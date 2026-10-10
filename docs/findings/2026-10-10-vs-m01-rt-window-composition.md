@@ -42,43 +42,47 @@ absent, `setup_scene`/`perform_reset` behave exactly as before, so
 `--playtest` is unchanged; with it present, the mission's player body is
 spawned instead and the synthetic scene is not.
 
-## The launch-gate premise that did not hold
+## The launch-gate premise: measured twice, corrected mid-task by #1220
 
 The task description stated "**All 11 surfaces measure Satisfied on main
-today**". Measured against the owner's installation on 2026-10-10 this is
-**not** the case:
+today**". This member's first retail run, against the branch base
+`390796d7` (2026-10-10 morning), saw the plan **Blocked**:
 
 ```
-world_geometry: unknown: the container imports to a WorldDefinition (144
-partition cells, 346 objects) with the `identity` axis map applied as
-ObservedTool under f18-world.world-axis-convention-measured, and every
-`fvol*` record classified as fog (#716); what no stage has answered is the
-collision role of the 4 grid-named `fvol*` volume records
+world_geometry: unknown: ... what no stage has answered is the collision
+role of the 4 grid-named `fvol*` volume records
 (f18-world.grid-named-fog-volume-role-unmeasured); and what the 1 grid
 record that stores no mesh index drew
-(docs/findings/2026-10-07-m01-lc-fvol-roles-and-axis-convention.md,
-docs/findings/2026-10-07-f18-grid-collision-origin.md)
 ```
 
-(The ten other surfaces are `Satisfied`.) Consequences, kept separate rather
-than folded together:
+While this task was in flight, Rally #1220
+(`VS-M01-GEOMETRY-VERDICT-ON-MAIN`) landed on main (commits `65b304ae`…
+`482c8e34`): #771's re-measurement showed `partition_records_fog_volume`
+was an **overlap counter** (how many grid-named records the fog consumer
+keys), not an open question — every record it covers resolves role `None`
+once the candidate's own narrow-phase filter is read. The verdict now reads
+the report's residual counters, and the retail plan measures **11/11
+satisfied, `launchable() == true`** on current main. The task premise holds
+after #1220; the acceptance test `accept_vs_m01_runtime_window_retail_m01_
+reaches_the_headless_composition` therefore asserts `launchable()` with the
+gap list in its message. Consequences, kept separate:
 
-* **`cs --cs-path <install> --mission M01` still exits nonzero today**, as
-  `Blocked` naming `world_geometry` — the same refusal
-  `accept_vs_m01_runtime_retail_launch_is_refused_with_source_diagnostics`
-  pins and has been pinning. That is correct behavior under AGENTS.md rules
-  4 and 5: the collision roles of those five grid records are unanswered, so
-  no scene may be faked around them.
-* **The acceptance line "the retail plan reaches the composition (never
-  Blocked)" cannot be met by this task** and was not forced. What
-  `accept_vs_m01_runtime_window_retail_m01_reaches_the_headless_composition`
-  proves instead is the half this task owns: the very stage `launch_mission`
-  would hand the window composes M01's own world and player headlessly,
-  attaches the announced load, and tears down clean.
-* The window opens for the first time when a measurement task answers those
-  five records' collision roles (a Rally follow-up was filed with this
-  finding attached). Nothing in this stage depends on how that measurement
-  comes out; the gate reads it off the plan either way.
+* **`cs --cs-path <install> --mission M01` now reaches the windowed
+  composition on the retail install**: `launch_mission` builds the
+  composition through `run_windowed` and blocks until the window closes (or
+  fails nonzero with the refusing stage's diagnostics). The reviewer with
+  the `gpu` capability runs this; no automated test can open the window,
+  which is why the retail member drives the same stage through
+  `build_headless`.
+* The seam test main had (`accept_vs_m01_runtime_retail_launch_reaches_the_
+  composition_seam`, expecting `MissionLaunchError::NoRuntime`) named
+  exactly the behavior this task removes; it now asserts the plan-level
+  closure (`launchable()`, no `Blocked` gap) and points at the window
+  suite's retail member for the composition half.
+* A follow-up this member filed mid-task (Rally #1251, "measure the
+  collision role of M01 world's grid-named `fvol*` volumes…") is
+  **superseded by #1220**, which landed the answer; a note on #1251 says
+  so.
 
 ## Residues this stage names rather than settles
 
@@ -112,6 +116,13 @@ than folded together:
 
 * `cargo test -p cs_app --test campaign -- accept_vs_m01_runtime_window_
   --include-ignored`: 3 passed (two synthetic members in CI, one retail
-  member over `$CS_GAME_DIR` + `$CS_ENGINE_IMAGE`).
-* The retail refusal text quoted above is from that run's own assertion
-  path on 2026-10-10.
+  member over `$CS_GAME_DIR` + `$CS_ENGINE_IMAGE`), on both the pre-#1220
+  base and the rebased tree containing #1220's verdict change.
+* The Blocked retail measurement quoted above was taken against the
+  pre-#1220 base and is superseded by #1220's own finding
+  (`docs/findings/2026-10-10-vs-m01-geometry-verdict-on-main.md`), which
+  the rebased tree's retail member agrees with: `launchable()`, no gaps.
+* Full checks on the rebased tree: `cargo fmt --all -- --check`,
+  `cargo clippy --workspace --all-targets --all-features --locked --
+  -D warnings`, `cargo test --workspace --locked`, and the task selection
+  above, all green.

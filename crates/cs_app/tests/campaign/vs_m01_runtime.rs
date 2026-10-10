@@ -414,23 +414,29 @@ fn accept_vs_m01_runtime_launch_refuses_an_undeclared_mission_and_an_empty_insta
     assert!(matches!(empty, MissionLaunchError::Plan(_)), "{empty}");
 }
 
-/// **On the retail installation the gate passes and the refusal is the
-/// composition seam, never a guessed scene.** With every surface satisfied the
-/// launch stops exactly at the one thing still missing — the windowed mission
-/// composition this stage builds — reported as [`MissionLaunchError::NoRuntime`],
-/// and it is never a `Blocked` plan: no surface is named as missing.
+/// **On the retail installation the gate passes and the launch reaches the
+/// windowed composition itself, never a surface gap.** With every surface
+/// satisfied (#1220 re-measured the verdict off #771's residual counters),
+/// `launch_mission` no longer stops at a seam: it builds the composition
+/// (VS-M01-RT-WINDOW, #1215), so this test asserts at the plan level that
+/// the closure is satisfied and the refusal arms — `Blocked` above all —
+/// never fire. The composition itself, over the same stage this plan would
+/// hand the window, is driven headlessly by
+/// `accept_vs_m01_runtime_window_retail_m01_reaches_the_headless_composition`
+/// in `vs_m01_rt_window.rs`; a test can never open the real window.
 #[test]
 #[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_vs_m01_runtime_retail_launch_reaches_the_composition_seam() {
-    use cs_app::cli::MissionRequest;
-    use cs_app::mission_launch::{MissionLaunchError, launch_mission};
-    let error = launch_mission(&MissionRequest {
-        cs_path: game_dir(),
-        mission: "M01".to_owned(),
-    })
-    .expect_err("a launchable plan still stops at the unbuilt composition");
+    use cs_app::mission_launch::plan_mission_launch;
+    let plan = plan_mission_launch(&game_dir(), label("M01"), &discovery_title())
+        .expect("the installation yields a launch plan for M01");
     assert!(
-        matches!(error, MissionLaunchError::NoRuntime),
-        "the refusal is the composition seam, not a surface gap: {error}"
+        plan.launchable(),
+        "the retail plan reaches the composition; a gap would be a Blocked \
+         launch: {}",
+        plan.gaps()
+            .map(|gap| format!("{}: {}", gap.surface.label(), gap.verdict.describe()))
+            .collect::<Vec<_>>()
+            .join("; ")
     );
 }

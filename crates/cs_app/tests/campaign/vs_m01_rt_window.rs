@@ -365,43 +365,34 @@ fn accept_vs_m01_runtime_window_a_second_composition_starts_from_nothing() {
     assert!(residency(second.world()).is_none());
 }
 
-/// **Against the owner's installation, M01's stage reaches the headless
-/// composition through the same code path the window runs — and the launch
-/// gate is measured exactly as it stands today.**
+/// **Against the owner's installation, M01's measured plan is launchable and
+/// its stage reaches the composition: never `Blocked`, never `NoRuntime`.**
 ///
-/// Measured truth on 2026-10-10 (the finding is
-/// `docs/findings/2026-10-10-vs-m01-rt-window-composition.md`): the task
-/// premise "all 11 surfaces measure Satisfied" does **not** hold —
-/// `world_geometry` is still `Unknown`, because the collision role of the
-/// four grid-named `fvol*` volume records and of the one grid record that
-/// stores no mesh index drew is unanswered (the same gap
-/// `accept_vs_m01_runtime_retail_launch_is_refused_with_source_diagnostics`
-/// pins). So `launch_mission` refuses the retail launch as `Blocked` —
-/// nonzero with its source diagnostics, which is the acceptance behavior
-/// for unanswered reachable content (AGENTS.md rules 4 and 5), and the
-/// `NoRuntime` arm no longer exists on any path. What this member proves is
-/// the half this task owns: the very stage `launch_mission` would hand the
-/// window composes M01's own world and player headlessly, attaches the
-/// announced load and tears down clean.
+/// `NoRuntime` no longer exists (#1215 removed it with the seam it named),
+/// and the plan's closure is satisfied on current main — #1220 re-measured
+/// `world_geometry` off #771's residual counters, so the task premise "all
+/// 11 surfaces measure Satisfied" holds (this member ran against the
+/// pre-#1220 base mid-task and saw the old `fvol*` reading; the correction
+/// is recorded in
+/// `docs/findings/2026-10-10-vs-m01-rt-window-composition.md`). The
+/// windowed half is the reviewer's `gpu`-capability run of
+/// `cs --cs-path <install> --mission M01`; a test can never open the real
+/// window, so this member drives the very same stage through
+/// [`build_headless`].
 #[test]
 #[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_vs_m01_runtime_window_retail_m01_reaches_the_headless_composition() {
     let root = game_dir();
     let plan: MissionLaunchPlan = plan_mission_launch(&root, label("M01"), "The Lost Treasure")
         .expect("M01's launch closure plans");
-    let gaps: Vec<String> = plan
-        .gaps()
-        .map(|gap| format!("{}: {}", gap.surface.label(), gap.verdict.describe()))
-        .collect();
-    if !plan.launchable() {
-        // Whatever blocks the launch must be a named gap, never silence —
-        // today it is `world_geometry`'s unanswered collision roles.
-        assert!(
-            gaps.iter().any(|gap| gap.starts_with("world_geometry:")),
-            "an unsatisfied retail plan must name its blocking surfaces: {}",
-            gaps.join("; ")
-        );
-    }
+    assert!(
+        plan.launchable(),
+        "every launch surface must be satisfied before the composition runs: {}",
+        plan.gaps()
+            .map(|gap| format!("{}: {}", gap.surface.label(), gap.verdict.describe()))
+            .collect::<Vec<_>>()
+            .join("; ")
+    );
 
     let stage = stage_for(&root, &plan).expect("M01's stage reads through the production readers");
     let pose = stage.start;
