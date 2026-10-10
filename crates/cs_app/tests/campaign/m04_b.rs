@@ -180,8 +180,8 @@ fn arguments(directive: &Directive) -> Vec<i64> {
 /// The cross-objective **block addresses** a directive spells.
 ///
 /// The measured effects split the two children of a nap: child0 is the
-/// targeted block index and child1 is the number of seconds after which the
-/// target re-wakes
+/// targeted block's number and child1 is the number of seconds after which
+/// the target re-wakes
 /// (`docs/findings/2026-10-06-m01-lc-directive-b-objective-lifecycle-target-semantics.md`),
 /// so a nap contributes one address while a wake or a kill contributes every
 /// integer it spells. Taking the nap's seconds for a range check would report
@@ -673,9 +673,10 @@ fn accept_m04_b_the_sheet_priorities_are_located_and_resolve_to_measured_operati
 /// ends the mission. Both start dormant with no timed wake (`BEGIN_DORMANT`
 /// `-1`), and of the 47 dormant markers only blocks 1 and 2 — the mission
 /// start — arm a timed self-wake, so neither latch can fire on its own clock.
-/// Block 32 is named by exactly one other block, 44, through a nap; block 41
-/// by block 20's wake. Every wake, kill, nap and gate address lies in
-/// `1..=52`.
+/// A spelled integer is the target's one-based block number — the original's
+/// parse decrements it to a record index (M02-B-FU3 / #802) — so block 32 is
+/// named by exactly one other block, 31, through a nap, and block 41 by block
+/// 27's nap. Every wake, kill, nap and gate address lies in `1..=52`.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m04_b_the_terminal_blocks_are_gated_and_every_address_is_in_range() {
@@ -778,7 +779,11 @@ fn accept_m04_b_the_terminal_blocks_are_gated_and_every_address_is_in_range() {
         "every address is a block of this record: {out_of_range:?}"
     );
 
-    // Who may fire the two latches: only a completion edge names them.
+    // Who may fire the two latches: only a completion edge names them, and a
+    // spelled integer names the target's own block number — one-based, as the
+    // original's `dec` parse measured it, so the edge hits the block literally
+    // spelled, not the block one slot later (the zero-based reading this walk
+    // used to apply misattributed every edge to the preceding block's site).
     let incoming = |target: u32| -> Vec<(u32, String, Vec<i64>)> {
         blocks
             .iter()
@@ -787,7 +792,7 @@ fn accept_m04_b_the_terminal_blocks_are_gated_and_every_address_is_in_range() {
                     .iter()
                     .filter(|d| {
                         d.key.ends_with("_OBJECTIVE_WHEN_I_COMPLETE")
-                            && addresses(d).contains(&(i64::from(target) - 1))
+                            && addresses(d).contains(&i64::from(target))
                     })
                     .map(|d| (*number, d.key.clone(), addresses(d)))
             })
@@ -795,34 +800,40 @@ fn accept_m04_b_the_terminal_blocks_are_gated_and_every_address_is_in_range() {
     };
     assert_eq!(
         incoming(32),
-        [(44, "NAP_OBJECTIVE_WHEN_I_COMPLETE".to_owned(), vec![31])],
-        "the success latch has in-degree one and cannot fire early"
+        [(31, "NAP_OBJECTIVE_WHEN_I_COMPLETE".to_owned(), vec![32])],
+        "the success latch has in-degree one — OBJECTIVE31's nap of block 32 — \
+         and cannot fire early"
     );
     assert_eq!(
         incoming(41),
-        [(
-            20,
-            "WAKE_OBJECTIVE_WHEN_I_COMPLETE".to_owned(),
-            vec![22, 40, 50]
-        )],
-        "the failure latch is woken by exactly one block"
+        [(27, "NAP_OBJECTIVE_WHEN_I_COMPLETE".to_owned(), vec![41])],
+        "the failure latch's only completion edge is OBJECTIVE27's nap of \
+         block 41, not a wake"
     );
-    let gates: Vec<u32> = blocks
-        .iter()
-        .flat_map(|(number, directives)| {
-            directives
-                .iter()
-                .filter(|d| d.key == "TICK_DEPENDS_ON_OBJ")
-                .map(|d| (*number, addresses(d)))
-                .filter(|(_, targets)| targets.contains(&(i64::from(41) - 1)))
-                .map(|(number, _)| number)
-                .collect::<Vec<_>>()
-        })
-        .collect();
+    let gates_on = |target: u32| -> Vec<u32> {
+        blocks
+            .iter()
+            .flat_map(|(number, directives)| {
+                directives
+                    .iter()
+                    .filter(|d| d.key == "TICK_DEPENDS_ON_OBJ")
+                    .map(|d| (*number, addresses(d)))
+                    .filter(|(_, targets)| targets.contains(&i64::from(target)))
+                    .map(|(number, _)| number)
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    };
     assert_eq!(
-        gates,
+        gates_on(41),
+        [] as [u32; 0],
+        "nothing gates on the failure latch's own block"
+    );
+    assert_eq!(
+        gates_on(40),
         [42],
-        "block 42 runs only while the failure latch's block is awake — a gate, not a wake"
+        "block 42 runs only while block 40 — the block OBJECTIVE20 wakes — is \
+         awake: a gate on its dependency, not on the latch"
     );
 }
 
@@ -1407,4 +1418,18 @@ fn accept_m04_b_fu1_a_top_level_completion_count_is_inert_and_unbound() {
         "the sibling key is unmeasured as a directive: {}",
         refusals[0]
     );
+}
+
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn scratch_dump_m04_detail() {
+    let (document, _member) = read_control_member(&game_dir(), MISSION).expect("control member");
+    let blocks = blocks_of(&document);
+    for want in [20u32, 27, 31, 32, 40, 41, 42, 44] {
+        let (_, directives) = blocks.iter().find(|(n, _)| *n == want).unwrap();
+        println!("OBJECTIVE{want}:");
+        for d in directives {
+            println!("   {} {:?}", d.key, d.args);
+        }
+    }
 }
