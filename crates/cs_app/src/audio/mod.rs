@@ -24,6 +24,12 @@
 //! * [`loops::AudioSession`] and [`loops::sync_emitter_loops`] — the loop
 //!   lifecycle: bindings starting, swapping and stopping loops, every outcome
 //!   and refusal recorded by name and never played;
+//! * [`spawn::bind_spawned_emitters`] — the spawn/bind path, the one producer
+//!   of [`AudioEmitterBinding`]s: an aircraft's engine loop and its
+//!   [`EngineVoiceFollow`](engine::EngineVoiceFollow), and the world's
+//!   environment loop on the delivered item entity, each named from the
+//!   delivered closure's own [`cs_content::audio`] records and given one
+//!   session-qualified emitter id for its whole life;
 //! * [`engine`] — engine pitch and volume smoothed from the **fixed-tick**
 //!   engine spool, so the mix follows measured engine state rather than render
 //!   FPS (F41 non-negotiable behavior 1);
@@ -56,6 +62,7 @@ pub mod lower;
 pub mod mixer;
 pub mod plugin;
 pub mod samples;
+pub mod spawn;
 
 pub use device::{
     AudibleDevice, AudioBackendKind, AudioBackendLog, AudioBackendRefusal, CODE_CAPABILITY_ABSENT,
@@ -78,6 +85,10 @@ pub use mixer::{
 };
 pub use plugin::AudioPlugin;
 pub use samples::{AudioSampleSource, CODE_SAMPLE_ABSENT, ContentSampleSource, SampleSource};
+pub use spawn::{
+    AudioBindLog, AudioBindRecord, AudioBindRefusal, AudioEmitterIds, AudioEmitterRole,
+    bind_spawned_emitters,
+};
 
 use bevy::ecs::component::Component;
 use cs_sim::audio_events::{AudioBus, AudioEmitterId};

@@ -135,6 +135,17 @@ impl AudioSession {
         )
     }
 
+    /// The specs the installed load lowered, in content-id order.
+    ///
+    /// This is the session's view of *playable* content: the declared records
+    /// of the delivered closure that [`lower_record`](super::lower_record)
+    /// accepted. [`bind_spawned_emitters`](super::bind_spawned_emitters) reads
+    /// it to resolve an emitter role delivered-first, so an emitter names
+    /// something the load really delivered whenever the load carries it.
+    pub fn specs(&self) -> impl Iterator<Item = &AudioAssetSpec> {
+        self.specs.values()
+    }
+
     /// Takes the accumulated outcomes, leaving the refusals for a consumer that
     /// reports them.
     ///

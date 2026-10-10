@@ -9,16 +9,22 @@
 //! # The schedule
 //!
 //! ```text
-//! PreUpdate   insert_audio_session   the load's handoff owns the session
-//! FixedUpdate smooth_engine_voices   one fixed tick of throttle state
-//! Update      sync_emitter_loops  ->  advance_radio  ->  mix_session
+//! PreUpdate   insert_audio_session    the load's handoff owns the session
+//! FixedUpdate smooth_engine_voices     one fixed tick of throttle state
+//! Update      bind_spawned_emitters -> sync_emitter_loops -> advance_radio
+//!                 -> mix_session
 //! ```
 //!
-//! Three of those orderings are load-bearing:
+//! Four of those orderings are load-bearing:
 //!
 //! * `insert_audio_session` runs **before** the loop systems, so the session the
 //!   load owns exists before anything reads it, and a reload's fresh session is
 //!   never a frame behind.
+//! * `bind_spawned_emitters` runs **before** `sync_emitter_loops`, so an
+//!   aircraft or world emitter spawned this frame gets its binding, its
+//!   session-qualified emitter id and (on an aircraft) its engine voice in the
+//!   same frame the loop system looks for `Added` bindings — the spawn path and
+//!   the loop lifecycle see one spawn, not two frames of it.
 //! * `smooth_engine_voices` runs in **`FixedUpdate`** and reads `Time<Fixed>`,
 //!   never a render delta: engine pitch and volume follow measured engine state
 //!   at a fixed rate, so a frame-rate change cannot change the mix (F41
@@ -44,7 +50,9 @@
 //!
 //! The plugin loads no audio either: the session's specs come from the delivered
 //! load, not from here. It holds the declared catalog the loading path publishes
-//! and lowers only what the handoff actually delivered.
+//! and lowers only what the handoff actually delivered — and
+//! [`bind_spawned_emitters`](super::spawn::bind_spawned_emitters) names emitter
+//! bindings from exactly that content, never from ids it invents.
 
 use std::sync::{Arc, Mutex};
 
@@ -62,6 +70,7 @@ use super::engine::{EngineVoices, smooth_engine_voices};
 use super::handoff::{AudioHandoffLog, DeclaredAudioCatalog, insert_audio_session};
 use super::loops::{advance_radio, sync_emitter_loops};
 use super::mixer::{AudioMixReport, AudioOutput, AudioSpatial, mix_session};
+use super::spawn::{AudioBindLog, bind_spawned_emitters};
 
 /// Registers the F41 audio systems, the declared catalog the handoff lowers
 /// from, and the spatial configuration and device the mixer runs against.
@@ -202,12 +211,19 @@ impl Plugin for AudioPlugin {
         }
         app.init_resource::<AudioHandoffLog>();
         app.init_resource::<AudioMixReport>();
+        app.init_resource::<AudioBindLog>();
         app.init_resource::<EngineVoices>();
         app.add_systems(PreUpdate, insert_audio_session);
         app.add_systems(FixedUpdate, smooth_engine_voices);
         app.add_systems(
             Update,
-            (sync_emitter_loops, advance_radio, mix_session).chain(),
+            (
+                bind_spawned_emitters,
+                sync_emitter_loops,
+                advance_radio,
+                mix_session,
+            )
+                .chain(),
         );
     }
 }

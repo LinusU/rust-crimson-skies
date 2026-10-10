@@ -327,7 +327,27 @@ fn accept_f41_b_undelivered_sound_is_refused_by_name() {
         "the engine loop was refused: {:?}",
         world.session().refusals
     );
-    assert_eq!(world.device.sounding(), 0, "nothing was played");
+    // The refusal is about the *engine* emitter, so that is what "nothing was
+    // played" has to mean now: the refused asset reaches no device voice at
+    // all. The load did deliver `synthetic.environment.wind`, and the spawn
+    // path (#531) binds that delivered record as the world's emitter, so
+    // exactly one voice sounds — and it is the delivered loop, never the one
+    // the load did not deliver.
+    assert!(
+        !world
+            .device
+            .voices()
+            .iter()
+            .any(|(_, start)| start.asset == engine_asset()),
+        "the refused engine loop reached no device voice: {:?}",
+        world.device.voices()
+    );
+    assert_eq!(
+        world.device.sounding(),
+        1,
+        "only the delivered environment loop is sounding: {:?}",
+        world.device.voices()
+    );
 }
 
 /// A delivered audio content with no declared record is refused by the handoff

@@ -11,7 +11,8 @@
 //!   level follows the flight model. It is a component rather than a flag on
 //!   [`AudioEmitterBinding`](super::AudioEmitterBinding) because the binding is
 //!   F41-B's *lifecycle* record — which asset plays on which emitter — and this
-//!   is a different question: how loudly, and how fast.
+//!   is a different question: how loudly, and how fast. The spawn path attaches
+//!   it alongside the binding it produces (`super::spawn`).
 //! * [`smooth_engine_voices`] advances every followed voice by exactly one
 //!   **fixed** tick of the authoritative [`cs_sim::flight::EngineState`] spool
 //!   the F24-B driver integrates. It reads `Time<Fixed>`, never a render
@@ -32,12 +33,14 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use bevy::ecs::component::Component;
+use bevy::ecs::query::{Or, With};
 use bevy::ecs::resource::Resource;
 use bevy::ecs::system::{Query, Res, ResMut};
 use bevy::time::{Fixed, Time};
 use cs_sim::audio_events::{AudioEmitterId, EngineSmoothing, EngineVoice, VoiceLevel};
 
 use crate::physics::flight::FlightAircraft;
+use crate::playtest::scene::PlaytestOriginalFlight;
 
 use super::AudioEmitterBinding;
 
@@ -128,6 +131,10 @@ impl EngineVoices {
 /// from the commanded throttle with the airframe's declared response rate, so
 /// this system reacts to *measured* engine state rather than re-deriving
 /// throttle from the input, and an engine that is not running asks for silence.
+/// A body spawned over the recovered original law carries no `FlightAircraft`
+/// record at all, so the query reads whichever authority the body has — the
+/// designed record or [`PlaytestOriginalFlight`]'s own actual throttle — and a
+/// body with neither is not followed.
 ///
 /// Voices whose emitter no longer has a live binding are dropped in the same
 /// pass, so a destroyed aircraft cannot leave a voice behind: the loop stops
@@ -136,7 +143,15 @@ impl EngineVoices {
 pub fn smooth_engine_voices(
     time: Res<Time<Fixed>>,
     mut voices: ResMut<EngineVoices>,
-    followed: Query<(&AudioEmitterBinding, &EngineVoiceFollow, &FlightAircraft)>,
+    followed: Query<
+        (
+            &AudioEmitterBinding,
+            &EngineVoiceFollow,
+            Option<&FlightAircraft>,
+            Option<&PlaytestOriginalFlight>,
+        ),
+        Or<(With<FlightAircraft>, With<PlaytestOriginalFlight>)>,
+    >,
 ) {
     let dt_s = f64::from(time.delta_secs());
     let live: BTreeSet<AudioEmitterId> = followed
@@ -144,8 +159,17 @@ pub fn smooth_engine_voices(
         .map(|(binding, ..)| binding.emitter)
         .collect();
     voices.retain(&live);
-    for (binding, follow, aircraft) in &followed {
-        let engine = aircraft.engine();
+    for (binding, follow, flight, original) in &followed {
+        // Two engine authorities and one law per body, exactly as the
+        // propeller spin reads them: the designed F24 record when the body
+        // carries it, otherwise the recovered original law's own throttle. A
+        // body with neither cannot reach this system — the query filters for
+        // one of them — so nothing here ever guesses a target level.
+        let engine = match (flight, original) {
+            (Some(record), _) => record.engine(),
+            (_, Some(record)) => record.engine(),
+            (None, None) => continue,
+        };
         let target = follow.smoothing.target(engine.running, engine.spool);
         voices.advance(binding.emitter, &follow.smoothing, target, dt_s);
     }
