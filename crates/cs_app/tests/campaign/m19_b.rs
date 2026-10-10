@@ -1363,22 +1363,18 @@ fn accept_m19_b_every_actor_the_record_names_resolves_in_the_shipped_data() {
     // The same question in the chapter-4 world container and the shared bank:
     // the transfer and extraction animation names, and the fortress members
     // the INACTIVE chains address.
-    let world: [(&str, &str, &[&str]); 9] = [
-        (
-            "bm_hookup_player",
-            "bhmhookup.zrd",
-            &["activate_bmhookup_node", "bm_hookup_player"],
-        ),
-        ("activate_bmhookup_node", "bhmhookup.zrd", &[]),
-        ("launch_warhawk", "bhm_warhawks.zrd", &[]),
-        ("launch_autogyro", "bhm_warhawks.zrd", &[]),
-        ("launch_brigand", "bhm_warhawks.zrd", &[]),
-        ("bhf_dockdoors", "bhf_dockdoors.zrd", &[]),
-        ("bhf_heliumtank1", "bhf_docktankboom.zrd", &[]),
-        ("tank1_healthy", "bhf_docktankboom.zrd", &[]),
-        ("rail", "bhf_hangarboom.zrd", &[]),
+    let world: [(&str, &str); 9] = [
+        ("bm_hookup_player", "bhmhookup.zrd"),
+        ("activate_bmhookup_node", "bhmhookup.zrd"),
+        ("launch_warhawk", "bhm_warhawks.zrd"),
+        ("launch_autogyro", "bhm_warhawks.zrd"),
+        ("launch_brigand", "bhm_warhawks.zrd"),
+        ("bhf_dockdoors", "bhf_dockdoors.zrd"),
+        ("bhf_heliumtank1", "bhf_docktankboom.zrd"),
+        ("tank1_healthy", "bhf_docktankboom.zrd"),
+        ("rail", "bhf_hangarboom.zrd"),
     ];
-    for (name, member, _) in world {
+    for (name, member) in world {
         assert!(named.contains(name), "the record spells {name:?}");
         let texts = member_texts(WORLD_CONTAINER, member);
         assert!(
