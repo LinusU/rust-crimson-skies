@@ -124,19 +124,32 @@ const CREW_ANIMATIONS: [&str; 17] = [
 /// The object node the seventeen crew animations drive.
 const CREW_NODE: &str = "apassengers";
 
-/// The world nodes M06's own directives and targets name, each of which must
-/// resolve in the chapter world exactly once — the contrast that shows the
-/// mission addresses what it uses.
-const MISSION_NODES: [&str; 8] = [
+/// The world nodes M06's own directives, targets and evaluator member lists
+/// name, each of which must resolve in the chapter world exactly once — the
+/// contrast that shows the mission addresses what it uses.
+const MISSION_NODES: [&str; 14] = [
     "sprucegoose",
     "propane",
     "kkgate",
-    "sghangar",
     "tugandbarge01",
     "tugandbarge02",
     "tugandbarge03",
     "tugandbarge04",
+    "g_engine1",
+    "g_engine2",
+    "g_engine3",
+    "g_engine4",
+    "g_engine5",
+    "g_engine6",
+    "g_engine7",
+    "g_engine8",
 ];
+
+/// The chapter node the *sibling* missions name (`ZBD/C2/M02`,
+/// `ZBD/C2/M03` and the chapter's instant-action record spell `sghangar`) and
+/// M06's archive spells nowhere — the counter-example that keeps the list
+/// above honest about whose names it lists.
+const SIBLING_ONLY_NODE: &str = "sghangar";
 
 /// The one message id the installation spells with the word, and the one
 /// archive of the census that carries it (chapter one's instant action).

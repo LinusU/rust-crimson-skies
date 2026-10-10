@@ -73,7 +73,7 @@ Measured on this installation, re-derived by the acceptance tests on each run:
 | The sibling's copy | `ZBD/C2/M02/zrdr.zbd`'s `location.zrd` has the **same digest and the same bytes** |
 | The four locations | `Airport_terminal` `[-5249, 199, -4747]` `[-11, 22, 0]`; `Passenger_hangar` `[-5177, 325, -6842]` `[-15, 9, 0]`; `Crops` `[-3295, 390, -6837]` `[-12.8, 151, 0]`; `Coast` `[-1968, 128, -2465]` `[9, -23, 0]` — a name, a position and a heading, and nothing else |
 | Chapter world | `ZBD/C2/gamez.zbd`, 4 908 288 bytes, SHA-256 `2b2cf09b…4c924b6`; node array of 4 956 slots at offset 3 111 828; exactly one `apassengers` (slot 503), one `passall` (504) |
-| The mission's own world nodes | `sprucegoose`, `propane`, `kkgate`, `sghangar` and `tugandbarge01..04` each resolve **exactly once** in that array — the mission addresses what it uses |
+| The mission's own world nodes | `sprucegoose`, `propane`, `kkgate`, `tugandbarge01..04` and `g_engine1..8` each resolve **exactly once** in that array — the mission addresses what it uses; the sibling missions' `sghangar` resolves once too and M06 spells it nowhere |
 | Library archive | `ZBD/zrdr.zbd`, 3 988 394 bytes, SHA-256 `76b510d8…cf592dd`; member `passengers.zrd` at offset 2 128 952, length 19 418, own SHA-256 `2dedd152…8ab092d` |
 | What that member declares | 17 `ANIMATION_DEFINITION` records, every one driving node `apassengers`, every one `ON_CALL`: `add_waldo`, `add_spks`, `add_jack`, `call_add_jack`, `add_bjon`, `call_add_bjon`, `add_pick`, `call_add_pick`, `add_fas`, `call_add_fas`, `add_ilsa`, `call_add_ilsa`, `add_boothe`, `call_add_boothe`, `add_swan`, `call_add_swan`, `rem_pas` |
 | M06's startup member | `startanims.zrd` fires `player_setup`, `kktorch_burning1`, `kktorch_burning2`, `place_the_goose` at `NEW_GAME_START` and `player_setup` again at `LOAD_GAME_START` — **no crew animation** |
@@ -166,14 +166,18 @@ carries, and it is not an actor, an objective or an interaction.
 | `crimson.rof`'s `ASSETS/SCRIPTS/PASSENGERCABIN.SCRIPT`, and the image's UI-page table | A `PassengerCabin` UI page beside `FinalCinema`, `ScrapBook`, `IA_WrapUp`, `Load` and `Save` | A between-missions UI page, not mission data; nothing in M06's archive references it |
 | `ZBD/interp.zbd` loading scripts, and the `cam_anim.zbd` front indexes | Loading-screen and camera-animation references to the people models and to `passenger_plane_destruct.zrd` | Loading/camera plumbing shared by every chapter |
 
-A detail worth keeping for whoever reads the map next: the world's *other*
-place-name-bearing member, `ZBD/C2/IA1/zrdr.zbd`'s `ia.zrd`, spells
-`sghangar` too — and `sghangar` **is** a world node M06's own record names.
-So the archive-member vocabulary splits cleanly: node names (`propane`,
-`kkgate`, `sghangar`, `tugandbarge01..04`, `sprucegoose`) reach the world
-array, and location names (`Airport_terminal`, `Passenger_hangar`, `Crops`,
-`Coast`) reach the teleport list. M06 uses the first kind and never the
-second.
+A detail worth keeping for whoever reads the map next: the archive-member
+vocabulary splits cleanly, and the split is measurable. **Node names** —
+`propane`, `kkgate`, `tugandbarge01..04`, `sprucegoose`, `g_engine1..8` —
+are what M06's own directives, targets and evaluator member lists spell, and
+each resolves exactly once in the chapter's world array. **Location names** —
+`Airport_terminal`, `Passenger_hangar`, `Crops`, `Coast` — reach only the
+teleport list, and M06 spells none of them outside `location.zrd`. The
+neighbouring node `sghangar` (the Spruce Goose hangar) makes the split
+visible from the other side: `ZBD/C2/M02/zrdr.zbd`, `ZBD/C2/M03/zrdr.zbd` and
+the chapter's instant-action record spell it, `ZBD/C2/M01/zrdr.zbd` spells it
+nowhere, and it still resolves in the world exactly once. M06 uses the first
+kind of name and never the second.
 
 ## Recorded unknowns (not guessed)
 
