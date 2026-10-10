@@ -128,6 +128,13 @@
 //! the second spelling in [`SourceBinding::unknowns`] as measured, with the
 //! rows it read, and keeps `verified` false.
 //!
+//! A checklist entry measured for **one** mission's data alone is likewise
+//! never guessed onto the others: [`mission_scoped_unknowns`] keys
+//! `MISSION_SCOPED_UNKNOWNS` by work order, so such a limitation reaches only
+//! the record of the mission whose data was measured, in the same voice as the
+//! shared entries — M06-B-FU4 recorded M06's passenger identity this way,
+//! measured for M06 alone by M06-B-FU2.
+//!
 //! ## The whole campaign (F50-B)
 //!
 //! `SourceContext::bind` answers for one work order; [`SourceContext::bind_campaign`]
@@ -2139,6 +2146,12 @@ pub fn campaign_layout(
 
 /// The checklist entries a source binding deliberately does **not**
 /// resolve, with why. Every one of them keeps `verified` false.
+///
+/// This table is shared by every mission's record, so a limitation measured
+/// for one mission never goes here: it would assert the limitation for every
+/// mission, which is false for the missions whose data settles it. Such a
+/// limitation belongs in [`MISSION_SCOPED_UNKNOWNS`], keyed by the work order
+/// it was measured for.
 const SOURCE_BINDING_UNKNOWNS: &[&str] = &[
     "initial player and wingmate configurations: not bound from original data at this stage",
     "actor/spawn/route sets: not bound from original data at this stage",
@@ -2156,6 +2169,44 @@ const SOURCE_BINDING_UNKNOWNS: &[&str] = &[
     "closure_sha256: the mission dependency closure hash needs the retail content catalog \
      (F14-D) and decoded mission programs (F37/F38)",
 ];
+
+/// The checklist entries a source binding records for **one** work order
+/// alone, keyed by that work order's label.
+///
+/// [`SOURCE_BINDING_UNKNOWNS`] is shared by every mission's record, so a
+/// limitation measured for one mission's data must never be added there: it
+/// would assert the limitation for every mission, which is false for the
+/// missions whose data settles it. An entry here is appended after the shared
+/// entries by [`SourceContext::bind`] for the named work order alone —
+/// measured, in the same voice, naming the limitation, its reason and the
+/// task or ruling that would settle it — and the follow-up that settles it
+/// removes the entry (M06-B-FU4 added M06's passenger identity, measured for
+/// M06 only by M06-B-FU2).
+const MISSION_SCOPED_UNKNOWNS: &[(&str, &[&str])] = &[(
+    "M06",
+    &[
+        "passenger identity: the shipped data binds no passenger or extraction entity to this \
+      mission — the archive's only passenger-named string is the shared `location.zrd` teleport \
+      entry `Passenger_hangar`, and no directive, target, actor, startup animation, world node or \
+      message id names one (measured by M06-B-FU2); needs an original reference run under M06-C \
+      or the owner's ruling",
+    ],
+)];
+
+/// The checklist entries recorded in a source binding for one work order
+/// alone ([`MISSION_SCOPED_UNKNOWNS`]), in table order — empty when the work
+/// order carries no mission-scoped limitation.
+///
+/// [`SourceContext::bind`] consults this for the label it binds, so a
+/// mission-scoped entry reaches exactly one mission's record and its
+/// siblings stay silent about a question their own data settles.
+pub fn mission_scoped_unknowns(label: &MissionLabel) -> &'static [&'static str] {
+    MISSION_SCOPED_UNKNOWNS
+        .iter()
+        .find(|(work_order, _)| *work_order == label.as_str())
+        .map(|(_, entries)| *entries)
+        .unwrap_or(&[])
+}
 
 /// Why a source-derived binding could not be produced at all.
 ///
@@ -2358,6 +2409,11 @@ impl SourceContext {
     /// long-name form and the installation spells the same campaign position
     /// differently in another campaign-length block, that second spelling is
     /// recorded in [`SourceBinding::unknowns`] rather than reconciled.
+    /// Likewise, a checklist entry measured for this work order's own data —
+    /// and not for the whole campaign — is recorded in
+    /// [`SourceBinding::unknowns`] on this work order's record alone, through
+    /// [`mission_scoped_unknowns`]; the shared checklist every mission
+    /// carries stays untouched by it.
     ///
     /// # Errors
     ///
@@ -2581,6 +2637,15 @@ impl SourceContext {
             .iter()
             .map(|entry| (*entry).to_owned())
             .collect();
+        // A limitation measured for this work order's data alone is recorded
+        // on this work order's record only ([`mission_scoped_unknowns`]): the
+        // shared table above would assert it for every mission, and only this
+        // mission's data was measured.
+        unknowns.extend(
+            mission_scoped_unknowns(&label)
+                .iter()
+                .map(|entry| (*entry).to_owned()),
+        );
         // A title confirmed through the long-name form means the installation
         // carries this mission's name in two display forms, and they may
         // disagree: the bare short name of this campaign position can omit a
