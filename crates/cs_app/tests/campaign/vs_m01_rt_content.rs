@@ -10,38 +10,36 @@
 //!   is refused with the path or logical key the reader failed at — never a
 //!   partially filled `MissionContent`, never a default (AGENTS.md rules 4
 //!   and 5). The synthetic member drives that path in CI.
-//! * **Against the owner's installation, the read runs the whole list and
-//!   names where it stops.** The retail member runs `prepare` over M01's real
-//!   plan and asserts that stop.
+//! * **Against the owner's installation, M01's content prepares every
+//!   record.** The retail member runs `prepare` over M01's real plan and
+//!   asserts each record the composition will consume.
 //!
-//! # Where it stops today, and why
+//! # The objectives source, since the owner's amendment (2026-10-10)
 //!
-//! The retail member asserts an `Objectives` refusal, not a prepared value:
-//! `ObjectiveRecovery::program()` (`crates/cs_app/src/objectives.rs:5609`)
-//! returns `Err(ObjectiveRecoveryRefusal)` **unconditionally** — its own doc
-//! says "always today" — and M01's `objectives.zrd` reads 58 blocks / 358
-//! fields with none of them recovered
-//! (`accept_m01_lc_objectives_retail_m01_drops_no_record` ends in
-//! `recovery.program().expect_err(...)`). Item 7 of #1214 therefore cannot
-//! succeed for M01, and a test that claimed M01's content "prepares" would be
-//! claiming something production does not do.
-//!
-//! Preparation reads the objective recovery **last**, so an `Objectives`
-//! refusal is also the proof that every other reader on the list succeeded:
-//! a failure in the world, the start configuration, the flight record, the
-//! weather, the world actors, the animation join, the control program or the
-//! sound walk would have been reported under its own variant instead.
-//! `docs/findings/2026-10-10-vs-m01-rt-content-objectives-program-refuses-and-plan-premises.md`
-//! holds the measurement and the follow-up (#1219); when a recovery can yield
-//! a program for M01, this member becomes the assertion that the value is
-//! prepared.
+//! Acceptance item 7 originally asked for the `ObjectiveRecovery::program()`
+//! path (`crates/cs_app/src/objectives.rs:5609`), which returns
+//! `Err(ObjectiveRecoveryRefusal)` **unconditionally** — its own doc says
+//! "always today" — so no original mission's content could ever prepare.
+//! The owner decided (Rally #1214, 2026-10-10, option 2): M01's declared
+//! objective program **is** the measured control/directive lowering
+//! (`mission_control::survey_mission_control_programs` → the mission's row →
+//! `lowering()` → `complete()` → `lowering_attempt().program()`), the same
+//! program the `mission_objectives` launch surface is judged by
+//! (`crates/cs_app/src/mission_launch.rs:908-921`). "Objectives program
+//! lowers" in the acceptance list therefore means that lowering completes —
+//! asserted below through `content.control` — and the separate
+//! `ObjectiveRecovery` path stays in `objectives.rs`, measured by #1219,
+//! consulted by no reader here. The measurement that forced the amendment is
+//! recorded in
+//! `docs/findings/2026-10-10-vs-m01-rt-content-objectives-program-refuses-and-plan-premises.md`.
 
 use std::path::PathBuf;
 
 use cs_app::mission_launch::{MissionLaunchPlan, plan_mission_launch};
-use cs_app::mission_session::{MissionSessionError, prepare_mission_content};
+use cs_app::mission_session::prepare_mission_content;
 use cs_content::campaign_bindings::MissionLabel;
-use cs_types::content::{ContentId, ContentKind};
+use cs_types::Tick;
+use cs_types::content::{ContentId, ContentKind, Resolved};
 
 use crate::common::label;
 
@@ -104,41 +102,108 @@ fn accept_vs_m01_runtime_content_an_unreadable_installation_is_refused_with_its_
     let _ = std::fs::remove_dir_all(&root);
 }
 
-/// **Against the owner's installation, M01's content prepares everything the
-/// production readers can stand behind — and stops exactly at the objective
-/// recovery, naming it.**
+/// **Against the owner's installation, M01's content prepares: every record
+/// the composition consumes is read through its production reader, and the
+/// declared objective program — the measured control/directive lowering —
+/// lowers completely.**
 ///
-/// The variant alone is the evidence: preparation reads the objective recovery
-/// last, so `Objectives` means the world container imported, the start
-/// airframe and pose resolved `Known`, the campaign flight record imported
-/// with its fuel load, the weather session started, the world-actor binding
-/// launched its session, the animation join bound, the control lowering
-/// completed and the sound walk found an archive — a refusal in any of those
-/// would have been reported under its own variant instead.
+/// Each assertion pins one record of the nine-item list; a refusal in any
+/// reader would have kept `prepare` from returning at all.
 #[test]
 #[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
-fn accept_vs_m01_runtime_content_m01_prepares_every_record_but_the_objectives_program() {
+fn accept_vs_m01_runtime_content_m01_prepares_every_record() {
     let root = game_dir();
     let plan: MissionLaunchPlan = plan_mission_launch(&root, label("M01"), "The Lost Treasure")
         .expect("M01's launch closure plans");
 
-    let error = prepare_mission_content(&root, &plan)
-        .expect_err("M01's objective record yields no program today (see the module doc)");
-    match error {
-        MissionSessionError::Objectives { mission, reason } => {
-            assert_eq!(mission, plan.mission_dir);
-            assert!(
-                reason.contains("no declared objective program can be recovered"),
-                "the refusal must be the recovery's own message, got: {reason}"
-            );
-            assert!(
-                reason.contains(&plan.mission_dir),
-                "the refusal must name the mission it was read for, got: {reason}"
-            );
-        }
-        other => panic!(
-            "M01 must stop at the objective recovery; every earlier reader succeeded, so any \
-             other variant means one of them refused — got: {other}"
-        ),
-    }
+    let content = prepare_mission_content(&root, &plan)
+        .expect("M01's content prepares through the production readers");
+
+    // 1. World: the definition imported from the mission's group container,
+    // and the engine meshes the definition names.
+    assert!(
+        !content.world.definition().objects().is_empty(),
+        "M01's world definition must import objects from {}",
+        plan.group_dir
+    );
+    assert!(
+        content.meshes.len() > 0,
+        "M01's world must upload the meshes its definition names"
+    );
+
+    // 2. Player start: the airframe and the initial pose, both Known.
+    let Resolved::Known(airframe) = content.start.airframe() else {
+        panic!("M01's start airframe must resolve Known");
+    };
+    assert_eq!(
+        airframe.value.key(),
+        "player_pfighter",
+        "the campaign start must resolve the measured scene root"
+    );
+    assert!(
+        matches!(content.start.initial_pose(), Resolved::Known(_)),
+        "M01's start pose must resolve Known"
+    );
+
+    // 3. Player flight law: the measured row's record, imported with its
+    // fuel load (an explicit unknown would have refused, never zero).
+    assert_eq!(
+        content.flight.record, "pdevastator",
+        "the campaign airframe row must map the pdevastator record"
+    );
+    assert!(
+        content.flight.fuel.is_finite() && content.flight.fuel > 0.0,
+        "the pdevastator record must import a positive fuel load, got {}",
+        content.flight.fuel
+    );
+
+    // 4. Environment: the bound weather session, started at tick zero of the
+    // composition's timeline.
+    assert_eq!(
+        content.environment.clock().tick(),
+        Tick(0),
+        "the weather session must start at tick zero"
+    );
+
+    // 5. World actors: satisfied, and the three actors this scope places.
+    assert!(
+        content.world_actors.is_satisfied(),
+        "M01's world-actor binding must be satisfied"
+    );
+    assert_eq!(
+        content.world_actors.rows().len(),
+        3,
+        "M01's scope must place its three measured world actors"
+    );
+
+    // 6. Animations: the join bound against this mission's scope and its
+    // world group's archives.
+    assert_eq!(
+        content.animation.scope(),
+        plan.mission_dir,
+        "the animation join must bind M01's own scope"
+    );
+    assert_eq!(
+        content.animation.group(),
+        plan.group_dir.trim_start_matches("zbd/"),
+        "the animation join must bind M01's world group"
+    );
+    assert!(
+        !content.animation.archives().is_empty(),
+        "the animation join must name the reader archives it read"
+    );
+
+    // 7 + 8. Objectives and script host: one measured control/directive
+    // lowering (the owner's 2026-10-10 amendment), lowered completely into
+    // the program the composition runs — objectives included.
+    assert!(
+        !content.control.objectives.is_empty(),
+        "M01's control lowering must produce a program with declared objectives"
+    );
+
+    // 9. Audio: at least one sound-family archive in the mission's scope.
+    assert!(
+        !content.sound_archives.is_empty(),
+        "M01's scope must hold at least one sound-family archive"
+    );
 }
