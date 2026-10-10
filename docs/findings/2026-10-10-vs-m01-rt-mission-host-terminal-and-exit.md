@@ -155,10 +155,10 @@ that path and by nothing else, never on a flag the test set itself.
 
 | check | result |
 | --- | --- |
-| `cargo fmt --all -- --check` | see the handover summary |
-| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | see the handover summary |
-| `cargo test --workspace --locked` | see the handover summary |
-| `cargo test --workspace --locked -- accept_vs_m01_runtime_host_02_ --include-ignored` | 4 tests: 3 synthetic pass in CI, 1 retail member runs against `$CS_GAME_DIR` |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
+| `cargo test --workspace --locked` | 0 — 496 `test result` lines, 0 failed |
+| `cargo test --workspace --locked -- accept_vs_m01_runtime_host_ --include-ignored` | 0 — 7 passed in 623.6 s: the 3 new synthetic members, the new retail member, and the three `.01` members (the selection is a superset of the required `accept_vs_m01_runtime_host_02_`, which is 4 tests, all passing) |
 
 Sources: `docs/contracts/SCRIPT-MISSION.md` ("Objective event ordering"),
 `docs/contracts/IDENTITY-CONTENT.md`, `docs/contracts/CLI-EVIDENCE.md`,
