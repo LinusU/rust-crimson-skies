@@ -619,20 +619,6 @@ fn accept_m06_b_fu2_no_shipped_record_binds_a_passenger_entity_for_m06() {
         "M06's archive spells no {SIBLING_ONLY_NODE}: the sibling missions' node is not this \
          mission's content"
     );
-    // The sibling missions' node resolves in the same world, and M06's archive
-    // spells it nowhere — the counter-example that keeps the list above about
-    // M06's own names rather than about the chapter's.
-    assert_eq!(
-        count_of(SIBLING_ONLY_NODE),
-        1,
-        "the world carries exactly one {SIBLING_ONLY_NODE}, which the sibling missions name"
-    );
-    let archive = std::fs::read(game_dir().join(CONTAINER)).expect("M06's reader archive reads");
-    assert!(
-        find(&archive, SIBLING_ONLY_NODE.as_bytes()).is_none(),
-        "M06's archive spells no {SIBLING_ONLY_NODE}: the sibling missions' node is not this \
-         mission's"
-    );
     for member in ["objectives.zrd", "targets.zrd", "aiv.zrd", "location.zrd"] {
         let texts = member_texts(CONTAINER, member);
         for node in [CREW_NODE, "passall"] {
