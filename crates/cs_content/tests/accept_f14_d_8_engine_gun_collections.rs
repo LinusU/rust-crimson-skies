@@ -364,7 +364,7 @@ fn game_dir() -> PathBuf {
 
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_f14_d_8_retail_the_installation_states_its_engines_and_guns() {
+fn accept_f14_d_8_engine_gun_retail_the_installation_states_its_engines_and_guns() {
     let dir = game_dir();
     let baseline = retail_baseline(&dir).expect("the original installation reads");
     let archive = fs::read(dir.join(ENGINE_GUN_ARCHIVE)).expect("archive");

@@ -66,7 +66,7 @@ const TASK_PREFIX: &str = "accept_f14_d_8_engine_gun_";
 
 /// The retail half of the prefix; its presence in the log is what licenses the
 /// `retail` capability below.
-const RETAIL_PREFIX: &str = "accept_f14_d_8_retail_the_installation_states_its_engines";
+const RETAIL_PREFIX: &str = "accept_f14_d_8_engine_gun_retail_";
 
 #[test]
 #[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_GAME_DIR"]
