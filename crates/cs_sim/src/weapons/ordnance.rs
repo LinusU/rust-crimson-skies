@@ -3386,6 +3386,218 @@ impl StatusEffectLedger {
     }
 }
 
+// ---------------------------------------------------------------- area ledger ----
+
+/// A triggered area's stable identity.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct AreaInstanceId {
+    /// The session generation the area belongs to.
+    pub session: u64,
+    /// The session-local serial, never recycled inside a session.
+    pub serial: u64,
+}
+
+impl fmt::Display for AreaInstanceId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "area/{}#{}", self.session, self.serial)
+    }
+}
+
+/// One live triggered area.
+///
+/// Gameplay state over the contact inputs the caller already supplies: the
+/// centre is a position copied from the detonating item, never an Avian body
+/// and never a pose the area owns or moves. The recipient list is fixed by the
+/// one application pass on the tick the area opened, so an actor that flies in
+/// afterwards is not a recipient of an area that was applied before it
+/// arrived.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ActiveArea {
+    /// The area's stable id.
+    pub instance: AreaInstanceId,
+    /// The component that left it.
+    pub source: OrdnanceId,
+    /// The actor that launched the component.
+    pub shooter: ActorId,
+    /// The item whose detonation opened it.
+    pub projectile: ProjectileId,
+    /// Where the detonation happened.
+    pub centre: WorldPosition,
+    /// The declared radius and lifetime it was opened with.
+    pub area: AreaEffect,
+    /// The tick the single application pass ran on.
+    pub opened_at: Tick,
+    /// The tick it expires on, with the status ledger's boundary rule: live
+    /// *at* every tick before `opened_at + lifetime_ticks`, gone at it.
+    pub expires_at: Tick,
+    /// Every actor inside the declared radius when it opened, in ascending
+    /// actor order, each once.
+    pub recipients: Vec<ActorId>,
+}
+
+impl ActiveArea {
+    /// Whether the area is still live at `tick`.
+    #[must_use]
+    pub fn is_live_at(&self, tick: Tick) -> bool {
+        tick < self.expires_at
+    }
+
+    /// Whether `actor` was inside the radius when the area was applied.
+    #[must_use]
+    pub fn reached(&self, actor: &ActorId) -> bool {
+        self.recipients.binary_search(actor).is_ok()
+    }
+}
+
+/// An area that reached its expiry boundary.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ExpiredArea {
+    /// The area that expired.
+    pub instance: AreaInstanceId,
+    /// The component that had left it.
+    pub source: OrdnanceId,
+    /// The tick it expired on.
+    pub expired_at: Tick,
+    /// The actors it had reached.
+    pub recipients: Vec<ActorId>,
+}
+
+/// The session's live triggered areas.
+///
+/// Like the status ledger, every area is **bounded**: it carries an expiry tick
+/// of `opened_at + lifetime_ticks`, [`advance_to`](Self::advance_to) removes
+/// exactly the areas whose boundary was reached and reports each once, and the
+/// ledger is confined to one session generation, so a restarted session (a new
+/// ledger) inherits nothing. It holds no particle: the visual is an
+/// [`OrdnanceMedia`] field and no area record can reach it.
+#[derive(Clone, Debug)]
+pub struct AreaLedger {
+    session: u64,
+    tick: Tick,
+    next_serial: u64,
+    live: BTreeMap<AreaInstanceId, ActiveArea>,
+}
+
+impl AreaLedger {
+    /// Opens an empty ledger for one session generation, positioned at `tick`.
+    #[must_use]
+    pub const fn new(session: u64, tick: Tick) -> Self {
+        Self {
+            session,
+            tick,
+            next_serial: 0,
+            live: BTreeMap::new(),
+        }
+    }
+
+    /// The session generation this ledger is confined to.
+    #[must_use]
+    pub const fn session(&self) -> u64 {
+        self.session
+    }
+
+    /// How many areas are live.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.live.len()
+    }
+
+    /// Whether no area is live.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.live.is_empty()
+    }
+
+    /// One live area by id.
+    #[must_use]
+    pub fn get(&self, instance: &AreaInstanceId) -> Option<&ActiveArea> {
+        self.live.get(instance)
+    }
+
+    /// Every live area, in ascending id order.
+    pub fn iter(&self) -> impl Iterator<Item = &ActiveArea> {
+        self.live.values()
+    }
+
+    /// Whether `actor` is a recipient of any area live at the ledger's tick.
+    #[must_use]
+    pub fn reaches(&self, actor: &ActorId) -> bool {
+        self.live
+            .values()
+            .any(|area| area.is_live_at(self.tick) && area.reached(actor))
+    }
+
+    fn open(
+        &mut self,
+        session: u64,
+        tick: Tick,
+        mut area: ActiveArea,
+    ) -> Result<AreaInstanceId, StatusEffectError> {
+        self.check(session, tick)?;
+        let instance = AreaInstanceId {
+            session: self.session,
+            serial: self.next_serial,
+        };
+        self.next_serial += 1;
+        area.instance = instance;
+        area.opened_at = tick;
+        area.expires_at = Tick(tick.0 + area.area.lifetime_ticks());
+        self.live.insert(instance, area);
+        Ok(instance)
+    }
+
+    fn check(&self, session: u64, tick: Tick) -> Result<(), StatusEffectError> {
+        if session != self.session {
+            return Err(StatusEffectError::ForeignSession {
+                expected: self.session,
+                found: session,
+            });
+        }
+        if tick < self.tick {
+            return Err(StatusEffectError::NonMonotonicTick {
+                at: self.tick,
+                found: tick,
+            });
+        }
+        Ok(())
+    }
+
+    /// Advances the ledger to `tick` and reports every area that reached its
+    /// expiry boundary, each exactly once, boundary tick first then id.
+    ///
+    /// # Errors
+    ///
+    /// [`StatusEffectError::ForeignSession`] or
+    /// [`StatusEffectError::NonMonotonicTick`].
+    pub fn advance_to(
+        &mut self,
+        session: u64,
+        tick: Tick,
+    ) -> Result<Vec<ExpiredArea>, StatusEffectError> {
+        self.check(session, tick)?;
+        let mut expired = Vec::new();
+        self.live.retain(|instance, area| {
+            if area.is_live_at(tick) {
+                return true;
+            }
+            expired.push(ExpiredArea {
+                instance: *instance,
+                source: area.source.clone(),
+                expired_at: area.expires_at,
+                recipients: std::mem::take(&mut area.recipients),
+            });
+            false
+        });
+        expired.sort_by(|a, b| {
+            a.expired_at
+                .cmp(&b.expired_at)
+                .then(a.instance.cmp(&b.instance))
+        });
+        self.tick = tick;
+        Ok(expired)
+    }
+}
+
 // -------------------------------------------------------------- nitro ledger ----
 
 /// Why a nitro activation was refused.
@@ -3819,6 +4031,12 @@ pub enum OrdnanceRuntimeError {
         /// The recipient actor.
         target: ActorId,
     },
+    /// This item's area has already been applied. An area gets one
+    /// application pass, on one tick.
+    AreaAlreadyOpened {
+        /// The item whose area was opened before.
+        projectile: ProjectileId,
+    },
 }
 
 impl OrdnanceRuntimeError {
@@ -3843,6 +4061,7 @@ impl OrdnanceRuntimeError {
             Self::NoSession => "no_session",
             Self::NoAreaEffect { .. } => "no_area_effect",
             Self::NonFiniteRecipient { .. } => "non_finite_recipient",
+            Self::AreaAlreadyOpened { .. } => "area_already_opened",
         }
     }
 }
@@ -3903,6 +4122,9 @@ impl fmt::Display for OrdnanceRuntimeError {
                     f,
                     "blast recipient {target} has no finite distance from the blast"
                 )
+            }
+            Self::AreaAlreadyOpened { projectile } => {
+                write!(f, "{projectile}'s area has already been applied")
             }
         }
     }
@@ -4159,6 +4381,15 @@ impl GuidanceTick {
     }
 }
 
+/// Where one area opens from: the item, what it was and its declared area.
+struct AreaOrigin {
+    projectile: ProjectileId,
+    source: OrdnanceId,
+    shooter: ActorId,
+    centre: WorldPosition,
+    declared: Option<AreaEffect>,
+}
+
 /// The per-session runtime of live ordnance.
 ///
 /// This is the production path F28-A left unowned: [`launch`](Self::launch)
@@ -4187,8 +4418,10 @@ pub struct OrdnanceRuntime {
     next_hit_sequence: u32,
     live: BTreeMap<ProjectileId, LiveOrdnance>,
     routed: BTreeSet<ProjectileId>,
+    areas_opened: BTreeSet<ProjectileId>,
     guidance: GuidanceSet,
     status: StatusEffectLedger,
+    areas: AreaLedger,
     nitro: BTreeMap<ActorId, NitroLedger>,
 }
 
@@ -4205,8 +4438,10 @@ impl OrdnanceRuntime {
             next_hit_sequence: 0,
             live: BTreeMap::new(),
             routed: BTreeSet::new(),
+            areas_opened: BTreeSet::new(),
             guidance: GuidanceSet::new(session),
             status: StatusEffectLedger::new(session, tick),
+            areas: AreaLedger::new(session, tick),
             nitro: BTreeMap::new(),
         }
     }
@@ -4268,6 +4503,12 @@ impl OrdnanceRuntime {
     #[must_use]
     pub const fn status(&self) -> &StatusEffectLedger {
         &self.status
+    }
+
+    /// The session's bounded area ledger.
+    #[must_use]
+    pub const fn areas(&self) -> &AreaLedger {
+        &self.areas
     }
 
     /// One actor's nitro ledger, if a booster is registered for it.
@@ -4827,6 +5068,159 @@ impl OrdnanceRuntime {
             }
         }
         Ok(hits)
+    }
+
+    /// Applies a triggered item's declared area at the item's current position.
+    ///
+    /// The single application pass: every supplied target whose current
+    /// position is strictly inside the declared radius becomes a recipient,
+    /// once, by its stable [`ActorId`]; a target at or beyond the radius is
+    /// not. The pass reads the same [`TargetPath`]s the proximity fuse
+    /// reads, so it adds no input and owns no pose. The area then lives for
+    /// the declared `lifetime_ticks` and expires on its boundary tick (see
+    /// [`advance_areas`](Self::advance_areas)). It is separate from the
+    /// item's damage routing and status effects, and carries no particle.
+    ///
+    /// The radius-from-detonation shape is the one measured for the
+    /// guidance-loss blast; whether the original uses it for every area is
+    /// unmeasured and is not claimed here.
+    ///
+    /// # Errors
+    ///
+    /// [`OrdnanceRuntimeError::UnknownProjectile`], `NoAreaEffect`,
+    /// `AreaAlreadyOpened`, `NonFiniteRecipient`, `ForeignSession` or `Status`.
+    pub fn open_area(
+        &mut self,
+        session: u64,
+        tick: Tick,
+        projectile: &ProjectileId,
+        targets: &[TargetPath],
+    ) -> Result<AreaInstanceId, OrdnanceRuntimeError> {
+        let Some(live) = self.live.get(projectile) else {
+            return Err(OrdnanceRuntimeError::UnknownProjectile {
+                projectile: *projectile,
+            });
+        };
+        let source = live.definition.ordnance().clone();
+        let shooter = live.shooter;
+        let centre = live.current();
+        let declared = live.definition.area_effect();
+        self.open_area_at(
+            session,
+            tick,
+            AreaOrigin {
+                projectile: *projectile,
+                source,
+                shooter,
+                centre,
+                declared,
+            },
+            targets,
+        )
+    }
+
+    /// Applies a guidance-loss detonation's declared area at its position.
+    ///
+    /// The detonation counterpart of [`open_area`](Self::open_area).
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`open_area`](Self::open_area), without `UnknownProjectile`.
+    pub fn open_detonation_area(
+        &mut self,
+        session: u64,
+        tick: Tick,
+        detonation: &GuidanceDetonation,
+        targets: &[TargetPath],
+    ) -> Result<AreaInstanceId, OrdnanceRuntimeError> {
+        if detonation.projectile.session != self.session {
+            return Err(OrdnanceRuntimeError::ForeignSession {
+                expected: self.session,
+                found: detonation.projectile.session,
+            });
+        }
+        self.open_area_at(
+            session,
+            tick,
+            AreaOrigin {
+                projectile: detonation.projectile,
+                source: detonation.ordnance().clone(),
+                shooter: detonation.shooter,
+                centre: detonation.position,
+                declared: detonation.area_effect(),
+            },
+            targets,
+        )
+    }
+
+    fn open_area_at(
+        &mut self,
+        session: u64,
+        tick: Tick,
+        origin: AreaOrigin,
+        targets: &[TargetPath],
+    ) -> Result<AreaInstanceId, OrdnanceRuntimeError> {
+        if session != self.session {
+            return Err(OrdnanceRuntimeError::ForeignSession {
+                expected: self.session,
+                found: session,
+            });
+        }
+        let projectile = origin.projectile;
+        let Some(area) = origin.declared else {
+            return Err(OrdnanceRuntimeError::NoAreaEffect { projectile });
+        };
+        if self.areas_opened.contains(&projectile) {
+            return Err(OrdnanceRuntimeError::AreaAlreadyOpened { projectile });
+        }
+        let centre = origin.centre;
+        let mut recipients = BTreeSet::new();
+        for path in targets {
+            if path.actor.session.get() != self.session {
+                return Err(OrdnanceRuntimeError::ForeignSession {
+                    expected: self.session,
+                    found: path.actor.session.get(),
+                });
+            }
+            let at = path.current;
+            let dx = at.x() - centre.x();
+            let dy = at.y() - centre.y();
+            let dz = at.z() - centre.z();
+            let distance = (dx * dx + dy * dy + dz * dz).sqrt();
+            if !distance.is_finite() {
+                return Err(OrdnanceRuntimeError::NonFiniteRecipient { target: path.actor });
+            }
+            if distance < area.radius_m() {
+                recipients.insert(path.actor);
+            }
+        }
+        let record = ActiveArea {
+            instance: AreaInstanceId { session, serial: 0 },
+            source: origin.source,
+            shooter: origin.shooter,
+            projectile,
+            centre,
+            area,
+            opened_at: tick,
+            expires_at: tick,
+            recipients: recipients.into_iter().collect(),
+        };
+        let instance = self.areas.open(session, tick, record)?;
+        self.areas_opened.insert(projectile);
+        Ok(instance)
+    }
+
+    /// Advances the area ledger to `tick`, reporting every expiry once.
+    ///
+    /// # Errors
+    ///
+    /// [`OrdnanceRuntimeError::Status`] when the ledger refuses the call.
+    pub fn advance_areas(
+        &mut self,
+        session: u64,
+        tick: Tick,
+    ) -> Result<Vec<ExpiredArea>, OrdnanceRuntimeError> {
+        Ok(self.areas.advance_to(session, tick)?)
     }
 
     /// Registers one actor's booster, starting it at full capacity.
