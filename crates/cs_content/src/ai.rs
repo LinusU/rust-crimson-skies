@@ -122,12 +122,33 @@ pub const MAX_PRIORITY_WEIGHT: f64 = 1_000.0;
 
 // --------------------------------------------------------- roles ----
 
+/// Whether the original's AI is classified by a role set of this shape.
+///
+/// **Not measured** (F32-ROLES). Neither the installation's data members nor
+/// the executable image carries a role, order or behavior-class vocabulary:
+/// the data declares only squadron *shape* (F32-D), and the image's AI debug
+/// overlay names a nine-label runtime **mode** vocabulary that is not these
+/// seven roles (`docs/findings/2026-10-11-f32-r-ai-role-set.md`).
+/// [`DeclaredCombatRole`] is therefore project vocabulary, and while this is
+/// `false` a [`DeclaredRoleProfile`] and the [`DeclaredCombatRules`] holding it
+/// must carry designed provenance and may not claim an original origin.
+pub const ORIGINAL_AI_ROLE_SET_MEASURED: bool = false;
+
+/// The number of `AI mode:` labels the executable's debug overlay carries.
+///
+/// **Measured** (F32-ROLES), as a count only; no label text is committed. It
+/// is the only AI behavior-state vocabulary found in the installation, and it
+/// is a runtime state list, not a mission-facing role set.
+pub const ORIGINAL_AI_MODE_LABEL_COUNT: usize = 9;
+
 /// A declared combat role: what one AI actor is trying to do.
 ///
 /// These are the seven behaviors the F32 sheet names — fighter attack,
 /// bomber run, torpedo run, escort, interception, evasion and retreat.
-/// Whether the original game classifies its AI with exactly this set is
-/// unmeasured (F32-D); this is designed engine vocabulary.
+/// The original is **not** known to classify its AI this way
+/// ([`ORIGINAL_AI_ROLE_SET_MEASURED`] is `false`); this is designed engine
+/// vocabulary, and [`DeclaredRoleProfile::try_new`] refuses a profile that
+/// claims otherwise.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum DeclaredCombatRole {
     /// Engage the nearest eligible hostile with guns.
@@ -1770,6 +1791,27 @@ pub enum CombatSchemaError {
         /// Its value.
         value: i64,
     },
+    /// A role profile claimed an original origin, but the original's role set
+    /// is unmeasured.
+    RoleClaimsOriginalOrigin {
+        /// The role.
+        role: DeclaredCombatRole,
+    },
+    /// A role profile carried a provenance other than designed, but the
+    /// original's role set is unmeasured.
+    RoleProvenanceNotDesigned {
+        /// The role.
+        role: DeclaredCombatRole,
+        /// The claim class it carried.
+        class: ClaimStatus,
+    },
+    /// A rules record holding roles carried a provenance other than designed.
+    RulesRolesNotDesigned {
+        /// The rules' subject.
+        subject: ContentId,
+        /// The claim class it carried.
+        class: ClaimStatus,
+    },
     /// An ace stat slot was addressed by a name the installation never gives.
     AceStatSlotNameUnmeasured {
         /// The name asked for, verbatim.
@@ -1912,6 +1954,18 @@ impl fmt::Display for CombatSchemaError {
                 f,
                 "ace stat slot {slot} is {value}, outside the measured range 0..={ORIGINAL_ACE_STAT_MAX}"
             ),
+            Self::RoleClaimsOriginalOrigin { role } => write!(
+                f,
+                "role {role} claims an original origin; the original's AI role set is unmeasured, so a role is designed vocabulary"
+            ),
+            Self::RoleProvenanceNotDesigned { role, class } => write!(
+                f,
+                "role {role} carries {class:?} provenance; a role of an unmeasured role set must carry designed provenance"
+            ),
+            Self::RulesRolesNotDesigned { subject, class } => write!(
+                f,
+                "rules for {subject:?} hold roles but carry {class:?} provenance; they must carry designed provenance"
+            ),
             Self::AceStatSlotNameUnmeasured { name } => write!(
                 f,
                 "ace stat slot name {name:?} is not measured; the installation names no slot, address it by index"
@@ -1963,6 +2017,17 @@ impl DeclaredRoleProfile {
     ) -> Result<Self, CombatSchemaError> {
         knobs.validate()?;
         priority.validate()?;
+        if !ORIGINAL_AI_ROLE_SET_MEASURED {
+            if origin.is_original() {
+                return Err(CombatSchemaError::RoleClaimsOriginalOrigin { role });
+            }
+            if provenance.class != ClaimStatus::Designed {
+                return Err(CombatSchemaError::RoleProvenanceNotDesigned {
+                    role,
+                    class: provenance.class,
+                });
+            }
+        }
         if role.needs_ordnance() && !arsenal.ordnance {
             return Err(CombatSchemaError::RoleArsenalMissing { role });
         }
@@ -2068,6 +2133,16 @@ impl DeclaredCombatRules {
     ) -> Result<Self, CombatSchemaError> {
         if subject.kind() != ContentKind::Mission && subject.kind() != ContentKind::IaScenario {
             return Err(CombatSchemaError::SubjectKind { subject });
+        }
+
+        if !ORIGINAL_AI_ROLE_SET_MEASURED
+            && !roles.is_empty()
+            && provenance.class != ClaimStatus::Designed
+        {
+            return Err(CombatSchemaError::RulesRolesNotDesigned {
+                subject,
+                class: provenance.class,
+            });
         }
 
         let mut declared_roles = BTreeSet::new();
@@ -2615,6 +2690,142 @@ mod tests {
         assert!(message.contains("not measured"), "{message}");
         let message = CombatSchemaError::AceStatEffectUnmeasured { slot: 3 }.to_string();
         assert!(message.contains("no measured runtime effect"), "{message}");
+    }
+
+    /// A role profile built over the synthetic escort fixture, with the given
+    /// origin and provenance.
+    fn role_with(
+        origin: Origin,
+        provenance: Provenance,
+    ) -> Result<DeclaredRoleProfile, CombatSchemaError> {
+        DeclaredRoleProfile::try_new(
+            DeclaredCombatRole::Escort,
+            RoleArsenal::guns(),
+            declared_synthetic_escort_knobs(),
+            declared_synthetic_escort_policy(),
+            origin,
+            provenance,
+        )
+    }
+
+    /// F32-R: the role set is designed vocabulary on every path. A profile may
+    /// carry a designed or synthetic origin and designed provenance, and
+    /// nothing else.
+    #[test]
+    fn accept_f32_r_designed_roles_are_accepted_and_the_set_is_unmeasured() {
+        assert!(!std::hint::black_box(ORIGINAL_AI_ROLE_SET_MEASURED));
+        assert_eq!(DeclaredCombatRole::ALL.len(), 7);
+        for origin in [Origin::Designed, Origin::SyntheticFixture] {
+            let profile = role_with(origin.clone(), designed()).expect("a designed role");
+            assert_eq!(profile.origin(), &origin);
+            assert_eq!(profile.provenance().class, ClaimStatus::Designed);
+        }
+        let rules = declared_synthetic_combat_rules();
+        assert_eq!(rules.provenance().class, ClaimStatus::Designed);
+        for profile in rules.roles() {
+            assert!(!profile.origin().is_original());
+            assert_eq!(profile.provenance().class, ClaimStatus::Designed);
+        }
+    }
+
+    /// F32-R failure: a role that claims an installation origin is refused,
+    /// even with designed provenance.
+    #[test]
+    fn accept_f32_r_a_role_may_not_claim_an_original_origin() {
+        let source = SourceSpan::new(
+            ContentHash::from_bytes([7; 32]),
+            "ASSETS/SCRIPTS/DEBUGINFO.TXT",
+            None,
+            0,
+            16,
+            None,
+        )
+        .expect("a span");
+        assert_eq!(
+            role_with(Origin::Installation { source }, designed()).expect_err("claims an origin"),
+            CombatSchemaError::RoleClaimsOriginalOrigin {
+                role: DeclaredCombatRole::Escort
+            }
+        );
+    }
+
+    /// F32-R failure: a role whose provenance is not designed is refused, for
+    /// every claim class.
+    #[test]
+    fn accept_f32_r_a_role_must_carry_designed_provenance() {
+        for class in [
+            ClaimStatus::VerifiedOriginal,
+            ClaimStatus::Inferred,
+            ClaimStatus::Unknown,
+        ] {
+            let mut provenance = designed();
+            provenance.class = class;
+            assert_eq!(
+                role_with(Origin::Designed, provenance).expect_err("not designed"),
+                CombatSchemaError::RoleProvenanceNotDesigned {
+                    role: DeclaredCombatRole::Escort,
+                    class
+                },
+                "{class:?}"
+            );
+        }
+    }
+
+    /// F32-R failure: a rules record holding roles carries designed
+    /// provenance too, so a rule cannot lend the roles an origin.
+    #[test]
+    fn accept_f32_r_rules_holding_roles_must_carry_designed_provenance() {
+        let fixture = declared_synthetic_combat_rules();
+        let roles = fixture.roles().to_vec();
+        let mut provenance = fixture.provenance().clone();
+        provenance.class = ClaimStatus::Inferred;
+        let refused = DeclaredCombatRules::try_new(
+            fixture.subject().clone(),
+            Origin::SyntheticFixture,
+            roles,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            provenance.clone(),
+        )
+        .expect_err("rules with roles and non-designed provenance");
+        assert_eq!(
+            refused,
+            CombatSchemaError::RulesRolesNotDesigned {
+                subject: fixture.subject().clone(),
+                class: ClaimStatus::Inferred
+            }
+        );
+        assert!(refused.to_string().contains("designed provenance"));
+        // A rules record with no role declares no role vocabulary, so the
+        // check does not apply to it.
+        DeclaredCombatRules::try_new(
+            fixture.subject().clone(),
+            Origin::SyntheticFixture,
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            Vec::new(),
+            provenance,
+        )
+        .expect("no roles, nothing to claim");
+    }
+
+    /// F32-R: the two crates' copies of the unmeasured-role-set flag agree, so
+    /// the runtime mirror cannot claim an original counterpart the declared
+    /// side refuses.
+    #[test]
+    fn accept_f32_r_the_runtime_mirror_agrees_the_role_set_is_unmeasured() {
+        assert_eq!(
+            cs_sim::ai::combat::ORIGINAL_AI_ROLE_SET_MEASURED,
+            ORIGINAL_AI_ROLE_SET_MEASURED
+        );
+        let declared: Vec<&str> = DeclaredCombatRole::ALL.iter().map(|r| r.label()).collect();
+        let runtime: Vec<&str> = cs_sim::ai::combat::CombatRole::ALL
+            .iter()
+            .map(|r| r.label())
+            .collect();
+        assert_eq!(declared, runtime, "one vocabulary on both sides");
     }
 
     /// F32-E: a tier override must be a declared designed alternative of
@@ -4447,6 +4658,81 @@ mod f32_d {
         }
     }
 
+    /// F32-R: the installation has no AI role set. None of the seven role
+    /// spellings is in the executable image except `evade`, which there is a
+    /// runtime AI *mode* label and a maneuver name; the data members the
+    /// engine's identifier lists and scenario descriptors form carry no role
+    /// key; and the image's only AI behavior-state vocabulary is
+    /// [`ORIGINAL_AI_MODE_LABEL_COUNT`] debug-overlay labels. Counts and
+    /// absences only: no label text is carried out.
+    #[test]
+    #[ignore = "requires CS_GAME_DIR"]
+    fn accept_f32_r_retail_no_installed_file_names_the_role_set() {
+        let root = game_dir();
+        for member in ["ASSETS/SCRIPTS/DEBUGINFO.TXT", ORIGINAL_RESOURCE_HEADER] {
+            let bytes = read_member(&root, member).expect("the member must read");
+            let text = String::from_utf8_lossy(&bytes).to_ascii_lowercase();
+            for word in ROLE_NEEDLES {
+                assert!(!text.contains(word), "{member}: contains {word:?}");
+            }
+        }
+        let surface = measured();
+        for key in surface.scenario_key_vocabulary() {
+            assert!(
+                !key.contains("role") && !key.contains("behav"),
+                "descriptor key {key:?} would be a role candidate"
+            );
+        }
+
+        let path = std::env::var_os("CS_ENGINE_IMAGE")
+            .expect("CS_ENGINE_IMAGE is not set: the executable search needs the decrypted image");
+        let image = std::fs::read(&path).expect("the engine image reads");
+        assert_eq!(
+            cs_assets::install::sha256(&image).to_string(),
+            ENGINE_IMAGE_SHA256,
+            "the image the search was run over"
+        );
+        let lower: Vec<u8> = image.iter().map(u8::to_ascii_lowercase).collect();
+        let count = |needle: &[u8]| lower.windows(needle.len()).filter(|w| *w == needle).count();
+        for word in ROLE_NEEDLES {
+            assert_eq!(count(word.as_bytes()), 0, "{word:?} is in the image");
+        }
+        assert_eq!(count(b"role"), 0, "the image spells no `role`");
+        assert!(
+            count(b"evade") > 0,
+            "the one shared word is a mode/maneuver"
+        );
+        let overlay = count(b"ai mode: ");
+        let placeholders = count(b"ai mode: n/a");
+        assert_eq!(
+            overlay - placeholders,
+            ORIGINAL_AI_MODE_LABEL_COUNT,
+            "the overlay's mode labels, excluding its `N/A` placeholders"
+        );
+    }
+
+    /// The role spellings searched for, lowercased. `evade` is searched
+    /// separately: the image has it as a mode label and a maneuver name, which
+    /// is not a role set.
+    const ROLE_NEEDLES: [&str; 12] = [
+        "escort",
+        "intercept",
+        "retreat",
+        "torpedo_run",
+        "torpedo run",
+        "bomber_run",
+        "bomber run",
+        "bombing",
+        "fighter_attack",
+        "fighter attack",
+        "withdraw",
+        "evasion",
+    ];
+
+    /// The SHA-256 of the owner-supplied decrypted executable F32-R searched.
+    const ENGINE_IMAGE_SHA256: &str =
+        "43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75";
+
     /// The mission types the installation measures: three of them. This is the
     /// vocabulary a difficulty probe's scenario may be built from — no invented
     /// fourth mission type.
@@ -4995,7 +5281,7 @@ mod evidence_report_f32_d {
         "f32.d.limit.difficulty_effects: the original's difficulty option has three measured steps and no measured file says what any step changes; cs_content::ai::SkillKnob and the runtime's tier profiles are designed alternatives under F32 non-negotiable 1, and nothing forces a tier's author to say which knobs are evidence-backed (resolving task #566 F32-DIFFICULTY-EFFECT)",
         "f32.d.limit.skill_tier_effects: the measured per-aircraft labels novice/veteran/ace carry no measured effect, so cs_sim's skill knobs for them are designed and cs_content::ai::DeclaredSkillTier is a closed vocabulary that DeclaredSkillAssignment now consumes and whose runtime knobs are refused as unmeasured; what a tier does stays unknown and the executable image is unsearched (#567 F32-SKILL-EFFECT closed the declared half)",
         "f32.d.limit.ace_stats: nine ace stat slots and the maximum of nine are measured, but no file names a slot, its order, or what a value below the maximum does, and no measured key names a damage or health slot; cs_content::ai::AceStatSlots keeps the slots unnamed and refuses a name or an effect, and DEBUGINFO.TXT and RESOURCE.H carry no ace stat identifier (#568 F32-ACE-STATS closed the declared half; the original's meanings stay unknown)",
-        "f32.d.limit.ai_roles: the original's AI role set is in no measured file; cs_content::ai::DeclaredCombatRole's seven roles and cs_sim's mirror are designed vocabulary with no code check distinguishing them (resolving task #569 F32-ROLES)",
+        "f32.d.limit.ai_roles: the original's AI role set is in no installed data member and no string of the executable image (searched-and-empty, nine runtime AI-mode debug labels are the only behavior-state vocabulary); cs_content::ai::DeclaredCombatRole's seven roles and cs_sim's mirror are designed vocabulary and a role profile or a rules record holding roles is refused unless it carries designed provenance and no original origin (#569 F32-ROLES closed the declared half; whether the original's mode machine maps to any mission-facing role stays unknown)",
         "f32.d.limit.difficulty_naming: the original's three step names live in its shipped localizable string image and are deliberately not reproduced in Git or in any report, so the declared tier labels claim nothing about the original's wording and the tier-to-step mapping is positional only (resolving task F32-LOWERING, #551)",
         "f32.d.limit.per_mission_difficulty: measured negative - no key at any depth of any of the eight scenario descriptors names a difficulty, so this engine cannot read a per-mission difficulty from content (resolving task F32-LOWERING, #551)",
         "f32.d.limit.probe_geometry: every number in the probe's scenario is newly authored project design because no measured file describes an original AI encounter, so the probe measures this engine's per-tier decision behavior and is not evidence about the original's numbers (resolving task #570 F32-PROBE-GEOMETRY)",

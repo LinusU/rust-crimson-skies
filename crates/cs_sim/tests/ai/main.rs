@@ -27,3 +27,4 @@ mod accept_f32_c_combat;
 mod accept_f32_c_combat_failures;
 mod accept_f32_d_combat;
 mod accept_f32_d_combat_failures;
+mod accept_f32_r_combat;

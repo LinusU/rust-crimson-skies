@@ -180,10 +180,21 @@ pub const PROXIMITY_EPSILON_M: f64 = 1e-9;
 
 // ----------------------------------------------------------- role ----
 
+/// Whether the original's AI is classified by a role set of this shape.
+///
+/// A mirror of `cs_content::ai::ORIGINAL_AI_ROLE_SET_MEASURED`, compared with
+/// it by `accept_f32_r_*` since this crate cannot depend on `cs_content`.
+/// **Not measured** (F32-ROLES): no installed data member and no string of the
+/// executable image names these seven roles, so [`CombatRole`] is designed
+/// vocabulary and [`CombatRole::original_counterpart_measured`] is `false` for
+/// every variant.
+pub const ORIGINAL_AI_ROLE_SET_MEASURED: bool = false;
+
 /// The runtime mirror of `cs_content::ai::DeclaredCombatRole`.
 ///
 /// The boundary maps the two field-wise; this crate cannot depend on
-/// `cs_content` (`docs/01-ARCHITECTURE.md`).
+/// `cs_content` (`docs/01-ARCHITECTURE.md`). Designed project vocabulary: see
+/// [`ORIGINAL_AI_ROLE_SET_MEASURED`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum CombatRole {
     /// Engage the nearest eligible hostile with guns.
@@ -226,6 +237,15 @@ impl CombatRole {
             Self::Evade => "evade",
             Self::Retreat => "retreat",
         }
+    }
+
+    /// Whether the original is known to have a behavior class this role stands
+    /// for. `false` for every role while [`ORIGINAL_AI_ROLE_SET_MEASURED`] is
+    /// `false`: a report built from a role may not say "the original does
+    /// this".
+    #[must_use]
+    pub const fn original_counterpart_measured(self) -> bool {
+        ORIGINAL_AI_ROLE_SET_MEASURED
     }
 
     /// Whether the role is declared to need ordnance. A structural
