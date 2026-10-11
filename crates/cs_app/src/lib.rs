@@ -340,6 +340,19 @@
 //! `Transform` written from the simulation's own position and carrying no
 //! collider, so Avian never becomes a second contact authority. The design
 //! record is `docs/findings/2026-10-02-f27-c-weapon-session-wiring.md`.
+//! The schedule (task #538) puts that step in the session's fixed loop:
+//! [`weapons::WeaponSchedulePlugin`] runs [`weapons::drive_weapon_session`]
+//! once per committed fixed tick after the physics step, binding the
+//! session's own [`weapons::WeaponTickInputs`] publications (tick, measured
+//! wind, orders and the local cockpit's delivered actions), the shared
+//! [`weapons::SessionDamageResolver`] and the `TargetingSession`'s declared
+//! allegiance table, and releasing a superseded session's rounds, mirrors and
+//! pending inputs — reporting every tick it could not honestly serve in
+//! [`weapons::WeaponScheduleReport`] rather than stepping with invented
+//! inputs. The plugin ships in the production composition itself:
+//! [`physics::PhysicsSession::production_builder`] installs it next to the
+//! animation plugin, so every session built on the production path runs the
+//! weapon step.
 //!
 //! [`mission_control`] is the measured mission control program (task
 //! `M01-LC-MISSION-PROGRAM`, #630):

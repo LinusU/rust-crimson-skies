@@ -288,12 +288,17 @@ impl PhysicsSession {
 
     /// Starts building a session with the production composition: the
     /// one-stop [`AnimationPlugin`](crate::animation::AnimationPlugin), so the
-    /// session's committed ticks drive the F20-C animation path. Callers add
-    /// their own plugins through [`configure`](PhysicsSessionBuilder::configure)
-    /// and must not add `AnimationPlugin` or `AnimationSchedulePlugin` again.
+    /// session's committed ticks drive the F20-C animation path, and the
+    /// [`WeaponSchedulePlugin`](crate::weapons::WeaponSchedulePlugin), so the
+    /// same ticks drive the F27-C weapon step against the installed session
+    /// resources. Callers add their own plugins through
+    /// [`configure`](PhysicsSessionBuilder::configure) and must not add
+    /// `AnimationPlugin`, `AnimationSchedulePlugin` or `WeaponSchedulePlugin`
+    /// again.
     pub fn production_builder() -> PhysicsSessionBuilder {
         Self::builder().configure(|app| {
             app.add_plugins(crate::animation::AnimationPlugin);
+            app.add_plugins(crate::weapons::WeaponSchedulePlugin);
         })
     }
 

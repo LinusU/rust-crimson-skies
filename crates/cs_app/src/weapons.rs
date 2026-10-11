@@ -51,11 +51,16 @@
 //! [`DamageResolver`]: cs_sim::damage::DamageResolver
 //! [`HitEvent`]: cs_sim::damage::HitEvent
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, VecDeque};
 
-use avian3d::prelude::LinearVelocity;
+use avian3d::prelude::{LinearVelocity, PhysicsSystems};
+use bevy::app::{App, Plugin};
 use bevy::ecs::component::Component;
+use bevy::ecs::resource::Resource;
+use bevy::ecs::schedule::IntoScheduleConfigs;
+use bevy::prelude::FixedPostUpdate;
 use bevy::prelude::{ChildOf, Entity, Transform, World};
+use bevy::time::{Fixed, Time};
 use cs_content::scene::SceneNodeId;
 use cs_content::weapons::{
     AmmunitionId as DeclaredAmmunitionId, DeclaredAmmunition, DeclaredFriendlyFireRule,
@@ -69,18 +74,21 @@ use cs_sim::targeting::Allegiance;
 use cs_sim::weapons::{
     AmmunitionDamageConsumer, AmmunitionId, AmmunitionIdError, AmmunitionRefusal,
     AmmunitionRegistry, CadenceRefusal, FireDenialReason, FireError, FireEvent, FireIntent,
-    FriendlyFireRule, GunBank, GunCadence, GunDefinition, GunDefinitionError, GunHitRouter,
-    GunMountKind, GunRate, GunStateError, InheritanceRule, LiveProjectile, MountTransform,
-    ProjectileId, ProjectileRuntimeError, ProjectileSegment, SelfHitRule, SpreadCone,
-    SweepCandidate, SweepOutcome, SweepRefusal, SweepTarget, SweepTargetError, WeaponDamage,
-    WeaponRules, WeaponState,
+    FireIntentId, FriendlyFireRule, GunBank, GunCadence, GunDefinition, GunDefinitionError,
+    GunHitRouter, GunMountKind, GunRate, GunStateError, InheritanceRule, LiveProjectile,
+    MountTransform, ProjectileId, ProjectileRuntimeError, ProjectileSegment, SelfHitRule,
+    SpreadCone, SweepCandidate, SweepOutcome, SweepRefusal, SweepTarget, SweepTargetError,
+    WeaponDamage, WeaponRules, WeaponState,
 };
 use cs_types::Tick;
 use cs_types::content::{ContentId, Known, Resolved};
 use cs_types::evidence::ClaimId;
+use cs_types::input::{Action, FlightCommand};
 use cs_types::space::{Radians, UnitVec3, WorldPosition};
 
-use crate::scene::{NodeVisualTransform, SceneGeneration};
+use crate::physics::PhysicsTickLedger;
+use crate::scene::{NodeVisualTransform, SceneGeneration, SceneGenerations};
+use crate::targeting::TargetingSession;
 
 /// Why a declared weapon record could not be lowered to the runtime records.
 #[derive(Clone, Debug, PartialEq)]
@@ -1393,7 +1401,12 @@ impl std::error::Error for SessionRefusal {}
 ///
 /// Dropping the session is the teardown; [`WeaponSession::close`] is the
 /// explicit one, and it releases every live round and every mirror with it.
-#[derive(Clone, Debug)]
+///
+/// It is an ECS [`Resource`] because the fixed-tick schedule
+/// ([`WeaponSchedulePlugin`]) serves the one session resource the running
+/// session installed: a restart installs a *new* resource for a new
+/// generation, and the schedule releases what the old one left behind.
+#[derive(Resource, Clone, Debug)]
 pub struct WeaponSession {
     session: u64,
     cadence: GunCadence,
@@ -2121,6 +2134,649 @@ fn despawn_round_mirrors(world: &mut World) -> usize {
         world.entity_mut(*entity).despawn();
     }
     mirrors.len()
+}
+
+// --------------------------------------------------- the session schedule ----
+//
+// The step above is a *function*: something must call it, once per committed
+// fixed tick, with the session's own world inputs. This section is that
+// caller — the schedule a running session installs — plus the resources it
+// binds, none of which the schedule itself owns:
+//
+// * [`WeaponSession`] — installed by the session lifecycle for one session
+//   generation. Removed or replaced, it is a teardown.
+// * [`SessionDamageResolver`] — the session's one damage authority, the same
+//   `DamageResolver` every other producer (collision, crash, script) routes
+//   into. The schedule borrows it for the step and puts it back; it never
+//   keeps a second one.
+// * [`TargetingSession`] — the session's declared allegiance authority. The
+//   step's `relation` resolves a *pair* of actors to their factions and asks
+//   the declared table what the shooter is to the target; nothing here
+//   re-derives hostility.
+// * [`WeaponTickInputs`] — the session's per-tick publications: which tick
+//   the record serves, the wind it read from its own `EnvironmentSession`,
+//   the orders it authored, and the local cockpit's delivered actions.
+// * [`PhysicsTickLedger`] and `Time<Fixed>` — the committed tick and its
+//   length. The ledger counts the fixed ticks the physics adapter already
+//   committed, which is why the step runs *after*
+//   [`PhysicsSystems::StepSimulation`]: the live mount poses and part boxes
+//   it reads belong to the tick that step just finished.
+// * [`SceneGenerations`] — the live scene generation every world read is
+//   gated by.
+//
+// What the schedule owns is the *ordering* and the *honest gap*: a tick with
+// no published inputs, no measured wind or a missing authority does not
+// resolve weapons — it is reported in [`WeaponScheduleReport`] by name, and
+// the step is not called, rather than being stepped with invented inputs.
+
+/// Resource: the session's one authoritative [`DamageResolver`], installed so
+/// every damage producer borrows the same ledger.
+///
+/// The weapon schedule takes it out for the duration of its step and puts it
+/// back — a collision or crash producer that runs in the same fixed tick
+/// resolves into the identical resolver, so a hit is never split across two
+/// damage ledgers by which producer arrived first. The session lifecycle owns
+/// it the way it owns [`WeaponSession`]: a restart installs a new resolver
+/// for a new generation, and the schedule names a resolver that still serves
+/// the old one rather than routing this session's hits into it.
+#[derive(Resource, Clone, Debug)]
+pub struct SessionDamageResolver(DamageResolver);
+
+impl SessionDamageResolver {
+    /// Installs the session's damage resolver as the shared authority.
+    #[must_use]
+    pub const fn new(resolver: DamageResolver) -> Self {
+        Self(resolver)
+    }
+
+    /// The session generation the resolver owns.
+    #[must_use]
+    pub fn session(&self) -> u64 {
+        self.0.session().get()
+    }
+
+    /// The shared resolver, for producers that read or register with it.
+    #[must_use]
+    pub const fn resolver(&self) -> &DamageResolver {
+        &self.0
+    }
+
+    /// The shared resolver, for producers that resolve damage into it.
+    pub const fn resolver_mut(&mut self) -> &mut DamageResolver {
+        &mut self.0
+    }
+}
+
+/// The local cockpit's half of one tick's weapon inputs.
+///
+/// The input boundary ([`crate::input`], F46's seat) delivers actions; this
+/// record carries them to the schedule alongside the two facts the boundary
+/// cannot know: which [`ActorId`] the seat flies this tick — the shooter the
+/// minted fire orders name — and which producer serial the session allocated
+/// to this firing channel, the `producer` the minted [`FireIntentId`]s carry
+/// (a player's craft, a scripted wingman, a replayed packet each own one).
+#[derive(Clone, Debug, PartialEq)]
+pub struct CockpitInput {
+    /// The actor the seat flies this tick.
+    pub shooter: ActorId,
+    /// The session-allocated producer serial the minted fire intents carry.
+    /// Uniqueness within the session is the publisher's: two channels that
+    /// share a serial share one intent id space and deduplicate against each
+    /// other.
+    pub producer: u32,
+    /// The actions the input boundary delivered on this tick, in boundary
+    /// order.
+    pub actions: Vec<Action>,
+}
+
+/// One tick's published weapon inputs: everything the scheduled step needs
+/// that the world cannot supply on its own.
+///
+/// The session's driver publishes exactly one record per committed tick it
+/// means to serve. `session` and `at` together make the record
+/// generation-qualified and tick-qualified: the schedule drops, by name, a
+/// record a superseded session left behind or one whose tick already passed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WeaponTickInput {
+    /// The session generation the record serves.
+    pub session: u64,
+    /// The committed tick it serves.
+    pub at: Tick,
+    /// The session's authoritative wind for the tick, as the session read it
+    /// from its own environment authority. `None` is an honest *unmeasured*:
+    /// the schedule reports it and does not step, because inventing still air
+    /// here would be exactly the guessed wind [`crate::environment`] refuses
+    /// to substitute.
+    pub wind_velocity_m_s: Option<[f64; 3]>,
+    /// The session's own orders — network replays, scripted orders, a seat's
+    /// own bank switch — applied before the cockpit's delivered actions are
+    /// translated, so an authored selection applies to the same tick's
+    /// trigger.
+    pub orders: Vec<WeaponOrder>,
+    /// The local cockpit's delivered actions, when a local seat flies this
+    /// session. Absent for a session with no local shooter.
+    pub cockpit: Option<CockpitInput>,
+}
+
+/// Resource: the session's pending per-tick weapon inputs.
+///
+/// A queue rather than a single record because the publisher and the fixed
+/// tick are not the same loop: a rendered-frame driver that publishes ahead
+/// of two committed ticks leaves both records pending, and each fixed tick
+/// consumes exactly its own. The queue is held **in committed-tick order**, so
+/// a record published for a later tick waits behind the ones whose ticks come
+/// first however the publisher ordered its pushes; the schedule drains the
+/// head records it cannot serve — a superseded session's, a tick that already
+/// passed — and names each one dropped in [`WeaponScheduleReport`]. A record
+/// for a tick not yet committed is left pending, not consumed early.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct WeaponTickInputs {
+    queue: VecDeque<WeaponTickInput>,
+}
+
+impl WeaponTickInputs {
+    /// Publishes one tick's record, queued by the tick it serves rather than
+    /// by push order: an early publication for a later tick is served after
+    /// the ticks that come before it, and a second publication for the same
+    /// tick is served after the first — and named a stale drop the tick
+    /// after, because a tick's inputs are consumed exactly once.
+    pub fn push(&mut self, input: WeaponTickInput) {
+        let position = self
+            .queue
+            .iter()
+            .position(|queued| queued.at > input.at)
+            .unwrap_or(self.queue.len());
+        self.queue.insert(position, input);
+    }
+
+    /// How many records are pending.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.queue.len()
+    }
+
+    /// Whether no record is pending.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.queue.is_empty()
+    }
+
+    /// Drops every pending record. The session teardown path uses this: a
+    /// record whose session is gone has no tick left to serve.
+    pub fn clear(&mut self) {
+        self.queue.clear();
+    }
+}
+
+/// A session-scoped authority the weapon schedule binds.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WeaponScheduleAuthority {
+    /// The session's shared damage authority, [`SessionDamageResolver`].
+    DamageResolver,
+    /// The session's declared targeting and allegiance authority,
+    /// [`TargetingSession`].
+    Targeting,
+}
+
+/// An authority the scheduled step needed but the world could not supply.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WeaponScheduleMissing {
+    /// No [`PhysicsTickLedger`]: no committed fixed tick exists to resolve.
+    Timeline,
+    /// No `Time<Fixed>`: the committed tick's length is unknown.
+    Clock,
+    /// No [`SceneGenerations`]: no live generation exists to stamp the ECS
+    /// mirrors with or to gate the live reads by.
+    Generation,
+    /// No [`SessionDamageResolver`]: the damage authority the step routes
+    /// swept hits into is absent.
+    DamageResolver,
+    /// No [`TargetingSession`]: the declared allegiance table the relation
+    /// lookup reads is absent.
+    Targeting,
+    /// An installed authority serves another session generation — named with
+    /// its own, because routing this session's hits into another generation's
+    /// resolver, or this session's relation reads into another generation's
+    /// table, would apply a foreign session's facts to this one.
+    ForeignSession {
+        /// Which authority was foreign.
+        authority: WeaponScheduleAuthority,
+        /// The session generation it actually serves.
+        found: u64,
+    },
+}
+
+/// Why one published input record was dropped without being stepped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DroppedTickInputReason {
+    /// The committed tick had already passed the record's — published for a
+    /// tick the world never let the schedule serve.
+    StaleTick,
+    /// The record serves another session generation.
+    ForeignSession {
+        /// The installed session generation.
+        expected: u64,
+        /// The generation the record serves.
+        found: u64,
+    },
+}
+
+/// One published input record the schedule dropped without stepping it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DroppedTickInput {
+    /// The record's tick.
+    pub at: Tick,
+    /// Why it was dropped.
+    pub reason: DroppedTickInputReason,
+}
+
+/// What a session teardown released, observed by the schedule.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WeaponTeardownRecord {
+    /// The session generation that went away.
+    pub session: u64,
+    /// The ECS mirrors it left behind, released here the same way
+    /// [`WeaponSession::close`] releases them.
+    pub mirrors: usize,
+    /// The pending input records that had no tick left to serve, dropped
+    /// with it.
+    pub inputs: usize,
+}
+
+/// Resource: the schedule's own bookkeeping across ticks.
+///
+/// `session` is the generation the schedule last served — the identity it
+/// tears down against. `next_sequence` is the `FireIntentId::sequence` the
+/// next cockpit-minted order carries: it resets with the session, because the
+/// once-only key is generation-qualified and a new session starts its own
+/// intent sequence.
+#[derive(Resource, Clone, Debug, Default)]
+struct WeaponScheduleState {
+    session: Option<u64>,
+    next_sequence: u32,
+}
+
+/// Resource: what the scheduled weapon step did and did not do, one fixed
+/// tick at a time.
+///
+/// Every field answers for the tick `at` names. `stepped` is the production
+/// step's own report — including the `refused` it returns when its own gate
+/// rejects the tick — so nothing the step decided is re-described here; the
+/// schedule's own fields name what kept the step from running at all.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct WeaponScheduleReport {
+    /// Fixed ticks the schedule has run, including this one.
+    pub ticks: u64,
+    /// The session generation installed this run; `None` without one.
+    pub session: Option<u64>,
+    /// The committed tick this run served; `None` when no
+    /// [`PhysicsTickLedger`] could name it.
+    pub at: Option<Tick>,
+    /// The production step's own report when it ran.
+    pub stepped: Option<WeaponTick>,
+    /// The orders the step was called with: the session's published orders
+    /// followed by the orders the cockpit's delivered actions minted.
+    pub orders: Vec<WeaponOrder>,
+    /// Delivered actions that minted no order. `FirePrimary` is the only
+    /// established gun order; `CycleWeapon` stays here because the bank names
+    /// and cycle order are unmeasured (F46 owns the control, F27-D owns the
+    /// measurement), and every other action belongs to another consumer.
+    pub unmapped_actions: Vec<Action>,
+    /// A session was installed but no published record served the committed
+    /// tick.
+    pub missing_inputs: bool,
+    /// The earliest pending record is for a tick after the committed one —
+    /// published early and kept for its own tick.
+    pub inputs_ahead: Option<Tick>,
+    /// Published records dropped this tick, each named by tick and reason.
+    pub dropped_inputs: Vec<DroppedTickInput>,
+    /// The session published no authoritative wind for the tick: the step
+    /// cannot invent still air, so the tick's orders went with it.
+    pub wind_unavailable: bool,
+    /// The authorities the step needed but the world did not have.
+    pub missing: Vec<WeaponScheduleMissing>,
+    /// The session the schedule last served was removed or replaced.
+    pub tore_down: Option<WeaponTeardownRecord>,
+}
+
+impl WeaponScheduleReport {
+    /// Opens the report for a new run: every per-tick field clears, the run
+    /// count advances.
+    fn begin_tick(&mut self) {
+        self.ticks += 1;
+        self.session = None;
+        self.at = None;
+        self.stepped = None;
+        self.orders.clear();
+        self.unmapped_actions.clear();
+        self.missing_inputs = false;
+        self.inputs_ahead = None;
+        self.dropped_inputs.clear();
+        self.wind_unavailable = false;
+        self.missing.clear();
+        self.tore_down = None;
+    }
+}
+
+/// The orders one tick's delivered cockpit actions mint.
+///
+/// [`FlightCommand::FirePrimary`] is the only established cockpit gun order:
+/// each delivered edge becomes one [`WeaponOrder::Fire`] whose intent id is
+/// stamped with the session generation, the tick being resolved, the channel's
+/// producer serial and the channel's next sequence — which is what makes a
+/// replayed edge land exactly once (the once-only id) and a held trigger fire
+/// exactly once (the boundary delivers one edge per press, so holding is not
+/// repeated fire; the original's held-trigger semantics are unmeasured and
+/// F46 owns that control's policy).
+///
+/// Everything else mints nothing and is reported unmapped: `CycleWeapon`
+/// because the original's bank names and cycle order are unmeasured (F27-D/F46
+/// own them — inventing a "next bank" here would invent a control the data
+/// does not establish), and the rest because other consumers own them.
+fn mint_cockpit_orders(
+    actions: &[Action],
+    session: u64,
+    at: Tick,
+    producer: u32,
+    shooter: ActorId,
+    next_sequence: &mut u32,
+) -> (Vec<WeaponOrder>, Vec<Action>) {
+    let mut orders = Vec::new();
+    let mut unmapped = Vec::new();
+    for action in actions {
+        match action {
+            Action::Flight(FlightCommand::FirePrimary) => {
+                orders.push(WeaponOrder::Fire(FireIntent {
+                    id: FireIntentId {
+                        session,
+                        tick: at,
+                        producer,
+                        sequence: *next_sequence,
+                    },
+                    shooter,
+                }));
+                *next_sequence += 1;
+            }
+            other => unmapped.push(*other),
+        }
+    }
+    (orders, unmapped)
+}
+
+/// Drives one committed fixed tick of the weapon path: teardown, inputs, then
+/// one [`step_weapon_session`] — in that order — and records the run in
+/// [`WeaponScheduleReport`].
+///
+/// Exclusive over the world because the step it drives is exclusive; running
+/// it anywhere else would be a second schedule for the same session. A tick
+/// the step cannot honestly serve is named in the report, never stepped with
+/// invented inputs and never panicked on:
+///
+/// * no [`WeaponSession`] resource → the tick ran session-less;
+/// * a missing authority → [`WeaponScheduleReport::missing`] names it;
+/// * no record for the committed tick → `missing_inputs` (pending stale or
+///   foreign records are dropped and named in `dropped_inputs`);
+/// * `wind_velocity_m_s: None` → `wind_unavailable`, the honest statement of
+///   an unmeasured wind;
+/// * a committed tick the session already resolved → the *step's own*
+///   [`StepRefusal::StaleTick`], recorded in `stepped`, because a tick cannot
+///   resolve twice.
+///
+/// Teardown runs before anything else: a [`WeaponSession`] resource that was
+/// removed or replaced since the last run releases its rounds with it (its
+/// drop), the mirrors it left are despawned the same way
+/// [`WeaponSession::close`] despawns them, its pending inputs are dropped with
+/// it, and [`WeaponScheduleReport::tore_down`] names the generation — so a
+/// restart installs a fresh session and never inherits a round, a mirror or
+/// an unpublished order from the generation before.
+///
+/// Directly callable, and the same code [`WeaponSchedulePlugin`] installs, so
+/// a test drives exactly what a session runs.
+pub fn drive_weapon_session(world: &mut World) {
+    let mut report = world
+        .remove_resource::<WeaponScheduleReport>()
+        .unwrap_or_default();
+    report.begin_tick();
+    let mut state = world
+        .remove_resource::<WeaponScheduleState>()
+        .unwrap_or_default();
+
+    // --- session identity and teardown ------------------------------------
+    let installed = world
+        .get_resource::<WeaponSession>()
+        .map(|session| session.session());
+    report.session = installed;
+    if state.session != installed {
+        if let Some(previous) = state.session.take() {
+            // The session the schedule last served is gone: removing or
+            // replacing the resource released its rounds with it, so what is
+            // left to release here is what it left in the world — its mirrors
+            // — and what it left unpublished, its pending inputs.
+            let mirrors = despawn_round_mirrors(world);
+            let inputs = world
+                .get_resource_mut::<WeaponTickInputs>()
+                .map(|mut inputs| {
+                    let pending = inputs.len();
+                    inputs.clear();
+                    pending
+                })
+                .unwrap_or(0);
+            report.tore_down = Some(WeaponTeardownRecord {
+                session: previous,
+                mirrors,
+                inputs,
+            });
+        }
+        state.session = installed;
+        state.next_sequence = 0;
+    }
+
+    let Some(generation_u64) = installed else {
+        // No session: the tick ran session-less and the report says so.
+        world.insert_resource(report);
+        world.insert_resource(state);
+        return;
+    };
+
+    // --- the step's authorities ---------------------------------------------
+    //
+    // Every authority is checked before any input is drained: a tick the step
+    // cannot serve keeps its publications, and they age out by name on a
+    // later tick rather than being consumed by a run that never stepped.
+    let committed = world
+        .get_resource::<PhysicsTickLedger>()
+        .map(|ledger| Tick(ledger.ticks));
+    if committed.is_none() {
+        report.missing.push(WeaponScheduleMissing::Timeline);
+    }
+    report.at = committed;
+    let dt_s = world
+        .get_resource::<Time<Fixed>>()
+        .map(|time| time.timestep().as_secs_f64());
+    if dt_s.is_none() {
+        report.missing.push(WeaponScheduleMissing::Clock);
+    }
+    let scene_generation = world
+        .get_resource::<SceneGenerations>()
+        .map(|generations| generations.latest());
+    if scene_generation.is_none() {
+        report.missing.push(WeaponScheduleMissing::Generation);
+    }
+    let damage_session = world
+        .get_resource::<SessionDamageResolver>()
+        .map(|damage| damage.session());
+    if damage_session.is_none() {
+        report.missing.push(WeaponScheduleMissing::DamageResolver);
+    }
+    let targeting_session = world
+        .get_resource::<TargetingSession>()
+        .map(|targeting| targeting.session().get());
+    if targeting_session.is_none() {
+        report.missing.push(WeaponScheduleMissing::Targeting);
+    }
+    for (authority, found) in [
+        (WeaponScheduleAuthority::DamageResolver, damage_session),
+        (WeaponScheduleAuthority::Targeting, targeting_session),
+    ] {
+        if let Some(found) = found
+            && found != generation_u64
+        {
+            report
+                .missing
+                .push(WeaponScheduleMissing::ForeignSession { authority, found });
+        }
+    }
+    let (Some(at), Some(dt_s), Some(generation)) = (committed, dt_s, scene_generation) else {
+        world.insert_resource(report);
+        world.insert_resource(state);
+        return;
+    };
+    if !report.missing.is_empty() {
+        world.insert_resource(report);
+        world.insert_resource(state);
+        return;
+    }
+
+    // --- the tick's published inputs -----------------------------------------
+    let mut inputs = world
+        .remove_resource::<WeaponTickInputs>()
+        .unwrap_or_default();
+    let mut record = None;
+    while let Some(front) = inputs.queue.front() {
+        if front.session != generation_u64 {
+            let dropped = inputs.queue.pop_front().expect("the front exists");
+            report.dropped_inputs.push(DroppedTickInput {
+                at: dropped.at,
+                reason: DroppedTickInputReason::ForeignSession {
+                    expected: generation_u64,
+                    found: dropped.session,
+                },
+            });
+            continue;
+        }
+        if front.at > at {
+            report.inputs_ahead = Some(front.at);
+            break;
+        }
+        let consumed = inputs.queue.pop_front().expect("the front exists");
+        if consumed.at == at {
+            record = Some(consumed);
+            break;
+        }
+        report.dropped_inputs.push(DroppedTickInput {
+            at: consumed.at,
+            reason: DroppedTickInputReason::StaleTick,
+        });
+    }
+    world.insert_resource(inputs);
+    let Some(record) = record else {
+        // The session served no record for the committed tick. Pending
+        // records for later ticks stay queued for their own ticks.
+        report.missing_inputs = true;
+        world.insert_resource(report);
+        world.insert_resource(state);
+        return;
+    };
+    let Some(wind_velocity_m_s) = record.wind_velocity_m_s else {
+        // The session's own environment authority measured no wind for this
+        // tick; a guessed still air is not a substitute it asked for.
+        report.wind_unavailable = true;
+        world.insert_resource(report);
+        world.insert_resource(state);
+        return;
+    };
+
+    // --- orders: the session's own, then the cockpit's delivered actions ------
+    let mut orders = record.orders;
+    if let Some(cockpit) = record.cockpit {
+        let (minted, unmapped) = mint_cockpit_orders(
+            &cockpit.actions,
+            generation_u64,
+            at,
+            cockpit.producer,
+            cockpit.shooter,
+            &mut state.next_sequence,
+        );
+        report.unmapped_actions = unmapped;
+        orders.extend(minted);
+    }
+    report.orders = orders.clone();
+
+    // --- the step ------------------------------------------------------------
+    //
+    // The relation is bound per actor pair here, where the declared table
+    // lives: each side resolves to its rostered faction, and the pair asks
+    // `TargetingSession::store().allegiance` — an actor nobody rostered, and
+    // a pair nobody declared, both answer `None`, which is the *undeclared*
+    // the rules distinguish from friendly. The authorities are taken out for
+    // the call and put back, so a producer scheduled later in the same tick
+    // finds the same resolver it had before.
+    let targeting = world
+        .remove_resource::<TargetingSession>()
+        .expect("targeting was checked present above");
+    let mut session = world
+        .remove_resource::<WeaponSession>()
+        .expect("the session was checked present above");
+    let mut damage = world
+        .remove_resource::<SessionDamageResolver>()
+        .expect("the resolver was checked present above");
+    let relation = |from: ActorId, to: ActorId| -> Option<Allegiance> {
+        let store = targeting.store();
+        let (from, to) = (store.record(&from)?, store.record(&to)?);
+        store.allegiance(&from.faction, &to.faction)
+    };
+    let step = WeaponStep {
+        at,
+        dt_s,
+        wind_velocity_m_s,
+        generation,
+        relation: &relation,
+    };
+    report.stepped = Some(step_weapon_session(
+        world,
+        &mut session,
+        damage.resolver_mut(),
+        &orders,
+        &step,
+    ));
+
+    world.insert_resource(session);
+    world.insert_resource(damage);
+    world.insert_resource(targeting);
+    world.insert_resource(report);
+    world.insert_resource(state);
+}
+
+/// Installs the scheduled weapon step in `FixedPostUpdate`, after the physics
+/// step.
+///
+/// Add it to the world that runs a session's fixed loop — the production
+/// [`crate::physics::PhysicsSession`], whose `configure` seam is where an app
+/// composes one. The plugin owns the *call*, not the session: a mission that
+/// opens weapons installs its own [`WeaponSession`], [`SessionDamageResolver`]
+/// and [`TargetingSession`], publishes [`WeaponTickInputs`] per committed
+/// tick, and removes or replaces the session resource when the generation
+/// ends — exactly as [`crate::targeting::TargetingSchedulePlugin`] divides the
+/// same responsibilities for its own session.
+///
+/// Ordered after [`PhysicsSystems::StepSimulation`] so the step reads the
+/// mount poses and part boxes the committed tick left live, and counts the
+/// tick that step committed. A world that installs this plugin without a
+/// session runs the schedule every fixed tick and steps nothing — the honest
+/// state of a world with no session, reported in [`WeaponScheduleReport`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WeaponSchedulePlugin;
+
+impl Plugin for WeaponSchedulePlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<WeaponScheduleReport>()
+            .init_resource::<WeaponScheduleState>()
+            .init_resource::<WeaponTickInputs>()
+            .add_systems(
+                FixedPostUpdate,
+                drive_weapon_session.after(PhysicsSystems::StepSimulation),
+            );
+    }
 }
 
 // ------------------------------------------------ the session ammo/loadout ----
