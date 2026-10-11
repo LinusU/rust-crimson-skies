@@ -53,8 +53,11 @@
 //!   A run that settles now ends cleanly with the exit its outcome maps to
 //!   (#1217's `.02`, Rally #1279), and a restart rebuilds the authored
 //!   initial state (`.03`, the `R` bullet below).
-//! * No mission-bound audio source is started, so teardown stops none; the
-//!   sound archives travel on [`super::MissionContent`] for the host stage.
+//! * The one mission-bound sound is the player airframe's engine loop
+//!   (VS-M01-RT-EVIDENCE-B, #1313): measured in [`super::launch_sound`],
+//!   decoded through the load's population pass, played through the
+//!   [`crate::audio::AudioPlugin`] device and stopped by [`teardown`]. Mission
+//!   dialogue and music are not started here.
 //! * `R` restarts the whole mission (VS-M01-RT-MISSION-HOST `.03`): the
 //!   playtest's own reset still replaces the player body, and the composed
 //!   restart that observes `PlaytestState::resets` rebuilds every session,
@@ -91,6 +94,7 @@ use cs_types::content::{ContentId, ContentKind, Resolved};
 use cs_types::evidence::ContentHash;
 use cs_types::space::Quaternion;
 
+use super::launch_sound::{LaunchSound, LaunchSoundError, measure_launch_sound};
 use super::player_visual::{
     MissionPlayerVisual, PlayerAirframeSource, build_player_visual, spawn_player_visual,
 };
@@ -133,6 +137,12 @@ pub const DEFAULT_MISSION_CACHE_DIR: &str = "private/mission-cache";
 
 /// The mount id the composition's one announced load resolves through.
 const WINDOW_MOUNT_ID: &str = "mission-window";
+
+/// The mount id and namespace the staged launch sound container is mounted
+/// under: the installation's own namespace, so the key spells the container
+/// as the F14-D.7 member ids do.
+const LAUNCH_SOUND_MOUNT_ID: &str = "mission-launch-sound";
+const LAUNCH_SOUND_NAMESPACE: &str = "install";
 
 /// The namespace the announced items are keyed under: the world mount's own
 /// namespace, so a key addresses the mounted group directory.
@@ -211,6 +221,10 @@ pub struct MissionStage {
     /// (#1216). The synthetic acceptance stages set `None` and spawn the
     /// body alone.
     pub player_aircraft: Option<PlayerAirframeSource>,
+    /// The one sound the launch starts: the player airframe's engine loop,
+    /// measured from the original data (VS-M01-RT-EVIDENCE-B, #1313). The
+    /// synthetic acceptance stages set `None` and install no audio.
+    pub launch_sound: Option<LaunchSound>,
     /// The label every surface shows.
     pub label: String,
     /// The private cache root, outside the installation.
@@ -266,6 +280,12 @@ pub enum MissionCompositionError {
     /// An evidence capture was asked for and could not be set up or did not
     /// produce its evidence.
     Capture(crate::mission_session::CaptureRefusal),
+    /// The launch sound could not be measured from the original data.
+    LaunchSound(LaunchSoundError),
+    /// The audio backend refused: the machine cannot play the launch sound.
+    /// The device error carries the stable code `audibility_exit_code` maps
+    /// to the CLI exit status (4 for a missing `audio` capability).
+    Audio(cs_sim::audio_events::DeviceError),
     /// The app exited with an error.
     Exit(String),
 }
@@ -294,6 +314,8 @@ impl fmt::Display for MissionCompositionError {
             Self::Player(reason) => write!(f, "the mission's player body refuses: {reason}"),
             Self::Host(error) => write!(f, "the mission host refuses: {error}"),
             Self::Capture(refusal) => write!(f, "{refusal}"),
+            Self::LaunchSound(error) => write!(f, "{error}"),
+            Self::Audio(error) => write!(f, "the mission audio refuses: {error}"),
             Self::Exit(reason) => write!(f, "the mission window exited with an error: {reason}"),
         }
     }
@@ -470,6 +492,14 @@ pub fn stage_for(
             install_root,
             plan.group_dir.trim_start_matches("zbd/"),
         )?),
+        launch_sound: Some(
+            measure_launch_sound(
+                install_root,
+                &content.flight.record,
+                &content.sound_archives,
+            )
+            .map_err(MissionCompositionError::LaunchSound)?,
+        ),
         label: MISSION_COMPOSITION_LABEL.to_owned(),
         cache_root: Path::new(DEFAULT_MISSION_CACHE_DIR).to_path_buf(),
         installation,
@@ -636,7 +666,24 @@ fn add_composition(
     //    driven to Ready through the production driver, and delivered at
     //    the ready boundary — the F15 handoff exactly as the contract
     //    tests run it.
-    let session = open_session(stage)?;
+    // The launch sound's container is staged first, so the session can mount
+    // it as a one-file source (see `stage_container`).
+    let sound_root = match &stage.launch_sound {
+        Some(launch) => Some(
+            super::launch_sound::stage_container(&stage.cache_root, launch)
+                .map_err(MissionCompositionError::LaunchSound)?,
+        ),
+        None => None,
+    };
+    if let Some(launch) = &stage.launch_sound {
+        super::launch_sound::install_launch_audio(
+            app,
+            launch,
+            stage.start.position.map(|c| c as f32),
+        )
+        .map_err(MissionCompositionError::LaunchSound)?;
+    }
+    let session = open_session(stage, sound_root.as_deref())?;
     let request = LoadRequest {
         session: session.generation(),
         target: stage.target.clone(),
@@ -681,6 +728,12 @@ fn add_composition(
         .deliver(app.world_mut())
         .map_err(|error| MissionCompositionError::Handoff(error.to_string()))?;
     let _store = loading.close();
+    drop(io);
+    // The population pass decodes the delivered sound through the very
+    // content session the load read through.
+    if stage.launch_sound.is_some() {
+        app.insert_resource(crate::audio::AudioSampleSource::of(session));
+    }
 
     // 2. The world: the mission's own, through the residency path.
     load_world(app, &stage.world, &stage.instance, &stage.meshes)
@@ -743,7 +796,10 @@ fn add_composition(
 /// Opens the stage's content session: its mount directory mounted into a
 /// fresh session, the way the F15 contract tests mount theirs. The session
 /// mints its own generation — a composition never supplies one.
-fn open_session(stage: &MissionStage) -> Result<ContentSession, MissionCompositionError> {
+fn open_session(
+    stage: &MissionStage,
+    sound_root: Option<&Path>,
+) -> Result<ContentSession, MissionCompositionError> {
     let refused = |reason: String| MissionCompositionError::Mount(reason);
     let mut context =
         ResolveContext::new(stage.installation).with_world_group(stage.mount.world_group.clone());
@@ -767,6 +823,22 @@ fn open_session(stage: &MissionStage) -> Result<ContentSession, MissionCompositi
     builder
         .mount_directory(mount, &stage.mount.host)
         .map_err(|error| refused(format!("the mount directory refuses: {error}")))?;
+    if let Some(root) = sound_root {
+        // The staged launch container, addressed the way the installation
+        // spells it (`ZBD/soundsh.zbd` under the `install` namespace).
+        let sound = MountBuilder::new(
+            MountId::new(LAUNCH_SOUND_MOUNT_ID)
+                .map_err(|error| refused(format!("the mount id refuses: {error}")))?,
+            MountNamespace::new(LAUNCH_SOUND_NAMESPACE)
+                .map_err(|error| refused(format!("the mount namespace refuses: {error}")))?,
+            PrecedenceClass::Shared,
+            ".",
+        )
+        .retail();
+        builder
+            .mount_directory(sound, root)
+            .map_err(|error| refused(format!("the sound mount refuses: {error}")))?;
+    }
     Ok(builder.open())
 }
 
@@ -790,6 +862,27 @@ fn load_items(stage: &MissionStage) -> Result<Vec<LoadItem>, MissionCompositionE
                 reason: error.to_string(),
             })?;
         items.push(declared);
+    }
+    if let Some(launch) = &stage.launch_sound {
+        let spelling = format!("{}/{}", LAUNCH_SOUND_NAMESPACE, launch.container);
+        let key = AssetKey::from_spelling(LAUNCH_SOUND_NAMESPACE, &launch.container, "default")
+            .map_err(|error| {
+                MissionCompositionError::Identity(format!(
+                    "the item key {spelling} refuses: {error}"
+                ))
+            })?;
+        items.push(
+            LoadItem::new(
+                key,
+                launch.content.clone(),
+                Criticality::GameplayCritical,
+                launch.bytes,
+            )
+            .map_err(|error| MissionCompositionError::Item {
+                key: spelling,
+                reason: error.to_string(),
+            })?,
+        );
     }
     Ok(items)
 }
@@ -886,9 +979,9 @@ pub fn spawn_player(world: &mut World) -> Result<Entity, SceneError> {
 /// cleared. A second [`build_headless`] or [`build_windowed`] in the same
 /// process therefore starts from nothing.
 ///
-/// No mission-bound audio source is started at this stage, so none is
-/// stopped here; the sound archives travel on the stage record for the
-/// mission-host stage (#1217).
+/// The launch sound's loop (the player airframe's engine, #1313) is stopped
+/// here as `Despawned` once its emitter's entity is gone, and one mix pass
+/// carries the stop to the device.
 pub fn teardown(app: &mut App) {
     let _ = unload_world(app);
     let world = app.world_mut();
@@ -907,6 +1000,7 @@ pub fn teardown(app: &mut App) {
             target.despawn();
         }
     }
+    super::launch_sound::stop_launch_audio(world);
     world.remove_resource::<MissionComposition>();
     world.remove_resource::<MissionPlayerStart>();
     world.remove_resource::<MissionPlayerVisual>();
@@ -946,6 +1040,12 @@ pub fn run_windowed(
         .map_err(MissionCompositionError::Capture)?;
     let stage = stage_for(install_root, plan)?;
     let mut app = build_windowed(&stage)?;
+    // A machine that cannot play the launch sound is a named refusal before
+    // the window runs, never a silent mute (docs/contracts/CLI-EVIDENCE.md).
+    if let Some(error) = super::launch_sound::backend_refusal(&app) {
+        teardown(&mut app);
+        return Err(MissionCompositionError::Audio(error));
+    }
     let capture_handle = capture.map(|settings| {
         let plugin = crate::mission_session::MissionCapturePlugin::new(settings, &stage.label);
         let handle = plugin.handle();

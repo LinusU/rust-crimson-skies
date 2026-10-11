@@ -82,6 +82,7 @@ mod compose;
 mod content;
 mod evidence;
 mod host;
+mod launch_sound;
 mod player_visual;
 mod terminal;
 
@@ -104,6 +105,10 @@ pub use host::{
     MissionHostRestartRequest, MissionHostSeed, MissionHostStepError, MissionHostTick,
     host_session_id, install_mission_host, mint_host_generation, mission_host_restart,
     mission_host_tick, no_declared_objectives,
+};
+pub use launch_sound::{
+    LAUNCH_SOUND_CONTAINER, LaunchAudioProbe, LaunchSound, LaunchSoundError, measure_launch_sound,
+    member_content_id,
 };
 pub use player_visual::{
     MISSION_PLAYER_AIRCRAFT_ROOT_NAME, MISSION_PLAYER_INTACT_NODE_NAME,

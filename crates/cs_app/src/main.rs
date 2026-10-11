@@ -45,7 +45,7 @@ fn main() -> ExitCode {
             Ok(()) => ExitCode::SUCCESS,
             Err(error) => {
                 eprintln!("cs: {error}");
-                ExitCode::from(cli::EXIT_RUNTIME_FAILURE)
+                ExitCode::from(error.exit_code())
             }
         },
         CliRequest::MissingInput => {

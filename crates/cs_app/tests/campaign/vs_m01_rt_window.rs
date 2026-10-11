@@ -280,6 +280,8 @@ pub(crate) fn synthetic_stage(scratch: &Path) -> MissionStage {
         // from: the player body spawns without a visual, as it did before
         // #1216.
         player_aircraft: None,
+        // No installation, no sound archive: the synthetic stage installs no audio.
+        launch_sound: None,
         label: "SYNTHETIC MISSION COMPOSITION".to_owned(),
         cache_root: scratch.join("cache"),
         installation: ContentHash::from_hex(&"5a".repeat(32))

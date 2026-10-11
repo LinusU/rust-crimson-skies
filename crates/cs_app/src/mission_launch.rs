@@ -438,6 +438,21 @@ impl fmt::Display for MissionLaunchError {
     }
 }
 
+impl MissionLaunchError {
+    /// The CLI exit status this failure maps to: an audio backend that refuses
+    /// the launch sound maps through `audibility_exit_code` (4 for a missing
+    /// `audio` capability), every other failure is a runtime failure.
+    #[must_use]
+    pub fn exit_code(&self) -> u8 {
+        match self {
+            Self::Composition(crate::mission_session::MissionCompositionError::Audio(error)) => {
+                crate::audio::audibility_exit_code(error)
+            }
+            _ => crate::cli::EXIT_RUNTIME_FAILURE,
+        }
+    }
+}
+
 impl std::error::Error for MissionLaunchError {}
 
 /// The mission labels and discovery titles this build declares (the work
