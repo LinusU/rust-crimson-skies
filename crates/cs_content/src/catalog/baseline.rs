@@ -127,6 +127,17 @@
 //!   derived. Neither kind is launchable, so the denominator does not move; the
 //!   per-container counts are reported in [`CollectionStatus`] rather than
 //!   dropped,
+//! * one [`ContentKind::Material`] row per present material record of every one
+//!   of those containers (F14-D.9), identified by the container's key and the
+//!   material-array slot a mesh's material reference carries, and located by
+//!   the record's own extent, which `cs_formats::gamez::RawMaterial` reports
+//!   (`data_offset`..`data_end`) so no layout arithmetic is repeated here. A
+//!   zero stub slot is not content and has no row. Each row points at its
+//!   container's `install_file` row and at the `mesh` row of every mesh that
+//!   references it; a material naming a texture index the texture-name table
+//!   has no row for carries an explicit unknown. The stored colour is a raw
+//!   `f32` and nothing is normalized, so no row is launchable and the
+//!   denominator does not move,
 //! * one [`ContentKind::Stunt`] row per fly-through danger-zone target of an
 //!   instant-action scenario the installation's own `ia.zrd` marks
 //!   [`STUNT_MISSION_TYPE`] (F14-D.8), read by the producing stage's own
@@ -212,7 +223,10 @@ use cs_assets::rof::mount_rof_into;
 use cs_assets::vfs::{INSTALL_NAMESPACE, MountBuilder, SessionBuilder};
 use cs_assets::zbd::{ContainerVerdict, audit_containers};
 use cs_formats::LANG_ENGLISH_US;
-use cs_formats::gamez::{GameZMeshes, GameZNodes, read_gamez_meshes, read_gamez_nodes};
+use cs_formats::gamez::{
+    GameZMaterials, GameZMeshes, GameZNodes, RawMaterial, read_gamez_materials, read_gamez_meshes,
+    read_gamez_nodes,
+};
 use cs_formats::interp::DecodedInterp;
 use cs_formats::script_raw::discover_container;
 use cs_formats::zbd::{
@@ -521,6 +535,22 @@ const CLAIM_UNSPELLABLE_NODE_PATH: &str = "f14.d.4.baseline.node_path_unspellabl
 /// does not terminate inside the node array, so the authored name path derived
 /// from it names no hierarchy and cannot be an identity.
 const CLAIM_UNTERMINATED_NODE_PATH: &str = "f14.d.4.baseline.node_path_unterminated";
+
+/// The claim id behind the observation that a container's material section
+/// holds a present material record at a slot, and that the record's own bytes
+/// (the reader's `data_offset`..`data_end`) are the row's checked span.
+const CLAIM_MATERIAL_RECORD: &str = "f14.d.9.baseline.material_record";
+
+/// The claim id behind the observation that a present mesh of the same
+/// container stores a reference (a mesh material reference or a polygon's
+/// material group) to a material slot, which is what the material row's edge
+/// onto that mesh row states.
+const CLAIM_MATERIAL_MESH_REFERENCE: &str = "f14.d.9.baseline.material_mesh_reference";
+
+/// The claim id behind the observation that a material names a texture-table
+/// index (its own or one of its cycle frames) the container's texture-name
+/// table has no row for, so the texture it means is unknown.
+const CLAIM_MATERIAL_TEXTURE_UNRESOLVED: &str = "f14.d.9.baseline.material_texture_unresolved";
 
 /// The installation-relative file name every world group's geometry container
 /// has, and the shared planes container's geometry container.
@@ -1238,6 +1268,10 @@ pub fn retail_baseline(install_root: &Path) -> Result<Baseline, BaselineError> {
         insert(&mut catalog, element)?;
     }
     collection_status.push(geometry.mesh_status);
+    for element in geometry.materials {
+        insert(&mut catalog, element)?;
+    }
+    collection_status.push(geometry.material_status);
 
     // The stunts the instant-action scenarios declare and the scrapbook items
     // the shared archive's scrapbook table declares. Neither kind is
@@ -1604,6 +1638,16 @@ pub struct GeometryContainerReport {
     /// the array, so their name path is the part of the loop that fits the walk
     /// and nothing more.
     pub unterminated: usize,
+    /// How many present material records the container's material section
+    /// holds, which is how many `material` rows exist. Zero when the section
+    /// could not be read.
+    pub materials: usize,
+    /// How many of those rows name a texture-table index (their own or a cycle
+    /// frame's) the container's texture-name table has no row for.
+    pub material_textures_unresolved: usize,
+    /// How many distinct material slots a present mesh references that no
+    /// present material record answers.
+    pub material_references_without_record: usize,
 }
 
 /// One decoded geometry container, held only as long as its rows are built.
@@ -1617,6 +1661,12 @@ struct ContainerGeometry {
     /// The nodes whose parent-slot chain did not terminate inside the array, so
     /// their authored name path is meaningless.
     unterminated: BTreeSet<u32>,
+    /// The texture-name table and material records, or [`None`] when the
+    /// material reader refused the section. The nodes and meshes are still
+    /// rows: one unreadable section must not hide the others.
+    materials: Option<GameZMaterials>,
+    /// Why the material section was refused, when it was.
+    material_refusal: Option<String>,
     report: GeometryContainerReport,
 }
 
@@ -1666,6 +1716,11 @@ fn gamez_geometry_rows(
 
     let mut mesh_status = node_status.clone();
     mesh_status.kind = ContentKind::Mesh;
+    let mut material_status = node_status.clone();
+    material_status.kind = ContentKind::Material;
+    let mut materials = Vec::new();
+    let mut material_refused: Vec<String> = Vec::new();
+    let mut material_read = 0usize;
 
     let mut nodes = Vec::new();
     let mut meshes = Vec::new();
@@ -1710,6 +1765,9 @@ fn gamez_geometry_rows(
                     mesh_rows: 0,
                     absent_meshes: 0,
                     unterminated: 0,
+                    materials: 0,
+                    material_textures_unresolved: 0,
+                    material_references_without_record: 0,
                 });
                 continue;
             }
@@ -1734,8 +1792,20 @@ fn gamez_geometry_rows(
             &file_id,
             record.sha256,
         )?);
+        match &geometry.material_refusal {
+            Some(reason) => material_refused.push(format!("{spelling}: {reason}")),
+            None => material_read += 1,
+        }
+        materials.extend(geometry_material_rows(
+            install_hash,
+            spelling,
+            &geometry,
+            &file_id,
+            record.sha256,
+        )?);
         node_status.rows += geometry.report.nodes;
         mesh_status.rows += geometry.report.mesh_rows;
+        material_status.rows += geometry.report.materials;
         reports.push(geometry.report);
     }
 
@@ -1767,6 +1837,40 @@ fn gamez_geometry_rows(
         "named_slot_without_mesh",
         reports.iter().map(|report| report.absent_meshes).sum(),
     );
+    // A material section that is refused, or a container that is not read at all,
+    // is unreadable for this collection; each is named in the diagnostic.
+    let material_unread = sources.len() - material_read;
+    material_status
+        .gaps
+        .insert("container_visited", sources.len());
+    material_status.gaps.insert("container_read", material_read);
+    material_status
+        .gaps
+        .insert("unreadable_container", material_unread);
+    material_status.gaps.insert(
+        "texture_index_without_texture_name",
+        reports
+            .iter()
+            .map(|report| report.material_textures_unresolved)
+            .sum(),
+    );
+    material_status.gaps.insert(
+        "referenced_slot_without_material",
+        reports
+            .iter()
+            .map(|report| report.material_references_without_record)
+            .sum(),
+    );
+    if material_unread > 0 {
+        let mut reasons = refused.clone();
+        reasons.extend(material_refused);
+        material_status.diagnostic = Some(format!(
+            "{material_unread} of the {} geometry containers' material sections could not be \
+             read: {}",
+            sources.len(),
+            reasons.join("; ")
+        ));
+    }
     if !refused.is_empty() {
         let diagnostic = format!(
             "{} of the {} geometry containers could not be read: {}",
@@ -1781,8 +1885,10 @@ fn gamez_geometry_rows(
     Ok(GeometryRows {
         nodes,
         meshes,
+        materials,
         node_status,
         mesh_status,
+        material_status,
         reports,
     })
 }
@@ -1793,10 +1899,14 @@ struct GeometryRows {
     nodes: Vec<CatalogElement>,
     /// The `mesh` rows, in container then stored slot order.
     meshes: Vec<CatalogElement>,
+    /// The `material` rows, in container then stored slot order.
+    materials: Vec<CatalogElement>,
     /// What the node collection contributed, and what it could not.
     node_status: CollectionStatus,
     /// What the mesh collection contributed, and what it could not.
     mesh_status: CollectionStatus,
+    /// What the material collection contributed, and what it could not.
+    material_status: CollectionStatus,
     /// One entry per container, in walk order.
     reports: Vec<GeometryContainerReport>,
 }
@@ -1858,6 +1968,14 @@ fn read_geometry_container(
         ));
     }
 
+    // The material section is read on its own, through the producing stage's
+    // reader, over the same context. A refusal is kept as a reason and costs the
+    // container its `material` rows only.
+    let (materials, material_refusal) = match read_gamez_materials(context, spelling, bytes) {
+        Ok(materials) => (Some(materials), None),
+        Err(error) => (None, Some(error.to_string())),
+    };
+
     let (paths, unterminated) = node_name_paths(&nodes);
     let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
     for path in paths.values() {
@@ -1898,6 +2016,23 @@ fn read_geometry_container(
         .count();
     let absent_meshes = named_slots.len() - mesh_rows;
 
+    let material_references = material_references(&meshes);
+    let (material_count, textures_unresolved, references_without_record) = match &materials {
+        Some(materials) => (
+            materials.materials.len(),
+            materials
+                .materials
+                .iter()
+                .filter(|material| unresolved_texture(materials, material).is_some())
+                .count(),
+            material_references
+                .keys()
+                .filter(|slot| materials.material(**slot).is_none())
+                .count(),
+        ),
+        None => (0, 0, 0),
+    };
+
     Ok(ContainerGeometry {
         report: GeometryContainerReport {
             spelling: spelling.to_owned(),
@@ -1914,7 +2049,12 @@ fn read_geometry_container(
             // the report carries the counted value rather than the length of the
             // set the rows are keyed from.
             unterminated: unterminated_nodes,
+            materials: material_count,
+            material_textures_unresolved: textures_unresolved,
+            material_references_without_record: references_without_record,
         },
+        materials,
+        material_refusal,
         nodes,
         meshes,
         paths,
@@ -2263,6 +2403,156 @@ fn geometry_mesh_rows(
     Ok(rows)
 }
 
+/// The material slots the present meshes of a container reference, each with
+/// the mesh-array slots that reference it.
+///
+/// Both places the format stores a material index count: the mesh's own list of
+/// 12-byte material references and every polygon's stored material groups. The
+/// indices are raw and not range-checked here; the caller decides what a slot
+/// with no record means.
+fn material_references(meshes: &GameZMeshes) -> BTreeMap<u32, BTreeSet<u32>> {
+    let mut references: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
+    for mesh in meshes.present() {
+        let slots = mesh
+            .materials
+            .iter()
+            .map(|reference| reference.material_index)
+            .chain(
+                mesh.material_groups
+                    .iter()
+                    .flatten()
+                    .map(|group| group.material),
+            );
+        for slot in slots {
+            references.entry(slot).or_default().insert(mesh.index);
+        }
+    }
+    references
+}
+
+/// The first texture-table index `material` names that the container's
+/// texture-name table has no row for, with where it was named, or [`None`] when
+/// every index it names resolves (or it names no texture at all).
+fn unresolved_texture(materials: &GameZMaterials, material: &RawMaterial) -> Option<String> {
+    if !materials.names_a_texture(material) {
+        return None;
+    }
+    let available = materials.textures.len();
+    let index = material.record.texture_index;
+    if materials.texture(index).is_none() {
+        return Some(format!(
+            "its texture index {index} (the table has {available} names)"
+        ));
+    }
+    let cycle = material.cycle.as_ref()?;
+    cycle
+        .textures
+        .iter()
+        .find(|frame| materials.texture(**frame).is_none())
+        .map(|frame| {
+            format!("its cycle frame texture index {frame} (the table has {available} names)")
+        })
+}
+
+/// One `material` row per present material record of the container, in stored
+/// slot order.
+///
+/// The identity is the container's inventory key plus the material-array slot
+/// a mesh's material reference and a polygon's material group carry. The span
+/// is the record's own 44-byte slot (`RawMaterial::data_offset`..`data_end`),
+/// taken from the reader and never derived from the section layout here. A
+/// zero stub slot is not content and has no row.
+///
+/// The row depends statically on the container's `install_file` row and on the
+/// `mesh` row of each mesh that references it; a referencing mesh with no row
+/// (its slot is named by no node) contributes no edge rather than one onto an
+/// id nothing holds. A material that names a texture index the texture-name
+/// table has no row for carries an explicit unknown. The stored colour is a raw
+/// `f32` triple whose meaning the reference does not give, so no row is
+/// normalized.
+fn geometry_material_rows(
+    install_hash: ContentHash,
+    spelling: &str,
+    geometry: &ContainerGeometry,
+    file_id: &ContentId,
+    sha256: ContentHash,
+) -> Result<Vec<CatalogElement>, BaselineError> {
+    let Some(materials) = &geometry.materials else {
+        return Ok(Vec::new());
+    };
+    let key = install_file_key(spelling);
+    let references = material_references(&geometry.meshes);
+    let named: BTreeSet<u32> = geometry
+        .nodes
+        .nodes
+        .iter()
+        .filter_map(|node| u32::try_from(node.mesh_index()).ok())
+        .filter(|slot| geometry.meshes.get(*slot).is_some())
+        .collect();
+
+    let mut rows = Vec::with_capacity(materials.materials.len());
+    for material in &materials.materials {
+        let span = container_span(
+            install_hash,
+            spelling,
+            material.data_offset,
+            material.data_end - material.data_offset,
+        )?;
+        let mut dependencies = vec![Dependency {
+            target: file_id.clone(),
+            kind: DependencyKind::Static,
+            provenance: observed(CLAIM_MATERIAL_RECORD, &span)?,
+        }];
+        for slot in references.get(&material.index).into_iter().flatten() {
+            if named.contains(slot) {
+                dependencies.push(Dependency {
+                    target: mesh_id(&key, *slot)?,
+                    kind: DependencyKind::Static,
+                    provenance: observed(CLAIM_MATERIAL_MESH_REFERENCE, &span)?,
+                });
+            }
+        }
+
+        // The stored colour is raw `f32` and the reference does not say what it
+        // is, so nothing on this row is normalized.
+        let mut unsupported_reasons = vec![UnsupportedReason::NotNormalized];
+        if let Some(what) = unresolved_texture(materials, material) {
+            let claim_id = ClaimId::new(CLAIM_MATERIAL_TEXTURE_UNRESOLVED).map_err(|error| {
+                BaselineError::Provenance {
+                    claim: CLAIM_MATERIAL_TEXTURE_UNRESOLVED.to_owned(),
+                    reason: error.to_string(),
+                }
+            })?;
+            unsupported_reasons.push(UnsupportedReason::Unknown {
+                claim_id,
+                reason: format!(
+                    "material {} of this container names {what}, but the container's \
+                     texture-name table has no row for it, so the texture this material means \
+                     is unknown",
+                    material.index
+                ),
+            });
+        }
+        rows.push(CatalogElement {
+            kind: ContentKind::Material,
+            display_name: None,
+            origin: Origin::Installation { source: span },
+            dependencies,
+            parse_state: cs_types::install::ParseState::Parsed,
+            normalize_state: NormalizeState::NotNormalized,
+            runtime_consumers: Vec::new(),
+            readiness: Readiness::Unavailable,
+            unsupported_reasons,
+            fingerprint: Some(Fingerprint {
+                kind: FingerprintKind::Installation,
+                sha256,
+            }),
+            id: material_id(&key, material.index)?,
+        });
+    }
+    Ok(rows)
+}
+
 /// A span into one geometry container's own bytes.
 ///
 /// `member_key` is [`None`] on purpose: a GameZ geometry container **is** a loose
@@ -2386,6 +2676,16 @@ fn scene_node_key(container_key: &str, path: &str) -> Option<ContentId> {
 fn mesh_id(container_key: &str, slot: u32) -> Result<ContentId, BaselineError> {
     let key = format!("{container_key}.{slot}");
     ContentId::from_source(ContentKind::Mesh, &key).map_err(|source| BaselineError::Key {
+        spelling: key.clone(),
+        source,
+    })
+}
+
+/// The identity of one `material`: the container's key plus the stored
+/// material-array slot a mesh's material reference carries.
+fn material_id(container_key: &str, slot: u32) -> Result<ContentId, BaselineError> {
+    let key = format!("{container_key}.{slot}");
+    ContentId::from_source(ContentKind::Material, &key).map_err(|source| BaselineError::Key {
         spelling: key.clone(),
         source,
     })
@@ -4452,7 +4752,8 @@ fn geometry_container_json(container: &GeometryContainerReport, out: &mut String
         out,
         "{{\"container\":{},\"nodes\":{},\"named\":{},\"ambiguous\":{},\"unspellable\":{},\
          \"paths\":{},\"roots\":{},\"named_meshes\":{},\"mesh_rows\":{},\"absent_meshes\":{},\
-         \"unterminated\":{}}}",
+         \"unterminated\":{},\"materials\":{},\"material_textures_unresolved\":{},\
+         \"material_references_without_record\":{}}}",
         json_string(&container.spelling),
         container.nodes,
         container.named,
@@ -4464,6 +4765,9 @@ fn geometry_container_json(container: &GeometryContainerReport, out: &mut String
         container.mesh_rows,
         container.absent_meshes,
         container.unterminated,
+        container.materials,
+        container.material_textures_unresolved,
+        container.material_references_without_record,
     );
 }
 
