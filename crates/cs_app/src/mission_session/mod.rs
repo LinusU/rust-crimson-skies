@@ -97,7 +97,8 @@ pub use content::{
 };
 pub use evidence::{
     CAPABILITIES_ENV, CAPTURE_ENV, CaptureHandle, CaptureRefusal, CaptureSettings,
-    EVIDENCE_DIR_ENV, MissionCapturePlugin, TRACE_FILE, finish as finish_capture,
+    EVIDENCE_DIR_ENV, MissionCapturePlugin, PLAYBACK_FILE, TRACE_FILE, finish as finish_capture,
+    write_playback,
 };
 pub use host::{
     MissionHost, MissionHostLaunchError, MissionHostRefusal, MissionHostReport,

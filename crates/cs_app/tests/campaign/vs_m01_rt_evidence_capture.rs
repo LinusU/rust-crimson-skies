@@ -32,11 +32,25 @@ fn accept_vs_m01_runtime_evidence_capture_refuses_missing_gpu_and_directory() {
     let unset = CaptureSettings::resolve(None, Some("/tmp/x")).expect_err("unset is refused");
     assert!(unset.to_string().contains("unset"), "{unset}");
 
-    let no_dir = CaptureSettings::resolve(Some("retail, gpu"), None).expect_err("no dir");
+    let no_audio = CaptureSettings::resolve(Some("retail,gpu"), Some("/tmp/x"))
+        .expect_err("no audio is refused");
+    assert!(
+        matches!(
+            no_audio,
+            CaptureRefusal::MissingCapability {
+                capability: "audio",
+                ..
+            }
+        ),
+        "{no_audio}"
+    );
+    assert!(no_audio.to_string().contains("`audio`"), "{no_audio}");
+
+    let no_dir = CaptureSettings::resolve(Some("retail, gpu, audio"), None).expect_err("no dir");
     assert_eq!(no_dir, CaptureRefusal::MissingDirectory);
     assert!(no_dir.to_string().contains(EVIDENCE_DIR_ENV), "{no_dir}");
     assert_eq!(
-        CaptureSettings::resolve(Some("gpu"), Some("")).expect_err("empty dir"),
+        CaptureSettings::resolve(Some("gpu,audio"), Some("")).expect_err("empty dir"),
         CaptureRefusal::MissingDirectory
     );
 
@@ -50,7 +64,7 @@ fn accept_vs_m01_runtime_evidence_capture_refuses_missing_gpu_and_directory() {
 fn accept_vs_m01_runtime_evidence_capture_finish_refuses_an_uncaptured_run() {
     let dir = std::env::temp_dir().join(format!("cs_m01_capture_refusal_{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let settings = CaptureSettings::resolve(Some("gpu"), dir.to_str()).expect("resolves");
+    let settings = CaptureSettings::resolve(Some("gpu,audio"), dir.to_str()).expect("resolves");
     let plugin = MissionCapturePlugin::new(settings, "synthetic");
     let error = finish_capture(&plugin.handle()).expect_err("no tick and no frame, no evidence");
     assert!(matches!(error, CaptureRefusal::Incomplete(_)), "{error}");

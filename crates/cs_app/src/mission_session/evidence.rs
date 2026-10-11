@@ -45,6 +45,7 @@ use bevy::prelude::{
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk};
 
 use super::host::MissionHost;
+use crate::audio::device::SampleLibrary;
 use crate::input::platform::PlatformInput;
 use crate::physics::PhysicsTickLedger;
 use crate::playtest::scene::PlaytestAircraft;
@@ -75,8 +76,11 @@ pub const TRACE_FILE: &str = "trace.jsonl";
 /// Why a capture could not be set up or did not produce its evidence.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CaptureRefusal {
-    /// `gpu` is not listed in `CS_CAPABILITIES`.
+    /// A capability the capture needs (`gpu` for the picture, `audio` for
+    /// the playback record) is not listed in `CS_CAPABILITIES`.
     MissingCapability {
+        /// The capability that is missing.
+        capability: &'static str,
         /// What `CS_CAPABILITIES` held, `None` when unset.
         declared: Option<String>,
     },
@@ -91,9 +95,12 @@ pub enum CaptureRefusal {
 impl fmt::Display for CaptureRefusal {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::MissingCapability { declared } => write!(
+            Self::MissingCapability {
+                capability,
+                declared,
+            } => write!(
                 f,
-                "mission capture needs the `gpu` capability, but {CAPABILITIES_ENV} is {}",
+                "mission capture needs the `{capability}` capability, but {CAPABILITIES_ENV} is {}",
                 declared
                     .as_deref()
                     .map_or_else(|| "unset".to_owned(), |value| format!("{value:?}"))
@@ -126,12 +133,17 @@ impl CaptureSettings {
     /// `gpu`; [`CaptureRefusal::MissingDirectory`] when `dir` is unset or
     /// empty. The capability is judged first.
     pub fn resolve(capabilities: Option<&str>, dir: Option<&str>) -> Result<Self, CaptureRefusal> {
-        let has_gpu = capabilities
-            .is_some_and(|list| list.split(',').any(|capability| capability.trim() == "gpu"));
-        if !has_gpu {
-            return Err(CaptureRefusal::MissingCapability {
-                declared: capabilities.map(str::to_owned),
+        for capability in ["gpu", "audio"] {
+            let has = capabilities.is_some_and(|list| {
+                list.split(',')
+                    .any(|declared| declared.trim() == capability)
             });
+            if !has {
+                return Err(CaptureRefusal::MissingCapability {
+                    capability,
+                    declared: capabilities.map(str::to_owned),
+                });
+            }
         }
         match dir {
             Some(dir) if !dir.is_empty() => Ok(Self {
@@ -198,6 +210,12 @@ impl CaptureHandle {
         self.0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The capture directory.
+    #[must_use]
+    pub fn dir(&self) -> Option<PathBuf> {
+        Some(self.lock().dir.clone())
     }
 }
 
@@ -497,4 +515,69 @@ fn json_f32(value: f32) -> String {
     } else {
         "null".to_owned()
     }
+}
+
+/// Name of the audio playback record inside the capture directory.
+pub const PLAYBACK_FILE: &str = "playback.json";
+
+/// Writes the launch's audio playback record into `dir`
+/// (VS-M01-RT-EVIDENCE, Rally #1218): which original archive member the
+/// device was handed and what its output stream pulled from it.
+///
+/// This is the **source boundary** — frames the output stream consumed —
+/// never a capture of a speaker; that stays the owner's `human_review`.
+///
+/// # Errors
+///
+/// [`CaptureRefusal::Incomplete`] when the audible backend was refused, the
+/// library never received the member, or the stream pulled nothing or only
+/// silence; [`CaptureRefusal::Io`] when the record cannot be written.
+pub fn write_playback(
+    dir: &Path,
+    launch: &super::LaunchSound,
+    probe: &super::LaunchAudioProbe,
+) -> Result<(), CaptureRefusal> {
+    if let Some(refusal) = &probe.refusal {
+        return Err(CaptureRefusal::Incomplete(format!(
+            "the audible audio backend was refused: {refusal}"
+        )));
+    }
+    let pcm = probe.library.pcm(&launch.content).ok_or_else(|| {
+        CaptureRefusal::Incomplete(format!(
+            "the device library never received {}",
+            launch.content
+        ))
+    })?;
+    let pulled = probe.probe.pulled();
+    let peak = probe.probe.peak();
+    if pulled == 0 || peak <= 0.0 {
+        return Err(CaptureRefusal::Incomplete(format!(
+            "the output stream pulled nothing audible from {} ({pulled} samples, peak {peak})",
+            launch.member
+        )));
+    }
+    let record = format!(
+        "{{\n  \"boundary\": \"sample_probe_source_pull\",\n  \"asset\": {},\n  \
+         \"airframe_record\": {},\n  \"sound_group\": {},\n  \"archive\": {},\n  \
+         \"archive_sha256\": \"{}\",\n  \"container_choice\": \"labelled choice: which sound archive the original opens is unmeasured\",\n  \"member\": {},\n  \"channels\": {},\n  \
+         \"rate_hz\": {},\n  \"member_frames\": {},\n  \"member_duration_s\": {:.4},\n  \
+         \"sample_values_pulled\": {pulled},\n  \"frames_pulled\": {},\n  \"peak\": {},\n  \
+         \"backend\": \"audible\",\n  \"verified_original\": false,\n  \
+         \"human_review\": false\n}}\n",
+        json_string(&launch.content.to_string()),
+        json_string(&launch.airframe),
+        json_string(&launch.group),
+        json_string(&launch.container),
+        launch.container_sha256.to_hex(),
+        json_string(&launch.member),
+        pcm.channels(),
+        pcm.rate_hz(),
+        pcm.frames(),
+        pcm.duration().as_secs_f64(),
+        pulled / u64::from(pcm.channels().max(1)),
+        json_f32(peak),
+    );
+    let path = dir.join(PLAYBACK_FILE);
+    std::fs::write(&path, record)
+        .map_err(|error| CaptureRefusal::Io(format!("cannot write {}: {error}", path.display())))
 }

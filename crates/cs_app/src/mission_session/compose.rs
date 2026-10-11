@@ -1053,6 +1053,16 @@ pub fn run_windowed(
         app.add_plugins(plugin);
         handle
     });
+    // The audio half of a capture: the launch sound and the tap on what the
+    // device pulled, read once the window has closed.
+    let playback = capture_handle.as_ref().map(|_| {
+        (
+            stage.launch_sound.clone(),
+            app.world()
+                .get_resource::<super::launch_sound::LaunchAudioProbe>()
+                .cloned(),
+        )
+    });
     println!(
         "mission composition: {} — {}, world {}",
         plan.label.as_str(),
@@ -1064,9 +1074,18 @@ pub fn run_windowed(
         stage.flight.record, stage.flight.provenance
     );
     let exit = app.run();
-    let captured = capture_handle
-        .as_ref()
-        .map_or(Ok(()), crate::mission_session::finish_capture);
+    let captured = capture_handle.as_ref().map_or(Ok(()), |handle| {
+        let trace = crate::mission_session::finish_capture(handle);
+        let audio = match (&playback, handle.dir()) {
+            (Some((Some(launch), Some(probe))), Some(dir)) => {
+                crate::mission_session::write_playback(&dir, launch, probe)
+            }
+            _ => Err(crate::mission_session::CaptureRefusal::Incomplete(
+                "the launch started no sound, so there is no playback to record".to_owned(),
+            )),
+        };
+        trace.and(audio)
+    });
     teardown(&mut app);
     captured.map_err(MissionCompositionError::Capture)?;
     match exit {
