@@ -138,6 +138,13 @@
 //!   has no row for carries an explicit unknown. The stored colour is a raw
 //!   `f32` and nothing is normalized, so no row is launchable and the
 //!   denominator does not move,
+//! * one [`ContentKind::Engine`] row per distinct id of `engines.zrd` and one
+//!   [`ContentKind::Gun`] row per `weapons.zrd` record that sets the file's own
+//!   `CANNON` key, both members of [`ENGINE_GUN_ARCHIVE`] (F14-D.10). A row is
+//!   located by its own node's bytes, points at the archive's `install_file`
+//!   row and carries an explicit unknown instead of any stored number. Armor,
+//!   ammunition and hardpoint equipment have no entry list in that archive and
+//!   so no row. Neither kind is launchable, so the denominator does not move,
 //! * one [`ContentKind::Stunt`] row per fly-through danger-zone target of an
 //!   instant-action scenario the installation's own `ia.zrd` marks
 //!   [`STUNT_MISSION_TYPE`] (F14-D.8), read by the producing stage's own
@@ -230,8 +237,8 @@ use cs_formats::gamez::{
 use cs_formats::interp::DecodedInterp;
 use cs_formats::script_raw::discover_container;
 use cs_formats::zbd::{
-    ZbdFamily, ZbdProbe, ZbdRole, dispatch, read_sound_archive, read_version_one_index,
-    role_for_path,
+    ZbdFamily, ZbdProbe, ZbdRole, dispatch, read_reader_archive, read_sound_archive,
+    read_version_one_index, role_for_path,
 };
 use cs_types::asset_id::{
     AssetKey, MountId, MountNamespace, PrecedenceClass, ResolveContext, SourceSpan, SourceSpanError,
@@ -248,6 +255,7 @@ use crate::livery::{
     FactionPaletteCatalog, PAINT_SHOP_CONTAINER, PALETTE_CONTAINER, StockLiveryCatalog,
 };
 use crate::multiplayer::{ModeEntry, TextRef, discover_modes, mode_name_id};
+use crate::original_airframe::{ENGINES_MEMBER, SpannedDocument, SpannedValue};
 use crate::scene::{
     AVAILABILITY_DISCOVERY_CLAIM, AirframeDeclaration, DiscoveredAirframe, RosterDeclarations,
     RosterDiscoveryIssue, discover_airframe_roster,
@@ -406,6 +414,38 @@ pub const AIRFRAME_SCRIPT_IMAGE: &str = "ZBD/interp.zbd";
 /// The script of [`AIRFRAME_SCRIPT_IMAGE`] that declares the shared airframe
 /// roster, as the container spells it.
 const AIRFRAME_DECLARING_SCRIPT: &str = "support\\planes.gw";
+
+/// The installation-relative spelling of the reader archive whose `engines.zrd`
+/// and `weapons.zrd` members the engine and gun rows are read from.
+pub const ENGINE_GUN_ARCHIVE: &str = "ZBD/zrdr.zbd";
+
+/// The member of [`ENGINE_GUN_ARCHIVE`] that states the weapon records.
+pub const WEAPONS_MEMBER: &str = "weapons.zrd";
+
+/// The key of [`WEAPONS_MEMBER`] whose value holds the `wep_NN` records.
+const WEAPONS_SECTION_KEY: &str = "BALLISTICS";
+
+/// The record key [`WEAPONS_MEMBER`] sets on a weapon the original fires as a
+/// cannon. It is the file's own spelling and the only gun marker the member
+/// states; a record without it (a rocket, a torpedo, a bare record) is a weapon
+/// of no kind this inventory names.
+const WEAPON_CANNON_KEY: &str = "CANNON";
+
+/// The claim id behind the observation that an `engines.zrd` row `(id "name"
+/// factor)` states an engine, and that the row's bytes are the row's span.
+const CLAIM_ENGINE_ROW: &str = "f14.d.8.baseline.engine_row";
+
+/// The claim id behind the observation that a `weapons.zrd` record carries the
+/// cannon marker, which is what makes it a `gun` row.
+const CLAIM_GUN_RECORD: &str = "f14.d.8.baseline.gun_record";
+
+/// The claim id of an engine row's explicit unknown: the unit of the stored
+/// thrust factor and the hangar selection that picks the engine are not read.
+pub const ENGINE_UNKNOWN_CLAIM: &str = "f14.d.8.engine_statistics";
+
+/// The claim id of a gun row's explicit unknown: units of the stored values and
+/// the vehicle fit are not read.
+pub const GUN_UNKNOWN_CLAIM: &str = "f14.d.8.gun_statistics";
 
 /// The `CollectionStatus::source` pattern of the `stunt` collection: one
 /// instant-action scenario reader archive per row, so no single spelling is
@@ -1245,6 +1285,18 @@ pub fn retail_baseline(install_root: &Path) -> Result<Baseline, BaselineError> {
         insert(&mut catalog, element)?;
     }
     collection_status.push(airframe_status);
+
+    // The engines and guns the reader archive's `engines.zrd` and `weapons.zrd`
+    // members state (F14-D.8 follow-up). Armor, ammunition and hardpoint
+    // equipment have no located entry list and so no row; the findings note
+    // says where their values are.
+    let (engines, engine_status, guns, gun_status) =
+        engine_and_gun_rows(install_root, install_hash, &files)?;
+    for element in engines.into_iter().chain(guns) {
+        insert(&mut catalog, element)?;
+    }
+    collection_status.push(engine_status);
+    collection_status.push(gun_status);
 
     // The audio cues the ZBD sound family holds (F14-D.7). The `music` and
     // `dialogue` records come with them: the sound family names every member as
@@ -3350,6 +3402,350 @@ fn airframe_unknowns(
         )?,
         UnsupportedReason::MissingRuntimeConsumer,
     ])
+}
+
+/// A decoded member of [`ENGINE_GUN_ARCHIVE`] with its spans.
+fn read_reader_member_documents(
+    install_root: &Path,
+    install_hash: ContentHash,
+    members: &[&str],
+) -> Result<Vec<SpannedDocument>, String> {
+    let bytes = std::fs::read(install_root.join(ENGINE_GUN_ARCHIVE))
+        .map_err(|error| format!("{ENGINE_GUN_ARCHIVE} cannot be read: {error}"))?;
+    let spelling = cs_types::install::RelativePath::new(ENGINE_GUN_ARCHIVE)
+        .map_err(|error| error.to_string())?;
+    let mut context = cs_formats::ParseContext::with_defaults(ENGINE_GUN_ARCHIVE);
+    let decision = dispatch(ZbdProbe::new(ENGINE_GUN_ARCHIVE, &spelling, &bytes))
+        .map_err(|error| format!("{ENGINE_GUN_ARCHIVE} is not a known container: {error}"))?;
+    let index = read_version_one_index(&mut context, decision, &bytes)
+        .map_err(|error| format!("{ENGINE_GUN_ARCHIVE} has no readable index: {error}"))?;
+    let table = index.member_table();
+    let archive = read_reader_archive(&mut context, &table, index.data())
+        .map_err(|error| format!("{ENGINE_GUN_ARCHIVE} is not a reader archive: {error}"))?;
+    let mut documents = Vec::with_capacity(members.len());
+    for member in members {
+        let entry = archive
+            .entries()
+            .find(|entry| String::from_utf8_lossy(entry.name()).eq_ignore_ascii_case(member))
+            .ok_or_else(|| format!("{ENGINE_GUN_ARCHIVE} holds no {member} member"))?;
+        let content = entry.content().to_vec();
+        let member_sha256 = cs_assets::install::sha256(&content);
+        documents.push(
+            SpannedDocument::decode(
+                install_hash,
+                member,
+                &content,
+                entry.span().offset,
+                member_sha256,
+            )
+            .map_err(|error| format!("{member} does not decode: {error}"))?,
+        );
+    }
+    Ok(documents)
+}
+
+/// The `engine` and `gun` rows the reader archive's `engines.zrd` and
+/// `weapons.zrd` members state.
+///
+/// An engine is one `(id "name" factor)` row of `engines.zrd`; its identity is
+/// the stored id, its span the row's own bytes. A gun is one `wep_NN` record of
+/// `weapons.zrd`'s `BALLISTICS` section that sets the file's own `CANNON` key;
+/// its identity is the record key, its span the record's bytes. A record
+/// without that key is a weapon of a kind this inventory has no name for (a
+/// rocket, a torpedo) and is counted, not guessed into a kind. Both rows point
+/// at the inventory row of [`ENGINE_GUN_ARCHIVE`] and carry explicit unknowns:
+/// no unit of any stored number is read, and no stored number is copied.
+///
+/// A member that cannot be read leaves its collection without rows and with a
+/// diagnostic. Neither kind is launchable, so the denominator does not move.
+fn engine_and_gun_rows(
+    install_root: &Path,
+    install_hash: ContentHash,
+    files: &BTreeMap<String, &InstallFileRecord>,
+) -> Result<
+    (
+        Vec<CatalogElement>,
+        CollectionStatus,
+        Vec<CatalogElement>,
+        CollectionStatus,
+    ),
+    BaselineError,
+> {
+    let status = |kind| CollectionStatus {
+        kind,
+        source: ENGINE_GUN_ARCHIVE.to_owned(),
+        language: None,
+        rows: 0,
+        gaps: BTreeMap::new(),
+        boundary_id: None,
+        diagnostic: None,
+    };
+    let engine_status = status(ContentKind::Engine);
+    let gun_status = status(ContentKind::Gun);
+
+    let Some(record) = files.get(&ENGINE_GUN_ARCHIVE.to_ascii_lowercase()) else {
+        let reason = format!(
+            "the installation inventories no {ENGINE_GUN_ARCHIVE}, so there are no engine or \
+             weapon records to read"
+        );
+        let (_, engine_status) = unpopulated(engine_status, reason.clone());
+        let (_, gun_status) = unpopulated(gun_status, reason);
+        return Ok((Vec::new(), engine_status, Vec::new(), gun_status));
+    };
+    let file_id = ContentId::from_source(
+        ContentKind::InstallFile,
+        &install_file_key(record.relative_spelling.as_str()),
+    )
+    .map_err(|source| BaselineError::Key {
+        spelling: ENGINE_GUN_ARCHIVE.to_owned(),
+        source,
+    })?;
+    let spelling = record.relative_spelling.as_str();
+
+    let documents = |member: &str| {
+        read_reader_member_documents(install_root, install_hash, &[member])
+            .map(|mut found| found.remove(0))
+    };
+    let (engines, engine_status) = match documents(ENGINES_MEMBER) {
+        Ok(document) => engine_rows(&document, spelling, &file_id, record.sha256, engine_status)?,
+        Err(reason) => unpopulated(engine_status, reason),
+    };
+    let (guns, gun_status) = match documents(WEAPONS_MEMBER) {
+        Ok(document) => gun_rows(&document, spelling, &file_id, record.sha256, gun_status)?,
+        Err(reason) => unpopulated(gun_status, reason),
+    };
+    Ok((engines, engine_status, guns, gun_status))
+}
+
+/// The span of a spanned node inside the archive, through the member's own
+/// provenance.
+fn member_node_span(
+    document: &SpannedDocument,
+    node: &SpannedValue,
+    claim: &str,
+) -> Result<SourceSpan, BaselineError> {
+    let provenance =
+        document
+            .provenance(node, claim)
+            .map_err(|error| BaselineError::Provenance {
+                claim: claim.to_owned(),
+                reason: error.to_string(),
+            })?;
+    provenance
+        .source
+        .clone()
+        .ok_or_else(|| BaselineError::Provenance {
+            claim: claim.to_owned(),
+            reason: "the member provenance carries no span".to_owned(),
+        })
+}
+
+fn unknown_reason(claim: &str, reason: String) -> Result<UnsupportedReason, BaselineError> {
+    let claim_id = ClaimId::new(claim).map_err(|error| BaselineError::Provenance {
+        claim: claim.to_owned(),
+        reason: error.to_string(),
+    })?;
+    Ok(UnsupportedReason::Unknown { claim_id, reason })
+}
+
+/// One `engine` row per distinct id of `engines.zrd`.
+fn engine_rows(
+    document: &SpannedDocument,
+    spelling: &str,
+    file_id: &ContentId,
+    sha256: ContentHash,
+    mut status: CollectionStatus,
+) -> Result<(Vec<CatalogElement>, CollectionStatus), BaselineError> {
+    let Some(entries) = document.root().as_list() else {
+        return Ok(unpopulated(
+            status,
+            format!("{ENGINES_MEMBER} is not a list of rows"),
+        ));
+    };
+    let mut seen = BTreeSet::new();
+    let mut rows = Vec::new();
+    let (mut malformed, mut duplicate) = (0usize, 0usize);
+    for entry in entries {
+        let fields = entry.as_list().unwrap_or_default();
+        let id = fields.first().and_then(SpannedValue::as_scalar_u32);
+        let name = fields.get(1).and_then(SpannedValue::as_text);
+        let factor_ok = fields
+            .get(2)
+            .and_then(SpannedValue::as_scalar_f64)
+            .is_some_and(f64::is_finite);
+        let (Some(id), Some(name), true, 3) = (id, name, factor_ok, fields.len()) else {
+            malformed += 1;
+            continue;
+        };
+        if !seen.insert(id) {
+            duplicate += 1;
+            continue;
+        }
+        let span = member_node_span(document, entry, CLAIM_ENGINE_ROW)?;
+        rows.push(CatalogElement {
+            kind: ContentKind::Engine,
+            id: engine_id(id)?,
+            display_name: Some(name.to_owned()),
+            origin: Origin::Installation {
+                source: span.clone(),
+            },
+            dependencies: vec![Dependency {
+                target: file_id.clone(),
+                kind: DependencyKind::Static,
+                provenance: observed(CLAIM_ENGINE_ROW, &span)?,
+            }],
+            parse_state: cs_types::install::ParseState::Parsed,
+            normalize_state: NormalizeState::NotNormalized,
+            runtime_consumers: Vec::new(),
+            readiness: Readiness::Unavailable,
+            unsupported_reasons: vec![
+                unknown_reason(
+                    ENGINE_UNKNOWN_CLAIM,
+                    format!(
+                        "{ENGINES_MEMBER} stores a thrust factor for engine {id} in {spelling}, \
+                         but no unit for it has been read and no hangar field that selects the \
+                         engine has been traced, so the row carries no value"
+                    ),
+                )?,
+                UnsupportedReason::NotNormalized,
+                UnsupportedReason::MissingRuntimeConsumer,
+            ],
+            fingerprint: Some(Fingerprint {
+                kind: FingerprintKind::Installation,
+                sha256,
+            }),
+        });
+    }
+    status.rows = rows.len();
+    status.gaps.insert("malformed_engine_row", malformed);
+    status.gaps.insert("duplicate_engine_id", duplicate);
+    if rows.is_empty() {
+        return Ok(unpopulated(
+            status,
+            format!("{ENGINES_MEMBER} states no readable engine row"),
+        ));
+    }
+    Ok((rows, status))
+}
+
+/// The identity of one `engine`: the stored id.
+fn engine_id(id: u32) -> Result<ContentId, BaselineError> {
+    let key = format!("engine-{id}");
+    ContentId::from_source(ContentKind::Engine, &key).map_err(|source| BaselineError::Key {
+        spelling: key.clone(),
+        source,
+    })
+}
+
+/// The `wep_NN` records of `weapons.zrd`'s `BALLISTICS` section, as
+/// `(key, record)` pairs in file order.
+fn weapon_records(document: &SpannedDocument) -> Option<Vec<(&str, &SpannedValue)>> {
+    let top = document.root().as_list()?.first()?.as_list()?;
+    let section = top
+        .chunks(2)
+        .find(|pair| pair[0].as_text() == Some(WEAPONS_SECTION_KEY))?
+        .get(1)?
+        .as_list()?;
+    section
+        .chunks(2)
+        .map(|pair| Some((pair.first()?.as_text()?, pair.get(1)?)))
+        .collect()
+}
+
+/// One `gun` row per cannon record of `weapons.zrd`.
+fn gun_rows(
+    document: &SpannedDocument,
+    spelling: &str,
+    file_id: &ContentId,
+    sha256: ContentHash,
+    mut status: CollectionStatus,
+) -> Result<(Vec<CatalogElement>, CollectionStatus), BaselineError> {
+    let Some(records) = weapon_records(document) else {
+        return Ok(unpopulated(
+            status,
+            format!("{WEAPONS_MEMBER} has no {WEAPONS_SECTION_KEY} section of key/record pairs"),
+        ));
+    };
+    let mut seen = BTreeSet::new();
+    let mut rows = Vec::new();
+    let (mut not_a_gun, mut duplicate, mut unnamed) = (0usize, 0usize, 0usize);
+    for (key, record) in &records {
+        let fields = record.as_list().unwrap_or_default();
+        let value_of = |wanted: &str| {
+            fields
+                .chunks(2)
+                .find(|pair| pair[0].as_text() == Some(wanted))
+                .and_then(|pair| pair.get(1))
+        };
+        if value_of(WEAPON_CANNON_KEY).is_none() {
+            not_a_gun += 1;
+            continue;
+        }
+        if !seen.insert((*key).to_owned()) {
+            duplicate += 1;
+            continue;
+        }
+        let name = value_of("NAME")
+            .and_then(SpannedValue::as_list)
+            .and_then(|values| values.first())
+            .and_then(SpannedValue::as_text)
+            .map(str::to_owned);
+        if name.is_none() {
+            unnamed += 1;
+        }
+        let span = member_node_span(document, record, CLAIM_GUN_RECORD)?;
+        let id =
+            ContentId::from_source(ContentKind::Gun, key).map_err(|source| BaselineError::Key {
+                spelling: (*key).to_owned(),
+                source,
+            })?;
+        rows.push(CatalogElement {
+            kind: ContentKind::Gun,
+            id,
+            display_name: name,
+            origin: Origin::Installation {
+                source: span.clone(),
+            },
+            dependencies: vec![Dependency {
+                target: file_id.clone(),
+                kind: DependencyKind::Static,
+                provenance: observed(CLAIM_GUN_RECORD, &span)?,
+            }],
+            parse_state: cs_types::install::ParseState::Parsed,
+            normalize_state: NormalizeState::NotNormalized,
+            runtime_consumers: Vec::new(),
+            readiness: Readiness::Unavailable,
+            unsupported_reasons: vec![
+                unknown_reason(
+                    GUN_UNKNOWN_CLAIM,
+                    format!(
+                        "{WEAPONS_MEMBER} stores damage, rate, range and ammunition numbers for \
+                         {key} in {spelling}, but no unit for any of them has been read and no \
+                         vehicle fit has been tied to this row, so the row carries no value"
+                    ),
+                )?,
+                UnsupportedReason::NotNormalized,
+                UnsupportedReason::MissingRuntimeConsumer,
+            ],
+            fingerprint: Some(Fingerprint {
+                kind: FingerprintKind::Installation,
+                sha256,
+            }),
+        });
+    }
+    status.rows = rows.len();
+    status
+        .gaps
+        .insert("weapon_record_without_cannon", not_a_gun);
+    status.gaps.insert("duplicate_weapon_key", duplicate);
+    status.gaps.insert("gun_without_name", unnamed);
+    if rows.is_empty() {
+        return Ok(unpopulated(
+            status,
+            format!("{WEAPONS_MEMBER} states no cannon record"),
+        ));
+    }
+    Ok((rows, status))
 }
 
 /// The `stunt` rows the installation's instant-action scenarios declare, plus
