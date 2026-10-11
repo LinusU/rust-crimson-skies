@@ -58,6 +58,11 @@
 //! [`compose::build_windowed`] / [`compose::build_headless`], the two faces
 //! of the composition itself.
 //!
+//! The `evidence` submodule is the capture path (VS-M01-RT-EVIDENCE-A,
+//! #1312): `CS_MISSION_CAPTURE=1` makes [`run_windowed`] write a real
+//! framebuffer PNG and `trace.jsonl` into `CS_EVIDENCE_DIR`, and refuse by
+//! name when `gpu` or the directory is missing.
+//!
 //! The `host` submodule is the stage those records were prepared for
 //! (VS-M01-RT-MISSION-HOST, #1217): [`host::MissionHostSeed`] is what [`compose::stage_for`] leaves on
 //! the stage, [`host::MissionHost`] launches it as one session, and
@@ -75,6 +80,7 @@
 
 mod compose;
 mod content;
+mod evidence;
 mod host;
 mod player_visual;
 mod terminal;
@@ -87,6 +93,10 @@ pub use compose::{
 pub use content::{
     MissionContent, MissionFlight, MissionSessionError, SoundArchive, prepare_mission_content,
     root_seed_from,
+};
+pub use evidence::{
+    CAPABILITIES_ENV, CAPTURE_ENV, CaptureHandle, CaptureRefusal, CaptureSettings,
+    EVIDENCE_DIR_ENV, MissionCapturePlugin, TRACE_FILE, finish as finish_capture,
 };
 pub use host::{
     MissionHost, MissionHostLaunchError, MissionHostRefusal, MissionHostReport,

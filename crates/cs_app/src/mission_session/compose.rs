@@ -263,6 +263,9 @@ pub enum MissionCompositionError {
     Player(String),
     /// The mission host's records could not be launched as a session.
     Host(crate::mission_session::MissionHostLaunchError),
+    /// An evidence capture was asked for and could not be set up or did not
+    /// produce its evidence.
+    Capture(crate::mission_session::CaptureRefusal),
     /// The app exited with an error.
     Exit(String),
 }
@@ -290,6 +293,7 @@ impl fmt::Display for MissionCompositionError {
             }
             Self::Player(reason) => write!(f, "the mission's player body refuses: {reason}"),
             Self::Host(error) => write!(f, "the mission host refuses: {error}"),
+            Self::Capture(refusal) => write!(f, "{refusal}"),
             Self::Exit(reason) => write!(f, "the mission window exited with an error: {reason}"),
         }
     }
@@ -937,8 +941,17 @@ pub fn run_windowed(
     install_root: &Path,
     plan: &MissionLaunchPlan,
 ) -> Result<(), MissionCompositionError> {
+    // A requested capture is judged before any content is read.
+    let capture = crate::mission_session::CaptureSettings::from_env()
+        .map_err(MissionCompositionError::Capture)?;
     let stage = stage_for(install_root, plan)?;
     let mut app = build_windowed(&stage)?;
+    let capture_handle = capture.map(|settings| {
+        let plugin = crate::mission_session::MissionCapturePlugin::new(settings, &stage.label);
+        let handle = plugin.handle();
+        app.add_plugins(plugin);
+        handle
+    });
     println!(
         "mission composition: {} — {}, world {}",
         plan.label.as_str(),
@@ -950,7 +963,11 @@ pub fn run_windowed(
         stage.flight.record, stage.flight.provenance
     );
     let exit = app.run();
+    let captured = capture_handle
+        .as_ref()
+        .map_or(Ok(()), crate::mission_session::finish_capture);
     teardown(&mut app);
+    captured.map_err(MissionCompositionError::Capture)?;
     match exit {
         AppExit::Success => Ok(()),
         AppExit::Error(code) => Err(MissionCompositionError::Exit(format!("exit code {code}"))),
