@@ -78,8 +78,8 @@ use cs_types::space::{Meters, Radians};
 
 use crate::config::StringCatalog;
 use crate::stunts::{
-    SCENARIO_MEMBER, ZrdValue, decode_zrd, scenario_mission_type, scenario_non_player_aircraft,
-    zrd_field,
+    SCENARIO_MEMBER, ScenarioAce, ScenarioEnemyGroup, ZrdValue, decode_zrd, scenario_mission_type,
+    scenario_non_player_aircraft, zrd_field,
 };
 
 /// The largest reaction delay a declared role may carry, in ticks.
@@ -1241,6 +1241,117 @@ impl fmt::Display for DeclaredSkillTier {
     }
 }
 
+/// Whether the effect of a per-aircraft skill tier has been measured.
+///
+/// **Not measured** (F32-SKILL-EFFECT). The scenario descriptors only *name*
+/// a tier per group and for the named ace; no reachable data binds a tier to
+/// a reaction time, aim error or any other knob, and the executable image
+/// that would hold such a table was not searched. The tier is therefore
+/// declared vocabulary: [`DeclaredSkillTier::knob_overrides`] refuses with the
+/// reason instead of inventing a mapping. It is also not mapped onto
+/// [`DifficultyTier`], which is the player's option.
+pub const ORIGINAL_SKILL_TIER_EFFECT_MEASURED: bool = false;
+
+/// What a declared skill tier is attached to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum SkillTarget {
+    /// The authored enemy group with this record number (`group3` → `3`).
+    Group(u32),
+    /// The scenario's own named ace.
+    ScenarioAce,
+}
+
+impl fmt::Display for SkillTarget {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Group(index) => write!(f, "group {index}"),
+            Self::ScenarioAce => f.write_str("the scenario ace"),
+        }
+    }
+}
+
+/// A declared statement that one authored group, or the scenario ace, flies
+/// at one measured skill tier.
+///
+/// Only the measured vocabulary can be carried: the label is parsed through
+/// [`DeclaredSkillTier::from_label`] and refused by name otherwise. The record
+/// says *which tier*, never *what it does*; see
+/// [`ORIGINAL_SKILL_TIER_EFFECT_MEASURED`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DeclaredSkillAssignment {
+    target: SkillTarget,
+    tier: DeclaredSkillTier,
+}
+
+impl DeclaredSkillAssignment {
+    /// Names the tier of a target from the label an importer read.
+    ///
+    /// # Errors
+    ///
+    /// [`CombatSchemaError::UnknownSkillTier`] for a label outside the
+    /// measured vocabulary.
+    pub fn try_new(target: SkillTarget, label: &str) -> Result<Self, CombatSchemaError> {
+        let tier = DeclaredSkillTier::from_label(label).ok_or_else(|| {
+            CombatSchemaError::UnknownSkillTier {
+                target,
+                label: label.to_owned(),
+            }
+        })?;
+        Ok(Self { target, tier })
+    }
+
+    /// The assignment an imported enemy group declares, or `None` when the
+    /// group declares no skill.
+    ///
+    /// # Errors
+    ///
+    /// [`CombatSchemaError::UnknownSkillTier`] for an unrecognised label.
+    pub fn from_group(group: &ScenarioEnemyGroup) -> Result<Option<Self>, CombatSchemaError> {
+        group
+            .skill()
+            .map(|label| Self::try_new(SkillTarget::Group(group.index()), label))
+            .transpose()
+    }
+
+    /// The assignment an imported scenario ace declares, or `None` when it
+    /// declares no skill.
+    ///
+    /// # Errors
+    ///
+    /// [`CombatSchemaError::UnknownSkillTier`] for an unrecognised label.
+    pub fn from_ace(ace: &ScenarioAce) -> Result<Option<Self>, CombatSchemaError> {
+        ace.skill()
+            .map(|label| Self::try_new(SkillTarget::ScenarioAce, label))
+            .transpose()
+    }
+
+    /// What the tier is attached to.
+    #[must_use]
+    pub const fn target(&self) -> SkillTarget {
+        self.target
+    }
+
+    /// The declared tier.
+    #[must_use]
+    pub const fn tier(&self) -> DeclaredSkillTier {
+        self.tier
+    }
+}
+
+impl DeclaredSkillTier {
+    /// The knob overrides this tier stands for at runtime.
+    ///
+    /// # Errors
+    ///
+    /// Always [`CombatSchemaError::SkillTierEffectUnmeasured`]: the effect of
+    /// a tier is not measured, and a guessed table would be a fabricated
+    /// tuning table. A mission that needs a tier to change behaviour must
+    /// declare its own [`DeclaredAceProfile`] or role knobs.
+    pub fn knob_overrides(self) -> Result<Vec<SkillKnobOverride>, CombatSchemaError> {
+        Err(CombatSchemaError::SkillTierEffectUnmeasured { tier: self })
+    }
+}
+
 /// How many skill labels the measured scenario descriptors declare.
 ///
 /// **Measured**: thirty-two enemy groups plus eight named aces.
@@ -1542,6 +1653,23 @@ pub enum CombatSchemaError {
         /// The repeated tier.
         tier: DifficultyTier,
     },
+    /// A skill assignment named a label outside the measured vocabulary.
+    UnknownSkillTier {
+        /// What the label was attached to.
+        target: SkillTarget,
+        /// The unrecognised label, verbatim.
+        label: String,
+    },
+    /// A skill target is assigned a tier more than once.
+    DuplicateSkillTarget {
+        /// The repeated target.
+        target: SkillTarget,
+    },
+    /// A skill tier was asked for runtime knobs, but its effect is unmeasured.
+    SkillTierEffectUnmeasured {
+        /// The tier.
+        tier: DeclaredSkillTier,
+    },
     /// Two overrides of one record name the same knob.
     DuplicateKnob {
         /// The repeated knob.
@@ -1654,6 +1782,17 @@ impl fmt::Display for CombatSchemaError {
                 f,
                 "tier {tier} moves knob {knob} with neither verified original evidence nor a \
                  designed alternative_of naming that knob"
+            ),
+            Self::UnknownSkillTier { target, label } => write!(
+                f,
+                "skill label {label:?} of {target} is not one of the measured tiers"
+            ),
+            Self::DuplicateSkillTarget { target } => {
+                write!(f, "{target} is assigned a skill tier more than once")
+            }
+            Self::SkillTierEffectUnmeasured { tier } => write!(
+                f,
+                "skill tier {tier} has no measured runtime effect; declare knobs explicitly"
             ),
             Self::UnknownKnob { knob } => write!(f, "knob {knob} is not carried by this record"),
             Self::NoScoredPriorityTerm => write!(
@@ -1775,6 +1914,7 @@ pub struct DeclaredCombatRules {
     aces: Vec<DeclaredAceProfile>,
     formations: Vec<DeclaredFormation>,
     difficulties: Vec<DifficultyProfile>,
+    skill_assignments: Vec<DeclaredSkillAssignment>,
     provenance: Provenance,
 }
 
@@ -1857,8 +1997,50 @@ impl DeclaredCombatRules {
             aces,
             formations,
             difficulties,
+            skill_assignments: Vec::new(),
             provenance,
         })
+    }
+
+    /// Declares the per-aircraft skill tiers of authored groups and of the
+    /// scenario ace.
+    ///
+    /// This is the *per-aircraft* tier, kept apart from
+    /// [`Self::difficulties`], which is the player's option.
+    ///
+    /// # Errors
+    ///
+    /// [`CombatSchemaError::DuplicateSkillTarget`] when a target is assigned
+    /// twice.
+    pub fn with_skill_assignments(
+        mut self,
+        assignments: Vec<DeclaredSkillAssignment>,
+    ) -> Result<Self, CombatSchemaError> {
+        let mut targets = BTreeSet::new();
+        for assignment in &assignments {
+            if !targets.insert(assignment.target()) {
+                return Err(CombatSchemaError::DuplicateSkillTarget {
+                    target: assignment.target(),
+                });
+            }
+        }
+        self.skill_assignments = assignments;
+        Ok(self)
+    }
+
+    /// The declared per-aircraft skill tiers, in authored order.
+    #[must_use]
+    pub fn skill_assignments(&self) -> &[DeclaredSkillAssignment] {
+        &self.skill_assignments
+    }
+
+    /// The tier declared for one target, if any.
+    #[must_use]
+    pub fn skill_tier_of(&self, target: SkillTarget) -> Option<DeclaredSkillTier> {
+        self.skill_assignments
+            .iter()
+            .find(|a| a.target() == target)
+            .map(DeclaredSkillAssignment::tier)
     }
 
     /// The catalog id the rules belong to.
@@ -2154,6 +2336,92 @@ mod tests {
         overrides: Vec<SkillKnobOverride>,
     ) -> Result<DifficultyProfile, CombatSchemaError> {
         DifficultyProfile::try_new(DifficultyTier::Hard, overrides, designed())
+    }
+
+    /// F32-S: a rule names the tier of a group and of the ace; an
+    /// unrecognised label is refused by name, and duplicates are refused.
+    #[test]
+    fn accept_f32_s_rules_name_group_and_ace_tiers_and_refuse_unknown_labels() {
+        let rules = declared_synthetic_combat_rules()
+            .with_skill_assignments(vec![
+                DeclaredSkillAssignment::try_new(SkillTarget::Group(1), "veteran").unwrap(),
+                DeclaredSkillAssignment::try_new(SkillTarget::ScenarioAce, "ace").unwrap(),
+            ])
+            .expect("distinct targets");
+        assert_eq!(
+            rules.skill_tier_of(SkillTarget::Group(1)),
+            Some(DeclaredSkillTier::Veteran)
+        );
+        assert_eq!(
+            rules.skill_tier_of(SkillTarget::ScenarioAce),
+            Some(DeclaredSkillTier::Ace)
+        );
+        assert_eq!(rules.skill_tier_of(SkillTarget::Group(2)), None);
+
+        for bad in ["Ace", "elite", "", "novice "] {
+            assert_eq!(
+                DeclaredSkillAssignment::try_new(SkillTarget::Group(2), bad),
+                Err(CombatSchemaError::UnknownSkillTier {
+                    target: SkillTarget::Group(2),
+                    label: bad.to_owned()
+                })
+            );
+        }
+        let dup = declared_synthetic_combat_rules().with_skill_assignments(vec![
+            DeclaredSkillAssignment::try_new(SkillTarget::Group(1), "novice").unwrap(),
+            DeclaredSkillAssignment::try_new(SkillTarget::Group(1), "ace").unwrap(),
+        ]);
+        assert_eq!(
+            dup.expect_err("same group twice"),
+            CombatSchemaError::DuplicateSkillTarget {
+                target: SkillTarget::Group(1)
+            }
+        );
+    }
+
+    /// F32-S: an imported group's bare label no longer slips past the
+    /// vocabulary.
+    #[test]
+    fn accept_f32_s_imported_group_label_goes_through_the_vocabulary() {
+        let group = |skill: Option<&str>| {
+            ScenarioEnemyGroup::new(3, None, None, skill.map(str::to_owned), None)
+        };
+        assert_eq!(
+            DeclaredSkillAssignment::from_group(&group(Some("novice"))),
+            Ok(Some(
+                DeclaredSkillAssignment::try_new(SkillTarget::Group(3), "novice").unwrap()
+            ))
+        );
+        assert_eq!(DeclaredSkillAssignment::from_group(&group(None)), Ok(None));
+        assert!(matches!(
+            DeclaredSkillAssignment::from_group(&group(Some("legend"))),
+            Err(CombatSchemaError::UnknownSkillTier {
+                target: SkillTarget::Group(3),
+                ..
+            })
+        ));
+        assert_eq!(
+            DeclaredSkillAssignment::from_ace(&ScenarioAce::default()),
+            Ok(None)
+        );
+    }
+
+    /// F32-S: the declared-to-runtime shape is refused with a reason, never
+    /// silently dropped or filled with an invented table.
+    #[test]
+    fn accept_f32_s_tier_runtime_effect_is_refused_as_unmeasured() {
+        assert!(!std::hint::black_box(ORIGINAL_SKILL_TIER_EFFECT_MEASURED));
+        for tier in DeclaredSkillTier::ALL {
+            assert_eq!(
+                tier.knob_overrides(),
+                Err(CombatSchemaError::SkillTierEffectUnmeasured { tier: *tier })
+            );
+        }
+        let message = CombatSchemaError::SkillTierEffectUnmeasured {
+            tier: DeclaredSkillTier::Ace,
+        }
+        .to_string();
+        assert!(message.contains("no measured runtime effect"), "{message}");
     }
 
     /// F32-E: a tier override must be a declared designed alternative of
@@ -4485,7 +4753,7 @@ mod evidence_report_f32_d {
     /// limitations"; the empty array is the price of `--require-pass`.
     const UNRESOLVED: &[&str] = &[
         "f32.d.limit.difficulty_effects: the original's difficulty option has three measured steps and no measured file says what any step changes; cs_content::ai::SkillKnob and the runtime's tier profiles are designed alternatives under F32 non-negotiable 1, and nothing forces a tier's author to say which knobs are evidence-backed (resolving task #566 F32-DIFFICULTY-EFFECT)",
-        "f32.d.limit.skill_tier_effects: the measured per-aircraft labels novice/veteran/ace carry no measured effect, so cs_sim's skill knobs for them are designed and cs_content::ai::DeclaredSkillTier is a closed vocabulary with no production consumer yet (resolving task #567 F32-SKILL-EFFECT)",
+        "f32.d.limit.skill_tier_effects: the measured per-aircraft labels novice/veteran/ace carry no measured effect, so cs_sim's skill knobs for them are designed and cs_content::ai::DeclaredSkillTier is a closed vocabulary that DeclaredSkillAssignment now consumes and whose runtime knobs are refused as unmeasured; what a tier does stays unknown and the executable image is unsearched (#567 F32-SKILL-EFFECT closed the declared half)",
         "f32.d.limit.ace_stats: nine ace stat slots and the maximum of nine are measured, but no file names a slot, its order, or what a value below the maximum does, and no measured key names a damage or health slot (resolving task #568 F32-ACE-STATS)",
         "f32.d.limit.ai_roles: the original's AI role set is in no measured file; cs_content::ai::DeclaredCombatRole's seven roles and cs_sim's mirror are designed vocabulary with no code check distinguishing them (resolving task #569 F32-ROLES)",
         "f32.d.limit.difficulty_naming: the original's three step names live in its shipped localizable string image and are deliberately not reproduced in Git or in any report, so the declared tier labels claim nothing about the original's wording and the tier-to-step mapping is positional only (resolving task F32-LOWERING, #551)",
