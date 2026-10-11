@@ -720,6 +720,27 @@ impl AreaEffect {
     pub const fn lifetime_ticks(&self) -> u64 {
         self.lifetime_ticks
     }
+
+    /// The fraction of the declared damage a recipient `distance_m` from the
+    /// blast centre takes: `1 - (distance / radius)^2`, `0.0` at or beyond the
+    /// radius.
+    ///
+    /// **Measured**, not designed: the original's area routine scales each
+    /// recipient's armor and health damage by `1 - d^2 / r^2` where `r` is the
+    /// weapon record's `IMPACT_PROXIMITY` (see
+    /// `docs/findings/2026-10-11-f28-c-2-lost-target-blast-measured.md`).
+    /// `None` for a negative or non-finite distance, which has no fraction.
+    #[must_use]
+    pub fn blast_fraction(&self, distance_m: f64) -> Option<f64> {
+        if !distance_m.is_finite() || distance_m < 0.0 {
+            return None;
+        }
+        if distance_m >= self.radius_m {
+            return Some(0.0);
+        }
+        let ratio = distance_m / self.radius_m;
+        Some(1.0 - ratio * ratio)
+    }
 }
 
 // ---------------------------------------------------------- status channels ----
@@ -3786,6 +3807,18 @@ pub enum OrdnanceRuntimeError {
     /// The runtime is session generation zero, which is not a session a
     /// [`HitEvent`] can be stamped into.
     NoSession,
+    /// An area blast was asked for an item whose declaration has no
+    /// [`AreaEffect`], so there is no radius to take recipients from.
+    NoAreaEffect {
+        /// The item that declares no area.
+        projectile: ProjectileId,
+    },
+    /// A blast recipient's distance from the blast centre was not a finite
+    /// number, so it has no damage fraction.
+    NonFiniteRecipient {
+        /// The recipient actor.
+        target: ActorId,
+    },
 }
 
 impl OrdnanceRuntimeError {
@@ -3808,6 +3841,8 @@ impl OrdnanceRuntimeError {
             Self::Hit(_) => "hit",
             Self::Nitro(_) => "nitro",
             Self::NoSession => "no_session",
+            Self::NoAreaEffect { .. } => "no_area_effect",
+            Self::NonFiniteRecipient { .. } => "non_finite_recipient",
         }
     }
 }
@@ -3857,6 +3892,18 @@ impl fmt::Display for OrdnanceRuntimeError {
                 f,
                 "this runtime is session generation zero, which is not a session a hit can be stamped into"
             ),
+            Self::NoAreaEffect { projectile } => {
+                write!(
+                    f,
+                    "{projectile} declares no area effect, so it has no blast radius"
+                )
+            }
+            Self::NonFiniteRecipient { target } => {
+                write!(
+                    f,
+                    "blast recipient {target} has no finite distance from the blast"
+                )
+            }
         }
     }
 }
@@ -4052,6 +4099,43 @@ impl GuidanceDetonation {
     #[must_use]
     pub const fn area_effect(&self) -> Option<AreaEffect> {
         self.definition.area_effect()
+    }
+}
+
+/// One actor's damage node inside a blast, with where it is.
+///
+/// The producer supplies the recipients (the sim holds no actor list); the
+/// runtime measures each one's distance from the detonation position and
+/// scales the declared channels by [`AreaEffect::blast_fraction`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct BlastRecipient {
+    target: ActorId,
+    node: DamageNodeKey,
+    position: WorldPosition,
+}
+
+impl BlastRecipient {
+    /// A recipient: the actor, the damage node that takes the hit and where it
+    /// is when the blast goes off.
+    #[must_use]
+    pub const fn new(target: ActorId, node: DamageNodeKey, position: WorldPosition) -> Self {
+        Self {
+            target,
+            node,
+            position,
+        }
+    }
+
+    /// The actor that takes the blast.
+    #[must_use]
+    pub const fn target(&self) -> ActorId {
+        self.target
+    }
+
+    /// Where the recipient is.
+    #[must_use]
+    pub const fn position(&self) -> WorldPosition {
+        self.position
     }
 }
 
@@ -4648,6 +4732,99 @@ impl OrdnanceRuntime {
                 HitEvent::try_new(id, Some(attacker), target, node.clone(), channel, amount)
                     .map_err(OrdnanceRuntimeError::Hit)?,
             );
+        }
+        Ok(hits)
+    }
+
+    /// Routes one detonation's declared damage to **every recipient inside
+    /// its declared area**, each scaled by the measured falloff.
+    ///
+    /// This is the measured original rule (see
+    /// `docs/findings/2026-10-11-f28-c-2-lost-target-blast-measured.md`): the
+    /// blast is not aimed at a tracked target; every actor whose distance from
+    /// the detonation position is inside the radius takes the item's declared
+    /// channels times [`AreaEffect::blast_fraction`]. A recipient at or beyond
+    /// the radius, or whose scaled amount is zero, produces no hit. Like
+    /// [`route_detonation`](Self::route_detonation) the item latches once.
+    ///
+    /// # Errors
+    ///
+    /// [`OrdnanceRuntimeError::NoAreaEffect`] when the item declares no area
+    /// (nothing is latched), [`OrdnanceRuntimeError::NonFiniteRecipient`] for
+    /// a recipient position that gives no finite distance (nothing is
+    /// latched), plus every error of
+    /// [`route_detonation`](Self::route_detonation).
+    pub fn route_detonation_area(
+        &mut self,
+        session: u64,
+        tick: Tick,
+        detonation: &GuidanceDetonation,
+        recipients: &[BlastRecipient],
+    ) -> Result<Vec<HitEvent>, OrdnanceRuntimeError> {
+        if session != self.session {
+            return Err(OrdnanceRuntimeError::ForeignSession {
+                expected: self.session,
+                found: session,
+            });
+        }
+        if detonation.projectile.session != self.session {
+            return Err(OrdnanceRuntimeError::ForeignSession {
+                expected: self.session,
+                found: detonation.projectile.session,
+            });
+        }
+        let Some(area) = detonation.area_effect() else {
+            return Err(OrdnanceRuntimeError::NoAreaEffect {
+                projectile: detonation.projectile,
+            });
+        };
+        let centre = detonation.position;
+        let mut fractions = Vec::with_capacity(recipients.len());
+        for recipient in recipients {
+            let dx = recipient.position.x() - centre.x();
+            let dy = recipient.position.y() - centre.y();
+            let dz = recipient.position.z() - centre.z();
+            let distance = (dx * dx + dy * dy + dz * dz).sqrt();
+            let Some(fraction) = area.blast_fraction(distance) else {
+                return Err(OrdnanceRuntimeError::NonFiniteRecipient {
+                    target: recipient.target,
+                });
+            };
+            fractions.push(fraction);
+        }
+        let Some(session_id) = SessionId::new(self.session) else {
+            return Err(OrdnanceRuntimeError::NoSession);
+        };
+        if !self.routed.insert(detonation.projectile) {
+            return Err(OrdnanceRuntimeError::AlreadyRouted {
+                projectile: detonation.projectile,
+            });
+        }
+        let attacker = detonation.shooter;
+        let damage = *detonation.definition.channels();
+        let mut hits = Vec::new();
+        for (recipient, fraction) in recipients.iter().zip(fractions) {
+            if fraction == 0.0 {
+                continue;
+            }
+            for channel in WEAPON_DAMAGE_CHANNELS {
+                let amount = damage.amount_on(channel) * fraction;
+                if amount == 0.0 {
+                    continue;
+                }
+                let id = self.next_hit_id(session_id, tick);
+                hits.push(
+                    HitEvent::try_new(
+                        id,
+                        Some(attacker),
+                        recipient.target,
+                        recipient.node.clone(),
+                        channel,
+                        amount,
+                    )
+                    .map_err(OrdnanceRuntimeError::Hit)?,
+                );
+            }
         }
         Ok(hits)
     }
