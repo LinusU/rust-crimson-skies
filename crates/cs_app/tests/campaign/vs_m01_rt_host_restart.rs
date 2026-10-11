@@ -23,8 +23,8 @@
 //!   stored names the generation it tore down and the cue that will never
 //!   play. A **second** reset advances both identities again. This member
 //!   runs in CI.
-//! * **A restart requested after a settled terminal clears it.** The very
-//!   same stage carries a control program whose own `Finish(Succeeded)`
+//! * **A restart requested after a settled terminal clears it.** The suite's
+//!   settling twin stage carries a control program whose own `Finish(Succeeded)`
 //!   directive settles a terminal on its first evaluated tick (the designed
 //!   synthetic terminal path — M01 itself cannot reach one headlessly, a
 //!   measured property of the content). A [`MissionHostRestartRequest`] —
@@ -114,31 +114,38 @@ fn restart_report_of<'a>(
 }
 
 /// The stage the restart suite drives: the very synthetic stage
-/// `vs_m01_rt_window.rs` builds, with two of its seed records swapped for
-/// ones this suite authors (both synthetic, both lowered/built through
-/// production constructors):
+/// `vs_m01_rt_window.rs` builds, with its seed's objective program swapped
+/// for one this suite authors (synthetic, lowered through production
+/// constructors): the F39-C fixture
+/// ([`declared_synthetic_objectives`], production-lowered through
+/// [`lower_program`]) with its radio timer re-declared to auto-arm at tick
+/// one ([`DeclaredTimerStart::AtTick`] instead of `OnArm`), so driving a
+/// few committed ticks through the composed entry leaves a dialogue cue
+/// pending in the objective session — the teardown must name it.
 ///
-/// * a **settling** control program — one objective whose condition is
-///   `true` and whose action is the IR's own terminal request
-///   [`Action::Finish`]`(`[`Outcome::Succeeded]`)`, so the composed entry
-///   drives the program to a real terminal state headlessly;
-/// * a **cue-emitting** objective program — the F39-C fixture
-///   ([`declared_synthetic_objectives`], production-lowered through
-///   [`lower_program`]) with its radio timer re-declared to auto-arm at tick
-///   one ([`DeclaredTimerStart::AtTick`] instead of `OnArm`), so driving a
-///   few committed ticks through the composed entry leaves a dialogue cue
-///   pending in the objective session — the teardown must name it.
-///
-/// The seed's own `ObjectiveDeclarations` refusal described the **empty**
+/// The control program stays the seed's own: its one objective is `true`
+/// and completes on the first tick, and the run never settles a terminal
+/// (`.02`'s rule: a settled host advances nothing, so this variant is the
+/// one whose environment clock and world-actor tick keep moving). The
+/// seed's own `ObjectiveDeclarations` refusal described the **empty**
 /// objective program this variant no longer carries, so it is not carried
 /// into the report; the two absences every host names (the unobserved world
 /// fact fold and the undeclared block lifecycles) are appended by the
 /// launch itself, as everywhere else.
 fn restart_stage(scratch: &std::path::Path) -> MissionStage {
     let mut stage = synthetic_stage(scratch);
-    stage.host.control = settling_control_program();
     stage.host.objectives = cue_emitting_objectives();
     stage.host.refusals = Vec::new();
+    stage
+}
+
+/// [`restart_stage`]'s twin, with the control program swapped for one that
+/// **settles**: [`settling_control_program`]. Only the member that proves a
+/// restart after a settled terminal drives this one — every other member
+/// needs a run that keeps stepping.
+fn settling_restart_stage(scratch: &std::path::Path) -> MissionStage {
+    let mut stage = restart_stage(scratch);
+    stage.host.control = settling_control_program();
     stage
 }
 
@@ -274,9 +281,10 @@ fn accept_vs_m01_runtime_host_03_a_meta_reset_rebuilds_the_authored_initial_stat
     );
     assert!(old_step_tick.0 > 0, "the composed entry must have stepped");
     assert!(
-        app.world().resource::<MissionHost>().terminal().is_some(),
-        "the synthetic program's own Finish must have settled this host before the restart, so \
-         the reset is a restart after a terminal state too"
+        app.world().resource::<MissionHost>().terminal().is_none(),
+        "this variant's program completes objectives but never settles a terminal, so the reset \
+         below is a restart of a run that has not ended (the member after this one covers the \
+         settled case)"
     );
     assert!(
         pending_before >= 1,
@@ -444,15 +452,21 @@ fn accept_vs_m01_runtime_host_03_a_meta_reset_rebuilds_the_authored_initial_stat
         "the stale composed-step report must not survive the restart"
     );
 
-    // The fresh host steps again through the same composed entry, and the
-    // settled program replays its authored terminal from zero.
+    // The fresh host steps again through the same composed entry: this
+    // variant's program has no terminal directive, so the rebuilt run is
+    // `Running` again and keeps advancing past the torn-down generation.
     app.update();
     {
         let report = report_of(&app, "the restarted composition");
         let produced = report.answer.as_ref().unwrap_or_else(|error| {
             panic!("the fresh host must step cleanly after the restart: {error}");
         });
-        assert_eq!(produced.script.terminal, TerminalState::Succeeded);
+        assert_eq!(
+            produced.script.terminal,
+            TerminalState::Running,
+            "the rebuilt control session is the authored one: it completes its objective again \
+             and settles no terminal"
+        );
         assert!(report.tick.0 > old_step_tick.0);
     }
 
@@ -488,7 +502,7 @@ fn accept_vs_m01_runtime_host_03_a_meta_reset_rebuilds_the_authored_initial_stat
 #[test]
 fn accept_vs_m01_runtime_host_03_a_requested_restart_clears_the_settled_terminal() {
     let scratch = Scratch::new("host-restart-terminal");
-    let stage = restart_stage(scratch.path());
+    let stage = settling_restart_stage(scratch.path());
     let mut app = build_headless(&stage).expect("the synthetic stage composes");
 
     // Drive until the control program's own Finish directive settles the
