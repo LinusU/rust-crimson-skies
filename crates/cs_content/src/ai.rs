@@ -1387,6 +1387,94 @@ pub const ORIGINAL_ACE_STAT_SLOTS: usize = 9;
 /// unmeasured and stays unmeasured.
 pub const ORIGINAL_ACE_STAT_MAX: i64 = 9;
 
+/// Whether any slot of the original's `ace_stats` vector has a measured name or
+/// meaning.
+///
+/// **Not measured** (F32-ACE-STATS). The scenario descriptors spell the vector
+/// as one key, `ace_stats`; neither the engine's variable dictionary
+/// (`ASSETS/SCRIPTS/DEBUGINFO.TXT`) nor its resource header
+/// ([`ORIGINAL_RESOURCE_HEADER`]) carries an identifier for an ace stat slot.
+/// [`AceStatSlots`] therefore keeps ordered, unnamed slots and refuses a name.
+pub const ORIGINAL_ACE_STAT_SLOTS_NAMED: bool = false;
+
+/// The original's ace stat vector: ordered integer slots with **no** names.
+///
+/// The record is addressed by index only. Index `n` is the `n`-th element of
+/// the descriptor's list; it is not a claim that the slot is a reaction,
+/// accuracy or aggression number, and no accessor takes a name that could make
+/// it one ([`Self::slot_named`] refuses every name). What a value below
+/// [`ORIGINAL_ACE_STAT_MAX`] does is unmeasured ([`Self::effect_of`] refuses).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AceStatSlots {
+    slots: Vec<u32>,
+}
+
+impl AceStatSlots {
+    /// Carries an imported `ace_stats` list.
+    ///
+    /// # Errors
+    ///
+    /// [`CombatSchemaError::AceStatSlotCount`] unless the list has
+    /// [`ORIGINAL_ACE_STAT_SLOTS`] elements, and
+    /// [`CombatSchemaError::AceStatOutOfRange`] for an element outside
+    /// `0..=`[`ORIGINAL_ACE_STAT_MAX`], the only range the installation shows.
+    pub fn try_from_list(values: &[i64]) -> Result<Self, CombatSchemaError> {
+        if values.len() != ORIGINAL_ACE_STAT_SLOTS {
+            return Err(CombatSchemaError::AceStatSlotCount {
+                found: values.len(),
+            });
+        }
+        let mut slots = Vec::with_capacity(values.len());
+        for (slot, value) in values.iter().enumerate() {
+            match u32::try_from(*value) {
+                Ok(value) if i64::from(value) <= ORIGINAL_ACE_STAT_MAX => slots.push(value),
+                _ => {
+                    return Err(CombatSchemaError::AceStatOutOfRange {
+                        slot,
+                        value: *value,
+                    });
+                }
+            }
+        }
+        Ok(Self { slots })
+    }
+
+    /// The slots, in the descriptor's order.
+    #[must_use]
+    pub fn as_slice(&self) -> &[u32] {
+        &self.slots
+    }
+
+    /// The value of slot `index`, if there is one.
+    #[must_use]
+    pub fn slot(&self, index: usize) -> Option<u32> {
+        self.slots.get(index).copied()
+    }
+
+    /// A slot by name.
+    ///
+    /// # Errors
+    ///
+    /// Always [`CombatSchemaError::AceStatSlotNameUnmeasured`]: the
+    /// installation never names a slot, so any name would be a guess.
+    pub fn slot_named(&self, name: &str) -> Result<u32, CombatSchemaError> {
+        Err(CombatSchemaError::AceStatSlotNameUnmeasured {
+            name: name.to_owned(),
+        })
+    }
+
+    /// The runtime knob overrides slot `index` stands for.
+    ///
+    /// # Errors
+    ///
+    /// Always [`CombatSchemaError::AceStatEffectUnmeasured`]: what a slot does,
+    /// at nine or below, is unmeasured. A mission that wants an ace to behave
+    /// differently declares a [`DeclaredAceProfile`].
+    pub fn effect_of(&self, index: usize) -> Result<Vec<SkillKnobOverride>, CombatSchemaError> {
+        Err(CombatSchemaError::AceStatEffectUnmeasured { slot: index })
+    }
+}
+
 /// Where a declared [`DifficultyProfile`]'s tier came from, given what the
 /// original's option actually is.
 ///
@@ -1670,6 +1758,28 @@ pub enum CombatSchemaError {
         /// The tier.
         tier: DeclaredSkillTier,
     },
+    /// An ace stat list does not have the measured number of slots.
+    AceStatSlotCount {
+        /// How many elements it had.
+        found: usize,
+    },
+    /// An ace stat element is outside the measured `0..=9` range.
+    AceStatOutOfRange {
+        /// The element's index.
+        slot: usize,
+        /// Its value.
+        value: i64,
+    },
+    /// An ace stat slot was addressed by a name the installation never gives.
+    AceStatSlotNameUnmeasured {
+        /// The name asked for, verbatim.
+        name: String,
+    },
+    /// An ace stat slot was asked for runtime knobs, but its effect is unmeasured.
+    AceStatEffectUnmeasured {
+        /// The slot index.
+        slot: usize,
+    },
     /// Two overrides of one record name the same knob.
     DuplicateKnob {
         /// The repeated knob.
@@ -1793,6 +1903,22 @@ impl fmt::Display for CombatSchemaError {
             Self::SkillTierEffectUnmeasured { tier } => write!(
                 f,
                 "skill tier {tier} has no measured runtime effect; declare knobs explicitly"
+            ),
+            Self::AceStatSlotCount { found } => write!(
+                f,
+                "an ace stat list has {found} elements; the measured vector has {ORIGINAL_ACE_STAT_SLOTS}"
+            ),
+            Self::AceStatOutOfRange { slot, value } => write!(
+                f,
+                "ace stat slot {slot} is {value}, outside the measured range 0..={ORIGINAL_ACE_STAT_MAX}"
+            ),
+            Self::AceStatSlotNameUnmeasured { name } => write!(
+                f,
+                "ace stat slot name {name:?} is not measured; the installation names no slot, address it by index"
+            ),
+            Self::AceStatEffectUnmeasured { slot } => write!(
+                f,
+                "ace stat slot {slot} has no measured runtime effect; declare an ace profile explicitly"
             ),
             Self::UnknownKnob { knob } => write!(f, "knob {knob} is not carried by this record"),
             Self::NoScoredPriorityTerm => write!(
@@ -2421,6 +2547,73 @@ mod tests {
             tier: DeclaredSkillTier::Ace,
         }
         .to_string();
+        assert!(message.contains("no measured runtime effect"), "{message}");
+    }
+
+    /// F32-AS: the ace record is nine ordered, unnamed slots; a list of
+    /// another length, or an element outside the measured range, is refused.
+    #[test]
+    fn accept_f32_as_ace_stats_are_nine_ordered_unnamed_slots() {
+        assert!(!std::hint::black_box(ORIGINAL_ACE_STAT_SLOTS_NAMED));
+        let stats = AceStatSlots::try_from_list(&[9, 8, 7, 6, 5, 4, 3, 2, 1]).expect("nine slots");
+        assert_eq!(stats.as_slice(), &[9, 8, 7, 6, 5, 4, 3, 2, 1]);
+        assert_eq!(stats.slot(0), Some(9));
+        assert_eq!(stats.slot(8), Some(1));
+        assert_eq!(stats.slot(ORIGINAL_ACE_STAT_SLOTS), None);
+        assert_eq!(
+            AceStatSlots::try_from_list(&[9; 8]),
+            Err(CombatSchemaError::AceStatSlotCount { found: 8 })
+        );
+        assert_eq!(
+            AceStatSlots::try_from_list(&[9; 10]),
+            Err(CombatSchemaError::AceStatSlotCount { found: 10 })
+        );
+        let mut high = [9_i64; 9];
+        high[4] = ORIGINAL_ACE_STAT_MAX + 1;
+        assert_eq!(
+            AceStatSlots::try_from_list(&high),
+            Err(CombatSchemaError::AceStatOutOfRange { slot: 4, value: 10 })
+        );
+        let mut negative = [9_i64; 9];
+        negative[0] = -1;
+        assert_eq!(
+            AceStatSlots::try_from_list(&negative),
+            Err(CombatSchemaError::AceStatOutOfRange { slot: 0, value: -1 })
+        );
+    }
+
+    /// F32-AS: a named slot and a slot's runtime effect are refused with a
+    /// reason, so nine field names cannot be invented from the nine numbers.
+    #[test]
+    fn accept_f32_as_a_slot_name_and_a_slot_effect_are_refused_as_unmeasured() {
+        let stats = AceStatSlots::try_from_list(&[9; 9]).expect("nine slots");
+        for name in [
+            "reaction",
+            "accuracy",
+            "aggression",
+            "health",
+            "damage",
+            "0",
+        ] {
+            assert_eq!(
+                stats.slot_named(name),
+                Err(CombatSchemaError::AceStatSlotNameUnmeasured {
+                    name: name.to_owned()
+                })
+            );
+        }
+        for slot in 0..ORIGINAL_ACE_STAT_SLOTS {
+            assert_eq!(
+                stats.effect_of(slot),
+                Err(CombatSchemaError::AceStatEffectUnmeasured { slot })
+            );
+        }
+        let message = CombatSchemaError::AceStatSlotNameUnmeasured {
+            name: "reaction".to_owned(),
+        }
+        .to_string();
+        assert!(message.contains("not measured"), "{message}");
+        let message = CombatSchemaError::AceStatEffectUnmeasured { slot: 3 }.to_string();
         assert!(message.contains("no measured runtime effect"), "{message}");
     }
 
@@ -4207,6 +4400,53 @@ mod f32_d {
         }
     }
 
+    /// F32-AS: the installation names no ace stat slot. Neither the engine's
+    /// variable dictionary nor its resource header carries an identifier that
+    /// starts `ace`, the descriptors' only stat-like key is `ace_stats`, and
+    /// every descriptor's list loads into the unnamed record.
+    #[test]
+    #[ignore = "requires CS_GAME_DIR"]
+    fn accept_f32_as_retail_no_identifier_names_an_ace_stat_slot() {
+        let root = game_dir();
+        for member in ["ASSETS/SCRIPTS/DEBUGINFO.TXT", ORIGINAL_RESOURCE_HEADER] {
+            let bytes = read_member(&root, member).expect("the member must read");
+            assert!(bytes.len() > 10_000, "{member}: a real member was read");
+            let text = String::from_utf8_lossy(&bytes).to_ascii_lowercase();
+            let identifiers: Vec<&str> = text
+                .split(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+                .filter(|token| !token.is_empty())
+                .collect();
+            assert!(
+                identifiers.len() > 500,
+                "{member}: the tokenizer saw the member's identifiers"
+            );
+            let ace_like: Vec<&&str> = identifiers
+                .iter()
+                .filter(|token| token.starts_with("ace"))
+                .collect();
+            assert!(
+                ace_like.is_empty(),
+                "{member}: an identifier starting `ace` would be a candidate slot name: {ace_like:?}"
+            );
+        }
+        let surface = measured();
+        let stat_keys: Vec<&str> = surface
+            .scenario_key_vocabulary()
+            .into_iter()
+            .filter(|key| key.contains("stat"))
+            .collect();
+        assert_eq!(
+            stat_keys,
+            ["ace_stats"],
+            "the only stat-like descriptor key is the vector itself"
+        );
+        for scenario in &surface.scenarios {
+            let list = scenario.ace_stats.as_ref().expect("an ace_stats list");
+            let stats = AceStatSlots::try_from_list(list).expect("the measured list loads");
+            assert_eq!(stats.as_slice(), &[9; 9], "{}", scenario.container);
+        }
+    }
+
     /// The mission types the installation measures: three of them. This is the
     /// vocabulary a difficulty probe's scenario may be built from — no invented
     /// fourth mission type.
@@ -4754,7 +4994,7 @@ mod evidence_report_f32_d {
     const UNRESOLVED: &[&str] = &[
         "f32.d.limit.difficulty_effects: the original's difficulty option has three measured steps and no measured file says what any step changes; cs_content::ai::SkillKnob and the runtime's tier profiles are designed alternatives under F32 non-negotiable 1, and nothing forces a tier's author to say which knobs are evidence-backed (resolving task #566 F32-DIFFICULTY-EFFECT)",
         "f32.d.limit.skill_tier_effects: the measured per-aircraft labels novice/veteran/ace carry no measured effect, so cs_sim's skill knobs for them are designed and cs_content::ai::DeclaredSkillTier is a closed vocabulary that DeclaredSkillAssignment now consumes and whose runtime knobs are refused as unmeasured; what a tier does stays unknown and the executable image is unsearched (#567 F32-SKILL-EFFECT closed the declared half)",
-        "f32.d.limit.ace_stats: nine ace stat slots and the maximum of nine are measured, but no file names a slot, its order, or what a value below the maximum does, and no measured key names a damage or health slot (resolving task #568 F32-ACE-STATS)",
+        "f32.d.limit.ace_stats: nine ace stat slots and the maximum of nine are measured, but no file names a slot, its order, or what a value below the maximum does, and no measured key names a damage or health slot; cs_content::ai::AceStatSlots keeps the slots unnamed and refuses a name or an effect, and DEBUGINFO.TXT and RESOURCE.H carry no ace stat identifier (#568 F32-ACE-STATS closed the declared half; the original's meanings stay unknown)",
         "f32.d.limit.ai_roles: the original's AI role set is in no measured file; cs_content::ai::DeclaredCombatRole's seven roles and cs_sim's mirror are designed vocabulary with no code check distinguishing them (resolving task #569 F32-ROLES)",
         "f32.d.limit.difficulty_naming: the original's three step names live in its shipped localizable string image and are deliberately not reproduced in Git or in any report, so the declared tier labels claim nothing about the original's wording and the tier-to-step mapping is positional only (resolving task F32-LOWERING, #551)",
         "f32.d.limit.per_mission_difficulty: measured negative - no key at any depth of any of the eight scenario descriptors names a difficulty, so this engine cannot read a per-mission difficulty from content (resolving task F32-LOWERING, #551)",
