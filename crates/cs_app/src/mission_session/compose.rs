@@ -83,6 +83,7 @@ use cs_assets::vfs::{ContentSession, MountBuilder, SessionBuilder};
 use cs_content::world::{WorldDefinition, WorldInstance};
 use cs_sim::flight::original::FORCE_TO_ACCEL;
 use cs_sim::flight::{FlightInput, OriginalFlightModel, OriginalState};
+use cs_sim::mission::BlockLifecycleTable;
 use cs_types::asset_id::{
     AssetKey, MissionScope, MountId, MountNamespace, PrecedenceClass, ResolveContext, WorldGroup,
 };
@@ -429,6 +430,7 @@ pub fn stage_for(
         world_actors: content.world_actors.lowered().cloned(),
         animation: Some(content.animation.clone()),
         control: content.control.clone(),
+        block_lifecycles: declared_block_lifecycles(install_root, plan, &mut refusals),
         sound_archives: content.sound_archives.clone(),
         objectives: declared_objectives(install_root, plan, &mut refusals),
         // M01's `mission_markers` ships no cue table on purpose: nobody has
@@ -509,6 +511,39 @@ fn declared_objectives(
         Ok(lowered) => lowered,
         Err(error) => refuse(error.to_string()),
     }
+}
+
+/// The control record's declared block lifecycles, read through
+/// [`crate::control_lifecycles`] — the record's own `BEGIN_DORMANT` and
+/// `TICK_DEPENDS_ON_OBJ` spellings (VS-M01-RT-HOST-BLOCK-LIFECYCLES).
+///
+/// The reader is asked here so the detail a run reports is **its own
+/// message**: a source it cannot read, or a spelling outside the measured
+/// shapes, leaves the stage carrying the empty fail-closed table plus
+/// [`MissionHostRefusal::BlockLifecycles`] quoting the reader, never a
+/// partially-read table answering a condition (AGENTS.md rules 4 and 5).
+fn declared_block_lifecycles(
+    install_root: &Path,
+    plan: &MissionLaunchPlan,
+    refusals: &mut Vec<MissionHostRefusal>,
+) -> BlockLifecycleTable {
+    let read = match crate::control_lifecycles::read_mission_block_lifecycles(
+        install_root,
+        &plan.mission_dir,
+    ) {
+        Ok(read) => read,
+        Err(detail) => {
+            refusals.push(MissionHostRefusal::BlockLifecycles { detail });
+            return BlockLifecycleTable::new();
+        }
+    };
+    if read.is_complete() {
+        return read.into_table();
+    }
+    refusals.push(MissionHostRefusal::BlockLifecycles {
+        detail: read.refusal_detail(),
+    });
+    BlockLifecycleTable::new()
 }
 
 /// The heading-to-orientation compose, through the production

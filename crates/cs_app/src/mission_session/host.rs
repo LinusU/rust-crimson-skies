@@ -39,11 +39,13 @@
 //!   quoting the reader's own message. No `ObjectiveSpec`, `CountCondition`,
 //!   `MissionTimer`, `SweptTrigger` or spawn group is ever constructed here
 //!   for an original mission (AGENTS.md rules 4 and 5).
-//! * No production reader turns a record's `BEGIN_DORMANT` spellings into
-//!   [`BlockLifecycleTable`] declarations yet, so the fold runs over an empty
-//!   table — its documented fail-closed read, where every
-//!   `Condition::ObjectiveAwake` answers `false` — under
-//!   [`MissionHostRefusal::BlockLifecycles`].
+//! * A stage that carries no declared [`BlockLifecycleTable`] — because no
+//!   production reader turned its record's `BEGIN_DORMANT` spellings into
+//!   declarations (or that reader refused) — folds the empty table, its
+//!   documented fail-closed read where every `Condition::ObjectiveAwake`
+//!   answers `false`, under [`MissionHostRefusal::BlockLifecycles`]. A
+//!   stage that carries the record's declared table (read through
+//!   [`crate::control_lifecycles`]) folds it and raises no such refusal.
 //! * No stage builds a [`crate::world_facts::WorldObservation`] out of the ECS
 //!   world, so [`WorldFactTable`] answers from its empty report under
 //!   [`MissionHostRefusal::WorldObservation`].
@@ -222,9 +224,11 @@ pub enum MissionHostRefusal {
         /// What the fold is reading instead of an observation.
         detail: String,
     },
-    /// No production reader declares a block's `BEGIN_DORMANT` lifecycle into
-    /// [`BlockLifecycleTable`], so every `Condition::ObjectiveAwake` answers
-    /// `false` and no block can complete.
+    /// The stage carries no declared [`BlockLifecycleTable`] — the record's
+    /// lifecycle spellings were not read into one, or that reader refused —
+    /// so the fold answers from the empty table, where every
+    /// `Condition::ObjectiveAwake` answers `false` and no block can
+    /// complete.
     BlockLifecycles {
         /// What the table is empty of, and whose job filling it is.
         detail: String,
@@ -281,6 +285,11 @@ pub struct MissionHostSeed {
     pub animation: Option<MissionAnimationBinding>,
     /// The mission's declared control program — the script host's own.
     pub control: MissionProgram,
+    /// The control record's declared block lifecycles — its
+    /// `BEGIN_DORMANT`/`TICK_DEPENDS_ON_OBJ` spellings read through
+    /// [`crate::control_lifecycles`]. An empty table is the fail-closed
+    /// read, named by [`MissionHostRefusal::BlockLifecycles`].
+    pub block_lifecycles: BlockLifecycleTable,
     /// The sound-family archives in the mission's scope.
     pub sound_archives: Vec<SoundArchive>,
     /// The objective program the F39 session launches from. For every
@@ -608,9 +617,11 @@ impl MissionHost {
     /// objective session and the control program — and a refusal from any of
     /// them is returned by name rather than worked around. The stage's own
     /// refusals are carried over and the ones only this launch can see (no
-    /// animation join, no world-actor program, the unobserved fact fold and
-    /// the undeclared block lifecycles) are appended, so
-    /// [`Self::refusals`] is the complete list a run reports.
+    /// animation join, no world-actor program, the unobserved fact fold, and
+    /// — for a stage that carries no declared [`BlockLifecycleTable`] and
+    /// has not named that absence itself — the undeclared block lifecycles)
+    /// are appended, so [`Self::refusals`] is the complete list a run
+    /// reports.
     ///
     /// # Errors
     ///
@@ -644,6 +655,10 @@ impl MissionHost {
             .map_err(MissionHostLaunchError::Script)?;
 
         let refusals = stage_refusals(seed);
+        // A stage that carries the record's declared lifecycles folds them;
+        // a stage that carries none runs over the empty fail-closed read
+        // `stage_refusals` names.
+        let blocks = seed.block_lifecycles.clone();
 
         Ok(Self {
             environment,
@@ -652,7 +667,7 @@ impl MissionHost {
             markers,
             objectives,
             script,
-            blocks: BlockLifecycleTable::new(),
+            blocks,
             world_facts: WorldFactTable::new(seed.resolver.clone()),
             operands: WorldOperands::of(&seed.control),
             sound_archives: seed.sound_archives.clone(),
@@ -685,8 +700,10 @@ impl MissionHost {
     ///    control program — its state is `Running` again, so whatever
     ///    terminal the previous generation settled is cleared with the
     ///    session that carried it;
-    /// 7. a fresh [`BlockLifecycleTable`] and [`WorldFactTable`], and the
-    ///    complete refusal list recomputed from the stage's seed;
+    /// 7. the seed's declared [`BlockLifecycleTable`] restored fresh (its
+    ///    spelled starting states, nothing the torn-down run advanced) and
+    ///    a fresh [`WorldFactTable`], and the complete refusal list
+    ///    recomputed from the stage's seed;
     /// 8. the host's own records cleared: `last_tick()` is `None` (the
     ///    world's fixed ledger is the physics timeline and keeps counting;
     ///    this host keeps no clock of its own) and [`Self::terminal`] is
@@ -765,7 +782,7 @@ impl MissionHost {
         };
         self.script = MissionSession::launch(seed.control.clone(), generation, [])
             .map_err(MissionHostRestartError::Script)?;
-        self.blocks = BlockLifecycleTable::new();
+        self.blocks = seed.block_lifecycles.clone();
         self.world_facts = WorldFactTable::new(seed.resolver.clone());
         self.operands = WorldOperands::of(&seed.control);
         self.sound_archives = seed.sound_archives.clone();
@@ -1142,12 +1159,23 @@ fn stage_refusals(seed: &MissionHostSeed) -> Vec<MissionHostRefusal> {
                  table answers from its empty, fail-closed report for every tick"
             .to_owned(),
     });
-    refusals.push(MissionHostRefusal::BlockLifecycles {
-        detail: "no production reader declares a record's BEGIN_DORMANT lifecycle into the \
-                 block lifecycle table, so the table is empty and every Condition::\
-                 ObjectiveAwake answers false"
-            .to_owned(),
-    });
+    // A stage that carries the record's declared lifecycles folds them and
+    // raises no refusal; a stage that carries no declared table runs over
+    // the empty fail-closed read and says so — unless it already named the
+    // absence itself (the reader's own refusals travel on the seed), which
+    // is the same naming and is not repeated here.
+    if seed.block_lifecycles.is_empty()
+        && !seed
+            .refusals
+            .iter()
+            .any(|refusal| matches!(refusal, MissionHostRefusal::BlockLifecycles { .. }))
+    {
+        refusals.push(MissionHostRefusal::BlockLifecycles {
+            detail: "this stage carries no declared block lifecycles, so the table is empty \
+                     and every Condition::ObjectiveAwake answers false"
+                .to_owned(),
+        });
+    }
     refusals
 }
 
