@@ -134,15 +134,15 @@ leaves nothing behind and a second teardown is a no-op.
 
 ## Test sensitivity (measured, one mutation at a time)
 
-Two mutations were applied to `crates/cs_app/src/weapon_effects.rs`, one at a
+Three mutations were applied to `crates/cs_app/src/weapon_effects.rs`, one at a
 time, and `cargo test -p cs_app --test accept_f27_c_fx_weapon_effect_presentation`
 was re-run after each. The counts are what the run reported, not an estimate.
 
 | mutation | caught by |
 | --- | --- |
-| the consumer never drains the log (the drain returns nothing) | 4 tests: the present test, the no-listener test, the repeated-present test, the undelivered-sound test |
-| the visual half is removed (no entity is spawned) | 2 tests: the present test, the release test |
-| the audio half fabricates a cue for a record the log never carried (a cue per live round instead of per drained effect) | 2 tests: the denied-shot test, the repeated-present test |
+| the consumer never presents the drained log (`drain_effects()` results are dropped) | all 6 tests |
+| the visual half is removed (no muzzle entity is spawned) | 5 tests (all but the spatialisation test, which asserts placements only) |
+| the audio half plays a cue per **live round** instead of per **drained effect** (`WeaponEffect::of` fabricated from the session's retained shot records) | 3 tests: the denied-shot test, the repeated-present test and the spatialisation test |
 
 The mutation harness is a scratch script under the session's temporary
 directory, not a committed tool: it rewrites production source in place and
