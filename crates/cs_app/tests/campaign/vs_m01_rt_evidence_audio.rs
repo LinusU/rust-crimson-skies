@@ -98,6 +98,40 @@ fn accept_vs_m01_runtime_evidence_audio_the_staged_container_is_checked_against_
     assert!(error.to_string().contains("digest"), "{error}");
 }
 
+/// The SHA-256 of the member's bytes inside the staged container, read
+/// through the same content-session and `ZbdContainer` path the load uses.
+fn member_digest(cache_root: &std::path::Path, launch: &LaunchSound) -> String {
+    let root = cs_app::mission_session::stage_container(cache_root, launch).expect("staged");
+    let context = cs_types::asset_id::ResolveContext::new(launch.container_sha256);
+    let mut builder = cs_assets::vfs::SessionBuilder::new(context);
+    let mount = cs_assets::vfs::MountBuilder::new(
+        cs_types::asset_id::MountId::new("digest").expect("id"),
+        cs_types::asset_id::MountNamespace::new("install").expect("namespace"),
+        cs_types::asset_id::PrecedenceClass::Shared,
+        ".",
+    )
+    .retail();
+    builder
+        .mount_directory(mount, &root)
+        .expect("the staged file mounts");
+    let session = builder.open();
+    let key = cs_types::asset_id::AssetKey::from_spelling("install", &launch.container, "default")
+        .expect("key");
+    let container = cs_assets::zbd::ZbdContainer::open(&session, &key).expect("container opens");
+    let mut parse = cs_formats::ParseContext::with_defaults(container.label());
+    let index = container.index(&mut parse).expect("index");
+    let table = index.member_table();
+    let assets = container
+        .sound_assets(&mut parse, &index, &table)
+        .expect("sound assets");
+    let member = assets
+        .entries()
+        .iter()
+        .find(|asset| String::from_utf8_lossy(asset.name()).eq_ignore_ascii_case(&launch.member))
+        .expect("the member is in the container");
+    cs_assets::install::sha256(member.content()).to_hex()
+}
+
 fn wait_for(limit: Duration, app: &mut App, done: impl Fn(&App) -> bool) -> bool {
     let started = Instant::now();
     while started.elapsed() < limit {
@@ -189,15 +223,19 @@ fn accept_vs_m01_runtime_evidence_audio_the_launch_plays_the_engine_loop_through
             .is_empty()
     );
 
+    let member_sha256 = member_digest(&stage.cache_root, &launch);
     let dir = std::env::var("CS_EVIDENCE_DIR").map_or_else(
-        |_| PathBuf::from("private/evidence/VS-M01-RT-EVIDENCE-B"),
+        |_| {
+            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+                .join("../../private/evidence/VS-M01-RT-EVIDENCE-B")
+        },
         PathBuf::from,
     );
     std::fs::create_dir_all(&dir).expect("the evidence directory is created");
     let record = format!(
         "{{\n  \"task\": \"VS-M01-RT-EVIDENCE-B\",\n  \"boundary\": \"sample_probe_source_pull\",\n  \
          \"asset\": \"{asset}\",\n  \"airframe_record\": \"{airframe}\",\n  \"sound_group\": \"{group}\",\n  \
-         \"archive\": \"{archive}\",\n  \"archive_sha256\": \"{sha}\",\n  \"member\": \"{member}\",\n  \
+         \"archive\": \"{archive}\",\n  \"archive_sha256\": \"{sha}\",\n  \"member\": \"{member}\",\n  \"member_sha256\": \"{member_sha}\",\n  \
          \"container_choice\": \"labelled choice: which sound archive the original opens is unmeasured\",\n  \
          \"channels\": {channels},\n  \"rate_hz\": {rate},\n  \"member_frames\": {frames},\n  \
          \"member_duration_s\": {duration:.4},\n  \"sample_values_pulled\": {pulled},\n  \
@@ -209,6 +247,7 @@ fn accept_vs_m01_runtime_evidence_audio_the_launch_plays_the_engine_loop_through
         archive = launch.container,
         sha = launch.container_sha256.to_hex(),
         member = launch.member,
+        member_sha = member_sha256,
         channels = pcm.channels(),
         rate = pcm.rate_hz(),
         frames = pcm.frames(),

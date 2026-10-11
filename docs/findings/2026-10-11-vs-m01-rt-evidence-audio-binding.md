@@ -94,3 +94,42 @@ airframe emitter.
 - Whether the original launch also autostarts `snd_NW1Start` at the 2-second
   dormant wakeup in the same frame budget is mission-program timing; this task
   binds only the engine loop.
+
+## Implementation and playback (same task, 2026-10-12)
+
+The composition now starts that binding (`mission_session/launch_sound.rs`,
+`compose.rs`):
+
+- `stage_for` measures it through the production readers (`engine_sound` of the
+  player airframe record, `sounds.zrd`, the stage's sound archives); a stage
+  that cannot measure it refuses by name.
+- The declared catalog holds one record. The member's identity is measured;
+  its bus (`engine`), mode (`loop`) and level (`1.0`) are **designed** and
+  the record's `Origin::Designed` and provenance say so.
+- The container is staged as a verified copy in the private cache
+  (`launch-sound/ZBD/soundsh.zbd`, digest-checked against the installation's)
+  and mounted as a one-file `install` source. Mounting the installation
+  directory instead hashes every file below it (about 85 s measured), which a
+  launch must not pay twice. A single-file mount in `cs_assets` would remove the
+  copy; that is outside this task's paths.
+- `AudioPlugin` installs the audible device (or a `RefusingAudioDevice` with the
+  named refusal) with a `SampleProbe` attached before any voice starts. The
+  load delivers the member, the population pass decodes it, the player body's
+  engine emitter binds the loop, and the listener rides with the body
+  (designed: right axis `+X`, 10 m / 100 m policy).
+- `run_windowed` refuses before the window opens when the backend was refused;
+  `MissionLaunchError::exit_code` maps that through `audibility_exit_code`
+  (4 for a missing `audio` capability).
+- The host still reports `MissionAudioStillBound` at settle (true: the loop is
+  bound). `teardown` then despawns the emitter and stops the loop as
+  `Despawned`, with one mix pass carrying the stop to the device.
+
+Playback record (retail + audio machine, source boundary only): the retail
+test writes `playback.json` with the asset id, archive, archive and member
+digests, the decoded member shape and the frames the output stream pulled.
+First measured run: 22050 Hz stereo, 71852 frames (3.26 s), 963 frames pulled
+in the first moments, peak 0.667. It is not a speaker capture and not
+`human_review`; nothing here is `verified_original`.
+
+Still unmeasured: which archive the original opens, the original's bus, level
+and attenuation for this loop, and the cockpit variant's use (`devastator_cp.wav`).

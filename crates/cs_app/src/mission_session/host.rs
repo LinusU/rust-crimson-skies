@@ -236,10 +236,11 @@ pub enum MissionHostRefusal {
     /// Mission-bound audio loops were still bound when the run ended.
     ///
     /// `cs_sim::audio_events::EmitterStopReason` measures no mission-end
-    /// reason, so they are reported rather than stopped under a reason they
-    /// did not have. The composition this stage builds starts no mission-bound
-    /// emitter, so the count is 0 today; the variant exists so that a future
-    /// composition which does start one has to name the loops it left bound.
+    /// reason, so settling reports them rather than stopping them under a
+    /// reason they did not have. The composition starts one — the player
+    /// airframe's engine loop (#1313) — so on a machine that plays it the
+    /// count is 1 at settle; [`super::teardown`] then despawns the emitter and
+    /// the loop stops as `Despawned`, which is true of it.
     MissionAudioStillBound {
         /// How many loops the router still held.
         count: usize,
@@ -263,7 +264,8 @@ impl fmt::Display for MissionHostRefusal {
             Self::MissionAudioStillBound { count } => write!(
                 f,
                 "the mission audio: {count} loop(s) were still bound when the run ended, and \
-                 EmitterStopReason measures no mission-end reason to stop them under"
+                 EmitterStopReason measures no mission-end reason to stop them under; the \
+                 teardown stops them as despawned"
             ),
         }
     }
@@ -970,7 +972,9 @@ impl MissionHost {
     ///    still bound are counted and named under
     ///    [`MissionHostRefusal::MissionAudioStillBound`] — the router's
     ///    `EmitterStopReason` measures no mission-end reason, so they are
-    ///    reported rather than stopped under a reason they did not have;
+    ///    reported rather than stopped under a reason they did not have (the
+    ///    teardown that follows despawns their emitters, which stops them as
+    ///    `Despawned`);
     /// 4. the one report line the run writes is produced and printed.
     ///
     /// Returns the terminal the first call settled, and `None` on every later

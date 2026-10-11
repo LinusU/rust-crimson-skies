@@ -679,7 +679,7 @@ fn add_composition(
         super::launch_sound::install_launch_audio(
             app,
             launch,
-            stage.start.position.map(|c| c as f32),
+            stage.start.position,
             &crate::audio::CapabilityDeclaration::from_environment(),
         )
         .map_err(MissionCompositionError::LaunchSound)?;
