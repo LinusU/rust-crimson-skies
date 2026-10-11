@@ -39,6 +39,24 @@ use cs_types::Tick;
 use cs_types::content::Origin;
 use cs_types::net::SessionId;
 
+/// The supported catalogue the session is opened with: every synthetic
+/// declared record, lowered, with a repeated id keeping its first lowering.
+fn supported_catalogue() -> cs_sim::weapons::OrdnanceRegistry {
+    let mut catalogue = cs_sim::weapons::OrdnanceRegistry::new();
+    for declared in [
+        cs_content::ordnance::declared_synthetic_direct(),
+        cs_content::ordnance::declared_synthetic_flak(),
+        cs_content::ordnance::declared_synthetic_guided(),
+        cs_content::ordnance::declared_synthetic_area_denial(),
+        cs_content::ordnance::declared_synthetic_torpedo(),
+        cs_content::ordnance::declared_synthetic_nitro(),
+    ] {
+        let component = cs_app::ordnance::lower_ordnance(&declared).expect("a synthetic lowers");
+        let _ = catalogue.register(component);
+    }
+    catalogue
+}
+
 const SESSION: u64 = 77;
 /// The ordnance producer serial the session and its events are stamped with.
 const PRODUCER: u32 = 71;
@@ -170,7 +188,8 @@ fn accept_f28_d_boost_changes_thrust_and_consumption_and_never_moves_or_scales_a
     let mut world = World::new();
     let shooter_entity = shooter_entity(&mut world);
     let mut session =
-        OrdnanceSession::new(SESSION, Tick(0), rate(), PRODUCER).expect("a nonzero session opens");
+        OrdnanceSession::new(SESSION, Tick(0), rate(), PRODUCER, supported_catalogue())
+            .expect("a nonzero session opens");
     session
         .register(actor(1), &[declared_synthetic_nitro()])
         .expect("the declared booster registers");
@@ -327,7 +346,8 @@ fn accept_f28_d_boost_costs_the_same_at_any_render_frame_length() {
         let mut world = World::new();
         shooter_entity(&mut world);
         let mut session =
-            OrdnanceSession::new(SESSION, Tick(0), rate(), PRODUCER).expect("a session opens");
+            OrdnanceSession::new(SESSION, Tick(0), rate(), PRODUCER, supported_catalogue())
+                .expect("a session opens");
         session
             .register(actor(1), &[declared_synthetic_nitro()])
             .expect("the declared booster registers");
@@ -373,7 +393,9 @@ fn accept_f28_d_boost_costs_the_same_at_any_render_frame_length() {
 fn accept_f28_d_boost_costs_the_same_walked_or_jumped() {
     let mut world = World::new();
     shooter_entity(&mut world);
-    let mut walked = OrdnanceSession::new(SESSION, Tick(0), rate(), PRODUCER).expect("a session");
+    let mut walked =
+        OrdnanceSession::new(SESSION, Tick(0), rate(), PRODUCER, supported_catalogue())
+            .expect("a session");
     walked
         .register(actor(1), &[declared_synthetic_nitro()])
         .expect("the declared booster registers");
@@ -399,7 +421,9 @@ fn accept_f28_d_boost_costs_the_same_walked_or_jumped() {
 
     let mut world = World::new();
     shooter_entity(&mut world);
-    let mut jumped = OrdnanceSession::new(SESSION, Tick(0), rate(), PRODUCER).expect("a session");
+    let mut jumped =
+        OrdnanceSession::new(SESSION, Tick(0), rate(), PRODUCER, supported_catalogue())
+            .expect("a session");
     jumped
         .register(actor(1), &[declared_synthetic_nitro()])
         .expect("the declared booster registers");
@@ -445,7 +469,8 @@ fn accept_f28_d_a_refused_boost_consumes_nothing() {
     let mut world = World::new();
     let shooter_entity = shooter_entity(&mut world);
     let mut session =
-        OrdnanceSession::new(SESSION, Tick(0), rate(), PRODUCER).expect("a session opens");
+        OrdnanceSession::new(SESSION, Tick(0), rate(), PRODUCER, supported_catalogue())
+            .expect("a session opens");
     session
         .register(actor(1), &[declared_nitro_with(3.0, 0.0)])
         .expect("the declared booster registers");
@@ -568,7 +593,8 @@ fn accept_f28_d_a_refused_boost_consumes_nothing() {
 fn accept_f28_d_capacity_recovers_only_while_the_booster_is_idle() {
     let mut world = World::new();
     let mut session =
-        OrdnanceSession::new(SESSION, Tick(0), rate(), PRODUCER).expect("a session opens");
+        OrdnanceSession::new(SESSION, Tick(0), rate(), PRODUCER, supported_catalogue())
+            .expect("a session opens");
     session
         .register(actor(1), &[declared_nitro_with(3.0, 0.6)])
         .expect("the declared booster registers");
@@ -634,7 +660,8 @@ fn accept_f28_d_an_order_for_an_unregistered_booster_is_refused() {
     let mut world = World::new();
     shooter_entity(&mut world);
     let mut session =
-        OrdnanceSession::new(SESSION, Tick(0), rate(), PRODUCER).expect("a session opens");
+        OrdnanceSession::new(SESSION, Tick(0), rate(), PRODUCER, supported_catalogue())
+            .expect("a session opens");
     let mut damage = damage_resolver();
     let tick = run_step(
         &mut world,
@@ -666,7 +693,8 @@ fn accept_f28_d_an_order_for_an_unregistered_booster_is_refused() {
 #[test]
 fn accept_f28_d_the_session_audit_reports_every_registered_component() {
     let mut session =
-        OrdnanceSession::new(SESSION, Tick(0), rate(), PRODUCER).expect("a session opens");
+        OrdnanceSession::new(SESSION, Tick(0), rate(), PRODUCER, supported_catalogue())
+            .expect("a session opens");
     let registered = session
         .register(actor(1), &declared_catalogue())
         .expect("the whole synthetic catalogue registers");
@@ -722,7 +750,8 @@ fn accept_f28_d_the_session_audit_reports_every_registered_component() {
 #[test]
 fn accept_f28_d_a_component_that_delivers_nothing_is_named() {
     let mut session =
-        OrdnanceSession::new(SESSION, Tick(0), rate(), PRODUCER).expect("a session opens");
+        OrdnanceSession::new(SESSION, Tick(0), rate(), PRODUCER, supported_catalogue())
+            .expect("a session opens");
     session
         .register(actor(1), std::slice::from_ref(&dud_direct_explosive()))
         .expect("a dud component still registers: it is valid, just useless");
@@ -776,7 +805,8 @@ fn dud_direct_explosive() -> DeclaredOrdnance {
 #[test]
 fn accept_f28_d_a_consumed_area_effect_is_no_longer_a_gap() {
     let mut session =
-        OrdnanceSession::new(SESSION, Tick(0), rate(), PRODUCER).expect("a session opens");
+        OrdnanceSession::new(SESSION, Tick(0), rate(), PRODUCER, supported_catalogue())
+            .expect("a session opens");
     session
         .register(actor(1), &[declared_synthetic_area_denial()])
         .expect("the area-denial component registers");
@@ -806,7 +836,8 @@ fn accept_f28_d_a_consumed_area_effect_is_no_longer_a_gap() {
 fn accept_f28_d_a_closed_session_audits_to_nothing() {
     let mut world = World::new();
     let mut session =
-        OrdnanceSession::new(SESSION, Tick(0), rate(), PRODUCER).expect("a session opens");
+        OrdnanceSession::new(SESSION, Tick(0), rate(), PRODUCER, supported_catalogue())
+            .expect("a session opens");
     session
         .register(actor(1), &declared_catalogue())
         .expect("the catalogue registers");
@@ -877,7 +908,8 @@ fn accept_f28_d_the_session_audit_sees_the_whole_declared_catalogue() {
     wanted.sort();
 
     let mut session =
-        OrdnanceSession::new(SESSION, Tick(0), rate(), PRODUCER).expect("a session opens");
+        OrdnanceSession::new(SESSION, Tick(0), rate(), PRODUCER, supported_catalogue())
+            .expect("a session opens");
     let registered = session
         .register(actor(1), &declared_catalogue())
         .expect("the catalogue registers");

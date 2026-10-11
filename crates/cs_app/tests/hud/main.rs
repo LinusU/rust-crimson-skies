@@ -156,11 +156,25 @@ pub fn damage_for(s: u64, serial: u64) -> DamageResolver {
 /// A real `OrdnanceSession` for session `s` with `declared` registered for
 /// the actor.
 pub fn ordnance_for(s: u64, serial: u64, declared: &[DeclaredOrdnance]) -> OrdnanceSession {
+    let mut catalogue = cs_sim::weapons::OrdnanceRegistry::new();
+    for record in declared.iter().cloned().chain([
+        cs_content::ordnance::declared_synthetic_direct(),
+        cs_content::ordnance::declared_synthetic_flak(),
+        cs_content::ordnance::declared_synthetic_guided(),
+        cs_content::ordnance::declared_synthetic_area_denial(),
+        cs_content::ordnance::declared_synthetic_torpedo(),
+        cs_content::ordnance::declared_synthetic_nitro(),
+    ]) {
+        let component =
+            cs_app::ordnance::lower_ordnance(&record).expect("a declared record lowers");
+        let _ = catalogue.register(component);
+    }
     let mut session = OrdnanceSession::new(
         s,
         Tick(0),
         TickRate::new(60).expect("a nonzero tick rate"),
         ORDNANCE_PRODUCER,
+        catalogue,
     )
     .expect("a nonzero generation opens");
     session

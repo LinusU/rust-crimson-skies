@@ -46,6 +46,24 @@ use cs_types::content::{ContentId, ContentKind, Known, Origin, Provenance, Resol
 use cs_types::evidence::ClaimId;
 use cs_types::net::SessionId;
 
+/// The supported catalogue the session is opened with: every synthetic
+/// declared record, lowered, with a repeated id keeping its first lowering.
+fn supported_catalogue() -> cs_sim::weapons::OrdnanceRegistry {
+    let mut catalogue = cs_sim::weapons::OrdnanceRegistry::new();
+    for declared in [
+        cs_content::ordnance::declared_synthetic_direct(),
+        cs_content::ordnance::declared_synthetic_flak(),
+        cs_content::ordnance::declared_synthetic_guided(),
+        cs_content::ordnance::declared_synthetic_area_denial(),
+        cs_content::ordnance::declared_synthetic_torpedo(),
+        cs_content::ordnance::declared_synthetic_nitro(),
+    ] {
+        let component = cs_app::ordnance::lower_ordnance(&declared).expect("a synthetic lowers");
+        let _ = catalogue.register(component);
+    }
+    catalogue
+}
+
 const SESSION: u64 = 41;
 /// The ordnance producer serial the session and its events are stamped with.
 const PRODUCER: u32 = 91;
@@ -204,7 +222,8 @@ fn damage_resolver() -> DamageResolver {
 /// A session with the retimed area-denial fixture registered for `actor(1)`.
 fn session_with_area_denial(fuse_ticks: u64, lifetime_ticks: u64) -> (OrdnanceSession, OrdnanceId) {
     let mut session =
-        OrdnanceSession::new(SESSION, Tick(0), rate(), PRODUCER).expect("a nonzero session opens");
+        OrdnanceSession::new(SESSION, Tick(0), rate(), PRODUCER, supported_catalogue())
+            .expect("a nonzero session opens");
     let registered = session
         .register(
             actor(1),
@@ -336,8 +355,14 @@ fn accept_f28_c_a_timed_engine_status_expires_on_its_tick_and_resets_on_restart(
     // A restarted session has a new ledger: it inherits nothing.
     session.close(&mut world);
     assert!(session.is_closed());
-    let restarted =
-        OrdnanceSession::new(SESSION + 1, Tick(0), rate(), PRODUCER).expect("a new session opens");
+    let restarted = OrdnanceSession::new(
+        SESSION + 1,
+        Tick(0),
+        rate(),
+        PRODUCER,
+        supported_catalogue(),
+    )
+    .expect("a new session opens");
     let restarted_recipient = StatusEffectTarget::actor_system(actor(2), SystemKind::Propulsion);
     assert!(
         !restarted.is_under(&restarted_recipient, StatusEffectKind::Choke),
@@ -400,8 +425,14 @@ fn accept_f28_c_a_live_status_does_not_survive_a_restart() {
         session.runtime().status().is_empty(),
         "the teardown released the live ledger rather than leaving it reachable"
     );
-    let restarted =
-        OrdnanceSession::new(SESSION + 1, Tick(0), rate(), PRODUCER).expect("a new session opens");
+    let restarted = OrdnanceSession::new(
+        SESSION + 1,
+        Tick(0),
+        rate(),
+        PRODUCER,
+        supported_catalogue(),
+    )
+    .expect("a new session opens");
     assert!(
         !restarted.is_under(&recipient, StatusEffectKind::Choke),
         "a restart inherits no live effect"
@@ -417,7 +448,8 @@ fn accept_f28_c_a_launch_reads_the_live_pose_and_mirrors_the_item() {
     let mut world = World::new();
     launcher_world(&mut world, &[MOUNT]);
     let mut session =
-        OrdnanceSession::new(SESSION, Tick(0), rate(), PRODUCER).expect("a nonzero session opens");
+        OrdnanceSession::new(SESSION, Tick(0), rate(), PRODUCER, supported_catalogue())
+            .expect("a nonzero session opens");
     let registered = session
         .register(actor(1), &[declared_area_denial(5, 20)])
         .expect("the declared area denial registers");
@@ -711,7 +743,8 @@ fn accept_f28_c_a_nitro_order_changes_thrust_and_consumes_capacity() {
     let mut world = World::new();
     launcher_world(&mut world, &[MOUNT]);
     let mut session =
-        OrdnanceSession::new(SESSION, Tick(0), rate(), PRODUCER).expect("a nonzero session opens");
+        OrdnanceSession::new(SESSION, Tick(0), rate(), PRODUCER, supported_catalogue())
+            .expect("a nonzero session opens");
     session
         .register(actor(1), &[declared_synthetic_nitro()])
         .expect("the declared booster registers");
@@ -864,7 +897,7 @@ fn accept_f28_c_a_repeated_tick_is_refused_whole() {
 #[test]
 fn accept_f28_c_a_session_on_generation_zero_refuses_at_the_door() {
     assert_eq!(
-        OrdnanceSession::new(0, Tick(0), rate(), PRODUCER).err(),
+        OrdnanceSession::new(0, Tick(0), rate(), PRODUCER, supported_catalogue()).err(),
         Some(SessionRefusal::NoSession),
         "generation zero is not a session"
     );
@@ -875,7 +908,8 @@ fn accept_f28_c_a_session_on_generation_zero_refuses_at_the_door() {
 #[test]
 fn accept_f28_c_a_foreign_session_registration_is_refused() {
     let mut session =
-        OrdnanceSession::new(SESSION, Tick(0), rate(), PRODUCER).expect("a nonzero session opens");
+        OrdnanceSession::new(SESSION, Tick(0), rate(), PRODUCER, supported_catalogue())
+            .expect("a nonzero session opens");
     let foreign = ActorId {
         session: SessionId::new(SESSION + 1).expect("a nonzero generation"),
         serial: 1,

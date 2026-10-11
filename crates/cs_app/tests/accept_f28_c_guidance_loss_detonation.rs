@@ -38,6 +38,24 @@ use cs_types::content::{ContentId, ContentKind, Known, Origin, Provenance, Resol
 use cs_types::evidence::ClaimId;
 use cs_types::net::SessionId;
 
+/// The supported catalogue the session is opened with: every synthetic
+/// declared record, lowered, with a repeated id keeping its first lowering.
+fn supported_catalogue() -> cs_sim::weapons::OrdnanceRegistry {
+    let mut catalogue = cs_sim::weapons::OrdnanceRegistry::new();
+    for declared in [
+        cs_content::ordnance::declared_synthetic_direct(),
+        cs_content::ordnance::declared_synthetic_flak(),
+        cs_content::ordnance::declared_synthetic_guided(),
+        cs_content::ordnance::declared_synthetic_area_denial(),
+        cs_content::ordnance::declared_synthetic_torpedo(),
+        cs_content::ordnance::declared_synthetic_nitro(),
+    ] {
+        let component = cs_app::ordnance::lower_ordnance(&declared).expect("a synthetic lowers");
+        let _ = catalogue.register(component);
+    }
+    catalogue
+}
+
 const SESSION: u64 = 47;
 /// The ordnance producer serial the session and its events are stamped with.
 const PRODUCER: u32 = 97;
@@ -199,7 +217,8 @@ fn damage_resolver() -> DamageResolver {
 /// A session with the guided fixture registered for `actor(1)`.
 fn session_with_guided() -> (OrdnanceSession, OrdnanceId) {
     let mut session =
-        OrdnanceSession::new(SESSION, Tick(0), rate(), PRODUCER).expect("a nonzero session opens");
+        OrdnanceSession::new(SESSION, Tick(0), rate(), PRODUCER, supported_catalogue())
+            .expect("a nonzero session opens");
     let registered = session
         .register(actor(1), &[declared_guided()])
         .expect("the declared guided rocket registers");

@@ -53,12 +53,12 @@ use cs_content::ordnance::{
 };
 use cs_sim::damage::{ActorId, DamageNodeKey, NodeKeyError};
 use cs_sim::weapons::{
-    AreaEffect, ArmingRule, EquipmentRules, FuseRule, GuidanceRule, GunDefinitionError,
-    HardpointKind, InheritanceRule, LaunchGeometry, LostTargetBehavior, NitroActivationRule,
-    NitroOrdnance, NitroParameters, NitroTradeoffs, OrdnanceComponent, OrdnanceDefinitionError,
-    OrdnanceFamily, OrdnanceId, OrdnanceIdError, OrdnanceMedia, OrdnanceStatusEffect,
-    ProjectileOrdnance, ProximityFuse, StackLoad, StatusEffectKind, WEAPON_DAMAGE_CHANNELS,
-    WeaponDamage,
+    AreaEffect, ArmingRule, CompatibilityVerdict, EquipmentRules, FuseRule, GuidanceRule,
+    GunDefinitionError, HardpointKind, InheritanceRule, LaunchGeometry, LostTargetBehavior,
+    NitroActivationRule, NitroOrdnance, NitroParameters, NitroTradeoffs, OrdnanceComponent,
+    OrdnanceDefinitionError, OrdnanceFamily, OrdnanceId, OrdnanceIdError, OrdnanceMedia,
+    OrdnanceRegistry, OrdnanceRegistryError, OrdnanceStatusEffect, ProjectileOrdnance,
+    ProximityFuse, StackLoad, StatusEffectKind, WEAPON_DAMAGE_CHANNELS, WeaponDamage,
 };
 use cs_types::content::{ContentId, Known, Resolved};
 use cs_types::evidence::ClaimId;
@@ -635,6 +635,16 @@ pub enum OrdnanceRegistrationError {
     },
     /// The runtime refused the nitro registration itself.
     Nitro(OrdnanceRuntimeError),
+    /// The session's supported catalogue holds no component with this id, so
+    /// an import naming it cannot bypass the shop (F28 non-negotiable 5).
+    Unsupported(OrdnanceRegistryError),
+    /// The shared equipment rule refuses this installation on the airframe.
+    Incompatible {
+        /// The component that cannot be installed.
+        ordnance: OrdnanceId,
+        /// The verdict, naming the missing or forbidden equipment.
+        verdict: CompatibilityVerdict,
+    },
 }
 
 impl std::fmt::Display for OrdnanceRegistrationError {
@@ -652,6 +662,15 @@ impl std::fmt::Display for OrdnanceRegistrationError {
                 write!(f, "{ordnance} is registered twice for one actor")
             }
             Self::Nitro(source) => write!(f, "the runtime refused the booster: {source}"),
+            Self::Unsupported(source) => {
+                write!(f, "the supported ordnance catalogue refused it: {source}")
+            }
+            Self::Incompatible { ordnance, verdict } => {
+                write!(
+                    f,
+                    "{ordnance} cannot be installed on this airframe: {verdict}"
+                )
+            }
         }
     }
 }
@@ -1150,6 +1169,7 @@ pub struct OrdnanceSession {
     rate: TickRate,
     producer: u32,
     runtime: OrdnanceRuntime,
+    catalogue: OrdnanceRegistry,
     components: BTreeMap<ActorId, BTreeMap<OrdnanceId, OrdnanceComponent>>,
     engagements: BTreeMap<ProjectileId, OrdnanceEngagement>,
     next_projectile_serial: u64,
@@ -1169,6 +1189,11 @@ impl OrdnanceSession {
     /// resolver's own producer, exactly as the F27-C session's router producer
     /// is.
     ///
+    /// `catalogue` is the supported set every registration is resolved
+    /// against. There is no default: an empty catalogue supports nothing and
+    /// refuses every registration, so a session cannot be opened that quietly
+    /// accepts whatever an import names.
+    ///
     /// # Errors
     ///
     /// [`SessionRefusal::NoSession`] for session generation zero.
@@ -1177,6 +1202,7 @@ impl OrdnanceSession {
         tick: Tick,
         rate: TickRate,
         producer: u32,
+        catalogue: OrdnanceRegistry,
     ) -> Result<Self, crate::weapons::SessionRefusal> {
         let Some(session_id) = SessionId::new(session) else {
             return Err(crate::weapons::SessionRefusal::NoSession);
@@ -1187,6 +1213,7 @@ impl OrdnanceSession {
             rate,
             producer,
             runtime: OrdnanceRuntime::new(session, tick, rate, producer),
+            catalogue,
             components: BTreeMap::new(),
             engagements: BTreeMap::new(),
             next_projectile_serial: 0,
@@ -1318,15 +1345,43 @@ impl OrdnanceSession {
     /// kept so a launch can resolve against them. Registration is
     /// all-or-nothing: a refused batch registers nothing.
     ///
+    /// The airframe is taken to carry no equipment; use
+    /// [`Self::register_installed`] to register against a real equipment set.
+    /// Both go through the same catalogue and compatibility check.
+    ///
     /// # Errors
     ///
-    /// [`OrdnanceRegistrationError`] for a closed session, an actor from
-    /// another generation, a component whose declared record refuses to lower,
-    /// a repeated id, or a booster the runtime refused.
+    /// As [`Self::register_installed`].
     pub fn register(
         &mut self,
         shooter: ActorId,
         declared: &[DeclaredOrdnance],
+    ) -> Result<Vec<RegisteredOrdnance>, OrdnanceRegistrationError> {
+        self.register_installed(shooter, declared, &BTreeSet::new())
+    }
+
+    /// Registers one actor's declared loadout on an airframe carrying
+    /// `equipment`, resolving every id against the session's supported
+    /// catalogue first.
+    ///
+    /// An id the catalogue does not hold is refused by name
+    /// ([`OrdnanceRegistrationError::Unsupported`]), and a component whose
+    /// shared equipment rule gives a non-compatible verdict is refused
+    /// ([`OrdnanceRegistrationError::Incompatible`]); either refusal
+    /// registers nothing, so an import and the shop read one answer
+    /// (F28 non-negotiable 5).
+    ///
+    /// # Errors
+    ///
+    /// [`OrdnanceRegistrationError`] for a closed session, an actor from
+    /// another generation, a component whose declared record refuses to lower,
+    /// an id outside the catalogue, a repeated id, an incompatible
+    /// installation, or a booster the runtime refused.
+    pub fn register_installed(
+        &mut self,
+        shooter: ActorId,
+        declared: &[DeclaredOrdnance],
+        equipment: &BTreeSet<ContentId>,
     ) -> Result<Vec<RegisteredOrdnance>, OrdnanceRegistrationError> {
         if self.closed {
             return Err(OrdnanceRegistrationError::Closed);
@@ -1341,6 +1396,9 @@ impl OrdnanceSession {
         for record in declared {
             let component = lower_ordnance(record).map_err(OrdnanceRegistrationError::Lower)?;
             let ordnance = component.ordnance().clone();
+            self.catalogue
+                .require(&ordnance)
+                .map_err(OrdnanceRegistrationError::Unsupported)?;
             let repeated = self
                 .components
                 .get(&shooter)
@@ -1352,6 +1410,20 @@ impl OrdnanceSession {
                 return Err(OrdnanceRegistrationError::DuplicateOrdnance { ordnance });
             }
             lowered.push(component);
+        }
+        let ids: Vec<OrdnanceId> = lowered.iter().map(|item| item.ordnance().clone()).collect();
+        let verdicts = self
+            .catalogue
+            .resolve_installation(&ids, equipment)
+            .map_err(OrdnanceRegistrationError::Unsupported)?;
+        if let Some(refused) = verdicts
+            .into_iter()
+            .find(|verdict| !verdict.compatibility.is_compatible())
+        {
+            return Err(OrdnanceRegistrationError::Incompatible {
+                ordnance: refused.ordnance,
+                verdict: refused.compatibility,
+            });
         }
 
         let mut registered = Vec::with_capacity(lowered.len());
