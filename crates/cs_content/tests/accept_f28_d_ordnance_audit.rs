@@ -986,11 +986,10 @@ fn accept_f28_d_every_finding_names_itself() {
         labels,
         vec![
             "unattributed_rocket_type",
-            "unconsumed_field",
             "undeclared_rocket_type",
             "unmeasured_record",
         ],
-        "the fixture catalogue's gaps are exactly these four kinds: {labels:?}"
+        "the fixture catalogue's gaps are exactly these three kinds: {labels:?}"
     );
     // One `unmeasured_record` per record, and one `unconsumed_field` per
     // declared field of the one area record.

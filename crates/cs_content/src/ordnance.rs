@@ -1204,33 +1204,19 @@ pub const ORIGINAL_ORDNANCE_HARDPOINT_POINTS: u32 = ORIGINAL_HARDPOINT_POINTS;
 /// The declared fields that lower into a runtime definition and that **no
 /// production path reads**.
 ///
-/// **Measured 2026-10-03 (F28-D)**, and recorded here so a field that is
-/// declared, lowered and then read by nothing is a *named* gap rather than a
-/// silent one. Each entry is `(declared field, the lowered field it reaches)`.
+/// Each entry is `(declared field, the lowered field it reaches)`. **Empty
+/// since F28-AE1**: the area effect's radius and lifetime are read by
+/// `cs_sim::weapons::ordnance::OrdnanceRuntime::open_area` (and its
+/// guidance-loss counterpart), which applies the area once to every actor
+/// inside the radius and expires it on its boundary tick. The list stays as
+/// the place a future declared-but-unread field is recorded, and the audit
+/// that walks it keeps reporting `UnconsumedField` for any entry.
 ///
-/// The area effect is the case: `cs_app::ordnance::lower_ordnance` lowers both
-/// of its values into `cs_sim::weapons::ordnance::AreaEffect`, and exactly two
-/// methods read that field back: the definition's own
-/// `ProjectileOrdnance::area_effect` and the pass-through
-/// `GuidanceDetonation::area_effect` F28-C.1 added. **Neither is read by a
-/// production gameplay path**: F28-C applies a triggered item's declared
-/// *status effects* to the one stable recipient its engagement names, and F28-C.1's guidance-loss blast routes the declared
-/// damage channels to that same named target and damage node rather than to
-/// every actor inside a radius. The radius and the area's own bounded lifetime
-/// therefore reach no recipient at all, so non-negotiable 3's "bounded
-/// lifetimes and stable recipient ids" is enforced for the status ledger and
-/// **not** for the area's reach. Follow-up task #552 (F28-AE1) owns implementing
-/// it; this list is where it is recorded until then.
-pub const DECLARED_FIELDS_WITHOUT_CONSUMER: [(&str, &str); 2] = [
-    (
-        "area_effect.radius_m",
-        "cs_sim::weapons::ordnance::ProjectileOrdnance::area_effect",
-    ),
-    (
-        "area_effect.lifetime_ticks",
-        "cs_sim::weapons::ordnance::ProjectileOrdnance::area_effect",
-    ),
-];
+/// Reading the field is not a claim about the original: the radius shape is
+/// the one measured for the guidance-loss blast, and the original's area
+/// semantics for a fuse-triggered item are unmeasured (see
+/// `docs/findings/2026-10-11-f28-ae1-area-effect-reach.md`).
+pub const DECLARED_FIELDS_WITHOUT_CONSUMER: [(&str, &str); 0] = [];
 
 /// The measured counts of one installation's ordnance surface.
 ///

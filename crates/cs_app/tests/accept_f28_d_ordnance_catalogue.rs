@@ -771,10 +771,10 @@ fn dud_direct_explosive() -> DeclaredOrdnance {
     .expect("a zero-damage record is valid: zero is a measurement, not a gap")
 }
 
-/// The declared area effect lowers and reaches no recipient, and the audit says
-/// so instead of implying a splash was applied.
+/// The declared area effect now has a production consumer, and the audit says
+/// so (F28-AE1) instead of reporting a gap.
 #[test]
-fn accept_f28_d_an_unconsumed_area_effect_is_named() {
+fn accept_f28_d_a_consumed_area_effect_is_no_longer_a_gap() {
     let mut session =
         OrdnanceSession::new(SESSION, Tick(0), rate(), PRODUCER).expect("a session opens");
     session
@@ -789,20 +789,13 @@ fn accept_f28_d_an_unconsumed_area_effect_is_named() {
         .expect("the area-denial component has a row");
     assert!(row.declares_area(), "the record declares a bounded area");
     assert!(
-        !row.area_applied(),
-        "no production path applies the area's reach, so the row must not claim it did"
+        row.area_applied(),
+        "the session applies a declared area's radius and lifetime"
     );
-    assert_eq!(
-        row.unconsumed_fields().len(),
-        2,
-        "both of the area's declared values are reported as unconsumed: {:?}",
+    assert!(
+        row.unconsumed_fields().is_empty(),
+        "no declared area value is left unread: {:?}",
         row.unconsumed_fields()
-    );
-    assert_eq!(
-        audit.findings_of("unconsumed_area_effect").len(),
-        1,
-        "the gap is reported once, by name: {:?}",
-        audit.findings()
     );
 }
 
