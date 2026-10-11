@@ -1297,11 +1297,10 @@ pub fn mission_host_restart(world: &mut World) {
     let mut reset = false;
     if let Some(resets) = resets
         && let Some(mut watch) = world.get_resource_mut::<MissionHostRestartWatch>()
+        && watch.resets != resets
     {
-        if watch.resets != resets {
-            watch.resets = resets;
-            reset = true;
-        }
+        watch.resets = resets;
+        reset = true;
     }
     if !(requested || reset) {
         return;
