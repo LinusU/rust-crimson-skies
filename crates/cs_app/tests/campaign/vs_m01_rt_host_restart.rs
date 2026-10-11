@@ -274,6 +274,11 @@ fn accept_vs_m01_runtime_host_03_a_meta_reset_rebuilds_the_authored_initial_stat
     );
     assert!(old_step_tick.0 > 0, "the composed entry must have stepped");
     assert!(
+        app.world().resource::<MissionHost>().terminal().is_some(),
+        "the synthetic program's own Finish must have settled this host before the restart, so \
+         the reset is a restart after a terminal state too"
+    );
+    assert!(
         pending_before >= 1,
         "the auto-armed radio timer must have left a cue pending before the restart"
     );
@@ -336,6 +341,11 @@ fn accept_vs_m01_runtime_host_03_a_meta_reset_rebuilds_the_authored_initial_stat
         assert!(
             host.last_tick().is_none(),
             "the host's tick record is back at zero: it has stepped nothing in the new generation"
+        );
+        assert!(
+            host.terminal().is_none(),
+            "the previous generation's settled terminal must not survive the restart: a rebuilt \
+             host is never already settled"
         );
         assert_eq!(
             host.environment().clock().tick(),
@@ -523,6 +533,11 @@ fn accept_vs_m01_runtime_host_03_a_requested_restart_clears_the_settled_terminal
         );
         assert!(host.script().state().last_tick().is_none());
         assert!(host.last_tick().is_none());
+        assert!(
+            host.terminal().is_none(),
+            "the host's own settled-terminal mark must be gone too: the composed entry steps a \
+             rebuilt host again"
+        );
         assert_eq!(host.environment().clock().tick(), Tick(0));
     }
     assert!(
@@ -650,8 +665,10 @@ fn accept_vs_m01_runtime_host_03_retail_m01_restart_rebuilds_its_authored_initia
     let bindings_before = binding_count(&mut app);
     assert_eq!(bindings_before, 1, "one announced item was delivered");
 
-    // The trigger: the composed request seam (the window's terminal handler
-    // latches the same resource once .02 wires it).
+    // The trigger: the composed request seam — the resource a caller latches
+    // to ask for a restart after a terminal state. Nothing here synthesizes
+    // M01's objectives to get one: the run has stepped its own records and
+    // this request only rebuilds them.
     app.world_mut().insert_resource(MissionHostRestartRequest);
     app.update();
 
@@ -682,6 +699,11 @@ fn accept_vs_m01_runtime_host_03_retail_m01_restart_rebuilds_its_authored_initia
         assert_eq!(host.generation(), report.started);
         assert_eq!(host.served(), report.served);
         assert!(host.last_tick().is_none());
+        assert!(
+            host.terminal().is_none(),
+            "M01's host cannot have been settled (it never reaches a terminal headlessly); the \
+             restart must still leave it unsettled"
+        );
         assert_eq!(
             host.environment().clock().tick(),
             Tick(0),
