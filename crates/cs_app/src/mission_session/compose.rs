@@ -51,13 +51,19 @@
 //!   (VS-M01-RT-MISSION-HOST, #1217): this stage prepares them, leaves them
 //!   on [`MissionHostSeed`] and launches them through [`add_composition`].
 //!   A run that settles now ends cleanly with the exit its outcome maps to
-//!   (#1217's `.02`, Rally #1279); a **restart** is still open (#1217's
-//!   `.03`), so nothing is reloaded yet.
+//!   (#1217's `.02`, Rally #1279), and the restart (`.03`) is installed — `R`
+//!   and a `MissionHostRestartRequest` rebuild the authored initial state
+//!   through the composed `PostUpdate` entry, sessions and world together.
 //! * No mission-bound audio source is started, so teardown stops none; the
 //!   sound archives travel on [`super::MissionContent`] for the host stage.
-//! * `R` restarts the player body at the mission's start pose with a fresh
-//!   flight state; a full mission restart (world unload, reload and a new
-//!   loading attach) belongs to #1217.
+//! * `R` restarts the whole mission (VS-M01-RT-MISSION-HOST `.03`): the
+//!   playtest's own reset still replaces the player body, and the composed
+//!   restart that observes `PlaytestState::resets` rebuilds every session,
+//!   unloads and reloads the world from this stage's records and respawns
+//!   exactly one player body from the start recipe. The announced load is
+//!   not re-announced: its content session and delivered bindings are the
+//!   composition's own and outlive a mission restart — a restart re-runs no
+//!   load and therefore leaves the composition's one binding unchanged.
 //! * The flight law is the statically recovered one (its provenance label
 //!   travels on [`super::MissionFlight`]) — never `verified_original`, and
 //!   uncalibrated against an original run (#358).
@@ -176,7 +182,12 @@ pub struct StageMount {
 /// [`stage_for`] builds it from a satisfied launch plan and the prepared
 /// content; the acceptance tests build one over the synthetic harbor world
 /// to drive the same composition code without an installation.
-#[derive(Clone, Debug)]
+///
+/// The composition leaves a clone on the stage as a resource, because the
+/// restart's world half needs exactly these records again: the definition,
+/// instance and meshes to `load_world` from, and the seed's stored programs
+/// to relaunch the sessions from (VS-M01-RT-MISSION-HOST `.03`).
+#[derive(Clone, Debug, Resource)]
 pub struct MissionStage {
     /// What the announced load builds.
     pub target: LoadTarget,
@@ -678,11 +689,15 @@ fn add_composition(
 
     // 4. The mission host: every record the stage carries, launched as one
     //    session, and the one composed per-tick entry that advances it in the
-    //    fixed-tick schedule after the same tick's physics step.
+    //    fixed-tick schedule after the same tick's physics step. The stage
+    //    itself stays on the world as a resource: the composed restart
+    //    (`mission_host_restart`, VS-M01-RT-MISSION-HOST `.03`) rebuilds the
+    //    world half and the sessions from its own records.
     let generation = mint_host_generation();
     let host = MissionHost::launch(stage, generation, host_session_id(generation))
         .map_err(MissionCompositionError::Host)?;
     app.insert_resource(host);
+    app.insert_resource(stage.clone());
     install_mission_host(app);
     Ok(())
 }
@@ -859,8 +874,12 @@ pub fn teardown(app: &mut App) {
     world.remove_resource::<MissionPlayerVisual>();
     world.remove_resource::<AircraftSpawner>();
     world.remove_resource::<ExpectedLoad>();
+    world.remove_resource::<MissionStage>();
     world.remove_resource::<MissionHost>();
     world.remove_resource::<crate::mission_session::MissionHostReport>();
+    world.remove_resource::<crate::mission_session::MissionHostRestartRequest>();
+    world.remove_resource::<crate::mission_session::MissionHostRestartReport>();
+    world.remove_resource::<crate::mission_session::MissionHostRestartFailure>();
 }
 
 /// Runs `cs --mission`: composes the window over the satisfied plan and
