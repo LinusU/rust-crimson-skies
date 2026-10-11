@@ -18,15 +18,16 @@
 //!    (case-sensitive) name compare, then recursion over the child array
 //!    **last-to-first**, so the last stored child with a matching name wins.
 //! 2. `0x473480` is the per-vehicle registration: it resolves `healthy`,
-//!    `dontmove`, `cockpit1`, `geometry`, `markers` — and `cockpit_camera`
-//!    (`.rdata` `0x62747c`) — from the vehicle root, and when the
-//!    `cockpit_camera` node resolves it calls `0x4d1cc0`, which reads the
-//!    node's **stored local translation** (the `+0x54`/`+0x58`/`+0x5c` triple
-//!    of its object3d record) into the eye-offset globals
-//!    `0x71c328..0x71c330`. A null vehicle restores the triple from the
-//!    defaults at `0x75d1b8..0x75d1c0`. `0x4d1cc0` is the same local-translate
-//!    reader [`horizon`]'s measured apply path reads node translations
-//!    through — two mechanism claims pin the same reader.
+//!    `dontmove`, `cockpit1`, `geometry` and `cockpit_camera` (`.rdata`
+//!    `0x62747c`) under the vehicle root — `structure` under `cockpit1`,
+//!    `markers` under `geometry` — and when the `cockpit_camera` node
+//!    resolves it calls `0x4d1cc0`, which reads the node's **stored local
+//!    translation** (the `+0x54`/`+0x58`/`+0x5c` triple of its object3d
+//!    record) into the eye-offset globals `0x71c328..0x71c330`. A null
+//!    vehicle restores the triple from the defaults at
+//!    `0x75d1b8..0x75d1c0`. `0x4d1cc0` is the same local-translate reader
+//!    [`horizon`]'s measured apply path reads node translations through —
+//!    two mechanism claims pin the same reader.
 //! 3. The camera dispatcher at `0x42c5c0` loads the camera-mode index
 //!    (`[cam + 0x14c]`), bounds it to ten entries, and jumps through the
 //!    table at `0x42c648`; entries **6 and 7** reach the `0x42c61d` thunk →
@@ -46,7 +47,9 @@
 //! [`resolve_cockpit_eye`](super::coverage::resolve_cockpit_eye) measures.
 //! The registration reads the *local* slot directly, so the answer does not
 //! depend on ancestor transforms; in the retail corpus every `cockpit_camera`
-//! is an `object3d` marker child of `markers` under `geometry`.
+//! is an `object3d` marker under a `markers` node — under `geometry` for the
+//! `player_*` roots, directly under the airframe root for the AI variants —
+//! and every ancestor transform is the identity.
 //!
 //! What is **not** claimed: which world axes the three stored components are
 //! (the archive stores a source-unit triple; the axis map to this project's

@@ -43,11 +43,12 @@ executable.
 
 The measured answer: **the eye is not a script binding at all.** It is a
 named node in the airframe archive — `cockpit_camera`, an `object3d` marker
-under `geometry → markers` in every vehicle subtree — whose stored local
-translation the original's own vehicle registration reads into the eye
-globals at spawn time, and which two dispatched camera modes then transform
-by the aircraft's world matrix each frame. Every player airframe declares
-one; so does every AI variant.
+under a `markers` node in every vehicle subtree (`geometry → markers` for
+the `player_*` roots, `markers` directly under the root for the AI
+variants) — whose stored local translation the original's own vehicle
+registration reads into the eye globals at spawn time, and which two
+dispatched camera modes then transform by the aircraft's world matrix each
+frame. Every player airframe declares one; so does every AI variant.
 
 ## The method
 
@@ -71,8 +72,9 @@ Four links, each pinned in the acceptance suite at the byte level (VAs are
    matching child wins. Its only `e8` call targets itself.
 2. **The registration.** `0x473480` runs per vehicle (three call sites:
    spawn, reset with a null argument, and a detach path). It resolves
-   `healthy`, `dontmove`, `cockpit1`, `geometry`, `markers` — and
-   `cockpit_camera` (`.rdata` `0x62747c`) — through the lookup, and when the
+   `healthy`, `dontmove`, `cockpit1`, `geometry` and `cockpit_camera`
+   (`.rdata` `0x62747c`) under the vehicle root — `structure` under
+   `cockpit1`, `markers` under `geometry` — through the lookup, and when the
    `cockpit_camera` node resolves it calls `0x4d1cc0`, which reads the
    node's **stored local translation** — the `+0x54`/`+0x58`/`+0x5c` triple
    of its object3d record — into the eye-offset globals
@@ -106,9 +108,10 @@ Against `ZBD/planes.zbd` (manifest-fingerprinted, `read_gamez_nodes`):
 
 - the archive stores **22** `cockpit_camera` nodes — one under every
   `player_*` airframe root and one under every AI-variant root;
-- each is an `object3d` marker child of `markers` under `geometry`, with
-  every ancestor transform the identity, so the stored local translation
-  is the airframe-relative authored eye offset;
+- each is an `object3d` marker under a `markers` node — under `geometry`
+  for the `player_*` roots, directly under the airframe root for the AI
+  variants — with every ancestor transform the identity, so the stored
+  local translation is the airframe-relative authored eye offset;
 - all **11** audited player airframes resolve `Declared` — exactly one
   `object3d` `cockpit_camera` inside their own children closure — and the
   eleven stored triples are authored per airframe, not one shared

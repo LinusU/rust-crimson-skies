@@ -607,9 +607,9 @@ fn accept_t542_retail_every_airframe_declares_its_eye_as_one_stored_translation(
 
     // Every declaration is the archive's own node: an object3d record named
     // `cockpit_camera` byte for byte, inside that airframe's subtree and
-    // nowhere else — twenty such nodes exist in the whole archive (the other
-    // nine belong to airframes the roster does not declare), and each
-    // audited row names its own index, all distinct.
+    // nowhere else — twenty-two such nodes exist in the whole archive (the
+    // other eleven belong to airframes the roster does not declare), and
+    // each audited row names its own index, all distinct.
     let mut indices = BTreeSet::new();
     let mut translations = BTreeSet::new();
     for row in report.rows() {
