@@ -557,8 +557,11 @@ fn accept_t542_retail_every_airframe_declares_its_eye_as_one_stored_translation(
     )
     .expect("the claimed script is the one the container holds");
 
-    let roster = discover_airframe_roster(&decoded, &retail_roster_declarations(install_sha256))
-        .expect("the real roster discovery reports findings, not a contradiction");
+    let roster = discover_airframe_roster(
+        &decoded,
+        &retail_roster_declarations(install_sha256, &decoded),
+    )
+    .expect("the real roster discovery reports findings, not a contradiction");
     assert_eq!(roster.airframe_count(), RETAIL_AIRFRAMES);
     let airframes: Vec<CockpitAirframe> = roster
         .discovered()

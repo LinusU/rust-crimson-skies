@@ -41,7 +41,7 @@ use cs_app::camera::coverage::{
 };
 use cs_content::cameras::CockpitBindingSource;
 use cs_content::mesh::RenderMesh;
-use cs_content::scene::{AirframeDeclaration, RosterDeclarations, RosterRoleRule};
+use cs_content::scene::{RosterDeclarations, RosterRoleRule};
 use cs_formats::gamez::{PrimitiveKind, RawCorner, RawMesh};
 use cs_types::asset_id::SourceSpan;
 use cs_types::content::{ContentId, ContentKind, Provenance};
@@ -2037,8 +2037,11 @@ fn accept_f21_d_retail_every_declared_cockpit_binding_is_resolved_or_reported_by
     // The roster the bindings are checked against is F11-D2's discovery over the
     // same container: the eleven airframes the original's own build script
     // declares, with the roots it created.
-    let roster = discover_airframe_roster(&decoded, &retail_roster_declarations(install_sha256))
-        .expect("the real roster discovery reports findings, not a contradiction");
+    let roster = discover_airframe_roster(
+        &decoded,
+        &retail_roster_declarations(install_sha256, &decoded),
+    )
+    .expect("the real roster discovery reports findings, not a contradiction");
     assert_eq!(
         roster.airframe_count(),
         RETAIL_AIRFRAMES,
@@ -2773,23 +2776,42 @@ fn retail_view_claims(install_sha256: ContentHash) -> Vec<ViewCommandClaim> {
 
 /// The roster declarations over the real container, so the coverage audit is
 /// measured against F11-D2's discovered roster rather than a transcription.
-pub(crate) fn retail_roster_declarations(install_sha256: ContentHash) -> RosterDeclarations {
-    RosterDeclarations::new(vec![AirframeDeclaration {
-        script: "support\\planes.gw".to_owned(),
-        bind_command: "set".to_owned(),
-        include_command: "source".to_owned(),
-        write_command: "GameZWriteZBDFile".to_owned(),
-        create_command: "NewObject3D".to_owned(),
-        container_variable: "ZBDFile".to_owned(),
-        root_variable: "planeOutput".to_owned(),
-        model_variable: "planeInput".to_owned(),
-        required_roles: vec![RosterRoleRule {
-            role: cs_content::scene::PartRole::Cockpit,
-            provenance: retail_provenance(install_sha256, "ZBD/interp.zbd", 187_904, 392),
-        }],
-        provenance: retail_provenance(install_sha256, "ZBD/interp.zbd", 37_838, 8_650),
-    }])
-    .expect("one declaration naming one script is valid")
+///
+/// The idiom is the production declaration
+/// (`cs_content::catalog::baseline::airframe_roster_declarations`), whose span is
+/// derived from `decoded`; no byte offset of one installation is written here.
+/// The cockpit requirement is the one extra claim this helper adds: the
+/// production row deliberately asserts no role, but `support\util\planesurgery.gw`
+/// runs for every declared airframe and re-adds `cockpit1`, and the audit pins
+/// that. Its span is that script's extent in `decoded`.
+pub(crate) fn retail_roster_declarations(
+    install_sha256: ContentHash,
+    decoded: &cs_formats::interp::DecodedInterp<'_>,
+) -> RosterDeclarations {
+    let container = "ZBD/interp.zbd";
+    let mut declaration = cs_content::catalog::baseline::airframe_roster_declarations(
+        install_sha256,
+        container,
+        decoded,
+    )
+    .expect("the production idiom builds over the real container")
+    .declarations()[0]
+        .clone();
+    let surgery = decoded
+        .scripts()
+        .iter()
+        .find(|script| {
+            script
+                .name()
+                .eq_ignore_ascii_case(b"support\\util\\planesurgery.gw")
+        })
+        .expect("the container holds the surgery script");
+    let start = u64::from(surgery.entry().script_offset);
+    declaration.required_roles = vec![RosterRoleRule {
+        role: cs_content::scene::PartRole::Cockpit,
+        provenance: retail_provenance(install_sha256, container, start, surgery.end() - start),
+    }];
+    RosterDeclarations::new(vec![declaration]).expect("one declaration naming one script is valid")
 }
 
 /// Provenance over a real byte range of a real file.

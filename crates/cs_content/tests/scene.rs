@@ -6402,64 +6402,50 @@ fn accept_f11_d_2_contradictory_declarations_are_refused_and_an_empty_table_find
     );
 }
 
-/// The retail roster idiom, measured from `ZBD/interp.zbd` over
-/// `support\planes.gw` and `support\util\planesurgery.gw`.
+/// The retail roster idiom: the **production** declaration plus the one extra
+/// claim this test pins on purpose.
 ///
-/// This is the caller-supplied table the discovery takes: which script
-/// declares airframes, which command creates a root, which variables name the
-/// root, the model and the container, and which role each declared airframe
-/// must bind. Nothing in `cs_content` ships it, so the claim that these shapes
-/// declare the roster is the caller's and the row count below is what makes it
-/// falsifiable.
+/// The idiom itself (`set planeOutput` + `NewObject3D %planeOutput%` +
+/// `GameZWriteZBDFile %ZBDFile%` in `support\planes.gw`) is
+/// `cs_content::catalog::baseline::airframe_roster_declarations`, the single
+/// measured declaration, whose provenance span is derived from the container it
+/// is handed. This helper therefore holds no byte offsets of its own.
 ///
-/// The spans are measured against the decoded container below, so they are
-/// offsets somebody verified rather than numbers this test would report about
-/// itself.
-///
-/// The cockpit requirement is evidence-backed: `support\util\planesurgery.gw`
-/// runs for **every** declared airframe and ends by naming the node it re-added
-/// `cockpit1`, so the container's own build script states that each declared
-/// airframe root carries a cockpit binding.
+/// What it adds is the cockpit requirement, which the production row
+/// deliberately does not assert (a role is a claim about node bindings, see
+/// `docs/findings/2026-10-03-f14-d-6-airframe-collection.md`).
+/// `support\util\planesurgery.gw` runs for **every** declared airframe and ends
+/// by naming the node it re-added `cockpit1`, so the container's own build
+/// script states that each declared airframe root carries a cockpit binding. The
+/// requirement's span is the extent of that script in the decoded container.
 fn retail_roster_declarations(
     install_sha256: cs_types::evidence::ContentHash,
+    decoded: &cs_formats::interp::DecodedInterp<'_>,
 ) -> RosterDeclarations {
     use cs_types::asset_id::SourceSpan;
 
     let container = "ZBD/interp.zbd";
-    let span = |offset: u64, length: u64| {
-        SourceSpan::new(install_sha256, container, None, offset, length, None)
-            .expect("a container span over real bytes is valid")
-    };
-    let measured = |id: &str, offset: u64, length: u64| {
-        Provenance::new(
-            claim(id),
+    let mut declaration = cs_content::catalog::baseline::airframe_roster_declarations(
+        install_sha256,
+        container,
+        decoded,
+    )
+    .expect("the production idiom builds over the real container")
+    .declarations()[0]
+        .clone();
+    let (start, end) = retail_script_extent(decoded, "support\\util\\planesurgery.gw");
+    let span = SourceSpan::new(install_sha256, container, None, start, end - start, None)
+        .expect("a container span over real bytes is valid");
+    declaration.required_roles = vec![RosterRoleRule {
+        role: PartRole::Cockpit,
+        provenance: Provenance::new(
+            claim("f11d2.retail.planesurgery-cockpit"),
             cs_types::evidence::ClaimStatus::ObservedTool,
-            Some(span(offset, length)),
+            Some(span),
         )
-        .expect("an observed_tool claim with a source span is valid")
-    };
-    RosterDeclarations::new(vec![AirframeDeclaration {
-        script: "support\\planes.gw".to_owned(),
-        bind_command: "set".to_owned(),
-        include_command: "source".to_owned(),
-        write_command: "GameZWriteZBDFile".to_owned(),
-        create_command: "NewObject3D".to_owned(),
-        container_variable: "ZBDFile".to_owned(),
-        root_variable: "planeOutput".to_owned(),
-        model_variable: "planeInput".to_owned(),
-        required_roles: vec![RosterRoleRule {
-            role: PartRole::Cockpit,
-            // `support\util\planesurgery.gw`, the script every declared
-            // airframe's surgery block includes. The span covers the whole
-            // script, whose last two lines are `FindNode %unique3840%` and
-            // `NodeSetDescription cockpit1`: the evidence the requirement rests
-            // on is inside it.
-            provenance: measured("f11d2.retail.planesurgery-cockpit", 187_904, 392),
-        }],
-        // `support\planes.gw` itself, from its first to its last line.
-        provenance: measured("f11d2.retail.planes-gw-idiom", 37_838, 8_650),
-    }])
-    .expect("one declaration naming one script is valid")
+        .expect("an observed_tool claim with a source span is valid"),
+    }];
+    RosterDeclarations::new(vec![declaration]).expect("one declaration naming one script is valid")
 }
 
 /// The eleven airframes `ZBD/interp.zbd`'s `support\planes.gw` declares, in the
@@ -6602,8 +6588,11 @@ fn accept_f11_d_2_retail_the_installation_declares_the_shared_airframe_roster() 
     )
     .expect("the loading-script container must decode");
 
-    let found = discover_airframe_roster(&decoded, &retail_roster_declarations(install_sha256))
-        .expect("eleven distinct roots are not a contradiction");
+    let found = discover_airframe_roster(
+        &decoded,
+        &retail_roster_declarations(install_sha256, &decoded),
+    )
+    .expect("eleven distinct roots are not a contradiction");
 
     assert!(
         found.issues().is_empty(),
@@ -6630,7 +6619,7 @@ fn accept_f11_d_2_retail_the_installation_declares_the_shared_airframe_roster() 
     // The two measured spans are checked against the container's own script
     // extents, so "the claim points at the script it names" is verified rather
     // than reported.
-    let declarations = retail_roster_declarations(install_sha256);
+    let declarations = retail_roster_declarations(install_sha256, &decoded);
     let declaration = &declarations.declarations()[0];
     let extent =
         |span: &cs_types::asset_id::SourceSpan| (span.offset(), span.offset() + span.length());
@@ -7134,8 +7123,11 @@ fn evidence_report_f11_d_2_writes_the_acceptance_report() {
     )
     .expect("the loading-script container must decode");
     let install_hash = install_api::fingerprint(&found.manifest);
-    let roster = discover_airframe_roster(&decoded, &retail_roster_declarations(install_hash))
-        .expect("eleven distinct roots are not a contradiction");
+    let roster = discover_airframe_roster(
+        &decoded,
+        &retail_roster_declarations(install_hash, &decoded),
+    )
+    .expect("eleven distinct roots are not a contradiction");
     // The audit's graph source answers from the containers' own measured
     // verdicts, exactly as the retail acceptance test does: the node arrays
     // read, every record converts, and `SceneGraph::build` decides.
@@ -7775,8 +7767,11 @@ fn accept_f11_d2p1_retail_the_chapter_loads_declare_no_airframe() {
         .expect("the container must be there");
     let decoded = decode_interp(&mut ParseContext::with_defaults("zbd/interp.zbd"), &bytes)
         .expect("the loading-script container must decode");
-    let shared = discover_airframe_roster(&decoded, &retail_roster_declarations(install_sha256))
-        .expect("eleven distinct roots are not a contradiction");
+    let shared = discover_airframe_roster(
+        &decoded,
+        &retail_roster_declarations(install_sha256, &decoded),
+    )
+    .expect("eleven distinct roots are not a contradiction");
     assert_eq!(shared.airframe_count(), 11);
     let census = retail_gamez_census(&game_dir);
     assert_eq!(census.len(), 9);
@@ -7952,8 +7947,11 @@ fn evidence_report_f11_d2p1_writes_the_acceptance_report() {
         &interp_bytes,
     )
     .expect("the loading-script container must decode");
-    let shared = discover_airframe_roster(&decoded, &retail_roster_declarations(install_hash))
-        .expect("eleven distinct roots are not a contradiction");
+    let shared = discover_airframe_roster(
+        &decoded,
+        &retail_roster_declarations(install_hash, &decoded),
+    )
+    .expect("eleven distinct roots are not a contradiction");
     let census = retail_gamez_census(&game_dir);
     let chapter = retail_chapter_discovery(&decoded, &shared, &census);
     assert_eq!(chapter.airframe_count(), 0);

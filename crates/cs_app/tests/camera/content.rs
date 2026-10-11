@@ -687,8 +687,11 @@ fn accept_t540_retail_every_declared_binding_names_drawable_geometry_in_its_own_
     )
     .expect("the claimed script is the one the container holds");
 
-    let roster = discover_airframe_roster(&decoded, &retail_roster_declarations(install_sha256))
-        .expect("the real roster discovery reports findings, not a contradiction");
+    let roster = discover_airframe_roster(
+        &decoded,
+        &retail_roster_declarations(install_sha256, &decoded),
+    )
+    .expect("the real roster discovery reports findings, not a contradiction");
     assert_eq!(roster.airframe_count(), RETAIL_AIRFRAMES);
     let airframes: Vec<CockpitAirframe> = roster
         .discovered()

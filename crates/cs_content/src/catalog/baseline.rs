@@ -3220,7 +3220,7 @@ fn airframe_rows(
 /// `required_roles` is empty: a role requirement is a claim about an airframe's
 /// **node** bindings, which belong to F11-C/F29's name-path rules, and a catalog
 /// row asserts no role.
-fn airframe_roster_declarations(
+pub fn airframe_roster_declarations(
     install_hash: ContentHash,
     spelling: &str,
     decoded: &DecodedInterp<'_>,
