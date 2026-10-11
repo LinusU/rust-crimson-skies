@@ -4,8 +4,8 @@
 //! Spec: `specs/F21-cameras-cockpit-views-and-spyglass.md`, stages
 //! `### F21-A`, `### F21-B` and `### F21-C`; shared contract
 //! `docs/contracts/UI-NETWORK.md`. Task test prefixes: `accept_f21_a_`,
-//! `accept_f21_b_`, `accept_f21_c_`, `accept_f21_d_`, `accept_t540_` and
-//! `accept_t541_`.
+//! `accept_f21_b_`, `accept_f21_c_`, `accept_f21_d_`, `accept_t540_`,
+//! `accept_t541_` and `accept_t542_`.
 //!
 //! These tests drive production code only: `cs_content::cameras` owns the
 //! declared records and their validation, and `cs_app::camera` owns the
@@ -62,6 +62,16 @@
 //!   the retail world archives' real `horizon` scenery — with the bound
 //!   nodes the archives do not store left an explicit unknown.
 //!
+//! Task #542 — the measured cockpit eye:
+//!
+//! * `eye` owns the third F21-D follow-up: the same static analysis measured
+//!   that the original resolves a `cockpit_camera` node under each vehicle
+//!   root and installs its stored local translation as the pilot's eye,
+//!   which two camera modes then transform by the airframe matrix. The suite
+//!   pins the per-airframe resolution states on authored archives, all
+//!   eleven retail airframes' measured eye offsets, and the mechanism's
+//!   image spans byte for byte.
+//!
 //! Stage `### F21-C` — script cameras, deterministic capture flags and the
 //! session that runs them:
 //!
@@ -86,6 +96,7 @@ mod capture;
 mod common;
 mod content;
 mod coverage;
+mod eye;
 mod framing;
 mod horizon;
 mod modes;

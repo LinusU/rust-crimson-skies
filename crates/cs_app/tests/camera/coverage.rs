@@ -1591,22 +1591,27 @@ fn accept_f21_d_a_subtree_walk_never_leaves_the_aircraft_it_started_from() {
     );
 }
 
-/// However complete the bindings are, the pilot's eye stays undeclared: no
-/// verified binding means a cockpit mode may be declared, not that a viewpoint
-/// may be invented.
+/// However complete the bindings are, the *binding audit's* eye verdict stays
+/// undeclared: no verified binding means a cockpit mode may be declared, not
+/// that a viewpoint may be invented. (Task #542 later found where the eye *is*
+/// declared — the `cockpit_camera` node, a different channel the
+/// `resolve_cockpit_eye` pass measures; that changes nothing here, because a
+/// verified binding name is still not a viewpoint.)
 #[test]
 fn accept_f21_d_the_eye_placement_stays_undeclared_however_complete_the_bindings_are() {
     assert_eq!(
         eye_placement(),
         CockpitEyeCoverage::Undeclared,
-        "no file this audit reads declares where the pilot's eye sits, so the audit reports it \
+        "the declared cockpit bindings name no eye, so the binding audit reports it \
          undeclared instead of accepting a value"
     );
     assert_eq!(eye_placement().label(), "undeclared");
 
-    // The strongest coverage the audit can produce, and the eye is still
-    // undeclared: a verified binding is a *name*, and a viewpoint needs a
-    // transform the original does not put in a readable file.
+    // The strongest coverage the audit can produce, and the audit's eye
+    // verdict is still undeclared: a verified binding is a *name*, and a
+    // viewpoint needs a transform the binding set does not declare — the
+    // `cockpit_camera` node that does declare one is not among the twenty
+    // script bindings.
     let bytes = synthetic_cockpit_script();
     let discovery =
         discover_cockpit_bindings(&decode(&bytes), &cockpit_claim(), FIXTURE, observed(0, 16))
@@ -1622,7 +1627,11 @@ fn accept_f21_d_the_eye_placement_stays_undeclared_however_complete_the_bindings
         .row("airframe/synthetic.kestrel")
         .expect("the airframe has a row");
     assert_eq!(row.bound(), 3, "the audit resolved every declared binding");
-    assert_eq!(report.eye(), CockpitEyeCoverage::Undeclared);
+    assert_eq!(
+        report.eye(),
+        CockpitEyeCoverage::Undeclared,
+        "the report's eye is the binding audit's verdict, and the bindings are not an eye"
+    );
 
     // And the engine agrees: a cockpit mode whose viewpoint orientation is an
     // explicit unknown still refuses to lower, which is what keeps the audit's
@@ -2229,7 +2238,9 @@ fn accept_f21_d_retail_every_declared_cockpit_binding_is_resolved_or_reported_by
         }
     }
 
-    // And the pilot's eye is undeclared however much of the cockpit resolved.
+    // And the binding audit's eye verdict is undeclared however much of the
+    // cockpit resolved — the measured eye lives in task #542's
+    // `resolve_cockpit_eye` report, not in the declared binding set.
     assert_eq!(report.eye(), CockpitEyeCoverage::Undeclared);
     // No airframe resolves all twenty, and the report says so rather than
     // reporting a partial result as a complete one.
@@ -2420,8 +2431,8 @@ fn write_coverage_census(
         unresolved,
         quote(report.eye().label()),
         quote(
-            "an owner-supplied original run that shows a pilot's eye placement, or a bounded \
-             static analysis of the packed executable; no readable file declares it"
+            "the cockpit_camera node task #542 measured: the binding audit still declares no \
+             eye, and the eye pass reports the airframe's own stored translation"
         ),
         quote(
             "no shipped file holds a key/mouse/joystick to command map (F22-H measured the label \
