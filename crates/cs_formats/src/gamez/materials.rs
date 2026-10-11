@@ -306,6 +306,14 @@ pub struct RawMaterial {
     /// The cycled frame data, when the cycled flag is set. Raw: the reference
     /// names none of its fields.
     pub cycle: Option<RawCycle>,
+    /// Absolute container offset of the slot: the first byte of the 40-byte
+    /// record. Taken from the reader's own position when the slot was read, so
+    /// no consumer derives it from the section layout.
+    pub data_offset: u64,
+    /// Absolute container offset one past the slot's two link words, so
+    /// `data_end - data_offset` is [`MATERIAL_SLOT_BYTES`]. The cycle frame data
+    /// stored after the whole array is **not** inside this extent.
+    pub data_end: u64,
 }
 
 impl RawMaterial {
@@ -1202,6 +1210,7 @@ fn read_material_table(
 
     let mut materials: Vec<RawMaterial> = Vec::with_capacity(valid as usize);
     for index in 0..valid {
+        let data_offset = reader.position();
         let record = read_material_record(reader)?;
         check_material_fields(record, index, findings);
         let link1 = reader.read_i16("material.link1").map_err(material_parse)?;
@@ -1222,6 +1231,8 @@ fn read_material_table(
             link1,
             link2,
             cycle: None,
+            data_offset,
+            data_end: reader.position(),
         });
     }
 

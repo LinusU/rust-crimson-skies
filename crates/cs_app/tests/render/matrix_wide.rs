@@ -294,6 +294,8 @@ fn textured_material(index: u32, texture_index: u32) -> RawMaterial {
         link1: 0,
         link2: 0,
         cycle: None,
+        data_offset: 0,
+        data_end: 0,
     }
 }
 
@@ -316,6 +318,8 @@ fn colored_material(index: u32) -> RawMaterial {
         link1: 0,
         link2: 0,
         cycle: None,
+        data_offset: 0,
+        data_end: 0,
     }
 }
 

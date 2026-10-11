@@ -4824,6 +4824,8 @@ mod tests {
             },
             link2: if index == 0 { -1 } else { (index - 1) as i16 },
             cycle: None,
+            data_offset: 0,
+            data_end: 0,
         }
     }
 
@@ -9716,6 +9718,8 @@ mod tests {
                     link1: 2,
                     link2: 0,
                     cycle: None,
+                    data_offset: 0,
+                    data_end: 0,
                 },
                 // A textured record naming a texture index the table lacks.
                 RawMaterial {
@@ -9724,6 +9728,8 @@ mod tests {
                     link1: -1,
                     link2: 1,
                     cycle: None,
+                    data_offset: 0,
+                    data_end: 0,
                 },
             ],
         );
@@ -9795,6 +9801,8 @@ mod tests {
                     link1: 2,
                     link2: 0,
                     cycle: None,
+                    data_offset: 0,
+                    data_end: 0,
                 },
             ],
         );
@@ -10147,6 +10155,8 @@ mod tests {
                     link1: 2,
                     link2: 0,
                     cycle: None,
+                    data_offset: 0,
+                    data_end: 0,
                 },
                 RawMaterial {
                     index: 2,
@@ -10154,6 +10164,8 @@ mod tests {
                     link1: -1,
                     link2: 1,
                     cycle: None,
+                    data_offset: 0,
+                    data_end: 0,
                 },
             ],
         );
@@ -10469,6 +10481,8 @@ mod tests {
                     link1: 2,
                     link2: 0,
                     cycle: None,
+                    data_offset: 0,
+                    data_end: 0,
                 },
                 RawMaterial {
                     index: 2,
@@ -10476,6 +10490,8 @@ mod tests {
                     link1: -1,
                     link2: 1,
                     cycle: None,
+                    data_offset: 0,
+                    data_end: 0,
                 },
             ],
         );

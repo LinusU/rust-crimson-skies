@@ -25,7 +25,7 @@
 use cs_formats::ParseContext;
 use cs_formats::gamez::materials::{
     MATERIAL_FLAG_ALWAYS, MATERIAL_FLAG_CYCLED, MATERIAL_FLAG_FREE, MATERIAL_FLAG_TEXTURED,
-    MATERIAL_FLAG_UNKNOWN, NG_MATERIAL_SLOTS,
+    MATERIAL_FLAG_UNKNOWN, MATERIAL_HEADER_BYTES, NG_MATERIAL_SLOTS,
 };
 use cs_formats::gamez::{
     CYCLE_FRAME_BYTES, CYCLE_HEADER_BYTES, GAMEZ_HEADER_BYTES, GameZMaterialError, GameZMaterials,
@@ -479,6 +479,49 @@ fn parse_ok(bytes: &[u8]) -> GameZMaterials {
 }
 
 // ------------------------------------------------------------------ tests ---
+
+/// Every present material reports the extent of its own 44-byte slot, taken from
+/// the reader's position: the first at the section header's end, the rest back
+/// to back, none overlapping the cycle data stored after the 1000-slot array.
+#[test]
+fn accept_f14_d_9_a_present_material_reports_the_extent_of_its_own_slot() {
+    let names = three_names();
+    let mut section = MaterialSection::of(vec![
+        MaterialSpec::textured(0, 0.25),
+        MaterialSpec::colored([1.0, 0.0, 0.0], 0.125),
+        MaterialSpec::textured(2, 0.75),
+    ]);
+    section.materials[2].flags |= MATERIAL_FLAG_CYCLED;
+    section.materials[2].cycle_ptr = 1;
+    section.cycles = vec![CycleSpec::of(vec![0, 1])];
+    let bytes = container(&names, &section);
+    let materials = parse_ok(&bytes);
+
+    let first = materials.materials_offset + MATERIAL_HEADER_BYTES;
+    assert_eq!(materials.materials.len(), 3);
+    for (position, material) in materials.materials.iter().enumerate() {
+        let start = first + MATERIAL_SLOT_BYTES * position as u64;
+        assert_eq!(material.data_offset, start, "material {position}");
+        assert_eq!(
+            material.data_end,
+            start + MATERIAL_SLOT_BYTES,
+            "material {position}"
+        );
+        // The bytes at the reported offset are the record that was written.
+        assert_eq!(
+            bytes[material.data_offset as usize + 1],
+            material.record.flags,
+            "material {position}: the extent begins at its flag byte"
+        );
+    }
+    // The cycle frames are stored after the whole array, outside every slot.
+    let array_end = first + MATERIAL_SLOT_BYTES * u64::from(NG_MATERIAL_SLOTS);
+    assert!(materials.materials.iter().all(|m| m.data_end < array_end));
+    assert_eq!(
+        materials.data_end,
+        array_end + CYCLE_HEADER_BYTES + 2 * CYCLE_FRAME_BYTES
+    );
+}
 
 /// A material record stores an **index** into the container's texture table, and
 /// the three name encodings the layout has decode to the stored names. Nothing
