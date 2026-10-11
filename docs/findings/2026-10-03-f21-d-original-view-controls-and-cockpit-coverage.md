@@ -14,6 +14,23 @@ Owner paths: `crates/cs_app/src/camera/`,
 `crates/cs_content/src/cameras.rs`, `crates/cs_app/tests/camera/`,
 `docs/findings/`.
 
+> **Superseded on the horizon commands, 2026-10-11 (task #541).** This stage
+> classified `CameraSetHorizon`/`CameraSetHorizonXZ` from their spellings as
+> `LevelsHorizon`/`LevelsHorizonToZone` — an up-axis lock — and marked the
+> rows unconsumed for want of one. Task #541's bounded static analysis of the
+> owner-supplied decrypted executable falsified the classification: the
+> handlers bind named *scenery* nodes (`+0x8`/`+0xc` on the camera data) and
+> every render pass writes the camera's world translation into them — a
+> camera→scenery anchor that never reads or writes the camera's basis. The
+> coverage model now carries the measured
+> `AnchorsSceneryToCamera`/`AnchorsSceneryToCameraLaterally` effects, consumed
+> by `CameraOperation::SceneryAnchors`. Passages below that describe the
+> commands as "levelling the horizon" — the measured census of *occurrences*
+> (16 and 4, the scripts and their arguments) still stands — are historical:
+> the mechanism, the corrected classification and the remaining unknowns are
+> recorded in
+> `docs/findings/2026-10-11-t541-horizon-commands-anchor-scenery-to-camera.md`.
+
 ## What this stage measures, and what it cannot
 
 F21-A declared the camera records, F21-B built the four rigs and F21-C ran them
