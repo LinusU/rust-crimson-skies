@@ -30,6 +30,26 @@ Owner paths: `crates/cs_app/src/camera/`,
 > the mechanism, the corrected classification and the remaining unknowns are
 > recorded in
 > `docs/findings/2026-10-11-t541-horizon-commands-anchor-scenery-to-camera.md`.
+>
+> **Superseded on the pilot's eye, 2026-10-11 (task #542).** The section
+> below says "nothing in any file this project opens says where the pilot's
+> eye sits" — that is falsified in part, and narrowed in the rest. Task
+> #542's bounded static analysis of the owner-supplied executable (the
+> alternative this section itself filed, taken because no owner run was
+> available) measured that the original's per-vehicle registration resolves
+> a `cockpit_camera` node under the vehicle root and installs its **stored
+> local translation** as the pilot's eye, which two dispatched camera modes
+> transform by the airframe matrix. `ZBD/planes.zbd` therefore *does* store
+> an eye offset — twenty-two times, one per player and AI airframe — under
+> a name the script walk never declared: it is a native channel, not a
+> `support\cockpit.gw` binding. What stays true, and what the `Undeclared`
+> verdict now means: the **declared binding set** names no eye, so the
+> binding audit still reports `Undeclared`; the measured eye lives in
+> `resolve_cockpit_eye`'s report. Which body axis each stored component is
+> and in what units, what the two camera modes are called, and what
+> `cocky`/`cockz` write at run time remain unknown. The mechanism, the
+> measured per-airframe triples and the remaining unknowns are recorded in
+> `docs/findings/2026-10-11-t542-cockpit-camera-eye-placement.md`.
 
 ## What this stage measures, and what it cannot
 
