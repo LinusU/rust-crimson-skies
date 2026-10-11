@@ -72,7 +72,7 @@ use cs_types::asset_id::{
     AssetKey, MountId, MountNamespace, PrecedenceClass, ResolveContext, SourceSpan,
 };
 use cs_types::content::{ContentId, ContentKind, Origin, Provenance, Resolved};
-use cs_types::evidence::{ClaimId, ContentHash};
+use cs_types::evidence::{ClaimId, ClaimStatus, ContentHash};
 use cs_types::install::{InstallManifest, RelativePath};
 use cs_types::space::{Meters, Radians};
 
@@ -413,6 +413,10 @@ pub struct SkillKnobOverride {
     pub value: SkillKnobValue,
     /// Where the override came from.
     pub provenance: Provenance,
+    /// The baseline knob this override is a designed alternative to, when it
+    /// declares one. A [`DifficultyProfile`] refuses a designed override
+    /// that does not name the knob it moves here.
+    pub alternative_of: Option<SkillKnob>,
 }
 
 impl SkillKnobOverride {
@@ -435,7 +439,39 @@ impl SkillKnobOverride {
             knob,
             value,
             provenance,
+            alternative_of: None,
         })
+    }
+
+    /// Declares this override a designed alternative to the baseline value
+    /// of the knob it moves.
+    ///
+    /// # Errors
+    ///
+    /// The validation errors of [`Self::try_new`].
+    pub fn try_new_alternative(
+        knob: SkillKnob,
+        value: SkillKnobValue,
+        provenance: Provenance,
+    ) -> Result<Self, CombatSchemaError> {
+        let mut change = Self::try_new(knob, value, provenance)?;
+        change.alternative_of = Some(knob);
+        Ok(change)
+    }
+
+    /// Whether a difficulty tier may carry this override.
+    ///
+    /// Measured (F32-D, F32-E): no shipped file binds a difficulty step to
+    /// any knob, so the only declarable tier override is a `Designed` one
+    /// naming the baseline knob it replaces, or one backed by
+    /// `VerifiedOriginal` evidence (none exists today).
+    #[must_use]
+    pub fn is_evidenced_tier_change(&self) -> bool {
+        match self.provenance.class {
+            ClaimStatus::VerifiedOriginal => self.provenance.source.is_some(),
+            ClaimStatus::Designed => self.alternative_of == Some(self.knob),
+            _ => false,
+        }
     }
 }
 
@@ -1392,13 +1428,21 @@ impl DifficultyProfile {
     /// # Errors
     ///
     /// [`CombatSchemaError::DuplicateKnob`] when two overrides name the
-    /// same knob.
+    /// same knob and [`CombatSchemaError::UnevidencedTierOverride`] when an
+    /// override is neither `VerifiedOriginal` with a source nor `Designed`
+    /// with an `alternative_of` naming its own knob.
     pub fn try_new(
         tier: DifficultyTier,
         overrides: Vec<SkillKnobOverride>,
         provenance: Provenance,
     ) -> Result<Self, CombatSchemaError> {
         check_unique_knobs(&overrides)?;
+        if let Some(change) = overrides.iter().find(|c| !c.is_evidenced_tier_change()) {
+            return Err(CombatSchemaError::UnevidencedTierOverride {
+                tier,
+                knob: change.knob,
+            });
+        }
         Ok(Self {
             tier,
             overrides,
@@ -1503,6 +1547,14 @@ pub enum CombatSchemaError {
         /// The repeated knob.
         knob: SkillKnob,
     },
+    /// A difficulty tier moves a knob with neither original evidence nor a
+    /// declared designed alternative.
+    UnevidencedTierOverride {
+        /// The tier.
+        tier: DifficultyTier,
+        /// The knob moved without evidence.
+        knob: SkillKnob,
+    },
     /// An override's value carries another unit than its knob.
     KnobUnitMismatch {
         /// The knob.
@@ -1598,6 +1650,11 @@ impl fmt::Display for CombatSchemaError {
             Self::NotAPriorityWeight { knob } => {
                 write!(f, "knob {knob} is a skill knob, not a priority weight")
             }
+            Self::UnevidencedTierOverride { tier, knob } => write!(
+                f,
+                "tier {tier} moves knob {knob} with neither verified original evidence nor a \
+                 designed alternative_of naming that knob"
+            ),
             Self::UnknownKnob { knob } => write!(f, "knob {knob} is not carried by this record"),
             Self::NoScoredPriorityTerm => write!(
                 f,
@@ -2007,7 +2064,7 @@ pub fn declared_synthetic_difficulty_profiles() -> Vec<DifficultyProfile> {
     ]
     .into_iter()
     .map(|(knob, value)| {
-        SkillKnobOverride::try_new(knob, value, provenance.clone())
+        SkillKnobOverride::try_new_alternative(knob, value, provenance.clone())
             .expect("the declared synthetic difficulty override is valid")
     })
     .collect();
@@ -2089,7 +2146,110 @@ mod tests {
     }
 
     fn override_of(knob: SkillKnob, value: SkillKnobValue) -> SkillKnobOverride {
-        SkillKnobOverride::try_new(knob, value, designed()).expect("the unit override is valid")
+        SkillKnobOverride::try_new_alternative(knob, value, designed())
+            .expect("the unit override is valid")
+    }
+
+    fn tier_with(
+        overrides: Vec<SkillKnobOverride>,
+    ) -> Result<DifficultyProfile, CombatSchemaError> {
+        DifficultyProfile::try_new(DifficultyTier::Hard, overrides, designed())
+    }
+
+    /// F32-E: a tier override must be a declared designed alternative of
+    /// the knob it moves; a bare designed override is refused by name.
+    #[test]
+    fn accept_f32_e_tier_override_without_alternative_is_refused() {
+        let bare = SkillKnobOverride::try_new(
+            SkillKnob::ReactionTicks,
+            SkillKnobValue::Ticks(6),
+            designed(),
+        )
+        .expect("valid value");
+        assert_eq!(
+            tier_with(vec![bare]).expect_err("no alternative_of"),
+            CombatSchemaError::UnevidencedTierOverride {
+                tier: DifficultyTier::Hard,
+                knob: SkillKnob::ReactionTicks
+            }
+        );
+        // An alternative naming a different knob does not count.
+        let mut wrong = override_of(SkillKnob::ReactionTicks, SkillKnobValue::Ticks(6));
+        wrong.alternative_of = Some(SkillKnob::AimErrorRad);
+        assert!(matches!(
+            tier_with(vec![wrong]),
+            Err(CombatSchemaError::UnevidencedTierOverride { .. })
+        ));
+        // Neither does a non-designed class, even with an alternative.
+        for class in [
+            ClaimStatus::Inferred,
+            ClaimStatus::Unknown,
+            ClaimStatus::Documented,
+        ] {
+            let mut change = override_of(SkillKnob::ReactionTicks, SkillKnobValue::Ticks(6));
+            change.provenance.class = class;
+            assert!(
+                matches!(
+                    tier_with(vec![change]),
+                    Err(CombatSchemaError::UnevidencedTierOverride { .. })
+                ),
+                "{class:?}"
+            );
+        }
+        // A verified_original claim with no source is refused too.
+        let mut orphan = override_of(SkillKnob::ReactionTicks, SkillKnobValue::Ticks(6));
+        orphan.provenance.class = ClaimStatus::VerifiedOriginal;
+        orphan.alternative_of = None;
+        assert!(tier_with(vec![orphan]).is_err());
+    }
+
+    /// F32-E: the accepted forms, and the empty baseline tier.
+    #[test]
+    fn accept_f32_e_declared_alternatives_are_accepted() {
+        let ok = tier_with(vec![
+            override_of(SkillKnob::ReactionTicks, SkillKnobValue::Ticks(6)),
+            override_of(SkillKnob::ProtectedActorWeight, SkillKnobValue::Weight(4.0)),
+        ])
+        .expect("designed alternatives are allowed");
+        assert_eq!(ok.overrides().len(), 2);
+        assert!(tier_with(Vec::new()).is_ok());
+        assert!(declared_synthetic_difficulty_profiles().iter().all(|p| {
+            p.overrides()
+                .iter()
+                .all(|c| c.alternative_of == Some(c.knob))
+        }));
+    }
+
+    /// F32-E: a tier still cannot express a rate, damage multiplier or
+    /// tick rate: the knob vocabulary is closed and has none.
+    #[test]
+    fn accept_f32_e_tier_cannot_move_rates_damage_or_tick_rate() {
+        for knob in SkillKnob::ALL {
+            let label = knob.label();
+            for banned in [
+                "rate",
+                "damage",
+                "tick_rate",
+                "time_scale",
+                "speed",
+                "health",
+            ] {
+                assert!(!label.contains(banned), "{label} looks like {banned}");
+            }
+            assert!(
+                matches!(
+                    knob.unit(),
+                    SkillKnobUnit::Ticks
+                        | SkillKnobUnit::Angle
+                        | SkillKnobUnit::Distance
+                        | SkillKnobUnit::Weight
+                ),
+                "{label}"
+            );
+        }
+        assert_eq!(SkillKnob::from_label("tick_rate"), None);
+        assert_eq!(SkillKnob::from_label("damage_multiplier"), None);
+        assert_eq!(SkillKnob::from_label("simulation_rate"), None);
     }
 
     /// The declared synthetic rules are a synthetic, designed record: an
