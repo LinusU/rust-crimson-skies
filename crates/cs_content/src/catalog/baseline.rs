@@ -269,8 +269,9 @@ use crate::livery::{
 use crate::multiplayer::{ModeEntry, TextRef, discover_modes, mode_name_id};
 use crate::original_airframe::{ENGINES_MEMBER, SpannedDocument, SpannedValue};
 use crate::scene::{
-    AVAILABILITY_DISCOVERY_CLAIM, AirframeDeclaration, DiscoveredAirframe, RosterDeclarations,
-    RosterDiscoveryIssue, discover_airframe_roster,
+    AVAILABILITY_DISCOVERY_CLAIM, AirframeDeclaration, ChapterLoadIdiom, ChapterLoadIssue,
+    DiscoveredAirframe, RosterDeclarations, RosterDiscoveryIssue, discover_airframe_roster,
+    discover_mission_only_airframes,
 };
 use crate::stunts::{
     SCENARIO_MEMBER, SCENARIO_TARGETS_MEMBER, STUNT_MISSION_TYPE, decode_zrd,
@@ -426,6 +427,24 @@ pub const AIRFRAME_SCRIPT_IMAGE: &str = "ZBD/interp.zbd";
 /// The script of [`AIRFRAME_SCRIPT_IMAGE`] that declares the shared airframe
 /// roster, as the container spells it.
 const AIRFRAME_DECLARING_SCRIPT: &str = "support\\planes.gw";
+
+/// The claim id behind the observation that a per-chapter load script stores
+/// `LoadGameGen <model> <alias>` lines (F14-D.9 mission-only discovery).
+const CLAIM_CHAPTER_LOAD_IDIOM: &str = "f14.d.9.baseline.chapter_load_idiom";
+
+/// The per-chapter load scripts of [`AIRFRAME_SCRIPT_IMAGE`], as the container
+/// spells them: every script that stores a `LoadGameGen` line and sits in a
+/// chapter directory. The shared `support\\load.gw` is not one of them.
+pub const CHAPTER_LOAD_SCRIPTS: [&str; 8] = [
+    "support\\c1\\load.gw",
+    "support\\c1b\\load.gw",
+    "support\\c1c\\load.gw",
+    "support\\c2\\load.gw",
+    "support\\c2b\\load.gw",
+    "support\\c3\\load.gw",
+    "support\\c4\\load.gw",
+    "support\\c5\\load.gw",
+];
 
 /// The installation-relative spelling of the reader archive whose `engines.zrd`
 /// and `weapons.zrd` members the engine and gun rows are read from.
@@ -3499,6 +3518,37 @@ fn airframe_rows(
         *status.gaps.entry(roster_issue_label(issue)).or_default() += 1;
     }
 
+    // The per-chapter load scripts are read for mission-only airframes. The
+    // measured answer is that their `LoadGameGen <model> <alias>` shape does not
+    // identify one, so this adds no row; the counts keep "read and found
+    // nothing" distinguishable from "not read" (F14-D.9).
+    let chapter_idiom = chapter_load_idiom()?;
+    let chapter = discover_mission_only_airframes(&decoded, &chapter_idiom, &found, &[]);
+    status.gaps.insert("chapter_load", chapter.loads().len());
+    status
+        .gaps
+        .insert("chapter_load_shared", chapter.shared_loads().count());
+    status.gaps.insert(
+        "chapter_load_unclassified",
+        chapter.unclassified_loads().count(),
+    );
+    status
+        .gaps
+        .insert("mission_only_airframe", chapter.airframe_count());
+    status
+        .gaps
+        .insert("mission_only_unknown", chapter.unknowns().len());
+    for issue in chapter.issues() {
+        *status
+            .gaps
+            .entry(match issue {
+                ChapterLoadIssue::ScriptAbsent { .. } => "chapter_script_absent",
+                ChapterLoadIssue::ScriptAmbiguous { .. } => "chapter_script_ambiguous",
+                ChapterLoadIssue::LineUnreadable { .. } => "chapter_line_unreadable",
+            })
+            .or_default() += 1;
+    }
+
     let mut rows = Vec::with_capacity(found.discovered().len());
     for airframe in found.discovered() {
         rows.push(airframe_row(
@@ -3608,6 +3658,31 @@ pub fn airframe_roster_declarations(
         provenance,
     }])
     .map_err(|error| BaselineError::AirframeRoster(error.to_string()))
+}
+
+/// The per-chapter load idiom this inventory declares: `LoadGameGen <model>
+/// <alias>` in [`CHAPTER_LOAD_SCRIPTS`]. It declares a **load**, not an airframe.
+fn chapter_load_idiom() -> Result<ChapterLoadIdiom, BaselineError> {
+    let claim_id =
+        ClaimId::new(CLAIM_CHAPTER_LOAD_IDIOM).map_err(|error| BaselineError::Provenance {
+            claim: CLAIM_CHAPTER_LOAD_IDIOM.to_owned(),
+            reason: error.to_string(),
+        })?;
+    let provenance =
+        Provenance::new(claim_id, ClaimStatus::ObservedTool, None).map_err(|error| {
+            BaselineError::Provenance {
+                claim: CLAIM_CHAPTER_LOAD_IDIOM.to_owned(),
+                reason: error.to_string(),
+            }
+        })?;
+    Ok(ChapterLoadIdiom {
+        load_command: "LoadGameGen".to_owned(),
+        scripts: CHAPTER_LOAD_SCRIPTS
+            .iter()
+            .map(|name| (*name).to_owned())
+            .collect(),
+        provenance,
+    })
 }
 
 /// The one script of `name` the container holds, or `None` when it holds none or
