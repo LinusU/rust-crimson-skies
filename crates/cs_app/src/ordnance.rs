@@ -70,9 +70,9 @@ use bevy::prelude::{ChildOf, Entity, Transform, World};
 use cs_sim::damage::{DamageError, DamageResolver, HitEvent, TickResolution};
 use cs_sim::time::TickRate;
 use cs_sim::weapons::{
-    ExpiredStatusEffect, FuseDecision, FuseTrigger, GuidanceTick, MountTransform, NitroTick,
-    OrdnanceRuntime, OrdnanceRuntimeError, ProjectileId, StatusEffectInstanceId,
-    StatusEffectTarget, SweptHit, TargetObservation, TargetPath,
+    AreaInstanceId, ExpiredArea, ExpiredStatusEffect, FuseDecision, FuseTrigger, GuidanceTick,
+    MountTransform, NitroTick, OrdnanceRuntime, OrdnanceRuntimeError, ProjectileId,
+    StatusEffectInstanceId, StatusEffectTarget, SweptHit, TargetObservation, TargetPath,
 };
 use cs_types::Tick;
 use cs_types::net::{EventId, SessionId};
@@ -966,6 +966,10 @@ pub struct OrdnanceDetonation {
     pub status_applied: Vec<StatusEffectInstanceId>,
     /// Why the status ledger refused the trigger, when it did.
     pub status_refused: Option<OrdnanceRuntimeError>,
+    /// The area the trigger opened, when the component declares one.
+    pub area: Option<AreaInstanceId>,
+    /// Why the area could not be opened, when it could not.
+    pub area_refused: Option<OrdnanceRuntimeError>,
 }
 
 /// One guidance-loss detonation's whole outcome.
@@ -995,6 +999,10 @@ pub struct OrdnanceGuidanceBlast {
     pub status_applied: Vec<StatusEffectInstanceId>,
     /// Why the status ledger refused the blast, when it did.
     pub status_refused: Option<OrdnanceRuntimeError>,
+    /// The area the blast opened, when the component declares one.
+    pub area: Option<AreaInstanceId>,
+    /// Why the area could not be opened, when it could not.
+    pub area_refused: Option<OrdnanceRuntimeError>,
 }
 
 /// Why a triggered item's effects could not be routed.
@@ -1078,6 +1086,10 @@ pub struct OrdnanceSessionTick {
     pub status_expired: Vec<ExpiredStatusEffect>,
     /// The status advance was refused whole.
     pub status_refused: Option<OrdnanceRuntimeError>,
+    /// Areas that reached their expiry boundary this tick.
+    pub areas_expired: Vec<ExpiredArea>,
+    /// The area advance was refused whole.
+    pub areas_refused: Option<OrdnanceRuntimeError>,
     /// One entry per nitro order that reached a registered booster.
     pub nitro: Vec<(ActorId, NitroTick)>,
     /// The network events emitted this tick.
@@ -1533,6 +1545,13 @@ pub fn step_ordnance_session(
         Err(source) => tick.status_refused = Some(source),
     }
 
+    // Areas expire on the same rule as statuses: on their boundary tick,
+    // reported once, before this tick's detonations open new ones.
+    match session.runtime.advance_areas(session.session, step.at) {
+        Ok(expired) => tick.areas_expired = expired,
+        Err(source) => tick.areas_refused = Some(source),
+    }
+
     // One launcher read per actor per tick, shared by every launch order that
     // actor gives, so a mount is never walked twice in a tick.
     let mut reads: BTreeMap<ActorId, LiveMountTransforms> = BTreeMap::new();
@@ -1712,6 +1731,8 @@ pub fn step_ordnance_session(
                 damage_refused: None,
                 status_applied: Vec::new(),
                 status_refused: None,
+                area: None,
+                area_refused: None,
             };
             match session.runtime.route_detonation(
                 session.session,
@@ -1755,6 +1776,17 @@ pub fn step_ordnance_session(
                             }
                         }
                         Err(source) => blast.status_refused = Some(source),
+                    }
+                    if detonation.area_effect().is_some() {
+                        match session.runtime.open_detonation_area(
+                            session.session,
+                            step.at,
+                            detonation,
+                            step.targets,
+                        ) {
+                            Ok(instance) => blast.area = Some(instance),
+                            Err(source) => blast.area_refused = Some(source),
+                        }
                     }
                     let event = push_network_event(
                         &mut session.events,
@@ -1826,6 +1858,8 @@ pub fn step_ordnance_session(
                     damage_refused: None,
                     status_applied: Vec::new(),
                     status_refused: None,
+                    area: None,
+                    area_refused: None,
                 };
 
                 match session.runtime.route_trigger(
@@ -1871,6 +1905,22 @@ pub fn step_ordnance_session(
                                 }
                             }
                             Err(source) => detonation.status_refused = Some(source),
+                        }
+
+                        let declares_area = session
+                            .runtime
+                            .get(&projectile)
+                            .is_some_and(|item| item.definition().area_effect().is_some());
+                        if declares_area {
+                            match session.runtime.open_area(
+                                session.session,
+                                step.at,
+                                &projectile,
+                                step.targets,
+                            ) {
+                                Ok(instance) => detonation.area = Some(instance),
+                                Err(source) => detonation.area_refused = Some(source),
+                            }
                         }
 
                         let event = push_network_event(
@@ -2236,19 +2286,14 @@ impl SessionOrdnanceRow {
         self.area_declared
     }
 
-    /// Whether the declared area's reach reached a recipient.
+    /// Whether the session applies the declared area's radius and lifetime.
     ///
-    /// Always `false`: the radius and lifetime lower into
-    /// [`cs_sim::weapons::ordnance::AreaEffect`] and reach nobody. A triggered
-    /// item's effects go to the one stable recipient its engagement names, and
-    /// F28-C.1's guidance-loss blast routes to that same named target and node
-    /// rather than to everyone inside a radius, so the report says so instead
-    /// of implying a splash was applied to whoever happened to be nearby. Both
-    /// methods that read the lowered field back
-    /// ([`cs_sim::weapons::ordnance::ProjectileOrdnance::area_effect`] and
-    /// [`cs_sim::weapons::ordnance::GuidanceDetonation::area_effect`]) are
-    /// themselves read by no production gameplay path.
-    /// Follow-up task #552 (F28-AE1) owns it.
+    /// `true` for a component that declares an area: a trigger or a
+    /// guidance-loss detonation opens it through
+    /// [`cs_sim::weapons::ordnance::OrdnanceRuntime::open_area`], which reaches
+    /// every actor inside the radius once and expires on the lifetime
+    /// boundary. It says the path exists, not that the original behaves this
+    /// way; see `docs/findings/2026-10-11-f28-ae1-area-effect-reach.md`.
     #[must_use]
     pub const fn area_applied(&self) -> bool {
         self.area_applied
@@ -2377,18 +2422,6 @@ pub enum SessionOrdnanceFinding {
         /// The family with no component.
         family: OrdnanceFamily,
     },
-    /// A registered component declares a bounded area effect whose reach
-    /// reaches no recipient.
-    ///
-    /// The record lowers, so the session flies it, and the area's radius and
-    /// lifetime stop there. Follow-up task #552 (F28-AE1) owns implementing
-    /// the reach.
-    UnconsumedAreaEffect {
-        /// The actor carrying it.
-        shooter: ActorId,
-        /// The component whose area reaches nothing.
-        ordnance: OrdnanceId,
-    },
 }
 
 impl SessionOrdnanceFinding {
@@ -2398,7 +2431,6 @@ impl SessionOrdnanceFinding {
         match self {
             Self::ComponentDeliversNothing { .. } => "component_delivers_nothing",
             Self::FamilyWithoutAComponent { .. } => "family_without_a_component",
-            Self::UnconsumedAreaEffect { .. } => "unconsumed_area_effect",
         }
     }
 }
@@ -2414,11 +2446,6 @@ impl std::fmt::Display for SessionOrdnanceFinding {
             Self::FamilyWithoutAComponent { family } => {
                 write!(f, "the {family} family has no registered component")
             }
-            Self::UnconsumedAreaEffect { shooter, ordnance } => write!(
-                f,
-                "{ordnance} declares an area effect registered for {shooter}, whose radius \
-                 and lifetime reach no recipient"
-            ),
         }
     }
 }
@@ -2516,10 +2543,10 @@ impl SessionOrdnanceAudit {
 /// The runtime counterpart of `cs_content::ordnance::OrdnanceAudit`: that one
 /// walks declared records and can read their provenance, this one walks the
 /// components a session **lowered and registered** and reports which channels
-/// each of them reaches a consumer through. Neither repairs a gap — the
-/// unconsumed area effect is *reported*, not implemented, because the
-/// original's area behavior is unmeasured and inventing a splash rule is the
-/// guess F28's research boundary forbids.
+/// each of them reaches a consumer through. Neither repairs a gap. The
+/// declared area effect is consumed since F28-AE1, but only as a radius from the
+/// detonation: the original's area semantics for a fuse-triggered item are
+/// unmeasured and not claimed.
 #[must_use]
 pub fn session_ordnance_audit(session: &OrdnanceSession) -> SessionOrdnanceAudit {
     let mut audit = SessionOrdnanceAudit::default();
@@ -2558,28 +2585,16 @@ pub fn session_ordnance_audit(session: &OrdnanceSession) -> SessionOrdnanceAudit
                 damage_channels,
                 status_effects,
                 area_declared,
-                area_applied: false,
-                unconsumed_fields: if area_declared {
-                    cs_content::ordnance::DECLARED_FIELDS_WITHOUT_CONSUMER
-                        .iter()
-                        .map(|(field, _)| *field)
-                        .collect()
-                } else {
-                    Vec::new()
-                },
+                area_applied: area_declared,
+                unconsumed_fields: cs_content::ordnance::DECLARED_FIELDS_WITHOUT_CONSUMER
+                    .iter()
+                    .map(|(field, _)| *field)
+                    .collect(),
             };
             if !row.delivers_effect() {
                 audit
                     .findings
                     .push(SessionOrdnanceFinding::ComponentDeliversNothing {
-                        shooter: *shooter,
-                        ordnance: ordnance.clone(),
-                    });
-            }
-            if area_declared {
-                audit
-                    .findings
-                    .push(SessionOrdnanceFinding::UnconsumedAreaEffect {
                         shooter: *shooter,
                         ordnance: ordnance.clone(),
                     });
