@@ -31,9 +31,9 @@ So a route follower authored at `speed_m_s` travelled
 `speed * host_hz / session_hz` metres per real second: **1.875×** its authored speed
 (120 / 64). The divergence is measurable without #1278: `MissionContent` already declares the
 composition's timeline as `MissionContent::tick_rate()` =
-`TickRate::new(BASELINE_FIXED_HZ)` (`crates/cs_app/src/mission_session/content.rs:382`,
+`TickRate::new(BASELINE_FIXED_HZ)` (`crates/cs_app/src/mission_session/content.rs:392`,
 "the fixed tick the composition flies on"), starts the environment session on it
-(`:583`), and binds the world-actor program at `SESSION_TICKS_PER_SECOND` (`:602`) — two
+(`:599`), and binds the world-actor program at `SESSION_TICKS_PER_SECOND` (`:618`) — two
 sessions of one composition, two different seconds.
 
 ## 2. What the rest of the workspace says
@@ -41,7 +41,7 @@ sessions of one composition, two different seconds.
 | Reading | Rate | What it actually is | Verdict |
 | --- | --- | --- | --- |
 | `crate::physics::BASELINE_FIXED_HZ` (`physics/adapter.rs:46`) | 120 | "**Designed baseline, not original data.** 120 Hz is the spec's designed starting rate (`### F23-A`)"; the rate `PhysicsTickLedger` commits and `MissionHost::step` reads | **the composition's timeline** |
-| `MissionContent::tick_rate()` (`mission_session/content.rs:382`) | 120 | "the fixed tick the composition flies on"; starts `prepare_environment`'s weather session (`:583`) | same number, same composition |
+| `MissionContent::tick_rate()` (`mission_session/content.rs:392`) | 120 | "the fixed tick the composition flies on"; starts `prepare_environment`'s weather session (`:599`) | same number, same composition |
 | `crate::playtest` (`playtest/mod.rs:309`, `:327`) | 120 | the production playtest harness builds the real app with `PhysicsAdapterPlugin::new(BASELINE_FIXED_HZ)` and `TickRate::new(BASELINE_FIXED_HZ)` | 120 |
 | `diagnostics::scenario::SIM_HZ` (`diagnostics/scenario.rs:6`) | 120 | the simulation rate the diagnostics scenarios budget against (`SIM_TICK_BUDGET_US_120HZ`) | 120 |
 | `physics::PhysicsSession` default (`physics/session.rs:283`) | 120 | `fixed_hz: super::BASELINE_FIXED_HZ` | 120 |
