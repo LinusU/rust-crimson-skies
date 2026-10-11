@@ -687,9 +687,12 @@ impl MissionHost {
     ///    session that carried it;
     /// 7. a fresh [`BlockLifecycleTable`] and [`WorldFactTable`], and the
     ///    complete refusal list recomputed from the stage's seed;
-    /// 8. the host's own tick record cleared (`last_tick()` is `None` — the
+    /// 8. the host's own records cleared: `last_tick()` is `None` (the
     ///    world's fixed ledger is the physics timeline and keeps counting;
-    ///    this host keeps no clock of its own);
+    ///    this host keeps no clock of its own) and [`Self::terminal`] is
+    ///    `None` — the terminal the previous generation settled is this
+    ///    host's own mark of a run that has ended, and the fresh session
+    ///    starts `Running`, so a rebuilt host is never already settled;
     /// 9. the world half: [`unload_world`] then [`load_world`] from the
     ///    stage's own definition, instance and meshes;
     /// 10. the player body respawned from the stage's start recipe, so
@@ -768,6 +771,12 @@ impl MissionHost {
         self.sound_archives = seed.sound_archives.clone();
         self.refusals = stage_refusals(seed);
         self.stepped = None;
+        // The terminal is this host's own record of a run that has ended
+        // (`.02`'s `settled` mark, which `step` and the composed entry read
+        // as "advance nothing"). The fresh control session starts `Running`,
+        // so the mark of the generation just torn down goes with it: a
+        // rebuilt host is never already settled.
+        self.settled = None;
         self.generation = generation;
         self.served = served;
 

@@ -3,8 +3,10 @@
 - **Task:** #1280 `VS-M01-RT-MISSION-HOST.03` — "Rebuild M01's authored initial
   state on restart with no leftover entity, cue or session id"
 - **Implementer:** `bunny-alpha-2`, 2026-10-11, branch
-  `rally/1280-rebuild-m01-s-authored-initial-state-on` cut from `origin/main`
-  `5fe4d4d2`
+  `rally/1280-rebuild-m01-s-authored-initial-state-on`, cut from `origin/main`
+  `5fe4d4d2` and rebased onto `origin/main` `011dea5a` (which landed
+  VS-M01-RT-MISSION-HOST `.02`, the terminal funnel this task's restart sits
+  beside; the rebase merged both into `host.rs` and is recorded below)
 - **Capabilities used:** `retail` (read of `$CS_GAME_DIR` through production
   code), `CS_ENGINE_IMAGE` set, ordinary build/test. Nothing here is
   `verified_original`; no original executable ran and no original capture was
@@ -38,7 +40,9 @@ that cannot leave the session half-rebuilt (the task's order, verbatim):
    list recomputed by `stage_refusals` — **the same function the launch now
    uses**, so a rebuilt host reports exactly the absences the launched one
    does;
-8. the host's own tick record cleared (`stepped = None`);
+8. the host's own records cleared (`stepped = None`, and the `.02`
+   `settled` mark of the torn-down generation too — a rebuilt host is never
+   "already settled", see the merge note below);
 9. the world half: `unload_world` then `load_world` from the stage's own
    definition, instance and meshes;
 10. the player body respawned from the stage's start recipe (every
@@ -77,16 +81,49 @@ Two triggers, each consumed exactly once:
   `Local`, hence the watch resource);
 - **a `MissionHostRestartRequest`** another system inserted — the seam "a
   restart requested after a terminal state" is latched through. On this
-  branch nothing raises it automatically: the terminal handler is
-  VS-M01-RT-MISSION-HOST `.02` (Rally #1279, in review), whose integration
-  task wires it to this latch; an automatic raise here would restart-loop
-  any program that settles again immediately.
+  branch nothing raises it automatically: `.02` has since landed on `main`
+  (`0881eea4`, rebased into this branch) and its funnel **exits** the run on
+  a terminal (`MissionTerminal::exit` as an `AppExit` message) instead of
+  restarting it, so the windowed composition never comes back to ask. An
+  automatic raise here would restart-loop any program that settles again
+  immediately, which is exactly why the composed system watches requests and
+  the playtest's reset — never the terminal itself. A "play again" style
+  caller (or a menu path) latches this resource and gets the rebuilt initial
+  state; the acceptance member `..._a_requested_restart_clears_the_settled_terminal`
+  drives that seam against a settled host.
 
 `MissionStage` is now a `Resource` the composition leaves on the world (it
 already derived `Clone, Debug`): the restart's world half and the fresh
 session relaunches are built from its own records. `teardown` removes it
 and every new restart resource, so a second composition still starts from
 nothing.
+
+### Sitting beside `.02`'s terminal funnel
+
+The rebase onto `011dea5a` merged this restart with `.02`'s landed work in
+the same three files (`host.rs`, `compose.rs`, `mod.rs`); the two features
+are complementary, and the merge needed no semantic change:
+
+- `.02` owns **ending** a run: `MissionHost::settle` funnels the two terminal
+  sources, keeps the `MissionTerminal` on the host (`settled`) and
+  `mission_host_tick` sends its `AppExit` message. The restart owns
+  **rebuilding** one: a fresh control session starts `Running`, so the
+  settled terminal of the torn-down generation is gone with the session that
+  carried it. The merge surfaced one real interaction, now fixed and
+  asserted: `settled` is the **host's own** mark of a run that has ended
+  (`step` answers `MissionHostStepError::Settled` and the composed entry
+  early-returns on it), and the pre-`.02` restart did not clear it — a
+  rebuilt host would have been "already settled" forever. `restart` now
+  clears it beside `stepped`, the host's docs say so, and every acceptance
+  member asserts `terminal().is_none()` after a restart (the synthetic ones
+  also assert the host *was* settled before it, so the reset path is proved
+  to be a restart after a terminal state).
+- `mission_host_tick`'s early return for a settled host and
+  `mission_host_restart`'s rebuild therefore compose: a settled host is
+  stepped by nothing, and a restart request rebuilds it into the authored
+  initial state, which the acceptance members assert from both sides.
+- `outcome_of` (`.02`) and `with_app_world` (this task) are two independent
+  helpers in `host.rs`; both survived the merge unchanged.
 
 ## Decisions this task had to make
 
@@ -175,10 +212,11 @@ production constructors:
 
 ## Residues
 
-- **`.02` integration.** When the terminal handler lands, its "restart after
-  this terminal" must latch `MissionHostRestartRequest`; the restart already
-  clears the settled terminal and any terminal latch `.02` stores on the
-  host is `.02`'s field to reset in its own integration step. The composed
+- **Who raises the restart after a terminal.** `.02` landed on `main` and
+  this branch merged with it; the restart clears the settled terminal (see
+  above). What stays open is a product path that *asks*: `.02`'s windowed
+  run exits on a terminal (`AppExit`), so a "play again"/menu caller
+  latching `MissionHostRestartRequest` belongs to a later task. The composed
   system deliberately does not watch the terminal itself (restart-loop).
 - **`playtest::scene`/`residency` `&mut App` signatures** remain; the swap
   above is the documented bridge (see the decision), and option (c) stays
@@ -253,5 +291,5 @@ No original executable ran; `retail` is read access to the owner's
 installation. Nothing here is `verified_original`. The restart does not
 reset the world's fixed physics ledger (documented above). The announced
 load is not re-announced. The terminal *exit mapping* (zero only for
-`Success`) is `.02`'s, still open; this stage clears a settled terminal on
-request and never decides a run's exit.
+`Success`) is `.02`'s (landed on `main` before this branch's rebase); this
+stage clears a settled terminal on request and never decides a run's exit.
