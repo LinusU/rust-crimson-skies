@@ -193,13 +193,24 @@ already state for sectors).
 Two acceptance demands needed authored synthetic content, both through
 production constructors:
 
-- **A real terminal**: the restart suite's stage swaps the seed's control
-  program for one whose single objective is `Const(true)` with
+- **A real terminal**: the suite's `settling_restart_stage` swaps the seed's
+  control program for one whose single objective is `Const(true)` with
   `Action::Finish(Outcome::Succeeded)` — the IR's own terminal request —
   so the composed entry drives a program to a settled terminal headlessly.
   M01 itself cannot (its two `Finish` blocks start dormant behind the `-1`
   sentinel and every wake path needs world facts a headless run does not
-  have — #1278's fact 7), so no retail program is touched.
+  have — #1278's fact 7), so no retail program is touched. Only the member
+  that proves a restart after a settled terminal drives this variant.
+- **A mutating run that keeps moving**: the other three members use
+  `restart_stage`, which keeps the seed's own control program (its one
+  objective is `true` and completes on the first tick, and it settles no
+  terminal). This split is `.02`'s rule made visible: a **settled** host
+  advances nothing, so a stage that settles on its first evaluated tick
+  never moves its environment clock or world-actor tick — measured on this
+  branch, where the settling variant made those two asserts fail with the
+  funnel landed. The mutate phase of the meta-reset member therefore runs a
+  never-settled program and proves the *mutated* state is what the restart
+  rebuilds over.
 - **A pending cue**: the F39-C fixture `declared_synthetic_objectives()`,
   production-lowered through `lower_program`, with its radio timer's start
   re-declared `DeclaredTimerStart::AtTick(1)` instead of `OnArm`. The host
@@ -232,7 +243,8 @@ Tests named `accept_vs_m01_runtime_host_03_*` in
 one `mod` line in that directory's `main.rs`:
 
 - **`..._a_meta_reset_rebuilds_the_authored_initial_state`** (CI): composes
-  the synthetic stage (harbor world, settling control program, cue-emitting
+  the synthetic stage (harbor world, the seed's own never-settling control
+  program, cue-emitting
   objective program), steps until the environment clock and world-actor
   tick moved and a cue is pending, then raises the playtest's own reset.
   Asserts on produced state: the stored teardown report names the torn-down
@@ -242,7 +254,8 @@ one `mod` line in that directory's `main.rs`:
   initial tick, the record player and marker consumer fresh on the new ids,
   the objective session on the new generation with **no** stale cue, the
   control session `Running` with no stepped tick, the host's tick record
-  cleared, the stale composed-step report gone; the world resident again
+  cleared, the host's own settled-terminal mark `None`, the stale
+  composed-step report gone; the world resident again
   with the same authored population; exactly one player body at the stage's
   start pose flying the original-law record; the one delivered binding
   neither doubled nor gone. A second reset advances both identities again.
