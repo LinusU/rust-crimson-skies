@@ -73,16 +73,45 @@
 //! composed entry then sends [`MissionTerminal::exit`]'s `AppExit` as a
 //! message, so the windowed run ends and the headless test can read it.
 //!
+//! # Restart: the authored initial state, rebuilt
+//!
+//! [`MissionHost::restart`] (VS-M01-RT-MISSION-HOST `.03`, Rally #1280)
+//! rebuilds every record this host drives — and the world half beside them —
+//! under a **fresh** [`SessionGeneration`] and [`SessionId`], in an order that
+//! cannot leave the session half-rebuilt: the objective session's `retry`
+//! runs first (its [`crate::objectives::TeardownReport`] names the wave
+//! actors, cues, armed deadlines and settled outcome of the generation being
+//! torn down, taken before the fresh runtime exists because the fresh
+//! runtime reuses the old instance ids), then the marker consumer's `retry`,
+//! the environment clock's `restart`, a fresh record player, a fresh
+//! world-actor session and a fresh control session relaunched from the
+//! stage's own stored programs, fresh fact tables, and only then the world
+//! half — `unload_world` + `load_world` from the stage's definition,
+//! instance and meshes — with the player body respawned from the stage's
+//! start recipe so exactly one exists. A restart asked for the **live**
+//! generation fails by name before anything is rebuilt
+//! (`docs/contracts/IDENTITY-CONTENT.md`: no cross-session id reuse).
+//!
+//! Two triggers reach it through [`mission_host_restart`], the composed
+//! `PostUpdate` system [`install_mission_host`] installs beside the per-tick
+//! entry: the playtest's own meta reset (`R`, observed through
+//! [`PlaytestState::resets`] — `perform_reset` runs in `Update`, so a latch
+//! in `PostUpdate` is the first place the increment is visible), and a
+//! [`MissionHostRestartRequest`] another system raises — the seam a terminal
+//! handler latches a restart through.
+//!
 //! # What is not claimed
 //!
 //! No original executable ran; `retail` is read access to the owner's
-//! installation. Nothing here is `verified_original`. A **restart** still
-//! belongs to VS-M01-RT-MISSION-HOST `.03`, so this stage reloads nothing, and
-//! M01 itself cannot reach a terminal headlessly: both of its `Finish` blocks
-//! start dormant behind the `-1` sentinel and every wake path needs world
-//! facts a headless run does not have (a measured property of the content —
-//! #1278's fact 7 — not a defect), so terminal behaviour is proven on a
-//! synthetic stage whose program really does settle.
+//! installation. Nothing here is `verified_original`. A settled run now
+//! exits with the outcome it maps to and a restart rebuilds the authored
+//! initial state (`.02` and `.03` of VS-M01-RT-MISSION-HOST); the fresh
+//! control session a restart launches starts `Running` again, and M01 itself
+//! cannot reach a terminal headlessly: both of its `Finish` blocks start
+//! dormant behind the `-1` sentinel and every wake path needs world facts a
+//! headless run does not have (a measured property of the content — #1278's
+//! fact 7 — not a defect), so terminal behaviour is proven on a synthetic
+//! stage whose program really does settle.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -90,8 +119,9 @@ use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
 use bevy::ecs::schedule::IntoScheduleConfigs;
-use bevy::prelude::{App, FixedPostUpdate, Resource, World};
+use bevy::prelude::{App, Entity, FixedPostUpdate, PostUpdate, Resource, With, World};
 use bevy::time::{Fixed, Time};
+use cs_content::world::WorldObjectId;
 use cs_script::ir::MissionProgram;
 use cs_script::runtime::{EventKind, SessionGeneration, TerminalState, TickError};
 use cs_sim::mission::{BlockLifecycleTable, LaunchRefused, MissionSession, MissionTick};
@@ -102,7 +132,7 @@ use cs_sim::world_actors::runtime::WorldActorError;
 use cs_types::Tick;
 use cs_types::net::SessionId;
 
-use super::compose::MissionStage;
+use super::compose::{MissionPlayerBody, MissionStage, spawn_player};
 use super::terminal::{MissionTerminal, MissionTerminalSource};
 use crate::animation::mission::{MissionAnimationBinding, StartupAnimation};
 use crate::audio::AudioSession;
@@ -111,11 +141,18 @@ use crate::mission_animations::{
     MissionAnimationPlayer, MissionAnimationStepRefusal, PlayerError, TickReport,
     step_mission_animations,
 };
-use crate::mission_markers::{MarkerDelivery, MissionMarkerBindings, MissionMarkerConsumer};
+use crate::mission_markers::{
+    MarkerDelivery, MarkerTeardown, MarkerTeardownError, MissionMarkerBindings,
+    MissionMarkerConsumer,
+};
 use crate::mission_session::SoundArchive;
-use crate::objectives::{LoweredObjectives, ObjectiveSession, SessionLaunchError, SessionTick};
+use crate::objectives::{
+    LoweredObjectives, ObjectiveSession, SessionLaunchError, SessionTick, TeardownReport,
+};
 use crate::physics::{BASELINE_FIXED_HZ, PhysicsTickLedger};
 use crate::playtest::PlaytestState;
+use crate::playtest::scene::SceneError;
+use crate::world::residency::{load_world, unload_world};
 use crate::world_actors::{
     LoweredWorldActors, WorldActorLaunchError, WorldActorSession, WorldActorSessionTick,
     WorldActorTick,
@@ -412,6 +449,130 @@ pub struct MissionHostReport {
     pub answer: Result<MissionHostTick, MissionHostStepError>,
 }
 
+/// Why a restart could not rebuild the authored initial state.
+///
+/// Every variant names the record that refused, in the order the restart
+/// runs them; a refusal is never returned as a half-successful answer
+/// (`docs/contracts/CLI-EVIDENCE.md`).
+#[derive(Debug)]
+pub enum MissionHostRestartError {
+    /// The generation asked for is the live one, so the rebuilt sessions
+    /// would carry the very stamp the torn-down artifacts already do
+    /// (`IDENTITY-CONTENT`: no cross-session id reuse). Refused before
+    /// anything was rebuilt.
+    SameGeneration {
+        /// The generation that was asked for and already serves.
+        session: SessionGeneration,
+    },
+    /// The objective session refused to relaunch the declared program.
+    Objectives(SessionLaunchError),
+    /// The marker consumer refused the new session id.
+    Markers(MarkerTeardownError),
+    /// The environment clock refused to rebuild from the authored
+    /// definition.
+    Environment(TimelineError),
+    /// The animation record player refused the host's session or timeline.
+    Animation(PlayerError),
+    /// The world-actor session refused to relaunch the lowered program.
+    WorldActors(WorldActorLaunchError),
+    /// The control program refused to validate and launch again.
+    Script(LaunchRefused),
+    /// The world half refused: the reload would not load from the stage's
+    /// own definition, instance and meshes (the unload is a no-op when
+    /// nothing is resident, and reports so through an empty despawn list).
+    World(crate::world::WorldLoadError),
+    /// The player body could not be respawned through the production
+    /// physics path.
+    Player(SceneError),
+}
+
+impl fmt::Display for MissionHostRestartError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::SameGeneration { session } => write!(
+                f,
+                "generation {session:?} is the live mission-host generation, so a restart that \
+                 reused it would re-stamp the cues, waves and events of a session that is still \
+                 running (IDENTITY-CONTENT: no cross-session id reuse)"
+            ),
+            Self::Objectives(error) => {
+                write!(f, "the objective session refuses to relaunch: {error}")
+            }
+            Self::Markers(error) => {
+                write!(f, "the marker consumer refuses the new session: {error}")
+            }
+            Self::Environment(error) => write!(f, "the environment clock refuses: {error}"),
+            Self::Animation(error) => {
+                write!(f, "the animation record player refuses: {error}")
+            }
+            Self::WorldActors(error) => {
+                write!(f, "the world-actor session refuses to relaunch: {error}")
+            }
+            Self::Script(error) => {
+                write!(
+                    f,
+                    "the control program refuses to launch again: {}",
+                    error.error
+                )
+            }
+            Self::World(error) => write!(f, "the mission's world refuses to reload: {error}"),
+            Self::Player(error) => write!(f, "the player's body refuses to respawn: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for MissionHostRestartError {}
+
+/// What one restart tore down and rebuilt — the previous generation's
+/// remaining ownership as data a caller can assert on.
+///
+/// Nothing here is narrated: `objectives` is the objective session's own
+/// [`TeardownReport`] (the generation it tore down, the wave actors to
+/// despawn, the cues that will now never play, the deadlines that were still
+/// armed, the outcome it settled), `markers` is the marker ledger's own
+/// release, and the two world lists are the residency's own despawn and
+/// respawn answers for the stage's instance.
+#[derive(Resource, Clone, Debug)]
+pub struct MissionHostRestartReport {
+    /// The generation whose sessions were torn down.
+    pub torn_down: SessionGeneration,
+    /// The generation the rebuilt sessions now serve.
+    pub started: SessionGeneration,
+    /// The session id the record player and the marker consumer now serve.
+    pub served: SessionId,
+    /// What the objective session's `retry` reported before the fresh
+    /// runtime replaced it.
+    pub objectives: TeardownReport,
+    /// What the marker consumer's `retry` released.
+    pub markers: MarkerTeardown,
+    /// The world objects the unload despawned, in the order the residency
+    /// named them; empty when nothing was resident.
+    pub world_despawned: Vec<WorldObjectId>,
+    /// The world objects the reload respawned from the stage's own instance.
+    pub world_respawned: Vec<WorldObjectId>,
+}
+
+/// A restart asked for by another system, latched until
+/// [`mission_host_restart`] consumes it.
+///
+/// This is the seam a terminal handler latches a restart through ("a restart
+/// requested after a terminal state"): inserting the resource is a request,
+/// the composed `PostUpdate` system takes it, and the fresh control session
+/// the restart launches starts `Running` again. The playtest's own meta
+/// reset (`R`) reaches the same system through [`PlaytestState::resets`]
+/// without going through here.
+#[derive(Resource, Debug, Default)]
+pub struct MissionHostRestartRequest;
+
+/// A restart the composed system could not perform, kept so a run says what
+/// it did not do rather than silently keeping the old sessions
+/// (`docs/contracts/CLI-EVIDENCE.md`).
+#[derive(Resource, Debug)]
+pub struct MissionHostRestartFailure {
+    /// The refusal itself, named by the record that produced it.
+    pub error: MissionHostRestartError,
+}
+
 /// The mission host of one composition: every record the stage carries, plus
 /// the sessions launched from them.
 ///
@@ -460,7 +621,6 @@ impl MissionHost {
         served: SessionId,
     ) -> Result<Self, MissionHostLaunchError> {
         let seed = &stage.host;
-        let mut refusals = seed.refusals.clone();
 
         let environment = seed.environment.clone();
 
@@ -469,25 +629,13 @@ impl MissionHost {
                 WorldActorSession::launch(lowered.clone(), generation)
                     .map_err(MissionHostLaunchError::WorldActors)?,
             ),
-            None => {
-                refusals.push(MissionHostRefusal::WorldActors {
-                    detail: "this stage carries no lowered world-actor program, so no world-actor \
-                             session steps"
-                        .to_owned(),
-                });
-                None
-            }
+            None => None,
         };
 
         let mut animation = MissionAnimationPlayer::new(served, BASELINE_FIXED_HZ)
             .map_err(MissionHostLaunchError::Animation)?;
-        match &seed.animation {
-            Some(binding) => offer_startup_rows(&mut animation, binding),
-            None => refusals.push(MissionHostRefusal::AnimationJoin {
-                detail: "this stage carries no animation join, so no startup row was offered to \
-                         the record player"
-                    .to_owned(),
-            }),
+        if let Some(binding) = &seed.animation {
+            offer_startup_rows(&mut animation, binding);
         }
         let markers = MissionMarkerConsumer::new(served, seed.markers.clone());
         let objectives = ObjectiveSession::launch(seed.objectives.clone(), generation)
@@ -495,17 +643,7 @@ impl MissionHost {
         let script = MissionSession::launch(seed.control.clone(), generation, [])
             .map_err(MissionHostLaunchError::Script)?;
 
-        refusals.push(MissionHostRefusal::WorldObservation {
-            detail: "no stage builds a WorldObservation out of the ECS world, so the world fact \
-                     table answers from its empty, fail-closed report for every tick"
-                .to_owned(),
-        });
-        refusals.push(MissionHostRefusal::BlockLifecycles {
-            detail: "no production reader declares a record's BEGIN_DORMANT lifecycle into the \
-                     block lifecycle table, so the table is empty and every Condition::\
-                     ObjectiveAwake answers false"
-                .to_owned(),
-        });
+        let refusals = stage_refusals(seed);
 
         Ok(Self {
             environment,
@@ -523,6 +661,151 @@ impl MissionHost {
             served,
             stepped: None,
             settled: None,
+        })
+    }
+
+    /// Rebuilds the authored initial state of `stage` under `generation`,
+    /// leaving nothing of the previous session behind.
+    ///
+    /// The order is the one that cannot leave the session half-rebuilt:
+    ///
+    /// 1. [`ObjectiveSession::retry`] **first** — its
+    ///    [`TeardownReport`] names the wave actors to despawn, the cues that
+    ///    will never play, the armed deadlines and the settled outcome, taken
+    ///    before the fresh runtime exists because the fresh runtime reuses
+    ///    the old instance ids;
+    /// 2. [`MissionMarkerConsumer::retry`] — the marker ledger's releases;
+    /// 3. [`EnvironmentSession::restart`] — the authored weather at tick
+    ///    zero again, keeping the run's seeds;
+    /// 4. a fresh [`MissionAnimationPlayer`] with the stage's join rows
+    ///    offered again at its tick zero;
+    /// 5. a fresh [`WorldActorSession`] relaunched from the stage's stored
+    ///    [`LoweredWorldActors`];
+    /// 6. a fresh [`MissionSession`] relaunched from the stage's stored
+    ///    control program — its state is `Running` again, so whatever
+    ///    terminal the previous generation settled is cleared with the
+    ///    session that carried it;
+    /// 7. a fresh [`BlockLifecycleTable`] and [`WorldFactTable`], and the
+    ///    complete refusal list recomputed from the stage's seed;
+    /// 8. the host's own tick record cleared (`last_tick()` is `None` — the
+    ///    world's fixed ledger is the physics timeline and keeps counting;
+    ///    this host keeps no clock of its own);
+    /// 9. the world half: [`unload_world`] then [`load_world`] from the
+    ///    stage's own definition, instance and meshes;
+    /// 10. the player body respawned from the stage's start recipe, so
+    ///     exactly one exists.
+    ///
+    /// `SessionGeneration` and `SessionId` both advance: a restart asked for
+    /// the **live** generation fails by name before anything is rebuilt
+    /// (`docs/contracts/IDENTITY-CONTENT.md` — a rebuilt session's cues,
+    /// waves and events would carry the very stamp the torn-down artifacts
+    /// already do).
+    ///
+    /// The world half reaches the residency through a scratch-`App` world
+    /// swap: [`load_world`]/[`unload_world`] take `&mut App` while this
+    /// method has only `&mut World`, and every `app.` access those two make
+    /// is `app.world()`/`app.world_mut()` (measured across
+    /// `world/residency.rs` and `world/spawn.rs`), so an `App` whose main
+    /// world *is* the live one behaves exactly as the composition's own.
+    /// `docs/findings/2026-10-11-vs-m01-rt-mission-host-restart.md` records
+    /// the choice and the two rejected options.
+    ///
+    /// # Errors
+    ///
+    /// [`MissionHostRestartError`] naming the record that refused. Each
+    /// constructor is all-or-nothing (the retry paths build the fresh value
+    /// before releasing the old one), and the world half is
+    /// [`load_world`]'s own transaction — but a refusal after the sessions
+    /// were rebuilt leaves the fresh sessions standing with the error
+    /// reported by name, never a silent half-restart.
+    pub fn restart(
+        &mut self,
+        world: &mut World,
+        stage: &MissionStage,
+        generation: SessionGeneration,
+    ) -> Result<MissionHostRestartReport, MissionHostRestartError> {
+        if generation == self.generation {
+            return Err(MissionHostRestartError::SameGeneration {
+                session: generation,
+            });
+        }
+        let served = host_session_id(generation);
+        let seed = &stage.host;
+
+        let objectives = self
+            .objectives
+            .retry(generation)
+            .map_err(MissionHostRestartError::Objectives)?;
+        let markers = self
+            .markers
+            .retry(served)
+            .map_err(MissionHostRestartError::Markers)?;
+        self.environment
+            .restart()
+            .map_err(MissionHostRestartError::Environment)?;
+
+        let mut animation = MissionAnimationPlayer::new(served, BASELINE_FIXED_HZ)
+            .map_err(MissionHostRestartError::Animation)?;
+        if let Some(binding) = &seed.animation {
+            offer_startup_rows(&mut animation, binding);
+        }
+        self.animation = animation;
+        // `markers.retry(served)` above already released the old ledger and
+        // stamped the new session on the live consumer, whose declared cue
+        // table is the stage's own — nothing else about it changes.
+        self.world_actors = match &seed.world_actors {
+            Some(lowered) => Some(
+                WorldActorSession::launch(lowered.clone(), generation)
+                    .map_err(MissionHostRestartError::WorldActors)?,
+            ),
+            None => None,
+        };
+        self.script = MissionSession::launch(seed.control.clone(), generation, [])
+            .map_err(MissionHostRestartError::Script)?;
+        self.blocks = BlockLifecycleTable::new();
+        self.world_facts = WorldFactTable::new(seed.resolver.clone());
+        self.operands = WorldOperands::of(&seed.control);
+        self.sound_archives = seed.sound_archives.clone();
+        self.refusals = stage_refusals(seed);
+        self.stepped = None;
+        self.generation = generation;
+        self.served = served;
+
+        let world_despawned: Vec<WorldObjectId> = with_app_world(world, |app| {
+            unload_world(app).map_or_else(Vec::new, |load| load.despawned)
+        });
+        let respawned = with_app_world(world, |app| {
+            load_world(app, &stage.world, &stage.instance, &stage.meshes)
+        })
+        .map_err(MissionHostRestartError::World)?;
+        let world_respawned: Vec<WorldObjectId> = respawned
+            .objects()
+            .iter()
+            .map(|spawned| spawned.object.clone())
+            .collect();
+
+        let bodies: Vec<Entity> = {
+            let mut query = world.query_filtered::<Entity, With<MissionPlayerBody>>();
+            query.iter(world).collect()
+        };
+        for body in bodies {
+            let _ = world.despawn(body);
+        }
+        spawn_player(world).map_err(MissionHostRestartError::Player)?;
+
+        // The previous composed step's report describes the generation just
+        // torn down; it is removed so this restart leaves no stale answer and
+        // the next step writes this generation's own.
+        world.remove_resource::<MissionHostReport>();
+
+        Ok(MissionHostRestartReport {
+            torn_down: objectives.session,
+            started: generation,
+            served,
+            objectives,
+            markers,
+            world_despawned,
+            world_respawned,
         })
     }
 
@@ -822,6 +1105,43 @@ impl MissionHost {
     }
 }
 
+/// The complete refusal list a launch or a restart runs over: the stage
+/// seed's own, then the absences only the seed can see (no world-actor
+/// program, no animation join), then the two every host names (the
+/// unobserved world fact fold and the undeclared block lifecycles).
+///
+/// Launch and restart share this one function so a rebuilt host reports
+/// exactly the absences the launched one did.
+fn stage_refusals(seed: &MissionHostSeed) -> Vec<MissionHostRefusal> {
+    let mut refusals = seed.refusals.clone();
+    if seed.world_actors.is_none() {
+        refusals.push(MissionHostRefusal::WorldActors {
+            detail: "this stage carries no lowered world-actor program, so no world-actor \
+                     session steps"
+                .to_owned(),
+        });
+    }
+    if seed.animation.is_none() {
+        refusals.push(MissionHostRefusal::AnimationJoin {
+            detail: "this stage carries no animation join, so no startup row was offered to the \
+                     record player"
+                .to_owned(),
+        });
+    }
+    refusals.push(MissionHostRefusal::WorldObservation {
+        detail: "no stage builds a WorldObservation out of the ECS world, so the world fact \
+                 table answers from its empty, fail-closed report for every tick"
+            .to_owned(),
+    });
+    refusals.push(MissionHostRefusal::BlockLifecycles {
+        detail: "no production reader declares a record's BEGIN_DORMANT lifecycle into the \
+                 block lifecycle table, so the table is empty and every Condition::\
+                 ObjectiveAwake answers false"
+            .to_owned(),
+    });
+    refusals
+}
+
 /// Offers a join's startup rows to `animation`, grouped by their own event
 /// and stamped at the tick the player is about to advance (its tick zero).
 ///
@@ -860,6 +1180,27 @@ fn outcome_of(state: TerminalState) -> TerminalOutcome {
         }
         TerminalState::Running => TerminalOutcome::Failure,
     }
+}
+
+/// Runs `f` with an `App` whose main world **is** `world`, so the `&mut App`
+/// residency entry points ([`load_world`]/[`unload_world`]) act on the live
+/// composition.
+///
+/// This is the fact-9 option the restart chose, and it is safe for exactly
+/// one measured reason: every `app.` access those two make — and every one
+/// their helper `world/spawn.rs` makes — is `app.world()` or
+/// `app.world_mut()` (measured across both files on 2026-10-11, recorded in
+/// `docs/findings/2026-10-11-vs-m01-rt-mission-host-restart.md`), so they
+/// behave identically on an `App` that owns nothing but a world handle. The
+/// scratch app is dropped with the placeholder world it was built with; the
+/// live world — resources, entities and all — comes back exactly where it
+/// was, mutated only by the call in between.
+fn with_app_world<R>(world: &mut World, f: impl FnOnce(&mut App) -> R) -> R {
+    let mut scratch = App::empty();
+    let placeholder = std::mem::replace(scratch.world_mut(), std::mem::take(world));
+    let result = f(&mut scratch);
+    *world = std::mem::replace(scratch.world_mut(), placeholder);
+    result
 }
 
 /// The composed per-tick entry: one step of the mission host per committed
@@ -918,8 +1259,80 @@ pub fn mission_host_tick(world: &mut World) {
     world.insert_resource(MissionHostReport { tick, answer });
 }
 
+/// How many playtest resets the composed restart has already observed.
+///
+/// `perform_reset` runs in `Update` and increments
+/// [`PlaytestState::resets`] there; the restart system runs in
+/// [`PostUpdate`], the first schedule after it, and compares against this
+/// mark — the fact-11 seam.
+#[derive(Resource, Debug)]
+struct MissionHostRestartWatch {
+    /// The last observed `PlaytestState::resets`.
+    resets: u32,
+}
+
+/// The composed restart entry: one full rebuild per requested restart.
+///
+/// Two triggers reach it, and both are consumed exactly once:
+///
+/// * the playtest's own meta reset (`R`/[`PlaytestRequests`](crate::playtest::PlaytestRequests)
+///   → `perform_reset` in `Update`), observed through
+///   [`PlaytestState::resets`] against [`MissionHostRestartWatch`];
+/// * a [`MissionHostRestartRequest`] another system inserted — the seam a
+///   terminal handler latches "restart after this terminal" through.
+///
+/// It takes the host **and** the stage out of the world for the restart
+/// (both are put back whatever happens), mints the next generation from the
+/// process-wide counter, and stores the [`MissionHostRestartReport`] — or,
+/// when a constructor refused, the [`MissionHostRestartFailure`] naming it.
+/// A world with no host, or with no stage resource, runs nothing: "no
+/// session, no host" as everywhere else in this composition.
+pub fn mission_host_restart(world: &mut World) {
+    let requested = world
+        .remove_resource::<MissionHostRestartRequest>()
+        .is_some();
+    let resets = world
+        .get_resource::<PlaytestState>()
+        .map(|state| state.resets);
+    let mut reset = false;
+    if let Some(resets) = resets
+        && let Some(mut watch) = world.get_resource_mut::<MissionHostRestartWatch>()
+    {
+        if watch.resets != resets {
+            watch.resets = resets;
+            reset = true;
+        }
+    }
+    if !(requested || reset) {
+        return;
+    }
+    let Some(mut host) = world.remove_resource::<MissionHost>() else {
+        return;
+    };
+    let Some(stage) = world.remove_resource::<MissionStage>() else {
+        world.insert_resource(host);
+        return;
+    };
+    let generation = mint_host_generation();
+    let result = host.restart(world, &stage, generation);
+    world.insert_resource(host);
+    world.insert_resource(stage);
+    match result {
+        Ok(report) => {
+            world.remove_resource::<MissionHostRestartFailure>();
+            world.insert_resource(report);
+        }
+        Err(error) => {
+            world.remove_resource::<MissionHostRestartReport>();
+            world.insert_resource(MissionHostRestartFailure { error });
+        }
+    }
+}
+
 /// Installs [`mission_host_tick`] in the fixed-tick schedule, after the
-/// physics step of the same tick.
+/// physics step of the same tick, and [`mission_host_restart`] in
+/// [`PostUpdate`] — after the playtest's `Update`-schedule reset has run and
+/// incremented [`PlaytestState::resets`].
 ///
 /// This is the half the windowed composition wires: it inserts the
 /// [`MissionHost`] resource and then calls here, so a composition installs
@@ -931,4 +1344,10 @@ pub fn install_mission_host(app: &mut App) {
         FixedPostUpdate,
         mission_host_tick.after(PhysicsSystems::StepSimulation),
     );
+    app.add_systems(PostUpdate, mission_host_restart);
+    let resets = app
+        .world()
+        .get_resource::<PlaytestState>()
+        .map_or(0, |state| state.resets);
+    app.insert_resource(MissionHostRestartWatch { resets });
 }

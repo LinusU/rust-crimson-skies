@@ -67,7 +67,11 @@
 //! record it cannot drive is named as a [`host::MissionHostRefusal`] rather
 //! than replaced. A settled run ends through [`terminal::MissionTerminal`]:
 //! one terminal from either source, one exit, and the one report line the run
-//! writes.
+//! writes. [`host::MissionHost::restart`] rebuilds the authored initial
+//! state — every session, the world and the player body — under a fresh
+//! session generation, and [`host::mission_host_restart`] is the composed
+//! entry that observes the playtest's meta reset and a
+//! [`host::MissionHostRestartRequest`] and performs it.
 
 mod compose;
 mod content;
@@ -85,9 +89,11 @@ pub use content::{
     root_seed_from,
 };
 pub use host::{
-    MissionHost, MissionHostLaunchError, MissionHostRefusal, MissionHostReport, MissionHostSeed,
-    MissionHostStepError, MissionHostTick, host_session_id, install_mission_host,
-    mint_host_generation, mission_host_tick, no_declared_objectives,
+    MissionHost, MissionHostLaunchError, MissionHostRefusal, MissionHostReport,
+    MissionHostRestartError, MissionHostRestartFailure, MissionHostRestartReport,
+    MissionHostRestartRequest, MissionHostSeed, MissionHostStepError, MissionHostTick,
+    host_session_id, install_mission_host, mint_host_generation, mission_host_restart,
+    mission_host_tick, no_declared_objectives,
 };
 pub use player_visual::{
     MISSION_PLAYER_AIRCRAFT_ROOT_NAME, MISSION_PLAYER_INTACT_NODE_NAME,
