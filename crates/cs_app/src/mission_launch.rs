@@ -1270,7 +1270,7 @@ fn measure_animation_carrier(
                                 rows.len()
                             ),
                         },
-                        Ok((0, refused)) => SurfaceVerdict::Unsupported {
+                        Ok((0, refused, _player)) => SurfaceVerdict::Unsupported {
                             mechanism: mechanism.to_owned(),
                             detail: format!(
                                 "{} startup rows resolve a record in {key} and the \
@@ -1278,7 +1278,7 @@ fn measure_animation_carrier(
                                 rows.len()
                             ),
                         },
-                        Ok((running, refused)) => SurfaceVerdict::Satisfied {
+                        Ok((running, refused, _player)) => SurfaceVerdict::Satisfied {
                             consumer: format!(
                                 "mission_animations::MissionAnimationPlayer started \
                                  {running} of {} {key} rows through \
@@ -1301,18 +1301,25 @@ fn measure_animation_carrier(
 
 /// Starts one carrier's rows through the production consumer exactly as a
 /// mission host would: one [`MissionAnimationPlayer`], each startup event's
-/// rows offered under that event's own label.
+/// rows offered under that event's own label. The player comes back beside
+/// the counts, so a caller can read the rate the run actually used instead
+/// of re-deriving it from a literal.
 ///
-/// The tick rate is the **host's** timeline (the plan claims no original
-/// rate — `f20-anim.tick-rate-unmeasured` stands); nothing here is advanced
-/// or rendered, the run only proves the consumer takes these rows.
+/// The tick rate is the **host's** timeline: [`crate::physics::BASELINE_FIXED_HZ`],
+/// the rate `MissionHost::launch` hands its own player (#1278) — not a
+/// second number of this surface's own (the plan claims no original rate —
+/// `f20-anim.tick-rate-unmeasured` stands). Nothing here is advanced or
+/// rendered, the run only proves the consumer takes these rows.
 ///
 /// # Errors
 ///
 /// The player's own construction refusals, carried verbatim.
-fn started_rows(rows: &[StartupAnimation]) -> Result<(usize, usize), String> {
+fn started_rows(
+    rows: &[StartupAnimation],
+) -> Result<(usize, usize, MissionAnimationPlayer), String> {
     let session = SessionId::new(1).expect("one is a live session id");
-    let mut player = MissionAnimationPlayer::new(session, 64).map_err(|error| error.to_string())?;
+    let mut player = MissionAnimationPlayer::new(session, crate::physics::BASELINE_FIXED_HZ)
+        .map_err(|error| error.to_string())?;
     let mut events: Vec<(String, Vec<StartupAnimation>)> = Vec::new();
     for row in rows {
         match events.iter_mut().find(|(event, _)| event == row.event()) {
@@ -1323,7 +1330,7 @@ fn started_rows(rows: &[StartupAnimation]) -> Result<(usize, usize), String> {
     for (event, group) in &events {
         let _ = player.start(event, Tick(0), group);
     }
-    Ok((player.running_count(), player.refused_count()))
+    Ok((player.running_count(), player.refused_count(), player))
 }
 
 /// Sound archives inside the mission's scope: the mission directory, the
@@ -1547,4 +1554,31 @@ fn manifest_record<'a>(found: &'a Discovery, key: &str) -> Option<&'a InstallFil
 fn read_member_bytes(install_root: &Path, record: &InstallFileRecord) -> Result<Vec<u8>, String> {
     let host: PathBuf = install_root.join(record.relative_spelling.as_str());
     std::fs::read(&host).map_err(|error| format!("cannot read {}: {error}", host.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::started_rows;
+    use crate::animation::mission::StartupAnimation;
+    use crate::physics::BASELINE_FIXED_HZ;
+
+    /// #1284: the record player [`started_rows`] builds runs on the host's
+    /// timeline. The player the production path hands back is the one read
+    /// here, so a literal rate reintroduced in `started_rows` (the drift
+    /// this test was written for: a `64` beside a doc claiming the host's
+    /// timeline) makes this assertion fail rather than pass unnoticed.
+    #[test]
+    fn accept_vs_m01_rt_anim_rate_literal_started_rows_runs_its_player_on_the_host_timeline() {
+        let rows: &[StartupAnimation] = &[];
+        let (running, refused, player) =
+            started_rows(rows).expect("an empty row list constructs its player");
+        assert_eq!((running, refused), (0, 0), "the run offered nothing");
+        assert_eq!(
+            player.ticks_per_second(),
+            BASELINE_FIXED_HZ,
+            "started_rows built its record player at {} ticks/s, not the host's \
+             timeline ({BASELINE_FIXED_HZ} Hz)",
+            player.ticks_per_second(),
+        );
+    }
 }
