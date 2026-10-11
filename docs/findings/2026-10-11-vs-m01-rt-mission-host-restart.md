@@ -291,12 +291,25 @@ calls the restart itself.
 
 ## Checks run on this branch
 
+On the final tree, `330e5ac0` (rebased onto `origin/main` `5d96eb8f`):
+
 | check | result |
 | --- | --- |
 | `cargo fmt --all -- --check` | 0 |
 | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
-| `cargo test --workspace --locked` | (recorded at handover) |
-| `cargo test --workspace --locked -- accept_vs_m01_runtime_host_03_ --include-ignored` | (recorded at handover) |
+| `cargo test --workspace --locked` | 0 (498 test binaries, no failures) |
+| `cargo test --workspace --locked -- accept_vs_m01_runtime_host_03_ --include-ignored` | 0 (4 members run: 3 synthetic + the retail M01 member; all pass) |
+
+The same four checks were green on the branch's previous trees too; the two
+rebases this branch went through (`011dea5a`, `.02`'s terminal funnel, and
+`60e99c00`/`5d96eb8f`, the world-actor cadence work) changed no result, and
+both are recorded above. One honest failure history is worth keeping: the
+**first** post-`.02` selection run failed its three synthetic members for
+two distinct merge reasons (the `settled` mark the restart did not clear,
+and the settling mutate stage `.02`'s "a settled run advances nothing"
+rule stopped after one tick); both were fixed by this branch, and every
+member has passed on every tree since. The retail member takes ≈10 minutes
+of world load on this host, which is the selection run's whole duration.
 
 ## What is not claimed
 
