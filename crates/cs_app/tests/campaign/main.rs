@@ -301,6 +301,7 @@ mod objaddr;
 mod record_objectives_sound;
 mod vs_m01_geometry_verdict;
 mod vs_m01_rt_content;
+mod vs_m01_rt_evidence_audio;
 mod vs_m01_rt_evidence_capture;
 mod vs_m01_rt_host;
 mod vs_m01_rt_host_02;

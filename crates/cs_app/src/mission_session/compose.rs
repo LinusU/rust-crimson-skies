@@ -680,6 +680,7 @@ fn add_composition(
             app,
             launch,
             stage.start.position.map(|c| c as f32),
+            &crate::audio::CapabilityDeclaration::from_environment(),
         )
         .map_err(MissionCompositionError::LaunchSound)?;
     }

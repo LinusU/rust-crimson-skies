@@ -107,8 +107,8 @@ pub use host::{
     mission_host_tick, no_declared_objectives,
 };
 pub use launch_sound::{
-    LAUNCH_SOUND_CONTAINER, LaunchAudioProbe, LaunchSound, LaunchSoundError, measure_launch_sound,
-    member_content_id,
+    LAUNCH_SOUND_CONTAINER, LaunchAudioProbe, LaunchSound, LaunchSoundError, backend_refusal,
+    install_launch_audio, measure_launch_sound, member_content_id, stage_container,
 };
 pub use player_visual::{
     MISSION_PLAYER_AIRCRAFT_ROOT_NAME, MISSION_PLAYER_INTACT_NODE_NAME,

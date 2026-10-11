@@ -319,6 +319,9 @@ pub fn stage_container(
 /// voice starts, the sample library the load fills, and the scene generation
 /// the handoff reads.
 ///
+/// `declaration` is the machine's capability declaration: the composition passes
+/// `$CS_CAPABILITIES`, a test passes its own.
+///
 /// The sample source (the content session the load ran under) is published
 /// by the caller once the load has run.
 ///
@@ -329,20 +332,20 @@ pub fn install_launch_audio(
     app: &mut App,
     launch: &LaunchSound,
     start_m: [f32; 3],
+    declaration: &CapabilityDeclaration,
 ) -> Result<(), LaunchSoundError> {
     let refuse = |reason: String| LaunchSoundError::Read(reason);
-    let declaration = CapabilityDeclaration::from_environment();
     let library = Arc::new(InMemorySamples::new());
     let probe = Arc::new(SampleProbe::new());
     let mut refusal = None;
     let (device, backend): (Box<dyn AudioDevice>, AudioBackendLog) =
-        match open_audible_device(library.clone(), &declaration) {
+        match open_audible_device(library.clone(), declaration) {
             Ok(device) => (
                 Box::new(device.with_probe(probe.clone())),
-                AudioBackendLog::audible(&declaration),
+                AudioBackendLog::audible(declaration),
             ),
             Err(error) => {
-                let log = AudioBackendLog::refused(&declaration, &error);
+                let log = AudioBackendLog::refused(declaration, &error);
                 let device = Box::new(RefusingAudioDevice::new(error.clone()));
                 refusal = Some(error);
                 (device, log)
