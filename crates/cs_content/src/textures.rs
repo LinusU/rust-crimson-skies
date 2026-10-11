@@ -1069,6 +1069,22 @@ impl TextureCatalog {
             .ok_or_else(not_ours)
     }
 
+    /// Where a resolved texture's stored level lies inside its archive's bytes:
+    /// the byte range the catalog's own [`Self::records`] fingerprint, so a
+    /// caller that places a span never repeats the package layout.
+    ///
+    /// # Errors
+    ///
+    /// [`TextureResolveError::NotFromThisCatalog`] when `resolved` was not
+    /// produced by this catalog.
+    pub fn stored_range(
+        &self,
+        resolved: &ResolvedTexture,
+    ) -> Result<Range<usize>, TextureResolveError> {
+        let (_, entry) = self.entry_of(resolved)?;
+        Ok(entry.stored.clone())
+    }
+
     /// Decodes a resolved texture's stored level.
     ///
     /// # Errors

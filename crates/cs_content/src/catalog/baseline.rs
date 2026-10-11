@@ -145,6 +145,17 @@
 //!   row and carries an explicit unknown instead of any stored number. Armor,
 //!   ammunition and hardpoint equipment have no entry list in that archive and
 //!   so no row. Neither kind is launchable, so the denominator does not move,
+//! * one [`ContentKind::Image`] row per entry of the texture-name table of every
+//!   one of those containers (F14-D.10), identified by the container's key and
+//!   the table index a material's texture index carries, and displayed under
+//!   the entry's decoded name exactly as stored. The bytes are located by F08's
+//!   own resolution: the container's world group selects the `world` mount's
+//!   `texture.zbd`, `TextureCatalog::resolve` finds the stored name and the
+//!   entry's stored level is the checked span. A name the archive does not store
+//!   exactly once, and every name of `planes.zbd` (no world, so no established
+//!   archive), keeps its row with an explicit unknown over the name entry's own
+//!   record and is counted in [`CollectionStatus`]. Nothing is normalized and no
+//!   row claims a consumer, so the denominator does not move,
 //! * one [`ContentKind::Stunt`] row per fly-through danger-zone target of an
 //!   instant-action scenario the installation's own `ia.zrd` marks
 //!   [`STUNT_MISSION_TYPE`] (F14-D.8), read by the producing stage's own
@@ -227,7 +238,7 @@ use std::io;
 use std::path::Path;
 
 use cs_assets::rof::mount_rof_into;
-use cs_assets::vfs::{INSTALL_NAMESPACE, MountBuilder, SessionBuilder};
+use cs_assets::vfs::{INSTALL_NAMESPACE, MountBuilder, SessionBuilder, WORLD_NAMESPACE};
 use cs_assets::zbd::{ContainerVerdict, audit_containers};
 use cs_formats::LANG_ENGLISH_US;
 use cs_formats::gamez::{
@@ -241,7 +252,8 @@ use cs_formats::zbd::{
     read_version_one_index, role_for_path,
 };
 use cs_types::asset_id::{
-    AssetKey, MountId, MountNamespace, PrecedenceClass, ResolveContext, SourceSpan, SourceSpanError,
+    AssetKey, MountId, MountNamespace, PrecedenceClass, ResolveContext, SourceSpan,
+    SourceSpanError, WorldGroup,
 };
 use cs_types::content::{
     CatalogElement, ContentId, ContentIdError, ContentKind, Dependency, DependencyKind,
@@ -591,6 +603,29 @@ const CLAIM_MATERIAL_MESH_REFERENCE: &str = "f14.d.9.baseline.material_mesh_refe
 /// index (its own or one of its cycle frames) the container's texture-name
 /// table has no row for, so the texture it means is unknown.
 const CLAIM_MATERIAL_TEXTURE_UNRESOLVED: &str = "f14.d.9.baseline.material_texture_unresolved";
+
+/// The claim id behind the observation that a container's texture-name table
+/// holds an entry at a slot, and that the entry's own record is the span of an
+/// image whose archive bytes could not be located.
+const CLAIM_IMAGE_NAME_RECORD: &str = "f14.d.10.baseline.image_name_record";
+
+/// The claim id behind the observation that the world's own texture archive
+/// stores the name a container's texture-name entry spells, once, and that the
+/// entry's stored level is the row's checked span.
+const CLAIM_IMAGE_ARCHIVE_ENTRY: &str = "f14.d.10.baseline.image_archive_entry";
+
+/// The claim id behind the unknown on an image row whose name the world's
+/// texture archive does not resolve to exactly one entry.
+const CLAIM_IMAGE_NAME_UNRESOLVED: &str = "f14.d.10.baseline.image_name_unresolved";
+
+/// The claim id behind the unknown on an image row of a container that has no
+/// world of its own, so which texture archive its names resolve against is not
+/// established.
+const CLAIM_IMAGE_ARCHIVE_UNESTABLISHED: &str = "f14.d.10.baseline.image_archive_unestablished";
+
+/// The key every world's texture archive is resolved by: the `world` mount
+/// answers it with the selected world group's own `texture.zbd`.
+const WORLD_TEXTURE_ARCHIVE_KEY: &str = "texture.zbd";
 
 /// The installation-relative file name every world group's geometry container
 /// has, and the shared planes container's geometry container.
@@ -1324,6 +1359,10 @@ pub fn retail_baseline(install_root: &Path) -> Result<Baseline, BaselineError> {
         insert(&mut catalog, element)?;
     }
     collection_status.push(geometry.material_status);
+    for element in geometry.images {
+        insert(&mut catalog, element)?;
+    }
+    collection_status.push(geometry.image_status);
 
     // The stunts the instant-action scenarios declare and the scrapbook items
     // the shared archive's scrapbook table declares. Neither kind is
@@ -1700,6 +1739,13 @@ pub struct GeometryContainerReport {
     /// How many distinct material slots a present mesh references that no
     /// present material record answers.
     pub material_references_without_record: usize,
+    /// How many entries the container's texture-name table holds, which is how
+    /// many `image` rows exist. Zero when the material section could not be read.
+    pub images: usize,
+    /// How many of those rows no texture archive located: the container's world
+    /// archive does not hold the name exactly once, or the container has no
+    /// established archive at all.
+    pub images_unresolved: usize,
 }
 
 /// One decoded geometry container, held only as long as its rows are built.
@@ -1773,6 +1819,21 @@ fn gamez_geometry_rows(
     let mut materials = Vec::new();
     let mut material_refused: Vec<String> = Vec::new();
     let mut material_read = 0usize;
+    let mut image_status = node_status.clone();
+    image_status.kind = ContentKind::Image;
+    image_status.source = format!("{GEOMETRY_CONTAINER_PATTERN} texture-name tables");
+    let mut images = Vec::new();
+    let mut images_without_established_archive = 0usize;
+    let worlds: BTreeMap<String, &cs_types::install::RelativePath> = diagnosis
+        .world_groups
+        .iter()
+        .map(|group| {
+            (
+                format!("{}/{GEOMETRY_CONTAINER_FILE}", group.logical_key()),
+                group,
+            )
+        })
+        .collect();
 
     let mut nodes = Vec::new();
     let mut meshes = Vec::new();
@@ -1801,7 +1862,7 @@ fn gamez_geometry_rows(
         // diagnostic.
         let mut context = cs_formats::ParseContext::with_defaults(spelling);
         let decoded = read_geometry_container(&mut context, spelling, &bytes);
-        let geometry = match decoded {
+        let mut geometry = match decoded {
             Ok(geometry) => geometry,
             Err(reason) => {
                 refused.push(format!("{spelling}: {reason}"));
@@ -1820,6 +1881,8 @@ fn gamez_geometry_rows(
                     materials: 0,
                     material_textures_unresolved: 0,
                     material_references_without_record: 0,
+                    images: 0,
+                    images_unresolved: 0,
                 });
                 continue;
             }
@@ -1855,9 +1918,27 @@ fn gamez_geometry_rows(
             &file_id,
             record.sha256,
         )?);
+        let (container_images, unresolved, unestablished) = geometry_image_rows(
+            &ImageContext {
+                install_root,
+                install_hash,
+                files,
+                diagnosis,
+            },
+            spelling,
+            worlds.get(asset).copied(),
+            &geometry,
+            &file_id,
+            record.sha256,
+        )?;
+        geometry.report.images = container_images.len();
+        geometry.report.images_unresolved = unresolved;
+        images_without_established_archive += unestablished;
+        images.extend(container_images);
         node_status.rows += geometry.report.nodes;
         mesh_status.rows += geometry.report.mesh_rows;
         material_status.rows += geometry.report.materials;
+        image_status.rows += geometry.report.images;
         reports.push(geometry.report);
     }
 
@@ -1913,15 +1994,32 @@ fn gamez_geometry_rows(
             .map(|report| report.material_references_without_record)
             .sum(),
     );
+    // An image row needs the container's texture-name table, so a container whose
+    // material section is refused contributes none; it is counted the same way.
+    image_status.gaps.insert("container_visited", sources.len());
+    image_status.gaps.insert("container_read", material_read);
+    image_status
+        .gaps
+        .insert("unreadable_container", material_unread);
+    image_status.gaps.insert(
+        "name_without_archive_entry",
+        reports.iter().map(|report| report.images_unresolved).sum(),
+    );
+    image_status.gaps.insert(
+        "name_in_container_without_established_archive",
+        images_without_established_archive,
+    );
     if material_unread > 0 {
         let mut reasons = refused.clone();
         reasons.extend(material_refused);
-        material_status.diagnostic = Some(format!(
+        let diagnostic = format!(
             "{material_unread} of the {} geometry containers' material sections could not be \
              read: {}",
             sources.len(),
             reasons.join("; ")
-        ));
+        );
+        image_status.diagnostic = Some(diagnostic.clone());
+        material_status.diagnostic = Some(diagnostic);
     }
     if !refused.is_empty() {
         let diagnostic = format!(
@@ -1938,9 +2036,11 @@ fn gamez_geometry_rows(
         nodes,
         meshes,
         materials,
+        images,
         node_status,
         mesh_status,
         material_status,
+        image_status,
         reports,
     })
 }
@@ -1953,12 +2053,16 @@ struct GeometryRows {
     meshes: Vec<CatalogElement>,
     /// The `material` rows, in container then stored slot order.
     materials: Vec<CatalogElement>,
+    /// The `image` rows, in container then texture-name table order.
+    images: Vec<CatalogElement>,
     /// What the node collection contributed, and what it could not.
     node_status: CollectionStatus,
     /// What the mesh collection contributed, and what it could not.
     mesh_status: CollectionStatus,
     /// What the material collection contributed, and what it could not.
     material_status: CollectionStatus,
+    /// What the image collection contributed, and what it could not.
+    image_status: CollectionStatus,
     /// One entry per container, in walk order.
     reports: Vec<GeometryContainerReport>,
 }
@@ -2104,6 +2208,8 @@ fn read_geometry_container(
             materials: material_count,
             material_textures_unresolved: textures_unresolved,
             material_references_without_record: references_without_record,
+            images: 0,
+            images_unresolved: 0,
         },
         materials,
         material_refusal,
@@ -2605,6 +2711,231 @@ fn geometry_material_rows(
     Ok(rows)
 }
 
+/// What the image rows of one container need from the installation.
+struct ImageContext<'a> {
+    install_root: &'a Path,
+    install_hash: ContentHash,
+    files: &'a BTreeMap<String, &'a InstallFileRecord>,
+    diagnosis: &'a cs_assets::install::Diagnosis,
+}
+
+/// The world's own texture archive as the `world` mount answers it, or why no
+/// archive could be established.
+struct WorldTextures {
+    session: cs_assets::vfs::ContentSession,
+    catalog: crate::textures::TextureCatalog,
+    key: AssetKey,
+}
+
+/// Opens the texture archive `world/default/texture.zbd` resolves to in a
+/// session selecting `group`, exactly as F18-D's survey and F10's audit do.
+///
+/// # Errors
+///
+/// The reason the archive could not be opened, as prose.
+fn open_world_textures(
+    context: &ImageContext<'_>,
+    group: &cs_types::install::RelativePath,
+) -> Result<WorldTextures, String> {
+    let resolve = ResolveContext::new(context.install_hash)
+        .with_world_group(WorldGroup::from_relative(group.clone()));
+    let mut builder = SessionBuilder::new(resolve);
+    builder
+        .mount_installation(context.install_root, context.diagnosis)
+        .map_err(|error| format!("the installation could not be mounted: {error}"))?;
+    let session = builder.open();
+    let key = AssetKey::from_spelling(WORLD_NAMESPACE, WORLD_TEXTURE_ARCHIVE_KEY, "default")
+        .map_err(|error| error.to_string())?;
+    let catalog = crate::textures::TextureCatalog::open(&session, std::slice::from_ref(&key));
+    if let Some((_, error)) = catalog.failures().next() {
+        return Err(format!(
+            "the world's texture archive could not be opened: {error}"
+        ));
+    }
+    Ok(WorldTextures {
+        session,
+        catalog,
+        key,
+    })
+}
+
+/// One `image` row per entry of the container's texture-name table, in table
+/// order, plus how many of them no archive located and how many of those belong
+/// to a container with no established archive at all.
+///
+/// The identity is the container's inventory key plus the table index a
+/// material's texture index carries, and the display name is the entry's
+/// decoded name, spelled exactly as stored. The bytes are located by F08's own
+/// resolution: the container's world group selects the `world` mount's
+/// `texture.zbd`, [`crate::textures::TextureCatalog::resolve`] folds the request
+/// the measured way and compares it with the archive's stored spellings, and the
+/// entry's stored level (reported by the catalog, never recomputed here) is the
+/// row's span. A name the archive does not store exactly once, an archive that
+/// does not open, and a container with no world group (`planes.zbd`, whose
+/// archive is not established) each keep the row with an explicit unknown whose
+/// span is the name entry's own record, the only original bytes the row has.
+///
+/// # Errors
+///
+/// [`BaselineError::Span`] or [`BaselineError::Key`] when a span or identity does
+/// not validate.
+fn geometry_image_rows(
+    context: &ImageContext<'_>,
+    spelling: &str,
+    group: Option<&cs_types::install::RelativePath>,
+    geometry: &ContainerGeometry,
+    file_id: &ContentId,
+    container_sha256: ContentHash,
+) -> Result<(Vec<CatalogElement>, usize, usize), BaselineError> {
+    let Some(materials) = &geometry.materials else {
+        return Ok((Vec::new(), 0, 0));
+    };
+    let key = install_file_key(spelling);
+    let world = match group {
+        Some(group) => open_world_textures(context, group).map_err(|reason| {
+            (
+                CLAIM_IMAGE_NAME_UNRESOLVED,
+                format!("the container's world texture archive is unavailable: {reason}"),
+            )
+        }),
+        None => Err((
+            CLAIM_IMAGE_ARCHIVE_UNESTABLISHED,
+            "the container belongs to no world group, so which texture archive its names \
+             resolve against is not established"
+                .to_owned(),
+        )),
+    };
+
+    let mut rows = Vec::with_capacity(materials.textures.len());
+    let mut unresolved = 0usize;
+    let mut unestablished = 0usize;
+    for texture in &materials.textures {
+        let name_span = container_span(
+            context.install_hash,
+            spelling,
+            texture.data_offset,
+            texture.data_end - texture.data_offset,
+        )?;
+        let located = match &world {
+            Ok(world) => locate_image(context, world, &texture.name),
+            Err((claim, reason)) => Err((*claim, reason.clone())),
+        };
+        let mut unsupported_reasons = vec![UnsupportedReason::NotNormalized];
+        let (span, dependencies, fingerprint_sha) = match located {
+            Ok(located) => {
+                let archive_span = container_span(
+                    context.install_hash,
+                    &located.spelling,
+                    located.offset,
+                    located.length,
+                )?;
+                let dependencies = vec![
+                    Dependency {
+                        target: file_id.clone(),
+                        kind: DependencyKind::Static,
+                        provenance: observed(CLAIM_IMAGE_NAME_RECORD, &name_span)?,
+                    },
+                    Dependency {
+                        target: ContentId::from_source(
+                            ContentKind::InstallFile,
+                            &install_file_key(&located.spelling),
+                        )
+                        .map_err(|source| BaselineError::Key {
+                            spelling: located.spelling.clone(),
+                            source,
+                        })?,
+                        kind: DependencyKind::Static,
+                        provenance: observed(CLAIM_IMAGE_ARCHIVE_ENTRY, &archive_span)?,
+                    },
+                ];
+                (archive_span, dependencies, located.sha256)
+            }
+            Err((claim, reason)) => {
+                unresolved += 1;
+                if claim == CLAIM_IMAGE_ARCHIVE_UNESTABLISHED {
+                    unestablished += 1;
+                }
+                let claim_id = ClaimId::new(claim).map_err(|error| BaselineError::Provenance {
+                    claim: claim.to_owned(),
+                    reason: error.to_string(),
+                })?;
+                unsupported_reasons.push(UnsupportedReason::Unknown {
+                    claim_id,
+                    reason: format!(
+                        "texture {} ({:?}) of this container: {reason}",
+                        texture.index, texture.name
+                    ),
+                });
+                let dependencies = vec![Dependency {
+                    target: file_id.clone(),
+                    kind: DependencyKind::Static,
+                    provenance: observed(CLAIM_IMAGE_NAME_RECORD, &name_span)?,
+                }];
+                (name_span, dependencies, container_sha256)
+            }
+        };
+        rows.push(CatalogElement {
+            kind: ContentKind::Image,
+            display_name: Some(texture.name.clone()),
+            origin: Origin::Installation { source: span },
+            dependencies,
+            parse_state: cs_types::install::ParseState::Parsed,
+            normalize_state: NormalizeState::NotNormalized,
+            runtime_consumers: Vec::new(),
+            readiness: Readiness::Unavailable,
+            unsupported_reasons,
+            fingerprint: Some(Fingerprint {
+                kind: FingerprintKind::Installation,
+                sha256: fingerprint_sha,
+            }),
+            id: image_id(&key, texture.index)?,
+        });
+    }
+    Ok((rows, unresolved, unestablished))
+}
+
+/// Where the world's texture archive stores a name.
+struct LocatedImage {
+    /// The archive's installation spelling.
+    spelling: String,
+    /// Offset of the stored level inside the archive file.
+    offset: u64,
+    /// Length of the stored level.
+    length: u64,
+    /// SHA-256 of the archive file.
+    sha256: ContentHash,
+}
+
+/// Resolves `name` in the world's archive through F08's catalog.
+fn locate_image(
+    context: &ImageContext<'_>,
+    world: &WorldTextures,
+    name: &str,
+) -> Result<LocatedImage, (&'static str, String)> {
+    let unresolved = |reason: String| (CLAIM_IMAGE_NAME_UNRESOLVED, reason);
+    let reference = crate::textures::TextureRef::new(world.key.clone(), name);
+    let resolved = world
+        .catalog
+        .resolve(&world.session, &reference)
+        .map_err(|error| unresolved(error.to_string()))?;
+    let range = world
+        .catalog
+        .stored_range(&resolved)
+        .map_err(|error| unresolved(error.to_string()))?;
+    let archive = &resolved.id().archive;
+    let record = context.files.get(&archive.logical_key()).ok_or_else(|| {
+        unresolved(format!(
+            "the installation inventories no file at {archive}, which the world mount served"
+        ))
+    })?;
+    Ok(LocatedImage {
+        spelling: record.relative_spelling.as_str().to_owned(),
+        offset: range.start as u64,
+        length: range.len() as u64,
+        sha256: record.sha256,
+    })
+}
+
 /// A span into one geometry container's own bytes.
 ///
 /// `member_key` is [`None`] on purpose: a GameZ geometry container **is** a loose
@@ -2728,6 +3059,16 @@ fn scene_node_key(container_key: &str, path: &str) -> Option<ContentId> {
 fn mesh_id(container_key: &str, slot: u32) -> Result<ContentId, BaselineError> {
     let key = format!("{container_key}.{slot}");
     ContentId::from_source(ContentKind::Mesh, &key).map_err(|source| BaselineError::Key {
+        spelling: key.clone(),
+        source,
+    })
+}
+
+/// The identity of one `image`: the container's key plus the index into its
+/// texture-name table a material's texture index carries.
+fn image_id(container_key: &str, index: u32) -> Result<ContentId, BaselineError> {
+    let key = format!("{container_key}.{index}");
+    ContentId::from_source(ContentKind::Image, &key).map_err(|source| BaselineError::Key {
         spelling: key.clone(),
         source,
     })
@@ -5149,7 +5490,7 @@ fn geometry_container_json(container: &GeometryContainerReport, out: &mut String
         "{{\"container\":{},\"nodes\":{},\"named\":{},\"ambiguous\":{},\"unspellable\":{},\
          \"paths\":{},\"roots\":{},\"named_meshes\":{},\"mesh_rows\":{},\"absent_meshes\":{},\
          \"unterminated\":{},\"materials\":{},\"material_textures_unresolved\":{},\
-         \"material_references_without_record\":{}}}",
+         \"material_references_without_record\":{},\"images\":{},\"images_unresolved\":{}}}",
         json_string(&container.spelling),
         container.nodes,
         container.named,
@@ -5164,6 +5505,8 @@ fn geometry_container_json(container: &GeometryContainerReport, out: &mut String
         container.materials,
         container.material_textures_unresolved,
         container.material_references_without_record,
+        container.images,
+        container.images_unresolved,
     );
 }
 
