@@ -2355,3 +2355,161 @@ pub fn declared_synthetic_nitro() -> DeclaredOrdnance {
     )
     .expect("the synthetic declared nitro is valid")
 }
+
+// ------------------------------------------------ the measured original blast ----
+
+/// The `ZBD/zrdr.zbd` member the original's weapon records live in.
+pub const ORIGINAL_WEAPONS_MEMBER: &str = "weapons.zrd";
+
+/// The key whose presence marks a weapon record as a rocket.
+pub const ORIGINAL_ROCKET_FLAG: &str = "ROCKET";
+
+/// One retail rocket record's blast-relevant declarations, exactly as stored.
+///
+/// **Measured** from `weapons.zrd` (task #548,
+/// `docs/findings/2026-10-11-f28-c-2-lost-target-blast-measured.md`). Every
+/// number is in the original's own units: this struct deliberately has no
+/// meters, because the unit scale of `IMPACT_PROXIMITY` is not a property of the
+/// record.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OriginalRocketBlast {
+    /// The record name (`wep_04`).
+    pub record: String,
+    /// `IMPACT_PROXIMITY`: the blast radius, original units.
+    pub impact_proximity: Option<f64>,
+    /// `DETONATION_DISTANCE`: the lock-on proximity trigger, original units.
+    pub detonation_distance: Option<f64>,
+    /// `DETONATION_TIME`: the timer trigger, seconds.
+    pub detonation_time_s: Option<f64>,
+    /// `ARMOR_DAMAGE` at the blast centre.
+    pub armor_damage: Option<f64>,
+    /// `HEALTH_DAMAGE` at the blast centre.
+    pub health_damage: Option<f64>,
+    /// `LOCK_ON`, the first value.
+    pub lock_on: Option<f64>,
+    /// Every key the record declares, at its top level, sorted.
+    pub keys: BTreeSet<String>,
+}
+
+/// Reads every `ROCKET` record of the installation's `weapons.zrd`.
+///
+/// # Errors
+///
+/// [`crate::original_airframe::OriginalImportError`] for an undiscoverable
+/// installation, an unreadable archive, a missing or undecodable member or a
+/// member whose shape is not the record list.
+pub fn read_original_rocket_blasts(
+    install_root: &std::path::Path,
+) -> Result<Vec<OriginalRocketBlast>, crate::original_airframe::OriginalImportError> {
+    use crate::original_airframe::{OriginalImportError, READER_ARCHIVE, SpannedDocument};
+    use cs_formats::io::ParseContext;
+    use cs_formats::zbd::{ZbdProbe, dispatch, read_reader_archive, read_version_one_index};
+
+    let found = cs_assets::install::discover(install_root)
+        .map_err(|error| OriginalImportError::Io(error.to_string()))?;
+    let install_sha256 = cs_assets::install::fingerprint(&found.manifest);
+    let bytes = std::fs::read(install_root.join(READER_ARCHIVE))
+        .map_err(|error| OriginalImportError::Io(error.to_string()))?;
+    let spelling = cs_types::install::RelativePath::new(READER_ARCHIVE)
+        .map_err(|error| OriginalImportError::Io(error.to_string()))?;
+    let mut context = ParseContext::with_defaults("original_blast");
+    let decision = dispatch(ZbdProbe::new(READER_ARCHIVE, &spelling, &bytes))
+        .map_err(|error| OriginalImportError::Archive(error.to_string()))?;
+    let index = read_version_one_index(&mut context, decision, &bytes)
+        .map_err(|error| OriginalImportError::Archive(error.to_string()))?;
+    let table = index.member_table();
+    let archive = read_reader_archive(&mut context, &table, index.data())
+        .map_err(|error| OriginalImportError::Archive(error.to_string()))?;
+    let entry = archive
+        .entries()
+        .find(|entry| {
+            String::from_utf8_lossy(entry.name()).eq_ignore_ascii_case(ORIGINAL_WEAPONS_MEMBER)
+        })
+        .ok_or_else(|| OriginalImportError::MemberMissing {
+            member: ORIGINAL_WEAPONS_MEMBER.to_owned(),
+        })?;
+    let content = entry.content().to_vec();
+    let member_sha256 = cs_assets::install::sha256(&content);
+    let document = SpannedDocument::decode(
+        install_sha256,
+        ORIGINAL_WEAPONS_MEMBER,
+        &content,
+        entry.span().offset,
+        member_sha256,
+    )?;
+
+    let mut blasts = Vec::new();
+    collect_weapon_records(document.root(), &mut blasts);
+    if blasts.is_empty() {
+        return Err(OriginalImportError::Shape {
+            detail: "no `wep_` record with a ROCKET key was found".to_owned(),
+        });
+    }
+    Ok(blasts)
+}
+
+/// Walks the decoded member for `(name, body)` pairs whose name begins `wep_`
+/// and whose body declares [`ORIGINAL_ROCKET_FLAG`].
+///
+/// The member's root also carries a table of integers and a header of global
+/// keys (`VERSION`, `BALLISTICS`, ...), so the records are found by their own
+/// shape rather than by a position the member does not promise.
+fn collect_weapon_records(
+    node: &crate::original_airframe::SpannedValue,
+    out: &mut Vec<OriginalRocketBlast>,
+) {
+    let Some(children) = node.as_list() else {
+        return;
+    };
+    let mut index = 0;
+    while index < children.len() {
+        let record = children[index]
+            .as_text()
+            .filter(|name| name.starts_with("wep_"))
+            .zip(children.get(index + 1).and_then(|body| body.as_list()));
+        if let Some((name, body)) = record {
+            if let Some(blast) = rocket_blast(name, body) {
+                out.push(blast);
+            }
+            index += 2;
+        } else {
+            collect_weapon_records(&children[index], out);
+            index += 1;
+        }
+    }
+}
+
+/// One record's declarations, when it is a rocket.
+fn rocket_blast(
+    name: &str,
+    body: &[crate::original_airframe::SpannedValue],
+) -> Option<OriginalRocketBlast> {
+    let mut keys = BTreeSet::new();
+    let mut scalar = BTreeMap::new();
+    for field in body.chunks(2) {
+        let [key, value] = field else { continue };
+        let Some(key) = key.as_text() else { continue };
+        keys.insert(key.to_owned());
+        if let Some(number) = value
+            .as_list()
+            .and_then(|list| list.first())
+            .and_then(crate::original_airframe::SpannedValue::as_scalar_f64)
+        {
+            scalar.insert(key.to_owned(), number);
+        }
+    }
+    if !keys.contains(ORIGINAL_ROCKET_FLAG) {
+        return None;
+    }
+    let number = |key: &str| scalar.get(key).copied();
+    Some(OriginalRocketBlast {
+        record: name.to_owned(),
+        impact_proximity: number("IMPACT_PROXIMITY"),
+        detonation_distance: number("DETONATION_DISTANCE"),
+        detonation_time_s: number("DETONATION_TIME"),
+        armor_damage: number("ARMOR_DAMAGE"),
+        health_damage: number("HEALTH_DAMAGE"),
+        lock_on: number("LOCK_ON"),
+        keys,
+    })
+}
