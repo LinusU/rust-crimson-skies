@@ -21,6 +21,7 @@
 //! Everything here is newly authored project design; the original route
 //! encoding, cadence and anchor binding are unmeasured (F31-D).
 
+pub mod combat;
 pub mod navigation;
 
 pub use navigation::{
