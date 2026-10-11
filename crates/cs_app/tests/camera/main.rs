@@ -42,6 +42,13 @@
 //!   The comparison against the original *running* needs an owner-supplied
 //!   original run and is recorded as an unknown, not asserted.
 //!
+//! Task #540 — declared cockpit bindings' subtree content:
+//!
+//! * `content` owns the F21-D follow-up: for every binding the audit leaves
+//!   in a non-`Bound` state, the drawable geometry inside the resolved node's
+//!   own subtree — measured over authored arrays and over the real
+//!   `ZBD/planes.zbd`, with the audit's states carried verbatim.
+//!
 //! Stage `### F21-C` — script cameras, deterministic capture flags and the
 //! session that runs them:
 //!
@@ -64,6 +71,7 @@
 
 mod capture;
 mod common;
+mod content;
 mod coverage;
 mod framing;
 mod modes;

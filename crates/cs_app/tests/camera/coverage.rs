@@ -55,7 +55,7 @@ fn claim() -> cs_types::evidence::ClaimId {
 }
 
 /// The container label the authored fixtures carry.
-const FIXTURE: &str = "synthetic/f21d.interp";
+pub(crate) const FIXTURE: &str = "synthetic/f21d.interp";
 
 /// The archive the authored airframes live in, as the installation spells it.
 ///
@@ -69,12 +69,12 @@ const ARCHIVE_SPELLING: &str = "ZBD/planes.zbd";
 /// The archive's catalog **key**, which is what the audit compares against: a
 /// `ContentId` carries its key, and its own id spelling is the namespace and the
 /// key joined.
-fn archive_key() -> String {
+pub(crate) fn archive_key() -> String {
     cs_content::catalog::baseline::install_file_key(ARCHIVE_SPELLING)
 }
 
 /// The catalog id of the authored archive.
-fn archive_id() -> ContentId {
+pub(crate) fn archive_id() -> ContentId {
     ContentId::from_source(ContentKind::InstallFile, &archive_key())
         .expect("the normalized archive key is a valid id key")
 }
@@ -82,7 +82,7 @@ fn archive_id() -> ContentId {
 /// The node id a root inside the authored archive carries: a `SceneRootRef`
 /// requires the root's key to be the container's own key plus the node's stored
 /// name, and the production roster discovery builds exactly that pairing.
-fn root_id(root: &str) -> cs_content::scene::SceneNodeId {
+pub(crate) fn root_id(root: &str) -> cs_content::scene::SceneNodeId {
     cs_content::scene::SceneNodeId::from_content_id(
         ContentId::from_source(ContentKind::SceneNode, &format!("{}.{root}", archive_key()))
             .expect("a container-qualified node key is a valid id key"),
@@ -101,7 +101,7 @@ fn designed() -> Provenance {
 /// there so a span can be built, and the tests below never treat it as evidence
 /// that any installation was read. The retail tests build their spans from the
 /// real `fingerprint`.
-fn observed(offset: u64, length: u64) -> Provenance {
+pub(crate) fn observed(offset: u64, length: u64) -> Provenance {
     let digest =
         ContentHash::from_hex("0000000000000000000000000000000000000000000000000000000000000000")
             .expect("sixty-four zeroes are a digest");
@@ -113,7 +113,7 @@ fn observed(offset: u64, length: u64) -> Provenance {
 
 /// One authored line: NUL-terminated arguments with their declared count, which
 /// is the shape the container's own decoder splits tokens on.
-fn line(tokens: &[&[u8]]) -> Vec<u8> {
+pub(crate) fn line(tokens: &[&[u8]]) -> Vec<u8> {
     let mut data = Vec::new();
     let mut count = 0_u32;
     for token in tokens {
@@ -129,7 +129,7 @@ fn line(tokens: &[&[u8]]) -> Vec<u8> {
 }
 
 /// Builds one container from `(script name, lines)`.
-fn container(scripts: &[(&[u8], Vec<Vec<u8>>)]) -> Vec<u8> {
+pub(crate) fn container(scripts: &[(&[u8], Vec<Vec<u8>>)]) -> Vec<u8> {
     use cs_formats::interp::{INDEX_ENTRY_BYTES, INTERP_HEADER_BYTES, NAME_FIELD_BYTES};
 
     let body_start = (INTERP_HEADER_BYTES + scripts.len() * INDEX_ENTRY_BYTES) as u64;
@@ -158,7 +158,7 @@ fn container(scripts: &[(&[u8], Vec<Vec<u8>>)]) -> Vec<u8> {
 }
 
 /// Decodes one authored container through the production decoder.
-fn decode(bytes: &[u8]) -> cs_formats::interp::DecodedInterp<'_> {
+pub(crate) fn decode(bytes: &[u8]) -> cs_formats::interp::DecodedInterp<'_> {
     use cs_formats::interp::decode_interp;
     use cs_formats::io::ParseContext;
 
@@ -289,7 +289,7 @@ fn synthetic_cockpit_script() -> Vec<u8> {
 
 /// The claim over [`synthetic_cockpit_script`], carrying the spans the walk
 /// reports.
-fn cockpit_claim() -> CockpitBindingClaim {
+pub(crate) fn cockpit_claim() -> CockpitBindingClaim {
     CockpitBindingClaim::try_new(
         "support\\cockpit.gw",
         "FindNode",
@@ -301,17 +301,17 @@ fn cockpit_claim() -> CockpitBindingClaim {
 }
 
 /// One node of an authored airframe archive.
-struct Node {
-    name: &'static str,
-    parent: Option<u32>,
-    children: Vec<u32>,
-    mesh_index: i32,
+pub(crate) struct Node {
+    pub(crate) name: &'static str,
+    pub(crate) parent: Option<u32>,
+    pub(crate) children: Vec<u32>,
+    pub(crate) mesh_index: i32,
 }
 
 /// A node record with the stored words the coverage audit reads and every other
 /// word at the value the reference asserts, so the array is a valid decoded
 /// record rather than a partly-filled one.
-fn raw_node(spec: &Node, index: u32) -> cs_formats::gamez::RawNode {
+pub(crate) fn raw_node(spec: &Node, index: u32) -> cs_formats::gamez::RawNode {
     cs_formats::gamez::RawNode {
         index,
         name: spec.name.to_owned(),
@@ -388,7 +388,7 @@ fn zero_node_info() -> cs_formats::gamez::RawNodeInfo {
 /// The authored airframe archive the synthetic coverage tests audit: two
 /// airframes, each with a `gungauge` node that carries a mesh, and one shared
 /// node name under the second root that resolves twice.
-fn synthetic_archive() -> cs_formats::gamez::GameZNodes {
+pub(crate) fn synthetic_archive() -> cs_formats::gamez::GameZNodes {
     let specs = [
         Node {
             name: "player_kestrel",
@@ -461,7 +461,7 @@ fn synthetic_archive() -> cs_formats::gamez::GameZNodes {
 }
 
 /// An airframe the synthetic coverage tests audit.
-fn airframe(key: &str, root: &str) -> CockpitAirframe {
+pub(crate) fn airframe(key: &str, root: &str) -> CockpitAirframe {
     CockpitAirframe::new(
         ContentId::from_source(ContentKind::Airframe, key).expect("a valid fixture airframe id"),
         cs_content::scene::SceneRootRef::new(archive_id(), root_id(root))
@@ -2439,7 +2439,7 @@ fn write_coverage_census(
 }
 
 /// The audit's own name for one binding state.
-fn coverage_state(coverage: &CockpitNodeCoverage) -> &'static str {
+pub(crate) fn coverage_state(coverage: &CockpitNodeCoverage) -> &'static str {
     match coverage {
         CockpitNodeCoverage::Bound { .. } => "bound",
         CockpitNodeCoverage::Ambiguous { .. } => "ambiguous",
@@ -2462,7 +2462,7 @@ fn span_json(provenance: &Provenance) -> String {
 }
 
 /// A JSON string literal: quoted and escaped.
-fn quote(value: &str) -> String {
+pub(crate) fn quote(value: &str) -> String {
     let mut out = String::with_capacity(value.len() + 2);
     out.push('"');
     for character in value.chars() {
@@ -2597,7 +2597,7 @@ fn accept_f21_d_retail_a_bound_cockpit_mesh_draws_a_measured_frame_on_the_gpu() 
 // ------------------------------------------------- the retail fixtures ----
 
 /// How many airframes the real container declares.
-const RETAIL_AIRFRAMES: usize = 11;
+pub(crate) const RETAIL_AIRFRAMES: usize = 11;
 
 /// How many lines the real container stores for each claimed camera command.
 ///
@@ -2631,7 +2631,7 @@ const RETAIL_COMMAND_HEADS: usize = 85;
 /// which fails if the walk returns anything else. A transcription is not a
 /// source of truth; it is the expected value the measurement is compared
 /// against, so a reader who wants the real list has one that was compared.
-const RETAIL_COCKPIT_BINDINGS: [&str; 20] = [
+pub(crate) const RETAIL_COCKPIT_BINDINGS: [&str; 20] = [
     "gungauge",
     "4char_ammo",
     "missilegauge",
@@ -2665,7 +2665,7 @@ fn cockpit_binding_names() -> BTreeSet<&'static str> {
 /// (stored script offset 12 850, terminator past 18 563), and the claim's
 /// provenance is the installation's own fingerprint, so every row the walk
 /// reports points at real bytes of a real file.
-fn retail_cockpit_claim(install_sha256: ContentHash) -> CockpitBindingClaim {
+pub(crate) fn retail_cockpit_claim(install_sha256: ContentHash) -> CockpitBindingClaim {
     CockpitBindingClaim::try_new(
         "support\\cockpit.gw",
         "FindNode",
@@ -2759,7 +2759,7 @@ fn retail_view_claims(install_sha256: ContentHash) -> Vec<ViewCommandClaim> {
 
 /// The roster declarations over the real container, so the coverage audit is
 /// measured against F11-D2's discovered roster rather than a transcription.
-fn retail_roster_declarations(install_sha256: ContentHash) -> RosterDeclarations {
+pub(crate) fn retail_roster_declarations(install_sha256: ContentHash) -> RosterDeclarations {
     RosterDeclarations::new(vec![AirframeDeclaration {
         script: "support\\planes.gw".to_owned(),
         bind_command: "set".to_owned(),
@@ -2779,7 +2779,7 @@ fn retail_roster_declarations(install_sha256: ContentHash) -> RosterDeclarations
 }
 
 /// Provenance over a real byte range of a real file.
-fn retail_provenance(
+pub(crate) fn retail_provenance(
     install_sha256: ContentHash,
     container: &str,
     offset: u64,
@@ -2793,7 +2793,7 @@ fn retail_provenance(
 
 /// The installation path, or a panic: a retail test that quietly passes without
 /// the original data is a test that proves nothing.
-fn retail_dir() -> PathBuf {
+pub(crate) fn retail_dir() -> PathBuf {
     PathBuf::from(
         std::env::var("CS_GAME_DIR")
             .expect("CS_GAME_DIR is set for a retail test; without it this test must fail"),
