@@ -797,3 +797,48 @@ fn accept_f28_b_launch_refuses_a_bad_request_by_name() {
         })
     );
 }
+
+/// The declared refused-activation recovery rule decides whether a pilot who
+/// holds the control on an empty tank gets capacity back; either way the
+/// refusal itself consumes nothing and adds no thrust.
+#[test]
+fn accept_f28_ae3_refused_activation_recovery_follows_the_declared_rule() {
+    use cs_sim::weapons::ordnance::NitroRefusedRecovery;
+
+    let capacity_after_refusal = |rule: NitroRefusedRecovery| {
+        let mut rt = runtime();
+        let parameters = cs_sim::weapons::ordnance::NitroParameters::try_new(
+            0.1,
+            3.0,
+            1.0,
+            4200.0,
+            NitroActivationRule::WhileHeld,
+            NitroTradeoffs::UNMEASURED,
+        )
+        .expect("the tiny fixture is valid")
+        .with_recovery_on_refused(rule);
+        rt.register_nitro(actor(1), parameters)
+            .expect("the booster registers for this session");
+        assert!(
+            rt.request_nitro(&actor(1), tick(1), true)
+                .expect("accepted")
+                .is_active()
+        );
+        let refused = rt
+            .request_nitro(&actor(1), tick(2), true)
+            .expect("a refusal is not an error");
+        assert!(refused.is_refused());
+        assert_eq!(refused.consumed_units, 0.0, "a refusal consumes nothing");
+        assert_eq!(refused.extra_thrust_n, 0.0, "a refusal adds no thrust");
+        rt.nitro(&actor(1)).expect("ledger").capacity_units()
+    };
+    assert_eq!(
+        capacity_after_refusal(NitroRefusedRecovery::Withheld),
+        0.0,
+        "a withheld rule recovers nothing on a refused tick"
+    );
+    assert!(
+        capacity_after_refusal(NitroRefusedRecovery::Recovers) > 0.0,
+        "a recovering rule refills the tank on a refused tick"
+    );
+}

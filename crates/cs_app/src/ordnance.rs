@@ -49,16 +49,17 @@ use cs_content::ordnance::{
     DeclaredAreaEffect, DeclaredArmingRule, DeclaredEquipmentRules, DeclaredFuseRule,
     DeclaredGuidanceRule, DeclaredHardpointKind, DeclaredInheritanceRule,
     DeclaredLostTargetBehavior, DeclaredNitroActivationRule, DeclaredNitroParameters,
-    DeclaredOrdnance, DeclaredProximityFuse, DeclaredStatusEffect,
+    DeclaredNitroRefusedRecovery, DeclaredOrdnance, DeclaredProximityFuse, DeclaredStatusEffect,
 };
 use cs_sim::damage::{ActorId, DamageNodeKey, NodeKeyError};
 use cs_sim::weapons::{
     AreaEffect, ArmingRule, CompatibilityVerdict, EquipmentRules, FuseRule, GuidanceRule,
     GunDefinitionError, HardpointKind, InheritanceRule, LaunchGeometry, LostTargetBehavior,
-    NitroActivationRule, NitroOrdnance, NitroParameters, NitroTradeoffs, OrdnanceComponent,
-    OrdnanceDefinitionError, OrdnanceFamily, OrdnanceId, OrdnanceIdError, OrdnanceMedia,
-    OrdnanceRegistry, OrdnanceRegistryError, OrdnanceStatusEffect, ProjectileOrdnance,
-    ProximityFuse, StackLoad, StatusEffectKind, WEAPON_DAMAGE_CHANNELS, WeaponDamage,
+    NitroActivationRule, NitroOrdnance, NitroParameters, NitroRefusedRecovery, NitroTradeoffs,
+    OrdnanceComponent, OrdnanceDefinitionError, OrdnanceFamily, OrdnanceId, OrdnanceIdError,
+    OrdnanceMedia, OrdnanceRegistry, OrdnanceRegistryError, OrdnanceStatusEffect,
+    ProjectileOrdnance, ProximityFuse, StackLoad, StatusEffectKind, WEAPON_DAMAGE_CHANNELS,
+    WeaponDamage,
 };
 use cs_types::content::{ContentId, Known, Resolved};
 use cs_types::evidence::ClaimId;
@@ -423,6 +424,11 @@ fn lower_nitro(
     let consumption_per_s =
         known_or_refuse("nitro.consumption_per_s", &parameters.consumption_per_s)?;
     let recovery_per_s = known_or_refuse("nitro.recovery_per_s", &parameters.recovery_per_s)?;
+    let recovery_on_refused =
+        match known_or_refuse("nitro.recovery_on_refused", &parameters.recovery_on_refused)? {
+            DeclaredNitroRefusedRecovery::Recovers => NitroRefusedRecovery::Recovers,
+            DeclaredNitroRefusedRecovery::Withheld => NitroRefusedRecovery::Withheld,
+        };
     let extra_thrust_n = known_or_refuse("nitro.extra_thrust_n", &parameters.extra_thrust_n)?;
     let activation =
         lower_nitro_activation(known_or_refuse("nitro.activation", &parameters.activation)?)?;
@@ -439,7 +445,8 @@ fn lower_nitro(
         activation,
         tradeoffs,
     )
-    .map_err(OrdnanceLowerError::Definition)?;
+    .map_err(OrdnanceLowerError::Definition)?
+    .with_recovery_on_refused(recovery_on_refused);
     let media = lower_media(&declared.media)?;
     let equipment_rules = lower_equipment_rules(&declared.equipment_rules)?;
     NitroOrdnance::try_new(id, lowered, media, equipment_rules)

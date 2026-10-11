@@ -1655,6 +1655,22 @@ impl NitroTradeoffs {
     }
 }
 
+/// Whether idle recovery runs on a tick whose activation was refused.
+///
+/// The original's rule is unmeasured (`f28.d.limit.nitro_recovery`), so a
+/// declared record must state it; nothing here picks it on the record's
+/// behalf. Neither choice changes the tested refusal contract: a refused
+/// activation consumes nothing and adds no thrust.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NitroRefusedRecovery {
+    /// A refused tick recovers like any other tick the booster did not run.
+    /// Holding the control on an empty tank therefore refills it.
+    Recovers,
+    /// A refused tick recovers nothing: recovery waits for a tick on which
+    /// the control is not requested.
+    Withheld,
+}
+
 /// The declared numbers a nitro booster carries.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct NitroParameters {
@@ -1664,6 +1680,7 @@ pub struct NitroParameters {
     extra_thrust_n: f64,
     activation: NitroActivationRule,
     tradeoffs: NitroTradeoffs,
+    recovery_on_refused: NitroRefusedRecovery,
 }
 
 impl NitroParameters {
@@ -1729,7 +1746,25 @@ impl NitroParameters {
             extra_thrust_n,
             activation,
             tradeoffs,
+            recovery_on_refused: NitroRefusedRecovery::Recovers,
         })
+    }
+
+    /// Replaces the refused-activation recovery rule.
+    ///
+    /// [`Self::try_new`] keeps the idle-only recovery the ledger always had
+    /// ([`NitroRefusedRecovery::Recovers`]); a declared record lowers through
+    /// this so its own, explicitly resolved choice is the one that runs.
+    #[must_use]
+    pub const fn with_recovery_on_refused(mut self, rule: NitroRefusedRecovery) -> Self {
+        self.recovery_on_refused = rule;
+        self
+    }
+
+    /// Whether idle recovery runs on a tick whose activation was refused.
+    #[must_use]
+    pub const fn recovery_on_refused(&self) -> NitroRefusedRecovery {
+        self.recovery_on_refused
     }
 
     /// The declared capacity, in capacity units.
@@ -3891,7 +3926,9 @@ impl NitroLedger {
 
         // Idle recovery, for the elapsed seconds of a tick the booster was
         // not running.
-        if !active && self.parameters.recovery_per_s() > 0.0 && dt_s > 0.0 {
+        let withheld = refused.is_some()
+            && self.parameters.recovery_on_refused() == NitroRefusedRecovery::Withheld;
+        if !active && !withheld && self.parameters.recovery_per_s() > 0.0 && dt_s > 0.0 {
             let recovered = self.parameters.recovery_per_s() * dt_s;
             self.capacity_units =
                 (self.capacity_units + recovered).min(self.parameters.capacity_units());

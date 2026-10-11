@@ -20,12 +20,12 @@ use cs_content::ordnance::{
     DECLARED_SYNTHETIC_GUIDED_KEY, DECLARED_SYNTHETIC_NITRO_KEY, DECLARED_SYNTHETIC_TORPEDO_KEY,
     DeclaredAreaEffect, DeclaredEquipmentRules, DeclaredFuseRule, DeclaredGuidanceRule,
     DeclaredHardpointKind, DeclaredInheritanceRule, DeclaredNitro, DeclaredNitroActivationRule,
-    DeclaredNitroParameters, DeclaredOrdnance, DeclaredOrdnanceDetails, DeclaredOrdnanceFamily,
-    DeclaredProjectile, DeclaredProximityFuse, DeclaredStatusEffect, DeclaredStatusEffectKind,
-    OrdnanceSchemaError, declared_known, declared_synthetic_area_denial, declared_synthetic_direct,
-    declared_synthetic_flak, declared_synthetic_guided, declared_synthetic_media,
-    declared_synthetic_nitro, declared_synthetic_provenance, declared_synthetic_torpedo,
-    declared_unknown,
+    DeclaredNitroParameters, DeclaredNitroRefusedRecovery, DeclaredOrdnance,
+    DeclaredOrdnanceDetails, DeclaredOrdnanceFamily, DeclaredProjectile, DeclaredProximityFuse,
+    DeclaredStatusEffect, DeclaredStatusEffectKind, OrdnanceSchemaError, declared_known,
+    declared_synthetic_area_denial, declared_synthetic_direct, declared_synthetic_flak,
+    declared_synthetic_guided, declared_synthetic_media, declared_synthetic_nitro,
+    declared_synthetic_provenance, declared_synthetic_torpedo, declared_unknown,
 };
 use cs_types::content::{ContentId, ContentKind, Origin, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
@@ -351,6 +351,7 @@ fn accept_f28_a_declared_nitro_numbers_are_each_checked() {
             capacity_units: capacity,
             consumption_per_s: consumption,
             recovery_per_s: known(1.0),
+            recovery_on_refused: known(DeclaredNitroRefusedRecovery::Recovers),
             extra_thrust_n: thrust,
             activation: known(DeclaredNitroActivationRule::WhileHeld),
             authority_multiplier: authority,

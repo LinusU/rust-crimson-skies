@@ -381,6 +381,13 @@ fn accept_f28_a_each_unresolved_nitro_field_is_refused_by_name() {
             },
         ),
         (
+            "nitro.recovery_on_refused",
+            DeclaredNitroParameters {
+                recovery_on_refused: unknown(),
+                ..base.parameters.clone()
+            },
+        ),
+        (
             "nitro.extra_thrust_n",
             DeclaredNitroParameters {
                 extra_thrust_n: unknown(),

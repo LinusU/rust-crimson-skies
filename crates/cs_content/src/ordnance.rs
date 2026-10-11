@@ -527,6 +527,29 @@ impl fmt::Display for DeclaredNitroActivationRule {
     }
 }
 
+/// Whether a nitro booster recovers capacity on a tick whose activation was
+/// refused because the tank was empty.
+///
+/// The original's rule is unmeasured (`f28.d.limit.nitro_recovery`), so this
+/// is a [`Resolved`] option with no default: an unresolved one refuses to
+/// lower rather than becoming either choice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DeclaredNitroRefusedRecovery {
+    /// A refused tick recovers like any other tick the booster did not run.
+    Recovers,
+    /// A refused tick recovers nothing.
+    Withheld,
+}
+
+impl fmt::Display for DeclaredNitroRefusedRecovery {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(match self {
+            Self::Recovers => "recovers",
+            Self::Withheld => "withheld",
+        })
+    }
+}
+
 /// The declared numbers one nitro booster carries.
 ///
 /// Every value is [`Resolved`]. In particular the tradeoff is: the original's
@@ -540,6 +563,8 @@ pub struct DeclaredNitroParameters {
     pub consumption_per_s: Resolved<f64>,
     /// Capacity recovered per second while idle.
     pub recovery_per_s: Resolved<f64>,
+    /// Whether capacity recovers on a tick whose activation was refused.
+    pub recovery_on_refused: Resolved<DeclaredNitroRefusedRecovery>,
     /// The extra thrust nitro adds, in newtons.
     pub extra_thrust_n: Resolved<f64>,
     /// The declared activation rule.
@@ -1531,6 +1556,7 @@ fn walk_record(record: &DeclaredOrdnance) -> RecordWalk {
             walk.value("nitro.capacity_units", &parameters.capacity_units);
             walk.value("nitro.consumption_per_s", &parameters.consumption_per_s);
             walk.value("nitro.recovery_per_s", &parameters.recovery_per_s);
+            walk.value("nitro.recovery_on_refused", &parameters.recovery_on_refused);
             walk.value("nitro.extra_thrust_n", &parameters.extra_thrust_n);
             match &parameters.activation {
                 Resolved::Known(Known {
@@ -2329,6 +2355,7 @@ pub fn declared_synthetic_nitro() -> DeclaredOrdnance {
                 capacity_units: declared_known(12.0),
                 consumption_per_s: declared_known(3.0),
                 recovery_per_s: declared_known(1.0),
+                recovery_on_refused: declared_known(DeclaredNitroRefusedRecovery::Recovers),
                 extra_thrust_n: declared_known(4200.0),
                 activation: declared_known(DeclaredNitroActivationRule::WhileHeld),
                 authority_multiplier: declared_known(1.0),
