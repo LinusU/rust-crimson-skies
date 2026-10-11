@@ -51,9 +51,8 @@
 //!   (VS-M01-RT-MISSION-HOST, #1217): this stage prepares them, leaves them
 //!   on [`MissionHostSeed`] and launches them through [`add_composition`].
 //!   A run that settles now ends cleanly with the exit its outcome maps to
-//!   (#1217's `.02`, Rally #1279), and the restart (`.03`) is installed — `R`
-//!   and a `MissionHostRestartRequest` rebuild the authored initial state
-//!   through the composed `PostUpdate` entry, sessions and world together.
+//!   (#1217's `.02`, Rally #1279), and a restart rebuilds the authored
+//!   initial state (`.03`, the `R` bullet below).
 //! * No mission-bound audio source is started, so teardown stops none; the
 //!   sound archives travel on [`super::MissionContent`] for the host stage.
 //! * `R` restarts the whole mission (VS-M01-RT-MISSION-HOST `.03`): the
