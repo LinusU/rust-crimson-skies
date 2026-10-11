@@ -4,7 +4,8 @@
 //! Spec: `specs/F21-cameras-cockpit-views-and-spyglass.md`, stages
 //! `### F21-A`, `### F21-B` and `### F21-C`; shared contract
 //! `docs/contracts/UI-NETWORK.md`. Task test prefixes: `accept_f21_a_`,
-//! `accept_f21_b_` and `accept_f21_c_`.
+//! `accept_f21_b_`, `accept_f21_c_`, `accept_f21_d_`, `accept_t540_` and
+//! `accept_t541_`.
 //!
 //! These tests drive production code only: `cs_content::cameras` owns the
 //! declared records and their validation, and `cs_app::camera` owns the
@@ -49,6 +50,18 @@
 //!   own subtree — measured over authored arrays and over the real
 //!   `ZBD/planes.zbd`, with the audit's states carried verbatim.
 //!
+//! Task #541 — the measured horizon commands:
+//!
+//! * `horizon` owns the second F21-D follow-up: a bounded static analysis of
+//!   the owner-supplied decrypted executable established that
+//!   `CameraSetHorizon`/`CameraSetHorizonXZ` bind named world scenery nodes
+//!   that every render pass re-anchors to the camera's position — scenery
+//!   tracking, not the up-axis lock F21-D's spelling-based classification
+//!   suggested. The suite pins the two rules, the bound state, the binding
+//!   set a census derives, the mechanism's image spans byte for byte, and
+//!   the retail world archives' real `horizon` scenery — with the bound
+//!   nodes the archives do not store left an explicit unknown.
+//!
 //! Stage `### F21-C` — script cameras, deterministic capture flags and the
 //! session that runs them:
 //!
@@ -74,6 +87,7 @@ mod common;
 mod content;
 mod coverage;
 mod framing;
+mod horizon;
 mod modes;
 mod projection;
 mod records;
