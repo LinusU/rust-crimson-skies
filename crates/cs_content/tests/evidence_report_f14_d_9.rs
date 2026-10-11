@@ -470,15 +470,16 @@ fn rows_of(
 fn review_identity() -> String {
     let recorded = String::from(
         "implementer: sonnet-1/sonnet-1 (Rally #558, implement claim of 2026-10-11T14:22:12Z), \
-         model Sonnet 5.5. reviewer: none yet — this report was written by the implementer \
-         before review, so it records no independent review and the format and identity claims \
-         still deserve a different agent instance or model with a fresh context; a reviewing \
-         agent replaces this literal with their own identity (through CS_EVIDENCE_REVIEW) in the \
-         same commit that regenerates the report. No agent review awards more than checked, and \
-         nothing here is verified_original: retail is read access to the installation's own \
-         files, the original game was never run, and the material collection is structural — it \
-         records what the store holds and how it is addressed, not what the engine does with it. \
-         No agent review replaces the owner's human approval",
+         model Sonnet 5.5. reviewer: the Rally review claim opened after this submission; at the \
+         time of writing no review has taken place, so this report claims no independent review \
+         and the format and identity claims still deserve a different agent instance or model \
+         with a fresh context. The reviewing agent replaces this literal with their own identity \
+         (through CS_EVIDENCE_REVIEW) in the same commit that regenerates the report. No agent \
+         review awards more than checked, and nothing here is verified_original: retail is read \
+         access to the installation's own files, the original game was never run, and the \
+         material collection is structural — it records what the store holds and how it is \
+         addressed, not what the engine does with it. No agent review replaces the owner's \
+         human approval",
     );
     std::env::var("CS_EVIDENCE_REVIEW").unwrap_or(recorded)
 }
