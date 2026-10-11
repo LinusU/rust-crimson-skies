@@ -272,6 +272,8 @@ fn texture_name(index: u32, name: &str) -> GameZTextureName {
         field32: 2,
         field36: 0,
         field40: -1,
+        data_offset: 0,
+        data_end: 0,
     }
 }
 

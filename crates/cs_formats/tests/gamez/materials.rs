@@ -523,6 +523,29 @@ fn accept_f14_d_9_a_present_material_reports_the_extent_of_its_own_slot() {
     );
 }
 
+/// Each texture-name entry reports the extent of its own 44-byte record, taken
+/// from the reader's position: back to back from the table start, and the bytes
+/// at the extent start with the record's first word.
+#[test]
+fn accept_f14_d_10_a_texture_name_reports_the_extent_of_its_own_record() {
+    let names = three_names();
+    let section = MaterialSection::of(vec![MaterialSpec::textured(0, 0.25)]);
+    let bytes = container(&names, &section);
+    let materials = parse_ok(&bytes);
+
+    assert_eq!(materials.textures.len(), names.len());
+    for (position, texture) in materials.textures.iter().enumerate() {
+        let start = materials.textures_offset + TEXTURE_INFO_BYTES * position as u64;
+        assert_eq!(texture.data_offset, start, "texture {position}");
+        assert_eq!(
+            texture.data_end,
+            start + TEXTURE_INFO_BYTES,
+            "texture {position}"
+        );
+        assert!(texture.data_end <= materials.materials_offset);
+    }
+}
+
 /// A material record stores an **index** into the container's texture table, and
 /// the three name encodings the layout has decode to the stored names. Nothing
 /// is folded or trimmed: `Sky1.tif` stays `Sky1.tif`.

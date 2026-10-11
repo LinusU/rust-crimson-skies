@@ -197,6 +197,12 @@ pub struct GameZTextureName {
     pub field36: u32,
     /// `unk40`: the reference asserts it is `-1`.
     pub field40: i32,
+    /// Absolute container offset of this entry's 44-byte record, taken from the
+    /// reader's own position when it started the record.
+    pub data_offset: u64,
+    /// Absolute container offset one past the record's last byte.
+    /// `data_end - data_offset` is [`TEXTURE_INFO_BYTES`].
+    pub data_end: u64,
 }
 
 /// What a material record is, as far as the layout establishes.
@@ -1001,6 +1007,7 @@ fn read_texture_table(
 
     let mut textures = Vec::with_capacity(count);
     for index in 0..header.texture_count {
+        let data_offset = reader.position();
         let field00 = reader.read_u32("texture.field00").map_err(material_parse)?;
         let field04 = reader.read_u32("texture.field04").map_err(material_parse)?;
         let field08 = reader.read_u32("texture.field08").map_err(material_parse)?;
@@ -1058,6 +1065,8 @@ fn read_texture_table(
             field32,
             field36,
             field40,
+            data_offset,
+            data_end: reader.position(),
         });
     }
     Ok(textures)
