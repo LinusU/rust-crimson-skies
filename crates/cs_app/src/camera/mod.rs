@@ -53,6 +53,9 @@
 //!   and the airframe archive and reports what the original declares about the
 //!   pilot's view — the camera commands its scripts use, and the cockpit nodes
 //!   they bind — checked against what this contract consumes and can resolve.
+//!   Task #540 adds its content pass: each declared binding's *subtree* is
+//!   resolved to the drawable instrument geometry it holds, with the audit's
+//!   binding states carried verbatim.
 //!
 //! F21-D's measurement and what it deliberately leaves unknown are written down
 //! in `docs/findings/2026-10-03-f21-d-original-view-controls-and-cockpit-coverage.md`.
@@ -86,12 +89,14 @@ pub use capture::{
     Narrowing, PinnedProjection, ProjectionPinError, pin,
 };
 pub use coverage::{
-    AirframeCockpitCoverage, CameraOperation, CockpitAirframe, CockpitBinding, CockpitBindingClaim,
-    CockpitBindingCoverage, CockpitBindingDiscovery, CockpitCoverageError, CockpitCoverageReport,
-    CockpitEyeCoverage, CockpitFinding, CockpitNodeCoverage, ViewCommandClaim, ViewControlCensus,
-    ViewControlCoverage, ViewControlEffect, ViewControlError, ViewControlFinding,
-    ViewControlOccurrence, ViewControlRow, audit_cockpit_coverage, discover_cockpit_bindings,
-    discover_view_controls, eye_placement,
+    AirframeCockpitContent, AirframeCockpitCoverage, CameraOperation, CockpitAirframe,
+    CockpitBinding, CockpitBindingClaim, CockpitBindingContent, CockpitBindingCoverage,
+    CockpitBindingDiscovery, CockpitContentNode, CockpitContentReport, CockpitCoverageError,
+    CockpitCoverageReport, CockpitEyeCoverage, CockpitFinding, CockpitNodeCoverage,
+    CockpitSubtreeContent, ViewCommandClaim, ViewControlCensus, ViewControlCoverage,
+    ViewControlEffect, ViewControlError, ViewControlFinding, ViewControlOccurrence, ViewControlRow,
+    audit_cockpit_coverage, discover_cockpit_bindings, discover_view_controls, eye_placement,
+    resolve_cockpit_content,
 };
 pub use modes::{
     CameraLowerError, LoweredCameraMode, LoweredCameraModes, LoweredCockpitViewpoint,

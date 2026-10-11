@@ -26,6 +26,17 @@
 //!    binding set; [`audit_cockpit_coverage`] then checks that set against the
 //!    real node array of the airframe archive, per airframe, and reports which
 //!    model nodes are **verified** and which are missing.
+//! 3. **The subtree content those bindings name.** (Task #540, an F21-D
+//!    follow-up.) [`resolve_cockpit_content`] takes a coverage report and the
+//!    archive it was measured over and, for every declared binding of every
+//!    audited airframe, walks the resolved node's *own* subtree and names the
+//!    drawable geometry it holds — so a `NoMesh` container like the corpus's
+//!    `gungauge` names the instrument faces and needles in its children, and an
+//!    `Ambiguous` name names each candidate node's geometry. The binding's
+//!    measured state is carried verbatim: a container whose descendants draw
+//!    is still `NoMesh`, because the node the original's script names still
+//!    stores no mesh of its own, and two candidates stay `Ambiguous` however
+//!    much geometry each holds.
 //!
 //! # What is measured and what is claimed
 //!
@@ -1102,6 +1113,21 @@ pub enum CockpitCoverageError {
         /// The container the node array is.
         measured: String,
     },
+    /// A node index the coverage audit resolved is not in the node array the
+    /// content pass was handed, so the report and the array disagree about
+    /// which container was measured.
+    ///
+    /// Refused rather than walked past: a missing candidate would otherwise
+    /// report a binding's subtree as empty when the truth is that this archive
+    /// does not hold the node the audit named.
+    ResolvedNodeAbsent {
+        /// The airframe whose row carries the index.
+        airframe: String,
+        /// The declared binding.
+        node: String,
+        /// The node index the report resolved.
+        node_index: u32,
+    },
 }
 
 impl fmt::Display for CockpitCoverageError {
@@ -1164,6 +1190,15 @@ impl fmt::Display for CockpitCoverageError {
             } => write!(
                 f,
                 "the airframe {airframe} lives in {declared}, but the measured node array is {measured}"
+            ),
+            Self::ResolvedNodeAbsent {
+                airframe,
+                node,
+                node_index,
+            } => write!(
+                f,
+                "the coverage report resolved {airframe}'s {node:?} binding to node {node_index}, \
+                 which this node array does not hold"
             ),
         }
     }
@@ -1897,6 +1932,422 @@ fn subtree_indices(archive: &GameZNodes, root: u32) -> Vec<u32> {
         }
     }
     visited.into_iter().collect()
+}
+
+// =============================== cockpit binding subtree content (task 540) ====
+
+/// One node of a resolved binding's subtree that stores a mesh association.
+///
+/// This is what "name drawable instrument geometry" means concretely: the
+/// node's index in the airframe archive's node array, its **stored** name (the
+/// `ggindicator0` or `ggarrow` a coverage row could previously only gesture at
+/// as "a child of `gungauge`"), and the non-negative `mesh_index` it
+/// associates. Whether the slot holds geometry is the mesh reader's answer,
+/// exactly as for [`CockpitNodeCoverage::Bound`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CockpitContentNode {
+    node_index: u32,
+    name: String,
+    mesh_index: u32,
+}
+
+impl CockpitContentNode {
+    /// The node's index in the airframe archive's node array.
+    #[must_use]
+    pub const fn node_index(&self) -> u32 {
+        self.node_index
+    }
+
+    /// The node's stored name.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The non-negative `mesh_index` the node stores.
+    #[must_use]
+    pub const fn mesh_index(&self) -> u32 {
+        self.mesh_index
+    }
+}
+
+/// What the subtree of one node a binding resolved to holds.
+///
+/// `subtree` is the candidate node's own children closure under
+/// [`subtree_indices`] — the same walk the coverage audit applies to the
+/// airframe root, so a binding's content is measured the same way its
+/// resolution was. `geometry` is the members of that closure that store a
+/// non-negative `mesh_index`, in array order; the candidate itself appears
+/// first when it carries one, so a `Bound` leaf's subtree names itself and a
+/// `NoMesh` container's names only its descendants.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CockpitSubtreeContent {
+    node_index: u32,
+    name: String,
+    mesh_index: i32,
+    subtree_nodes: usize,
+    geometry: Vec<CockpitContentNode>,
+}
+
+impl CockpitSubtreeContent {
+    /// The candidate node's index in the archive's node array.
+    #[must_use]
+    pub const fn node_index(&self) -> u32 {
+        self.node_index
+    }
+
+    /// The candidate's stored name — the spelling the archive holds, which is
+    /// what the binding's declared name matched case-insensitively.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The candidate's own stored `mesh_index`, signed: `-1` for a container.
+    #[must_use]
+    pub const fn mesh_index(&self) -> i32 {
+        self.mesh_index
+    }
+
+    /// How many nodes the candidate's children closure holds, drawable or not.
+    ///
+    /// Reported beside `geometry` because the difference is itself a
+    /// measurement: a `gungauge` subtree of ten nodes with eight drawable has
+    /// two members — the container and its `markers`/`marker` leaf — that
+    /// carry no mesh of their own.
+    #[must_use]
+    pub const fn subtree_nodes(&self) -> usize {
+        self.subtree_nodes
+    }
+
+    /// The drawable nodes of the closure, in array order.
+    #[must_use]
+    pub fn geometry(&self) -> &[CockpitContentNode] {
+        &self.geometry
+    }
+}
+
+/// One declared binding's subtree content in one airframe.
+///
+/// `coverage` is the audit's verdict carried **verbatim** — the point of the
+/// content pass is that a `NoMesh` container with drawable children is still
+/// `NoMesh` and a name two nodes share is still `Ambiguous`. Collapsing either
+/// into "resolved" would trade a true statement about the node array for a
+/// convenient one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CockpitBindingContent {
+    node: String,
+    coverage: CockpitNodeCoverage,
+    subtrees: Vec<CockpitSubtreeContent>,
+}
+
+impl CockpitBindingContent {
+    /// The declared node name, as the declaring script spells it.
+    #[must_use]
+    pub fn node(&self) -> &str {
+        &self.node
+    }
+
+    /// How the binding resolved, exactly as the coverage audit reported it.
+    #[must_use]
+    pub const fn coverage(&self) -> &CockpitNodeCoverage {
+        &self.coverage
+    }
+
+    /// One entry per node the binding's name resolved to, in that state's own
+    /// order: one for `Bound` and `NoMesh`, several for `Ambiguous`, none for
+    /// `Absent`.
+    #[must_use]
+    pub fn subtrees(&self) -> &[CockpitSubtreeContent] {
+        &self.subtrees
+    }
+
+    /// The union of every candidate subtree's drawable nodes, in node-index
+    /// order, each named once. Two `Ambiguous` candidates whose subtrees
+    /// overlap share the shared nodes here rather than counting them twice.
+    #[must_use]
+    pub fn geometry(&self) -> Vec<&CockpitContentNode> {
+        let mut dedup: BTreeMap<u32, &CockpitContentNode> = BTreeMap::new();
+        for subtree in &self.subtrees {
+            for node in &subtree.geometry {
+                dedup.entry(node.node_index).or_insert(node);
+            }
+        }
+        dedup.into_values().collect()
+    }
+
+    /// Whether any candidate's subtree holds drawable geometry.
+    #[must_use]
+    pub fn has_geometry(&self) -> bool {
+        self.subtrees
+            .iter()
+            .any(|subtree| !subtree.geometry.is_empty())
+    }
+}
+
+/// One airframe's cockpit binding content: every declared binding's subtree,
+/// in the declaring script's order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AirframeCockpitContent {
+    airframe: String,
+    root: String,
+    root_index: u32,
+    container: String,
+    bindings: Vec<CockpitBindingContent>,
+}
+
+impl AirframeCockpitContent {
+    /// The audited airframe's id.
+    #[must_use]
+    pub fn airframe(&self) -> &str {
+        &self.airframe
+    }
+
+    /// The root's stored node name.
+    #[must_use]
+    pub fn root(&self) -> &str {
+        &self.root
+    }
+
+    /// The root's index in the archive's node array.
+    #[must_use]
+    pub const fn root_index(&self) -> u32 {
+        self.root_index
+    }
+
+    /// The archive the row was measured over.
+    #[must_use]
+    pub fn container(&self) -> &str {
+        &self.container
+    }
+
+    /// Every declared binding's subtree content, in declared order.
+    #[must_use]
+    pub fn bindings(&self) -> &[CockpitBindingContent] {
+        &self.bindings
+    }
+
+    /// The content row for one declared binding name.
+    ///
+    /// Compared the way every name here is compared — case-insensitively on
+    /// stored bytes — so a lookup cannot miss a row the pass wrote.
+    #[must_use]
+    pub fn binding(&self, node: &str) -> Option<&CockpitBindingContent> {
+        self.bindings
+            .iter()
+            .find(|binding| same_name(binding.node.as_bytes(), node))
+    }
+
+    /// How many declared bindings resolved to a subtree holding at least one
+    /// drawable node.
+    #[must_use]
+    pub fn resolved(&self) -> usize {
+        self.bindings
+            .iter()
+            .filter(|binding| binding.has_geometry())
+            .count()
+    }
+
+    /// The bindings whose subtrees hold no drawable node, in declared order.
+    #[must_use]
+    pub fn unresolved(&self) -> Vec<&CockpitBindingContent> {
+        self.bindings
+            .iter()
+            .filter(|binding| !binding.has_geometry())
+            .collect()
+    }
+
+    /// Whether every declared binding's subtree holds drawable geometry.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        self.resolved() == self.bindings.len()
+    }
+
+    /// The union of every binding subtree's drawable nodes, in node-index
+    /// order, each named once.
+    ///
+    /// Declared bindings overlap by construction in the corpus — the
+    /// `ggindicator0` leaf is both its own binding and a member of the
+    /// `gungauge` container's subtree — so the per-airframe answer is a set,
+    /// not a sum: a node inside two bindings' subtrees is still one instrument.
+    #[must_use]
+    pub fn drawable_nodes(&self) -> Vec<&CockpitContentNode> {
+        let mut dedup: BTreeMap<u32, &CockpitContentNode> = BTreeMap::new();
+        for binding in &self.bindings {
+            for subtree in &binding.subtrees {
+                for node in &subtree.geometry {
+                    dedup.entry(node.node_index).or_insert(node);
+                }
+            }
+        }
+        dedup.into_values().collect()
+    }
+}
+
+/// The content pass's report: one row per audited airframe.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CockpitContentReport {
+    archive: String,
+    rows: Vec<AirframeCockpitContent>,
+}
+
+impl CockpitContentReport {
+    /// The archive the pass resolved over, as its catalog id spells it.
+    #[must_use]
+    pub fn archive(&self) -> &str {
+        &self.archive
+    }
+
+    /// One row per audited airframe, in the coverage report's order.
+    #[must_use]
+    pub fn rows(&self) -> &[AirframeCockpitContent] {
+        &self.rows
+    }
+
+    /// The row for one airframe, compared the way the coverage report
+    /// compares it.
+    #[must_use]
+    pub fn row(&self, airframe: &str) -> Option<&AirframeCockpitContent> {
+        self.rows
+            .iter()
+            .find(|row| same_name(row.airframe.as_bytes(), airframe))
+    }
+
+    /// How many `(airframe, binding)` pairs the report covers.
+    #[must_use]
+    pub fn declared_pairs(&self) -> usize {
+        self.rows.iter().map(|row| row.bindings().len()).sum()
+    }
+
+    /// How many `(airframe, binding)` pairs resolved to a subtree holding at
+    /// least one drawable node.
+    #[must_use]
+    pub fn resolved_pairs(&self) -> usize {
+        self.rows.iter().map(AirframeCockpitContent::resolved).sum()
+    }
+
+    /// Every `(airframe, binding)` pair whose subtree holds no drawable node.
+    pub fn unresolved_pairs(&self) -> impl Iterator<Item = (&str, &CockpitBindingContent)> {
+        self.rows.iter().flat_map(|row| {
+            row.bindings
+                .iter()
+                .filter(|binding| !binding.has_geometry())
+                .map(move |binding| (row.airframe(), binding))
+        })
+    }
+
+    /// Whether every audited airframe resolved every declared binding's
+    /// subtree to drawable geometry.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        !self.rows.is_empty() && self.rows.iter().all(AirframeCockpitContent::is_complete)
+    }
+}
+
+/// Resolves each declared cockpit binding's subtree to the drawable geometry
+/// it holds, per audited airframe.
+///
+/// This is the pass F21-D deferred: the coverage audit answers *which node* a
+/// declared name resolves to, and this answers *what content that node
+/// carries*. Every candidate a binding's [`CockpitNodeCoverage`] names gets
+/// its own children-closure walk under [`subtree_indices`], and the closure's
+/// mesh-bearing members are the binding's drawable instrument geometry. A
+/// `Bound` leaf's subtree is itself; a `NoMesh` container's is its contents;
+/// an `Ambiguous` name gets one subtree per candidate and stays ambiguous;
+/// `Absent` has no candidates and no content.
+///
+/// A candidate's closure can never leave the airframe it was found in: the
+/// candidate is a member of the airframe's own children closure, and a
+/// children closure is closed under children, so `subtree_indices(candidate)`
+/// is a subset of `subtree_indices(root)`. The wrong-aircraft attribution the
+/// audit refuses cannot reappear one level down.
+///
+/// # Errors
+///
+/// [`CockpitCoverageError::ContainerMismatch`] when a coverage row was audited
+/// over an archive other than `archive_id`, and
+/// [`CockpitCoverageError::ResolvedNodeAbsent`] when an index the report
+/// resolved is not in `archive` — both mean the node array handed here is not
+/// the one the audit measured, and a subtree reported against it would be a
+/// different container's content.
+pub fn resolve_cockpit_content(
+    coverage: &CockpitCoverageReport,
+    archive: &GameZNodes,
+    archive_id: &ContentId,
+) -> Result<CockpitContentReport, CockpitCoverageError> {
+    let measured = archive_id.as_str();
+    let mut rows = Vec::with_capacity(coverage.rows().len());
+    for row in coverage.rows() {
+        // The check the audit makes against the roster, repeated against the
+        // report: a row audited over another archive must not pick up this
+        // one's geometry.
+        if row.container() != measured {
+            return Err(CockpitCoverageError::ContainerMismatch {
+                airframe: row.airframe().to_owned(),
+                declared: row.container().to_owned(),
+                measured: measured.to_owned(),
+            });
+        }
+        let bindings = row
+            .bindings()
+            .iter()
+            .map(|binding| {
+                let candidates: &[u32] = match binding.coverage() {
+                    CockpitNodeCoverage::Bound { node_index, .. }
+                    | CockpitNodeCoverage::NoMesh { node_index } => {
+                        std::slice::from_ref(node_index)
+                    }
+                    CockpitNodeCoverage::Ambiguous { node_indices } => node_indices,
+                    CockpitNodeCoverage::Absent => &[],
+                };
+                let mut subtrees = Vec::with_capacity(candidates.len());
+                for candidate in candidates {
+                    let Some(node) = archive.get(*candidate) else {
+                        return Err(CockpitCoverageError::ResolvedNodeAbsent {
+                            airframe: row.airframe().to_owned(),
+                            node: binding.node().to_owned(),
+                            node_index: *candidate,
+                        });
+                    };
+                    let subtree = subtree_indices(archive, *candidate);
+                    let geometry = subtree
+                        .iter()
+                        .filter_map(|index| {
+                            let member = archive.get(*index)?;
+                            (member.info.mesh_index >= 0).then(|| CockpitContentNode {
+                                node_index: *index,
+                                name: member.name.clone(),
+                                mesh_index: member.info.mesh_index as u32,
+                            })
+                        })
+                        .collect();
+                    subtrees.push(CockpitSubtreeContent {
+                        node_index: *candidate,
+                        name: node.name.clone(),
+                        mesh_index: node.info.mesh_index,
+                        subtree_nodes: subtree.len(),
+                        geometry,
+                    });
+                }
+                Ok(CockpitBindingContent {
+                    node: binding.node().to_owned(),
+                    coverage: binding.coverage().clone(),
+                    subtrees,
+                })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        rows.push(AirframeCockpitContent {
+            airframe: row.airframe().to_owned(),
+            root: row.root().to_owned(),
+            root_index: row.root_index(),
+            container: row.container().to_owned(),
+            bindings,
+        });
+    }
+    Ok(CockpitContentReport {
+        archive: measured.to_owned(),
+        rows,
+    })
 }
 
 /// The length a declared spelling has, or the length it must be refused for.
