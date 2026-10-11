@@ -353,6 +353,12 @@
 //! [`physics::PhysicsSession::production_builder`] installs it next to the
 //! animation plugin, so every session built on the production path runs the
 //! weapon step.
+//! Task #539 (F27-C-FX) adds the presentation half those emitted effects
+//! lacked: [`weapon_effects::present_weapon_effects`] drains the session's
+//! effect log once per call and turns each accepted shot into one declared
+//! shot-sound cue through the installed audio session and one
+//! [`weapon_effects::MuzzleEffectSpawn`] record for the render path, so a
+//! denied input or a duplicate packet presents nothing on either side.
 //!
 //! [`mission_control`] is the measured mission control program (task
 //! `M01-LC-MISSION-PROGRAM`, #630):
@@ -765,6 +771,7 @@ pub mod ui {
     pub mod mods;
     pub mod scrapbook;
 }
+pub mod weapon_effects;
 pub mod weapons;
 pub mod world;
 pub mod world_actors;

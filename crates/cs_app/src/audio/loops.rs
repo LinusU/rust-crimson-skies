@@ -146,6 +146,19 @@ impl AudioSession {
         self.specs.values()
     }
 
+    /// The lowered spec one delivered asset resolved to, if the installed load
+    /// delivered it.
+    ///
+    /// The delivered-first lookup a one-shot producer resolves a declared
+    /// catalog id through: an id the load did not deliver is `None`, so the
+    /// producer refuses it by name instead of playing a guessed asset (the
+    /// same rule [`bind_spawned_emitters`](super::bind_spawned_emitters) and
+    /// [`crate::weapon_effects::trigger_shot_sound`] follow).
+    #[must_use]
+    pub fn spec(&self, asset: &ContentId) -> Option<&AudioAssetSpec> {
+        self.specs.get(asset)
+    }
+
     /// Takes the accumulated outcomes, leaving the refusals for a consumer that
     /// reports them.
     ///
