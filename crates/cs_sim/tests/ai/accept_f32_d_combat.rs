@@ -29,8 +29,9 @@
 use cs_sim::ai::combat::{
     CombatRole, CombatRuntime, DIFFICULTY_PROBE_DOMAIN, DifficultyProbeReport, DifficultyProbeSpec,
     DifficultyTier, ORIGINAL_DIFFICULTY_STEPS, PROBE_FORMATION, PROBE_LATERAL_JITTER_M,
-    ProbeDifference, RecoveryTrigger, RoleAssignment, SYNTHETIC_SESSION, synthetic_actor,
-    synthetic_combat_runtime, synthetic_difficulty_probe_spec, synthetic_recovery_policies,
+    ProbeDifference, ProbeProvenance, RecoveryTrigger, RoleAssignment, SYNTHETIC_SESSION,
+    synthetic_actor, synthetic_combat_runtime, synthetic_difficulty_probe_spec,
+    synthetic_recovery_policies,
 };
 use cs_types::random::SplitMix64;
 
@@ -51,6 +52,7 @@ fn short_report(runs: u32, ticks: u64, seed: u64) -> DifficultyProbeReport {
         runs,
         seed,
         synthetic_recovery_policies(),
+        ProbeProvenance::DesignedFixture,
     )
     .expect("the short probe spec is valid");
     synthetic_combat_runtime()
@@ -314,6 +316,7 @@ fn accept_f32_d_a_roster_whose_tiers_collapse_measures_nothing_to_compare() {
         8,
         4_242,
         synthetic_recovery_policies(),
+        ProbeProvenance::DesignedFixture,
     )
     .expect("the flat probe spec is valid");
 
@@ -459,6 +462,7 @@ fn accept_f32_d_the_probe_stream_follows_the_documented_domain_recipe() {
         4,
         20_260_903,
         synthetic_recovery_policies(),
+        ProbeProvenance::DesignedFixture,
     )
     .expect("the probe spec is valid");
 
@@ -491,12 +495,13 @@ fn accept_f32_d_the_probe_stream_follows_the_documented_domain_recipe() {
 #[test]
 fn accept_f32_d_a_probe_spec_that_would_measure_nothing_is_refused_by_name() {
     let policies = synthetic_recovery_policies();
+    let fixture = ProbeProvenance::DesignedFixture;
     assert_eq!(
-        DifficultyProbeSpec::try_new(SYNTHETIC_SESSION, 600, 0, 1, policies).unwrap_err(),
+        DifficultyProbeSpec::try_new(SYNTHETIC_SESSION, 600, 0, 1, policies, fixture).unwrap_err(),
         cs_sim::ai::combat::CombatError::ProbeWithoutRuns
     );
     assert_eq!(
-        DifficultyProbeSpec::try_new(SYNTHETIC_SESSION, 0, 4, 1, policies).unwrap_err(),
+        DifficultyProbeSpec::try_new(SYNTHETIC_SESSION, 0, 4, 1, policies, fixture).unwrap_err(),
         cs_sim::ai::combat::CombatError::ProbeWithoutTicks
     );
     assert_eq!(
@@ -505,7 +510,8 @@ fn accept_f32_d_a_probe_spec_that_would_measure_nothing_is_refused_by_name() {
             600,
             cs_sim::ai::combat::MAX_PROBE_RUNS_PER_TIER + 1,
             1,
-            policies
+            policies,
+            fixture,
         )
         .unwrap_err(),
         cs_sim::ai::combat::CombatError::ProbeTooManyRuns {
@@ -519,7 +525,8 @@ fn accept_f32_d_a_probe_spec_that_would_measure_nothing_is_refused_by_name() {
             cs_sim::ai::combat::MAX_PROBE_TICKS + 1,
             4,
             1,
-            policies
+            policies,
+            fixture,
         )
         .unwrap_err(),
         cs_sim::ai::combat::CombatError::ProbeTooManyTicks {

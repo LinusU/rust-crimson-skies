@@ -2828,6 +2828,35 @@ mod tests {
         assert_eq!(declared, runtime, "one vocabulary on both sides");
     }
 
+    /// F32-PROBE-GEOMETRY (#570): the runtime's probe report is sealed as a
+    /// designed fixture — the marker `f32.d.limit.probe_geometry` asked for —
+    /// and the read that would quote its outcome as the original's difficulty
+    /// is refused by name. Asserted here, on the side that owns the
+    /// measurement, so the marker cannot drift away from the limitation it
+    /// answers.
+    #[test]
+    fn accept_f32_pg_the_runtime_probe_is_marked_designed_and_refuses_the_original_read() {
+        use cs_sim::ai::combat::ProbeProvenance;
+
+        let spec = cs_sim::ai::combat::synthetic_difficulty_probe_spec();
+        assert_eq!(spec.provenance(), ProbeProvenance::DesignedFixture);
+        assert!(!spec.provenance().is_measured());
+
+        let report = cs_sim::ai::combat::synthetic_combat_runtime()
+            .probe_difficulties(&spec)
+            .expect("the synthetic probe replays at every tier");
+        assert_eq!(report.provenance(), ProbeProvenance::DesignedFixture);
+        assert_eq!(
+            report.tiers_as_original_evidence().unwrap_err(),
+            cs_sim::ai::combat::CombatError::ProbeOutcomeIsDesigned,
+            "a designed fixture's outcome may not be read as the original's difficulty"
+        );
+        // The marker changed nothing about what the probe measures: the tier
+        // order is still reported — as this engine's designed-fixture claim.
+        assert!(report.outcomes_differ());
+        assert!(report.protected_answers_never_regress());
+    }
+
     /// F32-E: a tier override must be a declared designed alternative of
     /// the knob it moves; a bare designed override is refused by name.
     #[test]
@@ -5251,8 +5280,12 @@ mod evidence_report_f32_d {
         "f32.d.limit.probe_geometry - every number in the probe's scenario (positions, speeds, the ",
         "120-tick attack period, the jitter bound) is newly authored project design, because no measured ",
         "file describes an original AI encounter; the probe therefore measures THIS engine's per-tier ",
-        "decision behavior, is not evidence about the original's numbers, and carries no machine-readable ",
-        "marker saying so (resolving task #570 F32-PROBE-GEOMETRY); claim f32.d.limit.fire_discipline - ",
+        "decision behavior and is not evidence about the original's numbers, and the marker is now in ",
+        "code rather than prose: cs_sim::ai::combat::ProbeProvenance::DesignedFixture is declared at ",
+        "DifficultyProbeSpec::try_new, carried on DifficultyProbeReport::provenance, and the as-original ",
+        "read DifficultyProbeReport::tiers_as_original_evidence is refused by name (#570 F32-PROBE-GEOMETRY ",
+        "sealed the marker; the geometry stays designed and the measured tier order remains a ",
+        "designed-fixture project claim); claim f32.d.limit.fire_discipline - ",
         "the runtime REPORTS a profile's ",
         "fire_discipline_ticks and aim_error_rad and neither is enforced across ticks, so the probe's ",
         "firing-tick counts are a control that cannot discriminate a tier, two tiers differing ONLY in ",
@@ -5284,7 +5317,7 @@ mod evidence_report_f32_d {
         "f32.d.limit.ai_roles: the original's AI role set is in no installed data member and no string of the executable image (searched-and-empty, nine runtime AI-mode debug labels are the only behavior-state vocabulary); cs_content::ai::DeclaredCombatRole's seven roles and cs_sim's mirror are designed vocabulary and a role profile or a rules record holding roles is refused unless it carries designed provenance and no original origin (#569 F32-ROLES closed the declared half; whether the original's mode machine maps to any mission-facing role stays unknown)",
         "f32.d.limit.difficulty_naming: the original's three step names live in its shipped localizable string image and are deliberately not reproduced in Git or in any report, so the declared tier labels claim nothing about the original's wording and the tier-to-step mapping is positional only (resolving task F32-LOWERING, #551)",
         "f32.d.limit.per_mission_difficulty: measured negative - no key at any depth of any of the eight scenario descriptors names a difficulty, so this engine cannot read a per-mission difficulty from content (resolving task F32-LOWERING, #551)",
-        "f32.d.limit.probe_geometry: every number in the probe's scenario is newly authored project design because no measured file describes an original AI encounter, so the probe measures this engine's per-tier decision behavior and is not evidence about the original's numbers (resolving task #570 F32-PROBE-GEOMETRY)",
+        "f32.d.limit.probe_geometry: every number in the probe's scenario is newly authored project design because no measured file describes an original AI encounter, so the probe measures this engine's per-tier decision behavior and is not evidence about the original's numbers; the marker is now machine-readable - cs_sim::ai::combat::ProbeProvenance::DesignedFixture is required at DifficultyProbeSpec::try_new, carried on DifficultyProbeReport::provenance, and the as-original read DifficultyProbeReport::tiers_as_original_evidence is refused as ProbeOutcomeIsDesigned (#570 F32-PROBE-GEOMETRY sealed the marker; the geometry stays designed, so the measured tier order remains a designed-fixture project claim)",
         "f32.d.limit.fire_discipline: the runtime reports fire_discipline_ticks and aim_error_rad without enforcing them, so two tiers differing only in those two knobs measure as identical and the probe's firing-tick control cannot discriminate a tier (resolving task #571 F32-FIRE-DISCIPLINE)",
     ];
 
@@ -5546,13 +5579,16 @@ mod evidence_report_f32_d {
             })
             .collect();
         let json = format!(
-            "{{\"seed\":{},\"ticks\":{},\"runs_per_tier\":{},\"domain\":{},\"declared_tiers\":{},\"measured_steps\":{},\"covers_every_measured_step\":{},\"geometry_is_tier_invariant\":{},\"arsenal_is_tier_invariant\":{},\"clock_is_tier_invariant\":{},\"distinct_profile_count\":{},\"outcomes_differ\":{},\"protected_answers_never_regress\":{},\"measured_tiers\":{},\"tiers\":[{}],\"comparisons\":[{}]}}\n",
+            "{{\"seed\":{},\"ticks\":{},\"runs_per_tier\":{},\"domain\":{},\"declared_tiers\":{},\"measured_steps\":{},\"scenario_provenance\":{},\"scenario_is_measured\":{},\"original_evidence_readable\":{},\"covers_every_measured_step\":{},\"geometry_is_tier_invariant\":{},\"arsenal_is_tier_invariant\":{},\"clock_is_tier_invariant\":{},\"distinct_profile_count\":{},\"outcomes_differ\":{},\"protected_answers_never_regress\":{},\"measured_tiers\":{},\"tiers\":[{}],\"comparisons\":[{}]}}\n",
             spec.root_seed,
             spec.ticks,
             spec.runs_per_tier,
             cs_sim::ai::combat::DIFFICULTY_PROBE_DOMAIN,
             DifficultyTier::ALL.len(),
             cs_sim::ai::combat::ORIGINAL_DIFFICULTY_STEPS,
+            jstr(report.provenance().label()),
+            report.provenance().is_measured(),
+            report.tiers_as_original_evidence().is_ok(),
             report.covers_every_measured_step(),
             report.geometry_is_tier_invariant(),
             report.arsenal_is_tier_invariant(),

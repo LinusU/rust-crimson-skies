@@ -24,10 +24,10 @@
 
 use cs_sim::ai::combat::{
     CombatRole, CombatRuntime, CombatStep, CombatantRequest, DifficultyProbeSpec, DifficultyTier,
-    ORIGINAL_DIFFICULTY_STEPS, PROBE_FORMATION, PriorityTerm, RoleAssignment, SYNTHETIC_SESSION,
-    answers_protected_threat, synthetic_actor, synthetic_arsenal, synthetic_candidate,
-    synthetic_combat_runtime, synthetic_difficulty_probe_spec, synthetic_recovery_policies,
-    synthetic_threat,
+    ORIGINAL_DIFFICULTY_STEPS, PROBE_FORMATION, PriorityTerm, ProbeProvenance, RoleAssignment,
+    SYNTHETIC_SESSION, answers_protected_threat, synthetic_actor, synthetic_arsenal,
+    synthetic_candidate, synthetic_combat_runtime, synthetic_difficulty_probe_spec,
+    synthetic_recovery_policies, synthetic_threat,
 };
 use cs_sim::targeting::Allegiance;
 use cs_types::Tick;
@@ -195,6 +195,7 @@ fn accept_f32_d_without_a_measurement_the_probe_still_refuses_to_claim_coverage_
         4,
         9_001,
         synthetic_recovery_policies(),
+        ProbeProvenance::DesignedFixture,
     )
     .expect("the probe spec is valid");
     let report: cs_sim::ai::combat::DifficultyProbeReport = synthetic_combat_runtime()

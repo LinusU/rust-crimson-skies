@@ -111,6 +111,12 @@
 //! one snapshot for every tier, so a tier that handed the AI a different gun
 //! or rack would change [`DifficultyProbeRun::arsenal_fingerprint`].
 //!
+//! The probe's scenario is itself designed content — no measured file
+//! describes an original AI encounter — and it says so in code: every
+//! [`DifficultyProbeSpec`] declares a [`ProbeProvenance`], every
+//! [`DifficultyProbeReport`] carries it, and the one reading a designed
+//! outcome may not have — as the original's difficulty evidence — is refused.
+//!
 //! # Designed vocabulary, not original data
 //!
 //! The original game's AI **role** set, target-priority order, reaction times,
@@ -3617,6 +3623,11 @@ pub enum CombatError {
         /// The bound.
         max: u64,
     },
+    /// A difficulty probe's outcome table was read as evidence about the
+    /// original's difficulty while its scenario is a designed fixture — a
+    /// measurement of this engine's per-tier behavior, never of the
+    /// original's numbers.
+    ProbeOutcomeIsDesigned,
     /// An actor identity belongs to another session generation.
     ForeignSession {
         /// The offending actor.
@@ -3921,6 +3932,10 @@ impl fmt::Display for CombatError {
             Self::ProbeTooManyTicks { ticks, max } => {
                 write!(f, "{ticks} probe ticks per run exceeds the bound of {max}")
             }
+            Self::ProbeOutcomeIsDesigned => f.write_str(
+                "the difficulty probe's outcome is a designed fixture's measurement of \
+                 this engine, not evidence about the original's difficulty",
+            ),
             Self::ForeignSession { actor, session } => {
                 write!(f, "{actor} does not belong to session {session}")
             }
@@ -4553,12 +4568,76 @@ pub const MAX_PROBE_TICKS: u64 = 65_536;
 /// so it can never move a candidate across the range gate by itself.
 pub const PROBE_LATERAL_JITTER_M: f64 = 120.0;
 
+/// Where a difficulty probe's scenario geometry comes from.
+///
+/// **Designed** today (F32-PROBE-GEOMETRY): every number in the scenario the
+/// probe replays — the `probe_geometry` positions, speeds, serials, the attack
+/// period, the loss ticks and the jitter bound — is authored project design,
+/// because no measured file describes an original AI encounter (F32-D recorded
+/// that negative as `f32.d.limit.probe_geometry`). The provenance is a *value*
+/// a spec declares and every report carries, not a doc comment: a consumer
+/// cannot read an outcome table without meeting it, and the one reading a
+/// designed fixture may not have — its outcome as the original's difficulty
+/// evidence — is refused by
+/// [`DifficultyProbeReport::tiers_as_original_evidence`].
+///
+/// A `Measured` variant belongs here when a scenario's geometry is bound to
+/// measured content — an authored mission's declared spawn points, an `ia.zrd`
+/// roster's aircraft and groups — and it will carry the record of what it was
+/// bound to. While [`Self::ALL`] holds only the designed fixture the marker
+/// cannot lie: no caller can construct a spec whose provenance claims more
+/// than the code replays.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ProbeProvenance {
+    /// The scenario's geometry is authored project design: the probe measures
+    /// **this engine's** per-tier decision behavior and its outcome table is
+    /// not evidence about the original's numbers.
+    DesignedFixture,
+}
+
+impl ProbeProvenance {
+    /// Every provenance a probe spec may declare.
+    ///
+    /// One entry today: the designed fixture. A measured scenario arrives as a
+    /// new variant *together with* the geometry binding it, so this list is
+    /// also the check that no provenance exists without its content.
+    pub const ALL: &'static [ProbeProvenance] = &[Self::DesignedFixture];
+
+    /// The stable label used in reports and evidence artifacts.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::DesignedFixture => "designed_fixture",
+        }
+    }
+
+    /// Whether the scenario's geometry came from measured original content.
+    ///
+    /// `false` while [`Self::ALL`] holds only the designed fixture: the
+    /// probe's outcome is a measurement of this engine's per-tier behavior,
+    /// never of the original's difficulty.
+    #[must_use]
+    pub const fn is_measured(self) -> bool {
+        match self {
+            Self::DesignedFixture => false,
+        }
+    }
+}
+
+impl fmt::Display for ProbeProvenance {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
 /// The probe scenario: how many times to replay it, for how long, from which
-/// seed.
+/// seed, and where its geometry comes from.
 ///
 /// A spec carries **no** tier list: [`CombatRuntime::probe_difficulties`]
 /// always runs [`DifficultyTier::ALL`], so "at every discovered difficulty"
-/// cannot be narrowed by a caller who forgot one.
+/// cannot be narrowed by a caller who forgot one. It carries a **required**
+/// [`ProbeProvenance`] instead, so a report's outcome table always says what
+/// it is a measurement *of*.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DifficultyProbeSpec {
     /// The session generation the probe's actors belong to.
@@ -4575,10 +4654,21 @@ pub struct DifficultyProbeSpec {
     /// kind of decision a mission makes — and a probe that invented them would
     /// be measuring the probe's own policy rather than the runtime's.
     pub policies: RecoveryPolicySet,
+    /// Where the scenario's geometry comes from.
+    ///
+    /// A declaration the caller makes at construction, carried into the report
+    /// so an outcome table can never be quoted without it. Every spec today is
+    /// [`ProbeProvenance::DesignedFixture`]: a measured binding arrives with
+    /// the content it replays, never as a label on this geometry.
+    pub provenance: ProbeProvenance,
 }
 
 impl DifficultyProbeSpec {
     /// Assembles and bounds a probe spec.
+    ///
+    /// `provenance` is a required argument, not a defaulted field: declaring
+    /// where the scenario's geometry comes from is part of assembling the
+    /// spec, so a probe can never exist unmarked.
     ///
     /// # Errors
     ///
@@ -4593,6 +4683,7 @@ impl DifficultyProbeSpec {
         runs_per_tier: u32,
         root_seed: u64,
         policies: RecoveryPolicySet,
+        provenance: ProbeProvenance,
     ) -> Result<Self, CombatError> {
         if runs_per_tier == 0 {
             return Err(CombatError::ProbeWithoutRuns);
@@ -4618,6 +4709,7 @@ impl DifficultyProbeSpec {
             runs_per_tier,
             root_seed,
             policies,
+            provenance,
         })
     }
 
@@ -4625,6 +4717,12 @@ impl DifficultyProbeSpec {
     #[must_use]
     pub const fn policies(&self) -> RecoveryPolicySet {
         self.policies
+    }
+
+    /// Where the replayed scenario's geometry comes from.
+    #[must_use]
+    pub const fn provenance(&self) -> ProbeProvenance {
+        self.provenance
     }
 
     /// The stream one run draws its geometry from.
@@ -4853,6 +4951,37 @@ impl DifficultyProbeReport {
         self.tiers.iter().find(|outcome| outcome.tier == tier)
     }
 
+    /// Where the replayed scenario's geometry came from.
+    ///
+    /// The spec's declaration, carried on the report so a reader cannot reach
+    /// `tiers` or `comparisons` as *original* evidence without meeting it.
+    /// Every report today is [`ProbeProvenance::DesignedFixture`]: a
+    /// measurement of this engine's per-tier decisions and of nothing else.
+    #[must_use]
+    pub fn provenance(&self) -> ProbeProvenance {
+        self.spec.provenance
+    }
+
+    /// The per-tier outcome table read **as evidence about the original's
+    /// difficulty**.
+    ///
+    /// That is the one reading a designed fixture may not have: the scenario
+    /// is authored project design, so its outcome distribution measures this
+    /// engine's per-tier decision behavior and may not be quoted as the
+    /// original's numbers. When a scenario bound to measured content exists —
+    /// an authored mission's declared spawn points, an `ia.zrd` roster — this
+    /// is the read that returns it.
+    ///
+    /// # Errors
+    ///
+    /// [`CombatError::ProbeOutcomeIsDesigned`] while the scenario is a
+    /// designed fixture, which is every [`ProbeProvenance`] there is.
+    pub fn tiers_as_original_evidence(&self) -> Result<&[TierProbeOutcome], CombatError> {
+        match self.provenance() {
+            ProbeProvenance::DesignedFixture => Err(CombatError::ProbeOutcomeIsDesigned),
+        }
+    }
+
     /// Whether every tier replayed the same world.
     ///
     /// This is the non-negotiable 1 check, and it is a *per run index*
@@ -4976,7 +5105,10 @@ impl DifficultyProbeReport {
 ///
 /// Every number is authored project design: no measured file describes where an
 /// original AI encounter happened or how long it lasted (F32-D measured no such
-/// thing). The *shape* is chosen so the reaction gate is the only thing that
+/// thing). The spec marks that in code — [`ProbeProvenance::DesignedFixture`],
+/// required at [`DifficultyProbeSpec::try_new`] and carried into every report —
+/// so an outcome table cannot be quoted as the original's difficulty.
+/// The *shape* is chosen so the reaction gate is the only thing that
 /// decides the outcome: the protected actor's attacker starts farther away than
 /// the harmless hostile, so an escort that has not noticed the attack yet scores
 /// the nearer hostile first, and the tick on which it stops doing so is the tick
@@ -5049,6 +5181,13 @@ impl CombatRuntime {
     /// Runs the mission-combat probe: every [`DifficultyTier::ALL`] tier,
     /// [`DifficultyProbeSpec::runs_per_tier`] runs each, and the adjacent
     /// comparisons between them.
+    ///
+    /// The report carries the spec's [`ProbeProvenance`]
+    /// ([`DifficultyProbeReport::provenance`]): the replayed scenario is a
+    /// designed fixture, so the outcome table is a measurement of this
+    /// engine's per-tier decisions and
+    /// [`DifficultyProbeReport::tiers_as_original_evidence`] refuses the one
+    /// reading it may not have.
     ///
     /// # The one observable failure
     ///
@@ -5674,6 +5813,12 @@ fn profile_fingerprint(profile: &SkillProfile) -> u64 {
 
 /// The synthetic probe spec: the synthetic session, the F32-D probe's designed
 /// geometry and a bounded number of runs.
+///
+/// Its provenance is declared [`ProbeProvenance::DesignedFixture`]: every
+/// number it replays is authored project design, so the report it produces is
+/// a measurement of this engine's per-tier decision behavior and may not be
+/// quoted as the original's (see
+/// [`DifficultyProbeReport::tiers_as_original_evidence`]).
 #[must_use]
 pub fn synthetic_difficulty_probe_spec() -> DifficultyProbeSpec {
     DifficultyProbeSpec::try_new(
@@ -5682,6 +5827,7 @@ pub fn synthetic_difficulty_probe_spec() -> DifficultyProbeSpec {
         24,
         20_260_903,
         synthetic_recovery_policies(),
+        ProbeProvenance::DesignedFixture,
     )
     .expect("the synthetic probe spec is valid")
 }

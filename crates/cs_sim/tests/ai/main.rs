@@ -3,9 +3,11 @@
 //! Task test prefix: `accept_f32_a_` for the roles/skill/decision-trace
 //! stage, `accept_f32_b_` for the maneuvers/firing-solution stage,
 //! `accept_f32_c_` for the session runtime that composes formations, aces and
-//! difficulty, and `accept_f32_d_` for the retail-measured stage: the
+//! difficulty, `accept_f32_d_` for the retail-measured stage: the
 //! original's difficulty option and AI skill tiers, and the repeated
-//! mission-combat probe run at every discovered difficulty. Spec:
+//! mission-combat probe run at every discovered difficulty, `accept_f32_r_`
+//! for the unmeasured role set, and `accept_f32_pg_` for the probe scenario's
+//! designed-fixture provenance marker. Spec:
 //! `specs/F32-ai-combat-formations-aces-and-difficulty.md`, stages
 //! `### F32-A`, `### F32-B`, `### F32-C` and `### F32-D`.
 //!
@@ -27,4 +29,5 @@ mod accept_f32_c_combat;
 mod accept_f32_c_combat_failures;
 mod accept_f32_d_combat;
 mod accept_f32_d_combat_failures;
+mod accept_f32_pg_combat;
 mod accept_f32_r_combat;
