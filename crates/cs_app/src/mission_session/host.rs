@@ -1274,8 +1274,12 @@ pub fn mission_host_tick(world: &mut World) {
 /// [`PlaytestState::resets`] there; the restart system runs in
 /// [`PostUpdate`], the first schedule after it, and compares against this
 /// mark — the fact-11 seam.
+///
+/// It is `pub(crate)` only so [`super::compose::teardown`] can remove it
+/// beside every other restart resource: a torn-down composition leaves no
+/// restart bookkeeping behind either.
 #[derive(Resource, Debug)]
-struct MissionHostRestartWatch {
+pub(crate) struct MissionHostRestartWatch {
     /// The last observed `PlaytestState::resets`.
     resets: u32,
 }

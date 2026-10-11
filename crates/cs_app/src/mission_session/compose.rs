@@ -879,6 +879,7 @@ pub fn teardown(app: &mut App) {
     world.remove_resource::<crate::mission_session::MissionHostRestartRequest>();
     world.remove_resource::<crate::mission_session::MissionHostRestartReport>();
     world.remove_resource::<crate::mission_session::MissionHostRestartFailure>();
+    world.remove_resource::<crate::mission_session::host::MissionHostRestartWatch>();
 }
 
 /// Runs `cs --mission`: composes the window over the satisfied plan and
