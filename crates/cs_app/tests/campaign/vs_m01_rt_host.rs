@@ -437,11 +437,41 @@ fn accept_vs_m01_runtime_host_01_retail_m01_runs_its_real_program_through_the_co
             .any(|refusal| matches!(refusal, MissionHostRefusal::WorldObservation { .. })),
         "the unobserved world fact fold must be named"
     );
+    // M01's stage carries the record's declared block lifecycles, read
+    // through the production lifecycle reader (VS-M01-RT-HOST-BLOCK-
+    // LIFECYCLES), so the undeclared-lifecycles refusal is not raised for
+    // it, and the table the fold answers through is the record's own 58
+    // blocks: a block the record leaves awake (`OBJECTIVE2`, index 1)
+    // reads awake and `OBJECTIVE1` (index 0) reads dormant behind the
+    // positive 2-second clock it arms.
     assert!(
         host.refusals()
             .iter()
-            .any(|refusal| matches!(refusal, MissionHostRefusal::BlockLifecycles { .. })),
-        "the undeclared block lifecycles must be named"
+            .all(|refusal| !matches!(refusal, MissionHostRefusal::BlockLifecycles { .. })),
+        "M01's stage carries the record's declared block lifecycles, so no \
+         undeclared-lifecycles refusal may be raised"
+    );
+    assert_eq!(
+        host.blocks().len(),
+        58,
+        "the host must fold M01's own 58 declared block lifecycles"
+    );
+    assert_eq!(
+        host.blocks().state(1),
+        Some(cs_script::runtime::ObjectiveLifecycle::Awake),
+        "M01's OBJECTIVE2 carries no BEGIN_DORMANT, so the folded table must read it awake"
+    );
+    assert_eq!(
+        host.blocks().state(0),
+        Some(cs_script::runtime::ObjectiveLifecycle::Dormant),
+        "M01's OBJECTIVE1 starts dormant behind its BEGIN_DORMANT 2 clock, so the folded table \
+         must read it dormant"
+    );
+    assert_eq!(
+        host.blocks().state(22),
+        Some(cs_script::runtime::ObjectiveLifecycle::Dormant),
+        "M01's Finish(Succeeded) block starts dormant behind the -1 sentinel, so the folded \
+         table must read it dormant"
     );
 
     teardown(&mut app);

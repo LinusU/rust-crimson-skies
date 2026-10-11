@@ -51,6 +51,7 @@ use cs_content::world::WorldDefinition;
 use cs_script::ir::{Condition, IR_VERSION, MissionProgram, Objective, SymbolId};
 use cs_sim::flight::original::PROVENANCE_LABEL;
 use cs_sim::flight::{OriginalAirframe, OriginalFlightModel, OriginalGlobals};
+use cs_sim::mission::BlockLifecycleTable;
 use cs_types::asset_id::{PrecedenceClass, WorldGroup};
 use cs_types::content::{ContentId, ContentKind};
 use cs_types::evidence::ContentHash;
@@ -203,13 +204,19 @@ fn synthetic_world_actors() -> LoweredWorldActors {
 /// The records the synthetic stage hands the mission host: the fixture
 /// environment, the empty-but-real world-actor program, no animation join
 /// (the fixture installation holds no `startanims.zrd`), the synthetic
-/// control program, no objective declarations and no cue table.
+/// control program, no objective declarations and no cue table. The block
+/// lifecycles are deliberately empty — the synthetic program's blocks are
+/// not read through the production lifecycle reader (there is no control
+/// record behind them), so the host must raise
+/// [`MissionHostRefusal::BlockLifecycles`] over this stage, exactly as it
+/// does for any stage that carries no declared table.
 fn synthetic_host_seed() -> MissionHostSeed {
     MissionHostSeed {
         environment: synthetic_environment(),
         world_actors: Some(synthetic_world_actors()),
         animation: None,
         control: synthetic_control_program(),
+        block_lifecycles: BlockLifecycleTable::new(),
         sound_archives: Vec::new(),
         objectives: no_declared_objectives(),
         markers: MissionMarkerBindings::default(),
