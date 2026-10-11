@@ -771,6 +771,18 @@ fn accept_f27_c_sched_a_replaced_session_is_torn_down() {
         &[actor_in(restarted, 2)],
     )));
     world(&mut session).insert_resource(targeting_session(restarted, GENERATION));
+    // The new generation's own first record, published ahead of the teardown:
+    // it is not the dead session's to take with it.
+    publish(
+        &mut session,
+        WeaponTickInput {
+            session: restarted,
+            at: Tick(2),
+            wind_velocity_m_s: Some([0.0; 3]),
+            orders: Vec::new(),
+            cockpit: None,
+        },
+    );
 
     // Tick 2 commits: the schedule tears the old generation down before
     // anything can step under the new one.
@@ -783,7 +795,7 @@ fn accept_f27_c_sched_a_replaced_session_is_torn_down() {
             mirrors: 1,
             inputs: 1,
         }),
-        "the teardown names the superseded session, its mirrors and its pending inputs: {ran:?}"
+        "the teardown names the superseded session, its mirrors and only its pending inputs: {ran:?}"
     );
     assert_eq!(
         mirror_count(&mut session),
@@ -795,10 +807,16 @@ fn accept_f27_c_sched_a_replaced_session_is_torn_down() {
         Some(restarted),
         "the new generation serves now"
     );
+    // The record the new generation published ahead of the teardown kept its
+    // tick: the dead session's own pending record — the tick-2 one the count
+    // above names — is the only one that went with it.
     assert!(
-        ran.missing_inputs,
-        "the pending record died with the old session: {ran:?}"
+        !ran.missing_inputs,
+        "the new generation's record survived the teardown: {ran:?}"
     );
+    let stepped = ran.stepped.as_ref().expect("the kept record stepped");
+    assert_eq!(stepped.at, Tick(2), "{stepped:?}");
+    assert!(stepped.refused.is_none(), "{stepped:?}");
 
     // Tick 3: the new generation's own publication is served under its own
     // session.

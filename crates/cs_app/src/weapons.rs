@@ -2301,8 +2301,23 @@ impl WeaponTickInputs {
         self.queue.is_empty()
     }
 
-    /// Drops every pending record. The session teardown path uses this: a
-    /// record whose session is gone has no tick left to serve.
+    /// Drops every pending record belonging to `session`, returning how many
+    /// the dead generation left behind.
+    ///
+    /// The session teardown path uses this — and only this, rather than a
+    /// clear: a record published for the generation that *replaced* the dead
+    /// one still has its own tick to serve, and a record belonging to a
+    /// session nobody installed is named a foreign drop by the drain that
+    /// finds it. Neither is the dead session's to take.
+    pub fn drop_session(&mut self, session: u64) -> usize {
+        let before = self.queue.len();
+        self.queue.retain(|queued| queued.session != session);
+        before - self.queue.len()
+    }
+
+    /// Drops every pending record. A whole-world teardown uses this; a
+    /// session replacement uses [`drop_session`](Self::drop_session) instead,
+    /// because the records it finds are not all the dead generation's.
     pub fn clear(&mut self) {
         self.queue.clear();
     }
@@ -2378,8 +2393,9 @@ pub struct WeaponTeardownRecord {
     /// The ECS mirrors it left behind, released here the same way
     /// [`WeaponSession::close`] releases them.
     pub mirrors: usize,
-    /// The pending input records that had no tick left to serve, dropped
-    /// with it.
+    /// The pending input records it left behind — only its own: a record
+    /// published for the generation that replaced it still has its tick to
+    /// serve, and a foreign record is named by the drain that finds it.
     pub inputs: usize,
 }
 
@@ -2555,11 +2571,7 @@ pub fn drive_weapon_session(world: &mut World) {
             let mirrors = despawn_round_mirrors(world);
             let inputs = world
                 .get_resource_mut::<WeaponTickInputs>()
-                .map(|mut inputs| {
-                    let pending = inputs.len();
-                    inputs.clear();
-                    pending
-                })
+                .map(|mut inputs| inputs.drop_session(previous))
                 .unwrap_or(0);
             report.tore_down = Some(WeaponTeardownRecord {
                 session: previous,
