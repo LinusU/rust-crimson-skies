@@ -56,6 +56,14 @@
 //!   Task #540 adds its content pass: each declared binding's *subtree* is
 //!   resolved to the drawable instrument geometry it holds, with the audit's
 //!   binding states carried verbatim.
+//! * [`horizon`] is task #541's follow-up to F21-D: a bounded static analysis
+//!   of the owner-supplied decrypted executable measured what
+//!   `CameraSetHorizon`/`CameraSetHorizonXZ` actually do — they bind named
+//!   world scenery nodes that every render pass re-anchors to the camera's
+//!   position, which is scenery tracking and not the up-axis lock their
+//!   names suggested. [`horizon::HorizonBinding`] is the bound state the
+//!   command installs and [`horizon::horizon_bindings`] derives the
+//!   measured binding set from a view-control census.
 //!
 //! F21-D's measurement and what it deliberately leaves unknown are written down
 //! in `docs/findings/2026-10-03-f21-d-original-view-controls-and-cockpit-coverage.md`.
@@ -75,6 +83,7 @@
 
 pub mod capture;
 pub mod coverage;
+pub mod horizon;
 pub mod modes;
 pub mod orientation;
 pub mod pose;
@@ -97,6 +106,10 @@ pub use coverage::{
     ViewControlEffect, ViewControlError, ViewControlFinding, ViewControlOccurrence, ViewControlRow,
     audit_cockpit_coverage, discover_cockpit_bindings, discover_view_controls, eye_placement,
     resolve_cockpit_content,
+};
+pub use horizon::{
+    HorizonAnchorRule, HorizonBinding, HorizonError, HorizonMechanism, HorizonMechanismError,
+    horizon_bindings, mechanism_source,
 };
 pub use modes::{
     CameraLowerError, LoweredCameraMode, LoweredCameraModes, LoweredCockpitViewpoint,

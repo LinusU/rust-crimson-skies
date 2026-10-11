@@ -17,9 +17,11 @@
 //!    reports every occurrence of the camera commands a caller claims, with the
 //!    script it came from, its byte offset, its stored arguments and its spans.
 //!    The original's `support\display.gw` creates camera *objects* and binds
-//!    them to a world and a window, and every world group's `load.gw` levels a
-//!    camera's horizon; those are facts about the original's view system, and
-//!    the coverage rows say which of them this contract can consume.
+//!    them to a world and a window, and every world group's `load.gw` binds
+//!    horizon scenery nodes the render pass re-anchors to the camera (task
+//!    #541 measured that mechanism — it is scenery tracking, not an up-axis
+//!    lock); those are facts about the original's view system, and the
+//!    coverage rows say which of them this contract can consume.
 //! 2. **The cockpit bindings the original declares.**
 //!    [`discover_cockpit_bindings`] walks the loading script that binds the
 //!    player plane's cockpit nodes and reports the ordered, deduplicated
@@ -130,6 +132,11 @@ pub enum CameraOperation {
     CaptureFrame,
     /// The magnified view of the currently selected target (F21-B).
     MagnifiedTarget,
+    /// A named world scenery node re-anchored to the camera's position each
+    /// pass (task #541): [`super::horizon::HorizonBinding`] holds the bound
+    /// state and [`super::horizon::HorizonBinding::anchored_translation`]
+    /// computes the measured write.
+    SceneryAnchors,
 }
 
 impl CameraOperation {
@@ -139,6 +146,7 @@ impl CameraOperation {
         Self::AuthoredCamera,
         Self::CaptureFrame,
         Self::MagnifiedTarget,
+        Self::SceneryAnchors,
     ];
 
     /// The stable label used in reports.
@@ -149,6 +157,7 @@ impl CameraOperation {
             Self::AuthoredCamera => "authored_camera",
             Self::CaptureFrame => "capture_frame",
             Self::MagnifiedTarget => "magnified_target",
+            Self::SceneryAnchors => "scenery_anchors",
         }
     }
 }
@@ -161,15 +170,22 @@ impl fmt::Display for CameraOperation {
 
 /// What one declared camera command asks the original's camera system to do.
 ///
-/// The vocabulary is **project design** and deliberately describes operations
-/// rather than original semantics: no value here is a measurement, and the
-/// coverage claim that uses it is what a reader checks against this engine.
-/// Every value is this project's reading of the command's own **spelling and
-/// its stored argument**, so a command whose operation cannot be read from those
-/// is [`Self::Undetermined`] — which is where `CameraSetObjectHSETest off` sits,
-/// because nothing in a readable file says what an object hull-sensitivity test
-/// does to a camera, and giving it one of the operations below would be a guess
-/// presented as a classification.
+/// The vocabulary deliberately describes operations rather than original
+/// semantics: the coverage claim that uses it is what a reader checks against
+/// this engine, and a command whose operation cannot be read from its own
+/// **spelling and stored argument** is [`Self::Undetermined`] — which is where
+/// `CameraSetObjectHSETest off` sits, because nothing in a readable file says
+/// what an object hull-sensitivity test does to a camera, and giving it one
+/// of the operations below would be a guess presented as a classification.
+///
+/// Two values are the exception: [`Self::AnchorsSceneryToCamera`] and
+/// [`Self::AnchorsSceneryToCameraLaterally`] are **measured** semantics —
+/// task #541's bounded static analysis of the owner-supplied decrypted
+/// executable established what the two horizon commands' native handlers
+/// actually do (re-anchor named world scenery nodes to the camera's
+/// position, never the camera's basis). They replaced F21-D's earlier
+/// `LevelsHorizon`/`LevelsHorizonToZone` classification, which was marked
+/// project design at the time and which the measured bytes falsify.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum ViewControlEffect {
     /// Creates a named camera object.
@@ -180,10 +196,23 @@ pub enum ViewControlEffect {
     BindsCameraToWorld,
     /// Binds a camera to a window.
     BindsCameraToWindow,
-    /// Levels a camera's up axis against the world's horizon.
-    LevelsHorizon,
-    /// Levels a camera's up axis against a named zone's plane.
-    LevelsHorizonToZone,
+    /// Anchors a named world scenery node to the camera's full position.
+    ///
+    /// **Measured** (task #541's static analysis of the owner-supplied
+    /// decrypted executable, `0x4d6390` → `0x4d1d50`): `CameraSetHorizon`
+    /// binds a scene node that every render pass re-anchors to the camera's
+    /// world translation — the `horizon` sky container follows the viewer.
+    /// It is not an up-axis lock: the camera's own rotation is never read
+    /// or written. See `super::horizon`.
+    AnchorsSceneryToCamera,
+    /// Anchors a named world scenery node to the camera's lateral position.
+    ///
+    /// **Measured** (task #541, same path): `CameraSetHorizonXZ` binds a
+    /// scene node that every render pass re-anchors to the camera's X/Z
+    /// while keeping the node's own stored Y — the `zone2_cloud_floor` /
+    /// `moon_reflection` content slides under the camera at its authored
+    /// altitude. Not an up-axis lock either.
+    AnchorsSceneryToCameraLaterally,
     /// The operation is not established by the command's spelling or its stored
     /// argument.
     ///
@@ -201,8 +230,8 @@ impl ViewControlEffect {
             Self::ActivatesCamera => "activates_camera",
             Self::BindsCameraToWorld => "binds_camera_to_world",
             Self::BindsCameraToWindow => "binds_camera_to_window",
-            Self::LevelsHorizon => "levels_horizon",
-            Self::LevelsHorizonToZone => "levels_horizon_to_zone",
+            Self::AnchorsSceneryToCamera => "anchors_scenery_to_camera",
+            Self::AnchorsSceneryToCameraLaterally => "anchors_scenery_to_camera_laterally",
             Self::Undetermined => "undetermined",
         }
     }

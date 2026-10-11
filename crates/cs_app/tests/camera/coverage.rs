@@ -169,10 +169,12 @@ pub(crate) fn decode(bytes: &[u8]) -> cs_formats::interp::DecodedInterp<'_> {
 /// The camera-command claims every synthetic census test uses.
 ///
 /// Arities are the corpus's own: `CameraSetHorizon horizon`, `NewCamera
-/// %camName%` and `CameraSetWindow %winName%` are each a head plus one argument. The two `Consumed` verdicts are the project's own
-/// judgement and the three `Unconsumed` verdicts each name what the camera
-/// contract would have to gain — a horizon-locked up axis, a viewport binding
-/// and a per-window display camera are none of which `cs_app::camera` has.
+/// %camName%` and `CameraSetWindow %winName%` are each a head plus one
+/// argument. The `Consumed` verdicts are the project's own judgement — task
+/// #541's static analysis measured the two horizon commands as scenery
+/// anchors, which `CameraOperation::SceneryAnchors` models — and the one
+/// `Unconsumed` verdict names what the camera contract would have to gain
+/// (a viewport/window binding is something `cs_app::camera` does not have).
 fn view_claims() -> Vec<ViewCommandClaim> {
     let mut claims = Vec::new();
     for (command, arguments, effect, coverage) in [
@@ -211,19 +213,17 @@ fn view_claims() -> Vec<ViewCommandClaim> {
         (
             "CameraSetHorizon",
             2,
-            ViewControlEffect::LevelsHorizon,
-            ViewControlCoverage::Unconsumed {
-                reason: "no camera in this contract can level its up axis against a world horizon"
-                    .to_owned(),
+            ViewControlEffect::AnchorsSceneryToCamera,
+            ViewControlCoverage::Consumed {
+                operation: CameraOperation::SceneryAnchors,
             },
         ),
         (
             "CameraSetHorizonXZ",
             2,
-            ViewControlEffect::LevelsHorizonToZone,
-            ViewControlCoverage::Unconsumed {
-                reason: "no camera in this contract can level its up axis against a named zone"
-                    .to_owned(),
+            ViewControlEffect::AnchorsSceneryToCameraLaterally,
+            ViewControlCoverage::Consumed {
+                operation: CameraOperation::SceneryAnchors,
             },
         ),
     ] {
@@ -572,25 +572,18 @@ fn accept_f21_d_the_declared_camera_commands_are_censused_with_their_scripts_and
     );
     assert_eq!(
         census.unconsumed().count(),
-        4,
-        "the window binding, the horizon levelling and the zone levelling have no consumer, and \
-         all four of their occurrences are reported as unconsumed rather than dropped"
+        1,
+        "the window binding has no consumer; the two horizon commands do — task #541 \
+         measured them as scenery anchors, and `SceneryAnchors` is that operation — and \
+         the one unconsumed occurrence is reported rather than dropped"
     );
     assert_eq!(
         census.unconsumed().count(),
         census
             .row("CameraSetWindow")
             .map(|row| row.count())
-            .expect("the window row exists")
-            + census
-                .row("CameraSetHorizon")
-                .map(|row| row.count())
-                .expect("the horizon row exists")
-            + census
-                .row("CameraSetHorizonXZ")
-                .map(|row| row.count())
-                .expect("the zone row exists"),
-        "which is exactly the three unconsumed rows' occurrences and nothing else"
+            .expect("the window row exists"),
+        "which is exactly the one unconsumed row's occurrence and nothing else"
     );
     let window = census
         .row("CameraSetWindow")
@@ -613,9 +606,16 @@ fn accept_f21_d_the_declared_camera_commands_are_censused_with_their_scripts_and
     assert_eq!(
         census
             .row("CameraSetHorizon")
+            .map(|row| row.coverage().label()),
+        Some("scenery_anchors"),
+        "the horizon command is consumed by the measured scenery-anchor operation"
+    );
+    assert_eq!(
+        census
+            .row("CameraSetHorizon")
             .map(|row| row.effect().label()),
-        Some("levels_horizon"),
-        "a command whose spelling and argument name an operation is classified as one"
+        Some("anchors_scenery_to_camera"),
+        "the measured effect names what the command does: anchor scenery to the camera"
     );
     assert_eq!(
         ViewControlEffect::Undetermined.to_string(),
@@ -665,7 +665,7 @@ fn accept_f21_d_a_claim_the_container_never_writes_is_refused_rather_than_report
         ViewCommandClaim::try_new(
             "CameraSetRoll",
             2,
-            ViewControlEffect::LevelsHorizon,
+            ViewControlEffect::AnchorsSceneryToCamera,
             ViewControlCoverage::Consumed {
                 operation: CameraOperation::PlayerRig,
             },
@@ -745,7 +745,7 @@ fn accept_f21_d_a_claim_the_container_never_writes_is_refused_rather_than_report
         ViewCommandClaim::try_new(
             "CameraSetHorizon",
             2,
-            ViewControlEffect::LevelsHorizon,
+            ViewControlEffect::AnchorsSceneryToCamera,
             ViewControlCoverage::Consumed {
                 operation: CameraOperation::PlayerRig,
             },
@@ -825,7 +825,7 @@ fn accept_f21_d_a_line_the_claim_does_not_describe_is_reported_instead_of_droppe
         ViewCommandClaim::try_new(
             command,
             2,
-            ViewControlEffect::LevelsHorizon,
+            ViewControlEffect::AnchorsSceneryToCamera,
             ViewControlCoverage::Consumed {
                 operation: CameraOperation::PlayerRig,
             },
@@ -2602,8 +2602,10 @@ pub(crate) const RETAIL_AIRFRAMES: usize = 11;
 /// How many lines the real container stores for each claimed camera command.
 ///
 /// Measured by the retail census above, which fails if any count moves. The
-/// horizon levelling is the interesting one: **every** world group's `load.gw`
-/// writes it, for the default camera and for the spyglass camera.
+/// horizon anchoring is the interesting one: **every** world group's
+/// `load.gw` binds `horizon`, for the default camera and for the spyglass
+/// camera — task #541 measured the native handlers as scenery anchors, not
+/// camera up-axis locks.
 const RETAIL_CAMERA_COMMAND_COUNTS: [(&str, usize); 7] = [
     ("NewCamera", 2),
     ("CameraSetActive", 2),
@@ -2680,9 +2682,10 @@ pub(crate) fn retail_cockpit_claim(install_sha256: ContentHash) -> CockpitBindin
 ///
 /// Seven spellings, the arities the corpus stores, and coverage judged against
 /// this engine: `NewCamera`, `CameraSetActive` and `CameraSetWorld` have
-/// consumers here, and `CameraSetWindow`, `CameraSetHorizon`,
-/// `CameraSetHorizonXZ` and `CameraSetObjectHSETest` do not — each naming what
-/// the camera contract would have to gain.
+/// consumers here, task #541's measured horizon commands are consumed by
+/// `CameraOperation::SceneryAnchors`, and `CameraSetWindow` and
+/// `CameraSetObjectHSETest` are unconsumed — each naming what the camera
+/// contract would have to gain.
 fn retail_view_claims(install_sha256: ContentHash) -> Vec<ViewCommandClaim> {
     let provenance = || retail_provenance(install_sha256, "ZBD/interp.zbd", 18_563, 1_012);
     let mut claims = Vec::new();
@@ -2722,27 +2725,27 @@ fn retail_view_claims(install_sha256: ContentHash) -> Vec<ViewCommandClaim> {
         (
             "CameraSetHorizon",
             2,
-            ViewControlEffect::LevelsHorizon,
-            ViewControlCoverage::Unconsumed {
-                reason: "no camera in this contract can level its up axis against a world horizon"
-                    .to_owned(),
+            ViewControlEffect::AnchorsSceneryToCamera,
+            ViewControlCoverage::Consumed {
+                operation: CameraOperation::SceneryAnchors,
             },
         ),
         (
             "CameraSetHorizonXZ",
             2,
-            ViewControlEffect::LevelsHorizonToZone,
-            ViewControlCoverage::Unconsumed {
-                reason: "no camera in this contract can level its up axis against a named zone"
-                    .to_owned(),
+            ViewControlEffect::AnchorsSceneryToCameraLaterally,
+            ViewControlCoverage::Consumed {
+                operation: CameraOperation::SceneryAnchors,
             },
         ),
         (
             "CameraSetObjectHSETest",
             2,
-            // Not a horizon operation: nothing in a readable file says what an
-            // object hull-sensitivity test does to a camera, so it is reported
-            // undetermined rather than filed under an operation nobody measured.
+            // Not an anchor either: nothing in a readable file or in the
+            // handler's own bytes (task #541 read them too) says what an
+            // object hull-sensitivity test does to a camera, so it is
+            // reported undetermined rather than filed under an operation
+            // nobody measured.
             ViewControlEffect::Undetermined,
             ViewControlCoverage::Unconsumed {
                 reason: "the hull-sensitivity probe has no counterpart in this contract".to_owned(),
