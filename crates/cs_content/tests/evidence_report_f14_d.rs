@@ -342,15 +342,15 @@ const UNKNOWN_LIMITATIONS: &[&str] = &[
      instant-action and 21 MP1-MP3 multiplayer scenario directories are declared launchable \
      rows of the denominator; the 8 world-group readers and the top-level reader are recorded \
      as not launchable. Still unmeasured: how many player-selectable presets one IA1 \
-     directory holds (its ia.zrd record is not decoded), and which of the four multiplayer \
-     modes a slot is launched under (F56-A records the slot-to-mode binding as unknown), so \
-     the denominator unit is the scenario directory and may undercount launch \
-     configurations. The role of one scenario directory is also read partly from its name: ia.zrd \
+     directory holds (its ia.zrd record is not decoded), and which deathmatch variant a \
+     slot is launched under (F56-A binds each slot to a mode family from its own targets.zrd, \
+     but 7011 versus 7012 and every per-mode rule stay open), so the denominator unit is the \
+     scenario directory and may undercount launch configurations. The role of one scenario directory is also read partly from its name: ia.zrd \
      occurs in no other reader, but net.zrd also occurs in the campaign-mission readers, so a \
      multiplayer row rests on the MP<n> directory name (F56-A measured the same 21 slots \
      independently) and not on a member that no campaign mission has. Affected content: \
      instant-action presets, multiplayer slot/mode pairs, the role of each scenario directory. \
-     Resolving tasks: F49 (instant-action presets), F56-B (mode rules and slot binding); until \
+     Resolving tasks: F49 (instant-action presets), F56-B (deathmatch variant and mode rules); until \
      they land no claim may read the denominator as every launch configuration.",
     "Only five collections are populated: install files, campaign missions, reader programs (the \
      campaign mission programs plus the scenario readers), instant-action scenario directories and \
