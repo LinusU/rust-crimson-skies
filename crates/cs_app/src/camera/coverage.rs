@@ -62,13 +62,14 @@
 //!   an owner-supplied original run.
 //! * **No default binding.** No shipped file holds a key → command map (F22-H
 //!   measured the label vocabulary and found the bindings themselves native).
-//! * **No viewpoint transform.** The original declares *which* cockpit nodes
-//!   exist; it does not declare, in any file this audit reads, where the
-//!   pilot's eye sits inside them. [`eye_placement`] therefore reports
-//!   [`CockpitEyeCoverage::Undeclared`] unconditionally rather than accepting a
-//!   value from a caller — a cockpit eye invented from a mesh's bounds would be
-//!   exactly the "HUD-only synthetic camera" F21 non-negotiable behavior 1
-//!   forbids.
+//! * **No eye in the *bindings*.** The twenty declared cockpit bindings name
+//!   instruments and gauges, never a viewpoint, so the audit's own eye verdict
+//!   stays [`CockpitEyeCoverage::Undeclared`]: a binding is not an eye, and a
+//!   cockpit eye invented from a mesh's bounds would be exactly the "HUD-only
+//!   synthetic camera" F21 non-negotiable behavior 1 forbids. The eye is
+//!   declared by a *different* channel — the `cockpit_camera` node the
+//!   original's vehicle registration resolves — which task #542's
+//!   [`resolve_cockpit_eye`] measures in the same airframe archive.
 //! * **No authored camera timelines.** The world's `cam_anim` carriers exist
 //!   and are fingerprinted (F20-D), and the `.zan`/`.zrd` clips they reference
 //!   are still an undecoded layout; nothing here reads one.
@@ -1647,18 +1648,23 @@ impl AirframeCockpitCoverage {
     }
 }
 
-/// Where the pilot's eye sits inside a cockpit.
+/// What the *binding audit* can say about where the pilot's eye sits.
+///
+/// This is deliberately the audit's own narrow verdict — "the declared
+/// cockpit bindings include no eye" — not a claim that no declaration exists:
+/// task #542's [`resolve_cockpit_eye`] measures the actual eye declaration
+/// (the `cockpit_camera` node) in the same airframe archive.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CockpitEyeCoverage {
-    /// No file this audit reads declares the eye.
+    /// None of the bindings the declaring script names is an eye.
     ///
     /// Unconditional and production-owned on purpose. The original's scripts
-    /// say *which* cockpit nodes an aircraft has; the transform that puts the
-    /// pilot's eye inside one is not in the loading scripts, the airframe
-    /// archive or any other readable container this project opens, so the audit
-    /// reports it undeclared instead of accepting a value from a caller. An eye
-    /// derived from a mesh's bounds would be the "HUD-only synthetic camera"
-    /// F21 non-negotiable behavior 1 forbids in place of a verified binding.
+    /// say *which* cockpit nodes an aircraft has — instruments and gauges —
+    /// and a verified binding name is still not a viewpoint transform, so the
+    /// audit reports its bindings as eye-less instead of accepting a value
+    /// from a caller. An eye derived from a mesh's bounds would be the
+    /// "HUD-only synthetic camera" F21 non-negotiable behavior 1 forbids in
+    /// place of a verified binding.
     Undeclared,
 }
 
@@ -1711,7 +1717,9 @@ impl CockpitCoverageReport {
         self.declared
     }
 
-    /// Where the pilot's eye sits: [`CockpitEyeCoverage::Undeclared`].
+    /// What the binding audit declares about the pilot's eye:
+    /// [`CockpitEyeCoverage::Undeclared`] — the measured eye lives in
+    /// [`resolve_cockpit_eye`]'s report.
     #[must_use]
     pub const fn eye(&self) -> CockpitEyeCoverage {
         self.eye
@@ -1750,11 +1758,14 @@ impl CockpitCoverageReport {
     }
 }
 
-/// Where the pilot's eye sits: [`CockpitEyeCoverage::Undeclared`].
-///
-/// A function rather than a value a caller may set, so "the eye is unknown" is
-/// a property of this audit and not something a caller can quietly fill in. See
+/// What the *binding audit* can say about the pilot's eye:
 /// [`CockpitEyeCoverage::Undeclared`].
+///
+/// A function rather than a value a caller may set, so "the declared bindings
+/// are not an eye" is a property of this audit and not something a caller can
+/// quietly fill in. The measured eye is a different channel — the
+/// `cockpit_camera` node — resolved by [`resolve_cockpit_eye`]; see
+/// [`CockpitEyeCoverage`].
 #[must_use]
 pub const fn eye_placement() -> CockpitEyeCoverage {
     CockpitEyeCoverage::Undeclared
@@ -2374,6 +2385,283 @@ pub fn resolve_cockpit_content(
         });
     }
     Ok(CockpitContentReport {
+        archive: measured.to_owned(),
+        rows,
+    })
+}
+
+// =============================== the cockpit eye (task 542) ==================
+
+/// The stored node name the original's vehicle registration resolves as the
+/// pilot's eye: `cockpit_camera`.
+///
+/// The name and the lookup's semantics are task #542's measurement of the
+/// owner-supplied executable — see [`super::eye::EyeMechanism`]: the
+/// registration calls a recursive, **byte-exact** child-by-name search, so
+/// this pass compares the constant byte for byte rather than through
+/// [`same_name`]. A stored `Cockpit_Camera` would not be found by the
+/// original's own lookup and is not found here.
+pub const COCKPIT_EYE_NODE: &str = "cockpit_camera";
+
+/// What one airframe's subtree holds under the name [`COCKPIT_EYE_NODE`].
+///
+/// The states mirror [`CockpitNodeCoverage`]'s discipline — a name that
+/// resolves to nothing, to one node, or to several — plus the object3d
+/// requirement the original's own reader asserts. `Absent` and `Ambiguous`
+/// are findings, not guesses to repair; `NotAnObject` reports the kind the
+/// archive actually stored because the original's translation reader asserts
+/// an object3d record.
+#[derive(Clone, Debug, PartialEq)]
+pub enum CockpitEyeState {
+    /// Exactly one `cockpit_camera` node in this airframe's children closure,
+    /// and it is an object3d. `translation` is the node's **stored local
+    /// translation** — the exact triple the original's registration reads out
+    /// of the object3d record and installs as the eye offset, in the
+    /// archive's own source units with no axis names attached.
+    Declared {
+        /// The node's index in the airframe archive's node array.
+        node_index: u32,
+        /// The stored local translation the registration installs.
+        translation: [f32; 3],
+    },
+    /// No node of that name in the airframe's children closure.
+    Absent,
+    /// More than one node carries the name.
+    ///
+    /// Reported rather than resolved by position: the original's lookup picks
+    /// the *last* matching child, but which of two subtrees the name lands in
+    /// is a finding for the reader, not an ambiguity this pass resolves by
+    /// mimicking traversal order.
+    Ambiguous {
+        /// The candidate node indices, in array order.
+        node_indices: Vec<u32>,
+    },
+    /// Exactly one node carries the name but it is not an object3d, so the
+    /// translation slot the original reads does not exist on it.
+    NotAnObject {
+        /// The node's index in the airframe archive's node array.
+        node_index: u32,
+        /// The stored `node_type` tag the record actually carries.
+        kind: u32,
+    },
+}
+
+impl CockpitEyeState {
+    /// The stable label used in reports.
+    #[must_use]
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::Declared { .. } => "declared",
+            Self::Absent => "absent",
+            Self::Ambiguous { .. } => "ambiguous",
+            Self::NotAnObject { .. } => "not_an_object",
+        }
+    }
+
+    /// Whether the airframe's subtree declares exactly one object3d
+    /// `cockpit_camera` — the state the original's registration installs.
+    #[must_use]
+    pub const fn is_declared(&self) -> bool {
+        matches!(self, Self::Declared { .. })
+    }
+
+    /// The `cockpit_camera` node's index, when the state names exactly one
+    /// node (`Declared` or `NotAnObject`).
+    #[must_use]
+    pub const fn node_index(&self) -> Option<u32> {
+        match self {
+            Self::Declared { node_index, .. } | Self::NotAnObject { node_index, .. } => {
+                Some(*node_index)
+            }
+            _ => None,
+        }
+    }
+
+    /// The stored local translation, when the node is declared.
+    #[must_use]
+    pub const fn translation(&self) -> Option<[f32; 3]> {
+        match self {
+            Self::Declared { translation, .. } => Some(*translation),
+            _ => None,
+        }
+    }
+}
+
+/// One airframe's cockpit-eye row: which of [`CockpitEyeState`]'s answers its
+/// subtree gives.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AirframeCockpitEye {
+    airframe: String,
+    root: String,
+    root_index: u32,
+    container: String,
+    state: CockpitEyeState,
+}
+
+impl AirframeCockpitEye {
+    /// The audited airframe's id.
+    #[must_use]
+    pub fn airframe(&self) -> &str {
+        &self.airframe
+    }
+
+    /// The airframe root's stored node name.
+    #[must_use]
+    pub fn root(&self) -> &str {
+        &self.root
+    }
+
+    /// The root's index in the archive's node array.
+    #[must_use]
+    pub const fn root_index(&self) -> u32 {
+        self.root_index
+    }
+
+    /// The archive the row was measured over, as its catalog id spells it.
+    #[must_use]
+    pub fn container(&self) -> &str {
+        &self.container
+    }
+
+    /// What the airframe's subtree holds under the eye's name.
+    #[must_use]
+    pub const fn state(&self) -> &CockpitEyeState {
+        &self.state
+    }
+}
+
+/// The eye pass's report: one row per audited airframe.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CockpitEyeReport {
+    archive: String,
+    rows: Vec<AirframeCockpitEye>,
+}
+
+impl CockpitEyeReport {
+    /// The archive the pass resolved over, as its catalog id spells it.
+    #[must_use]
+    pub fn archive(&self) -> &str {
+        &self.archive
+    }
+
+    /// One row per audited airframe, in the coverage report's order.
+    #[must_use]
+    pub fn rows(&self) -> &[AirframeCockpitEye] {
+        &self.rows
+    }
+
+    /// The row for one airframe, compared the way the coverage report
+    /// compares it.
+    #[must_use]
+    pub fn row(&self, airframe: &str) -> Option<&AirframeCockpitEye> {
+        self.rows
+            .iter()
+            .find(|row| same_name(row.airframe.as_bytes(), airframe))
+    }
+
+    /// How many audited airframes declare their eye.
+    #[must_use]
+    pub fn declared(&self) -> usize {
+        self.rows
+            .iter()
+            .filter(|row| row.state.is_declared())
+            .count()
+    }
+
+    /// The rows whose subtrees do not yield one object3d `cockpit_camera`.
+    pub fn undeclared(&self) -> impl Iterator<Item = &AirframeCockpitEye> {
+        self.rows.iter().filter(|row| !row.state.is_declared())
+    }
+
+    /// Whether every audited airframe declares its eye.
+    #[must_use]
+    pub fn is_complete(&self) -> bool {
+        !self.rows.is_empty() && self.rows.iter().all(|row| row.state.is_declared())
+    }
+}
+
+/// Resolves the pilot's eye for every audited airframe: the `cockpit_camera`
+/// node inside each airframe's own children closure.
+///
+/// This is the pass F21-D's `Undeclared` verdict deferred to. The binding
+/// audit answers *which cockpit nodes the loading scripts name*; this answers
+/// *which node the original's vehicle registration resolves as the eye* — a
+/// name the scripts never declare, so the discovery is driven by the
+/// mechanism task #542 measured (`super::eye::EyeMechanism`), not by the
+/// declared binding set. The search is each airframe's **whole children
+/// closure**, matching the original's recursive lookup, under the same
+/// [`subtree_indices`] walk that can never leave the airframe it started
+/// from. The name compare is byte-exact because the measured lookup is.
+///
+/// # Errors
+///
+/// [`CockpitCoverageError::ContainerMismatch`] when a coverage row was audited
+/// over an archive other than `archive_id`, and
+/// [`CockpitCoverageError::ResolvedNodeAbsent`] when a row's root index is not
+/// in `archive` — both mean the node array handed here is not the one the
+/// audit measured, and an eye reported against it would be a different
+/// container's eye.
+pub fn resolve_cockpit_eye(
+    coverage: &CockpitCoverageReport,
+    archive: &GameZNodes,
+    archive_id: &ContentId,
+) -> Result<CockpitEyeReport, CockpitCoverageError> {
+    let measured = archive_id.as_str();
+    let mut rows = Vec::with_capacity(coverage.rows().len());
+    for row in coverage.rows() {
+        if row.container() != measured {
+            return Err(CockpitCoverageError::ContainerMismatch {
+                airframe: row.airframe().to_owned(),
+                declared: row.container().to_owned(),
+                measured: measured.to_owned(),
+            });
+        }
+        if archive.get(row.root_index()).is_none() {
+            return Err(CockpitCoverageError::ResolvedNodeAbsent {
+                airframe: row.airframe().to_owned(),
+                node: row.root().to_owned(),
+                node_index: row.root_index(),
+            });
+        }
+        let subtree = subtree_indices(archive, row.root_index());
+        let mut found: Vec<u32> = subtree
+            .iter()
+            .copied()
+            .filter(|index| {
+                archive
+                    .get(*index)
+                    .is_some_and(|node| node.name.as_bytes() == COCKPIT_EYE_NODE.as_bytes())
+            })
+            .collect();
+        found.sort_unstable();
+        let state = match found.as_slice() {
+            [] => CockpitEyeState::Absent,
+            [only] => match archive.get(*only) {
+                Some(node) => match node.object3d() {
+                    Some(data) => CockpitEyeState::Declared {
+                        node_index: *only,
+                        translation: data.translation,
+                    },
+                    None => CockpitEyeState::NotAnObject {
+                        node_index: *only,
+                        kind: node.info.node_type,
+                    },
+                },
+                None => CockpitEyeState::Absent,
+            },
+            many => CockpitEyeState::Ambiguous {
+                node_indices: many.to_vec(),
+            },
+        };
+        rows.push(AirframeCockpitEye {
+            airframe: row.airframe().to_owned(),
+            root: row.root().to_owned(),
+            root_index: row.root_index(),
+            container: row.container().to_owned(),
+            state,
+        });
+    }
+    Ok(CockpitEyeReport {
         archive: measured.to_owned(),
         rows,
     })

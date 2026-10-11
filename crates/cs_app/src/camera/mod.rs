@@ -64,6 +64,12 @@
 //!   names suggested. [`horizon::HorizonBinding`] is the bound state the
 //!   command installs and [`horizon::horizon_bindings`] derives the
 //!   measured binding set from a view-control census.
+//! * [`eye`] is task #542's follow-up to F21-D: the same image measured how
+//!   the original finds the pilot's eye — a `cockpit_camera` node under each
+//!   vehicle root whose stored local translation the registration installs
+//!   and two camera modes transform by the airframe matrix. The archive-side
+//!   discovery is [`coverage::resolve_cockpit_eye`]; [`eye::CockpitEyeBinding`]
+//!   is the bound state it produces.
 //!
 //! F21-D's measurement and what it deliberately leaves unknown are written down
 //! in `docs/findings/2026-10-03-f21-d-original-view-controls-and-cockpit-coverage.md`.
@@ -83,6 +89,7 @@
 
 pub mod capture;
 pub mod coverage;
+pub mod eye;
 pub mod horizon;
 pub mod modes;
 pub mod orientation;
@@ -98,15 +105,17 @@ pub use capture::{
     Narrowing, PinnedProjection, ProjectionPinError, pin,
 };
 pub use coverage::{
-    AirframeCockpitContent, AirframeCockpitCoverage, CameraOperation, CockpitAirframe,
-    CockpitBinding, CockpitBindingClaim, CockpitBindingContent, CockpitBindingCoverage,
-    CockpitBindingDiscovery, CockpitContentNode, CockpitContentReport, CockpitCoverageError,
-    CockpitCoverageReport, CockpitEyeCoverage, CockpitFinding, CockpitNodeCoverage,
-    CockpitSubtreeContent, ViewCommandClaim, ViewControlCensus, ViewControlCoverage,
-    ViewControlEffect, ViewControlError, ViewControlFinding, ViewControlOccurrence, ViewControlRow,
-    audit_cockpit_coverage, discover_cockpit_bindings, discover_view_controls, eye_placement,
-    resolve_cockpit_content,
+    AirframeCockpitContent, AirframeCockpitCoverage, AirframeCockpitEye, COCKPIT_EYE_NODE,
+    CameraOperation, CockpitAirframe, CockpitBinding, CockpitBindingClaim, CockpitBindingContent,
+    CockpitBindingCoverage, CockpitBindingDiscovery, CockpitContentNode, CockpitContentReport,
+    CockpitCoverageError, CockpitCoverageReport, CockpitEyeCoverage, CockpitEyeReport,
+    CockpitEyeState, CockpitFinding, CockpitNodeCoverage, CockpitSubtreeContent, ViewCommandClaim,
+    ViewControlCensus, ViewControlCoverage, ViewControlEffect, ViewControlError,
+    ViewControlFinding, ViewControlOccurrence, ViewControlRow, audit_cockpit_coverage,
+    discover_cockpit_bindings, discover_view_controls, eye_placement, resolve_cockpit_content,
+    resolve_cockpit_eye,
 };
+pub use eye::{CockpitEyeBinding, CockpitEyeError, EyeMechanism, eye_mechanism_source};
 pub use horizon::{
     HorizonAnchorRule, HorizonBinding, HorizonError, HorizonMechanism, HorizonMechanismError,
     horizon_bindings, mechanism_source,
