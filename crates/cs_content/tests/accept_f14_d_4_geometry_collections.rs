@@ -1359,7 +1359,8 @@ fn accept_f14_d_4_the_report_renders_both_collections_and_the_per_container_coun
             "\"container\":\"ZBD/C1/gamez.zbd\",\"nodes\":8,\"named\":5,\"ambiguous\":2,\
              \"unspellable\":1,\"paths\":7,\"roots\":1,\"named_meshes\":3,\"mesh_rows\":2,\
              \"absent_meshes\":1,\"unterminated\":0,\"materials\":0,\
-             \"material_textures_unresolved\":0,\"material_references_without_record\":0}"
+             \"material_textures_unresolved\":0,\"material_references_without_record\":0,\
+             \"images\":0,\"images_unresolved\":0}"
         ),
         "{report}"
     );

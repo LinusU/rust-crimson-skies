@@ -691,7 +691,7 @@ fn accept_f14_d_9_the_report_renders_the_collection_and_the_per_container_counts
     assert!(
         report.contains(
             "\"materials\":4,\"material_textures_unresolved\":1,\
-             \"material_references_without_record\":1}"
+             \"material_references_without_record\":1,\"images\":2,\"images_unresolved\":2}"
         ),
         "{report}"
     );
