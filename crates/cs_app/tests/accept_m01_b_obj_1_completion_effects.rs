@@ -272,7 +272,7 @@ fn accept_m01_b_obj_1_retail_corpus_recovers_every_measured_key() {
             "{} has a gap in its objective numbers",
             recovery.mission()
         );
-        engine_builds(&recovery);
+        engine_builds(recovery);
         recovered += recovery.fields_recovered();
         left_effects += recovery
             .unrecovered()
