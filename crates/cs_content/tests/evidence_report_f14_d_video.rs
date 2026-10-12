@@ -32,22 +32,24 @@
 //! baseline builder's own report over that installation (the consumer trace),
 //! `rustc --version` and `Cargo.lock`. The only texts this file holds are the
 //! [`review_identity`] literal the committed
-//! `docs/findings/evidence/F14-D.VIDEO.json` carries (a reviewing agent
-//! replaces it with their own through `CS_EVIDENCE_REVIEW`) and the
-//! product-coverage limitations quoted into `review.method`; everything else is
-//! measured.
+//! `docs/findings/evidence/F14-D.VIDEO.json` carries (the reviewing agent of
+//! 2026-10-12 replaced the implementer's text with their own, which is what the
+//! committed report now records) and the product-coverage limitations quoted
+//! into `review.method`; everything else is measured.
 //!
 //! `unknowns` is `[]` and the report validates with `--require-pass`: the
-//! **task's** acceptance is complete — the `video` collection is populated from
+//! **stage's** acceptance is complete — the `video` collection is populated from
 //! the `PLAYAVI` actions of `ZBD/zrdr.zbd`'s `fmv.zrd` member, every row is
 //! located by the named file's own bytes, the denominator it must not move did
-//! not move, and every selected test passed. The product incompleteness is a
-//! different state and is moved, never deleted: the seven `.mpg` files no
-//! original byte names, the unknown codec/duration/trigger on every row and the
+//! not move, and every selected test passed. The report does **not** claim the
+//! collection is complete, and that incompleteness is moved, never deleted: the
+//! seven `.mpg` files no `PLAYAVI` action reaches — two of which other original
+//! bytes do name — the unknown codec/duration/trigger on every row and the
 //! absence of a media player consumer are named in `UNKNOWN_LIMITATIONS` below,
 //! in `review.method`, in the hashed baseline-report artifact and in
-//! `docs/findings/2026-10-12-f14-d-video-collection.md`. A failing run produces
-//! a failing report, which the validator rejects.
+//! `docs/findings/2026-10-12-f14-d-video-collection.md`, each with the Rally
+//! task that resolves it. A failing run produces a failing report, which the
+//! validator rejects.
 
 use std::collections::VecDeque;
 use std::fs;
@@ -68,9 +70,14 @@ const TASK_PREFIX: &str = "accept_f14_d_video_";
 const RETAIL_PREFIX: &str = "accept_f14_d_video_retail_";
 
 /// The three `PLAYAVI` names `fmv.zrd` states on the owner's installation, and
-/// the seven `.mpg` files no original byte names. Both numbers are re-measured
-/// here from the rows themselves rather than trusted; the constants are what a
-/// drift must be reconciled against.
+/// the seven `.mpg` files no `PLAYAVI` action reaches. Both numbers are
+/// re-measured here from the rows themselves rather than trusted; the
+/// constants are what a drift must be reconciled against. The second number is
+/// **not** "the files no original byte names": a review scan of 2026-10-12
+/// decompressed both retail ROF containers with the production reader and
+/// found two of them spelled by `ASSETS/LAYOUT.CSV` and five constructed by
+/// `ASSETS/SCRIPTS/CAMPAIGNINTRO.SCRIPT`. That correction is the first entry
+/// of `UNKNOWN_LIMITATIONS` below (Rally #1351, Rally #1352).
 const RETAIL_VIDEO_ROWS: usize = 3;
 const RETAIL_UNNAMED_MPG_FILES: usize = 7;
 
@@ -443,15 +450,19 @@ fn rows_of(
 fn review_identity() -> String {
     let recorded = String::from(
         "implementer: bunny-alpha-2/bunny-alpha-2 (Rally #573, implement claim of \
-         2026-10-12T00:09:16Z), model MiMo. reviewer: the Rally review claim opened after this \
-         submission; at the time of writing no review has taken place, so this report claims no \
-         independent review and the format and identity claims still deserve a different agent \
-         instance or model with a fresh context. The reviewing agent replaces this literal with \
-         their own identity (through CS_EVIDENCE_REVIEW) in the same commit that regenerates the \
-         report. No agent review awards more than checked, and nothing here is verified_original: \
-         retail is read access to the installation's own files, the original game was never run, \
-         and the video collection is structural. No agent review replaces the owner's human \
-         approval",
+         2026-10-12T00:09:16Z), model MiMo. reviewer: bunny-alpha-2/bunny-alpha-2 (Rally #573, \
+         review claim opened 2026-10-12T02:59:53Z), model MiMo - a separate session whose context \
+         was fresh and which took no part in the implementation, so this is a same-agent, \
+         different-session review and not independent original-reference evidence. The reviewer \
+         re-read the spec section and the contracts, re-ran all four checks and the acceptance \
+         suite with --include-ignored, mutation-checked the video_rows wiring, re-measured the \
+         naming scan, found that this report's completeness claim was false (the zlib-compressed \
+         members of GOSDATA/ASSETS/crimson.rof do name CrimFlag.MPG and Final.MPG and construct \
+         chap<N>.mpg), corrected the findings note and the limitations below, and filed the \
+         resolving tasks Rally #1351 and Rally #1352. No agent review awards more than checked, \
+         and nothing here is verified_original: retail is read access to the installation's own \
+         files, the original game was never run, and the video collection is structural. No \
+         agent review replaces the owner's human approval",
     );
     std::env::var("CS_EVIDENCE_REVIEW").unwrap_or(recorded)
 }
@@ -469,8 +480,10 @@ fn review_method() -> String {
          .mpg file's own install_file_key and its span is the file's whole extent with the \
          file's own digest; the names come from the PLAYAVI actions of the fmv.zrd member of \
          ZBD/zrdr.zbd, located by production container discovery and decoded by the production \
-         decode_zrd. The measurement that no other original byte names an .mpg file is in \
-         docs/findings/2026-10-12-f14-d-video-collection.md.",
+         decode_zrd. This stage reads no other source: the raw scan behind that measurement \
+         never saw the zlib-compressed members of GOSDATA/ASSETS/crimson.rof, which a review \
+         scan of 2026-10-12 read with the production reader and found naming more videos - see \
+         the first LIMITATION below and docs/findings/2026-10-12-f14-d-video-collection.md.",
     );
     recorded
         + &UNKNOWN_LIMITATIONS
@@ -483,11 +496,17 @@ fn review_method() -> String {
 /// affected content and the task that resolves it (AGENTS owner directive,
 /// 2026-09-28: a limitation must survive into machine-readable evidence).
 const UNKNOWN_LIMITATIONS: &[&str] = &[
-    "Seven inventoried .mpg files (chap1.mpg through chap5.mpg, crimflag.mpg, final.mpg) are \
-     named by no original byte of this installation: they are counted under the collection's \
-     `unnamed_video_file` gap and have no row, because a file name is not a cutscene identity. \
-     Affected content: those seven files. Resolving task: an F40 stage that reads a trigger \
-     binding, or an owner-supplied original-run capture that shows which sequence plays them.",
+    "Seven inventoried .mpg files (chap1.mpg through chap5.mpg, crimflag.mpg, final.mpg) no \
+     PLAYAVI action reaches, so they are counted under the collection's `unnamed_video_file` gap \
+     and have no row. They are not unnamed everywhere: a review scan of 2026-10-12 decompressed \
+     both retail ROF containers with the production reader and found ASSETS/LAYOUT.CSV of \
+     GOSDATA/ASSETS/crimson.rof spelling CrimFlag.MPG five times and Final.MPG once in MOVIE \
+     records, and ASSETS/SCRIPTS/CAMPAIGNINTRO.SCRIPT constructing the chapter name as \"chap\" \
+     conv$(FC) \".mpg\" - this stage reads neither source, so no row is minted from them. \
+     Affected content: crimflag.mpg, final.mpg and chap1.mpg through chap5.mpg. Resolving tasks: \
+     Rally #1351 (F14-D.VIDEO-LAYOUT, the LAYOUT.CSV movie records) and Rally #1352 \
+     (F14-D.VIDEO-CHAPTER, the chapter-name binding); both gate any completeness or fidelity \
+     claim for the video collection.",
     "No row carries a codec, duration, resolution or playback trigger: no original byte read \
      here states one, and reading the MPEG stream would produce numbers with no unit contract \
      and no consumer. Affected content: every video row. Resolving task: F40 (cutscenes) and \

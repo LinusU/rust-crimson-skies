@@ -180,10 +180,16 @@
 //!   that file's own key, its span is the file's own bytes with the file's
 //!   digest, and its single static edge points at that file's inventory row. A
 //!   name with no matching file, a name matching several, a repeat of a name
-//!   already resolved and an `.mpg` file no name reaches are each counted in
-//!   [`CollectionStatus`] instead of being guessed or dropped; no codec,
-//!   duration or trigger is read, so every row carries an explicit unknown. A
-//!   video is **not** launchable, so the denominator does not move,
+//!   already resolved and an `.mpg` file no `PLAYAVI` name reaches are each
+//!   counted in [`CollectionStatus`] instead of being guessed or dropped; no
+//!   codec, duration or trigger is read, so every row carries an explicit
+//!   unknown. A video is **not** launchable, so the denominator does not move.
+//!   The last gap is scoped to this source: the review of F14-D.VIDEO found
+//!   `crimflag.mpg` and `final.mpg` spelled by `ASSETS/LAYOUT.CSV` of
+//!   `GOSDATA/ASSETS/crimson.rof` and `chap1`…`chap5` constructed by
+//!   `ASSETS/SCRIPTS/CAMPAIGNINTRO.SCRIPT` — two containers this stage does
+//!   not read, owned by Rally #1351 and Rally #1352 (see the F14-D.VIDEO
+//!   findings note);
 //! * one [`ContentKind::ScrapbookItem`] row per `Mission_Spread_Item` record of
 //!   the shared archive's `ASSETS/SCRAPBOOK.CSV` member (F14-D.8), read through
 //!   the production ROF reader and the keyed-list configuration reader. The
@@ -414,8 +420,18 @@ pub const VIDEO_UNKNOWN_CLAIM: &str = "f14.d.video.playback";
 
 /// The installation-relative spelling of the reader archive the video names
 /// are read from: the same shared archive [`ENGINE_GUN_ARCHIVE`] names, whose
-/// [`FMV_MEMBER`] member is the only original byte in this installation that
-/// names an `.mpg` file (measured in F14-D.VIDEO's findings note).
+/// [`FMV_MEMBER`] member is the only byte **this collection** reads that names
+/// an `.mpg` file.
+///
+/// It is not the only byte in the installation that does so. A review scan of
+/// 2026-10-12 (F14-D.VIDEO's findings note) decompressed both retail ROF
+/// containers with the production reader and found the
+/// `ASSETS/LAYOUT.CSV` member of `GOSDATA/ASSETS/crimson.rof` spelling
+/// `CrimFlag.MPG` and `Final.MPG` in its `MOVIE` records, while
+/// `ASSETS/SCRIPTS/CAMPAIGNINTRO.SCRIPT` constructs `chap<N>.mpg`. This stage
+/// reads neither source: Rally #1351 owns the layout records and Rally #1352
+/// owns the chapter binding, and until they land those files stay counted
+/// under the `unnamed_video_file` gap rather than becoming rows.
 pub const FMV_ARCHIVE: &str = ENGINE_GUN_ARCHIVE;
 
 /// The member of [`FMV_ARCHIVE`] that states the FMV sequences: its `PLAYAVI`
@@ -5141,10 +5157,21 @@ fn unclassified_audio_statuses() -> Vec<CollectionStatus> {
 ///
 /// The names come from the `PLAYAVI` actions of [`FMV_MEMBER`], the FMV member
 /// of [`FMV_ARCHIVE`], decoded by the producing stage's own `.zrd` reader
-/// ([`decode_zrd`]). This member is the only original byte in the surveyed
-/// installation that names an `.mpg` file: a full scan of every decompressed
-/// reader-archive member and every loose file (F14-D.VIDEO's findings note)
-/// found no other name, so a file name is never identity here. Each name is
+/// ([`decode_zrd`]). This member is the only byte **this collection** reads
+/// that names an `.mpg` file: a case-insensitive raw scan of every one of the
+/// installation's 804 MB finds `.mpg` only here and in `UNINSTAL.EXE`'s
+/// uninstall bookkeeping (F14-D.VIDEO's findings note).
+///
+/// That scan is not the whole installation. The two retail ROF containers
+/// store their members zlib-compressed, and a review scan of 2026-10-12 read
+/// them through the production reader: `ASSETS/LAYOUT.CSV` of
+/// `GOSDATA/ASSETS/crimson.rof` spells `CrimFlag.MPG` five times and
+/// `Final.MPG` once in `MOVIE` records, and `ASSETS/SCRIPTS/CAMPAIGNINTRO.SCRIPT`
+/// builds the chapter name as `"chap" conv$(FC) ".mpg"`. Neither source is
+/// read here — Rally #1351 owns the layout records, Rally #1352 the chapter
+/// binding — so those files remain counted under [`GAP_VIDEO_UNNAMED_FILE`]
+/// instead of becoming rows from a name this stage never read. What stays
+/// true is the rule: a file name is never identity on its own. Each name is
 /// resolved against the inventory by its file-name component, case-folded the
 /// way the id grammar folds case: exactly one match is one row, no match is a
 /// named gap, and several matches are a named gap with no row, because nothing
@@ -5189,7 +5216,7 @@ fn video_rows(
             status,
             format!(
                 "the installation inventories no {FMV_ARCHIVE}, so the {FMV_MEMBER} definitions \
-                 have no bytes to read and no original byte names a video"
+                 have no bytes to read and no byte this collection reads names a video"
             ),
         ));
     };
@@ -5210,7 +5237,9 @@ fn video_rows(
     }) else {
         return Ok(unpopulated(
             status,
-            format!("{spelling} holds no {FMV_MEMBER} member, so no original byte names a video"),
+            format!(
+                "{spelling} holds no {FMV_MEMBER} member, so no byte this collection reads names a video"
+            ),
         ));
     };
     let root = match decode_zrd(fmv.bytes()) {

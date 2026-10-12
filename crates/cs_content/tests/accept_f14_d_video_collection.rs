@@ -548,13 +548,21 @@ fn game_dir() -> PathBuf {
 /// `MSopen1.mpg` and `zipper.mpg` of the `INTRO` sequence and `Chap0.mpg` of
 /// the `CHAP0` sequence — and each resolves to exactly one of the ten loose
 /// `.mpg` files under `GOSDATA/ASSETS/GRAPHICS/MPG/`. The other seven
-/// (`chap1`…`chap5`, `crimflag`, `final`) are named nowhere in original bytes.
+/// (`chap1`…`chap5`, `crimflag`, `final`) no `PLAYAVI` action reaches, so they
+/// stay counted as gaps here — but they are **not** unnamed everywhere: a
+/// review scan of 2026-10-12 read the zlib-compressed members of
+/// `GOSDATA/ASSETS/crimson.rof` through the production ROF reader and found
+/// `ASSETS/LAYOUT.CSV` spelling `crimflag.mpg` five times and `final.mpg` once
+/// in its `MOVIE` records, while `ASSETS/SCRIPTS/CAMPAIGNINTRO.SCRIPT` builds the
+/// chapter name as `"chap" conv$(FC) ".mpg"`. This stage reads neither source;
+/// Rally #1351 and Rally #1352 own them, and the correction is recorded in
+/// `docs/findings/2026-10-12-f14-d-video-collection.md`.
 const RETAIL_VIDEO_ROWS: usize = 3;
 const RETAIL_UNNAMED_MPG_FILES: usize = 7;
 
 /// The retail half: the three files the FMV definitions name in bytes become
-/// rows, the seven no byte names stay named gaps, and the coverage denominator
-/// is unchanged.
+/// rows, the seven no `PLAYAVI` name reaches stay named gaps, and the coverage
+/// denominator is unchanged.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_f14_d_video_retail_videos_are_rows() {
