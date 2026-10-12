@@ -69,8 +69,9 @@ pub use ledger::{
     ReachedOpcode, walk_program,
 };
 pub use probe::{
-    ClaimError, ProbeConfig, ProbeError, ProbeReport, ProbeSession, ProgramProbe, RecordProbeError,
-    RecordProbeStats, SignatureClaim, SignatureShape, SignatureTable, probe_records,
+    ClaimError, DirectiveKeyRow, DirectiveKeyStatus, DirectiveProgramProbe, ProbeConfig,
+    ProbeError, ProbeReport, ProbeSession, ProgramProbe, RecordProbeError, RecordProbeStats,
+    SignatureClaim, SignatureShape, SignatureTable, probe_records,
 };
 pub use ui_host_calls::{
     ArgShape, ArgShapeCounts, CorpusMember, DispatchForm, HostCallCorpus, HostCallSite,

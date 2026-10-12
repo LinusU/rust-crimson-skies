@@ -24,6 +24,14 @@
 //!   ([`ProgramError::UnknownOpcode`]) while refusing a structural stop.
 //!   [`ProbeSession::teardown`] snapshots the report and closes the session,
 //!   so a probe after teardown is an error, not a silent success.
+//! * [`DirectiveProgramProbe`] is the other kind of program a reader archive
+//!   holds: a **text directive program** (a mission's `objectives.zrd`), which
+//!   is a list of named directive keys and not a stream of binary opcodes.
+//!   [`ProbeSession::record_directive_program`] files it instead of walking
+//!   it, so its first text byte is not misread as an unknown opcode; every
+//!   distinct key it reaches is listed as measured (with the findings that
+//!   measure it) or as explicitly unknown (with the reason), and nothing is
+//!   guessed. No numeric [`SignatureClaim`] ever describes such a program.
 //! * [`probe_records`] answers the other half of AC03: for **every** record of
 //!   one container it attaches [`RecordReachability`] — which located programs
 //!   overlap the record, or that none does. A record no reader decodes, no
@@ -374,6 +382,16 @@ pub enum ProbeError {
         /// Where the program handed in lives.
         found: String,
     },
+    /// A directive-program listing was refused.
+    InvalidDirectiveProgram {
+        /// Where the program lives.
+        locator: String,
+        /// The offending key.
+        key: String,
+        /// Stable reason: `empty_key`, `duplicate_key` or
+        /// `unknown_without_reason`.
+        reason: &'static str,
+    },
     /// A claim could not be added to the table.
     Claim(ClaimError),
 }
@@ -387,6 +405,7 @@ impl ProbeError {
             Self::NoSuchProbe { .. } => "no_such_probe",
             Self::NotRetryable { .. } => "not_retryable",
             Self::MismatchedProgram { .. } => "mismatched_program",
+            Self::InvalidDirectiveProgram { .. } => "invalid_directive_program",
             Self::Claim(error) => error.code(),
         }
     }
@@ -417,6 +436,14 @@ impl fmt::Display for ProbeError {
             } => write!(
                 f,
                 "probe {index} recorded {expected}, but the program handed in is {found}"
+            ),
+            Self::InvalidDirectiveProgram {
+                locator,
+                key,
+                reason,
+            } => write!(
+                f,
+                "directive program {locator} lists key `{key}` invalidly ({reason})"
             ),
             Self::Claim(error) => write!(f, "{error}"),
         }
@@ -553,6 +580,7 @@ pub struct ProbeReport {
     table: SignatureTable,
     config: ProbeConfig,
     probes: Vec<ProgramProbe>,
+    directive_programs: Vec<DirectiveProgramProbe>,
 }
 
 impl ProbeReport {
@@ -569,6 +597,11 @@ impl ProbeReport {
     /// Every probe, in program order.
     pub fn probes(&self) -> &[ProgramProbe] {
         &self.probes
+    }
+
+    /// The text directive programs the session classified instead of walking.
+    pub fn directive_programs(&self) -> &[DirectiveProgramProbe] {
+        &self.directive_programs
     }
 
     /// Number of probes.
@@ -627,6 +660,171 @@ fn run_probe(
     }
 }
 
+/// What is known about one directive key a text directive program reaches.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DirectiveKeyStatus {
+    /// A findings document measured what the key does.
+    Measured {
+        /// The measured operation, in the measuring crate's own spelling.
+        operation: String,
+        /// The findings documents (file stems under `docs/findings/`) the
+        /// measurement comes from.
+        evidence: Vec<String>,
+    },
+    /// The key requests a terminal mission outcome, by its spelling.
+    Terminal {
+        /// The outcome the spelling names.
+        outcome: String,
+        /// The findings documents that record the reading.
+        evidence: Vec<String>,
+    },
+    /// No document measures the key; the program reaches it anyway.
+    Unknown {
+        /// Stable reason code, for example `meaning_not_measured`.
+        code: String,
+        /// The measured numbers behind the reason.
+        detail: String,
+    },
+}
+
+impl DirectiveKeyStatus {
+    /// Stable lowercase label for reports.
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::Measured { .. } => "measured",
+            Self::Terminal { .. } => "terminal_outcome",
+            Self::Unknown { .. } => "unknown",
+        }
+    }
+
+    /// Whether the key is explicitly unknown.
+    pub const fn is_unknown(&self) -> bool {
+        matches!(self, Self::Unknown { .. })
+    }
+}
+
+/// One distinct directive key a text directive program reaches.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirectiveKeyRow {
+    key: String,
+    blocks: u32,
+    sites: u32,
+    shapes: Vec<String>,
+    status: DirectiveKeyStatus,
+}
+
+impl DirectiveKeyRow {
+    /// One key with the sites that spell it.
+    pub fn new(
+        key: impl Into<String>,
+        blocks: u32,
+        sites: u32,
+        shapes: Vec<String>,
+        status: DirectiveKeyStatus,
+    ) -> Self {
+        Self {
+            key: key.into(),
+            blocks,
+            sites,
+            shapes,
+            status,
+        }
+    }
+
+    /// The key as the original spells it.
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// Blocks that spell the key.
+    pub const fn blocks(&self) -> u32 {
+        self.blocks
+    }
+
+    /// Sites that spell the key.
+    pub const fn sites(&self) -> u32 {
+        self.sites
+    }
+
+    /// Every distinct argument shape measured beside the key.
+    pub fn shapes(&self) -> &[String] {
+        &self.shapes
+    }
+
+    /// What is known about the key.
+    pub const fn status(&self) -> &DirectiveKeyStatus {
+        &self.status
+    }
+}
+
+/// A text directive program, classified instead of walked as binary words.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DirectiveProgramProbe {
+    mission: String,
+    locator: ProgramLocator,
+    kind: ProgramKind,
+    confidence: Confidence,
+    blocks: u32,
+    refused_blocks: u32,
+    keys: Vec<DirectiveKeyRow>,
+}
+
+impl DirectiveProgramProbe {
+    /// The scope the program was probed in.
+    pub fn mission(&self) -> &str {
+        &self.mission
+    }
+
+    /// Where the program lives.
+    pub const fn locator(&self) -> &ProgramLocator {
+        &self.locator
+    }
+
+    /// The role a name or a path supports.
+    pub const fn kind(&self) -> ProgramKind {
+        self.kind
+    }
+
+    /// How far that role is supported.
+    pub const fn confidence(&self) -> Confidence {
+        self.confidence
+    }
+
+    /// Numbered objective blocks the program declares.
+    pub const fn blocks(&self) -> u32 {
+        self.blocks
+    }
+
+    /// Blocks that did not read as a directive list. They are counted and
+    /// never read, so a nonzero count means the key list is not complete.
+    pub const fn refused_blocks(&self) -> u32 {
+        self.refused_blocks
+    }
+
+    /// Every distinct key the program reaches, in key order.
+    pub fn keys(&self) -> &[DirectiveKeyRow] {
+        &self.keys
+    }
+
+    /// Total directive sites over all keys.
+    pub fn sites(&self) -> u32 {
+        self.keys.iter().map(DirectiveKeyRow::sites).sum()
+    }
+
+    /// Keys with a measured meaning or a terminal outcome.
+    pub fn known_keys(&self) -> usize {
+        self.keys
+            .iter()
+            .filter(|row| !row.status.is_unknown())
+            .count()
+    }
+
+    /// Keys explicitly unknown.
+    pub fn unknown_keys(&self) -> usize {
+        self.keys.len() - self.known_keys()
+    }
+}
+
 /// The isolated probes of a set of located programs.
 ///
 /// One program at a time: a stop is recorded as data and never aborts the
@@ -637,6 +835,7 @@ pub struct ProbeSession {
     table: SignatureTable,
     config: ProbeConfig,
     probes: Vec<ProgramProbe>,
+    directive_programs: Vec<DirectiveProgramProbe>,
     closed: bool,
 }
 
@@ -647,6 +846,7 @@ impl ProbeSession {
             table,
             config,
             probes: Vec::new(),
+            directive_programs: Vec::new(),
             closed: false,
         }
     }
@@ -694,6 +894,61 @@ impl ProbeSession {
         let probe = run_probe(program, &self.table, self.config, 1);
         self.probes.push(probe);
         Ok(index)
+    }
+
+    /// Files `program` as a text directive program with the keys it reaches,
+    /// without walking it as binary words, and returns its index among the
+    /// directive programs.
+    ///
+    /// The caller measured the keys from the program's own decoded text; this
+    /// session only refuses a listing that cannot be evidence: a key spelled
+    /// twice, an empty key, and an unknown key with no reason.
+    ///
+    /// # Errors
+    ///
+    /// [`ProbeError::SessionClosed`] after teardown and
+    /// [`ProbeError::InvalidDirectiveProgram`] for a refused listing.
+    pub fn record_directive_program(
+        &mut self,
+        program: &LocatedProgram<'_>,
+        blocks: u32,
+        refused_blocks: u32,
+        mut keys: Vec<DirectiveKeyRow>,
+    ) -> Result<usize, ProbeError> {
+        if self.closed {
+            return Err(ProbeError::SessionClosed);
+        }
+        keys.sort_by(|a, b| a.key.cmp(&b.key));
+        for (index, row) in keys.iter().enumerate() {
+            let problem = if row.key.trim().is_empty() {
+                Some("empty_key")
+            } else if index > 0 && keys[index - 1].key == row.key {
+                Some("duplicate_key")
+            } else if matches!(&row.status, DirectiveKeyStatus::Unknown { code, detail }
+                if code.trim().is_empty() || detail.trim().is_empty())
+            {
+                Some("unknown_without_reason")
+            } else {
+                None
+            };
+            if let Some(reason) = problem {
+                return Err(ProbeError::InvalidDirectiveProgram {
+                    locator: program.locator().to_string(),
+                    key: row.key.clone(),
+                    reason,
+                });
+            }
+        }
+        self.directive_programs.push(DirectiveProgramProbe {
+            mission: program.mission_label().to_owned(),
+            locator: program.locator().clone(),
+            kind: program.kind(),
+            confidence: program.confidence(),
+            blocks,
+            refused_blocks,
+            keys,
+        });
+        Ok(self.directive_programs.len() - 1)
     }
 
     /// Re-runs the probe at `index` against the current table.
@@ -755,6 +1010,7 @@ impl ProbeSession {
             table: self.table.clone(),
             config: self.config,
             probes: std::mem::take(&mut self.probes),
+            directive_programs: std::mem::take(&mut self.directive_programs),
         }
     }
 }
