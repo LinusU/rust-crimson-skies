@@ -47,7 +47,12 @@
 //!   is filed with every distinct directive key it reaches, each listed as
 //!   measured (with the findings that measure it), a terminal outcome, or
 //!   explicitly unknown with its reason (`probe.directive_program_rows`).
-//!   No numeric signature claim describes such a program;
+//!   The row also lists the record-level axis: every key the control record
+//!   spells **outside** its numbered blocks, either classified through a
+//!   measured record vocabulary with its value's shapes
+//!   (`shape_measured`/`effect_measured`) or an unclassified key, explicitly
+//!   unknown with its reason. No numeric signature claim describes such a
+//!   program;
 //! * `--signatures <file>` supplies caller-measured claims in the shape
 //!   `<opcode> <spelling> <program> <arity> <signature> <effects> <timing>
 //!   <errors> <citation> [note]`, exactly as F07-D's `--classes` supplies
@@ -77,15 +82,15 @@ use std::process::ExitCode;
 
 use cs_assets::install;
 use cs_content::mission_control::{
-    DecodedMember, DirectiveDisposition, control_member, measure_control_record,
+    DecodedMember, DirectiveDisposition, FieldSupport, control_member, measure_control_record,
 };
 use cs_content::stunts::decode_zrd;
 use cs_formats::script_raw::{
     ClaimError, Confidence, ContainerDiscovery, DirectiveKeyRow, DirectiveKeyStatus,
     DirectiveProgramProbe, EvidenceLocator, ProbeConfig, ProbeReport, ProbeSession, ProgramKind,
-    RecordProbeError, RecordProbeStats, RecordReachability, ResearchMethod, ScriptEvidence,
-    ScriptRecord, ScriptSource, SignatureClaim, SignatureShape, SignatureTable, discover_container,
-    inventory_scripts, probe_records,
+    RecordFieldSupport, RecordKeyRow, RecordKeyStatus, RecordProbeError, RecordProbeStats,
+    RecordReachability, ResearchMethod, ScriptEvidence, ScriptRecord, ScriptSource, SignatureClaim,
+    SignatureShape, SignatureTable, discover_container, inventory_scripts, probe_records,
 };
 use cs_formats::zbd::{HeaderStatus, ZbdFamily};
 use cs_types::install::RelativePath;
@@ -93,8 +98,11 @@ use cs_types::install::RelativePath;
 /// The report format version. Version 2 adds the `probe` and per-container
 /// `records` sections (F13-C); version 3 adds the `probe.directive_*` fields
 /// (M01-B-OPC) and counts a text directive program as accounted for, not as
-/// unresolved; the F13-B fields are unchanged.
-pub const SCRIPTS_REPORT_VERSION: &str = "cs-inspect-scripts/3";
+/// unresolved; version 4 adds the record-level axis to each directive
+/// program row (`record_keys`, `record_keys_classified`,
+/// `record_keys_unclassified`) and the summed `probe.directive_record_keys_*`
+/// counts (F13-C-RECKEYS); the F13-B fields are unchanged.
+pub const SCRIPTS_REPORT_VERSION: &str = "cs-inspect-scripts/4";
 
 /// The instruction unit the walk assumes when `--word-bytes` is omitted. It
 /// is an **assumption**, reported as such in `probe.assumed`; F13 has not
@@ -206,6 +214,12 @@ pub struct ScriptsSummary {
     pub directive_keys_known: usize,
     /// Distinct directive keys (summed per program) explicitly unknown.
     pub directive_keys_unknown: usize,
+    /// Record-level keys (summed per program) classified through a measured
+    /// record vocabulary.
+    pub directive_record_keys_classified: usize,
+    /// Record-level keys (summed per program) outside both record
+    /// vocabularies: listed as explicitly unknown with their reason.
+    pub directive_record_keys_unclassified: usize,
     /// Blocks of directive programs that did not read as a directive list.
     pub directive_refused_blocks: usize,
 }
@@ -224,6 +238,20 @@ impl ScriptsSummary {
     /// With no `--signatures` file the table ships empty, so this is `false`
     /// for any corpus that holds a binary program — the honest state, never a
     /// pass.
+    ///
+    /// An **unclassified record key** (a record-level key outside both
+    /// measured vocabularies) does *not* count against this check, and that
+    /// is a decision, not an omission (F13-C-RECKEYS): the check asks whether
+    /// the listing is complete — whether everything the program spells was
+    /// read and listed with a status. A refused block is unread text that may
+    /// spell keys the listing never shows, so it fails the check. The
+    /// record-level walk reads every flat field of the record, so an
+    /// unclassified key **is** listed — explicitly unknown with its reason,
+    /// exactly like a directive key whose meaning no finding measures
+    /// (`meaning_not_measured`), which has never counted against this check
+    /// either. The anomaly is surfaced per program (`record_keys`) and summed
+    /// in the probe section (`directive_record_keys_unclassified`) instead of
+    /// being gated here; a caller that wants to fail on it has the count.
     pub fn signatures_complete(&self) -> bool {
         self.directive_refused_blocks == 0
             && self.programs_resolved + self.directive_programs == self.programs
@@ -382,6 +410,7 @@ pub fn scripts_command_result(args: &[String], env_cs_path: Option<OsString>) ->
                         found.blocks,
                         found.refused_blocks,
                         found.keys.clone(),
+                        found.record_keys.clone(),
                     )
                     .map(|_| ()),
                 _ => session.probe(program).map(|_| ()),
@@ -426,6 +455,8 @@ pub fn scripts_command_result(args: &[String], env_cs_path: Option<OsString>) ->
         summary.directive_programs += 1;
         summary.directive_keys_known += program.known_keys();
         summary.directive_keys_unknown += program.unknown_keys();
+        summary.directive_record_keys_classified += program.classified_record_keys();
+        summary.directive_record_keys_unclassified += program.unclassified_record_keys();
         summary.directive_refused_blocks += program.refused_blocks() as usize;
     }
     let signature_check = !signatures_supplied || summary.signatures_complete();
@@ -613,7 +644,8 @@ fn probe_json(
          \"budget\": {}, \"claims\": {}, \"programs\": {}, \"resolved\": {}, \"unresolved\": {}, \
          \"retryable\": {}, \"complete\": {}, \"stops\": {{{stops}}}, \
          \"directive_programs\": {}, \"directive_keys_known\": {}, \
-         \"directive_keys_unknown\": {}, \"directive_program_rows\": [{directive_rows}]}}",
+         \"directive_keys_unknown\": {}, \"directive_record_keys_classified\": {}, \
+         \"directive_record_keys_unclassified\": {}, \"directive_program_rows\": [{directive_rows}]}}",
         report.config().word_bytes(),
         report.config().budget(),
         summary.signature_claims,
@@ -625,6 +657,8 @@ fn probe_json(
         summary.directive_programs,
         summary.directive_keys_known,
         summary.directive_keys_unknown,
+        summary.directive_record_keys_classified,
+        summary.directive_record_keys_unclassified,
     )
 }
 
@@ -635,6 +669,7 @@ struct DirectiveSelection {
     blocks: u32,
     refused_blocks: u32,
     keys: Vec<DirectiveKeyRow>,
+    record_keys: Vec<RecordKeyRow>,
 }
 
 /// The findings that record the reading of a terminal-outcome spelling.
@@ -642,6 +677,17 @@ const TERMINAL_EVIDENCE: [&str; 2] = [
     "2026-10-04-m01-lc-mission-program",
     "2026-10-06-m01-lc-directive-meaning",
 ];
+
+/// The stable reason an unclassified record key carries: the key matches
+/// neither measured record vocabulary, so the census counts it, names it and
+/// never reads it.
+const UNCLASSIFIED_RECORD_KEY_CODE: &str = "outside_both_record_vocabularies";
+
+/// The measured detail behind [`UNCLASSIFIED_RECORD_KEY_CODE`].
+const UNCLASSIFIED_RECORD_KEY_DETAIL: &str = "the record-level walk classifies a key only \
+     through a measured vocabulary — the shape-measured record fields or the record-level \
+     sound keys; this key matches neither, so it is counted and named by the census and \
+     nothing reads it";
 
 /// Classifies the one control member of a reader container as a directive
 /// program.
@@ -703,15 +749,86 @@ fn directive_program_of(discovery: &ContainerDiscovery<'_>) -> Option<DirectiveS
             )
         })
         .collect();
+    // The record-level axis: every key the control record spells outside its
+    // numbered blocks. A classified field carries its sites and the distinct
+    // shapes the census measured; a key outside both vocabularies is listed
+    // explicitly unknown with its reason — the census counts it as a distinct
+    // name only, so its site count stays `None` and is never invented.
+    let mut record_keys: Vec<RecordKeyRow> = record
+        .record_fields()
+        .iter()
+        .map(|(field, sites)| {
+            let shapes = record
+                .record_field_shapes()
+                .iter()
+                .filter(|(key, _)| key == field.key())
+                .map(|(_, shape)| shape.label())
+                .collect();
+            RecordKeyRow::new(
+                field.key(),
+                Some(*sites),
+                shapes,
+                RecordKeyStatus::Classified {
+                    support: match field.support() {
+                        FieldSupport::ShapeMeasured => RecordFieldSupport::ShapeMeasured,
+                        FieldSupport::EffectMeasured => RecordFieldSupport::EffectMeasured,
+                    },
+                },
+            )
+        })
+        .collect();
+    for key in record.unclassified_record_keys() {
+        record_keys.push(RecordKeyRow::new(
+            key,
+            None,
+            Vec::new(),
+            RecordKeyStatus::Unknown {
+                code: UNCLASSIFIED_RECORD_KEY_CODE.to_owned(),
+                detail: UNCLASSIFIED_RECORD_KEY_DETAIL.to_owned(),
+            },
+        ));
+    }
     Some(DirectiveSelection {
         index,
         blocks: record.blocks(),
         refused_blocks: record.refusals().len() as u32,
         keys,
+        record_keys,
     })
 }
 
-/// Renders one directive program: where it lives and every key it reaches.
+/// Renders one record-level key of a directive program: a classified field
+/// with its measured shapes and support, or an unclassified key explicitly
+/// unknown with its reason. The row key is `record_key`, never `key`: `key`
+/// stays the directive-axis spelling, and the two axes are separate
+/// vocabularies.
+fn record_key_json(row: &RecordKeyRow) -> String {
+    let (status, support, reason) = match row.status() {
+        RecordKeyStatus::Classified { support } => (
+            "classified",
+            format!(", \"support\": {}", jstr(support.label())),
+            String::new(),
+        ),
+        RecordKeyStatus::Unknown { code, detail } => (
+            "unknown",
+            String::new(),
+            format!(", \"reason\": {}, \"detail\": {}", jstr(code), jstr(detail)),
+        ),
+    };
+    let sites = row
+        .sites()
+        .map_or_else(|| "null".to_owned(), |n| n.to_string());
+    let shapes: Vec<String> = row.shapes().iter().map(|shape| jstr(shape)).collect();
+    format!(
+        "{{\"record_key\": {}, \"status\": \"{status}\"{support}{reason}, \"sites\": {sites}, \
+         \"shapes\": [{}]}}",
+        jstr(row.key()),
+        shapes.join(", "),
+    )
+}
+
+/// Renders one directive program: where it lives, every key it reaches and
+/// the record-level keys its control record spells.
 fn directive_program_json(program: &DirectiveProgramProbe) -> String {
     let keys = program
         .keys()
@@ -750,10 +867,17 @@ fn directive_program_json(program: &DirectiveProgramProbe) -> String {
         })
         .collect::<Vec<_>>()
         .join(", ");
+    let record_keys = program
+        .record_keys()
+        .iter()
+        .map(record_key_json)
+        .collect::<Vec<_>>()
+        .join(", ");
     format!(
         "{{\"mission\": {}, \"locator\": {}, \"class\": \"directive_program\", \
          \"blocks\": {}, \"refused_blocks\": {}, \"sites\": {}, \"keys_known\": {}, \
-         \"keys_unknown\": {}, \"keys\": [{keys}]}}",
+         \"keys_unknown\": {}, \"keys\": [{keys}], \"record_keys_classified\": {}, \
+         \"record_keys_unclassified\": {}, \"record_keys\": [{record_keys}]}}",
         jstr(program.mission()),
         jstr(&program.locator().to_string()),
         program.blocks(),
@@ -761,6 +885,8 @@ fn directive_program_json(program: &DirectiveProgramProbe) -> String {
         program.sites(),
         program.known_keys(),
         program.unknown_keys(),
+        program.classified_record_keys(),
+        program.unclassified_record_keys(),
     )
 }
 
@@ -1682,18 +1808,310 @@ mod tests {
             )
         };
         let error = session
-            .record_directive_program(program, 1, 0, vec![unknown(" ")])
+            .record_directive_program(program, 1, 0, vec![unknown(" ")], vec![])
             .expect_err("an unknown key with no reason is refused");
         assert_eq!(error.code(), "invalid_directive_program");
         let error = session
-            .record_directive_program(program, 1, 0, vec![unknown("a"), unknown("a")])
+            .record_directive_program(program, 1, 0, vec![unknown("a"), unknown("a")], vec![])
             .expect_err("a key listed twice is refused");
         assert!(error.to_string().contains("duplicate_key"), "{error}");
         session
-            .record_directive_program(program, 1, 0, vec![unknown("meaning_not_measured")])
+            .record_directive_program(program, 1, 0, vec![unknown("meaning_not_measured")], vec![])
             .expect("a reasoned listing is filed");
         assert!(session.probes().is_empty());
         assert_eq!(session.teardown().directive_programs().len(), 1);
+    }
+
+    // --- F13-C-RECKEYS: the record-level axis ---------------------------------
+
+    fn zrd_int(value: u32) -> Vec<u8> {
+        let mut out = zrd_word(1).to_vec();
+        out.extend_from_slice(&value.to_le_bytes());
+        out
+    }
+
+    fn zrd_float(value: f32) -> Vec<u8> {
+        let mut out = zrd_word(2).to_vec();
+        out.extend_from_slice(&value.to_le_bytes());
+        out
+    }
+
+    /// An authored control member that also spells record-level keys: one
+    /// `OBJECTIVE1` block with a terminal key, then a classified field with a
+    /// list value (`MISSION_TIMER`), a classified sound key with a text value
+    /// (`MISSION_WON_SOUND`) and a key outside both record vocabularies
+    /// (`MYSTERY_SETTING`).
+    fn authored_objectives_with_record_keys() -> Vec<u8> {
+        let block = zrd_list(&[zrd_text("INSTANTWIN")]);
+        let record = zrd_list(&[
+            zrd_text("OBJECTIVE1"),
+            block,
+            zrd_text("MISSION_TIMER"),
+            zrd_list(&[zrd_float(0.0)]),
+            zrd_text("MISSION_WON_SOUND"),
+            zrd_text("sgwon"),
+            zrd_text("MYSTERY_SETTING"),
+            zrd_list(&[zrd_int(7)]),
+        ]);
+        zrd_list(&[record])
+    }
+
+    /// An authored control member whose only numbered block is not a list —
+    /// the record-level refusal [`signatures_complete`] must keep counting.
+    fn authored_objectives_with_a_refused_block() -> Vec<u8> {
+        let record = zrd_list(&[
+            zrd_text("OBJECTIVE1"),
+            zrd_text("not-a-list"),
+            zrd_text("MISSION_TIMER"),
+            zrd_list(&[zrd_float(0.0)]),
+        ]);
+        zrd_list(&[record])
+    }
+
+    /// An empty-but-valid signature claims file: no caller-measured claims,
+    /// but a table was supplied, so the completeness check is in force.
+    fn empty_claims_file(label: &str) -> PathBuf {
+        claims_file(
+            label,
+            "# no caller-measured claims; the table ships empty by design\n",
+        )
+    }
+
+    /// F13-C-RECKEYS: the `scripts` report lists the record-level axis of a
+    /// directive program — classified fields with their measured shapes and
+    /// support level, and an unclassified record key explicitly unknown with
+    /// its reason — and the unclassified key does not count against
+    /// `signatures_complete` (it is listed, not unread).
+    #[test]
+    fn accept_f13_c_reckeys_cli_lists_the_record_level_axis_of_a_directive_program() {
+        let tree = Temp::new("reckeys-axis");
+        tree.write(
+            "ZBD/C1C/M01/zrdr.zbd",
+            &reader_archive(&[(b"objectives.zrd", &authored_objectives_with_record_keys())]),
+        );
+
+        let result = run(&tree.0, &["--coverage"]);
+        assert_eq!(result.exit_code, 0, "{:?}", result.diagnostics);
+        let summary = result.summary.as_ref().expect("the command ran");
+        assert_eq!(summary.directive_programs, 1);
+        assert_eq!(summary.directive_record_keys_classified, 2);
+        assert_eq!(
+            summary.directive_record_keys_unclassified, 1,
+            "the key outside both record vocabularies is counted, not dropped"
+        );
+        // The single member is the directive program, and nothing about an
+        // unclassified-but-listed record key leaves it unaccounted for.
+        assert!(summary.signatures_complete());
+
+        let report = result.report.expect("a report");
+        assert!(report.contains("\"passes\": true"), "{report}");
+        assert!(report.contains("\"complete\": true"), "{report}");
+        assert!(
+            report.contains("\"directive_record_keys_classified\": 2"),
+            "{report}"
+        );
+        assert!(
+            report.contains("\"directive_record_keys_unclassified\": 1"),
+            "{report}"
+        );
+        // Classified fields carry their measured shape and support level.
+        assert!(
+            report.contains(
+                "{\"record_key\": \"MISSION_TIMER\", \"status\": \"classified\", \
+                 \"support\": \"shape_measured\", \"sites\": 1, \"shapes\": [\"[float]\"]}"
+            ),
+            "{report}"
+        );
+        assert!(
+            report.contains(
+                "{\"record_key\": \"MISSION_WON_SOUND\", \"status\": \"classified\", \
+                 \"support\": \"effect_measured\", \"sites\": 1, \"shapes\": [\"not_a_list\"]}"
+            ),
+            "{report}"
+        );
+        // The unclassified key is listed unknown-with-reason, with no site
+        // count invented beside it.
+        assert!(
+            report.contains(
+                "{\"record_key\": \"MYSTERY_SETTING\", \"status\": \"unknown\", \"reason\": \
+                 \"outside_both_record_vocabularies\""
+            ),
+            "{report}"
+        );
+        assert!(
+            report.contains("\"sites\": null, \"shapes\": []"),
+            "an unclassified record key's site count is not measured: {report}"
+        );
+        // The per-program counters say the same thing.
+        assert!(report.contains("\"record_keys_classified\": 2"), "{report}");
+        assert!(
+            report.contains("\"record_keys_unclassified\": 1"),
+            "{report}"
+        );
+        // `record_key` rows never leak into the directive-key axis the M01
+        // listing counts by.
+        assert_eq!(
+            report
+                .split("\"directive_program_rows\": [")
+                .nth(1)
+                .map(|rows| rows
+                    .split("{\"mission\": ")
+                    .nth(1)
+                    .expect("one row")
+                    .matches("{\"key\": ")
+                    .count()),
+            Some(1),
+            "the directive axis of this program spells one distinct key"
+        );
+
+        // With `--signatures` supplied (an empty table), the unclassified
+        // record key still does not fail the completeness gate: the row lists
+        // it, which is what the gate asks for.
+        let claims = empty_claims_file("reckeys-empty");
+        let result = run(
+            &tree.0,
+            &[
+                "--coverage",
+                "--signatures",
+                claims.to_str().expect("UTF-8"),
+            ],
+        );
+        let _ = fs::remove_file(&claims);
+        assert_eq!(result.exit_code, 0, "{:?}", result.diagnostics);
+        assert!(
+            result
+                .report
+                .expect("a report")
+                .contains("\"complete\": true"),
+            "an explicitly unknown record key is accounted for, like an unknown directive key"
+        );
+    }
+
+    /// F13-C-RECKEYS: the documented boundary of that decision — a block that
+    /// did not read as a directive list still counts against
+    /// `signatures_complete`, because its unread text may spell keys no row
+    /// lists, while the record-level fields beside it stay listed either way.
+    #[test]
+    fn accept_f13_c_reckeys_cli_keeps_a_refused_block_failing_completeness() {
+        let tree = Temp::new("reckeys-refused");
+        tree.write(
+            "ZBD/C1C/M01/zrdr.zbd",
+            &reader_archive(&[(
+                b"objectives.zrd",
+                &authored_objectives_with_a_refused_block(),
+            )]),
+        );
+
+        let claims = empty_claims_file("reckeys-refused-empty");
+        let result = run(
+            &tree.0,
+            &[
+                "--coverage",
+                "--signatures",
+                claims.to_str().expect("UTF-8"),
+            ],
+        );
+        let _ = fs::remove_file(&claims);
+        assert_eq!(result.exit_code, 3, "{:?}", result.diagnostics);
+        let summary = result.summary.as_ref().expect("the command ran");
+        assert_eq!(summary.directive_refused_blocks, 1);
+        assert!(!summary.signatures_complete());
+        // The classified record field is still listed beside the refusal.
+        assert_eq!(summary.directive_record_keys_classified, 1);
+        let report = result.report.expect("a report");
+        assert!(report.contains("\"passes\": false"), "{report}");
+        assert!(report.contains("\"complete\": false"), "{report}");
+        assert!(report.contains("\"refused_blocks\": 1"), "{report}");
+        assert!(
+            report.contains(
+                "{\"record_key\": \"MISSION_TIMER\", \"status\": \"classified\", \
+                 \"support\": \"shape_measured\""
+            ),
+            "{report}"
+        );
+    }
+
+    /// F13-C-RECKEYS: the session refuses a record-level listing that cannot
+    /// be evidence — an unknown key with no reason and a key listed twice —
+    /// and files a reasoned one.
+    #[test]
+    fn accept_f13_c_reckeys_session_refuses_unreasoned_and_duplicate_record_keys() {
+        use cs_formats::script_raw::{
+            ProbeConfig, ProbeSession, RecordFieldSupport, RecordKeyRow, RecordKeyStatus,
+            SignatureTable, discover_container,
+        };
+        use cs_types::install::RelativePath;
+
+        let bytes = reader_archive(&[(b"objectives.zrd", &authored_objectives_with_record_keys())]);
+        let path = RelativePath::new("ZBD/C1C/M01/zrdr.zbd").expect("a relative path");
+        let discovery = discover_container("ZBD/C1C/M01/zrdr.zbd", &path, &bytes);
+        let program = &discovery.programs()[0];
+        let mut session = ProbeSession::new(
+            SignatureTable::new(),
+            ProbeConfig::new(4, 16).expect("a valid config"),
+        );
+        let classified = || {
+            RecordKeyRow::new(
+                "MISSION_TIMER",
+                Some(1),
+                vec!["[float]".to_owned()],
+                RecordKeyStatus::Classified {
+                    support: RecordFieldSupport::ShapeMeasured,
+                },
+            )
+        };
+        let unclassified = |code: &str, detail: &str| {
+            RecordKeyRow::new(
+                "MYSTERY_SETTING",
+                None,
+                Vec::new(),
+                RecordKeyStatus::Unknown {
+                    code: code.to_owned(),
+                    detail: detail.to_owned(),
+                },
+            )
+        };
+        let error = session
+            .record_directive_program(
+                program,
+                1,
+                0,
+                vec![],
+                vec![classified(), unclassified(" ", " ")],
+            )
+            .expect_err("an unknown record key with no reason is refused");
+        assert_eq!(error.code(), "invalid_directive_program");
+        assert!(
+            error.to_string().contains("unknown_without_reason"),
+            "{error}"
+        );
+        let error = session
+            .record_directive_program(program, 1, 0, vec![], vec![classified(), classified()])
+            .expect_err("a record key listed twice is refused");
+        assert!(error.to_string().contains("duplicate_key"), "{error}");
+        session
+            .record_directive_program(
+                program,
+                1,
+                0,
+                vec![],
+                vec![
+                    classified(),
+                    unclassified(
+                        "outside_both_record_vocabularies",
+                        "matches neither measured record vocabulary",
+                    ),
+                ],
+            )
+            .expect("a reasoned record-level listing is filed");
+        assert!(session.probes().is_empty());
+        let report = session.teardown();
+        let filed = &report.directive_programs()[0];
+        assert_eq!(filed.classified_record_keys(), 1);
+        assert_eq!(filed.unclassified_record_keys(), 1);
+        assert_eq!(filed.record_keys()[0].key(), "MISSION_TIMER");
+        assert_eq!(filed.record_keys()[1].key(), "MYSTERY_SETTING");
+        assert_eq!(filed.record_keys()[1].sites(), None);
     }
 
     // --- retail ---------------------------------------------------------------
@@ -1757,6 +2175,82 @@ mod tests {
             if status == "unknown" {
                 assert!(key.contains("\"reason\": \""), "{key}");
             }
+        }
+    }
+
+    /// F13-C-RECKEYS over the original installation: M01's directive-program
+    /// row carries the record-level axis — exactly the five classified record
+    /// fields with their measured shapes — and its directive-key listing is
+    /// unchanged: 43 keys, no unclassified record key.
+    #[test]
+    #[ignore = "requires CS_GAME_DIR"]
+    fn accept_f13_c_reckeys_retail_m01_lists_five_classified_record_fields_and_no_unclassified_keys()
+     {
+        let dir = game_dir();
+        let result = scripts_command_result(
+            &args(&[
+                "--cs-path",
+                dir.to_str().expect("a UTF-8 game dir"),
+                "--coverage",
+            ]),
+            None,
+        );
+        assert_eq!(result.exit_code, 0, "{:?}", result.diagnostics);
+        let summary = result.summary.as_ref().expect("the command ran");
+        assert!(summary.directive_programs >= 1);
+        let report = result.report.expect("a report");
+        let row = report
+            .split("\"directive_program_rows\": [")
+            .nth(1)
+            .expect("the rows")
+            .split("{\"mission\": ")
+            .find(|row| row.starts_with("\"zbd/c1c/m01\""))
+            .expect("M01's directive program is listed");
+        // The directive-key listing is unchanged by the record-level axis.
+        assert_eq!(row.matches("{\"key\": ").count(), 43, "{row}");
+        assert!(row.contains("\"blocks\": 58"), "{row}");
+        assert!(row.contains("\"refused_blocks\": 0"), "{row}");
+        // The record-level axis: five classified fields, no unclassified key.
+        assert!(row.contains("\"record_keys_classified\": 5"), "{row}");
+        assert!(row.contains("\"record_keys_unclassified\": 0"), "{row}");
+        for key in [
+            "MISSION_TIMER",
+            "PLAYER_INIT",
+            "RESTORE_ANIMS",
+            "EXECUTE_ANIMS",
+            "INVALIDATE_ANIMS",
+        ] {
+            assert!(
+                row.contains(&format!(
+                    "{{\"record_key\": \"{key}\", \"status\": \"classified\","
+                )),
+                "{row}"
+            );
+        }
+        // Each field's measured M01 shape (M01-LC findings).
+        assert!(
+            row.contains(
+                "\"record_key\": \"MISSION_TIMER\", \"status\": \"classified\", \"support\": \
+                 \"shape_measured\", \"sites\": 1, \"shapes\": [\"[float]\"]"
+            ),
+            "{row}"
+        );
+        assert!(
+            row.contains(
+                "\"record_key\": \"PLAYER_INIT\", \"status\": \"classified\", \"support\": \
+                 \"shape_measured\", \"sites\": 1, \"shapes\": \
+                 [\"[int,[float,float,float],[float,float,float],float,float]\"]"
+            ),
+            "{row}"
+        );
+        for key in ["RESTORE_ANIMS", "EXECUTE_ANIMS", "INVALIDATE_ANIMS"] {
+            assert!(
+                row.contains(&format!(
+                    "\"record_key\": \"{key}\", \"status\": \"classified\", \"support\": \
+                     \"shape_measured\", \"sites\": 1, \"shapes\": [\"[]\"]"
+                )),
+                "{row}"
+            );
         }
     }
 
@@ -1866,7 +2360,11 @@ mod tests {
             summary.programs_resolved, 0,
             "an empty table resolves nothing, as it must"
         );
-        assert_eq!(summary.programs_retryable, 1452);
+        // 1452 located programs minus the 40 control members M01-B-OPC (#1356)
+        // classifies as directive programs instead of walking: only the other
+        // 1412 binary programs stop at `unknown_opcode`. (The 1452 pin here
+        // went stale with #1356 and was corrected by F13-C-RECKEYS (#1364).)
+        assert_eq!(summary.programs_retryable, 1412);
         assert!(!summary.signatures_complete());
 
         let report = result.report.expect("a report");
@@ -1874,7 +2372,7 @@ mod tests {
         assert!(report.contains("\"supplied\": false"), "{report}");
         assert!(report.contains("\"assumed\": true"), "{report}");
         assert!(report.contains("\"complete\": false"), "{report}");
-        assert!(report.contains("\"unknown_opcode\": 1452"), "{report}");
+        assert!(report.contains("\"unknown_opcode\": 1412"), "{report}");
         // Every record carries a verdict and its evidence; none is null.
         assert_eq!(
             report.matches("\"reachability\": {").count(),
