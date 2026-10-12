@@ -30,13 +30,13 @@ position, and the split is structural, not a count coincidence:
 | `RESTORE_ANIMS` | 1 | record top level | `0x466e47` |
 | `EXECUTE_ANIMS` | 1 | record top level | `0x4674d3` |
 | `INVALIDATE_ANIMS` | 1 | record top level | `0x46718f` |
-| `ADD_OBJECTIVE_TARGET` | 4 | blocks 2, 11*, 17, 47, 50* | finding B |
-| `REMOVE_OBJECTIVE_TARGET` | 4 | blocks 2, 11, 15, 50 | finding B |
+| `ADD_OBJECTIVE_TARGET` | 4 | blocks 2, 17, 47*, 50* | finding B |
+| `REMOVE_OBJECTIVE_TARGET` | 4 | blocks 2, 11*, 15*, 50 | finding B |
 | `ADD_OTHER_TARGET` | 3 | blocks 2, 13, 50 | finding B |
 | `ANIM_STATE` | 3 | blocks 11, 15, 18 | finding C |
 | `COMPLETED_STOPPOINT` | 1 | block 13 | finding B |
 | `DEDG` | 8 | blocks 2, 16, 17, 20, 21, 42, 43, 44 | finding B |
-| `SET_AI_NET` | 3 | blocks 2 (×2), 19, 22 | finding B |
+| `SET_AI_NET` | 3 | blocks 2, 19, 22 | finding B |
 | `SET_HELP_LABEL` | 2 | blocks 2, 50 | finding D |
 | `STOP_QUEUED_SOUNDS` | 3 | blocks 11, 15, 55 | finding D |
 | `TRAVELERS` | 1 | block 3 | findings B, C |
@@ -45,9 +45,11 @@ position, and the split is structural, not a count coincidence:
 | `WAKEUP_ZEP_TURRETS` | 3 | blocks 1, 5, 13 | finding C |
 | `WAKE_ANIM` | 5 | blocks 11, 13, 15, 18, 49 | finding C |
 
-\* block 11's `REMOVE_OBJECTIVE_TARGET` names the same object its
-`ADD_OBJECTIVE_TARGET` in block 47 re-adds — the sites named are the spelled
-ones, no effect is inferred.
+\* the `["wv_tailhook", "peoplehook"]` name chain spelled by
+`REMOVE_OBJECTIVE_TARGET` in blocks 11 and 15 is the same chain
+`ADD_OBJECTIVE_TARGET` spells in blocks 47 and 50 — the sites named are the
+spelled ones; no effect or ordering is inferred. (`SET_AI_NET` block 2 is one
+field whose argument carries two pairs, not two sites.)
 
 **The five record keys appear nowhere else.** M01 never spells one inside a
 block; their only five occurrences are the top-level fields the record parser
@@ -129,6 +131,11 @@ list leave the same empty list. Per element:
   element, a list that is not exactly three children, or a triple whose
   selector lacks the `#` terminator — and any resolved name that finds no
   table entry. A malformed spelling silently contributes nothing.
+
+The skip rules cover the list's **elements**. The value itself is read as the
+element vector unconditionally (`follower+4` with no tag check), so a
+non-list follower is a wild read in the original — the record model reports
+it as `RecordFieldError::AnimListShape`, not an empty list.
 
 The accumulated lists store at mission record `+0xc80` (`RESTORE_ANIMS`),
 `+0xc84` (`INVALIDATE_ANIMS`) and `+0xc88` (`EXECUTE_ANIMS`) — confirmed at
