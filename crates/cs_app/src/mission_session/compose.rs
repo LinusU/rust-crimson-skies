@@ -458,7 +458,12 @@ pub fn stage_for(
         world_actors: content.world_actors.lowered().cloned(),
         animation: Some(content.animation.clone()),
         control: content.control.clone(),
-        block_lifecycles: declared_block_lifecycles(install_root, plan, &mut refusals),
+        block_lifecycles: declared_block_lifecycles(
+            install_root,
+            plan,
+            engine_objectives.is_some(),
+            &mut refusals,
+        ),
         engine_objectives,
         sound_archives: content.sound_archives.clone(),
         objectives,
@@ -614,26 +619,49 @@ fn declared_engine_objectives(
 /// shapes, leaves the stage carrying the empty fail-closed table plus
 /// [`MissionHostRefusal::BlockLifecycles`] quoting the reader, never a
 /// partially-read table answering a condition (AGENTS.md rules 4 and 5).
+///
+/// `engine_model` is whether the stage also carries the recovered
+/// [`EngineObjectives`]: when it does, that model — not this table — is what
+/// the fold answers `Condition::ObjectiveAwake` through, so the refusal's
+/// consequence clause names the model that actually answers rather than
+/// claiming every read answers `false`.
 fn declared_block_lifecycles(
     install_root: &Path,
     plan: &MissionLaunchPlan,
+    engine_model: bool,
     refusals: &mut Vec<MissionHostRefusal>,
 ) -> BlockLifecycleTable {
+    let consequence = if engine_model {
+        "the declared table stays empty while the recovered engine lifecycle model is what \
+         answers Condition::ObjectiveAwake"
+    } else {
+        "the table stays empty and every Condition::ObjectiveAwake answers false"
+    };
     let read = match crate::control_lifecycles::read_mission_block_lifecycles(
         install_root,
         &plan.mission_dir,
     ) {
         Ok(read) => read,
         Err(detail) => {
-            refusals.push(MissionHostRefusal::BlockLifecycles { detail });
+            refusals.push(MissionHostRefusal::BlockLifecycles {
+                detail: format!("{detail}; {consequence}"),
+            });
             return BlockLifecycleTable::new();
         }
     };
     if read.is_complete() {
         return read.into_table();
     }
+    let joined = read
+        .refusals()
+        .iter()
+        .map(ToString::to_string)
+        .collect::<Vec<_>>()
+        .join("; ");
     refusals.push(MissionHostRefusal::BlockLifecycles {
-        detail: read.refusal_detail(),
+        detail: format!(
+            "the record's block lifecycles could not be read completely ({joined}); {consequence}"
+        ),
     });
     BlockLifecycleTable::new()
 }
