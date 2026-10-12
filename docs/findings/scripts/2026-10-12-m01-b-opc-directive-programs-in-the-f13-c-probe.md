@@ -60,6 +60,11 @@ claim, so no per-family measurement task was split off for M01.
 - Only the control member is a directive program. `aiv.zrd`, `targets.zrd` and
   the other `.zrd` members are still probed as binary words; their role is
   unestablished and this task did not measure it.
+- The key listing is the numbered-block directive census. The control record's
+  record-level keys (`MeasuredControlRecord::record_fields`,
+  `unclassified_record_keys`) are outside it: an unclassified record key would
+  not appear in the row. M01 has none (measured); whether any mission does is
+  not answered here.
 - M01's INTERP loading body was not examined, so no binary-opcode finding is
   made for it.
 - `terminal_outcome` is a reading of the spelling, as `cs_content` already
