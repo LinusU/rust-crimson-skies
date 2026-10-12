@@ -1,9 +1,9 @@
 {
  "schema_version": 1,
  "task_id": "VS-M01-RUNTIME",
- "candidate_tree": "3e6c2b0a89a194fb90025ae43a603870756e9ed7",
+ "candidate_tree": "4c7cf2e421ad40b6e9bfe55177d9d4cb9a910ad8",
  "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
- "created_at": "2026-10-11T23:42:45Z",
+ "created_at": "2026-10-12T02:27:41Z",
  "command": {"argv": ["cs", "--mission", "M01", "--cs-path", "/Users/linus/coding/rust-crimson-skies/retail"], "cwd": "/Users/linus/coding/rust-crimson-skies/sonnet-1", "exit_code": 0},
  "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
  "seed": 0,
@@ -12,7 +12,7 @@
  "capabilities": ["retail", "gpu", "audio"],
  "tests": {"discovered": 1, "executed": 1, "passed": 1, "failed": 0, "ignored": 0},
  "assertions": [{"id": "image: a framebuffer PNG of the M01 world with the player present is >= 640x360 with >= 16 luminance levels", "status": "pass", "evidence": ["frame_00180_player.png"]}, {"id": "trace: header, tick, camera, input and screenshot records end in a terminal record", "status": "pass", "evidence": ["trace.jsonl"]}, {"id": "audio: the audible AudioDevice backend pulled frames and non-silent samples of the original devastator.wav engine loop", "status": "pass", "evidence": ["playback.json"]}, {"id": "launch: the cs process exited 0", "status": "pass", "evidence": ["trace.jsonl"]}],
- "artifacts": [{"path": "frame_00180_player.png", "sha256": "561b758cbfe8bb080d4e85803a46b39e888fa6220c79043c071de4e2ab8cde1a", "kind": "image"}, {"path": "trace.jsonl", "sha256": "93fc7ef9872035bdcc714adfd2c9d1b143f83adbf3c9a48a23ce4aad640efee9", "kind": "trace"}, {"path": "playback.json", "sha256": "6a674bc3e3fce20689bb947ccd6447b7dce43d233da61f60f46891e648aa8c56", "kind": "audio"}],
+ "artifacts": [{"path": "frame_00180_player.png", "sha256": "cbacfb586bd726c01a8ffe58d991e9f86e8916db0680a5690fd1499dcfa3f1ed", "kind": "image"}, {"path": "trace.jsonl", "sha256": "08ed8c262f26173b5068c72290f9e30571b4034c29ea60bb8a77b4971145275d", "kind": "trace"}, {"path": "playback.json", "sha256": "8bf6444a49e22f7ac6707f8df07e6f1aa38731f0bf3d9ac5bbcbc0400c58b9d3", "kind": "audio"}],
  "unknowns": [],
  "review": {"identity": "implementer: sonnet-1 (Rally #1218 implement claim of 2026-10-12); reviewer: recorded by the Rally review claim that follows. An agent review is `checked` at best and never replaces the owner's human approval.", "method": "NOT PROVEN, by design of this slice: this is an automated run of our own build with a scripted pitch-up, so it is not human_play; the audio record is the source boundary (frames the output stream pulled), not a speaker capture, and the image was not compared with an original screenshot, so neither is human_review; nothing here is verified_original (claim: implemented). The sound archive the original opens for the engine loop is unmeasured (playback.json labels it a choice; see docs/findings/2026-10-11-vs-m01-rt-evidence-audio-binding.md), and the owner run #358 REF-OWNER-FIRST-CAPTURE is what resolves it. Method: the harness spawned the real `cs --mission M01` launch with CS_MISSION_CAPTURE=1 on a machine with the retail, gpu and audio capabilities; the windowed composition wrote the PNG, trace.jsonl and playback.json; this harness checked them and hashed them. Structure checked with tools/validate_evidence.py; the single recorded test is this harness. validated with --require-pass."},
  "claim": "implemented"
