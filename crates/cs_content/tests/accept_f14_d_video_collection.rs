@@ -8,23 +8,28 @@
 //! container**: the only video files are loose `.mpg` files, so unlike the ZBD
 //! sound family there is no member index that enumerates them.
 //!
-//! **What this stage adds.** One bounded source: the `fmv.zrd` member of the
+//! **What this stage adds.** Two bounded sources: the `fmv.zrd` member of the
 //! shared reader archive `ZBD/zrdr.zbd`, whose `PLAYAVI` actions name the
 //! videos in bytes (the decrypted engine's own strings corroborate the member
-//! and the action tag). Each name is resolved against the inventory by its
-//! file-name component, case-folded the way the id grammar folds case. Exactly
-//! one match is one `ContentKind::Video` row whose identity is the resolved
-//! file's own key, whose span is the file's own bytes with the file's digest,
-//! and whose single static edge points at that file's `install_file` row.
+//! and the action tag), and — since F14-D.VIDEO-LAYOUT (task #1351) — the
+//! `M` (movie) records of `ASSETS/LAYOUT.CSV` in `GOSDATA/ASSETS/crimson.rof`,
+//! read through the production ROF mount. Each name is resolved against the
+//! inventory by its file-name component, case-folded the way the id grammar
+//! folds case. Exactly one match is one `ContentKind::Video` row whose
+//! identity is the resolved file's own key, whose span is the file's own
+//! bytes with the file's digest, and whose single static edge points at that
+//! file's `install_file` row.
 //!
 //! **What this stage refuses.** No row is ever minted from a file name: a
-//! `PLAYAVI` name with no matching file, a name matching several files, a
-//! repeat of a name already resolved and an `.mpg` file no name reaches are
-//! each counted in `CollectionStatus::gaps`, and a `PLAYAVI` action whose
-//! argument is not text counts under its own code. Nothing here decodes the
-//! MPEG stream: every row is unparsed and carries an explicit unknown for
-//! codec, duration, resolution and trigger. A video is not launchable, so the
-//! collection cannot move the coverage denominator.
+//! name with no matching file, a name matching several files, a repeat of a
+//! name already resolved, a layout record whose value is not an `.mpg` name
+//! and an `.mpg` file no record of either source reaches are each counted in
+//! `CollectionStatus::gaps`, a `PLAYAVI` action whose argument is not text
+//! counts under its own code, and a source that cannot be read is counted
+//! under `unreadable_video_source` and named in the diagnostic. Nothing here
+//! decodes the MPEG stream: every row is unparsed and carries an explicit
+//! unknown for codec, duration, resolution and trigger. A video is not
+//! launchable, so the collection cannot move the coverage denominator.
 //!
 //! The non-retail tests write **synthetic installation trees** into temporary
 //! directories, whose reader archives are built the way the pinned format
@@ -44,8 +49,8 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use cs_content::catalog::baseline::{
-    Baseline, CollectionStatus, FMV_ARCHIVE, FMV_MEMBER, baseline_report_json, install_file_key,
-    retail_baseline,
+    Baseline, CollectionStatus, FMV_ARCHIVE, FMV_MEMBER, VIDEO_LAYOUT_CONTAINER,
+    baseline_report_json, install_file_key, retail_baseline,
 };
 use cs_types::content::{
     CatalogElement, ContentId, ContentKind, NormalizeState, Readiness, UnsupportedReason,
@@ -327,23 +332,35 @@ fn accept_f14_d_video_named_file_is_one_row() {
     );
 
     let status = status_of(&baseline, ContentKind::Video);
-    assert_eq!(status.source, FMV_ARCHIVE);
+    assert_eq!(
+        status.source,
+        format!("{FMV_ARCHIVE} + {VIDEO_LAYOUT_CONTAINER}"),
+        "the status names both contributors"
+    );
     assert_eq!(status.language, None);
     assert_eq!(status.rows, 2);
     assert_eq!(
         status.gaps,
         BTreeMap::from([
             ("playavi_name_not_text", 0),
+            ("movie_record_without_mpg_name", 0),
             ("named_file_absent", 0),
             ("ambiguous_file_name", 0),
             ("duplicate_video_name", 0),
             // The `crimflag.mpg` file is real and stays accounted for, but
-            // nothing in the original bytes names it.
+            // nothing in the fixture's layout records names it.
             ("unnamed_video_file", 1),
+            // The fixture holds no `GOSDATA/ASSETS/crimson.rof`, so the
+            // layout source is the one source that could not be read.
+            ("unreadable_video_source", 1),
         ]),
         "the only entry no name reaches is the one loose .mpg of the fixture"
     );
-    assert_eq!(status.diagnostic, None);
+    let diagnostic = status
+        .diagnostic
+        .as_deref()
+        .expect("a source that could not be read is named");
+    assert!(diagnostic.contains(VIDEO_LAYOUT_CONTAINER), "{diagnostic}");
 
     // The denominator did not move: a video is not launchable content.
     assert!(!ContentKind::Video.is_launchable());
@@ -422,15 +439,21 @@ fn accept_f14_d_video_unresolved_names_are_gaps() {
         status.gaps,
         BTreeMap::from([
             ("playavi_name_not_text", 1),
+            ("movie_record_without_mpg_name", 0),
             ("named_file_absent", 1),
             ("ambiguous_file_name", 2),
             ("duplicate_video_name", 1),
             ("unnamed_video_file", 2),
+            ("unreadable_video_source", 1),
         ]),
         "each failure keeps its own code, and both `both.mpg` files stay named \
          as ambiguous rather than being picked or dropped"
     );
-    assert_eq!(status.diagnostic, None);
+    let diagnostic = status
+        .diagnostic
+        .as_deref()
+        .expect("a source that could not be read is named");
+    assert!(diagnostic.contains(VIDEO_LAYOUT_CONTAINER), "{diagnostic}");
 
     // The two ambiguous files and the absent name built no row at all: no
     // identity may be minted where the bytes name several files or none.
@@ -459,10 +482,27 @@ fn accept_f14_d_video_missing_member_is_diagnostic() {
     assert!(rows_of(&baseline, ContentKind::Video).is_empty());
     let status = status_of(&baseline, ContentKind::Video);
     assert_eq!(status.rows, 0);
-    assert_eq!(status.source, FMV_ARCHIVE);
-    assert!(
-        status.gaps.is_empty(),
-        "nothing was read, so nothing was counted"
+    assert_eq!(
+        status.source,
+        format!("{FMV_ARCHIVE} + {VIDEO_LAYOUT_CONTAINER}")
+    );
+    assert_eq!(
+        status.gaps,
+        BTreeMap::from([
+            ("playavi_name_not_text", 0),
+            ("movie_record_without_mpg_name", 0),
+            ("named_file_absent", 0),
+            ("ambiguous_file_name", 0),
+            ("duplicate_video_name", 0),
+            // The loose `.mpg` file no record of either source reaches; it
+            // stays accounted for even with no source readable.
+            ("unnamed_video_file", 1),
+            // Neither source could be read: `zrdr.zbd` holds no `fmv.zrd`
+            // member and the fixture holds no `crimson.rof`.
+            ("unreadable_video_source", 2),
+        ]),
+        "no name was read, so every name code is zero and both failed \
+         sources are counted"
     );
     let diagnostic = status
         .diagnostic
@@ -472,6 +512,7 @@ fn accept_f14_d_video_missing_member_is_diagnostic() {
         diagnostic.contains(FMV_MEMBER) && diagnostic.contains(FMV_ARCHIVE),
         "{diagnostic}"
     );
+    assert!(diagnostic.contains(VIDEO_LAYOUT_CONTAINER), "{diagnostic}");
     // The loose `.mpg` file is still inventoried as a file row: no video row
     // came from its name.
     assert!(
@@ -542,27 +583,27 @@ fn game_dir() -> PathBuf {
 
 /// The row counts the retail acceptance pins, measured on the owner's
 /// installation and recorded in
-/// `docs/findings/2026-10-12-f14-d-video-collection.md`.
+/// `docs/findings/2026-10-12-f14-d-video-collection.md` and superseded by
+/// `docs/findings/2026-10-12-f14-d-video-layout-collection.md`.
 ///
 /// `ZBD/zrdr.zbd`'s `fmv.zrd` member holds three `PLAYAVI` actions —
 /// `MSopen1.mpg` and `zipper.mpg` of the `INTRO` sequence and `Chap0.mpg` of
-/// the `CHAP0` sequence — and each resolves to exactly one of the ten loose
-/// `.mpg` files under `GOSDATA/ASSETS/GRAPHICS/MPG/`. The other seven
-/// (`chap1`…`chap5`, `crimflag`, `final`) no `PLAYAVI` action reaches, so they
-/// stay counted as gaps here — but they are **not** unnamed everywhere: a
-/// review scan of 2026-10-12 read the zlib-compressed members of
-/// `GOSDATA/ASSETS/crimson.rof` through the production ROF reader and found
-/// `ASSETS/LAYOUT.CSV` spelling `crimflag.mpg` five times and `final.mpg` once
-/// in its `MOVIE` records, while `ASSETS/SCRIPTS/CAMPAIGNINTRO.SCRIPT` builds the
-/// chapter name as `"chap" conv$(FC) ".mpg"`. This stage reads neither source;
-/// Rally #1351 and Rally #1352 own them, and the correction is recorded in
-/// `docs/findings/2026-10-12-f14-d-video-collection.md`.
-const RETAIL_VIDEO_ROWS: usize = 3;
-const RETAIL_UNNAMED_MPG_FILES: usize = 7;
+/// the `CHAP0` sequence — and `GOSDATA/ASSETS/crimson.rof`'s
+/// `ASSETS/LAYOUT.CSV` member states `MOVIE=M,CrimFlag.MPG,…` five times and
+/// `CF_MOVIE=M,Final.MPG,…` once in its `M` (movie) records, each name
+/// resolving to exactly one of the ten loose `.mpg` files under
+/// `GOSDATA/ASSETS/GRAPHICS/MPG/`. The five chapter files
+/// (`chap1`…`chap5`) no record of either source reaches —
+/// `ASSETS/SCRIPTS/CAMPAIGNINTRO.SCRIPT` constructs the chapter name as
+/// `"chap" conv$(FC) ".mpg"`, a binding Rally #1352 owns — so they stay
+/// counted as gaps here.
+const RETAIL_VIDEO_ROWS: usize = 5;
+const RETAIL_UNNAMED_MPG_FILES: usize = 5;
+const RETAIL_DUPLICATE_NAMES: usize = 4;
 
-/// The retail half: the three files the FMV definitions name in bytes become
-/// rows, the seven no `PLAYAVI` name reaches stay named gaps, and the coverage
-/// denominator is unchanged.
+/// The retail half: the five files the two sources name in bytes become
+/// rows, the five no record of either source reaches stay named gaps, and
+/// the coverage denominator is unchanged.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_f14_d_video_retail_videos_are_rows() {
@@ -632,10 +673,29 @@ fn accept_f14_d_video_retail_videos_are_rows() {
         assert!(row.runtime_consumers.is_empty());
         assert_eq!(row.dependencies.len(), 1);
         assert_eq!(row.dependencies[0].kind.label(), "static");
-        assert_eq!(
-            row.dependencies[0].provenance.claim_id.as_str(),
-            "f14.d.video.baseline.playavi"
-        );
+        // The edge's claim names the source that stated the name: the three
+        // `PLAYAVI` rows under the FMV claim, the two layout rows under the
+        // layout claim with a provenance span inside the decoded member.
+        let claim = row.dependencies[0].provenance.claim_id.as_str();
+        match row
+            .display_name
+            .as_deref()
+            .expect("a video row carries the record's spelling")
+            .to_ascii_lowercase()
+            .as_str()
+        {
+            "crimflag.mpg" | "final.mpg" => {
+                assert_eq!(claim, "f14.d.video.baseline.layout");
+                let provenance = row.dependencies[0]
+                    .provenance
+                    .source
+                    .as_ref()
+                    .expect("the layout claim is located by a span");
+                assert_eq!(provenance.container_path(), VIDEO_LAYOUT_CONTAINER);
+                assert_eq!(provenance.member_key(), Some("ASSETS/LAYOUT.CSV"));
+            }
+            _ => assert_eq!(claim, "f14.d.video.baseline.playavi"),
+        }
         assert_eq!(
             row.dependencies[0].provenance.class,
             ClaimStatus::ObservedTool
@@ -657,24 +717,41 @@ fn accept_f14_d_video_retail_videos_are_rows() {
         );
     }
     named.sort();
-    assert_eq!(named, vec!["chap0.mpg", "msopen1.mpg", "zipper.mpg"]);
+    assert_eq!(
+        named,
+        vec![
+            "chap0.mpg",
+            "crimflag.mpg",
+            "final.mpg",
+            "msopen1.mpg",
+            "zipper.mpg"
+        ]
+    );
 
     let status = status_of(&baseline, ContentKind::Video);
-    assert_eq!(status.source, FMV_ARCHIVE);
+    assert_eq!(
+        status.source,
+        format!("{FMV_ARCHIVE} + {VIDEO_LAYOUT_CONTAINER}"),
+        "the status names both contributors"
+    );
     assert_eq!(status.language, None);
     assert_eq!(status.rows, RETAIL_VIDEO_ROWS);
     assert_eq!(
         status.gaps,
         BTreeMap::from([
             ("playavi_name_not_text", 0),
+            ("movie_record_without_mpg_name", 0),
             ("named_file_absent", 0),
             ("ambiguous_file_name", 0),
-            ("duplicate_video_name", 0),
+            // The first `CrimFlag.MPG` record makes the row; the other four
+            // repeats are counted.
+            ("duplicate_video_name", RETAIL_DUPLICATE_NAMES),
             ("unnamed_video_file", RETAIL_UNNAMED_MPG_FILES),
+            ("unreadable_video_source", 0),
         ]),
-        "the seven .mpg files no PLAYAVI name reaches are the only unaccounted-for \
-         entries; a new gap code here means the measured source changed and this \
-         measurement has to be re-measured"
+        "the five .mpg files no record of either source reaches are the only \
+         unaccounted-for entries; a new gap code here means the measured \
+         sources changed and this measurement has to be re-measured"
     );
     assert_eq!(status.diagnostic, None);
 
