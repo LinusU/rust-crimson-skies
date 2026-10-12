@@ -28,6 +28,26 @@ directory is original game data — no assets, scripts or extracted bytes.
   bind (actors, objectives, media, rewards, difficulty branches, precedence,
   progression, `closure_sha256`) are recorded there and keep the mission out
   of any readiness claim.
+
+  M01-B (#259) regenerated this record through the same production path
+  once `campaign_bindings` gained a mission-scoped **checklist override**
+  table (`mission_scoped_checklist_overrides`): the three shared checklist
+  questions M01's compatibility subtasks measured — the objective graph
+  (M01-B-OBJ + M01-B-WAKE), script/native coverage (M01-B-OPC) and the
+  exact failure/success precedence (M01-B-WAKE) — are replaced on M01's
+  record alone by the measured statement, in the same voice as its
+  siblings, naming the census it rests on and the residuals it did not
+  settle (the untraced world-fact producers, the declared-schema gap that
+  still refuses `ObjectiveRecovery::program()`, the binary-probed members,
+  and the ordinary-play run only M01-C can produce). Every other mission's
+  record and the shared checklist are unchanged. The entries keep `verified`
+  false and are settled the way a mission-scoped unknown is: whoever
+  re-measures them edits the override table and regenerates the record with
+  `CS_REGENERATE_M01_BINDING=1`
+  (`regenerate_m01_b_writes_the_committed_record_through_production`).
+  `accept_m01_b_m01s_record_binds_the_measured_results_and_m02s_does_not`
+  pins both directions against fresh production censuses
+  (`docs/findings/2026-10-12-m01-b-binding-the-measured-results.md`).
 - `M02.json` — the M02 binding output (stage M02-A), generated and pinned the
   same way by `accept_m02_a_the_committed_record_is_what_the_installation_derives`.
   It is source-derived under the same five critical dependencies and equally
