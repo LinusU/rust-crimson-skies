@@ -18,11 +18,18 @@ runtime are an engine design, not measured original behavior.
 - `MAX_RNG_REPLAY_DRAWS` → `MAX_RNG_STREAM_DRAWS` (same `1 << 22`) and
   `RestoreError::RngReplayTooLong` → `RestoreError::RngStateOutOfDomain
   { state, draws }`.
-- `SNAPSHOT_VERSION` is 3: a version-2 record's field was a draw count, not
-  a state, so it is refused rather than reinterpreted. `cs_sim`'s session and
-  host records share the constant and bump with it.
+- `SNAPSHOT_VERSION` is 4: version 3 (F37-C-FU1) added the `seed` field but
+  still stored a draw count, and a count is not a state, so an older record
+  is refused rather than reinterpreted. `cs_sim`'s session and host records
+  share the constant and bump with it.
 - `MISSION_EVALUATOR_DOMAIN` is now `pub` so record-domain checks are
   observable in tests, matching the other domain constants.
+
+Landed after F37-C-FU1: the record therefore also carries `seed`, the
+evaluator seed derived from the run's root seed and the mission id, and the
+domain check below measures the recorded state against the stream the
+recorded `seed` starts — the "session's stream" is now that stream, not one
+keyed on the session generation.
 
 ## Why the restore is still checked, not trusted
 
@@ -40,9 +47,13 @@ orbit" cannot be the check. The check is the bound: a state is in the
 record's domain exactly when its implied index is at most
 `MAX_RNG_STREAM_DRAWS`. For a honestly written record this is the same
 refusal boundary as before (a session past the bound cannot restore,
-exactly as a `rng_draws` past it could not). For a forged or foreign state —
-another session's stream, another domain's — the implied index is
-effectively uniform, so it is refused with probability ≈ `1 - 2^-42`.
+exactly as a `rng_draws` past it could not). For a state that is not on the
+recorded stream — another seed's stream, another domain's — the implied
+index is effectively uniform, so it is refused with probability
+≈ `1 - 2^-42`. A forged record could pair a forged seed with a state on its
+own orbit, but that is the same acceptance surface the count had (a forged
+seed plus `rng_draws = 0` restored a stream from the forged seed): the seed
+travels in the record and is trusted like every other recorded field.
 
 Rejected alternative: storing `rng_state` *and* `rng_draws` and checking
 them for consistency adds no refusal power — the fields are bijective, so a
@@ -63,11 +74,7 @@ forever.
   corpus replay test still fails if the record forgets the stream position.
 - An out-of-domain state is refused:
   `accept_f37_c_restore_refuses_a_foreign_or_incompatible_record` (bound,
-  bound+1 and another session's state) and
+  bound+1 and another stream's state) and
   `accept_t583_restore_refuses_an_out_of_domain_rng_state`;
-  `accept_t583_version_two_records_are_refused` pins the format bump.
-
-## Not done here
-
-The evaluator is still seeded from the session generation rather than the
-run root seed — that is #581 (`F37-C-FU1`), deliberately untouched.
+  `accept_t583_older_versioned_records_are_refused` pins the format bump
+  (versions 2 and 3 both refused).
