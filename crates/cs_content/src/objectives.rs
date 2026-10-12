@@ -4256,9 +4256,11 @@ pub const RECORD_INVALIDATE_ANIMS_KEY: &str = "INVALIDATE_ANIMS";
 
 /// The five record-level keys, in the order the parser checks them.
 ///
-/// The sound keys the parser reads between `MISSION_TIMER` and the animation
-/// lists are a separate measured vocabulary
-/// (`crate::mission_control::CONTROL_RECORD_SOUND_KEY_VOCABULARY`).
+/// The same five spellings make up
+/// `crate::mission_control::CONTROL_RECORD_KEY_VOCABULARY`, listed there in
+/// census order rather than parse order. The sound keys the parser reads
+/// between `MISSION_TIMER` and the animation lists are a separate measured
+/// vocabulary (`crate::mission_control::CONTROL_RECORD_SOUND_KEY_VOCABULARY`).
 pub const RECORD_FIELD_KEY_VOCABULARY: [&str; 5] = [
     RECORD_MISSION_TIMER_KEY,
     RECORD_RESTORE_ANIMS_KEY,
