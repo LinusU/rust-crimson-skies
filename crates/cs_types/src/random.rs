@@ -33,6 +33,24 @@ impl SplitMix64 {
     /// Second finaliser constant `0x94d049bb133111eb`.
     const FINALISER_2: u64 = 0x94D0_49BB_1331_11EB;
 
+    /// The multiplicative inverse of [`Self::INCREMENT`] modulo `2^64`: for
+    /// every `x`, `x * INCREMENT * INCREMENT_INVERSE == x`. It exists because
+    /// the increment is odd, and it is what [`Self::draws_since`] uses to
+    /// recover a draw index in one multiplication instead of a replay.
+    ///
+    /// Derived by Newton–Raphson at compile time — `x ← x·(2 − a·x)` doubles
+    /// the number of correct low bits each round, and an odd seed is already
+    /// exact in 3 bits, so six rounds cover all 64.
+    const INCREMENT_INVERSE: u64 = {
+        let mut x = Self::INCREMENT;
+        let mut round = 0;
+        while round < 6 {
+            x = x.wrapping_mul(2u64.wrapping_sub(Self::INCREMENT.wrapping_mul(x)));
+            round += 1;
+        }
+        x
+    };
+
     /// Creates a generator whose state is exactly `state`.
     ///
     /// The next draw is the SplitMix64 output of `state` advanced once, which
@@ -40,6 +58,33 @@ impl SplitMix64 {
     /// stream.
     pub const fn new(state: u64) -> Self {
         Self { state }
+    }
+
+    /// The generator's state.
+    ///
+    /// The state is everything a draw depends on — the output is a pure
+    /// function of it — so `SplitMix64::new(g.state())` resumes the stream
+    /// exactly where `g` left it. A save record can therefore store one
+    /// `u64` instead of a draw count to replay.
+    pub const fn state(&self) -> u64 {
+        self.state
+    }
+
+    /// The draw index of `self` relative to `start`: the count `k` such that
+    /// `self` is the state the stream holds `k` draws after `start`.
+    ///
+    /// [`Self::next_u64`] adds [`Self::INCREMENT`] to the state on every draw,
+    /// so the states a stream visits from `start` are exactly
+    /// `start.state + k * INCREMENT` for `k = 0, 1, …`, and multiplying the
+    /// difference by [`Self::INCREMENT_INVERSE`] recovers `k` exactly. The map
+    /// is a bijection on `u64`, so *every* pair of states has a defined
+    /// index — a state that is not actually `k` draws ahead of `start` still
+    /// returns the `k` it would be at. A caller that needs "did this stream
+    /// produce that state" must bound the returned count itself.
+    pub const fn draws_since(&self, start: Self) -> u64 {
+        self.state
+            .wrapping_sub(start.state)
+            .wrapping_mul(Self::INCREMENT_INVERSE)
     }
 
     /// The stream a consumer draws from when the run's root seed is
