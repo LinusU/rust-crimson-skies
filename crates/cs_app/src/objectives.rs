@@ -182,12 +182,13 @@ use cs_content::objectives::{
     MeasuredBranchConflict, MeasuredBranchPrecedence, MeasuredBranchSite, MeasuredCategoryEvidence,
     MeasuredCountConditions, MeasuredDormantBlock, MeasuredRepeatedEffect, MeasuredTargetKinds,
     OBJECTIVE_INACTIVE_COUNT_KEY, ProgramActor, ProgramSymbol, UnmeasuredQuantity,
-    is_objective_inactive_stage, is_optional_objective_key, measure_dormant_declarations,
-    measured_category_evidence,
+    inactive_stage_number, is_objective_inactive_stage, is_optional_objective_key,
+    measure_dormant_declarations, measured_category_evidence,
 };
 use cs_content::objectives_conditions::{ObjectiveOutcome, StageConditions, keys as outcome_keys};
 use cs_content::objectives_engine::{
-    EngineDeclaration, NapDeclaration, TargetList, keys as engine_keys,
+    DORMANT_SLOT_COUNT, DormantTimers, EngineDeclaration, EngineIdentity, NapDeclaration,
+    TargetList, keys as engine_keys,
 };
 use cs_content::stunts::{
     OBJECTIVE_BLOCK_PREFIX, SCENARIO_OBJECTIVES_MEMBER, SCENARIO_TARGETS_MEMBER,
@@ -5438,7 +5439,9 @@ impl RecordFieldFamily {
             Self::OrderDependency
         } else if FAILURE_KEY_VOCABULARY.contains(&key) {
             Self::Outcome
-        } else if key == cs_content::objectives::OBJECTIVE_DORMANT_KEY {
+        } else if key == cs_content::objectives::OBJECTIVE_DORMANT_KEY
+            || key == engine_keys::WAKE_WHEN_I_SLEEP
+        {
             Self::Dormancy
         } else if key == OBJECTIVE_INACTIVE_COUNT_KEY {
             Self::CompletionCount
@@ -5472,18 +5475,20 @@ impl RecordFieldFamily {
                 "the field is not an outcome key the engine's loader reads in a loaded block (M01-B-OBJ-3)"
             }
             Self::Dormancy => {
-                "the unit of the argument and the reveal rule are unmeasured (F39-E1)"
+                "the engine's loader reads BEGIN_DORMANT's timer slots in seconds and the WAKE_OBJECTIVE_WHEN_I_SLEEP list (recovered when well formed, M01-B-OBJ-2); this field is a spelling or a shape the loader never reads"
             }
             Self::InactiveStage => {
                 "the field is not a stage condition the engine's loader reads: a number outside 1..=100, a non-canonical or repeated spelling, a block the loader does not load, or a value that is not a list of names (M01-B-OBJ-3)"
             }
             Self::CompletionCount => {
-                "the field is not the single in-range integer threshold the engine's loader reads, or it repeats an earlier one (M01-B-OBJ-3)"
+                "the engine's loader stores INACTIVE_COMPLETION_COUNT verbatim and defaults it to the resolved stage count; the field is not the single in-range integer threshold the loader reads, or it repeats an earlier one (M01-B-OBJ-2, M01-B-OBJ-3), and whether enough stages can clear in ordinary play stays unmeasured"
             }
             Self::Identity => {
-                "the message ids are not resolvable to text and the reveal timing is unmeasured (F39-E1)"
+                "the engine's loader resolves IDENTITY's role and ordinal (recovered when well formed, M01-B-OBJ-2); this field is a shape the loader never reads, and the message element resolves only in the briefing table"
             }
-            Self::SoundCue => "when the cue is emitted is unmeasured (F39-E1)",
+            Self::SoundCue => {
+                "the engine's loader resolves the group names and the runtime emits them on wake and on completion (recovered when well formed, M01-B-OBJ-2); this field is a spelling or a shape the loader never reads"
+            }
             Self::Optionality => "what an optional declaration changes is unmeasured (F39-D)",
             Self::Unmeasured => {
                 "no F39 stage measured this key; the mission-language instruction table is undecoded (F13-B/C, F38)"
@@ -5580,6 +5585,12 @@ enum EngineField {
     Kill(TargetList),
     Sleep(TargetList),
     TickDependsOn(usize),
+    BeginDormant(DormantTimers),
+    WakeWhenISleep(TargetList),
+    InactiveCompletionCount(u32),
+    Identity(EngineIdentity),
+    WakeupSoundGroup(String),
+    CompletedSoundGroup(String),
 }
 
 impl EngineField {
@@ -5621,6 +5632,70 @@ impl EngineField {
                     .map(|index| Self::TickDependsOn(index as usize)),
                 _ => None,
             },
+            engine_keys::BEGIN_DORMANT => {
+                let values = engine_values(value);
+                // The loader reads at most four elements, one per timer slot;
+                // each is an integer or a float converted to `f32`. Elements
+                // past the fourth are never looked at.
+                let elements: Option<Vec<f32>> = values
+                    .iter()
+                    .take(DORMANT_SLOT_COUNT)
+                    .map(|element| match element {
+                        // The payload is a dword: the engine converts it as a
+                        // signed integer, so a `u32` sentinel is seen signed.
+                        #[allow(clippy::cast_precision_loss)]
+                        ZrdValue::Int(number) => Some(*number as i32 as f32),
+                        ZrdValue::Float(number) => Some(*number),
+                        _ => None,
+                    })
+                    .collect();
+                Some(Self::BeginDormant(DormantTimers::from_elements(&elements?)))
+            }
+            engine_keys::WAKE_WHEN_I_SLEEP => TargetList::from_record(&engine_integers(value)?)
+                .ok()
+                .map(Self::WakeWhenISleep),
+            engine_keys::INACTIVE_COMPLETION_COUNT => {
+                // The loader reads the first element's payload verbatim; a
+                // non-integer first element is a shape the loader never sees
+                // in the installation.
+                match engine_values(value).first() {
+                    Some(ZrdValue::Int(count)) => Some(Self::InactiveCompletionCount(*count)),
+                    _ => None,
+                }
+            }
+            engine_keys::IDENTITY => {
+                // The loader requires at least two elements: a non-empty role
+                // text and an integer ordinal. The message element is never
+                // read on this path; it is kept verbatim when it is a name.
+                let values = engine_values(value);
+                let (ZrdValue::Text(role), ZrdValue::Int(ordinal)) =
+                    (values.first()?, values.get(1)?)
+                else {
+                    return None;
+                };
+                if role.is_empty() {
+                    return None;
+                }
+                let message = match values.get(2) {
+                    Some(ZrdValue::Text(message)) => Some(message.clone()),
+                    _ => None,
+                };
+                Some(Self::Identity(EngineIdentity::from_record(
+                    role, *ordinal, message,
+                )))
+            }
+            engine_keys::WAKEUP_SOUND_GROUP => match engine_values(value).first() {
+                Some(ZrdValue::Text(name)) if !name.is_empty() => {
+                    Some(Self::WakeupSoundGroup(name.clone()))
+                }
+                _ => None,
+            },
+            engine_keys::COMPLETED_SOUND_GROUP => match engine_values(value).first() {
+                Some(ZrdValue::Text(name)) if !name.is_empty() => {
+                    Some(Self::CompletedSoundGroup(name.clone()))
+                }
+                _ => None,
+            },
             _ => None,
         }
     }
@@ -5628,6 +5703,10 @@ impl EngineField {
     const fn family(&self) -> RecordFieldFamily {
         match self {
             Self::TickDependsOn(_) => RecordFieldFamily::OrderDependency,
+            Self::BeginDormant(_) | Self::WakeWhenISleep(_) => RecordFieldFamily::Dormancy,
+            Self::InactiveCompletionCount(_) => RecordFieldFamily::CompletionCount,
+            Self::Identity(_) => RecordFieldFamily::Identity,
+            Self::WakeupSoundGroup(_) | Self::CompletedSoundGroup(_) => RecordFieldFamily::SoundCue,
             _ => RecordFieldFamily::CompletionEffect,
         }
     }
@@ -5641,6 +5720,12 @@ impl EngineField {
             Self::Kill(_) => !declaration.kill.targets().is_empty(),
             Self::Sleep(_) => !declaration.sleep.targets().is_empty(),
             Self::TickDependsOn(_) => declaration.tick_depends_on.is_some(),
+            Self::BeginDormant(_) => declaration.begin_dormant.is_some(),
+            Self::WakeWhenISleep(_) => !declaration.wake_when_i_sleep.targets().is_empty(),
+            Self::InactiveCompletionCount(_) => declaration.inactive_completion_count.is_some(),
+            Self::Identity(_) => declaration.identity.is_some(),
+            Self::WakeupSoundGroup(_) => declaration.wakeup_sound_group.is_some(),
+            Self::CompletedSoundGroup(_) => declaration.completed_sound_group.is_some(),
         }
     }
 
@@ -5651,17 +5736,31 @@ impl EngineField {
             Self::Kill(list) => declaration.kill = list,
             Self::Sleep(list) => declaration.sleep = list,
             Self::TickDependsOn(index) => declaration.tick_depends_on = Some(index),
+            Self::BeginDormant(timers) => declaration.begin_dormant = Some(timers),
+            Self::WakeWhenISleep(list) => declaration.wake_when_i_sleep = list,
+            Self::InactiveCompletionCount(count) => {
+                declaration.inactive_completion_count = Some(count);
+            }
+            Self::Identity(identity) => declaration.identity = Some(identity),
+            Self::WakeupSoundGroup(group) => declaration.wakeup_sound_group = Some(group),
+            Self::CompletedSoundGroup(group) => declaration.completed_sound_group = Some(group),
         }
     }
 
     /// The highest objective index the field names.
     fn highest_target(&self) -> Option<usize> {
         match self {
-            Self::Wake(list) | Self::Kill(list) | Self::Sleep(list) => {
-                list.targets().iter().copied().max()
-            }
+            Self::Wake(list)
+            | Self::Kill(list)
+            | Self::Sleep(list)
+            | Self::WakeWhenISleep(list) => list.targets().iter().copied().max(),
             Self::Nap(nap) => nap.target,
             Self::TickDependsOn(index) => Some(*index),
+            Self::BeginDormant(_)
+            | Self::InactiveCompletionCount(_)
+            | Self::Identity(_)
+            | Self::WakeupSoundGroup(_)
+            | Self::CompletedSoundGroup(_) => None,
         }
     }
 }
@@ -5696,6 +5795,7 @@ impl ObjectiveRecovery {
         let mut declarations: BTreeMap<u32, EngineDeclaration> = BTreeMap::new();
         let mut conditions = BTreeMap::new();
         let mut outcomes = BTreeMap::new();
+        let mut stage_numbers: BTreeMap<u32, BTreeSet<u32>> = BTreeMap::new();
         let mut unrecovered = Vec::new();
         for (key, value) in zrd_flat_fields(record) {
             if let Some(number) = cs_content::objectives::objective_block_number(key) {
@@ -5714,6 +5814,14 @@ impl ObjectiveRecovery {
                 }
                 for (index, (field, argument)) in fields.iter().enumerate() {
                     fields_read += 1;
+                    // The engine scans INACTIVE1..=INACTIVE100 once each: the
+                    // declared stage count is the distinct numbers it finds.
+                    if in_loaded_prefix
+                        && let Some(stage) = inactive_stage_number(field)
+                        && (1..=100).contains(&stage)
+                    {
+                        stage_numbers.entry(number).or_default().insert(stage);
+                    }
                     let declaration = declarations.entry(number).or_default();
                     let engine_field = EngineField::read(field, argument).filter(|read| {
                         in_loaded_prefix
@@ -5753,6 +5861,13 @@ impl ObjectiveRecovery {
                     family: RecordFieldFamily::of_key(key),
                 });
             }
+        }
+        for (number, stages) in stage_numbers {
+            declarations
+                .entry(number)
+                .or_default()
+                .declared_inactive_stages =
+                u32::try_from(stages.len()).expect("at most 100 stage keys");
         }
         declarations.retain(|_, declaration| *declaration != EngineDeclaration::default());
         Self {
