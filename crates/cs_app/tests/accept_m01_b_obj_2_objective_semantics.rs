@@ -82,11 +82,8 @@ fn accept_m01_b_obj_2_recovers_the_measured_keys() {
         ]),
     )]);
     assert_eq!(recovery.fields_read(), 8);
-    assert_eq!(
-        recovery.fields_recovered(),
-        6,
-        "the two stages are another family"
-    );
+    // The two stage conditions are M01-B-OBJ-3's family, recovered beside ours.
+    assert_eq!(recovery.fields_recovered(), 8);
     let declaration = &recovery.engine_declarations()[&1];
     let timers = declaration.begin_dormant.expect("dormant");
     assert_eq!(timers.wake_at, 2.0);

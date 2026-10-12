@@ -250,7 +250,12 @@ fn accept_m01_b_obj_3_recovery_reads_what_the_loader_reads_and_names_the_rest() 
                 ("INSTANTWIN", ZrdValue::List(vec![])),
                 // Not a shape the loader reads.
                 ("INACTIVE3", ZrdValue::Int(7)),
-                ("BEGIN_DORMANT", ZrdValue::Int(1)),
+                // Not a shape the loader reads either (M01-B-OBJ-2 recovers the
+                // well-formed ones).
+                (
+                    "BEGIN_DORMANT",
+                    ZrdValue::List(vec![ZrdValue::List(vec![])]),
+                ),
             ]),
         ),
         (
@@ -287,7 +292,9 @@ fn accept_m01_b_obj_3_recovery_reads_what_the_loader_reads_and_names_the_rest() 
     assert_eq!(recovery.outcomes()[&2], ObjectiveOutcome::InstantLoss);
 
     // The program still refuses, now without naming the recovered families.
-    let refusal = recovery.program().expect_err("dormancy is unrecovered");
+    let refusal = recovery
+        .program()
+        .expect_err("a malformed dormancy is unrecovered");
     assert!(refusal.to_string().contains("Dormancy x1"));
 }
 
@@ -355,14 +362,17 @@ fn accept_m01_b_obj_3_retail_m01_recovers_every_condition_and_outcome_the_census
             "{family:?} left unrecovered"
         );
     }
-    // The effect and dependency fields (M01-B-OBJ-1) share the recovered list.
+    // Other tasks' families (effects, dependencies, lifecycle) share the
+    // recovered list; count only this task's.
     let own_recovered = recovery
         .recovered()
         .iter()
         .filter(|field| {
-            !matches!(
+            matches!(
                 field.family,
-                RecordFieldFamily::CompletionEffect | RecordFieldFamily::OrderDependency
+                RecordFieldFamily::InactiveStage
+                    | RecordFieldFamily::CompletionCount
+                    | RecordFieldFamily::Outcome
             )
         })
         .count();
