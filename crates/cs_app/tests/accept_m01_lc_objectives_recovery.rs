@@ -41,17 +41,22 @@ fn accept_m01_lc_objectives_names_every_field_it_cannot_recover() {
 
     assert_eq!(recovery.blocks(), &[1, 2]);
     assert_eq!(recovery.fields_read(), 5);
-    assert_eq!(recovery.fields_recovered(), 0);
-    assert_eq!(recovery.unrecovered().len(), 5);
+    // M01-B-OBJ-1: the KILL effect is a measured engine field (one in-range
+    // target), so it is recovered; every other field is still named.
+    assert_eq!(recovery.fields_recovered(), 1);
+    assert_eq!(recovery.unrecovered().len(), 4);
     let families = recovery.unrecovered_by_family();
     assert_eq!(families[&RecordFieldFamily::Dormancy], 1);
-    assert_eq!(families[&RecordFieldFamily::CompletionEffect], 1);
+    assert!(!families.contains_key(&RecordFieldFamily::CompletionEffect));
     assert_eq!(families[&RecordFieldFamily::Outcome], 1);
     assert_eq!(families[&RecordFieldFamily::Unmeasured], 2);
     assert!(recovery.unrecovered().iter().any(|f| f.block.is_none()));
 
-    let refusal = recovery.program().expect_err("nothing is recoverable");
-    assert!(refusal.to_string().contains("CompletionEffect x1"));
+    let refusal = recovery
+        .program()
+        .expect_err("the other families are unrecovered");
+    assert!(refusal.to_string().contains("Dormancy x1"));
+    assert!(!refusal.to_string().contains("CompletionEffect"));
 }
 
 #[test]
@@ -73,7 +78,7 @@ fn accept_m01_lc_objectives_retail_m01_drops_no_record() {
         recovery.fields_read()
     );
     assert_eq!(
-        recovery.unrecovered_by_family().values().sum::<usize>(),
+        recovery.unrecovered_by_family().values().sum::<usize>() + recovery.fields_recovered(),
         recovery.fields_read()
     );
     // Block-level fields match the census's own per-key site totals.
@@ -82,7 +87,8 @@ fn accept_m01_lc_objectives_retail_m01_drops_no_record() {
         .unrecovered()
         .iter()
         .filter(|f| f.block.is_some())
-        .count();
+        .count()
+        + recovery.recovered().len();
     assert_eq!(block_fields, census_sites as usize);
 
     // Semantics are unmeasured, so no program is emitted.

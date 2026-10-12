@@ -185,6 +185,9 @@ use cs_content::objectives::{
     is_objective_inactive_stage, is_optional_objective_key, measure_dormant_declarations,
     measured_category_evidence,
 };
+use cs_content::objectives_engine::{
+    EngineDeclaration, NapDeclaration, TargetList, keys as engine_keys,
+};
 use cs_content::stunts::{
     OBJECTIVE_BLOCK_PREFIX, SCENARIO_OBJECTIVES_MEMBER, SCENARIO_TARGETS_MEMBER,
     TARGET_CATEGORY_KEY, TARGET_HELP_KEY, ZrdValue, objective_record, objective_record_count,
@@ -5459,10 +5462,10 @@ impl RecordFieldFamily {
     pub const fn reason(self) -> &'static str {
         match self {
             Self::CompletionEffect => {
-                "the spelling is measured but what the effect does is an inference, and precedence between effects is unmeasured (F39-E2, E5, E6)"
+                "the engine's loader reads WAKE, NAP, KILL and SLEEP (recovered when well formed, M01-B-OBJ-1); this field is a spelling the loader never reads, or a shape outside the measured one"
             }
             Self::OrderDependency => {
-                "the objective it sequences behind is named but the ordering rule is undecoded (F39-E2)"
+                "the field is not the single in-range objective number the engine's loader reads (M01-B-OBJ-1)"
             }
             Self::Outcome => "the terminal precedence between win and loss is unmeasured (F39-D)",
             Self::Dormancy => {
@@ -5507,41 +5510,206 @@ impl UnrecoveredField {
     }
 }
 
+/// One field of an original objective record that was read and **recovered**
+/// into the engine's measured completion-effect and tick-dependency model.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecoveredField {
+    /// The `OBJECTIVE<N>` block number.
+    pub block: u32,
+    /// The key as the original wrote it.
+    pub key: String,
+    /// The measured family of the key.
+    pub family: RecordFieldFamily,
+}
+
 /// What reading one mission's `objectives.zrd` recovered, and everything it
 /// could not.
 ///
 /// The producer walks **every** field of every `OBJECTIVE<N>` block and of the
 /// record's top level, so nothing is silently dropped:
 /// `fields_read() == fields_recovered() + unrecovered().len()` by construction.
-/// Today no field is recoverable — the mission-language table and the objective
-/// semantics are unmeasured, and AGENTS.md rule 4 forbids guessing them — so
-/// [`program`](Self::program) is the refusal naming each gap, never a program
-/// built from guessed semantics.
-#[derive(Clone, Debug, PartialEq, Eq)]
+/// The fields recovered are the ones the engine's loader reads for completion
+/// effects (`WAKE`, `NAP`, `KILL`, `SLEEP`) and the tick dependency
+/// (`TICK_DEPENDS_ON_OBJ`), measured from the executable image in M01-B-OBJ-1 and
+/// kept as [`EngineDeclaration`]s. Every other family is still unmeasured and
+/// AGENTS.md rule 4 forbids guessing it, so [`program`](Self::program) is the
+/// refusal naming each gap, never a program built from guessed semantics.
+#[derive(Clone, Debug, PartialEq)]
 pub struct ObjectiveRecovery {
     mission: String,
     blocks: Vec<u32>,
     fields_read: usize,
+    recovered: Vec<RecoveredField>,
+    declarations: BTreeMap<u32, EngineDeclaration>,
     unrecovered: Vec<UnrecoveredField>,
+}
+
+/// A field's follower as the engine's array of values: a list's children, a bare
+/// directive's none, any other single value itself.
+fn engine_values(value: &ZrdValue) -> &[ZrdValue] {
+    match value {
+        ZrdValue::List(children) => children,
+        single => std::slice::from_ref(single),
+    }
+}
+
+fn engine_integers(value: &ZrdValue) -> Option<Vec<u32>> {
+    engine_values(value)
+        .iter()
+        .map(|entry| match entry {
+            ZrdValue::Int(number) => Some(*number),
+            _ => None,
+        })
+        .collect()
+}
+
+/// How many objectives the engine loads from the declared block numbers.
+fn engine_loaded_prefix(declared: &BTreeSet<u32>) -> usize {
+    (1..).take_while(|number| declared.contains(number)).count()
+}
+
+/// One key's engine reading, or `None` when the field is not a measured shape.
+enum EngineField {
+    Wake(TargetList),
+    Nap(NapDeclaration),
+    Kill(TargetList),
+    Sleep(TargetList),
+    TickDependsOn(usize),
+}
+
+impl EngineField {
+    /// Reads `key`'s follower as the engine does, or `None` for a key the engine
+    /// does not read here or a shape outside the measured one.
+    fn read(key: &str, value: &ZrdValue) -> Option<Self> {
+        match key {
+            engine_keys::WAKE | engine_keys::WAKE_ALIAS => {
+                TargetList::from_record(&engine_integers(value)?)
+                    .ok()
+                    .map(Self::Wake)
+            }
+            engine_keys::KILL => TargetList::from_record(&engine_integers(value)?)
+                .ok()
+                .map(Self::Kill),
+            engine_keys::SLEEP => TargetList::from_record(&engine_integers(value)?)
+                .ok()
+                .map(Self::Sleep),
+            engine_keys::NAP => {
+                let values = engine_values(value);
+                let ZrdValue::Int(target) = values.first()? else {
+                    return None;
+                };
+                let time = match values.get(1) {
+                    None => None,
+                    // The engine converts an integer time to a float.
+                    #[allow(clippy::cast_precision_loss)]
+                    Some(ZrdValue::Int(time)) => Some(*time as f32),
+                    Some(ZrdValue::Float(time)) => Some(*time),
+                    // A string or a nested list is the engine's error path.
+                    Some(_) => return None,
+                };
+                // The measured shape is one target and at most one time.
+                (values.len() <= 2).then(|| Self::Nap(NapDeclaration::from_record(*target, time)))
+            }
+            engine_keys::TICK_DEPENDS_ON_OBJ => match engine_integers(value)?.as_slice() {
+                [number] => number
+                    .checked_sub(1)
+                    .map(|index| Self::TickDependsOn(index as usize)),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+
+    const fn family(&self) -> RecordFieldFamily {
+        match self {
+            Self::TickDependsOn(_) => RecordFieldFamily::OrderDependency,
+            _ => RecordFieldFamily::CompletionEffect,
+        }
+    }
+
+    /// Whether the declaration already holds this key (the engine reads the
+    /// first occurrence only).
+    fn already_declared(&self, declaration: &EngineDeclaration) -> bool {
+        match self {
+            Self::Wake(_) => !declaration.wake.targets().is_empty(),
+            Self::Nap(_) => declaration.nap.is_some(),
+            Self::Kill(_) => !declaration.kill.targets().is_empty(),
+            Self::Sleep(_) => !declaration.sleep.targets().is_empty(),
+            Self::TickDependsOn(_) => declaration.tick_depends_on.is_some(),
+        }
+    }
+
+    fn store(self, declaration: &mut EngineDeclaration) {
+        match self {
+            Self::Wake(list) => declaration.wake = list,
+            Self::Nap(nap) => declaration.nap = Some(nap),
+            Self::Kill(list) => declaration.kill = list,
+            Self::Sleep(list) => declaration.sleep = list,
+            Self::TickDependsOn(index) => declaration.tick_depends_on = Some(index),
+        }
+    }
+
+    /// The highest objective index the field names.
+    fn highest_target(&self) -> Option<usize> {
+        match self {
+            Self::Wake(list) | Self::Kill(list) | Self::Sleep(list) => {
+                list.targets().iter().copied().max()
+            }
+            Self::Nap(nap) => nap.target,
+            Self::TickDependsOn(index) => Some(*index),
+        }
+    }
 }
 
 impl ObjectiveRecovery {
     /// Walks a decoded `objectives.zrd` document.
+    ///
+    /// A completion-effect or tick-dependency field is recovered when the engine
+    /// would read it: the key is one it reads, the shape is the measured one, it
+    /// is the first such key of its block, and every objective it names is among
+    /// the blocks the engine loads (`OBJECTIVE1` upward until the first number
+    /// the record does not declare).
     #[must_use]
     pub fn read(mission: &str, document: &ZrdValue) -> Self {
+        let record = objective_record(document);
         let mut blocks = Vec::new();
-        let mut fields_read = 0;
-        let mut unrecovered = Vec::new();
-        for (key, value) in zrd_flat_fields(objective_record(document)) {
+        for (key, _) in zrd_flat_fields(record) {
             if let Some(number) = cs_content::objectives::objective_block_number(key) {
                 blocks.push(number);
-                for (field, _) in zrd_directive_fields(value) {
+            }
+        }
+        let declared: BTreeSet<u32> = blocks.iter().copied().collect();
+        let loaded = engine_loaded_prefix(&declared);
+
+        let mut fields_read = 0;
+        let mut recovered = Vec::new();
+        let mut declarations: BTreeMap<u32, EngineDeclaration> = BTreeMap::new();
+        let mut unrecovered = Vec::new();
+        for (key, value) in zrd_flat_fields(record) {
+            if let Some(number) = cs_content::objectives::objective_block_number(key) {
+                let in_loaded_prefix = (number as usize) <= loaded;
+                for (field, argument) in zrd_directive_fields(value) {
                     fields_read += 1;
-                    unrecovered.push(UnrecoveredField {
-                        block: Some(number),
-                        key: field.to_owned(),
-                        family: RecordFieldFamily::of_key(field),
+                    let declaration = declarations.entry(number).or_default();
+                    let engine_field = EngineField::read(field, argument).filter(|read| {
+                        in_loaded_prefix
+                            && !read.already_declared(declaration)
+                            && read.highest_target().is_none_or(|index| index < loaded)
                     });
+                    if let Some(read) = engine_field {
+                        recovered.push(RecoveredField {
+                            block: number,
+                            key: field.to_owned(),
+                            family: read.family(),
+                        });
+                        read.store(declaration);
+                    } else {
+                        unrecovered.push(UnrecoveredField {
+                            block: Some(number),
+                            key: field.to_owned(),
+                            family: RecordFieldFamily::of_key(field),
+                        });
+                    }
                 }
             } else {
                 fields_read += 1;
@@ -5552,12 +5720,35 @@ impl ObjectiveRecovery {
                 });
             }
         }
+        declarations.retain(|_, declaration| *declaration != EngineDeclaration::default());
         Self {
             mission: mission.to_owned(),
             blocks,
             fields_read,
+            recovered,
+            declarations,
             unrecovered,
         }
+    }
+
+    /// Every field recovered into the engine model, in record order.
+    #[must_use]
+    pub fn recovered(&self) -> &[RecoveredField] {
+        &self.recovered
+    }
+
+    /// The recovered completion effects and tick dependencies per `OBJECTIVE<N>`
+    /// block number. A block that declares none has no entry.
+    #[must_use]
+    pub const fn engine_declarations(&self) -> &BTreeMap<u32, EngineDeclaration> {
+        &self.declarations
+    }
+
+    /// How many objectives the engine loads: `OBJECTIVE1` upward until the
+    /// first number the record does not declare.
+    #[must_use]
+    pub fn engine_objective_count(&self) -> usize {
+        engine_loaded_prefix(&self.blocks.iter().copied().collect())
     }
 
     /// The mission this record belongs to.
@@ -5581,7 +5772,7 @@ impl ObjectiveRecovery {
     /// How many fields were recovered into a declared program.
     #[must_use]
     pub const fn fields_recovered(&self) -> usize {
-        self.fields_read - self.unrecovered.len()
+        self.recovered.len()
     }
 
     /// Every field that could not be recovered.
@@ -5604,8 +5795,10 @@ impl ObjectiveRecovery {
     ///
     /// # Errors
     ///
-    /// [`ObjectiveRecoveryRefusal`], always today: no field family has a measured
-    /// recovery, so a program would be built from guessed semantics.
+    /// [`ObjectiveRecoveryRefusal`], always today: the completion effects and the
+    /// tick dependency are recovered (M01-B-OBJ-1), but the conditions that
+    /// complete an objective, its dormancy, its outcome and the other families
+    /// are not, so a program would be built from guessed semantics.
     pub fn program(&self) -> Result<DeclaredObjectiveProgram, ObjectiveRecoveryRefusal> {
         Err(ObjectiveRecoveryRefusal {
             mission: self.mission.clone(),
@@ -5666,4 +5859,22 @@ pub fn recover_retail_objectives(
             reason: "the installation has no such mission reader".to_owned(),
         })?;
     Ok(ObjectiveRecovery::read(&record.mission, &record.document))
+}
+
+/// Reads every installed mission's `objectives.zrd` with one discovery of the
+/// installation and reports what is and is not recoverable, in mission order.
+///
+/// # Errors
+///
+/// [`ObjectiveCensusError`] when the installation cannot be walked or a record
+/// does not decode.
+pub fn recover_all_retail_objectives(
+    install_root: &Path,
+) -> Result<Vec<ObjectiveRecovery>, ObjectiveCensusError> {
+    let found = cs_assets::install::discover(install_root)
+        .map_err(|error| ObjectiveCensusError::Discovery(error.to_string()))?;
+    Ok(locate_mission_objective_records(&found)?
+        .iter()
+        .map(|record| ObjectiveRecovery::read(&record.mission, &record.document))
+        .collect())
 }
