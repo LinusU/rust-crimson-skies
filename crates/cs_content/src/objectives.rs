@@ -4409,6 +4409,11 @@ impl AnimListField {
     /// Reads the list the way the engine's parse does: strings become
     /// [`AnimDirective::Named`], three-child `[object, "X#", anim]` lists
     /// become [`AnimDirective::Scoped`], every other element is skipped.
+    ///
+    /// `value` must be the spelled list: the parse reads the follower's
+    /// element vector unconditionally, so a non-list follower is a wild read
+    /// in the original — [`measure_record_fields`] reports it as
+    /// [`RecordFieldError::AnimListShape`], not an empty list.
     #[must_use]
     pub fn of(value: &ZrdValue) -> Self {
         let mut list = Self::default();
@@ -4482,6 +4487,15 @@ pub enum RecordFieldError {
         /// What the declaration is instead of its measured shape.
         detail: &'static str,
     },
+    /// An animation-list key's follower was not a list: the parse reads the
+    /// follower's element vector unconditionally, so a scalar or string in
+    /// its place is a wild read in the original, not an empty list.
+    AnimListShape {
+        /// The spelled key.
+        key: &'static str,
+        /// What the declaration is instead of its measured shape.
+        detail: &'static str,
+    },
 }
 
 impl fmt::Display for RecordFieldError {
@@ -4492,6 +4506,9 @@ impl fmt::Display for RecordFieldError {
             }
             Self::PlayerInitShape { detail } => {
                 write!(f, "PLAYER_INIT: {detail}")
+            }
+            Self::AnimListShape { key, detail } => {
+                write!(f, "{key}: {detail}")
             }
         }
     }
@@ -4535,6 +4552,24 @@ fn read_mission_timer(value: &ZrdValue) -> Result<MissionTimerField, RecordField
         }
     };
     Ok(MissionTimerField { seconds, no_loss })
+}
+
+/// Reads one animation-list key's follower the way the engine's parse does —
+/// as the element vector of a list — or reports the off-shape spelling.
+///
+/// # Errors
+///
+/// [`RecordFieldError::AnimListShape`] when the follower is not a list: the
+/// parse reads `follower+4` as the element vector unconditionally, so a
+/// scalar or string in its place is a wild read in the original.
+fn read_anim_list(key: &'static str, value: &ZrdValue) -> Result<AnimListField, RecordFieldError> {
+    if value.as_list().is_none() {
+        return Err(RecordFieldError::AnimListShape {
+            key,
+            detail: "the follower is not a list; the parser reads its element vector unconditionally",
+        });
+    }
+    Ok(AnimListField::of(value))
 }
 
 /// Reads `PLAYER_INIT`'s argument the way the engine does: five elements,
@@ -4630,9 +4665,15 @@ pub fn measure_record_fields(
         match RECORD_FIELD_KEY_VOCABULARY[slot] {
             RECORD_MISSION_TIMER_KEY => measured.mission_timer = Some(read_mission_timer(value)?),
             RECORD_PLAYER_INIT_KEY => measured.player_init = Some(read_player_init(value)?),
-            RECORD_RESTORE_ANIMS_KEY => measured.restore_anims = AnimListField::of(value),
-            RECORD_EXECUTE_ANIMS_KEY => measured.execute_anims = AnimListField::of(value),
-            RECORD_INVALIDATE_ANIMS_KEY => measured.invalidate_anims = AnimListField::of(value),
+            RECORD_RESTORE_ANIMS_KEY => {
+                measured.restore_anims = read_anim_list(RECORD_RESTORE_ANIMS_KEY, value)?;
+            }
+            RECORD_EXECUTE_ANIMS_KEY => {
+                measured.execute_anims = read_anim_list(RECORD_EXECUTE_ANIMS_KEY, value)?;
+            }
+            RECORD_INVALIDATE_ANIMS_KEY => {
+                measured.invalidate_anims = read_anim_list(RECORD_INVALIDATE_ANIMS_KEY, value)?;
+            }
             _ => unreachable!("the slot indexes the vocabulary"),
         }
     }
