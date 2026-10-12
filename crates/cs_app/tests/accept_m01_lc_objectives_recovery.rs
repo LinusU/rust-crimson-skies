@@ -30,7 +30,7 @@ fn accept_m01_lc_objectives_names_every_field_it_cannot_recover() {
         (
             "OBJECTIVE1",
             block(vec![
-                ("BEGIN_DORMANT", ZrdValue::Int(1)),
+                ("INACTIVE1", ZrdValue::Int(1)),
                 ("KILL_OBJECTIVE_WHEN_I_COMPLETE", ZrdValue::Int(2)),
                 ("SOME_NEW_KEY", ZrdValue::Int(0)),
             ]),
@@ -47,7 +47,7 @@ fn accept_m01_lc_objectives_names_every_field_it_cannot_recover() {
     assert_eq!(recovery.fields_recovered(), 2);
     assert_eq!(recovery.unrecovered().len(), 3);
     let families = recovery.unrecovered_by_family();
-    assert_eq!(families[&RecordFieldFamily::Dormancy], 1);
+    assert_eq!(families[&RecordFieldFamily::InactiveStage], 1);
     assert!(!families.contains_key(&RecordFieldFamily::CompletionEffect));
     assert!(!families.contains_key(&RecordFieldFamily::Outcome));
     assert_eq!(families[&RecordFieldFamily::Unmeasured], 2);
@@ -56,7 +56,7 @@ fn accept_m01_lc_objectives_names_every_field_it_cannot_recover() {
     let refusal = recovery
         .program()
         .expect_err("the other families are unrecovered");
-    assert!(refusal.to_string().contains("Dormancy x1"));
+    assert!(refusal.to_string().contains("InactiveStage x1"));
     assert!(!refusal.to_string().contains("CompletionEffect"));
 }
 

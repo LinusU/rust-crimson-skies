@@ -77,7 +77,7 @@ fn accept_m01_b_obj_1_recovers_the_four_measured_keys() {
         ),
         (
             "OBJECTIVE3",
-            block(vec![("BEGIN_DORMANT", ZrdValue::Int(1))]),
+            block(vec![("INSTANTWIN", ints(&[]))]),
         ),
     ]);
     assert_eq!(recovery.fields_read(), 5);
@@ -91,12 +91,12 @@ fn accept_m01_b_obj_1_recovers_the_four_measured_keys() {
     assert!((nap.time - 2.5).abs() < f32::EPSILON);
     assert_eq!(recovery.engine_declarations()[&2].tick_depends_on, Some(0));
     assert!(!recovery.engine_declarations().contains_key(&3));
-    // Only the dormancy field is left, and the program still refuses naming it.
+    // Only the outcome field is left, and the program still refuses naming it.
     let families = recovery.unrecovered_by_family();
     assert_eq!(families.len(), 1);
-    assert_eq!(families[&RecordFieldFamily::Dormancy], 1);
-    let refusal = recovery.program().expect_err("dormancy is unrecovered");
-    assert!(refusal.to_string().contains("Dormancy x1"));
+    assert_eq!(families[&RecordFieldFamily::Outcome], 1);
+    let refusal = recovery.program().expect_err("outcome is unrecovered");
+    assert!(refusal.to_string().contains("Outcome x1"));
 }
 
 #[test]
@@ -117,7 +117,8 @@ fn accept_m01_b_obj_1_effects_apply_in_the_engines_order_not_the_records() {
                 block(vec![("BEGIN_DORMANT", ZrdValue::Int(1))]),
             ),
         ]);
-        assert_eq!(recovery.fields_recovered(), 2);
+        // The dormancy marker also recovers: M01-B-OBJ-2 owns BEGIN_DORMANT.
+        assert_eq!(recovery.fields_recovered(), 3);
         let mut set = engine(&recovery, EngineState::Dormant);
         set.complete(0);
         let target = set.get(1).expect("target");
@@ -295,9 +296,11 @@ fn accept_m01_b_obj_1_retail_corpus_recovers_every_measured_key() {
             .filter(|field| field.family == RecordFieldFamily::CompletionEffect)
             .count();
     }
-    // 412 WAKE + 417 NAP + 225 KILL + 35 TICK_DEPENDS (F39-E2); the two `WAKEUP`
-    // sites are a spelling the loader never reads.
-    assert_eq!(recovered, 412 + 417 + 225 + 35);
+    // 412 WAKE + 417 NAP + 225 KILL + 35 TICK_DEPENDS (F39-E2) plus
+    // M01-B-OBJ-2's corpus families — 1118 dormancy, 130 completion counts,
+    // 111 identities, 708 sound groups; the two `WAKEUP` sites are a spelling
+    // the loader never reads, and one malformed identity stays out.
+    assert_eq!(recovered, 412 + 417 + 225 + 35 + 1118 + 130 + 111 + 708);
     assert_eq!(left_effects, 2);
 }
 
