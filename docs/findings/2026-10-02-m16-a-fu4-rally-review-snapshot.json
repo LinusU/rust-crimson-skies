@@ -10,7 +10,7 @@
   "actor_meaning": "Rally actor strings are `<agent instance>/<session label>`. Two claims from the same actor string are the same agent instance, so the second is not independent of the first (owner ruling 2026-09-28, review policy).",
   "independent_is_derived": "The check derives independence from actor equality; this file records the actors and the event timestamps, not a verdict.",
   "every_merged_stage_has_a_review_claim": "Rally only merges a stage through complete_review or its landing queue, so every stage listed here has at least one review claim and a reviewer to name.",
-  "scope": "Only the stages whose committed `review.identity` was still a hand-over placeholder when this file was written. Every other committed report is either already honest or names no reviewer at all without carrying a placeholder; the latter are filed as follow-up #484 rather than rewritten here. F14-D.7 was added to this file later, under F14-D.7-SNAPSHOT (#578): its report already named the implementer and the reviewer honestly but was written before any snapshot covered it, so the snapshot-backed rules were not enforced for it; see `entries_added_after_writing`.",
+  "scope": "Only the stages whose committed `review.identity` was still a hand-over placeholder when this file was written. Every other committed report is either already honest or names no reviewer at all without carrying a placeholder; the latter are filed as follow-up #484 rather than rewritten here. F14-D.7 was added to this file later, under F14-D.7-SNAPSHOT (#578): its report already named the implementer and the reviewer honestly but was written before any snapshot covered it, so the snapshot-backed rules were not enforced for it; see `entries_added_after_writing`. F14-D.10.image, F14-D.10 and F14-D.9.mission-only were added to this file later, under #1380: their committed reports still carried the pre-review wording ('the Rally review claim opened after this submission; at the time of writing no review has taken place') after all three stages had merged, and that wording matches no PLACEHOLDERS entry, so the snapshot-backed rules were not enforced for them either; see `entries_added_after_writing`.",
   "actor_spelling": "The check matches the recorded `actor` verbatim against the committed report's `review.identity`, so `actor` holds the spelling the report itself uses. Every entry this file's author wrote spells Rally's `<agent instance>/<session label>` actor string out in its report, so there `actor` is that whole string. F14-D.7's report spells the agent as `openrouter/stealth-space-bunny-alpha (bunny-alpha-2, ...)`, so its `actor` is the agent-instance name `bunny-alpha-2` and its `rally_actor` holds Rally's verbatim actor string. Both spellings name the same instance and the same session, and nothing else in the check reads the spelling: the equality that derives independence compares the two recorded actors, so it is unaffected.",
   "model_spelling": "`model` is the provider-qualified model id in the spelling the rest of this repository uses (`openrouter/stealth/space-bunny-alpha`; `docs/findings/2026-10-02-f28-d-original-ordnance-catalogue.md` records the same id as `stealth/space-bunny-alpha`), not the report's: F14-D.7's `review.identity` flattens the slashes into `openrouter/stealth-space-bunny-alpha`, which is that id inside prose and not an id of its own. Nothing in the check reads this field; it records which model ran both claims, because AGENTS.md asks for a different instance *or model* for an independent review.",
   "report_written_by_meaning": "Derived from the report's own `created_at` against the claim windows in the Rally log: a `created_at` inside a review claim means the reviewer regenerated the report, one inside the implement claim means the committed copy is the implementer's. `report_regenerated_on_reviewed_commit` is `true` only when the reviewer's run wrote the copy that reached `main`.",
@@ -22,6 +22,30 @@
       "added_by": "bunny-alpha-2/bunny-alpha-2",
       "read_at": "2026-10-03T08:52:00Z",
       "note": "The review of #490 was done by the same agent instance that implemented it and the branch landed through Rally's landing queue, so its `task.merged` event is a system event rather than a reviewer action. The entry was therefore added only after that event really existed (2026-10-03T08:47:46Z); the reviewer of #490 declined to predict one. Read with the `rally` MCP server (get_activity for #490) from the activity log, not from the hand-over summaries."
+    },
+    {
+      "task_key": "F14-D.10.image",
+      "rally_task": 559,
+      "added_under": "#1380",
+      "added_by": "Devin SWE-2/swe2-max-1",
+      "read_at": "2026-10-12T21:26:00Z",
+      "note": "The review of #559 was done by the same agent instance that implemented it, and the committed report still carried the pre-review hand-over wording, which matches no PLACEHOLDERS entry, so the gap fired no check. The entry was added only after the report's `review.identity` and its harness literal were corrected to name the real claims; what the reviewer did and did not run comes from the task's `task.merged` notes. Read with the `rally` MCP server (get_task for #559) from the activity log, not from the hand-over summaries."
+    },
+    {
+      "task_key": "F14-D.10",
+      "rally_task": 563,
+      "added_under": "#1380",
+      "added_by": "Devin SWE-2/swe2-max-1",
+      "read_at": "2026-10-12T21:26:00Z",
+      "note": "The review of #563 was done by the same agent instance that implemented it, and the committed report still carried the pre-review hand-over wording, which matches no PLACEHOLDERS entry, so the gap fired no check. The entry was added only after the report's `review.identity` and its harness literal were corrected to name the real claims; what the reviewer did and did not run comes from the task's `task.merged` notes. Read with the `rally` MCP server (get_task for #563) from the activity log, not from the hand-over summaries."
+    },
+    {
+      "task_key": "F14-D.9.mission-only",
+      "rally_task": 564,
+      "added_under": "#1380",
+      "added_by": "Devin SWE-2/swe2-max-1",
+      "read_at": "2026-10-12T21:26:00Z",
+      "note": "The review of #564 was done by the same agent instance that implemented it, and the committed report still carried the pre-review hand-over wording, which matches no PLACEHOLDERS entry, so the gap fired no check. The entry was added only after the report's `review.identity` and its harness literal were corrected to name the real claims; what the reviewer did and did not run comes from the task's `task.merged` notes. Read with the `rally` MCP server (get_task for #564) from the activity log, not from the hand-over summaries."
     }
   ],
   "tasks": [
@@ -238,6 +262,72 @@
       "report_regenerated_on_reviewed_commit": true,
       "self_review": "The implementer and the reviewer are the same agent instance and model, so this review is not independent evidence and the check requires the report to keep saying so; the reviewer of #490 recorded the same in its `complete_review` notes.",
       "notes": "`merge_event` is a system event: the reviewer approved the stage at `approval_event` and Rally's landing queue rebased the branch onto main and fast-forwarded main to `merged_sha`, so the copy of the report on main is the one the reviewer's own run wrote (`created_at` 2026-10-03T08:32:27Z, inside the review claim). See `actor_spelling` for why `actor` is the agent-instance name rather than Rally's `<instance>/<session>` string."
+    },
+    {
+      "task_key": "F14-D.10.image",
+      "rally_task": 559,
+      "evidence_report": "docs/findings/evidence/F14-D.10.image.json",
+      "merged_sha": "06c48fdb610430dcb001787d88a0aa09e56b0309",
+      "implementer": {
+        "actor": "sonnet-1/sonnet-1",
+        "claim_started": "2026-10-11T17:23:24Z",
+        "submitted": "2026-10-11T18:39:09Z",
+        "earlier_implement_claims": [
+          {"actor": "bunny-alpha-2/bunny-alpha-2", "claim_started": "2026-10-11T15:36:07Z", "outcome": "the implement lease expired on 2026-10-11T17:06:20Z without a pushed branch; sonnet-1 resumed the stage and rebuilt it from origin/main"}
+        ]
+      },
+      "reviewer": {
+        "actor": "sonnet-1/sonnet-1",
+        "review_claim_started": "2026-10-11T18:39:25Z",
+        "merge_event": {"type": "task.merged", "actor": "sonnet-1/sonnet-1", "at": "2026-10-11T18:39:39Z"}
+      },
+      "report_written_by": "implementer",
+      "report_regenerated_on_reviewed_commit": false,
+      "self_review": "The implementer and the reviewer are the same agent instance and model, so this review is not independent evidence and the check requires the report to keep saying so; the reviewer of #559 recorded the same in its `complete_review` notes.",
+      "notes": "The report's `created_at` (2026-10-11T18:13:43Z) is inside sonnet-1's implement claim, so the committed copy is the implementer's: the reviewer's `task.merged` notes say it re-read the core diff, confirmed the branch sat on the then-current origin/main and that CI was green on `merged_sha`, and found no protected paths touched and no weakened tests, but did not rerun the four checks, the retail prefix run or the evidence validation in the review session - those were the same agent's pre-submission runs. `claim_started` is the `task.resumed` event, per `claim_started_source`."
+    },
+    {
+      "task_key": "F14-D.10",
+      "rally_task": 563,
+      "evidence_report": "docs/findings/evidence/F14-D.10.json",
+      "merged_sha": "c6194f577527809fc1a174deb1e2030a2a3bc643",
+      "implementer": {
+        "actor": "sonnet-1/sonnet-1",
+        "claim_started": "2026-10-11T15:43:14Z",
+        "submitted": "2026-10-11T16:30:49Z"
+      },
+      "reviewer": {
+        "actor": "sonnet-1/sonnet-1",
+        "review_claim_started": "2026-10-11T16:31:06Z",
+        "merge_event": {"type": "task.merged", "actor": "sonnet-1/sonnet-1", "at": "2026-10-11T16:47:17Z"}
+      },
+      "report_written_by": "implementer",
+      "report_regenerated_on_reviewed_commit": false,
+      "self_review": "The implementer and the reviewer are the same agent instance and model, so this review is not independent evidence and the check requires the report to keep saying so; the reviewer of #563 recorded the same in its `complete_review` notes.",
+      "notes": "The report's `created_at` (2026-10-11T16:11:50Z) is inside the implement claim, so the committed copy is the implementer's: the reviewer's `task.merged` notes say it read the baseline.rs diff and reran `cargo test --workspace --locked -- accept_f14_d_8_engine_gun_ --include-ignored` with CS_GAME_DIR (4 passed: 3 synthetic, 1 retail), but did not rerun fmt, clippy or the plain workspace test, relying on the implementer's recorded runs and on CI green on `merged_sha`."
+    },
+    {
+      "task_key": "F14-D.9.mission-only",
+      "rally_task": 564,
+      "evidence_report": "docs/findings/evidence/F14-D.9.mission-only.json",
+      "merged_sha": "43e47813cf17dc148c4c4e2eadce1e849d0c2375",
+      "implementer": {
+        "actor": "sonnet-1/sonnet-1",
+        "claim_started": "2026-10-11T18:39:48Z",
+        "submitted": "2026-10-11T19:42:00Z",
+        "earlier_implement_claims": [
+          {"actor": "bunny-alpha-1/bunny-alpha-1", "claim_started": "2026-10-11T16:22:13Z", "outcome": "the implement lease expired on 2026-10-11T18:16:17Z; sonnet-1 resumed the stage"}
+        ]
+      },
+      "reviewer": {
+        "actor": "sonnet-1/sonnet-1",
+        "review_claim_started": "2026-10-11T19:42:08Z",
+        "merge_event": {"type": "task.merged", "actor": "sonnet-1/sonnet-1", "at": "2026-10-11T19:42:24Z"}
+      },
+      "report_written_by": "implementer",
+      "report_regenerated_on_reviewed_commit": false,
+      "self_review": "The implementer and the reviewer are the same agent instance and model, so this review is not independent evidence and the check requires the report to keep saying so; the reviewer of #564 recorded the same in its `complete_review` notes.",
+      "notes": "The report's `created_at` (2026-10-11T19:16:09Z) is inside sonnet-1's implement claim, so the committed copy is the implementer's: the reviewer's `task.merged` notes say it confirmed the branch was already a descendant of origin/main and that CI was green on `merged_sha`, made no changes, and did not rerun the four local checks in the review session - they were the same agent's green pre-push runs. `claim_started` is the `task.resumed` event, per `claim_started_source`."
     }
   ]
 }
