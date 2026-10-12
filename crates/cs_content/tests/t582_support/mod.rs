@@ -364,10 +364,7 @@ fn census_zbd(
         }
     };
     let family: ZbdFamily = decided.record().family();
-    *out
-        .zbd_files_by_family
-        .entry(family.as_str())
-        .or_insert(0) += 1;
+    *out.zbd_files_by_family.entry(family.as_str()).or_insert(0) += 1;
 
     if !indexed_by_trailer(family) {
         return;

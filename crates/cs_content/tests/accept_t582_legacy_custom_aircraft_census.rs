@@ -146,7 +146,10 @@ fn rows_of(baseline: &Baseline, kind: ContentKind) -> Vec<&cs_types::content::Ca
 }
 
 /// The collection record of one kind, when the baseline wrote one.
-fn status_of(baseline: &Baseline, kind: ContentKind) -> Option<&cs_content::catalog::baseline::CollectionStatus> {
+fn status_of(
+    baseline: &Baseline,
+    kind: ContentKind,
+) -> Option<&cs_content::catalog::baseline::CollectionStatus> {
     baseline
         .collection_status
         .iter()
@@ -174,8 +177,14 @@ fn ids(baseline: &Baseline) -> BTreeSet<String> {
 #[test]
 fn accept_t582_a_file_named_like_a_stored_plane_never_becomes_a_custom_plane_row() {
     let temp = campaign_tree("fabrication");
-    temp.write("Planes/TESTPLANE.DAT", b"synthetic bytes that resemble nothing measured");
-    temp.write("GOSDATA/SAVEDGAMES/SLOT1.SAV", b"synthetic bytes that resemble nothing measured");
+    temp.write(
+        "Planes/TESTPLANE.DAT",
+        b"synthetic bytes that resemble nothing measured",
+    );
+    temp.write(
+        "GOSDATA/SAVEDGAMES/SLOT1.SAV",
+        b"synthetic bytes that resemble nothing measured",
+    );
 
     let baseline = retail_baseline(&temp.0).expect("the fixture installation reads");
 
@@ -270,9 +279,16 @@ fn accept_t582_retail_every_container_member_is_accounted_for_and_no_stored_plan
     );
 
     // The two ROF containers, fully decoded member by member.
-    assert_eq!(census.rof_containers.len(), 2, "the installation ships exactly two ROF containers");
+    assert_eq!(
+        census.rof_containers.len(),
+        2,
+        "the installation ships exactly two ROF containers"
+    );
     let rof_members: usize = census.rof_containers.iter().map(|rof| rof.members).sum();
-    assert_eq!(rof_members, 847, "the two ROF containers declare 847 members together");
+    assert_eq!(
+        rof_members, 847,
+        "the two ROF containers declare 847 members together"
+    );
     for rof in &census.rof_containers {
         assert_eq!(
             rof.members, rof.decoded_ok,
@@ -283,14 +299,19 @@ fn accept_t582_retail_every_container_member_is_accounted_for_and_no_stored_plan
         assert!(
             rof.decode_failures.is_empty(),
             "{} must have no member decode failures: {:?}",
-            rof.spelling, rof.decode_failures
+            rof.spelling,
+            rof.decode_failures
         );
     }
 
     // Every ZBD file dispatched to a family; the trailer-indexed families
     // list every member readable.
     let family_total: usize = census.zbd_files_by_family.values().sum();
-    assert_eq!(family_total, census.file_count - census.plain_files.len() - census.rof_containers.len(), "every container file is either ROF or a dispatched ZBD");
+    assert_eq!(
+        family_total,
+        census.file_count - census.plain_files.len() - census.rof_containers.len(),
+        "every container file is either ROF or a dispatched ZBD"
+    );
     assert!(
         census.zbd_index_failures.is_empty(),
         "every trailer-indexed container must list: {:?}",
@@ -358,7 +379,9 @@ fn accept_t582_retail_every_container_member_is_accounted_for_and_no_stored_plan
         .find(|rof| rof.spelling == t582_support::BASE_CONTAINER)
         .expect("the shared archive is inventoried");
     assert!(
-        base.member_spellings.iter().any(|member| member == PLANE_CONSTRUCTION),
+        base.member_spellings
+            .iter()
+            .any(|member| member == PLANE_CONSTRUCTION),
         "{PLANE_CONSTRUCTION} must ship inside {}",
         base.spelling
     );
