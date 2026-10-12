@@ -159,13 +159,13 @@
 //!   into ticks: the unit's correspondence to this runtime's integer ticks is
 //!   unmeasured. Carrying it rather than dropping it keeps the record's
 //!   number available to a later measurement.
-//! * **The one refused shape on this side.** A program whose two different
-//!   effects name the same objective is refused by
+//! * **The one refused shape on this side.** A program whose two *different*
+//!   completing objectives declare different effects on one target is refused
+//!   by
 //!   [`DeclaredObjectiveProgram::try_new`](cs_content::objectives::DeclaredObjectiveProgram::try_new)
-//!   before a session exists — a schema-level refusal the runtime no longer
-//!   needs for its own table (the engine's fixed order decides that shape
-//!   now), kept here until the content side re-measures it. Across two
-//!   *different* completions the runtime still refuses the shape again at
+//!   before a session exists — F39-E5-FU1 re-measured the within-block shape
+//!   and the schema accepts it now (the engine's fixed order decides it), but
+//!   across two completions the runtime still refuses the shape again at
 //!   registration, because the engine completes one objective per pass and
 //!   the pass-origin rule is unmeasured.
 //!
