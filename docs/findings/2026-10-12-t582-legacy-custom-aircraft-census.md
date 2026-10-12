@@ -175,6 +175,34 @@ retail; the retail run over the installation takes ~20 s). Evidence artifact
 installation is reproduced beyond the spellings, counts, families, extents
 and digests listed above.**
 
+## Reviewer regeneration (2026-10-12, review of the same task)
+
+The reviewing agent was the same agent name (`bunny-alpha-1`, same model)
+in a **fresh session that had never seen the implementation work**; Rally
+did not hand the review to a different instance, so this is recorded as
+context-fresh but not instance-independent, and nothing here is above
+`checked`.
+
+The committed evidence report originally named `candidate_tree
+e4b700c7…`, a tree reachable from none of the branch's commits (it had
+been generated before the final rebase). The reviewer regenerated the
+whole report on the reviewed tree and replaced
+`docs/findings/evidence/T582.json` with it — twice: first on the tree
+reviewed at that moment, then again after the branch was rebased onto
+the then-current `main` (the M01-B-OBJ-4 commits, no file overlap, no
+Cargo changes), so the committed report names `candidate_tree
+e404d5ee…`, the tree its acceptance run actually tested. Both
+regenerations reproduced every substantive field, and the second
+reproduced the first exactly apart from the tree binding and log
+timings: same install/content digests, same 228 files, same per-family
+counts, same 847/847 ROF members, same 6 334 indexed members, the same
+six candidates with the same extents, and the same three passing
+assertions (`private/evidence/T582-review*/`, validated with
+`tools/validate_evidence.py --require-pass`). The reviewer also reran
+the checks, each `accept_t582_` test alone with `--exact`, and one
+sensitivity mutation (dropping the fabrication fixture's stray files
+kills the fabrication guard, observed and reverted).
+
 ## Unknowns and limitations (all recorded, none guessed)
 
 - **The byte layout of a stored plane is still unmeasured — because none
