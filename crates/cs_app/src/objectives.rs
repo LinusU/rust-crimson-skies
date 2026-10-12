@@ -185,6 +185,7 @@ use cs_content::objectives::{
     is_objective_inactive_stage, is_optional_objective_key, measure_dormant_declarations,
     measured_category_evidence,
 };
+use cs_content::objectives_conditions::{ObjectiveOutcome, StageConditions, keys as outcome_keys};
 use cs_content::objectives_engine::{
     EngineDeclaration, NapDeclaration, TargetList, keys as engine_keys,
 };
@@ -5467,15 +5468,17 @@ impl RecordFieldFamily {
             Self::OrderDependency => {
                 "the field is not the single in-range objective number the engine's loader reads (M01-B-OBJ-1)"
             }
-            Self::Outcome => "the terminal precedence between win and loss is unmeasured (F39-D)",
+            Self::Outcome => {
+                "the field is not an outcome key the engine's loader reads in a loaded block (M01-B-OBJ-3)"
+            }
             Self::Dormancy => {
                 "the unit of the argument and the reveal rule are unmeasured (F39-E1)"
             }
             Self::InactiveStage => {
-                "what satisfying the named actor/part/attribute condition means is unmeasured (F39-E1, E7)"
+                "the field is not a stage condition the engine's loader reads: a number outside 1..=100, a non-canonical or repeated spelling, a block the loader does not load, or a value that is not a list of names (M01-B-OBJ-3)"
             }
             Self::CompletionCount => {
-                "the threshold's reachability and monotonicity are unmeasured (F39-E1)"
+                "the field is not the single in-range integer threshold the engine's loader reads, or it repeats an earlier one (M01-B-OBJ-3)"
             }
             Self::Identity => {
                 "the message ids are not resolvable to text and the reveal timing is unmeasured (F39-E1)"
@@ -5541,6 +5544,8 @@ pub struct ObjectiveRecovery {
     fields_read: usize,
     recovered: Vec<RecoveredField>,
     declarations: BTreeMap<u32, EngineDeclaration>,
+    conditions: BTreeMap<u32, StageConditions>,
+    outcomes: BTreeMap<u32, ObjectiveOutcome>,
     unrecovered: Vec<UnrecoveredField>,
 }
 
@@ -5669,6 +5674,11 @@ impl ObjectiveRecovery {
     /// is the first such key of its block, and every objective it names is among
     /// the blocks the engine loads (`OBJECTIVE1` upward until the first number
     /// the record does not declare).
+    ///
+    /// A stage condition, its completion count and an `INSTANTWIN`/`INSTANTLOSS`
+    /// key are recovered when the engine's loader would read them (M01-B-OBJ-3):
+    /// the block is one the loader loads (`OBJECTIVE1` upward until the first
+    /// number the record does not declare) and the field has the measured shape.
     #[must_use]
     pub fn read(mission: &str, document: &ZrdValue) -> Self {
         let record = objective_record(document);
@@ -5684,11 +5694,25 @@ impl ObjectiveRecovery {
         let mut fields_read = 0;
         let mut recovered = Vec::new();
         let mut declarations: BTreeMap<u32, EngineDeclaration> = BTreeMap::new();
+        let mut conditions = BTreeMap::new();
+        let mut outcomes = BTreeMap::new();
         let mut unrecovered = Vec::new();
         for (key, value) in zrd_flat_fields(record) {
             if let Some(number) = cs_content::objectives::objective_block_number(key) {
                 let in_loaded_prefix = (number as usize) <= loaded;
-                for (field, argument) in zrd_directive_fields(value) {
+                let fields = zrd_directive_fields(value);
+                let stage = StageConditions::read(&fields);
+                if in_loaded_prefix {
+                    if !stage.conditions.is_empty() {
+                        conditions.insert(number, stage.conditions);
+                    }
+                    if let Some(outcome) =
+                        ObjectiveOutcome::of_keys(fields.iter().map(|(field, _)| *field))
+                    {
+                        outcomes.insert(number, outcome);
+                    }
+                }
+                for (index, (field, argument)) in fields.iter().enumerate() {
                     fields_read += 1;
                     let declaration = declarations.entry(number).or_default();
                     let engine_field = EngineField::read(field, argument).filter(|read| {
@@ -5699,14 +5723,24 @@ impl ObjectiveRecovery {
                     if let Some(read) = engine_field {
                         recovered.push(RecoveredField {
                             block: number,
-                            key: field.to_owned(),
+                            key: (*field).to_owned(),
                             family: read.family(),
                         });
                         read.store(declaration);
+                    } else if in_loaded_prefix
+                        && (stage.recovered[index]
+                            || *field == outcome_keys::INSTANT_WIN
+                            || *field == outcome_keys::INSTANT_LOSS)
+                    {
+                        recovered.push(RecoveredField {
+                            block: number,
+                            key: (*field).to_owned(),
+                            family: RecordFieldFamily::of_key(field),
+                        });
                     } else {
                         unrecovered.push(UnrecoveredField {
                             block: Some(number),
-                            key: field.to_owned(),
+                            key: (*field).to_owned(),
                             family: RecordFieldFamily::of_key(field),
                         });
                     }
@@ -5727,6 +5761,8 @@ impl ObjectiveRecovery {
             fields_read,
             recovered,
             declarations,
+            conditions,
+            outcomes,
             unrecovered,
         }
     }
@@ -5749,6 +5785,19 @@ impl ObjectiveRecovery {
     #[must_use]
     pub fn engine_objective_count(&self) -> usize {
         engine_loaded_prefix(&self.blocks.iter().copied().collect())
+    }
+
+    /// The recovered stage conditions and completion count per `OBJECTIVE<N>`
+    /// block number. A block that declares none has no entry.
+    #[must_use]
+    pub const fn stage_conditions(&self) -> &BTreeMap<u32, StageConditions> {
+        &self.conditions
+    }
+
+    /// The outcome each loaded block carries, per `OBJECTIVE<N>` block number.
+    #[must_use]
+    pub const fn outcomes(&self) -> &BTreeMap<u32, ObjectiveOutcome> {
+        &self.outcomes
     }
 
     /// The mission this record belongs to.

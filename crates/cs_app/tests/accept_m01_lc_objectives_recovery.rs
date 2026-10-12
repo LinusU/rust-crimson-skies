@@ -41,14 +41,15 @@ fn accept_m01_lc_objectives_names_every_field_it_cannot_recover() {
 
     assert_eq!(recovery.blocks(), &[1, 2]);
     assert_eq!(recovery.fields_read(), 5);
-    // M01-B-OBJ-1: the KILL effect is a measured engine field (one in-range
-    // target), so it is recovered; every other field is still named.
-    assert_eq!(recovery.fields_recovered(), 1);
-    assert_eq!(recovery.unrecovered().len(), 4);
+    // M01-B-OBJ-1 and M01-B-OBJ-3: the KILL effect (one in-range target) and the
+    // INSTANTWIN outcome key are measured engine fields, so they are recovered;
+    // every other field is still named.
+    assert_eq!(recovery.fields_recovered(), 2);
+    assert_eq!(recovery.unrecovered().len(), 3);
     let families = recovery.unrecovered_by_family();
     assert_eq!(families[&RecordFieldFamily::Dormancy], 1);
     assert!(!families.contains_key(&RecordFieldFamily::CompletionEffect));
-    assert_eq!(families[&RecordFieldFamily::Outcome], 1);
+    assert!(!families.contains_key(&RecordFieldFamily::Outcome));
     assert_eq!(families[&RecordFieldFamily::Unmeasured], 2);
     assert!(recovery.unrecovered().iter().any(|f| f.block.is_none()));
 
