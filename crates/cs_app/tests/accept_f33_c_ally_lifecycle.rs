@@ -17,6 +17,16 @@
 //! `MountDisabled` and consumes no round, so a bridge that only wrote a record
 //! fails at the shot.
 //!
+//! **F33-C1** (`accept_f33_c1_`, task #572) adds the cross-pass tests to this
+//! binary rather than to a target of its own, for the measured disk cost the
+//! F29-C.1 header in `accept_f29_c_damage_consumers.rs` records: a
+//! Bevy/Avian-linked test binary is ~123 MB, which exhausted the CI runner's
+//! disk twice on this branch. A lethal hit on a non-weapon node leaves the
+//! weapon carrier intact, so the F29-C damage consumer
+//! ([`cs_app::damage::apply_damage_state`]) and the F33-C lifecycle consumer
+//! disagree about the same mount unless the damage pass reads the actor's
+//! lifecycle ledger too. The order the two passes run in must not matter.
+//!
 //! Every value here is newly authored synthetic fixture data, never original
 //! game data. Whether the original postponed a death that happened during a
 //! cutscene, and which voice lines it played, is unrecovered (F33 "Research
@@ -26,11 +36,12 @@
 use std::collections::BTreeMap;
 
 use cs_app::cinematics::{MediaAvailability, begin, lower_cinematic};
-use cs_app::damage::{lower_graph, lower_policy};
+use cs_app::damage::{DamageConsumerEvent, apply_damage_state, lower_graph, lower_policy};
 use cs_app::roster::{
     AllyConsumerEvent, AllyConsumerRefusal, DialogueCue, apply_ally_lifecycle,
     apply_roster_lifecycle, lower_roster, open_roster,
 };
+use cs_app::scene::AirframeDamageState;
 use cs_app::weapons::lower_gun;
 use cs_content::cinematics::declared_synthetic_cinematic;
 use cs_content::damage::declared_synthetic_airframe_damage;
@@ -41,7 +52,10 @@ use cs_sim::allies::{
     SurvivabilityPolicy, WingmateSlot, synthetic_ally_roster, synthetic_faction,
 };
 use cs_sim::cinematic_state::{PausePolicy, SYNTHETIC_DURATION_TICKS};
-use cs_sim::damage::{ActorId, DamageNodeKey, DamageResolver, LifecycleKind, SYNTHETIC_MOUNT_NODE};
+use cs_sim::damage::{
+    ActorId, DamageChannel, DamageNodeKey, DamageResolver, HitEvent, HitEventId, LifecycleKind,
+    PartState, SYNTHETIC_HULL_INTEGRITY, SYNTHETIC_HULL_NODE, SYNTHETIC_MOUNT_NODE,
+};
 use cs_sim::weapons::{
     FireDenialReason, FireIntent, FireIntentId, FireResolver, GunBank, MountTransform,
     SYNTHETIC_STARTING_ROUNDS, WeaponState,
@@ -152,6 +166,32 @@ fn dialogue(outcome: &cs_app::roster::AllyConsumerOutcome) -> Option<&DialogueCu
         AllyConsumerEvent::Dialogue(cue) => Some(cue),
         _ => None,
     })
+}
+
+fn key(name: &str) -> DamageNodeKey {
+    DamageNodeKey::new(name).expect("test node keys are valid")
+}
+
+/// Resolves exactly one internal hit of `damage` on `node`, as the session's
+/// resolver would after a real ballistic hit.
+fn resolve_hit(resolver: &mut DamageResolver, victim: ActorId, node: &DamageNodeKey, damage: f64) {
+    let hit = HitEvent::try_new(
+        HitEventId {
+            session: session(SESSION),
+            tick: Tick(0),
+            producer: PRODUCER,
+            sequence: 0,
+        },
+        Some(actor(SESSION, 99)),
+        victim,
+        node.clone(),
+        DamageChannel::Internal,
+        damage,
+    )
+    .expect("a finite, non-negative hit");
+    resolver
+        .resolve(Tick(0), &[hit])
+        .expect("the resolver accepts the batch");
 }
 
 // -------------------------------------------------- the minimum scenario ---
@@ -434,5 +474,284 @@ fn accept_f33_c_a_retry_is_a_new_generation_with_no_carried_death() {
             .expect("armed")
             .ammunition(&mount()),
         SYNTHETIC_STARTING_ROUNDS - 1
+    );
+}
+
+// ------------------------------------- the two passes over one actor (F33-C1) ---
+
+/// The harmful order, and the one the task names: the F33-C lifecycle pass
+/// grounds the actor, then the F29-C damage pass runs over the same state.
+///
+/// The lethal hit lands on `hull`, which is not a weapon carrier, so the
+/// part state says `gun_mount_1` is `Intact`. A purely part-driven pass
+/// would re-enable the mount `apply_ally_lifecycle` just closed and the dead
+/// wingmate would fire again — order-dependent, and a reopening of AC03.
+#[test]
+fn accept_f33_c1_the_damage_pass_does_not_re_enable_a_grounded_actors_mount() {
+    let wingman = actor(SESSION, 2);
+    let mut roster = opened(SESSION);
+    roster
+        .register_wingmate(wingman, WingmateSlot(1))
+        .expect("slot 1 is assigned");
+
+    let mut damage = DamageResolver::new(session(SESSION), PRODUCER);
+    register_damage_actor(&mut damage, wingman);
+    let mut fire = armed(wingman);
+    let mut visuals = AirframeDamageState::new();
+
+    // A lethal hit on a node that is not a weapon mount: the actor dies and
+    // its gun carrier stays intact.
+    resolve_hit(
+        &mut damage,
+        wingman,
+        &key(SYNTHETIC_HULL_NODE),
+        SYNTHETIC_HULL_INTEGRITY,
+    );
+    assert_eq!(
+        damage.part_state(&wingman, &key(SYNTHETIC_HULL_NODE)),
+        Some(PartState::Destroyed)
+    );
+    assert_eq!(
+        damage.part_state(&wingman, &mount()),
+        Some(PartState::Intact),
+        "the killing blow landed on a non-weapon node, so the carrier is intact"
+    );
+    assert!(!fire.state(&wingman).expect("armed").is_disabled(&mount()));
+
+    // The harmful order: the lifecycle pass first, the damage pass second.
+    let grounded = apply_ally_lifecycle(&mut roster, wingman, &damage, &mut fire);
+    assert_eq!(grounded.report.mounts_disabled, 1);
+    assert!(fire.state(&wingman).expect("armed").is_disabled(&mount()));
+
+    let outcome = apply_damage_state(&damage, wingman, &mut fire, &mut visuals);
+    assert_eq!(
+        outcome.report.mounts_enabled, 0,
+        "the damage pass re-enabled nothing: {outcome:?}"
+    );
+    assert!(
+        outcome
+            .log
+            .events()
+            .iter()
+            .all(|event| !matches!(event, DamageConsumerEvent::MountEnabled { .. })),
+        "no mount was reported re-enabled: {:?}",
+        outcome.log
+    );
+    assert!(
+        fire.state(&wingman).expect("armed").is_disabled(&mount()),
+        "the hull-lethal destruction left the actor's mount grounded"
+    );
+
+    // The gate is real: a later shot from the dead wingmate is refused and
+    // consumes no round.
+    let before = fire.state(&wingman).expect("armed").ammunition(&mount());
+    let resolution = fire
+        .resolve(&intent(wingman, 0), &transforms())
+        .expect("the intent resolves");
+    assert_eq!(
+        resolution.refused,
+        vec![FireDenialReason::MountDisabled { mount: mount() }],
+        "a dead ally cannot fire from a stale actor"
+    );
+    assert!(resolution.accepted.is_empty());
+    assert_eq!(
+        fire.state(&wingman).expect("armed").ammunition(&mount()),
+        before,
+        "a refused shot consumes no round"
+    );
+
+    // Still convergent: the second damage pass changes nothing more.
+    let again = apply_damage_state(&damage, wingman, &mut fire, &mut visuals);
+    assert!(
+        again.report.is_noop() && again.log.is_empty(),
+        "a converged pass reports nothing: {again:?}"
+    );
+    assert!(
+        fire.state(&wingman).expect("armed").is_disabled(&mount()),
+        "the mount stayed grounded across both passes"
+    );
+}
+
+/// The other order, and the case only one of the two passes would ever see on
+/// its own: the damage consumer runs without the lifecycle pass having closed
+/// the gate first. An intact carrier on an actor that may no longer act is
+/// closed and named as such, not left firing.
+#[test]
+fn accept_f33_c1_the_damage_pass_alone_grounds_a_destroyed_actors_intact_mount() {
+    let wingman = actor(SESSION, 2);
+    let mut roster = opened(SESSION);
+    roster
+        .register_wingmate(wingman, WingmateSlot(1))
+        .expect("slot 1 is assigned");
+
+    let mut damage = DamageResolver::new(session(SESSION), PRODUCER);
+    register_damage_actor(&mut damage, wingman);
+    let mut fire = armed(wingman);
+    let mut visuals = AirframeDamageState::new();
+
+    resolve_hit(
+        &mut damage,
+        wingman,
+        &key(SYNTHETIC_HULL_NODE),
+        SYNTHETIC_HULL_INTEGRITY,
+    );
+
+    // Only the damage pass runs.
+    let outcome = apply_damage_state(&damage, wingman, &mut fire, &mut visuals);
+    assert_eq!(
+        outcome.report,
+        cs_app::damage::DamageConsumerReport {
+            visuals_destroyed: 1,
+            mounts_grounded: 1,
+            ..Default::default()
+        },
+        "the intact mount is closed because the actor is gone, not because it is a wreck"
+    );
+    assert!(
+        outcome
+            .log
+            .events()
+            .iter()
+            .any(|event| matches!(event, DamageConsumerEvent::VisualDestroyed { node, .. } if node == &key(SYNTHETIC_HULL_NODE))),
+        "the hull's own visual is destroyed"
+    );
+    assert!(
+        outcome
+            .log
+            .events()
+            .contains(&DamageConsumerEvent::MountGrounded {
+                actor: wingman,
+                mount: mount(),
+            }),
+        "the reason is named: the actor's lifecycle, not the part state — {:?}",
+        outcome.log
+    );
+    assert!(fire.state(&wingman).expect("armed").is_disabled(&mount()));
+    assert_eq!(
+        fire.resolve(&intent(wingman, 0), &transforms())
+            .expect("the intent resolves")
+            .refused,
+        vec![FireDenialReason::MountDisabled { mount: mount() }]
+    );
+
+    // Convergent: a second pass sees the gate already closed.
+    let again = apply_damage_state(&damage, wingman, &mut fire, &mut visuals);
+    assert!(
+        again.report.is_noop() && again.log.is_empty(),
+        "a converged pass reports nothing: {again:?}"
+    );
+
+    // The lifecycle pass then finds the gate already closed and changes
+    // nothing more — the two passes agree rather than undoing each other.
+    let reconciled = apply_ally_lifecycle(&mut roster, wingman, &damage, &mut fire);
+    assert_eq!(reconciled.report.mounts_disabled, 0);
+    assert!(fire.state(&wingman).expect("armed").is_disabled(&mount()));
+}
+
+/// F29's repair semantics survive the guard: a genuinely intact, living
+/// actor's mount is still re-enabled, the stale disable is cleared and the
+/// gun really fires.
+#[test]
+fn accept_f33_c1_a_living_actors_stale_mount_disable_is_still_cleared() {
+    let wingman = actor(SESSION, 2);
+    let mut roster = opened(SESSION);
+    roster
+        .register_wingmate(wingman, WingmateSlot(1))
+        .expect("slot 1 is assigned");
+
+    let mut damage = DamageResolver::new(session(SESSION), PRODUCER);
+    register_damage_actor(&mut damage, wingman);
+    let mut fire = armed(wingman);
+    let mut visuals = AirframeDamageState::new();
+
+    // A scratch: the actor is damaged, alive, and its lifecycle ledger holds
+    // nothing.
+    resolve_hit(&mut damage, wingman, &key(SYNTHETIC_HULL_NODE), 1.0);
+    assert!(
+        damage
+            .lifecycle(&wingman)
+            .expect("the actor is registered")
+            .is_empty(),
+        "a scratch records no lifecycle transition"
+    );
+
+    fire.state_mut(&wingman).expect("armed").disable(&mount());
+    let outcome = apply_damage_state(&damage, wingman, &mut fire, &mut visuals);
+    assert_eq!(
+        outcome.report,
+        cs_app::damage::DamageConsumerReport {
+            mounts_enabled: 1,
+            ..Default::default()
+        },
+        "a living actor's intact mount is re-enabled: {outcome:?}"
+    );
+    assert!(!fire.state(&wingman).expect("armed").is_disabled(&mount()));
+
+    let before = fire.state(&wingman).expect("armed").ammunition(&mount());
+    let resolution = fire
+        .resolve(&intent(wingman, 0), &transforms())
+        .expect("the intent resolves");
+    assert!(
+        resolution.refused.is_empty(),
+        "the re-enabled gun fires: {:?}",
+        resolution.refused
+    );
+    assert_eq!(
+        fire.state(&wingman).expect("armed").ammunition(&mount()),
+        before - 1,
+        "the accepted shot consumed exactly one round"
+    );
+    assert_eq!(roster.status(&wingman), Some(AllyStatus::Active));
+}
+
+/// The guard is exactly the ends-action split, not "any lifecycle
+/// transition": a capture is recorded, the actor still acts, and its intact
+/// mount is neither grounded by the lifecycle pass nor closed by the damage
+/// pass.
+#[test]
+fn accept_f33_c1_a_captured_actors_intact_mount_is_not_grounded() {
+    let wingman = actor(SESSION, 2);
+    let mut roster = opened(SESSION);
+    roster
+        .register_wingmate(wingman, WingmateSlot(1))
+        .expect("slot 1 is assigned");
+
+    let mut damage = DamageResolver::new(session(SESSION), PRODUCER);
+    register_damage_actor(&mut damage, wingman);
+    let mut fire = armed(wingman);
+    let mut visuals = AirframeDamageState::new();
+
+    damage
+        .record_lifecycle(wingman, LifecycleKind::OwnershipCaptured, Tick(0))
+        .expect("the wingmate is registered with the resolver");
+
+    let capture = apply_ally_lifecycle(&mut roster, wingman, &damage, &mut fire);
+    assert_eq!(
+        callback(&capture).map(|event| event.kind),
+        Some(AllyEventKind::Captured)
+    );
+    assert_eq!(capture.report.mounts_disabled, 0);
+    assert!(roster.may_fire(&wingman));
+
+    // A stale disable the pass must still clear, exactly as for a living
+    // actor: a capture changes ownership, not the mount's state.
+    fire.state_mut(&wingman).expect("armed").disable(&mount());
+    let outcome = apply_damage_state(&damage, wingman, &mut fire, &mut visuals);
+    assert_eq!(
+        outcome.report,
+        cs_app::damage::DamageConsumerReport {
+            mounts_enabled: 1,
+            ..Default::default()
+        },
+        "a capture does not ground the aircraft: {outcome:?}"
+    );
+    assert!(!fire.state(&wingman).expect("armed").is_disabled(&mount()));
+    let resolution = fire
+        .resolve(&intent(wingman, 0), &transforms())
+        .expect("the intent resolves");
+    assert!(
+        resolution.refused.is_empty(),
+        "the captured wingmate still fires: {:?}",
+        resolution.refused
     );
 }
