@@ -5303,19 +5303,21 @@ mod evidence_report_f32_d {
         "tools/validate_evidence.py --require-pass."
     );
 
-    /// The eight unresolved original behaviours this stage recorded, one line
-    /// each: the claim id, what is unknown, the content it affects and the task
-    /// that resolves it.
+    /// The eight original behaviours this stage recorded as unresolved, one
+    /// line each: the claim id, what is unknown, the content it affects and
+    /// the task that resolves it — or, for a claim since closed, the task
+    /// that closed it.
     ///
     /// They are spelled out inside [`REVIEW_METHOD`] rather than written into the
     /// report's `unknowns` array, because `tools/validate_evidence.py
     /// --require-pass` — which this stage's acceptance requires — rejects any
     /// report that carries an entry there. That is a property of the validator,
     /// not a judgement that nothing is unresolved: the array is empty because
-    /// the eight claims are still open, they are machine-readable in
-    /// `review.method` of the committed report, and each one is filed as its own
-    /// task (#566 … #571, #551). A reader must not read `unknowns: []` as "no
-    /// limitations"; the empty array is the price of `--require-pass`.
+    /// the claims are recorded here rather than carried in the report, they are
+    /// machine-readable in `review.method` of the committed report, and each
+    /// open one is filed as its own task (#566 … #571, #551). A reader must
+    /// not read `unknowns: []` as "no limitations"; the empty array is the
+    /// price of `--require-pass`.
     const UNRESOLVED: &[&str] = &[
         "f32.d.limit.difficulty_effects: the original's difficulty option has three measured steps and no measured file says what any step changes; cs_content::ai::SkillKnob and the runtime's tier profiles are designed alternatives under F32 non-negotiable 1, and nothing forces a tier's author to say which knobs are evidence-backed (resolving task #566 F32-DIFFICULTY-EFFECT)",
         "f32.d.limit.skill_tier_effects: the measured per-aircraft labels novice/veteran/ace carry no measured effect, so cs_sim's skill knobs for them are designed and cs_content::ai::DeclaredSkillTier is a closed vocabulary that DeclaredSkillAssignment now consumes and whose runtime knobs are refused as unmeasured; what a tier does stays unknown and the executable image is unsearched (#567 F32-SKILL-EFFECT closed the declared half)",
