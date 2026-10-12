@@ -37,6 +37,7 @@
 //! survivability records are the `AlliesRoster`'s; these are the conversion
 //! and binding records the ECS wiring consumes (F33-B/C).
 
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
 use bevy::ecs::component::Component;
@@ -1231,6 +1232,183 @@ pub struct RosterBinding {
     pub roster: ContentId,
     /// The scene generation that spawned the binding.
     pub generation: SceneGeneration,
+}
+
+/// Why a session actor could not be bound to a script actor.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ScriptBindingError {
+    /// The actor belongs to another session generation than the table's: a
+    /// restarted world's actor never inherits a script identity.
+    ForeignSession {
+        /// The table's session.
+        expected: SessionId,
+        /// The session the actor carried.
+        found: SessionId,
+    },
+    /// The session actor already carries a script identity.
+    DuplicateSessionActor {
+        /// The actor.
+        actor: ActorId,
+    },
+    /// The script actor id is already bound to another session actor.
+    DuplicateScriptActor {
+        /// The script actor.
+        script: cs_script::ir::ActorId,
+    },
+}
+
+/// The one place a session-qualified [`ActorId`] is paired with the
+/// mission-scoped [`cs_script::ir::ActorId`] that `MissionFacts` is keyed by.
+///
+/// # What is measured and what is designed
+///
+/// Measured (`docs/findings/2026-10-12-t575-session-actor-to-script-actor.md`):
+/// no retail control record carries a numeric actor id. The records name
+/// placed actors by **text** (`ADD_OBJECTIVE_TARGET`, `INACTIVE<n>`,
+/// `TRAVELERS`, …); every integer a record carries is an objective index, a
+/// count or a flag. So the pairing is not read from a byte of the original:
+/// the host that places an actor under an authored name declares it here,
+/// once, and the script id is the table's own stable key. The optional
+/// `name` records the authored spelling the host bound it under.
+///
+/// The table is per session: a binding for another session generation is
+/// refused, and a retry builds a new table (`STATE-TRANSACTIONS`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScriptActorBindings {
+    session: SessionId,
+    by_session: BTreeMap<ActorId, cs_script::ir::ActorId>,
+    by_script: BTreeMap<cs_script::ir::ActorId, ActorId>,
+    names: BTreeMap<cs_script::ir::ActorId, String>,
+    admitted: BTreeSet<cs_script::ir::ActorId>,
+}
+
+impl ScriptActorBindings {
+    /// An empty table for one session generation.
+    #[must_use]
+    pub fn new(session: SessionId) -> Self {
+        Self {
+            session,
+            by_session: BTreeMap::new(),
+            by_script: BTreeMap::new(),
+            names: BTreeMap::new(),
+            admitted: BTreeSet::new(),
+        }
+    }
+
+    /// Pairs `actor` with `script`, recording the authored `name` the host
+    /// placed it under.
+    ///
+    /// # Errors
+    ///
+    /// [`ScriptBindingError`] for a foreign session or either side already
+    /// bound; nothing is recorded on a refusal.
+    pub fn bind(
+        &mut self,
+        actor: ActorId,
+        script: cs_script::ir::ActorId,
+        name: Option<&str>,
+    ) -> Result<(), ScriptBindingError> {
+        if actor.session != self.session {
+            return Err(ScriptBindingError::ForeignSession {
+                expected: self.session,
+                found: actor.session,
+            });
+        }
+        if self.by_session.contains_key(&actor) {
+            return Err(ScriptBindingError::DuplicateSessionActor { actor });
+        }
+        if self.by_script.contains_key(&script) {
+            return Err(ScriptBindingError::DuplicateScriptActor { script });
+        }
+        self.by_session.insert(actor, script);
+        self.by_script.insert(script, actor);
+        if let Some(name) = name {
+            self.names.insert(script, name.to_owned());
+        }
+        Ok(())
+    }
+
+    /// The script actor a session actor is bound to.
+    #[must_use]
+    pub fn script_actor(&self, actor: &ActorId) -> Option<cs_script::ir::ActorId> {
+        self.by_session.get(actor).copied()
+    }
+
+    /// The session actor a script actor is bound to.
+    #[must_use]
+    pub fn session_actor(&self, script: &cs_script::ir::ActorId) -> Option<ActorId> {
+        self.by_script.get(script).copied()
+    }
+
+    /// The authored name a script actor was bound under, if any.
+    #[must_use]
+    pub fn name_of(&self, script: &cs_script::ir::ActorId) -> Option<&str> {
+        self.names.get(script).map(String::as_str)
+    }
+
+    /// Translates a pass's mission callbacks into the script side's
+    /// observation: bound actors not yet admitted are `registered` (their
+    /// admission event), each [`AllyConsumerEvent::Callback`] on a bound
+    /// actor becomes one `(script actor, LifecycleKind)` pair, and a callback
+    /// naming an unbound actor is returned in `unbound` rather than dropped.
+    pub fn translate(&mut self, log: &AllyConsumerLog) -> ScriptActorBatch {
+        let mut batch = ScriptActorBatch::default();
+        for script in self.by_script.keys() {
+            if self.admitted.insert(*script) {
+                batch.registered.push(*script);
+            }
+        }
+        for event in log.events() {
+            if let AllyConsumerEvent::Callback(callback) = event {
+                match self.script_actor(&callback.actor) {
+                    Some(script) => batch
+                        .lifecycles
+                        .push((script, lifecycle_of_ally_event(callback.kind))),
+                    None => batch.unbound.push(callback.actor),
+                }
+            }
+        }
+        batch
+    }
+}
+
+/// The authoritative transition an [`AllyEventKind`] reports — the inverse of
+/// `cs_sim::allies`' classification. The three loss kinds are all a
+/// destruction; they differ only in what the roster does with them.
+#[must_use]
+pub const fn lifecycle_of_ally_event(kind: AllyEventKind) -> LifecycleKind {
+    match kind {
+        AllyEventKind::WingmateLost
+        | AllyEventKind::ProtectedNeutralLost
+        | AllyEventKind::OtherAllyLost => LifecycleKind::Destroyed,
+        AllyEventKind::Captured => LifecycleKind::OwnershipCaptured,
+        AllyEventKind::BailedOut => LifecycleKind::PilotBailout,
+        AllyEventKind::Despawned => LifecycleKind::Despawned,
+        AllyEventKind::MissionRemoved => LifecycleKind::MissionRemoved,
+    }
+}
+
+/// One pass's mission-side observation, ready for
+/// `cs_sim::mission::MissionSession::advance_observed`.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ScriptActorBatch {
+    /// Script actors that entered play this pass.
+    pub registered: Vec<cs_script::ir::ActorId>,
+    /// Lifecycle transitions on bound actors, in callback order.
+    pub lifecycles: Vec<(cs_script::ir::ActorId, LifecycleKind)>,
+    /// Callbacks whose session actor has no script binding.
+    pub unbound: Vec<ActorId>,
+}
+
+impl ScriptActorBatch {
+    /// The borrowed form `MissionSession::advance_observed` takes.
+    #[must_use]
+    pub fn input(&self) -> cs_sim::mission::ActorFactInput<'_> {
+        cs_sim::mission::ActorFactInput {
+            registered: &self.registered,
+            lifecycles: &self.lifecycles,
+        }
+    }
 }
 
 #[cfg(test)]
