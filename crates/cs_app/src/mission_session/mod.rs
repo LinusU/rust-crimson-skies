@@ -83,6 +83,7 @@ mod content;
 mod evidence;
 mod host;
 mod launch_sound;
+mod lifecycles;
 mod player_visual;
 mod terminal;
 
@@ -104,13 +105,14 @@ pub use host::{
     MissionHost, MissionHostLaunchError, MissionHostRefusal, MissionHostReport,
     MissionHostRestartError, MissionHostRestartFailure, MissionHostRestartReport,
     MissionHostRestartRequest, MissionHostSeed, MissionHostStepError, MissionHostTick,
-    host_session_id, install_mission_host, mint_host_generation, mission_host_restart,
-    mission_host_tick, no_declared_objectives,
+    MissionWorldObservation, host_session_id, install_mission_host, mint_host_generation,
+    mission_host_restart, mission_host_tick, no_declared_objectives,
 };
 pub use launch_sound::{
     LAUNCH_SOUND_CONTAINER, LaunchAudioProbe, LaunchSound, LaunchSoundError, backend_refusal,
     install_launch_audio, measure_launch_sound, member_content_id, stage_container,
 };
+pub use lifecycles::{LifecycleAdvance, ObjectiveLifecycleTick, ObjectiveLifecycles};
 pub use player_visual::{
     MISSION_PLAYER_AIRCRAFT_ROOT_NAME, MISSION_PLAYER_INTACT_NODE_NAME,
     MISSION_PLAYER_INTACT_NODE_SLOT, MISSION_PLAYER_LOD_DISTANCE_M, MISSION_PLAYER_PROP_NODE_NAME,

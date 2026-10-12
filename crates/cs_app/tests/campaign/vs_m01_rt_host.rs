@@ -203,9 +203,10 @@ fn accept_vs_m01_runtime_host_01_synthetic_stage_drives_every_record_through_one
         .expect("the stage's own control program launches");
     let mut answer = None;
     for tick in 1..=report.tick.0 {
+        let lifecycle_facts = host.lifecycles().facts();
         let facts = compose_mission_facts(
             &replay,
-            host.blocks(),
+            &lifecycle_facts,
             host.world_facts(),
             host.world_operands(),
         );
@@ -452,23 +453,23 @@ fn accept_vs_m01_runtime_host_01_retail_m01_runs_its_real_program_through_the_co
          undeclared-lifecycles refusal may be raised"
     );
     assert_eq!(
-        host.blocks().len(),
+        host.lifecycles().len(),
         58,
         "the host must fold M01's own 58 declared block lifecycles"
     );
     assert_eq!(
-        host.blocks().state(1),
+        host.lifecycles().state(1),
         Some(cs_script::runtime::ObjectiveLifecycle::Awake),
         "M01's OBJECTIVE2 carries no BEGIN_DORMANT, so the folded table must read it awake"
     );
     assert_eq!(
-        host.blocks().state(0),
+        host.lifecycles().state(0),
         Some(cs_script::runtime::ObjectiveLifecycle::Dormant),
         "M01's OBJECTIVE1 starts dormant behind its BEGIN_DORMANT 2 clock, so the folded table \
          must read it dormant"
     );
     assert_eq!(
-        host.blocks().state(22),
+        host.lifecycles().state(22),
         Some(cs_script::runtime::ObjectiveLifecycle::Dormant),
         "M01's Finish(Succeeded) block starts dormant behind the -1 sentinel, so the folded \
          table must read it dormant"

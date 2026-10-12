@@ -286,7 +286,7 @@ fn accept_m01_lc_world_facts_a_lowered_block_completes_on_observed_world_state()
     table.observe(observed);
 
     let (mut session, blocks) = session_with_block_awake(program);
-    let facts = compose_mission_facts(&session, &blocks, &table, &operands);
+    let facts = compose_mission_facts(&session, &blocks.facts(), &table, &operands);
     let tick = session.advance(&facts, Tick(1)).expect("tick 1 advances");
 
     assert!(
@@ -339,7 +339,7 @@ fn accept_m01_lc_world_facts_the_same_block_holds_while_the_world_holds_the_memb
     table.observe(observed);
 
     let (mut session, blocks) = session_with_block_awake(program);
-    let facts = compose_mission_facts(&session, &blocks, &table, &operands);
+    let facts = compose_mission_facts(&session, &blocks.facts(), &table, &operands);
     assert_eq!(
         facts.members[&member_chain(["piratezep"])].presence,
         MemberPresence::InPlay,
@@ -416,7 +416,7 @@ fn accept_m01_lc_world_facts_removing_the_resolver_keeps_every_answer_fail_close
     );
 
     let (mut session, blocks) = session_with_block_awake(program);
-    let folded = compose_mission_facts(&session, &blocks, &table, &operands);
+    let folded = compose_mission_facts(&session, &blocks.facts(), &table, &operands);
     let tick = session.advance(&folded, Tick(1)).expect("tick 1 advances");
     assert!(
         !session.state().is_completed(SymbolId(DRIVEN_BLOCK)),

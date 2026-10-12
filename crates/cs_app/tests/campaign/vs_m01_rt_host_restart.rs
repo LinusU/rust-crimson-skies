@@ -776,17 +776,17 @@ fn accept_vs_m01_runtime_host_03_retail_m01_restart_rebuilds_its_authored_initia
              not report their absence"
         );
         assert_eq!(
-            host.blocks().len(),
+            host.lifecycles().len(),
             58,
             "the restart must restore the seed's own 58 declared block lifecycles"
         );
         assert_eq!(
-            host.blocks().state(0),
+            host.lifecycles().state(0),
             Some(cs_script::runtime::ObjectiveLifecycle::Dormant),
             "the restored table starts OBJECTIVE1 dormant behind its spelled 2-second clock"
         );
         assert_eq!(
-            host.blocks().state(1),
+            host.lifecycles().state(1),
             Some(cs_script::runtime::ObjectiveLifecycle::Awake),
             "the restored table starts OBJECTIVE2 awake, the record's own spelling"
         );

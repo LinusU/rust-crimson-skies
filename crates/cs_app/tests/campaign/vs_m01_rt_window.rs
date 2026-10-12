@@ -217,6 +217,7 @@ fn synthetic_host_seed() -> MissionHostSeed {
         animation: None,
         control: synthetic_control_program(),
         block_lifecycles: BlockLifecycleTable::new(),
+        engine_objectives: None,
         sound_archives: Vec::new(),
         objectives: no_declared_objectives(),
         markers: MissionMarkerBindings::default(),

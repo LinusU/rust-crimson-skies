@@ -83,6 +83,7 @@ use bevy::app::{App, AppExit};
 use bevy::prelude::{Entity, Or, Quat, Resource, Transform, Vec3, Visibility, With, World};
 use cs_assets::cache::{CacheBudget, CacheDirectory, CacheStore};
 use cs_assets::vfs::{ContentSession, MountBuilder, SessionBuilder};
+use cs_content::objectives_engine::{EngineObjective, EngineObjectives};
 use cs_content::world::{WorldDefinition, WorldInstance};
 use cs_sim::flight::original::FORCE_TO_ACCEL;
 use cs_sim::flight::{FlightInput, OriginalFlightModel, OriginalState};
@@ -451,14 +452,16 @@ pub fn stage_for(
     };
 
     let mut refusals = Vec::new();
+    let (objectives, engine_objectives) = declared_objectives(install_root, plan, &mut refusals);
     let host = MissionHostSeed {
         environment: content.environment.clone(),
         world_actors: content.world_actors.lowered().cloned(),
         animation: Some(content.animation.clone()),
         control: content.control.clone(),
         block_lifecycles: declared_block_lifecycles(install_root, plan, &mut refusals),
+        engine_objectives,
         sound_archives: content.sound_archives.clone(),
-        objectives: declared_objectives(install_root, plan, &mut refusals),
+        objectives,
         // M01's `mission_markers` ships no cue table on purpose: nobody has
         // declared a cue → signal row for an original mission, so the marker
         // consumer refuses every gameplay cue by name instead of resolving it
@@ -511,44 +514,95 @@ pub fn stage_for(
     })
 }
 
-/// The objective program this stage's session launches from, and the refusal
-/// that names what the F39 reader would not produce.
+/// The objective program this stage's session launches from, the recovered
+/// engine lifecycle model the same recovery yields, and the refusals that
+/// name what the reader would not produce.
 ///
-/// The reader is `crate::objectives::recover_retail_objectives` →
-/// `ObjectiveRecovery::program()`, called here so the detail a run reports is
-/// **the reader's own message** and not a summary of it. Today that call
-/// refuses unconditionally for every original mission — the 358 fields of 58
-/// blocks are unrecovered and Rally #1219 owns that measurement
+/// The reader is `crate::objectives::recover_retail_objectives`, called once
+/// so both surfaces read the same record: `ObjectiveRecovery::program()` for
+/// the F39 session's declared program and
+/// `ObjectiveRecovery::engine_declarations()` for the measured lifecycle
+/// model. The detail a run reports is **the reader's own message** and not
+/// a summary of it. Today `program()` refuses unconditionally for every
+/// original mission — the 358 fields of 58 blocks are unrecovered and Rally
+/// #1219 owns that measurement
 /// (`docs/findings/2026-10-10-vs-m01-rt-content-objectives-program-refuses-
 /// and-plan-premises.md`) — so the stage carries
-/// [`no_declared_objectives`] and records why.
+/// [`no_declared_objectives`] and records why, while the engine model needs
+/// only the recovered families and is carried beside it.
 ///
 /// The `Ok` arms are the forward path: when the recovery does lower a
 /// declared program, the stage carries **that** program and raises no
 /// refusal, because silently running an empty session where a declared one
 /// exists would be the same invention the refusal is there to prevent.
+/// Likewise an [`EngineObjectives`] the record's own declarations cannot
+/// build (the engine's range check refusing a target) is named under
+/// [`MissionHostRefusal::EngineObjectives`], never silently dropped.
 fn declared_objectives(
     install_root: &Path,
     plan: &MissionLaunchPlan,
     refusals: &mut Vec<MissionHostRefusal>,
-) -> LoweredObjectives {
-    let mut refuse = |detail: String| {
-        refusals.push(MissionHostRefusal::ObjectiveDeclarations { detail });
-        no_declared_objectives()
-    };
+) -> (LoweredObjectives, Option<EngineObjectives>) {
     let recovery =
         match crate::objectives::recover_retail_objectives(install_root, &plan.mission_dir) {
             Ok(recovery) => recovery,
-            Err(error) => return refuse(error.to_string()),
+            Err(error) => {
+                refusals.push(MissionHostRefusal::ObjectiveDeclarations {
+                    detail: error.to_string(),
+                });
+                return (no_declared_objectives(), None);
+            }
         };
-    let declared = match recovery.program() {
-        Ok(declared) => declared,
-        Err(refusal) => return refuse(refusal.to_string()),
+    let engine_objectives = match declared_engine_objectives(&recovery) {
+        Ok(engine) => Some(engine),
+        Err(error) => {
+            refusals.push(MissionHostRefusal::EngineObjectives {
+                detail: error.to_string(),
+            });
+            None
+        }
     };
-    match crate::objectives::lower_program(&declared) {
-        Ok(lowered) => lowered,
-        Err(error) => refuse(error.to_string()),
-    }
+    let lowered = match recovery.program() {
+        Ok(declared) => match crate::objectives::lower_program(&declared) {
+            Ok(lowered) => lowered,
+            Err(error) => {
+                refusals.push(MissionHostRefusal::ObjectiveDeclarations {
+                    detail: error.to_string(),
+                });
+                no_declared_objectives()
+            }
+        },
+        Err(refusal) => {
+            refusals.push(MissionHostRefusal::ObjectiveDeclarations {
+                detail: refusal.to_string(),
+            });
+            no_declared_objectives()
+        }
+    };
+    (lowered, engine_objectives)
+}
+
+/// The measured lifecycle model the recovery's engine declarations build:
+/// every loaded objective (`OBJECTIVE1` upward until the first number the
+/// record does not declare) in its own load state, with the engine's range
+/// check the last reader — a target the record's count does not bound is a
+/// refusal, never a clamp.
+fn declared_engine_objectives(
+    recovery: &crate::objectives::ObjectiveRecovery,
+) -> Result<EngineObjectives, cs_content::objectives_engine::EngineEffectError> {
+    let count = u32::try_from(recovery.engine_objective_count())
+        .expect("an original mission declares a few dozen objectives");
+    let objectives = (1..=count)
+        .map(|number| {
+            let declaration = recovery
+                .engine_declarations()
+                .get(&number)
+                .cloned()
+                .unwrap_or_default();
+            EngineObjective::loaded(declaration)
+        })
+        .collect();
+    EngineObjectives::new(objectives)
 }
 
 /// The control record's declared block lifecycles, read through

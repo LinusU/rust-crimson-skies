@@ -526,7 +526,7 @@ fn accept_vs_m01_rt_host_block_lifecycles_retail_m01_stage_carries_the_declared_
          declared table"
     );
     assert_eq!(
-        host.blocks().len(),
+        host.lifecycles().len(),
         58,
         "the host folds the record's own table, not an empty one"
     );
@@ -536,25 +536,25 @@ fn accept_vs_m01_rt_host_block_lifecycles_retail_m01_stage_carries_the_declared_
     // awake — the two shapes a declared lifecycle can take, both read
     // back through the folded table.
     assert_eq!(
-        host.blocks().state(0),
+        host.lifecycles().state(0),
         Some(ObjectiveLifecycle::Dormant),
         "M01's first block starts dormant behind its positive 2-second clock, so the folded \
          table must read it dormant"
     );
     assert_eq!(
-        host.blocks().state(1),
+        host.lifecycles().state(1),
         Some(ObjectiveLifecycle::Awake),
         "M01's second block spells no BEGIN_DORMANT, so the folded table must read it awake"
     );
     assert_eq!(
-        host.blocks().state(22),
+        host.lifecycles().state(22),
         Some(ObjectiveLifecycle::Dormant),
         "M01's Finish(Succeeded) block reads dormant through the folded table"
     );
     // The folded table is the very one the fact fold answers through: the
     // fail-closed empty-table read would publish no objective at all.
     assert_eq!(
-        host.blocks().facts().objectives.len(),
+        host.lifecycles().facts().objectives.len(),
         58,
         "every declared block publishes its lifecycle to the fold"
     );

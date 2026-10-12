@@ -20,8 +20,18 @@
 //!    [`step_mission_animations`] call, whose order is load-bearing (the
 //!    record half runs before the mission half so a refusal can still be
 //!    retried with the delivery it carries);
-//! 4. **script host** — [`MissionSession::advance`] over the
-//!    [`compose_mission_facts`] fold.
+//! 4. **world observation** — the world's own report for the tick
+//!    ([`MissionWorldObservation`], consumed so a report lives exactly one
+//!    tick) merged with what the host itself observes — the player body's
+//!    position and the record player's animation states — and fed to
+//!    [`WorldFactTable::observe`];
+//! 5. **objective lifecycles** — [`ObjectiveLifecycles::advance`], the
+//!    measured per-frame timer pass, on the elapsed this step covers;
+//! 6. **script host** — [`MissionSession::advance`] over the
+//!    [`compose_mission_facts`] fold (which now carries the fresh lifecycle
+//!    rows), then the completion pass: every `ObjectiveCompleted` event's
+//!    block handed to [`ObjectiveLifecycles::complete`], so its
+//!    `WAKE`/`NAP`/`KILL`/`SLEEP` effects run in the engine's own order.
 //!
 //! The answer is every record's **own** output for that tick
 //! ([`MissionHostTick`]): the environment's committed ticks, the world-actor
@@ -39,16 +49,20 @@
 //!   quoting the reader's own message. No `ObjectiveSpec`, `CountCondition`,
 //!   `MissionTimer`, `SweptTrigger` or spawn group is ever constructed here
 //!   for an original mission (AGENTS.md rules 4 and 5).
-//! * A stage that carries no declared [`BlockLifecycleTable`] — because no
-//!   production reader turned its record's `BEGIN_DORMANT` spellings into
-//!   declarations (or that reader refused) — folds the empty table, its
-//!   documented fail-closed read where every `Condition::ObjectiveAwake`
-//!   answers `false`, under [`MissionHostRefusal::BlockLifecycles`]. A
-//!   stage that carries the record's declared table (read through
-//!   [`crate::control_lifecycles`]) folds it and raises no such refusal.
-//! * No stage builds a [`crate::world_facts::WorldObservation`] out of the ECS
-//!   world, so [`WorldFactTable`] answers from its empty report under
-//!   [`MissionHostRefusal::WorldObservation`].
+//! * A stage that carries neither a declared [`BlockLifecycleTable`] nor a
+//!   recovered [`EngineObjectives`] — because no production reader turned its
+//!   record's `BEGIN_DORMANT` spellings into declarations (or that reader
+//!   refused) — folds the empty table, its documented fail-closed read where
+//!   every `Condition::ObjectiveAwake` answers `false`, under
+//!   [`MissionHostRefusal::BlockLifecycles`]. A stage that carries the
+//!   record's declared table (read through [`crate::control_lifecycles`])
+//!   folds it, and a stage whose [`EngineObjectives`] recovered runs that
+//!   instead; either raises no such refusal.
+//! * The stage folds whatever the world reports this tick: a
+//!   [`MissionWorldObservation`] the world's own observation system wrote
+//!   this step (consumed on use), the player body's position and the record
+//!   player's animation rows. A stage that never wrote one folds the empty
+//!   report under [`MissionHostRefusal::WorldObservation`].
 //! * A stage with no animation join, or whose scope lowered no world-actor
 //!   program, is named by [`MissionHostRefusal::AnimationJoin`] and
 //!   [`MissionHostRefusal::WorldActors`].
@@ -108,12 +122,12 @@
 //! installation. Nothing here is `verified_original`. A settled run now
 //! exits with the outcome it maps to and a restart rebuilds the authored
 //! initial state (`.02` and `.03` of VS-M01-RT-MISSION-HOST); the fresh
-//! control session a restart launches starts `Running` again, and M01 itself
-//! cannot reach a terminal headlessly: both of its `Finish` blocks start
-//! dormant behind the `-1` sentinel and every wake path needs world facts a
-//! headless run does not have (a measured property of the content — #1278's
-//! fact 7 — not a defect), so terminal behaviour is proven on a synthetic
-//! stage whose program really does settle.
+//! control session a restart launches starts `Running` again. M01's two
+//! `Finish` blocks start dormant behind the `-1` sentinel and wake only
+//! through the `NAP`/`WAKE`/`SLEEP` effects this host's completion pass now
+//! applies — a run that reports no member presence cannot reach either one
+//! (M01's whole wake graph passes through the three `INACTIVE` gates, a
+//! measured property of the content), and a run that reports them can.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -123,8 +137,9 @@ use std::time::Duration;
 use bevy::ecs::schedule::IntoScheduleConfigs;
 use bevy::prelude::{App, Entity, FixedPostUpdate, PostUpdate, Resource, With, World};
 use bevy::time::{Fixed, Time};
+use cs_content::objectives_engine::EngineObjectives;
 use cs_content::world::WorldObjectId;
-use cs_script::ir::MissionProgram;
+use cs_script::ir::{AnimationState, MissionProgram};
 use cs_script::runtime::{EventKind, SessionGeneration, TerminalState, TickError};
 use cs_sim::mission::{BlockLifecycleTable, LaunchRefused, MissionSession, MissionTick};
 use cs_sim::objectives::runtime::{ObjectiveEventKind, RuntimeLimits, TickInput};
@@ -160,7 +175,11 @@ use crate::world_actors::{
     LoweredWorldActors, WorldActorLaunchError, WorldActorSession, WorldActorSessionTick,
     WorldActorTick,
 };
-use crate::world_facts::{MemberResolver, WorldFactTable, WorldOperands, compose_mission_facts};
+use crate::world_facts::{
+    MemberResolver, WorldFactTable, WorldObservation, WorldOperands, compose_mission_facts,
+};
+
+use super::lifecycles::{ObjectiveLifecycleTick, ObjectiveLifecycles};
 
 /// The mission host's own session generation, minted from a process-wide
 /// counter the way `SessionBuilder::open` mints a content session's: the
@@ -225,13 +244,21 @@ pub enum MissionHostRefusal {
         /// What the fold is reading instead of an observation.
         detail: String,
     },
-    /// The stage carries no declared [`BlockLifecycleTable`] — the record's
-    /// lifecycle spellings were not read into one, or that reader refused —
-    /// so the fold answers from the empty table, where every
-    /// `Condition::ObjectiveAwake` answers `false` and no block can
-    /// complete.
+    /// The stage carries neither a declared [`BlockLifecycleTable`] nor a
+    /// recovered [`EngineObjectives`] — the record's lifecycle spellings were
+    /// not read into either, or the readers refused — so the fold answers
+    /// from the empty table, where every `Condition::ObjectiveAwake` answers
+    /// `false` and no block can complete.
     BlockLifecycles {
-        /// What the table is empty of, and whose job filling it is.
+        /// What the model is empty of, and whose job filling it is.
+        detail: String,
+    },
+    /// The record's recovered objective declarations would not build an
+    /// [`EngineObjectives`] — the engine's own range check refused — so only
+    /// the declared dormancy table runs: no `WAKE`/`NAP`/`KILL`/`SLEEP`
+    /// completion effects are applied.
+    EngineObjectives {
+        /// The engine constructor's own refusal.
         detail: String,
     },
     /// Mission-bound audio loops were still bound when the run ended.
@@ -261,6 +288,9 @@ impl fmt::Display for MissionHostRefusal {
             }
             Self::BlockLifecycles { detail } => {
                 write!(f, "the block lifecycles: {detail}")
+            }
+            Self::EngineObjectives { detail } => {
+                write!(f, "the engine objective lifecycle model: {detail}")
             }
             Self::MissionAudioStillBound { count } => write!(
                 f,
@@ -293,6 +323,14 @@ pub struct MissionHostSeed {
     /// [`crate::control_lifecycles`]. An empty table is the fail-closed
     /// read, named by [`MissionHostRefusal::BlockLifecycles`].
     pub block_lifecycles: BlockLifecycleTable,
+    /// The recovered engine lifecycle model for the same record
+    /// ([`crate::objectives::ObjectiveRecovery::engine_objectives`]), when
+    /// every field the model needs loaded. A stage that carries one runs it
+    /// as the `objectives` lifecycle — dormancy timers, `TICK_DEPENDS_ON_OBJ`,
+    /// `WAKE`/`NAP`/`KILL`/`SLEEP` effects and all — and the declared table
+    /// above stays only for the stage's own bookkeeping; a stage that
+    /// carries neither folds the empty table's fail-closed read.
+    pub engine_objectives: Option<EngineObjectives>,
     /// The sound-family archives in the mission's scope.
     pub sound_archives: Vec<SoundArchive>,
     /// The objective program the F39 session launches from. For every
@@ -334,6 +372,17 @@ fn launch_script(
         generation,
         seed.environment.seeds().mission_seed(),
         seed.rewards.iter().cloned(),
+    )
+}
+
+/// The lifecycle model one stage runs: the recovered
+/// [`EngineObjectives`] when the seed carries one, else the record's declared
+/// [`BlockLifecycleTable`] — which may be the empty fail-closed read
+/// [`stage_refusals`] names.
+fn seed_lifecycles(seed: &MissionHostSeed) -> ObjectiveLifecycles {
+    seed.engine_objectives.clone().map_or_else(
+        || ObjectiveLifecycles::declared(seed.block_lifecycles.clone()),
+        ObjectiveLifecycles::engine,
     )
 }
 
@@ -469,8 +518,29 @@ pub struct MissionHostTick {
     pub markers: MarkerDelivery,
     /// What the objective session answered for this tick.
     pub objectives: SessionTick,
+    /// What the objective lifecycle model applied on this tick: the timer
+    /// pass's own report (woken / napped / slept) plus the blocks the
+    /// completion pass completed, whose `WAKE`/`NAP`/`KILL`/`SLEEP` effects
+    /// already ran.
+    pub lifecycles: ObjectiveLifecycleTick,
     /// What the control program answered for this tick.
     pub script: MissionTick,
+}
+
+/// The world's own report of what the mission's members, groups and
+/// actors did — written by the world's observation system once per host
+/// step and consumed by it, so a report describes exactly one tick.
+///
+/// The host merges this with what it observes itself — the record player's
+/// measured animation states, keyed by each record's startup identity — and
+/// feeds the merged rows to [`WorldFactTable::observe`]. A host step that
+/// finds no report folds the members the stage could not see as absent
+/// (fail-closed), which [`MissionHostRefusal::WorldObservation`] already
+/// names for the stage that never builds one at all.
+#[derive(Resource, Clone, Debug, Default)]
+pub struct MissionWorldObservation {
+    /// The world's rows for this step, in the observation's own vocabulary.
+    pub observation: WorldObservation,
 }
 
 /// What the composed entry answered for one host tick, or the refusal that
@@ -626,7 +696,7 @@ pub struct MissionHost {
     markers: MissionMarkerConsumer,
     objectives: ObjectiveSession,
     script: MissionSession,
-    blocks: BlockLifecycleTable,
+    lifecycles: ObjectiveLifecycles,
     world_facts: WorldFactTable,
     operands: WorldOperands,
     sound_archives: Vec<SoundArchive>,
@@ -683,10 +753,7 @@ impl MissionHost {
         let script = launch_script(seed, generation).map_err(MissionHostLaunchError::Script)?;
 
         let refusals = stage_refusals(seed);
-        // A stage that carries the record's declared lifecycles folds them;
-        // a stage that carries none runs over the empty fail-closed read
-        // `stage_refusals` names.
-        let blocks = seed.block_lifecycles.clone();
+        let lifecycles = seed_lifecycles(seed);
 
         Ok(Self {
             environment,
@@ -695,7 +762,7 @@ impl MissionHost {
             markers,
             objectives,
             script,
-            blocks,
+            lifecycles,
             world_facts: WorldFactTable::new(seed.resolver.clone()),
             operands: WorldOperands::of(&seed.control),
             sound_archives: seed.sound_archives.clone(),
@@ -728,10 +795,11 @@ impl MissionHost {
     ///    control program — its state is `Running` again, so whatever
     ///    terminal the previous generation settled is cleared with the
     ///    session that carried it;
-    /// 7. the seed's declared [`BlockLifecycleTable`] restored fresh (its
-    ///    spelled starting states, nothing the torn-down run advanced) and
-    ///    a fresh [`WorldFactTable`], and the complete refusal list
-    ///    recomputed from the stage's seed;
+    /// 7. the seed's lifecycle model restored fresh — the recovered
+    ///    [`EngineObjectives`] at its own load state, or the declared
+    ///    [`BlockLifecycleTable`]'s spelled starting states, never anything
+    ///    the torn-down run advanced — a fresh [`WorldFactTable`], and the
+    ///    complete refusal list recomputed from the stage's seed;
     /// 8. the host's own records cleared: `last_tick()` is `None` (the
     ///    world's fixed ledger is the physics timeline and keeps counting;
     ///    this host keeps no clock of its own) and [`Self::terminal`] is
@@ -809,7 +877,7 @@ impl MissionHost {
             None => None,
         };
         self.script = launch_script(seed, generation).map_err(MissionHostRestartError::Script)?;
-        self.blocks = seed.block_lifecycles.clone();
+        self.lifecycles = seed_lifecycles(seed);
         self.world_facts = WorldFactTable::new(seed.resolver.clone());
         self.operands = WorldOperands::of(&seed.control);
         self.sound_archives = seed.sound_archives.clone();
@@ -944,11 +1012,43 @@ impl MissionHost {
         )
         .map_err(MissionHostStepError::Composed)?;
 
-        // 4. Script host: the production fact fold, then the program's own
-        //    answer for this tick.
+        // 4. World observation: the world's own report for this step —
+        //    consumed, so it describes exactly this tick — merged with what
+        //    the host itself observes: the record player's measured
+        //    animation states, keyed by each record's startup identity, the
+        //    only name the player honestly holds.
+        let mut observation = world
+            .remove_resource::<MissionWorldObservation>()
+            .map_or_else(WorldObservation::new, |report| report.observation);
+        for record in self.animation.running() {
+            observation =
+                observation.animation(record.identity().to_owned(), AnimationState::Running.code());
+        }
+        for record in self.animation.finished() {
+            observation = observation.animation(
+                record.identity().to_owned(),
+                AnimationState::Executed.code(),
+            );
+        }
+        self.world_facts.observe(observation);
+
+        // 5. Objective lifecycles: the measured per-frame timer pass on the
+        //    elapsed this step covers, before the control program reads the
+        //    fresh lifecycle rows — a paused frame covers no gameplay time,
+        //    so its mission clock does not advance.
+        let lifecycles_advanced =
+            self.lifecycles
+                .advance(if paused { 0.0 } else { elapsed.as_secs_f64() });
+
+        // 6. Script host: the production fact fold over the fresh lifecycle
+        //    rows, then the program's own answer for this tick; the
+        //    completion pass then hands every completed block to the
+        //    lifecycle model, whose WAKE/NAP/KILL/SLEEP effects run in the
+        //    engine's own order.
+        let lifecycle_facts = self.lifecycles.facts();
         let facts = compose_mission_facts(
             &self.script,
-            &self.blocks,
+            &lifecycle_facts,
             &self.world_facts,
             &self.operands,
         );
@@ -956,6 +1056,21 @@ impl MissionHost {
             .script
             .advance(&facts, tick)
             .map_err(MissionHostStepError::Script)?;
+        let mut completed = Vec::new();
+        for event in &script.events {
+            if event.kind == EventKind::ObjectiveCompleted {
+                completed.push(event.key.source.0);
+            }
+        }
+        for index in &completed {
+            self.lifecycles.complete(*index);
+        }
+        let lifecycles = ObjectiveLifecycleTick {
+            woken: lifecycles_advanced.woken,
+            napped: lifecycles_advanced.napped,
+            slept: lifecycles_advanced.slept,
+            completed,
+        };
 
         Ok(MissionHostTick {
             tick,
@@ -964,6 +1079,7 @@ impl MissionHost {
             animation: composed.records,
             markers: composed.mission.markers,
             objectives: composed.mission.tick,
+            lifecycles,
             script,
         })
     }
@@ -1123,10 +1239,12 @@ impl MissionHost {
         &self.script
     }
 
-    /// The block lifecycle table the fact fold answers through.
+    /// The objective lifecycle model the fact fold answers through — the
+    /// recovered engine model when the stage carries one, else the declared
+    /// dormancy table (possibly the empty, fail-closed read).
     #[must_use]
-    pub const fn blocks(&self) -> &BlockLifecycleTable {
-        &self.blocks
+    pub const fn lifecycles(&self) -> &ObjectiveLifecycles {
+        &self.lifecycles
     }
 
     /// The world fact table the fold answers through.
@@ -1162,8 +1280,8 @@ impl MissionHost {
 
 /// The complete refusal list a launch or a restart runs over: the stage
 /// seed's own, then the absences only the seed can see (no world-actor
-/// program, no animation join), then the two every host names (the
-/// unobserved world fact fold and the undeclared block lifecycles).
+/// program, no animation join), then the ones every host names (the world
+/// observation port and the missing lifecycle models).
 ///
 /// Launch and restart share this one function so a rebuilt host reports
 /// exactly the absences the launched one did.
@@ -1184,24 +1302,28 @@ fn stage_refusals(seed: &MissionHostSeed) -> Vec<MissionHostRefusal> {
         });
     }
     refusals.push(MissionHostRefusal::WorldObservation {
-        detail: "no stage builds a WorldObservation out of the ECS world, so the world fact \
-                 table answers from its empty, fail-closed report for every tick"
+        detail: "the world fact table folds only what this step observed: the \
+                 MissionWorldObservation port (consumed per step) plus the record player's \
+                 animation rows — a member or group nobody reported stays absent and every \
+                 condition reading it answers false"
             .to_owned(),
     });
-    // A stage that carries the record's declared lifecycles folds them and
-    // raises no refusal; a stage that carries no declared table runs over
-    // the empty fail-closed read and says so — unless it already named the
-    // absence itself (the reader's own refusals travel on the seed), which
-    // is the same naming and is not repeated here.
+    // A stage that carries the record's lifecycle model — recovered engine
+    // objectives, or at least the declared dormancy table — folds it and
+    // raises no refusal; a stage that carries neither runs over the empty
+    // fail-closed read and says so — unless it already named the absence
+    // itself (the reader's own refusals travel on the seed), which is the
+    // same naming and is not repeated here.
     if seed.block_lifecycles.is_empty()
+        && seed.engine_objectives.is_none()
         && !seed
             .refusals
             .iter()
             .any(|refusal| matches!(refusal, MissionHostRefusal::BlockLifecycles { .. }))
     {
         refusals.push(MissionHostRefusal::BlockLifecycles {
-            detail: "this stage carries no declared block lifecycles, so the table is empty \
-                     and every Condition::ObjectiveAwake answers false"
+            detail: "this stage carries neither a declared block lifecycle table nor a \
+                     recovered engine model, so every Condition::ObjectiveAwake answers false"
                 .to_owned(),
         });
     }

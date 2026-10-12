@@ -89,7 +89,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use cs_script::ir::{MemberName, MissionProgram, TravelersAnchor};
 use cs_script::runtime::{MemberFact, MemberPresence, MissionFacts};
-use cs_sim::mission::{BlockLifecycleTable, MissionSession};
+use cs_sim::mission::MissionSession;
 
 use crate::world::retail::RetailWorldContainer;
 
@@ -654,26 +654,28 @@ const fn missing_member() -> MemberFact {
 
 /// Folds every fact writer's table into the one [`MissionFacts`] a tick reads.
 ///
-/// This is the fold the two `cs_sim` tables document as the caller's job: the
-/// actor-fact table owns `actors`, the block-lifecycle table owns `objectives`
-/// and the world-side table owns the other five, and each builds its own
-/// [`MissionFacts`] for [`MissionFacts::absorb`] to combine. Doing it here, in
-/// one function, is what makes "the maps were folded before the tick that
-/// evaluated them" a property a caller gets by construction rather than by
-/// remembering.
+/// This is the fold the `cs_sim` tables document as the caller's job: the
+/// actor-fact table owns `actors`, the lifecycle model owns `objectives`
+/// (already folded into `lifecycles` — the host's
+/// [`crate::mission_session::ObjectiveLifecycles`] is what produces it, so
+/// whichever model the stage runs can answer) and the world-side table owns
+/// the other five, each building its own [`MissionFacts`] for
+/// [`MissionFacts::absorb`] to combine. Doing it here, in one function, is
+/// what makes "the maps were folded before the tick that evaluated them" a
+/// property a caller gets by construction rather than by remembering.
 ///
-/// `session` contributes its actor observations, `blocks` the numbered blocks'
-/// lifecycle states and `world` the five world-side maps, keyed exactly as the
-/// record spelled them.
+/// `session` contributes its actor observations, `lifecycles` the numbered
+/// blocks' lifecycle states and `world` the five world-side maps, keyed
+/// exactly as the record spelled them.
 #[must_use]
 pub fn compose_mission_facts(
     session: &MissionSession,
-    blocks: &BlockLifecycleTable,
+    lifecycles: &MissionFacts,
     world: &WorldFactTable,
     operands: &WorldOperands,
 ) -> MissionFacts {
     let mut facts = session.actor_facts().facts();
-    facts.absorb(blocks.facts());
+    facts.absorb(lifecycles.clone());
     facts.absorb(world.facts(operands));
     facts
 }
