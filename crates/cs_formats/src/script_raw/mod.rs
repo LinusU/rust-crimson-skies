@@ -70,8 +70,9 @@ pub use ledger::{
 };
 pub use probe::{
     ClaimError, DirectiveKeyRow, DirectiveKeyStatus, DirectiveProgramProbe, ProbeConfig,
-    ProbeError, ProbeReport, ProbeSession, ProgramProbe, RecordProbeError, RecordProbeStats,
-    SignatureClaim, SignatureShape, SignatureTable, probe_records,
+    ProbeError, ProbeReport, ProbeSession, ProgramProbe, RecordFieldSupport, RecordKeyRow,
+    RecordKeyStatus, RecordProbeError, RecordProbeStats, SignatureClaim, SignatureShape,
+    SignatureTable, probe_records,
 };
 pub use ui_host_calls::{
     ArgShape, ArgShapeCounts, CorpusMember, DispatchForm, HostCallCorpus, HostCallSite,

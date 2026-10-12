@@ -31,7 +31,11 @@
 //!   it, so its first text byte is not misread as an unknown opcode; every
 //!   distinct key it reaches is listed as measured (with the findings that
 //!   measure it) or as explicitly unknown (with the reason), and nothing is
-//!   guessed. No numeric [`SignatureClaim`] ever describes such a program.
+//!   guessed. The record-level axis is listed beside it: every key the
+//!   control record spells **outside** its numbered blocks, either classified
+//!   through a measured record vocabulary with its value's shapes
+//!   ([`RecordKeyRow`]) or explicitly unknown with its reason. No numeric
+//!   [`SignatureClaim`] ever describes such a program.
 //! * [`probe_records`] answers the other half of AC03: for **every** record of
 //!   one container it attaches [`RecordReachability`] — which located programs
 //!   overlap the record, or that none does. A record no reader decodes, no
@@ -757,6 +761,119 @@ impl DirectiveKeyRow {
     }
 }
 
+/// What is established about one **classified** record-level field.
+///
+/// The measuring crate (`cs_content`) distinguishes a field whose value's
+/// shape alone is measured from one whose effect a finding also located; this
+/// crate carries the two levels as data and never reads a record field itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecordFieldSupport {
+    /// The value's measured shape is established; what the value does is not.
+    ShapeMeasured,
+    /// The value's shape and the field's measured effect are established.
+    EffectMeasured,
+}
+
+impl RecordFieldSupport {
+    /// Stable lowercase label for reports.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::ShapeMeasured => "shape_measured",
+            Self::EffectMeasured => "effect_measured",
+        }
+    }
+}
+
+/// What is known about one record-level key a control record spells outside
+/// its numbered blocks.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RecordKeyStatus {
+    /// The key is one of the measured record vocabularies' fields, so its
+    /// value's shape (and, for a sound key, its effect) is measured.
+    Classified {
+        /// How far the classification measures the field.
+        support: RecordFieldSupport,
+    },
+    /// The key is outside both measured record vocabularies: the census
+    /// counts it and names it, and nothing reads it. Listed with its reason
+    /// instead of being dropped or absorbed into a documented field.
+    Unknown {
+        /// Stable reason code, for example `outside_both_record_vocabularies`.
+        code: String,
+        /// The measured detail behind the reason.
+        detail: String,
+    },
+}
+
+impl RecordKeyStatus {
+    /// Stable lowercase label for reports.
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::Classified { .. } => "classified",
+            Self::Unknown { .. } => "unknown",
+        }
+    }
+
+    /// Whether the key is explicitly unknown.
+    pub const fn is_unknown(&self) -> bool {
+        matches!(self, Self::Unknown { .. })
+    }
+}
+
+/// One distinct record-level key a directive program's control record spells
+/// outside its numbered blocks: a classified field with its measured shapes,
+/// or a key outside both vocabularies, explicitly unknown with its reason.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RecordKeyRow {
+    key: String,
+    sites: Option<u32>,
+    shapes: Vec<String>,
+    status: RecordKeyStatus,
+}
+
+impl RecordKeyRow {
+    /// One record-level key with what the census measured beside it.
+    ///
+    /// `sites` is `Some` for a classified field, whose sites the census
+    /// counts, and `None` for an unclassified key: the census collects
+    /// unclassified keys as distinct names only, so a site count for one is
+    /// **not measured** and is never invented here.
+    pub fn new(
+        key: impl Into<String>,
+        sites: Option<u32>,
+        shapes: Vec<String>,
+        status: RecordKeyStatus,
+    ) -> Self {
+        Self {
+            key: key.into(),
+            sites,
+            shapes,
+            status,
+        }
+    }
+
+    /// The key as the original spells it.
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// Sites that spell the key, or `None` when the census counts it as a
+    /// distinct name only.
+    pub const fn sites(&self) -> Option<u32> {
+        self.sites
+    }
+
+    /// Every distinct value shape measured beside the key, as stable labels.
+    pub fn shapes(&self) -> &[String] {
+        &self.shapes
+    }
+
+    /// What is known about the key.
+    pub const fn status(&self) -> &RecordKeyStatus {
+        &self.status
+    }
+}
+
 /// A text directive program, classified instead of walked as binary words.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct DirectiveProgramProbe {
@@ -767,6 +884,7 @@ pub struct DirectiveProgramProbe {
     blocks: u32,
     refused_blocks: u32,
     keys: Vec<DirectiveKeyRow>,
+    record_keys: Vec<RecordKeyRow>,
 }
 
 impl DirectiveProgramProbe {
@@ -822,6 +940,27 @@ impl DirectiveProgramProbe {
     /// Keys explicitly unknown.
     pub fn unknown_keys(&self) -> usize {
         self.keys.len() - self.known_keys()
+    }
+
+    /// Every distinct record-level key the program's control record spells
+    /// outside its numbered blocks, in key order — classified fields and
+    /// unclassified keys in one listing, each row carrying its status.
+    pub fn record_keys(&self) -> &[RecordKeyRow] {
+        &self.record_keys
+    }
+
+    /// Record-level keys classified through a measured vocabulary.
+    pub fn classified_record_keys(&self) -> usize {
+        self.record_keys
+            .iter()
+            .filter(|row| !row.status.is_unknown())
+            .count()
+    }
+
+    /// Record-level keys outside both vocabularies, listed as explicitly
+    /// unknown with their reason.
+    pub fn unclassified_record_keys(&self) -> usize {
+        self.record_keys.len() - self.classified_record_keys()
     }
 }
 
@@ -902,7 +1041,10 @@ impl ProbeSession {
     ///
     /// The caller measured the keys from the program's own decoded text; this
     /// session only refuses a listing that cannot be evidence: a key spelled
-    /// twice, an empty key, and an unknown key with no reason.
+    /// twice, an empty key, and an unknown key with no reason. The same
+    /// refusals apply to `record_keys`, the record-level axis: a classified
+    /// field or an explicitly unknown key outside both record vocabularies,
+    /// each listed once with its reason.
     ///
     /// # Errors
     ///
@@ -914,6 +1056,7 @@ impl ProbeSession {
         blocks: u32,
         refused_blocks: u32,
         mut keys: Vec<DirectiveKeyRow>,
+        mut record_keys: Vec<RecordKeyRow>,
     ) -> Result<usize, ProbeError> {
         if self.closed {
             return Err(ProbeError::SessionClosed);
@@ -939,6 +1082,27 @@ impl ProbeSession {
                 });
             }
         }
+        record_keys.sort_by(|a, b| a.key.cmp(&b.key));
+        for (index, row) in record_keys.iter().enumerate() {
+            let problem = if row.key.trim().is_empty() {
+                Some("empty_key")
+            } else if index > 0 && record_keys[index - 1].key == row.key {
+                Some("duplicate_key")
+            } else if matches!(&row.status, RecordKeyStatus::Unknown { code, detail }
+                if code.trim().is_empty() || detail.trim().is_empty())
+            {
+                Some("unknown_without_reason")
+            } else {
+                None
+            };
+            if let Some(reason) = problem {
+                return Err(ProbeError::InvalidDirectiveProgram {
+                    locator: program.locator().to_string(),
+                    key: row.key.clone(),
+                    reason,
+                });
+            }
+        }
         self.directive_programs.push(DirectiveProgramProbe {
             mission: program.mission_label().to_owned(),
             locator: program.locator().clone(),
@@ -947,6 +1111,7 @@ impl ProbeSession {
             blocks,
             refused_blocks,
             keys,
+            record_keys,
         });
         Ok(self.directive_programs.len() - 1)
     }
