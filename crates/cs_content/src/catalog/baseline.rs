@@ -171,25 +171,34 @@
 //!   non-stunt scenario — like a zone label the scenario names twice, or twice
 //!   with two different descriptions — is counted in [`CollectionStatus`] rather
 //!   than dropped or turned into a second row with the same identity;
-//! * one [`ContentKind::Video`] row per file the shared archive's FMV
-//!   definitions **name** in bytes (F14-D.VIDEO): the `PLAYAVI` actions of its
-//!   [`FMV_MEMBER`] member, decoded by the producing stage's own reader
-//!   ([`decode_zrd`]). The installation holds ten loose `.mpg` files and no
-//!   video container, so a file name is not identity: a row exists only for a
-//!   named file that resolves to exactly one inventoried file, its identity is
-//!   that file's own key, its span is the file's own bytes with the file's
-//!   digest, and its single static edge points at that file's inventory row. A
-//!   name with no matching file, a name matching several, a repeat of a name
-//!   already resolved and an `.mpg` file no `PLAYAVI` name reaches are each
-//!   counted in [`CollectionStatus`] instead of being guessed or dropped; no
-//!   codec, duration or trigger is read, so every row carries an explicit
-//!   unknown. A video is **not** launchable, so the denominator does not move.
-//!   The last gap is scoped to this source: the review of F14-D.VIDEO found
-//!   `crimflag.mpg` and `final.mpg` spelled by `ASSETS/LAYOUT.CSV` of
-//!   `GOSDATA/ASSETS/crimson.rof` and `chap1`…`chap5` constructed by
-//!   `ASSETS/SCRIPTS/CAMPAIGNINTRO.SCRIPT` — two containers this stage does
-//!   not read, owned by Rally #1351 and Rally #1352 (see the F14-D.VIDEO
-//!   findings note);
+//! * one [`ContentKind::Video`] row per file the installation's own video
+//!   records **name** in bytes (F14-D.VIDEO and F14-D.VIDEO-LAYOUT), from two
+//!   sources: the `PLAYAVI` actions of the shared archive's [`FMV_MEMBER`]
+//!   member, decoded by the producing stage's own reader ([`decode_zrd`]),
+//!   and the movie records of [`VIDEO_LAYOUT_MEMBER`] in
+//!   [`VIDEO_LAYOUT_CONTAINER`], read through the production ROF mount and
+//!   the keyed-list configuration reader ([`ConfigDocument`]). A layout
+//!   record is a video reference only when the measured record schema
+//!   classifies it as the member's own `M` (movie) record
+//!   ([`RecordSchema::Layout`]`(`[`RecordKind::Movie`])`) **and** its
+//!   file-name field states an `.mpg` name; a record whose value is not an
+//!   `.mpg` name is not a video reference. The installation holds ten loose
+//!   `.mpg` files and no video container, so a file name is not identity: a
+//!   row exists only for a named file that resolves to exactly one
+//!   inventoried file, its identity is that file's own key, its span is the
+//!   file's own bytes with the file's digest, and its single static edge
+//!   points at that file's inventory row — under the `PLAYAVI` claim for one
+//!   source and the layout claim for the other, the latter with a provenance
+//!   source span inside the decoded member. A name with no matching file, a
+//!   name matching several, a repeat of a name already resolved, a movie
+//!   record whose name field is not an `.mpg` spelling and an `.mpg` file no
+//!   record reaches are each counted in [`CollectionStatus`] instead of
+//!   being guessed or dropped; no codec, duration or trigger is read, so
+//!   every row carries an explicit unknown. A video is **not** launchable,
+//!   so the denominator does not move. What the last gap still holds is
+//!   scoped to these two sources: `chap1`…`chap5` are *constructed* by
+//!   `ASSETS/SCRIPTS/CAMPAIGNINTRO.SCRIPT`, a binding Rally #1352 owns (see
+//!   the F14-D.VIDEO-LAYOUT findings note);
 //! * one [`ContentKind::ScrapbookItem`] row per `Mission_Spread_Item` record of
 //!   the shared archive's `ASSETS/SCRAPBOOK.CSV` member (F14-D.8), read through
 //!   the production ROF reader and the keyed-list configuration reader. The
@@ -267,6 +276,7 @@ use cs_formats::gamez::{
 };
 use cs_formats::interp::DecodedInterp;
 use cs_formats::script_raw::discover_container;
+use cs_formats::text::RecordKind;
 use cs_formats::zbd::{
     ZbdFamily, ZbdProbe, ZbdRole, dispatch, read_reader_archive, read_sound_archive,
     read_version_one_index, role_for_path,
@@ -282,7 +292,9 @@ use cs_types::content::{
 use cs_types::evidence::{ClaimId, ClaimStatus, ContentHash, Fingerprint, FingerprintKind};
 use cs_types::install::InstallFileRecord;
 
-use crate::config::{ConfigDocument, RecordSchema, StringCatalog};
+use crate::config::{
+    ConfigDocument, ConfigNodeKind, RawField, RawValue, RecordSchema, StringCatalog,
+};
 use crate::livery::{
     FactionPaletteCatalog, PAINT_SHOP_CONTAINER, PALETTE_CONTAINER, StockLiveryCatalog,
 };
@@ -410,6 +422,12 @@ const GAP_SOUND_AMBIGUOUS_MEMBER: &str = "ambiguous_member_name";
 /// (F14-D.VIDEO).
 const CLAIM_VIDEO_PLAYAVI: &str = "f14.d.video.baseline.playavi";
 
+/// The claim id behind the observation that a video is named by a movie
+/// record of [`VIDEO_LAYOUT_MEMBER`] — a record of original bytes, never a
+/// file name — and that the row's edge points at the inventory row of the
+/// named file (F14-D.VIDEO-LAYOUT).
+const CLAIM_VIDEO_LAYOUT: &str = "f14.d.video.baseline.layout";
+
 /// The claim id of the unknown every video row carries: what the file holds
 /// and when it plays.
 ///
@@ -419,20 +437,19 @@ const CLAIM_VIDEO_PLAYAVI: &str = "f14.d.video.baseline.playavi";
 /// bytes name this file and nothing more.
 pub const VIDEO_UNKNOWN_CLAIM: &str = "f14.d.video.playback";
 
-/// The installation-relative spelling of the reader archive the video names
-/// are read from: the same shared archive [`ENGINE_GUN_ARCHIVE`] names, whose
-/// [`FMV_MEMBER`] member is the only byte **this collection** reads that names
-/// an `.mpg` file.
+/// The installation-relative spelling of the reader archive the FMV
+/// definitions are read from: the same shared archive [`ENGINE_GUN_ARCHIVE`]
+/// names, whose [`FMV_MEMBER`] member's `PLAYAVI` actions name one video
+/// each (F14-D.VIDEO).
 ///
-/// It is not the only byte in the installation that does so. A review scan of
-/// 2026-10-12 (F14-D.VIDEO's findings note) decompressed both retail ROF
-/// containers with the production reader and found the
-/// `ASSETS/LAYOUT.CSV` member of `GOSDATA/ASSETS/crimson.rof` spelling
-/// `CrimFlag.MPG` and `Final.MPG` in its `MOVIE` records, while
-/// `ASSETS/SCRIPTS/CAMPAIGNINTRO.SCRIPT` constructs `chap<N>.mpg`. This stage
-/// reads neither source: Rally #1351 owns the layout records and Rally #1352
-/// owns the chapter binding, and until they land those files stay counted
-/// under the `unnamed_video_file` gap rather than becoming rows.
+/// It is one of the two sources whose bytes this collection reads for video
+/// names: the other is the [`VIDEO_LAYOUT_MEMBER`] member of
+/// [`VIDEO_LAYOUT_CONTAINER`], whose movie records F14-D.VIDEO-LAYOUT added
+/// as the second source. What remains outside either source is
+/// `ASSETS/SCRIPTS/CAMPAIGNINTRO.SCRIPT`, which *constructs* `chap<N>.mpg`
+/// rather than naming it — a binding Rally #1352 owns, and until it lands
+/// those files stay counted under the `unnamed_video_file` gap rather than
+/// becoming rows.
 pub const FMV_ARCHIVE: &str = ENGINE_GUN_ARCHIVE;
 
 /// The member of [`FMV_ARCHIVE`] that states the FMV sequences: its `PLAYAVI`
@@ -448,6 +465,20 @@ pub const FMV_MEMBER: &str = "fmv.zrd";
 /// that takes an `.mpg` file name.
 const FMV_PLAY_ACTION: &str = "PLAYAVI";
 
+/// The installation-relative spelling of the ROF container the layout movie
+/// records are read from: the same shared archive
+/// [`PAINT_SHOP_CONTAINER`](crate::livery::PAINT_SHOP_CONTAINER) names, tied to
+/// it by construction so the two spellings cannot drift (F14-D.VIDEO-LAYOUT).
+pub const VIDEO_LAYOUT_CONTAINER: &str = PAINT_SHOP_CONTAINER;
+
+/// The member of [`VIDEO_LAYOUT_CONTAINER`] the video records are read from.
+/// Its `M` records are the member's own movie record kind (the `;Movie
+/// Format` comment states `;ID=M,...`), and the file name is the first field
+/// of the record's value — position 1 of the measured
+/// [`RecordSchema::Layout`]`(`[`RecordKind::Movie`]`)` schema, a field the
+/// member's own comment does not name (F14-D.VIDEO-LAYOUT).
+pub const VIDEO_LAYOUT_MEMBER: &str = "ASSETS/LAYOUT.CSV";
+
 /// Gap code: one `PLAYAVI` name that resolves to no inventoried file, so no
 /// bytes back the video it names.
 const GAP_VIDEO_NAME_ABSENT: &str = "named_file_absent";
@@ -461,14 +492,28 @@ const GAP_VIDEO_NAME_AMBIGUOUS: &str = "ambiguous_file_name";
 /// with the same identity.
 const GAP_VIDEO_DUPLICATE_NAME: &str = "duplicate_video_name";
 
-/// Gap code: one inventoried `.mpg` file no `PLAYAVI` name reaches. It is a
-/// real file of the installation and stays in the accounting, but nothing in
-/// the original bytes names it, so no row may be minted from its name.
+/// Gap code: one inventoried `.mpg` file no record of either video source
+/// reaches. It is a real file of the installation and stays in the
+/// accounting, but nothing in the original bytes names it, so no row may be
+/// minted from its name.
 const GAP_VIDEO_UNNAMED_FILE: &str = "unnamed_video_file";
 
 /// Gap code: one `PLAYAVI` action whose argument is not text, so it names
 /// nothing this identity can be built from.
 const GAP_VIDEO_NAME_NOT_TEXT: &str = "playavi_name_not_text";
+
+/// Gap code: one record of [`VIDEO_LAYOUT_MEMBER`] that the measured schema
+/// classifies as a movie record but whose file-name field is not an `.mpg`
+/// name. A record whose value is not an `.mpg` name is not a video
+/// reference, so it is counted rather than read as one.
+const GAP_VIDEO_MOVIE_NOT_MPG: &str = "movie_record_without_mpg_name";
+
+/// Gap code: one of the collection's two sources that could not be read at
+/// all — the container is absent from the inventory, the member is absent
+/// from the container, or its bytes do not decode or mount — so whatever it
+/// would have named is missing instead of guessed. The source is named in
+/// [`CollectionStatus::diagnostic`].
+const GAP_VIDEO_UNREADABLE_SOURCE: &str = "unreadable_video_source";
 
 /// The installation-relative spelling of the airframe library the paint-mask
 /// collection is read from.
@@ -1192,8 +1237,9 @@ impl Baseline {
 /// [`discover_airframe_roster`] declares its airframes in, each geometry
 /// container `cs_assets::install::Diagnosis` names for its node array and mesh
 /// section, the sound containers [`cs_formats::zbd::role_for_path`] names
-/// for its cue members, and the [`FMV_MEMBER`] member of [`FMV_ARCHIVE`] for
-/// the video files it names. Rows are inserted in a fixed order and every report
+/// for its cue members, the [`FMV_MEMBER`] member of [`FMV_ARCHIVE`] and the
+/// [`VIDEO_LAYOUT_MEMBER`] member of [`VIDEO_LAYOUT_CONTAINER`] for the video
+/// files each names. Rows are inserted in a fixed order and every report
 /// array is rendered from canonical id order, so the same installation yields
 /// the same bytes (spec F14 AC02).
 ///
@@ -5153,50 +5199,61 @@ fn unclassified_audio_statuses() -> Vec<CollectionStatus> {
     .collect()
 }
 
-/// The `video` rows the installation's own FMV definitions name, plus the
-/// record of what those bytes could not turn into a row.
+/// The `video` rows the installation's own records name, plus the record of
+/// what those bytes could not turn into a row.
 ///
-/// The names come from the `PLAYAVI` actions of [`FMV_MEMBER`], the FMV member
-/// of [`FMV_ARCHIVE`], decoded by the producing stage's own `.zrd` reader
-/// ([`decode_zrd`]). This member is the only byte **this collection** reads
-/// that names an `.mpg` file: a case-insensitive raw scan of every one of the
-/// installation's 804 MB finds `.mpg` only here and in `UNINSTAL.EXE`'s
-/// uninstall bookkeeping (F14-D.VIDEO's findings note).
+/// The names come from two sources. The `PLAYAVI` actions of
+/// [`FMV_MEMBER`], the FMV member of [`FMV_ARCHIVE`], are decoded by the
+/// producing stage's own `.zrd` reader ([`decode_zrd`]) — F14-D.VIDEO's
+/// source. And the movie records of [`VIDEO_LAYOUT_MEMBER`] in
+/// [`VIDEO_LAYOUT_CONTAINER`] are read through the production ROF mount and
+/// the keyed-list configuration reader ([`ConfigDocument`]) — the source
+/// F14-D.VIDEO-LAYOUT added. A layout record is a video reference only when
+/// the measured schema classifies it as the member's own `M` (movie) record
+/// ([`RecordSchema::Layout`]`(`[`RecordKind::Movie`])`) **and** its
+/// file-name field — position 1 of the record value, the field the member's
+/// own `;Movie Format` comment does not name — states an
+/// `.mpg` name; a record whose value is not an `.mpg` name is not a video
+/// reference and is counted under [`GAP_VIDEO_MOVIE_NOT_MPG`]. Each source is
+/// read separately: a source that cannot be read is counted under
+/// [`GAP_VIDEO_UNREADABLE_SOURCE`] and named in the diagnostic rather than
+/// failing the collection, because the other source's rows are real either
+/// way. What stays outside either source is
+/// `ASSETS/SCRIPTS/CAMPAIGNINTRO.SCRIPT`, which builds the chapter name as
+/// `"chap" conv$(FC) ".mpg"` — a binding Rally #1352 owns, so the files it
+/// produces stay counted under [`GAP_VIDEO_UNNAMED_FILE`].
 ///
-/// That scan is not the whole installation. The two retail ROF containers
-/// store their members zlib-compressed, and a review scan of 2026-10-12 read
-/// them through the production reader: `ASSETS/LAYOUT.CSV` of
-/// `GOSDATA/ASSETS/crimson.rof` spells `CrimFlag.MPG` five times and
-/// `Final.MPG` once in `MOVIE` records, and `ASSETS/SCRIPTS/CAMPAIGNINTRO.SCRIPT`
-/// builds the chapter name as `"chap" conv$(FC) ".mpg"`. Neither source is
-/// read here — Rally #1351 owns the layout records, Rally #1352 the chapter
-/// binding — so those files remain counted under [`GAP_VIDEO_UNNAMED_FILE`]
-/// instead of becoming rows from a name this stage never read. What stays
-/// true is the rule: a file name is never identity on its own. Each name is
-/// resolved against the inventory by its file-name component, case-folded the
-/// way the id grammar folds case: exactly one match is one row, no match is a
-/// named gap, and several matches are a named gap with no row, because nothing
-/// in the bytes tells which file the original would have played.
+/// What stays true is the rule: a file name is never identity on its own.
+/// Each name from either source is resolved against the inventory by its
+/// file-name component, case-folded the way the id grammar folds case:
+/// exactly one match is one row, no match is a named gap, and several matches
+/// are a named gap with no row, because nothing in the bytes tells which file
+/// the original would have played.
 ///
 /// A row's identity is the resolved file's own [`install_file_key`], its span
 /// is the file's own bytes with the file's digest, and its single static edge
-/// points at that file's `install_file` row. Nothing here decodes the MPEG
-/// stream: no codec, duration, resolution or playback trigger has been read,
-/// so every row carries [`VIDEO_UNKNOWN_CLAIM`] as an explicit unknown, is
-/// unparsed and claims no consumer. An `.mpg` file no name reaches is counted
-/// under [`GAP_VIDEO_UNNAMED_FILE`] so the collection stays visible over every
-/// file the installation holds; it is never a row from its own name.
+/// points at that file's `install_file` row — under [`CLAIM_VIDEO_PLAYAVI`]
+/// for a `PLAYAVI` name or [`CLAIM_VIDEO_LAYOUT`] for a layout record, the
+/// latter with a provenance source span at the record's own line inside the
+/// decoded member. Nothing here decodes the MPEG stream: no codec, duration,
+/// resolution or playback trigger has been read, so every row carries
+/// [`VIDEO_UNKNOWN_CLAIM`] as an explicit unknown, is unparsed and claims no
+/// consumer. An `.mpg` file no name reaches is counted under
+/// [`GAP_VIDEO_UNNAMED_FILE`] so the collection stays visible over every file
+/// the installation holds; it is never a row from its own name.
 ///
 /// A video is **not** launchable content, so this collection adds no root and
 /// cannot move the coverage denominator.
 ///
 /// # Errors
 ///
-/// [`BaselineError::Read`] when the archive cannot be read, [`BaselineError::Key`]
-/// when an id key is refused and [`BaselineError::Span`] when a span is
-/// refused. A missing archive, a missing member and a member that does not
-/// decode yield no rows and a [`CollectionStatus::diagnostic`] instead, which
-/// is a reported gap and not an error.
+/// [`BaselineError::Read`] when a container cannot be read,
+/// [`BaselineError::Key`] when an id key is refused, [`BaselineError::Span`]
+/// when a span is refused, [`BaselineError::Identity`] when the member key is
+/// refused and [`BaselineError::Session`] when the mount label is refused. A
+/// source that is absent, holds no expected member or holds bytes that do not
+/// read yields no rows from itself and a [`CollectionStatus::diagnostic`]
+/// instead, which is a reported gap and not an error.
 fn video_rows(
     install_root: &Path,
     install_hash: ContentHash,
@@ -5204,7 +5261,12 @@ fn video_rows(
 ) -> Result<(Vec<CatalogElement>, CollectionStatus), BaselineError> {
     let mut status = CollectionStatus {
         kind: ContentKind::Video,
-        source: FMV_ARCHIVE.to_owned(),
+        // The two containers whose bytes this collection's names come from,
+        // so a reader sees the whole source set rather than one of them.
+        // A container that could not be read stays named here — the
+        // collection consults it — and is counted under
+        // `unreadable_video_source` with its reason in the diagnostic.
+        source: format!("{FMV_ARCHIVE} + {VIDEO_LAYOUT_CONTAINER}"),
         language: None,
         rows: 0,
         gaps: BTreeMap::new(),
@@ -5212,63 +5274,25 @@ fn video_rows(
         diagnostic: None,
     };
 
-    let Some(record) = files.get(&FMV_ARCHIVE.to_ascii_lowercase()) else {
-        return Ok(unpopulated(
-            status,
-            format!(
-                "the installation inventories no {FMV_ARCHIVE}, so the {FMV_MEMBER} definitions \
-                 have no bytes to read and no byte this collection reads names a video"
-            ),
-        ));
-    };
-    let spelling = record.relative_spelling.as_str();
-    let bytes =
-        std::fs::read(install_root.join(spelling)).map_err(|source| BaselineError::Read {
-            path: spelling.to_owned(),
-            source,
-        })?;
-    // The production container discovery locates the member by the archive's
-    // own index; a member it does not locate is simply absent.
-    let discovery = discover_container(spelling, &record.relative_spelling, &bytes);
-    let Some(fmv) = discovery.programs().iter().find(|program| {
-        program
-            .locator()
-            .member()
-            .is_some_and(|member| member.eq_ignore_ascii_case(FMV_MEMBER))
-    }) else {
-        return Ok(unpopulated(
-            status,
-            format!(
-                "{spelling} holds no {FMV_MEMBER} member, so no byte this collection reads names a video"
-            ),
-        ));
-    };
-    let root = match decode_zrd(fmv.bytes()) {
-        Ok(root) => root,
-        Err(error) => {
-            return Ok(unpopulated(
-                status,
-                format!(
-                    "{spelling} member {FMV_MEMBER} does not decode as a .zrd document: code {} at \
-                     offset {}",
-                    error.code(),
-                    error.offset()
-                ),
-            ));
-        }
-    };
-    let mut names = Vec::new();
-    let mut not_text = 0usize;
-    collect_playavi_names(&root, &mut names, &mut not_text);
-    if names.is_empty() && not_text == 0 {
-        return Ok(unpopulated(
-            status,
-            format!(
-                "{spelling} member {FMV_MEMBER} states no {FMV_PLAY_ACTION} action naming a video, \
-                 so the installation names no video in bytes"
-            ),
-        ));
-    }
+    let playavi = playavi_video_names(install_root, files)?;
+    let layout = layout_video_names(install_root, install_hash, files)?;
+    let unreadable_reasons: Vec<String> = [&playavi, &layout]
+        .iter()
+        .filter_map(|reading| reading.unreadable.clone())
+        .collect();
+    let empty_reasons: Vec<String> = [&playavi, &layout]
+        .iter()
+        .filter_map(|reading| reading.empty.clone())
+        .collect();
+    let unreadable = unreadable_reasons.len();
+
+    // Resolution runs over the union of both sources' names. `PLAYAVI` names
+    // come first so a file both sources name keeps the FMV row's provenance
+    // and the layout record counts as the repeat.
+    let mut names = playavi.names;
+    names.extend(layout.names);
+    let not_text = playavi.not_text;
+    let not_mpg = layout.not_mpg;
 
     // Resolution runs over the inventory's own keys, so it is case-insensitive
     // exactly where the id grammar is, and several files under one name are a
@@ -5291,7 +5315,7 @@ fn video_rows(
     let mut rows = Vec::new();
     let mut resolved: BTreeSet<String> = BTreeSet::new();
     for name in &names {
-        let matches = by_file_name.get(&name.to_ascii_lowercase());
+        let matches = by_file_name.get(&name.name.to_ascii_lowercase());
         let chosen = match matches.map(Vec::as_slice) {
             None | Some([]) => {
                 absent += 1;
@@ -5307,12 +5331,19 @@ fn video_rows(
         };
         let key = chosen.relative_spelling.logical_key();
         if !resolved.insert(key) {
-            // The same file named twice (by two spellings or one repeat): one
-            // identity, one row, the repeat counted rather than duplicated.
+            // The same file named twice (by two spellings, two sources or one
+            // repeat): one identity, one row, the repeat counted rather than
+            // duplicated.
             duplicate += 1;
             continue;
         }
-        rows.push(video_row(name, chosen, install_hash)?);
+        rows.push(video_row(
+            &name.name,
+            name.claim,
+            name.provenance_span.as_ref(),
+            chosen,
+            install_hash,
+        )?);
     }
 
     // Every `.mpg` file no name reaches stays accounted for: named as a gap,
@@ -5330,27 +5361,301 @@ fn video_rows(
         }
     }
 
-    // All five codes are always reported, so a collection reader sees the whole
-    // accounting shape even when a count is zero.
+    // All seven codes are always reported, so a collection reader sees the
+    // whole accounting shape even when a count is zero.
     status.gaps.insert(GAP_VIDEO_NAME_NOT_TEXT, not_text);
+    status.gaps.insert(GAP_VIDEO_MOVIE_NOT_MPG, not_mpg);
     status.gaps.insert(GAP_VIDEO_NAME_ABSENT, absent);
     status.gaps.insert(GAP_VIDEO_NAME_AMBIGUOUS, ambiguous);
     status.gaps.insert(GAP_VIDEO_DUPLICATE_NAME, duplicate);
     status.gaps.insert(GAP_VIDEO_UNNAMED_FILE, unnamed);
+    status.gaps.insert(GAP_VIDEO_UNREADABLE_SOURCE, unreadable);
 
     status.rows = rows.len();
     if rows.is_empty() {
-        return Ok(unpopulated(
-            status,
-            format!(
-                "the {FMV_MEMBER} member of {spelling} states {actions} {FMV_PLAY_ACTION} \
-                 action(s) but none names a file that resolves to exactly one inventoried file, \
-                 so no video row could be built",
-                actions = names.len() + not_text
-            ),
+        let mut reasons = unreadable_reasons;
+        reasons.extend(empty_reasons);
+        if !names.is_empty() {
+            reasons.push(format!(
+                "none of the {} name(s) the read sources state resolves to exactly one \
+                 inventoried file",
+                names.len()
+            ));
+        }
+        return Ok(unpopulated(status, reasons.join("; ")));
+    }
+    if unreadable > 0 {
+        status.diagnostic = Some(format!(
+            "{unreadable} of the 2 video sources could not be read: {}",
+            unreadable_reasons.join("; ")
         ));
     }
     Ok((rows, status))
+}
+
+/// One video file name a source record states.
+struct VideoName {
+    /// The name exactly as the record spells it (`MSopen1.mpg`,
+    /// `CrimFlag.MPG`), kept outside identity as the row's display name.
+    name: String,
+    /// The claim id the resolved row's single static edge reports.
+    claim: &'static str,
+    /// The span the edge's provenance names: the record's own line inside the
+    /// decoded layout member for a [`VIDEO_LAYOUT_MEMBER`] name; `None` for a
+    /// `PLAYAVI` name, whose edge keeps the resolved file's own span, the
+    /// provenance F14-D.VIDEO established.
+    provenance_span: Option<SourceSpan>,
+}
+
+/// What one of the video collection's two sources contributed.
+#[derive(Default)]
+struct VideoSourceReading {
+    /// The `.mpg` names the source's records state, in record order.
+    names: Vec<VideoName>,
+    /// `PLAYAVI` actions whose argument is not text.
+    not_text: usize,
+    /// Movie-kind records whose file-name field is not an `.mpg` name.
+    not_mpg: usize,
+    /// Why the source could not be read: its container is not inventoried,
+    /// its member is absent from the container, or its bytes do not decode,
+    /// mount or read. `None` when the source was read.
+    unreadable: Option<String>,
+    /// Why a source that read stated no usable video name. `None` when it
+    /// named at least one file or when it could not be read.
+    empty: Option<String>,
+}
+
+/// The names the `PLAYAVI` actions of [`FMV_MEMBER`] state, decoded by the
+/// producing stage's own `.zrd` reader, plus what that member could not
+/// state.
+///
+/// An absent archive or member, or a member whose bytes do not decode, is not
+/// a collection error: the reading records [`VideoSourceReading::unreadable`]
+/// and yields no names, so the other source's rows still build.
+fn playavi_video_names(
+    install_root: &Path,
+    files: &BTreeMap<String, &InstallFileRecord>,
+) -> Result<VideoSourceReading, BaselineError> {
+    let mut reading = VideoSourceReading::default();
+    let Some(record) = files.get(&FMV_ARCHIVE.to_ascii_lowercase()) else {
+        reading.unreadable = Some(format!(
+            "the installation inventories no {FMV_ARCHIVE}, so the {FMV_MEMBER} definitions \
+             have no bytes to read"
+        ));
+        return Ok(reading);
+    };
+    let spelling = record.relative_spelling.as_str();
+    let bytes =
+        std::fs::read(install_root.join(spelling)).map_err(|source| BaselineError::Read {
+            path: spelling.to_owned(),
+            source,
+        })?;
+    // The production container discovery locates the member by the archive's
+    // own index; a member it does not locate is simply absent.
+    let discovery = discover_container(spelling, &record.relative_spelling, &bytes);
+    let Some(fmv) = discovery.programs().iter().find(|program| {
+        program
+            .locator()
+            .member()
+            .is_some_and(|member| member.eq_ignore_ascii_case(FMV_MEMBER))
+    }) else {
+        reading.unreadable = Some(format!("{spelling} holds no {FMV_MEMBER} member"));
+        return Ok(reading);
+    };
+    let root = match decode_zrd(fmv.bytes()) {
+        Ok(root) => root,
+        Err(error) => {
+            reading.unreadable = Some(format!(
+                "{spelling} member {FMV_MEMBER} does not decode as a .zrd document: code {} at \
+                 offset {}",
+                error.code(),
+                error.offset()
+            ));
+            return Ok(reading);
+        }
+    };
+    let mut names = Vec::new();
+    collect_playavi_names(&root, &mut names, &mut reading.not_text);
+    if names.is_empty() {
+        // A member whose only PLAYAVI actions carry non-text arguments still
+        // states no name; the actions are reported under `not_text` either
+        // way.
+        reading.empty = Some(format!(
+            "{spelling} member {FMV_MEMBER} states no {FMV_PLAY_ACTION} action naming a video"
+        ));
+    }
+    reading.names = names
+        .into_iter()
+        .map(|name| VideoName {
+            name,
+            claim: CLAIM_VIDEO_PLAYAVI,
+            provenance_span: None,
+        })
+        .collect();
+    Ok(reading)
+}
+
+/// The `.mpg` names the movie records of [`VIDEO_LAYOUT_MEMBER`] state, read
+/// through the production ROF mount and the keyed-list configuration reader,
+/// plus what that member could not state.
+///
+/// An absent container or member, or a member that does not mount, read or
+/// parse, is not a collection error: the reading records
+/// [`VideoSourceReading::unreadable`] and yields no names, so the other
+/// source's rows still build.
+fn layout_video_names(
+    install_root: &Path,
+    install_hash: ContentHash,
+    files: &BTreeMap<String, &InstallFileRecord>,
+) -> Result<VideoSourceReading, BaselineError> {
+    let mut reading = VideoSourceReading::default();
+    let Some(record) = files.get(&VIDEO_LAYOUT_CONTAINER.to_ascii_lowercase()) else {
+        reading.unreadable = Some(format!(
+            "the installation inventories no {VIDEO_LAYOUT_CONTAINER}, so the layout movie \
+             records have no bytes to read"
+        ));
+        return Ok(reading);
+    };
+    let path = install_root.join(record.relative_spelling.as_str());
+    let mut builder = SessionBuilder::new(ResolveContext::new(install_hash));
+    let mount = MountBuilder::new(
+        MountId::new("rof-video-layout")
+            .map_err(|error| BaselineError::Session(error.to_string()))?,
+        MountNamespace::new(INSTALL_NAMESPACE)
+            .map_err(|error| BaselineError::Session(error.to_string()))?,
+        PrecedenceClass::Shared,
+        VIDEO_LAYOUT_CONTAINER,
+    )
+    .retail();
+    let source = match mount_rof_into(&mut builder, mount, &path) {
+        Ok(source) => source,
+        Err(error) => {
+            reading.unreadable = Some(format!(
+                "the shared archive {VIDEO_LAYOUT_CONTAINER} does not mount as the observed ROF \
+                 container: {error}"
+            ));
+            return Ok(reading);
+        }
+    };
+    let key = AssetKey::from_spelling(source.namespace().as_str(), VIDEO_LAYOUT_MEMBER, "default")
+        .map_err(|error| BaselineError::Identity {
+            identity: VIDEO_LAYOUT_MEMBER.to_owned(),
+            reason: error.to_string(),
+        })?;
+    let Some(info) = source.member(&key).cloned() else {
+        reading.unreadable = Some(format!(
+            "the shared archive {VIDEO_LAYOUT_CONTAINER} holds no {VIDEO_LAYOUT_MEMBER} member"
+        ));
+        return Ok(reading);
+    };
+    let read = match source.read(&key) {
+        Ok(read) => read,
+        Err(error) => {
+            reading.unreadable = Some(format!(
+                "the layout member {VIDEO_LAYOUT_MEMBER} does not read: {error}"
+            ));
+            return Ok(reading);
+        }
+    };
+    let bytes = read.data.as_slice();
+    let member_sha256 = cs_assets::install::sha256(bytes);
+    // The member's decoded-extent span, the convention `PaintShopCatalog`
+    // established for a compressed member: the stored extent's offset, the
+    // decoded length and the digest of exactly the decoded bytes.
+    let member_span = SourceSpan::new(
+        install_hash,
+        VIDEO_LAYOUT_CONTAINER,
+        Some(VIDEO_LAYOUT_MEMBER),
+        info.offset,
+        info.declared_decoded_len,
+        Some(member_sha256),
+    )
+    .map_err(|source| BaselineError::Span {
+        path: VIDEO_LAYOUT_MEMBER.to_owned(),
+        source,
+    })?;
+    let mut context = cs_formats::ParseContext::with_defaults(record.relative_spelling.as_str());
+    let document = match ConfigDocument::read(&mut context, member_span, bytes) {
+        Ok(document) => document,
+        Err(error) => {
+            reading.unreadable = Some(format!(
+                "the member {VIDEO_LAYOUT_MEMBER} does not read as the keyed-list layout \
+                 member: {error}"
+            ));
+            return Ok(reading);
+        }
+    };
+
+    for node in document.nodes() {
+        let ConfigNodeKind::Entry(entry) = &node.kind else {
+            continue;
+        };
+        if RecordSchema::for_entry(entry) != Some(RecordSchema::Layout(RecordKind::Movie)) {
+            continue;
+        }
+        // `for_entry` only classifies a `RawValue::Fields` value, so the
+        // record's file name is position 1 of the field list — the movie's
+        // file name the measured schema records.
+        let RawValue::Fields(fields) = &entry.value else {
+            continue;
+        };
+        let Some(name) = fields.get(1).map(RawField::value) else {
+            reading.not_mpg += 1;
+            continue;
+        };
+        if !is_mpg_name(name) {
+            reading.not_mpg += 1;
+            continue;
+        }
+        // The edge provenance's span is the record's own line: a checked
+        // range inside the member's decoded extent, under the decoded
+        // member's digest — the same convention a `.zrd` member's node spans
+        // use (`member_node_span`).
+        let provenance_span = SourceSpan::new(
+            install_hash,
+            VIDEO_LAYOUT_CONTAINER,
+            Some(VIDEO_LAYOUT_MEMBER),
+            info.offset
+                .checked_add(node.offset)
+                .ok_or(BaselineError::Span {
+                    path: VIDEO_LAYOUT_MEMBER.to_owned(),
+                    source: SourceSpanError::RangeOverflow {
+                        offset: info.offset,
+                        length: node.offset,
+                    },
+                })?,
+            node.content.len() as u64,
+            Some(member_sha256),
+        )
+        .map_err(|source| BaselineError::Span {
+            path: VIDEO_LAYOUT_MEMBER.to_owned(),
+            source,
+        })?;
+        // The lossy spelling is enough for both jobs a name does here: it
+        // cannot spell an inventoried file it was not — a replacement
+        // character matches no real file name — and it keeps the record's
+        // own spelling as the row's display name as closely as the bytes
+        // allow.
+        reading.names.push(VideoName {
+            name: String::from_utf8_lossy(name).into_owned(),
+            claim: CLAIM_VIDEO_LAYOUT,
+            provenance_span: Some(provenance_span),
+        });
+    }
+    if reading.names.is_empty() {
+        reading.empty = Some(format!(
+            "the member {VIDEO_LAYOUT_MEMBER} of {VIDEO_LAYOUT_CONTAINER} states no movie \
+             record naming an .mpg file"
+        ));
+    }
+    Ok(reading)
+}
+
+/// Whether `name` spells an `.mpg` file name: the four bytes `.mpg`,
+/// ASCII case-folded, at the end — the same predicate the
+/// `unnamed_video_file` scan applies to the inventory's own spellings.
+fn is_mpg_name(name: &[u8]) -> bool {
+    name.len() >= 4 && name[name.len() - 4..].eq_ignore_ascii_case(b".mpg")
 }
 
 /// Every `PLAYAVI` action of a decoded FMV document, in document order.
@@ -5376,11 +5681,17 @@ fn collect_playavi_names(node: &ZrdValue, names: &mut Vec<String>, not_text: &mu
 
 /// One named video as a catalog row, located by the named file's own bytes.
 ///
-/// `named_as` is the record's own spelling (`MSopen1.mpg`); the identity and
-/// the span come from the resolved inventoried file, which the name resolved to
-/// exactly once.
+/// `named_as` is the record's own spelling (`MSopen1.mpg`, `CrimFlag.MPG`);
+/// the identity and the row's origin span come from the resolved inventoried
+/// file, which the name resolved to exactly once. `claim` is the observation
+/// the row's single static edge reports — [`CLAIM_VIDEO_PLAYAVI`] or
+/// [`CLAIM_VIDEO_LAYOUT`] — and `provenance_span` the source span that
+/// observation is located at: the record's own line for a layout name, the
+/// resolved file's own span for a `PLAYAVI` name.
 fn video_row(
     named_as: &str,
+    claim: &'static str,
+    provenance_span: Option<&SourceSpan>,
     record: &InstallFileRecord,
     install_hash: ContentHash,
 ) -> Result<CatalogElement, BaselineError> {
@@ -5420,7 +5731,7 @@ fn video_row(
         dependencies: vec![Dependency {
             target: file_id,
             kind: DependencyKind::Static,
-            provenance: observed(CLAIM_VIDEO_PLAYAVI, &span)?,
+            provenance: observed(claim, provenance_span.unwrap_or(&span))?,
         }],
         parse_state: cs_types::install::ParseState::Unparsed,
         normalize_state: NormalizeState::NotNormalized,
@@ -5430,12 +5741,11 @@ fn video_row(
             UnsupportedReason::NotParsed,
             unknown_reason(
                 VIDEO_UNKNOWN_CLAIM,
-                format!(
-                    "{FMV_MEMBER} names this file as a video to play, but no original byte read \
-                     here states its codec, duration, resolution or playback trigger, and no \
-                     media player consumer is claimed (F40 measures those), so the row carries no \
-                     value"
-                ),
+                "the records that name this file state it is a video to play, but no original \
+                 byte read here states its codec, duration, resolution or playback trigger, and \
+                 no media player consumer is claimed (F40 measures those), so the row carries \
+                 no value"
+                    .to_owned(),
             )?,
             UnsupportedReason::MissingRuntimeConsumer,
         ],
