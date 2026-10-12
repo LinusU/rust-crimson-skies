@@ -430,16 +430,24 @@ fn rows_of(
 /// names the review that actually happened.
 fn review_identity() -> String {
     let recorded = String::from(
-        "implementer: sonnet-1/sonnet-1 (Rally #563, implement claim of 2026-10-11T15:43:14Z), \
-         model Sonnet 5.5. reviewer: the Rally review claim opened after this submission; at the \
-         time of writing no review has taken place, so this report claims no independent review \
-         and the format and identity claims still deserve a different agent instance or model \
-         with a fresh context. The reviewing agent replaces this literal with their own identity \
-         (through CS_EVIDENCE_REVIEW) in the same commit that regenerates the report. No agent \
-         review awards more than checked, and nothing here is verified_original: retail is read \
-         access to the installation's own files, the original game was never run, and the \
-         engine and gun collections are structural. No agent review replaces the owner's human \
-         approval",
+        "implementer: sonnet-1/sonnet-1 (Rally #563, implement claim of \
+         2026-10-11T15:43:14Z), model Sonnet 5.5. reviewer: sonnet-1/sonnet-1 \
+         (Rally #563 review claim of 2026-10-11T16:31:06Z, merged \
+         2026-10-11T16:47:17Z at c6194f57), model Sonnet 5.5, the same agent \
+         instance and model as the implementer with no fresh context, so this \
+         review is not independent and the format and identity claims still \
+         deserve a different agent instance or model. The reviewer read the \
+         baseline.rs diff and reran `cargo test --workspace --locked -- \
+         accept_f14_d_8_engine_gun_ --include-ignored` with CS_GAME_DIR (4 \
+         passed: 3 synthetic, 1 retail); the reviewer did not rerun fmt, clippy \
+         or the plain workspace test, relying on the implementer's recorded runs \
+         and on CI green on the merged commit, and regenerated no report: this \
+         copy is the implementer's, written inside the implement claim at \
+         2026-10-11T16:11:50Z. No agent review awards more than checked, and \
+         nothing here is verified_original: retail is read access to the \
+         installation's own files, the original game was never run, and the \
+         engine and gun collections are structural. No agent review replaces the \
+         owner's human approval",
     );
     std::env::var("CS_EVIDENCE_REVIEW").unwrap_or(recorded)
 }
