@@ -139,9 +139,12 @@ or an owner capture, which no agent can synthesize.
   report.
 - This file.
 
-No production crate is changed: the census reads the same production
+No production logic is changed: the census reads the same production
 readers the baseline inventory already uses, and the measured state it
-pins is the state `main` ships.
+pins is the state `main` ships. (The review additionally corrected the
+now-stale `CustomPlane` rationale paragraph in `baseline.rs`'s module
+documentation — a doc comment only — so it describes the measured
+negative instead of the pre-F64-B unmeasured state.)
 
 ## Test inventory
 
@@ -192,8 +195,11 @@ committed report always names the tree its acceptance run actually
 tested: first on the tree reviewed at that moment, then again after the
 branch was rebased onto the then-current `main` (the M01-B-OBJ-4
 commits, no file overlap, no Cargo changes), and finally on the rebased
-head itself, so the committed report names `candidate_tree
-0b3d45c4…`, the tree of the commit it sits on top of. All
+head itself after that head also corrected this file's then-stale
+`CustomPlane` rationale comment in
+`crates/cs_content/src/catalog/baseline.rs`, so the committed report
+names `candidate_tree` equal to the tree of the commit it sits on top
+of. All
 regenerations reproduced every substantive field: same install/content
 digests, same 228 files, same per-family counts, same 847/847 ROF
 members, same 6 334 indexed members, the same six candidates with the

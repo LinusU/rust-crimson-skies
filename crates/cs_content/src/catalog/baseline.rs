@@ -201,16 +201,17 @@
 //!   duplicate identity;
 //!
 //! `ContentKind::CustomPlane` gets **no** row and no collection record, and the
-//! reason is that **nothing has been measured**: F64-A's legacy inventory is a
-//! list of what must be known, and it was written without the `retail`
-//! capability, so its `LEGACY_LAYOUT_INVENTORY[CustomAircraft].referenced_by`
-//! is empty because no installation file was ever looked at, not because one was
-//! searched and found to reference nothing (`evidence` is `Unknown`, and its own
-//! unknowns list "whether any original content path references a custom aircraft
-//! at all" first). No byte of this installation has been shown to name a legacy
-//! aircraft either, so a row could only be guessed from a file name; the question
-//! is recorded as unmeasured in the task's findings note and evidence report and
-//! assigned to the follow-up that measures the layout before any row can exist.
+//! reason is now **measured** rather than unmeasured: F64-B swept the
+//! installation's inventoried file spellings and found none of the storage
+//! shapes the engine image's own path templates name, and T582's member-level
+//! census (`docs/findings/2026-10-12-t582-legacy-custom-aircraft-census.md`)
+//! decoded every container member through the production readers and found
+//! none either — the originals are runtime-created under `Planes\`.
+//! `LEGACY_LAYOUT_INVENTORY[CustomAircraft]` records the one measured
+//! referencing member (`ASSETS/SCRIPTS/PLANECONSTRUCTION.SCRIPT`), and its
+//! `evidence` stays `Unknown` because no stored-plane file ships to measure a
+//! byte layout from; until one is captured, a row could only be guessed from a
+//! file name, which this catalog refuses.
 //!
 //! Every row's [`Origin`] is [`Origin::Installation`] with a checked
 //! [`SourceSpan`] and the installation fingerprint of the bytes that were read,
