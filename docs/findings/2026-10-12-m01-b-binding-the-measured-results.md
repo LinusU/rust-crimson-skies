@@ -167,6 +167,41 @@ and M02 bindings (nothing typed by hand), `tools/validate_evidence.py
 … --require-pass` validates it, and the report is committed as
 `docs/findings/evidence/M01-B.json`.
 
+## Review (2026-10-13)
+
+Reviewed by **opencode-go/mimo-v2.6-flash** (agent bunny-alpha-1, Rally #259
+review claim of 2026-10-13) — the same agent name and model as the
+implementer, but a separate session whose context was fresh: it started from
+the task history, `missions/M01.md`, `docs/contracts/SCRIPT-MISSION.md` and
+the branch diff. This is **not** independent review per AGENTS.md, and the
+format and mission-semantics claims here still deserve a different agent
+instance or model; a merge awards `checked` at most. What the review did:
+
+* re-read the whole diff against the task description, the owner's 2026-10-12
+  directive and the subtask findings, and checked every number the three
+  replacement entries quote (58 blocks / 358 fields / 308 recovered / 45 +
+  5 unrecovered; 353 sites / 43 keys / 41 + 2 + 0; `OBJECTIVE24`
+  `INSTANTWIN`, `OBJECTIVE40` `INSTANTLOSS`, the `-1` sentinel) against
+  `2026-10-12-m01-b-obj-integration-family-verdict.md`,
+  `docs/findings/scripts/2026-10-12-m01-b-opc-directive-programs-in-the-f13-c-probe.md`
+  and `2026-10-12-m01-b-wake-world-facts-that-wake-m01-finish-blocks.md` —
+  all match;
+* rebased onto `origin/main` `1be927d6` (conflict-free) and re-ran the full
+  four checks on the rebased tree: `cargo fmt --check` = 0, `cargo clippy …
+  -D warnings` = 0, `cargo test --workspace --locked` = 0, the
+  `accept_m01_b_` selection with `CS_GAME_DIR` = 0 (62 tests, 0 failed), the
+  `accept_m01_a_` pin = 0 (8 tests);
+* applied two mutation probes, each reverted afterwards and each failing the
+  test that pins it: keying `MISSION_SCOPED_CHECKLIST_OVERRIDES` at `M02`
+  instead of `M01` (the synthetic inventory test fails), and dropping the
+  replacement in `SourceContext::bind` (the retail binding-pin test fails);
+* regenerated this task's evidence report on the reviewed tree through the
+  producing harness, now carrying both identities, and re-validated it with
+  `tools/validate_evidence.py --require-pass` (= 0).
+
+No defect was found in the implementation; nothing was changed besides this
+section and the regenerated `docs/findings/evidence/M01-B.json`.
+
 ## Sources
 
 `$CS_GAME_DIR` read-only through `cs_assets::install::discover`;
