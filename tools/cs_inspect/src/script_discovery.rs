@@ -40,6 +40,14 @@
 //! * every located program is walked **in isolation** against the signature
 //!   table, one program per probe, so a stop is reported rather than
 //!   aborting the run;
+//! * a reader archive's **control member** (the one decoded `.zrd` member that
+//!   declares numbered `OBJECTIVE<N>` blocks, chosen by
+//!   `cs_content::mission_control::control_member`, never by name) is a text
+//!   *directive program*, not a stream of binary opcodes. It is not walked: it
+//!   is filed with every distinct directive key it reaches, each listed as
+//!   measured (with the findings that measure it), a terminal outcome, or
+//!   explicitly unknown with its reason (`probe.directive_program_rows`).
+//!   No numeric signature claim describes such a program;
 //! * `--signatures <file>` supplies caller-measured claims in the shape
 //!   `<opcode> <spelling> <program> <arity> <signature> <effects> <timing>
 //!   <errors> <citation> [note]`, exactly as F07-D's `--classes` supplies
@@ -68,18 +76,25 @@ use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
 use cs_assets::install;
+use cs_content::mission_control::{
+    DecodedMember, DirectiveDisposition, control_member, measure_control_record,
+};
+use cs_content::stunts::decode_zrd;
 use cs_formats::script_raw::{
-    ClaimError, Confidence, ContainerDiscovery, EvidenceLocator, ProbeConfig, ProbeReport,
-    ProbeSession, ProgramKind, RecordProbeError, RecordProbeStats, RecordReachability,
-    ResearchMethod, ScriptEvidence, ScriptRecord, ScriptSource, SignatureClaim, SignatureShape,
-    SignatureTable, discover_container, inventory_scripts, probe_records,
+    ClaimError, Confidence, ContainerDiscovery, DirectiveKeyRow, DirectiveKeyStatus,
+    DirectiveProgramProbe, EvidenceLocator, ProbeConfig, ProbeReport, ProbeSession, ProgramKind,
+    RecordProbeError, RecordProbeStats, RecordReachability, ResearchMethod, ScriptEvidence,
+    ScriptRecord, ScriptSource, SignatureClaim, SignatureShape, SignatureTable, discover_container,
+    inventory_scripts, probe_records,
 };
 use cs_formats::zbd::{HeaderStatus, ZbdFamily};
 use cs_types::install::RelativePath;
 
 /// The report format version. Version 2 adds the `probe` and per-container
-/// `records` sections (F13-C); the F13-B fields are unchanged.
-pub const SCRIPTS_REPORT_VERSION: &str = "cs-inspect-scripts/2";
+/// `records` sections (F13-C); version 3 adds the `probe.directive_*` fields
+/// (M01-B-OPC) and counts a text directive program as accounted for, not as
+/// unresolved; the F13-B fields are unchanged.
+pub const SCRIPTS_REPORT_VERSION: &str = "cs-inspect-scripts/3";
 
 /// The instruction unit the walk assumes when `--word-bytes` is omitted. It
 /// is an **assumption**, reported as such in `probe.assumed`; F13 has not
@@ -184,6 +199,15 @@ pub struct ScriptsSummary {
     pub programs_resolved: usize,
     /// Located programs that stopped at an unknown opcode.
     pub programs_retryable: usize,
+    /// Located programs classified as text directive programs instead of
+    /// being walked as binary words.
+    pub directive_programs: usize,
+    /// Distinct directive keys (summed per program) with a measured meaning.
+    pub directive_keys_known: usize,
+    /// Distinct directive keys (summed per program) explicitly unknown.
+    pub directive_keys_unknown: usize,
+    /// Blocks of directive programs that did not read as a directive list.
+    pub directive_refused_blocks: usize,
 }
 
 impl ScriptsSummary {
@@ -193,11 +217,16 @@ impl ScriptsSummary {
         self.dispatch_refused == 0 && self.unlocated_containers == 0 && self.finding_containers == 0
     }
 
-    /// Whether every located program was resolved by the signature table. With
-    /// no `--signatures` file the table ships empty, so this is `false` for
-    /// any corpus that holds a program — the honest state, never a pass.
+    /// Whether every located program was accounted for: walked to the end
+    /// against the signature table, or classified as a text directive program
+    /// whose every key is listed as measured or explicitly unknown (a block
+    /// that did not read as a directive list leaves the program unaccounted).
+    /// With no `--signatures` file the table ships empty, so this is `false`
+    /// for any corpus that holds a binary program — the honest state, never a
+    /// pass.
     pub fn signatures_complete(&self) -> bool {
-        self.programs_resolved == self.programs
+        self.directive_refused_blocks == 0
+            && self.programs_resolved + self.directive_programs == self.programs
     }
 }
 
@@ -344,8 +373,20 @@ pub fn scripts_command_result(args: &[String], env_cs_path: Option<OsString>) ->
         summary.records_unused += record_stats.unused;
         summary.unused_unknown_records += record_stats.unused_unknown;
         rows.push(container_json(&discovery, &record_rows));
-        for program in discovery.programs() {
-            if let Err(error) = session.probe(program) {
+        let directive = directive_program_of(&discovery);
+        for (index, program) in discovery.programs().iter().enumerate() {
+            let outcome = match &directive {
+                Some(found) if found.index == index => session
+                    .record_directive_program(
+                        program,
+                        found.blocks,
+                        found.refused_blocks,
+                        found.keys.clone(),
+                    )
+                    .map(|_| ()),
+                _ => session.probe(program).map(|_| ()),
+            };
+            if let Err(error) = outcome {
                 diagnostics.push(format!("{spelling}: signature probe failed: {error}"));
                 runtime_failed = true;
             }
@@ -381,6 +422,12 @@ pub fn scripts_command_result(args: &[String], env_cs_path: Option<OsString>) ->
     summary.signature_claims = probe_report.table().len();
     summary.programs_resolved = probe_report.resolved();
     summary.programs_retryable = probe_report.retryable();
+    for program in probe_report.directive_programs() {
+        summary.directive_programs += 1;
+        summary.directive_keys_known += program.known_keys();
+        summary.directive_keys_unknown += program.unknown_keys();
+        summary.directive_refused_blocks += program.refused_blocks() as usize;
+    }
     let signature_check = !signatures_supplied || summary.signatures_complete();
     let passes = summary.covered() && signature_check;
     let probe_section = probe_json(&probe_report, signatures_supplied, assumed, &summary);
@@ -550,6 +597,12 @@ fn probe_json(
     for probe in report.probes() {
         *stops.entry(probe.code()).or_default() += 1;
     }
+    let directive_rows = report
+        .directive_programs()
+        .iter()
+        .map(directive_program_json)
+        .collect::<Vec<_>>()
+        .join(", ");
     let stops = stops
         .iter()
         .map(|(code, count)| format!("{}: {count}", jstr(code)))
@@ -558,15 +611,156 @@ fn probe_json(
     format!(
         "{{\"supplied\": {supplied}, \"assumed\": {assumed}, \"word_bytes\": {}, \
          \"budget\": {}, \"claims\": {}, \"programs\": {}, \"resolved\": {}, \"unresolved\": {}, \
-         \"retryable\": {}, \"complete\": {}, \"stops\": {{{stops}}}}}",
+         \"retryable\": {}, \"complete\": {}, \"stops\": {{{stops}}}, \
+         \"directive_programs\": {}, \"directive_keys_known\": {}, \
+         \"directive_keys_unknown\": {}, \"directive_program_rows\": [{directive_rows}]}}",
         report.config().word_bytes(),
         report.config().budget(),
         summary.signature_claims,
         summary.programs,
         summary.programs_resolved,
-        summary.programs - summary.programs_resolved,
+        summary.programs - summary.programs_resolved - summary.directive_programs,
         summary.programs_retryable,
         summary.signatures_complete(),
+        summary.directive_programs,
+        summary.directive_keys_known,
+        summary.directive_keys_unknown,
+    )
+}
+
+/// The control program of one reader container, found by the measured rule.
+struct DirectiveSelection {
+    /// Index into the discovery's programs.
+    index: usize,
+    blocks: u32,
+    refused_blocks: u32,
+    keys: Vec<DirectiveKeyRow>,
+}
+
+/// The findings that record the reading of a terminal-outcome spelling.
+const TERMINAL_EVIDENCE: [&str; 2] = [
+    "2026-10-04-m01-lc-mission-program",
+    "2026-10-06-m01-lc-directive-meaning",
+];
+
+/// Classifies the one control member of a reader container as a directive
+/// program.
+///
+/// The member is chosen by `cs_content`'s measured rule (exactly one decoded
+/// member declares numbered objective blocks), never by name. A member that
+/// does not decode as `.zrd`, a container with no or several candidates and a
+/// non-reader container all answer `None`, and their programs are probed as
+/// before: nothing is classified on a guess.
+fn directive_program_of(discovery: &ContainerDiscovery<'_>) -> Option<DirectiveSelection> {
+    if discovery.family() != Some(ZbdFamily::Reader) {
+        return None;
+    }
+    let mut decoded = Vec::new();
+    let mut indices = Vec::new();
+    for (index, program) in discovery.programs().iter().enumerate() {
+        let Some(name) = program.locator().member() else {
+            continue;
+        };
+        let Ok(document) = decode_zrd(program.bytes()) else {
+            continue;
+        };
+        decoded.push(DecodedMember::new(name, document));
+        indices.push(index);
+    }
+    let control = control_member(discovery.container(), &decoded).ok()?;
+    let index = indices[decoded
+        .iter()
+        .position(|member| std::ptr::eq(member, control))?];
+    let record = measure_control_record(&control.document);
+    let keys = record
+        .keys()
+        .iter()
+        .map(|measured| {
+            let status = match measured.disposition() {
+                DirectiveDisposition::TerminalOutcome { outcome } => DirectiveKeyStatus::Terminal {
+                    outcome: outcome.label().to_owned(),
+                    evidence: TERMINAL_EVIDENCE.map(str::to_owned).to_vec(),
+                },
+                DirectiveDisposition::Measured(directive) => DirectiveKeyStatus::Measured {
+                    operation: format!("{:?}", directive.operation),
+                    evidence: directive.evidence.iter().map(|&s| s.to_owned()).collect(),
+                },
+                DirectiveDisposition::Unmeasured { reason } => DirectiveKeyStatus::Unknown {
+                    code: reason.code().to_owned(),
+                    detail: reason.detail(),
+                },
+            };
+            DirectiveKeyRow::new(
+                measured.key.clone(),
+                measured.blocks,
+                measured.sites,
+                measured
+                    .shapes
+                    .iter()
+                    .map(|(shape, _)| shape.label())
+                    .collect(),
+                status,
+            )
+        })
+        .collect();
+    Some(DirectiveSelection {
+        index,
+        blocks: record.blocks(),
+        refused_blocks: record.refusals().len() as u32,
+        keys,
+    })
+}
+
+/// Renders one directive program: where it lives and every key it reaches.
+fn directive_program_json(program: &DirectiveProgramProbe) -> String {
+    let keys = program
+        .keys()
+        .iter()
+        .map(|row| {
+            let (detail, evidence) = match row.status() {
+                DirectiveKeyStatus::Measured {
+                    operation,
+                    evidence,
+                } => (
+                    format!("\"operation\": {}", jstr(operation)),
+                    Some(evidence),
+                ),
+                DirectiveKeyStatus::Terminal { outcome, evidence } => {
+                    (format!("\"outcome\": {}", jstr(outcome)), Some(evidence))
+                }
+                DirectiveKeyStatus::Unknown { code, detail } => (
+                    format!("\"reason\": {}, \"detail\": {}", jstr(code), jstr(detail)),
+                    None,
+                ),
+            };
+            let evidence = evidence.map_or(String::new(), |list| {
+                let list: Vec<String> = list.iter().map(|stem| jstr(stem)).collect();
+                format!(", \"evidence\": [{}]", list.join(", "))
+            });
+            let shapes: Vec<String> = row.shapes().iter().map(|shape| jstr(shape)).collect();
+            format!(
+                "{{\"key\": {}, \"status\": {}, \"blocks\": {}, \"sites\": {}, \
+                 \"shapes\": [{}], {detail}{evidence}}}",
+                jstr(row.key()),
+                jstr(row.status().label()),
+                row.blocks(),
+                row.sites(),
+                shapes.join(", "),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
+    format!(
+        "{{\"mission\": {}, \"locator\": {}, \"class\": \"directive_program\", \
+         \"blocks\": {}, \"refused_blocks\": {}, \"sites\": {}, \"keys_known\": {}, \
+         \"keys_unknown\": {}, \"keys\": [{keys}]}}",
+        jstr(program.mission()),
+        jstr(&program.locator().to_string()),
+        program.blocks(),
+        program.refused_blocks(),
+        program.sites(),
+        program.known_keys(),
+        program.unknown_keys(),
     )
 }
 
@@ -1340,6 +1534,168 @@ mod tests {
         );
     }
 
+    // --- M01-B-OPC: text directive programs ------------------------------------
+
+    fn zrd_word(value: u32) -> [u8; 4] {
+        value.to_le_bytes()
+    }
+
+    fn zrd_text(value: &str) -> Vec<u8> {
+        let mut out = zrd_word(3).to_vec();
+        out.extend_from_slice(&zrd_word(value.len() as u32));
+        out.extend_from_slice(value.as_bytes());
+        out
+    }
+
+    /// A list node: the stored count is one more than the child count.
+    fn zrd_list(children: &[Vec<u8>]) -> Vec<u8> {
+        let mut out = zrd_word(4).to_vec();
+        out.extend_from_slice(&zrd_word(children.len() as u32 + 1));
+        for child in children {
+            out.extend_from_slice(child);
+        }
+        out
+    }
+
+    /// An authored control member: one `OBJECTIVE1` block holding a terminal
+    /// key (bare), a measured key with an argument list and a key no finding
+    /// measures.
+    fn authored_objectives() -> Vec<u8> {
+        let block = zrd_list(&[
+            zrd_text("INSTANTWIN"),
+            zrd_text("WAKE_ANIM"),
+            zrd_list(&[zrd_text("runwayanim")]),
+            zrd_text("SET_AI_"),
+            zrd_list(&[zrd_text("x")]),
+        ]);
+        zrd_list(&[zrd_list(&[zrd_text("OBJECTIVE1"), block])])
+    }
+
+    /// M01-B-OPC: the production `scripts` path classifies a mission's control
+    /// member as a directive program instead of walking its text as binary
+    /// words, lists every key it reaches as measured or explicitly unknown, and
+    /// still probes the other members as binary programs.
+    #[test]
+    fn accept_m01_b_opc_cli_classifies_the_control_member_as_a_directive_program() {
+        let tree = Temp::new("opc-classify");
+        tree.write(
+            "ZBD/C1C/M01/zrdr.zbd",
+            &reader_archive(&[
+                (b"objectives.zrd", &authored_objectives()),
+                (b"aiv.zrd", b"\x01\x00\x00\x00"),
+            ]),
+        );
+
+        let result = run(&tree.0, &["--coverage"]);
+        assert_eq!(result.exit_code, 0, "{:?}", result.diagnostics);
+        let summary = result.summary.as_ref().expect("the command ran");
+        assert_eq!(summary.programs, 2);
+        assert_eq!(summary.directive_programs, 1);
+        assert_eq!(summary.directive_keys_known, 2);
+        assert_eq!(summary.directive_keys_unknown, 1);
+        // Only the binary member is walked, and it stops at an unknown opcode.
+        assert_eq!(summary.programs_resolved, 0);
+        assert_eq!(summary.programs_retryable, 1);
+        assert!(!summary.signatures_complete());
+
+        let report = result.report.expect("a report");
+        assert!(report.contains("\"directive_programs\": 1"), "{report}");
+        assert!(report.contains("\"unknown_opcode\": 1"), "{report}");
+        assert!(report.contains("\"class\": \"directive_program\""));
+        assert!(
+            report.contains("{\"key\": \"INSTANTWIN\", \"status\": \"terminal_outcome\""),
+            "{report}"
+        );
+        assert!(
+            report.contains("{\"key\": \"WAKE_ANIM\", \"status\": \"measured\""),
+            "{report}"
+        );
+        assert!(
+            report.contains("{\"key\": \"SET_AI_\", \"status\": \"unknown\""),
+            "{report}"
+        );
+        assert!(report.contains("\"reason\": \"meaning_not_measured\""));
+
+        // Every evidence stem a row cites is a findings document the
+        // repository holds.
+        let findings = workspace_root().join("docs/findings");
+        let mut cited = 0;
+        for part in report.split("\"evidence\": [").skip(1) {
+            let list = part.split(']').next().expect("a closed list");
+            for stem in list.split(',').map(|s| s.trim().trim_matches('"')) {
+                assert!(
+                    findings.join(format!("{stem}.md")).is_file(),
+                    "cited finding {stem} is not recorded"
+                );
+                cited += 1;
+            }
+        }
+        assert!(cited >= 3, "measured rows cite their findings: {report}");
+    }
+
+    /// M01-B-OPC: a text member that is not a unique control program is never
+    /// classified; it keeps the binary probe and its stop is reported.
+    #[test]
+    fn accept_m01_b_opc_cli_does_not_classify_members_without_a_unique_control_rule() {
+        let tree = Temp::new("opc-ambiguous");
+        tree.write(
+            "ZBD/C1C/M01/zrdr.zbd",
+            &reader_archive(&[
+                (b"objectives.zrd", &authored_objectives()),
+                (b"copy.zrd", &authored_objectives()),
+            ]),
+        );
+        let result = run(&tree.0, &[]);
+        let summary = result.summary.as_ref().expect("the command ran");
+        assert_eq!(summary.programs, 2);
+        assert_eq!(summary.directive_programs, 0);
+        assert_eq!(summary.programs_retryable, 2);
+    }
+
+    /// M01-B-OPC: the session refuses a listing that cannot be evidence.
+    #[test]
+    fn accept_m01_b_opc_session_refuses_unreasoned_unknown_keys() {
+        use cs_formats::script_raw::{
+            DirectiveKeyRow, DirectiveKeyStatus, ProbeConfig, ProbeSession, SignatureTable,
+            discover_container,
+        };
+        use cs_types::install::RelativePath;
+
+        let bytes = reader_archive(&[(b"objectives.zrd", &authored_objectives())]);
+        let path = RelativePath::new("ZBD/C1C/M01/zrdr.zbd").expect("a relative path");
+        let discovery = discover_container("ZBD/C1C/M01/zrdr.zbd", &path, &bytes);
+        let program = &discovery.programs()[0];
+        let mut session = ProbeSession::new(
+            SignatureTable::new(),
+            ProbeConfig::new(4, 16).expect("a valid config"),
+        );
+        let unknown = |reason: &str| {
+            DirectiveKeyRow::new(
+                "SET_AI_",
+                1,
+                1,
+                vec![],
+                DirectiveKeyStatus::Unknown {
+                    code: reason.to_owned(),
+                    detail: reason.to_owned(),
+                },
+            )
+        };
+        let error = session
+            .record_directive_program(program, 1, 0, vec![unknown(" ")])
+            .expect_err("an unknown key with no reason is refused");
+        assert_eq!(error.code(), "invalid_directive_program");
+        let error = session
+            .record_directive_program(program, 1, 0, vec![unknown("a"), unknown("a")])
+            .expect_err("a key listed twice is refused");
+        assert!(error.to_string().contains("duplicate_key"), "{error}");
+        session
+            .record_directive_program(program, 1, 0, vec![unknown("meaning_not_measured")])
+            .expect("a reasoned listing is filed");
+        assert!(session.probes().is_empty());
+        assert_eq!(session.teardown().directive_programs().len(), 1);
+    }
+
     // --- retail ---------------------------------------------------------------
 
     fn game_dir() -> PathBuf {
@@ -1356,6 +1712,52 @@ mod tests {
 
     fn workspace_root() -> PathBuf {
         Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
+    }
+
+    /// M01-B-OPC over the original installation: M01's control member
+    /// (`c1c/m01`) is a directive program whose keys are all accounted for —
+    /// the key site counts add up to the measured census, and every key is
+    /// measured, a terminal outcome, or unknown with a reason.
+    #[test]
+    #[ignore = "requires CS_GAME_DIR"]
+    fn accept_m01_b_opc_retail_m01_lists_every_reachable_key_as_measured_or_unknown() {
+        let dir = game_dir();
+        let result = scripts_command_result(
+            &args(&[
+                "--cs-path",
+                dir.to_str().expect("a UTF-8 game dir"),
+                "--coverage",
+            ]),
+            None,
+        );
+        assert_eq!(result.exit_code, 0, "{:?}", result.diagnostics);
+        let summary = result.summary.as_ref().expect("the command ran");
+        assert!(summary.directive_programs >= 1);
+        assert_eq!(summary.directive_refused_blocks, 0);
+        let report = result.report.expect("a report");
+        let row = report
+            .split("\"directive_program_rows\": [")
+            .nth(1)
+            .expect("the rows")
+            .split("{\"mission\": ")
+            .find(|row| row.starts_with("\"zbd/c1c/m01\""))
+            .expect("M01's directive program is listed");
+        // 58 blocks, 353 directive sites, 43 distinct keys (M01-LC finding).
+        assert!(row.contains("\"blocks\": 58"), "{row}");
+        assert!(row.contains("\"sites\": 353"), "{row}");
+        assert!(row.contains("\"refused_blocks\": 0"), "{row}");
+        assert_eq!(row.matches("{\"key\": ").count(), 43, "{row}");
+        for key in row.split("{\"key\": ").skip(1) {
+            let status = key.split("\"status\": \"").nth(1).expect("a status");
+            let status = status.split('"').next().expect("a closed status");
+            assert!(
+                matches!(status, "measured" | "terminal_outcome" | "unknown"),
+                "{key}"
+            );
+            if status == "unknown" {
+                assert!(key.contains("\"reason\": \""), "{key}");
+            }
+        }
     }
 
     /// AC02 over the original installation: the `scripts` command routes every
