@@ -4513,10 +4513,12 @@ fn read_mission_timer(value: &ZrdValue) -> Result<MissionTimerField, RecordField
         });
     };
     // A float's bits are read verbatim; an integer is converted (`fild`), the
-    // same conversion the parser emits — not a bit reinterpretation.
+    // same conversion the parser emits — not a bit reinterpretation, and
+    // signed like `fild dword`, so a payload above `i32::MAX` reads negative.
+    #[allow(clippy::cast_precision_loss)]
     let seconds = match first {
         ZrdValue::Float(v) => *v,
-        ZrdValue::Int(v) => *v as f32,
+        ZrdValue::Int(v) => *v as i32 as f32,
         _ => {
             return Err(RecordFieldError::MissionTimerShape {
                 detail: "element 0 is not a number; the engine logs \"Expecting real value\"",
