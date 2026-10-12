@@ -243,6 +243,7 @@
 //! the top of its file, where a reader lands anyway; the map above is kept as
 //! the overview of what this binary already links.
 
+mod accept_m01_b_wake;
 mod closure;
 mod common;
 mod coverage;
