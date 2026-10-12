@@ -5248,7 +5248,7 @@ fn video_rows(
         let base = candidate
             .relative_spelling
             .as_str()
-            .rsplit(|byte| byte == '/' || byte == '\\')
+            .rsplit(['/', '\\'])
             .next()
             .unwrap_or(candidate.relative_spelling.as_str());
         by_file_name

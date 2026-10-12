@@ -227,18 +227,6 @@ fn unknown_claim(row: &CatalogElement) -> Option<&str> {
         })
 }
 
-/// The gap map with every code at zero, so a test can compare the whole
-/// accounting shape.
-fn zero_gaps() -> BTreeMap<&'static str, usize> {
-    BTreeMap::from([
-        ("playavi_name_not_text", 0),
-        ("named_file_absent", 0),
-        ("ambiguous_file_name", 0),
-        ("duplicate_video_name", 0),
-        ("unnamed_video_file", 0),
-    ])
-}
-
 // ------------------------------------------------------------ the tests ---
 
 /// A `PLAYAVI` name that resolves to exactly one inventoried file is one row,
