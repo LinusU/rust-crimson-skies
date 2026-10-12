@@ -52,13 +52,20 @@
 //! * [`FiringSolution`] (F32-B): the per-mount verdict for the selected
 //!   target. A disabled mount (F29) and an empty rack (F27/F28) are two
 //!   distinct refusals and neither is a question of skill: an ace fires off
-//!   the same [`ArsenalSnapshot`] the player does (AC02).
+//!   the same [`ArsenalSnapshot`] the player does (AC02). One more refusal
+//!   is a *schedule* answer the mount cannot see: the actor's own fire
+//!   discipline holds a ready mount for [`FireDiscipline::ready_at`]
+//!   (#571), because a firing solution is one tick's answer and the
+//!   cadence is a state that spans them.
 //! * [`CombatRuntime`] (F32-C): the per-session authority that owns the
-//!   planner, the [`AceVariant`] registry, the [`DifficultyRoster`] and the
-//!   [`FormationCoordinator`], and turns one mission tick into
-//!   [`CombatStep`]s. It is the wiring: the coordinator *produces* the
-//!   [`FormationFacts`] the planner *consumes*, so a leader promoted by a
-//!   recovery is the leader the next tick's decision reasons about.
+//!   planner, the [`AceVariant`] registry, the [`DifficultyRoster`], the
+//!   [`FormationCoordinator`] and the [`FireDiscipline`], and turns one
+//!   mission tick into [`CombatStep`]s. It is the wiring: the coordinator
+//!   *produces* the [`FormationFacts`] the planner *consumes*, so a leader
+//!   promoted by a recovery is the leader the next tick's decision reasons
+//!   about; and the fire discipline is the one per-actor state a step
+//!   reads and advances — the reported `fire_discipline_ticks` is the
+//!   cadence it applies.
 //!
 //! # Recovery is applied, not only reported
 //!
@@ -1122,6 +1129,15 @@ pub enum MountFireState {
         /// Ticks remaining before the mount may fire.
         remaining_ticks: u64,
     },
+    /// The mount was loaded and ready, but the actor's own fire discipline
+    /// is still waiting, so it is not fired this tick. A *schedule* refusal
+    /// like [`MountFireState::CoolingDown`], except the schedule is the
+    /// actor's — the session-owned [`FireDiscipline`] the solution was
+    /// gated with — not the weapon's.
+    DisciplineHold {
+        /// Ticks remaining before the actor's next shot is allowed.
+        remaining_ticks: u64,
+    },
     /// The role's [`RoleArsenal`] does not declare this mount's kind, so a
     /// guns-only role never fires ordnance and a torpedo role never fires
     /// guns.
@@ -1137,6 +1153,7 @@ impl MountFireState {
             Self::Disabled => "disabled",
             Self::Empty => "empty",
             Self::CoolingDown { .. } => "cooling_down",
+            Self::DisciplineHold { .. } => "discipline_hold",
             Self::WrongKind => "wrong_kind",
         }
     }
@@ -1166,6 +1183,14 @@ pub enum FireHoldReason {
     /// The role's [`RoleArsenal`] declares no weapon kind at all — the
     /// evasion and retreat roles.
     RoleUnarmed,
+    /// At least one mount was usable, but the actor's own fire discipline
+    /// refused the shot: the session's cadence is still waiting. A
+    /// schedule refusal like `CoolingDown`, except the schedule is the
+    /// actor's [`FireDiscipline`], not a weapon's.
+    DisciplineHold {
+        /// Ticks remaining before the actor's next shot is allowed.
+        remaining_ticks: u64,
+    },
     /// No mount of a kind the role may use can fire this tick, with the
     /// count of each distinct refusal. A checker that only looked at the
     /// total would hide whether the cause was destruction, exhaustion or
@@ -1181,6 +1206,16 @@ pub enum FireHoldReason {
         wrong_kind: u32,
     },
 }
+
+/// Whether `aim_error_rad` changes the shot a [`FiringSolution`]
+/// describes — always `false`, declared rather than implied.
+///
+/// [`FiringSolution::aim_error_applied`] pins it: the solution reports the
+/// profile's declared half-angle, and the dispersion itself belongs to the
+/// weapon system that owns the shot — the firing solution names an error;
+/// it does not own a trajectory to disperse (`f32.d.limit.fire_discipline`,
+/// resolved by #571 as a declared reported-only field).
+pub const AIM_ERROR_RAD_APPLIED: bool = false;
 
 /// Which of one actor's mounts may fire this tick, and the aim error the
 /// shot carries.
@@ -1201,17 +1236,27 @@ pub struct FiringSolution {
     pub target: ActorId,
     /// The tick the solution was made on.
     pub tick: Tick,
-    /// The half-angle of aim error the profile adds to the shot.
+    /// The half-angle of aim error the profile adds to the shot — reported,
+    /// never applied here; see [`FiringSolution::aim_error_applied`].
     pub aim_error_rad: f64,
     /// The AI's own minimum cadence between fire decisions, from the
     /// profile's `fire_discipline_ticks`.
     ///
     /// The per-mount `cooldown_ticks` a [`MountAvailability`] carries is the
     /// weapon's schedule and is enforced here. This knob is the *actor's*
-    /// cadence across ticks; keeping that state is the session's job
-    /// (F32-C), so the solution reports it rather than silently dropping a
-    /// declared behavior knob.
+    /// cadence across ticks; the per-session state it needs is the
+    /// [`FireDiscipline`] a [`CombatRuntime`] owns, and
+    /// [`FiringSolution::hold_until`] is where the solution reads it.
     pub fire_discipline_ticks: u64,
+    /// The earliest tick the session let this actor's next shot on, as the
+    /// solution consulted it.
+    ///
+    /// `None` means no session state was consulted: a solution the planner
+    /// produced on its own has no cadence to read. `Some(tick)` is the
+    /// [`FireDiscipline::ready_at`] the session reported when it gated the
+    /// mounts with [`FiringSolution::hold_until`] — the record that says
+    /// *which* state produced the verdicts.
+    pub fire_ready_at: Option<Tick>,
     /// The role's declared arsenal rule the solution applied.
     pub arsenal: RoleArsenal,
     /// Every mount the snapshot reported, in declared order, with its
@@ -1267,6 +1312,7 @@ impl FiringSolution {
             tick,
             aim_error_rad: profile.knobs().aim_error_rad,
             fire_discipline_ticks: profile.knobs().fire_discipline_ticks,
+            fire_ready_at: None,
             arsenal: rule,
             mounts,
         }
@@ -1296,11 +1342,52 @@ impl FiringSolution {
             .map(|fire| fire.state)
     }
 
+    /// Whether `aim_error_rad` changes the shot this solution describes.
+    ///
+    /// `false`, and declared rather than implied: the solution *reports*
+    /// the profile's declared half-angle and does not disperse anything,
+    /// because this module produces no trajectory to disperse — the shot's
+    /// dispersion belongs to the weapon system that owns it
+    /// (`f32.d.limit.fire_discipline`, resolved by #571 as a declared
+    /// reported-only field). A change that starts applying the error here
+    /// flips this declaration and the `accept_f32_fd_` test that pins it.
+    #[must_use]
+    pub const fn aim_error_applied(&self) -> bool {
+        AIM_ERROR_RAD_APPLIED
+    }
+
+    /// Applies the session's per-actor fire discipline to every mount.
+    ///
+    /// `ready_at` is the earliest tick the session lets this actor's next
+    /// shot on — the [`FireDiscipline::ready_at`] a [`CombatRuntime`] owns
+    /// and reports into every step's solution. A mount the availability
+    /// classification already refused keeps its refusal; a mount it cleared
+    /// to fire while `ready_at` is still ahead reports
+    /// [`MountFireState::DisciplineHold`] for the ticks it is made to wait.
+    /// Whether or not the cadence binds, the consulted state is recorded on
+    /// [`FiringSolution::fire_ready_at`], so the trace says *which* session
+    /// state produced the verdicts.
+    pub fn hold_until(&mut self, ready_at: Tick) {
+        self.fire_ready_at = Some(ready_at);
+        if self.tick >= ready_at {
+            return;
+        }
+        let remaining_ticks = ready_at.0 - self.tick.0;
+        for fire in &mut self.mounts {
+            if fire.state == MountFireState::Firing {
+                fire.state = MountFireState::DisciplineHold { remaining_ticks };
+            }
+        }
+    }
+
     /// Why nothing fires this tick, or `None` when a shot is available.
     ///
     /// An unarmed role reports [`FireHoldReason::RoleUnarmed`] whatever its
-    /// snapshot carries; any other role reports the count of each refusal
-    /// so the cause is visible rather than only the absence of a shot.
+    /// snapshot carries; a session-gated actor reports
+    /// [`FireHoldReason::DisciplineHold`] when its own cadence is the
+    /// binding refusal — the mounts were usable and were made to wait. Any
+    /// other role reports the count of each refusal so the cause is
+    /// visible rather than only the absence of a shot.
     #[must_use]
     pub fn hold(&self) -> Option<FireHoldReason> {
         if self.is_firing() {
@@ -1313,14 +1400,22 @@ impl FiringSolution {
         let mut empty = 0;
         let mut cooling = 0;
         let mut wrong_kind = 0;
+        let mut discipline: Option<u64> = None;
         for fire in &self.mounts {
             match fire.state {
                 MountFireState::Firing => {}
                 MountFireState::Disabled => disabled += 1,
                 MountFireState::Empty => empty += 1,
                 MountFireState::CoolingDown { .. } => cooling += 1,
+                MountFireState::DisciplineHold { remaining_ticks } => {
+                    discipline =
+                        Some(discipline.map_or(remaining_ticks, |held| held.max(remaining_ticks)));
+                }
                 MountFireState::WrongKind => wrong_kind += 1,
             }
+        }
+        if let Some(remaining_ticks) = discipline {
+            return Some(FireHoldReason::DisciplineHold { remaining_ticks });
         }
         Some(FireHoldReason::NoUsableMount {
             disabled,
@@ -3325,8 +3420,85 @@ impl CombatStep {
     }
 }
 
+/// The session's per-actor fire discipline: the earliest tick each actor's
+/// next shot is allowed on (#571, F32-FIRE-DISCIPLINE).
+///
+/// [`FiringSolution::solve`] classifies mounts against their own schedules —
+/// the `cooldown_ticks` each [`MountAvailability`] carries — and never sees
+/// the *actor's* cadence: a firing solution is one tick's answer, and an
+/// actor's `fire_discipline_ticks` is a state that spans them. That state
+/// belongs to the session, so it lives here: one map of actor → next
+/// allowed shot, owned by the one [`CombatRuntime`] of the session
+/// generation, read into every firing solution
+/// [`CombatRuntime::step`] produces through [`FiringSolution::hold_until`]
+/// and advanced when a mount actually fires.
+///
+/// Two properties keep it honest. A step that fires nothing advances
+/// nothing — a held shot, a refused request and an unarmed role all leave
+/// the wait to expire on its own, so an actor that misses an eligible tick
+/// is never made to pay the cadence twice. And `ready_at` is monotone per
+/// actor, never shortened by a record, so the cadence a shot pays is never
+/// silently refunded.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FireDiscipline {
+    /// Actor → the earliest tick its next shot may go out on. A missing
+    /// entry means the actor has never fired in this generation.
+    ready_at: BTreeMap<ActorId, Tick>,
+}
+
+impl FireDiscipline {
+    /// An empty state: every actor may fire whenever its mounts are ready.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// The earliest tick one actor's next shot may go out on.
+    ///
+    /// An actor that has never fired returns `Tick(0)`: it is ready at
+    /// every tick, which is exactly what "never fired" means.
+    #[must_use]
+    pub fn ready_at(&self, actor: ActorId) -> Tick {
+        self.ready_at.get(&actor).copied().unwrap_or(Tick(0))
+    }
+
+    /// Whether one actor's cadence lets it fire at `now` — a mount the
+    /// arsenal clears would still have to wait.
+    #[must_use]
+    pub fn is_ready(&self, actor: ActorId, now: Tick) -> bool {
+        now >= self.ready_at(actor)
+    }
+
+    /// How many actors the cadence has been written for.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.ready_at.len()
+    }
+
+    /// Whether no actor has fired yet.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.ready_at.is_empty()
+    }
+
+    /// Records that `actor` fired at `now`: the next shot may go out no
+    /// earlier than `cadence_ticks` later, and never earlier than the wait
+    /// already recorded.
+    ///
+    /// `saturating_add` is deliberate: a declared cadence must never wrap
+    /// an actor back to "ready". The map takes the maximum rather than the
+    /// assignment for the same reason — a recorded shot moves the wait
+    /// forward or leaves it, never back.
+    fn record_shot(&mut self, actor: ActorId, now: Tick, cadence_ticks: u64) {
+        let next = Tick(now.0.saturating_add(cadence_ticks));
+        let entry = self.ready_at.entry(actor).or_insert(next);
+        *entry = (*entry).max(next);
+    }
+}
+
 /// The per-session combat-AI runtime: the planner, the ace variants, the
-/// difficulty tiers and the formation coordinator, wired together.
+/// difficulty tiers, the formation coordinator and the per-actor fire
+/// discipline, wired together.
 ///
 /// One instance per session generation, like
 /// [`crate::damage::DamageResolver`],
@@ -3337,9 +3509,11 @@ impl CombatStep {
 ///
 /// 1. [`CombatRuntime::update_formation`] once per formation, with the facts
 ///    the producers report. This *applies* any declared recovery.
-/// 2. [`CombatRuntime::step`] once per AI actor, in any order; it is a pure
-///    function of the request and the runtime's immutable policy, so one
-///    actor's decision cannot depend on another's.
+/// 2. [`CombatRuntime::step`] once per AI actor, in any order. The *decision*
+///    is a pure function of the request and the runtime's immutable policy,
+///    so one actor's decision cannot depend on another's; the actor's own
+///    [`FireDiscipline`] is the one per-actor state a step reads and
+///    advances — the actor's cadence, and nobody else's.
 ///
 /// Stepping before updating a formation is not an error — it reports the
 /// recovery that is pending, which is what F32-A's trace is for — it simply
@@ -3351,6 +3525,7 @@ pub struct CombatRuntime {
     aces: BTreeMap<AceId, AceVariant>,
     difficulty: DifficultyRoster,
     formations: FormationCoordinator,
+    fire: FireDiscipline,
 }
 
 impl CombatRuntime {
@@ -3380,6 +3555,7 @@ impl CombatRuntime {
             aces: declared,
             difficulty,
             formations: FormationCoordinator::new(session),
+            fire: FireDiscipline::new(),
         })
     }
 
@@ -3531,7 +3707,27 @@ impl CombatRuntime {
         }
     }
 
+    /// The runtime's per-actor fire discipline (#571, F32-FIRE-DISCIPLINE).
+    ///
+    /// [`CombatRuntime::step`] reads the observer's [`FireDiscipline::ready_at`]
+    /// into every firing solution it produces and records the shot when a
+    /// mount actually fires — the cadence the solution reports is the
+    /// cadence this state applies.
+    #[must_use]
+    pub const fn fire_discipline(&self) -> &FireDiscipline {
+        &self.fire
+    }
+
     /// Decides one actor for one tick under the selected tier and ace variant.
+    ///
+    /// The session's fire discipline applies where the decision happens:
+    /// every firing solution the step produces is gated with
+    /// [`FiringSolution::hold_until`] on the observer's
+    /// [`FireDiscipline::ready_at`], and a solution that still fires a mount
+    /// records the shot — the observer's next shot may go out no earlier
+    /// than its `fire_discipline_ticks` later. A decision that fires
+    /// nothing advances nothing: a held shot is the cadence doing its job,
+    /// not a shot to pay for.
     ///
     /// # Errors
     ///
@@ -3541,9 +3737,9 @@ impl CombatRuntime {
     /// assignment disagree about which formation the observer is in,
     /// [`CombatError::UnknownFormationMember`] when the request names a
     /// formation the observer is not a living member of, and every error
-    /// [`CombatPlanner::decide`] reports. Nothing is mutated, so a refused
-    /// step can be retried unchanged.
-    pub fn step(&self, request: &CombatantRequest<'_>) -> Result<CombatStep, CombatError> {
+    /// [`CombatPlanner::decide`] reports. A refused step records no shot, so
+    /// it can be retried unchanged.
+    pub fn step(&mut self, request: &CombatantRequest<'_>) -> Result<CombatStep, CombatError> {
         // The formation the assignment places the observer in and the
         // formation the request names are one statement about the observer.
         // The runtime will not let the request withhold it: an actor the
@@ -3576,7 +3772,7 @@ impl CombatRuntime {
         };
         let (profile, source) =
             self.resolve_profile(request.assignment, request.ace, request.tier)?;
-        let decision = self.planner.decide(&CombatRequest {
+        let mut decision = self.planner.decide(&CombatRequest {
             observer: request.observer,
             now: request.now,
             observer_position: request.observer_position,
@@ -3587,6 +3783,19 @@ impl CombatRuntime {
             arsenal: request.arsenal,
             profile: Some(&profile),
         })?;
+        // The observer's own cadence is the one schedule a firing solution
+        // cannot see: `FiringSolution::solve` classified the mounts against
+        // the weapons' cooldowns, and the session's discipline gates what is
+        // still standing. A shot that survives the gate pays the cadence
+        // it was solved with — the profile's `fire_discipline_ticks` — so a
+        // mount that fires twice in one window is never the session's bug.
+        if let Some(firing) = decision.trace.firing.as_mut() {
+            firing.hold_until(self.fire.ready_at(request.observer));
+            if firing.is_firing() {
+                self.fire
+                    .record_shot(request.observer, firing.tick, firing.fire_discipline_ticks);
+            }
+        }
         Ok(CombatStep {
             decision,
             source,
@@ -4802,7 +5011,12 @@ pub struct DifficultyProbeRun {
     /// answered once is latched until the fact it came from stops holding, and
     /// the probe's facts hold for the rest of the run once they appear.
     pub recovery_triggers: Vec<(RecoveryTrigger, u64)>,
-    /// Ticks on which at least one mount fired.
+    /// Ticks on which at least one mount fired — counted after the
+    /// session's [`FireDiscipline`] gated the mounts, so it measures the
+    /// *applied* actor cadence (#571): two tiers that differ only in
+    /// `fire_discipline_ticks` measure different counts, and equal counts
+    /// under equal cadences are a real equality, not a control the probe
+    /// cannot see.
     pub firing_ticks: u64,
     /// A digest of every position and threat stamp the run replayed.
     ///
@@ -4869,7 +5083,9 @@ pub struct TierProbeOutcome {
     pub range_rejects: u64,
     /// The summed formation recoveries.
     pub recoveries: u64,
-    /// The summed ticks on which a mount fired.
+    /// The summed ticks on which a mount fired under the session's applied
+    /// [`FireDiscipline`] — the discriminator `f32.d.limit.fire_discipline`
+    /// said did not exist (#571).
     pub firing_ticks: u64,
     /// The per-run geometry digests, one per run.
     pub geometry_fingerprints: Vec<u64>,
@@ -4929,6 +5145,9 @@ pub struct TierComparison {
     pub protected_answers: ProbeDifference,
     /// How the deferred-threat count moved.
     pub deferred_threats: ProbeDifference,
+    /// How the ticks on which a mount fired moved — the session-applied
+    /// fire-discipline cadence the run's tier carried (#571).
+    pub firing_ticks: ProbeDifference,
 }
 
 /// The whole probe: every run, every tier and the adjacent comparisons.
@@ -5097,6 +5316,7 @@ impl DifficultyProbeReport {
             comparison.engagements != ProbeDifference::Same
                 || comparison.protected_answers != ProbeDifference::Same
                 || comparison.deferred_threats != ProbeDifference::Same
+                || comparison.firing_ticks != ProbeDifference::Same
         })
     }
 }
@@ -5719,6 +5939,7 @@ fn compare_adjacent(tiers: &[TierProbeOutcome]) -> Vec<TierComparison> {
                 engagements: difference(lower.engagements, higher.engagements),
                 protected_answers: difference(lower.protected_answers, higher.protected_answers),
                 deferred_threats: difference(lower.deferred_threats, higher.deferred_threats),
+                firing_ticks: difference(lower.firing_ticks, higher.firing_ticks),
             }
         })
         .collect()

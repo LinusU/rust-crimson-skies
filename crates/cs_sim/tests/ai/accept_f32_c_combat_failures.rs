@@ -452,7 +452,7 @@ fn accept_f32_c_foreign_generations_never_touch_the_formation_or_the_decision() 
 /// never assigned, and report no recovery path for an actor that has one.
 #[test]
 fn accept_f32_c_a_request_may_not_withhold_or_replace_the_formations_facts() {
-    let runtime = synthetic_combat_runtime();
+    let mut runtime = synthetic_combat_runtime();
     let candidates = vec![synthetic_candidate(
         2,
         [300.0, 0.0, 0.0],
@@ -470,7 +470,7 @@ fn accept_f32_c_a_request_may_not_withhold_or_replace_the_formations_facts() {
         formation: FORMATION,
         slot: 1,
     });
-    let step = |assignment: &RoleAssignment, formation: Option<FormationId>| {
+    let mut step = |assignment: &RoleAssignment, formation: Option<FormationId>| {
         runtime.step(&CombatantRequest {
             observer: synthetic_actor(SYNTHETIC_FORMATION_WINGMEN[0]),
             now: Tick(START),

@@ -102,7 +102,7 @@ struct Scenario<'a> {
 
 /// A follower request against one hostile, at the follower's own position.
 fn request<'a>(
-    runtime: &'a CombatRuntime,
+    runtime: &mut CombatRuntime,
     serial: u64,
     now: u64,
     scenario: Scenario<'a>,
@@ -302,7 +302,7 @@ fn accept_f32_c_leader_destroyed_mid_turn_its_followers_recover() {
     // After the recovery the planner is quiet: the same decision no longer
     // reports a pending recovery, because the leader it names is alive.
     let after = request(
-        &runtime,
+        &mut runtime,
         SYNTHETIC_FORMATION_WINGMEN[0],
         START + 1,
         standard([810.0, 0.0, 0.0], &hostile, &arsenal),
@@ -829,7 +829,7 @@ fn accept_f32_c_a_second_assigned_target_loss_is_answered_too() {
 /// not match the actor's role or the mission's selected tier.
 #[test]
 fn accept_f32_c_an_ace_variant_is_selected_as_data_for_its_tier() {
-    let runtime = synthetic_combat_runtime();
+    let mut runtime = synthetic_combat_runtime();
     let ace = synthetic_ace_id();
     let escort = follower(SYNTHETIC_FORMATION_WINGMEN[0]);
     let fighter = RoleAssignment::new(
@@ -877,13 +877,13 @@ fn accept_f32_c_an_ace_variant_is_selected_as_data_for_its_tier() {
     let hostile = hostile_at(300.0);
     let arsenal = synthetic_arsenal();
     let rookies = request(
-        &runtime,
+        &mut runtime,
         SYNTHETIC_FORMATION_WINGMEN[0],
         START,
         standard([800.0, 0.0, 0.0], &hostile, &arsenal),
     );
     let aces = request(
-        &runtime,
+        &mut runtime,
         SYNTHETIC_FORMATION_WINGMEN[0],
         START,
         Scenario {
@@ -973,8 +973,14 @@ fn accept_f32_c_difficulty_moves_behavior_parameters_and_nothing_else() {
             "no tier changes what the role may shoot with"
         );
 
+        // A fresh runtime per tier: the session's fire discipline is real
+        // per-actor state now (#571), so stepping the same observer twice at
+        // one tick on one runtime would measure the cadence holding the
+        // second shot — which is the discipline doing its job, not what this
+        // test is about.
+        let mut tier_runtime = synthetic_combat_runtime();
         let step = request(
-            &runtime,
+            &mut tier_runtime,
             SYNTHETIC_FORMATION_WINGMEN[0],
             START,
             Scenario {

@@ -40,7 +40,7 @@ use cs_types::Tick;
 /// protected-actor term contributes zero and the escort may still select the
 /// attacker for an unrelated reason.
 fn step_with(protected_alive: Option<bool>) -> CombatStep {
-    let runtime = synthetic_combat_runtime();
+    let mut runtime = synthetic_combat_runtime();
     let observer = synthetic_actor(30);
     let charge = synthetic_actor(40);
     let assignment = RoleAssignment::protecting(observer, CombatRole::Escort, charge)

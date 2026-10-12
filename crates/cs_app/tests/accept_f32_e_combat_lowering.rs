@@ -222,7 +222,7 @@ fn accept_f32_e_formation_lowers_and_refuses_unbound_slots() {
 #[test]
 fn accept_f32_e_declared_ace_reaches_the_decision_and_firing_solution() {
     let rules = rules();
-    let runtime_rules =
+    let mut runtime_rules =
         lower_runtime(SESSION, &rules, DifficultyTier::Standard).expect("the rules lower");
     let ace = declared_synthetic_ace_profile();
     let ace_id: &'static runtime::AceId = Box::leak(Box::new(
