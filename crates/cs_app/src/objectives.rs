@@ -5557,13 +5557,16 @@ pub struct RecoveredField {
 /// record's top level, so nothing is silently dropped:
 /// `fields_read() == fields_recovered() + unrecovered().len()` by construction.
 /// The fields recovered are the ones the engine's loader reads for completion
-/// effects (`WAKE`, `NAP`, `KILL`, `SLEEP`) and the tick dependency
-/// (`TICK_DEPENDS_ON_OBJ`), measured from the executable image in M01-B-OBJ-1 and
-/// kept as [`EngineDeclaration`]s. The measured mission-language directives and
-/// the record-level fields are kept as their own families — their semantics are
-/// measured (M01-LC-DIRECTIVE B–D, M01-B-OBJ-4) but their effects are world-side
-/// operations and mission preamble, not declared-objective fields — and every
-/// other family is still unmeasured. AGENTS.md rule 4 forbids guessing any of
+/// effects and the tick dependency (M01-B-OBJ-1), for dormancy, the completion
+/// count, the display identity and the sound-group cues (M01-B-OBJ-2), and for
+/// the `INACTIVE<n>` stage conditions and the terminal outcome keys
+/// (M01-B-OBJ-3) — eight families in all, kept as [`EngineDeclaration`]s,
+/// [`StageConditions`]s and [`ObjectiveOutcome`]s. The measured
+/// mission-language directives and the record-level fields are kept as their
+/// own families — their semantics are measured (M01-LC-DIRECTIVE B–D,
+/// M01-B-OBJ-4) but their effects are world-side operations and mission
+/// preamble, not declared-objective fields — and a key no measured stage
+/// covers is still `Unmeasured`. AGENTS.md rule 4 forbids guessing any of
 /// them, so [`program`](Self::program) is the refusal naming each gap, never a
 /// program built from guessed semantics.
 #[derive(Clone, Debug, PartialEq)]
@@ -5982,6 +5985,20 @@ impl ObjectiveRecovery {
         counts
     }
 
+    /// The recovered field counts per family, mirroring
+    /// [`Self::unrecovered_by_family`].
+    ///
+    /// The two maps partition the record's fields between them: their values
+    /// sum to [`Self::fields_read`].
+    #[must_use]
+    pub fn recovered_by_family(&self) -> BTreeMap<RecordFieldFamily, usize> {
+        let mut counts = BTreeMap::new();
+        for field in &self.recovered {
+            *counts.entry(field.family).or_insert(0) += 1;
+        }
+        counts
+    }
+
     /// What the record-level fields read as under the engine's measured parse
     /// (M01-B-OBJ-4), or the shape error the first off-shape key reports.
     ///
@@ -5993,12 +6010,26 @@ impl ObjectiveRecovery {
 
     /// The declared program, or the refusal naming what cannot be recovered.
     ///
+    /// The refusal is computed from this record's own census, never assumed: a
+    /// field family the record still leaves unrecovered is named with its count
+    /// and its measured reason, and a record in which every field *was*
+    /// recovered still refuses — the declared schema carries no measured slot
+    /// for the engine's own objective states, node-chain stage conditions,
+    /// dormancy timers, tick dependency, identity or sound cues, so assembling
+    /// a [`DeclaredObjectiveProgram`] from the engine model would invent the
+    /// mapping (M01-B-OBJ integration,
+    /// `docs/findings/2026-10-12-m01-b-obj-integration-family-verdict.md`).
+    ///
+    /// For M01 (`zbd/c1c/m01`) the refusal names exactly the two directive
+    /// families its four measuring stages left unrecovered: `ControlDirective`
+    /// (45 block-level directive sites) and `RecordDirective` (5 record-level
+    /// fields), whose measured effects are world-side operations the control
+    /// lowering owns, not declared-objective fields (M01-B-OBJ-4).
+    ///
     /// # Errors
     ///
-    /// [`ObjectiveRecoveryRefusal`], always today: the completion effects and the
-    /// tick dependency are recovered (M01-B-OBJ-1), but the conditions that
-    /// complete an objective, its dormancy, its outcome and the other families
-    /// are not, so a program would be built from guessed semantics.
+    /// [`ObjectiveRecoveryRefusal`] naming every family this record leaves
+    /// unrecovered, or the schema gap when it leaves none.
     pub fn program(&self) -> Result<DeclaredObjectiveProgram, ObjectiveRecoveryRefusal> {
         Err(ObjectiveRecoveryRefusal {
             mission: self.mission.clone(),
@@ -6026,9 +6057,23 @@ impl fmt::Display for ObjectiveRecoveryRefusal {
     fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(
             formatter,
-            "{}: no declared objective program can be recovered; unrecovered",
+            "{}: no declared objective program can be recovered",
             self.mission
         )?;
+        if self.families.is_empty() {
+            // Every field was read into the engine model; what is missing is a
+            // measured slot in the declared schema, not a field. Saying
+            // "unrecovered" with nothing after it would name no gap at all.
+            return write!(
+                formatter,
+                "; every field was recovered into the engine model, but the declared \
+                 schema has no measured carrier for the engine's objective states, \
+                 node-chain stage conditions, dormancy timers, tick dependency, \
+                 identity and sound cues, so a program would invent the mapping \
+                 (M01-B-OBJ integration)"
+            );
+        }
+        write!(formatter, "; unrecovered")?;
         for (family, count) in &self.families {
             write!(formatter, " {family:?} x{count} ({})", family.reason())?;
         }
