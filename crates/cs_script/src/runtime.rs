@@ -1210,7 +1210,7 @@ fn pending_timer(
 /// It carries every piece that can change a later observation: variable
 /// values, the latched objectives, the consumed execution keys, the terminal
 /// state, the last evaluated tick, the whole pending queue in drain order with
-/// its eligibility ticks, the item-ordinal counter, the RNG draw count and
+/// its eligibility ticks, the item-ordinal counter, the RNG stream state and
 /// the directive emissions already produced. Mid-mission save is therefore
 /// supported; nothing is declared unsupported.
 #[derive(Clone, Debug, PartialEq)]

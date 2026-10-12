@@ -1084,8 +1084,8 @@ fn accept_f37_d_simultaneous_writes_follow_execution_order_events_follow_key_ord
 /// observation depends on.
 ///
 /// The programs that draw are checked to draw *more than once*: a record that
-/// forgot the draw count would replay the stream from its start, both save
-/// strategies would agree with each other and both would be wrong.
+/// forgot the stream's position would restart it, both save strategies would
+/// agree with each other and both would be wrong.
 #[test]
 fn accept_f37_d_adversarial_corpus_replays_identically_across_saves_at_every_boundary() {
     let corpus = corpus_programs();
@@ -1130,7 +1130,7 @@ fn accept_f37_d_adversarial_corpus_replays_identically_across_saves_at_every_bou
     assert!(
         separated_draws >= 1,
         "no corpus member draws on more than one tick, so a record that forgot \
-         the draw count would be undetectable here"
+         the stream's position would be undetectable here"
     );
 }
 
