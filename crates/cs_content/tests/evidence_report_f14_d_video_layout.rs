@@ -342,6 +342,27 @@ fn evidence_report_f14_d_video_layout_writes_the_acceptance_report() {
                             <= info.offset + info.declared_decoded_len,
                     "{container}: the record span is inside the member's decoded extent"
                 );
+                // And the span's own bytes, read back out of the decoded
+                // member, are the record line that stated the name: an `M`
+                // record whose file-name field spells it.
+                let at = (provenance.offset() - info.offset) as usize;
+                let line = &member[at..at + provenance.length() as usize];
+                let line = std::str::from_utf8(line).expect("the record line is ASCII");
+                let value = line
+                    .split_once('=')
+                    .expect("the record line is a key=value entry")
+                    .1;
+                let mut fields = value.split(',');
+                assert_eq!(
+                    fields.next(),
+                    Some("M"),
+                    "{container}: the span covers the member's movie record"
+                );
+                assert_eq!(
+                    fields.next(),
+                    element.display_name.as_deref(),
+                    "{container}: the record's file-name field is the name the row carries"
+                );
             }
             _ => assert_eq!(
                 edge.provenance.claim_id.as_str(),
@@ -550,15 +571,14 @@ fn rows_of(
 /// report then names the review that actually happened.
 fn review_identity() -> String {
     let recorded = String::from(
-        "implementer: swe2-max-1/swe2-max-1 (Rally #1351, implement claim of \
-         2026-10-12T17:23:02Z), model SWE-2 Max. reviewer: the Rally review claim opened after \
-         this submission; at the time of writing no review has taken place, so this report \
-         claims no independent review and the format and identity claims still deserve a \
-         different agent instance or model with a fresh context. The reviewing agent replaces \
-         this literal with their own identity (through CS_EVIDENCE_REVIEW) in the same commit \
-         that regenerates the report. No agent review awards more than checked, and nothing \
-         here is verified_original: retail is read access to the installation's own files, \
-         the original game was never run, and the video collection is structural. No agent \
+        "implementer: Devin SWE-2/swe2-max-1 (Rally #1351, implement claim of \
+         2026-10-12T17:23:02Z), model SWE-2 Max. reviewer: Devin SWE-2/swe2-max-1 (Rally \
+         #1351, review claim of 2026-10-12T19:34Z), model SWE-2 Max - the same agent name \
+         and model as the implementer, in a fresh context, so this review is not independent \
+         evidence and the format and identity claims still deserve a different agent \
+         instance or model. No agent review awards more than checked, and nothing here is \
+         verified_original: retail is read access to the installation's own files, the \
+         original game was never run, and the video collection is structural. No agent \
          review replaces the owner's human approval",
     );
     std::env::var("CS_EVIDENCE_REVIEW").unwrap_or(recorded)

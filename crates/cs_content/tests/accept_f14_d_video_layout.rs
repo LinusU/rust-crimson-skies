@@ -825,6 +825,27 @@ fn accept_f14_d_video_layout_retail_movie_records_are_rows() {
                         && span.offset() + span.length() <= info.offset + info.declared_decoded_len,
                     "{file}: the record span is inside the member's decoded extent"
                 );
+                // And the span's own bytes, read back out of the decoded
+                // member, are the record line that stated the name: an `M`
+                // record whose file-name field spells it.
+                let at = (span.offset() - info.offset) as usize;
+                let line = &member[at..at + span.length() as usize];
+                let line = std::str::from_utf8(line).expect("the record line is ASCII");
+                let value = line
+                    .split_once('=')
+                    .expect("the record line is a key=value entry")
+                    .1;
+                let mut fields = value.split(',');
+                assert_eq!(
+                    fields.next(),
+                    Some("M"),
+                    "{file}: the span covers the member's movie record"
+                );
+                assert_eq!(
+                    fields.next(),
+                    row.display_name.as_deref(),
+                    "{file}: the record's file-name field is the name the row carries"
+                );
             }
             _ => {
                 assert_eq!(
