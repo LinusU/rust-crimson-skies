@@ -105,13 +105,21 @@ UNRESOLVED = 'unresolved review marker at offset {}'
 # happened, or handed the job to a reviewer that had not run yet.  None of it
 # survives once the real reviewer is named.  `independent review is pending` is
 # the wording M19-A, M21-A and M24-A shipped with, `not yet independent` is
-# F12-K's, and the last three are the instructions to a future reviewer that
-# F10-D and F51-D shipped with - the same gap written as an order rather than as
-# a claim, which is why a rule that only looked for `none yet` missed them.
+# F12-K's, and `must re-run`, `must record its own identity` and `are recorded
+# at review time` are the instructions to a future reviewer that F10-D and
+# F51-D shipped with - the same gap written as an order rather than as a claim,
+# which is why a rule that only looked for `none yet` missed them.  `review
+# claim opened after this submission` and `no review has taken place` are the
+# hand-over sentence F14-D.10 (#563), F14-D.10.image (#559) and
+# F14-D.9.mission-only (#564) all merged with: a reviewer section written
+# before any review claim existed, which matched none of the wording above, so
+# the three stages merged unchecked (#1380 corrected the reports, #1381 the
+# list).
 PLACEHOLDERS = ('none yet', 'not yet assigned', 'not yet known', 'not yet independent',
                 'to be recorded', 'self-check', 'the rally reviewer regenerates',
                 'independent review is pending', 'must re-run',
-                'must record its own identity', 'are recorded at review time')
+                'must record its own identity', 'are recorded at review time',
+                'review claim opened after this submission', 'no review has taken place')
 
 TASK_ID = re.compile(r'\\"task_id\\": \\"([^"\\]+)\\"')
 CLAIM = re.compile(r'\\"claim\\": \\"([a-z_]+)\\"')
@@ -955,7 +963,9 @@ class EvidenceReviewIdentityTests(unittest.TestCase):
         shipped = ('self-check', 'none yet', 'not yet assigned at hand-over',
                    'not yet independently reviewed', 'the Rally reviewer regenerates this report',
                    'an independent review is pending', 'must re-run the four steps',
-                   'must record its own identity', 'are recorded at review time')
+                   'must record its own identity', 'are recorded at review time',
+                   'the Rally review claim opened after this submission',
+                   'at the time of writing no review has taken place')
         for phrase in shipped:
             self.assertTrue(any(placeholder in phrase.lower() for placeholder in PLACEHOLDERS),
                             f'{phrase!r} is not covered by PLACEHOLDERS')
