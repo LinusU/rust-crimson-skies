@@ -135,6 +135,18 @@
 //! shared entries — M06-B-FU4 recorded M06's passenger identity this way,
 //! measured for M06 alone by M06-B-FU2.
 //!
+//! The other direction is the same rule applied to a *settled* entry: when a
+//! later stage measures one of the shared checklist questions for one
+//! mission's data, the shared entry would state the opposite on that
+//! mission's record, so [`mission_scoped_checklist_overrides`] keys
+//! `MISSION_SCOPED_CHECKLIST_OVERRIDES` by work order and
+//! [`SourceContext::bind`] replaces the named shared entry with the measured
+//! statement — residuals included — on that one record, while every sibling
+//! keeps the shared text untouched. M01-B recorded M01's measured objective
+//! graph, directive-program coverage and terminal precedence this way,
+//! measured by M01-B-OBJ, M01-B-OPC and M01-B-WAKE; each replacement still
+//! keeps `verified` false and names what the measurement did not settle.
+//!
 //! ## The whole campaign (F50-B)
 //!
 //! `SourceContext::bind` answers for one work order; [`SourceContext::bind_campaign`]
@@ -2208,6 +2220,110 @@ pub fn mission_scoped_unknowns(label: &MissionLabel) -> &'static [&'static str] 
         .unwrap_or(&[])
 }
 
+/// The shared checklist entries a later stage has measured for **one** work
+/// order's data, and the measured statement that replaces each on that work
+/// order's record alone, keyed by work order.
+///
+/// [`MISSION_SCOPED_UNKNOWNS`] *appends* a limitation a mission's own data
+/// imposes; this table does the opposite job for the same reason: it
+/// *replaces* a shared entry that a later stage measured for one mission's
+/// data, because leaving the shared text in place would state the opposite of
+/// what that measurement established. Each `(shared, measured)` row names a
+/// shared entry **verbatim** — a row whose `shared` text is not a member of
+/// [`SOURCE_BINDING_UNKNOWNS`] replaces nothing, and the acceptance suite
+/// pins that membership — and the measured statement keeps the entry's
+/// checklist prefix (so a reader looking for "objective graph" still finds
+/// it), names the measurements with their task ids and says what they did
+/// not settle. `bind` applies the replacement through
+/// [`mission_scoped_checklist_overrides`]; every sibling record keeps the
+/// shared text, `verified` stays false (the residuals are still unknowns)
+/// and the entry is settled by removing or re-measuring it here, the same
+/// way [`MISSION_SCOPED_UNKNOWNS`] entries are settled.
+const MISSION_SCOPED_CHECKLIST_OVERRIDES: &[(&str, &[(&str, &str)])] = &[(
+    "M01",
+    &[
+        (
+            "objective graph: not bound from original data at this stage",
+            "objective graph: measured for this mission — M01's control record declares 58 \
+             OBJECTIVE blocks and 358 fields, 308 of them recovered into the engine lifecycle \
+             model and 50 unrecovered and named (45 block-level control directives and 5 \
+             record-level directive fields, world-side operations the control lowering owns per \
+             the owner's 2026-10-10 ruling on #1219) (M01-B-OBJ); both terminal blocks — \
+             OBJECTIVE24 spelling INSTANTWIN and OBJECTIVE40 spelling INSTANTLOSS — load \
+             dormant behind the -1 sentinel and wake only through the record's own effect graph \
+             and observed world facts, and driven runs reach each terminal through the \
+             production host (M01-B-WAKE). Residual: the in-play-bit writers, DEDG's \
+             member-field rewrites, TRAVELERS' producers and the TICK_DEPENDS_ON_OBJ roots stay \
+             untraced off the terminal paths, ObjectiveRecovery::program() still refuses this \
+             record by the declared-schema gap, and no original ordinary-play run exists — M01-C \
+             stays the settling stage",
+        ),
+        (
+            "script/native coverage: the mission opcode table is unmeasured, so F13-C probes \
+             every program against an empty signature table",
+            "script/native coverage: the mission opcode table is still unmeasured, but the \
+             empty-signature-table premise does not describe this archive's control program — \
+             the control member is a text directive program, classified through the F13-C \
+             directive probe as 58 blocks, 353 directive sites and 43 distinct keys, of which \
+             41 are measured, 2 are terminal outcomes and 0 are unknown, so M01's control \
+             program is fully accounted (M01-B-OPC). Residual: the other reader members \
+             (aiv.zrd, targets.zrd and the rest) are still binary-probed with unestablished \
+             role, M01's INTERP loading body was not examined, and no numeric binary signature \
+             claim was written",
+        ),
+        (
+            "exact failure/success precedence: not measured",
+            "exact failure/success precedence: measured for this mission — the record's only \
+             outcomes are OBJECTIVE24's INSTANTWIN and OBJECTIVE40's INSTANTLOSS, each reached \
+             through its own measured wake chain under the host's measured per-tick order \
+             (world observation, lifecycle timer pass, completion pass, completion effects), \
+             and a driven run settles each terminal from the program's own Action::Finish, \
+             never a shortcut (M01-B-WAKE). Residual: no run reports both terminals' world \
+             facts, no original executable was run, and ordinary-play precedence stays with \
+             M01-C",
+        ),
+    ],
+)];
+
+/// The checklist replacements recorded in a source binding for one work order
+/// alone ([`MISSION_SCOPED_CHECKLIST_OVERRIDES`]), in table order — empty when
+/// no later stage measured a shared checklist question for that work order's
+/// data.
+///
+/// [`SourceContext::bind`] consults this for the label it binds, so a
+/// replacement reaches exactly one mission's record and its siblings keep the
+/// shared checklist text about a question their own data was not measured on.
+pub fn mission_scoped_checklist_overrides(
+    label: &MissionLabel,
+) -> &'static [(&'static str, &'static str)] {
+    MISSION_SCOPED_CHECKLIST_OVERRIDES
+        .iter()
+        .find(|(work_order, _)| *work_order == label.as_str())
+        .map(|(_, rows)| *rows)
+        .unwrap_or(&[])
+}
+
+/// The replacement [`SourceContext::bind`] applies to one shared checklist
+/// entry for one work order, or [`None`] when the shared text stands.
+fn mission_scoped_checklist_override(label: &MissionLabel, shared: &str) -> Option<&'static str> {
+    mission_scoped_checklist_overrides(label)
+        .iter()
+        .find(|(superseded, _)| *superseded == shared)
+        .map(|(_, measured)| *measured)
+}
+
+/// The shared checklist every mission's record starts from, in checklist
+/// order ([`SOURCE_BINDING_UNKNOWNS`]).
+///
+/// A stage that replaces an entry through
+/// [`mission_scoped_checklist_overrides`] must name one of these verbatim;
+/// the acceptance suites pin that membership so a typo in a replacement key
+/// cannot leave the shared text (or the measured statement) silently absent
+/// from the record.
+pub fn source_binding_checklist() -> &'static [&'static str] {
+    SOURCE_BINDING_UNKNOWNS
+}
+
 /// Why a source-derived binding could not be produced at all.
 ///
 /// A *semantic* miss — a title that the local strings do not carry, a
@@ -2635,7 +2751,17 @@ impl SourceContext {
 
         let mut unknowns: Vec<String> = SOURCE_BINDING_UNKNOWNS
             .iter()
-            .map(|entry| (*entry).to_owned())
+            .map(|entry| {
+                // A shared checklist question a later stage measured for this
+                // work order's data is replaced by the measured statement on
+                // this record alone ([`mission_scoped_checklist_overrides`]):
+                // leaving the shared text here would state the opposite of
+                // what the measurement established, and every sibling keeps
+                // the shared entry untouched.
+                mission_scoped_checklist_override(&label, entry)
+                    .unwrap_or(*entry)
+                    .to_owned()
+            })
             .collect();
         // A limitation measured for this work order's data alone is recorded
         // on this work order's record only ([`mission_scoped_unknowns`]): the
