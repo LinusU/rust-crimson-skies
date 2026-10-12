@@ -152,6 +152,16 @@ and ordered* by the runtime. (`cs_content`'s declared schema still refuses
 that shape at `DeclaredObjectiveProgram::try_new`; relaxing it is content-side
 work, filed as a follow-up task, not changed here.)
 
+Review of this change (same task) caught and fixed one gap in the narrowed
+refusal: the registration scan recorded only each declaration's *first* kind
+per target, so a declaration carrying two kinds on one target (the
+`OBJECTIVE8` shape) hid its second kind from the cross-completion check, and
+a *different* completion naming that target with the other kind was accepted
+although the two completions collide by the rule above. The scan now records
+every kind each declaration names;
+`accept_m01_b_obj_1_fu1_multi_effect_declaration_refuses_cross_completion_collision`
+pins both registration orders.
+
 ### 5. The nap's number is the nap time — carried, still never converted
 
 #1358 measured what the number beside a `NAP` target is: the loader's own

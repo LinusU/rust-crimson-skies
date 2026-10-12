@@ -1152,29 +1152,44 @@ impl ObjectiveRuntime {
     /// one objective per pass, so two completions never collide there, and
     /// which of two same-tick completions should apply last depends on the
     /// pass-origin rule, which is unmeasured. Registration order decides
-    /// nothing either, which is why the scan covers every registered objective
-    /// and not only the one before this one.
+    /// nothing either, which is why the scan covers every registered
+    /// objective — and every kind each of them names, not only the first
+    /// kind its authored order spells — so a declaration that already
+    /// carries two effects on one target still collides here with a
+    /// *different* completion naming that target with either of them.
     fn check_uncontested_targets(
         &self,
         source: SymbolId,
         effects: &[CompletionEffect],
     ) -> Result<(), RuntimeError> {
-        let mut declared: BTreeMap<SymbolId, (SymbolId, CompletionEffectKind)> = BTreeMap::new();
+        let mut declared: BTreeMap<SymbolId, Vec<(SymbolId, CompletionEffectKind)>> =
+            BTreeMap::new();
         for (id, tracked) in &self.objectives {
             for effect in &tracked.completion_effects {
-                declared.entry(effect.target).or_insert((*id, effect.kind));
+                declared
+                    .entry(effect.target)
+                    .or_default()
+                    .push((*id, effect.kind));
             }
         }
         for effect in effects {
-            if let Some((other, kind)) = declared.get(&effect.target)
-                && *other != source
-                && *kind != effect.kind
+            let named = declared
+                .get(&effect.target)
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            if named
+                .iter()
+                .any(|(other, kind)| *other != source && *kind != effect.kind)
             {
                 return Err(RuntimeError::AmbiguousCompletionEffect {
                     source,
                     target: effect.target,
                 });
             }
+            declared
+                .entry(effect.target)
+                .or_default()
+                .push((source, effect.kind));
         }
         Ok(())
     }
@@ -2785,6 +2800,55 @@ mod tests {
             assert!(
                 message.contains("completes one objective per pass"),
                 "the refusal states the measured rule it leans on: {message}"
+            );
+        }
+    }
+
+    /// What the narrowed refusal still covers in full: the cross-completion
+    /// check compares against **every** kind a registered declaration names,
+    /// not only the first kind its authored order spells. A declaration that
+    /// already carries two effects on one target (the corpus's within-block
+    /// shape, legal since the engine's fixed order decides it) still collides
+    /// with a *different* completion naming that target with either of them,
+    /// whichever order the two register in.
+    #[test]
+    fn accept_m01_b_obj_1_fu1_multi_effect_declaration_refuses_cross_completion_collision() {
+        // Objective 1 carries the corpus's within-declaration shape: a nap and
+        // a wake on the same target, spelled nap first — the wake is the kind
+        // a check that only read each declaration's first kind would miss.
+        let both = spec(
+            1,
+            ObjectiveState::Active,
+            vec![
+                effect(CompletionEffectKind::Nap, 3, Some(2.0)),
+                effect(CompletionEffectKind::Wake, 3, None),
+            ],
+        );
+        // Objective 2 names the same target with only one of the two effects.
+        let single = spec(
+            2,
+            ObjectiveState::Active,
+            vec![effect(CompletionEffectKind::Nap, 3, Some(1.0))],
+        );
+        for order in [0, 1] {
+            let first = if order == 0 {
+                both.clone()
+            } else {
+                single.clone()
+            };
+            let second = if order == 0 {
+                single.clone()
+            } else {
+                both.clone()
+            };
+            let mut runtime = runtime_with(vec![first]);
+            assert_eq!(
+                runtime.add_objective(second),
+                Err(RuntimeError::AmbiguousCompletionEffect {
+                    source: SymbolId(if order == 0 { 2 } else { 1 }),
+                    target: SymbolId(3),
+                }),
+                "registration order decides nothing: the nap/wake collision across two completions is refused however they arrive"
             );
         }
     }
