@@ -355,8 +355,19 @@ fn accept_m01_b_obj_3_retail_m01_recovers_every_condition_and_outcome_the_census
             "{family:?} left unrecovered"
         );
     }
+    // The effect and dependency fields (M01-B-OBJ-1) share the recovered list.
+    let own_recovered = recovery
+        .recovered()
+        .iter()
+        .filter(|field| {
+            !matches!(
+                field.family,
+                RecordFieldFamily::CompletionEffect | RecordFieldFamily::OrderDependency
+            )
+        })
+        .count();
     assert_eq!(
-        recovery.fields_recovered(),
+        own_recovered,
         census_stages + census_counts + recovery.outcomes().len()
     );
 

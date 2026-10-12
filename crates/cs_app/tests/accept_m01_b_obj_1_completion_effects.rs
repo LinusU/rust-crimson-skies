@@ -236,7 +236,13 @@ fn accept_m01_b_obj_1_retail_m01_recovers_its_effects_and_dependencies() {
     };
     assert_eq!(by_family(RecordFieldFamily::CompletionEffect), 56);
     assert_eq!(by_family(RecordFieldFamily::OrderDependency), 3);
-    assert_eq!(recovery.fields_recovered(), 59);
+    // The effect and dependency fields are all of this task's recovered fields;
+    // later tasks recover further families into the same list.
+    assert_eq!(
+        by_family(RecordFieldFamily::CompletionEffect)
+            + by_family(RecordFieldFamily::OrderDependency),
+        59
+    );
     assert_eq!(
         recovery.fields_recovered() + recovery.unrecovered().len(),
         recovery.fields_read()
@@ -273,7 +279,16 @@ fn accept_m01_b_obj_1_retail_corpus_recovers_every_measured_key() {
             recovery.mission()
         );
         engine_builds(recovery);
-        recovered += recovery.fields_recovered();
+        recovered += recovery
+            .recovered()
+            .iter()
+            .filter(|field| {
+                matches!(
+                    field.family,
+                    RecordFieldFamily::CompletionEffect | RecordFieldFamily::OrderDependency
+                )
+            })
+            .count();
         left_effects += recovery
             .unrecovered()
             .iter()
