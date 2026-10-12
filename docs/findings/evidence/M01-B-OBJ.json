@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "M01-B-OBJ",
+ "candidate_tree": "b5eedfd48a1e847f0730bd170350cef452ac79f6",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-10-12T13:49:00Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_m01_b_obj_integration_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/bunny-alpha-1", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 3, "executed": 3, "passed": 3, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_m01_b_obj_integration_unmeasured_key_is_still_refused_by_name", "status": "pass", "evidence": ["cargo-test.log", "family-verdict.json"]}, {"id": "accept_m01_b_obj_integration_fully_recovered_record_refuses_by_the_schema_gap", "status": "pass", "evidence": ["cargo-test.log", "family-verdict.json"]}, {"id": "accept_m01_b_obj_integration_retail_m01_every_family_is_measured_and_the_directives_are_named", "status": "pass", "evidence": ["cargo-test.log", "family-verdict.json"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "c523211d088a94509e417dd0bb39b01007857fd9d545645dca181d149cb3782f", "kind": "log"}, {"path": "family-verdict.json", "sha256": "3502c673bee3e9dbd1b5638c9ed1dece982c4a7c938dcaafb6459d1e5e6992e9", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "bunny-alpha-1 (opencode-go/mimo-v2.6-flash), implementer, fresh context", "method": "Acceptance suite run locally with the retail capability; this harness derives every field from the recorded log, production discovery of $CS_GAME_DIR, and a second production run of cs_app::objectives::recover_retail_objectives on zbd/c1c/m01 (family-verdict.json). Claim is implemented only. MEASURED: the integration finding docs/findings/2026-10-12-m01-b-obj-integration-family-verdict.md joins the four stages' findings (2026-10-12-m01-b-obj-1..4) into one verdict: of M01's 358 fields, 308 are recovered into the engine model across eight measured families and 50 remain unrecovered in the two directive families whose world-side operations the declared program does not represent; no field is left Unmeasured, and program() refuses naming exactly those families (its computed refusal text is recorded verbatim in family-verdict.json). LIMITS: the family measurements are static code readings of $CS_ENGINE_IMAGE and retail-data censuses; no original executable was run, so nothing here is verified_original runtime behaviour, and the directive families' remaining unknowns are those recorded in the M01-B-OBJ-4 finding. TEST-SELECTION NOTE: the prefix accept_m01_b_obj_integration_ is unique to this task, so the 3 discovered assertions are exactly this task's tests. Validated with tools/validate_evidence.py --require-pass."},
+ "claim": "implemented"
+}
