@@ -184,8 +184,7 @@ use cs_content::objectives::{
     MeasuredCountConditions, MeasuredDormantBlock, MeasuredRecordFields, MeasuredRepeatedEffect,
     MeasuredTargetKinds, OBJECTIVE_INACTIVE_COUNT_KEY, ProgramActor, ProgramSymbol,
     RecordFieldError, UnmeasuredQuantity, inactive_stage_number, is_objective_inactive_stage,
-    is_optional_objective_key,
-    measure_dormant_declarations, measured_category_evidence,
+    is_optional_objective_key, measure_dormant_declarations, measured_category_evidence,
 };
 use cs_content::objectives_conditions::{ObjectiveOutcome, StageConditions, keys as outcome_keys};
 use cs_content::objectives_engine::{
