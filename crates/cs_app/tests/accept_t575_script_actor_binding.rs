@@ -234,7 +234,7 @@ fn accept_t575_retail_actor_references_are_text_names_not_numeric_ids() {
             assert!(!shape.contains("int"), "{family} carries an int: {shape}");
         }
     }
-    // TRAVELERS names its subject by text at most sites; an int leads at five
+    // TRAVELERS names its subject by text at most sites; an int leads at six
     // sites whose meaning is unmeasured and is not read as an actor id.
     let travelers = &shapes["TRAVELERS"];
     let int_led: u32 = travelers
