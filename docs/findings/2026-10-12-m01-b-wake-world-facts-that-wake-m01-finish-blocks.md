@@ -33,7 +33,7 @@ spells `WAKE_OBJECTIVE_WHEN_I_SLEEP` or an armed `nap_after`/`sleep_at` slot.
 Every other wake in the record is a completion effect (`WAKE…`, `NAP…`,
 `KILL…`, `SLEEP…`) applied when some other block completes.
 
-Five blocks load awake (no `BEGIN_DORMANT`), and each one's non-lifecycle gate
+Six blocks load awake (no `BEGIN_DORMANT`), and each one's non-lifecycle gate
 is a world fact — these are the roots of the whole graph:
 
 | Block | Gate beyond `ObjectiveAwake` |
@@ -43,9 +43,13 @@ is a world fact — these are the roots of the whole graph:
 | `OBJECTIVE6` | `INACTIVE` — ≥ 1 of `workersvoyagezep`'s 18 engine-part chains out of play |
 | `OBJECTIVE7` | `INACTIVE` — ≥ 1 of `workersvoyagezep`'s 9 turret chains out of play |
 | `OBJECTIVE36` | `INACTIVE` — ≥ 2 of `piratezep`'s 12 engine-part chains out of play |
+| `OBJECTIVE55` | `INACTIVE` — ≥ 2 of `workersvoyagezep`'s 18 engine-part chains out of play |
 
-Every dormant block the program can ever reach descends from one of these five
-(or from `OBJECTIVE1`'s lone 2-second self-wake), and each of the five needs a
+`OBJECTIVE55` is a leaf: it spells no completion effects and no dormant block
+gates on it, so nothing descends from it — it sits off both terminal paths
+while sharing `OBJECTIVE6`'s member set at a higher threshold. Every dormant
+block the program can ever reach descends from one of the other five
+(or from `OBJECTIVE1`'s lone 2-second self-wake), and each of the six needs a
 world fact to complete — so a run whose world reports nothing cannot start any
 chain. That is the measured proof of the integration note's "every wake path
 needs world facts a headless run does not have".

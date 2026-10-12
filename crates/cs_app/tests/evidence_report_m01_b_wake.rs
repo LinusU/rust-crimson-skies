@@ -77,6 +77,7 @@ const INACTIVE_GATES: &[(u32, u32, usize)] = &[
     (37, 6, 12),
     (38, 10, 12),
     (39, 12, 12),
+    (55, 2, 18),
 ];
 /// The `ANIM_STATE` gates on the win chain: (number, animation, wanted state).
 const ANIM_GATES: &[(u32, &str, u32)] = &[
@@ -100,7 +101,7 @@ fn review_method(own_tests: u64) -> String {
          is verified_original runtime behaviour. MEASURED: both Finish blocks (OBJECTIVE24 \
          INSTANTWIN, OBJECTIVE40 INSTANTLOSS) load dormant behind BEGIN_DORMANT -1, OBJECTIVE1 \
          is the record's only armed self-wake, and every other wake is a completion effect \
-         rooted at one of the five awake-at-load blocks (2, 3, 6, 7, 36), each gated on a world \
+         rooted at one of the six awake-at-load blocks (2, 3, 6, 7, 36, 55), each gated on a world \
          fact — the census asserts the whole graph edge by edge so a drift between the \
          findings document and the record fails this run. LIMITS OF WHAT WAS MEASURED, each an \
          `unknowns` entry: the in-play-bit writers the INACTIVE counts read are untraced world \
@@ -243,16 +244,17 @@ fn assert_wake_graph(recovery: &ObjectiveRecovery, program: &MissionProgram) {
         "OBJECTIVE40 is the INSTANTLOSS block"
     );
 
-    // The load states: five blocks awake (no BEGIN_DORMANT), OBJECTIVE1 the
+    // The load states: six blocks awake (no BEGIN_DORMANT), OBJECTIVE1 the
     // only armed self-wake, both terminals behind the -1 sentinel and no
-    // armed nap/sleep self-timer anywhere.
+    // armed nap/sleep self-timer anywhere. OBJECTIVE55 — a leaf no dormant
+    // block descends from — is the sixth.
     let awake_at_load: Vec<u32> = (1..=58u32)
         .filter(|number| declaration(*number).begin_dormant.is_none())
         .collect();
     assert_eq!(
         awake_at_load,
-        vec![2, 3, 6, 7, 36],
-        "the graph roots are the five blocks that load awake"
+        vec![2, 3, 6, 7, 36, 55],
+        "the graph roots are the six blocks that load awake"
     );
     for number in 1..=58u32 {
         let Some(timers) = declaration(number).begin_dormant else {
