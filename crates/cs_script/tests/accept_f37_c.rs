@@ -360,8 +360,7 @@ fn accept_f37_c_restore_refuses_a_foreign_or_incompatible_record() {
     // trusted. Another stream's state lands at an index past the recorded
     // stream's bound, and so does the state exactly one draw past the bound;
     // the bound's own state still restores.
-    let stream_start =
-        SplitMix64::for_domain(live.snapshot(&p).seed, MISSION_EVALUATOR_DOMAIN);
+    let stream_start = SplitMix64::for_domain(live.snapshot(&p).seed, MISSION_EVALUATOR_DOMAIN);
     let mut stream = stream_start;
     for _ in 0..MAX_RNG_STREAM_DRAWS {
         stream.next_u64();
