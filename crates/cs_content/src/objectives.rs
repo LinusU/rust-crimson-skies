@@ -4229,6 +4229,414 @@ fn read_declaration_text(value: &ZrdValue, each: &mut impl FnMut(&str)) {
 /// repeat the spelling.
 pub const DETACHED_TARGETS_MEMBER: &str = SCENARIO_TARGETS_MEMBER;
 
+// ---------------------------------------------------------------------------
+// The record-level fields (M01-B-OBJ-4)
+// ---------------------------------------------------------------------------
+//
+// The engine's mission parser reads five keys at a control record's **top
+// level**, outside the numbered `OBJECTIVE<N>` blocks, measured from the
+// decrypted image in `docs/findings/2026-10-12-m01-b-obj-4-mission-language-directive-keys.md`:
+// `MISSION_TIMER` (`0x466c31`), `RESTORE_ANIMS` (`0x466e47`),
+// `INVALIDATE_ANIMS` (`0x46718f`), `EXECUTE_ANIMS` (`0x4674d3`) and
+// `PLAYER_INIT` (`0x46777d`), each resolved by a first-match key lookup, so a
+// repeated key is never read twice. None of them is a declared-objective
+// field: they are the mission's preamble — its timer, its player spawn and
+// three lists of animation handles resolved at load.
+
+/// The record key arming the mission timer.
+pub const RECORD_MISSION_TIMER_KEY: &str = "MISSION_TIMER";
+/// The record key carrying the player's spawn declaration.
+pub const RECORD_PLAYER_INIT_KEY: &str = "PLAYER_INIT";
+/// The record key whose list of animation handles is stored at `+0xc80`.
+pub const RECORD_RESTORE_ANIMS_KEY: &str = "RESTORE_ANIMS";
+/// The record key whose list of animation handles is stored at `+0xc88`.
+pub const RECORD_EXECUTE_ANIMS_KEY: &str = "EXECUTE_ANIMS";
+/// The record key whose list of animation handles is stored at `+0xc84`.
+pub const RECORD_INVALIDATE_ANIMS_KEY: &str = "INVALIDATE_ANIMS";
+
+/// The five record-level keys, in the order the parser checks them.
+///
+/// The sound keys the parser reads between `MISSION_TIMER` and the animation
+/// lists are a separate measured vocabulary
+/// (`crate::mission_control::CONTROL_RECORD_SOUND_KEY_VOCABULARY`).
+pub const RECORD_FIELD_KEY_VOCABULARY: [&str; 5] = [
+    RECORD_MISSION_TIMER_KEY,
+    RECORD_RESTORE_ANIMS_KEY,
+    RECORD_INVALIDATE_ANIMS_KEY,
+    RECORD_EXECUTE_ANIMS_KEY,
+    RECORD_PLAYER_INIT_KEY,
+];
+
+/// A scalar field payload as the record spells it.
+///
+/// The engine's record-level parse copies most payloads **verbatim** — a
+/// four-byte dword with no tag check — so a scalar's tag says how the record
+/// wrote the value, not how the engine stores it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum RecordScalar {
+    /// Tag `1`: a `u32`.
+    Int(u32),
+    /// Tag `2`: an `f32`.
+    Real(f32),
+}
+
+impl RecordScalar {
+    fn of(value: &ZrdValue) -> Option<Self> {
+        match value {
+            ZrdValue::Int(v) => Some(Self::Int(*v)),
+            ZrdValue::Float(v) => Some(Self::Real(*v)),
+            ZrdValue::Text(_) | ZrdValue::List(_) => None,
+        }
+    }
+
+    /// The four payload bytes, as the engine stores them.
+    #[must_use]
+    pub const fn bits(self) -> u32 {
+        match self {
+            Self::Int(v) => v,
+            Self::Real(v) => v.to_bits(),
+        }
+    }
+
+    /// What the engine's `fld dword` reads of the payload: the raw bits
+    /// interpreted as `f32` — **not** an integer-to-float conversion.
+    #[must_use]
+    pub fn as_float(self) -> f32 {
+        f32::from_bits(self.bits())
+    }
+}
+
+/// `MISSION_TIMER`'s measured parse (`0x466c31`…`0x466ceb`).
+///
+/// Element 0 is loaded as seconds: a float's bits are read verbatim, an
+/// integer is converted (`fild`), any other tag walks the "Expecting real
+/// value" error path. The value is written to the timer object at `0x71b468`
+/// both as `f32` and as `value × 1000f` truncated to milliseconds; per
+/// finding D the countdown starts only when the stored seconds are positive
+/// — M01's `[0]` never starts it.
+///
+/// When a second element exists the parser compares it, byte-for-byte, to the
+/// seven bytes of `NOLOSS\0`: on an exact match it writes `1` to the timer
+/// object's `+0x14` flag; **any other second element is silently ignored.**
+/// Elements past the second are never read.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MissionTimerField {
+    /// The declared seconds, as the engine computes them (`f32`).
+    pub seconds: f32,
+    /// Whether the second element spelled exactly `NOLOSS`.
+    pub no_loss: bool,
+}
+
+/// `PLAYER_INIT`'s measured parse (`0x46777d`…`0x467891`).
+///
+/// The parser reads five elements unconditionally — there is no arity check,
+/// so a shorter declaration would read out of bounds in the original — into
+/// the mission record's `+0x6c0`…`+0x6e0`:
+///
+/// * element 0 → `+0x6c0`, verbatim;
+/// * element 1's first three children → `+0x6c4`…`+0x6cc`, verbatim;
+/// * element 2's first three children → `+0x6d0`…`+0x6d8`, each read as `f32`
+///   and multiplied by π/180 — the attitude is spelled in degrees, stored in
+///   radians;
+/// * element 3 → `+0x6dc`, verbatim;
+/// * element 4 → `+0x6e0`, read as `f32` and multiplied by `0.1f`.
+///
+/// What the fields select is partly unmeasured: the position and attitude
+/// match the `player` spawn the archive's `aiv.zrd` spells (the M13 finding),
+/// element 0 matches the `player` record's index there, and the roles of
+/// elements 3 and 4 stay unknown — see the M01-B-OBJ-4 finding.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlayerInitField {
+    /// Element 0 as spelled (every retail record spells an int).
+    pub head: RecordScalar,
+    /// Element 1's first three children as spelled — the spawn position.
+    pub position: [RecordScalar; 3],
+    /// Element 2's first three children, each as the `f32` the parser loads —
+    /// the attitude in **degrees** (the engine stores radians).
+    pub attitude_degrees: [f32; 3],
+    /// Element 3 as spelled; role unmeasured.
+    pub tail: RecordScalar,
+    /// Element 4 as the `f32` the parser loads, **before** the `0.1f` scaling.
+    pub scaled_input: f32,
+}
+
+/// One element of a `RESTORE_ANIMS`/`EXECUTE_ANIMS`/`INVALIDATE_ANIMS` list as
+/// the parser's shared element grammar resolves it.
+///
+/// All three keys are parsed by three copies of the same loop: an element
+/// that is a bare text resolves through the global animation table
+/// (`0x523820`, stride `0x110`, entries with `+0xa0 == 5` skipped) and its
+/// handle is appended when found; an element that is a list must hold exactly
+/// three children — an object name, a `#`-suffixed member selector and an
+/// animation name — or it is skipped.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AnimDirective {
+    /// A bare animation name, resolved globally.
+    Named(String),
+    /// `[object, "X#", anim]`: `object` resolves through the kind-7 registry
+    /// (`0x4d0280`); `member` — the selector **with its required `#`
+    /// stripped** — either names the object itself or selects named
+    /// descendants (`0x46d280` walks `+0x56`/`+0x5c`); `animation` resolves on
+    /// each matched object (`0x5238a0`, entry `+0x48` is the owner).
+    Scoped {
+        /// The registry name the object is looked up by.
+        object: String,
+        /// The member selector, `#` removed.
+        member: String,
+        /// The animation name resolved on each matched object.
+        animation: String,
+    },
+}
+
+/// What one animation-list key reads: the elements the parse keeps and how
+/// many it skips.
+///
+/// The parser allocates the list record whether or not the key is spelled —
+/// an absent key and an empty list leave the same empty list — and a
+/// malformed element is **skipped**, never an error: a non-text non-list
+/// element, a list that does not hold exactly three children, a triple whose
+/// selector lacks the `#` terminator, or any element whose names do not
+/// resolve at load.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct AnimListField {
+    /// The directives the record spells, in declaration order.
+    pub directives: Vec<AnimDirective>,
+    /// How many elements the parse's shape rules skip.
+    pub skipped: usize,
+}
+
+impl AnimListField {
+    /// Reads the list the way the engine's parse does: strings become
+    /// [`AnimDirective::Named`], three-child `[object, "X#", anim]` lists
+    /// become [`AnimDirective::Scoped`], every other element is skipped.
+    #[must_use]
+    pub fn of(value: &ZrdValue) -> Self {
+        let mut list = Self::default();
+        for element in value.as_list().unwrap_or_default() {
+            match element {
+                ZrdValue::Text(name) => list.directives.push(AnimDirective::Named(name.clone())),
+                ZrdValue::List(triple) => {
+                    let directive = match triple.as_slice() {
+                        [
+                            ZrdValue::Text(object),
+                            ZrdValue::Text(selector),
+                            ZrdValue::Text(anim),
+                        ] => selector
+                            .strip_suffix('#')
+                            .map(|member| AnimDirective::Scoped {
+                                object: object.clone(),
+                                member: member.to_owned(),
+                                animation: anim.clone(),
+                            }),
+                        _ => None,
+                    };
+                    match directive {
+                        Some(directive) => list.directives.push(directive),
+                        None => list.skipped += 1,
+                    }
+                }
+                _ => list.skipped += 1,
+            }
+        }
+        list
+    }
+}
+
+/// What the five record-level keys of one control record read as.
+///
+/// Missing keys leave `None` — matching the engine, whose timer object is
+/// untouched without `MISSION_TIMER` and whose `+0x6c0` is zeroed without
+/// `PLAYER_INIT` — while the three animation lists are always present (the
+/// parser allocates each list record unconditionally), empty when the key is
+/// absent or spells `[]`.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MeasuredRecordFields {
+    /// `MISSION_TIMER`'s parse, when the key is spelled.
+    pub mission_timer: Option<MissionTimerField>,
+    /// `PLAYER_INIT`'s parse, when the key is spelled.
+    pub player_init: Option<PlayerInitField>,
+    /// `RESTORE_ANIMS`' list (`+0xc80`).
+    pub restore_anims: AnimListField,
+    /// `EXECUTE_ANIMS`' list (`+0xc88`).
+    pub execute_anims: AnimListField,
+    /// `INVALIDATE_ANIMS`' list (`+0xc84`).
+    pub invalidate_anims: AnimListField,
+}
+
+/// Why a record-level field is outside the shape the engine's parse is
+/// measured to read.
+#[derive(Clone, Debug, PartialEq)]
+pub enum RecordFieldError {
+    /// `MISSION_TIMER` held no element, a non-numeric element 0 — the
+    /// engine's "Expecting real value" path — or a non-text element 1 (read
+    /// as a `char *` with no tag check).
+    MissionTimerShape {
+        /// What the declaration is instead of its measured shape.
+        detail: &'static str,
+    },
+    /// `PLAYER_INIT` held fewer than the five elements the parser reads
+    /// unconditionally, a non-scalar where a scalar is read, or a non-list
+    /// where a three-element list is read — each an out-of-bounds or wild
+    /// read in the original.
+    PlayerInitShape {
+        /// What the declaration is instead of its measured shape.
+        detail: &'static str,
+    },
+}
+
+impl fmt::Display for RecordFieldError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::MissionTimerShape { detail } => {
+                write!(f, "MISSION_TIMER: {detail}")
+            }
+            Self::PlayerInitShape { detail } => {
+                write!(f, "PLAYER_INIT: {detail}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for RecordFieldError {}
+
+/// Reads `MISSION_TIMER`'s argument the way the engine does.
+///
+/// # Errors
+///
+/// [`RecordFieldError::MissionTimerShape`] when element 0 is absent or not a
+/// number, or element 1 is present and not text.
+fn read_mission_timer(value: &ZrdValue) -> Result<MissionTimerField, RecordFieldError> {
+    let elements = value.as_list().unwrap_or_default();
+    let Some(first) = elements.first() else {
+        return Err(RecordFieldError::MissionTimerShape {
+            detail: "held no elements; the parser reads element 0 unconditionally",
+        });
+    };
+    // A float's bits are read verbatim; an integer is converted (`fild`), the
+    // same conversion the parser emits — not a bit reinterpretation.
+    let seconds = match first {
+        ZrdValue::Float(v) => *v,
+        ZrdValue::Int(v) => *v as f32,
+        _ => {
+            return Err(RecordFieldError::MissionTimerShape {
+                detail: "element 0 is not a number; the engine logs \"Expecting real value\"",
+            });
+        }
+    };
+    let no_loss = match elements.get(1) {
+        None => false,
+        Some(ZrdValue::Text(flag)) => flag == "NOLOSS",
+        Some(_) => {
+            return Err(RecordFieldError::MissionTimerShape {
+                detail: "element 1 is not text; the parser compares it against \"NOLOSS\" as a char *",
+            });
+        }
+    };
+    Ok(MissionTimerField { seconds, no_loss })
+}
+
+/// Reads `PLAYER_INIT`'s argument the way the engine does: five elements,
+/// elements 1 and 2 three-scalar lists.
+///
+/// # Errors
+///
+/// [`RecordFieldError::PlayerInitShape`] when any read falls outside that
+/// shape.
+fn read_player_init(value: &ZrdValue) -> Result<PlayerInitField, RecordFieldError> {
+    fn three(list: &ZrdValue) -> Result<[RecordScalar; 3], RecordFieldError> {
+        let children = list.as_list().ok_or(RecordFieldError::PlayerInitShape {
+            detail: "an element that is not a list is read as a three-element list",
+        })?;
+        let mut out = [RecordScalar::Int(0); 3];
+        for (index, slot) in out.iter_mut().enumerate() {
+            *slot = RecordScalar::of(children.get(index).ok_or(
+                RecordFieldError::PlayerInitShape {
+                    detail: "an inner list holds fewer than the three children read",
+                },
+            )?)
+            .ok_or(RecordFieldError::PlayerInitShape {
+                detail: "an inner element is not a scalar",
+            })?;
+        }
+        Ok(out)
+    }
+
+    let elements = value.as_list().unwrap_or_default();
+    let shape = || RecordFieldError::PlayerInitShape {
+        detail: "the parser reads five elements unconditionally",
+    };
+    let head = RecordScalar::of(elements.first().ok_or_else(shape)?).ok_or(
+        RecordFieldError::PlayerInitShape {
+            detail: "element 0 is not a scalar",
+        },
+    )?;
+    let position = three(elements.get(1).ok_or_else(shape)?)?;
+    let attitude = three(elements.get(2).ok_or_else(shape)?)?;
+    let tail = RecordScalar::of(elements.get(3).ok_or_else(shape)?).ok_or(
+        RecordFieldError::PlayerInitShape {
+            detail: "element 3 is not a scalar",
+        },
+    )?;
+    let scaled = RecordScalar::of(elements.get(4).ok_or_else(shape)?).ok_or(
+        RecordFieldError::PlayerInitShape {
+            detail: "element 4 is not a scalar",
+        },
+    )?;
+    Ok(PlayerInitField {
+        head,
+        position,
+        attitude_degrees: attitude.map(RecordScalar::as_float),
+        tail,
+        scaled_input: scaled.as_float(),
+    })
+}
+
+/// Measures the five record-level keys of one control record's top-level
+/// fields.
+///
+/// `fields` is the record's flat `key, value` list, as
+/// [`crate::stunts::zrd_flat_fields`] reads it. Each key's **first**
+/// occurrence is the one the engine's first-match lookup resolves; repeats
+/// are never read. Keys outside [`RECORD_FIELD_KEY_VOCABULARY`] are ignored.
+///
+/// # Errors
+///
+/// [`RecordFieldError`] for the first measured key whose argument is outside
+/// the engine's measured shape.
+pub fn measure_record_fields(
+    fields: &[(&str, &ZrdValue)],
+) -> Result<MeasuredRecordFields, RecordFieldError> {
+    let mut measured = MeasuredRecordFields {
+        mission_timer: None,
+        player_init: None,
+        restore_anims: AnimListField::default(),
+        execute_anims: AnimListField::default(),
+        invalidate_anims: AnimListField::default(),
+    };
+    let mut seen = [false; 5];
+    for (key, value) in fields {
+        let Some(slot) = RECORD_FIELD_KEY_VOCABULARY
+            .iter()
+            .position(|candidate| candidate == key)
+        else {
+            continue;
+        };
+        if seen[slot] {
+            continue;
+        }
+        seen[slot] = true;
+        match RECORD_FIELD_KEY_VOCABULARY[slot] {
+            RECORD_MISSION_TIMER_KEY => measured.mission_timer = Some(read_mission_timer(value)?),
+            RECORD_PLAYER_INIT_KEY => measured.player_init = Some(read_player_init(value)?),
+            RECORD_RESTORE_ANIMS_KEY => measured.restore_anims = AnimListField::of(value),
+            RECORD_EXECUTE_ANIMS_KEY => measured.execute_anims = AnimListField::of(value),
+            RECORD_INVALIDATE_ANIMS_KEY => measured.invalidate_anims = AnimListField::of(value),
+            _ => unreachable!("the slot indexes the vocabulary"),
+        }
+    }
+    Ok(measured)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
