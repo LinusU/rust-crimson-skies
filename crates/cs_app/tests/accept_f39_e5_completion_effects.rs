@@ -98,9 +98,8 @@ use cs_content::objectives::{
     BRANCH_EFFECT_KEY_VOCABULARY, BRANCH_KEY_VOCABULARY, BranchEffectKind,
     DeclaredCompletionEffect, DeclaredObjective, DeclaredObjectiveProgram, DeclaredObjectiveState,
     DeclaredRevealRule, DeclaredSupport, ObjectivesSchemaError, ProgramSymbol,
-    SYNTHETIC_E5_COMPLETING, SYNTHETIC_E5_NAPPED, SYNTHETIC_E5_WOKEN,
-    UNMEASURED_BLOCK_PRECEDENCE, UNMEASURED_NAP_ARGUMENT, UNMEASURED_OBJECTIVE_SEMANTICS,
-    declared_synthetic_completion_effects,
+    SYNTHETIC_E5_COMPLETING, SYNTHETIC_E5_NAPPED, SYNTHETIC_E5_WOKEN, UNMEASURED_BLOCK_PRECEDENCE,
+    UNMEASURED_NAP_ARGUMENT, UNMEASURED_OBJECTIVE_SEMANTICS, declared_synthetic_completion_effects,
 };
 use cs_script::ir::SymbolId;
 use cs_script::runtime::SessionGeneration;

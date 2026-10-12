@@ -4969,12 +4969,9 @@ mod tests {
     #[test]
     fn accept_f39_e5_fu1_one_declaration_two_effects_on_one_target_is_accepted() {
         let base = declared_synthetic_completion_effects();
-        let nap_on_woken = DeclaredCompletionEffect::new(
-            BranchEffectKind::Nap,
-            SYNTHETIC_E5_WOKEN,
-            Some(2.0),
-        )
-        .expect("a nap with its number");
+        let nap_on_woken =
+            DeclaredCompletionEffect::new(BranchEffectKind::Nap, SYNTHETIC_E5_WOKEN, Some(2.0))
+                .expect("a nap with its number");
         let wake_order = [
             BranchEffectKind::Wake,
             BranchEffectKind::Nap,
