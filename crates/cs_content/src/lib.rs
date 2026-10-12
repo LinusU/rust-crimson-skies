@@ -565,6 +565,7 @@ pub mod mods;
 pub mod multiplayer;
 pub mod objectives;
 pub mod objectives_engine;
+pub mod objectives_conditions;
 pub mod ordnance;
 pub mod original_airframe;
 pub mod pilots;
