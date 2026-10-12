@@ -110,6 +110,33 @@ fidelity claim for this collection:
   the binding as an unknown. The installation holds no `chap6.mpg`, although
   the engine image's table lists it.
 
+## Update (2026-10-12, Rally #1351): the layout records landed as the second source
+
+Rally #1351 (F14-D.VIDEO-LAYOUT) landed after this note's review and did
+exactly the bounded slice the correction reserved: `video_rows` now reads
+`ASSETS/LAYOUT.CSV` through the production ROF mount and the keyed-list
+configuration reader, and a record becomes a video reference only when the
+measured schema classifies it as a movie record **and** its file-name field
+states an `.mpg` name. Re-measured on the owner's installation, the expected
+numbers held: **5 rows** (`chap0`, `msopen1`, `zipper` under
+`f14.d.video.baseline.playavi`; `crimflag`, `final` under
+`f14.d.video.baseline.layout`, with edge provenance spans at the records' own
+lines inside the decoded member), `unnamed_video_file` **5** (the
+`chap1`…`chap5` files `CAMPAIGNINTRO.SCRIPT` constructs, still Rally #1352's)
+and `duplicate_video_name` **4** (the four `CrimFlag.MPG` repeats).
+`CollectionStatus.source` names both containers
+(`ZBD/zrdr.zbd + GOSDATA/ASSETS/crimson.rof`), a source that cannot be read is
+counted under the new `unreadable_video_source` code and named in the
+diagnostic, and a movie-kind record whose name field is not an `.mpg` name is
+counted under `movie_record_without_mpg_name` instead of being read as a
+reference. Full record: `docs/findings/2026-10-12-f14-d-video-layout-collection.md`
+and `docs/findings/evidence/F14-D.VIDEO-LAYOUT.json`.
+
+The sections below are left as the record of the stage as it landed and was
+reviewed; where they disagree with this update — "still reads exactly one
+source", "still mints three rows", "still counts seven", the retail result of
+3 rows and `unnamed_video_file: 7` — **this update wins**.
+
 ## What the collection now holds
 
 `video_rows` in `crates/cs_content/src/catalog/baseline.rs`:
