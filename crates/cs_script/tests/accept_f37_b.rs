@@ -42,7 +42,7 @@ fn reward(key: &str) -> Action {
 }
 
 fn state(program: &ValidatedProgram, work: u64, pending: usize) -> MissionState {
-    let mut state = MissionState::new(program, SessionGeneration(1));
+    let mut state = MissionState::new(program, SessionGeneration(1), 1);
     state.set_limits(WorkLimits {
         max_work_per_tick: work,
         max_pending_items: pending,
@@ -343,8 +343,9 @@ fn accept_f37_b_same_source_items_have_distinct_event_keys() {
     assert!(seqs.iter().all(|s| *s > MAX_ACTIONS_PER_OBJECTIVE as u32));
 }
 
-/// The explicit RNG stream is part of state: same session + same program =
-/// bit-identical draws; a different session draws from a different stream.
+/// The explicit RNG stream is part of state: same root seed + same program =
+/// bit-identical draws; a different root seed draws from a different stream
+/// (F37-C-FU1: the stream no longer follows the session counter).
 #[test]
 fn accept_f37_b_draw_is_seeded_deterministic_per_session() {
     let draws = |session: u32| -> Vec<i32> {
@@ -373,7 +374,7 @@ fn accept_f37_b_draw_is_seeded_deterministic_per_session() {
                 },
             ],
         )]);
-        let mut s = MissionState::new(&p, SessionGeneration(session));
+        let mut s = MissionState::new(&p, SessionGeneration(1), u64::from(session));
         s.step(&p, &MissionFacts::default(), Tick(1)).unwrap();
         let first = s.variable(SymbolId(100)).cloned();
         s.step(&p, &MissionFacts::default(), Tick(2)).unwrap();

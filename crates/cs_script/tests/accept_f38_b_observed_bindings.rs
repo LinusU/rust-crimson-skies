@@ -797,7 +797,7 @@ fn recreated_program_declared_in(
 /// stay a pure reduction of what it is given.
 fn run(program: &MissionProgram, ticks: u64) -> Vec<cs_script::runtime::MissionEvent> {
     let validated = program.clone().validate().expect("a valid program");
-    let mut state = MissionState::new(&validated, SessionGeneration(1));
+    let mut state = MissionState::new(&validated, SessionGeneration(1), 1);
     let facts = MissionFacts::default();
     let mut events = Vec::new();
     for tick in 0..ticks {

@@ -132,6 +132,7 @@ use cs_sim::objectives::terminal::{TerminalOutcome, TerminalPrecedence};
 use cs_sim::visibility::TimelineError;
 use cs_sim::world_actors::runtime::WorldActorError;
 use cs_types::Tick;
+use cs_types::content::ContentId;
 use cs_types::net::SessionId;
 
 use super::compose::{MissionPlayerBody, MissionStage, spawn_player};
@@ -308,6 +309,32 @@ pub struct MissionHostSeed {
     /// Every absence the stage already knows about; [`MissionHost::launch`]
     /// appends the ones only it can see.
     pub refusals: Vec<MissionHostRefusal>,
+    /// The reward ids the host may apply for this mission, resolved from the
+    /// declared campaign content ([`crate::campaign::mission_reward_catalog`]).
+    /// A stage with no declared campaign carries none, and a `GrantReward` in
+    /// its program is then refused as `HostFault::UnknownReward` instead of
+    /// being granted. An engine design, not an original rule.
+    pub rewards: Vec<ContentId>,
+}
+
+/// Launches the control session of `seed` for `generation`.
+///
+/// The evaluator stream comes from the run's mission seed
+/// ([`RunSeeds::mission_seed`](crate::environment::RunSeeds::mission_seed), held
+/// by the stage's environment) and the mission's content id, never from the
+/// generation counter: path is run seed -> `cs_script::runtime::evaluator_seed`
+/// -> the `MSN_EVAL` domain stream. The reward catalog is the stage's declared
+/// one.
+fn launch_script(
+    seed: &MissionHostSeed,
+    generation: SessionGeneration,
+) -> Result<MissionSession, cs_sim::mission::LaunchRefused> {
+    MissionSession::launch_seeded(
+        seed.control.clone(),
+        generation,
+        seed.environment.seeds().mission_seed(),
+        seed.rewards.iter().cloned(),
+    )
 }
 
 /// The lowered objective program a stage carries when no declared program
@@ -653,8 +680,7 @@ impl MissionHost {
         let markers = MissionMarkerConsumer::new(served, seed.markers.clone());
         let objectives = ObjectiveSession::launch(seed.objectives.clone(), generation)
             .map_err(MissionHostLaunchError::Objectives)?;
-        let script = MissionSession::launch(seed.control.clone(), generation, [])
-            .map_err(MissionHostLaunchError::Script)?;
+        let script = launch_script(seed, generation).map_err(MissionHostLaunchError::Script)?;
 
         let refusals = stage_refusals(seed);
         // A stage that carries the record's declared lifecycles folds them;
@@ -782,8 +808,7 @@ impl MissionHost {
             ),
             None => None,
         };
-        self.script = MissionSession::launch(seed.control.clone(), generation, [])
-            .map_err(MissionHostRestartError::Script)?;
+        self.script = launch_script(seed, generation).map_err(MissionHostRestartError::Script)?;
         self.blocks = seed.block_lifecycles.clone();
         self.world_facts = WorldFactTable::new(seed.resolver.clone());
         self.operands = WorldOperands::of(&seed.control);

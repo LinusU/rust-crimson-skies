@@ -88,7 +88,7 @@ fn program(variables: Vec<Variable>, objectives: Vec<Objective>) -> MissionProgr
 }
 
 fn state(program: &ValidatedProgram) -> MissionState {
-    MissionState::new(program, SESSION)
+    MissionState::new(program, SESSION, 1)
 }
 
 /// The reference event order the contract fixes: session, tick, source symbol,

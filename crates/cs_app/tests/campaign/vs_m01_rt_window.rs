@@ -221,6 +221,7 @@ fn synthetic_host_seed() -> MissionHostSeed {
         objectives: no_declared_objectives(),
         markers: MissionMarkerBindings::default(),
         resolver: MemberResolver::from_hierarchy([("harbor".to_owned(), None)]),
+        rewards: Vec::new(),
         refusals: vec![MissionHostRefusal::ObjectiveDeclarations {
             detail: "this synthetic stage declares no objective records of its own, so the F39 \
                      recovery is never asked for one"

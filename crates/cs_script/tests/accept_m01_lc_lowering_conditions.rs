@@ -267,7 +267,7 @@ fn evaluator() -> MissionState {
     }
     .validate()
     .expect("an empty program validates");
-    MissionState::new(&program, SessionGeneration(1))
+    MissionState::new(&program, SessionGeneration(1), 1)
 }
 
 /// Every world-shaped leaf inside a condition, in document order — so a test

@@ -1449,7 +1449,7 @@ fn accept_m07_b_fu1_the_danger_zones_predicate_is_the_measured_flag_count() {
         .clone()
         .validate()
         .expect("M07's program validates clean");
-    let state = MissionState::new(&validated, SessionGeneration(1));
+    let state = MissionState::new(&validated, SessionGeneration(1), 1);
     for (index, zones) in &carried {
         let condition = &program.objectives[*index].condition;
         assert!(

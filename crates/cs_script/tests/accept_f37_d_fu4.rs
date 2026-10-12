@@ -147,7 +147,7 @@ fn accept_f37_d_fu4_expired_countdown_fails_the_mission_before_that_ticks_object
     // one objective completes per tick — the lowest declaration index — so
     // objective 1 admits, grants and wins here; objective 2, satisfied on the
     // same tick, waits and never runs because the success ends the mission.
-    let mut control = MissionState::new(&p, SESSION);
+    let mut control = MissionState::new(&p, SESSION, 1);
     let tick = control.step(&p, &MissionFacts::default(), Tick(1)).unwrap();
     assert_eq!(
         completions(&tick.events),
@@ -166,7 +166,7 @@ fn accept_f37_d_fu4_expired_countdown_fails_the_mission_before_that_ticks_object
     );
 
     // The measured pre-emption, on a fresh session of the same program.
-    let mut state = MissionState::new(&p, SESSION);
+    let mut state = MissionState::new(&p, SESSION, 1);
     let tick = state
         .step_with_countdown(&p, &MissionFacts::default(), Tick(1), expired())
         .unwrap();
@@ -234,7 +234,7 @@ fn accept_f37_d_fu4_expiry_grants_no_reward_of_that_tick_including_queued_work()
     .validate()
     .unwrap();
 
-    let mut state = MissionState::new(&p, SESSION);
+    let mut state = MissionState::new(&p, SESSION, 1);
     let first = state.step(&p, &MissionFacts::default(), Tick(1)).unwrap();
     assert_eq!(completions(&first.events), vec![1]);
     assert_eq!(
@@ -332,7 +332,7 @@ fn accept_f37_d_fu4_noloss_and_network_games_exclude_the_expiry() {
             },
         ),
     ] {
-        let mut state = MissionState::new(&p, SESSION);
+        let mut state = MissionState::new(&p, SESSION, 1);
         let tick = state
             .step_with_countdown(&p, &MissionFacts::default(), Tick(1), countdown)
             .unwrap();
@@ -355,7 +355,7 @@ fn accept_f37_d_fu4_noloss_and_network_games_exclude_the_expiry() {
     }
 
     // The control: the same tick without an exclusion fails the mission.
-    let mut state = MissionState::new(&p, SESSION);
+    let mut state = MissionState::new(&p, SESSION, 1);
     let tick = state
         .step_with_countdown(&p, &MissionFacts::default(), Tick(1), expired())
         .unwrap();
@@ -476,7 +476,7 @@ fn accept_f37_d_fu4_plain_step_passes_no_countdown_and_never_preempts() {
         .validate()
         .unwrap();
 
-    let mut plain = MissionState::new(&p, SESSION);
+    let mut plain = MissionState::new(&p, SESSION, 1);
     let mut granted = 0;
     for tick in 1..=3u64 {
         let result = plain
@@ -495,7 +495,7 @@ fn accept_f37_d_fu4_plain_step_passes_no_countdown_and_never_preempts() {
     );
 
     // The same program through the countdown input ends at once instead.
-    let mut expiring = MissionState::new(&p, SESSION);
+    let mut expiring = MissionState::new(&p, SESSION, 1);
     let result = expiring
         .step_with_countdown(&p, &MissionFacts::default(), Tick(1), expired())
         .unwrap();

@@ -128,7 +128,7 @@ fn accept_f37_d_fu2_measured_precedence_records_success_iff_won() {
     .validate()
     .unwrap();
 
-    let mut measured = MissionState::new(&p, SESSION);
+    let mut measured = MissionState::new(&p, SESSION, 1);
     // The default policy is the measured one; it is observable through the
     // save record, which carries the rule a restore must not swap.
     assert_eq!(
@@ -165,7 +165,7 @@ fn accept_f37_d_fu2_measured_precedence_records_success_iff_won() {
 
     // The designed policy, selected through the save record, still answers
     // `Failed`: the policies are different rules, not two names for one.
-    let mut record = MissionState::new(&p, SESSION).snapshot(&p);
+    let mut record = MissionState::new(&p, SESSION, 1).snapshot(&p);
     record.policy = PrecedencePolicy::SyntheticConservative;
     let mut designed = MissionState::restore(&p, record).unwrap();
     designed
@@ -185,7 +185,7 @@ fn accept_f37_d_fu2_measured_precedence_records_success_iff_won() {
     ])
     .validate()
     .unwrap();
-    let mut state = MissionState::new(&p, SESSION);
+    let mut state = MissionState::new(&p, SESSION, 1);
     state.step(&p, &MissionFacts::default(), Tick(1)).unwrap();
     let tick = state.step(&p, &MissionFacts::default(), Tick(2)).unwrap();
     assert_eq!(
@@ -222,7 +222,7 @@ fn accept_f37_d_fu2_completion_scan_runs_in_declaration_index_order() {
     .validate()
     .unwrap();
 
-    let mut state = MissionState::new(&p, SESSION);
+    let mut state = MissionState::new(&p, SESSION, 1);
     state.set_limits(WorkLimits {
         max_work_per_tick: MIN_WORK_PER_TICK,
         ..WorkLimits::default()
@@ -473,7 +473,7 @@ fn accept_f37_d_fu2_recorded_divergences_match_what_the_runtime_does() {
     ])
     .validate()
     .unwrap();
-    let mut state = MissionState::new(&p, SESSION);
+    let mut state = MissionState::new(&p, SESSION, 1);
     let first = state.step(&p, &MissionFacts::default(), Tick(1)).unwrap();
     assert_eq!(
         completions(&first.events),
@@ -545,7 +545,7 @@ fn accept_f37_d_fu2_recorded_divergences_match_what_the_runtime_does() {
     let p = program(vec![objective(1, vec![reward("r-only")])])
         .validate()
         .unwrap();
-    let mut state = MissionState::new(&p, SESSION);
+    let mut state = MissionState::new(&p, SESSION, 1);
     // Ten ordinary ticks through the evaluator's own `step` — the entry
     // point for a caller that has no countdown, which still passes
     // `MissionCountdown::NONE`. The mission runs on: with no producer fed

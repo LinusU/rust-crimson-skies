@@ -25,7 +25,7 @@ impl MissionSession {
             terminal: TerminalState::Unsupported,
             error,
         })?;
-        let state = MissionState::new(&program, g);
+        let state = MissionState::new(&program, g, 1);
         Ok(Self { program, state })
     }
     fn step(&mut self, f: &MissionFacts, t: Tick) -> Result<TickResult, TickError> {

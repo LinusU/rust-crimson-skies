@@ -133,7 +133,7 @@ fn accept_m01_lc_lowering_conditions_lifecycle_gates_are_represented() {
         .collect()
     );
 
-    let mut state = MissionState::new(&program, SessionGeneration(3));
+    let mut state = MissionState::new(&program, SessionGeneration(3), 1);
     let first = state.step(&program, &facts, Tick(1)).unwrap();
     assert!(
         !state.is_completed(SymbolId(0)),
@@ -243,7 +243,7 @@ fn accept_m01_lc_lowering_conditions_a_completed_dependency_freezes_its_dependen
         .declare(1, LifecycleDecl::awake())
         .expect("declared once");
 
-    let mut state = MissionState::new(&program, SessionGeneration(4));
+    let mut state = MissionState::new(&program, SessionGeneration(4), 1);
     let mut facts = table.facts();
 
     // The gate is open but the group still has a member: no completion.
@@ -299,7 +299,8 @@ fn accept_m01_lc_lowering_conditions_the_lifecycle_table_drives_the_measured_wak
     assert!(
         !MissionState::new(
             &program(vec![objective(7, "OBJECTIVE8", vec![])]),
-            SessionGeneration(5)
+            SessionGeneration(5),
+            1
         )
         .holds(&Condition::ObjectiveAwake { index: 7 }, &facts)
     );
@@ -334,7 +335,7 @@ fn accept_m01_lc_lowering_conditions_a_firing_block_emits_one_completion() {
         .declare(1, LifecycleDecl::awake())
         .expect("declared once");
 
-    let mut state = MissionState::new(&program, SessionGeneration(6));
+    let mut state = MissionState::new(&program, SessionGeneration(6), 1);
     let first = state.step(&program, &table.facts(), Tick(1)).unwrap();
     assert_eq!(first.events.len(), 1);
     assert_eq!(first.events[0].key.source, SymbolId(1));

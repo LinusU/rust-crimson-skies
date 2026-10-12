@@ -115,7 +115,7 @@ fn accept_f37_d_fu3_one_objective_completes_per_tick_lowest_declaration_index_fi
     .validate()
     .unwrap();
 
-    let mut state = MissionState::new(&p, SESSION);
+    let mut state = MissionState::new(&p, SESSION, 1);
     let mut completions = Vec::new();
     let mut granted: Vec<ContentId> = Vec::new();
     for tick in 1..=5u64 {
@@ -175,7 +175,7 @@ fn accept_f37_d_fu3_a_satisfied_objective_that_waits_is_re_evaluated_not_latched
     .validate()
     .unwrap();
 
-    let mut state = MissionState::new(&p, SESSION);
+    let mut state = MissionState::new(&p, SESSION, 1);
 
     // Both conditions hold; only the lower index completes.
     let first = state.step(&p, &dead(&[70]), Tick(1)).unwrap();
@@ -237,7 +237,7 @@ fn accept_f37_d_fu3_objectives_cannot_request_both_outcomes_on_one_tick() {
     .validate()
     .unwrap();
 
-    let mut state = MissionState::new(&p, SESSION);
+    let mut state = MissionState::new(&p, SESSION, 1);
     let first = state.step(&p, &MissionFacts::default(), Tick(1)).unwrap();
     let requests: Vec<Outcome> = first
         .events

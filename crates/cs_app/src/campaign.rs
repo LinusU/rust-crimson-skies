@@ -195,6 +195,33 @@ pub fn loadout_weight(
     }
 }
 
+/// The reward ids a mission's declared campaign nodes may grant: the unlocks
+/// of every edge grant of every node bound to `mission`, sorted and unique.
+///
+/// A node whose mission binding is unknown matches nothing. A mission no
+/// declared node binds yields an empty catalog, so the host refuses its
+/// `GrantReward` (`HostFault::UnknownReward`) instead of granting content the
+/// installation never declared. An engine design, not a measured original rule.
+#[must_use]
+pub fn mission_reward_catalog(
+    campaign: &CampaignDefinition,
+    mission: &cs_types::content::ContentId,
+) -> Vec<cs_types::content::ContentId> {
+    let mut ids: Vec<_> = campaign
+        .nodes()
+        .filter(|node| {
+            matches!(&node.kind, NodeKind::Mission { mission: bound }
+                if bound.clone().known().as_ref() == Some(mission))
+        })
+        .flat_map(|node| node.edges.iter())
+        .filter_map(|edge| edge.grant.as_ref())
+        .flat_map(|grant| grant.unlocks.iter().cloned())
+        .collect();
+    ids.sort();
+    ids.dedup();
+    ids
+}
+
 /// Lowers a declared campaign into the validated runtime graph. The first
 /// refusal wins; a half-lowered graph is never produced.
 ///

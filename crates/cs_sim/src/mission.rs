@@ -140,7 +140,34 @@ impl MissionSession {
         session: SessionGeneration,
         rewards: impl IntoIterator<Item = ContentId>,
     ) -> Result<Self, LaunchRefused> {
-        Self::launch_inner(program, session, rewards, Countdown::unarmed())
+        Self::launch_inner(
+            program,
+            session,
+            u64::from(session.0),
+            rewards,
+            Countdown::unarmed(),
+        )
+    }
+
+    /// [`Self::launch`] with the evaluator stream seeded from the run's
+    /// `root_seed` (plus the mission's content id, see
+    /// [`cs_script::runtime::evaluator_seed`]) instead of the session counter.
+    ///
+    /// This is the production path: two sessions launched with one root seed
+    /// draw identically, and a different root seed diverges. [`Self::launch`]
+    /// keeps the session counter as its root only for callers that have no run
+    /// seed (synthetic stages).
+    ///
+    /// # Errors
+    ///
+    /// [`LaunchRefused`] with the precise validation trace.
+    pub fn launch_seeded(
+        program: MissionProgram,
+        session: SessionGeneration,
+        root_seed: u64,
+        rewards: impl IntoIterator<Item = ContentId>,
+    ) -> Result<Self, LaunchRefused> {
+        Self::launch_inner(program, session, root_seed, rewards, Countdown::unarmed())
     }
 
     /// [`Self::launch`] for a mission whose control record spelled a
@@ -158,12 +185,34 @@ impl MissionSession {
         rewards: impl IntoIterator<Item = ContentId>,
         spec: CountdownSpec,
     ) -> Result<Self, LaunchRefused> {
-        Self::launch_inner(program, session, rewards, Countdown::armed(spec))
+        Self::launch_inner(
+            program,
+            session,
+            u64::from(session.0),
+            rewards,
+            Countdown::armed(spec),
+        )
+    }
+
+    /// [`Self::launch_with_countdown`] seeded like [`Self::launch_seeded`].
+    ///
+    /// # Errors
+    ///
+    /// [`LaunchRefused`] with the precise validation trace.
+    pub fn launch_with_countdown_seeded(
+        program: MissionProgram,
+        session: SessionGeneration,
+        root_seed: u64,
+        rewards: impl IntoIterator<Item = ContentId>,
+        spec: CountdownSpec,
+    ) -> Result<Self, LaunchRefused> {
+        Self::launch_inner(program, session, root_seed, rewards, Countdown::armed(spec))
     }
 
     fn launch_inner(
         program: MissionProgram,
         session: SessionGeneration,
+        root_seed: u64,
         rewards: impl IntoIterator<Item = ContentId>,
         countdown: Countdown,
     ) -> Result<Self, LaunchRefused> {
@@ -171,7 +220,7 @@ impl MissionSession {
             terminal: TerminalState::Unsupported,
             error,
         })?;
-        let state = MissionState::new(&program, session);
+        let state = MissionState::new(&program, session, root_seed);
         Ok(Self {
             program,
             host: HostLedger::new(session, rewards),

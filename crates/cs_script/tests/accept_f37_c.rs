@@ -72,7 +72,7 @@ fn delayed_reward_program() -> ValidatedProgram {
 }
 
 fn state(program: &ValidatedProgram) -> MissionState {
-    MissionState::new(program, SessionGeneration(9))
+    MissionState::new(program, SessionGeneration(9), 1)
 }
 
 /// Runs the fixture from tick 1 to `until` and returns every emitted reward

@@ -466,6 +466,10 @@ pub fn stage_for(
         markers: MissionMarkerBindings::default(),
         resolver: content.resolver.clone(),
         refusals,
+        // No campaign is declared for an original mission yet (the F43-D
+        // survey is open), so the catalog is empty: a `GrantReward` in its
+        // control program is refused by name, never granted from a guess.
+        rewards: Vec::new(),
     };
 
     Ok(MissionStage {

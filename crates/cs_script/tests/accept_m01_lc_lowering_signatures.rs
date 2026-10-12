@@ -354,7 +354,7 @@ fn accept_m01_lc_lowering_signatures_nested_arguments_stay_nested() {
         ]
     );
     // And the runtime's host-effect record keeps the structure intact.
-    let mut state = MissionState::new(&lowered, SessionGeneration(7));
+    let mut state = MissionState::new(&lowered, SessionGeneration(7), 1);
     state
         .step(&lowered, &MissionFacts::default(), Tick(1))
         .unwrap();
@@ -641,7 +641,7 @@ fn accept_m01_lc_lowering_signatures_every_operation_executes() {
     )
     .unwrap();
     let program = lowered.validate().unwrap();
-    let mut state = MissionState::new(&program, SessionGeneration(1));
+    let mut state = MissionState::new(&program, SessionGeneration(1), 1);
     state
         .step(&program, &MissionFacts::default(), Tick(1))
         .unwrap();
@@ -719,7 +719,7 @@ fn accept_m01_lc_lowering_signatures_directive_log_is_ordered_once_and_restorabl
     }
     .validate()
     .unwrap();
-    let mut state = MissionState::new(&program, SessionGeneration(4));
+    let mut state = MissionState::new(&program, SessionGeneration(4), 1);
     state
         .step(&program, &MissionFacts::default(), Tick(1))
         .unwrap();
@@ -781,6 +781,7 @@ fn accept_m01_lc_lowering_signatures_restore_checks_the_directive_log() {
         pending: vec![],
         next_item_ordinal: 0,
         limits: WorkLimits::default(),
+        seed: 0,
         rng_draws: 0,
     };
     let key = |sequence| EventKey {

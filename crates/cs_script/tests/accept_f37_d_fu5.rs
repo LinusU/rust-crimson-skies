@@ -109,7 +109,7 @@ fn accept_f37_d_fu5_loss_branch_runs_while_the_recorded_result_is_success() {
         ),
         objective(3, vec![Action::Finish(Outcome::Failed)]),
     ]);
-    let mut state = MissionState::new(&program, SESSION);
+    let mut state = MissionState::new(&program, SESSION, 1);
     assert_eq!(
         state.terminal_presentation(),
         None,
@@ -195,7 +195,7 @@ fn accept_f37_d_fu5_cues_follow_the_won_flag_not_the_recorded_result() {
         ),
         objective(3, vec![Action::Finish(Outcome::Failed)]),
     ]);
-    let mut record = MissionState::new(&program, SESSION).snapshot(&program);
+    let mut record = MissionState::new(&program, SESSION, 1).snapshot(&program);
     record.policy = PrecedencePolicy::SyntheticConservative;
     let mut designed = MissionState::restore(&program, record).unwrap();
 
@@ -242,7 +242,7 @@ fn accept_f37_d_fu5_cues_follow_the_won_flag_not_the_recorded_result() {
 #[test]
 fn accept_f37_d_fu5_win_and_loss_branches_select_their_own_cues() {
     let win = validated(vec![objective(1, vec![Action::Finish(Outcome::Succeeded)])]);
-    let mut state = MissionState::new(&win, SESSION);
+    let mut state = MissionState::new(&win, SESSION, 1);
     let result = tick(&mut state, &win, 1);
     let presentation = state.terminal_presentation().unwrap();
     assert_eq!(result.terminal, TerminalState::Succeeded);
@@ -258,7 +258,7 @@ fn accept_f37_d_fu5_win_and_loss_branches_select_their_own_cues() {
     assert_eq!(presentation.result, TerminalState::Succeeded);
 
     let loss = validated(vec![objective(1, vec![Action::Finish(Outcome::Failed)])]);
-    let mut state = MissionState::new(&loss, SESSION);
+    let mut state = MissionState::new(&loss, SESSION, 1);
     let result = tick(&mut state, &loss, 1);
     let presentation = state.terminal_presentation().unwrap();
     assert_eq!(result.terminal, TerminalState::Failed);
@@ -290,7 +290,7 @@ fn accept_f37_d_fu5_end_delay_follows_the_measured_instant_rule() {
 
     // Instant: a win/loss terminal request fired on the terminal tick.
     let instant = validated(vec![objective(1, vec![Action::Finish(Outcome::Succeeded)])]);
-    let mut state = MissionState::new(&instant, SESSION);
+    let mut state = MissionState::new(&instant, SESSION, 1);
     tick(&mut state, &instant, 1);
     assert_eq!(
         state.terminal_presentation().unwrap().end_delay,
@@ -300,7 +300,7 @@ fn accept_f37_d_fu5_end_delay_follows_the_measured_instant_rule() {
     // Standard, program side: an abort request is not an instant win/loss, so
     // no instant outcome fired — the measured "otherwise" half applies.
     let aborted = validated(vec![objective(1, vec![Action::Finish(Outcome::Aborted)])]);
-    let mut state = MissionState::new(&aborted, SESSION);
+    let mut state = MissionState::new(&aborted, SESSION, 1);
     let result = tick(&mut state, &aborted, 1);
     assert_eq!(result.terminal, TerminalState::Aborted);
     let presentation = state.terminal_presentation().unwrap();
@@ -313,7 +313,7 @@ fn accept_f37_d_fu5_end_delay_follows_the_measured_instant_rule() {
 
     // Standard, host side: a teardown ends the mission with neither flag set.
     let teardown = validated(vec![objective(1, vec![Action::Finish(Outcome::Succeeded)])]);
-    let mut state = MissionState::new(&teardown, SESSION);
+    let mut state = MissionState::new(&teardown, SESSION, 1);
     state.abort();
     let presentation = state.terminal_presentation().unwrap();
     assert_eq!(presentation.end_delay, EndDelay::Standard);
@@ -346,7 +346,7 @@ fn accept_f37_d_fu5_end_delay_follows_the_measured_instant_rule() {
 #[test]
 fn accept_f37_d_fu5_countdown_expiry_selects_the_no_flag_presentation() {
     let program = validated(vec![objective(1, vec![Action::Finish(Outcome::Succeeded)])]);
-    let mut state = MissionState::new(&program, SESSION);
+    let mut state = MissionState::new(&program, SESSION, 1);
     let expired = MissionCountdown {
         expired: true,
         ..MissionCountdown::NONE
@@ -397,7 +397,7 @@ fn accept_f37_d_fu5_presentation_latches_and_survives_save_and_restore() {
         objective(10, vec![Action::Finish(Outcome::Succeeded)]),
         objective(3, vec![Action::Finish(Outcome::Failed)]),
     ]);
-    let mut state = MissionState::new(&program, SESSION);
+    let mut state = MissionState::new(&program, SESSION, 1);
     tick(&mut state, &program, 1);
     let presentation = state.terminal_presentation().unwrap();
 

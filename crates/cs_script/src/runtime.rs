@@ -102,6 +102,31 @@ use crate::ir::{
 /// `cs_types::random::SplitMix64::for_domain`.
 const MISSION_EVALUATOR_DOMAIN: u64 = 0x4D53_4E5F_4556_414C;
 
+/// The seed of one mission's evaluator stream: the run's root seed mixed with
+/// the mission's stable content id.
+///
+/// Seed path, end to end: the run's root seed (`cs_app` `RunSeeds::mission_seed`,
+/// itself derived from the installation fingerprint or `--seed`, never from
+/// ambient entropy) -> this function, which folds in the mission's id text with
+/// 64-bit FNV-1a so two missions of one run draw independent streams ->
+/// [`MissionState::new`] stores the result -> `SplitMix64::for_domain(seed,
+/// MISSION_EVALUATOR_DOMAIN)` is the stream. The result travels in
+/// [`MissionStateSnapshot::seed`] and a restore replays
+/// [`MissionStateSnapshot::rng_draws`] draws over the same stream.
+///
+/// The session counter plays no part: two runs of one mission with different
+/// root seeds diverge, and one root seed reproduces a mission bit-for-bit. The
+/// recipe is an engine design, not a measured original one.
+#[must_use]
+pub fn evaluator_seed(root_seed: u64, mission: &ContentId) -> u64 {
+    const FNV_OFFSET: u64 = 0xCBF2_9CE4_8422_2325;
+    const FNV_PRIME: u64 = 0x0000_0100_0000_01B3;
+    let id = mission.as_str().bytes().fold(FNV_OFFSET, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(FNV_PRIME)
+    });
+    root_seed ^ id
+}
+
 /// Default per-tick work budget: units of "one firing, one dequeue or one
 /// action". The value is a design bound, not a measured original limit.
 pub const MAX_WORK_PER_TICK: u64 = 4096;
@@ -130,7 +155,10 @@ pub const MAX_PENDING_ITEMS: usize = 4096;
 /// ([`MissionEndPresentation`], F37-D-FU5): a record written before it cannot
 /// say which branch, delay, sounds and animation the tick that ended the
 /// session selected, so it is refused rather than read as if it carried one.
-pub const SNAPSHOT_VERSION: u32 = 2;
+///
+/// Version 3 carries the evaluator seed ([`MissionStateSnapshot::seed`]): the
+/// stream is derived from the run's root seed, which a record cannot re-derive.
+pub const SNAPSHOT_VERSION: u32 = 3;
 
 /// Most `Draw`s a restore will replay to rewind the mission's RNG stream.
 ///
@@ -1211,6 +1239,9 @@ pub struct MissionStateSnapshot {
     /// Ordinal the next scheduled item will take.
     pub next_item_ordinal: u32,
     pub limits: WorkLimits,
+    /// The evaluator seed the session's stream was derived from
+    /// ([`evaluator_seed`]); a restore rebuilds the same stream from it.
+    pub seed: u64,
     /// Draws taken from the session's RNG stream.
     pub rng_draws: u64,
 }
@@ -1512,17 +1543,21 @@ pub struct MissionState {
     /// Session-unique ordinal for the next scheduled item.
     next_item_ordinal: u32,
     limits: WorkLimits,
-    /// The mission's explicit RNG stream, seeded from the session so a replay
-    /// of one session reproduces every draw bit-for-bit.
+    /// The mission's explicit RNG stream, seeded from the run's root seed so a replay
+    /// of one run reproduces every draw bit-for-bit.
     rng: SplitMix64,
+    /// The seed `rng` was derived from ([`evaluator_seed`]).
+    seed: u64,
     /// Draws taken from `rng`; a restore replays them (see
     /// [`MAX_RNG_REPLAY_DRAWS`]).
     rng_draws: u64,
 }
 
 impl MissionState {
-    /// Initial state of a validated program.
-    pub fn new(program: &ValidatedProgram, session: SessionGeneration) -> Self {
+    /// Initial state of a validated program, its RNG stream seeded from the
+    /// run's `root_seed` and the program's mission id ([`evaluator_seed`]).
+    pub fn new(program: &ValidatedProgram, session: SessionGeneration, root_seed: u64) -> Self {
+        let seed = evaluator_seed(root_seed, &program.program().mission);
         Self {
             session,
             variables: program
@@ -1546,7 +1581,8 @@ impl MissionState {
             presentation: None,
             next_item_ordinal: 0,
             limits: WorkLimits::default(),
-            rng: SplitMix64::for_domain(session.0 as u64, MISSION_EVALUATOR_DOMAIN),
+            rng: SplitMix64::for_domain(seed, MISSION_EVALUATOR_DOMAIN),
+            seed,
             rng_draws: 0,
         }
     }
@@ -1662,6 +1698,7 @@ impl MissionState {
             pending,
             next_item_ordinal: self.next_item_ordinal,
             limits: self.limits,
+            seed: self.seed,
             rng_draws: self.rng_draws,
         }
     }
@@ -1888,7 +1925,7 @@ impl MissionState {
                 });
             pending_len += 1;
         }
-        let mut rng = SplitMix64::for_domain(snapshot.session.0 as u64, MISSION_EVALUATOR_DOMAIN);
+        let mut rng = SplitMix64::for_domain(snapshot.seed, MISSION_EVALUATOR_DOMAIN);
         for _ in 0..snapshot.rng_draws {
             rng.next_u64();
         }
@@ -1907,6 +1944,7 @@ impl MissionState {
             next_item_ordinal: snapshot.next_item_ordinal,
             limits,
             rng,
+            seed: snapshot.seed,
             rng_draws: snapshot.rng_draws,
         })
     }
