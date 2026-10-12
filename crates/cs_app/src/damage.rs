@@ -32,8 +32,12 @@
 //!   weapon firing gate ([`FireResolver`]'s disabled-mount set) and the
 //!   visual damage record ([`AirframeDamageState`]) to agree with it. A
 //!   destroyed weapon mount stops firing and its part is presented
-//!   destroyed; a repair brings both back. Every refusal is named in the
-//!   returned [`DamageConsumerLog`].
+//!   destroyed; a repair brings both back. A mount whose carrier is intact
+//!   is **not** re-enabled while the resolver's own lifecycle ledger holds a
+//!   transition that ends the actor's ability to act, so this pass cannot
+//!   undo the grounding [`crate::roster::apply_ally_lifecycle`] applies
+//!   (F33-C1). Every refusal is named in the returned
+//!   [`DamageConsumerLog`].
 //! * [`apply_propulsion_state`] — the F29-C.1 consumer seam for
 //!   [`SystemKind::Propulsion`]: it reads the resolver's authoritative system
 //!   state and rewrites the thrust authority of the actor's
@@ -84,7 +88,7 @@ use cs_content::world::{WorldInstance, WorldObjectId};
 use cs_sim::damage::{
     ActorId, AttributionRule, DamageEvent, DamageEventKind, DamageGraph, DamageGraphError,
     DamageNode, DamageNodeKey, DamageNodeKind, DamagePolicy, DamageResolver, InitialDamage,
-    InitialDamageReport, NodeKeyError, PartState, SystemKind, SystemState,
+    InitialDamageReport, LifecycleKind, NodeKeyError, PartState, SystemKind, SystemState,
 };
 use cs_sim::flight::DamageState;
 use cs_sim::weapons::FireResolver;
@@ -727,6 +731,24 @@ pub fn repair_damage_zone(
 // this pass stays the gate + visual consumer it is. Nothing in this pass
 // *decides* damage — it only reflects the resolver's state onto the two
 // consumers.
+//
+// # The actor-level half of the state it reads (F33-C1)
+//
+// A part state is not the whole truth about an actor. The same resolver owns
+// the lifecycle ledger, and a lethal hit on a non-weapon node — the synthetic
+// fixture's `hull` — records `LifecycleKind::Destroyed` while leaving the
+// weapon carrier `Intact`. [`crate::roster::apply_ally_lifecycle`] (F33-C)
+// grounds every mount of such an actor, and a purely part-driven pass would
+// re-enable them on its next run: an order-dependent reopening of a dead
+// actor's guns. So the mount half of this pass reads both halves of the
+// resolver's authority — the part state and the lifecycle ledger — and an
+// intact carrier on an actor whose ledger ends action is closed and reported
+// as [`DamageConsumerEvent::MountGrounded`], never re-enabled. The repair
+// convergence F29-C pins is untouched: it is scoped to actors whose ledger
+// does not end action, which a living, captured or bailed-out actor's never
+// does. The alternative — scheduling one pass before the other and calling
+// that a contract — was rejected: neither pass has an ECS system yet, so
+// nothing would enforce the order where it is actually wired.
 
 /// Why the damage → consumer pass could not update a consumer.
 ///
@@ -815,6 +837,17 @@ pub enum DamageConsumerEvent {
         /// The actor.
         actor: ActorId,
         /// The re-enabled mount.
+        mount: DamageNodeKey,
+    },
+    /// An intact mount was disabled because the actor's own lifecycle ends
+    /// its ability to act: the mount is no wreck, but a destroyed, despawned
+    /// or mission-removed actor fires nothing. Recorded apart from
+    /// [`Self::MountDisabled`] so a reader can tell "this mount is a wreck"
+    /// from "this actor is gone".
+    MountGrounded {
+        /// The actor.
+        actor: ActorId,
+        /// The mount the actor's lifecycle closed.
         mount: DamageNodeKey,
     },
     /// A destroyed part was recorded as destroyed in the visual state.
@@ -912,6 +945,10 @@ pub struct DamageConsumerReport {
     pub mounts_disabled: u32,
     /// Not-destroyed carriers whose mount was re-enabled.
     pub mounts_enabled: u32,
+    /// Mounts the actor's own lifecycle closed: the carrier's part is
+    /// intact, but a destroyed, despawned or mission-removed actor fires
+    /// nothing (F33-C1).
+    pub mounts_grounded: u32,
     /// Parts newly recorded destroyed in the visual state.
     pub visuals_destroyed: u32,
     /// Parts newly recorded repaired in the visual state.
@@ -931,6 +968,7 @@ impl DamageConsumerReport {
     pub const fn is_noop(&self) -> bool {
         self.mounts_disabled == 0
             && self.mounts_enabled == 0
+            && self.mounts_grounded == 0
             && self.visuals_destroyed == 0
             && self.visuals_repaired == 0
             && self.thrust_cut == 0
@@ -963,6 +1001,15 @@ pub struct DamageConsumerOutcome {
 ///   gate stops firing exactly while the mount is a wreck and comes back on a
 ///   repair.
 ///
+/// The pass is **lifecycle-aware**: the same resolver's lifecycle ledger says
+/// whether the actor may act at all, and a mount whose carrier is intact is
+/// *not* re-enabled — it is closed — when that ledger holds a transition that
+/// ends action (destruction, despawn, mission removal). Without that guard
+/// the pass would re-open the guns `cs_app::roster::apply_ally_lifecycle`
+/// just closed, because a lethal hit on a non-weapon node (the synthetic
+/// fixture's `hull`) leaves the weapon carrier intact; see
+/// `docs/findings/2026-10-12-f33-c1-grounded-actor-across-damage-consumer.md`.
+///
 /// `log`-free callers read the returned [`DamageConsumerOutcome`]; an
 /// `Unknown` integrity asserts neither direction and is refused by name.
 #[must_use]
@@ -982,6 +1029,13 @@ pub fn apply_damage_state(
         refusals::unknown_actor(&mut outcome, actor);
         return outcome;
     };
+
+    // The lifecycle ledger is the resolver's own, so an actor-level fact is
+    // never re-derived here: a destroyed, despawned or mission-removed
+    // actor fires nothing, whatever its individual parts say.
+    let grounded = resolver
+        .lifecycle(&actor)
+        .is_some_and(|recorded| recorded.iter().any(|kind| lifecycle_ends_action(*kind)));
 
     // An unarmed actor is reported once, not once per carrier.
     let mut unarmed_reported = false;
@@ -1016,7 +1070,7 @@ pub fn apply_damage_state(
                 // Already reported as an unresolved integrity above.
                 continue;
             };
-            apply_mount(&mut outcome, actor, node_key, destroyed, fire);
+            apply_mount(&mut outcome, actor, node_key, destroyed, grounded, fire);
         }
     }
 
@@ -1084,11 +1138,19 @@ fn apply_visual(
 }
 
 /// Disables or re-enables one mount on the firing gate, logging a real change.
+///
+/// `destroyed` is the part's authoritative state; `grounded` is the actor's:
+/// whether a transition in its lifecycle ledger ends its ability to act. A
+/// grounded actor's intact mount is **closed**, not re-enabled — the two
+/// reasons are recorded apart, because "this mount is a wreck" and "this
+/// actor is gone" are different statements a mission may key on. Both write
+/// only when the gate actually changes, so the pass stays convergent.
 fn apply_mount(
     outcome: &mut DamageConsumerOutcome,
     actor: ActorId,
     mount: &DamageNodeKey,
     destroyed: bool,
+    grounded: bool,
     fire: &mut FireResolver,
 ) {
     let state = fire
@@ -1104,6 +1166,15 @@ fn apply_mount(
                 mount: mount.clone(),
             });
         }
+    } else if grounded {
+        state.disable(mount);
+        if !was_disabled {
+            outcome.report.mounts_grounded += 1;
+            outcome.log.push(DamageConsumerEvent::MountGrounded {
+                actor,
+                mount: mount.clone(),
+            });
+        }
     } else {
         state.enable(mount);
         if was_disabled {
@@ -1114,6 +1185,22 @@ fn apply_mount(
             });
         }
     }
+}
+
+/// Whether one recorded lifecycle transition ends the actor's ability to
+/// act — fire, follow a route, hold an AI role.
+///
+/// This is the designed split `cs_sim::allies::AllyStatus::ends_action` and
+/// `cs_sim::targeting`'s `ends_targeting` both name: destruction, despawn and
+/// mission removal. A capture and a bailout deliberately do **not** — a
+/// bailed-out airframe is still a physical object, and a capture changes
+/// *who owns* the actor rather than whether it exists — so an intact mount
+/// stays live on a captured or bailed-out airframe (F33-C).
+fn lifecycle_ends_action(kind: LifecycleKind) -> bool {
+    matches!(
+        kind,
+        LifecycleKind::Destroyed | LifecycleKind::Despawned | LifecycleKind::MissionRemoved
+    )
 }
 
 /// Authored initial damage for a world object: the damage node it is and the
