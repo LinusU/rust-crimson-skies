@@ -173,6 +173,7 @@ use bevy::{
     ecs::schedule::IntoScheduleConfigs,
     prelude::{App, Entity, FixedPostUpdate, Plugin, Res, ResMut, Resource},
 };
+use cs_content::mission_control::measured_directive;
 use cs_content::objectives::{
     BRANCH_EFFECT_KEY_VOCABULARY, BRANCH_KEY_VOCABULARY, BRANCH_ORDER_KEY, BranchEffectKind,
     DeclaredCompletion, DeclaredCompletionEffect, DeclaredCountKind, DeclaredCountReaction,
@@ -180,9 +181,10 @@ use cs_content::objectives::{
     DeclaredTerminalOutcome, DeclaredTimeDomain, DeclaredTimer, DeclaredTimerAction,
     DeclaredTimerStart, DeclaredVolume, DormantReadError, DormantReading, FAILURE_KEY_VOCABULARY,
     MeasuredBranchConflict, MeasuredBranchPrecedence, MeasuredBranchSite, MeasuredCategoryEvidence,
-    MeasuredCountConditions, MeasuredDormantBlock, MeasuredRepeatedEffect, MeasuredTargetKinds,
-    OBJECTIVE_INACTIVE_COUNT_KEY, ProgramActor, ProgramSymbol, UnmeasuredQuantity,
-    inactive_stage_number, is_objective_inactive_stage, is_optional_objective_key,
+    MeasuredCountConditions, MeasuredDormantBlock, MeasuredRecordFields, MeasuredRepeatedEffect,
+    MeasuredTargetKinds, OBJECTIVE_INACTIVE_COUNT_KEY, ProgramActor, ProgramSymbol,
+    RecordFieldError, UnmeasuredQuantity, inactive_stage_number, is_objective_inactive_stage,
+    is_optional_objective_key,
     measure_dormant_declarations, measured_category_evidence,
 };
 use cs_content::objectives_conditions::{ObjectiveOutcome, StageConditions, keys as outcome_keys};
@@ -5425,7 +5427,16 @@ pub enum RecordFieldFamily {
     SoundCue,
     /// An optionality key (F39-D).
     Optionality,
-    /// A key no F39 stage measured.
+    /// A measured mission-language directive read inside a numbered block —
+    /// its effect is a world-side operation the control lowering owns
+    /// (M01-LC-DIRECTIVE B–D, M01-B-OBJ-4).
+    ControlDirective,
+    /// One of the five keys the engine's parser reads at the record's top
+    /// level — `MISSION_TIMER`, `PLAYER_INIT` and the three animation lists —
+    /// measured in M01-B-OBJ-4 and kept in `cs_content::objectives`' record
+    /// model.
+    RecordDirective,
+    /// A key no measured stage covers.
     Unmeasured,
 }
 
@@ -5455,6 +5466,10 @@ impl RecordFieldFamily {
             Self::SoundCue
         } else if is_optional_objective_key(key) {
             Self::Optionality
+        } else if cs_content::objectives::RECORD_FIELD_KEY_VOCABULARY.contains(&key) {
+            Self::RecordDirective
+        } else if measured_directive(key).is_some() {
+            Self::ControlDirective
         } else {
             Self::Unmeasured
         }
@@ -5490,8 +5505,14 @@ impl RecordFieldFamily {
                 "the engine's loader resolves the group names and the runtime emits them on wake and on completion (recovered when well formed, M01-B-OBJ-2); this field is a spelling or a shape the loader never reads"
             }
             Self::Optionality => "what an optional declaration changes is unmeasured (F39-D)",
+            Self::ControlDirective => {
+                "the engine's loader reads the field as a mission-language directive whose effect is a world-side operation — a target flag, an AI-net entry, a wake, a traveler watch, a group depletion, an animation state, a stop-point ping, a help label or a queued-sound stop — that the declared program does not represent (M01-LC-DIRECTIVE B–D, M01-B-OBJ-4)"
+            }
+            Self::RecordDirective => {
+                "the engine's parser reads the field at the record's top level into the measured record model — the mission timer, the player init or an animation list — not as a declared-objective field (M01-B-OBJ-4)"
+            }
             Self::Unmeasured => {
-                "no F39 stage measured this key; the mission-language instruction table is undecoded (F13-B/C, F38)"
+                "no measured stage covers this key; the mission-language instruction table's remaining spellings are undecoded (F13-B/C, F38)"
             }
         }
     }
@@ -5539,9 +5560,13 @@ pub struct RecoveredField {
 /// The fields recovered are the ones the engine's loader reads for completion
 /// effects (`WAKE`, `NAP`, `KILL`, `SLEEP`) and the tick dependency
 /// (`TICK_DEPENDS_ON_OBJ`), measured from the executable image in M01-B-OBJ-1 and
-/// kept as [`EngineDeclaration`]s. Every other family is still unmeasured and
-/// AGENTS.md rule 4 forbids guessing it, so [`program`](Self::program) is the
-/// refusal naming each gap, never a program built from guessed semantics.
+/// kept as [`EngineDeclaration`]s. The measured mission-language directives and
+/// the record-level fields are kept as their own families — their semantics are
+/// measured (M01-LC-DIRECTIVE B–D, M01-B-OBJ-4) but their effects are world-side
+/// operations and mission preamble, not declared-objective fields — and every
+/// other family is still unmeasured. AGENTS.md rule 4 forbids guessing any of
+/// them, so [`program`](Self::program) is the refusal naming each gap, never a
+/// program built from guessed semantics.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ObjectiveRecovery {
     mission: String,
@@ -5552,6 +5577,7 @@ pub struct ObjectiveRecovery {
     conditions: BTreeMap<u32, StageConditions>,
     outcomes: BTreeMap<u32, ObjectiveOutcome>,
     unrecovered: Vec<UnrecoveredField>,
+    record: Result<MeasuredRecordFields, RecordFieldError>,
 }
 
 /// A field's follower as the engine's array of values: a list's children, a bare
@@ -5781,6 +5807,7 @@ impl ObjectiveRecovery {
     #[must_use]
     pub fn read(mission: &str, document: &ZrdValue) -> Self {
         let record = objective_record(document);
+        let record_fields = cs_content::objectives::measure_record_fields(&zrd_flat_fields(record));
         let mut blocks = Vec::new();
         for (key, _) in zrd_flat_fields(record) {
             if let Some(number) = cs_content::objectives::objective_block_number(key) {
@@ -5879,6 +5906,7 @@ impl ObjectiveRecovery {
             conditions,
             outcomes,
             unrecovered,
+            record: record_fields,
         }
     }
 
@@ -5953,6 +5981,15 @@ impl ObjectiveRecovery {
             *counts.entry(field.family).or_insert(0) += 1;
         }
         counts
+    }
+
+    /// What the record-level fields read as under the engine's measured parse
+    /// (M01-B-OBJ-4), or the shape error the first off-shape key reports.
+    ///
+    /// The timer, the player init and the animation lists are mission preamble
+    /// — kept here so the census stays honest — not declared-objective fields.
+    pub const fn record_fields(&self) -> &Result<MeasuredRecordFields, RecordFieldError> {
+        &self.record
     }
 
     /// The declared program, or the refusal naming what cannot be recovered.
