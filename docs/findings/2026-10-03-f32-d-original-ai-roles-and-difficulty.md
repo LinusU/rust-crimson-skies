@@ -329,7 +329,7 @@ is the outcome the probe exists to catch: "difficulty" as a comment.
 | `f32.d.limit.difficulty_naming` | The three step names are in the shipped localizable image and are deliberately not reproduced, so `relaxed`/`standard`/`hard`/`elite` claim nothing about the original's wording and the tier-to-step mapping is positional only. | #551 `F32-LOWERING` |
 | `f32.d.limit.per_mission_difficulty` | Measured: no record binds a step to a scenario or mission, so this engine has no way to read one from content. | #551 `F32-LOWERING` |
 | `f32.d.limit.probe_geometry` | Every number in the probe's scenario is authored project design; no measured file describes an original AI encounter. The probe measures **this** engine's per-tier decision behavior. Marker now in code: `ProbeProvenance::DesignedFixture` is required at `DifficultyProbeSpec::try_new`, carried on `DifficultyProbeReport::provenance`, and `tiers_as_original_evidence` is refused by name. The tier *order* stays a designed-fixture project claim. | #570 `F32-PROBE-GEOMETRY` sealed the marker; measured-geometry binding stays open |
-| `f32.d.limit.fire_discipline` | `fire_discipline_ticks` and `aim_error_rad` are reported and not enforced across ticks, so **two tiers differing only in those two knobs measure as identical** and the probe's firing-tick count is a control that cannot discriminate. | #571 `F32-FIRE-DISCIPLINE` |
+| `f32.d.limit.fire_discipline` | Was: `fire_discipline_ticks` and `aim_error_rad` reported and not enforced across ticks, so **two tiers differing only in those two knobs measured as identical** and the probe's firing-tick count was a control that could not discriminate. **Closed by #571:** the session-owned `FireDiscipline` applies each actor's cadence through `FiringSolution::hold_until` and the probe's firing-tick count is now a discriminator; `aim_error_rad` is a declared reported-only field (`aim_error_applied()` is `false`, checked by `accept_f32_fd_`), its application to a real trajectory filed as #1347 `F32-AIM-ERROR-APPLY`. | #571 `F32-FIRE-DISCIPLINE` |
 
 Every one of these is machine-readable twice over: as the `UNRESOLVED` table in
 `crates/cs_content/src/ai.rs` (which the evidence harness asserts claim-by-claim
@@ -504,13 +504,15 @@ original's. The task awards at most **checked** status.
   report on purpose: an empty report has measured nothing, and the suite pairs
   it with `covers_every_measured_step` (also `false`) so a caller cannot
   present a vacuous invariant as evidence.
-- A reviewer should treat `f32.d.limit.fire_discipline` as the load-bearing
-  open limitation: the runtime *reports* `fire_discipline_ticks` and
-  `aim_error_rad` without enforcing them, so two tiers that differ only in those
-  two knobs would measure as identical here. The probe's `firing_ticks` column
-  is a control precisely because it cannot discriminate today; when the
-  per-actor fire-discipline state gets a session owner, that column becomes a
-  discriminator and this finding should be revisited.
+- `f32.d.limit.fire_discipline` was the load-bearing open limitation at the
+  time of this report and is **resolved by #571**: the session-owned
+  `FireDiscipline` holds each actor's next allowed shot, `CombatRuntime::step`
+  reads it into every firing solution through `FiringSolution::hold_until` and
+  advances it when a mount fires, so the probe's `firing_ticks` column is now
+  the discriminator it could not be before. `aim_error_rad` is declared
+  reported-only rather than enforced (`aim_error_applied()` is `false`, pinned
+  by `accept_f32_fd_aim_error_is_a_declared_report_only_field`); applying it to
+  a real shot is the weapon system's job, filed as #1347 `F32-AIM-ERROR-APPLY`.
 - Reviewer identity for this session: implemented **and** reviewed by `bunny-2`,
   which is **not** independent review. The F32 sheet asks for a fresh reader on
   format and mission semantics, and the review pass above found three real
