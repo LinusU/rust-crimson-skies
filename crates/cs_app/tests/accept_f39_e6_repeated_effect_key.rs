@@ -466,16 +466,37 @@ fn accept_f39_e6_the_declared_form_refuses_a_repeat_by_name() {
         "two objectives agreeing on one effect is not a repetition"
     );
 
-    // And the repeat refusal does not eat the conflict refusal: WAKE then NAP
-    // on one objective is still the *ambiguous* shape, refused by its own name.
-    let refused = with_completing_effects(vec![
-        effect(BranchEffectKind::Wake, SYNTHETIC_E5_WOKEN, None),
-        effect(BranchEffectKind::Nap, SYNTHETIC_E5_WOKEN, Some(1.0)),
-    ]);
-    assert!(matches!(
-        refused.unwrap_err(),
-        ObjectivesSchemaError::AmbiguousCompletionEffect { .. }
-    ));
+    // And the repeat refusal does not eat the conflict refusal: two *different*
+    // declaring objectives naming one target with different effects — WAKE from
+    // one, NAP from the other — is still the *ambiguous* shape, refused by its
+    // own name (within one declaring objective the engine's fixed order decides
+    // that pair now, so it is no longer the ambiguous shape).
+    let base = declared_synthetic_completion_effects();
+    let mut objectives = base.objectives().to_vec();
+    objectives[0].completion_effects =
+        vec![effect(BranchEffectKind::Wake, SYNTHETIC_E5_WOKEN, None)];
+    objectives[2].completion_effects =
+        vec![effect(BranchEffectKind::Nap, SYNTHETIC_E5_WOKEN, Some(1.0))];
+    assert_eq!(
+        DeclaredObjectiveProgram::try_new(
+            base.subject().clone(),
+            base.origin().clone(),
+            base.provenance().clone(),
+            base.precedence().clone(),
+            objectives,
+            base.conditions().to_vec(),
+            base.timers().to_vec(),
+            base.triggers().to_vec(),
+            base.spawn_groups().to_vec(),
+        )
+        .unwrap_err(),
+        ObjectivesSchemaError::AmbiguousCompletionEffect {
+            by: SYNTHETIC_E5_NAPPED,
+            objective: SYNTHETIC_E5_WOKEN,
+            first: BranchEffectKind::Wake,
+            second: BranchEffectKind::Nap,
+        }
+    );
 }
 
 // ---------------------------------------------------------- the retail census ---
