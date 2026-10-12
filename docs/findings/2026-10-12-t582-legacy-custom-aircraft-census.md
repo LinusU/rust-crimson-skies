@@ -187,17 +187,18 @@ The committed evidence report originally named `candidate_tree
 e4b700c7…`, a tree reachable from none of the branch's commits (it had
 been generated before the final rebase). The reviewer regenerated the
 whole report on the reviewed tree and replaced
-`docs/findings/evidence/T582.json` with it — twice: first on the tree
-reviewed at that moment, then again after the branch was rebased onto
-the then-current `main` (the M01-B-OBJ-4 commits, no file overlap, no
-Cargo changes), so the committed report names `candidate_tree
-e404d5ee…`, the tree its acceptance run actually tested. Both
-regenerations reproduced every substantive field, and the second
-reproduced the first exactly apart from the tree binding and log
-timings: same install/content digests, same 228 files, same per-family
-counts, same 847/847 ROF members, same 6 334 indexed members, the same
-six candidates with the same extents, and the same three passing
-assertions (`private/evidence/T582-review*/`, validated with
+`docs/findings/evidence/T582.json` with it — three times, so that the
+committed report always names the tree its acceptance run actually
+tested: first on the tree reviewed at that moment, then again after the
+branch was rebased onto the then-current `main` (the M01-B-OBJ-4
+commits, no file overlap, no Cargo changes), and finally on the rebased
+head itself, so the committed report names `candidate_tree
+0b3d45c4…`, the tree of the commit it sits on top of. All
+regenerations reproduced every substantive field: same install/content
+digests, same 228 files, same per-family counts, same 847/847 ROF
+members, same 6 334 indexed members, the same six candidates with the
+same extents, and the same three passing assertions
+(`private/evidence/T582-review*/`, validated with
 `tools/validate_evidence.py --require-pass`). The reviewer also reran
 the checks, each `accept_t582_` test alone with `--exact`, and one
 sensitivity mutation (dropping the fabrication fixture's stray files
