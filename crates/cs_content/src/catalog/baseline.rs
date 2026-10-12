@@ -171,6 +171,19 @@
 //!   non-stunt scenario — like a zone label the scenario names twice, or twice
 //!   with two different descriptions — is counted in [`CollectionStatus`] rather
 //!   than dropped or turned into a second row with the same identity;
+//! * one [`ContentKind::Video`] row per file the shared archive's FMV
+//!   definitions **name** in bytes (F14-D.VIDEO): the `PLAYAVI` actions of its
+//!   [`FMV_MEMBER`] member, decoded by the producing stage's own reader
+//!   ([`decode_zrd`]). The installation holds ten loose `.mpg` files and no
+//!   video container, so a file name is not identity: a row exists only for a
+//!   named file that resolves to exactly one inventoried file, its identity is
+//!   that file's own key, its span is the file's own bytes with the file's
+//!   digest, and its single static edge points at that file's inventory row. A
+//!   name with no matching file, a name matching several, a repeat of a name
+//!   already resolved and an `.mpg` file no name reaches are each counted in
+//!   [`CollectionStatus`] instead of being guessed or dropped; no codec,
+//!   duration or trigger is read, so every row carries an explicit unknown. A
+//!   video is **not** launchable, so the denominator does not move,
 //! * one [`ContentKind::ScrapbookItem`] row per `Mission_Spread_Item` record of
 //!   the shared archive's `ASSETS/SCRAPBOOK.CSV` member (F14-D.8), read through
 //!   the production ROF reader and the keyed-list configuration reader. The
@@ -274,7 +287,7 @@ use crate::scene::{
     discover_mission_only_airframes,
 };
 use crate::stunts::{
-    SCENARIO_MEMBER, SCENARIO_TARGETS_MEMBER, STUNT_MISSION_TYPE, decode_zrd,
+    SCENARIO_MEMBER, SCENARIO_TARGETS_MEMBER, STUNT_MISSION_TYPE, ZrdValue, decode_zrd,
     scenario_fly_through_targets, scenario_mission_type,
 };
 
@@ -383,6 +396,62 @@ const GAP_SOUND_DUPLICATE_MEMBER: &str = "duplicate_member";
 /// identity that tells them apart, and minting one would guess (AGENTS.md
 /// rule 4).
 const GAP_SOUND_AMBIGUOUS_MEMBER: &str = "ambiguous_member_name";
+
+/// The claim id behind the observation that a video is named by a `PLAYAVI`
+/// action of [`FMV_MEMBER`] — a record of original bytes, never a file name —
+/// and that the row's edge points at the inventory row of the named file
+/// (F14-D.VIDEO).
+const CLAIM_VIDEO_PLAYAVI: &str = "f14.d.video.baseline.playavi";
+
+/// The claim id of the unknown every video row carries: what the file holds
+/// and when it plays.
+///
+/// Nothing in the installation states a codec, a duration, a resolution or a
+/// trigger for the files [`FMV_MEMBER`] names, and no media player consumer is
+/// claimed (F40 measures those). The row therefore records that the original
+/// bytes name this file and nothing more.
+pub const VIDEO_UNKNOWN_CLAIM: &str = "f14.d.video.playback";
+
+/// The installation-relative spelling of the reader archive the video names
+/// are read from: the same shared archive [`ENGINE_GUN_ARCHIVE`] names, whose
+/// [`FMV_MEMBER`] member is the only original byte in this installation that
+/// names an `.mpg` file (measured in F14-D.VIDEO's findings note).
+pub const FMV_ARCHIVE: &str = ENGINE_GUN_ARCHIVE;
+
+/// The member of [`FMV_ARCHIVE`] that states the FMV sequences: its `PLAYAVI`
+/// actions name the videos, as the decrypted engine's own strings corroborate
+/// (`Failed to find FMV definitions (fmv.zrd)`, `fmv_script.cpp`).
+pub const FMV_MEMBER: &str = "fmv.zrd";
+
+/// The action tag of [`FMV_MEMBER`] whose text argument names one video file.
+///
+/// The tag vocabulary is the decrypted engine's own
+/// (`SHOWIMAGE/LOADIMAGE/TEXTLIST/BLITIMAGE/WAIT/FADEIN/FADEOUT/PLAYAVI/
+/// PLAYMCI/BLUR/PLAYSOUND/PLAYCD/STOPCD`); `PLAYAVI` is the only one of them
+/// that takes an `.mpg` file name.
+const FMV_PLAY_ACTION: &str = "PLAYAVI";
+
+/// Gap code: one `PLAYAVI` name that resolves to no inventoried file, so no
+/// bytes back the video it names.
+const GAP_VIDEO_NAME_ABSENT: &str = "named_file_absent";
+
+/// Gap code: one `PLAYAVI` name that resolves to several inventoried files, so
+/// no identity tells which file the original would play. Neither becomes a row.
+const GAP_VIDEO_NAME_AMBIGUOUS: &str = "ambiguous_file_name";
+
+/// Gap code: one repeat of a `PLAYAVI` name already resolved to a file. The
+/// repeat is the same video, so it is counted instead of becoming a second row
+/// with the same identity.
+const GAP_VIDEO_DUPLICATE_NAME: &str = "duplicate_video_name";
+
+/// Gap code: one inventoried `.mpg` file no `PLAYAVI` name reaches. It is a
+/// real file of the installation and stays in the accounting, but nothing in
+/// the original bytes names it, so no row may be minted from its name.
+const GAP_VIDEO_UNNAMED_FILE: &str = "unnamed_video_file";
+
+/// Gap code: one `PLAYAVI` action whose argument is not text, so it names
+/// nothing this identity can be built from.
+const GAP_VIDEO_NAME_NOT_TEXT: &str = "playavi_name_not_text";
 
 /// The installation-relative spelling of the airframe library the paint-mask
 /// collection is read from.
@@ -1094,7 +1163,7 @@ impl Baseline {
 
 /// Builds the complete private baseline inventory of `install_root`.
 ///
-/// The walk reads the installation ten ways and nothing else: the F02
+/// The walk reads the installation eleven ways and nothing else: the F02
 /// inventory (`cs_assets::install::discover`) for every regular file, the
 /// shared campaign layout ([`crate::campaign_bindings::campaign_layout`]) for
 /// the mission directories, each mission's reader archive for its span and
@@ -1105,8 +1174,9 @@ impl Baseline {
 /// ([`PAINT_MASK_CONTAINER`]), the loading-script container F11-D2's
 /// [`discover_airframe_roster`] declares its airframes in, each geometry
 /// container `cs_assets::install::Diagnosis` names for its node array and mesh
-/// section, and the sound containers [`cs_formats::zbd::role_for_path`] names
-/// for its cue members. Rows are inserted in a fixed order and every report
+/// section, the sound containers [`cs_formats::zbd::role_for_path`] names
+/// for its cue members, and the [`FMV_MEMBER`] member of [`FMV_ARCHIVE`] for
+/// the video files it names. Rows are inserted in a fixed order and every report
 /// array is rendered from canonical id order, so the same installation yields
 /// the same bytes (spec F14 AC02).
 ///
@@ -1398,6 +1468,15 @@ pub fn retail_baseline(install_root: &Path) -> Result<Baseline, BaselineError> {
         insert(&mut catalog, element)?;
     }
     collection_status.push(scrapbook_status);
+
+    // The videos the shared archive's FMV definitions name in bytes
+    // (F14-D.VIDEO). A video is not launchable, so it moves no denominator; a
+    // name the bytes state that resolves to no single file is a named gap.
+    let (videos, video_status) = video_rows(install_root, install_hash, &files)?;
+    for element in videos {
+        insert(&mut catalog, element)?;
+    }
+    collection_status.push(video_status);
 
     let coverage = coverage(&catalog, &roots)?;
 
@@ -5055,6 +5134,286 @@ fn unclassified_audio_statuses() -> Vec<CollectionStatus> {
         .1
     })
     .collect()
+}
+
+/// The `video` rows the installation's own FMV definitions name, plus the
+/// record of what those bytes could not turn into a row.
+///
+/// The names come from the `PLAYAVI` actions of [`FMV_MEMBER`], the FMV member
+/// of [`FMV_ARCHIVE`], decoded by the producing stage's own `.zrd` reader
+/// ([`decode_zrd`]). This member is the only original byte in the surveyed
+/// installation that names an `.mpg` file: a full scan of every decompressed
+/// reader-archive member and every loose file (F14-D.VIDEO's findings note)
+/// found no other name, so a file name is never identity here. Each name is
+/// resolved against the inventory by its file-name component, case-folded the
+/// way the id grammar folds case: exactly one match is one row, no match is a
+/// named gap, and several matches are a named gap with no row, because nothing
+/// in the bytes tells which file the original would have played.
+///
+/// A row's identity is the resolved file's own [`install_file_key`], its span
+/// is the file's own bytes with the file's digest, and its single static edge
+/// points at that file's `install_file` row. Nothing here decodes the MPEG
+/// stream: no codec, duration, resolution or playback trigger has been read,
+/// so every row carries [`VIDEO_UNKNOWN_CLAIM`] as an explicit unknown, is
+/// unparsed and claims no consumer. An `.mpg` file no name reaches is counted
+/// under [`GAP_VIDEO_UNNAMED_FILE`] so the collection stays visible over every
+/// file the installation holds; it is never a row from its own name.
+///
+/// A video is **not** launchable content, so this collection adds no root and
+/// cannot move the coverage denominator.
+///
+/// # Errors
+///
+/// [`BaselineError::Read`] when the archive cannot be read, [`BaselineError::Key`]
+/// when an id key is refused and [`BaselineError::Span`] when a span is
+/// refused. A missing archive, a missing member and a member that does not
+/// decode yield no rows and a [`CollectionStatus::diagnostic`] instead, which
+/// is a reported gap and not an error.
+fn video_rows(
+    install_root: &Path,
+    install_hash: ContentHash,
+    files: &BTreeMap<String, &InstallFileRecord>,
+) -> Result<(Vec<CatalogElement>, CollectionStatus), BaselineError> {
+    let mut status = CollectionStatus {
+        kind: ContentKind::Video,
+        source: FMV_ARCHIVE.to_owned(),
+        language: None,
+        rows: 0,
+        gaps: BTreeMap::new(),
+        boundary_id: None,
+        diagnostic: None,
+    };
+
+    let Some(record) = files.get(&FMV_ARCHIVE.to_ascii_lowercase()) else {
+        return Ok(unpopulated(
+            status,
+            format!(
+                "the installation inventories no {FMV_ARCHIVE}, so the {FMV_MEMBER} definitions \
+                 have no bytes to read and no original byte names a video"
+            ),
+        ));
+    };
+    let spelling = record.relative_spelling.as_str();
+    let bytes =
+        std::fs::read(install_root.join(spelling)).map_err(|source| BaselineError::Read {
+            path: spelling.to_owned(),
+            source,
+        })?;
+    // The production container discovery locates the member by the archive's
+    // own index; a member it does not locate is simply absent.
+    let discovery = discover_container(spelling, &record.relative_spelling, &bytes);
+    let Some(fmv) = discovery.programs().iter().find(|program| {
+        program
+            .locator()
+            .member()
+            .is_some_and(|member| member.eq_ignore_ascii_case(FMV_MEMBER))
+    }) else {
+        return Ok(unpopulated(
+            status,
+            format!("{spelling} holds no {FMV_MEMBER} member, so no original byte names a video"),
+        ));
+    };
+    let root = match decode_zrd(fmv.bytes()) {
+        Ok(root) => root,
+        Err(error) => {
+            return Ok(unpopulated(
+                status,
+                format!(
+                    "{spelling} member {FMV_MEMBER} does not decode as a .zrd document: code {} at \
+                     offset {}",
+                    error.code(),
+                    error.offset()
+                ),
+            ));
+        }
+    };
+    let mut names = Vec::new();
+    let mut not_text = 0usize;
+    collect_playavi_names(&root, &mut names, &mut not_text);
+    if names.is_empty() && not_text == 0 {
+        return Ok(unpopulated(
+            status,
+            format!(
+                "{spelling} member {FMV_MEMBER} states no {FMV_PLAY_ACTION} action naming a video, \
+                 so the installation names no video in bytes"
+            ),
+        ));
+    }
+
+    // Resolution runs over the inventory's own keys, so it is case-insensitive
+    // exactly where the id grammar is, and several files under one name are a
+    // reported ambiguity rather than an arbitrary pick.
+    let mut by_file_name: BTreeMap<String, Vec<&InstallFileRecord>> = BTreeMap::new();
+    for candidate in files.values() {
+        let base = candidate
+            .relative_spelling
+            .as_str()
+            .rsplit(|byte| byte == '/' || byte == '\\')
+            .next()
+            .unwrap_or(candidate.relative_spelling.as_str());
+        by_file_name
+            .entry(base.to_ascii_lowercase())
+            .or_default()
+            .push(candidate);
+    }
+
+    let (mut absent, mut ambiguous, mut duplicate) = (0usize, 0usize, 0usize);
+    let mut rows = Vec::new();
+    let mut resolved: BTreeSet<String> = BTreeSet::new();
+    for name in &names {
+        let matches = by_file_name.get(&name.to_ascii_lowercase());
+        let chosen = match matches.map(Vec::as_slice) {
+            None | Some([]) => {
+                absent += 1;
+                continue;
+            }
+            Some([single]) => *single,
+            Some(several) => {
+                // Several files under one name: no byte states which one the
+                // original would play, so neither becomes a row.
+                ambiguous += several.len();
+                continue;
+            }
+        };
+        let key = chosen.relative_spelling.logical_key();
+        if !resolved.insert(key) {
+            // The same file named twice (by two spellings or one repeat): one
+            // identity, one row, the repeat counted rather than duplicated.
+            duplicate += 1;
+            continue;
+        }
+        rows.push(video_row(name, chosen, install_hash)?);
+    }
+
+    // Every `.mpg` file no name reaches stays accounted for: named as a gap,
+    // never minted into a row from its own file name.
+    let mut unnamed = 0usize;
+    for candidate in files.values() {
+        if candidate
+            .relative_spelling
+            .as_str()
+            .to_ascii_lowercase()
+            .ends_with(".mpg")
+            && !resolved.contains(&candidate.relative_spelling.logical_key())
+        {
+            unnamed += 1;
+        }
+    }
+
+    // All five codes are always reported, so a collection reader sees the whole
+    // accounting shape even when a count is zero.
+    status.gaps.insert(GAP_VIDEO_NAME_NOT_TEXT, not_text);
+    status.gaps.insert(GAP_VIDEO_NAME_ABSENT, absent);
+    status.gaps.insert(GAP_VIDEO_NAME_AMBIGUOUS, ambiguous);
+    status.gaps.insert(GAP_VIDEO_DUPLICATE_NAME, duplicate);
+    status.gaps.insert(GAP_VIDEO_UNNAMED_FILE, unnamed);
+
+    status.rows = rows.len();
+    if rows.is_empty() {
+        return Ok(unpopulated(
+            status,
+            format!(
+                "the {FMV_MEMBER} member of {spelling} states {actions} {FMV_PLAY_ACTION} \
+                 action(s) but none names a file that resolves to exactly one inventoried file, \
+                 so no video row could be built",
+                actions = names.len() + not_text
+            ),
+        ));
+    }
+    Ok((rows, status))
+}
+
+/// Every `PLAYAVI` action of a decoded FMV document, in document order.
+///
+/// The walk is over the decoded value tree only: an action is a list whose
+/// first field is the [`FMV_PLAY_ACTION`] tag and whose second field is the
+/// file it names. An action whose argument is not text names nothing an
+/// identity could be built from, so it is counted rather than dropped.
+fn collect_playavi_names(node: &ZrdValue, names: &mut Vec<String>, not_text: &mut usize) {
+    let Some(children) = node.as_list() else {
+        return;
+    };
+    if children.first().and_then(ZrdValue::as_text) == Some(FMV_PLAY_ACTION) {
+        match children.get(1).and_then(ZrdValue::as_text) {
+            Some(name) => names.push(name.to_owned()),
+            None => *not_text += 1,
+        }
+    }
+    for child in children {
+        collect_playavi_names(child, names, not_text);
+    }
+}
+
+/// One named video as a catalog row, located by the named file's own bytes.
+///
+/// `named_as` is the record's own spelling (`MSopen1.mpg`); the identity and
+/// the span come from the resolved inventoried file, which the name resolved to
+/// exactly once.
+fn video_row(
+    named_as: &str,
+    record: &InstallFileRecord,
+    install_hash: ContentHash,
+) -> Result<CatalogElement, BaselineError> {
+    let spelling = record.relative_spelling.as_str();
+    let id = ContentId::from_source(ContentKind::Video, &install_file_key(spelling)).map_err(
+        |source| BaselineError::Key {
+            spelling: spelling.to_owned(),
+            source,
+        },
+    )?;
+    let file_id = ContentId::from_source(ContentKind::InstallFile, &install_file_key(spelling))
+        .map_err(|source| BaselineError::Key {
+            spelling: spelling.to_owned(),
+            source,
+        })?;
+    let span = SourceSpan::new(
+        install_hash,
+        spelling,
+        None,
+        0,
+        record.size_bytes,
+        Some(record.sha256),
+    )
+    .map_err(|source| BaselineError::Span {
+        path: spelling.to_owned(),
+        source,
+    })?;
+    Ok(CatalogElement {
+        kind: ContentKind::Video,
+        id,
+        // The record's own spelling stays outside identity as the name, the
+        // way every file-derived row spells it.
+        display_name: Some(named_as.to_owned()),
+        origin: Origin::Installation {
+            source: span.clone(),
+        },
+        dependencies: vec![Dependency {
+            target: file_id,
+            kind: DependencyKind::Static,
+            provenance: observed(CLAIM_VIDEO_PLAYAVI, &span)?,
+        }],
+        parse_state: cs_types::install::ParseState::Unparsed,
+        normalize_state: NormalizeState::NotNormalized,
+        runtime_consumers: Vec::new(),
+        readiness: Readiness::Unavailable,
+        unsupported_reasons: vec![
+            UnsupportedReason::NotParsed,
+            unknown_reason(
+                VIDEO_UNKNOWN_CLAIM,
+                format!(
+                    "{FMV_MEMBER} names this file as a video to play, but no original byte read \
+                     here states its codec, duration, resolution or playback trigger, and no \
+                     media player consumer is claimed (F40 measures those), so the row carries no \
+                     value"
+                ),
+            )?,
+            UnsupportedReason::MissingRuntimeConsumer,
+        ],
+        fingerprint: Some(Fingerprint {
+            kind: FingerprintKind::Installation,
+            sha256: record.sha256,
+        }),
+    })
 }
 
 /// One multiplayer mode as a catalog row.
