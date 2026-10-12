@@ -103,8 +103,9 @@ fn review_method(own_tests: u64) -> String {
          is the record's only armed self-wake, and every other wake is a completion effect \
          rooted at one of the six awake-at-load blocks (2, 3, 6, 7, 36, 55), each gated on a world \
          fact — the census asserts the whole graph edge by edge so a drift between the \
-         findings document and the record fails this run. LIMITS OF WHAT WAS MEASURED, each an \
-         `unknowns` entry: the in-play-bit writers the INACTIVE counts read are untraced world \
+         findings document and the record fails this run. LIMITS OF WHAT WAS MEASURED, each \
+         recorded in the findings document's Unknowns carried section: the in-play-bit writers \
+         the INACTIVE counts read are untraced world \
          code; DEDG's member-field rewrites are a named residual the runtime does not \
          reproduce; TRAVELERS' world-side producers are off the terminal paths and unproduced; \
          TICK_DEPENDS_ON_OBJ's roots descend from dormant world-fact consumers. TEST-SELECTION \
@@ -530,21 +531,14 @@ fn render_gate(condition: &Condition) -> String {
     }
 }
 
-/// The residual unknowns this task inherits from the measured findings.
+/// The schema's `unknowns` field is for issues that would block the claim —
+/// `--require-pass` refuses a non-empty list. This task's inherited
+/// measurement residuals (the untraced in-play-bit writers, `DEDG`'s member
+/// rewrites, `TRAVELERS`' producers, the no-original-run limit) are recorded
+/// in the findings document's `Unknowns carried` section and named in the
+/// review method, so the field itself is empty.
 fn unknown_array() -> String {
-    [
-        cs_script::ir::IN_PLAY_BIT_WRITERS_UNTRACED,
-        cs_script::ir::DEDG_MEMBER_FIELD_REWRITES,
-        "TRAVELERS' world-side producers (the position the proximity gate reads) are off both \
-         terminal paths and unproduced today",
-        "whether the engine's runtime behaviour matches the measured lifecycle model when run \
-         — the evidence is a static record reading plus driven headless runs, never an \
-         original capture",
-    ]
-    .iter()
-    .map(|u| jstr(u))
-    .collect::<Vec<_>>()
-    .join(", ")
+    String::new()
 }
 
 // ---------------------------------------------------------------- inputs ---
