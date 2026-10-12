@@ -62,45 +62,126 @@ fn m01_record_fields() -> Vec<(&'static str, ZrdValue)> {
     ]
 }
 
-/// The fourteen block-level keys of the task, each in one of the shapes M01
-/// itself spells, with the `DirectiveOperation` the measured table returns.
-const BLOCK_DIRECTIVES: &[(&str, DirectiveOperation)] = &[
-    (
-        "ADD_OBJECTIVE_TARGET",
-        DirectiveOperation::SetTargetFlag {
-            objective: true,
-            set: true,
-        },
-    ),
-    (
-        "REMOVE_OBJECTIVE_TARGET",
-        DirectiveOperation::SetTargetFlag {
-            objective: true,
-            set: false,
-        },
-    ),
-    (
-        "ADD_OTHER_TARGET",
-        DirectiveOperation::SetTargetFlag {
-            objective: false,
-            set: true,
-        },
-    ),
-    ("ANIM_STATE", DirectiveOperation::AnimationStates),
-    ("COMPLETED_STOPPOINT", DirectiveOperation::AdvanceStopPoint),
-    ("DEDG", DirectiveOperation::EnemyGroupDepletion),
-    ("SET_AI_NET", DirectiveOperation::AssignNet),
-    ("SET_HELP_LABEL", DirectiveOperation::SetHelpLabel),
-    ("STOP_QUEUED_SOUNDS", DirectiveOperation::StopQueuedSounds),
-    ("TRAVELERS", DirectiveOperation::Travelers),
-    ("WAKEUP_ENEMIES", DirectiveOperation::WakeEnemies),
-    ("WAKEUP_GENERATOR", DirectiveOperation::FeedGenerator),
-    (
-        "WAKEUP_ZEP_TURRETS",
-        DirectiveOperation::WakeZeppelinTurrets,
-    ),
-    ("WAKE_ANIM", DirectiveOperation::WakeAnimation),
-];
+/// The fourteen block-level keys of the task, each paired with an argument
+/// spelled exactly as one of its M01 sites spells it, and the
+/// `DirectiveOperation` the measured table returns.
+fn m01_block_directives() -> Vec<(&'static str, ZrdValue, DirectiveOperation)> {
+    vec![
+        // M01 block 2.
+        (
+            "ADD_OBJECTIVE_TARGET",
+            list(vec![text("workersvoyagezep")]),
+            DirectiveOperation::SetTargetFlag {
+                objective: true,
+                set: true,
+            },
+        ),
+        // M01 block 11: a nested name chain.
+        (
+            "REMOVE_OBJECTIVE_TARGET",
+            list(vec![list(vec![text("wv_tailhook"), text("peoplehook")])]),
+            DirectiveOperation::SetTargetFlag {
+                objective: true,
+                set: false,
+            },
+        ),
+        // M01 block 2.
+        (
+            "ADD_OTHER_TARGET",
+            list(vec![list(vec![text("piratezep"), text("rock_zeppelin")])]),
+            DirectiveOperation::SetTargetFlag {
+                objective: false,
+                set: true,
+            },
+        ),
+        // M01 block 11.
+        (
+            "ANIM_STATE",
+            list(vec![
+                text("ANIM"),
+                list(vec![
+                    text("NAME"),
+                    list(vec![text("wv_drop_copilot")]),
+                    text("STATE"),
+                    list(vec![text("RUNNING")]),
+                ]),
+            ]),
+            DirectiveOperation::AnimationStates,
+        ),
+        // M01 block 13.
+        (
+            "COMPLETED_STOPPOINT",
+            list(vec![list(vec![text("SwanZep1"), int(1), int(0)])]),
+            DirectiveOperation::AdvanceStopPoint,
+        ),
+        // M01 block 2.
+        (
+            "DEDG",
+            list(vec![int(1), int(0)]),
+            DirectiveOperation::EnemyGroupDepletion,
+        ),
+        // M01 block 2: one field whose argument carries two pairs.
+        (
+            "SET_AI_NET",
+            list(vec![
+                list(vec![text("devastator_2"), text("Bravo2")]),
+                list(vec![text("devastator_3"), text("Charlie2")]),
+            ]),
+            DirectiveOperation::AssignNet,
+        ),
+        // M01 block 2.
+        (
+            "SET_HELP_LABEL",
+            list(vec![
+                list(vec![text("piratezep"), text("rock_zeppelin")]),
+                text(" "),
+            ]),
+            DirectiveOperation::SetHelpLabel,
+        ),
+        // M01 block 11.
+        (
+            "STOP_QUEUED_SOUNDS",
+            list(vec![text("snd_c2-NW-m1_Jack_21")]),
+            DirectiveOperation::StopQueuedSounds,
+        ),
+        // M01 block 3.
+        (
+            "TRAVELERS",
+            list(vec![
+                text("player"),
+                text("APPROACHING"),
+                text("workersvoyagezep"),
+                real(700.0),
+                int(1),
+            ]),
+            DirectiveOperation::Travelers,
+        ),
+        // M01 block 13.
+        (
+            "WAKEUP_ENEMIES",
+            list(vec![text("bsfury_1"), text("blackswanzep")]),
+            DirectiveOperation::WakeEnemies,
+        ),
+        // M01 block 9.
+        (
+            "WAKEUP_GENERATOR",
+            list(vec![text("workersvoyagezep"), int(3)]),
+            DirectiveOperation::FeedGenerator,
+        ),
+        // M01 block 1.
+        (
+            "WAKEUP_ZEP_TURRETS",
+            list(vec![text("piratezep")]),
+            DirectiveOperation::WakeZeppelinTurrets,
+        ),
+        // M01 block 11.
+        (
+            "WAKE_ANIM",
+            list(vec![text("activate_dropoff_node")]),
+            DirectiveOperation::WakeAnimation,
+        ),
+    ]
+}
 
 #[test]
 fn accept_m01_b_obj_4_record_fields_parse_the_measured_grammar() {
@@ -194,13 +275,24 @@ fn accept_m01_b_obj_4_record_field_shapes_outside_the_measured_grammar_refuse() 
             ..Default::default()
         })
     );
-    // An integer element 0 converts rather than erroring; any other second
-    // element is silently ignored by the engine's byte compare.
+    // An integer element 0 converts rather than erroring — signed like the
+    // engine's `fild dword`, so a payload above `i32::MAX` reads negative —
+    // and any other second element is silently ignored by the byte compare.
     assert_eq!(
         read("MISSION_TIMER", list(vec![int(30), text("anything-else")])),
         Ok(MeasuredRecordFields {
             mission_timer: Some(MissionTimerField {
                 seconds: 30.0,
+                no_loss: false
+            }),
+            ..Default::default()
+        })
+    );
+    assert_eq!(
+        read("MISSION_TIMER", list(vec![int(0xffff_ffff)])),
+        Ok(MeasuredRecordFields {
+            mission_timer: Some(MissionTimerField {
+                seconds: -1.0,
                 no_loss: false
             }),
             ..Default::default()
@@ -252,6 +344,26 @@ fn accept_m01_b_obj_4_record_field_shapes_outside_the_measured_grammar_refuse() 
     );
     assert_eq!(fields.execute_anims.skipped, 3);
 
+    // The follower's element vector is read unconditionally, so a non-list
+    // follower is off the measured shape — a wild read in the original, not
+    // an empty list.
+    for key in ["RESTORE_ANIMS", "EXECUTE_ANIMS", "INVALIDATE_ANIMS"] {
+        assert!(
+            matches!(
+                read(key, text("hover")),
+                Err(RecordFieldError::AnimListShape { key: seen, .. }) if seen == key
+            ),
+            "{key} with a non-list follower"
+        );
+        assert!(
+            matches!(
+                read(key, int(1)),
+                Err(RecordFieldError::AnimListShape { key: seen, .. }) if seen == key
+            ),
+            "{key} with a scalar follower"
+        );
+    }
+
     // An absent key still leaves the (empty) list the parser allocates.
     let recovery = ObjectiveRecovery::read(
         "zbd/test/m01",
@@ -268,9 +380,10 @@ fn accept_m01_b_obj_4_record_field_shapes_outside_the_measured_grammar_refuse() 
 
 #[test]
 fn accept_m01_b_obj_4_block_directives_classify_as_control_directives() {
-    let fields: Vec<(&'static str, ZrdValue)> = BLOCK_DIRECTIVES
+    let directives = m01_block_directives();
+    let fields: Vec<(&'static str, ZrdValue)> = directives
         .iter()
-        .map(|(key, _)| (*key, list(vec![text("argument")])))
+        .map(|(key, argument, _)| (*key, argument.clone()))
         .collect();
     let mut top = m01_record_fields();
     top.push(("OBJECTIVE1", block(fields)));
@@ -278,7 +391,7 @@ fn accept_m01_b_obj_4_block_directives_classify_as_control_directives() {
 
     // Every task key reaches its measured family and its measured operation —
     // none is reported as a generic Unmeasured.
-    for (key, operation) in BLOCK_DIRECTIVES {
+    for (key, _, operation) in &directives {
         let field = recovery
             .unrecovered()
             .iter()
