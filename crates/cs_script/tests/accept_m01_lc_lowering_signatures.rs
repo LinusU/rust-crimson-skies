@@ -25,11 +25,13 @@ use cs_script::ir::{
     MissionProgram, Objective, Outcome, Phase, SourceSpan, SymbolId, ValidationError, Value,
 };
 use cs_script::runtime::{
-    DirectiveEmission, EventKey, MissionFacts, MissionState, MissionStateSnapshot, RestoreDefect,
-    RestoreError, SNAPSHOT_VERSION, SessionGeneration, TerminalState, WorkLimits,
+    DirectiveEmission, EventKey, MISSION_EVALUATOR_DOMAIN, MissionFacts, MissionState,
+    MissionStateSnapshot, RestoreDefect, RestoreError, SNAPSHOT_VERSION, SessionGeneration,
+    TerminalState, WorkLimits,
 };
 use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind};
+use cs_types::random::SplitMix64;
 
 fn cid(kind: ContentKind, key: &str) -> ContentId {
     ContentId::from_source(kind, key).unwrap()
@@ -782,7 +784,9 @@ fn accept_m01_lc_lowering_signatures_restore_checks_the_directive_log() {
         next_item_ordinal: 0,
         limits: WorkLimits::default(),
         seed: 0,
-        rng_draws: 0,
+        // The seed-0 stream's start state: zero draws taken, inside the
+        // record's stream domain.
+        rng_state: SplitMix64::for_domain(0, MISSION_EVALUATOR_DOMAIN).state(),
     };
     let key = |sequence| EventKey {
         session: SessionGeneration(4),

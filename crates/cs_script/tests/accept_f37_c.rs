@@ -10,6 +10,7 @@ use cs_script::ir::*;
 use cs_script::runtime::*;
 use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind};
+use cs_types::random::SplitMix64;
 
 /// A reward intent the deferred item carries; the identity of the emitted
 /// event is what these tests observe.
@@ -225,7 +226,17 @@ fn accept_f37_c_restore_continues_the_explicit_rng_stream() {
         actual.push(live.variable(SymbolId(100)).cloned().unwrap());
     }
     let record = live.snapshot(&p);
-    assert_eq!(record.rng_draws, 2, "one draw per tick before the save");
+    // The record stores the stream's own state: the recorded seed's stream
+    // start advanced once per tick's draw.
+    let mut stream = SplitMix64::for_domain(record.seed, MISSION_EVALUATOR_DOMAIN);
+    for _ in 0..2 {
+        stream.next_u64();
+    }
+    assert_eq!(
+        record.rng_state,
+        stream.state(),
+        "one draw per tick before the save, stored as the state itself"
+    );
     let mut restored = MissionState::restore(&p, record).unwrap();
     restored
         .step(&p, &MissionFacts::default(), Tick(3))
@@ -345,14 +356,53 @@ fn accept_f37_c_restore_refuses_a_foreign_or_incompatible_record() {
         })
     );
 
-    // A session that took more draws than the restore bound refuses rather than
-    // replaying them.
-    let mut long = live.snapshot(&p);
-    long.rng_draws = MAX_RNG_REPLAY_DRAWS + 1;
+    // A record carrying an out-of-domain state is refused rather than
+    // trusted. Another stream's state lands at an index past the recorded
+    // stream's bound, and so does the state exactly one draw past the bound;
+    // the bound's own state still restores.
+    let stream_start =
+        SplitMix64::for_domain(live.snapshot(&p).seed, MISSION_EVALUATOR_DOMAIN);
+    let mut stream = stream_start;
+    for _ in 0..MAX_RNG_STREAM_DRAWS {
+        stream.next_u64();
+    }
+    let mut at_bound = live.snapshot(&p);
+    at_bound.rng_state = stream.state();
     assert_eq!(
-        MissionState::restore(&p, long),
-        Err(RestoreError::RngReplayTooLong {
-            draws: MAX_RNG_REPLAY_DRAWS + 1
+        SplitMix64::new(at_bound.rng_state).draws_since(stream_start),
+        MAX_RNG_STREAM_DRAWS
+    );
+    assert!(
+        MissionState::restore(&p, at_bound).is_ok(),
+        "the state at the bound is in-domain"
+    );
+
+    stream.next_u64();
+    let past = stream.state();
+    let mut forged = live.snapshot(&p);
+    forged.rng_state = past;
+    assert_eq!(
+        MissionState::restore(&p, forged),
+        Err(RestoreError::RngStateOutOfDomain {
+            state: past,
+            draws: MAX_RNG_STREAM_DRAWS + 1
+        })
+    );
+
+    // A state from another stream is out of the recorded stream's domain.
+    let foreign_state = SplitMix64::for_domain(10, MISSION_EVALUATOR_DOMAIN).state();
+    let foreign_draws = SplitMix64::new(foreign_state).draws_since(stream_start);
+    assert!(
+        foreign_draws > MAX_RNG_STREAM_DRAWS,
+        "the fixture's foreign state must be out of domain: {foreign_draws}"
+    );
+    let mut forged = live.snapshot(&p);
+    forged.rng_state = foreign_state;
+    assert_eq!(
+        MissionState::restore(&p, forged),
+        Err(RestoreError::RngStateOutOfDomain {
+            state: foreign_state,
+            draws: foreign_draws
         })
     );
 }

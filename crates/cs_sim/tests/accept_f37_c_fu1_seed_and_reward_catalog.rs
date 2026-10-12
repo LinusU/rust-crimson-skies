@@ -6,10 +6,13 @@
 //! original one.
 
 use cs_script::ir::*;
-use cs_script::runtime::{MissionFacts, SessionGeneration, evaluator_seed};
+use cs_script::runtime::{
+    MISSION_EVALUATOR_DOMAIN, MissionFacts, SessionGeneration, evaluator_seed,
+};
 use cs_sim::mission::{HostFault, MissionSession};
 use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind};
+use cs_types::random::SplitMix64;
 
 const ROLL: SymbolId = SymbolId(100);
 const MARKS: SymbolId = SymbolId(101);
@@ -156,11 +159,17 @@ fn accept_f37_c_fu1_save_restores_the_exact_stream_position() {
         live.advance(&MissionFacts::default(), Tick(tick)).unwrap();
     }
     let record = live.snapshot();
-    assert_eq!(record.state.rng_draws, 2);
     assert_eq!(
         record.state.seed,
         evaluator_seed(77, &cid(ContentKind::Mission, "fu1-m"))
     );
+    // The record stores the stream's own state: the recorded seed's stream
+    // start advanced once per tick's draw.
+    let mut stream = SplitMix64::for_domain(record.state.seed, MISSION_EVALUATOR_DOMAIN);
+    for _ in 0..2 {
+        stream.next_u64();
+    }
+    assert_eq!(record.state.rng_state, stream.state());
     let mut restored = MissionSession::restore(program_for("fu1-m", "r"), record).unwrap();
     for tick in 3..=4 {
         restored

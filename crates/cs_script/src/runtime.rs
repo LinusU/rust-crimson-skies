@@ -100,7 +100,7 @@ use crate::ir::{
 /// SplitMix64 domain separating the mission evaluator's stream from every
 /// other consumer of a run seed (`"MSN_EVAL"`). See
 /// `cs_types::random::SplitMix64::for_domain`.
-const MISSION_EVALUATOR_DOMAIN: u64 = 0x4D53_4E5F_4556_414C;
+pub const MISSION_EVALUATOR_DOMAIN: u64 = 0x4D53_4E5F_4556_414C;
 
 /// The seed of one mission's evaluator stream: the run's root seed mixed with
 /// the mission's stable content id.
@@ -111,8 +111,8 @@ const MISSION_EVALUATOR_DOMAIN: u64 = 0x4D53_4E5F_4556_414C;
 /// 64-bit FNV-1a so two missions of one run draw independent streams ->
 /// [`MissionState::new`] stores the result -> `SplitMix64::for_domain(seed,
 /// MISSION_EVALUATOR_DOMAIN)` is the stream. The result travels in
-/// [`MissionStateSnapshot::seed`] and a restore replays
-/// [`MissionStateSnapshot::rng_draws`] draws over the same stream.
+/// [`MissionStateSnapshot::seed`]; a restore starts the same stream from it
+/// and resumes at the recorded [`MissionStateSnapshot::rng_state`].
 ///
 /// The session counter plays no part: two runs of one mission with different
 /// root seeds diverge, and one root seed reproduces a mission bit-for-bit. The
@@ -157,17 +157,29 @@ pub const MAX_PENDING_ITEMS: usize = 4096;
 /// session selected, so it is refused rather than read as if it carried one.
 ///
 /// Version 3 carries the evaluator seed ([`MissionStateSnapshot::seed`]): the
-/// stream is derived from the run's root seed, which a record cannot re-derive.
-pub const SNAPSHOT_VERSION: u32 = 3;
-
-/// Most `Draw`s a restore will replay to rewind the mission's RNG stream.
+/// stream is derived from the run's root seed, which a record cannot
+/// re-derive (F37-C-FU1).
 ///
-/// `SplitMix64` exposes no state getter (`cs_types::random` is outside this
-/// stage's owner paths), so [`MissionStateSnapshot`] stores how many draws the
-/// session took and a restore re-seeds the same domain-separated stream and
-/// replays them. A design bound on restore work — contract: "cap memory/time"
-/// — and not a measured original limit.
-pub const MAX_RNG_REPLAY_DRAWS: u64 = 1 << 22;
+/// Version 4 stores the RNG stream's own state ([`MissionStateSnapshot`]'s
+/// `rng_state`, T583) where version 3 stored the draw count a restore had to
+/// replay (`rng_draws`). A count is not a state, so an older record is
+/// refused rather than reinterpreted.
+pub const SNAPSHOT_VERSION: u32 = 4;
+
+/// Most draws a session may take and still have its save record restored.
+///
+/// The record stores the stream's state itself, so this is no longer a bound
+/// on replay work: it is what makes a stored state checkable instead of
+/// trusted. A state is accepted exactly when it is the recorded evaluator
+/// seed's domain-separated stream start ([`MissionStateSnapshot::seed`])
+/// advanced `k` times with `k` at most this bound — an index recovered in
+/// constant time by `cs_types::random::SplitMix64::draws_since`. Every `u64`
+/// sits on the stream's orbit somewhere, so the bound is also what refuses a
+/// state that is not on the recorded stream: one from another seed or another
+/// domain lands at an effectively random index, past the bound with
+/// probability ≈ `1 - 2^-42`. A design bound — contract: "cap memory/time" —
+/// not a measured original limit.
+pub const MAX_RNG_STREAM_DRAWS: u64 = 1 << 22;
 
 /// The per-tick and queue bounds the evaluator runs under.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1240,10 +1252,15 @@ pub struct MissionStateSnapshot {
     pub next_item_ordinal: u32,
     pub limits: WorkLimits,
     /// The evaluator seed the session's stream was derived from
-    /// ([`evaluator_seed`]); a restore rebuilds the same stream from it.
+    /// ([`evaluator_seed`]); a restore starts the same stream from it to
+    /// check the recorded state.
     pub seed: u64,
-    /// Draws taken from the session's RNG stream.
-    pub rng_draws: u64,
+    /// The state of the session's RNG stream — what
+    /// `cs_types::random::SplitMix64::state` reports after the draws taken so
+    /// far. The record carries the state itself, so a restore is O(1); a
+    /// state outside the recorded stream's domain is refused
+    /// ([`RestoreError::RngStateOutOfDomain`], [`MAX_RNG_STREAM_DRAWS`]).
+    pub rng_state: u64,
 }
 
 impl MissionStateSnapshot {
@@ -1334,9 +1351,13 @@ pub enum RestoreError {
     },
     /// The record is internally inconsistent.
     Corrupt { defect: RestoreDefect },
-    /// The session took more draws than [`MAX_RNG_REPLAY_DRAWS`], so rewinding
-    /// its RNG stream would exceed the restore work bound.
-    RngReplayTooLong { draws: u64 },
+    /// The record's RNG state is outside the recorded stream's domain: the
+    /// draw index it implies past the recorded seed's domain-separated
+    /// stream start exceeds [`MAX_RNG_STREAM_DRAWS`], so it is not a state
+    /// the recorded stream could have held within the bound the record
+    /// format supports — a state from another seed, another domain or a
+    /// forgery — and it is refused rather than trusted.
+    RngStateOutOfDomain { state: u64, draws: u64 },
     /// The record's per-tick work budget is below [`MIN_WORK_PER_TICK`], so the
     /// restored session could never execute an action: every tick would admit
     /// work items and run none of them, so no reward is granted, no terminal
@@ -1454,9 +1475,10 @@ impl fmt::Display for RestoreError {
                 f,
                 "snapshot item ordinal {ordinal} is past the allocatable sequence space"
             ),
-            Self::RngReplayTooLong { draws } => write!(
+            Self::RngStateOutOfDomain { state, draws } => write!(
                 f,
-                "{draws} RNG draws exceed the restore replay bound {MAX_RNG_REPLAY_DRAWS}"
+                "snapshot RNG state {state:#018x} implies {draws} draws, past \
+                 the stream bound {MAX_RNG_STREAM_DRAWS}"
             ),
             Self::DeferredActions { ordinal, error } => {
                 write!(f, "pending item {ordinal} carries refused actions: {error}")
@@ -1543,14 +1565,13 @@ pub struct MissionState {
     /// Session-unique ordinal for the next scheduled item.
     next_item_ordinal: u32,
     limits: WorkLimits,
-    /// The mission's explicit RNG stream, seeded from the run's root seed so a replay
-    /// of one run reproduces every draw bit-for-bit.
+    /// The mission's explicit RNG stream, seeded from the run's root seed so a
+    /// replay of one run reproduces every draw bit-for-bit. Its `state` is
+    /// what the save record carries.
     rng: SplitMix64,
-    /// The seed `rng` was derived from ([`evaluator_seed`]).
+    /// The seed `rng` was derived from ([`evaluator_seed`]); the save record
+    /// carries it so a restore starts the same stream.
     seed: u64,
-    /// Draws taken from `rng`; a restore replays them (see
-    /// [`MAX_RNG_REPLAY_DRAWS`]).
-    rng_draws: u64,
 }
 
 impl MissionState {
@@ -1583,7 +1604,6 @@ impl MissionState {
             limits: WorkLimits::default(),
             rng: SplitMix64::for_domain(seed, MISSION_EVALUATOR_DOMAIN),
             seed,
-            rng_draws: 0,
         }
     }
 
@@ -1699,7 +1719,7 @@ impl MissionState {
             next_item_ordinal: self.next_item_ordinal,
             limits: self.limits,
             seed: self.seed,
-            rng_draws: self.rng_draws,
+            rng_state: self.rng.state(),
         }
     }
 
@@ -1824,9 +1844,22 @@ impl MissionState {
                 });
             }
         }
-        if snapshot.rng_draws > MAX_RNG_REPLAY_DRAWS {
-            return Err(RestoreError::RngReplayTooLong {
-                draws: snapshot.rng_draws,
+        // The record carries the stream's own state, so a restore is O(1):
+        // no replay, just a domain check. `draws_since` recovers the draw
+        // index the recorded state implies past the recorded seed's
+        // domain-separated stream start — exact, because the SplitMix64
+        // increment is a unit modulo 2^64. Every `u64` sits on the orbit
+        // somewhere, so the bound is the check: a state past it is not one
+        // the recorded stream could have held within the bound the format
+        // supports — one from another seed or domain lands past it with
+        // probability ≈ `1 - 2^-42` — and it is refused rather than trusted.
+        let rng = SplitMix64::new(snapshot.rng_state);
+        let stream_start = SplitMix64::for_domain(snapshot.seed, MISSION_EVALUATOR_DOMAIN);
+        let draws = rng.draws_since(stream_start);
+        if draws > MAX_RNG_STREAM_DRAWS {
+            return Err(RestoreError::RngStateOutOfDomain {
+                state: snapshot.rng_state,
+                draws,
             });
         }
         // The queue cap is an engine bound, so a record cannot install a longer
@@ -1925,10 +1958,6 @@ impl MissionState {
                 });
             pending_len += 1;
         }
-        let mut rng = SplitMix64::for_domain(snapshot.seed, MISSION_EVALUATOR_DOMAIN);
-        for _ in 0..snapshot.rng_draws {
-            rng.next_u64();
-        }
         Ok(Self {
             session: snapshot.session,
             variables,
@@ -1945,7 +1974,6 @@ impl MissionState {
             limits,
             rng,
             seed: snapshot.seed,
-            rng_draws: snapshot.rng_draws,
         })
     }
 
@@ -2432,7 +2460,6 @@ impl MissionState {
                 // the drawn value is in `[min, max]`, hence in `i32`.
                 let span = (*max as i64 - *min as i64 + 1) as u64;
                 let drawn = (*min as i64 + (self.rng.next_u64() % span) as i64) as i32;
-                self.rng_draws += 1;
                 run.writes.push((*variable, Value::Int(drawn)));
             }
             Action::Finish(outcome) => {
