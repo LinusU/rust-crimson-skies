@@ -257,6 +257,7 @@ mod f50_e4;
 mod identity;
 mod inventory;
 mod m01_a;
+mod m01_b;
 mod m01_lc_campaign_airframe_pose;
 mod m01_lc_campaign_airframe_pose_evidence;
 mod m01_lc_player_airframe_source;
