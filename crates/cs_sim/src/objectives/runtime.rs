@@ -72,11 +72,33 @@
 //! # Completion effects: one completion moves other objectives
 //!
 //! [`ObjectiveSpec::completion_effects`] is what completing one objective does to
-//! *others*: the four declared effects [`CompletionEffectKind`] carries, each
+//! *others*: the declared effects [`CompletionEffectKind`] carries, each
 //! naming one objective of the same program. The effect is applied by draining a
 //! queue in phase 7, **not** by calling back into the state machine from inside
 //! the completion that raised it, which is the contract's *"actions do not
 //! directly recurse into callbacks"* rule made structural.
+//!
+//! The semantics are the engine image's, measured under M01-B-OBJ-1
+//! (`docs/findings/2026-10-12-m01-b-obj-1-completion-effects-and-tick-dependency.md`)
+//! and carried here under the boundaries recorded in
+//! `docs/findings/2026-10-12-m01-b-obj-1-fu1-runtime-effect-alignment.md`:
+//!
+//! * **Fixed order.** The engine applies `WAKE`, then `NAP`, then `KILL`,
+//!   then `SLEEP`, whatever order the record spells; the runtime queues a
+//!   completion's effects in that order ([`CompletionEffectKind::engine_order`]),
+//!   so `WAKE` then `NAP` on one target leaves it napping, as the engine does.
+//! * **A wake is a guarded move.** It skips a target that is not
+//!   [`present`](ObjectiveRuntime::is_present) or has completed (a final
+//!   state), and a target that is already [`Active`] stops the rest of that
+//!   completion's wake list ([`ObjectiveEventKind::WakeStopped`]).
+//! * **A nap is a timed pause.** It moves the target to
+//!   [`ObjectiveState::Napping`] and stores the declared nap time
+//!   ([`NapTime`]) on it, exactly as the engine writes its re-wake slot. The
+//!   unit of that time is unmeasured, so nothing here converts it into ticks
+//!   and nothing ends a nap by itself: a wake or a declared move does.
+//! * **A kill is a removal.** It clears the target's presence flag and leaves
+//!   its state alone, reported as [`ObjectiveEventKind::ObjectiveRemoved`] —
+//!   it is not an outcome, and it never sets [`ObjectiveState::Failed`].
 //!
 //! Three properties keep the drain bounded and order-independent:
 //!
@@ -84,37 +106,37 @@
 //!   applied effect can never queue another one — a cascade cannot be written
 //!   even before the queue's own rule (a drain takes the due set, and anything
 //!   queued while draining waits for the next tick) applies;
-//! * a target named by **two different** effect kinds is refused at
-//!   registration ([`RuntimeError::AmbiguousCompletionEffect`]) rather than
-//!   ordered, because the original's own records declare exactly that shape in
-//!   exactly one place and nothing measured which of the two wins there;
+//! * a target named with **different** effect kinds by two different completing
+//!   objectives is refused at registration
+//!   ([`RuntimeError::AmbiguousCompletionEffect`]) rather than ordered: the
+//!   engine completes one objective per pass, so that collision cannot arise
+//!   there, and which of two same-tick completions should apply last depends on
+//!   the pass-origin rule, which stays unmeasured. One declaration carrying two
+//!   effects on one target — the shape the corpus spells — is no longer
+//!   refused: the engine's fixed order decides it.
 //! * the due set is applied in the order the completions happened — the phase
-//!   order, then each objective's effects in their declared order — and nothing
-//!   hashes or walks an entity table to produce it. Two objectives completing in
-//!   one tick may therefore be *applied* in either order, and the stream's final
+//!   order, then each objective's effects in engine order — and nothing hashes
+//!   or walks an entity table to produce it. Two objectives completing in one
+//!   tick may therefore be *applied* in either order, and the stream's final
 //!   sort by [`EventKey`] makes them *observed* in symbol order regardless; and
 //!   since a contested target cannot be declared, no such order ever decides an
 //!   outcome.
 //!
-//! The NAP effect's declared number ([`UnmeasuredNumber`]) is carried and
-//! **never interpreted**: what it measures is unmeasured, so the effect applies
-//! the same move whatever the number says.
-//!
 //! # What is unknown
 //!
-//! Everything about the original game here is unmeasured and stays that way
-//! until F39-D calibrates it with `retail` capability:
-//!
-//! * which deadline a mission declares, in which domain, armed by what, and
-//!   performing which action;
-//! * which terminal outcome wins a same-tick collision;
-//! * which actors a mission protects, and what losing one does;
-//! * what `WAKE`/`NAP`/`KILL`/`WAKEUP` do in the original. Their spellings and
-//!   the fact that they name other objectives of the same record are measured
-//!   (F39-D/F39-E2), and that they name what happens to those objectives when
-//!   this one completes is an inference from the spelling. The state each effect
-//!   moves its target to below is a **designed** engine rule over the table in
-//!   `cs_sim::objectives::state`, never a measured one.
+//! Which deadline a mission declares, in which domain, armed by what and
+//! performing which action; which terminal outcome wins a same-tick collision;
+//! and which actors a mission protects are other families' unmeasured rules and
+//! stay that way. The completion effects' spellings and closure over the record
+//! were measured (F39-D/F39-E2), and their behaviour above was measured in the
+//! engine image (M01-B-OBJ-1); what remains unmeasured and unmodelled here is
+//! recorded in the alignment finding: the dormant/awake timer families, the
+//! nap-time unit (so no nap expiry), the pass-origin rule, the wake's dormancy
+//! bookkeeping, and whether the image's behaviour matches its code when run.
+//! The spelling `WAKEUP_OBJECTIVE_WHEN_I_COMPLETE` has **no reader** in the
+//! image; [`CompletionEffectKind::Wakeup`] is kept apart from `Wake` because
+//! the declared schema still carries it, and its move stays this project's
+//! designed reading, not a measured one.
 //!
 //! No authored mission is bound to this runtime yet: the content binding is
 //! `cs_content::objectives` plus F39-C's wiring, so `content` here is a declared
@@ -296,24 +318,29 @@ pub enum ObjectiveCompletion {
     Requests(TerminalOutcome),
 }
 
-/// A number a completion effect declared with **no measured unit**.
+/// The declared **nap time** a `NAP` completion effect carries.
 ///
-/// F39-E2 measured that every `NAP_OBJECTIVE_WHEN_I_COMPLETE` site in the
-/// original's objective records carries one number after its objective list
-/// (42 distinct values between 0.5 and 170 across 417 sites) and that no other
-/// completion effect site carries one. **What the number measures is
-/// unmeasured**: nothing in this project has run the original, and the program
-/// behind the record is not decoded, so a duration, a weight and a threshold are
-/// all consistent with the bytes.
+/// F39-E2 measured the shape — every `NAP_OBJECTIVE_WHEN_I_COMPLETE` site in
+/// the original's objective records carries one number after its objective list
+/// (42 distinct values between 0.5 and 170 across 417 sites) and no other
+/// completion effect site carries one — and M01-B-OBJ-1 measured what it is:
+/// the loader's own diagnostic is "NAP_OBJECTIVE_WHEN_I_COMPLETE has no
+/// nap_time specified", a missing value stores `0.3`, and the engine writes
+/// the number into the target's re-wake timer slot, comparing it against
+/// accumulated per-pass steps.
 ///
-/// The type exists so that no caller can read the number as a time. Nothing in
-/// the runtime interprets it — a nap moves its target whatever the number says —
-/// and the state a *wakeup* may later reverse is a declared fact of the program,
-/// not a computation over this value.
+/// What stays unmeasured is the **unit**: the per-pass step is the engine's
+/// global frame step, and reading it as seconds is an inference. This runtime
+/// ticks in integers, so converting the nap time into ticks — and with it nap
+/// expiry, the rule that ends a nap by itself — would be an invention. The
+/// type therefore exists so the time can travel as data without a caller
+/// treating it as a duration *of this engine*: nothing here interprets it, and
+/// a napped objective leaves [`ObjectiveState::Napping`] only through a wake or
+/// a declared move.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct UnmeasuredNumber(f64);
+pub struct NapTime(f64);
 
-impl UnmeasuredNumber {
+impl NapTime {
     /// Wraps a finite number, or refuses a non-finite one: a declared value that
     /// is not a number cannot be carried as data either.
     #[must_use]
@@ -321,55 +348,89 @@ impl UnmeasuredNumber {
         value.is_finite().then_some(Self(value))
     }
 
-    /// The number exactly as declared, with no unit attached to it.
+    /// The nap time exactly as declared, in the engine's own unit and with no
+    /// conversion attached to it.
     #[must_use]
     pub const fn value(self) -> f64 {
         self.0
     }
 }
 
-/// Which of the four completion effects one declaration carries.
+/// Which of the completion effects one declaration carries.
 ///
-/// The **spellings** are measured: the original's objective records write
-/// `WAKE_OBJECTIVE_WHEN_I_COMPLETE`, `NAP_OBJECTIVE_WHEN_I_COMPLETE`,
-/// `KILL_OBJECTIVE_WHEN_I_COMPLETE` and `WAKEUP_OBJECTIVE_WHEN_I_COMPLETE`
-/// (F39-D's `BRANCH_KEY_VOCABULARY`), and `WAKE` and `WAKEUP` appear in one
-/// corpus without any measurement saying they are the same effect, so they stay
-/// apart here too. What each spelling *does* is an inference from the spelling;
-/// [`moves_to`](Self::moves_to) is this project's **designed** reading of it over
-/// the transition table, and nothing measured confirms it.
+/// The **spellings** are measured: the engine image reads
+/// `WAKE_OBJECTIVE_WHEN_I_COMPLETE` (and its bare alias `WAKE_OBJECTIVE`),
+/// `NAP_OBJECTIVE_WHEN_I_COMPLETE`, `KILL_OBJECTIVE_WHEN_I_COMPLETE` and
+/// `SLEEP_OBJECTIVE_WHEN_I_COMPLETE` out of an objective block (M01-B-OBJ-1),
+/// and the corpus also spells `WAKEUP_OBJECTIVE_WHEN_I_COMPLETE` — which the
+/// image has **no reader** for, an inertness that stays an inference until an
+/// original run settles it. `WAKE` and `WAKEUP` are therefore kept apart here
+/// too. What each spelling does is the engine image's measured behaviour
+/// (M01-B-OBJ-1); the boundaries it is carried under — no nap expiry, a kill's
+/// state kept — are recorded in
+/// `docs/findings/2026-10-12-m01-b-obj-1-fu1-runtime-effect-alignment.md`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum CompletionEffectKind {
-    /// The named objective starts being pursued.
+    /// The named objective is woken: it becomes [`ObjectiveState::Active`],
+    /// unless it is not present, has completed, or is already awake — in
+    /// which case the rest of this completion's wake list is skipped.
     Wake,
-    /// The named objective is put aside and no longer gates mission success,
-    /// carrying a declared number this engine cannot interpret.
+    /// The named objective is put aside for its declared nap time:
+    /// [`ObjectiveState::Napping`], carrying a [`NapTime`] this runtime never
+    /// converts into ticks.
     Nap,
-    /// The named objective fails and is no longer available.
+    /// The named objective is **removed**: its presence flag is cleared and
+    /// its state is left alone. It is not an outcome and never sets
+    /// [`ObjectiveState::Failed`].
     Kill,
-    /// The named objective starts being pursued again, after it was put aside.
+    /// The spelling the corpus writes but the engine image never reads. Kept
+    /// apart from [`Wake`](Self::Wake) so a later measurement can settle what,
+    /// if anything, it does; until then its move is the designed one.
     Wakeup,
+    /// The named objective is put to sleep: [`ObjectiveState::Asleep`]. The
+    /// engine reads `SLEEP_OBJECTIVE_WHEN_I_COMPLETE`; no retail record spells
+    /// it, so no lowered program carries this kind today.
+    Sleep,
 }
 
 impl CompletionEffectKind {
-    /// The state this effect moves its target to.
+    /// The state this effect moves its target to, or [`None`] for a kind that
+    /// moves no state at all.
     ///
-    /// **Designed, not measured.** `Wake` and `Wakeup` both make the target
-    /// `Active` — the sheet's "being pursued" state — because no measurement
-    /// distinguishes the two spellings and the table has no separate
-    /// "woken again" state; they are kept apart so a measurement can split them
-    /// later. `Nap` makes the target `Optional` — the sheet's state that "never
-    /// gates mission success" — and `Kill` makes it `Failed`.
+    /// `Wake` and `Wakeup` both make the target [`ObjectiveState::Active`] —
+    /// the engine's wake sets state 1 whatever the target was doing — and are
+    /// kept apart only because the corpus spells both while the image reads
+    /// one. `Nap` makes the target [`ObjectiveState::Napping`] (engine state
+    /// 2) and `Sleep` [`ObjectiveState::Asleep`] (engine state 3). `Kill`
+    /// moves nothing: it clears the target's presence flag, which is this
+    /// runtime's carried form of the engine's present/active clear.
     ///
-    /// **No kind returns [`ObjectiveState::Succeeded`]**, which is what makes the
-    /// effect queue non-cascading: an applied effect can never complete an
+    /// **No kind returns [`ObjectiveState::Succeeded`]**, which is what makes
+    /// the effect queue non-cascading: an applied effect can never complete an
     /// objective, so it can never queue another effect.
     #[must_use]
-    pub const fn moves_to(self) -> ObjectiveState {
+    pub const fn moves_to(self) -> Option<ObjectiveState> {
         match self {
-            Self::Wake | Self::Wakeup => ObjectiveState::Active,
-            Self::Nap => ObjectiveState::Optional,
-            Self::Kill => ObjectiveState::Failed,
+            Self::Wake | Self::Wakeup => Some(ObjectiveState::Active),
+            Self::Nap => Some(ObjectiveState::Napping),
+            Self::Kill => None,
+            Self::Sleep => Some(ObjectiveState::Asleep),
+        }
+    }
+
+    /// The engine's fixed application rank: one completion applies its `WAKE`s
+    /// first, then its `NAP`, then its `KILL`s, then its `SLEEP`s, whatever
+    /// order the record spells them in (M01-B-OBJ-1, measured at 0x46aa35 →
+    /// 0x46ad73 → 0x46addd → 0x46ae11). `Wakeup` takes the wake rank: the
+    /// image never reads that spelling, so nothing measured orders it, and
+    /// beside `Wake` is this project's designed placement.
+    #[must_use]
+    pub const fn engine_order(self) -> u8 {
+        match self {
+            Self::Wake | Self::Wakeup => 0,
+            Self::Nap => 1,
+            Self::Kill => 2,
+            Self::Sleep => 3,
         }
     }
 
@@ -384,19 +445,23 @@ impl CompletionEffectKind {
 /// What completing one declared objective does to one other objective of the
 /// same program.
 ///
-/// An effect is a **declared** move, applied through
+/// Most effects are a **declared** move, applied through
 /// [`ObjectiveRuntime::change_objective`](ObjectiveRuntime) like every other
-/// declared state change, so it obeys the same rules: the target's reveal rule
+/// declared state change, so they obey the same rules: the target's reveal rule
 /// still governs its visibility, the transition table still decides legality,
-/// and a refused move is *reported* rather than dropped.
+/// and a refused move is *reported* rather than dropped. A
+/// [`CompletionEffectKind::Kill`] is the exception the measurement made: it
+/// moves no state, clears the target's presence flag and reports
+/// [`ObjectiveEventKind::ObjectiveRemoved`].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct CompletionEffect {
     /// Which effect this is.
     pub kind: CompletionEffectKind,
     /// The objective it acts on.
     pub target: SymbolId,
-    /// The number only [`CompletionEffectKind::Nap`] carries, with no unit.
-    pub argument: Option<UnmeasuredNumber>,
+    /// The number only [`CompletionEffectKind::Nap`] carries: the declared nap
+    /// time, in the engine's own unit, never converted into ticks.
+    pub argument: Option<NapTime>,
 }
 
 impl CompletionEffect {
@@ -410,7 +475,7 @@ impl CompletionEffect {
     pub fn new(
         kind: CompletionEffectKind,
         target: SymbolId,
-        argument: Option<UnmeasuredNumber>,
+        argument: Option<NapTime>,
     ) -> Result<Self, RuntimeError> {
         let effect = Self {
             kind,
@@ -421,10 +486,10 @@ impl CompletionEffect {
         Ok(effect)
     }
 
-    /// The state this effect moves its target to. See
-    /// [`CompletionEffectKind::moves_to`].
+    /// The state this effect moves its target to, or [`None`] for a kill,
+    /// which moves no state. See [`CompletionEffectKind::moves_to`].
     #[must_use]
-    pub const fn moves_target_to(&self) -> ObjectiveState {
+    pub const fn moves_target_to(&self) -> Option<ObjectiveState> {
         self.kind.moves_to()
     }
 
@@ -457,9 +522,11 @@ pub struct ObjectiveSpec {
     pub reveal: RevealRule,
     /// What completing it means for the mission.
     pub on_complete: ObjectiveCompletion,
-    /// What completing it does to *other* objectives, in authored order. Empty
-    /// for an objective whose completion moves nothing else, which is the whole
-    /// of the behaviour before completion effects existed.
+    /// What completing it does to *other* objectives, in authored order.
+    /// Empty for an objective whose completion moves nothing else, which is
+    /// the whole of the behaviour before completion effects existed. The
+    /// runtime queues and applies them in the engine's fixed order
+    /// ([`CompletionEffectKind::engine_order`]), not in this order.
     pub completion_effects: Vec<CompletionEffect>,
 }
 
@@ -526,6 +593,24 @@ pub enum ObjectiveEventKind {
         objective: SymbolId,
         from: ObjectiveState,
         to: ObjectiveState,
+    },
+    /// A `KILL` completion effect removed the objective from play: its
+    /// presence flag is cleared and `from` is the state it kept. This is not
+    /// an outcome — the objective's state is unchanged, no terminal result is
+    /// requested, and every later wake skips it.
+    ObjectiveRemoved {
+        objective: SymbolId,
+        from: ObjectiveState,
+    },
+    /// A completion's wake list stopped early: `objective`, which the list
+    /// reached while already [`ObjectiveState::Active`], ended the whole list
+    /// (the engine's measured early-out), so the wake targets after it in the
+    /// same completion were not woken.
+    WakeStopped {
+        /// The completing objective whose wake list stopped.
+        source: SymbolId,
+        /// The already-awake target that stopped it.
+        objective: SymbolId,
     },
     /// A hidden objective became visible. `state` is the state it now holds:
     /// [`ObjectiveState::Pending`] when it was `Hidden`, unchanged otherwise.
@@ -736,17 +821,21 @@ pub enum RuntimeError {
     /// A declaration pairs [`RevealRule::Immediate`] with a `Hidden` initial
     /// state, which says both "hidden" and "shown from the first tick".
     HiddenButImmediate { objective: SymbolId },
-    /// **Different** completion effects name the same objective — whether two
-    /// objectives of this runtime declare them or one objective declares both.
+    /// **Different** completing objectives declare **different** effects on
+    /// the same target.
     ///
-    /// This is refused, not ordered: the original's own objective records declare
-    /// exactly that shape, in exactly one place across 1338 measured blocks, and
-    /// nothing measured which of the two effects wins there — the record's own
-    /// authored order is written both ways round across the corpus, so it carries
-    /// no engine intent either (F39-E2). Applying one of them would be inventing
-    /// the rule the measurement refused. Registration order decides nothing
-    /// either, because the scan covers every registered objective and not only
-    /// the one before this one.
+    /// Within *one* declaration this is no longer refused: M01-B-OBJ-1
+    /// measured the engine's fixed order (`WAKE` → `NAP` → `KILL` → `SLEEP`),
+    /// which resolves the corpus's one such block (`zbd/c3/m05` `OBJECTIVE8`:
+    /// the target is woken first, then napped, so it ends napping). Across
+    /// *two* declarations it stays refused rather than ordered: the engine
+    /// completes one objective per pass, so the collision cannot arise there,
+    /// and this runtime may complete both in one tick — which of them should
+    /// apply last depends on the pass-origin rule, which is unmeasured
+    /// (M01-B-OBJ-1's open question 2). Applying one in the other's place would
+    /// be inventing that rule. Registration order decides nothing either,
+    /// because the scan covers every registered objective and not only the one
+    /// before this one.
     AmbiguousCompletionEffect { source: SymbolId, target: SymbolId },
     /// An objective declares a completion effect on itself.
     ///
@@ -816,7 +905,7 @@ impl fmt::Display for RuntimeError {
             ),
             Self::AmbiguousCompletionEffect { source, target } => write!(
                 f,
-                "objective {source:?} declares a completion effect on {target:?} that is already declared differently, and no measured rule says which of the two applies"
+                "objective {source:?} declares a completion effect on {target:?} that a different objective already declares differently, and the engine completes one objective per pass, so which of the two applies when both complete in one tick is unmeasured"
             ),
             Self::SelfCompletionEffect { objective } => write!(
                 f,
@@ -1004,9 +1093,12 @@ impl ObjectiveRuntime {
     /// here rather than in [`CompletionEffect::new`], because every field of a
     /// [`CompletionEffect`] is public and a struct literal would otherwise let a
     /// declaration slip past: the measured number's shape, an effect on the
-    /// objective itself, and the one rule that cannot be expressed in the effect
-    /// alone — a target named by **two different** effects, which is refused
-    /// rather than ordered because no measured rule says which wins (F39-E2).
+    /// objective itself, and the one rule that cannot be expressed in the
+    /// effect alone — a target named with **different** effects by two
+    /// *different* objectives, which is refused rather than ordered because the
+    /// engine completes one objective per pass and the pass-origin rule is
+    /// unmeasured (M01-B-OBJ-1). One declaration carrying two effects on one
+    /// target is no longer refused: the engine's fixed order decides it.
     ///
     /// # Errors
     ///
@@ -1042,44 +1134,46 @@ impl ObjectiveRuntime {
                 revealed,
                 on_complete: spec.on_complete,
                 completion_effects: spec.completion_effects,
+                present: true,
+                nap_time: None,
             },
         );
         Ok(())
     }
 
-    /// Refuses a target this runtime is already naming with a **different**
-    /// effect kind.
+    /// Refuses a target that a **different** registered objective already
+    /// names with a **different** effect kind.
     ///
-    /// Registration order cannot decide the question, and neither can the
-    /// declaration's own field order: the original writes each conflicting pair
-    /// both ways round, so the corpus refutes the authored order as a rule
-    /// (F39-E2). The refusal is therefore about the *shape*, not about who spoke
-    /// first — which is why the scan runs over every registered objective and
-    /// not only the previous one, so a conflict is found whichever of the two
-    /// objectives is registered second.
+    /// M01-B-OBJ-1 measured the engine's fixed order (`WAKE` → `NAP` →
+    /// `KILL` → `SLEEP`), which decides one declaration that names one target
+    /// twice — the corpus's `zbd/c3/m05` `OBJECTIVE8` shape — so conflicts
+    /// *within* one declaration are applied in that order and never refused
+    /// here. Across declarations the question stays open: the engine completes
+    /// one objective per pass, so two completions never collide there, and
+    /// which of two same-tick completions should apply last depends on the
+    /// pass-origin rule, which is unmeasured. Registration order decides
+    /// nothing either, which is why the scan covers every registered objective
+    /// and not only the one before this one.
     fn check_uncontested_targets(
         &self,
         source: SymbolId,
         effects: &[CompletionEffect],
     ) -> Result<(), RuntimeError> {
-        let mut declared: BTreeMap<SymbolId, CompletionEffectKind> = BTreeMap::new();
-        for tracked in self.objectives.values() {
+        let mut declared: BTreeMap<SymbolId, (SymbolId, CompletionEffectKind)> = BTreeMap::new();
+        for (id, tracked) in &self.objectives {
             for effect in &tracked.completion_effects {
-                declared.entry(effect.target).or_insert(effect.kind);
+                declared.entry(effect.target).or_insert((*id, effect.kind));
             }
         }
         for effect in effects {
-            match declared.get(&effect.target) {
-                Some(kind) if *kind != effect.kind => {
-                    return Err(RuntimeError::AmbiguousCompletionEffect {
-                        source,
-                        target: effect.target,
-                    });
-                }
-                Some(_) => {}
-                None => {
-                    declared.insert(effect.target, effect.kind);
-                }
+            if let Some((other, kind)) = declared.get(&effect.target)
+                && *other != source
+                && *kind != effect.kind
+            {
+                return Err(RuntimeError::AmbiguousCompletionEffect {
+                    source,
+                    target: effect.target,
+                });
             }
         }
         Ok(())
@@ -1181,6 +1275,27 @@ impl ObjectiveRuntime {
     #[must_use]
     pub fn objective_state(&self, objective: SymbolId) -> Option<ObjectiveState> {
         self.objectives.get(&objective).map(TrackedObjective::state)
+    }
+
+    /// Whether an objective is still *present*: not removed by a
+    /// [`CompletionEffectKind::Kill`]. A killed objective keeps its state and
+    /// is skipped by every later wake, so this is the one query that tells
+    /// "removed from play" apart from "shown in a state".
+    #[must_use]
+    pub fn is_present(&self, objective: SymbolId) -> Option<bool> {
+        self.objectives
+            .get(&objective)
+            .map(|tracked| tracked.present)
+    }
+
+    /// The nap time the last applied `NAP` effect declared for this
+    /// objective, in the engine's own unit. Carried as data; this runtime
+    /// never converts it into ticks and never ends a nap by it.
+    #[must_use]
+    pub fn objective_nap_time(&self, objective: SymbolId) -> Option<NapTime> {
+        self.objectives
+            .get(&objective)
+            .and_then(|tracked| tracked.nap_time)
     }
 
     /// The content id an objective was authored as.
@@ -1735,22 +1850,134 @@ impl ObjectiveRuntime {
     /// a target to `Succeeded`, so no applied effect can complete an objective
     /// and the queue cannot grow while it drains.
     ///
-    /// Order is the order the completions happened — phase 5's objective requests
-    /// as the caller listed them, then phase 6's expiries in timer order — and
-    /// within one objective, its effects in their declared order. No hash map or
-    /// entity iteration is involved. Two objectives completing in one tick can
-    /// therefore be applied in either order, which is why this is only a
-    /// *reported* order question: [`step`](Self::step) sorts the stream by
-    /// [`EventKey`], so their moves are observed in `(source, sequence)` order
-    /// however they were applied, and a target named by two *different* effects
-    /// cannot be registered at all, so no such order decides a contested
-    /// outcome.
+    /// Order is the order the completions happened — phase 5's objective
+    /// requests as the caller listed them, then phase 6's expiries in timer
+    /// order — and within one completion, its effects in the engine's fixed
+    /// order (queued so by
+    /// [`queue_completion_effects`](Self::queue_completion_effects)). No hash
+    /// map or entity iteration is involved. Two objectives completing in one
+    /// tick can therefore be applied in either order, which is why this is
+    /// only a *reported* order question: [`step`](Self::step) sorts the stream
+    /// by [`EventKey`], so their moves are observed in `(source, sequence)`
+    /// order however they were applied, and a target named with different
+    /// effects by two *different* objectives cannot be registered at all, so no
+    /// such order decides a contested outcome.
+    ///
+    /// Each kind carries the engine's measured behaviour (M01-B-OBJ-1):
+    ///
+    /// * `WAKE` — per target in list order: a target that is not present or has
+    ///   completed (a final state) is skipped and the skip is reported; a
+    ///   target already `Active` stops the rest of this completion's wake list
+    ///   ([`ObjectiveEventKind::WakeStopped`]); anything else moves through
+    ///   [`change_objective`](Self::change_objective), whose reveal rule and
+    ///   transition table still gate it. The stop is tracked per *source*, so
+    ///   two completions in one tick never stop each other's lists.
+    /// * `NAP` — moves the target to [`ObjectiveState::Napping`] and stores
+    ///   the declared [`NapTime`] on it; a refused move stores nothing.
+    /// * `KILL` — clears the target's presence flag and reports
+    ///   [`ObjectiveEventKind::ObjectiveRemoved`] with the state it kept; the
+    ///   state itself is never touched, and no outcome is requested.
+    /// * `SLEEP` — moves the target to [`ObjectiveState::Asleep`].
     fn apply_completion_effects(&mut self, out: &mut Emitter) {
         let due: Vec<QueuedEffect> = std::mem::take(&mut self.pending_effects);
-        for pending in due {
-            let state = pending.effect.moves_target_to();
-            self.change_objective(pending.effect.target, state, pending.source, out);
+        let mut wake_stopped: BTreeSet<SymbolId> = BTreeSet::new();
+        for QueuedEffect { source, effect } in due {
+            match effect.kind {
+                CompletionEffectKind::Wake | CompletionEffectKind::Wakeup => {
+                    self.apply_wake(source, effect.target, &mut wake_stopped, out);
+                }
+                CompletionEffectKind::Nap => {
+                    if self.change_objective(effect.target, ObjectiveState::Napping, source, out)
+                        && let Some(tracked) = self.objectives.get_mut(&effect.target)
+                    {
+                        tracked.nap_time = effect.argument;
+                    }
+                }
+                CompletionEffectKind::Kill => self.apply_kill(source, effect.target, out),
+                CompletionEffectKind::Sleep => {
+                    self.change_objective(effect.target, ObjectiveState::Asleep, source, out);
+                }
+            }
         }
+    }
+
+    /// One wake of a completion's wake list, with the engine's measured guards
+    /// (0x469af0): skip a target that is not present or has completed; stop the
+    /// whole list at a target that is already awake; otherwise wake.
+    fn apply_wake(
+        &mut self,
+        source: SymbolId,
+        target: SymbolId,
+        wake_stopped: &mut BTreeSet<SymbolId>,
+        out: &mut Emitter,
+    ) {
+        if wake_stopped.contains(&source) {
+            // The list already stopped at an earlier target: the engine never
+            // reaches the rest of it, and `WakeStopped` already named where
+            // and why.
+            return;
+        }
+        let Some(tracked) = self.objectives.get(&target) else {
+            out.push(
+                source,
+                ObjectiveEventKind::RequestRefused {
+                    request: target,
+                    reason: RuntimeError::UnknownObjective { objective: target },
+                },
+            );
+            return;
+        };
+        let from = tracked.state();
+        if !tracked.present || from.is_final() {
+            out.push(
+                source,
+                ObjectiveEventKind::ObjectiveChangeRefused {
+                    objective: target,
+                    from,
+                    to: ObjectiveState::Active,
+                },
+            );
+            return;
+        }
+        if from == ObjectiveState::Active {
+            // The measured early-out: an already-awake target ends the whole
+            // list. The engine also resets that target's elapsed time; this
+            // runtime has no per-objective elapsed timer to reset.
+            wake_stopped.insert(source);
+            out.push(
+                source,
+                ObjectiveEventKind::WakeStopped {
+                    source,
+                    objective: target,
+                },
+            );
+            return;
+        }
+        self.change_objective(target, ObjectiveState::Active, source, out);
+    }
+
+    /// One kill: presence cleared, state kept, reported (0x46b130). An unknown
+    /// target is refused by name rather than dropped.
+    fn apply_kill(&mut self, source: SymbolId, target: SymbolId, out: &mut Emitter) {
+        let Some(tracked) = self.objectives.get_mut(&target) else {
+            out.push(
+                source,
+                ObjectiveEventKind::RequestRefused {
+                    request: target,
+                    reason: RuntimeError::UnknownObjective { objective: target },
+                },
+            );
+            return;
+        };
+        let from = tracked.state();
+        tracked.present = false;
+        out.push(
+            source,
+            ObjectiveEventKind::ObjectiveRemoved {
+                objective: target,
+                from,
+            },
+        );
     }
 
     /// Phase 8: resolve every terminal request this tick made, together.
@@ -1795,13 +2022,17 @@ impl ObjectiveRuntime {
     // -- helpers ------------------------------------------------------------
 
     /// Applies one declared objective state change and its consequences.
+    ///
+    /// Returns whether the move applied; every refusal is reported on the
+    /// stream first, so a `false` is always paired with the refusal event
+    /// that named it.
     fn change_objective(
         &mut self,
         objective: SymbolId,
         to: ObjectiveState,
         source: SymbolId,
         out: &mut Emitter,
-    ) {
+    ) -> bool {
         let Some(tracked) = self.objectives.get_mut(&objective) else {
             out.push(
                 source,
@@ -1810,7 +2041,7 @@ impl ObjectiveRuntime {
                     reason: RuntimeError::UnknownObjective { objective },
                 },
             );
-            return;
+            return false;
         };
         let from = tracked.state();
         // A hidden objective leaves `Hidden` only through its own reveal rule
@@ -1828,7 +2059,7 @@ impl ObjectiveRuntime {
                     to,
                 },
             );
-            return;
+            return false;
         }
         if let Err(IllegalTransition { from, to }) = tracked.cell.transition(to) {
             out.push(
@@ -1839,7 +2070,7 @@ impl ObjectiveRuntime {
                     to,
                 },
             );
-            return;
+            return false;
         }
         out.push(
             source,
@@ -1890,12 +2121,18 @@ impl ObjectiveRuntime {
                 out,
             );
         }
+        true
     }
 
     /// Queues the completion effects an objective declares, remembering which
     /// objective declared each one: that objective is the `source` its effects'
     /// events report under, because the effect belongs to *its* declaration and
-    /// not to whatever request completed it.
+    /// not to whatever request completed it. Within one completion the effects
+    /// are queued in the engine's fixed order
+    /// ([`CompletionEffectKind::engine_order`]), a stable sort, so two targets
+    /// of one kind keep their authored list order while `WAKE` always precedes
+    /// `NAP`, `NAP` precedes `KILL` and `KILL` precedes `SLEEP` — measured,
+    /// not authored (M01-B-OBJ-1).
     ///
     /// An objective that has already completed latches: no row leaves
     /// `Succeeded`, so a completion happens once per session and so do the
@@ -1905,14 +2142,12 @@ impl ObjectiveRuntime {
             return;
         };
         let source = objective;
+        let mut effects: Vec<CompletionEffect> = tracked.completion_effects.clone();
+        effects.sort_by_key(|effect| effect.kind.engine_order());
         self.pending_effects.extend(
-            tracked
-                .completion_effects
-                .iter()
-                .map(|effect| QueuedEffect {
-                    source,
-                    effect: *effect,
-                }),
+            effects
+                .into_iter()
+                .map(|effect| QueuedEffect { source, effect }),
         );
     }
 
@@ -2111,6 +2346,15 @@ struct TrackedObjective {
     revealed: bool,
     on_complete: ObjectiveCompletion,
     completion_effects: Vec<CompletionEffect>,
+    /// The engine's *present* flag (M01-B-OBJ-1): cleared by a
+    /// [`CompletionEffectKind::Kill`], which removes the objective from play
+    /// without touching its state. A wake skips a target that is not present.
+    present: bool,
+    /// The nap time the last applied `NAP` effect declared, exactly as the
+    /// engine stores it in the target's re-wake slot. Carried, never
+    /// converted: the unit is unmeasured and nothing here ends a nap by
+    /// elapsed time.
+    nap_time: Option<NapTime>,
 }
 
 impl TrackedObjective {
@@ -2182,5 +2426,483 @@ impl Emitter {
         };
         self.sequence += 1;
         self.events.push(ObjectiveEvent { key, kind });
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use cs_types::content::ContentKind;
+
+    use super::*;
+
+    const GEN: SessionGeneration = SessionGeneration(11);
+
+    fn content(key: &str) -> ContentId {
+        ContentId::from_source(ContentKind::Objective, key).expect("an objective content id")
+    }
+
+    fn spec(id: u32, initial: ObjectiveState, effects: Vec<CompletionEffect>) -> ObjectiveSpec {
+        ObjectiveSpec {
+            id: SymbolId(id),
+            content: content(&format!("synthetic.m01bfu1.{id}")),
+            initial,
+            reveal: RevealRule::Immediate,
+            on_complete: ObjectiveCompletion::Continue,
+            completion_effects: effects,
+        }
+    }
+
+    fn effect(kind: CompletionEffectKind, target: u32, argument: Option<f64>) -> CompletionEffect {
+        CompletionEffect::new(kind, SymbolId(target), argument.and_then(NapTime::new))
+            .expect("a well-shaped completion effect")
+    }
+
+    fn runtime_with(specs: Vec<ObjectiveSpec>) -> ObjectiveRuntime {
+        let mut runtime = ObjectiveRuntime::new(
+            GEN,
+            TerminalPrecedence::SyntheticConservative,
+            RuntimeLimits::default(),
+        );
+        for spec in specs {
+            runtime.add_objective(spec).expect("a registering spec");
+        }
+        runtime
+    }
+
+    /// Completes `completing` through the ordinary declared path on `tick`.
+    fn complete(runtime: &mut ObjectiveRuntime, completing: u32, tick: u64) -> ObjectiveTick {
+        let requests = [(SymbolId(completing), ObjectiveState::Succeeded)];
+        let mut input = TickInput::at(Tick(tick));
+        input.objective_requests = &requests;
+        runtime.step(&input).expect("a legal tick")
+    }
+
+    /// The applied state changes of a tick, in observation order, without the
+    /// completing objective's own move (the fixture's completion, not one of
+    /// its effects).
+    fn changes(
+        tick: &ObjectiveTick,
+        completing: u32,
+    ) -> Vec<(SymbolId, ObjectiveState, ObjectiveState)> {
+        tick.events
+            .iter()
+            .filter_map(|event| match event.kind {
+                ObjectiveEventKind::ObjectiveChanged {
+                    objective,
+                    from,
+                    to,
+                } if objective != SymbolId(completing) => Some((objective, from, to)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The removals of a tick, in observation order.
+    fn removals(tick: &ObjectiveTick) -> Vec<(SymbolId, ObjectiveState)> {
+        tick.events
+            .iter()
+            .filter_map(|event| match event.kind {
+                ObjectiveEventKind::ObjectiveRemoved { objective, from } => Some((objective, from)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// The refused state changes of a tick, in observation order.
+    fn refusals(tick: &ObjectiveTick) -> Vec<(SymbolId, ObjectiveState, ObjectiveState)> {
+        tick.events
+            .iter()
+            .filter_map(|event| match event.kind {
+                ObjectiveEventKind::ObjectiveChangeRefused {
+                    objective,
+                    from,
+                    to,
+                } => Some((objective, from, to)),
+                _ => None,
+            })
+            .collect()
+    }
+
+    /// M01-B-OBJ-1: the engine applies a completion's effects in its own fixed
+    /// order — `WAKE`, then `NAP`, then `KILL`, then `SLEEP` — whatever order
+    /// the record spells them in, so a declaration whose authored order puts
+    /// the nap first still wakes before it naps and removes last.
+    #[test]
+    fn accept_m01_b_obj_1_fu1_completion_effects_apply_in_the_engine_order() {
+        let mut runtime = runtime_with(vec![
+            // The completing objective spells its effects deliberately
+            // backwards: NAP, then WAKE, then KILL.
+            spec(
+                1,
+                ObjectiveState::Active,
+                vec![
+                    effect(CompletionEffectKind::Nap, 2, Some(2.0)),
+                    effect(CompletionEffectKind::Wake, 3, None),
+                    effect(CompletionEffectKind::Kill, 4, None),
+                ],
+            ),
+            spec(2, ObjectiveState::Active, Vec::new()),
+            spec(3, ObjectiveState::Pending, Vec::new()),
+            spec(4, ObjectiveState::Active, Vec::new()),
+        ]);
+
+        let tick = complete(&mut runtime, 1, 1);
+        assert_eq!(
+            changes(&tick, 1),
+            vec![
+                (SymbolId(3), ObjectiveState::Pending, ObjectiveState::Active),
+                (SymbolId(2), ObjectiveState::Active, ObjectiveState::Napping),
+            ],
+            "the wake applies before the nap, not in the authored order"
+        );
+        assert_eq!(
+            removals(&tick),
+            vec![(SymbolId(4), ObjectiveState::Active)],
+            "the kill applies last and removes without a state change"
+        );
+        assert_eq!(tick.outcome, None, "no completion effect ends the mission");
+        assert_eq!(
+            runtime.objective_state(SymbolId(2)),
+            Some(ObjectiveState::Napping),
+            "a napped objective holds the engine's state 2, not `Optional`"
+        );
+        assert_eq!(
+            runtime.objective_nap_time(SymbolId(2)).map(NapTime::value),
+            Some(2.0),
+            "the declared nap time is stored on the target, as the engine writes its slot"
+        );
+        assert_eq!(runtime.is_present(SymbolId(4)), Some(false));
+    }
+
+    /// M01-B-OBJ-1: the measured wake early-out — a target the list reaches
+    /// while already awake stops the whole list, and the stop is per
+    /// completion, so it never leaks into another completion's list.
+    #[test]
+    fn accept_m01_b_obj_1_fu1_an_awake_target_stops_the_rest_of_the_wake_list() {
+        let mut runtime = runtime_with(vec![
+            spec(
+                6,
+                ObjectiveState::Active,
+                vec![
+                    // The list reaches the already-awake target 2 first and
+                    // stops there; 3 and 5 are never reached. A kill is
+                    // spelled alongside to pin that it still applies after
+                    // the stopped list (engine order puts it last).
+                    effect(CompletionEffectKind::Wake, 2, None),
+                    effect(CompletionEffectKind::Wake, 3, None),
+                    effect(CompletionEffectKind::Wake, 5, None),
+                    effect(CompletionEffectKind::Kill, 4, None),
+                ],
+            ),
+            spec(2, ObjectiveState::Active, Vec::new()),
+            spec(3, ObjectiveState::Pending, Vec::new()),
+            spec(4, ObjectiveState::Active, Vec::new()),
+            spec(5, ObjectiveState::Pending, Vec::new()),
+        ]);
+
+        let tick = complete(&mut runtime, 6, 1);
+        assert!(
+            tick.events.iter().any(|event| matches!(
+                event.kind,
+                ObjectiveEventKind::WakeStopped { source, objective }
+                    if source == SymbolId(6) && objective == SymbolId(2)
+            )),
+            "the already-awake target stops the list and says so"
+        );
+        assert_eq!(
+            changes(&tick, 6),
+            vec![],
+            "no wake moved anything: the list stopped at the first target"
+        );
+        for behind in [3, 5] {
+            assert_eq!(
+                runtime.objective_state(SymbolId(behind)),
+                Some(ObjectiveState::Pending),
+                "objective {behind} is behind the stop and was not woken"
+            );
+        }
+        assert_eq!(
+            runtime.is_present(SymbolId(4)),
+            Some(false),
+            "the kill after the stopped wake list still applies"
+        );
+    }
+
+    /// M01-B-OBJ-1: a wake skips a completed target and reports the skip — and
+    /// a skip does **not** stop the list; only the already-awake early-out
+    /// does, so the target after a skipped one is still woken. (The other
+    /// skip — a target that is not present — carries the same report; it is
+    /// unreachable through registration today because a target one objective
+    /// kills cannot be woken by another without an ambiguity refusal, so this
+    /// test pins the reachable half of the guard.)
+    #[test]
+    fn accept_m01_b_obj_1_fu1_a_skipped_wake_does_not_stop_the_list() {
+        let mut runtime = runtime_with(vec![
+            spec(
+                1,
+                ObjectiveState::Active,
+                vec![
+                    effect(CompletionEffectKind::Wake, 7, None),
+                    effect(CompletionEffectKind::Wake, 3, None),
+                ],
+            ),
+            // Born completed: the engine's wake skips a completed target.
+            spec(7, ObjectiveState::Succeeded, Vec::new()),
+            spec(3, ObjectiveState::Pending, Vec::new()),
+        ]);
+
+        let tick = complete(&mut runtime, 1, 1);
+        assert_eq!(
+            refusals(&tick),
+            vec![(
+                SymbolId(7),
+                ObjectiveState::Succeeded,
+                ObjectiveState::Active
+            )],
+            "the completed target is skipped and the skip is reported"
+        );
+        assert_eq!(
+            changes(&tick, 1),
+            vec![(SymbolId(3), ObjectiveState::Pending, ObjectiveState::Active)],
+            "the wake after the skipped target still applies"
+        );
+    }
+
+    /// M01-B-OBJ-1: a kill is a removal, not an outcome. It clears presence,
+    /// keeps the state, requests nothing terminal — and in this runtime it
+    /// gates only later wakes, so a declared move may still name the killed
+    /// objective (the engine has no such path, so no measured rule forbids it).
+    #[test]
+    fn accept_m01_b_obj_1_fu1_a_kill_is_a_removal_not_an_outcome() {
+        let mut runtime = runtime_with(vec![
+            spec(
+                1,
+                ObjectiveState::Active,
+                vec![effect(CompletionEffectKind::Kill, 2, None)],
+            ),
+            spec(2, ObjectiveState::Active, Vec::new()),
+        ]);
+
+        let tick = complete(&mut runtime, 1, 1);
+        assert_eq!(tick.outcome, None, "a kill requests no terminal outcome");
+        assert!(
+            changes(&tick, 1).is_empty(),
+            "a kill moves no state at all, so there is no ObjectiveChanged to observe"
+        );
+        assert_eq!(
+            runtime.objective_state(SymbolId(2)),
+            Some(ObjectiveState::Active),
+            "the killed objective keeps the state it held"
+        );
+        assert_eq!(runtime.is_present(SymbolId(2)), Some(false));
+
+        // A declared completion still lands on a killed objective: presence is
+        // the wake guard the engine measured, not a general lock-out.
+        let requests = [(SymbolId(2), ObjectiveState::Succeeded)];
+        let mut input = TickInput::at(Tick(2));
+        input.objective_requests = &requests;
+        let tick = runtime.step(&input).expect("a legal tick");
+        assert_eq!(
+            runtime.objective_state(SymbolId(2)),
+            Some(ObjectiveState::Succeeded),
+            "a declared move is not gated by presence"
+        );
+        assert_eq!(
+            tick.outcome, None,
+            "the fixture declares no terminal completion"
+        );
+    }
+
+    /// M01-B-OBJ-1's `zbd/c3/m05` `OBJECTIVE8` shape: one declaration naming
+    /// one target in both a wake and a nap is no longer refused — the engine's
+    /// fixed order decides it, and the target ends napping.
+    #[test]
+    fn accept_m01_b_obj_1_fu1_wake_then_nap_on_one_target_ends_napping() {
+        let mut runtime = runtime_with(vec![
+            spec(
+                1,
+                ObjectiveState::Active,
+                vec![
+                    effect(CompletionEffectKind::Nap, 2, Some(2.0)),
+                    effect(CompletionEffectKind::Wake, 2, None),
+                ],
+            ),
+            spec(2, ObjectiveState::Pending, Vec::new()),
+        ]);
+
+        let tick = complete(&mut runtime, 1, 1);
+        assert_eq!(
+            changes(&tick, 1),
+            vec![
+                (SymbolId(2), ObjectiveState::Pending, ObjectiveState::Active),
+                (SymbolId(2), ObjectiveState::Active, ObjectiveState::Napping),
+            ],
+            "the target is woken first and napped after, so it ends napping"
+        );
+        assert_eq!(
+            runtime.objective_state(SymbolId(2)),
+            Some(ObjectiveState::Napping)
+        );
+    }
+
+    /// What stays refused: two *different* completions naming one target with
+    /// different effects. The engine completes one objective per pass, so
+    /// which of the two should apply last when both complete in one tick
+    /// depends on the unmeasured pass-origin rule.
+    #[test]
+    fn accept_m01_b_obj_1_fu1_cross_completion_conflicts_still_refuse_by_name() {
+        for order in [0, 1] {
+            let wake = spec(
+                1,
+                ObjectiveState::Active,
+                vec![effect(CompletionEffectKind::Wake, 3, None)],
+            );
+            let kill = spec(
+                2,
+                ObjectiveState::Active,
+                vec![effect(CompletionEffectKind::Kill, 3, None)],
+            );
+            let (first, second) = if order == 0 {
+                (wake, kill)
+            } else {
+                (kill, wake)
+            };
+            let mut runtime = runtime_with(vec![first]);
+            let refusal = runtime.add_objective(second);
+            assert_eq!(
+                refusal,
+                Err(RuntimeError::AmbiguousCompletionEffect {
+                    source: SymbolId(if order == 0 { 2 } else { 1 }),
+                    target: SymbolId(3),
+                }),
+                "registration order decides nothing"
+            );
+            let message = RuntimeError::AmbiguousCompletionEffect {
+                source: SymbolId(1),
+                target: SymbolId(3),
+            }
+            .to_string();
+            assert!(
+                message.contains("completes one objective per pass"),
+                "the refusal states the measured rule it leans on: {message}"
+            );
+        }
+    }
+
+    /// The nap's number is the measured nap time, carried as data and never
+    /// converted into this runtime's ticks: two programs differing only in it
+    /// produce identical streams, and no committed tick ends a nap by itself.
+    #[test]
+    fn accept_m01_b_obj_1_fu1_a_nap_time_is_carried_and_never_converted() {
+        let napped = |time: f64| {
+            vec![
+                spec(
+                    1,
+                    ObjectiveState::Active,
+                    vec![effect(CompletionEffectKind::Nap, 2, Some(time))],
+                ),
+                spec(2, ObjectiveState::Active, Vec::new()),
+            ]
+        };
+        let mut short = runtime_with(napped(0.5));
+        let mut long = runtime_with(napped(170.0));
+
+        let short_tick = complete(&mut short, 1, 1);
+        let long_tick = complete(&mut long, 1, 1);
+        assert_eq!(
+            short_tick.events, long_tick.events,
+            "the declared number may not change what the nap does"
+        );
+        assert_eq!(
+            short.objective_nap_time(SymbolId(2)).map(NapTime::value),
+            Some(0.5),
+            "and it arrives verbatim on the target"
+        );
+
+        // Nothing expires a nap: the engine's re-wake compares the time
+        // against a per-pass step whose unit is unmeasured, so this runtime
+        // never ends one by elapsed time.
+        let idle = TickInput {
+            tick: Tick(2),
+            committed_ticks: 100_000,
+            lifecycles: &[],
+            movements: &[],
+            signals: &[],
+            timer_requests: &[],
+            objective_requests: &[],
+            terminal_requests: &[],
+        };
+        short.step(&idle).expect("a legal tick");
+        assert_eq!(
+            short.objective_state(SymbolId(2)),
+            Some(ObjectiveState::Napping),
+            "a committed tick never ends a nap by itself"
+        );
+    }
+
+    /// The vocabulary itself: the measured moves, the engine's fixed ranks,
+    /// and the non-cascading guarantee none of them completes a target.
+    #[test]
+    fn accept_m01_b_obj_1_fu1_the_effect_vocabulary_carries_the_measured_moves() {
+        assert_eq!(
+            CompletionEffectKind::Wake.moves_to(),
+            Some(ObjectiveState::Active)
+        );
+        assert_eq!(
+            CompletionEffectKind::Wakeup.moves_to(),
+            Some(ObjectiveState::Active)
+        );
+        assert_eq!(
+            CompletionEffectKind::Nap.moves_to(),
+            Some(ObjectiveState::Napping)
+        );
+        assert_eq!(
+            CompletionEffectKind::Sleep.moves_to(),
+            Some(ObjectiveState::Asleep)
+        );
+        assert_eq!(CompletionEffectKind::Kill.moves_to(), None);
+        for kind in [
+            CompletionEffectKind::Wake,
+            CompletionEffectKind::Wakeup,
+            CompletionEffectKind::Nap,
+            CompletionEffectKind::Kill,
+            CompletionEffectKind::Sleep,
+        ] {
+            assert_ne!(
+                kind.moves_to(),
+                Some(ObjectiveState::Succeeded),
+                "{kind:?} must not complete its target"
+            );
+        }
+        // The engine's fixed order, as ranks.
+        assert_eq!(CompletionEffectKind::Wake.engine_order(), 0);
+        assert_eq!(CompletionEffectKind::Wakeup.engine_order(), 0);
+        assert_eq!(CompletionEffectKind::Nap.engine_order(), 1);
+        assert_eq!(CompletionEffectKind::Kill.engine_order(), 2);
+        assert_eq!(CompletionEffectKind::Sleep.engine_order(), 3);
+        // Only a nap carries the measured number.
+        assert!(CompletionEffectKind::Nap.carries_argument());
+        for kind in [
+            CompletionEffectKind::Wake,
+            CompletionEffectKind::Wakeup,
+            CompletionEffectKind::Kill,
+            CompletionEffectKind::Sleep,
+        ] {
+            assert!(!kind.carries_argument());
+        }
+        // A sleep effect lands through the same table as everything else.
+        let mut runtime = runtime_with(vec![
+            spec(
+                1,
+                ObjectiveState::Active,
+                vec![effect(CompletionEffectKind::Sleep, 2, None)],
+            ),
+            spec(2, ObjectiveState::Active, Vec::new()),
+        ]);
+        let tick = complete(&mut runtime, 1, 1);
+        assert_eq!(
+            changes(&tick, 1),
+            vec![(SymbolId(2), ObjectiveState::Active, ObjectiveState::Asleep)]
+        );
     }
 }

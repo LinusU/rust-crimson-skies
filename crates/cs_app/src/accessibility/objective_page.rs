@@ -27,6 +27,13 @@ pub const ROW_GAP_PX: u32 = 4;
 
 /// The cue status of an objective state; `None` for [`ObjectiveState::Hidden`],
 /// which the player is never shown.
+///
+/// [`ObjectiveState::Napping`] and [`ObjectiveState::Asleep`] map to
+/// [`ObjectiveStatus::Pending`]: both are shown but not being pursued, and the
+/// accessibility vocabulary has no separate "paused" status. No lowered
+/// program can reach either state today (the declared schema carries no
+/// `NAP`- or `SLEEP`-set initial state), so this mapping is a designed
+/// placeholder until the UI family measures what the original showed.
 #[must_use]
 pub fn status_of(state: ObjectiveState) -> Option<ObjectiveStatus> {
     match state {
@@ -37,6 +44,8 @@ pub fn status_of(state: ObjectiveState) -> Option<ObjectiveStatus> {
         ObjectiveState::Failed => Some(ObjectiveStatus::Failed),
         ObjectiveState::Optional => Some(ObjectiveStatus::Optional),
         ObjectiveState::Superseded => Some(ObjectiveStatus::Superseded),
+        ObjectiveState::Napping => Some(ObjectiveStatus::Pending),
+        ObjectiveState::Asleep => Some(ObjectiveStatus::Pending),
     }
 }
 

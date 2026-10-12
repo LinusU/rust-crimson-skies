@@ -53,20 +53,26 @@
 //!   nothing) is in
 //!   `docs/findings/2026-10-09-m02-b-fu3-out-of-range-wake-address.md`.
 //!
-//! # Stage F39-E5 — completion effects
+//! # Stage F39-E5 — completion effects, aligned in M01-B-OBJ-1-FU1
 //!
 //! - [`runtime::CompletionEffect`] / [`runtime::CompletionEffectKind`]: what
-//!   completing one objective does to *another* — the four spellings the
-//!   original's objective records use, applied as declared moves through the
-//!   same transition table every other declared action obeys. They are drained
-//!   from a queue in their own phase, never called from inside the completion
-//!   that raised them (`docs/contracts/SCRIPT-MISSION.md`: "actions do not
-//!   directly recurse into callbacks"), no kind moves its target to `Succeeded`
-//!   so the queue cannot cascade, and a target named by two *different* effects
-//!   is refused rather than ordered.
-//! - [`runtime::UnmeasuredNumber`]: the number a nap declaration carries, kept
-//!   as data with no unit because what it measures is unmeasured, and never
-//!   interpreted.
+//!   completing one objective does to *another* — the spellings the original's
+//!   objective records use, carried with the engine image's measured
+//!   behaviour (`WAKE` → `NAP` → `KILL` → `SLEEP` in a fixed order, a wake
+//!   guarded by presence and completion, a nap a timed pause on
+//!   [`state::ObjectiveState::Napping`], a kill a removal that moves no
+//!   state). They are drained from a queue in their own phase, never called
+//!   from inside the completion that raised them
+//!   (`docs/contracts/SCRIPT-MISSION.md`: "actions do not directly recurse
+//!   into callbacks"), no kind moves its target to `Succeeded` so the queue
+//!   cannot cascade, and a target named with different effects by two
+//!   *different* completions is refused rather than ordered. The measurement
+//!   and the boundaries it is carried under are in
+//!   `docs/findings/2026-10-12-m01-b-obj-1-fu1-runtime-effect-alignment.md`.
+//! - [`runtime::NapTime`]: the nap time a `NAP` declaration carries, measured
+//!   to be a time in the engine's own unit — kept as data and never converted
+//!   into this runtime's ticks, because the unit's correspondence is
+//!   unmeasured.
 //!
 //! # The pilot bailout's own mission transition (F29-C.4)
 //!

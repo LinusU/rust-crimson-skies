@@ -146,23 +146,35 @@
 //! effects ([`lower_effect`]): a `DeclaredObjective`'s
 //! [`completion_effects`](cs_content::objectives::DeclaredObjective::completion_effects)
 //! become the runtime's [`CompletionEffect`]s on the lowered [`ObjectiveSpec`],
-//! field-wise like every other declared field. Two boundaries worth naming:
+//! field-wise like every other declared field. The runtime applies them with
+//! the engine image's measured semantics (M01-B-OBJ-1-FU1: the fixed
+//! `WAKE` → `NAP` → `KILL` → `SLEEP` order, a wake guarded by presence and
+//! completion, a nap a timed pause on `Napping`, a kill a removal that moves
+//! no state); the lowering's own job stays the boundary:
 //!
-//! * **The nap's number crosses as a number, never as a duration.** It becomes a
-//!   [`UnmeasuredNumber`] and nothing downstream reads it as a time: the runtime
-//!   applies the same move whatever it says. Carrying it rather than dropping it
-//!   keeps the record's number available to a later measurement.
-//! * **The one refused shape never reaches here.** A program whose two different
+//! * **The nap's number crosses as the declared nap time, never as a
+//!   duration of this engine.** It becomes a
+//!   [`NapTime`](cs_sim::objectives::runtime::NapTime) — measured to be the
+//!   nap time in the engine's own unit — and nothing downstream converts it
+//!   into ticks: the unit's correspondence to this runtime's integer ticks is
+//!   unmeasured. Carrying it rather than dropping it keeps the record's
+//!   number available to a later measurement.
+//! * **The one refused shape on this side.** A program whose two different
 //!   effects name the same objective is refused by
 //!   [`DeclaredObjectiveProgram::try_new`](cs_content::objectives::DeclaredObjectiveProgram::try_new)
-//!   before a session exists, and the runtime refuses the same shape again at
-//!   registration — no order is applied anywhere, because nothing measured which
-//!   effect wins (F39-E2).
+//!   before a session exists — a schema-level refusal the runtime no longer
+//!   needs for its own table (the engine's fixed order decides that shape
+//!   now), kept here until the content side re-measures it. Across two
+//!   *different* completions the runtime still refuses the shape again at
+//!   registration, because the engine completes one objective per pass and
+//!   the pass-origin rule is unmeasured.
 //!
-//! The consumer side needs nothing new: an effect is an ordinary declared state
-//! change, so the objective display moves from the same
-//! [`ObjectiveEventKind::ObjectiveChanged`] event as every other state change
-//! and no game state is read from the UI.
+//! The consumer side needs nothing new: a state-moving effect is an ordinary
+//! declared state change, so the objective display moves from the same
+//! [`ObjectiveEventKind::ObjectiveChanged`] event as every other state change;
+//! a kill reports [`ObjectiveEventKind::ObjectiveRemoved`] and moves no row,
+//! and a stopped wake list reports [`ObjectiveEventKind::WakeStopped`]. No
+//! game state is read from the UI.
 
 use std::collections::{BTreeMap, BTreeSet, HashSet, VecDeque};
 use std::fmt;
@@ -201,9 +213,9 @@ use cs_script::runtime::SessionGeneration;
 use cs_sim::objectives::bailout::BailoutRefusal;
 use cs_sim::objectives::counters::CountKind;
 use cs_sim::objectives::runtime::{
-    CompletionEffect, CompletionEffectKind, CountCondition, CountReaction, ObjectiveCompletion,
-    ObjectiveEventKind, ObjectiveRuntime, ObjectiveSpec, ObjectiveTick, RevealRule, RuntimeError,
-    RuntimeLimits, StopReason, TickInput, UnmeasuredNumber,
+    CompletionEffect, CompletionEffectKind, CountCondition, CountReaction, NapTime,
+    ObjectiveCompletion, ObjectiveEventKind, ObjectiveRuntime, ObjectiveSpec, ObjectiveTick,
+    RevealRule, RuntimeError, RuntimeLimits, StopReason, TickInput,
 };
 use cs_sim::objectives::spawn::IdempotencyKey;
 use cs_sim::objectives::state::ObjectiveState;
@@ -694,6 +706,21 @@ const fn lower_completion(completion: DeclaredCompletion) -> ObjectiveCompletion
     }
 }
 
+/// Lowers one declared completion-effect kind.
+///
+/// The declared schema carries the four corpus spellings; the runtime carries
+/// the engine's measured reader set plus those four. Two boundaries are worth
+/// naming:
+///
+/// * `Wakeup` lowers to [`CompletionEffectKind::Wakeup`], still apart from
+///   `Wake`: the engine image reads `WAKE_OBJECTIVE_WHEN_I_COMPLETE` and has
+///   no reader at all for the `WAKEUP_…` spelling (M01-B-OBJ-1), so what a
+///   declared wakeup effect does stays this project's designed reading, not a
+///   measured one.
+/// * the engine also reads `SLEEP_OBJECTIVE_WHEN_I_COMPLETE`, and the runtime
+///   has [`CompletionEffectKind::Sleep`] for it — but no retail record spells
+///   it and the declared schema carries no such kind, so no lowered program
+///   produces it today.
 const fn lower_effect_kind(kind: BranchEffectKind) -> CompletionEffectKind {
     match kind {
         BranchEffectKind::Wake => CompletionEffectKind::Wake,
@@ -705,13 +732,13 @@ const fn lower_effect_kind(kind: BranchEffectKind) -> CompletionEffectKind {
 
 /// Lowers one declared completion effect field-wise.
 ///
-/// The nap's number crosses the boundary as a
-/// [`UnmeasuredNumber`] — **not** as a duration, a weight or a threshold. Nothing
-/// here divides by it, compares it or stores it in a clock, and the runtime's own
-/// [`CompletionEffectKind::moves_to`] never looks at it: a nap moves its target
-/// whatever the number says, because what the number measures is unmeasured.
-/// Carrying it rather than dropping it keeps the record's number visible to a
-/// later measurement instead of losing it at the boundary.
+/// The nap's number crosses the boundary as the declared [`NapTime`] —
+/// measured to be the nap time the engine writes into its target's re-wake
+/// slot, in the engine's own unit. Nothing here divides by it, compares it or
+/// stores it in a clock: the unit's correspondence to this runtime's integer
+/// ticks is unmeasured, so the runtime stores it on the target and never
+/// converts it. Carrying it rather than dropping it keeps the record's number
+/// visible to a later measurement instead of losing it at the boundary.
 ///
 /// The declared shape (a nap carries a number, nothing else does) is already
 /// enforced by the schema, and `CompletionEffect`'s own constructor re-checks it
@@ -728,7 +755,7 @@ fn lower_effect(effect: &DeclaredCompletionEffect) -> CompletionEffect {
         argument: effect
             .argument
             .map(UnmeasuredQuantity::value)
-            .and_then(UnmeasuredNumber::new),
+            .and_then(NapTime::new),
     }
 }
 
@@ -1521,6 +1548,14 @@ impl ObjectiveSession {
                 ObjectiveEventKind::TransitionRefused { reason, .. } => {
                     refusals.push(SessionRefusal::Transition { reason: *reason })
                 }
+                // A kill is a removal, not a refusal and not a state change:
+                // the objective's row keeps the state it held, and the stream
+                // carries the removal itself for any consumer that cares. A
+                // stopped wake list is likewise a fact about the stream, not a
+                // refusal: the engine's measured early-out, reported so the
+                // targets that were not woken are explainable from the stream.
+                ObjectiveEventKind::ObjectiveRemoved { .. }
+                | ObjectiveEventKind::WakeStopped { .. } => {}
                 ObjectiveEventKind::OutcomeSettled { .. }
                 | ObjectiveEventKind::ConditionMet { .. }
                 | ObjectiveEventKind::TriggerCrossed(_)
@@ -6122,4 +6157,63 @@ pub fn recover_all_retail_objectives(
         .iter()
         .map(|record| ObjectiveRecovery::read(&record.mission, &record.document))
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// M01-B-OBJ-1-FU1: the lowering carries the measured effect vocabulary —
+    /// the four declared corpus spellings lower one-to-one, the declared
+    /// schema can never produce the runtime's `Sleep` kind (the engine reads
+    /// `SLEEP_OBJECTIVE_WHEN_I_COMPLETE`, but no retail record spells it and
+    /// the schema has no such kind), and the nap's number crosses as the
+    /// declared `NapTime`, verbatim and with no conversion into ticks.
+    #[test]
+    fn accept_m01_b_obj_1_fu1_the_lowering_carries_the_measured_effect_vocabulary() {
+        assert_eq!(
+            lower_effect_kind(BranchEffectKind::Wake),
+            CompletionEffectKind::Wake
+        );
+        assert_eq!(
+            lower_effect_kind(BranchEffectKind::Nap),
+            CompletionEffectKind::Nap
+        );
+        assert_eq!(
+            lower_effect_kind(BranchEffectKind::Kill),
+            CompletionEffectKind::Kill
+        );
+        assert_eq!(
+            lower_effect_kind(BranchEffectKind::Wakeup),
+            CompletionEffectKind::Wakeup
+        );
+        for key in BRANCH_EFFECT_KEY_VOCABULARY {
+            let declared = BranchEffectKind::from_measured_key(key)
+                .unwrap_or_else(|| panic!("{key} names a declared effect"));
+            assert_ne!(
+                lower_effect_kind(declared),
+                CompletionEffectKind::Sleep,
+                "{key} can never lower to the runtime-only `Sleep` kind"
+            );
+        }
+
+        let nap =
+            DeclaredCompletionEffect::new(BranchEffectKind::Nap, ProgramSymbol(2), Some(170.0))
+                .expect("a nap with its declared time");
+        let lowered = lower_effect(&nap);
+        assert_eq!(lowered.kind, CompletionEffectKind::Nap);
+        assert_eq!(lowered.target, SymbolId(2));
+        assert_eq!(
+            lowered.argument.map(NapTime::value),
+            Some(170.0),
+            "the declared nap time crosses verbatim, in the engine's own unit"
+        );
+
+        let wake = DeclaredCompletionEffect::new(BranchEffectKind::Wake, ProgramSymbol(3), None)
+            .expect("a wake carries no number");
+        let lowered = lower_effect(&wake);
+        assert_eq!(lowered.kind, CompletionEffectKind::Wake);
+        assert_eq!(lowered.argument, None);
+        assert_eq!(lowered.target, SymbolId(3));
+    }
 }

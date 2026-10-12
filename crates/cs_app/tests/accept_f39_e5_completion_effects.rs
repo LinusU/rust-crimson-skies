@@ -23,39 +23,49 @@
 //! (`zbd/c3/m05` `OBJECTIVE8`, naming objective 68) without anything in the
 //! files saying which of them wins.
 //!
-//! So the *spellings*, the closure over the record and the isolated conflict are
-//! measured; **that a spelling means "wakes that objective when this one
-//! completes" is an inference from the spelling**, and the state each effect
-//! moves its target to is this project's designed vocabulary
-//! (`cs_sim::objectives::runtime::CompletionEffectKind::moves_to`). Nothing here
-//! is an original-fidelity claim, and no original executable has been run: the
-//! gate test at the end is the one that keeps that true.
+//! So the *spellings*, the closure over the record and the isolated conflict
+//! were measured; **that a spelling means "wakes that objective when this one
+//! completes" was an inference from the spelling** — and M01-B-OBJ-1 then read
+//! the engine image and measured what each effect does (fixed `WAKE` → `NAP`
+//! → `KILL` → `SLEEP` order, a guarded wake, a nap a timed pause, a kill a
+//! removal). This suite's runtime assertions now pin those measured moves
+//! through
+//! [`cs_sim::objectives::runtime::CompletionEffectKind::moves_to`]; the
+//! alignment and its boundaries are recorded in
+//! `docs/findings/2026-10-12-m01-b-obj-1-fu1-runtime-effect-alignment.md`.
+//! Nothing here is an original-fidelity claim, and no original executable has
+//! been run: the gate test at the end is the one that keeps that true.
 //!
 //! # What each test drives
 //!
 //! * `accept_f39_e5_a_completion_wakes_the_objectives_it_names` — the production
 //!   path end to end: a declared program lowers, an ordinary deadline expiry
-//!   completes one objective, and the four effects it declares each move their
-//!   own target in the same tick, on the ordered stream, under the completing
-//!   objective's own event key.
+//!   completes one objective, and the four effects it declares apply in the
+//!   engine's measured order on the same tick, under the completing
+//!   objective's own event key: the wake and the wakeup move their targets,
+//!   the nap moves its target to `Napping`, and the kill removes its target
+//!   without moving its state.
 //! * `accept_f39_e5_effects_apply_on_the_completion_tick_and_only_once` — the
 //!   eligibility rule and the latch: the moves land on the completion's tick (not
 //!   the next one), and a deadline cannot fire its effects a second time.
 //! * `accept_f39_e5_a_napped_objective_is_set_aside_whatever_the_number_says` —
-//!   the measured number with no measured unit: two programs whose nap numbers
-//!   are `0.5` and `170` produce byte-identical streams, and the value crosses
-//!   the lowering boundary as data nothing interprets.
+//!   the measured nap time with an unmeasured unit: two programs whose nap
+//!   numbers are `0.5` and `170` produce identical streams, and the value
+//!   crosses the lowering boundary as the declared time data, never converted
+//!   into this engine's ticks.
 //! * `accept_f39_e5_an_effect_on_a_hidden_objective_is_reported_not_dropped` —
 //!   reveal rules still govern visibility (F39 non-negotiable behavior 5): an
 //!   effect naming an objective the player has not been shown is refused *and
 //!   reported*, so "the program asked" stays distinguishable from "nothing
 //!   happened".
 //! * `accept_f39_e5_two_effects_naming_one_objective_are_refused_by_name` — the
-//!   refusal, in the declared schema and again in the runtime, in **both**
-//!   declaration orders and whether one declaration carries both effects or two
-//!   declarations carry one each, with the neighbour that stays legal (two
-//!   objectives agreeing on the same effect) so the refusal cannot widen into "no
-//!   two effects at all".
+//!   schema-level refusal, in **both** declaration orders and whether one
+//!   declaration carries both effects or two declarations carry one each, with
+//!   the neighbour that stays legal (two objectives agreeing on the same effect)
+//!   so the refusal cannot widen into "no two effects at all"; and the runtime's
+//!   own refusal of the shape the schema cannot see — two different completions
+//!   naming one target differently, which the engine's one-completion-per-pass
+//!   rule keeps undecided.
 //! * `accept_f39_e5_dead_completion_effects_are_refused_by_name` — the four dead
 //!   shapes and the number-shape rule, each with its own named error, plus the
 //!   declaration the rule must *not* refuse: an objective born finished that
@@ -87,9 +97,9 @@ use cs_content::objectives::{
 use cs_script::ir::SymbolId;
 use cs_script::runtime::SessionGeneration;
 use cs_sim::objectives::runtime::{
-    CompletionEffect, CompletionEffectKind, ObjectiveCompletion, ObjectiveEventKind,
+    CompletionEffect, CompletionEffectKind, NapTime, ObjectiveCompletion, ObjectiveEventKind,
     ObjectiveRuntime, ObjectiveSpec, RevealRule, RuntimeError, RuntimeLimits, StopReason,
-    TickInput, UnmeasuredNumber,
+    TickInput,
 };
 use cs_sim::objectives::state::ObjectiveState;
 use cs_sim::objectives::terminal::TerminalPrecedence;
@@ -216,9 +226,11 @@ fn accept_f39_e5_a_completion_wakes_the_objectives_it_names() {
         (ObjectiveState::Active, ObjectiveState::Succeeded)
     );
 
-    // …and each declared effect moves exactly one other objective, reporting
-    // under the objective whose declaration carries it — not under the timer that
-    // happened to complete it.
+    // …and each declared effect applies under the objective whose declaration
+    // carries it — not under the timer that happened to complete it — in the
+    // engine's fixed order (M01-B-OBJ-1): the wake and the wakeup move their
+    // targets, the nap moves its target to `Napping`, and the kill is a
+    // removal that moves no state at all.
     let moved = changes(&completed);
     let completing = symbol(program.objectives()[0].symbol);
     let effect_moves: Vec<_> = moved
@@ -227,8 +239,8 @@ fn accept_f39_e5_a_completion_wakes_the_objectives_it_names() {
         .collect();
     assert_eq!(
         effect_moves.len(),
-        4,
-        "one move per declared effect: {effect_moves:?}"
+        3,
+        "one move per state-moving effect (the kill moves none): {effect_moves:?}"
     );
     for (index, expected) in [
         (
@@ -237,19 +249,14 @@ fn accept_f39_e5_a_completion_wakes_the_objectives_it_names() {
             ObjectiveState::Active,
         ),
         (
-            program.objectives()[2].symbol,
-            ObjectiveState::Active,
-            ObjectiveState::Optional,
-        ),
-        (
             program.objectives()[3].symbol,
             ObjectiveState::Optional,
             ObjectiveState::Active,
         ),
         (
-            program.objectives()[4].symbol,
+            program.objectives()[2].symbol,
             ObjectiveState::Active,
-            ObjectiveState::Failed,
+            ObjectiveState::Napping,
         ),
     ]
     .into_iter()
@@ -269,20 +276,43 @@ fn accept_f39_e5_a_completion_wakes_the_objectives_it_names() {
         if index > 0 {
             assert!(
                 effect_moves[index - 1].4 < sequence,
-                "authored effect order is kept: sequence {sequence} follows {}",
+                "engine effect order is kept: sequence {sequence} follows {}",
                 effect_moves[index - 1].4
             );
         }
     }
+
+    // The kill is the fourth effect: it removed its target instead of moving
+    // it, and the removal is on the same ordered stream.
+    let removed: Vec<_> = completed
+        .tick
+        .events
+        .iter()
+        .filter_map(|event| match event.kind {
+            ObjectiveEventKind::ObjectiveRemoved { objective, from } => {
+                Some((event.key.source, objective, from))
+            }
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        removed,
+        vec![(
+            completing,
+            symbol(program.objectives()[4].symbol),
+            ObjectiveState::Active
+        )],
+        "the kill removes its target and reports the state it kept"
+    );
 
     // The consumer side needs nothing new: the objective display moved from the
     // same ordered stream.
     for (index, state) in [
         ObjectiveState::Succeeded,
         ObjectiveState::Active,
-        ObjectiveState::Optional,
+        ObjectiveState::Napping,
         ObjectiveState::Active,
-        ObjectiveState::Failed,
+        ObjectiveState::Active,
     ]
     .into_iter()
     .enumerate()
@@ -303,7 +333,7 @@ fn accept_f39_e5_a_completion_wakes_the_objectives_it_names() {
             .row(symbol(program.objectives()[4].symbol))
             .expect("tracked")
             .revealed,
-        "a killed objective is still shown to the player; it failed, it did not vanish"
+        "a killed objective is still shown to the player; it was removed from play, it did not vanish"
     );
 
     // The stream is still ordered by (session, tick, source, sequence).
@@ -332,7 +362,10 @@ fn accept_f39_e5_effects_apply_on_the_completion_tick_and_only_once() {
     // completion's effects are observable on the *same* stream as the completion
     // instead of appearing a tick later with nothing to explain the delay.
     let moved_on_completion = changes(&completed).len();
-    assert_eq!(moved_on_completion, 5, "one completion plus four effects");
+    assert_eq!(
+        moved_on_completion, 4,
+        "one completion plus the three state-moving effects; the kill's removal moves nothing"
+    );
 
     // A later tick with no facts moves nothing: the objectives have already been
     // moved, and an objective's completion latches, so its effects cannot replay.
@@ -384,8 +417,11 @@ fn accept_f39_e5_effects_apply_on_the_completion_tick_and_only_once() {
 #[test]
 fn accept_f39_e5_a_napped_objective_is_set_aside_whatever_the_number_says() {
     // 0.5 and 170 are the two ends of the range F39-E2 measured across the 417
-    // nap sites. Nothing measured what the number measures, so the engine must
-    // not read it as a time: two programs differing only in it behave identically.
+    // nap sites. M01-B-OBJ-1 measured that the number is the target's *nap
+    // time* in the engine's own unit — but that unit's correspondence to this
+    // runtime's integer ticks is unmeasured, so nothing may schedule on it
+    // either: two programs differing only in the number still behave
+    // identically.
     let short = with_nap_number(0.5);
     let long = with_nap_number(170.0);
 
@@ -405,13 +441,14 @@ fn accept_f39_e5_a_napped_objective_is_set_aside_whatever_the_number_says() {
                 .row(symbol(program.objectives()[2].symbol))
                 .expect("tracked")
                 .state,
-            ObjectiveState::Optional,
-            "the napped objective is set aside"
+            ObjectiveState::Napping,
+            "the napped objective is put aside in the engine's state 2"
         );
     }
 
-    // The number does cross the boundary, as data nothing reads: it is on the
-    // lowered effect, unchanged and with no unit attached to it.
+    // The number does cross the boundary, as the declared nap time: it is on
+    // the lowered effect, unchanged, with no conversion into ticks attached
+    // to it.
     let lowered = lower_program(&long).expect("the program lowers");
     let nap = lowered.objectives[0]
         .completion_effects
@@ -419,9 +456,9 @@ fn accept_f39_e5_a_napped_objective_is_set_aside_whatever_the_number_says() {
         .find(|effect| effect.kind == CompletionEffectKind::Nap)
         .expect("the nap lowered");
     assert_eq!(
-        nap.argument.map(UnmeasuredNumber::value),
+        nap.argument.map(NapTime::value),
         Some(170.0),
-        "the declared number arrives verbatim, as a number and not as a duration"
+        "the declared nap time arrives verbatim, in the engine's own unit"
     );
 }
 
@@ -542,8 +579,11 @@ fn accept_f39_e5_two_effects_naming_one_objective_are_refused_by_name() {
         "the refusal states the rule: {message}"
     );
 
-    // The runtime refuses the same shape, in either registration order, because a
-    // caller may build a program without the declared schema at all.
+    // The runtime refuses the same shape across two *different* completions,
+    // in either registration order, because a caller may build a program
+    // without the declared schema at all — and because the engine completes
+    // one objective per pass, so which of two same-tick completions should
+    // apply last depends on the unmeasured pass-origin rule.
     for order in [0, 1] {
         let mut runtime = ObjectiveRuntime::new(
             GEN,
@@ -590,11 +630,11 @@ fn accept_f39_e5_two_effects_naming_one_objective_are_refused_by_name() {
         );
     }
 
-    // One objective declaring both is the same shape as two objectives declaring
-    // one each, and the runtime refuses it for the same reason: the retail block
-    // F39-E2 measured (`zbd/c3/m05` `OBJECTIVE8`) puts both effects in *one*
-    // block. The message must not blame "another objective" for a conflict the
-    // same declaration made.
+    // One objective declaring both is no longer the runtime's refusal: the
+    // engine's fixed order (`WAKE` then `KILL`) decides it — the retail block
+    // F39-E2 measured (`zbd/c3/m05` `OBJECTIVE8`) spells exactly this shape,
+    // and M01-B-OBJ-1 measured how the engine resolves it. The schema-level
+    // refusal above still stands until the content side re-measures it.
     let mut runtime = ObjectiveRuntime::new(
         GEN,
         TerminalPrecedence::SyntheticConservative,
@@ -620,20 +660,9 @@ fn accept_f39_e5_two_effects_naming_one_objective_are_refused_by_name() {
             },
         ],
     };
-    let conflict = RuntimeError::AmbiguousCompletionEffect {
-        source: SymbolId(1),
-        target: SymbolId(3),
-    };
-    assert_eq!(
-        runtime.add_objective(both),
-        Err(conflict.clone()),
-        "one declaration carrying both effects is refused too"
-    );
     assert!(
-        conflict
-            .to_string()
-            .contains("no measured rule says which of the two applies"),
-        "and the refusal states the rule without inventing an author: {conflict}"
+        runtime.add_objective(both).is_ok(),
+        "one declaration carrying two effects on one target is ordered by the engine's fixed order now"
     );
 
     // And the refusal is not "no two effects at all": two objectives that *agree*
@@ -943,7 +972,7 @@ fn accept_f39_e5_the_effect_vocabulary_is_the_measured_one() {
         "the nap verdict still names the measured shape and the use it forbids: {UNMEASURED_NAP_ARGUMENT}"
     );
 
-    // The lowering keeps the four kinds apart, and no kind moves its target to
+    // The lowering keeps the kinds apart, and no kind moves its target to
     // `Succeeded` — the structural reason an applied effect can never queue
     // another one, so the effect queue cannot cascade.
     let lowered = lower_program(&declared_synthetic_completion_effects()).expect("it lowers");
@@ -967,13 +996,30 @@ fn accept_f39_e5_the_effect_vocabulary_is_the_measured_one() {
         CompletionEffectKind::Nap,
         CompletionEffectKind::Kill,
         CompletionEffectKind::Wakeup,
+        CompletionEffectKind::Sleep,
     ] {
         assert_ne!(
             kind.moves_to(),
-            ObjectiveState::Succeeded,
+            Some(ObjectiveState::Succeeded),
             "{kind:?} must not complete its target"
         );
     }
+    // And the moves are the engine's measured ones (M01-B-OBJ-1): a wake to
+    // `Active`, a nap to the timed-pause state, a sleep to `Asleep`, and a
+    // kill that moves no state at all — it removes instead.
+    assert_eq!(
+        CompletionEffectKind::Wake.moves_to(),
+        Some(ObjectiveState::Active)
+    );
+    assert_eq!(
+        CompletionEffectKind::Nap.moves_to(),
+        Some(ObjectiveState::Napping)
+    );
+    assert_eq!(
+        CompletionEffectKind::Sleep.moves_to(),
+        Some(ObjectiveState::Asleep)
+    );
+    assert_eq!(CompletionEffectKind::Kill.moves_to(), None);
 }
 
 #[test]
