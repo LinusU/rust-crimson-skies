@@ -677,7 +677,13 @@ fn accept_vs_m01_runtime_host_03_retail_m01_restart_rebuilds_its_authored_initia
     let objects_before = resident_objects(&mut app);
     assert!(!objects_before.is_empty(), "M01's world has objects");
     let bindings_before = binding_count(&mut app);
-    assert_eq!(bindings_before, 1, "one announced item was delivered");
+    // The announced world item, plus the launch sound's member when the stage
+    // measured one (VS-M01-RT-EVIDENCE-B): both are delivered, none invented.
+    let expected_bindings = 1 + usize::from(stage.launch_sound.is_some());
+    assert_eq!(
+        bindings_before, expected_bindings,
+        "the announced items were delivered"
+    );
 
     // The trigger: the composed request seam — the resource a caller latches
     // to ask for a restart after a terminal state. Nothing here synthesizes
