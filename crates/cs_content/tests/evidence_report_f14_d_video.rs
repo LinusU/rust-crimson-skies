@@ -38,15 +38,18 @@
 //! into `review.method`; everything else is measured.
 //!
 //! `unknowns` is `[]` and the report validates with `--require-pass`: the
-//! **stage's** acceptance is complete — the `video` collection is populated from
-//! the `PLAYAVI` actions of `ZBD/zrdr.zbd`'s `fmv.zrd` member, every row is
-//! located by the named file's own bytes, the denominator it must not move did
-//! not move, and every selected test passed. The report does **not** claim the
-//! collection is complete, and that incompleteness is moved, never deleted: the
-//! seven `.mpg` files no `PLAYAVI` action reaches — two of which other original
-//! bytes do name — the unknown codec/duration/trigger on every row and the
-//! absence of a media player consumer are named in `UNKNOWN_LIMITATIONS` below,
-//! in `review.method`, in the hashed baseline-report artifact and in
+//! **stage's** acceptance is complete — the `video` collection is populated
+//! from the `PLAYAVI` actions of `ZBD/zrdr.zbd`'s `fmv.zrd` member (this
+//! stage) and, since F14-D.VIDEO-LAYOUT (task #1351), the `M` (movie)
+//! records of `GOSDATA/ASSETS/crimson.rof`'s `ASSETS/LAYOUT.CSV` member —
+//! every row is located by the named file's own bytes, the denominator it
+//! must not move did not move, and every selected test passed. The report
+//! does **not** claim the collection is complete, and that incompleteness is
+//! moved, never deleted: the five `.mpg` files `chap1`…`chap5` no record of
+//! either source reaches, the unknown codec/duration/resolution/trigger on
+//! every row and the absence of a media player consumer are named in
+//! `UNKNOWN_LIMITATIONS` below, in `review.method`, in the hashed
+//! baseline-report artifact and in
 //! `docs/findings/2026-10-12-f14-d-video-collection.md`, each with the Rally
 //! task that resolves it. A failing run produces a failing report, which the
 //! validator rejects.
@@ -59,7 +62,9 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use cs_assets::install::{content_fingerprint, discover, fingerprint, sha256};
 use cs_content::campaign_bindings::{CampaignInventory, campaign_layout};
-use cs_content::catalog::baseline::{FMV_ARCHIVE, baseline_report_json, retail_baseline};
+use cs_content::catalog::baseline::{
+    FMV_ARCHIVE, VIDEO_LAYOUT_CONTAINER, baseline_report_json, retail_baseline,
+};
 use cs_types::content::ContentKind;
 
 /// The task's own prefix, which the log parser selects on.
@@ -69,17 +74,20 @@ const TASK_PREFIX: &str = "accept_f14_d_video_";
 /// `retail` capability below.
 const RETAIL_PREFIX: &str = "accept_f14_d_video_retail_";
 
-/// The three `PLAYAVI` names `fmv.zrd` states on the owner's installation, and
-/// the seven `.mpg` files no `PLAYAVI` action reaches. Both numbers are
-/// re-measured here from the rows themselves rather than trusted; the
-/// constants are what a drift must be reconciled against. The second number is
-/// **not** "the files no original byte names": a review scan of 2026-10-12
-/// decompressed both retail ROF containers with the production reader and
-/// found two of them spelled by `ASSETS/LAYOUT.CSV` and five constructed by
-/// `ASSETS/SCRIPTS/CAMPAIGNINTRO.SCRIPT`. That correction is the first entry
-/// of `UNKNOWN_LIMITATIONS` below (Rally #1351, Rally #1352).
-const RETAIL_VIDEO_ROWS: usize = 3;
-const RETAIL_UNNAMED_MPG_FILES: usize = 7;
+/// The five video files the two sources name on the owner's installation —
+/// the three `PLAYAVI` names `fmv.zrd` states plus the two `.mpg` names the
+/// `ASSETS/LAYOUT.CSV` movie records state (F14-D.VIDEO-LAYOUT, task #1351) —
+/// the five `.mpg` files no record of either source reaches and the four
+/// `CrimFlag.MPG` record repeats the first resolved record leaves over. All
+/// three numbers are re-measured here from the rows themselves rather than
+/// trusted; the constants are what a drift must be reconciled against. The
+/// second number is **not** "the files no original byte names":
+/// `ASSETS/SCRIPTS/CAMPAIGNINTRO.SCRIPT` constructs each of them as
+/// `"chap" conv$(FC) ".mpg"` — the first entry of `UNKNOWN_LIMITATIONS`
+/// below (Rally #1352).
+const RETAIL_VIDEO_ROWS: usize = 5;
+const RETAIL_UNNAMED_MPG_FILES: usize = 5;
+const RETAIL_DUPLICATE_NAMES: usize = 4;
 
 #[test]
 #[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_GAME_DIR"]
@@ -179,34 +187,47 @@ fn evidence_report_f14_d_video_writes_the_acceptance_report() {
         "the baseline's installation fingerprint is production discovery's"
     );
 
-    // The collection this task adds, measured from the rows themselves.
+    // The collection this task started and F14-D.VIDEO-LAYOUT extended,
+    // measured from the rows themselves.
     let video_rows = rows_of(&baseline, ContentKind::Video);
     assert_eq!(
         video_rows.len(),
         RETAIL_VIDEO_ROWS,
-        "the three files fmv.zrd names are the three rows; a different count must be re-measured \
-         and this test updated, never silently accepted"
+        "the five files the two sources name are the five rows; a different count must be \
+         re-measured and this test updated, never silently accepted"
     );
     let status = baseline
         .collection_status
         .iter()
         .find(|status| status.kind == ContentKind::Video)
         .expect("the video collection reports its status");
-    assert_eq!(status.source, FMV_ARCHIVE);
-    assert_eq!(status.diagnostic, None, "the FMV member read");
-    assert_eq!(status.rows, video_rows.len());
     assert_eq!(
-        status.gaps.get("unnamed_video_file"),
-        Some(&RETAIL_UNNAMED_MPG_FILES),
-        "the seven .mpg files no PLAYAVI name reaches are the only unaccounted-for entries"
+        status.source,
+        format!("{FMV_ARCHIVE} + {VIDEO_LAYOUT_CONTAINER}"),
+        "the status names both containers the stage consults"
     );
+    assert_eq!(
+        status.diagnostic, None,
+        "both video sources read on the owner's installation"
+    );
+    assert_eq!(status.rows, video_rows.len());
     for (code, count) in &status.gaps {
-        if *code != "unnamed_video_file" {
-            assert_eq!(
+        match *code {
+            "unnamed_video_file" => assert_eq!(
+                *count, RETAIL_UNNAMED_MPG_FILES,
+                "the five .mpg files no record of either source reaches are the only \
+                 unaccounted-for entries"
+            ),
+            "duplicate_video_name" => assert_eq!(
+                *count, RETAIL_DUPLICATE_NAMES,
+                "the first CrimFlag.MPG record makes the row; the other four repeats are \
+                 counted"
+            ),
+            _ => assert_eq!(
                 *count, 0,
                 "gap code {code} is nonzero on the owner's installation: re-measure it in \
                  docs/findings/2026-10-12-f14-d-video-collection.md"
-            );
+            ),
         }
     }
     let mut named = Vec::new();
@@ -259,10 +280,12 @@ fn evidence_report_f14_d_video_writes_the_acceptance_report() {
         named,
         vec![
             "GOSDATA/ASSETS/GRAPHICS/MPG/chap0.mpg".to_owned(),
+            "GOSDATA/ASSETS/GRAPHICS/MPG/crimflag.mpg".to_owned(),
+            "GOSDATA/ASSETS/GRAPHICS/MPG/final.mpg".to_owned(),
             "GOSDATA/ASSETS/GRAPHICS/MPG/msopen1.mpg".to_owned(),
             "GOSDATA/ASSETS/GRAPHICS/MPG/zipper.mpg".to_owned(),
         ],
-        "the three named files, as the installation spells them"
+        "the five named files, as the installation spells them"
     );
 
     // Every edge of the collection resolves.
@@ -478,12 +501,13 @@ fn review_method() -> String {
          cs_content::catalog::baseline::retail_baseline + baseline_report_json, the same \
          functions `cs-inspect catalog --cs-path` writes. Each row's identity is the resolved \
          .mpg file's own install_file_key and its span is the file's whole extent with the \
-         file's own digest; the names come from the PLAYAVI actions of the fmv.zrd member of \
-         ZBD/zrdr.zbd, located by production container discovery and decoded by the production \
-         decode_zrd. This stage reads no other source: the raw scan behind that measurement \
-         never saw the zlib-compressed members of GOSDATA/ASSETS/crimson.rof, which a review \
-         scan of 2026-10-12 read with the production reader and found naming more videos - see \
-         the first LIMITATION below and docs/findings/2026-10-12-f14-d-video-collection.md.",
+         file's own digest; the names come from two sources - the PLAYAVI actions of the \
+         fmv.zrd member of ZBD/zrdr.zbd, located by production container discovery and \
+         decoded by the production decode_zrd (this stage), and the M (movie) records of \
+         ASSETS/LAYOUT.CSV in GOSDATA/ASSETS/crimson.rof, which F14-D.VIDEO-LAYOUT (task \
+         #1351) added through the production ROF mount and the keyed-list configuration \
+         reader. The layout rows' edge provenance spans are the records' own lines inside \
+         the decoded member; CollectionStatus::source names both containers.",
     );
     recorded
         + &UNKNOWN_LIMITATIONS
@@ -496,17 +520,15 @@ fn review_method() -> String {
 /// affected content and the task that resolves it (AGENTS owner directive,
 /// 2026-09-28: a limitation must survive into machine-readable evidence).
 const UNKNOWN_LIMITATIONS: &[&str] = &[
-    "Seven inventoried .mpg files (chap1.mpg through chap5.mpg, crimflag.mpg, final.mpg) no \
-     PLAYAVI action reaches, so they are counted under the collection's `unnamed_video_file` gap \
-     and have no row. They are not unnamed everywhere: a review scan of 2026-10-12 decompressed \
-     both retail ROF containers with the production reader and found ASSETS/LAYOUT.CSV of \
-     GOSDATA/ASSETS/crimson.rof spelling CrimFlag.MPG five times and Final.MPG once in MOVIE \
-     records, and ASSETS/SCRIPTS/CAMPAIGNINTRO.SCRIPT constructing the chapter name as \"chap\" \
-     conv$(FC) \".mpg\" - this stage reads neither source, so no row is minted from them. \
-     Affected content: crimflag.mpg, final.mpg and chap1.mpg through chap5.mpg. Resolving tasks: \
-     Rally #1351 (F14-D.VIDEO-LAYOUT, the LAYOUT.CSV movie records) and Rally #1352 \
-     (F14-D.VIDEO-CHAPTER, the chapter-name binding); both gate any completeness or fidelity \
-     claim for the video collection.",
+    "Five inventoried .mpg files (chap1.mpg through chap5.mpg) no record of either video \
+     source reaches, so they are counted under the collection's `unnamed_video_file` gap and \
+     have no row. They are not unnamed everywhere: ASSETS/SCRIPTS/CAMPAIGNINTRO.SCRIPT of \
+     GOSDATA/ASSETS/crimson.rof constructs the chapter name as \"chap\" conv$(FC) \".mpg\" \
+     rather than spelling it, and no stage reads that binding yet, so no row is minted from \
+     it. The other two files that scan found - CrimFlag.MPG and Final.MPG - are rows since \
+     F14-D.VIDEO-LAYOUT (task #1351). Affected content: chap1.mpg through chap5.mpg. \
+     Resolving task: Rally #1352 (F14-D.VIDEO-CHAPTER, the chapter-name binding), which \
+     gates any completeness or fidelity claim for the video collection.",
     "No row carries a codec, duration, resolution or playback trigger: no original byte read \
      here states one, and reading the MPEG stream would produce numbers with no unit contract \
      and no consumer. Affected content: every video row. Resolving task: F40 (cutscenes) and \
