@@ -150,9 +150,12 @@
 //! [`UNMEASURED_BLOCK_PRECEDENCE`] is the verdict and
 //! [`MeasuredObjectiveRecord`] carries the reading. The authored field order is
 //! recorded as the only ordering the bytes carry and is measured *not* to be a
-//! format invariant, so nothing may rank effects by it.
+//! format invariant, so nothing may rank effects by it. (The *engine's* order
+//! between two effects of one block was measured later — from the executable
+//! image, not from the corpus — and is carried where the effects are applied;
+//! see the F39-E5 section below.)
 //!
-//! # F39-E5: completion effects, and the one shape that is refused
+//! # F39-E5: completion effects, and the one shape that stays refused
 //!
 //! F39-E2 measured the *vocabulary* and the isolated conflict. What the engine
 //! could not do with them is this stage's subject: the declared form now carries
@@ -172,17 +175,27 @@
 //! giving the engine a way to *say* what a record declares is not recovering what
 //! it means.
 //!
-//! One shape is refused rather than resolved, by name at declaration: **two
-//! different effects naming the same objective** in one program
-//! ([`ObjectivesSchemaError::AmbiguousCompletionEffect`]). F39-E2 measured that
-//! shape in exactly one of 1338 blocks (`zbd/c3/m05` `OBJECTIVE8` naming
-//! objective 68) and could not say which of the two wins there. The declaration's
-//! own field order cannot stand in for the answer either: the corpus writes
-//! every conflicting pair **both** ways round (`WAKE`/`NAP` 99 vs 81,
-//! `WAKE`/`KILL` 93 vs 20, `NAP`/`KILL` 70 vs 34), so the order is authored per
-//! block and carries no engine intent — the same conclusion
-//! [`UNMEASURED_BLOCK_PRECEDENCE`] records on the measurement side. Dead
-//! declarations are refused with it: an effect on the objective that fires it
+//! The one conflict shape F39-E2 could not resolve is now **measured and
+//! accepted**: one declaring objective naming two different effects for the
+//! same target (`zbd/c3/m05` `OBJECTIVE8`, a `WAKE` and a `NAP` both naming
+//! objective 68). M01-B-OBJ-1 read the engine image's completion handler and
+//! found the fixed order `WAKE` → `NAP` → `KILL` → `SLEEP`, applied whatever
+//! order the block spells, so the engine's order — not the authored field
+//! order — decides that shape, and `cs_sim::objectives::runtime` applies a
+//! completion's effects in exactly that order. The declaration's own field
+//! order still carries no intent: the corpus writes every conflicting pair
+//! **both** ways round (`WAKE`/`NAP` 99 vs 81, `WAKE`/`KILL` 93 vs 20,
+//! `NAP`/`KILL` 70 vs 34), so nothing here ranks effects by it — the same
+//! conclusion [`UNMEASURED_BLOCK_PRECEDENCE`] records on the measurement side.
+//!
+//! What stays refused is the shape the engine can never produce: **two
+//! different completing objectives declaring different effects on one target**
+//! ([`ObjectivesSchemaError::AmbiguousCompletionEffect`]). The engine completes
+//! one objective per pass, so those two completions never collide there; a
+//! runtime where two completions may share a tick cannot order them either,
+//! because which of them completes first depends on the pass-origin rule, which
+//! stays unmeasured. Dead declarations are refused with it: an effect on the
+//! objective that fires it
 //! ([`ObjectivesSchemaError::SelfCompletionEffect`]), one naming a target born
 //! finished ([`ObjectivesSchemaError::DeadCompletionEffect`]), one declared by an
 //! objective that never completes
@@ -446,18 +459,21 @@ impl DeclaredCompletionEffect {
 /// precedence is unrecovered carries [`Resolved::Unknown`] so the lowering
 /// refuses it by name instead of picking one.
 ///
-/// # The two precedence questions are not one (F39-E2)
+/// # The two precedence questions are not one (F39-E2, M01-B-OBJ-1)
 ///
 /// This precedence resolves two **terminal outcome requests** — success,
 /// extraction, failure — colliding on one tick. It does **not** resolve two
 /// completion effects on one objective, which is a different question about a
-/// different record: F39-E2 measured that corpus and found the original's answer
-/// for it nowhere in the data (one instance in 1338 blocks, unresolved; see
-/// [`MeasuredBranchPrecedence`] and [`UNMEASURED_BLOCK_PRECEDENCE`]). Nothing in
-/// this module ranks `WAKE` against `NAP` against `KILL`, and adding a ranking
-/// here would be the invented rule F39-E2 was asked to measure instead of
-/// assume. The original has no measured precedence for either question, so this
-/// variant stays designed and stays labelled synthetic.
+/// different record: F39-E2 measured that corpus and found the record's bytes
+/// carry no answer (one instance in 1338 blocks; see
+/// [`MeasuredBranchPrecedence`] and [`UNMEASURED_BLOCK_PRECEDENCE`]). M01-B-OBJ-1
+/// later measured the original's *engine* answer — a fixed order `WAKE` → `NAP`
+/// → `KILL` → `SLEEP`, applied whatever order the block spells — and that order
+/// is carried where the effects are applied (`cs_sim::objectives::runtime`),
+/// not here: nothing in this module ranks `WAKE` against `NAP` against `KILL`,
+/// and adding a ranking to this terminal-outcome precedence would conflate the
+/// two questions. The original has no measured precedence for *this* question,
+/// so this variant stays designed and stays labelled synthetic.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum DeclaredPrecedence {
     /// `Failure` > `Extraction` > `Success`. Designed; synthetic only.
@@ -1888,24 +1904,30 @@ pub enum ObjectivesSchemaError {
         /// The state it waits for.
         state: DeclaredObjectiveState,
     },
-    /// Two **different** completion effects name the same objective in one
-    /// program.
+    /// Two **different** completing objectives declare different effects on
+    /// the same objective.
     ///
-    /// F39-E2 measured this shape in exactly one of 1338 original blocks
-    /// (`zbd/c3/m05` `OBJECTIVE8`, a `WAKE` and a `NAP` both naming objective
-    /// 68) and could not say which of them wins there: the record's own field
-    /// order is refuted as a rule by the same corpus, which writes every
-    /// conflicting pair both ways round. So the declaration is refused by name
-    /// rather than resolved by an invented order.
+    /// The engine completes one objective per pass, so those two completions
+    /// never collide there; in a runtime where two completions may share a
+    /// tick, which of them applies last depends on the pass-origin rule, which
+    /// is unmeasured (M01-B-OBJ-1). So the declaration is refused by name
+    /// rather than resolved by an invented order. The shape *within* one
+    /// declaring objective — `zbd/c3/m05` `OBJECTIVE8`'s `WAKE` and `NAP`
+    /// both naming objective 68, the one conflict F39-E2 measured in 1338
+    /// blocks — is **not** this refusal: the engine's measured fixed order
+    /// (`WAKE` → `NAP` → `KILL` → `SLEEP`) decides it, so the schema accepts
+    /// it and `cs_sim::objectives::runtime` applies it in that order.
     AmbiguousCompletionEffect {
-        /// The objective whose declaration carries the second effect.
+        /// The objective whose declaration carries the effect the scan met
+        /// second.
         by: ProgramSymbol,
         /// The objective both effects name.
         objective: ProgramSymbol,
-        /// The effect the schema met first, walking the program's objectives in
-        /// declaration order and each objective's effects in authored order.
+        /// The effect **another** declaring objective already names the target
+        /// with, walking the program's objectives in declaration order and
+        /// each objective's effects in authored order.
         ///
-        /// Reported as **data about the declaration**, not as a rule: the
+        /// Reported as **data about the declarations**, not as a rule: the
         /// refusal is about the shape, so which of the two the message calls
         /// `first` never decides anything — declaring them the other way round
         /// is refused by the same rule, with the two swapped.
@@ -2132,7 +2154,7 @@ impl fmt::Display for ObjectivesSchemaError {
                 second,
             } => write!(
                 f,
-                "{by} declares a {second:?} completion effect on {objective}, which a {first:?} effect already names, and no measured rule says which applies"
+                "{by} declares a {second:?} completion effect on {objective}, which another objective's {first:?} effect already names; the engine completes one objective per pass, so no measured rule says which of the two completions applies last"
             ),
             Self::RepeatedCompletionEffect {
                 by,
@@ -2592,11 +2614,24 @@ fn check_signal(
 /// * three dead declarations are refused: an effect on the objective that fires
 ///   it, an effect on a target born finished, and effects declared by an
 ///   objective born finished (it never completes, so they never apply);
-/// * **two different effects naming the same objective is refused, not ordered**:
-///   that is the shape F39-E2 measured once in 1338 blocks and could not
-///   resolve, and the declaration's own field order is refuted as a rule by the
-///   same corpus. Two objectives naming the *same* effect kind for one objective
-///   are accepted — they agree on what happens, so there is no order to decide.
+/// * **within one declaring objective, two different effects naming one target
+///   are accepted, not refused**: M01-B-OBJ-1 measured the engine's fixed
+///   order (`WAKE` → `NAP` → `KILL` → `SLEEP`, whatever order the block
+///   spells), which decides that shape — the corpus's one conflict in 1338
+///   blocks, `zbd/c3/m05` `OBJECTIVE8` — and `cs_sim::objectives::runtime`
+///   applies the completion's effects in that order. The declaration's own
+///   field order still decides nothing (the corpus writes every conflicting
+///   pair both ways round), so nothing here sorts by it;
+/// * **two *different* declaring objectives naming different effects for one
+///   target is refused, not ordered**: the engine completes one objective per
+///   pass, so those completions never collide there, and which of two same-tick
+///   completions applies last depends on the pass-origin rule, which stays
+///   unmeasured (M01-B-OBJ-1). The scan records **every** kind each declaration
+///   names, so a declaration that already carries two effects on one target
+///   still collides here with a *different* completion naming that target with
+///   either of them. Two objectives naming the *same* effect kind for one
+///   objective are accepted — they agree on what happens, so there is no order
+///   to decide.
 /// * **one objective declaring the same effect on the same objective twice is
 ///   refused, not deduplicated** (F39-E6): that is the declared form of a block
 ///   spelling one completion-effect key twice, a shape the whole readable
@@ -2611,10 +2646,15 @@ fn check_completion_effects(
     objective_ids: &BTreeSet<ProgramSymbol>,
     objective_by_symbol: &BTreeMap<ProgramSymbol, &DeclaredObjective>,
 ) -> Result<(), ObjectivesSchemaError> {
-    // What kind of effect each objective of the program is already named for.
-    // Keyed by the *target*, so this is the one place the contended question is
-    // even representable.
-    let mut named: BTreeMap<ProgramSymbol, BranchEffectKind> = BTreeMap::new();
+    // Every (declaring objective, kind) pair each target of the program is
+    // already named with, keyed by the *target*: the one place the contended
+    // question is even representable. Every kind is recorded — not only each
+    // declaration's first — so a declaration that carries two effects on one
+    // target (the `OBJECTIVE8` shape, accepted within one declaration) still
+    // collides here with a *different* completion naming that target with
+    // either of them.
+    let mut named: BTreeMap<ProgramSymbol, Vec<(ProgramSymbol, BranchEffectKind)>> =
+        BTreeMap::new();
     for source in objectives {
         if source.initial.is_terminal() && !source.completion_effects.is_empty() {
             return Err(ObjectivesSchemaError::UnfiredCompletionEffects {
@@ -2656,20 +2696,26 @@ fn check_completion_effects(
                     state: target.initial,
                 });
             }
-            match named.get(&effect.objective) {
-                Some(kind) if *kind != effect.kind => {
-                    return Err(ObjectivesSchemaError::AmbiguousCompletionEffect {
-                        by: source.symbol,
-                        objective: effect.objective,
-                        first: *kind,
-                        second: effect.kind,
-                    });
-                }
-                Some(_) => {}
-                None => {
-                    named.insert(effect.objective, effect.kind);
-                }
+            // The one collision that stays unmeasured: a *different*
+            // declaring objective already names this target with a different
+            // effect. Within this declaration the engine's fixed order
+            // decides, so the same-source pairs never reach the refusal.
+            if let Some((_, kind)) = named.get(&effect.objective).and_then(|others| {
+                others
+                    .iter()
+                    .find(|(other, kind)| *other != source.symbol && *kind != effect.kind)
+            }) {
+                return Err(ObjectivesSchemaError::AmbiguousCompletionEffect {
+                    by: source.symbol,
+                    objective: effect.objective,
+                    first: *kind,
+                    second: effect.kind,
+                });
             }
+            named
+                .entry(effect.objective)
+                .or_default()
+                .push((source.symbol, effect.kind));
             if !declared.insert((effect.kind, effect.objective)) {
                 return Err(ObjectivesSchemaError::RepeatedCompletionEffect {
                     by: source.symbol,
@@ -3047,9 +3093,11 @@ pub const SYNTHETIC_E5_DEADLINE: ProgramSymbol = ProgramSymbol(30);
 ///   mission, and declares **one** effect per target — a `Wake` of
 ///   [`SYNTHETIC_E5_WOKEN`], a `Nap` of [`SYNTHETIC_E5_NAPPED`] carrying the
 ///   number `2.0`, a `Wakeup` of [`SYNTHETIC_E5_RESUMED`] and a `Kill` of
-///   [`SYNTHETIC_E5_KILLED`]. No two of them names the same objective, which is
-///   the shape the schema accepts (the refused one is in
-///   `accept_f39_e5_two_effects_naming_one_objective_are_refused_by_name`);
+///   [`SYNTHETIC_E5_KILLED`]. No two of them names the same objective — the
+///   simplest accepted shape; two effects on one target from **one** declaring
+///   objective are also accepted now (the engine's fixed order decides them),
+///   while the cross-objective conflict stays refused and is pinned in
+///   `accept_f39_e5_fu1_cross_objective_conflicts_are_still_refused_by_name`);
 /// * the four targets are born in the states their effect moves them out of:
 ///   shown-not-pursued, pursued, set aside and pursued;
 /// * [`SYNTHETIC_E5_DEADLINE`] completes the first objective on an explicit arm,
@@ -4890,5 +4938,169 @@ mod tests {
                 state: DeclaredObjectiveState::Optional
             }
         );
+    }
+
+    /// Rebuilds the completion-effects fixture with an edited objective list,
+    /// so a test can spell a shape the corpus's one conflict carries.
+    fn rebuild_completion_effects(
+        base: &DeclaredObjectiveProgram,
+        objectives: Vec<DeclaredObjective>,
+    ) -> Result<DeclaredObjectiveProgram, ObjectivesSchemaError> {
+        DeclaredObjectiveProgram::try_new(
+            base.subject.clone(),
+            base.origin.clone(),
+            base.provenance.clone(),
+            base.precedence.clone(),
+            objectives,
+            base.conditions.clone(),
+            base.timers.clone(),
+            base.triggers.clone(),
+            base.spawn_groups.clone(),
+        )
+    }
+
+    /// The `zbd/c3/m05` `OBJECTIVE8` shape, in declared form: **one**
+    /// declaring objective carrying a `WAKE` and a `NAP` on one target, in
+    /// both authored orders. M01-B-OBJ-1 measured the engine resolving exactly
+    /// that shape with its fixed order (`WAKE` then `NAP`, so objective 68
+    /// ends napping), so the schema accepts both spellings; the authored
+    /// order is kept as declared data and nothing here ranks by it — the
+    /// runtime applies the engine's order.
+    #[test]
+    fn accept_f39_e5_fu1_one_declaration_two_effects_on_one_target_is_accepted() {
+        let base = declared_synthetic_completion_effects();
+        let nap_on_woken = DeclaredCompletionEffect::new(
+            BranchEffectKind::Nap,
+            SYNTHETIC_E5_WOKEN,
+            Some(2.0),
+        )
+        .expect("a nap with its number");
+        let wake_order = [
+            BranchEffectKind::Wake,
+            BranchEffectKind::Nap,
+            BranchEffectKind::Wakeup,
+            BranchEffectKind::Kill,
+            BranchEffectKind::Nap,
+        ];
+        let nap_order = [
+            BranchEffectKind::Nap,
+            BranchEffectKind::Wake,
+            BranchEffectKind::Nap,
+            BranchEffectKind::Wakeup,
+            BranchEffectKind::Kill,
+        ];
+        for (reversed, expected) in [(false, wake_order), (true, nap_order)] {
+            let mut objectives = base.objectives.clone();
+            let completing = objectives
+                .iter_mut()
+                .find(|objective| objective.symbol == SYNTHETIC_E5_COMPLETING)
+                .expect("the fixture's completing objective");
+            if reversed {
+                completing.completion_effects.insert(0, nap_on_woken);
+            } else {
+                completing.completion_effects.push(nap_on_woken);
+            }
+            let program = rebuild_completion_effects(&base, objectives)
+                .expect("the engine's fixed order decides a within-declaration conflict");
+            let declared = program
+                .objectives
+                .iter()
+                .find(|objective| objective.symbol == SYNTHETIC_E5_COMPLETING)
+                .expect("the rebuilt program keeps the declaring objective");
+            let kinds: Vec<BranchEffectKind> = declared
+                .completion_effects
+                .iter()
+                .map(|effect| effect.kind)
+                .collect();
+            assert_eq!(
+                kinds, expected,
+                "both authored orders are accepted and carried as spelled"
+            );
+        }
+    }
+
+    /// What stays refused after that acceptance: **two different completing
+    /// objectives** declaring different effects on one target. The engine
+    /// completes one objective per pass, so those completions never collide
+    /// there; which of two same-tick completions should apply last depends on
+    /// the pass-origin rule, which is unmeasured. Both authored assignments
+    /// of the two kinds are refused by name.
+    #[test]
+    fn accept_f39_e5_fu1_cross_objective_conflicts_are_still_refused_by_name() {
+        let base = declared_synthetic_completion_effects();
+        let effect = |kind| {
+            DeclaredCompletionEffect::new(
+                kind,
+                SYNTHETIC_E5_WOKEN,
+                kind.carries_argument().then_some(2.0),
+            )
+            .expect("a finite declared effect")
+        };
+        // `SYNTHETIC_E5_COMPLETING` (scanned first) and `SYNTHETIC_E5_NAPPED`
+        // (scanned second) are two objectives that can both complete; the
+        // refusal names the later-scanned declaration as `by` and the two
+        // kinds in scan order, whichever way round the record spells them.
+        for (first, second) in [
+            (BranchEffectKind::Wake, BranchEffectKind::Nap),
+            (BranchEffectKind::Nap, BranchEffectKind::Wake),
+        ] {
+            let mut objectives = base.objectives.clone();
+            objectives[0].completion_effects = vec![effect(first)];
+            objectives[2].completion_effects = vec![effect(second)];
+            assert_eq!(
+                rebuild_completion_effects(&base, objectives).unwrap_err(),
+                ObjectivesSchemaError::AmbiguousCompletionEffect {
+                    by: SYNTHETIC_E5_NAPPED,
+                    objective: SYNTHETIC_E5_WOKEN,
+                    first,
+                    second,
+                },
+                "the authored order decides nothing: {first} then {second} is refused the \
+                 same way round"
+            );
+        }
+    }
+
+    /// The narrowed refusal sees **every** kind a declaration names, not only
+    /// its first: a declaration that already carries two effects on one target
+    /// (accepted within itself, engine-ordered) still collides here with a
+    /// *different* completion naming that target with either of them — the
+    /// schema-level twin of
+    /// `accept_m01_b_obj_1_fu1_multi_effect_declaration_refuses_cross_completion_collision`.
+    #[test]
+    fn accept_f39_e5_fu1_multi_effect_declaration_still_collides_cross_objective() {
+        let base = declared_synthetic_completion_effects();
+        let effect = |kind| {
+            DeclaredCompletionEffect::new(
+                kind,
+                SYNTHETIC_E5_WOKEN,
+                kind.carries_argument().then_some(2.0),
+            )
+            .expect("a finite declared effect")
+        };
+        let single = vec![effect(BranchEffectKind::Kill)];
+        for (first, second) in [
+            (BranchEffectKind::Wake, BranchEffectKind::Nap),
+            (BranchEffectKind::Nap, BranchEffectKind::Wake),
+        ] {
+            let mut objectives = base.objectives.clone();
+            // The declaration scanned first carries **both** kinds on the
+            // target; the one scanned second names it with a third kind, and
+            // must collide with the first of the pair, not only with a first
+            // kind the scan might have dropped.
+            objectives[0].completion_effects = vec![effect(first), effect(second)];
+            objectives[2].completion_effects = single.clone();
+            assert_eq!(
+                rebuild_completion_effects(&base, objectives).unwrap_err(),
+                ObjectivesSchemaError::AmbiguousCompletionEffect {
+                    by: SYNTHETIC_E5_NAPPED,
+                    objective: SYNTHETIC_E5_WOKEN,
+                    first,
+                    second: BranchEffectKind::Kill,
+                },
+                "the second kind {second} of SYNTHETIC_E5_COMPLETING is not hidden from \
+                 the cross-objective check"
+            );
+        }
     }
 }
