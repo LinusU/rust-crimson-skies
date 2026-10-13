@@ -373,6 +373,22 @@
 //! mission declares a directive with no measured effect. Nothing here claims what
 //! any original spelling *does*: no original executable has been run.
 //!
+//! [`scenario_control`] is the scenario half of that census (task
+//! `M01-LC-SCENARIOS`, #642):
+//! [`scenario_control::survey_scenario_control_programs`], which walks the same
+//! mission-scoped reader archives with the same block rule and measures the 13
+//! archives #630 reported as carrying **no** numbered objective block — the
+//! instant-action and multiplayer scenarios. Each archive's control member is
+//! found by contents, never by name: the unique member declaring the measured
+//! scenario descriptor surface, with zero candidates a measured absence (the
+//! multiplayer readers declare none) and two a refusal. What such a surface
+//! spells is measured beside it — the descriptor's full field vocabulary, the
+//! record-level `objectives.zrd` keys with the spellings outside the measured
+//! vocabulary kept unclassified, the bare `net.zrd` spawn list and the
+//! objective-marked `targets.zrd` records. A scenario row is never a campaign
+//! mission: it does not widen the mission denominator and nothing in this
+//! module lowers it to a `MissionProgram`.
+//!
 //! [`ordnance`] is the F28-A ordnance boundary
 //! (`specs/F28-rockets-special-ordnance-counter-effects-and-nitro.md`, stage
 //! `### F28-A`): [`ordnance::lower_ordnance`], which lowers a declared
@@ -719,6 +735,7 @@ pub mod profile;
 pub mod render;
 pub mod roster;
 pub mod run;
+pub mod scenario_control;
 pub mod scene;
 pub mod stunts;
 pub mod synthetic;
