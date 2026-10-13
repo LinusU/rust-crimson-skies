@@ -31,6 +31,7 @@ use cs_types::content::ContentId;
 use super::graph::{CampaignGraph, RuntimeNodeKind};
 use super::identity::{CampaignNodeKey, CampaignRunId, DifficultyId, OutcomeId, ProfileId};
 use super::outcome::{MissionOutcome, OutcomeAuthority};
+use crate::records::{BetterIs, RecordRule};
 
 /// Per-node completion records: per-kind tallies, the best score any
 /// application recorded and the most recent result — kept separately so a
@@ -44,7 +45,12 @@ pub struct NodeProgress {
     pub defeats: u32,
     /// Applied `Aborted` outcomes.
     pub aborts: u32,
-    /// The highest score any applied victory recorded.
+    /// The best score any applied victory recorded, judged under the
+    /// subject's declared [`RecordRule`] direction (F43-V2): a
+    /// higher-is-better subject keeps the largest victory score, a
+    /// lower-is-better one the smallest. Under the default rule
+    /// ([`RecordRule::DEFAULT`]) this is the F43-A "highest score" field
+    /// unchanged.
     pub best_score: u64,
     /// The most recent outcome applied, with its score.
     pub latest: Option<(Outcome, u64)>,
@@ -522,7 +528,28 @@ impl CampaignState {
             .is_some_and(|node| node.kind == RuntimeNodeKind::Ending)
     }
 
-    /// The outcome transaction: apply `outcome` exactly once.
+    /// The outcome transaction: apply `outcome` exactly once, under the
+    /// default record rule ([`RecordRule::DEFAULT`] — higher is better,
+    /// all difficulties; the F43-A behavior).
+    ///
+    /// A subject that declares its own direction goes through
+    /// [`Self::apply_outcome_with_rule`] instead; every caller that
+    /// declares no rule lands here and behaves exactly as F43-A pinned.
+    ///
+    /// # Errors
+    ///
+    /// [`CampaignError`].
+    pub fn apply_outcome(
+        &mut self,
+        graph: &CampaignGraph,
+        outcome: &MissionOutcome,
+    ) -> Result<AppliedOutcome, CampaignError> {
+        self.apply_outcome_with_rule(graph, outcome, RecordRule::DEFAULT)
+    }
+
+    /// The outcome transaction with the subject's declared [`RecordRule`]:
+    /// apply `outcome` exactly once, judging "best" in the direction the
+    /// rule names (F43-V2).
     ///
     /// Order of checks (the contract's): foreign `(profile, run)` → already
     /// applied → known node → mission node → eligible → compute plan →
@@ -535,13 +562,21 @@ impl CampaignState {
     /// generation), and a defeat cannot burn the victory grant before the
     /// first success earns it.
     ///
+    /// The rule's [`DifficultyScope`] is deliberately **not** consulted
+    /// here: this state is one run under one difficulty
+    /// ([`Self::difficulty`]), so its per-node record is per difficulty by
+    /// construction. The profile-level store — the scrapbook's
+    /// [`crate::records::RecordBook`] — is where the scope is honored;
+    /// `crate::mission_records` is the one entry point that feeds both.
+    ///
     /// # Errors
     ///
     /// [`CampaignError`].
-    pub fn apply_outcome(
+    pub fn apply_outcome_with_rule(
         &mut self,
         graph: &CampaignGraph,
         outcome: &MissionOutcome,
+        rule: RecordRule,
     ) -> Result<AppliedOutcome, CampaignError> {
         if outcome.id.profile != self.profile || outcome.id.run != self.run {
             return Err(CampaignError::ForeignOutcome {
@@ -580,10 +615,20 @@ impl CampaignState {
         };
         let prior = self.progress.get(&node_key);
         let prior_of_kind = prior.map_or(0, |p| p.of_kind(outcome.outcome));
+        let prior_victories = prior.map_or(0, |p| p.victories);
         let prior_best = prior.map_or(0, |p| p.best_score);
-        if outcome.outcome == Outcome::Succeeded && outcome.score > prior_best {
-            plan.best_score_raised = true;
-        }
+        plan.best_score_raised = outcome.outcome == Outcome::Succeeded
+            && if prior_victories == 0 {
+                // The first victory establishes the record in the subject's
+                // direction. Under the default higher-is-better rule this
+                // keeps the F43-A comparison against the 0 sentinel exactly
+                // (a 0-score first victory raises nothing); a
+                // lower-is-better subject has no record to beat yet, so any
+                // first victory sets one.
+                outcome.score != 0 || rule.better == BetterIs::Lower
+            } else {
+                rule.better.is_better(outcome.score, prior_best)
+            };
         if progresses && let Some(edge) = graph.transition(&node_key, outcome.outcome) {
             plan.progress_to = Some(edge.to.clone());
             // First outcome of this kind only: a replayed node cannot
@@ -605,8 +650,15 @@ impl CampaignState {
         let record = self.progress.entry(node_key.clone()).or_default();
         match outcome.outcome {
             Outcome::Succeeded => {
+                if record.victories == 0 {
+                    // The first victory establishes the record; the 0
+                    // sentinel is not a score a lower-is-better subject's
+                    // victory has to beat.
+                    record.best_score = outcome.score;
+                } else if rule.better.is_better(outcome.score, record.best_score) {
+                    record.best_score = outcome.score;
+                }
                 record.victories += 1;
-                record.best_score = record.best_score.max(outcome.score);
             }
             Outcome::Failed => record.defeats += 1,
             Outcome::Aborted => record.aborts += 1,

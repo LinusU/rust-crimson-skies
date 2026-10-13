@@ -49,6 +49,24 @@ pub enum BetterIs {
     Lower,
 }
 
+impl BetterIs {
+    /// Whether `score` beats `best` under this direction. A tie is **not**
+    /// better: the earlier run keeps the best record (the designed tie
+    /// policy, F43-V2).
+    ///
+    /// This is the single direction comparison every best/latest store in
+    /// `cs_sim` shares — the scrapbook [`RecordBook`] and the campaign's
+    /// `NodeProgress` both call it, so one subject's rule can never make
+    /// the two stores mean different things by the same score.
+    #[must_use]
+    pub fn is_better(self, score: u64, best: u64) -> bool {
+        match self {
+            Self::Higher => score > best,
+            Self::Lower => score < best,
+        }
+    }
+}
+
 /// Whether a record is shared by every difficulty or kept per difficulty.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum DifficultyScope {
@@ -65,6 +83,21 @@ pub struct RecordRule {
     pub better: BetterIs,
     /// The difficulty scope.
     pub scope: DifficultyScope,
+}
+
+impl RecordRule {
+    /// The rule used where no subject declares one: higher is better, one
+    /// record shared by every difficulty.
+    ///
+    /// This is exactly the pre-F43-V2 campaign behavior (the bare `max` of
+    /// F43-A), kept as the explicit default so callers that declare no
+    /// subject rule behave unchanged; the direction itself remains
+    /// **unmeasured** for the original (see
+    /// `docs/findings/2026-10-13-f43-v2-campaign-scrapbook-record-reconciliation.md`).
+    pub const DEFAULT: Self = Self {
+        better: BetterIs::Higher,
+        scope: DifficultyScope::AllDifficulties,
+    };
 }
 
 /// The key a record is stored under.
@@ -207,13 +240,14 @@ impl RecordBook {
                 BestChange::First
             }
             Some(slot) => {
-                let change = match (score.cmp(&slot.best.score), rule.better) {
-                    (std::cmp::Ordering::Equal, _) => BestChange::Tied,
-                    (std::cmp::Ordering::Greater, BetterIs::Higher)
-                    | (std::cmp::Ordering::Less, BetterIs::Lower) => BestChange::Improved {
+                let change = if score == slot.best.score {
+                    BestChange::Tied
+                } else if rule.better.is_better(score, slot.best.score) {
+                    BestChange::Improved {
                         previous: slot.best.score,
-                    },
-                    _ => BestChange::NotBetter,
+                    }
+                } else {
+                    BestChange::NotBetter
                 };
                 if matches!(change, BestChange::Improved { .. }) {
                     slot.best = run.clone();
