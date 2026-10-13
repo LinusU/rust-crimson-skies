@@ -3240,6 +3240,219 @@ fn accept_f11_e1_retail_planes_node_array_builds_every_node_id() {
     );
 }
 
+// --- F11-E1.F2: the over-long name-path rule, measured over the world shapes --
+
+/// A linear chain of records: `names[0]` is the root, each node's parent is
+/// the one before it, and slots are positions as in the store.
+fn name_chain(names: &[&str]) -> Vec<ParsedNode> {
+    let mut nodes: Vec<ParsedNode> = names
+        .iter()
+        .enumerate()
+        .map(|(slot, name)| ParsedNode::new(slot as u32, *name, ParsedNodeKind::Object3d))
+        .collect();
+    for slot in 1..nodes.len() {
+        nodes[slot - 1].children.push(slot as u32);
+        nodes[slot].parent = Some(slot as u32 - 1);
+    }
+    nodes
+}
+
+/// The installation's two longest measured name-paths, spelled out exactly as
+/// the corpus stores them (root first, the way [`SceneNode::path`] spells
+/// them): the `pzhookup_crane` chain is the longest path of six world
+/// containers at 136 bytes, the `wv_tailhook` chain is `C1C`'s at 150. Each
+/// digest is the first 128 bits of the SHA-256 of the lowercased escaped
+/// path, computed here with `shasum -a 256` over the same literal — an
+/// independent check of the algorithm, not an echo of production.
+const MEASURED_OVER_LONG: [(&str, &str, usize); 2] = [
+    (
+        "world1.piratezep.move_zeppelin.tilt_zeppelin.rock_zeppelin.underneath.pzhookup_crane.\
+         hook_base.top_seg.mid_seg.hook_seg.hoop.pzhookpoint",
+        "a55bd3ba18358585243aa5319f063f6d",
+        136,
+    ),
+    (
+        "world1.workersvoyagezep.move_zeppelin.tilt_zeppelin.rock_zeppelin.underneath.\
+         wv_tailhook.peoplehook.fassenbeiner.cpilot.cpilot_drop.cp_rt.cp_rc.cp_rft",
+        "ec6913ecc52506e8461bdf23530c9240",
+        150,
+    ),
+];
+
+/// **The measured over-long name-paths are digest-spelled inside the shared
+/// key bound, and the id's own words are the stated loss.** (#586)
+///
+/// The rule is #628's, decided for exactly these shapes: an over-long
+/// `<container>.<escaped path>` spells `<container>.-h<32 hex>` — the first
+/// 128 bits of the SHA-256 of the lowercased escaped path — so the id is
+/// stable, unique per path and inside `MAX_CONTENT_KEY_LEN`, while the stored
+/// name and the authored path stay on the node and
+/// [`SceneNodeId::authored_names`] answers `None` rather than guessing. The
+/// shared bound itself does not move, so no other namespace is touched.
+#[test]
+fn accept_f11_e1_f2_the_measured_over_long_shapes_are_digest_spelled_within_the_shared_bound() {
+    let container = cid(ContentKind::SceneNode, "container.zbd.c1");
+    let mut deepest_ids: Vec<String> = Vec::new();
+    for (path, digest, bytes) in MEASURED_OVER_LONG {
+        assert_eq!(path.len(), bytes, "the shape is the measured one");
+        let names: Vec<&str> = path.split('.').collect();
+        let graph = SceneGraph::build(
+            &container,
+            &name_chain(&names),
+            &radian_adapter(),
+            &BindingMap::default(),
+        )
+        .unwrap_or_else(|error| panic!("{bytes}-byte shape must convert: {error}"));
+
+        // The rule, node by node: spelled while `<container>.<path>` fits the
+        // bound, digest otherwise. Every name here needs no escaping, so the
+        // escaped path is the authored one.
+        for node in graph.nodes() {
+            let spelled = format!("container.zbd.c1.{}", node.path().to_ascii_lowercase());
+            if spelled.len() <= cs_types::content::MAX_CONTENT_KEY_LEN {
+                assert_eq!(node.id().key(), spelled, "a fitting path keeps its id");
+            } else {
+                assert!(
+                    node.id().key().starts_with("container.zbd.c1.-h"),
+                    "an over-long path is digest-spelled: {}",
+                    node.id().key()
+                );
+            }
+            assert!(node.id().key().len() <= cs_types::content::MAX_CONTENT_KEY_LEN);
+        }
+
+        let deepest = graph.nodes().last().expect("the chain is never empty");
+        assert_eq!(deepest.path(), path, "the authored path is kept whole");
+        assert_eq!(
+            deepest.id().key(),
+            format!("container.zbd.c1.-h{digest}"),
+            "the digest is the first 128 bits of the path's SHA-256"
+        );
+        assert_eq!(
+            deepest.id().authored_names(&container),
+            None,
+            "the loss is stated: the id no longer reads back to what the file said"
+        );
+        // The root and the shallow ancestors keep the ids they always had —
+        // the rule moves only what the bound refuses.
+        assert_eq!(graph.nodes()[0].id().key(), "container.zbd.c1.world1");
+        deepest_ids.push(deepest.id().key().to_owned());
+
+        // Stability: rebuilding the same stored shape derives the same id.
+        let again = SceneGraph::build(
+            &container,
+            &name_chain(&names),
+            &radian_adapter(),
+            &BindingMap::default(),
+        )
+        .expect("the same shape builds again");
+        assert_eq!(
+            again.nodes().last().expect("chain").id().key(),
+            deepest.id().key(),
+            "a digest id is stable across parses"
+        );
+    }
+    assert_ne!(
+        deepest_ids[0], deepest_ids[1],
+        "the two measured shapes derive distinct ids"
+    );
+
+    // The boundary is the shared bound itself: `<container>.<path>` of
+    // exactly 128 bytes still spells its id (the `container.zbd.c1` key is
+    // 16 bytes, so 16 + 1 + 111), one byte more does not.
+    let fits = format!("w.{}", "a".repeat(109)); // 16 + 1 + 111 = 128
+    let over = format!("w.{}", "a".repeat(110));
+    for (path, spelled) in [(fits, true), (over, false)] {
+        let names: Vec<&str> = path.split('.').collect();
+        let graph = SceneGraph::build(
+            &container,
+            &name_chain(&names),
+            &radian_adapter(),
+            &BindingMap::default(),
+        )
+        .expect("the boundary chain builds");
+        let child = graph.nodes().last().expect("chain");
+        assert_eq!(
+            child.id().key().starts_with("container.zbd.c1.-h"),
+            !spelled,
+            "the boundary is inclusive at {MAX}: {}",
+            child.path().len(),
+            MAX = cs_types::content::MAX_CONTENT_KEY_LEN,
+        );
+    }
+}
+
+/// **`C1C` converts with every over-long path digest-spelled: the retail
+/// evidence for the #586 rule.** (#586)
+///
+/// `C1C` holds the installation's longest authored name-path (150 bytes) and
+/// the second-longest measurement of the task (136), and its 292 digest ids
+/// are the largest count of any container, so this is the container where the
+/// rule has to hold.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_f11_e1_f2_retail_c1c_digest_spells_every_over_long_path() {
+    use cs_content::world::world_scene_graph_from_gamez;
+    use cs_formats::gamez::read_gamez_nodes;
+    use cs_formats::io::ParseContext;
+
+    let label = "zbd/c1c/gamez.zbd";
+    let bytes = std::fs::read(retail_dir().join("ZBD").join("C1C").join("gamez.zbd"))
+        .unwrap_or_else(|error| panic!("{label}: the installation must hold it: {error}"));
+    let records = read_gamez_nodes(&mut ParseContext::with_defaults(label.to_owned()), &bytes)
+        .unwrap_or_else(|error| panic!("{label}: the node array must read: {error}"));
+    let container = cid(ContentKind::SceneNode, "container.zbd.c1c");
+    let world = world_scene_graph_from_gamez(
+        &container,
+        &records,
+        &[],
+        &radian_adapter(),
+        &BindingMap::default(),
+    )
+    .unwrap_or_else(|error| panic!("{label}: must convert past the key bound: {error}"));
+    let graph = world.graph();
+    assert_eq!(graph.len(), 5_644, "{label}: nodes");
+
+    let mut digests = 0;
+    for node in graph.nodes() {
+        assert!(
+            node.id().key().len() <= cs_types::content::MAX_CONTENT_KEY_LEN,
+            "{label}: every key fits the shared bound"
+        );
+        if node.id().authored_names(&container).is_none() {
+            digests += 1;
+            assert!(
+                node.id().key().contains(".-h"),
+                "{label}: an id that does not read back is a digest"
+            );
+        }
+    }
+    assert_eq!(digests, 292, "{label}: digest-spelled ids");
+
+    // The two measured shapes, by exact authored path and exact id.
+    for (path, digest, bytes) in MEASURED_OVER_LONG {
+        let found = graph.nodes().iter().any(|node| {
+            node.path() == path
+                && node.id().key() == format!("container.zbd.c1c.-h{digest}")
+                && node.id().authored_names(&container).is_none()
+        });
+        assert!(
+            found,
+            "{label}: the measured {bytes}-byte path must exist, digest-spelled"
+        );
+    }
+    let longest = graph
+        .nodes()
+        .iter()
+        .map(|node| node.path().len())
+        .max()
+        .expect("the container is never empty");
+    assert_eq!(
+        longest, 150,
+        "{label}: the longest authored path is the measured 150 bytes"
+    );
+}
+
 /// The F11-E1 evidence harness.
 ///
 /// This test is deliberately **not** named `accept_f11_e1_*`: it is not part
