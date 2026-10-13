@@ -235,6 +235,21 @@ No probe text remains in the tree.
   instance or model with a fresh context for format/mission semantics and
   fidelity-claim work; this stage qualifies and no agent review replaces
   the owner's approval.
+- **Review round (2026-10-14).** Rally assigned the review of this branch to
+  a fresh review session of `bunny-alpha-1` (model
+  `opencode-go/mimo-v2.6-flash`): it started with no implementation context,
+  but it is the **same agent name** as the implementer, so the
+  different-instance preference above could not be satisfied here — recorded
+  honestly, and no agent review awards more than `checked`. The reviewer
+  reran two independent mutation probes (separator dropped from the match
+  head; containment winner rule collapsed to the first naming candidate),
+  each killed by a CI-runnable `accept_f09_prefix_` test; reran the four
+  checks (fmt, clippy, the workspace suite, the task selection with
+  `--include-ignored`, 4/4 green including the retail test); and
+  regenerated `docs/findings/evidence/F09-PREFIX.json` on the reviewed tree
+  per `CLI-EVIDENCE.md`. The regenerated `prefix-airframe-map.json` hashes
+  identically to the implementing round's (`c850f33c…`), so the measured
+  table above reproduced byte-for-byte on the reviewed commit.
 - **Nothing derived from the original bytes is committed.** Ids, counts,
   offsets, hashes and this table's numbers; no texture name, no mesh, no
   screenshot.
