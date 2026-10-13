@@ -1,6 +1,6 @@
-//! F36-C.2 acceptance: HUD, spyglass, sound, weapons, input and network
-//! ownership rebind from the applied `TransferReport`, and never from an
-//! aborted transfer (synthetic).
+//! F36-C.2 acceptance: HUD, spyglass, sound, weapons, damage, input and
+//! network ownership rebind from the applied `TransferReport`, and never
+//! from an aborted transfer (synthetic).
 //!
 //! Spec: `specs/F36-docking-passenger-pickups-boarding-and-plane-swaps.md`,
 //! non-negotiable behavior 5, through the F36-C session and the F36-C.2
@@ -23,11 +23,12 @@ use cs_app::interaction::{
 };
 use cs_net::validation::ActorOwnership;
 use cs_sim::interaction::{
-    ControlHolder, EligibilityRefusal, InitiatorMotion, InteractionKind, InteractionSession,
-    InteractionState, InteractionTransaction, PilotId, SYNTHETIC_HOOK_TARGET, SYNTHETIC_INITIATOR,
-    SYNTHETIC_SESSION, TransferLedger, TransferPolicy, evaluate_motion_eligibility,
-    synthetic_docking_anchor, synthetic_docking_envelope, synthetic_docking_id,
-    synthetic_docking_objective, synthetic_hook_trajectory,
+    CameraTransfer, ControlHolder, ControlOwner, EligibilityRefusal, InitiatorMotion,
+    InteractionKind, InteractionSession, InteractionState, InteractionTransaction,
+    InventoryTransfer, PilotId, PilotTransfer, SYNTHETIC_HOOK_TARGET, SYNTHETIC_INITIATOR,
+    SYNTHETIC_SESSION, TransferLedger, TransferPolicy, TransferReport, VelocityTransfer,
+    evaluate_motion_eligibility, synthetic_docking_anchor, synthetic_docking_envelope,
+    synthetic_docking_id, synthetic_docking_objective, synthetic_hook_trajectory,
 };
 use cs_types::Tick;
 use cs_types::net::{ActorId, PeerId};
@@ -56,6 +57,12 @@ fn good_pass() -> Result<cs_sim::world_actors::anchor::AnchorSample, Eligibility
 /// An aircraft-swap transaction, the policy that moves pilot, inventory,
 /// camera and control to the target.
 fn swap_transaction() -> InteractionTransaction {
+    swap_transaction_under(TransferPolicy::aircraft_swap())
+}
+
+/// An aircraft-swap transaction under `policy`, so a test can drive a real
+/// report whose camera and control fields differ.
+fn swap_transaction_under(policy: TransferPolicy) -> InteractionTransaction {
     InteractionTransaction::begin(
         synthetic_docking_id(),
         InteractionKind::AircraftSwap,
@@ -64,7 +71,7 @@ fn swap_transaction() -> InteractionTransaction {
             InteractionKind::AircraftSwap,
             synthetic_docking_objective(),
         ),
-        TransferPolicy::aircraft_swap(),
+        policy,
     )
 }
 
@@ -83,12 +90,25 @@ fn latched() -> (InteractionSession, cs_sim::interaction::InteractionId) {
 
 /// Drives the real session all the way to one applied transfer and returns
 /// its real report.
-fn applied_swap() -> (InteractionSession, cs_sim::interaction::TransferReport) {
-    let (mut session, id) = latched();
+fn applied_swap() -> (InteractionSession, TransferReport) {
+    applied_swap_under(TransferPolicy::aircraft_swap())
+}
+
+/// Drives the real session to one applied transfer under `policy` and
+/// returns its real report.
+fn applied_swap_under(policy: TransferPolicy) -> (InteractionSession, TransferReport) {
+    let tx = swap_transaction_under(policy);
+    let id = tx.id();
+    let mut session = InteractionSession::new(ledger());
+    session.open(tx).expect("opens");
+    assert_eq!(
+        session.observe(id, good_pass()).expect("known"),
+        Ok(InteractionState::Latching)
+    );
     session.release(id).expect("released");
     let (_outcome, report) = session
         .complete(id, &synthetic_docking_objective(), true, [6.0; 3], [5.0; 3])
-        .expect("the swap applies");
+        .expect("the transfer applies");
     (session, report)
 }
 
@@ -113,12 +133,13 @@ fn accept_f36_c2_each_consumer_follows_the_applied_report() {
     assert_eq!(binding.session, SYNTHETIC_SESSION);
     assert_eq!(binding.interaction, report.id);
 
-    // Input, HUD, sound, weapons and network ownership follow the actor that
-    // owns pose/control after the transfer.
+    // Input, HUD, sound, weapons, damage and network ownership follow the
+    // actor that owns pose/control after the transfer.
     assert_eq!(consumers.input(), Some(SYNTHETIC_HOOK_TARGET));
     assert_eq!(consumers.hud(), Some(SYNTHETIC_HOOK_TARGET));
     assert_eq!(consumers.sound(), Some(SYNTHETIC_HOOK_TARGET));
     assert_eq!(consumers.weapons(), Some(SYNTHETIC_HOOK_TARGET));
+    assert_eq!(consumers.damage(), Some(SYNTHETIC_HOOK_TARGET));
     assert_eq!(consumers.network(), Some(SYNTHETIC_HOOK_TARGET));
     // The spyglass follows the camera binding the policy transferred.
     assert_eq!(consumers.spyglass(), Some(report.camera_actor));
@@ -129,6 +150,54 @@ fn accept_f36_c2_each_consumer_follows_the_applied_report() {
         Some(SYNTHETIC_HOOK_TARGET),
         "control_of names the same actor the consumers now fly"
     );
+}
+
+#[test]
+fn accept_f36_c2_each_view_follows_its_own_report_field() {
+    // A real policy whose two report fields differ: the camera moves to the
+    // new actor while control stays with the initiator. The spyglass must
+    // follow `camera_actor` and every other view `control_actor`, so the
+    // per-consumer mapping is exercised by a report that actually
+    // discriminates between the two fields rather than one where they
+    // coincide.
+    let (session, report) = applied_swap_under(TransferPolicy {
+        velocity: VelocityTransfer::PreserveInitiator,
+        pilot: PilotTransfer::MoveToTarget,
+        inventory: InventoryTransfer::MoveToTarget,
+        camera: CameraTransfer::FollowTarget,
+        control_after_release: ControlOwner::Initiator,
+    });
+    assert_ne!(
+        report.camera_actor, report.control_actor,
+        "the fixture must distinguish the two fields or the mapping is untested"
+    );
+    let mut world = world_with(session);
+    apply_transfer_consumers(&mut world, &report).expect("applies");
+
+    let consumers = world
+        .get_resource::<TransferConsumers>()
+        .expect("the consumers are published");
+    assert_eq!(consumers.spyglass(), Some(SYNTHETIC_HOOK_TARGET));
+    assert_eq!(
+        consumers.spyglass(),
+        Some(report.camera_actor),
+        "the spyglass follows the camera binding the policy transferred"
+    );
+    for view in [
+        consumers.input(),
+        consumers.hud(),
+        consumers.sound(),
+        consumers.weapons(),
+        consumers.damage(),
+        consumers.network(),
+    ] {
+        assert_eq!(
+            view,
+            Some(report.control_actor),
+            "every other view follows the actor that owns pose/control"
+        );
+    }
+    assert_eq!(consumers.input(), Some(SYNTHETIC_INITIATOR));
 }
 
 /// Reads the runtime's control holder back as an actor, the way a consumer
@@ -203,6 +272,7 @@ fn accept_f36_c2_swap_rebinds_a_second_time_and_drops_the_first_aircraft() {
     assert_eq!(consumers.hud(), Some(SYNTHETIC_INITIATOR));
     assert_eq!(consumers.sound(), Some(SYNTHETIC_INITIATOR));
     assert_eq!(consumers.weapons(), Some(SYNTHETIC_INITIATOR));
+    assert_eq!(consumers.damage(), Some(SYNTHETIC_INITIATOR));
     assert_eq!(consumers.network(), Some(SYNTHETIC_INITIATOR));
     assert_eq!(consumers.spyglass(), Some(second.camera_actor));
 }
@@ -340,8 +410,20 @@ fn accept_f36_c2_a_consumers_record_without_a_runtime_is_dropped() {
         .get_resource::<TransferConsumers>()
         .expect("a reader finds a resource it can tell from a live one");
     assert_eq!(consumers.bound(), None, "and it holds no binding");
-    assert_eq!(consumers.input(), None);
-    assert_eq!(consumers.spyglass(), None);
+    for view in [
+        consumers.input(),
+        consumers.hud(),
+        consumers.spyglass(),
+        consumers.sound(),
+        consumers.weapons(),
+        consumers.damage(),
+        consumers.network(),
+    ] {
+        assert_eq!(
+            view, None,
+            "no consumer keeps a binding the runtime cannot stand behind"
+        );
+    }
 }
 
 #[test]
@@ -426,10 +508,39 @@ fn accept_f36_c2_network_ownership_keeps_the_binding_when_control_does_not_move(
 }
 
 #[test]
-fn accept_f36_c2_one_record_six_bindings_no_partial_write() {
-    // The joint-record property: a reader that sees input bound sees all six
-    // bound to the same report, and an aborted pass between two applied ones
-    // leaves the previous complete record, never a mix.
+fn accept_f36_c2_network_ownership_refuses_a_non_pilot_even_when_control_does_not_move() {
+    // The no-control-moved path must not be a way around the pilot check: a
+    // peer that owns nothing is refused there too, so no caller can be told
+    // it is bound to an aircraft the table says it does not fly.
+    let (_session, report) = applied_swap();
+    let unchanged = cs_sim::interaction::TransferReport {
+        control_actor: SYNTHETIC_INITIATOR,
+        camera_actor: SYNTHETIC_INITIATOR,
+        ..report
+    };
+    let pilot = PeerId::new(1).expect("peer 1");
+    let other = PeerId::new(2).expect("peer 2");
+    let mut ownership = ActorOwnership::new();
+    ownership.bind(pilot, SYNTHETIC_INITIATOR).expect("binds");
+
+    let refused = rebind_network_ownership(&mut ownership, other, &unchanged).unwrap_err();
+    assert_eq!(
+        refused,
+        NetworkRebindError::PeerDoesNotOwnInitiator {
+            peer: other,
+            actor: SYNTHETIC_INITIATOR,
+        }
+    );
+    // Nothing moved for either peer.
+    assert_eq!(ownership.actor_of(pilot), Some(SYNTHETIC_INITIATOR));
+    assert_eq!(ownership.actor_of(other), None);
+}
+
+#[test]
+fn accept_f36_c2_one_record_seven_bindings_no_partial_write() {
+    // The joint-record property: a reader that sees input bound sees all
+    // seven bound to the same report, and an aborted pass between two
+    // applied ones leaves the previous complete record, never a mix.
     let (session, first) = applied_swap();
     let mut world = world_with(session);
     apply_transfer_consumers(&mut world, &first).expect("applies");
@@ -508,6 +619,7 @@ fn accept_f36_c2_one_record_six_bindings_no_partial_write() {
         consumers.input(),
         consumers.hud(),
         consumers.weapons(),
+        consumers.damage(),
         consumers.network(),
     ];
     assert!(committed.iter().all(|a| *a == Some(SYNTHETIC_HOOK_TARGET)));

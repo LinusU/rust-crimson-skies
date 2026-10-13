@@ -29,9 +29,10 @@
 //!   carrier destroyed during a latch aborts in a running app, with every
 //!   abort or refusal recorded in [`InteractionConsumerLog`].
 //! * [`apply_transfer_consumers`] (F36-C.2) — the one authoritative rebind of
-//!   the input, HUD, spyglass, sound, weapons and network-ownership consumer
-//!   bindings from an applied [`cs_sim::interaction::TransferReport`], as the
-//!   single record [`TransferConsumers`]; a report the live session does not
+//!   the input, HUD, spyglass, sound, weapons, damage and network-ownership
+//!   consumer bindings from an applied
+//!   [`cs_sim::interaction::TransferReport`], as the single record
+//!   [`TransferConsumers`]; a report the live session does not
 //!   hold as **Completed** — an aborted, stale-generation or unknown
 //!   interaction — is refused and changes nothing.
 //! * [`teardown_transfer_consumers`] — the abort/retry/disconnect path that
@@ -512,24 +513,25 @@ pub struct ConsumerBinding {
     pub interaction: InteractionId,
 }
 
-/// Resource: the input, HUD, spyglass, sound, weapons and network-ownership
-/// bindings of one applied transfer, as one record (F36-C.2).
+/// Resource: the input, HUD, spyglass, sound, weapons, damage and
+/// network-ownership bindings of one applied transfer, as one record
+/// (F36-C.2).
 ///
 /// Spec: `specs/F36-docking-passenger-pickups-boarding-and-plane-swaps.md`,
 /// non-negotiable behavior 5: "Airframe swaps can occur during a mission.
 /// Input, HUD, spyglass, sounds, weapons, damage and networking all rebind to
-/// the new actor in one authoritative transition." The six views are one
-/// record derived from one [`TransferReport`], not six independent writes,
+/// the new actor in one authoritative transition." The seven views are one
+/// record derived from one [`TransferReport`], not seven independent writes,
 /// because the failure they share is disagreement: an input binding that
 /// flies the new aircraft while the HUD still draws the old one's
 /// instruments, or a network ownership entry that still lets a peer act for
 /// an aircraft nobody flies.
 ///
 /// [`apply_transfer_consumers`] is the only writer. The bindings follow the
-/// report's own fields: input, HUD, sound, weapons and network ownership
-/// follow [`TransferReport::control_actor`] (the aircraft that owns
-/// pose/control — the airframe whose hardpoints and engine loop the weapons
-/// and sound consumers present), and the spyglass follows
+/// report's own fields: input, HUD, sound, weapons, damage and network
+/// ownership follow [`TransferReport::control_actor`] (the aircraft that owns
+/// pose/control — the airframe whose hardpoints, armor and engine loop the
+/// weapons, damage and sound consumers present), and the spyglass follows
 /// [`TransferReport::camera_actor`] (the camera binding the policy
 /// transferred). This mapping is designed project behavior; the original
 /// game's per-consumer rebind rules are unrecovered (recorded in
@@ -547,6 +549,7 @@ pub struct TransferConsumers {
     spyglass: Option<ActorId>,
     sound: Option<ActorId>,
     weapons: Option<ActorId>,
+    damage: Option<ActorId>,
     network: Option<ActorId>,
 }
 
@@ -591,6 +594,13 @@ impl TransferConsumers {
         self.weapons
     }
 
+    /// The actor whose armor and damage state the damage consumers follow,
+    /// when a transfer published one.
+    #[must_use]
+    pub const fn damage(&self) -> Option<ActorId> {
+        self.damage
+    }
+
     /// The actor network ownership must move to, when a transfer published
     /// one.
     #[must_use]
@@ -607,6 +617,7 @@ impl TransferConsumers {
         self.spyglass = None;
         self.sound = None;
         self.weapons = None;
+        self.damage = None;
         self.network = None;
     }
 }
@@ -676,11 +687,11 @@ pub struct ConsumerRebindReport {
 /// one applied [`TransferReport`] — the F36-C.2 consumer entry.
 ///
 /// This is the **only** writer of [`TransferConsumers`], and it derives all
-/// six bindings from the one report, so the input binding, the HUD's
+/// seven bindings from the one report, so the input binding, the HUD's
 /// instruments, the spyglass camera, the engine-loop sound, the weapon
-/// hardpoints and the network ownership entry can never disagree about which
-/// aircraft the pilot now flies (spec F36 non-negotiable behavior 5: "one
-/// authoritative transition").
+/// hardpoints, the damage state and the network ownership entry can never
+/// disagree about which aircraft the pilot now flies (spec F36 non-negotiable
+/// behavior 5: "one authoritative transition").
 ///
 /// The report is checked against the live [`InteractionRuntime`] before any
 /// binding moves, which is what makes an aborted or stale transfer unable to
@@ -701,6 +712,14 @@ pub struct ConsumerRebindReport {
 /// Both refusals other than [`TransferConsumerError::NoRuntime`] leave the
 /// published bindings untouched: they still describe the last transfer that
 /// actually committed, which remains true after an unrelated abort.
+///
+/// The report's own **field values** are trusted once the session holds the
+/// interaction as Completed: the check binds the interaction, and a caller
+/// that edits `control_actor`/`camera_actor` after `complete` returned the
+/// report is trusted like the session's own output. Defending the fields
+/// themselves needs the session to publish its applied actors per
+/// interaction; that limit is recorded in
+/// `docs/findings/2026-10-05-f36-c-interaction-consumers.md`.
 ///
 /// # Errors
 ///
@@ -761,6 +780,7 @@ pub fn apply_transfer_consumers(
         spyglass: Some(report.camera_actor),
         sound: Some(report.control_actor),
         weapons: Some(report.control_actor),
+        damage: Some(report.control_actor),
         network: Some(report.control_actor),
     });
     Ok(ConsumerRebindReport { binding, rebound })
@@ -799,8 +819,10 @@ pub fn teardown_transfer_consumers(world: &mut World, session: u64) -> bool {
 /// nothing: the peer keeps the aircraft it owned.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum NetworkRebindError {
-    /// The peer does not own the actor the transfer moved control away from,
-    /// so it is not the pilot this swap rebinds.
+    /// The peer does not own the actor the report moved control away from,
+    /// so it is not the pilot this swap rebinds. The same check guards the
+    /// no-control-moved path, so a peer owning nothing can never be told it
+    /// is bound to an aircraft it does not fly.
     PeerDoesNotOwnInitiator {
         /// The peer that asked for the rebind.
         peer: PeerId,
@@ -856,13 +878,17 @@ pub struct NetworkRebind {
 /// The order is deliberate: the new binding is established **first** and the
 /// old aircraft is released only after it bound, so a refusal at any point
 /// leaves the peer owning exactly what it owned before — never nothing, and
-/// never both. When control did not move (`control_actor` is the initiator)
-/// there is nothing to rebind and the current binding is reported unchanged.
+/// never both. The peer must own the report's initiator on **both** paths:
+/// when control did not move (`control_actor` is the initiator) the current
+/// binding is reported unchanged, but only for a peer that really is that
+/// pilot — otherwise the answer would claim an authorization the table does
+/// not hold.
 ///
 /// # Errors
 ///
 /// [`NetworkRebindError::PeerDoesNotOwnInitiator`] when the peer is not the
-/// pilot of the aircraft the report moved control away from, and
+/// pilot of the aircraft the report moved control away from (or of the one
+/// it left it on, when control did not move), and
 /// [`NetworkRebindError::DestinationOwned`] when another peer already owns
 /// the destination. The table is unchanged in both cases.
 pub fn rebind_network_ownership(
@@ -872,16 +898,19 @@ pub fn rebind_network_ownership(
 ) -> Result<NetworkRebind, NetworkRebindError> {
     let from = report.id.initiator;
     let to = report.control_actor;
+    // Checked on both paths: a no-op answer of `bound: to` for a peer that
+    // owns nothing would tell the caller its intents are authorized for an
+    // aircraft it does not fly.
+    if ownership.actor_of(peer) != Some(from) {
+        return Err(NetworkRebindError::PeerDoesNotOwnInitiator { peer, actor: from });
+    }
     if to == from {
         // Control did not move: the peer's binding already describes the
-        // aircraft it still flies.
+        // aircraft it still flies, and it was just checked above.
         return Ok(NetworkRebind {
             bound: to,
             released: None,
         });
-    }
-    if ownership.actor_of(peer) != Some(from) {
-        return Err(NetworkRebindError::PeerDoesNotOwnInitiator { peer, actor: from });
     }
     // Bind the destination first: `bind` refuses exactly when another pilot
     // already owns it ("A peer never takes an aircraft from another pilot"),
