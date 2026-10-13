@@ -28,6 +28,19 @@
 //!   ([`crate::damage::DamageActorDestroyed`]) into the runtime, so a
 //!   carrier destroyed during a latch aborts in a running app, with every
 //!   abort or refusal recorded in [`InteractionConsumerLog`].
+//! * [`apply_transfer_consumers`] (F36-C.2) — the one authoritative rebind of
+//!   the input, HUD, spyglass, sound, weapons and network-ownership consumer
+//!   bindings from an applied [`cs_sim::interaction::TransferReport`], as the
+//!   single record [`TransferConsumers`]; a report the live session does not
+//!   hold as **Completed** — an aborted, stale-generation or unknown
+//!   interaction — is refused and changes nothing.
+//! * [`teardown_transfer_consumers`] — the abort/retry/disconnect path that
+//!   drops the published bindings for their own session generation and
+//!   refuses a late teardown from a previous one.
+//! * [`rebind_network_ownership`] — the server-side peer-to-actor ownership
+//!   rebind the swap owes [`cs_net::validation::ActorOwnership`], refusing a
+//!   peer that does not own the swapping actor and releasing the old aircraft
+//!   only after the new one bound.
 //!
 //! Nothing here owns runtime behavior: the state machine, eligibility test and
 //! transfer policy are `cs_sim::interaction`'s; this is the conversion and
@@ -38,6 +51,8 @@ use bevy::ecs::component::Component;
 use bevy::ecs::message::MessageReader;
 use bevy::ecs::resource::Resource;
 use bevy::ecs::system::ResMut;
+use bevy::ecs::world::World;
+use cs_net::validation::{ActorOwnership, SessionViolation};
 use cs_content::interaction::{
     DeclaredCameraTransfer, DeclaredControlOwner, DeclaredEligibility, DeclaredInteraction,
     DeclaredInteractionKind, DeclaredInventoryTransfer, DeclaredPilotTransfer,
@@ -46,11 +61,12 @@ use cs_content::interaction::{
 use cs_sim::damage::ActorId;
 use cs_sim::interaction::{
     CameraTransfer, ControlOwner, EligibilityEnvelope, EnvelopeError, InteractionAbort,
-    InteractionAuthorization, InteractionId, InteractionKind, InventoryTransfer, PilotTransfer,
-    TransferPolicy, VelocityTransfer,
+    InteractionAuthorization, InteractionId, InteractionKind, InteractionState, InventoryTransfer,
+    PilotTransfer, TransferPolicy, TransferReport, VelocityTransfer,
 };
 use cs_types::content::{ContentId, Resolved};
 use cs_types::evidence::ClaimId;
+use cs_types::net::PeerId;
 
 use crate::damage::DamageActorDestroyed;
 use crate::scene::SceneGeneration;
@@ -475,4 +491,422 @@ impl Plugin for InteractionSchedulePlugin {
         app.init_resource::<InteractionConsumerLog>();
         app.add_systems(Update, forward_actor_destroyed);
     }
+}
+
+// ------------------------------------------------- consumer rebinding (F36-C.2) ----
+
+/// The session generation and interaction whose applied transfer the
+/// published consumer bindings describe.
+///
+/// The binding is the `(session, interaction)` of the [`TransferReport`] the
+/// bindings were derived from. A consumer reading a binding without this pair
+/// cannot tell which transfer published it, which is why a teardown or a
+/// rebind drops the pair rather than leaving a stale one behind
+/// (`STATE-TRANSACTIONS`: "Retry restores the authored initial state ... No
+/// actor identifier is reused within a session").
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConsumerBinding {
+    /// The session generation the transfer committed in.
+    pub session: u64,
+    /// The interaction whose applied transfer published the bindings.
+    pub interaction: InteractionId,
+}
+
+/// Resource: the input, HUD, spyglass, sound, weapons and network-ownership
+/// bindings of one applied transfer, as one record (F36-C.2).
+///
+/// Spec: `specs/F36-docking-passenger-pickups-boarding-and-plane-swaps.md`,
+/// non-negotiable behavior 5: "Airframe swaps can occur during a mission.
+/// Input, HUD, spyglass, sounds, weapons, damage and networking all rebind to
+/// the new actor in one authoritative transition." The six views are one
+/// record derived from one [`TransferReport`], not six independent writes,
+/// because the failure they share is disagreement: an input binding that
+/// flies the new aircraft while the HUD still draws the old one's
+/// instruments, or a network ownership entry that still lets a peer act for
+/// an aircraft nobody flies.
+///
+/// [`apply_transfer_consumers`] is the only writer. The bindings follow the
+/// report's own fields: input, HUD, sound, weapons and network ownership
+/// follow [`TransferReport::control_actor`] (the aircraft that owns
+/// pose/control — the airframe whose hardpoints and engine loop the weapons
+/// and sound consumers present), and the spyglass follows
+/// [`TransferReport::camera_actor`] (the camera binding the policy
+/// transferred). This mapping is designed project behavior; the original
+/// game's per-consumer rebind rules are unrecovered (recorded in
+/// `docs/findings/2026-10-05-f36-c-interaction-consumers.md`).
+///
+/// Nothing is published before a transfer commits, and an aborted transfer
+/// publishes nothing: an interaction that is not held as
+/// [`InteractionState::Completed`] by the live [`InteractionRuntime`] is
+/// refused and changes no binding.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct TransferConsumers {
+    bound: Option<ConsumerBinding>,
+    input: Option<ActorId>,
+    hud: Option<ActorId>,
+    spyglass: Option<ActorId>,
+    sound: Option<ActorId>,
+    weapons: Option<ActorId>,
+    network: Option<ActorId>,
+}
+
+impl TransferConsumers {
+    /// The `(session, interaction)` the published bindings belong to; `None`
+    /// when nothing is published.
+    #[must_use]
+    pub const fn bound(&self) -> Option<ConsumerBinding> {
+        self.bound
+    }
+
+    /// The actor input flies, when a transfer published one.
+    #[must_use]
+    pub const fn input(&self) -> Option<ActorId> {
+        self.input
+    }
+
+    /// The actor whose instruments the HUD presents, when a transfer
+    /// published one.
+    #[must_use]
+    pub const fn hud(&self) -> Option<ActorId> {
+        self.hud
+    }
+
+    /// The actor the spyglass camera binds to, when a transfer published one.
+    #[must_use]
+    pub const fn spyglass(&self) -> Option<ActorId> {
+        self.spyglass
+    }
+
+    /// The actor whose engine loop the sound consumer follows, when a
+    /// transfer published one.
+    #[must_use]
+    pub const fn sound(&self) -> Option<ActorId> {
+        self.sound
+    }
+
+    /// The actor whose hardpoints the weapons consumer presents, when a
+    /// transfer published one.
+    #[must_use]
+    pub const fn weapons(&self) -> Option<ActorId> {
+        self.weapons
+    }
+
+    /// The actor network ownership must move to, when a transfer published
+    /// one.
+    #[must_use]
+    pub const fn network(&self) -> Option<ActorId> {
+        self.network
+    }
+
+    /// Drops every published binding, so no consumer can read a record
+    /// belonging to a transfer or session that no longer stands.
+    pub fn clear(&mut self) {
+        self.bound = None;
+        self.input = None;
+        self.hud = None;
+        self.spyglass = None;
+        self.sound = None;
+        self.weapons = None;
+        self.network = None;
+    }
+}
+
+/// Why a transfer report could not rebind the consumers. A refused report
+/// changes nothing except where its own documentation says the published
+/// bindings were dropped.
+#[derive(Clone, Debug, PartialEq)]
+pub enum TransferConsumerError {
+    /// No [`InteractionRuntime`] is installed, so no live session can stand
+    /// behind the report. The previously published bindings are dropped:
+    /// they describe a session that is gone (the F30-C unbind discipline).
+    NoRuntime,
+    /// The report belongs to a different session generation than the live
+    /// one — a retry replaced the session, so the report's transfer is not
+    /// part of the world these consumers fly.
+    StaleSession {
+        /// The live session generation.
+        live: u64,
+        /// The generation the report claimed.
+        report: u64,
+    },
+    /// The live session does not hold this interaction as completed: it
+    /// aborted, was never opened, or was dropped by a retry. An aborted
+    /// transfer never rebinds.
+    NotCompleted {
+        /// The interaction the report claimed.
+        id: InteractionId,
+        /// The stage the live session holds it at, if it knows it at all.
+        state: Option<InteractionState>,
+    },
+}
+
+impl std::fmt::Display for TransferConsumerError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NoRuntime => write!(
+                f,
+                "no interaction runtime is installed to stand behind the report"
+            ),
+            Self::StaleSession { live, report } => write!(
+                f,
+                "the report's transfer belongs to session {report}, the live session is {live}"
+            ),
+            Self::NotCompleted { id, state } => match state {
+                Some(state) => write!(f, "the live session holds {id} at {state}, not completed"),
+                None => write!(f, "the live session does not know {id}"),
+            },
+        }
+    }
+}
+
+impl std::error::Error for TransferConsumerError {}
+
+/// What one [`apply_transfer_consumers`] pass published.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConsumerRebindReport {
+    /// The `(session, interaction)` the bindings now describe.
+    pub binding: ConsumerBinding,
+    /// The pass rebound the consumers to a different transfer than the one
+    /// previously bound, so the previous transfer's actors were dropped
+    /// rather than carried over.
+    pub rebound: bool,
+}
+
+/// Rebinds input, HUD, spyglass, sound, weapons and network ownership from
+/// one applied [`TransferReport`] — the F36-C.2 consumer entry.
+///
+/// This is the **only** writer of [`TransferConsumers`], and it derives all
+/// six bindings from the one report, so the input binding, the HUD's
+/// instruments, the spyglass camera, the engine-loop sound, the weapon
+/// hardpoints and the network ownership entry can never disagree about which
+/// aircraft the pilot now flies (spec F36 non-negotiable behavior 5: "one
+/// authoritative transition").
+///
+/// The report is checked against the live [`InteractionRuntime`] before any
+/// binding moves, which is what makes an aborted or stale transfer unable to
+/// rebind anything:
+///
+/// * no installed runtime is [`TransferConsumerError::NoRuntime`], and the
+///   previously published bindings are dropped — they described a session
+///   nobody can stand behind any more;
+/// * a report from another generation is
+///   [`TransferConsumerError::StaleSession`] (a retry replaced the session,
+///   `STATE-TRANSACTIONS`: "Retry restores the authored initial state");
+/// * an interaction the live session does not hold as
+///   [`InteractionState::Completed`] — an aborted, unknown or dropped one —
+///   is [`TransferConsumerError::NotCompleted`]. The session produces no
+///   report for those, so a report claiming one is stale or fabricated, and
+///   a fabricated report must not move the player's aircraft bindings.
+///
+/// Both refusals other than [`TransferConsumerError::NoRuntime`] leave the
+/// published bindings untouched: they still describe the last transfer that
+/// actually committed, which remains true after an unrelated abort.
+///
+/// # Errors
+///
+/// [`TransferConsumerError`] as above; no binding changes on
+/// [`TransferConsumerError::StaleSession`] or
+/// [`TransferConsumerError::NotCompleted`].
+pub fn apply_transfer_consumers(
+    world: &mut World,
+    report: &TransferReport,
+) -> Result<ConsumerRebindReport, TransferConsumerError> {
+    // Read the previous binding before the mutable work: a pass for a
+    // different transfer rebinds, and the rebind must drop the previous
+    // transfer's actors rather than carry them across.
+    let rebound = world
+        .get_resource::<TransferConsumers>()
+        .and_then(TransferConsumers::bound)
+        .is_some_and(|bound| bound.interaction != report.id);
+
+    // The live session is the authority the report is checked against. The
+    // checks are collected before any write so a refusal cannot leave a
+    // half-rebound record.
+    let Some(runtime) = world.get_resource::<InteractionRuntime>() else {
+        // A bindings record that outlives the runtime it was derived from
+        // must not stay readable: unbind, then report.
+        match world.get_resource_mut::<TransferConsumers>() {
+            Some(mut consumers) => consumers.clear(),
+            None => {
+                world.insert_resource(TransferConsumers::default());
+            }
+        }
+        return Err(TransferConsumerError::NoRuntime);
+    };
+    let live = runtime.0.session();
+    if report.id.session != live {
+        return Err(TransferConsumerError::StaleSession {
+            live,
+            report: report.id.session,
+        });
+    }
+    let state = runtime.0.state(report.id);
+    if state != Some(InteractionState::Completed) {
+        return Err(TransferConsumerError::NotCompleted {
+            id: report.id,
+            state,
+        });
+    }
+
+    // Commit: nothing below can fail. One record, all six bindings, from the
+    // one report.
+    let binding = ConsumerBinding {
+        session: report.id.session,
+        interaction: report.id,
+    };
+    world.insert_resource(TransferConsumers {
+        bound: Some(binding),
+        input: Some(report.control_actor),
+        hud: Some(report.control_actor),
+        spyglass: Some(report.camera_actor),
+        sound: Some(report.control_actor),
+        weapons: Some(report.control_actor),
+        network: Some(report.control_actor),
+    });
+    Ok(ConsumerRebindReport { binding, rebound })
+}
+
+/// Drops the published consumer bindings for `session` — the explicit
+/// abort/retry/disconnect path (F36-C.2).
+///
+/// A caller that knows a generation is over calls it so no consumer reads a
+/// binding from a transfer the retry replaced (`STATE-TRANSACTIONS`: "Retry
+/// restores the authored initial state, not a mutated copy of the just-
+/// failed world"). It refuses to clear bindings published by a **different**
+/// session, so a late teardown for the previous generation cannot blank the
+/// current one, and reports whether it cleared anything.
+///
+/// Returns `false` (changing nothing) when nothing is bound at all, so the
+/// caller is told a teardown that appeared to do work did not.
+pub fn teardown_transfer_consumers(world: &mut World, session: u64) -> bool {
+    let Some(mut consumers) = world.get_resource_mut::<TransferConsumers>() else {
+        return false;
+    };
+    if consumers
+        .bound()
+        .is_some_and(|bound| bound.session != session)
+    {
+        return false;
+    }
+    if consumers.bound().is_none() {
+        return false;
+    }
+    consumers.clear();
+    true
+}
+
+/// Why a network-ownership rebind was refused. A refused rebind changes
+/// nothing: the peer keeps the aircraft it owned.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum NetworkRebindError {
+    /// The peer does not own the actor the transfer moved control away from,
+    /// so it is not the pilot this swap rebinds.
+    PeerDoesNotOwnInitiator {
+        /// The peer that asked for the rebind.
+        peer: PeerId,
+        /// The actor the report moved control away from.
+        actor: ActorId,
+    },
+    /// Another peer already owns the destination aircraft: "A peer never
+    /// takes an aircraft from another pilot" (`cs_net` ownership table).
+    DestinationOwned {
+        /// The peer that asked for the rebind.
+        peer: PeerId,
+        /// The destination aircraft.
+        actor: ActorId,
+        /// The peer that owns it.
+        owner: PeerId,
+    },
+}
+
+impl std::fmt::Display for NetworkRebindError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::PeerDoesNotOwnInitiator { peer, actor } => write!(
+                f,
+                "{peer} does not own the aircraft {actor} it is swapping from"
+            ),
+            Self::DestinationOwned { peer, actor, owner } => {
+                write!(f, "{peer} cannot take {actor}: {owner} already owns it")
+            }
+        }
+    }
+}
+
+impl std::error::Error for NetworkRebindError {}
+
+/// What one [`rebind_network_ownership`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NetworkRebind {
+    /// The actor the peer now owns.
+    pub bound: ActorId,
+    /// The aircraft the peer released, when it owned a different one.
+    pub released: Option<ActorId>,
+}
+
+/// Moves the server's peer-to-actor ownership entry along an applied
+/// [`TransferReport`] (F36-C.2).
+///
+/// The swap moves the pilot from the report's initiator to its
+/// [`TransferReport::control_actor`], and the ownership table
+/// ([`ActorOwnership`], `docs/contracts/UI-NETWORK.md`) must follow so the
+/// peer's intents are authorized for the aircraft it now flies and refused
+/// for the one it left.
+///
+/// The order is deliberate: the new binding is established **first** and the
+/// old aircraft is released only after it bound, so a refusal at any point
+/// leaves the peer owning exactly what it owned before — never nothing, and
+/// never both. When control did not move (`control_actor` is the initiator)
+/// there is nothing to rebind and the current binding is reported unchanged.
+///
+/// # Errors
+///
+/// [`NetworkRebindError::PeerDoesNotOwnInitiator`] when the peer is not the
+/// pilot of the aircraft the report moved control away from, and
+/// [`NetworkRebindError::DestinationOwned`] when another peer already owns
+/// the destination. The table is unchanged in both cases.
+pub fn rebind_network_ownership(
+    ownership: &mut ActorOwnership,
+    peer: PeerId,
+    report: &TransferReport,
+) -> Result<NetworkRebind, NetworkRebindError> {
+    let from = report.id.initiator;
+    let to = report.control_actor;
+    if to == from {
+        // Control did not move: the peer's binding already describes the
+        // aircraft it still flies.
+        return Ok(NetworkRebind {
+            bound: to,
+            released: None,
+        });
+    }
+    if ownership.actor_of(peer) != Some(from) {
+        return Err(NetworkRebindError::PeerDoesNotOwnInitiator { peer, actor: from });
+    }
+    // Bind the destination first: `bind` refuses exactly when another pilot
+    // already owns it ("A peer never takes an aircraft from another pilot"),
+    // and that refusal is reported against the table's own answer. The old
+    // aircraft is released only after the new one bound, so a refusal left
+    // the peer with its original binding.
+    if let Err(violation) = ownership.bind(peer, to) {
+        let owner = match violation {
+            SessionViolation::ActorNotOwned {
+                owner: Some(owner), ..
+            } => owner,
+            // `bind` documents exactly one refusal and carries the blocking
+            // owner; any other answer is reported against the asking peer
+            // rather than unwrapped.
+            _ => peer,
+        };
+        return Err(NetworkRebindError::DestinationOwned {
+            peer,
+            actor: to,
+            owner,
+        });
+    }
+    ownership.release(from);
+    Ok(NetworkRebind {
+        bound: to,
+        released: Some(from),
+    })
 }
