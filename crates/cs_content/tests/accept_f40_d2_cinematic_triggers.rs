@@ -30,9 +30,10 @@ use std::fs;
 use std::path::PathBuf;
 
 use cs_content::cinematics::{
-    CLAIM_RETAIL_SKIP_CAMPAIGN_INTRO, CLAIM_RETAIL_SKIP_ENGINE_FMV, CLAIM_RETAIL_SKIP_FINAL_CINEMA,
-    CLAIM_RETAIL_SKIP_MENU_BACKDROP, CLAIM_RETAIL_SKIP_UNREAD, RetailCinematicSources,
-    RetailSemanticEnd, RetailTrigger, UiPageSource, measure_retail_cinematics,
+    CLAIM_RETAIL_FMV_INVOCATION_UNREAD, CLAIM_RETAIL_SKIP_CAMPAIGN_INTRO,
+    CLAIM_RETAIL_SKIP_ENGINE_FMV, CLAIM_RETAIL_SKIP_FINAL_CINEMA, CLAIM_RETAIL_SKIP_MENU_BACKDROP,
+    CLAIM_RETAIL_SKIP_UNREAD, RetailCinematicSources, RetailSemanticEnd, RetailTrigger,
+    UiPageSource, measure_retail_cinematics,
 };
 use cs_types::content::Resolved;
 
@@ -138,6 +139,20 @@ fn guarded_backdrop_page() -> &'static str {
     "main\r\n{\r\ngui_create\r\n{\r\nif ($$KW$$)\r\n{\r\nobject GC = @ctl@AL\r\nGC.YC = \"movie\"\r\ninitialize(GC)\r\n}\r\n}\r\n}\r\n"
 }
 
+/// The authored page that sets a `.BL` file name on a **different** object
+/// (`XX`) than the one (`GC`) that binds the movie key: the record's own file
+/// name is not superseded by another object's field.
+fn other_object_bl_page() -> &'static str {
+    "main\r\n{\r\ngui_create\r\n{\r\nobject GC = @ctl@AL\r\nobject XX = @ctl@ZJ\r\nXX.BL = \"elsewhere.mpg\"\r\nGC.YC = \"movie\"\r\ninitialize(GC)\r\n}\r\n}\r\n"
+}
+
+/// The authored page that sets the **bound** object's `.BL` file name only
+/// **after** initializing it: the control already took the record's file name
+/// at initialization, so this assignment supersedes nothing.
+fn late_bl_page() -> &'static str {
+    "main\r\n{\r\ngui_create\r\n{\r\nobject GC = @ctl@AL\r\nGC.YC = \"movie\"\r\ninitialize(GC)\r\nGC.BL = \"late.mpg\"\r\n}\r\n}\r\n"
+}
+
 /// The authored save page: an `if ($$KW$$)` conditional that does **not**
 /// wrap the creation (it follows it) — the brace-scope negative case.
 fn unguarded_with_trailing_kw_page() -> &'static str {
@@ -153,6 +168,33 @@ fn campaign_intro_page() -> &'static str {
         "gui_create\r\n{\r\nint EC = 0\r\nint FC\r\ncallback($$E$$, 2151, FC)\r\nobject GC = @ctl@AL\r\ninitialize(this)\r\n}\r\n",
         "gui_init\r\n{\r\nGC.BL = \"chap\" conv$(FC) \".mpg\"\r\nGC.YC = \"cm_movie\"\r\ninitialize(GC)\r\n}\r\n",
         "gui_char\r\n{\r\nswitch (getchar())\r\n{\r\ncase key_escape:\r\ncase key_space:\r\ncase key_return:\r\nmail (11006, this)\r\n}\r\n}\r\n",
+        "lbutton_update\r\n{\r\nif (mouse.left == button_pressed)\r\n{\r\nmail (11006, this)\r\n}\r\n}\r\n",
+        "gui_mailbox\r\n{\r\nif (11006 == getmessage())\r\n{\r\nif (!EC)\r\n{\r\nEC = 1\r\nscript_continue @passengercabin@\r\nscript_end @campaignintro@\r\n}\r\n}\r\n}\r\n",
+        "}\r\n",
+    )
+}
+
+/// The authored intro page with a **partial** skip path: the keyboard skip
+/// mails the done message, but there is no left-click handler — the page
+/// states only one of the two skip inputs, so it is not measured skippable.
+fn campaign_intro_key_only_page() -> &'static str {
+    concat!(
+        "main\r\n{\r\n",
+        "gui_create\r\n{\r\nint EC = 0\r\nint FC\r\ncallback($$E$$, 2151, FC)\r\nobject GC = @ctl@AL\r\ninitialize(this)\r\n}\r\n",
+        "gui_init\r\n{\r\nGC.BL = \"chap\" conv$(FC) \".mpg\"\r\nGC.YC = \"cm_movie\"\r\ninitialize(GC)\r\n}\r\n",
+        "gui_char\r\n{\r\nswitch (getchar())\r\n{\r\ncase key_escape:\r\ncase key_space:\r\ncase key_return:\r\nmail (11006, this)\r\n}\r\n}\r\n",
+        "gui_mailbox\r\n{\r\nif (11006 == getmessage())\r\n{\r\nif (!EC)\r\n{\r\nEC = 1\r\nscript_continue @passengercabin@\r\nscript_end @campaignintro@\r\n}\r\n}\r\n}\r\n",
+        "}\r\n",
+    )
+}
+
+/// The authored intro page with the other **partial** skip path: the
+/// left-click mails the done message, but there is no keyboard handler.
+fn campaign_intro_click_only_page() -> &'static str {
+    concat!(
+        "main\r\n{\r\n",
+        "gui_create\r\n{\r\nint EC = 0\r\nint FC\r\ncallback($$E$$, 2151, FC)\r\nobject GC = @ctl@AL\r\ninitialize(this)\r\n}\r\n",
+        "gui_init\r\n{\r\nGC.BL = \"chap\" conv$(FC) \".mpg\"\r\nGC.YC = \"cm_movie\"\r\ninitialize(GC)\r\n}\r\n",
         "lbutton_update\r\n{\r\nif (mouse.left == button_pressed)\r\n{\r\nmail (11006, this)\r\n}\r\n}\r\n",
         "gui_mailbox\r\n{\r\nif (11006 == getmessage())\r\n{\r\nif (!EC)\r\n{\r\nEC = 1\r\nscript_continue @passengercabin@\r\nscript_end @campaignintro@\r\n}\r\n}\r\n}\r\n",
         "}\r\n",
@@ -288,7 +330,7 @@ impl FullFixture {
 }
 
 /// The claim id an unknown carries, for assertions.
-fn unknown_claim(resolved: &Resolved<bool>) -> &str {
+fn unknown_claim<T>(resolved: &Resolved<T>) -> &str {
     let Resolved::Unknown { claim_id, .. } = resolved else {
         panic!("the value must stay an explicit unknown");
     };
@@ -340,6 +382,14 @@ fn accept_f40_d2_full_chain_measures_every_video_and_trigger() {
             unknown_claim(cinematic.skippable()),
             CLAIM_RETAIL_SKIP_ENGINE_FMV,
             "{video}'s skippability stays the engine-FMV unknown"
+        );
+        let RetailTrigger::FmvSequence { invocation, .. } = &cinematic.triggers()[0] else {
+            panic!("{video}'s single trigger is the FMV sequence");
+        };
+        assert_eq!(
+            unknown_claim(invocation),
+            CLAIM_RETAIL_FMV_INVOCATION_UNREAD,
+            "{video}'s invocation stays the explicit FMV-invocation unknown on the trigger itself"
         );
         assert_eq!(
             *cinematic.semantic_end(),
@@ -552,6 +602,80 @@ fn accept_f40_d2_missing_skip_input_leaves_skippable_unknown_but_the_end_measure
             script: "scrapbook.script".to_owned()
         },
         "the cinema's semantic end is still measured"
+    );
+}
+
+#[test]
+fn accept_f40_d2_partial_skip_inputs_leave_skippable_unknown_but_the_end_measured() {
+    // Each partial skip path — keyboard only, and click only — must leave the
+    // chapter videos' skippability unknown while the done handler still
+    // measures the semantic end: skippability needs the full measured input
+    // set, not one input standing in for the page.
+    for (case, page) in [
+        ("keyboard-only", campaign_intro_key_only_page()),
+        ("click-only", campaign_intro_click_only_page()),
+    ] {
+        let mut fixture = FullFixture::new();
+        fixture.campaignintro = page;
+        let cinematics = fixture.measure();
+        let chap1 = cinematics
+            .iter()
+            .find(|cinematic| cinematic.video() == "chap1.mpg")
+            .unwrap_or_else(|| panic!("{case}: the chain still measures"));
+        assert_eq!(
+            unknown_claim(chap1.skippable()),
+            CLAIM_RETAIL_SKIP_UNREAD,
+            "{case}: a partial skip path is not a measured skippable page"
+        );
+        assert_eq!(
+            *chap1.semantic_end(),
+            RetailSemanticEnd::UiScriptResume {
+                page: "passengercabin".to_owned()
+            },
+            "{case}: the done handler still measures the semantic end"
+        );
+    }
+}
+
+#[test]
+fn accept_f40_d2_supersede_is_the_bound_object_file_field_before_its_initialization() {
+    let mut fixture = FullFixture::new();
+    // A `.BL` set on a different object does not supersede the movie
+    // control's record file name...
+    fixture.load = other_object_bl_page();
+    // ...and one set on the bound object after its initialization does not
+    // either (the control already took the record's name at initialize).
+    fixture.preferences = late_bl_page();
+    let cinematics = fixture.measure();
+
+    let crimflag = cinematics
+        .iter()
+        .find(|cinematic| cinematic.video() == "CrimFlag.MPG")
+        .expect("crimflag is named by five layout records");
+    let supersede: Vec<(&str, bool)> = crimflag
+        .triggers()
+        .iter()
+        .filter_map(|trigger| match trigger {
+            RetailTrigger::UiMoviePage {
+                page,
+                file_superseded_by_constructed_name,
+                ..
+            } => Some((page.as_str(), *file_superseded_by_constructed_name)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        supersede,
+        [
+            ("MainMenu", false),
+            ("CampaignIntro", true),
+            ("Save", false),
+            ("Load", false),
+            ("Preferences", false),
+        ],
+        "only the page that sets the BOUND control's file field before its initialization \
+         supersedes the record's file name: another object's `.BL` and a post-initialize \
+         `.BL` supersede nothing"
     );
 }
 
@@ -825,10 +949,19 @@ fn accept_f40_d2_retail_triggers_remeasure_from_the_installation() {
                         sequence: found,
                         archive: "ZBD/zrdr.zbd",
                         member: "fmv.zrd",
+                        ..
                     }] if found == sequence
             ),
             "{video} is triggered by the engine FMV sequence {sequence}: {:?}",
             cinematic.triggers()
+        );
+        let RetailTrigger::FmvSequence { invocation, .. } = &cinematic.triggers()[0] else {
+            panic!("{video}'s single trigger is the FMV sequence");
+        };
+        assert_eq!(
+            unknown_claim(invocation),
+            CLAIM_RETAIL_FMV_INVOCATION_UNREAD,
+            "{video}'s invocation stays the explicit FMV-invocation unknown on the trigger itself"
         );
         assert_eq!(
             unknown_claim(cinematic.skippable()),

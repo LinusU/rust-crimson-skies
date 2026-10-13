@@ -292,13 +292,17 @@ fn evidence_report_f40_d2_writes_the_acceptance_report() {
                     sequence,
                     archive,
                     member,
-                } => format!(
-                    "{{\"kind\": \"fmv_sequence\", \"sequence\": {}, \"archive\": {}, \
-                     \"member\": {}}}",
-                    jstr(sequence),
-                    jstr(archive),
-                    jstr(member)
-                ),
+                    invocation,
+                } => {
+                    let (invocation_claim, _) = resolved_string(invocation);
+                    format!(
+                        "{{\"kind\": \"fmv_sequence\", \"sequence\": {}, \"archive\": {}, \
+                         \"member\": {}, \"invocation_claim\": {invocation_claim}}}",
+                        jstr(sequence),
+                        jstr(archive),
+                        jstr(member)
+                    )
+                }
                 RetailTrigger::UiMoviePage {
                     page,
                     layout_key,

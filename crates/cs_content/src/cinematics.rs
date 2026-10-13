@@ -589,6 +589,18 @@ pub const CLAIM_RETAIL_SKIP_FINAL_CINEMA: &str = "f40.d2.retail.skippable.finalc
 /// byte read here states.
 pub const CLAIM_RETAIL_SKIP_ENGINE_FMV: &str = "f40.d2.retail.skippable.engine_fmv";
 
+/// Claim id of the explicit unknown on **which engine event invokes** an FMV
+/// sequence (`INTRO`, `CHAP0`).
+///
+/// The engine image registers both sequence names against `fmv.zrd` at
+/// startup, but the invocation sites were not read and no named script source
+/// handles these sequences, so when (and whether an action of the player)
+/// causes each sequence to run is engine state no byte read here states. The
+/// claim is carried on the trigger itself ([`RetailTrigger::FmvSequence`]'s
+/// `invocation`) so the unknown survives at the record a consumer reads, not
+/// only in the findings document.
+pub const CLAIM_RETAIL_FMV_INVOCATION_UNREAD: &str = "f40.d2.retail.fmv_invocation.unread";
+
 /// Claim id of the explicit unknown on the skippability of a menu-backdrop
 /// video (`crimflag` behind the main-menu/save/load/preferences pages).
 ///
@@ -679,7 +691,8 @@ pub enum RetailTrigger {
     /// engine's FMV player runs the sequence. Which engine event invokes the
     /// sequence is **not** measured (the engine image registers the sequence
     /// names `INTRO`/`CHAP0` against `fmv.zrd` at startup; the invocation
-    /// sites were not read).
+    /// sites were not read), and the trigger carries that explicit unknown in
+    /// `invocation` ([`CLAIM_RETAIL_FMV_INVOCATION_UNREAD`]).
     FmvSequence {
         /// The sequence's own name (`INTRO`, `CHAP0`).
         sequence: String,
@@ -687,6 +700,10 @@ pub enum RetailTrigger {
         archive: &'static str,
         /// The member the sequence was read from.
         member: &'static str,
+        /// Which engine event invokes the sequence — an explicit unknown
+        /// under [`CLAIM_RETAIL_FMV_INVOCATION_UNREAD`] on every measured
+        /// sequence; no byte read here states the invocation.
+        invocation: Resolved<String>,
     },
     /// A UI script page creates the movie control (`@ctl@AL`) bound to a
     /// layout key whose record's file field is this video.
@@ -705,11 +722,15 @@ pub enum RetailTrigger {
         /// `if ($$KW$$)` block (`$$freturntogame$$` in the retail script
         /// symbol map), measured by brace-matched block scope.
         freturntogame_guarded: bool,
-        /// Whether the bound page overrides the control's file-name field
-        /// (`<obj>.BL = …`) before initializing it, which supersedes the
-        /// record's own file name (the measured campaign-intro case: the
-        /// record spells `CrimFlag.MPG`, the page plays the constructed
-        /// `chap<FC>.mpg`).
+        /// Whether the bound page sets the **same control object's**
+        /// file-name field (`<obj>.BL = …`, where `<obj>` is the object whose
+        /// `.YC = "<key>"` binds this record) before that object's
+        /// `initialize(<obj>)`, which supersedes the record's own file name
+        /// (`CTL.SCRIPT` defaults `BL` from the record only when it is empty
+        /// at initialization: the measured campaign-intro case — the record
+        /// spells `CrimFlag.MPG`, the page plays the constructed
+        /// `chap<FC>.mpg`). An assignment on another object, or one after
+        /// the initialization, supersedes nothing.
         file_superseded_by_constructed_name: bool,
     },
     /// The chapter construction: `CAMPAIGNINTRO.SCRIPT` builds
@@ -1081,6 +1102,54 @@ fn yc_binding_offset(script: &[u8], key: &str) -> Option<usize> {
     None
 }
 
+/// The identifier bytes that end at `at` (an offset that points at the `.` of
+/// a `<obj>.FIELD` reference): the run of identifier characters before it.
+fn identifier_before(script: &[u8], at: usize) -> &[u8] {
+    let start = script[..at]
+        .iter()
+        .rposition(|byte| !byte.is_ascii_alphanumeric() && *byte != b'_')
+        .map_or(0, |index| index + 1);
+    &script[start..at]
+}
+
+/// Whether the page sets the **bound control's own** file-name field before
+/// that control initializes — the measured supersede of the layout record's
+/// file name.
+///
+/// `CTL.SCRIPT`'s `gui_init` defaults `BL` from the record only when `BL` is
+/// empty at `initialize(<obj>)` time, so a `<obj>.BL = …` assignment that
+/// precedes the initialization of the same `<obj>` whose `.YC = "<key>"`
+/// binds this record supersedes the record's file name (the measured
+/// campaign-intro case: the record spells `CrimFlag.MPG`, the page plays the
+/// constructed `chap<FC>.mpg`). An assignment on a **different** object, or
+/// one that follows the bound object's initialization, supersedes nothing of
+/// that playback.
+fn file_field_superseded(script: &[u8], key: &str) -> bool {
+    let Some(binding) = yc_binding_offset(script, key) else {
+        return false;
+    };
+    let object = identifier_before(script, binding);
+    if object.is_empty() {
+        return false;
+    }
+    let mut assignment = Vec::with_capacity(object.len() + 6);
+    assignment.extend_from_slice(object);
+    assignment.extend_from_slice(b".BL = ");
+    let mut initialize = Vec::with_capacity(object.len() + 14);
+    initialize.extend_from_slice(b"initialize(");
+    initialize.extend_from_slice(object);
+    initialize.push(b')');
+    let mut from = 0usize;
+    while let Some(hit) = find_bytes(&script[from..], &assignment) {
+        let at = from + hit;
+        if find_bytes(&script[..at], &initialize).is_none() {
+            return true;
+        }
+        from = at + 1;
+    }
+    false
+}
+
 /// The `script_continue @<page>@` target of a block.
 fn script_continue_target(block: &[u8]) -> Option<String> {
     let marker = b"script_continue @";
@@ -1411,6 +1480,13 @@ pub fn measure_retail_cinematics(
                 sequence: sequence.clone(),
                 archive: RETAIL_FMV_ARCHIVE,
                 member: RETAIL_FMV_MEMBER,
+                invocation: unmeasured(
+                    CLAIM_RETAIL_FMV_INVOCATION_UNREAD,
+                    "the engine image registers this sequence against fmv.zrd at startup, but \
+                     the invocation sites were not read and no named script source handles the \
+                     sequence, so which engine event makes it run is state no byte read here \
+                     states",
+                ),
             });
         if !order.contains(&key(video)) {
             order.push(key(video));
@@ -1446,7 +1522,7 @@ pub fn measure_retail_cinematics(
             .iter()
             .find(|page| page.page.eq_ignore_ascii_case(&page_name));
         let page_script = bound_page.map_or(&[][..], |page| page.script);
-        let file_superseded = find_bytes(page_script, b".BL = ").is_some();
+        let file_superseded = file_field_superseded(page_script, &movie.key);
         let guarded = yc_binding_offset(page_script, &movie.key)
             .is_some_and(|offset| freturntogame_guarded(page_script, offset));
         triggers
