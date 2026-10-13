@@ -363,8 +363,13 @@ pub fn sweep_volume_crossings(
 
         // Every volume the pair could have changed state about: the ones the
         // body was inside, the ones it ends inside, and the ones the segment
-        // touched. Sorted so a tick's decisions are in entity order, the way
-        // the stream's "in decision order" reads best.
+        // touched. `union` deduplicates `inside` against `ends`, but a volume
+        // can still reach the list twice from `touched` — inside at the
+        // segment's start and reported by a cast that begins overlapping (a
+        // hit at distance zero), or touched along the segment and ended
+        // inside. A pair is decided once per tick, so the list is
+        // deduplicated after the sort that puts the tick's decisions in
+        // entity order, the way the stream's "in decision order" reads best.
         let mut involved: Vec<Entity> = track
             .inside
             .union(&ends)
@@ -372,6 +377,7 @@ pub fn sweep_volume_crossings(
             .copied()
             .collect();
         involved.sort_unstable();
+        involved.dedup();
         for volume in involved {
             let was_inside = track.inside.contains(&volume);
             let ends_inside = ends.contains(&volume);
