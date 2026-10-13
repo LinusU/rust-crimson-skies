@@ -19,7 +19,7 @@ use cs_sim::objectives::counters::CountKind;
 use cs_sim::objectives::runtime::{
     ACTOR_EVENT_SOURCE, CountCondition, CountReaction, ObjectiveCompletion, ObjectiveEvent,
     ObjectiveEventKind, ObjectiveRuntime, ObjectiveSpec, ObjectiveTick, RevealRule, RuntimeError,
-    RuntimeLimits, StopReason, TickInput,
+    RuntimeLimits, SPAWNED_ACTOR_BASE, StopReason, TickInput,
 };
 use cs_sim::objectives::spawn::IdempotencyKey;
 use cs_sim::objectives::state::ObjectiveState;
@@ -46,6 +46,12 @@ const COMPLETE_DEADLINE: SymbolId = SymbolId(20);
 const APPROACH: SymbolId = SymbolId(30);
 /// The player actor the approach volume watches.
 const PLAYER: ActorId = ActorId(7);
+
+/// The actor id the runtime hands the k-th admitted wave instance: the
+/// F39-E-ACTORID-SPACE band, `SPAWNED_ACTOR_BASE` upward.
+const fn spawned(k: u32) -> ActorId {
+    ActorId(SPAWNED_ACTOR_BASE + k - 1)
+}
 
 const SESSION: SessionGeneration = SessionGeneration(1);
 
@@ -1230,10 +1236,10 @@ fn accept_f39_b_a_signal_arms_a_timer_once_and_a_repeat_does_not_replay_it() {
     assert!(matches!(
         armed.first(|kind| matches!(kind, ObjectiveEventKind::SpawnAdmitted { .. })),
         Some(ObjectiveEvent { kind: ObjectiveEventKind::SpawnAdmitted { group, instances, .. }, .. })
-            if *group == SymbolId(51) && instances == &vec![ActorId(1), ActorId(2)]
+            if *group == SymbolId(51) && instances == &vec![spawned(1), spawned(2)]
     ));
     let first = runtime.spawned_instances(&key()).map(<[ActorId]>::to_vec);
-    assert_eq!(first, Some(vec![ActorId(1), ActorId(2)]));
+    assert_eq!(first, Some(vec![spawned(1), spawned(2)]));
 
     // The same signal again: the re-arm is refused by name, and the action is not
     // performed again — there is no second wave request at all, admitted or
@@ -1290,7 +1296,7 @@ fn accept_f39_b_a_signal_arms_a_timer_once_and_a_repeat_does_not_replay_it() {
             &event.kind,
             ObjectiveEventKind::SpawnAdmitted { key, instances, .. }
                 if key == &IdempotencyKey("wave-3".into())
-                    && instances == &vec![ActorId(3), ActorId(4)]
+                    && instances == &vec![spawned(3), spawned(4)]
         )
     }));
 }
@@ -1448,7 +1454,7 @@ fn accept_f39_b_two_deadlines_asking_for_one_key_produce_one_wave() {
     const FIRST: SymbolId = SymbolId(120);
     const SECOND: SymbolId = SymbolId(121);
     let wave = IdempotencyKey("wave-2".into());
-    let wave_instances = vec![ActorId(1), ActorId(2)];
+    let wave_instances = vec![spawned(1), spawned(2)];
     let mut waves = runtime();
     for id in [FIRST, SECOND] {
         waves
@@ -2057,7 +2063,7 @@ fn accept_f39_b_a_new_session_generation_carries_nothing_from_the_old_one() {
         .spawned_instances(&IdempotencyKey("wave-2".into()))
         .expect("the wave was admitted")
         .to_vec();
-    assert_eq!(first_wave, vec![ActorId(1), ActorId(2)]);
+    assert_eq!(first_wave, vec![spawned(1), spawned(2)]);
 
     // The retry reaches the same outcome from its own events and nothing else,
     // and its wave takes this session's ids rather than the previous session's.

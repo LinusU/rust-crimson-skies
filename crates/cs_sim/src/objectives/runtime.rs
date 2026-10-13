@@ -69,6 +69,21 @@
 //! order a consumer should use. Effects were applied in the phase order above;
 //! the sort does not undo that.
 //!
+//! # Spawned instance ids sit in their own band
+//!
+//! An admitted spawn group's instance ids come from
+//! [`SPAWNED_ACTOR_BASE`] upward, in admission order — never from the low range
+//! the mission's placed actors (the player, convoy ships, importer-minted
+//! world actors) live in. That is the runtime half of the declared-vs-spawned
+//! actor-id contract (F39-E-ACTORID-SPACE): because the allocator can never
+//! reach the placed range, a declared actor's id can never name a wave
+//! instance, and lifecycle facts, trigger watches and counter attribution stay
+//! unambiguous in the one [`ActorId`] space they share. The declared half —
+//! the [`cs_content`] schema that keeps placed references out of the band and
+//! spawned references inside the program's computed wave capacity — lives in
+//! `cs_content::objectives`; the decision record is
+//! `docs/findings/2026-10-13-f39-e-actorid-space.md`.
+//!
 //! # Completion effects: one completion moves other objectives
 //!
 //! [`ObjectiveSpec::completion_effects`] is what completing one objective does to
@@ -174,6 +189,31 @@ use super::trigger::{Movement, SweptTrigger, TriggerError, TriggerEvent};
 /// [`add_trigger`](Self::add_trigger) all refuse it — so a counted event can
 /// never be mistaken for a declaration's event.
 pub const ACTOR_EVENT_SOURCE: SymbolId = SymbolId(0);
+
+/// The first [`ActorId`] a spawned wave instance ever takes: the low end of the
+/// band this runtime allocates from.
+///
+/// The declared-vs-spawned actor-id contract (F39-E-ACTORID-SPACE, recorded in
+/// `docs/findings/2026-10-13-f39-e-actorid-space.md`) splits one `ActorId`
+/// space in two: **placed** actors — the player, convoy ships and every actor
+/// an importer mints from a record — carry ids *below* this base, and **spawned**
+/// instances a timer action admits take ids at or above it, in admission order
+/// (the k-th admitted instance is `ActorId(SPAWNED_ACTOR_BASE + k - 1)`).
+///
+/// The split is enforced by allocation, not by a check that could be skipped:
+/// [`ObjectiveRuntime::admit_spawn`] never hands out an id below this value, so
+/// a declared actor such as `ActorId(2)` can never *be* a wave instance — its
+/// trigger watches, roster membership, lifecycle attribution and objective
+/// counts stay its own no matter what the waves admit. The declared schema
+/// side of the contract lives in `cs_content::objectives`, which carries the
+/// same constant under the same name; `cs_app` pins the two equal at compile
+/// time.
+///
+/// The boundary itself is **designed**, not measured: no original spawn-id
+/// space is known, so `0x4000_0000` is chosen only to leave both sides enormous
+/// headroom — roughly 1.07 billion placed ids below and 3.2 billion spawned ids
+/// at and above.
+pub const SPAWNED_ACTOR_BASE: u32 = 0x4000_0000;
 
 /// A declared count condition: *which* actors, in *which* category, how many.
 ///
@@ -1005,7 +1045,9 @@ pub struct ObjectiveRuntime {
     /// next tick — and no effect kind can queue anything, because none of them
     /// moves its target to `Succeeded`.
     pending_effects: Vec<QueuedEffect>,
-    /// The next instance id an admitted spawn group takes.
+    /// The next instance id an admitted spawn group takes. It starts at
+    /// [`SPAWNED_ACTOR_BASE`] and only ever increases, so no spawned instance
+    /// ever wears a placed actor's id.
     next_instance: u32,
     /// The tick's terminal requests raised by reactions and timer actions.
     requests: Vec<(SymbolId, TerminalOutcome)>,
@@ -1040,7 +1082,7 @@ impl ObjectiveRuntime {
             ledger: EmissionLedger::new(session),
             latch: TerminalLatch::new(),
             pending_effects: Vec::new(),
-            next_instance: 1,
+            next_instance: SPAWNED_ACTOR_BASE,
             requests: Vec::new(),
             sequence: 0,
             last_tick: None,
