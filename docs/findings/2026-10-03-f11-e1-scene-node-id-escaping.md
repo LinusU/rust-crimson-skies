@@ -254,6 +254,14 @@ only its column entry needs the retail capability:
   derived key is 104. **This is a second, separate decision** — whether a long
   path is shortened, folded or refused — and it is F18's to take together with
   the parentage question, not this stage's. A follow-up task is filed.
+  **Resolved 2026-10-04 by #628 (M01-LC-WORLD-SCENE,
+  `docs/findings/2026-10-04-m01-lc-world-scene-ids.md`):** an over-long path is
+  spelled by a digest (`<container>.-h<32 hex>` of the SHA-256 of the lowercased
+  escaped path), the refusal is gone, and the loss is stated — such an id no
+  longer says what the file said, while the stored name and the authored path
+  stay on the node. #586 (`docs/findings/2026-10-13-f11-e1-f2-key-bound-digest-decision.md`)
+  pins the measured 136- and 150-byte shapes and the `C1C` evidence with tests
+  of its own (`accept_f11_e1_f2_*`).
 - **The escape is only as good as the key grammar it fits into.** A name holding
   a `NUL`, a `/` or a non-ASCII byte cannot be stored in the 36-byte field as the
   reference reads it (the reader requires ASCII in the name prefix), so the rule
