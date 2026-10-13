@@ -40,9 +40,13 @@
 //!   [`DamageConsumerLog`].
 //! * [`apply_propulsion_state`] — the F29-C.1 consumer seam for
 //!   [`SystemKind::Propulsion`]: it reads the resolver's authoritative system
-//!   state and rewrites the thrust authority of the actor's
-//!   [`FlightAircraft`] gate, so a destroyed engine stops producing thrust and
-//!   a repair gives it back;
+//!   state and asserts the actor's [`FlightAircraft`]'s
+//!   [`PropulsionGate`](crate::physics::PropulsionGate) — a record the flight
+//!   driver composes with the producer-declared
+//!   [`DamageState`](cs_sim::flight::DamageState) instead of
+//!   overwriting it, so a destroyed engine stops producing thrust and stays
+//!   stopped across an equipment rebind (F29-C.1a), and a repair gives the
+//!   thrust back;
 //! * [`publish_destroyed_actors`] and [`DamageActorDestroyed`] — the F36-C.1
 //!   seam (task #658): one resolution's actor destructions become the
 //!   per-actor destroyed events the interaction consumer subscribes to, so a
@@ -97,13 +101,12 @@ use cs_sim::damage::{
     DamageNode, DamageNodeKey, DamageNodeKind, DamagePolicy, DamageResolver, InitialDamage,
     InitialDamageReport, LifecycleKind, NodeKeyError, PartState, SystemKind, SystemState,
 };
-use cs_sim::flight::DamageState;
 use cs_sim::weapons::FireResolver;
 use cs_types::content::{ContentId, Known, Resolved};
 use cs_types::evidence::ClaimId;
 
 use crate::physics::{
-    ColliderDecisionError, FlightAircraft, remove_collider_for_damage,
+    ColliderDecisionError, FlightAircraft, PropulsionGate, remove_collider_for_damage,
     restore_collider_after_repair,
 };
 use crate::scene::{AirframeDamageState, SceneGeneration};
@@ -876,14 +879,15 @@ pub enum DamageConsumerEvent {
         /// The visual part it presents as.
         scene_node: SceneNodeId,
     },
-    /// A disabled propulsion system cut the actor's thrust authority to zero.
+    /// A disabled propulsion system cut the actor's thrust: the flight
+    /// equations see a thrust authority of zero until the gate is lifted.
     ThrustCut {
         /// The actor.
         actor: ActorId,
     },
-    /// An enabled propulsion system lifted the gate's own cut: the thrust
-    /// authority is back at full — a repair, or the convergence that clears a
-    /// stale cut.
+    /// An enabled propulsion system lifted the gate's own cut: the
+    /// producer-declared thrust authority applies again — a repair, or the
+    /// convergence that clears a stale cut.
     ThrustRestored {
         /// The actor.
         actor: ActorId,
@@ -1261,18 +1265,21 @@ pub fn apply_world_initial_damage(
 }
 
 /// Applies one actor's authoritative propulsion state to its flight-authority
-/// gate: the [`DamageState::thrust_authority`] the [`FlightAircraft`]'s
-/// equations scale thrust and boost by.
+/// gate: the [`PropulsionGate`] the [`FlightAircraft`] composes with the
+/// producer-declared [`DamageState`](cs_sim::flight::DamageState) the
+/// equations scale thrust and boost by (F29-C.1a).
 ///
 /// The pass reads [`DamageResolver::system_state`] for
 /// [`SystemKind::Propulsion`] — the aggregate the resolver already owns, never
 /// a replay of `SystemDisabled` events — and:
 ///
-/// * [`SystemState::Disabled`] (any declaring part destroyed) cuts the thrust
-///   authority to `0`;
-/// * [`SystemState::Enabled`] lifts the gate's own cut: a thrust authority of
-///   exactly `0` goes back to [`DamageState::PRISTINE`]'s `1`, and any other
-///   value is left to the producer that wrote it;
+/// * [`SystemState::Disabled`] (any declaring part destroyed) cuts the gate:
+///   the equations see a thrust authority of `0` whatever the declared record
+///   holds, and an equipment rebind cannot lift the cut;
+/// * [`SystemState::Enabled`] lifts the gate's own cut: the declared thrust
+///   authority — whatever the equipment/mission producer wrote — applies
+///   again. A producer-declared `0` is **not** lifted: the pass opens only a
+///   gate it cut;
 /// * [`SystemState::Unknown`] asserts neither direction: every unresolved
 ///   declaring pool is refused by name and the gate is left as it is;
 /// * an actor whose graph declares no propulsion carrier leaves the gate
@@ -1284,7 +1291,8 @@ pub fn apply_world_initial_damage(
 ///
 /// **Designed rule, not original data.** Whether the original cut thrust on a
 /// destroyed engine, and how it aggregated several engines, is unmeasured; see
-/// `docs/findings/2026-10-05-f29-c1-propulsion-consumer.md`.
+/// `docs/findings/2026-10-05-f29-c1-propulsion-consumer.md` and
+/// `docs/findings/2026-10-13-f29-c1a-propulsion-gate-equipment.md`.
 #[must_use]
 pub fn apply_propulsion_state(
     resolver: &DamageResolver,
@@ -1302,20 +1310,19 @@ pub fn apply_propulsion_state(
         return outcome;
     };
 
-    let damage = flight.damage();
     match resolver.system_state(&actor, SystemKind::Propulsion) {
         // No propulsion carrier declared: nothing to gate.
         None => {}
         Some(SystemState::Disabled) => {
-            if damage.thrust_authority != 0.0 {
-                set_thrust_authority(flight, damage, 0.0);
+            if flight.propulsion_gate() != PropulsionGate::Cut {
+                flight.set_propulsion_gate(PropulsionGate::Cut);
                 outcome.report.thrust_cut += 1;
                 outcome.log.push(DamageConsumerEvent::ThrustCut { actor });
             }
         }
         Some(SystemState::Enabled) => {
-            if damage.thrust_authority == 0.0 {
-                set_thrust_authority(flight, damage, DamageState::PRISTINE.thrust_authority);
+            if flight.propulsion_gate() == PropulsionGate::Cut {
+                flight.set_propulsion_gate(PropulsionGate::Open);
                 outcome.report.thrust_restored += 1;
                 outcome
                     .log
@@ -1334,16 +1341,6 @@ pub fn apply_propulsion_state(
     }
 
     outcome
-}
-
-/// Rewrites only the thrust authority of a validated damage state.
-fn set_thrust_authority(flight: &mut FlightAircraft, damage: DamageState, thrust_authority: f64) {
-    flight
-        .set_damage(DamageState {
-            thrust_authority,
-            ..damage
-        })
-        .expect("a validated damage state with a thrust authority of 0 or 1 stays valid");
 }
 
 // ---------------------------------------------- the damage → actor-destroyed seam ---
