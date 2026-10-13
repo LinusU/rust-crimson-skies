@@ -42,7 +42,13 @@
 //!   [`SystemKind::Propulsion`]: it reads the resolver's authoritative system
 //!   state and rewrites the thrust authority of the actor's
 //!   [`FlightAircraft`] gate, so a destroyed engine stops producing thrust and
-//!   a repair gives it back.
+//!   a repair gives it back;
+//! * [`publish_destroyed_actors`] and [`DamageActorDestroyed`] — the F36-C.1
+//!   seam (task #658): one resolution's actor destructions become the
+//!   per-actor destroyed events the interaction consumer subscribes to, so a
+//!   carrier destroyed mid-latch reaches
+//!   [`InteractionRuntime::on_actor_destroyed`](crate::interaction::InteractionRuntime::on_actor_destroyed)
+//!   in a running app.
 //!
 //! Nothing here owns damage state: pools, lifecycle records and event
 //! sequences are the resolver's; these are the conversion and binding
@@ -78,6 +84,7 @@
 use std::collections::BTreeMap;
 
 use bevy::ecs::component::Component;
+use bevy::ecs::message::{Message, Messages};
 use bevy::prelude::{Entity, Resource, World};
 use cs_content::damage::{
     AttributionRule as DeclaredAttributionRule, DamageNodeKind as DeclaredNodeKind,
@@ -1337,6 +1344,72 @@ fn set_thrust_authority(flight: &mut FlightAircraft, damage: DamageState, thrust
             ..damage
         })
         .expect("a validated damage state with a thrust authority of 0 or 1 stays valid");
+}
+
+// ---------------------------------------------- the damage → actor-destroyed seam ---
+//
+// F36-C.1 (task #658). The resolver's five-way lifecycle ledger is the
+// authoritative record of an actor's destruction, and its ordered output
+// already carries it: one `DamageEventKind::Lifecycle` with
+// [`LifecycleKind::Destroyed`] per destroyed actor. The seam here turns
+// those into the per-actor destroyed events a non-damage consumer — the
+// first being [`crate::interaction::InteractionRuntime`] — subscribes to,
+// so a carrier destroyed mid-latch aborts its interaction in a running app
+// instead of leaving the latch controller holding a wreck forever.
+//
+// Only [`LifecycleKind::Destroyed`] publishes. Bailout, capture, despawn
+// and mission removal are separate transitions (F29 non-negotiable 3), not
+// spellings of death; whether any of them should touch an interaction is
+// a question no consumer has answered yet, and inventing that rule here
+// would collapse the five-way split the resolver exists to keep.
+
+/// Event: one actor's destruction reached the damage consumers.
+///
+/// Published by [`publish_destroyed_actors`] from the resolver's own
+/// [`Lifecycle`](DamageEventKind::Lifecycle) output — never re-derived
+/// from part states, because the destruction an actor recorded is the
+/// resolver's ledger fact, including a scripted destruction
+/// ([`DamageResolver::record_lifecycle`]) that no hit produced.
+#[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DamageActorDestroyed {
+    /// The actor whose destruction was recorded.
+    pub actor: ActorId,
+}
+
+/// Publishes one resolution's actor destructions as
+/// [`DamageActorDestroyed`] events, and returns the actors published in
+/// first-occurrence order.
+///
+/// `events` is the resolution a session's
+/// [`DamageResolver`](cs_sim::damage::DamageResolver) produced. Every
+/// [`DamageEventKind::Lifecycle`] whose kind is [`LifecycleKind::Destroyed`]
+/// is published once per batch — a batch naming the same destruction twice
+/// is one event, not two — and no other event kind or lifecycle kind
+/// publishes anything.
+///
+/// The publication is safe to repeat across batches: the forwarding
+/// consumer is idempotent (an already-aborted interaction aborts to
+/// nothing), so a replayed destruction cannot abort a second time or move
+/// control twice. The event queue is initialised here as well, so a caller
+/// with a world that has not installed
+/// [`InteractionSchedulePlugin`](crate::interaction::InteractionSchedulePlugin)
+/// yet records its publications instead of panicking on a missing
+/// [`Messages`] resource.
+#[must_use]
+pub fn publish_destroyed_actors(world: &mut World, events: &[DamageEvent]) -> Vec<ActorId> {
+    world.init_resource::<Messages<DamageActorDestroyed>>();
+    let mut published: Vec<ActorId> = Vec::new();
+    for event in events {
+        let DamageEventKind::Lifecycle { actor, kind } = &event.kind else {
+            continue;
+        };
+        if *kind != LifecycleKind::Destroyed || published.contains(actor) {
+            continue;
+        }
+        published.push(*actor);
+        world.write_message(DamageActorDestroyed { actor: *actor });
+    }
+    published
 }
 
 /// The refusal constructors, so [`apply_damage_state`] stays readable.

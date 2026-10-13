@@ -10,8 +10,29 @@
 //! Every test drives [`InteractionRuntime`] and the production
 //! [`InteractionSession`], so removing the abort, the control resolution or
 //! the joint commit fails an assertion.
+//!
+//! **F36-C.1** (`accept_f36_c1_`, task #658) adds the destroyed-carrier
+//! forward: the damage consumer's per-actor destroyed event
+//! ([`cs_app::damage::DamageActorDestroyed`], published by
+//! [`cs_app::damage::publish_destroyed_actors`]) is driven through the real
+//! [`cs_app::interaction::InteractionSchedulePlugin`] schedule, so the latch
+//! aborts in a **running app** — no test here calls `on_actor_destroyed`
+//! directly. These tests live in this binary rather than in a target of its
+//! own for the measured disk cost the F33-C1 header in
+//! `accept_f33_c_ally_lifecycle.rs` records: a Bevy/Avian-linked test binary
+//! is ~123 MB, which exhausted the CI runner's disk twice.
 
-use cs_app::interaction::InteractionRuntime;
+use bevy::prelude::App;
+use cs_app::damage::{lower_graph, lower_policy, publish_destroyed_actors};
+use cs_app::interaction::{
+    InteractionConsumerEvent, InteractionConsumerLog, InteractionRuntime, InteractionSchedulePlugin,
+};
+use cs_content::damage::declared_synthetic_airframe_damage;
+use cs_sim::damage::{
+    ActorId, DamageChannel, DamageEvent, DamageEventKind, DamageNodeKey, DamageResolver, HitEvent,
+    HitEventId, LifecycleKind, SYNTHETIC_HULL_INTEGRITY, SYNTHETIC_HULL_NODE,
+};
+use cs_sim::interaction::synthetic::SYNTHETIC_SESSION_ID;
 use cs_sim::interaction::{
     AbortReason, ControlHolder, EligibilityRefusal, InitiatorMotion, InteractionCompletion,
     InteractionId, InteractionKind, InteractionRefusal, InteractionSession, InteractionState,
@@ -270,4 +291,199 @@ fn accept_f36_c_initiator_cannot_hold_two_interactions() {
         session.open(other),
         Err(SessionRefusal::InitiatorBusy { .. })
     ));
+}
+
+// ------------------------------------------------------- F36-C.1: the forward ---
+//
+// The per-actor destroyed event and its ECS forward into the runtime
+// (task #658). Every test here goes through the **real schedule**: the
+// plugin's `Update` system runs on `app.update()`, and nothing calls
+// `InteractionRuntime::on_actor_destroyed` directly.
+
+/// The declared synthetic airframe lowered through the production damage
+/// boundary and registered with the real resolver under the interaction
+/// fixture's own session — the latch's carrier is the actor the damage
+/// resolver destroys.
+fn carrier_resolver() -> DamageResolver {
+    let declared = declared_synthetic_airframe_damage();
+    let mut resolver = DamageResolver::new(SYNTHETIC_SESSION_ID, 1);
+    resolver
+        .register_actor(
+            SYNTHETIC_HOOK_TARGET,
+            lower_graph(&declared).expect("the declared graph lowers"),
+            lower_policy(&declared).expect("the declared policy lowers"),
+        )
+        .expect("the carrier registers in the fixture session");
+    resolver
+}
+
+/// One internal hit that exactly destroys the carrier's hull, stamped in
+/// the fixture session, as the resolver receives a real ballistic hit.
+fn lethal_hit() -> HitEvent {
+    HitEvent::try_new(
+        HitEventId {
+            session: SYNTHETIC_SESSION_ID,
+            tick: Tick(0),
+            producer: 1,
+            sequence: 0,
+        },
+        None,
+        SYNTHETIC_HOOK_TARGET,
+        DamageNodeKey::new(SYNTHETIC_HULL_NODE).expect("the fixture hull key is valid"),
+        DamageChannel::Internal,
+        SYNTHETIC_HULL_INTEGRITY,
+    )
+    .expect("a finite, non-negative hit")
+}
+
+/// The carrier's destruction, resolved by the real resolver.
+fn resolved_destruction() -> Vec<DamageEvent> {
+    carrier_resolver()
+        .resolve(Tick(0), &[lethal_hit()])
+        .expect("the resolver accepts the batch")
+        .events
+}
+
+/// F36-C.1 minimum scenario: the damage consumer destroys the carrier
+/// mid-latch, and the real schedule forwards the destruction so the
+/// interaction aborts with control returned to the initiator.
+///
+/// The whole path is production code: the declared graph lowers and
+/// registers with the real [`DamageResolver`], the lethal hit is resolved
+/// by it, [`publish_destroyed_actors`] publishes the resolution's
+/// destructions, and one [`App::update`] over
+/// [`InteractionSchedulePlugin`]'s schedule forwards them into the
+/// runtime. A forward that never reads the event, or a publication that
+/// never emits it, fails at the abort assertion.
+#[test]
+fn accept_f36_c1_destroyed_carrier_during_latch_aborts_through_the_real_schedule() {
+    let (session, id) = latched(swap_transaction());
+    let mut app = App::new();
+    app.add_plugins(InteractionSchedulePlugin);
+    app.insert_resource(InteractionRuntime(session));
+
+    // The real resolver destroys the carrier: a lethal hit on its hull.
+    let events = resolved_destruction();
+    assert!(
+        events.iter().any(|event| matches!(
+            &event.kind,
+            DamageEventKind::Lifecycle { actor, kind }
+                if *actor == SYNTHETIC_HOOK_TARGET && *kind == LifecycleKind::Destroyed
+        )),
+        "the resolver emitted the carrier's destruction: {events:?}"
+    );
+
+    // The damage consumer publishes that destruction as the per-actor
+    // event, and the real schedule forwards it: the latch aborts and
+    // control resolves back to the initiator.
+    let published = publish_destroyed_actors(app.world_mut(), &events);
+    assert_eq!(published, vec![SYNTHETIC_HOOK_TARGET]);
+    app.update();
+
+    let runtime = app.world().resource::<InteractionRuntime>();
+    assert_eq!(runtime.0.state(id), Some(InteractionState::Aborted));
+    assert_eq!(
+        runtime.0.control_of(SYNTHETIC_INITIATOR),
+        ControlHolder::Actor(SYNTHETIC_INITIATOR),
+        "the initiator is flown by its own controller again"
+    );
+    assert!(runtime.0.active_for(SYNTHETIC_INITIATOR).is_none());
+    assert_eq!(
+        runtime.0.ledger().pilot_of(SYNTHETIC_INITIATOR),
+        Some(PILOT)
+    );
+    assert_eq!(runtime.0.ledger().pilot_of(SYNTHETIC_HOOK_TARGET), None);
+
+    let log = app.world().resource::<InteractionConsumerLog>();
+    assert_eq!(log.events().len(), 1, "one abort recorded: {log:?}");
+    let InteractionConsumerEvent::Aborted(abort) = &log.events()[0] else {
+        panic!("the forward recorded an abort, not a refusal: {log:?}");
+    };
+    assert_eq!(abort.id, id);
+    assert_eq!(abort.from, InteractionState::Latching);
+    assert_eq!(abort.reason, AbortReason::TargetDestroyed);
+}
+
+/// A destruction forwarded in a world with no interaction session is
+/// reported, not dropped: the wiring gap surfaces in the log instead of
+/// silently losing the abort.
+#[test]
+fn accept_f36_c1_destruction_without_an_interaction_runtime_is_reported() {
+    let mut app = App::new();
+    app.add_plugins(InteractionSchedulePlugin);
+
+    let published = publish_destroyed_actors(app.world_mut(), &resolved_destruction());
+    assert_eq!(published, vec![SYNTHETIC_HOOK_TARGET]);
+    app.update();
+
+    let log = app.world().resource::<InteractionConsumerLog>();
+    assert_eq!(
+        log.events(),
+        &[InteractionConsumerEvent::NoRuntime {
+            actor: SYNTHETIC_HOOK_TARGET
+        }],
+        "a destruction that cannot reach an interaction session is visible: {log:?}"
+    );
+}
+
+/// Only the resolver's destruction publishes: a bailout is a separate
+/// transition (F29 non-negotiable 3), so it leaves the active latch and
+/// its control untouched.
+#[test]
+fn accept_f36_c1_a_bailout_publishes_no_destroyed_event() {
+    let mut resolver = carrier_resolver();
+    let bailout = resolver
+        .record_lifecycle(SYNTHETIC_HOOK_TARGET, LifecycleKind::PilotBailout, Tick(0))
+        .expect("the carrier is registered");
+
+    let (session, id) = latched(swap_transaction());
+    let mut app = App::new();
+    app.add_plugins(InteractionSchedulePlugin);
+    app.insert_resource(InteractionRuntime(session));
+
+    let published = publish_destroyed_actors(app.world_mut(), std::slice::from_ref(&bailout));
+    assert_eq!(published, Vec::<ActorId>::new());
+    app.update();
+
+    let log = app.world().resource::<InteractionConsumerLog>();
+    assert!(log.is_empty(), "a bailout aborts nothing: {log:?}");
+    let runtime = app.world().resource::<InteractionRuntime>();
+    assert_eq!(runtime.0.state(id), Some(InteractionState::Latching));
+    assert_eq!(
+        runtime.0.control_of(SYNTHETIC_INITIATOR),
+        ControlHolder::Latch(id)
+    );
+}
+
+/// A batch that names the same destruction twice publishes once: one
+/// actor's death is one event, however many reporters recorded it.
+#[test]
+fn accept_f36_c1_a_replayed_destruction_publishes_once() {
+    let destroyed = DamageEvent {
+        id: HitEventId {
+            session: SYNTHETIC_SESSION_ID,
+            tick: Tick(0),
+            producer: 1,
+            sequence: 0,
+        },
+        kind: DamageEventKind::Lifecycle {
+            actor: SYNTHETIC_HOOK_TARGET,
+            kind: LifecycleKind::Destroyed,
+        },
+    };
+    let batch = [destroyed.clone(), destroyed];
+
+    let (session, id) = latched(swap_transaction());
+    let mut app = App::new();
+    app.add_plugins(InteractionSchedulePlugin);
+    app.insert_resource(InteractionRuntime(session));
+
+    let published = publish_destroyed_actors(app.world_mut(), &batch);
+    assert_eq!(published, vec![SYNTHETIC_HOOK_TARGET]);
+    app.update();
+
+    let log = app.world().resource::<InteractionConsumerLog>();
+    assert_eq!(log.events().len(), 1, "one destruction, one abort: {log:?}");
+    let runtime = app.world().resource::<InteractionRuntime>();
+    assert_eq!(runtime.0.state(id), Some(InteractionState::Aborted));
 }

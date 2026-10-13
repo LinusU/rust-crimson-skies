@@ -22,12 +22,22 @@
 //!   [`crate::scene::SceneNodeBinding`] and
 //!   [`crate::capital::CapitalActorBinding`] so a reload can never leave a
 //!   stale binding looking live.
+//! * [`InteractionRuntime`] (F36-C) and the F36-C.1 consumer wiring —
+//!   [`forward_actor_destroyed`] and [`InteractionSchedulePlugin`] forward
+//!   the damage side's per-actor destroyed events
+//!   ([`crate::damage::DamageActorDestroyed`]) into the runtime, so a
+//!   carrier destroyed during a latch aborts in a running app, with every
+//!   abort or refusal recorded in [`InteractionConsumerLog`].
 //!
 //! Nothing here owns runtime behavior: the state machine, eligibility test and
 //! transfer policy are `cs_sim::interaction`'s; this is the conversion and
 //! binding record the ECS wiring consumes (F36-B/C).
 
+use bevy::app::{App, Plugin, Update};
 use bevy::ecs::component::Component;
+use bevy::ecs::message::MessageReader;
+use bevy::ecs::resource::Resource;
+use bevy::ecs::system::ResMut;
 use cs_content::interaction::{
     DeclaredCameraTransfer, DeclaredControlOwner, DeclaredEligibility, DeclaredInteraction,
     DeclaredInteractionKind, DeclaredInventoryTransfer, DeclaredPilotTransfer,
@@ -35,13 +45,14 @@ use cs_content::interaction::{
 };
 use cs_sim::damage::ActorId;
 use cs_sim::interaction::{
-    CameraTransfer, ControlOwner, EligibilityEnvelope, EnvelopeError, InteractionAuthorization,
-    InteractionId, InteractionKind, InventoryTransfer, PilotTransfer, TransferPolicy,
-    VelocityTransfer,
+    CameraTransfer, ControlOwner, EligibilityEnvelope, EnvelopeError, InteractionAbort,
+    InteractionAuthorization, InteractionId, InteractionKind, InventoryTransfer, PilotTransfer,
+    TransferPolicy, VelocityTransfer,
 };
 use cs_types::content::{ContentId, Resolved};
 use cs_types::evidence::ClaimId;
 
+use crate::damage::DamageActorDestroyed;
 use crate::scene::SceneGeneration;
 
 /// Why a declared interaction could not be lowered to the runtime contract.
@@ -326,5 +337,142 @@ impl InteractionRuntime {
     /// Retries the mission under a new session generation.
     pub fn on_retry(&mut self, session: u64) -> Vec<cs_sim::interaction::InteractionAbort> {
         self.0.retry(session)
+    }
+}
+
+// ------------------------------------------ the damage → interaction consumer ---
+//
+// F36-C.1 (task #658). [`DamageActorDestroyed`] is the damage side's
+// per-actor destroyed event; this is the ECS system that forwards it to
+// [`InteractionRuntime`], the record of what the forward produced, and the
+// plugin that installs both into a running app. F36-C found the failure
+// this closes: destroying the carrier while a latch held control left the
+// latch controller holding a wreck forever, because nothing in the app
+// could tell the session the actor was gone.
+//
+// The forward is idempotent by construction: `InteractionSession` aborts
+// only active interactions, so a replayed destruction reaches a session
+// whose transaction is already terminal and changes nothing. A world with
+// no [`InteractionRuntime`] installed cannot abort anything — that is a
+// wiring gap, not a gameplay case — and it is reported in
+// [`InteractionConsumerLog`] rather than dropped, the way the damage
+// consumer names its own refusals.
+
+/// One update the damage → interaction forward applied, or one refusal.
+#[derive(Clone, Debug, PartialEq)]
+pub enum InteractionConsumerEvent {
+    /// A forwarded destruction aborted one interaction. The abort's
+    /// [`InteractionAbort::reason`] is the runtime's own
+    /// [`AbortReason::TargetDestroyed`](cs_sim::interaction::AbortReason::TargetDestroyed):
+    /// an actor destroyed mid-latch aborts from
+    /// [`InteractionState::Latching`](cs_sim::interaction::InteractionState::Latching)
+    /// with control resolving back to the surviving initiator.
+    Aborted(InteractionAbort),
+    /// A forwarded destruction found no [`InteractionRuntime`] installed,
+    /// so no interaction could be aborted and any held interaction stayed
+    /// live. Reported rather than dropped: a destruction that silently
+    /// fails to reach the interaction session is the F36-C failure
+    /// returning.
+    NoRuntime {
+        /// The destroyed actor whose abort could not be forwarded.
+        actor: ActorId,
+    },
+}
+
+/// Resource: the append-only record of what the damage → interaction
+/// forward changed or refused, oldest first.
+///
+/// A log entry is written for a real abort or a refusal, never for a
+/// destruction that found no active interaction — that is the normal case,
+/// not a change and not a gap.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct InteractionConsumerLog {
+    events: Vec<InteractionConsumerEvent>,
+}
+
+impl InteractionConsumerLog {
+    /// An empty log.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Appends one event.
+    pub fn push(&mut self, event: InteractionConsumerEvent) {
+        self.events.push(event);
+    }
+
+    /// Every event, oldest first.
+    #[must_use]
+    pub fn events(&self) -> &[InteractionConsumerEvent] {
+        &self.events
+    }
+
+    /// The most recent event.
+    #[must_use]
+    pub fn last(&self) -> Option<&InteractionConsumerEvent> {
+        self.events.last()
+    }
+
+    /// How many events the log holds.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.events.len()
+    }
+
+    /// Whether the log is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+}
+
+/// Forwards every [`DamageActorDestroyed`] event to the interaction runtime:
+/// each destruction reaches [`InteractionRuntime::on_actor_destroyed`],
+/// and every abort it produces lands in [`InteractionConsumerLog`].
+///
+/// A destruction that finds no active interaction logs nothing — the
+/// session simply has nothing to abort — while a world with no
+/// [`InteractionRuntime`] logs
+/// [`InteractionConsumerEvent::NoRuntime`] instead of dropping the
+/// destruction.
+pub fn forward_actor_destroyed(
+    mut destroyed: MessageReader<DamageActorDestroyed>,
+    mut runtime: Option<ResMut<InteractionRuntime>>,
+    mut log: ResMut<InteractionConsumerLog>,
+) {
+    for event in destroyed.read() {
+        match runtime.as_deref_mut() {
+            Some(runtime) => {
+                for abort in runtime.on_actor_destroyed(event.actor) {
+                    log.push(InteractionConsumerEvent::Aborted(abort));
+                }
+            }
+            None => log.push(InteractionConsumerEvent::NoRuntime { actor: event.actor }),
+        }
+    }
+}
+
+/// Registers the damage → interaction consumer: the per-actor destroyed
+/// event queue, the log, and [`forward_actor_destroyed`] in [`Update`].
+///
+/// This plugin owns the [`DamageActorDestroyed`] registration so the event
+/// has exactly one maintenance pipeline; the damage side publishes through
+/// [`publish_destroyed_actors`](crate::damage::publish_destroyed_actors),
+/// which only needs the queue this plugin creates.
+///
+/// The plugin installs no session: a mission that opens an interaction
+/// session inserts its own [`InteractionRuntime`]. Everything it installs
+/// starts empty, so a session-less world forwards destructions into the
+/// log as [`InteractionConsumerEvent::NoRuntime`] rather than losing them
+/// or finding a stale session.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct InteractionSchedulePlugin;
+
+impl Plugin for InteractionSchedulePlugin {
+    fn build(&self, app: &mut App) {
+        app.add_message::<DamageActorDestroyed>();
+        app.init_resource::<InteractionConsumerLog>();
+        app.add_systems(Update, forward_actor_destroyed);
     }
 }
