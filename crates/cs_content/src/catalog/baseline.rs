@@ -3009,12 +3009,16 @@ fn geometry_material_rows(
     };
     let key = install_file_key(spelling);
     let references = material_references(&geometry.meshes);
+    // The slots with a `mesh` row are the named slots minus the ones the
+    // format-level check left unresolved — the same verdict `geometry_mesh_rows`
+    // reads, so this edge question resolves `mesh_index` nowhere either.
+    let unresolved = unresolved_slots(&geometry.bindings);
     let named: BTreeSet<u32> = geometry
         .nodes
         .nodes
         .iter()
         .filter_map(|node| u32::try_from(node.mesh_index()).ok())
-        .filter(|slot| geometry.meshes.get(*slot).is_some())
+        .filter(|slot| !unresolved.contains_key(slot))
         .collect();
 
     let mut rows = Vec::with_capacity(materials.materials.len());

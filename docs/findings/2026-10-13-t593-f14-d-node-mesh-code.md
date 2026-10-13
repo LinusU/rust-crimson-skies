@@ -47,9 +47,11 @@ check's two codes.
   `ContainerGeometry::bindings` once with `NodeMeshBindings::of(&nodes, &meshes)`
   and every later decision reads it: `absent_meshes` and `out_of_range_meshes`
   count the distinct slots of its findings, `geometry_mesh_rows` skips exactly
-  the slots its findings name, and `geometry_node_rows` takes a node's mesh edge
-  and its unknown from `bindings.finding(node.index)`. There is one
-  implementation of the rule.
+  the slots its findings name, `geometry_node_rows` takes a node's mesh edge
+  and its unknown from `bindings.finding(node.index)`, and
+  `geometry_material_rows` derives the slots a `mesh` row exists for as the
+  named slots minus the same unresolved set. There is one implementation of
+  the rule.
 - **The two facts stay two facts.** A slot the array has and stores an all-zero
   stub in is `mesh_slot_absent` → `CLAIM_ABSENT_NODE_MESH`,
   `absent_meshes`, `named_slot_without_mesh`. A stored index past the array is
