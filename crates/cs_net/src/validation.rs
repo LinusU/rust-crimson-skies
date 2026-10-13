@@ -935,10 +935,17 @@ impl RateBudget {
     /// Forgets one peer's charge, as a peer leaving the session does.
     ///
     /// Without this the budget would remember every peer the epoch ever saw,
-    /// so [`Self::charge`] would eventually refuse a *new* peer with
-    /// [`RateViolation::TooManyPeers`] although the session never held more
-    /// than [`MAX_SESSION_PEERS`] members at once. The map is then bounded by
-    /// the live membership, not by everyone who ever joined.
+    /// so [`Self::peer_count`] would describe everyone who ever joined
+    /// instead of the members the session holds, and each lingering entry
+    /// would stay until `close`/`reopen`. Those entries can never cost a
+    /// later peer its charge: an epoch never reissues a peer id
+    /// (`compat::PeerAllocator` does not wrap onto an id it already issued),
+    /// so no one can ever present a lingering entry's key again, and with the
+    /// keys drawn from [`MAX_SESSION_PEERS`] ids the
+    /// [`RateViolation::TooManyPeers`] branch of [`Self::charge`] cannot be
+    /// reached — a full budget map already holds every id there is. The
+    /// point of forgetting is therefore that the map describes live
+    /// membership rather than everyone who ever joined.
     pub fn forget(&mut self, peer: PeerId) {
         self.peers.remove(&peer);
     }
