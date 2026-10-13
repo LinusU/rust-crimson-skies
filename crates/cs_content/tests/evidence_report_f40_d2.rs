@@ -229,7 +229,9 @@ fn evidence_report_f40_d2_writes_the_acceptance_report() {
         .collect();
     for expected in RETAIL_VIDEOS {
         assert!(
-            names.iter().any(|found| found.eq_ignore_ascii_case(expected)),
+            names
+                .iter()
+                .any(|found| found.eq_ignore_ascii_case(expected)),
             "{expected} is inventoried by the re-measurement; measured names: {names:?}"
         );
     }
@@ -333,10 +335,16 @@ fn evidence_report_f40_d2_writes_the_acceptance_report() {
         let (format_claim, format_value) = resolved_string(cinematic.format());
         let semantic_end = match cinematic.semantic_end() {
             cs_content::cinematics::RetailSemanticEnd::UiScriptResume { page } => {
-                format!("{{\"kind\": \"ui_script_resume\", \"page\": {}}}", jstr(page))
+                format!(
+                    "{{\"kind\": \"ui_script_resume\", \"page\": {}}}",
+                    jstr(page)
+                )
             }
             cs_content::cinematics::RetailSemanticEnd::UiScriptRun { script } => {
-                format!("{{\"kind\": \"ui_script_run\", \"script\": {}}}", jstr(script))
+                format!(
+                    "{{\"kind\": \"ui_script_run\", \"script\": {}}}",
+                    jstr(script)
+                )
             }
             cs_content::cinematics::RetailSemanticEnd::LoopForever => {
                 "{\"kind\": \"loop_forever\"}".to_owned()
@@ -479,19 +487,16 @@ fn evidence_report_f40_d2_writes_the_acceptance_report() {
 /// The claim id and value of a `Resolved<bool>`, as the artifact records it.
 fn resolved_bool(resolved: &cs_types::content::Resolved<bool>) -> (String, Option<bool>) {
     match resolved {
-        cs_types::content::Resolved::Known(known) => (
-            jstr(known.provenance.claim_id.as_str()),
-            Some(known.value),
-        ),
+        cs_types::content::Resolved::Known(known) => {
+            (jstr(known.provenance.claim_id.as_str()), Some(known.value))
+        }
         cs_types::content::Resolved::Unknown { claim_id, .. } => (jstr(claim_id.as_str()), None),
     }
 }
 
 /// The claim id and "is it known" of a `Resolved<T>` whose value the artifact
 /// does not carry (pause policy, master clock — unknown everywhere).
-fn resolved_known_claim<T>(
-    resolved: &cs_types::content::Resolved<T>,
-) -> (String, bool) {
+fn resolved_known_claim<T>(resolved: &cs_types::content::Resolved<T>) -> (String, bool) {
     match resolved {
         cs_types::content::Resolved::Known(known) => {
             (jstr(known.provenance.claim_id.as_str()), true)
@@ -538,8 +543,8 @@ fn retail_rof_member(root: &Path, member: &str) -> Vec<u8> {
 /// The retail `fmv.zrd` member through the production container discovery.
 fn retail_fmv_member(root: &Path) -> Vec<u8> {
     let bytes = fs::read(root.join("ZBD/zrdr.zbd")).expect("zrdr.zbd reads");
-    let path = cs_types::install::RelativePath::new("ZBD/zrdr.zbd")
-        .expect("the spelling is relative");
+    let path =
+        cs_types::install::RelativePath::new("ZBD/zrdr.zbd").expect("the spelling is relative");
     let discovery = cs_formats::script_raw::discover_container("ZBD/zrdr.zbd", &path, &bytes);
     let fmv = discovery
         .programs()
@@ -703,7 +708,10 @@ fn git(args: &[&str]) -> String {
 }
 
 fn rustc_version() -> String {
-    let output = Command::new("rustc").arg("--version").output().expect("rustc runs");
+    let output = Command::new("rustc")
+        .arg("--version")
+        .output()
+        .expect("rustc runs");
     assert!(output.status.success(), "rustc --version failed");
     String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
@@ -801,9 +809,7 @@ fn parse_suite(log: &str) -> Suite {
             }
         }
     }
-    suite
-        .assertions
-        .dedup_by(|left, right| left.0 == right.0);
+    suite.assertions.dedup_by(|left, right| left.0 == right.0);
     suite.executed = suite.passed + suite.failed;
     suite.discovered = suite.passed + suite.failed + suite.ignored;
     suite
