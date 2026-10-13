@@ -445,7 +445,7 @@ fn accept_f43_v2_refused_outcome_touches_neither_store() {
     )
     .expect_err("the subject must be the node's bound mission");
     assert!(
-        matches!(error, MissionRecordError::SubjectMismatch { .. }),
+        matches!(error, MissionRecordError::SubjectMismatch(_)),
         "the mismatch is reported, got {error}"
     );
     assert_eq!(state, untouched_state, "the campaign store is untouched");

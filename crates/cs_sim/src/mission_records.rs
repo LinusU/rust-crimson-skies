@@ -92,15 +92,22 @@ pub enum MissionRecordError {
     /// The declared subject is not the mission the outcome's node is bound
     /// to — a record filed under the wrong mission would poison every
     /// unlock predicate that reads it, so it is refused rather than
-    /// recorded.
-    SubjectMismatch {
-        /// The node the outcome names.
-        node: crate::campaign::CampaignNodeKey,
-        /// The subject the caller declared.
-        declared: ContentId,
-        /// The mission the node is actually bound to.
-        bound: ContentId,
-    },
+    /// recorded. Boxed like the payload of any other refusal: the ids are
+    /// the error, not worth carrying in every `Result` this crate hands
+    /// out.
+    SubjectMismatch(Box<SubjectMismatch>),
+}
+
+/// A submission whose declared subject is not the mission its node is bound
+/// to; see [`MissionRecordError::SubjectMismatch`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SubjectMismatch {
+    /// The node the outcome names.
+    pub node: crate::campaign::CampaignNodeKey,
+    /// The subject the caller declared.
+    pub declared: ContentId,
+    /// The mission the node is actually bound to.
+    pub bound: ContentId,
 }
 
 impl std::fmt::Display for MissionRecordError {
@@ -108,13 +115,10 @@ impl std::fmt::Display for MissionRecordError {
         match self {
             Self::Campaign(error) => write!(f, "campaign transaction refused: {error}"),
             Self::Record(error) => write!(f, "record book refused: {error}"),
-            Self::SubjectMismatch {
-                node,
-                declared,
-                bound,
-            } => write!(
+            Self::SubjectMismatch(mismatch) => write!(
                 f,
-                "node {node} is bound to {bound} but the record declares {declared}"
+                "node {} is bound to {} but the record declares {}",
+                mismatch.node, mismatch.bound, mismatch.declared
             ),
         }
     }
@@ -125,7 +129,7 @@ impl std::error::Error for MissionRecordError {
         match self {
             Self::Campaign(error) => Some(error),
             Self::Record(error) => Some(error),
-            Self::SubjectMismatch { .. } => None,
+            Self::SubjectMismatch(_) => None,
         }
     }
 }
@@ -182,11 +186,13 @@ pub fn apply_mission_record(
         .into());
     };
     if bound != mission {
-        return Err(MissionRecordError::SubjectMismatch {
-            node: outcome.node.clone(),
-            declared: mission.clone(),
-            bound: bound.clone(),
-        });
+        return Err(MissionRecordError::SubjectMismatch(Box::new(
+            SubjectMismatch {
+                node: outcome.node.clone(),
+                declared: mission.clone(),
+                bound: bound.clone(),
+            },
+        )));
     }
 
     // Compute both halves on copies; commit only when both accepted.
