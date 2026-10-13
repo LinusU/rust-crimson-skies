@@ -170,8 +170,10 @@ impl PrefixRootEvidence {
     }
 
     /// Mesh associations in the subtree that named no present mesh (past the
-    /// mesh array, or an all-zero slot). Their textures cannot be counted, so
-    /// a non-zero value is a measured gap in the evidence, not a pass.
+    /// mesh array, or an all-zero slot), plus child slots past the node array
+    /// — a link whose textures cannot be read at all. Their textures cannot
+    /// be counted, so a non-zero value is a measured gap in the evidence, not
+    /// a pass.
     #[must_use]
     pub const fn unresolved_meshes(&self) -> usize {
         self.unresolved_meshes

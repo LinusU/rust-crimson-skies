@@ -10,9 +10,35 @@
 //! deliberately **not** named with the task prefix) derives
 //! `private/evidence/F09-PREFIX/acceptance.json` from the recorded acceptance
 //! log, production discovery of `$CS_GAME_DIR` and a rerun of the production
-//! roster discovery plus prefix resolution. Follow the sequence in its doc
-//! comment; the committed copy lands at
-//! `docs/findings/evidence/F09-PREFIX.json`.
+//! roster discovery plus prefix resolution. Run it from the workspace root,
+//! after the acceptance suite, exactly as:
+//!
+//! 1. ```sh
+//!    cargo test --workspace --locked -- accept_f09_prefix_ --include-ignored \
+//!      > private/evidence/F09-PREFIX/cargo-test.log 2>&1
+//!    ```
+//!    (record that command's exit status — it is passed to this harness as
+//!    `CS_EVIDENCE_EXIT_CODE`.)
+//! 2. ```sh
+//!    CS_EVIDENCE_DIR=private/evidence/F09-PREFIX \
+//!    CS_CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}') \
+//!    CS_EVIDENCE_ARGV="cargo test --workspace --locked -- accept_f09_prefix_ --include-ignored" \
+//!    CS_EVIDENCE_EXIT_CODE=<status from step 1> \
+//!    CS_EVIDENCE_REVIEW=<this round's review identity and method> \
+//!      cargo test --locked -p cs_content --test livery_airframes \
+//!      evidence_report_f09_prefix_writes_the_acceptance_report -- --ignored --exact
+//!    ```
+//! 3. ```sh
+//!    python3 tools/validate_evidence.py \
+//!      private/evidence/F09-PREFIX/acceptance.json \
+//!      --artifact-root private/evidence/F09-PREFIX --require-pass
+//!    ```
+//! 4. Commit a copy of `acceptance.json` as
+//!    `docs/findings/evidence/F09-PREFIX.json`.
+//!
+//! A reviewer regenerates the report on the reviewed commit (steps 1-4 with
+//! their own `CS_EVIDENCE_REVIEW`) and compares it with the committed copy,
+//! per `docs/contracts/CLI-EVIDENCE.md`.
 
 use std::collections::BTreeSet;
 use std::fs;
@@ -1076,8 +1102,8 @@ fn evidence_report_f09_prefix_writes_the_acceptance_report() {
 
     assert!(
         suite.failed == 0 && exit_code == 0,
-        "the acceptance run failed (exit {exit_code}, {} failed): the report was written \
-         honestly and must NOT validate; fix the tests first",
+        "the acceptance run failed (exit {exit_code}, {} failed): refusing to write a \
+        passing-looking report; fix the tests first",
         suite.failed
     );
     for needle in [
