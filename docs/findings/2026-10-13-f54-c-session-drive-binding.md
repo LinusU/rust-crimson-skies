@@ -102,15 +102,54 @@ a mirror. Verified by disabling the plugin's `add_systems`: `NetSessionReport`
 stays at `ticks: 0`, the handshake never grants and all three loopback
 acceptance tests fail.
 
+## Review pass (Devin SWE-2/swe2-max-1, 2026-10-13)
+
+The implementer and the reviewer of this stage carry the same agent name
+(`swe2-max-1`); the review context was fresh (a new session that saw only the
+task, the specs and the diff). Under `AGENTS.md` that is **not** independent
+review, and nothing here is original-reference evidence either way.
+
+What the review found and fixed on the branch:
+
+1. **`bind_aircraft` leaked the prior gate record on a re-bind.**
+   `ActorOwnership::bind` inserts `actor → peer` without releasing the peer's
+   other records, so `bind_aircraft(peer, B)` while the peer still owned `A`
+   left `A → peer` in the gate: `actor_of(peer)` — which the wire's
+   `fire_requests` reads to mint `FireRequest`s — could name the actor whose
+   control buffer the rebind just dropped, and the departure release then
+   freed only the newest record, leaving `A` owned by nobody reachable
+   forever. A successful bind now surrenders the recorded prior actor, so the
+   documented "one peer flies at most one aircraft" is a rule the binding
+   keeps rather than a comment; a refused bind changes nothing.
+2. **The departure release only covered peers present in `pilots`.**
+   `release_pilot` returned early for a peer with no `ControlBuffer`, so an
+   ownership record written straight into the gate
+   (`session_mut().gate_mut().ownership_mut()`) outlived its peer as a ghost.
+   The gate does not know the peer left (transport `forget_peer` drops only
+   the replay window), so the release now surrenders every record that names
+   the peer — which also covers the designed case unchanged — and a
+   gate-only release is reported as a `ReleasedPilot` with honest zero
+   counts. `accept_f54_c_drive_a_rebound_or_gate_only_peer_keeps_no_aircraft`
+   covers both halves.
+
+Verified unchanged by the review: the task's scope calls (`SessionReceiver`
+reconciliation stays with F58-C/Rally #1221; mirror sampling/reconciliation
+stays with F57-C.01/Rally #657) and the zero-based-wire vs one-past-zero-book
+sequence boundary (filed as Rally #1385). The new test added above fails when
+either ownership fix is reverted: without the re-bind surrender
+`owner(plane())` stays `Some(peer)`, and without the gate-record sweep
+`unbind_aircraft` returns `None` for a bufferless peer.
+
 ## Files
 
 - `crates/cs_app/src/network/session.rs` — the binding described above.
 - `crates/cs_app/src/network/mod.rs` — `pub mod session;` plus module docs.
-- `crates/cs_app/tests/accept_f54_c_drive.rs` — four acceptance tests over a
-  real loopback pair (one `PhysicsSession` world carrying both `NetHost` and
-  `NetClient`, the listen-server shape): the full round trip including mirror
-  replacement and both teardowns; a departed peer's control/ownership release;
-  an unbound peer named rather than owned; and the missing-authority report.
+- `crates/cs_app/tests/accept_f54_c_drive.rs` — five acceptance tests: four
+  over a real loopback pair (one `PhysicsSession` world carrying both
+  `NetHost` and `NetClient`, the listen-server shape) — the full round trip
+  including mirror replacement and both teardowns; a departed peer's
+  control/ownership release; an unbound peer named rather than owned; the
+  missing-authority report — plus the re-bind/gate-only ownership release.
 - `docs/findings/2026-10-13-f54-c-session-drive-binding.md` — this note.
 
 ## Checks

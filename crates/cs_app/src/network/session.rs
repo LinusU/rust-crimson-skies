@@ -243,13 +243,25 @@ impl NetHost {
     /// A second binding for the same peer replaces the buffer — the gate is
     /// the authority on the pairing (one peer flies at most one aircraft),
     /// and a peer bound to a new actor starts that actor's control state
-    /// fresh rather than inheriting a predecessor's held axes.
+    /// fresh rather than inheriting a predecessor's held axes. The prior
+    /// aircraft's ownership goes with the move: it is released here, so a
+    /// re-bound peer cannot keep the first aircraft bound to it forever.
     ///
     /// # Errors
     ///
     /// [`SessionViolation::ActorNotOwned`] when another peer owns the actor.
+    /// A refused bind changes nothing: the prior binding still stands.
     pub fn bind_aircraft(&mut self, peer: PeerId, actor: ActorId) -> Result<(), SessionViolation> {
         self.session.gate_mut().ownership_mut().bind(peer, actor)?;
+        if let Some(previous) = self
+            .pilots
+            .get(&peer)
+            .map(|pilot| pilot.actor)
+            .filter(|previous| *previous != actor)
+            && self.session.gate().ownership().owner(previous) == Some(peer)
+        {
+            self.session.gate_mut().ownership_mut().release(previous);
+        }
         self.pilots.insert(
             peer,
             RemotePilot {
@@ -261,15 +273,15 @@ impl NetHost {
     }
 
     /// Releases the peer's binding and its control buffer, returning what the
-    /// release discarded. `None` when the peer was never bound.
+    /// release discarded. `None` when the peer was bound nowhere.
     ///
     /// The buffer is released the way every control handover is: its held
     /// axes are neutralized and its queued edges dropped first, so a departed
-    /// pilot leaves no stick deflected and no press half-delivered. The
-    /// gate's ownership of the actor goes with it — the gate is a separate
-    /// record that does not know the peer left, so a pilot released here that
-    /// still owns its actor surrenders it rather than leaving a ghost no
-    /// other peer may bind.
+    /// pilot leaves no stick deflected and no press half-delivered. Every
+    /// ownership record the gate holds for the peer goes with it — the gate
+    /// is a separate record that does not know the peer left, so a pilot
+    /// released here that still owns an actor surrenders it rather than
+    /// leaving a ghost no other peer may bind.
     pub fn unbind_aircraft(&mut self, peer: PeerId) -> Option<ReleasedPilot> {
         self.release_pilot(peer)
     }
@@ -328,19 +340,32 @@ impl NetHost {
     }
 
     /// Releases a departed peer's control state: axes neutralized, queued
-    /// edges dropped, and — when the gate still names the peer as the
-    /// actor's owner — the ownership released with it. Returns what the
-    /// release discarded, or `None` when the peer had no bound aircraft.
+    /// edges dropped, and every ownership record the gate still holds for the
+    /// peer released with it — the gate is a separate record that does not
+    /// know the peer left, so an owner that goes away keeps its aircraft as a
+    /// ghost no other peer may bind unless the release happens here.
+    /// `actor_of` only ever names *this* peer's records, so an actor another
+    /// peer was moved onto is never stripped. Returns what the release
+    /// discarded, or `None` when the peer was bound nowhere.
     fn release_pilot(&mut self, peer: PeerId) -> Option<ReleasedPilot> {
-        let mut pilot = self.pilots.remove(&peer)?;
-        if self.session.gate().ownership().owner(pilot.actor) == Some(peer) {
-            self.session.gate_mut().ownership_mut().release(pilot.actor);
+        let mut pilot = self.pilots.remove(&peer);
+        let mut actor = pilot.as_ref().map(|pilot| pilot.actor);
+        while let Some(owned) = self.session.gate().ownership().actor_of(peer) {
+            self.session.gate_mut().ownership_mut().release(owned);
+            actor = actor.or(Some(owned));
         }
+        let actor = actor?;
+        let (neutralized, dropped_edges) = pilot.as_mut().map_or((0, 0), |pilot| {
+            (
+                pilot.buffer.neutralize_axes().len(),
+                pilot.buffer.drain_pending().len(),
+            )
+        });
         Some(ReleasedPilot {
             peer,
-            actor: pilot.actor,
-            neutralized: pilot.buffer.neutralize_axes().len(),
-            dropped_edges: pilot.buffer.drain_pending().len(),
+            actor,
+            neutralized,
+            dropped_edges,
         })
     }
 }
@@ -446,11 +471,16 @@ pub enum NetDriveMissing {
 }
 
 /// What happened to one departed peer's control state.
+///
+/// `neutralized` and `dropped_edges` are honestly zero for a peer the gate
+/// bound but no `ControlBuffer` ever served — the ownership release still
+/// happened and `actor` still names the freed aircraft.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ReleasedPilot {
     /// The peer that left.
     pub peer: PeerId,
-    /// The aircraft it was bound to.
+    /// The aircraft it was bound to — the bound buffer's actor when one was
+    /// open, otherwise a gate record the release found.
     pub actor: ActorId,
     /// How many held axes the release neutralized.
     pub neutralized: usize,

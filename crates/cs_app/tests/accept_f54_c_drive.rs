@@ -54,7 +54,7 @@ use cs_net::transport::ConnectWindow;
 use cs_sim::net_state::{NetActorState, NetStateError, NetStateLedger};
 use cs_types::Tick;
 use cs_types::input::FlightCommand;
-use cs_types::net::{ActorId, SessionId};
+use cs_types::net::{ActorId, PeerId, SessionId};
 use cs_types::space::{Quaternion, WorldPosition};
 
 /// The session generation the fixture runs.
@@ -633,6 +633,72 @@ fn accept_f54_c_drive_an_unbound_peer_is_named_not_owned() {
     assert_eq!(
         report.pending_orders, 0,
         "nothing queued for the weapon schedule"
+    );
+}
+
+/// A peer moves aircraft at most one at a time: rebinding surrenders the
+/// prior gate record, and a record written straight into the gate — outside
+/// `bind_aircraft` — still dies with the peer that held it. Neither may
+/// leave an aircraft owned by a peer that no longer flies it.
+#[test]
+fn accept_f54_c_drive_a_rebound_or_gate_only_peer_keeps_no_aircraft() {
+    let _loopback = loopback();
+    let bind = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
+    let server = ServerSession::bind(session_id(), synthetic_parameters(), bind, Duration::ZERO)
+        .expect("the host socket binds");
+    let mut host = NetHost::new(server, spawned_ledger(), origin()).expect("the epochs agree");
+    let peer = PeerId::new(9).expect("a nonzero peer id");
+    let other = ActorId {
+        session: session_id(),
+        serial: PLANE_SERIAL + 1,
+    };
+
+    // The rebind: the gate's "one peer flies at most one aircraft" is a rule
+    // this binding keeps, so the first aircraft's record cannot outlive the
+    // move — and `actor_of`, which the wire's `fire_requests` reads, can only
+    // ever name the aircraft the peer actually flies.
+    host.bind_aircraft(peer, plane()).expect("the first bind");
+    host.bind_aircraft(peer, other).expect("the rebind");
+    assert_eq!(host.actor_of(peer), Some(other));
+    assert_eq!(
+        host.session().gate().ownership().owner(plane()),
+        None,
+        "the first aircraft was surrendered with the move"
+    );
+    assert_eq!(
+        host.session().gate().ownership().owner(other),
+        Some(peer),
+        "the second aircraft is the peer's now"
+    );
+
+    // The bypass: a record written through `session_mut().gate_mut()`
+    // directly — no `ControlBuffer` was ever opened for it — still releases
+    // with the peer, named rather than left as a ghost.
+    host.session_mut()
+        .gate_mut()
+        .ownership_mut()
+        .bind(peer, plane())
+        .expect("the direct gate bind");
+    let released = host
+        .unbind_aircraft(peer)
+        .expect("every record the peer held releases together");
+    assert_eq!(released.peer, peer);
+    assert_eq!(released.actor, other, "the buffer's actor is reported");
+    assert_eq!(released.neutralized, 0);
+    assert_eq!(released.dropped_edges, 0);
+    assert_eq!(
+        host.session().gate().ownership().owner(plane()),
+        None,
+        "the record that bypassed `bind_aircraft` released with the peer"
+    );
+    assert_eq!(
+        host.session().gate().ownership().owner(other),
+        None,
+        "the bound record released with the peer"
+    );
+    assert!(
+        host.unbind_aircraft(peer).is_none(),
+        "a released peer is bound nowhere"
     );
 }
 
