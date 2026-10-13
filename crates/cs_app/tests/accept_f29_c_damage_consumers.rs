@@ -34,6 +34,12 @@
 #[path = "damage/propulsion_gate.rs"]
 mod propulsion_gate;
 
+/// The propulsion gate's composition with the equipment producer, from
+/// F29-C.1a. A module for the same measured disk reason as
+/// `propulsion_gate`.
+#[path = "damage/propulsion_equipment.rs"]
+mod propulsion_equipment;
+
 use std::collections::BTreeMap;
 
 use cs_app::damage::{
