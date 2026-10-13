@@ -137,7 +137,12 @@ scale 250/250, `# Loops` 0, `Region?` 0; the `CM_MOVIE` record has `# Loops`
   `initialize(GC)`, and `CTL.SCRIPT` only defaults `BL` from the record when
   it is empty. The record's file is therefore **superseded** on that page —
   the measured reason the layout source alone overstates where CrimFlag
-  plays.
+  plays. The measurement is object-scoped: a `.BL` assignment counts only
+  when it is on the same object whose `.YC` binds the record and precedes
+  that object's `initialize`. An assignment on a different object, or after
+  the initialization, supersedes nothing (pinned by the
+  `accept_f40_d2_supersede_is_the_bound_object_file_field_before_its_initialization`
+  synthetic test).
 
 The load and preferences pages create their movie control inside an
 `if ($$KW$$)` block — `$$freturntogame$$` in the retail symbol map — so the
