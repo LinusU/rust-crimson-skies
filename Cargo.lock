@@ -2534,6 +2534,7 @@ version = "0.0.0"
 dependencies = [
  "bevy",
  "cs_app",
+ "cs_content",
  "cs_formats",
  "cs_types",
 ]

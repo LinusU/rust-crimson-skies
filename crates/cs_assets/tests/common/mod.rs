@@ -1,4 +1,5 @@
-//! Shared fixture helpers for the F02-B, F15-A and F15-D acceptance tests.
+//! Shared fixture helpers for the F02-B, F15-A, F15-D and F15-E acceptance
+//! tests.
 //!
 //! Every tree built here is newly authored fixture data written under the
 //! system temporary directory: it proves nothing about retail
@@ -7,11 +8,13 @@
 //! build only synthetic identities: fixed digests, spelled spans and
 //! contexts that name no original file.
 //!
-//! The F15-D helpers are different in kind: they define the **derived form**
-//! and the **converter identity** the retail cycle measures, and they are
-//! shared by the acceptance suite and by its evidence harness so the two
-//! cannot drift apart and the report's `cycle.json` describes the same bytes
-//! the suite measured.
+//! The F15-D and F15-E helpers are different in kind: they define the
+//! **derived form** and the **converter identity** a retail cycle measures —
+//! F15-D the derived texture base levels over each world's texture archives,
+//! F15-E the derived member listing over a mission closure's reader-family
+//! archives — and they are shared by the acceptance suite and by the evidence
+//! harness so the two cannot drift apart and the report's `cycle.json`
+//! describes the same bytes the suite measured.
 #![allow(dead_code)] // each test binary compiles this module and uses a subset
 
 use std::fs;
@@ -188,5 +191,85 @@ pub fn derive_texture_base_levels(label: &str, source: &[u8]) -> Result<Vec<u8>,
         derived.extend_from_slice(&extent.height.to_le_bytes());
         derived.extend_from_slice(image.texels());
     }
+    Ok(derived)
+}
+
+// --- F15-E the measured derived reader-archive form ------------------------
+
+/// The decoder name F15-E stores its derived reader-archive entries under.
+/// Bumping any component of [`derived_reader_listing_converter`] is what must
+/// invalidate them.
+pub const DERIVED_READER_LISTING_DECODER: &str = "zbd-reader-archive-listing";
+/// The structural-decode version.
+pub const DERIVED_READER_LISTING_DECODER_VERSION: u32 = 1;
+/// The canonical-form (IR) version.
+pub const DERIVED_READER_LISTING_IR_VERSION: u32 = 1;
+
+/// The converter identity the derived reader-archive entries are stored
+/// under. One definition, shared by the acceptance suite and the evidence
+/// harness, so the two can never drift into measuring different bytes.
+pub fn derived_reader_listing_converter() -> ConverterVersion {
+    ConverterVersion {
+        decoder: DecoderId::new(DERIVED_READER_LISTING_DECODER).expect("a valid decoder id"),
+        decoder_version: DERIVED_READER_LISTING_DECODER_VERSION,
+        ir: IrVersion(DERIVED_READER_LISTING_IR_VERSION),
+    }
+}
+
+/// The derived asset F15-E measures over a reader-family archive: the
+/// container's own member index, canonicalized as member count and, per
+/// declared member in index order, name length, name bytes, offset, length,
+/// optional id and encoding evidence, closed by the refused-member count.
+///
+/// This is a **structural** decode through the production pipeline the F13-B
+/// discovery uses — the F06 two-key [`cs_formats::zbd::dispatch`], the
+/// version-one trailer index and the reader-archive reader — so a cache entry
+/// is the parsed member table of original bytes, not the source bytes
+/// renamed. It deliberately decodes no member *content*: the reader family's
+/// entry encodings are undeclared in the committed research, and this form
+/// carries that fact as the per-entry evidence tag rather than pretending an
+/// interpretation.
+pub fn derive_reader_archive_listing(label: &str, source: &[u8]) -> Result<Vec<u8>, String> {
+    use cs_formats::zbd::dispatch::{ZbdProbe, dispatch};
+    use cs_formats::zbd::reader_archive::read_reader_archive;
+    use cs_formats::zbd::trailer::read_version_one_index;
+    use cs_types::install::RelativePath;
+
+    let path = RelativePath::new(label).map_err(|error| format!("{label}: {error}"))?;
+    let probe = ZbdProbe::new(label, &path, source);
+    let decision = dispatch(probe).map_err(|error| format!("{label}: dispatch {error}"))?;
+    let mut context = cs_formats::ParseContext::with_defaults(label);
+    let index = read_version_one_index(&mut context, decision, source)
+        .map_err(|error| format!("{label}: index {error}"))?;
+    let table = index.member_table();
+    let archive = read_reader_archive(&mut context, &table, index.data())
+        .map_err(|error| format!("{label}: reader {error}"))?;
+
+    let entries: Vec<_> = archive.entries().collect();
+    let mut derived = Vec::new();
+    derived.extend_from_slice(&(entries.len() as u32).to_le_bytes());
+    for entry in entries {
+        let name = entry.name();
+        let span = entry.span();
+        let _ = derived.try_reserve(8 + name.len() + 25);
+        derived.extend_from_slice(&(name.len() as u32).to_le_bytes());
+        derived.extend_from_slice(name);
+        derived.extend_from_slice(&span.offset.to_le_bytes());
+        derived.extend_from_slice(&span.length.to_le_bytes());
+        match entry.id() {
+            Some(id) => {
+                derived.push(1);
+                derived.extend_from_slice(&id.to_le_bytes());
+            }
+            None => derived.push(0),
+        }
+        // The encoding evidence, so the derived form carries the fact that no
+        // member content was interpreted rather than hiding it.
+        derived.push(u8::from(matches!(
+            entry.encoding(),
+            cs_formats::zbd::reader_archive::EncodingEvidence::Undeclared { .. }
+        )));
+    }
+    derived.extend_from_slice(&(archive.failures() as u32).to_le_bytes());
     Ok(derived)
 }

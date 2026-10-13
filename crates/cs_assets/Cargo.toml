@@ -21,4 +21,10 @@ cs_types.workspace = true
 [dev-dependencies]
 bevy.workspace = true
 cs_app.workspace = true
+# The F15-E acceptance tests measure spec F15 AC04 over a *mission* dependency
+# closure resolved through the production catalog and closure algorithm
+# (`cs_content::catalog`), then cross-check the same closure against the
+# production `cs-inspect closure` CLI. Dev-only: the production graph keeps
+# `cs_content -> cs_assets`, and this back-edge exists for the tests alone.
+cs_content.workspace = true
 cs_formats.workspace = true
