@@ -1967,12 +1967,24 @@ fn accept_f54_c_the_shared_work_queue_bound_holds_under_a_multi_peer_flood() {
             "the peer that spent the shared bound was cut off: {:?}",
             link.host_notices
         );
+        let spent_the_bound = link
+            .host_notices
+            .iter()
+            .find_map(|notice| match notice {
+                ServerNotice::CutOff {
+                    peer: Some(peer),
+                    threat: ThreatCase::ResourceExhaustion,
+                } => Some(*peer),
+                _ => None,
+            })
+            .expect("the cut-off names the peer that did it");
         assert!(
-            flooders
-                .iter()
-                .any(|(_, id, _)| link.host.members().all(|member| member != *id)),
-            "the cut-off peer is no longer a member: {:?}",
-            link.host.members().collect::<Vec<_>>()
+            flooders.iter().any(|(_, id, _)| *id == spent_the_bound),
+            "the peer that spent the bound was one of the flooders: {spent_the_bound:?}"
+        );
+        assert!(
+            link.host.members().all(|member| member != spent_the_bound),
+            "the cut-off peer is no longer a member"
         );
         assert!(
             !link.host_has(|notice| matches!(
