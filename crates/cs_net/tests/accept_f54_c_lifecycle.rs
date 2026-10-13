@@ -45,8 +45,7 @@ use cs_types::net::{ActorId, PeerId, SessionAllocator, SessionId};
 
 use cs_net::bounds::{
     MAX_INPUT_FRAMES_PER_PACKET, MAX_MOD_DIFF_IDS, MAX_MODS, MAX_PACKET_BYTES, MAX_SEEN_EVENTS,
-    MAX_SESSION_PEERS,
-    MAX_SNAPSHOT_BYTES, MAX_UNACKED_PACKETS, MAX_WORK_PER_PUMP,
+    MAX_SESSION_PEERS, MAX_SNAPSHOT_BYTES, MAX_UNACKED_PACKETS, MAX_WORK_PER_PUMP,
 };
 use cs_net::codec::{
     ClientPacket, CodecError, ServerPacket, decode_client_packet, decode_server_packet,
