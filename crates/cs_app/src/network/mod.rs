@@ -12,12 +12,18 @@
 //! [`cs_sim::net_state`]; the wire schema, quantizers and declared error budgets
 //! are [`cs_net::snapshot`].
 //!
-//! Not here yet: the wiring of a [`cs_net::lifecycle`] session into the Bevy
-//! schedule and a [`cs_sim`] ledger — F54-C built and tested the session owners
-//! and their bounded queues, but nothing here constructs one or pumps it yet.
-//! F57-B and F57-C built the interpolation buffers, local prediction,
-//! reconciliation, projectile confirmation and origin epochs as
-//! [`physics::NetSession`]; driving it from the Bevy schedule is F57-C.01.
+//! [`session`] is the wiring of a [`cs_net::lifecycle`] session into the Bevy
+//! schedule and a [`cs_sim`] ledger — the F54-C follow-up that left the
+//! session owners and their bounded queues without a pump. [`session::NetHost`]
+//! owns a `ServerSession`, its authoritative `NetStateLedger` and the peers'
+//! inbound control buffers; [`session::NetClient`] owns a `ClientSession`;
+//! [`session::drive_net_session`] pumps each once per committed fixed tick,
+//! forwards the notices into [`session::NetSessionReport`], folds admitted
+//! frames into `cs_sim::control`, mints fire intents through
+//! [`recovery::fire_intent`], publishes the ledger's snapshot and feeds
+//! accepted snapshots to the [`physics::NetSession`] mirror it installs once
+//! the grant names the epoch. Driving that mirror further — sampling,
+//! reconciliation, tracers — is F57-C.01 (Rally #657).
 //!
 //! F58-A adds [`recovery`]: the host-side receive boundary that admits a
 //! decoded client packet through the session identity gate and turns an
@@ -40,3 +46,4 @@
 
 pub mod physics;
 pub mod recovery;
+pub mod session;
