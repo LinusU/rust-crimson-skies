@@ -912,7 +912,10 @@ pub enum RuntimeError {
     /// multi-target site's residue and stays legal, and the same pair named by
     /// *two different* objectives agrees on what happens and also stays legal.
     /// Only [`Self::AmbiguousCompletionEffect`] looks across declarations, and
-    /// it is about *different* kinds — the two refusals do not overlap.
+    /// it is about *different* kinds: the two name different shapes — a repeat
+    /// is never a conflict and a conflict is never a repeat — though one spec
+    /// can carry both, and then the cross-declaration scan that runs first is
+    /// what gets reported.
     RepeatedCompletionEffect {
         /// The objective whose spec carries the repeated effect.
         source: SymbolId,
@@ -1299,10 +1302,10 @@ impl ObjectiveRuntime {
     /// registered already names — the residue of a block spelling one
     /// completion-effect key twice (F39-E6).
     ///
-    /// Mirrors `ObjectivesSchemaError::RepeatedCompletionEffect`
-    /// (`cs_content::objectives`) exactly, so the schema gate and this
-    /// registration gate refuse the same shapes: the check is per declaring
-    /// objective and per `(kind, target)` pair. One kind naming two
+    /// Mirrors the **key** of `ObjectivesSchemaError::RepeatedCompletionEffect`
+    /// (`cs_content::objectives`) — one declaring objective, one
+    /// `(kind, target)` pair — so the schema gate and this registration gate
+    /// refuse exactly the same repeat shapes. One kind naming two
     /// *different* targets stays legal — that is one multi-target site's
     /// residue as much as it is a repeat — and the same pair named by two
     /// *different* specs stays legal, because two declarations that agree on
@@ -1317,9 +1320,16 @@ impl ObjectiveRuntime {
     /// (`UNMEASURED_REPEATED_EFFECT_KEY`, `cs_content::objectives`) — so the
     /// pair is refused by name rather than applied as one effect.
     ///
-    /// Called after [`Self::check_uncontested_targets`] so a spec carrying
-    /// both shapes is reported the way the schema reports it: the
-    /// cross-declaration refusal first.
+    /// Called after [`Self::check_uncontested_targets`] so this refusal is
+    /// strictly additive: a spec that also names a target another
+    /// *registered* objective names differently is refused as
+    /// [`Self::AmbiguousCompletionEffect`] exactly as it was before this gate
+    /// existed, and only a spec with no such conflict reaches the repeat. The
+    /// schema interleaves its two checks per effect, so on a spec whose
+    /// conflicting effect comes *after* its repeat it names the repeat where
+    /// this gate names the conflict; what the two gates agree on, and all a
+    /// lowered program can reach, is which shapes are refused at all — the
+    /// schema gate runs ahead of this one and carries neither through.
     fn check_no_repeated_effects(
         source: SymbolId,
         effects: &[CompletionEffect],
@@ -3152,6 +3162,44 @@ mod tests {
                 target: SymbolId(3),
             }),
             "the different-effects-one-target refusal keeps its own name"
+        );
+    }
+
+    /// The refusal is strictly additive: a spec carrying the repeat *and* a
+    /// cross-declaration conflict is still refused under the name the cross
+    /// scan gave it before this gate existed, because that scan runs first —
+    /// no spec that was already refused changes name here. (The schema walks
+    /// its two checks per effect, so on this shape it names the repeat; the
+    /// two gates still refuse exactly the same shapes.)
+    #[test]
+    fn accept_f39_e6_runtime_repeat_a_both_shapes_spec_keeps_the_cross_declaration_name() {
+        let mut runtime = runtime_with(vec![spec(
+            1,
+            ObjectiveState::Active,
+            vec![effect(CompletionEffectKind::Wake, 4, None)],
+        )]);
+        let refusal = runtime.add_objective(spec(
+            2,
+            ObjectiveState::Active,
+            vec![
+                effect(CompletionEffectKind::Wake, 3, None),
+                effect(CompletionEffectKind::Wake, 3, None),
+                effect(CompletionEffectKind::Kill, 4, None),
+            ],
+        ));
+        assert_eq!(
+            refusal,
+            Err(RuntimeError::AmbiguousCompletionEffect {
+                source: SymbolId(2),
+                target: SymbolId(4),
+            }),
+            "the cross-declaration scan runs before the repeat check, so a spec refused \
+             before this gate existed keeps that refusal's name"
+        );
+        assert_eq!(
+            runtime.objective_state(SymbolId(2)),
+            None,
+            "refused either way: nothing of the both-shapes spec registers"
         );
     }
 
