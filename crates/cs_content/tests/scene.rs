@@ -3259,8 +3259,9 @@ fn name_chain(names: &[&str]) -> Vec<ParsedNode> {
 
 /// The installation's two longest measured name-paths, spelled out exactly as
 /// the corpus stores them (root first, the way [`SceneNode::path`] spells
-/// them): the `pzhookup_crane` chain is the longest path of six world
-/// containers at 136 bytes, the `wv_tailhook` chain is `C1C`'s at 150. Each
+/// them): the `pzhookup_crane` chain is the longest path of seven world
+/// containers at 136 bytes (and `C1C` holds it as a non-maximal path), the
+/// `wv_tailhook` chain is `C1C`'s at 150. Each
 /// digest is the first 128 bits of the SHA-256 of the lowercased escaped
 /// path, computed here with `shasum -a 256` over the same literal — an
 /// independent check of the algorithm, not an echo of production.
@@ -3372,13 +3373,21 @@ fn accept_f11_e1_f2_the_measured_over_long_shapes_are_digest_spelled_within_the_
         )
         .expect("the boundary chain builds");
         let child = graph.nodes().last().expect("chain");
-        assert_eq!(
-            child.id().key().starts_with("container.zbd.c1.-h"),
-            !spelled,
-            "the boundary is inclusive at {MAX}: {}",
-            child.path().len(),
-            MAX = cs_types::content::MAX_CONTENT_KEY_LEN,
-        );
+        if spelled {
+            assert_eq!(
+                child.id().key(),
+                format!("container.zbd.c1.{path}"),
+                "exactly at {MAX} the id still spells the path",
+                MAX = cs_types::content::MAX_CONTENT_KEY_LEN,
+            );
+        } else {
+            assert!(
+                child.id().key().starts_with("container.zbd.c1.-h"),
+                "one byte past {MAX} the id is a digest: {}",
+                child.id().key(),
+                MAX = cs_types::content::MAX_CONTENT_KEY_LEN,
+            );
+        }
     }
 }
 

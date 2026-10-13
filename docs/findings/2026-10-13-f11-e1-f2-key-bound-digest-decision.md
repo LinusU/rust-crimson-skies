@@ -63,7 +63,7 @@ spelled here root-first, the way `SceneNode::path` and the id spell them):
 
 | shape | authored path | bytes | where it is the longest |
 | --- | --- | --- | --- |
-| crane chain | `world1.piratezep.move_zeppelin.tilt_zeppelin.rock_zeppelin.underneath.pzhookup_crane.hook_base.top_seg.mid_seg.hook_seg.hoop.pzhookpoint` | **136** | six of the eight world containers (F11-E1's count; `C1C` holds it too, as a non-maximal path) |
+| crane chain | `world1.piratezep.move_zeppelin.tilt_zeppelin.rock_zeppelin.underneath.pzhookup_crane.hook_base.top_seg.mid_seg.hook_seg.hoop.pzhookpoint` | **136** | seven of the eight world containers (`C1`, `C1B`, `C2`, `C2B`, `C3`, `C4`, `C5`; re-measured 2026-10-13 through `world_scene_graph_from_gamez` — F11-E1's "six archives" undercounted one); `C1C` holds the chain too, as a non-maximal path under its own 150 |
 | tailhook chain | `world1.workersvoyagezep.move_zeppelin.tilt_zeppelin.rock_zeppelin.underneath.wv_tailhook.peoplehook.fassenbeiner.cpilot.cpilot_drop.cp_rt.cp_rc.cp_rft` | **150** | `C1C`, the installation's longest |
 
 Re-measured today through the production reader and
