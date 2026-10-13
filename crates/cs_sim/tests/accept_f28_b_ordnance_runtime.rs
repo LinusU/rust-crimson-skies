@@ -76,7 +76,7 @@ fn position(value: [f64; 3]) -> WorldPosition {
 
 /// A runtime opened on the fixture session.
 fn runtime() -> OrdnanceRuntime {
-    OrdnanceRuntime::new(SESSION, tick(0), rate(), PRODUCER)
+    OrdnanceRuntime::new(session(SESSION), tick(0), rate(), PRODUCER)
 }
 
 /// A launcher mount at the origin pointing down -Z, the canonical forward of
@@ -142,14 +142,17 @@ fn accept_f28_b_guidance_loses_a_destroyed_target_and_ends_safely() {
         "a guided item registers a tracker"
     );
 
-    let alive = runtime.guidance_tick(SESSION, TargetObservation::alive(target, tick(1)));
+    let alive = runtime.guidance_tick(session(SESSION), TargetObservation::alive(target, tick(1)));
     assert_eq!(
         alive.update_for(&projectile(1)),
         Some(GuidanceUpdate::Tracked { target }),
         "a live target keeps tracking"
     );
 
-    let destroyed = runtime.guidance_tick(SESSION, TargetObservation::destroyed(target, tick(2)));
+    let destroyed = runtime.guidance_tick(
+        session(SESSION),
+        TargetObservation::destroyed(target, tick(2)),
+    );
     assert!(
         matches!(
             destroyed.update_for(&projectile(1)),
@@ -181,7 +184,7 @@ fn accept_f28_b_guidance_loses_a_destroyed_target_and_ends_safely() {
 
     // The target cannot come back: a later live observation finds no tracker
     // and does not re-acquire.
-    let later = runtime.guidance_tick(SESSION, TargetObservation::alive(target, tick(3)));
+    let later = runtime.guidance_tick(session(SESSION), TargetObservation::alive(target, tick(3)));
     assert!(
         later.update_for(&projectile(1)).is_none(),
         "an ended item is never tracked again: {later:?}"
@@ -206,14 +209,17 @@ fn accept_f28_b_guidance_loses_its_target_on_a_session_change() {
         )
         .expect("the fixture launches");
 
-    let changed = runtime.guidance_tick(SESSION + 1, TargetObservation::alive(target, tick(1)));
+    let changed = runtime.guidance_tick(
+        session(SESSION + 1),
+        TargetObservation::alive(target, tick(1)),
+    );
     assert!(
         matches!(
             changed.update_for(&projectile(1)),
             Some(GuidanceUpdate::Lost {
                 reason: LostTargetReason::ForeignSession { expected, found },
                 ..
-            }) if expected == SESSION && found == SESSION + 1
+            }) if expected == session(SESSION) && found == session(SESSION + 1)
         ),
         "another generation is a lost target: {changed:?}"
     );
@@ -241,7 +247,10 @@ fn accept_f28_b_a_coasting_item_keeps_flying_after_losing_its_target() {
         )
         .expect("the fixture launches");
 
-    let lost = runtime.guidance_tick(SESSION, TargetObservation::destroyed(target, tick(1)));
+    let lost = runtime.guidance_tick(
+        session(SESSION),
+        TargetObservation::destroyed(target, tick(1)),
+    );
     assert_eq!(
         lost.update_for(&projectile(1)),
         Some(GuidanceUpdate::Coast),
@@ -295,7 +304,10 @@ fn accept_f28_b_a_disarmed_item_can_never_fire_its_fuse() {
         )
         .expect("the fixture launches");
 
-    let lost = runtime.guidance_tick(SESSION, TargetObservation::destroyed(target, tick(1)));
+    let lost = runtime.guidance_tick(
+        session(SESSION),
+        TargetObservation::destroyed(target, tick(1)),
+    );
     assert_eq!(
         lost.update_for(&projectile(1)),
         Some(GuidanceUpdate::Disarmed),
@@ -347,7 +359,10 @@ fn accept_f28_b_a_retired_dud_expires_after_its_declared_lifetime() {
         .state()
         .lifetime_ticks();
 
-    runtime.guidance_tick(SESSION, TargetObservation::destroyed(target, tick(1)));
+    runtime.guidance_tick(
+        session(SESSION),
+        TargetObservation::destroyed(target, tick(1)),
+    );
     assert!(
         runtime
             .get(&projectile(1))
@@ -507,7 +522,7 @@ fn accept_f28_b_an_impact_trigger_routes_its_declared_damage_once() {
     );
 
     let hits = runtime
-        .route_trigger(SESSION, tick(3), &projectile(1), actor(9), node())
+        .route_trigger(session(SESSION), tick(3), &projectile(1), actor(9), node())
         .expect("a triggered item routes");
     assert_eq!(hits.len(), 2, "one hit per non-zero declared channel");
     assert!(
@@ -518,7 +533,7 @@ fn accept_f28_b_an_impact_trigger_routes_its_declared_damage_once() {
     );
 
     assert_eq!(
-        runtime.route_trigger(SESSION, tick(3), &projectile(1), actor(9), node()),
+        runtime.route_trigger(session(SESSION), tick(3), &projectile(1), actor(9), node()),
         Err(OrdnanceRuntimeError::AlreadyRouted {
             projectile: projectile(1)
         }),
@@ -542,13 +557,13 @@ fn accept_f28_b_routing_refuses_an_untriggered_or_unknown_item() {
         )
         .expect("the fixture launches");
     assert_eq!(
-        runtime.route_trigger(SESSION, tick(0), &projectile(1), actor(9), node()),
+        runtime.route_trigger(session(SESSION), tick(0), &projectile(1), actor(9), node()),
         Err(OrdnanceRuntimeError::NotTriggered {
             projectile: projectile(1)
         })
     );
     assert_eq!(
-        runtime.route_trigger(SESSION, tick(0), &projectile(99), actor(9), node()),
+        runtime.route_trigger(session(SESSION), tick(0), &projectile(99), actor(9), node()),
         Err(OrdnanceRuntimeError::UnknownProjectile {
             projectile: projectile(99)
         })
@@ -604,7 +619,7 @@ fn accept_f28_b_a_timed_status_effect_expires_on_its_tick_and_resets() {
         .expect("the fixture launches");
     let engine = StatusEffectTarget::actor_system(actor(2), SystemKind::Propulsion);
     let applied = runtime
-        .apply_statuses(SESSION, tick(5), &projectile(1), engine)
+        .apply_statuses(session(SESSION), tick(5), &projectile(1), engine)
         .expect("the fixture choke applies");
     assert_eq!(applied.len(), 1);
     assert!(
@@ -617,7 +632,7 @@ fn accept_f28_b_a_timed_status_effect_expires_on_its_tick_and_resets() {
     );
 
     let expired = runtime
-        .advance_status(SESSION, tick(5 + SYNTHETIC_CHOKE_TICKS))
+        .advance_status(session(SESSION), tick(5 + SYNTHETIC_CHOKE_TICKS))
         .expect("the ledger advances");
     assert_eq!(expired.len(), 1, "the effect expires exactly once");
     assert_eq!(
@@ -627,7 +642,7 @@ fn accept_f28_b_a_timed_status_effect_expires_on_its_tick_and_resets() {
     );
     assert!(runtime.status().is_empty(), "the expired effect is gone");
 
-    let restarted = OrdnanceRuntime::new(SESSION + 1, tick(0), rate(), PRODUCER);
+    let restarted = OrdnanceRuntime::new(session(SESSION + 1), tick(0), rate(), PRODUCER);
     assert!(
         restarted.status().is_empty(),
         "a restarted session inherits no effect"

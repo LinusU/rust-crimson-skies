@@ -22,6 +22,10 @@ const SESSION: u64 = 12;
 const RADIUS_M: f64 = 30.0;
 const LIFETIME: u64 = 5;
 
+fn session(value: u64) -> SessionId {
+    SessionId::new(value).expect("a nonzero session generation")
+}
+
 fn actor_in(session: u64, serial: u64) -> ActorId {
     ActorId {
         session: SessionId::new(session).expect("a nonzero session generation"),
@@ -59,7 +63,12 @@ fn guided(area: Option<AreaEffect>) -> ProjectileOrdnance {
 }
 
 fn detonation(area: Option<AreaEffect>) -> (OrdnanceRuntime, GuidanceDetonation) {
-    let mut runtime = OrdnanceRuntime::new(SESSION, Tick(0), TickRate::new(30).expect("rate"), 7);
+    let mut runtime = OrdnanceRuntime::new(
+        session(SESSION),
+        Tick(0),
+        TickRate::new(30).expect("rate"),
+        7,
+    );
     let mount = MountTransform::try_new(
         cs_types::space::WorldPosition::try_new([0.0; 3]).expect("finite"),
         UnitVec3::try_new([0.0, 0.0, -1.0]).expect("unit vector"),
@@ -79,7 +88,10 @@ fn detonation(area: Option<AreaEffect>) -> (OrdnanceRuntime, GuidanceDetonation)
             [0.0; 3],
         )
         .expect("the fixture launches");
-    let mut lost = runtime.guidance_tick(SESSION, TargetObservation::destroyed(actor(9), Tick(1)));
+    let mut lost = runtime.guidance_tick(
+        session(SESSION),
+        TargetObservation::destroyed(actor(9), Tick(1)),
+    );
     let detonation = lost.detonated.remove(0);
     (runtime, detonation)
 }
@@ -98,13 +110,13 @@ fn accept_f28_ae1_the_application_pass_runs_once_and_lists_each_recipient_once()
         path(23, RADIUS_M),
     ];
     let instance = runtime
-        .open_detonation_area(SESSION, Tick(1), &detonation, &targets)
+        .open_detonation_area(session(SESSION), Tick(1), &detonation, &targets)
         .expect("the area opens");
     let live = runtime.areas().get(&instance).expect("live");
     assert_eq!(live.recipients, vec![actor(21), actor(22)]);
     assert_eq!(live.expires_at, Tick(1 + LIFETIME));
     assert_eq!(
-        runtime.open_detonation_area(SESSION, Tick(1), &detonation, &targets),
+        runtime.open_detonation_area(session(SESSION), Tick(1), &detonation, &targets),
         Err(OrdnanceRuntimeError::AreaAlreadyOpened {
             projectile: detonation.projectile()
         }),
@@ -117,46 +129,50 @@ fn accept_f28_ae1_the_application_pass_runs_once_and_lists_each_recipient_once()
 fn accept_f28_ae1_expiry_is_exact_and_reported_once() {
     let (mut runtime, detonation) = detonation(Some(area()));
     runtime
-        .open_detonation_area(SESSION, Tick(1), &detonation, &[path(21, 0.0)])
+        .open_detonation_area(session(SESSION), Tick(1), &detonation, &[path(21, 0.0)])
         .expect("opens");
     let boundary = 1 + LIFETIME;
     assert!(
         runtime
-            .advance_areas(SESSION, Tick(boundary - 1))
+            .advance_areas(session(SESSION), Tick(boundary - 1))
             .expect("advances")
             .is_empty(),
         "live one tick before the boundary"
     );
     let expired = runtime
-        .advance_areas(SESSION, Tick(boundary))
+        .advance_areas(session(SESSION), Tick(boundary))
         .expect("advances");
     assert_eq!(expired.len(), 1);
     assert_eq!(expired[0].expired_at, Tick(boundary));
     assert!(runtime.areas().is_empty());
     assert!(
         runtime
-            .advance_areas(SESSION, Tick(boundary))
+            .advance_areas(session(SESSION), Tick(boundary))
             .expect("advances")
             .is_empty()
     );
-    assert!(runtime.advance_areas(SESSION, Tick(boundary - 1)).is_err());
+    assert!(
+        runtime
+            .advance_areas(session(SESSION), Tick(boundary - 1))
+            .is_err()
+    );
 }
 
 #[test]
 fn accept_f28_ae1_an_item_without_an_area_and_a_foreign_session_are_refused() {
     let (mut runtime, detonation) = detonation(None);
     assert!(matches!(
-        runtime.open_detonation_area(SESSION, Tick(1), &detonation, &[]),
+        runtime.open_detonation_area(session(SESSION), Tick(1), &detonation, &[]),
         Err(OrdnanceRuntimeError::NoAreaEffect { .. })
     ));
     let (mut runtime, detonation) = self::detonation(Some(area()));
     let foreign = TargetPath::try_new(actor_in(SESSION + 1, 5), [0.0; 3], [0.0; 3]).expect("ok");
     assert!(matches!(
-        runtime.open_detonation_area(SESSION, Tick(1), &detonation, &[foreign]),
+        runtime.open_detonation_area(session(SESSION), Tick(1), &detonation, &[foreign]),
         Err(OrdnanceRuntimeError::ForeignSession { .. })
     ));
     assert!(matches!(
-        runtime.open_detonation_area(SESSION + 1, Tick(1), &detonation, &[]),
+        runtime.open_detonation_area(session(SESSION + 1), Tick(1), &detonation, &[]),
         Err(OrdnanceRuntimeError::ForeignSession { .. })
     ));
     assert!(runtime.areas().is_empty(), "a refusal opens nothing");

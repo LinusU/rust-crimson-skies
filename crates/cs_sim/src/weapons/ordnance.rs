@@ -2701,14 +2701,18 @@ pub enum LostTargetReason {
     /// stale id is a lost target, not a lookup that might succeed.
     ForeignSession {
         /// The generation the item was launched in.
-        expected: u64,
+        expected: SessionId,
         /// The generation the caller presented.
-        found: u64,
+        found: SessionId,
     },
 }
 
 impl LostTargetReason {
     /// The stable label used in reports.
+    ///
+    /// The generations are reported as the numbers the shared
+    /// [`SessionId`] wraps, so the label is byte-for-byte what it was
+    /// before the identity migration (task #601).
     #[must_use]
     pub fn label(&self) -> String {
         match self {
@@ -2716,7 +2720,7 @@ impl LostTargetReason {
             Self::Despawned => "despawned".to_owned(),
             Self::Unassigned => "unassigned".to_owned(),
             Self::ForeignSession { expected, found } => {
-                format!("foreign_session({expected}->{found})")
+                format!("foreign_session({}->{})", expected.get(), found.get())
             }
         }
     }
@@ -2812,7 +2816,7 @@ impl std::error::Error for GuidanceError {}
 /// happen to match an id in the next session.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GuidanceTracker {
-    session: u64,
+    session: SessionId,
     rule: GuidanceRule,
     projectile: ProjectileId,
     target: Option<ActorId>,
@@ -2827,7 +2831,7 @@ impl GuidanceTracker {
     /// be tracked at all, not a target waiting to be found.
     #[must_use]
     pub fn new(
-        session: u64,
+        session: SessionId,
         projectile: ProjectileId,
         rule: GuidanceRule,
         target: Option<ActorId>,
@@ -2843,7 +2847,7 @@ impl GuidanceTracker {
 
     /// The session generation this tracker is confined to.
     #[must_use]
-    pub const fn session(&self) -> u64 {
+    pub const fn session(&self) -> SessionId {
         self.session
     }
 
@@ -2979,16 +2983,20 @@ impl TargetObservation {
 /// [`LostTargetReason::ForeignSession`] instead of looking it up in the next
 /// session's roster. That is the "session change" half of AC02, made
 /// structural rather than a convention every caller has to remember.
-#[derive(Clone, Debug, Default)]
+///
+/// The generation is the shared nonzero [`SessionId`], so there is no
+/// "generation zero" set a caller could accidentally build (task #601);
+/// [`Default`] is deliberately not implemented for the same reason.
+#[derive(Clone, Debug)]
 pub struct GuidanceSet {
-    session: u64,
+    session: SessionId,
     trackers: BTreeMap<ProjectileId, GuidanceTracker>,
 }
 
 impl GuidanceSet {
     /// Opens an empty set for one session generation.
     #[must_use]
-    pub const fn new(session: u64) -> Self {
+    pub const fn new(session: SessionId) -> Self {
         Self {
             session,
             trackers: BTreeMap::new(),
@@ -2997,7 +3005,7 @@ impl GuidanceSet {
 
     /// The session generation this set is confined to.
     #[must_use]
-    pub const fn session(&self) -> u64 {
+    pub const fn session(&self) -> SessionId {
         self.session
     }
 
@@ -3054,7 +3062,7 @@ impl GuidanceSet {
     /// because no id from one session may be resolved in another.
     pub fn session_tick(
         &mut self,
-        session: u64,
+        session: SessionId,
         observation: TargetObservation,
     ) -> BTreeMap<ProjectileId, GuidanceUpdate> {
         let foreign = session != self.session;
@@ -3137,21 +3145,19 @@ impl ActiveStatusEffect {
     }
 }
 
-/// A status effect's stable identity.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct StatusEffectInstanceId {
-    /// The session generation the effect belongs to.
-    pub session: u64,
-    /// The session-local serial. Serials are never recycled inside a
-    /// session, so an instance id always names exactly one effect.
-    pub serial: u64,
-}
-
-impl fmt::Display for StatusEffectInstanceId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "status/{}#{}", self.session, self.serial)
-    }
-}
+/// A status effect's stable identity: the shared contract
+/// `ActorId { session, serial }` from `docs/contracts/IDENTITY-CONTENT.md`,
+/// re-exported under its ordnance-facing name.
+///
+/// This is the shared [`ActorId`] itself — the `cs_types::net` type
+/// `crate::damage` re-exports (task #442), not a second struct — exactly as
+/// the F28-A doc comment always promised: a nonzero [`SessionId`] plus a
+/// session-local serial that is never recycled, so an instance id always
+/// names exactly one effect of one session (task #601, closing the
+/// duplication #496 closed for audio emitters). An alias cannot carry its
+/// own [`fmt::Display`], so an id displays in the shared `actor s:n` form
+/// rather than the retired `status/s#n` one.
+pub type StatusEffectInstanceId = ActorId;
 
 /// A status effect that reached its expiry tick.
 #[derive(Clone, Debug, PartialEq)]
@@ -3175,9 +3181,9 @@ pub enum StatusEffectError {
     /// session that created them.
     ForeignSession {
         /// The ledger's generation.
-        expected: u64,
+        expected: SessionId,
         /// The generation the caller presented.
-        found: u64,
+        found: SessionId,
     },
     /// A caller asked about a tick the ledger has already passed. Time in a
     /// session does not run backwards, and a re-entered schedule step must
@@ -3195,7 +3201,9 @@ impl fmt::Display for StatusEffectError {
         match self {
             Self::ForeignSession { expected, found } => write!(
                 f,
-                "status effects belong to session {expected}, but the caller is session {found}"
+                "status effects belong to session {}, but the caller is session {}",
+                expected.get(),
+                found.get()
             ),
             Self::NonMonotonicTick { at, found } => write!(
                 f,
@@ -3228,7 +3236,7 @@ impl std::error::Error for StatusEffectError {}
 /// session that restarts cannot inherit a previous session's effects.
 #[derive(Clone, Debug)]
 pub struct StatusEffectLedger {
-    session: u64,
+    session: SessionId,
     tick: Tick,
     next_serial: u64,
     live: BTreeMap<StatusEffectInstanceId, ActiveStatusEffect>,
@@ -3237,7 +3245,7 @@ pub struct StatusEffectLedger {
 impl StatusEffectLedger {
     /// Opens an empty ledger for one session generation, positioned at `tick`.
     #[must_use]
-    pub const fn new(session: u64, tick: Tick) -> Self {
+    pub const fn new(session: SessionId, tick: Tick) -> Self {
         Self {
             session,
             tick,
@@ -3248,7 +3256,7 @@ impl StatusEffectLedger {
 
     /// The session generation this ledger is confined to.
     #[must_use]
-    pub const fn session(&self) -> u64 {
+    pub const fn session(&self) -> SessionId {
         self.session
     }
 
@@ -3308,7 +3316,7 @@ impl StatusEffectLedger {
     /// behind the ledger.
     pub fn apply(
         &mut self,
-        session: u64,
+        session: SessionId,
         tick: Tick,
         target: StatusEffectTarget,
         source: &OrdnanceId,
@@ -3350,7 +3358,7 @@ impl StatusEffectLedger {
     /// [`StatusEffectError::NonMonotonicTick`].
     pub fn advance_to(
         &mut self,
-        session: u64,
+        session: SessionId,
         tick: Tick,
     ) -> Result<Vec<ExpiredStatusEffect>, StatusEffectError> {
         self.check_session_and_tick(session, tick)?;
@@ -3388,7 +3396,7 @@ impl StatusEffectLedger {
     /// from a no-op.
     pub fn remove(
         &mut self,
-        session: u64,
+        session: SessionId,
         instance: &StatusEffectInstanceId,
     ) -> Result<bool, StatusEffectError> {
         if session != self.session {
@@ -3402,7 +3410,7 @@ impl StatusEffectLedger {
 
     fn check_session_and_tick(
         &mut self,
-        session: u64,
+        session: SessionId,
         tick: Tick,
     ) -> Result<(), StatusEffectError> {
         if session != self.session {
@@ -3423,20 +3431,17 @@ impl StatusEffectLedger {
 
 // ---------------------------------------------------------------- area ledger ----
 
-/// A triggered area's stable identity.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct AreaInstanceId {
-    /// The session generation the area belongs to.
-    pub session: u64,
-    /// The session-local serial, never recycled inside a session.
-    pub serial: u64,
-}
-
-impl fmt::Display for AreaInstanceId {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "area/{}#{}", self.session, self.serial)
-    }
-}
+/// A triggered area's stable identity: the shared contract
+/// `ActorId { session, serial }` from `docs/contracts/IDENTITY-CONTENT.md`,
+/// re-exported under its area-facing name.
+///
+/// This is the shared [`ActorId`] itself — the `cs_types::net` type
+/// `crate::damage` re-exports (task #442), not a second struct — the same
+/// shape and the same never-recycled-serial promise
+/// [`StatusEffectInstanceId`](StatusEffectInstanceId) carries (task #601).
+/// An alias cannot carry its own [`fmt::Display`], so an id displays in the
+/// shared `actor s:n` form rather than the retired `area/s#n` one.
+pub type AreaInstanceId = ActorId;
 
 /// One live triggered area.
 ///
@@ -3507,7 +3512,7 @@ pub struct ExpiredArea {
 /// [`OrdnanceMedia`] field and no area record can reach it.
 #[derive(Clone, Debug)]
 pub struct AreaLedger {
-    session: u64,
+    session: SessionId,
     tick: Tick,
     next_serial: u64,
     live: BTreeMap<AreaInstanceId, ActiveArea>,
@@ -3516,7 +3521,7 @@ pub struct AreaLedger {
 impl AreaLedger {
     /// Opens an empty ledger for one session generation, positioned at `tick`.
     #[must_use]
-    pub const fn new(session: u64, tick: Tick) -> Self {
+    pub const fn new(session: SessionId, tick: Tick) -> Self {
         Self {
             session,
             tick,
@@ -3527,7 +3532,7 @@ impl AreaLedger {
 
     /// The session generation this ledger is confined to.
     #[must_use]
-    pub const fn session(&self) -> u64 {
+    pub const fn session(&self) -> SessionId {
         self.session
     }
 
@@ -3564,7 +3569,7 @@ impl AreaLedger {
 
     fn open(
         &mut self,
-        session: u64,
+        session: SessionId,
         tick: Tick,
         mut area: ActiveArea,
     ) -> Result<AreaInstanceId, StatusEffectError> {
@@ -3581,7 +3586,7 @@ impl AreaLedger {
         Ok(instance)
     }
 
-    fn check(&self, session: u64, tick: Tick) -> Result<(), StatusEffectError> {
+    fn check(&self, session: SessionId, tick: Tick) -> Result<(), StatusEffectError> {
         if session != self.session {
             return Err(StatusEffectError::ForeignSession {
                 expected: self.session,
@@ -3606,7 +3611,7 @@ impl AreaLedger {
     /// [`StatusEffectError::NonMonotonicTick`].
     pub fn advance_to(
         &mut self,
-        session: u64,
+        session: SessionId,
         tick: Tick,
     ) -> Result<Vec<ExpiredArea>, StatusEffectError> {
         self.check(session, tick)?;
@@ -3717,9 +3722,9 @@ pub enum NitroError {
     /// The caller's session generation is not this ledger's.
     ForeignSession {
         /// The ledger's generation.
-        expected: u64,
+        expected: SessionId,
         /// The generation the caller presented.
-        found: u64,
+        found: SessionId,
     },
     /// A caller asked about a tick the ledger has passed.
     NonMonotonicTick {
@@ -3735,7 +3740,9 @@ impl fmt::Display for NitroError {
         match self {
             Self::ForeignSession { expected, found } => write!(
                 f,
-                "nitro belongs to session {expected}, but the caller is session {found}"
+                "nitro belongs to session {}, but the caller is session {}",
+                expected.get(),
+                found.get()
             ),
             Self::NonMonotonicTick { at, found } => write!(
                 f,
@@ -3763,7 +3770,7 @@ impl std::error::Error for NitroError {}
 /// express a render-frame-scaled boost burn.
 #[derive(Clone, Debug)]
 pub struct NitroLedger {
-    session: u64,
+    session: SessionId,
     tick: Tick,
     rate: TickRate,
     capacity_units: f64,
@@ -3775,7 +3782,7 @@ impl NitroLedger {
     /// Opens a full-capacity ledger for one actor in one session.
     #[must_use]
     pub const fn new(
-        session: u64,
+        session: SessionId,
         tick: Tick,
         rate: TickRate,
         parameters: NitroParameters,
@@ -3792,7 +3799,7 @@ impl NitroLedger {
 
     /// The session generation this ledger is confined to.
     #[must_use]
-    pub const fn session(&self) -> u64 {
+    pub const fn session(&self) -> SessionId {
         self.session
     }
 
@@ -3870,7 +3877,7 @@ impl NitroLedger {
     /// [`NitroError::ForeignSession`] or [`NitroError::NonMonotonicTick`].
     pub fn request(
         &mut self,
-        session: u64,
+        session: SessionId,
         tick: Tick,
         requested: bool,
     ) -> Result<NitroTick, NitroError> {
@@ -3985,9 +3992,24 @@ impl NitroLedger {
 // mirror them (the same split F27-B made for gun rounds).
 
 /// Why an [`OrdnanceRuntime`] operation was refused.
+///
+/// The runtime's session is the shared nonzero [`SessionId`] (task #601), so
+/// the "session generation zero that cannot stamp a hit" refusal this error
+/// used to carry no longer has a case to name: a runtime can only be opened
+/// for a real generation, and the [`HitEvent`]s it stamps take that
+/// generation directly.
 #[derive(Clone, Debug, PartialEq)]
 pub enum OrdnanceRuntimeError {
     /// The item, observation or event belongs to another session generation.
+    ///
+    /// The generations are reported as the numbers the shared [`SessionId`]
+    /// wraps rather than as [`SessionId`]s: one input this runtime validates
+    /// is a [`ProjectileId`] (F27), which still stamps its generation as a
+    /// bare `u64`, and a refusal must be able to report the number it was
+    /// given — including zero, which names no session at all. Migrating
+    /// `ProjectileId` onto the shared type is separate follow-up work (task
+    /// #601); every session this runtime is *opened* with and every session
+    /// it is *called* with is already the shared nonzero [`SessionId`].
     ForeignSession {
         /// The runtime's session.
         expected: u64,
@@ -4053,9 +4075,6 @@ pub enum OrdnanceRuntimeError {
     Hit(HitEventError),
     /// The nitro ledger refused the request.
     Nitro(NitroError),
-    /// The runtime is session generation zero, which is not a session a
-    /// [`HitEvent`] can be stamped into.
-    NoSession,
     /// An area blast was asked for an item whose declaration has no
     /// [`AreaEffect`], so there is no radius to take recipients from.
     NoAreaEffect {
@@ -4095,7 +4114,6 @@ impl OrdnanceRuntimeError {
             Self::Status(_) => "status",
             Self::Hit(_) => "hit",
             Self::Nitro(_) => "nitro",
-            Self::NoSession => "no_session",
             Self::NoAreaEffect { .. } => "no_area_effect",
             Self::NonFiniteRecipient { .. } => "non_finite_recipient",
             Self::AreaAlreadyOpened { .. } => "area_already_opened",
@@ -4144,10 +4162,6 @@ impl fmt::Display for OrdnanceRuntimeError {
             Self::Status(source) => write!(f, "the status ledger refused the call: {source}"),
             Self::Hit(source) => write!(f, "a routed damage amount was refused: {source}"),
             Self::Nitro(source) => write!(f, "the nitro ledger refused the request: {source}"),
-            Self::NoSession => write!(
-                f,
-                "this runtime is session generation zero, which is not a session a hit can be stamped into"
-            ),
             Self::NoAreaEffect { projectile } => {
                 write!(
                     f,
@@ -4448,7 +4462,7 @@ struct AreaOrigin {
 /// a render frame.
 #[derive(Clone, Debug)]
 pub struct OrdnanceRuntime {
-    session: u64,
+    session: SessionId,
     tick: Tick,
     rate: TickRate,
     producer: u32,
@@ -4466,7 +4480,7 @@ impl OrdnanceRuntime {
     /// Opens a runtime for one session generation, positioned at `tick` and
     /// stamping the [`HitEvent`]s it routes with producer serial `producer`.
     #[must_use]
-    pub fn new(session: u64, tick: Tick, rate: TickRate, producer: u32) -> Self {
+    pub fn new(session: SessionId, tick: Tick, rate: TickRate, producer: u32) -> Self {
         Self {
             session,
             tick,
@@ -4485,7 +4499,7 @@ impl OrdnanceRuntime {
 
     /// The session generation this runtime is confined to.
     #[must_use]
-    pub const fn session(&self) -> u64 {
+    pub const fn session(&self) -> SessionId {
         self.session
     }
 
@@ -4590,25 +4604,25 @@ impl OrdnanceRuntime {
         target: Option<ActorId>,
         wind_velocity_m_s: [f64; 3],
     ) -> Result<ProjectileId, OrdnanceRuntimeError> {
-        if projectile.session != self.session {
+        if projectile.session != self.session.get() {
             return Err(OrdnanceRuntimeError::ForeignSession {
-                expected: self.session,
+                expected: self.session.get(),
                 found: projectile.session,
             });
         }
-        if shooter.session.get() != self.session {
+        if shooter.session != self.session {
             return Err(OrdnanceRuntimeError::ForeignSession {
-                expected: self.session,
+                expected: self.session.get(),
                 found: shooter.session.get(),
             });
         }
         if let Some(target) = target
-            && target.session.get() != self.session
+            && target.session != self.session
         {
             // A tracker may only ever name a target of its own generation, so
             // no id from one session can be resolved in another.
             return Err(OrdnanceRuntimeError::ForeignSession {
-                expected: self.session,
+                expected: self.session.get(),
                 found: target.session.get(),
             });
         }
@@ -4765,7 +4779,11 @@ impl OrdnanceRuntime {
     /// carrying the declared blast and the position the runtime last recorded,
     /// so the caller applies it — and its spent tracker is dropped either way.
     /// There is no re-acquisition and no second announcement.
-    pub fn guidance_tick(&mut self, session: u64, observation: TargetObservation) -> GuidanceTick {
+    pub fn guidance_tick(
+        &mut self,
+        session: SessionId,
+        observation: TargetObservation,
+    ) -> GuidanceTick {
         let updates = self.guidance.session_tick(session, observation);
         let mut detonated = Vec::new();
         for (projectile, update) in &updates {
@@ -4812,7 +4830,7 @@ impl OrdnanceRuntime {
     /// or [`OrdnanceRuntimeError::Status`] when the ledger refuses the call.
     pub fn apply_statuses(
         &mut self,
-        session: u64,
+        session: SessionId,
         tick: Tick,
         projectile: &ProjectileId,
         target: StatusEffectTarget,
@@ -4841,7 +4859,7 @@ impl OrdnanceRuntime {
     /// [`OrdnanceRuntimeError::Status`] when the ledger refuses the call.
     pub fn apply_detonation_statuses(
         &mut self,
-        session: u64,
+        session: SessionId,
         tick: Tick,
         detonation: &GuidanceDetonation,
         target: StatusEffectTarget,
@@ -4859,7 +4877,7 @@ impl OrdnanceRuntime {
     /// expiry rule and the source naming are stated once.
     fn apply_effects(
         &mut self,
-        session: u64,
+        session: SessionId,
         tick: Tick,
         target: StatusEffectTarget,
         source: &OrdnanceId,
@@ -4880,7 +4898,7 @@ impl OrdnanceRuntime {
     /// ledger refuses the call.
     pub fn advance_status(
         &mut self,
-        session: u64,
+        session: SessionId,
         tick: Tick,
     ) -> Result<Vec<ExpiredStatusEffect>, OrdnanceRuntimeError> {
         Ok(self.status.advance_to(session, tick)?)
@@ -4900,11 +4918,11 @@ impl OrdnanceRuntime {
     /// # Errors
     ///
     /// [`OrdnanceRuntimeError`] for a foreign session, an unknown or
-    /// un-triggered item, an item already routed, a hit amount the damage
-    /// layer refuses, or a session generation zero that cannot stamp a hit.
+    /// un-triggered item, an item already routed, or a hit amount the damage
+    /// layer refuses.
     pub fn route_trigger(
         &mut self,
-        session: u64,
+        session: SessionId,
         tick: Tick,
         projectile: &ProjectileId,
         target: ActorId,
@@ -4912,8 +4930,8 @@ impl OrdnanceRuntime {
     ) -> Result<Vec<HitEvent>, OrdnanceRuntimeError> {
         if session != self.session {
             return Err(OrdnanceRuntimeError::ForeignSession {
-                expected: self.session,
-                found: session,
+                expected: self.session.get(),
+                found: session.get(),
             });
         }
         let Some(live) = self.live.get(projectile) else {
@@ -4931,9 +4949,6 @@ impl OrdnanceRuntime {
                 projectile: *projectile,
             });
         }
-        let Some(session_id) = SessionId::new(self.session) else {
-            return Err(OrdnanceRuntimeError::NoSession);
-        };
         let attacker = live.shooter;
         let damage = *live.definition.channels();
         let mut hits = Vec::new();
@@ -4942,7 +4957,7 @@ impl OrdnanceRuntime {
             if amount == 0.0 {
                 continue;
             }
-            let id = self.next_hit_id(session_id, tick);
+            let id = self.next_hit_id(self.session, tick);
             hits.push(
                 HitEvent::try_new(id, Some(attacker), target, node.clone(), channel, amount)
                     .map_err(OrdnanceRuntimeError::Hit)?,
@@ -4967,11 +4982,10 @@ impl OrdnanceRuntime {
     /// # Errors
     ///
     /// [`OrdnanceRuntimeError`] for a foreign session, an already-routed
-    /// detonation, a hit amount the damage layer refuses, or a session
-    /// generation zero that cannot stamp a hit.
+    /// detonation, or a hit amount the damage layer refuses.
     pub fn route_detonation(
         &mut self,
-        session: u64,
+        session: SessionId,
         tick: Tick,
         detonation: &GuidanceDetonation,
         target: ActorId,
@@ -4979,13 +4993,13 @@ impl OrdnanceRuntime {
     ) -> Result<Vec<HitEvent>, OrdnanceRuntimeError> {
         if session != self.session {
             return Err(OrdnanceRuntimeError::ForeignSession {
-                expected: self.session,
-                found: session,
+                expected: self.session.get(),
+                found: session.get(),
             });
         }
-        if detonation.projectile.session != self.session {
+        if detonation.projectile.session != self.session.get() {
             return Err(OrdnanceRuntimeError::ForeignSession {
-                expected: self.session,
+                expected: self.session.get(),
                 found: detonation.projectile.session,
             });
         }
@@ -4994,9 +5008,6 @@ impl OrdnanceRuntime {
                 projectile: detonation.projectile,
             });
         }
-        let Some(session_id) = SessionId::new(self.session) else {
-            return Err(OrdnanceRuntimeError::NoSession);
-        };
         let attacker = detonation.shooter;
         let damage = *detonation.definition.channels();
         let mut hits = Vec::new();
@@ -5005,7 +5016,7 @@ impl OrdnanceRuntime {
             if amount == 0.0 {
                 continue;
             }
-            let id = self.next_hit_id(session_id, tick);
+            let id = self.next_hit_id(self.session, tick);
             hits.push(
                 HitEvent::try_new(id, Some(attacker), target, node.clone(), channel, amount)
                     .map_err(OrdnanceRuntimeError::Hit)?,
@@ -5034,20 +5045,20 @@ impl OrdnanceRuntime {
     /// [`route_detonation`](Self::route_detonation).
     pub fn route_detonation_area(
         &mut self,
-        session: u64,
+        session: SessionId,
         tick: Tick,
         detonation: &GuidanceDetonation,
         recipients: &[BlastRecipient],
     ) -> Result<Vec<HitEvent>, OrdnanceRuntimeError> {
         if session != self.session {
             return Err(OrdnanceRuntimeError::ForeignSession {
-                expected: self.session,
-                found: session,
+                expected: self.session.get(),
+                found: session.get(),
             });
         }
-        if detonation.projectile.session != self.session {
+        if detonation.projectile.session != self.session.get() {
             return Err(OrdnanceRuntimeError::ForeignSession {
-                expected: self.session,
+                expected: self.session.get(),
                 found: detonation.projectile.session,
             });
         }
@@ -5070,9 +5081,6 @@ impl OrdnanceRuntime {
             };
             fractions.push(fraction);
         }
-        let Some(session_id) = SessionId::new(self.session) else {
-            return Err(OrdnanceRuntimeError::NoSession);
-        };
         if !self.routed.insert(detonation.projectile) {
             return Err(OrdnanceRuntimeError::AlreadyRouted {
                 projectile: detonation.projectile,
@@ -5090,7 +5098,7 @@ impl OrdnanceRuntime {
                 if amount == 0.0 {
                     continue;
                 }
-                let id = self.next_hit_id(session_id, tick);
+                let id = self.next_hit_id(self.session, tick);
                 hits.push(
                     HitEvent::try_new(
                         id,
@@ -5128,7 +5136,7 @@ impl OrdnanceRuntime {
     /// `AreaAlreadyOpened`, `NonFiniteRecipient`, `ForeignSession` or `Status`.
     pub fn open_area(
         &mut self,
-        session: u64,
+        session: SessionId,
         tick: Tick,
         projectile: &ProjectileId,
         targets: &[TargetPath],
@@ -5165,14 +5173,14 @@ impl OrdnanceRuntime {
     /// The errors of [`open_area`](Self::open_area), without `UnknownProjectile`.
     pub fn open_detonation_area(
         &mut self,
-        session: u64,
+        session: SessionId,
         tick: Tick,
         detonation: &GuidanceDetonation,
         targets: &[TargetPath],
     ) -> Result<AreaInstanceId, OrdnanceRuntimeError> {
-        if detonation.projectile.session != self.session {
+        if detonation.projectile.session != self.session.get() {
             return Err(OrdnanceRuntimeError::ForeignSession {
-                expected: self.session,
+                expected: self.session.get(),
                 found: detonation.projectile.session,
             });
         }
@@ -5192,15 +5200,15 @@ impl OrdnanceRuntime {
 
     fn open_area_at(
         &mut self,
-        session: u64,
+        session: SessionId,
         tick: Tick,
         origin: AreaOrigin,
         targets: &[TargetPath],
     ) -> Result<AreaInstanceId, OrdnanceRuntimeError> {
         if session != self.session {
             return Err(OrdnanceRuntimeError::ForeignSession {
-                expected: self.session,
-                found: session,
+                expected: self.session.get(),
+                found: session.get(),
             });
         }
         let projectile = origin.projectile;
@@ -5213,9 +5221,9 @@ impl OrdnanceRuntime {
         let centre = origin.centre;
         let mut recipients = BTreeSet::new();
         for path in targets {
-            if path.actor.session.get() != self.session {
+            if path.actor.session != self.session {
                 return Err(OrdnanceRuntimeError::ForeignSession {
-                    expected: self.session,
+                    expected: self.session.get(),
                     found: path.actor.session.get(),
                 });
             }
@@ -5254,7 +5262,7 @@ impl OrdnanceRuntime {
     /// [`OrdnanceRuntimeError::Status`] when the ledger refuses the call.
     pub fn advance_areas(
         &mut self,
-        session: u64,
+        session: SessionId,
         tick: Tick,
     ) -> Result<Vec<ExpiredArea>, OrdnanceRuntimeError> {
         Ok(self.areas.advance_to(session, tick)?)
@@ -5272,9 +5280,9 @@ impl OrdnanceRuntime {
         shooter: ActorId,
         parameters: NitroParameters,
     ) -> Result<(), OrdnanceRuntimeError> {
-        if shooter.session.get() != self.session {
+        if shooter.session != self.session {
             return Err(OrdnanceRuntimeError::ForeignSession {
-                expected: self.session,
+                expected: self.session.get(),
                 found: shooter.session.get(),
             });
         }

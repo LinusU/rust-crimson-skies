@@ -1219,7 +1219,7 @@ impl OrdnanceSession {
             session_id,
             rate,
             producer,
-            runtime: OrdnanceRuntime::new(session, tick, rate, producer),
+            runtime: OrdnanceRuntime::new(session_id, tick, rate, producer),
             catalogue,
             components: BTreeMap::new(),
             engagements: BTreeMap::new(),
@@ -1498,8 +1498,12 @@ impl OrdnanceSession {
         self.engagements.clear();
         self.components.clear();
         let mirrors = despawn_ordnance_mirrors(world);
-        self.runtime =
-            OrdnanceRuntime::new(self.session, self.runtime.tick(), self.rate, self.producer);
+        self.runtime = OrdnanceRuntime::new(
+            self.session_id,
+            self.runtime.tick(),
+            self.rate,
+            self.producer,
+        );
         OrdnanceTeardownReport {
             projectiles,
             mirrors,
@@ -1602,7 +1606,7 @@ pub fn step_ordnance_session(
     // Expire the ledger before anything new is applied, so an effect whose
     // boundary is this tick is reported once, in this tick's report, and can
     // never be resurrected by a re-entered step.
-    match session.runtime.advance_status(session.session, step.at) {
+    match session.runtime.advance_status(session.session_id, step.at) {
         Ok(expired) => {
             for effect in expired {
                 let event = push_network_event(
@@ -1626,7 +1630,7 @@ pub fn step_ordnance_session(
 
     // Areas expire on the same rule as statuses: on their boundary tick,
     // reported once, before this tick's detonations open new ones.
-    match session.runtime.advance_areas(session.session, step.at) {
+    match session.runtime.advance_areas(session.session_id, step.at) {
         Ok(expired) => tick.areas_expired = expired,
         Err(source) => tick.areas_refused = Some(source),
     }
@@ -1787,7 +1791,9 @@ pub fn step_ordnance_session(
     }
 
     if let Some(observation) = step.guidance {
-        let guidance = session.runtime.guidance_tick(session.session, observation);
+        let guidance = session
+            .runtime
+            .guidance_tick(session.session_id, observation);
         for detonation in &guidance.detonated {
             // A `Detonate` loss removes the item from the live set, so its
             // blast cannot go through the trigger path. It carries the
@@ -1814,7 +1820,7 @@ pub fn step_ordnance_session(
                 area_refused: None,
             };
             match session.runtime.route_detonation(
-                session.session,
+                session.session_id,
                 step.at,
                 detonation,
                 engagement.damage_target,
@@ -1827,7 +1833,7 @@ pub fn step_ordnance_session(
                         Err(source) => blast.damage_refused = Some(source),
                     }
                     match session.runtime.apply_detonation_statuses(
-                        session.session,
+                        session.session_id,
                         step.at,
                         detonation,
                         engagement.status_recipient,
@@ -1858,7 +1864,7 @@ pub fn step_ordnance_session(
                     }
                     if detonation.area_effect().is_some() {
                         match session.runtime.open_detonation_area(
-                            session.session,
+                            session.session_id,
                             step.at,
                             detonation,
                             step.targets,
@@ -1942,7 +1948,7 @@ pub fn step_ordnance_session(
                 };
 
                 match session.runtime.route_trigger(
-                    session.session,
+                    session.session_id,
                     step.at,
                     &projectile,
                     engagement.damage_target,
@@ -1955,7 +1961,7 @@ pub fn step_ordnance_session(
                             Err(source) => detonation.damage_refused = Some(source),
                         }
                         match session.runtime.apply_statuses(
-                            session.session,
+                            session.session_id,
                             step.at,
                             &projectile,
                             engagement.status_recipient,
@@ -1992,7 +1998,7 @@ pub fn step_ordnance_session(
                             .is_some_and(|item| item.definition().area_effect().is_some());
                         if declares_area {
                             match session.runtime.open_area(
-                                session.session,
+                                session.session_id,
                                 step.at,
                                 &projectile,
                                 step.targets,

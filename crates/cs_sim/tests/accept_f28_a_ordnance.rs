@@ -323,16 +323,16 @@ fn accept_f28_a_guidance_loses_a_destroyed_target_and_never_reacquires_it() {
         "the guided fixture detonates on target loss: {rule:?}"
     );
     let target = actor(9);
-    let mut set = GuidanceSet::new(SESSION);
+    let mut set = GuidanceSet::new(session(SESSION));
     set.insert(GuidanceTracker::new(
-        SESSION,
+        session(SESSION),
         projectile(4),
         rule,
         Some(target),
     ));
 
     // Alive: tracking.
-    let updates = set.session_tick(SESSION, TargetObservation::alive(target, tick(5)));
+    let updates = set.session_tick(session(SESSION), TargetObservation::alive(target, tick(5)));
     assert_eq!(
         updates.get(&projectile(4)).copied(),
         Some(GuidanceUpdate::Tracked { target }),
@@ -340,7 +340,10 @@ fn accept_f28_a_guidance_loses_a_destroyed_target_and_never_reacquires_it() {
     );
 
     // Destroyed: the loss is named exactly once.
-    let updates = set.session_tick(SESSION, TargetObservation::destroyed(target, tick(6)));
+    let updates = set.session_tick(
+        session(SESSION),
+        TargetObservation::destroyed(target, tick(6)),
+    );
     let lost = updates.get(&projectile(4)).copied();
     assert!(
         matches!(
@@ -364,7 +367,7 @@ fn accept_f28_a_guidance_loses_a_destroyed_target_and_never_reacquires_it() {
 
     // The target cannot come back, even if a live actor of the same id is
     // reported on a later tick.
-    let updates = set.session_tick(SESSION, TargetObservation::alive(target, tick(7)));
+    let updates = set.session_tick(session(SESSION), TargetObservation::alive(target, tick(7)));
     let after = updates.get(&projectile(4)).copied();
     assert!(
         !after.is_some_and(|update| update.is_tracked()),
@@ -382,15 +385,18 @@ fn accept_f28_a_guidance_loses_a_destroyed_target_and_never_reacquires_it() {
 fn accept_f28_a_guidance_loses_its_target_on_a_session_change() {
     let definition = synthetic_guided_rocket();
     let target = actor(9);
-    let mut set = GuidanceSet::new(SESSION);
+    let mut set = GuidanceSet::new(session(SESSION));
     set.insert(GuidanceTracker::new(
-        SESSION,
+        session(SESSION),
         projectile(4),
         definition.guidance(),
         Some(target),
     ));
 
-    let updates = set.session_tick(SESSION + 1, TargetObservation::alive(target, tick(6)));
+    let updates = set.session_tick(
+        session(SESSION + 1),
+        TargetObservation::alive(target, tick(6)),
+    );
     let update = updates.get(&projectile(4)).copied();
     assert!(
         matches!(
@@ -398,7 +404,7 @@ fn accept_f28_a_guidance_loses_its_target_on_a_session_change() {
             Some(GuidanceUpdate::Lost {
                 reason: LostTargetReason::ForeignSession { expected, found },
                 ..
-            }) if expected == SESSION && found == SESSION + 1
+            }) if expected == session(SESSION) && found == session(SESSION + 1)
         ),
         "another generation is a lost target, not a lookup: {update:?}"
     );
@@ -435,7 +441,7 @@ fn accept_f28_a_each_lost_target_behavior_has_its_own_outcome() {
     ];
     for (lost_target, expect) in outcomes {
         let mut tracker = GuidanceTracker::new(
-            SESSION,
+            session(SESSION),
             projectile(5),
             GuidanceRule::Targeted { lost_target },
             Some(target),
@@ -487,7 +493,7 @@ fn accept_f28_a_an_unguided_item_has_no_target_to_lose() {
         !flak.guidance().is_targeted(),
         "a flak shell is unguided by definition"
     );
-    let mut tracker = GuidanceTracker::new(SESSION, projectile(6), flak.guidance(), None);
+    let mut tracker = GuidanceTracker::new(session(SESSION), projectile(6), flak.guidance(), None);
     assert_eq!(tracker.hold(), GuidanceUpdate::Unguided);
     assert_eq!(
         tracker.lose(LostTargetReason::Destroyed),
@@ -504,7 +510,7 @@ fn accept_f28_a_an_unguided_item_has_no_target_to_lose() {
 fn accept_f28_a_a_targeted_item_launched_without_a_target_reports_one_unassigned_loss() {
     for lost_target in LostTargetBehavior::ALL {
         let mut tracker = GuidanceTracker::new(
-            SESSION,
+            session(SESSION),
             projectile(7),
             GuidanceRule::Targeted {
                 lost_target: *lost_target,
@@ -542,16 +548,19 @@ fn accept_f28_a_a_targeted_item_launched_without_a_target_reports_one_unassigned
 
     // The same resolution happens through the session's own tick, so no
     // caller has to remember to make it.
-    let mut set = GuidanceSet::new(SESSION);
+    let mut set = GuidanceSet::new(session(SESSION));
     set.insert(GuidanceTracker::new(
-        SESSION,
+        session(SESSION),
         projectile(8),
         GuidanceRule::Targeted {
             lost_target: LostTargetBehavior::Detonate,
         },
         None,
     ));
-    let updates = set.session_tick(SESSION, TargetObservation::alive(actor(11), tick(3)));
+    let updates = set.session_tick(
+        session(SESSION),
+        TargetObservation::alive(actor(11), tick(3)),
+    );
     assert!(
         matches!(
             updates.get(&projectile(8)).copied(),
@@ -574,7 +583,7 @@ fn accept_f28_a_a_targeted_item_launched_without_a_target_reports_one_unassigned
 /// absent tracker is never silently skipped.
 #[test]
 fn accept_f28_a_guidance_refuses_an_unregistered_item_rather_than_skipping_it() {
-    let mut set = GuidanceSet::new(SESSION);
+    let mut set = GuidanceSet::new(session(SESSION));
     assert_eq!(
         set.require(&projectile(12)),
         Err(GuidanceError::UnknownProjectile {
@@ -586,7 +595,7 @@ fn accept_f28_a_guidance_refuses_an_unregistered_item_rather_than_skipping_it() 
 
     let guided = synthetic_guided_rocket();
     set.insert(GuidanceTracker::new(
-        SESSION,
+        session(SESSION),
         projectile(13),
         guided.guidance(),
         Some(actor(9)),
@@ -609,10 +618,10 @@ fn accept_f28_a_a_timed_engine_status_effect_expires_on_exactly_its_tick() {
     let duration = choke.duration_ticks();
     let source = synthetic_ordnance(SYNTHETIC_AREA_DENIAL_KEY);
     let engine = StatusEffectTarget::actor_system(actor(1), SystemKind::Propulsion);
-    let mut ledger = StatusEffectLedger::new(SESSION, tick(100));
+    let mut ledger = StatusEffectLedger::new(session(SESSION), tick(100));
 
     let instance = ledger
-        .apply(SESSION, tick(100), engine, &source, &choke)
+        .apply(session(SESSION), tick(100), engine, &source, &choke)
         .expect("the effect applies in its own session");
     assert!(
         ledger.is_under(&engine, StatusEffectKind::Choke),
@@ -626,7 +635,7 @@ fn accept_f28_a_a_timed_engine_status_effect_expires_on_exactly_its_tick() {
 
     // One tick before the boundary the effect is still live ...
     let expired = ledger
-        .advance_to(SESSION, tick(100 + duration - 1))
+        .advance_to(session(SESSION), tick(100 + duration - 1))
         .expect("the advance is in this session");
     assert!(
         expired.is_empty(),
@@ -636,7 +645,7 @@ fn accept_f28_a_a_timed_engine_status_effect_expires_on_exactly_its_tick() {
 
     // ... and on the boundary tick it is gone.
     let expired = ledger
-        .advance_to(SESSION, tick(100 + duration))
+        .advance_to(session(SESSION), tick(100 + duration))
         .expect("the advance is in this session");
     assert_eq!(
         expired.len(),
@@ -658,7 +667,7 @@ fn accept_f28_a_a_timed_engine_status_effect_expires_on_exactly_its_tick() {
 
     // A re-entered schedule step on the same tick reports nothing further.
     let again = ledger
-        .advance_to(SESSION, tick(100 + duration))
+        .advance_to(session(SESSION), tick(100 + duration))
         .expect("a repeat advance is idempotent");
     assert!(
         again.is_empty(),
@@ -675,14 +684,14 @@ fn accept_f28_a_a_status_effect_ledger_resets_on_restart() {
     let source = synthetic_ordnance(SYNTHETIC_AREA_DENIAL_KEY);
     let engine = StatusEffectTarget::actor_system(actor(1), SystemKind::Propulsion);
 
-    let mut first = StatusEffectLedger::new(SESSION, tick(0));
+    let mut first = StatusEffectLedger::new(session(SESSION), tick(0));
     first
-        .apply(SESSION, tick(0), engine, &source, &choke)
+        .apply(session(SESSION), tick(0), engine, &source, &choke)
         .expect("the effect applies");
     assert!(first.is_under(&engine, StatusEffectKind::Choke));
 
     // Another session's ledger starts empty and cannot see the old effect.
-    let second = StatusEffectLedger::new(SESSION + 1, tick(0));
+    let second = StatusEffectLedger::new(session(SESSION + 1), tick(0));
     assert!(
         second.is_empty(),
         "a new session starts with no inherited effects"
@@ -695,10 +704,10 @@ fn accept_f28_a_a_status_effect_ledger_resets_on_restart() {
     // The old ledger refuses the new session rather than quietly accepting
     // it, in both directions.
     assert_eq!(
-        first.advance_to(SESSION + 1, tick(1)),
+        first.advance_to(session(SESSION + 1), tick(1)),
         Err(StatusEffectError::ForeignSession {
-            expected: SESSION,
-            found: SESSION + 1,
+            expected: session(SESSION),
+            found: session(SESSION + 1),
         }),
         "advancing a ledger from another generation is refused"
     );
@@ -707,10 +716,10 @@ fn accept_f28_a_a_status_effect_ledger_resets_on_restart() {
         "a refused operation changes nothing"
     );
     assert_eq!(
-        first.apply(SESSION + 1, tick(1), engine, &source, &choke),
+        first.apply(session(SESSION + 1), tick(1), engine, &source, &choke),
         Err(StatusEffectError::ForeignSession {
-            expected: SESSION,
-            found: SESSION + 1,
+            expected: session(SESSION),
+            found: session(SESSION + 1),
         }),
         "applying from another generation is refused"
     );
@@ -727,12 +736,12 @@ fn accept_f28_a_status_recipients_separate_the_actor_from_its_systems() {
     let engine = StatusEffectTarget::actor_system(actor(1), SystemKind::Propulsion);
     let whole = StatusEffectTarget::whole_actor(actor(1));
 
-    let mut ledger = StatusEffectLedger::new(SESSION, tick(0));
+    let mut ledger = StatusEffectLedger::new(session(SESSION), tick(0));
     ledger
-        .apply(SESSION, tick(0), engine, &source, &choke)
+        .apply(session(SESSION), tick(0), engine, &source, &choke)
         .expect("the engine choke applies");
     ledger
-        .apply(SESSION, tick(0), whole, &source, &marker)
+        .apply(session(SESSION), tick(0), whole, &source, &marker)
         .expect("the actor marker applies");
 
     assert!(ledger.is_under(&engine, StatusEffectKind::Choke));
@@ -1117,11 +1126,11 @@ fn accept_f28_a_a_timed_fuse_fires_exactly_on_its_declared_tick() {
 fn accept_f28_a_nitro_changes_thrust_and_consumption_and_nothing_else() {
     let parameters = synthetic_nitro_parameters();
     let per_tick = SYNTHETIC_NITRO_CONSUMPTION_PER_S * tick_seconds();
-    let mut ledger = NitroLedger::new(SESSION, tick(0), rate(), parameters);
+    let mut ledger = NitroLedger::new(session(SESSION), tick(0), rate(), parameters);
     assert_eq!(ledger.capacity_units(), parameters.capacity_units());
 
     let held = ledger
-        .request(SESSION, tick(1), true)
+        .request(session(SESSION), tick(1), true)
         .expect("the request is in this session");
     assert!(held.is_active(), "a held control with capacity runs nitro");
     assert_eq!(
@@ -1136,7 +1145,7 @@ fn accept_f28_a_nitro_changes_thrust_and_consumption_and_nothing_else() {
     assert_eq!(held.authority_multiplier, 1.0, "no tradeoff is invented");
 
     let released = ledger
-        .request(SESSION, tick(2), false)
+        .request(session(SESSION), tick(2), false)
         .expect("the request is in this session");
     assert!(!released.is_active(), "a released control stops nitro");
     assert_eq!(released.extra_thrust_n, 0.0, "no thrust modifier when idle");
@@ -1166,14 +1175,16 @@ fn accept_f28_a_pressing_nitro_without_capacity_consumes_nothing() {
         NitroTradeoffs::UNMEASURED,
     )
     .expect("the parameters are valid");
-    let mut ledger = NitroLedger::new(SESSION, tick(0), rate(), parameters);
+    let mut ledger = NitroLedger::new(session(SESSION), tick(0), rate(), parameters);
 
-    let first = ledger.request(SESSION, tick(1), true).expect("valid");
+    let first = ledger
+        .request(session(SESSION), tick(1), true)
+        .expect("valid");
     assert!(first.is_active(), "the first tick drains the capacity");
     assert_eq!(ledger.capacity_units(), 0.0);
 
     let second = ledger
-        .request(SESSION, tick(2), true)
+        .request(session(SESSION), tick(2), true)
         .expect("the request is in this session");
     assert_eq!(
         second.refused,
@@ -1209,17 +1220,17 @@ fn accept_f28_a_a_fixed_nitro_burn_lasts_exactly_its_declared_ticks() {
         NitroTradeoffs::UNMEASURED,
     )
     .expect("the parameters are valid");
-    let mut ledger = NitroLedger::new(SESSION, tick(0), rate(), parameters);
+    let mut ledger = NitroLedger::new(session(SESSION), tick(0), rate(), parameters);
 
     let first = ledger
-        .request(SESSION, tick(1), true)
+        .request(session(SESSION), tick(1), true)
         .expect("the activation is accepted");
     assert!(first.is_active(), "the burn starts on the accepted tick");
 
     // A second request while the burn is running is refused by name and
     // changes nothing — and the accepted burn keeps running.
     let second = ledger
-        .request(SESSION, tick(2), true)
+        .request(session(SESSION), tick(2), true)
         .expect("the request is in this session");
     assert_eq!(
         second.refused,
@@ -1242,7 +1253,7 @@ fn accept_f28_a_a_fixed_nitro_burn_lasts_exactly_its_declared_ticks() {
 
     // Releasing the control does not end a fixed burn either.
     let third = ledger
-        .request(SESSION, tick(3), false)
+        .request(session(SESSION), tick(3), false)
         .expect("the request is in this session");
     assert!(
         third.is_active(),
@@ -1252,7 +1263,7 @@ fn accept_f28_a_a_fixed_nitro_burn_lasts_exactly_its_declared_ticks() {
     // The burn is over on the tick its declared length reaches.
     assert!(ledger.burn_running());
     let fourth = ledger
-        .request(SESSION, tick(4), false)
+        .request(session(SESSION), tick(4), false)
         .expect("the request is in this session");
     assert!(!fourth.is_active(), "the burn ends on its declared tick");
     assert_eq!(
@@ -1284,14 +1295,14 @@ fn accept_f28_a_a_running_fixed_nitro_burn_never_recovers_capacity() {
          recovery would be visible in the capacity"
     );
 
-    let mut ledger = NitroLedger::new(SESSION, tick(0), rate(), parameters);
+    let mut ledger = NitroLedger::new(session(SESSION), tick(0), rate(), parameters);
     ledger
-        .request(SESSION, tick(1), true)
+        .request(session(SESSION), tick(1), true)
         .expect("the activation is accepted");
     let mut previous = ledger.capacity_units();
     for step in 2..=3 {
         let update = ledger
-            .request(SESSION, tick(step), true)
+            .request(session(SESSION), tick(step), true)
             .expect("the request is in this session");
         assert!(
             update.is_active(),
@@ -1312,7 +1323,7 @@ fn accept_f28_a_a_running_fixed_nitro_burn_never_recovers_capacity() {
 
     // Once the burn is over, the same ledger does recover while idle.
     let idle = ledger
-        .request(SESSION, tick(4), false)
+        .request(session(SESSION), tick(4), false)
         .expect("the request is in this session");
     assert!(!idle.is_active());
     assert!(
@@ -1330,15 +1341,15 @@ fn accept_f28_a_nitro_consumption_is_whole_ticks_not_frame_time() {
     let parameters = synthetic_nitro_parameters();
     let per_tick = SYNTHETIC_NITRO_CONSUMPTION_PER_S * tick_seconds();
 
-    let mut walked = NitroLedger::new(SESSION, tick(0), rate(), parameters);
+    let mut walked = NitroLedger::new(session(SESSION), tick(0), rate(), parameters);
     for step in 1..=10 {
         walked
-            .request(SESSION, tick(step), true)
+            .request(session(SESSION), tick(step), true)
             .expect("the request is in this session");
     }
-    let mut jumped = NitroLedger::new(SESSION, tick(0), rate(), parameters);
+    let mut jumped = NitroLedger::new(session(SESSION), tick(0), rate(), parameters);
     let jumped_tick = jumped
-        .request(SESSION, tick(10), true)
+        .request(session(SESSION), tick(10), true)
         .expect("the request is in this session");
 
     assert!(
@@ -1357,17 +1368,22 @@ fn accept_f28_a_nitro_consumption_is_whole_ticks_not_frame_time() {
 /// generation or a tick from the past is refused rather than applied.
 #[test]
 fn accept_f28_a_nitro_refuses_a_foreign_session_and_a_backwards_tick() {
-    let mut ledger = NitroLedger::new(SESSION, tick(10), rate(), synthetic_nitro_parameters());
+    let mut ledger = NitroLedger::new(
+        session(SESSION),
+        tick(10),
+        rate(),
+        synthetic_nitro_parameters(),
+    );
     assert_eq!(
-        ledger.request(SESSION + 1, tick(11), true),
+        ledger.request(session(SESSION + 1), tick(11), true),
         Err(NitroError::ForeignSession {
-            expected: SESSION,
-            found: SESSION + 1,
+            expected: session(SESSION),
+            found: session(SESSION + 1),
         }),
         "another generation is refused"
     );
     assert_eq!(
-        ledger.request(SESSION, tick(9), true),
+        ledger.request(session(SESSION), tick(9), true),
         Err(NitroError::NonMonotonicTick {
             at: tick(10),
             found: tick(9),

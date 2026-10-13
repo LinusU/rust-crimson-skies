@@ -28,9 +28,13 @@ use cs_types::space::{UnitVec3, WorldPosition};
 const SESSION: u64 = 11;
 const RADIUS_M: f64 = 40.0;
 
+fn session(value: u64) -> SessionId {
+    SessionId::new(value).expect("a nonzero session generation")
+}
+
 fn actor(serial: u64) -> ActorId {
     ActorId {
-        session: SessionId::new(SESSION).expect("a nonzero session generation"),
+        session: session(SESSION),
         serial,
     }
 }
@@ -67,7 +71,12 @@ fn guided(area: Option<AreaEffect>) -> ProjectileOrdnance {
 /// Launches one item at the origin and destroys its target, returning the
 /// runtime and the detonation record the loss produced.
 fn detonation(area: Option<AreaEffect>) -> (OrdnanceRuntime, GuidanceDetonation) {
-    let mut runtime = OrdnanceRuntime::new(SESSION, Tick(0), TickRate::new(30).expect("rate"), 7);
+    let mut runtime = OrdnanceRuntime::new(
+        session(SESSION),
+        Tick(0),
+        TickRate::new(30).expect("rate"),
+        7,
+    );
     let mount = MountTransform::try_new(
         position([0.0, 0.0, 0.0]),
         UnitVec3::try_new([0.0, 0.0, -1.0]).expect("unit vector"),
@@ -88,7 +97,10 @@ fn detonation(area: Option<AreaEffect>) -> (OrdnanceRuntime, GuidanceDetonation)
             [0.0, 0.0, 0.0],
         )
         .expect("the fixture launches");
-    let mut lost = runtime.guidance_tick(SESSION, TargetObservation::destroyed(target, Tick(1)));
+    let mut lost = runtime.guidance_tick(
+        session(SESSION),
+        TargetObservation::destroyed(target, Tick(1)),
+    );
     let detonation = lost.detonated.remove(0);
     (runtime, detonation)
 }
@@ -118,7 +130,7 @@ fn accept_t548_a_blast_damages_every_actor_inside_the_radius_with_falloff() {
     let (mut runtime, detonation) = detonation(Some(area));
     let hits = runtime
         .route_detonation_area(
-            SESSION,
+            session(SESSION),
             Tick(1),
             &detonation,
             &[
@@ -154,23 +166,34 @@ fn accept_t548_a_blast_routes_once_and_needs_a_declared_area() {
     let area = AreaEffect::try_new(RADIUS_M, 10).expect("a valid area");
     let (mut runtime, detonation) = detonation(Some(area));
     runtime
-        .route_detonation_area(SESSION, Tick(1), &detonation, &[recipient(20, 1.0)])
+        .route_detonation_area(
+            session(SESSION),
+            Tick(1),
+            &detonation,
+            &[recipient(20, 1.0)],
+        )
         .expect("the first routing succeeds");
-    let again = runtime.route_detonation_area(SESSION, Tick(1), &detonation, &[recipient(20, 1.0)]);
+    let again = runtime.route_detonation_area(
+        session(SESSION),
+        Tick(1),
+        &detonation,
+        &[recipient(20, 1.0)],
+    );
     assert!(matches!(
         again,
         Err(OrdnanceRuntimeError::AlreadyRouted { .. })
     ));
 
     let (mut runtime, bare) = detonation_without_area();
-    let refused = runtime.route_detonation_area(SESSION, Tick(1), &bare, &[recipient(20, 1.0)]);
+    let refused =
+        runtime.route_detonation_area(session(SESSION), Tick(1), &bare, &[recipient(20, 1.0)]);
     assert!(matches!(
         refused,
         Err(OrdnanceRuntimeError::NoAreaEffect { .. })
     ));
     // The refusal latched nothing: the single-target path is still open.
     runtime
-        .route_detonation(SESSION, Tick(1), &bare, actor(20), node())
+        .route_detonation(session(SESSION), Tick(1), &bare, actor(20), node())
         .expect("a refused area blast leaves the item routable");
 }
 
@@ -185,12 +208,17 @@ fn accept_t548_a_non_finite_recipient_is_refused_without_latching() {
     let area = AreaEffect::try_new(RADIUS_M, 10).expect("a valid area");
     let (mut runtime, detonation) = detonation(Some(area));
     let far = BlastRecipient::new(actor(20), node(), position([f64::MAX, f64::MAX, f64::MAX]));
-    let refused = runtime.route_detonation_area(SESSION, Tick(1), &detonation, &[far]);
+    let refused = runtime.route_detonation_area(session(SESSION), Tick(1), &detonation, &[far]);
     assert!(matches!(
         refused,
         Err(OrdnanceRuntimeError::NonFiniteRecipient { .. })
     ));
     runtime
-        .route_detonation_area(SESSION, Tick(1), &detonation, &[recipient(20, 1.0)])
+        .route_detonation_area(
+            session(SESSION),
+            Tick(1),
+            &detonation,
+            &[recipient(20, 1.0)],
+        )
         .expect("the item was not latched by the refusal");
 }
