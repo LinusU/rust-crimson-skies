@@ -53,9 +53,51 @@
 //!   gate's match-stage intent validation are the F58 follow-up recorded as
 //!   Rally #1221: this drive consumes the already-admitted [`PeerInput`] the
 //!   lifecycle produced; it does not re-run admission.
-//! * Driving `NetSession` further — sampling interpolated poses, reconciling
-//!   local prediction, tracer expiry — is F57-C.01 (Rally #657). This drive
-//!   feeds it; it does not render from it.
+//!
+//! # The F57-C.01 scheduled consumption
+//!
+//! Rally #657 fills in what the earlier drive deliberately left out: the
+//! mirror's own consumers now run on the same committed tick, in one
+//! explicitly chained [`NetSessionSet`] in `FixedPostUpdate`, ordered after
+//! Avian's [`PhysicsSystems::StepSimulation`]:
+//!
+//! 1. [`NetSessionSet::Origin`] ([`drive_net_origin`]) — the installed
+//!    [`NetOriginDriver`] advances one frame of wall time into whole fixed
+//!    ticks, so a policy rebase happens *before* this tick's snapshot is
+//!    decoded. The frame the driver produced is adopted by `NetHost` (the
+//!    publish frame), `NetClient` (the frame future mirrors build in) and the
+//!    live [`NetMirror`] through `NetSession::rebase` — one call per epoch
+//!    the driver crossed — and the one [`NetPredictedBody`] pose owner's
+//!    `Position` is converted through the same frame change, because a local
+//!    `f32` coordinate does not survive an epoch change unconverted.
+//! 2. [`NetSessionSet::Drive`] ([`drive_net_session`]) — the F54-C pump: the
+//!    lifecycle is pumped, a `Closed` client session's mirror is released by
+//!    name, decoded `SnapshotFrame`s drain into `NetSession::ingest` in tick
+//!    order (the latest-wins mailbox is fed at most once per snapshot), and
+//!    reliable `ActorSpawned` events teach the drive which actor the wire
+//!    named this client's own.
+//! 3. [`NetSessionSet::Sample`] ([`sample_net_mirror`]) — every mirrored
+//!    remote actor is sampled at the committed tick (the schedule's estimate
+//!    of the server tick) into [`NetPresentation`]. The local actor is never
+//!    interpolated: its pose is the predictor's, not the buffer's.
+//! 4. [`NetSessionSet::Correct`] ([`correct_local_pose`]) — the
+//!    server-named local actor is attached, the pose owner's committed pose
+//!    is recorded, `reconcile_local` is run when this tick's ingest moved
+//!    the local record, and `NetSession::next_correction` is written through
+//!    the one marked [`NetPredictedBody`] entity — the only place a pose the
+//!    session produced reaches the ECS. Two markers are refused by name
+//!    (`NetPoseOwner::Ambiguous`), not silently double-applied.
+//! 5. [`NetSessionSet::ExpireTracers`] ([`expire_net_tracers`]) — client
+//!    tracers past their presentation window are expired.
+//!
+//! Every refusal the chain hits — `SessionError`, `IngestRefusal`,
+//! `PublishError`, `BufferRefusal`, snapshot-decode and lifecycle notices —
+//! lands in the one caller-visible channel, [`NetSessionReport`]; nothing in
+//! the chain returns or drops a refusal. A session end or lifecycle
+//! disconnect runs `NetSession::teardown` by name, so no aircraft, tracer or
+//! interpolation track outlives its generation, and a reconnect builds a
+//! fresh mirror under the fresh grant's epoch rather than feeding the spent
+//! one.
 //!
 //! All of this is newly authored engine design: no original networked
 //! behavior has been measured, and none is asserted here.
@@ -63,30 +105,38 @@
 use std::collections::{BTreeMap, VecDeque};
 use std::fmt;
 
-use avian3d::prelude::PhysicsSystems;
+use avian3d::prelude::{PhysicsSystems, Position, Rotation};
 use bevy::app::{App, Plugin};
+use bevy::ecs::component::Component;
+use bevy::ecs::entity::Entity;
+use bevy::ecs::query::With;
 use bevy::ecs::resource::Resource;
-use bevy::ecs::schedule::IntoScheduleConfigs;
+use bevy::ecs::schedule::{IntoScheduleConfigs, SystemSet};
+use bevy::math::{Quat, Vec3};
 use bevy::prelude::FixedPostUpdate;
 use bevy::prelude::World;
 use bevy::time::{Fixed, Time};
 
 use cs_net::lifecycle::{
-    ClientNotice, ClientSession, PeerInput, ServerNotice, ServerPhase, ServerSession,
+    ClientNotice, ClientPhase, ClientSession, PeerInput, ServerFault, ServerNotice, ServerPhase,
+    ServerSession,
 };
-use cs_net::message::ReliableEvent;
+use cs_net::message::{EventBody, ReliableEvent};
 use cs_net::validation::SessionViolation;
 use cs_sim::control::{ControlBuffer, ControlError};
 use cs_sim::net_state::{NetStateError, NetStateLedger};
 use cs_types::Tick;
 use cs_types::net::{ActorId, PeerId, SessionId};
+use cs_types::space::{LocalPosition, Quaternion};
 
-use crate::origin::WorldOrigin;
-use crate::physics::PhysicsTickLedger;
+use crate::origin::{FixedTickDriver, WorldOrigin};
+use crate::physics::{FlightAircraft, PhysicsTickLedger};
 use crate::weapons::WeaponOrder;
 
 use super::physics::{
-    IngestReport, InterpolationConfig, NetSession, PublishError, publish_snapshot,
+    BufferRefusal, EpochTransition, IngestReport, InterpolatedAircraft, InterpolationConfig,
+    NetSession, PoseCorrection, PredictedPose, PredictionConfig, PublishError, ReconcileKind,
+    Reconciliation, publish_snapshot,
 };
 use super::recovery::fire_intent;
 
@@ -112,8 +162,8 @@ struct RemotePilot {
     buffer: ControlBuffer,
 }
 
-/// Why a [`NetHost`] could not be assembled.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// Why a [`NetHost`] could not be assembled or retried.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub enum NetHostError {
     /// The authoritative ledger serves a different session generation than
     /// the session object — the two authorities must agree or every snapshot
@@ -124,6 +174,9 @@ pub enum NetHostError {
         /// The ledger's epoch.
         ledger: SessionId,
     },
+    /// The session's own `reopen` refused the retry; the fault is the
+    /// session's words, not a guess.
+    Reopen(ServerFault),
 }
 
 impl fmt::Display for NetHostError {
@@ -133,6 +186,7 @@ impl fmt::Display for NetHostError {
                 f,
                 "ledger serves session {ledger}, but the session object is {session}"
             ),
+            Self::Reopen(fault) => write!(f, "the session refused the reopen: {fault}"),
         }
     }
 }
@@ -235,6 +289,40 @@ impl NetHost {
     /// epoch field (F57-C.01 owns the receiving rebase).
     pub fn set_origin(&mut self, next: WorldOrigin) {
         self.origin = next;
+    }
+
+    /// Spends the epoch and mints a fresh one on the same socket — the
+    /// session object's own [`ServerSession::reopen`] — then swaps in the
+    /// fresh generation's `ledger`. The spent epoch's peer bindings and
+    /// queued fire orders die with it: `reopen` hung every peer up, so a
+    /// control buffer or an order still naming one would be a ghost nobody
+    /// owns. Returns how many hung-up connections the retry reported.
+    ///
+    /// This is the retry half the F57-C.01 teardown test uses: a client that
+    /// reconnects after it gets a grant for the *new* session, and the drive
+    /// builds a fresh mirror under it rather than feeding the spent one.
+    ///
+    /// # Errors
+    ///
+    /// [`NetHostError::ForeignSession`] when `ledger` does not serve
+    /// `session`, or [`NetHostError::Reopen`] when the session object refused
+    /// the retry.
+    pub fn reopen(
+        &mut self,
+        session: SessionId,
+        ledger: NetStateLedger,
+    ) -> Result<usize, NetHostError> {
+        if ledger.session() != session {
+            return Err(NetHostError::ForeignSession {
+                session,
+                ledger: ledger.session(),
+            });
+        }
+        let hung_up = self.session.reopen(session).map_err(NetHostError::Reopen)?;
+        self.ledger = ledger;
+        self.pilots.clear();
+        self.orders.clear();
+        Ok(hung_up)
     }
 
     /// Binds `peer` to `actor` through the session gate's ownership table and
@@ -382,6 +470,7 @@ pub struct NetClient {
     session: ClientSession,
     origin: WorldOrigin,
     interpolation: InterpolationConfig,
+    prediction: PredictionConfig,
 }
 
 impl NetClient {
@@ -397,7 +486,23 @@ impl NetClient {
             session,
             origin,
             interpolation,
+            prediction: PredictionConfig::default(),
         }
+    }
+
+    /// Declares the prediction bounds `attach_local` installs when the wire
+    /// names this client's actor. A builder because the bounds belong to the
+    /// client that owns them, not to a session that was already attached.
+    #[must_use]
+    pub fn with_prediction(mut self, prediction: PredictionConfig) -> Self {
+        self.prediction = prediction;
+        self
+    }
+
+    /// The local predictor's declared bounds.
+    #[must_use]
+    pub const fn prediction(&self) -> PredictionConfig {
+        self.prediction
     }
 
     /// The session object, for grant, phase and snapshot reads.
@@ -454,6 +559,123 @@ impl std::ops::DerefMut for NetMirror {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
+}
+
+/// Resource: the session world's own [`crate::origin::FixedTickDriver`].
+///
+/// `FixedTickDriver` stays deliberately free of Bevy, so this newtype is what
+/// the world holds; it dereferences, so `driver.advance_frame(...)` reads as
+/// on the typed object. Install one when this world's frame is driven by the
+/// real origin driver — [`drive_net_origin`] advances it one committed-tick
+/// step per run and propagates the produced frame to every session owner.
+/// A world without one simply keeps the origins its session driver set.
+#[derive(Resource)]
+pub struct NetOriginDriver(pub FixedTickDriver);
+
+impl std::ops::Deref for NetOriginDriver {
+    type Target = FixedTickDriver;
+
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
+impl std::ops::DerefMut for NetOriginDriver {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+
+/// Marker: the one entity whose `Position`/`Rotation` own the local
+/// aircraft's pose for the networked session.
+///
+/// `NetSession::next_correction` *returns* a correction — the session itself
+/// never mutates a body — so the scheduled [`correct_local_pose`] writes it
+/// through the entity carrying this marker, keeping the one-pose-owner rule
+/// a property of the schedule rather than a convention. The marker is a unit
+/// on purpose: which *actor* is local is the wire's word (an `ActorSpawned`
+/// naming this client), not the marker's — a body that claims an actor the
+/// server did not grant is exactly the authority inversion the drive must
+/// not perform. Marking two entities is refused by name as
+/// [`NetPoseOwner::Ambiguous`]; an unposed or absent marker leaves the
+/// correction unwritten and the report says which happened.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
+pub struct NetPredictedBody;
+
+/// Resource: the remote aircraft the interpolation buffers presented this
+/// committed tick, keyed by actor.
+///
+/// Rebuilt every run by [`sample_net_mirror`] — an actor the buffers no
+/// longer hold does not linger in presentation. The local actor is never in
+/// it: a predicted aircraft's pose is its own body's, and blending the wire
+/// copy into the presentation would draw the same plane twice.
+#[derive(Resource, Clone, Debug, Default)]
+pub struct NetPresentation {
+    /// What `NetSession::sample` answered for each mirrored remote actor.
+    pub aircraft: BTreeMap<ActorId, InterpolatedAircraft>,
+}
+
+/// The ordered stages of the scheduled session drive (F57-C.01).
+///
+/// Chained in `FixedPostUpdate` after [`PhysicsSystems::StepSimulation`], in
+/// exactly this order — origin frame first (a rebase precedes decoding), the
+/// lifecycle pump and snapshot ingest, remote sampling, the local
+/// pose-owner's correction, tracer expiry last. The chain is the contract:
+/// splitting these across unrelated system placements would let a new-epoch
+/// snapshot be decoded in the old frame or a correction written before the
+/// ingest that produced it.
+#[derive(SystemSet, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum NetSessionSet {
+    /// Advance the installed origin driver and adopt its frame.
+    Origin,
+    /// Pump the lifecycle sessions and ingest the snapshot mailbox.
+    Drive,
+    /// Sample remote actors at the estimated server tick.
+    Sample,
+    /// Reconcile the local prediction and write the correction through the
+    /// one [`NetPredictedBody`].
+    Correct,
+    /// Expire client tracers whose presentation window elapsed.
+    ExpireTracers,
+}
+
+/// What [`correct_local_pose`] found claiming the local pose.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum NetPoseOwner {
+    /// No [`NetPredictedBody`] marker exists — or no committed tick named
+    /// this run — so nothing was written.
+    #[default]
+    Unbound,
+    /// The one marked entity, whose `Position`/`Rotation` the session's
+    /// correction owns.
+    Bound(Entity),
+    /// The marked entity carries no `Position`/`Rotation` to write through.
+    Unposed(Entity),
+    /// More than one marker claimed the pose. Writing through all of them
+    /// would apply the same correction twice, so none was written — the
+    /// count names the ambiguity instead of picking a winner.
+    Ambiguous(usize),
+}
+
+/// What the [`NetSessionSet::Origin`] stage did this run.
+///
+/// This is the caller-visible record AC03 names: `rebased` carries the
+/// mirror's own [`EpochTransition`] (the shift the frame made versus the
+/// largest conversion any record moved), so a world-scale jump is
+/// measurable rather than implied.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct NetOriginStep {
+    /// Whole fixed ticks the driver committed this run.
+    pub advanced: u64,
+    /// The mirror's epoch transitions, one per epoch the driver crossed —
+    /// empty when no rebase happened or no mirror exists to adopt it.
+    pub rebased: Vec<EpochTransition>,
+    /// How many [`NetPredictedBody`] poses were converted through the frame
+    /// change this run.
+    pub shifted_poses: usize,
+    /// The driver's refusal (`DriverError`), the mirror's `rebase` refusal or
+    /// a pose conversion refusal — named, never retried invisibly.
+    pub fault: Option<String>,
 }
 
 /// Why a tick the drive ran could not be served.
@@ -595,12 +817,50 @@ pub struct NetSessionReport {
     /// The newest snapshot's ingest report, when one was fed.
     pub ingested: Option<IngestReport>,
     /// Mirror calls that failed this run, each with the session's own words.
+    ///
+    /// `SessionError`s from `attach_local`, `record_local_pose`,
+    /// `reconcile_local` and `expire_tracers`, plus the pose conversions the
+    /// correction stage performed for the mirror, all land here — typed
+    /// refusals that have a place on the report's other fields stay there
+    /// (`ingested`, `sample_refusals`, `published`, `origin`); this vec is
+    /// where everything else must still reach a caller.
     pub mirror_refusals: Vec<String>,
     /// Reliable event bodies whose application recorded mirror state this
     /// run — today that is the `ActorRemoved` retirement fact.
     pub events_recorded: usize,
     /// Session resources that went away since the last run.
     pub tore_down: Vec<NetTeardown>,
+    /// What the origin stage did this run, when a [`NetOriginDriver`] is
+    /// installed. Written through `NetDriveState` because the report's
+    /// per-tick fields reset in `Drive`, which the chained set runs *after*
+    /// `Origin`.
+    pub origin: Option<NetOriginStep>,
+    /// Remote actors the sample stage presented this run.
+    pub sampled: usize,
+    /// Per-actor `BufferRefusal`s the sampler hit this run — the buffer's own
+    /// words, with the actor each belongs to.
+    pub sample_refusals: Vec<(ActorId, BufferRefusal)>,
+    /// The actor the session's `ActorSpawned` events last named this client
+    /// the owner of — the wire's word for "this is your aircraft".
+    pub local_actor: Option<ActorId>,
+    /// The local actor `attach_local` bound this run, when it did.
+    pub attached: Option<ActorId>,
+    /// What claimed the local pose this run (`correct_local_pose`'s verdict
+    /// on the [`NetPredictedBody`] marker).
+    pub pose_owner: NetPoseOwner,
+    /// The reconciliation the fresh local record produced this run, when the
+    /// run reconciled.
+    pub reconciled: Option<Reconciliation>,
+    /// The correction written through the pose owner this run, when a
+    /// non-identity one was pending.
+    pub corrected: Option<PoseCorrection>,
+    /// Set when the pose owner *adopted* the authoritative pose outright this
+    /// run — a reconcile that had no prediction to compare is reported
+    /// `Snapped` with an unbounded error, and adopting the record's pose is
+    /// the honest enactment of that verdict.
+    pub adopted_pose: bool,
+    /// Client tracers whose presentation window expired this run.
+    pub tracers_expired: usize,
 }
 
 impl NetSessionReport {
@@ -625,6 +885,16 @@ impl NetSessionReport {
         self.mirror_refusals.clear();
         self.events_recorded = 0;
         self.tore_down.clear();
+        self.origin = None;
+        self.sampled = 0;
+        self.sample_refusals.clear();
+        self.local_actor = None;
+        self.attached = None;
+        self.pose_owner = NetPoseOwner::Unbound;
+        self.reconciled = None;
+        self.corrected = None;
+        self.adopted_pose = false;
+        self.tracers_expired = 0;
     }
 }
 
@@ -634,12 +904,23 @@ impl NetSessionReport {
 /// tears down against. `fed` is the newest `(session, snapshot tick)` pair
 /// handed to the mirror, so the mailbox slot is never fed twice and a mirror
 /// built for another generation is never mistaken for current.
+/// `local_actor` is the wire's word for which actor is this client's own
+/// (learned from `ActorSpawned`, reset with the mirror); `attach_refused`
+/// keeps an `attach_local` refusal from being re-issued every run — the
+/// refusal is reported once and the persistent divergence stays readable in
+/// `local_actor` vs `attached`. `origin_step`/`origin_teardown` are the
+/// `Origin` stage's record, held because the report's per-tick fields reset
+/// in `Drive`, which the chained set runs after `Origin`.
 #[derive(Resource, Clone, Debug, Default)]
 struct NetDriveState {
     host: Option<SessionId>,
     client: Option<SessionId>,
     client_present: bool,
     fed: Option<(SessionId, Tick)>,
+    local_actor: Option<ActorId>,
+    attach_refused: Option<ActorId>,
+    origin_step: Option<NetOriginStep>,
+    origin_teardown: Option<NetTeardown>,
 }
 
 /// Forwards notices into the bounded report log, counting what would not fit.
@@ -651,6 +932,39 @@ fn log_notices<T>(log: &mut Vec<T>, overflowed: &mut u64, notices: Vec<T>) {
             *overflowed = overflowed.saturating_add(1);
         }
     }
+}
+
+/// Releases the installed mirror when it serves `session`, by name, and
+/// clears the presentation it produced plus the per-session bookkeeping the
+/// drive holds for it (`fed`, `local_actor`, `attach_refused`), so whatever
+/// is built next starts clean. Returns the [`NetTeardown`] for the caller to
+/// record, or `None` when no installed mirror serves `session` — a mirror
+/// for another generation was never this session's and is left alone.
+fn teardown_client_mirror(
+    world: &mut World,
+    state: &mut NetDriveState,
+    session: SessionId,
+) -> Option<NetTeardown> {
+    let serving = world
+        .get_resource::<NetMirror>()
+        .is_some_and(|mirror| mirror.session() == session);
+    if !serving {
+        return None;
+    }
+    let released = world
+        .remove_resource::<NetMirror>()
+        .map(|mut mirror| mirror.teardown());
+    if let Some(mut presentation) = world.get_resource_mut::<NetPresentation>() {
+        presentation.aircraft.clear();
+    }
+    state.fed = None;
+    state.local_actor = None;
+    state.attach_refused = None;
+    Some(NetTeardown {
+        side: "client",
+        session: Some(session),
+        mirror: released,
+    })
 }
 
 /// Consumes one admitted packet: the ledger's input book, the wire
@@ -717,6 +1031,13 @@ pub fn drive_net_session(world: &mut World) {
     report.begin_tick();
     let mut state = world.remove_resource::<NetDriveState>().unwrap_or_default();
 
+    // The Origin stage ran ahead of this one in the chained set and wrote
+    // through the state, because the report's per-tick fields just reset.
+    if let Some(teardown) = state.origin_teardown.take() {
+        report.tore_down.push(teardown);
+    }
+    report.origin = state.origin_step.take();
+
     let elapsed = world.get_resource::<Time<Fixed>>().map(|time| time.delta());
     if elapsed.is_none() {
         report.missing.push(NetDriveMissing::Clock);
@@ -762,17 +1083,9 @@ pub fn drive_net_session(world: &mut World) {
         // feed left; release it by name. A mirror for another generation was
         // never this client's and is left alone.
         if let Some(last) = state.client
-            && let Some(mut mirror) = world.get_resource_mut::<NetMirror>()
-            && mirror.session() == last
+            && let Some(teardown) = teardown_client_mirror(world, &mut state, last)
         {
-            let released = mirror.teardown();
-            report.tore_down.push(NetTeardown {
-                side: "client",
-                session: Some(last),
-                mirror: Some(released),
-            });
-            world.remove_resource::<NetMirror>();
-            state.fed = None;
+            report.tore_down.push(teardown);
             state.client = None;
         }
     }
@@ -852,7 +1165,27 @@ pub fn drive_net_session(world: &mut World) {
             notices,
         );
 
-        if let Some(grant) = client.session.grant() {
+        // A closed session's mirror is a ghost feed: `Closed` is terminal,
+        // so the mailbox can never move again and nothing may still be
+        // presented from it. Released by name, once — the spent epoch's
+        // grant still answers `grant()`, so the same session keeps serving
+        // as the thing being torn down.
+        if matches!(client.session.phase(), ClientPhase::Closed(_)) {
+            let dead = client
+                .session
+                .grant()
+                .map(|grant| grant.session)
+                .or(state.client);
+            if let Some(session) = dead
+                && let Some(teardown) = teardown_client_mirror(world, &mut state, session)
+            {
+                report.tore_down.push(teardown);
+            }
+        }
+
+        if let Some(grant) = client.session.grant()
+            && !matches!(client.session.phase(), ClientPhase::Closed(_))
+        {
             state.client = Some(grant.session);
             report.client_session = Some(grant.session);
             // The mirror serves exactly the granted epoch: an installed one
@@ -862,12 +1195,10 @@ pub fn drive_net_session(world: &mut World) {
                 .get_resource::<NetMirror>()
                 .map(|mirror| mirror.session());
             if current != Some(grant.session) {
-                if let Some(mut old) = world.remove_resource::<NetMirror>() {
-                    report.tore_down.push(NetTeardown {
-                        side: "client",
-                        session: Some(old.session()),
-                        mirror: Some(old.teardown()),
-                    });
+                if let Some(old) = current
+                    && let Some(teardown) = teardown_client_mirror(world, &mut state, old)
+                {
+                    report.tore_down.push(teardown);
                 }
                 world.insert_resource(NetMirror(NetSession::new(
                     grant.session,
@@ -880,6 +1211,23 @@ pub fn drive_net_session(world: &mut World) {
 
             if let Some(mut mirror) = world.get_resource_mut::<NetMirror>() {
                 for event in &events {
+                    // A spawn event that names this peer the actor's owner
+                    // is the server's word for "this aircraft is yours" —
+                    // the fact the Correct stage attaches against. Applying
+                    // the event itself still only moves the mirror on a
+                    // removal; a respawn re-names the actor and the failed
+                    // attach retry is released with it.
+                    if let EventBody::ActorSpawned {
+                        actor,
+                        owner: Some(owner),
+                        ..
+                    } = &event.body
+                        && *owner == grant.peer
+                        && state.local_actor != Some(*actor)
+                    {
+                        state.local_actor = Some(*actor);
+                        state.attach_refused = None;
+                    }
                     match mirror.apply_event(event) {
                         Ok(applied) => report.events_recorded += usize::from(applied),
                         Err(refusal) => report.mirror_refusals.push(refusal.to_string()),
@@ -910,15 +1258,373 @@ pub fn drive_net_session(world: &mut World) {
     world.insert_resource(state);
 }
 
+/// The origin stage of the scheduled drive (F57-C.01): once per committed
+/// tick, before anything reads a frame, the installed [`NetOriginDriver`]
+/// advances one frame of wall time into whole fixed ticks and every session
+/// owner adopts the frame it produced — `NetHost`'s publish frame,
+/// `NetClient`'s next-mirror frame, and the live mirror through
+/// `NetSession::rebase`, one call per epoch the driver crossed and each
+/// recorded in [`NetOriginStep::rebased`]. The [`NetPredictedBody`] pose
+/// owner's `Position` converts through the same frame change: a rebase is a
+/// coordinate-frame conversion, so the body's canonical world position is
+/// identical before and after — never a displacement of `origin_shift_m`.
+///
+/// A mirror already *ahead* of the driver's epoch can never go backwards —
+/// epochs are monotone — so a driver restart under a fresh frame (the
+/// driver's own `retry`) releases that mirror by name rather than letting it
+/// refuse every later snapshot as a foreign epoch.
+///
+/// The stage's record lands in `NetDriveState::origin_step`, because
+/// `NetSessionReport`'s per-tick fields reset in `Drive` — which the chained
+/// set runs after this. Directly callable, and the same code
+/// [`NetSessionDrivePlugin`] installs.
+pub fn drive_net_origin(world: &mut World) {
+    let Some(mut driver) = world.remove_resource::<NetOriginDriver>() else {
+        return;
+    };
+    let mut state = world.remove_resource::<NetDriveState>().unwrap_or_default();
+    let elapsed = world
+        .get_resource::<Time<Fixed>>()
+        .map(|time| time.delta())
+        .unwrap_or_default();
+
+    let mut step = NetOriginStep {
+        advanced: 0,
+        rebased: Vec::new(),
+        shifted_poses: 0,
+        fault: None,
+    };
+    let before = driver.world().origin();
+    match driver.advance_frame(elapsed) {
+        Ok(ticks) => step.advanced = ticks,
+        Err(fault) => step.fault = Some(fault.to_string()),
+    }
+    let origin = driver.world().origin();
+    if let Some(mut host) = world.get_resource_mut::<NetHost>() {
+        host.set_origin(origin);
+    }
+    if let Some(mut client) = world.get_resource_mut::<NetClient>() {
+        client.set_origin(origin);
+    }
+
+    let mirror_frame = world
+        .get_resource::<NetMirror>()
+        .map(|mirror| (mirror.session(), mirror.origin().epoch()));
+    if let Some((session, epoch)) = mirror_frame {
+        if epoch > origin.epoch() {
+            // The driver's frame restarted below the mirror's — a retry's
+            // fresh world. The mirror can never be fed again (every later
+            // snapshot reads as a foreign epoch), so it is released by name.
+            if let Some(teardown) = teardown_client_mirror(world, &mut state, session) {
+                state.origin_teardown = Some(teardown);
+            }
+        } else if let Some(mut mirror) = world.get_resource_mut::<NetMirror>() {
+            while mirror.origin().epoch() < origin.epoch() {
+                match mirror.rebase(origin.position()) {
+                    Ok(transition) => step.rebased.push(transition),
+                    Err(refusal) => {
+                        step.fault = Some(refusal.to_string());
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    if origin.epoch() != before.epoch() {
+        // The session's pose owner holds a local f32 pose: the frame moved
+        // under it, so its coordinates convert through the frame change the
+        // same way the mirror's records did — a conversion, so a body the
+        // session drives never reads `origin_shift_m` off its own pose.
+        let owners: Vec<Entity> = world
+            .query_filtered::<Entity, With<NetPredictedBody>>()
+            .iter(world)
+            .collect();
+        for entity in owners {
+            let Some(held) = world.get::<Position>(entity).map(|p| p.0) else {
+                continue;
+            };
+            let converted = LocalPosition::try_new(held.to_array())
+                .map_err(crate::origin::OriginError::from)
+                .and_then(|local| before.world_of(local))
+                .and_then(|at| origin.local_of(at));
+            match converted {
+                Ok(local) => {
+                    if let Some(mut position) = world.get_mut::<Position>(entity) {
+                        position.0 = Vec3::from_array(local.to_array());
+                    }
+                    step.shifted_poses += 1;
+                }
+                Err(fault) => step.fault = Some(fault.to_string()),
+            }
+        }
+    }
+
+    state.origin_step = Some(step);
+    world.insert_resource(state);
+    world.insert_resource(driver);
+}
+
+/// The sample stage of the scheduled drive: once per committed tick, after
+/// `Drive`, every mirrored remote actor is sampled at the committed tick —
+/// the schedule's estimate of the server tick, which the interpolator's
+/// declared `delay_ticks` runs behind — into [`NetPresentation`]. The
+/// presentation is rebuilt whole each run, so an actor the buffers dropped
+/// or forgot does not linger. The local actor is skipped on purpose: a
+/// predicted aircraft's pose is its own body's, and drawing the interpolated
+/// wire copy would present the same plane twice. Directly callable, and the
+/// same code [`NetSessionDrivePlugin`] installs.
+pub fn sample_net_mirror(world: &mut World) {
+    let mut report = world
+        .remove_resource::<NetSessionReport>()
+        .unwrap_or_default();
+    let mut presentation = world
+        .remove_resource::<NetPresentation>()
+        .unwrap_or_default();
+    presentation.aircraft.clear();
+
+    let at = world
+        .get_resource::<PhysicsTickLedger>()
+        .map(|ledger| Tick(ledger.ticks));
+    if let (Some(at), Some(mirror)) = (at, world.get_resource::<NetMirror>()) {
+        let local = mirror.local_actor();
+        for actor in mirror
+            .mirror()
+            .all_aircraft()
+            .map(|aircraft| aircraft.actor)
+            .collect::<Vec<_>>()
+        {
+            if Some(actor) == local {
+                continue;
+            }
+            match mirror.sample(actor, at) {
+                Ok(Some(sampled)) => {
+                    presentation.aircraft.insert(actor, sampled);
+                }
+                Ok(None) => {}
+                Err(refusal) => report.sample_refusals.push((actor, refusal)),
+            }
+        }
+    }
+    report.sampled = presentation.aircraft.len();
+    world.insert_resource(presentation);
+    world.insert_resource(report);
+}
+
+/// The correction stage of the scheduled drive: once per committed tick,
+/// after `Sample`, the pose the one [`NetPredictedBody`] entity owns is
+/// recorded into the session's predictor at the committed tick, the fresh
+/// local record this run's ingest produced is reconciled, and
+/// `NetSession::next_correction` is written through that same entity —
+/// `Position` translated, `Rotation` pre-multiplied by the correction step.
+///
+/// The session never mutates a body itself, so this system is the only place
+/// a session-produced pose reaches the ECS: the one-pose-owner rule is a
+/// property of the schedule, not a convention. A reconcile that had no
+/// prediction to compare is reported `Snapped` with an unbounded error; the
+/// honest enactment of that verdict is the pose owner adopting the record's
+/// pose outright (`adopted_pose` records that it happened). Every session or
+/// conversion refusal lands in `mirror_refusals`, and an `attach_local`
+/// refusal is issued once per wire-named actor rather than re-issued every
+/// run — the divergence stays readable in `local_actor` versus `attached`.
+/// Directly callable, and the same code [`NetSessionDrivePlugin`] installs.
+pub fn correct_local_pose(world: &mut World) {
+    let mut report = world
+        .remove_resource::<NetSessionReport>()
+        .unwrap_or_default();
+    let mut state = world.remove_resource::<NetDriveState>().unwrap_or_default();
+    let mut mirror = world.remove_resource::<NetMirror>();
+
+    // The pose owner is declared, not searched: the marker names the entity
+    // and the count names the claim, so two markers are an ambiguity the
+    // report says, rather than a winner the drive picked.
+    let owners: Vec<Entity> = world
+        .query_filtered::<Entity, With<NetPredictedBody>>()
+        .iter(world)
+        .collect();
+    report.pose_owner = match owners.as_slice() {
+        [] => NetPoseOwner::Unbound,
+        [entity] => {
+            if world.get::<Position>(*entity).is_some() && world.get::<Rotation>(*entity).is_some()
+            {
+                NetPoseOwner::Bound(*entity)
+            } else {
+                NetPoseOwner::Unposed(*entity)
+            }
+        }
+        many => NetPoseOwner::Ambiguous(many.len()),
+    };
+    report.local_actor = state.local_actor;
+
+    if let Some(mirror) = mirror.as_mut() {
+        // Attach the wire-named actor: the mirror must already hold the
+        // server's record of it, and a refusal stands once per named actor
+        // rather than being re-attempted — and re-reported — every run.
+        if let Some(actor) = state.local_actor
+            && mirror.local_actor() != Some(actor)
+            && state.attach_refused != Some(actor)
+            && let Some(record) = mirror.mirror().aircraft(actor).copied()
+        {
+            let prediction = world
+                .get_resource::<NetClient>()
+                .map(NetClient::prediction)
+                .unwrap_or_default();
+            match mirror.attach_local(actor, record.generation, prediction) {
+                Ok(()) => report.attached = Some(actor),
+                Err(refusal) => {
+                    state.attach_refused = Some(actor);
+                    report.mirror_refusals.push(refusal.to_string());
+                }
+            }
+        }
+
+        let at = world
+            .get_resource::<PhysicsTickLedger>()
+            .map(|ledger| Tick(ledger.ticks));
+        if let (NetPoseOwner::Bound(entity), Some(tick)) = (report.pose_owner, at)
+            && mirror.local_actor().is_some()
+        {
+            // The recorded pose is canonical world coordinates: the body's
+            // local pose re-anchored through the session's live frame.
+            let held_position = world.get::<Position>(entity).map(|p| p.0);
+            let held_rotation = world.get::<Rotation>(entity).map(|r| r.0);
+            let boosting = world
+                .get::<FlightAircraft>(entity)
+                .is_some_and(|aircraft| aircraft.command().boost);
+            let pose = held_position.and_then(|position| {
+                held_rotation.map(|rotation| {
+                    let position = LocalPosition::try_new(position.to_array())
+                        .map_err(crate::origin::OriginError::from)
+                        .and_then(|local| mirror.origin().world_of(local));
+                    let orientation = Quaternion::try_new([
+                        f64::from(rotation.x),
+                        f64::from(rotation.y),
+                        f64::from(rotation.z),
+                        f64::from(rotation.w),
+                    ])
+                    .map_err(crate::origin::OriginError::from);
+                    position.and_then(|position| {
+                        orientation.map(|orientation| PredictedPose {
+                            position,
+                            orientation,
+                        })
+                    })
+                })
+            });
+            match pose {
+                None => {}
+                Some(Err(fault)) => report.mirror_refusals.push(fault.to_string()),
+                Some(Ok(pose)) => {
+                    if let Err(refusal) = mirror.record_local_pose(tick, pose, boosting) {
+                        report.mirror_refusals.push(refusal.to_string());
+                    }
+                    // Reconciliation follows ingestion: only when this run's
+                    // feed actually moved the local record is there a new
+                    // authoritative word to compare against — every other run
+                    // leaves the pending correction advancing on its own.
+                    let fresh = mirror.local_actor().is_some_and(|actor| {
+                        report.ingested.as_ref().is_some_and(|ingest| {
+                            ingest.spawned.contains(&actor) || ingest.updated.contains(&actor)
+                        })
+                    });
+                    if fresh {
+                        match mirror.reconcile_local() {
+                            Ok(reconciliation) => {
+                                report.reconciled = Some(reconciliation);
+                                if reconciliation.kind == ReconcileKind::Snapped
+                                    && reconciliation.error_m.is_infinite()
+                                    && let Some(record) = mirror
+                                        .local_actor()
+                                        .and_then(|actor| mirror.mirror().aircraft(actor))
+                                        .copied()
+                                    && let Ok(local) = mirror
+                                        .origin()
+                                        .local_of(record.position)
+                                        .map(|local| local.to_array())
+                                {
+                                    // No predicted pose existed to compare:
+                                    // the predictor reported the snap but
+                                    // writes nothing, so the pose owner
+                                    // adopts the record's pose here.
+                                    let [x, y, z, w] = record.orientation.components();
+                                    if let Some(mut position) = world.get_mut::<Position>(entity) {
+                                        position.0 = Vec3::from_array(local);
+                                    }
+                                    if let Some(mut rotation) = world.get_mut::<Rotation>(entity) {
+                                        rotation.0 =
+                                            Quat::from_xyzw(x as f32, y as f32, z as f32, w as f32);
+                                    }
+                                    report.adopted_pose = true;
+                                }
+                            }
+                            Err(refusal) => {
+                                report.mirror_refusals.push(refusal.to_string());
+                            }
+                        }
+                    }
+                    let correction = mirror.next_correction();
+                    let is_identity = correction.translation_m.iter().all(|c| *c == 0.0)
+                        && correction.rotation == Quaternion::IDENTITY;
+                    if !is_identity {
+                        let [dx, dy, dz] = correction.translation_m;
+                        let [x, y, z, w] = correction.rotation.components();
+                        let step = Quat::from_xyzw(x as f32, y as f32, z as f32, w as f32);
+                        if let Some(mut position) = world.get_mut::<Position>(entity) {
+                            position.0 += Vec3::new(dx as f32, dy as f32, dz as f32);
+                        }
+                        if let Some(mut rotation) = world.get_mut::<Rotation>(entity) {
+                            rotation.0 = step * rotation.0;
+                        }
+                        report.corrected = Some(correction);
+                    }
+                }
+            }
+        }
+    }
+
+    if let Some(mirror) = mirror {
+        world.insert_resource(mirror);
+    }
+    world.insert_resource(state);
+    world.insert_resource(report);
+}
+
+/// The last stage of the scheduled drive: once per committed tick, after the
+/// correction write, client tracers whose presentation window elapsed are
+/// expired — the bound that keeps a shot nobody ever answered from pinning a
+/// tracer forever. Expiring last means one tick's tracers are observable for
+/// the whole tick they were spawned in. Directly callable, and the same code
+/// [`NetSessionDrivePlugin`] installs.
+pub fn expire_net_tracers(world: &mut World) {
+    let mut report = world
+        .remove_resource::<NetSessionReport>()
+        .unwrap_or_default();
+    let at = world
+        .get_resource::<PhysicsTickLedger>()
+        .map(|ledger| Tick(ledger.ticks));
+    if let Some(at) = at
+        && let Some(mut mirror) = world.get_resource_mut::<NetMirror>()
+    {
+        match mirror.expire_tracers(at) {
+            Ok(expired) => report.tracers_expired = expired,
+            Err(refusal) => report.mirror_refusals.push(refusal.to_string()),
+        }
+    }
+    world.insert_resource(report);
+}
+
 /// Installs the scheduled session drive in `FixedPostUpdate`, after the
 /// physics step.
 ///
 /// Ordered after [`PhysicsSystems::StepSimulation`] for the same reason the
 /// weapon schedule is: the pump reads the committed tick the step just made
-/// and the snapshot publishes the state it left. A world that installs this
-/// plugin with no session resources runs the drive every fixed tick and
-/// serves nothing — the honest state of a world with no session, recorded in
-/// [`NetSessionReport`].
+/// and the snapshot publishes the state it left. The five
+/// [`NetSessionSet`]s are chained — origin frame, lifecycle drive, remote
+/// sampling, pose-owner correction, tracer expiry — so a rebase always lands
+/// before the tick's ingest and the ingest before the correction it feeds.
+/// A world that installs this plugin with no session resources runs the
+/// drive every fixed tick and serves nothing — the honest state of a world
+/// with no session, recorded in [`NetSessionReport`].
 #[derive(Clone, Copy, Debug, Default)]
 pub struct NetSessionDrivePlugin;
 
@@ -926,9 +1632,28 @@ impl Plugin for NetSessionDrivePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<NetSessionReport>()
             .init_resource::<NetDriveState>()
+            .init_resource::<NetPresentation>()
+            .configure_sets(
+                FixedPostUpdate,
+                (
+                    NetSessionSet::Origin,
+                    NetSessionSet::Drive,
+                    NetSessionSet::Sample,
+                    NetSessionSet::Correct,
+                    NetSessionSet::ExpireTracers,
+                )
+                    .chain()
+                    .after(PhysicsSystems::StepSimulation),
+            )
             .add_systems(
                 FixedPostUpdate,
-                drive_net_session.after(PhysicsSystems::StepSimulation),
+                (
+                    drive_net_origin.in_set(NetSessionSet::Origin),
+                    drive_net_session.in_set(NetSessionSet::Drive),
+                    sample_net_mirror.in_set(NetSessionSet::Sample),
+                    correct_local_pose.in_set(NetSessionSet::Correct),
+                    expire_net_tracers.in_set(NetSessionSet::ExpireTracers),
+                ),
             );
     }
 }
