@@ -196,21 +196,28 @@ from the task description.
   design decisions above). **Affected content:** a caller that could pass a node
   array from a sibling container. **Resolving it** belongs with whichever stage
   decides that the F10 catalog reads the node section.
-- **The F14 geometry walk answers the same question a second time.**
-  `crates/cs_content/src/catalog/baseline.rs` resolves every node's `mesh_index`
-  against the mesh section itself: `read_geometry_container` counts
-  `absent_meshes` over the distinct named slots, `geometry_node_rows` puts
+- **The F14 geometry walk answered the same question a second time.**
+  `crates/cs_content/src/catalog/baseline.rs` resolved every node's `mesh_index`
+  against the mesh section itself: `read_geometry_container` counted
+  `absent_meshes` over the distinct named slots, `geometry_node_rows` put
   `CLAIM_ABSENT_NODE_MESH` (`absent_node_mesh_unknown`) on each unresolved node,
-  and the caller inserts the `named_slot_without_mesh` collection gap. That copy
-  resolves on the **stored** slot, so it is not wrong about the non-sequential
-  mesh index, and its counts agree with this check over the whole measured
-  corpus. What it does not have is the two facts kept apart: a node naming a slot
-  past the array and a node naming an inside-the-array all-zero stub both become
+  and the caller inserted the `named_slot_without_mesh` collection gap. That copy
+  resolved on the **stored** slot, so it was not wrong about the non-sequential
+  mesh index, and its counts agreed with this check over the whole measured
+  corpus. What it did not have was the two facts kept apart: a node naming a slot
+  past the array and a node naming an inside-the-array all-zero stub both became
   "named slot without mesh". **Affected content:** the machine-readable
   `Mesh` collection status and `SceneNode` row reasons on any container that
   stores an index past its mesh array — nothing in the measured installation.
-  **Resolving task:** **#593 (F14-D-NODE-MESH-CODE)**, which makes the walk
-  answer through `NodeMeshBindings` so one check owns the rule.
+  **Resolved by #593 (F14-D-NODE-MESH-CODE)** on 2026-10-13: the walk now builds
+  one `NodeMeshBindings::of` per container and quotes its two codes, adding
+  `CLAIM_OUT_OF_RANGE_NODE_MESH`, the `named_slot_past_mesh_array` gap and
+  `GeometryContainerReport::out_of_range_meshes`; see
+  `docs/findings/2026-10-13-t593-f14-d-node-mesh-code.md` for the measurement,
+  the sensitivity check and the limitations that remain (the multiplicity, the
+  engine treatment of an absent slot, the header cross-check, the F11/F17-B
+  rendering decision, the non-object `mesh_index` word and the container with no
+  node array are all still open and live in that note).
 - **Which mesh a node ends up drawing is F11's and F17-B's.** This check
   establishes that every stored index names a present mesh. It does not decide which
   node's transform applies, how a LOD node selects, or what a renderer uploads;
