@@ -598,15 +598,18 @@ fn rows_of(
 fn review_identity() -> String {
     let recorded = String::from(
         "implementer: Devin SWE-2/swe2-max-1 (Rally #1352, implement claim of \
-         2026-10-13T00:58:53Z), model SWE-2 Max. This report is the implementer's own \
-         record: every check it reports was run by the implementer, it names no reviewer \
-         because none has reviewed it, and the reviewing agent records their own \
-         identity in its place (through CS_EVIDENCE_REVIEW) when they regenerate it; the \
-         format and identity claims still deserve a different agent instance or model \
-         with a fresh context. No agent review awards more than checked, and nothing \
-         here is verified_original: retail is read access to the installation's own \
-         files, the original game was never run, and the video collection is \
-         structural. No agent review replaces the owner's human approval",
+         2026-10-13T00:58:53Z), model SWE-2 Max. reviewer: Devin SWE-2/swe2-max-1 (Rally \
+         #1352, review claim of 2026-10-13T02:17Z), model SWE-2 Max - the same agent name \
+         and model as the implementer, in a fresh context, so this review is not \
+         independent evidence and the format and identity claims still deserve a \
+         different agent instance or model. The reviewer re-read the task, the spec \
+         section and the contracts, re-ran all four checks and the acceptance suite \
+         with --include-ignored on the retail installation, mutation-checked the new \
+         gap counting and the chain verification, and regenerated this report on the \
+         reviewed commit. No agent review awards more than checked, and nothing here \
+         is verified_original: retail is read access to the installation's own files, \
+         the original game was never run, and the video collection is structural. No \
+         agent review replaces the owner's human approval",
     );
     std::env::var("CS_EVIDENCE_REVIEW").unwrap_or(recorded)
 }
