@@ -574,6 +574,7 @@ pub mod instant_action;
 pub mod interaction;
 pub mod legacy_import;
 pub mod livery;
+pub mod livery_airframes;
 pub mod loading;
 pub mod localization;
 pub mod mesh;
