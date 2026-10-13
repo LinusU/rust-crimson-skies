@@ -63,8 +63,8 @@ pub enum CampaignLowerError {
         node: CampaignNodeId,
     },
     /// The lowered graph failed its own validation — the runtime invariants
-    /// match the declared ones, so this names a lowering defect, not a bad
-    /// record.
+    /// the declared schema shares are checked there first, so this names a
+    /// lowering defect, not a bad record.
     Graph {
         /// The runtime refusal.
         source: GraphError,

@@ -33,7 +33,9 @@ fn key(id: &str) -> CampaignNodeKey {
     CampaignNodeKey::new(id).expect("valid node key")
 }
 
-/// `beat -> m01 -> end`, entering at `entry`.
+/// `m01 -> beat -> end`, entering at `entry`. The beat sits *downstream* of
+/// the mission because F43-V1 refuses a node no edge path from the entry
+/// reaches: an upstream beat cannot coexist with a mission entry.
 fn declared(entry: &str) -> CampaignDraft {
     let mission = ContentId::from_source(ContentKind::Mission, "m01").expect("valid");
     let edge = |on, to: &str| CampaignEdge {
@@ -51,19 +53,19 @@ fn declared(entry: &str) -> CampaignDraft {
     CampaignDraft {
         nodes: vec![
             n(
+                "m01",
+                NodeKind::Mission {
+                    mission: Resolved::Known(Known::new(mission, designed())),
+                },
+                vec![edge(EdgeCondition::Victory, "beat")],
+            ),
+            n(
                 "beat",
                 NodeKind::Interlude {
                     asset: Resolved::Unknown {
                         claim_id: ClaimId::new("f43b3.asset").expect("valid"),
                         reason: "unsurveyed".to_owned(),
                     },
-                },
-                vec![edge(EdgeCondition::Victory, "m01")],
-            ),
-            n(
-                "m01",
-                NodeKind::Mission {
-                    mission: Resolved::Known(Known::new(mission, designed())),
                 },
                 vec![edge(EdgeCondition::Victory, "end")],
             ),
@@ -84,13 +86,13 @@ fn runtime_nodes() -> Vec<RuntimeNode> {
     };
     vec![
         RuntimeNode {
-            id: key("beat"),
-            kind: RuntimeNodeKind::Interlude,
-            edges: vec![edge("m01")],
-        },
-        RuntimeNode {
             id: key("m01"),
             kind: RuntimeNodeKind::Mission { mission },
+            edges: vec![edge("beat")],
+        },
+        RuntimeNode {
+            id: key("beat"),
+            kind: RuntimeNodeKind::Interlude,
             edges: vec![edge("end")],
         },
         RuntimeNode {
@@ -110,7 +112,7 @@ fn accept_f43_b_3_declared_campaign_refuses_an_interlude_entry() {
 }
 
 #[test]
-fn accept_f43_b_3_declared_campaign_accepts_a_mission_entry_past_a_beat() {
+fn accept_f43_b_3_declared_campaign_accepts_a_mission_entry_with_a_later_beat() {
     let campaign = CampaignDefinition::try_new(declared("m01")).expect("mission entry is legal");
     let graph = lower_campaign(&campaign).expect("lowers");
     let state = CampaignState::begin(

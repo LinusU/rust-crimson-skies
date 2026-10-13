@@ -4,7 +4,10 @@
 //! values only (a lowered reward's currency is a `u64`, never an unknown),
 //! keyed by [`CampaignNodeKey`], and re-validated here so a caller that
 //! builds a graph directly cannot hand [`CampaignState::apply_outcome`] a
-//! shape that would dead-end a run.
+//! shape that would dead-end a run. The declared schema owns *finishability*
+//! (every node's victory path must end at an `Ending`); this graph still
+//! holds shapes that rule refuses, because the walk's dynamic refusals are
+//! this layer's answer to them.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -117,6 +120,22 @@ pub enum GraphError {
         /// The node.
         node: CampaignNodeKey,
     },
+    /// A node no edge path from the entry reaches — the mirror of the
+    /// declared schema's `UnreachableNode` rule, so a hand-built graph
+    /// cannot smuggle dead content a run could never select, complete or
+    /// gate roster items through.
+    ///
+    /// The mirror stops here on purpose: the declared schema also refuses
+    /// `Victory`-edge cycles and non-ending nodes with no `Victory` edge,
+    /// but this layer must still be able to *hold* those shapes — they are
+    /// the inputs `CampaignState::advance_interludes`'s dynamic refusals
+    /// (`InterludeLoop`, `InterludeDeadEnd`) exist to answer, and a graph
+    /// that could never contain them would leave those refusals with
+    /// nothing to refuse.
+    UnreachableNode {
+        /// The node nothing reaches.
+        node: CampaignNodeKey,
+    },
     /// A roster gate names an undeclared node.
     UnknownRosterGate {
         /// The item.
@@ -158,6 +177,12 @@ impl fmt::Display for GraphError {
             Self::DeadEnd { node } => {
                 write!(f, "node {node} has no way onward and is not an ending")
             }
+            Self::UnreachableNode { node } => {
+                write!(
+                    f,
+                    "node {node} is declared but no edge path from the entry reaches it"
+                )
+            }
             Self::UnknownRosterGate { item, gate } => {
                 write!(f, "roster item {item} is gated on undeclared node {gate}")
             }
@@ -180,7 +205,15 @@ pub struct CampaignGraph {
 
 impl CampaignGraph {
     /// Validates the graph with the same invariants the declared schema
-    /// enforces.
+    /// enforces — unique keys, a declared non-interlude entry, no dangling
+    /// edges, one edge per outcome, terminal endings, no dead ends, roster
+    /// gates on declared nodes, mission bindings and every node reachable
+    /// from the entry. The declared schema's finishability rules (no
+    /// `Victory` cycle, a `Victory` edge on every non-ending node) are
+    /// deliberately *not* enforced here: a runtime graph may hold those
+    /// shapes because `CampaignState::advance_interludes` is the dynamic
+    /// refusal for them, and a graph that could never contain one would
+    /// make that refusal unreachable.
     ///
     /// # Errors
     ///
@@ -247,6 +280,28 @@ impl CampaignGraph {
                     item: gate.item.clone(),
                     gate: gate.gate.clone(),
                 });
+            }
+        }
+        // Every node must be reachable from the entry, over edges of any
+        // outcome — the same rule the declared schema applies, so a graph
+        // built by hand cannot smuggle dead content a run could never
+        // reach. The declared layer's other shape rules are *not* mirrored
+        // here on purpose (see [`GraphError::UnreachableNode`]): cycles and
+        // victory-less nodes are shapes the walk's own refusals must be
+        // able to see.
+        let mut reachable = BTreeSet::new();
+        let mut frontier = vec![entry.clone()];
+        while let Some(id) = frontier.pop() {
+            if !reachable.insert(id.clone()) {
+                continue;
+            }
+            for edge in &map[&id].edges {
+                frontier.push(edge.to.clone());
+            }
+        }
+        for id in map.keys() {
+            if !reachable.contains(id) {
+                return Err(GraphError::UnreachableNode { node: id.clone() });
             }
         }
         Ok(Self {

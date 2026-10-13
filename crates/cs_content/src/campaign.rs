@@ -29,7 +29,10 @@
 //! carry a [`RewardSpec`]. `try_new` refuses duplicate node ids, dangling
 //! edge targets, a missing entry node, edges out of an ending and a
 //! mission node whose resolved binding is not a `ContentKind::Mission` —
-//! the invariants a consumer needs so it never has to guess.
+//! and, at the graph's *shape*, a node no edge path from the entry reaches,
+//! a `Victory`-edge cycle and a non-ending node with no `Victory` edge
+//! (the victory path from every node must terminate at an `Ending`). These
+//! are the invariants a consumer needs so it never has to guess.
 //!
 //! **What an edge means is declared, never invented** (spec F43
 //! non-negotiable behavior 4): whether defeat retries in place or skips
@@ -291,6 +294,40 @@ pub enum CampaignError {
         /// The node with no outgoing edges.
         node: CampaignNodeId,
     },
+    /// A node no edge path from the entry reaches — dead content: it can
+    /// never be selected, completed or report an outcome, and a roster gate
+    /// on it can never open. Refused rather than warned about: the schema
+    /// has no warning channel, and an unreachable node is an authoring
+    /// defect (a missing edge or a stale node), not a campaign feature.
+    UnreachableNode {
+        /// The node nothing reaches.
+        node: CampaignNodeId,
+    },
+    /// Following `Victory` edges returns to a node the path already crossed.
+    /// Designed engine rule (not measured from original data): a node
+    /// declares at most one victory edge, so a victory-edge cycle has no
+    /// victory exit — a run that keeps winning loops there forever and can
+    /// never finish (the AC04 shape: "complete final mission and verify
+    /// ending state"). This is the declared-layer answer to the shape
+    /// `cs_sim`'s `advance_interludes` measured hanging for 30 minutes on a
+    /// declared beat cycle (F43-B). Cycles through `Defeat`/`Abort` edges
+    /// stay legal: each traversal of one is a separate, player-driven
+    /// outcome transaction, so retry-in-place and authored replay loops
+    /// remain declarable.
+    VictoryCycle {
+        /// The node the victory path came back to.
+        node: CampaignNodeId,
+    },
+    /// A non-ending node declares no `Victory` edge — a winning run parked
+    /// on it can never move on or finish. Designed engine rule (not
+    /// measured): "complete the final mission" has to reach the ending, so
+    /// every node a run can stand on must offer the winner a way onward. A
+    /// node meant to end the campaign on failure is an `Ending`, not a
+    /// defeat-only route.
+    Unfinishable {
+        /// The node with no victory edge.
+        node: CampaignNodeId,
+    },
     /// A roster entry keys availability to an undeclared node.
     UnknownRosterGate {
         /// The item.
@@ -334,6 +371,26 @@ impl fmt::Display for CampaignError {
             Self::DeadEnd { node } => {
                 write!(f, "node {node} has no way onward and is not an ending")
             }
+            Self::UnreachableNode { node } => {
+                write!(
+                    f,
+                    "node {node} is declared but no edge path from the entry reaches it"
+                )
+            }
+            Self::VictoryCycle { node } => {
+                write!(
+                    f,
+                    "the victory path returns to node {node}, which it already crossed: \
+                     the declared campaign's victory edges form a cycle"
+                )
+            }
+            Self::Unfinishable { node } => {
+                write!(
+                    f,
+                    "node {node} is not an ending and declares no victory edge, so a run \
+                     that wins there can never finish the campaign"
+                )
+            }
             Self::UnknownRosterGate { item, node } => {
                 write!(f, "roster item {item} is gated on undeclared node {node}")
             }
@@ -374,8 +431,10 @@ impl CampaignDefinition {
     /// Validates the graph: unique node ids, a declared entry, no dangling
     /// edge targets, at most one edge per condition per node, no edges out
     /// of an ending, no non-ending dead ends, roster gates that name
-    /// declared nodes, and mission nodes whose resolved bindings are
-    /// actually [`ContentKind::Mission`] ids.
+    /// declared nodes, mission nodes whose resolved bindings are actually
+    /// [`ContentKind::Mission`] ids, every node reachable from the entry,
+    /// no `Victory`-edge cycle, and a `Victory` edge on every non-ending
+    /// node — so a run that keeps winning can always reach an `Ending`.
     ///
     /// # Errors
     ///
@@ -440,6 +499,61 @@ impl CampaignDefinition {
                     item: entry.item.clone(),
                     node: entry.available_from.clone(),
                 });
+            }
+        }
+        // Every declared node must be reachable from the entry, over edges of
+        // any condition: `apply_outcome` moves `current` along whichever edge
+        // matches the reported outcome, so a node no edge reaches can never be
+        // selected, never be completed and never open a roster gate. Dead
+        // content is a defect, and the schema has no channel weaker than a
+        // refusal to report it through.
+        let mut reachable = std::collections::BTreeSet::new();
+        let mut frontier = vec![draft.entry.clone()];
+        while let Some(id) = frontier.pop() {
+            if !reachable.insert(id.clone()) {
+                continue;
+            }
+            for edge in &nodes[&id].edges {
+                frontier.push(edge.to.clone());
+            }
+        }
+        for id in nodes.keys() {
+            if !reachable.contains(id) {
+                return Err(CampaignError::UnreachableNode { node: id.clone() });
+            }
+        }
+        // The victory path — each node's `Victory` edge, the one a run that
+        // keeps winning follows — must terminate at an `Ending` from every
+        // node. A node whose path stops at a non-ending (no victory edge) or
+        // loops back onto itself can never be won past, so a campaign
+        // declaring one can never be finished: refused here, at the
+        // declaration, instead of hanging or soft-locking a run later.
+        // `finishable` memoizes the nodes already proven to end a campaign.
+        let mut finishable = std::collections::BTreeSet::new();
+        for node in nodes.values() {
+            let mut walked = std::collections::BTreeSet::new();
+            let mut cursor = &node.id;
+            loop {
+                let here = &nodes[cursor];
+                if here.kind == NodeKind::Ending || finishable.contains(cursor) {
+                    finishable.extend(walked);
+                    break;
+                }
+                if !walked.insert(cursor.clone()) {
+                    return Err(CampaignError::VictoryCycle {
+                        node: cursor.clone(),
+                    });
+                }
+                let Some(edge) = here
+                    .edges
+                    .iter()
+                    .find(|edge| edge.on == EdgeCondition::Victory)
+                else {
+                    return Err(CampaignError::Unfinishable {
+                        node: cursor.clone(),
+                    });
+                };
+                cursor = &edge.to;
             }
         }
         Ok(Self {

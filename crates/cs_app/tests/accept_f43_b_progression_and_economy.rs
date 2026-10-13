@@ -27,10 +27,13 @@
 //! * **The declared campaign's mistakes, refused rather than obeyed.** A beat
 //!   with no onward edge, a chain of beats that cycles back on itself, and a
 //!   grant chain that would carry the balance past the currency type are all
-//!   declarations the schema accepts and the walk must not obey: nothing upstream
-//!   rejects them, and each one would otherwise hang the walk, crash it, or write
-//!   a wrong balance. A refusal must also *name what tripped it*: the balance a
-//!   chain had reached, not the one it started from.
+//!   shapes the walk must not obey — each one would otherwise hang the walk,
+//!   crash it, or write a wrong balance. Since F43-V1 the declared schema
+//!   refuses the first two outright; the runtime graph still holds them
+//!   because the walk's refusals are this layer's dynamic answer, and these
+//!   fixtures build on that vocabulary directly. A refusal must also *name
+//!   what tripped it*: the balance a chain had reached, not the one it
+//!   started from.
 //! * **The economy draft.** The contract's purchase rule — validate
 //!   availability, money and the expected profile revision before writing, and
 //!   fail a conflicting revision without overwriting unrelated progression.
@@ -49,7 +52,8 @@ use cs_content::campaign::{
 use cs_sim::campaign::{
     CampaignError, CampaignGraph, CampaignNodeKey, CampaignRunId, CampaignState, DifficultyId,
     EventKey, MissionOutcome, Outcome, OutcomeAuthority, OutcomeId, OutcomeReceipt, ProfileId,
-    RuntimeNodeKind, SessionGeneration, SymbolId, TransactionPlan,
+    Reward, RuntimeEdge, RuntimeNode, RuntimeNodeKind, SessionGeneration, SymbolId,
+    TransactionPlan,
 };
 use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind, Known, Provenance, Resolved};
@@ -281,11 +285,10 @@ fn completed_run() -> (CampaignGraph, CampaignState) {
 /// A declared campaign whose victory path crosses `chain`, the beat ids in the
 /// order the walk crosses them. The entry mission grants `entry_grant` and every
 /// beat grants `beat_grant`; the last beat's `Victory` edge targets `tail` (a
-/// mission that can report an outcome) or, with `cycle`, back at the first beat.
+/// mission that can report an outcome).
 fn beat_chain_campaign(
     chain: &[&str],
     tail: &str,
-    cycle: bool,
     entry_grant: u64,
     beat_grant: u64,
 ) -> CampaignDefinition {
@@ -309,7 +312,7 @@ fn beat_chain_campaign(
     });
     for (index, id) in chain.iter().enumerate() {
         let next = if index + 1 == chain.len() {
-            if cycle { chain[0] } else { tail }
+            tail
         } else {
             chain[index + 1]
         };
@@ -330,32 +333,77 @@ fn beat_chain_campaign(
             provenance: designed(),
         });
     }
-    if !cycle {
-        draft.nodes.push(CampaignNode {
-            id: node(tail),
-            kind: NodeKind::Mission {
-                mission: known(mission_content(tail)),
-            },
-            edges: vec![CampaignEdge {
-                on: EdgeCondition::Victory,
-                to: node("ending"),
-                grant: None,
-                provenance: designed(),
-            }],
+    draft.nodes.push(CampaignNode {
+        id: node(tail),
+        kind: NodeKind::Mission {
+            mission: known(mission_content(tail)),
+        },
+        edges: vec![CampaignEdge {
+            on: EdgeCondition::Victory,
+            to: node("ending"),
+            grant: None,
             provenance: designed(),
-        });
-        draft.nodes.push(CampaignNode {
-            id: node("ending"),
-            kind: NodeKind::Ending,
-            edges: Vec::new(),
-            provenance: designed(),
-        });
-    }
+        }],
+        provenance: designed(),
+    });
+    draft.nodes.push(CampaignNode {
+        id: node("ending"),
+        kind: NodeKind::Ending,
+        edges: Vec::new(),
+        provenance: designed(),
+    });
     CampaignDefinition::try_new(draft).expect("a declared beat chain is a valid campaign")
 }
 
+/// The same `m01 → beats` shape as [`beat_chain_campaign`], but with the last
+/// beat's `Victory` edge looping back to `chain[0]` — a cycle in the graph.
+/// Since F43-V1 the declared schema refuses this shape outright
+/// (`CampaignError::VictoryCycle`), so it is built straight on the runtime
+/// vocabulary: `CampaignGraph` may still hold a cycle because
+/// `advance_interludes`'s `InterludeLoop` is the dynamic refusal for it, and
+/// that refusal is what this fixture exists to exercise.
+fn cycling_beat_graph(chain: &[&str], entry_grant: u64, beat_grant: u64) -> CampaignGraph {
+    assert!(!chain.is_empty(), "a beat cycle needs at least one beat");
+    let grant = |currency: u64| Reward {
+        currency,
+        unlocks: Vec::new(),
+    };
+    let mut nodes = vec![RuntimeNode {
+        id: key("m01"),
+        kind: RuntimeNodeKind::Mission {
+            mission: mission_content("m01"),
+        },
+        edges: vec![RuntimeEdge {
+            on: Outcome::Succeeded,
+            to: key(chain[0]),
+            grant: grant(entry_grant),
+        }],
+    }];
+    for (index, id) in chain.iter().enumerate() {
+        let next = if index + 1 == chain.len() {
+            chain[0]
+        } else {
+            chain[index + 1]
+        };
+        nodes.push(RuntimeNode {
+            id: key(id),
+            kind: RuntimeNodeKind::Interlude,
+            edges: vec![RuntimeEdge {
+                on: Outcome::Succeeded,
+                to: key(next),
+                grant: grant(beat_grant),
+            }],
+        });
+    }
+    CampaignGraph::try_new(nodes, key("m01"), Vec::new())
+        .expect("a cyclic beat chain is a legal runtime graph")
+}
+
 /// Wins `m01` in a [`beat_chain_campaign`] run, parking it on the first beat
-/// with the entry grant already paid.
+/// with the entry grant already paid. A `cycle` chain goes through
+/// [`cycling_beat_graph`], not the declared schema — the declared layer
+/// refuses a beat cycle outright since F43-V1, while the runtime graph the
+/// walk guards may still hold one.
 fn parked_on_first_beat(
     chain: &[&str],
     tail: &str,
@@ -363,14 +411,12 @@ fn parked_on_first_beat(
     entry_grant: u64,
     beat_grant: u64,
 ) -> (CampaignGraph, CampaignState) {
-    let graph = lower_campaign(&beat_chain_campaign(
-        chain,
-        tail,
-        cycle,
-        entry_grant,
-        beat_grant,
-    ))
-    .expect("it lowers");
+    let graph = if cycle {
+        cycling_beat_graph(chain, entry_grant, beat_grant)
+    } else {
+        lower_campaign(&beat_chain_campaign(chain, tail, entry_grant, beat_grant))
+            .expect("it lowers")
+    };
     let mut state = CampaignState::begin(
         profile(),
         CampaignRunId::new(RUN).expect("valid run id"),
@@ -619,44 +665,44 @@ fn accept_f43_b_walking_a_beat_twice_pays_it_once() {
     );
 }
 
-/// A beat with no onward edge is a dead end in the *declared* campaign, and the
+/// A beat with no onward edge is a dead end in the declared campaign, and the
 /// walk must say so rather than stop quietly — otherwise an importer bug reads
 /// as "the campaign ends here".
 #[test]
 fn accept_f43_b_a_beat_with_no_onward_edge_is_refused_not_silently_stopped() {
     // `m01 --Victory--> interlude`, and the interlude declares only a Defeat
-    // edge, so it has no way onward. The declared schema accepts it (a
-    // non-ending node needs *an* edge); the runtime refuses to walk it.
-    let mut draft = empty_draft(node("m01"));
-    draft.nodes.push(CampaignNode {
-        id: node("m01"),
-        kind: NodeKind::Mission {
-            mission: known(mission_content("m01")),
-        },
-        edges: vec![CampaignEdge {
-            on: EdgeCondition::Victory,
-            to: node("interlude"),
-            grant: None,
-            provenance: designed(),
-        }],
-        provenance: designed(),
-    });
-    draft.nodes.push(CampaignNode {
-        id: node("interlude"),
-        kind: NodeKind::Interlude {
-            asset: unknown_asset("unsurveyed"),
-        },
-        edges: vec![CampaignEdge {
-            on: EdgeCondition::Defeat,
-            to: node("interlude"),
-            grant: None,
-            provenance: designed(),
-        }],
-        provenance: designed(),
-    });
-    let declared =
-        CampaignDefinition::try_new(draft).expect("a beat with one edge is a valid declaration");
-    let graph = lower_campaign(&declared).expect("it lowers");
+    // edge, so it has no way onward. Since F43-V1 the declared schema refuses
+    // this shape outright (`CampaignError::Unfinishable`), so the graph is
+    // built straight on the runtime vocabulary: `CampaignGraph` may still
+    // hold it because `advance_interludes`'s `InterludeDeadEnd` is the dynamic
+    // refusal this test exercises.
+    let graph = CampaignGraph::try_new(
+        vec![
+            RuntimeNode {
+                id: key("m01"),
+                kind: RuntimeNodeKind::Mission {
+                    mission: mission_content("m01"),
+                },
+                edges: vec![RuntimeEdge {
+                    on: Outcome::Succeeded,
+                    to: key("interlude"),
+                    grant: Reward::default(),
+                }],
+            },
+            RuntimeNode {
+                id: key("interlude"),
+                kind: RuntimeNodeKind::Interlude,
+                edges: vec![RuntimeEdge {
+                    on: Outcome::Failed,
+                    to: key("interlude"),
+                    grant: Reward::default(),
+                }],
+            },
+        ],
+        key("m01"),
+        Vec::new(),
+    )
+    .expect("a beat with one edge is a legal runtime graph");
     let mut state = CampaignState::begin(
         profile(),
         CampaignRunId::new(RUN).expect("valid run id"),
@@ -684,11 +730,11 @@ fn accept_f43_b_a_beat_with_no_onward_edge_is_refused_not_silently_stopped() {
 }
 
 /// A declared chain of beats that returns to a beat it already crossed is a
-/// cycle in the *declared* campaign, and nothing upstream rejects one: the
-/// declared schema and `CampaignGraph` only require a non-ending node to declare
-/// *an* edge. The walk itself must therefore refuse it — it may not cross the
-/// same beat forever, and it may not pay it again on every turn. A self-looped
-/// beat and a longer cycle are both pinned; both name the beat the chain came
+/// cycle in the campaign — which the declared schema refuses outright since
+/// F43-V1 (`CampaignError::VictoryCycle`). The runtime graph may still hold
+/// one, and the walk itself must refuse it — it may not cross the same beat
+/// forever, and it may not pay it again on every turn. A self-looped beat
+/// and a longer cycle are both pinned; both name the beat the chain came
 /// back to.
 #[test]
 fn accept_f43_b_a_declared_beat_cycle_is_refused_not_walked_forever() {
@@ -721,8 +767,8 @@ fn accept_f43_b_a_declared_beat_cycle_is_refused_not_walked_forever() {
 fn accept_f43_b_a_beat_chain_granting_more_than_i64_max_pays_exactly() {
     let big = 1_u64 << 62;
     let chain = ["beat_a", "beat_b", "beat_c"];
-    let graph = lower_campaign(&beat_chain_campaign(&chain, "m02", false, 1, big))
-        .expect("the chain lowers");
+    let graph =
+        lower_campaign(&beat_chain_campaign(&chain, "m02", 1, big)).expect("the chain lowers");
     let mut state = CampaignState::begin(
         profile(),
         CampaignRunId::new(RUN).expect("valid run id"),
