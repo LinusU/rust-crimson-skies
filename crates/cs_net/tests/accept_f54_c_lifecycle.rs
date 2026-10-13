@@ -45,6 +45,7 @@ use cs_types::net::{ActorId, PeerId, SessionAllocator, SessionId};
 
 use cs_net::bounds::{
     MAX_INPUT_FRAMES_PER_PACKET, MAX_MOD_DIFF_IDS, MAX_MODS, MAX_PACKET_BYTES, MAX_SEEN_EVENTS,
+    MAX_SESSION_PEERS,
     MAX_SNAPSHOT_BYTES, MAX_UNACKED_PACKETS, MAX_WORK_PER_PUMP,
 };
 use cs_net::codec::{
@@ -71,7 +72,7 @@ use cs_net::transport::{
     CHANNEL_SEQUENCED, ClientEvent, ClientTransport, ConnectWindow, DEFAULT_CONNECT_WINDOW,
     DropReason,
 };
-use cs_net::validation::ThreatCase;
+use cs_net::validation::{RateLimits, ThreatCase};
 
 /// One exchange round's duration. Loopback needs no real sleep; the updates
 /// only have to run often enough to exchange the netcode handshake's packets.
@@ -736,12 +737,14 @@ impl Attempt {
 }
 
 /// How many packets from `peer` the host has classified so far — admitted
-/// input, a refusal or the cut-off — one count per arrival.
+/// input, a refusal (a drop or a rate-limited surplus) or the cut-off — one
+/// count per arrival.
 fn peer_arrivals(notices: &[ServerNotice], peer: PeerId) -> usize {
     notices
         .iter()
         .filter(|notice| match notice {
             ServerNotice::Admitted(input) => input.peer == peer,
+            ServerNotice::RateLimited { peer: seen, .. } => *seen == peer,
             ServerNotice::Dropped {
                 peer: Some(seen), ..
             }
@@ -1582,47 +1585,356 @@ fn accept_f54_c_a_lost_input_packet_is_retransmitted_verbatim() {
     });
 }
 
+/// How many rounds a *burst* gets before the test reports that the rate cap
+/// never spoke, and how many it may spend before "not cut off" would stop
+/// being provable.
+///
+/// A flooder offering `max_intents_per_tick() + 1` packets a round spends at
+/// most 3 × 24 = 72 of the declared 96 intents per window inside this bound,
+/// so a peer that is still a member afterwards was *rate-limited*, not
+/// merely slow to be punished — that assertion is arithmetic, not luck.
+const RATE_LIMIT_ROUNDS: usize = 24;
+
+/// How many rounds a sustained flood gets before the test reports that the
+/// ladder never delivered its verdict.
+///
+/// Sized against the declared budget *and* against this host's measured
+/// loopback loss: the flooder offers well above the window's sustained rate
+/// every round, so any 60-round window carries more than
+/// `max_intents_per_window` offers unless more than four fifths of them are
+/// lost on the way. The wait ends the moment the verdict lands, so a healthy
+/// path spends a few dozen rounds here, not this many.
+const FLOOD_ROUNDS: usize = 160;
+
 #[test]
-fn accept_f54_c_the_work_queue_refuses_the_surplus_and_cuts_the_abusive_peer() {
+fn accept_f54_c_a_flooding_peer_is_rate_limited_before_it_can_spend_the_shared_queue() {
     let session = SessionAllocator::new()
         .allocate()
         .expect("an epoch allocates");
     live_fixture(|| {
         let mut link =
             Link::try_joined(session).map_err(|link| link.ungranted("the client's handshake"))?;
-        let mut raw = link.raw_peer(0xC4);
-        let peer = raw
+        let honest = link.client.grant().expect("a grant exists").peer;
+        link.host
+            .gate_mut()
+            .ownership_mut()
+            .bind(honest, ActorId { session, serial: 1 })
+            .expect("the host binds the honest peer's aircraft");
+
+        let mut raw = link.raw_peer(0xC6);
+        let flooder = raw
             .try_handshake(&mut link.host)
             .ok_or_else(|| ungranted_peer(&raw, "the flooding peer's handshake"))?;
         link.host
             .gate_mut()
             .ownership_mut()
-            .bind(peer, ActorId { session, serial: 1 })
-            .expect("the host binds an aircraft");
+            .bind(flooder, ActorId { session, serial: 2 })
+            .expect("the host binds the flooder's aircraft");
 
-        // One packet more than the queue can hold, all delivered inside a
-        // single host pump. The queue is never drained, so arrivals
-        // accumulate across pumps: the overflow fires on the cap+1-th packet
-        // to land whenever that is. The channel drops datagrams, so the wait
-        // refires a fresh burst — fresh sequences, since a repeated one is a
-        // named replay that cannot queue — until the surplus is observable.
+        let limits = link.host.rate_limits();
+        assert_eq!(
+            limits,
+            RateLimits::DESIGNED,
+            "the ladder enforces F58-B's declared numbers, not ones this stage chose"
+        );
+        let cap = limits.max_intents_per_tick();
+        assert!(
+            cap >= 1,
+            "the declared per-tick share admits at least one packet"
+        );
+
+        // The flooder offers one packet more than its per-tick share every
+        // round while the host consumes its queue every round — so the shared
+        // bound has nothing to do here, and whatever refuses the surplus is
+        // the per-peer cap. The honest peer keeps sending one sample a round
+        // straight through the flood.
         let mut next = 0u32;
-        let mut burst = |peer: &mut RawPeer| {
-            for _ in 0..=MAX_WORK_PER_PUMP {
-                peer.inject(
+        let mut flooder_served = 0usize;
+        let mut honest_served = 0usize;
+        let mut rounds = 0usize;
+        while rounds < RATE_LIMIT_ROUNDS
+            && !link.host_has(|notice| {
+                matches!(
+                    notice,
+                    ServerNotice::RateLimited { peer, .. } if *peer == flooder
+                )
+            })
+        {
+            link.client
+                .submit_sample(FlightCommand::Throttle, 0.5, Tick(500 + rounds as u64))
+                .expect("a finite throttle sample queues");
+            link.client_notices.extend(link.client.pump(STEP));
+            for _ in 0..=cap {
+                raw.inject(
                     CHANNEL_SEQUENCED,
                     &fire_bytes(session, Tick(400 + u64::from(next)), next),
                 );
                 next = next.wrapping_add(1);
             }
-        };
-        burst(&mut raw);
-        link.try_pump_peer_until(
-            &mut raw,
-            "the queue never overflowed",
-            |peer| burst(peer),
-            |link| link.host.overflowed() > 0,
+            raw.pump();
+            link.host_notices.extend(link.host.pump(STEP));
+            for input in link.host.drain_work() {
+                if input.peer == flooder {
+                    flooder_served += 1;
+                }
+                if input.peer == honest {
+                    honest_served += 1;
+                }
+            }
+            rounds += 1;
+        }
+
+        // 1. The refusal exists, is named for the rate, and is counted.
+        let refusal = link
+            .host_notices
+            .iter()
+            .find(|notice| {
+                matches!(
+                    notice,
+                    ServerNotice::RateLimited { peer, .. } if *peer == flooder
+                )
+            })
+            .unwrap_or_else(|| {
+                panic!(
+                    "the flooder's surplus was never refused: {:?}",
+                    link.host_notices
+                )
+            });
+        assert!(
+            refusal.to_string().contains("rate"),
+            "the refusal names the rate, not the queue: {refusal}"
+        );
+        assert!(
+            link.host.rate_refused() > 0,
+            "every rate refusal is counted"
+        );
+
+        // 2. Rate limiting first: the burst was dropped, not punished, and
+        //    the shared queue bound never had to fire for one peer.
+        assert!(
+            link.host.members().any(|member| member == flooder),
+            "a bursting peer is rate-limited, not cut off: {:?}",
+            link.host_notices
+        );
+        assert_eq!(
+            link.host.overflowed(),
+            0,
+            "one peer never spent the shared work-queue bound"
+        );
+        assert!(
+            link.host.queued() < MAX_WORK_PER_PUMP,
+            "the queue stays clear of its cap: {}",
+            link.host.queued()
+        );
+        assert!(
+            flooder_served <= rounds * cap as usize,
+            "the flooder is served only its per-tick share per round"
+        );
+
+        // 3. The other peer keeps working while the flooder is refused.
+        if honest_served == 0 {
+            link.client
+                .submit_edge(FlightCommand::FirePrimary, Tick(900))
+                .expect("an edge queues");
+            link.try_pump_until("the honest peer's input was never admitted", |link| {
+                link.host_has(|notice| {
+                    matches!(notice, ServerNotice::Admitted(input) if input.peer == honest)
+                })
+            })?;
+            honest_served = link
+                .host
+                .drain_work()
+                .iter()
+                .filter(|input| input.peer == honest)
+                .count();
+        }
+        assert!(
+            honest_served > 0,
+            "the honest peer kept admitting input while the flooder was refused: {:?}",
+            link.host_notices
+        );
+        Ok(())
+    });
+}
+
+#[test]
+fn accept_f54_c_a_peer_that_keeps_over_the_declared_rate_is_cut_off_with_the_named_reason() {
+    let session = SessionAllocator::new()
+        .allocate()
+        .expect("an epoch allocates");
+    live_fixture(|| {
+        let mut link =
+            Link::try_joined(session).map_err(|link| link.ungranted("the client's handshake"))?;
+        let honest = link.client.grant().expect("a grant exists").peer;
+        link.host
+            .gate_mut()
+            .ownership_mut()
+            .bind(honest, ActorId { session, serial: 1 })
+            .expect("the host binds the honest peer's aircraft");
+
+        let mut raw = link.raw_peer(0xC7);
+        let flooder = raw
+            .try_handshake(&mut link.host)
+            .ok_or_else(|| ungranted_peer(&raw, "the over-rate peer's handshake"))?;
+        link.host
+            .gate_mut()
+            .ownership_mut()
+            .bind(flooder, ActorId { session, serial: 2 })
+            .expect("the host binds the over-rate peer's aircraft");
+
+        let limits = link.host.rate_limits();
+        let cap = limits.max_intents_per_tick();
+        // Above the window's sustained rate, so the declared budget — not the
+        // per-tick share — is what this scenario is about to spend.
+        let burst = cap + 4;
+
+        let mut next = 0u32;
+        let mut rounds = 0usize;
+        while rounds < FLOOD_ROUNDS && !cut_off(&link, flooder) {
+            link.client
+                .submit_sample(FlightCommand::Throttle, 0.5, Tick(500 + rounds as u64))
+                .expect("a finite throttle sample queues");
+            link.client_notices.extend(link.client.pump(STEP));
+            for _ in 0..burst {
+                raw.inject(
+                    CHANNEL_SEQUENCED,
+                    &fire_bytes(session, Tick(400 + u64::from(next)), next),
+                );
+                next = next.wrapping_add(1);
+            }
+            raw.pump();
+            link.host_notices.extend(link.host.pump(STEP));
+            link.host.drain_work();
+            rounds += 1;
+        }
+
+        // The declared verdict: the window budget the session designed for,
+        // refused with its own named reason and cut off as `ImpossibleRate`.
+        assert!(
+            cut_off(&link, flooder),
+            "the peer that kept over-running the declared rate was cut off: {:?}",
+            link.host_notices
+        );
+        assert!(
+            link.host_has(|notice| matches!(
+                notice,
+                ServerNotice::Dropped {
+                    peer: Some(peer),
+                    reason: DropReason::RateExceeded { limit, .. },
+                } if *peer == flooder && *limit == limits.max_intents_per_window
+            )),
+            "the refusal names the declared window budget ({:?}): {:?}",
+            limits,
+            link.host_notices
+        );
+        assert!(
+            link.host_has(|notice| matches!(
+                notice,
+                ServerNotice::CutOff {
+                    peer: Some(peer),
+                    threat: ThreatCase::ImpossibleRate,
+                } if *peer == flooder
+            )),
+            "the cut-off names the declared threat class: {:?}",
+            link.host_notices
+        );
+        assert!(
+            link.host.rate_refused() > 0,
+            "the over-rate packets were refused and counted"
+        );
+        assert_eq!(
+            link.host.overflowed(),
+            0,
+            "the verdict came from the rate ladder, not from the shared queue"
+        );
+
+        // The cut-off is the flooder's alone: everything from here is the
+        // honest peer still being served — a wait over the notices recorded
+        // *after* the verdict, so an admission from before it cannot answer.
+        let after_the_cut_off = link.host_notices.len();
+        link.client
+            .submit_edge(FlightCommand::FirePrimary, Tick(900))
+            .expect("an edge queues");
+        link.try_pump_until(
+            "the honest peer's input was never admitted after the cut-off",
+            |link| {
+                link.host_notices[after_the_cut_off..].iter().any(|notice| {
+                    matches!(notice, ServerNotice::Admitted(input) if input.peer == honest)
+                })
+            },
         )?;
+        assert!(
+            link.host
+                .drain_work()
+                .iter()
+                .any(|input| input.peer == honest),
+            "the other peer kept working after the cut-off: {:?}",
+            link.host_notices
+        );
+        Ok(())
+    });
+}
+
+#[test]
+fn accept_f54_c_the_shared_work_queue_bound_holds_under_a_multi_peer_flood() {
+    let session = SessionAllocator::new()
+        .allocate()
+        .expect("an epoch allocates");
+    live_fixture(|| {
+        let mut link = Link::try_joined(session)
+            .map_err(|link| link.ungranted("the honest client's handshake"))?;
+
+        // The designed numbers tie the per-peer share to the shared bound
+        // exactly: a full session's per-tick shares *are* the queue, so one
+        // peer cannot reach `MAX_WORK_PER_PUMP` alone and a session-wide
+        // flood still can.
+        let limits = link.host.rate_limits();
+        let cap = limits.max_intents_per_tick();
+        assert_eq!(
+            u64::from(cap) * u64::try_from(MAX_SESSION_PEERS).expect("the peer cap fits a u64"),
+            u64::try_from(MAX_WORK_PER_PUMP).expect("the queue cap fits a u64"),
+            "one tick's worth of every peer's share is exactly the shared queue"
+        );
+
+        // Four peers, each offering exactly its per-tick share, with the
+        // consumer never draining: the queue fills from *several* peers at
+        // once, which is the only way the bound is reachable now.
+        let mut flooders = Vec::new();
+        for index in 0..4u64 {
+            let mut peer = link.raw_peer(0xD0 + index);
+            let id = peer
+                .try_handshake(&mut link.host)
+                .ok_or_else(|| ungranted_peer(&peer, "a flooding peer's handshake"))?;
+            link.host
+                .gate_mut()
+                .ownership_mut()
+                .bind(
+                    id,
+                    ActorId {
+                        session,
+                        serial: 10 + index,
+                    },
+                )
+                .expect("the host binds a flooder's aircraft");
+            flooders.push((peer, id, 0u32));
+        }
+
+        let mut rounds = 0usize;
+        while rounds < FLOOD_ROUNDS && link.host.overflowed() == 0 {
+            for (peer, _, next) in &mut flooders {
+                for _ in 0..cap {
+                    let sequence = *next;
+                    peer.inject(
+                        CHANNEL_SEQUENCED,
+                        &fire_bytes(session, Tick(400 + u64::from(sequence)), sequence),
+                    );
+                    *next = next.wrapping_add(1);
+                }
+                peer.pump();
+            }
+            link.host_notices.extend(link.host.pump(STEP));
+            rounds += 1;
+        }
 
         assert_eq!(
             link.host.queued(),
@@ -1652,12 +1964,26 @@ fn accept_f54_c_the_work_queue_refuses_the_surplus_and_cuts_the_abusive_peer() {
                     ..
                 }
             )),
-            "the abusive peer was cut off: {:?}",
+            "the peer that spent the shared bound was cut off: {:?}",
             link.host_notices
         );
         assert!(
-            link.host.members().all(|member| member != peer),
-            "the cut-off peer is no longer a member"
+            flooders
+                .iter()
+                .any(|(_, id, _)| link.host.members().all(|member| member != *id)),
+            "the cut-off peer is no longer a member: {:?}",
+            link.host.members().collect::<Vec<_>>()
+        );
+        assert!(
+            !link.host_has(|notice| matches!(
+                notice,
+                ServerNotice::CutOff {
+                    threat: ThreatCase::ImpossibleRate,
+                    ..
+                }
+            )),
+            "this flood stayed inside the declared rate, so the verdict is the queue bound: {:?}",
+            link.host_notices
         );
         assert_eq!(
             link.host.drain_work().len(),
