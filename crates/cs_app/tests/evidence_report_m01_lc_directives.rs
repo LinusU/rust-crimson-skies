@@ -656,9 +656,10 @@ fn render_observation(
                         "{{\"lowering\": \"directive\", \"operation\": {}}}",
                         jstr(operation.code())
                     ),
-                    Lowering::Finish(outcome) => {
-                        format!("{{\"lowering\": \"finish\", \"outcome\": {outcome:?}}}")
-                    }
+                    Lowering::Finish(outcome) => format!(
+                        "{{\"lowering\": \"finish\", \"outcome\": {}}}",
+                        jstr(&format!("{outcome:?}"))
+                    ),
                     other => format!("{{\"lowering\": {}}}", jstr(&format!("{other:?}"))),
                 });
             let emitted_shapes: Vec<String> = emitted
