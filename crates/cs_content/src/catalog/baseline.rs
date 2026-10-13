@@ -276,8 +276,8 @@ use cs_assets::vfs::{INSTALL_NAMESPACE, MountBuilder, SessionBuilder, WORLD_NAME
 use cs_assets::zbd::{ContainerVerdict, audit_containers};
 use cs_formats::LANG_ENGLISH_US;
 use cs_formats::gamez::{
-    GameZMaterials, GameZMeshes, GameZNodes, RawMaterial, read_gamez_materials, read_gamez_meshes,
-    read_gamez_nodes,
+    GameZMaterials, GameZMeshes, GameZNodes, MeshSlotIssue, NodeMeshBindings, NodeMeshFinding,
+    RawMaterial, read_gamez_materials, read_gamez_meshes, read_gamez_nodes,
 };
 use cs_formats::interp::DecodedInterp;
 use cs_formats::script_raw::{DispatchForm, UiScriptLimits, discover_container, scan_ui_program};
@@ -786,7 +786,21 @@ const CLAIM_NODE_MESH_SLOT: &str = "f14.d.4.baseline.node_mesh_slot";
 /// The claim id behind the observation that a node names a mesh-array slot the
 /// container's mesh section answers with no present record, so no `mesh` row
 /// exists for it and the node cannot carry an edge onto one.
+///
+/// The slot is **inside** the array: the container has that position and stores
+/// an all-zero stub in it. A node whose stored index names a position past the
+/// array states a different fact and carries
+/// [`CLAIM_OUT_OF_RANGE_NODE_MESH`] instead — the format-level check owns both
+/// codes (`cs_formats::gamez::MeshSlotIssue`) and this walk quotes them rather
+/// than deciding the rule again (task #593).
 const CLAIM_ABSENT_NODE_MESH: &str = "f14.d.4.baseline.node_mesh_slot_absent";
+
+/// The claim id behind the observation that a node stores a `mesh_index` **past
+/// the container's mesh array**, so the position it names does not exist in
+/// this container at all: no `mesh` row exists for it, the node cannot carry an
+/// edge onto one, and the fact is not the one [`CLAIM_ABSENT_NODE_MESH`] states
+/// (an inside-the-array slot the container really has and stores nothing in).
+const CLAIM_OUT_OF_RANGE_NODE_MESH: &str = "f14.d.4.baseline.node_mesh_slot_out_of_range";
 
 /// The claim id behind the observation that several stored nodes of one
 /// container spell the same authored name path, so the semantic key a
@@ -1949,8 +1963,16 @@ pub struct GeometryContainerReport {
     /// How many of those slots hold a present mesh record, which is how many
     /// `mesh` rows exist.
     pub mesh_rows: usize,
-    /// How many named slots no present mesh record answers.
+    /// How many named slots the array has but no present mesh record answers:
+    /// an all-zero stub at a position the container really has.
     pub absent_meshes: usize,
+    /// How many named slots the container's mesh array does **not have at all**:
+    /// a node stored an index past the array's last position. Distinct from
+    /// `absent_meshes` — the two facts the format-level check reports as
+    /// `mesh_slot_out_of_range` and `mesh_slot_absent`
+    /// (`cs_formats::gamez::MeshSlotIssue`) — and zero over the measured
+    /// installation.
+    pub out_of_range_meshes: usize,
     /// How many stored nodes whose parent-slot chain does not terminate inside
     /// the array, so their name path is the part of the loop that fits the walk
     /// and nothing more.
@@ -1978,6 +2000,16 @@ pub struct GeometryContainerReport {
 struct ContainerGeometry {
     nodes: GameZNodes,
     meshes: GameZMeshes,
+    /// The format-level verdict for every node of this container, produced once
+    /// by [`NodeMeshBindings::of`] over these two sections.
+    ///
+    /// Both row builders read it instead of resolving `mesh_index` themselves:
+    /// the check in `cs_formats::gamez` is the single implementation of "does
+    /// this stored index name a present mesh", and it keeps an index past the
+    /// array (`mesh_slot_out_of_range`) apart from an inside-the-array stub
+    /// (`mesh_slot_absent`) — two facts a second hand-rolled resolution here
+    /// would collapse into one (task #593).
+    bindings: NodeMeshBindings,
     /// The authored name path of every stored node, by array slot.
     paths: BTreeMap<u32, String>,
     /// The paths more than one stored node spells.
@@ -2103,6 +2135,7 @@ fn gamez_geometry_rows(
                     named_meshes: 0,
                     mesh_rows: 0,
                     absent_meshes: 0,
+                    out_of_range_meshes: 0,
                     unterminated: 0,
                     materials: 0,
                     material_textures_unresolved: 0,
@@ -2192,9 +2225,20 @@ fn gamez_geometry_rows(
         "unterminated_parent_chain",
         reports.iter().map(|report| report.unterminated).sum(),
     );
+    // Two gaps for the two facts the format-level check keeps apart: a named
+    // slot the array really has and stores an all-zero stub in, and a named
+    // index past the array, which names a position the container never had. No
+    // `mesh` row exists for either, and neither count contains the other.
     mesh_status.gaps.insert(
         "named_slot_without_mesh",
         reports.iter().map(|report| report.absent_meshes).sum(),
+    );
+    mesh_status.gaps.insert(
+        "named_slot_past_mesh_array",
+        reports
+            .iter()
+            .map(|report| report.out_of_range_meshes)
+            .sum(),
     );
     // A material section that is refused, or a container that is not read at all,
     // is unreadable for this collection; each is named in the diagnostic.
@@ -2392,11 +2436,19 @@ fn read_geometry_container(
         .iter()
         .filter_map(|node| u32::try_from(node.mesh_index()).ok())
         .collect();
-    let mesh_rows = named_slots
-        .iter()
-        .filter(|slot| meshes.get(**slot).is_some())
+    // The node-to-mesh verdicts come from the format-level check (F10-C.05),
+    // which has both sections and is the one implementation of the rule. Its
+    // findings are keyed by node; a slot's answer is a property of the slot, so
+    // they collapse onto the distinct slots the `mesh` collection has a row
+    // for, with **both** codes kept apart.
+    let bindings = NodeMeshBindings::of(&nodes, &meshes);
+    let unresolved = unresolved_slots(&bindings);
+    let mesh_rows = named_slots.len() - unresolved.len();
+    let absent_meshes = unresolved
+        .values()
+        .filter(|issue| matches!(issue, MeshSlotIssue::Absent { .. }))
         .count();
-    let absent_meshes = named_slots.len() - mesh_rows;
+    let out_of_range_meshes = unresolved.len() - absent_meshes;
 
     let material_references = material_references(&meshes);
     let (material_count, textures_unresolved, references_without_record) = match &materials {
@@ -2427,6 +2479,7 @@ fn read_geometry_container(
             named_meshes: named_slots.len(),
             mesh_rows,
             absent_meshes,
+            out_of_range_meshes,
             // The measured walk and the per-row classification have to agree, so
             // the report carries the counted value rather than the length of the
             // set the rows are keyed from.
@@ -2441,10 +2494,28 @@ fn read_geometry_container(
         material_refusal,
         nodes,
         meshes,
+        bindings,
         paths,
         ambiguous,
         unterminated,
     })
+}
+
+/// The named mesh slots of one container that hold no present mesh, keyed by
+/// the slot itself, each with the format-level check's own reason.
+///
+/// The check reports per **node** (`NodeMeshBindings::findings`): several nodes
+/// may name the same slot, and they all get the same answer, because the answer
+/// is a property of the slot. Collapsing onto the distinct slots is what the
+/// `mesh` collection has a row for, and both codes survive the collapse — a
+/// slot inside the array that holds an all-zero stub and a slot the array never
+/// had are different facts about the container.
+fn unresolved_slots(bindings: &NodeMeshBindings) -> BTreeMap<u32, MeshSlotIssue> {
+    bindings
+        .findings
+        .iter()
+        .map(|finding| (finding.slot(), finding.issue))
+        .collect()
 }
 
 /// How one stored node's identity is derived, and why.
@@ -2591,9 +2662,16 @@ fn geometry_node_rows(
         // dropped and the fact is recorded on the row as an explicit unknown
         // instead, which is where a reader finds both the slot and the reason
         // there is nothing behind it.
-        let named_mesh = u32::try_from(node.mesh_index())
-            .ok()
-            .filter(|slot| geometry.meshes.get(*slot).is_some());
+        //
+        // The verdict itself is the format-level check's, read from the
+        // container that produced it: this walk resolves `mesh_index` a second
+        // time nowhere, so an index past the array and an inside-the-array stub
+        // stay the two facts `NodeMeshBindings` reports.
+        let finding = geometry.bindings.finding(node.index);
+        let named_mesh = match finding {
+            Some(_) => None,
+            None => u32::try_from(node.mesh_index()).ok(),
+        };
         if let Some(slot) = named_mesh {
             dependencies.push(Dependency {
                 target: mesh_id(&key, slot)?,
@@ -2607,10 +2685,8 @@ fn geometry_node_rows(
         // original's world unit or angle unit, so no quantity on this row is
         // normalized and the row says so.
         let mut unsupported_reasons = vec![UnsupportedReason::NotNormalized];
-        if let Ok(slot) = u32::try_from(node.mesh_index())
-            && named_mesh.is_none()
-        {
-            unsupported_reasons.push(absent_node_mesh_unknown(node.index, slot)?);
+        if let Some(finding) = finding {
+            unsupported_reasons.push(node_mesh_issue_unknown(node.index, finding)?);
         }
         match identity {
             NodeIdentity::Path => {}
@@ -2692,13 +2768,37 @@ fn node_key_unknown(
     })
 }
 
+/// The explicit unknown a node row carries when the format-level check reports
+/// that its stored `mesh_index` names no present mesh, with the check's own
+/// reason so the two facts stay apart on the row too.
+///
+/// Both halves name the node, the slot and why nothing is behind it; what
+/// differs is which of the two facts happened, which claim id says it, and
+/// which collection gap counts it.
+fn node_mesh_issue_unknown(
+    node: u32,
+    finding: &NodeMeshFinding,
+) -> Result<UnsupportedReason, BaselineError> {
+    match finding.issue {
+        MeshSlotIssue::Absent { .. } => absent_node_mesh_unknown(node, finding.slot()),
+        MeshSlotIssue::OutOfRange { slots, .. } => {
+            // The finding only exists for a non-negative index, so its slot is
+            // the stored index itself; `OutOfRange` carries it signed because
+            // that is how the node reader read it.
+            out_of_range_node_mesh_unknown(node, finding.slot(), slots)
+        }
+    }
+}
+
 /// The explicit unknown a node row carries when it names a mesh-array slot the
-/// container answers with no present record, so no `mesh` row exists and the
-/// node carries no edge onto one.
+/// container has, and stores an all-zero stub in (`mesh_slot_absent`), so no
+/// `mesh` row exists and the node carries no edge onto one.
 ///
 /// The gap is also counted in the mesh collection's `named_slot_without_mesh`
 /// record; this is the same fact from the node that states it, so the row is not
-/// silently missing the mesh the container's own bytes say it has.
+/// silently missing the mesh the container's own bytes say it has. A node whose
+/// index is past the array carries [`CLAIM_OUT_OF_RANGE_NODE_MESH`] instead:
+/// that container has no such position at all.
 fn absent_node_mesh_unknown(node: u32, slot: u32) -> Result<UnsupportedReason, BaselineError> {
     let claim_id =
         ClaimId::new(CLAIM_ABSENT_NODE_MESH).map_err(|error| BaselineError::Provenance {
@@ -2711,6 +2811,37 @@ fn absent_node_mesh_unknown(node: u32, slot: u32) -> Result<UnsupportedReason, B
             "node {node} of this container stores mesh_index {slot}, but the container's mesh \
              section holds no present record for that slot, so no mesh row exists for it and this \
              row carries no mesh edge rather than one onto an id nothing holds"
+        ),
+    })
+}
+
+/// The explicit unknown a node row carries when it stores a `mesh_index` **past
+/// the container's mesh array** (`mesh_slot_out_of_range`): the position does
+/// not exist in this container, which is a different fact from the
+/// inside-the-array slot [`absent_node_mesh_unknown`] reports.
+///
+/// The gap is counted in the mesh collection's `named_slot_past_mesh_array`
+/// record; this is the same fact from the node that states it, and neither
+/// count contains the other. No `mesh` row exists for a position the container
+/// never had, so the row carries no mesh edge rather than one onto an id
+/// nothing holds.
+fn out_of_range_node_mesh_unknown(
+    node: u32,
+    slot: u32,
+    slots: u32,
+) -> Result<UnsupportedReason, BaselineError> {
+    let claim_id =
+        ClaimId::new(CLAIM_OUT_OF_RANGE_NODE_MESH).map_err(|error| BaselineError::Provenance {
+            claim: CLAIM_OUT_OF_RANGE_NODE_MESH.to_owned(),
+            reason: error.to_string(),
+        })?;
+    Ok(UnsupportedReason::Unknown {
+        claim_id,
+        reason: format!(
+            "node {node} of this container stores mesh_index {slot}, which is past the last of \
+             its {slots} mesh-array slots, so the position does not exist in this container at \
+             all: no mesh row exists for it and this row carries no mesh edge rather than one \
+             onto an id nothing holds"
         ),
     })
 }
@@ -2731,7 +2862,10 @@ fn absent_node_mesh_unknown(node: u32, slot: u32) -> Result<UnsupportedReason, B
 /// `named_slot_without_mesh` gap instead, and every node that names it carries
 /// an explicit unknown (see [`absent_node_mesh_unknown`]), which is what keeps
 /// the collection from holding an entry it failed to complete *and* from holding
-/// a reference to a row it never inserted.
+/// a reference to a row it never inserted. A node whose stored index is **past**
+/// the array gets the same treatment under its own fact: the row carries
+/// [`CLAIM_OUT_OF_RANGE_NODE_MESH`] and the gap `named_slot_past_mesh_array`
+/// counts it (see [`out_of_range_node_mesh_unknown`]).
 fn geometry_mesh_rows(
     install_hash: ContentHash,
     spelling: &str,
@@ -2747,8 +2881,17 @@ fn geometry_mesh_rows(
         .filter_map(|node| u32::try_from(node.mesh_index()).ok())
         .collect();
 
+    // Which named slots get a row is the format-level check's verdict, read
+    // from the container that produced it: a slot it reports as unresolved gets
+    // no row, whatever a second lookup here would say. The lookup below only
+    // supplies the resolved slot's own record extent for the span, and a slot
+    // the check resolved always has one.
+    let unresolved = unresolved_slots(&geometry.bindings);
     let mut rows = Vec::with_capacity(named.len());
     for slot in named {
+        if unresolved.contains_key(&slot) {
+            continue;
+        }
         let Some(mesh) = geometry.meshes.get(slot) else {
             continue;
         };
@@ -6566,20 +6709,23 @@ pub fn baseline_report_json(baseline: &Baseline) -> String {
 }
 
 /// Renders one geometry container's contribution: what its node array and mesh
-/// section gave the two collections, and the three numbers that say what could
-/// not be derived from it.
+/// section gave the two collections, and the numbers that say what could not
+/// be derived from it.
 ///
-/// The three are the point of the record. `ambiguous` and `unspellable` count
-/// nodes that **are** rows and carry an explicit unknown, so a reader of the
-/// report can tell "the store spells this name for several nodes" apart from
-/// "this node was dropped"; `absent_meshes` counts the named mesh slots no
-/// present mesh record answers, which is the only entry of the mesh collection
-/// with no row.
+/// Those numbers are the point of the record. `ambiguous` and `unspellable`
+/// count nodes that **are** rows and carry an explicit unknown, so a reader of
+/// the report can tell "the store spells this name for several nodes" apart
+/// from "this node was dropped"; `absent_meshes` and `out_of_range_meshes`
+/// count the two kinds of named mesh slot no `mesh` row exists for — a stub at
+/// a position the container has, and a position it never had — as two numbers,
+/// because they are two facts about the container. Together with `mesh_rows`
+/// they add up to `named_meshes`.
 fn geometry_container_json(container: &GeometryContainerReport, out: &mut String) {
     let _ = write!(
         out,
         "{{\"container\":{},\"nodes\":{},\"named\":{},\"ambiguous\":{},\"unspellable\":{},\
          \"paths\":{},\"roots\":{},\"named_meshes\":{},\"mesh_rows\":{},\"absent_meshes\":{},\
+         \"out_of_range_meshes\":{},\
          \"unterminated\":{},\"materials\":{},\"material_textures_unresolved\":{},\
          \"material_references_without_record\":{},\"images\":{},\"images_unresolved\":{}}}",
         json_string(&container.spelling),
@@ -6592,6 +6738,7 @@ fn geometry_container_json(container: &GeometryContainerReport, out: &mut String
         container.named_meshes,
         container.mesh_rows,
         container.absent_meshes,
+        container.out_of_range_meshes,
         container.unterminated,
         container.materials,
         container.material_textures_unresolved,
