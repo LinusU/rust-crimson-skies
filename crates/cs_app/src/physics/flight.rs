@@ -8,10 +8,13 @@
 //!
 //! * [`FlightAircraft`] is the component one flying body carries. It owns the
 //!   [`FlightModel`], the `FlightEnvironment` it flies in, the [`LoadoutMass`]
-//!   and [`DamageState`] the equations see, the [`EngineState`] whose spool
-//!   follows the throttle command at the tuning's response rate, the remaining
-//!   boost capacity, the currently held [`FlightInput`] and the last computed
-//!   [`FlightOutput`] (the instruments a panel reads).
+//!   and [`DamageState`] the equations see — the producer-declared record
+//!   composed with the damage system's [`PropulsionGate`], so an equipment
+//!   rebind never lifts a destroyed engine's thrust cut (F29-C.1a) — the
+//!   [`EngineState`] whose spool follows the throttle command at the tuning's
+//!   response rate, the remaining boost capacity, the currently held
+//!   [`FlightInput`] and the last computed [`FlightOutput`] (the instruments
+//!   a panel reads).
 //! * [`spawn_flight_body`] is the one place a flight body enters the world. It
 //!   wraps [`spawn_body`], so layer bindings and event flags are never
 //!   restated, then binds the *declared* mass properties: the body's mass is
@@ -61,8 +64,10 @@
 //!   *before* computing the tick; a rejected equipment record refuses the tick
 //!   by name ([`FlightRefusalReason::Equipment`]) instead of flying half-applied
 //!   state, and the next tick retries with whatever the producer declares then.
-//!   Removing the component tears the producer down: the aircraft keeps its last
-//!   bound equipment.
+//!   Its `damage` is the producer's *declared* half of the damage the equations
+//!   see: it composes with the damage system's [`PropulsionGate`], so a rebind
+//!   can never lift a cut it did not make. Removing the component tears the
+//!   producer down: the aircraft keeps its last bound equipment.
 //! * [`airframe_tuning_from_declared`] and [`declared_flight_model`] are the
 //!   profile-selection path: one `cs_content` record plus the requested
 //!   [`HandlingProfile`] become the production [`AirframeTuning`], refusing a
@@ -495,6 +500,10 @@ pub fn declared_flight_model(
 /// Every field is validated as a whole by [`FlightEquipment::validate`], so a
 /// corrupt record is refused *before* any field is applied — no half-bound
 /// loadout with pristine damage.
+///
+/// The `damage` field is the producer's *declared* damage state; the damage
+/// system's [`PropulsionGate`] is a separate record on the aircraft and is
+/// never part of this one (F29-C.1a).
 #[derive(Component, Clone, Copy, Debug, PartialEq)]
 pub struct FlightEquipment {
     /// The loadout mass the equations see.
@@ -557,23 +566,49 @@ impl FlightEquipment {
     }
 }
 
+/// The damage system's assertion on one aircraft's thrust (F29-C.1a).
+///
+/// A [`FlightAircraft`] has two producers of the [`DamageState`] the equations
+/// see: the equipment/mission producer's *declared* state — [`FlightEquipment`]
+/// and [`FlightAircraft::set_damage`] — and this gate, which the session damage
+/// consumer ([`crate::damage::apply_propulsion_state`]) writes from the
+/// resolver's `SystemKind::Propulsion` state. Keeping the gate a separate
+/// record makes the two producers compose instead of overwrite: an equipment
+/// rebind — a fuel burn, an ordnance release — rewrites the declared damage
+/// while the gate stands, so a destroyed engine's cut can no longer be lifted
+/// by an unrelated equipment change, and a repaired system lifts only the
+/// gate's own cut, never a producer's declared `0`.
+///
+/// The gate is binary because the resolver's `SystemState` vocabulary is: a
+/// partial propulsion authority is declared damage, not a gate state.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PropulsionGate {
+    /// The damage system asserts nothing: the declared thrust authority stands.
+    Open,
+    /// A disabled propulsion system cut all thrust: the equations see a thrust
+    /// authority of `0` whatever the declared record holds.
+    Cut,
+}
+
 /// A dynamic rigid body flown by the declared control law of its
 /// [`ModelKind`].
 ///
 /// The component is the per-aircraft record the fixed tick consumes: the law
-/// (fixed-wing or exceptional), the air it flies in, the loadout and damage the
-/// forces see, the engine spool, the boost reserve and the held command. The
-/// driver chooses the law from the tuning's declared [`ModelKind`] at
-/// construction, never from a filename or a component marker, and every setter
-/// re-validates its value, so a corrupt record can never sit inside a live
-/// aircraft and produce half-valid forces (`FLIGHT-PHYSICS`: "Reject nonfinite
-/// inputs at boundaries").
+/// (fixed-wing or exceptional), the air it flies in, the loadout and the
+/// producer-declared damage — composed with the [`PropulsionGate`] into the
+/// [`DamageState`] the forces see — the engine spool, the boost reserve and
+/// the held command. The driver chooses the law from the tuning's declared
+/// [`ModelKind`] at construction, never from a filename or a component marker,
+/// and every setter re-validates its value, so a corrupt record can never sit
+/// inside a live aircraft and produce half-valid forces (`FLIGHT-PHYSICS`:
+/// "Reject nonfinite inputs at boundaries").
 #[derive(Component, Clone, Debug, PartialEq)]
 pub struct FlightAircraft {
     law: FlightLaw,
     environment: FlightEnvironment,
     loadout: LoadoutMass,
-    damage: DamageState,
+    declared_damage: DamageState,
+    propulsion_gate: PropulsionGate,
     engine: EngineState,
     boost_capacity_units: f64,
     command: FlightInput,
@@ -692,7 +727,8 @@ impl FlightAircraft {
             law,
             environment,
             loadout: LoadoutMass::EMPTY,
-            damage: DamageState::PRISTINE,
+            declared_damage: DamageState::PRISTINE,
+            propulsion_gate: PropulsionGate::Open,
             engine: EngineState::STOPPED,
             boost_capacity_units: 0.0,
             command: FlightInput::NEUTRAL,
@@ -759,20 +795,53 @@ impl FlightAircraft {
         Ok(())
     }
 
-    /// The damage state the equations see.
+    /// The damage state the equations see: the producer-declared record
+    /// composed with the damage system's [`PropulsionGate`].
+    ///
+    /// The declared half is the equipment/mission producer's
+    /// ([`FlightEquipment`], [`Self::set_damage`]); the gate is the damage
+    /// consumer's ([`Self::set_propulsion_gate`]). While the gate is
+    /// [`PropulsionGate::Cut`] the equations see a thrust authority of `0`
+    /// whatever the declared record holds — the two producers compose instead
+    /// of overwrite (F29-C.1a).
     pub const fn damage(&self) -> DamageState {
-        self.damage
+        let mut damage = self.declared_damage;
+        if matches!(self.propulsion_gate, PropulsionGate::Cut) {
+            damage.thrust_authority = 0.0;
+        }
+        damage
     }
 
-    /// Replaces the damage state, validating it.
+    /// Replaces the producer-declared damage state, validating it.
+    ///
+    /// This is the equipment/mission producer's half of the damage the
+    /// equations see; the damage system's [`PropulsionGate`] is a separate
+    /// record ([`Self::set_propulsion_gate`]) and is never written here, so an
+    /// equipment rebind cannot lift a destroyed engine's cut.
     ///
     /// # Errors
     ///
     /// [`FlightAircraftError::Damage`] naming the rejected field.
     pub fn set_damage(&mut self, damage: DamageState) -> Result<(), FlightAircraftError> {
         damage.validate()?;
-        self.damage = damage;
+        self.declared_damage = damage;
         Ok(())
+    }
+
+    /// The damage system's gate on thrust, as
+    /// [`crate::damage::apply_propulsion_state`] last asserted it.
+    pub const fn propulsion_gate(&self) -> PropulsionGate {
+        self.propulsion_gate
+    }
+
+    /// Asserts the damage system's gate on thrust.
+    ///
+    /// Only the damage consumer writes this: it is not part of the
+    /// producer-declared [`DamageState`], so [`Self::set_damage`] and
+    /// [`Self::bind_equipment`] leave it alone. The state the equations see
+    /// is the composition [`Self::damage`] returns.
+    pub fn set_propulsion_gate(&mut self, gate: PropulsionGate) {
+        self.propulsion_gate = gate;
     }
 
     /// The engine state the next tick advances.
@@ -834,7 +903,12 @@ impl FlightAircraft {
 
     /// Binds a producer's [`FlightEquipment`] atomically: the whole record is
     /// validated first, and only a fully valid record replaces the aircraft's
-    /// loadout, damage and reserve.
+    /// loadout, declared damage and reserve.
+    ///
+    /// The declared damage is the producer's half of what the equations see:
+    /// the damage system's [`PropulsionGate`] is not part of the record and
+    /// survives every rebind, so a fuel burn or ordnance release cannot lift
+    /// a destroyed engine's thrust cut (F29-C.1a).
     ///
     /// Binding is idempotent: a record identical to the last one bound is a
     /// no-op. That is what keeps the boost reserve a *draining* quantity — a
@@ -940,12 +1014,15 @@ impl FlightAircraft {
             engine: self.engine,
             boost_available: self.boost_capacity_units > 0.0,
         };
+        // The damage the equations see is the composition: the declared
+        // record under the damage system's propulsion gate (F29-C.1a).
+        let damage = self.damage();
         let output = match &mut self.law {
             FlightLaw::FixedWing(model) => model
                 .compute(
                     &self.environment,
                     &self.loadout,
-                    &self.damage,
+                    &damage,
                     &state,
                     &self.command,
                     dt_s,
@@ -955,7 +1032,7 @@ impl FlightAircraft {
                 law.compute(
                     &self.environment,
                     &self.loadout,
-                    &self.damage,
+                    &damage,
                     &state,
                     &self.command,
                     dt_s,
@@ -1147,7 +1224,7 @@ pub struct FlightSpawnSpec {
     pub engine: EngineState,
     /// The loadout mass at spawn.
     pub loadout: LoadoutMass,
-    /// The damage state at spawn.
+    /// The producer-declared damage state at spawn.
     pub damage: DamageState,
     /// The boost reserve at spawn.
     pub boost_capacity_units: f64,
