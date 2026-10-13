@@ -394,12 +394,14 @@ pub fn declared_synthetic_cinematic() -> DeclaredCinematic {
 /// Why a camera-carrier record leaves every load-bearing cinematic value
 /// unknown (F40-D3): the camera cinematics of `cam_anim.zbd` are measured to
 /// be orchestration records — animation references, scene indices and node
-/// tables — and no measured field carries a duration, a pose, a frame size,
-/// a skippability, a pause policy, a master clock or a failure recovery
+/// tables — and no measured field carries a duration in ticks, a pose, a
+/// frame size, a skippability, a pause policy, a master clock or a failure
+/// recovery (statement spans in the original's stored unit are #690's
+/// measurement; the unit and the tick conversion are its named unknowns)
 /// (`docs/findings/2026-10-13-f40-d3-cam-anim-camera-format.md`).
 const CAMERA_SEQUENCE_UNKNOWN_REASON: &str = "the retail cam_anim.zbd camera-cinematic records \
      carry no measured value for this field: their event streams are decoded as opaque TLV \
-     instructions, and no per-tick pose, duration or policy is established (F40-D3)";
+     instructions, and no per-tick pose, tick-unit duration or policy is established (F40-D3)";
 
 /// Declares one measured camera-cinematic record as an in-engine cinematic
 /// whose every load-bearing value is an explicit unknown (F40-D3).

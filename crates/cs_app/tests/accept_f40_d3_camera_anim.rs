@@ -6,9 +6,10 @@
 //! `docs/findings/2026-10-13-f40-d3-cam-anim-camera-format.md`.
 //!
 //! The synthetic tests build event bytes by hand and walk them through the
-//! production parser; the retail tests re-measure all eight camera carriers
-//! from `$CS_GAME_DIR` on every run and are ignored on machines without the
-//! original installation.
+//! production parser; the two retail tests re-measure from `$CS_GAME_DIR` on
+//! every run — the eight camera carriers, and the full camera-cinematic
+//! inventory over every animation carrier (58 records in 31 carriers) — and
+//! are ignored on machines without the original installation.
 //!
 //! Run the retail half with:
 //!
@@ -26,6 +27,7 @@ use cs_content::cinematics::{DeclaredPresentation, declared_camera_sequence};
 use cs_types::content::{ContentId, ContentKind, Origin, Provenance};
 use cs_types::evidence::ClaimId;
 use cs_types::install::RelativePath;
+use std::collections::{BTreeMap, BTreeSet};
 
 /// Builds one TLV event: the 8-byte header and `payload`, padded to
 /// `total_bytes` with zeros (the padding is never read by the walk).
@@ -313,4 +315,195 @@ fn accept_f40_d3_retail_camera_carriers_walk_their_camera_cinematics() {
             survey.size_mismatches()
         );
     }
+}
+
+/// The camera cinematics measured in **every** retail camera carrier: the
+/// three common records, plus the `speed_cue`(`2`) variants that differ per
+/// carrier.
+fn expected_world_camera_names(group: &str) -> Vec<String> {
+    let mut names = vec![
+        "generic_intro".to_owned(),
+        "gi_scene1".to_owned(),
+        "player_setup".to_owned(),
+    ];
+    match group {
+        "C1B" => names.push("speed_cue2".to_owned()),
+        "C2B" => {
+            names.push("speed_cue".to_owned());
+            names.push("speed_cue2".to_owned());
+        }
+        _ => names.push("speed_cue".to_owned()),
+    }
+    names
+}
+
+/// The exact camera-cinematic inventory of the retail installation, measured
+/// by a full-carrier scan on 2026-10-13 (review of the first draft corrected
+/// its `c4/m01` mis-attribution): carrier key (`ZBD/<GROUP>` for a camera
+/// carrier, `ZBD/<GROUP>/<MISSION>` for a mission carrier) to the record
+/// names, in carrier order.
+fn expected_camera_inventory() -> BTreeMap<String, Vec<String>> {
+    let mut expected = BTreeMap::new();
+    for group in ["C1", "C1B", "C1C", "C2", "C2B", "C3", "C4", "C5"] {
+        expected.insert(format!("ZBD/{group}"), expected_world_camera_names(group));
+    }
+    expected.insert(
+        "ZBD/C1/M04".to_owned(),
+        vec!["mission_intro_animation".to_owned(), "scene1".to_owned()],
+    );
+    expected.insert(
+        "ZBD/C4/M03".to_owned(),
+        vec!["bdrop_ew_cam".to_owned(), "bdrop_we_cam".to_owned()],
+    );
+    // The 21 multiplayer mission carriers (groups without an MP2 or MP3
+    // ship fewer); every one carries exactly `multiplayer_setup`.
+    for group in ["C1", "C1B", "C1C", "C2", "C2B", "C3", "C4", "C5"] {
+        let missions: &[&str] = match group {
+            "C1" | "C2" | "C3" | "C4" | "C5" => &["MP1", "MP2", "MP3"],
+            _ => &["MP1", "MP3"],
+        };
+        for mission in missions {
+            expected.insert(
+                format!("ZBD/{group}/{mission}"),
+                vec!["multiplayer_setup".to_owned()],
+            );
+        }
+    }
+    expected
+}
+
+/// The event type ids measured **inside** camera cinematics (all 58 records,
+/// all 31 carriers). Notably absent: `0x114` — the one opcode the
+/// installation itself names `CAMERA_STATE` (#690) occurs in no camera
+/// cinematic, and `0x11a`/`0x11c` are #690's unjoined opcodes 26/28, which
+/// `ZBD/C1/M04`'s `mission_intro_animation` reset block carries exactly once
+/// each.
+fn expected_camera_cinematic_types() -> BTreeSet<u32> {
+    [
+        0x101, 0x106, 0x107, 0x109, 0x10c, 0x10f, 0x110, 0x116, 0x118, 0x119, 0x11a, 0x11c, 0x11f,
+        0x120, 0x121, 0x122, 0x123, 0x124, 0x12a, 0x21e, 0x319,
+    ]
+    .into_iter()
+    .collect()
+}
+
+/// Walks **every** retail animation carrier (all camera and mission ones)
+/// through the production survey and pins the full camera-cinematic
+/// inventory: the exact per-carrier record names, the record and carrier
+/// totals, the exact event type set inside camera cinematics, the two
+/// unjoined-opcode events, and that `CAMERA_STATE` is not among them.
+#[test]
+#[ignore = "requires CS_GAME_DIR: the original installation is needed"]
+fn accept_f40_d3_retail_mission_camera_cinematics_are_inventoried() {
+    let root = game_dir();
+
+    // Enumerate every carrier the way the census does: ZBD/<group>/cam_anim.zbd
+    // and ZBD/<group>/<mission>/mis_anim.zbd.
+    let mut carriers: Vec<(String, String, std::path::PathBuf)> = Vec::new();
+    for group_entry in std::fs::read_dir(root.join("ZBD")).expect("the installation has ZBD") {
+        let group_path = group_entry.expect("a ZBD entry").path();
+        if !group_path.is_dir() {
+            continue;
+        }
+        let group = group_path
+            .file_name()
+            .unwrap()
+            .to_string_lossy()
+            .into_owned();
+        let cam = group_path.join("cam_anim.zbd");
+        if cam.is_file() {
+            carriers.push((
+                format!("ZBD/{group}"),
+                format!("ZBD/{group}/cam_anim.zbd"),
+                cam,
+            ));
+        }
+        for mission_entry in std::fs::read_dir(&group_path).expect("a group directory") {
+            let mission_path = mission_entry.expect("a group entry").path();
+            if !mission_path.is_dir() {
+                continue;
+            }
+            let mis = mission_path.join("mis_anim.zbd");
+            if mis.is_file() {
+                let mission = mission_path
+                    .file_name()
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned();
+                carriers.push((
+                    format!("ZBD/{group}/{mission}"),
+                    format!("ZBD/{group}/{mission}/mis_anim.zbd"),
+                    mis,
+                ));
+            }
+        }
+    }
+    carriers.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(
+        carriers.len(),
+        61,
+        "the measured carrier population (8 camera + 53 mission)"
+    );
+
+    let mut inventory: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    let mut camera_records = 0usize;
+    let mut camera_events = 0u64;
+    let mut type_counts: BTreeMap<u32, u64> = BTreeMap::new();
+    for (key, spelling, path) in &carriers {
+        let bytes = std::fs::read(path)
+            .unwrap_or_else(|error| panic!("{spelling}: cannot read the carrier: {error}"));
+        let relative =
+            RelativePath::new(spelling).expect("the on-disk spelling is a relative path");
+        let survey = cs_app::cinematics::camera_anim::survey_camera_carrier(&relative, &bytes)
+            .unwrap_or_else(|error| panic!("{spelling}: survey refused: {error}"));
+        assert_eq!(survey.version(), 53, "{spelling}: the measured version");
+        if survey.sequences().is_empty() {
+            continue;
+        }
+        let names: Vec<String> = survey
+            .sequences()
+            .iter()
+            .map(|sequence| String::from_utf8_lossy(&sequence.anim_name).into_owned())
+            .collect();
+        camera_records += names.len();
+        for sequence in survey.sequences() {
+            assert_eq!(sequence.object_name, CAMERA_OBJECT_NAME);
+            assert_eq!(sequence.root_name, CAMERA_OBJECT_NAME);
+            for block in &sequence.blocks {
+                for event in &block.events {
+                    camera_events += 1;
+                    *type_counts.entry(event.type_id()).or_insert(0) += 1;
+                }
+            }
+        }
+        inventory.insert(key.clone(), names);
+    }
+
+    assert_eq!(
+        inventory,
+        expected_camera_inventory(),
+        "the exact per-carrier camera-cinematic inventory"
+    );
+    assert_eq!(camera_records, 58, "the measured camera-cinematic records");
+    let camera_types: BTreeSet<u32> = type_counts.keys().copied().collect();
+    assert_eq!(
+        camera_types,
+        expected_camera_cinematic_types(),
+        "the exact event type set inside camera cinematics"
+    );
+    assert_eq!(
+        camera_events, 1076,
+        "the measured event total inside camera cinematics"
+    );
+    // The installation's own camera-named opcode is not the pose source: it
+    // occurs in no camera cinematic (#690: its 10 events live in
+    // gi_1stperson/1stperson/cabpkup_player records).
+    assert!(
+        !camera_types.contains(&0x114),
+        "CAMERA_STATE (0x114) occurs inside a camera cinematic"
+    );
+    // The mission-intro cinematic's two events of #690's unjoined opcodes,
+    // exactly once each.
+    assert_eq!(type_counts.get(&0x11a), Some(&1), "one opcode-26 event");
+    assert_eq!(type_counts.get(&0x11c), Some(&1), "one opcode-28 event");
 }

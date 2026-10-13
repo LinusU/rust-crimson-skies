@@ -26,33 +26,56 @@
 //! * each measured type id stores one fixed `total_bytes` across every
 //!   container it occurs in — with one measured exception, `0x12f`, which
 //!   stores 548 or 1156 ([`measured_event_total_size`]);
-//! * the payload bytes are **not decoded**: no field inside a payload has a
-//!   measured meaning, so this module keeps them verbatim and never reads a
-//!   pose, a tick or a name out of one.
+//! * the payload bytes are **not decoded by this module**: it keeps them
+//!   verbatim and never reads a pose, a tick or a name out of one. Payload
+//!   *semantics* are measured elsewhere in this repository — task #690
+//!   (`docs/findings/2026-10-06-f20-event-grammar.md`,
+//!   `crate::animation::events`) joined the opcodes to the installation's own
+//!   statement spellings and measured the two timing words — and this module
+//!   defers to those claim ids rather than re-deriving them.
 //!
 //! The census behind this (2026-10-13, this repository's own tool, read-only
 //! against `$CS_GAME_DIR`): **all 61 retail animation carriers — 56 994
 //! sequence blocks, 242 391 events — every stream tiled exactly by its
 //! events, no size below 12, no overrun, no trailing bytes, 59 distinct type
 //! ids of which 58 store one fixed size**. The 56 994 blocks are exactly the
-//! count task #650 walked, which cross-checks the two derivations.
+//! count task #650 walked and the walk reproduces #690's corpus totals
+//! (56 994 blocks, 242 391 events), so three independent derivations agree.
+//!
+//! # Relation to #690's event grammar
+//!
+//! #690 measured the same two-word records as `tag` + `length`, where the
+//! tag's low byte is an opcode and its second byte is `1`, `2` or `3`. The 59
+//! type ids here are exactly that decomposition's other keying: the 35 stored
+//! opcodes #690 names, each with the second bytes it occurs with (`0x101`/
+//! `0x201`/`0x301` are opcode 1). This module keys by the full type id because
+//! a size table keyed any other way would have to assume the decomposition;
+//! both keyings measure the same bytes. #690's decoder refuses the four
+//! opcodes no declaration joins (its `f20-anim.event-opcode-not-measured`
+//! claim); a camera survey must still walk such records — `c1/m04`'s
+//! `mission_intro_animation` carries one event each of opcodes 26 and 28 — so
+//! this walker keeps them verbatim instead of refusing the record.
 //!
 //! # Camera cinematics, and what is *not* measured
 //!
 //! The in-engine camera sequences are the records whose `object_name` **and**
-//! `root_name` are `camera1` ([`CAMERA_OBJECT_NAME`]): `generic_intro`,
-//! `gi_scene1`, `player_setup` and `speed_cue` in all eight carriers
-//! (`speed_cue2` additionally in `c1b` and `c2b`), and mission carriers carry
-//! their own (`mission_intro_animation`/`scene1` in `c4/m01`). They
-//! *orchestrate* — their events reference other animation names, scene
-//! indices and node tables — but **no measured field carries a camera pose
-//! keyframe**: no per-tick position, orientation or field-of-view table
-//! exists anywhere this reader measures. So no
-//! [`super::timeline::CameraTimeline`] can be built from this data today;
-//! the candidates and their rejection are in the finding, and the content
-//! half marks the affected fields `Resolved::Unknown`
-//! ([`cs_content::cinematics::declared_camera_sequence`]) instead of
-//! inventing keyframes.
+//! `root_name` are `camera1` ([`CAMERA_OBJECT_NAME`]) — **58 records in 31
+//! retail carriers**: `generic_intro`, `gi_scene1`, `player_setup` and
+//! `speed_cue`(`2`) in all eight camera carriers, `mission_intro_animation`
+//! and `scene1` in `c1/m04`'s mission carrier, `bdrop_ew_cam`/`bdrop_we_cam`
+//! in `c4/m03`, and `multiplayer_setup` in the 21 multiplayer mission
+//! carriers. They *orchestrate* — their events reference other animation
+//! names, scene indices and node tables — but **no measured field carries a
+//! camera pose keyframe**: no per-tick position, orientation or
+//! field-of-view table exists anywhere this reader measures. Even the one
+//! opcode the installation itself names `CAMERA_STATE` (#690, type `0x114`,
+//! 10 events corpus-wide) occurs **inside no camera cinematic** — only in
+//! `gi_1stperson`, `1stperson` and `cabpkup_player` records — and is a single
+//! statement, not a track. So no [`super::timeline::CameraTimeline`] can be
+//! built from this data today; the candidates and their rejection are in the
+//! finding, and the content half marks the affected fields
+//! `Resolved::Unknown` ([`cs_content::cinematics::declared_camera_sequence`])
+//! instead of inventing keyframes.
 //!
 //! # Fail-closed
 //!
