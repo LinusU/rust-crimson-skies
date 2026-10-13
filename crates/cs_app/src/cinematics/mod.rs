@@ -21,7 +21,19 @@
 //! Decoded playback against the master clock is [`playback`] and authored
 //! camera timelines are [`timeline`] (F40-B); the skip/pause/failure wiring is
 //! [`session`] (F40-C).
+//!
+//! ### F40-D3: the measured camera-carrier format
+//!
+//! [`camera_anim`] is the F40-D3 stage: it identifies what `cam_anim.zbd`
+//! actually stores and parses it — the sequence event streams are a measured
+//! TLV instruction grammar ([`camera_anim::parse_camera_anim_stream`]), the
+//! camera cinematics are the `camera1`-rooted records
+//! ([`camera_anim::survey_camera_carrier`]), and camera **pose keyframes**
+//! are measured to be absent, so no [`timeline::CameraTimeline`] is built
+//! from this data and the content half declares the records with explicit
+//! `f40d3.*` unknowns (`cs_content::cinematics::declared_camera_sequence`).
 
+pub mod camera_anim;
 pub mod playback;
 pub mod session;
 pub mod timeline;

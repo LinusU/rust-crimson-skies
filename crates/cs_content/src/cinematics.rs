@@ -391,6 +391,58 @@ pub fn declared_synthetic_cinematic() -> DeclaredCinematic {
     .expect("the synthetic cinematic is valid")
 }
 
+/// Why a camera-carrier record leaves every load-bearing cinematic value
+/// unknown (F40-D3): the camera cinematics of `cam_anim.zbd` are measured to
+/// be orchestration records — animation references, scene indices and node
+/// tables — and no measured field carries a duration, a pose, a frame size,
+/// a skippability, a pause policy, a master clock or a failure recovery
+/// (`docs/findings/2026-10-13-f40-d3-cam-anim-camera-format.md`).
+const CAMERA_SEQUENCE_UNKNOWN_REASON: &str = "the retail cam_anim.zbd camera-cinematic records \
+     carry no measured value for this field: their event streams are decoded as opaque TLV \
+     instructions, and no per-tick pose, duration or policy is established (F40-D3)";
+
+/// Declares one measured camera-cinematic record as an in-engine cinematic
+/// whose every load-bearing value is an explicit unknown (F40-D3).
+///
+/// The subject and the presentation are the measured pair — a
+/// [`ContentKind::CameraTrack`] resource presented in-engine — and everything
+/// the original leaves unmeasured stays [`Resolved::Unknown`] under its own
+/// `f40d3.*` claim, so lowering refuses the record by claim
+/// (`cs_app::cinematics::lower_cinematic`) instead of playing invented
+/// numbers. This constructor never guesses a duration, a pose keyframe or a
+/// policy.
+///
+/// # Errors
+///
+/// [`CinematicSchemaError`] when `camera_track` is not a
+/// [`ContentKind::CameraTrack`].
+pub fn declared_camera_sequence(
+    origin: Origin,
+    provenance: Provenance,
+    camera_track: ContentId,
+) -> Result<DeclaredCinematic, CinematicSchemaError> {
+    fn unknown<T>(claim: &str) -> Resolved<T> {
+        Resolved::unknown(
+            ClaimId::new(claim).expect("the f40d3 claim ids are valid"),
+            CAMERA_SEQUENCE_UNKNOWN_REASON,
+        )
+        .expect("the reason is nonempty")
+    }
+    DeclaredCinematic::try_new(
+        camera_track.clone(),
+        origin,
+        provenance,
+        DeclaredPresentation::InEngine { camera_track },
+        unknown("f40d3.duration"),
+        unknown("f40d3.frame_size"),
+        unknown("f40d3.skippable"),
+        unknown("f40d3.pause_policy"),
+        unknown("f40d3.clock"),
+        unknown("f40d3.recovery"),
+        Vec::new(),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
