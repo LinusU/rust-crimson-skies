@@ -114,6 +114,15 @@
 //! * **A kill is a removal.** It clears the target's presence flag and leaves
 //!   its state alone, reported as [`ObjectiveEventKind::ObjectiveRemoved`] —
 //!   it is not an outcome, and it never sets [`ObjectiveState::Failed`].
+//! * **A repeat is refused, not deduplicated.** One declaration naming the
+//!   same `(kind, target)` pair twice is refused at registration
+//!   ([`RuntimeError::RepeatedCompletionEffect`]): the readable corpus spells
+//!   a repeated completion-effect key nowhere, so what a second site does —
+//!   replace the first, be ignored, or apply beside it — is unmeasured
+//!   (`UNMEASURED_REPEATED_EFFECT_KEY`, `cs_content::objectives`) and this
+//!   runtime does not collapse it into the one effect the declaration
+//!   authorized. One kind naming two *different* targets, and one pair named
+//!   by *two different* declarations, stay legal.
 //!
 //! Three properties keep the drain bounded and order-independent:
 //!
@@ -127,8 +136,10 @@
 //!   engine completes one objective per pass, so that collision cannot arise
 //!   there, and which of two same-tick completions should apply last depends on
 //!   the pass-origin rule, which stays unmeasured. One declaration carrying two
-//!   effects on one target — the shape the corpus spells — is no longer
-//!   refused: the engine's fixed order decides it.
+//!   *different* effects on one target — the shape the corpus spells — is no
+//!   longer refused: the engine's fixed order decides it. The same pair twice
+//!   is a different shape and stays refused
+//!   ([`RuntimeError::RepeatedCompletionEffect`]).
 //! * the due set is applied in the order the completions happened — the phase
 //!   order, then each objective's effects in engine order — and nothing hashes
 //!   or walks an entity table to produce it. Two objectives completing in one
@@ -864,7 +875,8 @@ pub enum RuntimeError {
     /// **Different** completing objectives declare **different** effects on
     /// the same target.
     ///
-    /// Within *one* declaration this is no longer refused: M01-B-OBJ-1
+    /// Within *one* declaration, two **different** effects on one target are
+    /// no longer refused: M01-B-OBJ-1
     /// measured the engine's fixed order (`WAKE` → `NAP` → `KILL` → `SLEEP`),
     /// which resolves the corpus's one such block (`zbd/c3/m05` `OBJECTIVE8`:
     /// the target is woken first, then napped, so it ends napping). Across
@@ -875,8 +887,40 @@ pub enum RuntimeError {
     /// (M01-B-OBJ-1's open question 2). Applying one in the other's place would
     /// be inventing that rule. Registration order decides nothing either,
     /// because the scan covers every registered objective and not only the one
-    /// before this one.
+    /// before this one. The *same* pair twice within one declaration is the
+    /// other refusal, [`Self::RepeatedCompletionEffect`].
     AmbiguousCompletionEffect { source: SymbolId, target: SymbolId },
+    /// One objective declares the same completion effect on the same target
+    /// **twice inside one [`ObjectiveSpec`]**.
+    ///
+    /// This is the runtime half of F39-E6's refusal
+    /// (`docs/findings/2026-10-04-f39-e6-repeated-completion-effect-key.md`).
+    /// The declared schema refuses a block spelling one completion-effect key
+    /// twice by name (`ObjectivesSchemaError::RepeatedCompletionEffect`,
+    /// `cs_content`), and that schema gate is the only way a lowered program
+    /// gets in — but an `ObjectiveSpec` built by hand bypasses it, and a caller
+    /// seeing the repeat accepted here would read it as a supported shape.
+    ///
+    /// The refusal is tied to the named unknown `UNMEASURED_REPEATED_EFFECT_KEY`
+    /// (`cs_content::objectives`): the shape occurs nowhere in the readable
+    /// corpus, so what a second site does — replace the first, be ignored, or
+    /// apply beside it — is unmeasured, and no reimplementation may choose one
+    /// of those by silently keeping a single effect.
+    ///
+    /// Deliberately per `(kind, target)` pair of **one** spec, mirroring the
+    /// schema check: one kind naming two *different* targets is one
+    /// multi-target site's residue and stays legal, and the same pair named by
+    /// *two different* objectives agrees on what happens and also stays legal.
+    /// Only [`Self::AmbiguousCompletionEffect`] looks across declarations, and
+    /// it is about *different* kinds — the two refusals do not overlap.
+    RepeatedCompletionEffect {
+        /// The objective whose spec carries the repeated effect.
+        source: SymbolId,
+        /// The objective both sites name.
+        target: SymbolId,
+        /// The effect kind declared twice.
+        kind: CompletionEffectKind,
+    },
     /// An objective declares a completion effect on itself.
     ///
     /// The effect fires *because* the objective completed, so by the time it is
@@ -946,6 +990,14 @@ impl fmt::Display for RuntimeError {
             Self::AmbiguousCompletionEffect { source, target } => write!(
                 f,
                 "objective {source:?} declares a completion effect on {target:?} that a different objective already declares differently, and the engine completes one objective per pass, so which of the two applies when both complete in one tick is unmeasured"
+            ),
+            Self::RepeatedCompletionEffect {
+                source,
+                target,
+                kind,
+            } => write!(
+                f,
+                "objective {source:?} declares a {kind:?} completion effect on {target:?} twice, and no measured rule says what the second site does (UNMEASURED_REPEATED_EFFECT_KEY)"
             ),
             Self::SelfCompletionEffect { objective } => write!(
                 f,
@@ -1135,18 +1187,22 @@ impl ObjectiveRuntime {
     /// here rather than in [`CompletionEffect::new`], because every field of a
     /// [`CompletionEffect`] is public and a struct literal would otherwise let a
     /// declaration slip past: the measured number's shape, an effect on the
-    /// objective itself, and the one rule that cannot be expressed in the
-    /// effect alone — a target named with **different** effects by two
-    /// *different* objectives, which is refused rather than ordered because the
-    /// engine completes one objective per pass and the pass-origin rule is
-    /// unmeasured (M01-B-OBJ-1). One declaration carrying two effects on one
-    /// target is no longer refused: the engine's fixed order decides it.
+    /// objective itself, a `(kind, target)` pair this same spec already named
+    /// (F39-E6's residue, refused rather than deduplicated), and the one rule
+    /// that cannot be expressed in the effect alone — a target named with
+    /// **different** effects by two *different* objectives, which is refused
+    /// rather than ordered because the engine completes one objective per pass
+    /// and the pass-origin rule is unmeasured (M01-B-OBJ-1). One declaration
+    /// carrying two *different* effects on one target is no longer refused:
+    /// the engine's fixed order decides it; the same pair spelled twice still
+    /// is.
     ///
     /// # Errors
     ///
     /// [`RuntimeError::DuplicateObjective`], [`RuntimeError::ReservedSymbol`],
     /// [`RuntimeError::HiddenButImmediate`],
     /// [`RuntimeError::AmbiguousCompletionEffect`],
+    /// [`RuntimeError::RepeatedCompletionEffect`],
     /// [`RuntimeError::SelfCompletionEffect`] and
     /// [`RuntimeError::EffectArgument`].
     pub fn add_objective(&mut self, spec: ObjectiveSpec) -> Result<(), RuntimeError> {
@@ -1166,6 +1222,7 @@ impl ObjectiveRuntime {
             }
         }
         self.check_uncontested_targets(spec.id, &spec.completion_effects)?;
+        Self::check_no_repeated_effects(spec.id, &spec.completion_effects)?;
         let revealed = spec.reveal == RevealRule::Immediate;
         self.objectives.insert(
             spec.id,
@@ -1188,16 +1245,18 @@ impl ObjectiveRuntime {
     ///
     /// M01-B-OBJ-1 measured the engine's fixed order (`WAKE` → `NAP` →
     /// `KILL` → `SLEEP`), which decides one declaration that names one target
-    /// twice — the corpus's `zbd/c3/m05` `OBJECTIVE8` shape — so conflicts
-    /// *within* one declaration are applied in that order and never refused
-    /// here. Across declarations the question stays open: the engine completes
-    /// one objective per pass, so two completions never collide there, and
-    /// which of two same-tick completions should apply last depends on the
-    /// pass-origin rule, which is unmeasured. Registration order decides
-    /// nothing either, which is why the scan covers every registered
-    /// objective — and every kind each of them names, not only the first
-    /// kind its authored order spells — so a declaration that already
-    /// carries two effects on one target still collides here with a
+    /// twice with two different kinds — the corpus's `zbd/c3/m05`
+    /// `OBJECTIVE8` shape — so conflicts *within* one declaration are applied
+    /// in that order and never refused here. (The *same* pair twice within one
+    /// declaration is the other shape and is refused by
+    /// [`Self::check_no_repeated_effects`].) Across declarations the question
+    /// stays open: the engine completes one objective per pass, so two
+    /// completions never collide there, and which of two same-tick completions
+    /// should apply last depends on the pass-origin rule, which is unmeasured.
+    /// Registration order decides nothing either, which is why the scan covers
+    /// every registered objective — and every kind each of them names, not
+    /// only the first kind its authored order spells — so a declaration that
+    /// already carries two effects on one target still collides here with a
     /// *different* completion naming that target with either of them.
     fn check_uncontested_targets(
         &self,
@@ -1232,6 +1291,48 @@ impl ObjectiveRuntime {
                 .entry(effect.target)
                 .or_default()
                 .push((source, effect.kind));
+        }
+        Ok(())
+    }
+
+    /// Refuses a `(kind, target)` pair the **one** [`ObjectiveSpec`] being
+    /// registered already names — the residue of a block spelling one
+    /// completion-effect key twice (F39-E6).
+    ///
+    /// Mirrors `ObjectivesSchemaError::RepeatedCompletionEffect`
+    /// (`cs_content::objectives`) exactly, so the schema gate and this
+    /// registration gate refuse the same shapes: the check is per declaring
+    /// objective and per `(kind, target)` pair. One kind naming two
+    /// *different* targets stays legal — that is one multi-target site's
+    /// residue as much as it is a repeat — and the same pair named by two
+    /// *different* specs stays legal, because two declarations that agree on
+    /// what happens have no second site to resolve.
+    ///
+    /// The schema gate is the only way a lowered program reaches this
+    /// runtime, so no authored record arrives here carrying the shape; a
+    /// hand-built [`ObjectiveSpec`] bypasses it, which is why the refusal
+    /// exists on both sides of the boundary instead of only in the schema.
+    /// Nothing about the second site's meaning is modelled — replace, ignore
+    /// and stack are all unmeasured
+    /// (`UNMEASURED_REPEATED_EFFECT_KEY`, `cs_content::objectives`) — so the
+    /// pair is refused by name rather than applied as one effect.
+    ///
+    /// Called after [`Self::check_uncontested_targets`] so a spec carrying
+    /// both shapes is reported the way the schema reports it: the
+    /// cross-declaration refusal first.
+    fn check_no_repeated_effects(
+        source: SymbolId,
+        effects: &[CompletionEffect],
+    ) -> Result<(), RuntimeError> {
+        let mut declared: BTreeSet<(CompletionEffectKind, SymbolId)> = BTreeSet::new();
+        for effect in effects {
+            if !declared.insert((effect.kind, effect.target)) {
+                return Err(RuntimeError::RepeatedCompletionEffect {
+                    source,
+                    target: effect.target,
+                    kind: effect.kind,
+                });
+            }
         }
         Ok(())
     }
@@ -2893,6 +2994,165 @@ mod tests {
                 "registration order decides nothing: the nap/wake collision across two completions is refused however they arrive"
             );
         }
+    }
+
+    /// F39-E6's residue, refused on this side of the boundary too: one
+    /// [`ObjectiveSpec`] naming the same `(kind, target)` pair twice is the
+    /// declared form of a block spelling one completion-effect key twice, a
+    /// shape the readable corpus spells nowhere — so what its second site
+    /// does is unmeasured and the spec is refused by name, not registered
+    /// with a repeat the declaration never authorized.
+    #[test]
+    fn accept_f39_e6_runtime_repeat_a_repeated_pair_inside_one_spec_is_refused_by_name() {
+        let mut runtime = ObjectiveRuntime::new(
+            GEN,
+            TerminalPrecedence::SyntheticConservative,
+            RuntimeLimits::default(),
+        );
+        let refusal = runtime.add_objective(spec(
+            1,
+            ObjectiveState::Active,
+            vec![
+                effect(CompletionEffectKind::Wake, 2, None),
+                effect(CompletionEffectKind::Wake, 2, None),
+            ],
+        ));
+        assert_eq!(
+            refusal,
+            Err(RuntimeError::RepeatedCompletionEffect {
+                source: SymbolId(1),
+                target: SymbolId(2),
+                kind: CompletionEffectKind::Wake,
+            }),
+            "the repeat is refused by name, per declaring spec and per (kind, target) pair"
+        );
+        assert_eq!(
+            runtime.objective_state(SymbolId(1)),
+            None,
+            "the refused spec registers nothing: the repeat never reaches the runtime"
+        );
+        let message = RuntimeError::RepeatedCompletionEffect {
+            source: SymbolId(1),
+            target: SymbolId(2),
+            kind: CompletionEffectKind::Wake,
+        }
+        .to_string();
+        assert!(
+            message.contains("UNMEASURED_REPEATED_EFFECT_KEY"),
+            "the refusal is tied to the named unknown behind the schema's own refusal: {message}"
+        );
+        assert!(
+            message.contains("twice"),
+            "the refusal states the shape it refuses: {message}"
+        );
+    }
+
+    /// The pair is `(kind, target)` and nothing else, and one kind naming two
+    /// different targets is the legal neighbour: a nap repeated on one target
+    /// is refused whether or not the two sites carry different numbers (they
+    /// are data, not part of the key), while the same kind on two targets is
+    /// one multi-target site's residue and registers as it always did.
+    #[test]
+    fn accept_f39_e6_runtime_repeat_the_pair_is_kind_and_target_only() {
+        let mut runtime = ObjectiveRuntime::new(
+            GEN,
+            TerminalPrecedence::SyntheticConservative,
+            RuntimeLimits::default(),
+        );
+        for arguments in [[0.5, 170.0], [0.5, 0.5]] {
+            let refusal = runtime.add_objective(spec(
+                1,
+                ObjectiveState::Active,
+                vec![
+                    effect(CompletionEffectKind::Nap, 2, Some(arguments[0])),
+                    effect(CompletionEffectKind::Nap, 2, Some(arguments[1])),
+                ],
+            ));
+            assert_eq!(
+                refusal,
+                Err(RuntimeError::RepeatedCompletionEffect {
+                    source: SymbolId(1),
+                    target: SymbolId(2),
+                    kind: CompletionEffectKind::Nap,
+                }),
+                "the numbers {arguments:?} change nothing: the pair is the key"
+            );
+        }
+
+        // One kind, two different targets: not a repeat, so it registers and
+        // both sites are still queued for the engine's fixed order.
+        let mut runtime = runtime_with(vec![
+            spec(
+                1,
+                ObjectiveState::Active,
+                vec![
+                    effect(CompletionEffectKind::Wake, 2, None),
+                    effect(CompletionEffectKind::Wake, 3, None),
+                ],
+            ),
+            spec(2, ObjectiveState::Pending, Vec::new()),
+            spec(3, ObjectiveState::Pending, Vec::new()),
+        ]);
+        assert_eq!(
+            runtime.objective_state(SymbolId(1)),
+            Some(ObjectiveState::Active),
+            "one kind naming two targets is a multi-target site's residue, not a repeat"
+        );
+        let tick = complete(&mut runtime, 1, 1);
+        assert_eq!(
+            changes(&tick, 1),
+            vec![
+                (SymbolId(2), ObjectiveState::Pending, ObjectiveState::Active),
+                (SymbolId(3), ObjectiveState::Pending, ObjectiveState::Active),
+            ],
+            "both sites still apply"
+        );
+    }
+
+    /// The two neighbours the refusal deliberately keeps legal, and the one
+    /// refusal it does not replace: the same pair in two *different* specs
+    /// agrees on what happens (either registration order), while two
+    /// different kinds naming one target across two completions is still
+    /// `AmbiguousCompletionEffect` and not the repeat's name.
+    #[test]
+    fn accept_f39_e6_runtime_repeat_the_legal_neighbours_and_the_other_refusal_stay() {
+        for order in [0, 1] {
+            let one = spec(
+                1,
+                ObjectiveState::Active,
+                vec![effect(CompletionEffectKind::Wake, 3, None)],
+            );
+            let two = spec(
+                2,
+                ObjectiveState::Active,
+                vec![effect(CompletionEffectKind::Wake, 3, None)],
+            );
+            let (first, second) = if order == 0 { (one, two) } else { (two, one) };
+            let mut runtime = runtime_with(vec![first]);
+            assert_eq!(
+                runtime.add_objective(second),
+                Ok(()),
+                "the same pair in a different spec agrees on what happens, whichever registers first"
+            );
+        }
+
+        let mut runtime = runtime_with(vec![spec(
+            1,
+            ObjectiveState::Active,
+            vec![effect(CompletionEffectKind::Wake, 3, None)],
+        )]);
+        assert_eq!(
+            runtime.add_objective(spec(
+                2,
+                ObjectiveState::Active,
+                vec![effect(CompletionEffectKind::Kill, 3, None)],
+            )),
+            Err(RuntimeError::AmbiguousCompletionEffect {
+                source: SymbolId(2),
+                target: SymbolId(3),
+            }),
+            "the different-effects-one-target refusal keeps its own name"
+        );
     }
 
     /// The nap's number is the measured nap time, carried as data and never
