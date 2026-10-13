@@ -158,4 +158,4 @@ either ownership fix is reverted: without the re-bind surrender
 - `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` — clean.
 - `cargo test --workspace --locked` — all pass.
 - `cargo test --workspace --locked -- accept_f54_c_drive_ --include-ignored` —
-  4 tests discovered, all pass.
+  5 tests discovered, all pass.
