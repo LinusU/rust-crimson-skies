@@ -13,6 +13,22 @@
 //! provenance-carrying half is `cs_content::ordnance`; the conversion
 //! boundary is `cs_app::ordnance`.
 //!
+//! # Session and instance identity
+//!
+//! Every session generation here is the shared nonzero
+//! [`SessionId`](cs_types::net::SessionId), and every stable instance id —
+//! a status effect, a triggered area — is the shared
+//! [`ActorId`](cs_types::net::ActorId) of
+//! `docs/contracts/IDENTITY-CONTENT.md`, named under its ordnance-facing
+//! aliases [`StatusEffectInstanceId`] and [`AreaInstanceId`]. A
+//! generation-zero sentinel is unrepresentable, and a foreign generation is
+//! refused by name (task #601, the follow-up #397/#442/#496 set). One
+//! identity is deliberately still *not* the shared type: a
+//! [`ProjectileId`](crate::weapons::guns::ProjectileId) carries F27's own
+//! bare `u64` generation stamp until the guns module migrates, which is why
+//! [`OrdnanceRuntimeError::ForeignSession`] reports generation numbers
+//! rather than the shared newtype.
+//!
 //! # What is defined here and what is not
 //!
 //! Stage F28-A defines the *typed* registry, its exhaustive shape and the
