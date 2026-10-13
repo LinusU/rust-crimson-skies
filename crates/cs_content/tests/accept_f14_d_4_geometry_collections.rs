@@ -1196,6 +1196,182 @@ fn accept_f14_d_4_a_named_mesh_slot_without_a_present_mesh_is_counted_not_rowed(
     assert_eq!(status.diagnostic, None);
 }
 
+/// A stored `mesh_index` **past** the container's mesh array is a different fact
+/// from a named slot the array holds an all-zero stub in, and the two are
+/// reported as two facts: two row reasons with two claim ids, and two collection
+/// gaps neither of which contains the other.
+///
+/// The format-level check (`cs_formats::gamez::NodeMeshBindings`) owns the
+/// distinction, and this walk quotes its verdicts rather than resolving
+/// `mesh_index` again. Collapsing the two into one "named slot without mesh"
+/// would report a container that never had the position as one that has it and
+/// stores nothing in it — the fact that made this a second task (task #593).
+///
+/// The container stores four named slots: 0 and 1, which hold a mesh; 2, which
+/// the array really has and stores an all-zero stub in; and 5, which is past the
+/// last of the three slots. No node names any other slot, so the stub the array
+/// holds is exactly the one named and the past-the-array position is exactly the
+/// one stored.
+#[test]
+fn accept_f14_d_4_an_index_past_the_mesh_array_is_out_of_range_not_absent() {
+    let temp = TempInstall::new("past-array");
+    write_campaign(&temp);
+    // The shared planes container stays the sound fixture; the world containers
+    // carry the two associations side by side, so one container states both
+    // facts and neither is a property of a different archive.
+    temp.write("ZBD/planes.zbd", &write_container(&fixture_nodes(), 3, 2));
+    let mut nodes = vec![
+        object("main", 0, None),
+        object("wing", 1, Some(0)),
+        object("stub_slot", 2, Some(0)),
+        object("past_array", 5, Some(0)),
+        object("no_mesh", -1, Some(0)),
+    ];
+    with_child_lists(&mut nodes, &[]);
+    for group in ["C1", "C1C"] {
+        temp.write(
+            &format!("ZBD/{group}/{GEOMETRY_CONTAINER_FILE}"),
+            &write_container(&nodes, 3, 2),
+        );
+    }
+    let baseline = retail_baseline(&temp.0).expect("the fixture installation reads");
+    let world_key = container_key("ZBD/C1/gamez.zbd");
+
+    // Neither named slot has bytes of its own, so neither gets a row: one is an
+    // absent stub the array has, the other is a position the array never had.
+    for slot in [2, 5] {
+        assert!(
+            baseline
+                .catalog
+                .get(&cid(ContentKind::Mesh, &format!("{world_key}.{slot}")))
+                .is_none(),
+            "mesh slot {slot} has no bytes of its own, so no row"
+        );
+    }
+    assert_eq!(
+        rows_of(&baseline, ContentKind::Mesh)
+            .iter()
+            .filter(|element| element.id.key().starts_with(&format!("{world_key}.")))
+            .count(),
+        2,
+        "only slots 0 and 1, which really hold a mesh, are rows"
+    );
+
+    // The node naming the inside-the-array stub states that fact, and the node
+    // naming the position past the array states the other one: two claim ids,
+    // not one.
+    let claims = |name: &str| {
+        let id = cid(ContentKind::SceneNode, &format!("{world_key}.main.{name}"));
+        unknown_claims(row(&baseline, &id)).to_vec()
+    };
+    assert_eq!(
+        claims("stub_slot"),
+        vec!["f14.d.4.baseline.node_mesh_slot_absent"]
+    );
+    assert_eq!(
+        claims("past_array"),
+        vec!["f14.d.4.baseline.node_mesh_slot_out_of_range"]
+    );
+    assert_ne!(
+        "f14.d.4.baseline.node_mesh_slot_absent", "f14.d.4.baseline.node_mesh_slot_out_of_range",
+        "a slot the array holds and stores nothing in is not a slot the array never had"
+    );
+    for (name, needle) in [
+        ("stub_slot", "mesh_index 2"),
+        ("past_array", "mesh_index 5"),
+    ] {
+        let id = cid(ContentKind::SceneNode, &format!("{world_key}.main.{name}"));
+        let element = row(&baseline, &id);
+        assert!(
+            !element
+                .dependencies
+                .iter()
+                .any(|edge| edge.target.kind() == ContentKind::Mesh),
+            "{name} names no mesh edge onto a row the catalog does not hold"
+        );
+        let reason = element
+            .unsupported_reasons
+            .iter()
+            .find_map(|reason| match reason {
+                UnsupportedReason::Unknown { reason, .. } => Some(reason.as_str()),
+                _ => None,
+            })
+            .expect("the row says why there is no mesh behind it");
+        assert!(reason.contains(needle), "{name}: {reason}");
+    }
+    // The out-of-range reason names the array it is past, which is the detail
+    // that makes the two facts separable on the row alone.
+    let past = row(
+        &baseline,
+        &cid(
+            ContentKind::SceneNode,
+            &format!("{world_key}.main.past_array"),
+        ),
+    );
+    let reason = past
+        .unsupported_reasons
+        .iter()
+        .find_map(|reason| match reason {
+            UnsupportedReason::Unknown { reason, .. } => Some(reason.as_str()),
+            _ => None,
+        })
+        .expect("the row says why there is no mesh behind it");
+    assert!(reason.contains("3 mesh-array slots"), "{reason}");
+
+    // The container's own record keeps the two numbers apart, and neither is
+    // the other: if the two facts were one code, `named_slot_past_mesh_array`
+    // would be 0 and `named_slot_without_mesh` would hold both.
+    let report = baseline
+        .geometry_containers
+        .iter()
+        .find(|report| report.spelling == "ZBD/C1/gamez.zbd")
+        .expect("the world container is reported");
+    assert_eq!(report.named_meshes, 4, "the four named slots");
+    assert_eq!(
+        report.mesh_rows, 2,
+        "only slots 0 and 1 hold a present mesh"
+    );
+    assert_eq!(report.absent_meshes, 1, "the stub the array really has");
+    assert_eq!(
+        report.out_of_range_meshes, 1,
+        "the position the array never had"
+    );
+
+    // The mesh collection's status carries both gaps, and neither contains the
+    // other's row.
+    let status = status_of(&baseline, ContentKind::Mesh);
+    assert_eq!(
+        status.rows,
+        FIXTURE_CONTAINERS * FIXTURE_MESH_ROWS,
+        "the present named slots of every container"
+    );
+    assert_eq!(
+        status.gaps.get("named_slot_without_mesh"),
+        Some(&FIXTURE_CONTAINERS),
+        "one absent stub per container, planes.zbd's own included"
+    );
+    assert_eq!(
+        status.gaps.get("named_slot_past_mesh_array"),
+        Some(&2),
+        "the two world containers store one past-the-array index each"
+    );
+    assert_eq!(status.diagnostic, None);
+
+    // The report renders both per-container counts, and the two numbers are
+    // both in it.
+    let rendered = baseline_report_json(&baseline);
+    assert!(
+        rendered.contains(
+            "\"container\":\"ZBD/C1/gamez.zbd\",\"nodes\":5,\"named\":5,\"ambiguous\":0,\
+             \"unspellable\":0,\"paths\":5,\"roots\":1,\"named_meshes\":4,\"mesh_rows\":2,\
+             \"absent_meshes\":1,\"out_of_range_meshes\":1,\"unterminated\":0,\"materials\":0,\
+             \"material_textures_unresolved\":0,\"material_references_without_record\":0,\
+             \"images\":0,\"images_unresolved\":0}"
+        ),
+        "{rendered}"
+    );
+}
+
 /// A container the producing readers refuse is a **named** diagnostic in
 /// [`cs_content::catalog::baseline::CollectionStatus`] and no row at all, and the
 /// rest of the inventory — including the container that does read — is still
@@ -1358,7 +1534,7 @@ fn accept_f14_d_4_the_report_renders_both_collections_and_the_per_container_coun
         report.contains(
             "\"container\":\"ZBD/C1/gamez.zbd\",\"nodes\":8,\"named\":5,\"ambiguous\":2,\
              \"unspellable\":1,\"paths\":7,\"roots\":1,\"named_meshes\":3,\"mesh_rows\":2,\
-             \"absent_meshes\":1,\"unterminated\":0,\"materials\":0,\
+             \"absent_meshes\":1,\"out_of_range_meshes\":0,\"unterminated\":0,\"materials\":0,\
              \"material_textures_unresolved\":0,\"material_references_without_record\":0,\
              \"images\":0,\"images_unresolved\":0}"
         ),
@@ -1549,7 +1725,7 @@ fn accept_f14_d_4_retail_every_gamez_container_yields_its_nodes_and_named_meshes
             report.spelling
         );
         assert_eq!(
-            report.mesh_rows + report.absent_meshes,
+            report.mesh_rows + report.absent_meshes + report.out_of_range_meshes,
             report.named_meshes,
             "{}: every named mesh slot either holds a record or is counted",
             report.spelling
@@ -1648,7 +1824,10 @@ fn accept_f14_d_4_retail_every_gamez_container_yields_its_nodes_and_named_meshes
 
     // This installation names no mesh slot the container leaves absent, so the
     // mesh-slot unknown this suite pins on a synthetic container occurs nowhere
-    // in the corpus: every node's mesh edge resolves to a mesh row.
+    // in the corpus: every node's mesh edge resolves to a mesh row. The same
+    // holds for the other half of the format-level check's verdict: no stored
+    // index is past its container's mesh array either, so the second gap stays
+    // zero and the two facts are both absent from the corpus.
     assert!(
         baseline
             .catalog
@@ -1657,6 +1836,25 @@ fn accept_f14_d_4_retail_every_gamez_container_yields_its_nodes_and_named_meshes
             .all(|element| !unknown_claims(element)
                 .contains(&"f14.d.4.baseline.node_mesh_slot_absent")),
         "every named mesh slot of all nine containers holds a present record"
+    );
+    assert!(
+        baseline
+            .catalog
+            .elements()
+            .filter(|element| element.kind == ContentKind::SceneNode)
+            .all(|element| !unknown_claims(element)
+                .contains(&"f14.d.4.baseline.node_mesh_slot_out_of_range")),
+        "every stored index of all nine containers is inside its container's mesh array"
+    );
+    assert_eq!(
+        mesh_status.gaps.get("named_slot_without_mesh"),
+        Some(&0),
+        "no named slot of any container is an absent stub"
+    );
+    assert_eq!(
+        mesh_status.gaps.get("named_slot_past_mesh_array"),
+        Some(&0),
+        "no stored index is past the mesh array of any container"
     );
 
     // The denominator did not move: the campaign part of it is still the frozen
