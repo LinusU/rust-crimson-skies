@@ -381,6 +381,7 @@ pub mod environment;
 pub mod flight;
 pub mod interaction;
 pub mod mission;
+pub mod mission_records;
 pub mod multiplayer;
 pub mod net_state;
 pub mod objectives;
