@@ -1600,10 +1600,11 @@ const RATE_LIMIT_ROUNDS: usize = 24;
 ///
 /// Sized against the declared budget *and* against this host's measured
 /// loopback loss: the flooder offers well above the window's sustained rate
-/// every round, so any 60-round window carries more than
-/// `max_intents_per_window` offers unless more than four fifths of them are
-/// lost on the way. The wait ends the moment the verdict lands, so a healthy
-/// path spends a few dozen rounds here, not this many.
+/// every round (six packets against a design of 1.6), so a full 60-round
+/// window carries 360 offers and `max_intents_per_window` (96) is crossed
+/// unless roughly three quarters of them are lost on the way. The wait ends
+/// the moment the verdict lands, so a healthy path spends a few dozen rounds
+/// here, not this many.
 const FLOOD_ROUNDS: usize = 160;
 
 #[test]
