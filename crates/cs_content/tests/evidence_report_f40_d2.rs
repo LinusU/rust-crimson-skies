@@ -598,10 +598,15 @@ fn review_identity() -> String {
          members (their SHA-256 equal to this report's cinematic-inventory.json), \
          confirmed that each page's skip inputs and the movie control's natural \
          completion converge on that page's single EC-guarded 11006 handler, confirmed \
-         the CM_MOVIE file supersede and the brace-scoped freturntogame guards, re-ran \
-         the full acceptance suite including the retail test, strengthened the retail \
-         fragment-offset validation to cover the four backdrop page members, and \
-         regenerated this report on the reviewed tree. No agent review awards more than \
+         the brace-scoped freturntogame guards, re-ran the full acceptance suite \
+         including the retail test, strengthened the retail fragment-offset validation \
+         to cover the four backdrop page members, tightened the CM_MOVIE file supersede \
+         so it measures only a file field set on the bound control object before that \
+         object's initialize (an assignment on another object, or after initialize, \
+         supersedes nothing), carried the engine-FMV invocation unknown as an explicit \
+         claim on the trigger itself, mutation-checked the skip and guard decisions \
+         against the synthetic suite, and regenerated this report on the reviewed tree. \
+         No agent review awards more than \
          checked, and nothing here is verified_original: retail is read access to the \
          installation's own files, the original game was never run, and the trigger \
          inventory is structural. No agent review replaces the owner's human approval",
