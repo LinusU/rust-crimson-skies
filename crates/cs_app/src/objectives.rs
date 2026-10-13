@@ -83,15 +83,19 @@
 //!   [`OverlayTriggerRequests`](crate::world::OverlayTriggerRequests) is where
 //!   a crossed volume opens a door; that hand-off is fed by the engine's
 //!   `CollisionStart` stream, which reports nothing for a spawn-tick crossing,
-//!   and the world-authored trigger volumes the mission would bind are not yet
-//!   visible to the preflight's cast (they carry no
-//!   [`BodyLayer`](crate::physics::BodyLayer)). Both gaps are composition
-//!   defects in F18's and F23-C's paths, recorded in the finding and filed
-//!   separately; wiring this channel into the overlay hand-off before they are
-//!   closed would be an unreachable branch. The ordinary-flight producer of
-//!   task #498 feeds the same hand-off for the world-authored volumes it can
-//!   see ([`crate::world::sweep_volume_crossings`]); this producer still does
-//!   not, for the same reason.
+//!   and no world composition installs the spawn preflight or this module's
+//!   consumer, so nothing reaches the preflight's cast in production. Task
+//!   #499 gave every world collider the declared
+//!   [`BodyLayer`](crate::physics::BodyLayer) the cast classifies by, so a
+//!   world sensor volume would now be read as a `SensorOverlap`; what is
+//!   missing is a composition that runs the cast and its consumer at all —
+//!   task #416, blocked on an owner ruling. Both gaps are composition defects
+//!   in F18's and F23-C's paths, recorded in the finding and filed
+//!   separately; wiring this channel into the overlay hand-off before they
+//!   are closed would be an unreachable branch. The ordinary-flight producer
+//!   of task #498 feeds the same hand-off for the world-authored volumes it
+//!   can see ([`crate::world::sweep_volume_crossings`]); this producer still
+//!   does not, because no composition installs it.
 //! * **It claims nothing about the original game.** Whether the original
 //!   reported a spawn-tick crossing at all, and with what delay, is **unknown**
 //!   and is left to the calibration stage (F26). What is measured here is this
