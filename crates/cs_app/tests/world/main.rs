@@ -135,10 +135,19 @@
 //! instead of #727's unknown, while one storing that bit keeps it; and a grid
 //! record that stores no mesh **and** no stored box resolves `None` because
 //! the store states no geometry. `residual_roles` owns it.
+//!
+//! **#643** (`accept_t643_`) is the swept crossing pass's counter discipline:
+//! `crossing_counters` owns the measurement that a `(body, volume)` pair is
+//! decided once per tick, so `SweptBodyTracks::exits` counts one exit
+//! transition once — never twice because the volume was both inside at the
+//! segment's start and touched along it — and an entry decided with the
+//! volume in `touched` and `ends` at once never asks the pair ledger to
+//! refuse a second visit.
 
 mod audit;
 mod common;
 mod crossing;
+mod crossing_counters;
 mod evidence_f18_parry_denormal_bvh;
 mod failed_load;
 mod fvol_roles;
