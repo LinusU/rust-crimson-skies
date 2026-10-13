@@ -196,9 +196,14 @@
 //!   being guessed or dropped; no codec, duration or trigger is read, so
 //!   every row carries an explicit unknown. A video is **not** launchable,
 //!   so the denominator does not move. What the last gap still holds is
-//!   scoped to these two sources: `chap1`…`chap5` are *constructed* by
-//!   `ASSETS/SCRIPTS/CAMPAIGNINTRO.SCRIPT`, a binding Rally #1352 owns (see
-//!   the F14-D.VIDEO-LAYOUT findings note);
+//!   scoped to these two sources — and scoped explicitly: `chap1`…`chap5`
+//!   are *constructed* by `ASSETS/SCRIPTS/CAMPAIGNINTRO.SCRIPT` as
+//!   `"chap" conv$(FC) ".mpg"`, a construction F14-D.VIDEO-CHAPTER measured
+//!   byte-for-byte through [`VIDEO_CHAPTER_CHAIN`] and left unbound because
+//!   no installation byte states the values `FC` takes (the callback is a
+//!   native id, not a stated domain). Files matching that shape are counted
+//!   under `chapter_name_unbound` in addition to `unnamed_video_file`
+//!   (Rally #1352; see its findings note);
 //! * one [`ContentKind::ScrapbookItem`] row per `Mission_Spread_Item` record of
 //!   the shared archive's `ASSETS/SCRAPBOOK.CSV` member (F14-D.8), read through
 //!   the production ROF reader and the keyed-list configuration reader. The
@@ -275,7 +280,7 @@ use cs_formats::gamez::{
     read_gamez_nodes,
 };
 use cs_formats::interp::DecodedInterp;
-use cs_formats::script_raw::discover_container;
+use cs_formats::script_raw::{DispatchForm, UiScriptLimits, discover_container, scan_ui_program};
 use cs_formats::text::RecordKind;
 use cs_formats::zbd::{
     ZbdFamily, ZbdProbe, ZbdRole, dispatch, read_reader_archive, read_sound_archive,
@@ -447,9 +452,11 @@ pub const VIDEO_UNKNOWN_CLAIM: &str = "f14.d.video.playback";
 /// [`VIDEO_LAYOUT_CONTAINER`], whose movie records F14-D.VIDEO-LAYOUT added
 /// as the second source. What remains outside either source is
 /// `ASSETS/SCRIPTS/CAMPAIGNINTRO.SCRIPT`, which *constructs* `chap<N>.mpg`
-/// rather than naming it — a binding Rally #1352 owns, and until it lands
-/// those files stay counted under the `unnamed_video_file` gap rather than
-/// becoming rows.
+/// rather than naming it: F14-D.VIDEO-CHAPTER (Rally #1352) measured the
+/// construction chain in [`VIDEO_CHAPTER_CHAIN`] and found no installation
+/// byte that states the values `FC` takes, so those files stay counted
+/// under the `unnamed_video_file` gap and, because their names match the
+/// construction shape, under `chapter_name_unbound` too — never as rows.
 pub const FMV_ARCHIVE: &str = ENGINE_GUN_ARCHIVE;
 
 /// The member of [`FMV_ARCHIVE`] that states the FMV sequences: its `PLAYAVI`
@@ -495,7 +502,10 @@ const GAP_VIDEO_DUPLICATE_NAME: &str = "duplicate_video_name";
 /// Gap code: one inventoried `.mpg` file no record of either video source
 /// reaches. It is a real file of the installation and stays in the
 /// accounting, but nothing in the original bytes names it, so no row may be
-/// minted from its name.
+/// minted from its name. A file whose name additionally spells the
+/// measured chapter construction (`chap` + digits + `.mpg`) is counted
+/// here *and* under [`GAP_VIDEO_CHAPTER_NAME_UNBOUND`]: the two codes count
+/// different facts about the same file, not two files.
 const GAP_VIDEO_UNNAMED_FILE: &str = "unnamed_video_file";
 
 /// Gap code: one `PLAYAVI` action whose argument is not text, so it names
@@ -514,6 +524,61 @@ const GAP_VIDEO_MOVIE_NOT_MPG: &str = "movie_record_without_mpg_name";
 /// would have named is missing instead of guessed. The source is named in
 /// [`CollectionStatus::diagnostic`].
 const GAP_VIDEO_UNREADABLE_SOURCE: &str = "unreadable_video_source";
+
+/// The member of [`VIDEO_LAYOUT_CONTAINER`] that *constructs* a chapter
+/// video name instead of stating one (F14-D.VIDEO-CHAPTER, Rally #1352):
+/// its `gui_create` block fills `FC` from a `callback($$E$$,
+/// `[`VIDEO_CHAPTER_CALLBACK_ID`]`, FC)` site and its `gui_init` block
+/// builds `GC.BL` as `"chap" conv$(FC) ".mpg"`, which
+/// [`VIDEO_CHAPTER_CONTROL_MEMBER`]
+/// resolves under `assets\graphics\mpg\` and `loop`s, after
+/// [`VIDEO_CHAPTER_TRIGGER_MEMBER`] calls the same callback and `script_run`s
+/// the intro member when `FC != 0`. The chain is measured byte-for-byte in
+/// [`VIDEO_CHAPTER_CHAIN`]; what it does **not** state is which values `FC`
+/// takes — the binding lives behind the native callback, so the constructed
+/// names stay unbound rather than becoming guessed rows.
+const VIDEO_CHAPTER_INTRO_MEMBER: &str = "ASSETS/SCRIPTS/CAMPAIGNINTRO.SCRIPT";
+
+/// The member of [`VIDEO_LAYOUT_CONTAINER`] the intro member's movie object
+/// is declared in: `movie CL` declares the handle `GC.BL` was stored into,
+/// `CL = "assets\\graphics\\mpg\\" BL` resolves the constructed name under
+/// the original's movie directory, and `loop CL` / `getstatus(CL)` play and
+/// poll it — measured in [`VIDEO_CHAPTER_CHAIN`].
+const VIDEO_CHAPTER_CONTROL_MEMBER: &str = "ASSETS/SCRIPTS/CTL.SCRIPT";
+
+/// The member of [`VIDEO_LAYOUT_CONTAINER`] that calls the same
+/// [`VIDEO_CHAPTER_CALLBACK_ID`] callback into `FC` and `script_run`s
+/// `campaignintro.script` when `FC != 0` — the measured trigger of the
+/// chapter-intro sequence.
+const VIDEO_CHAPTER_TRIGGER_MEMBER: &str = "ASSETS/SCRIPTS/PASSENGERCABIN.SCRIPT";
+
+/// The native callback id `FC` is read through in both members that measure
+/// a site for it. Its return value is engine state: which values `FC` can
+/// take, and so which chapter number each `chap<N>.mpg` file belongs to, is
+/// not stated in any installation byte this stage reads — F38-B already
+/// records native-callback meanings as unread, and no member, record or
+/// flag names the domain here.
+const VIDEO_CHAPTER_CALLBACK_ID: i64 = 2151;
+
+/// Gap code: one inventoried `.mpg` file whose file name spells the product
+/// of the measured chapter construction — `chap`, one or more decimal
+/// digits, `.mpg` — and that no record of either naming source reached.
+/// The file stays counted under [`GAP_VIDEO_UNNAMED_FILE`] as well: this
+/// code adds the measured fact that the file's name matches the
+/// construction shape, it does not replace the unaccounted-for count. No
+/// row may be minted: the construction states no name until `FC` is bound,
+/// and `FC`'s domain is not readable from the installation's bytes
+/// ([`VIDEO_CHAPTER_CALLBACK_ID`]).
+const GAP_VIDEO_CHAPTER_NAME_UNBOUND: &str = "chapter_name_unbound";
+
+/// Gap code: one member of [`VIDEO_CHAPTER_CHAIN`] that could not be
+/// verified — the container is absent or does not mount, the member is
+/// absent or does not read, the program does not scan, or its bytes do not
+/// show the sites and fragments the chain was measured with. A nonzero
+/// count means the [`GAP_VIDEO_CHAPTER_NAME_UNBOUND`] record rests on the
+/// file-name shape alone; the member is named in
+/// [`CollectionStatus::diagnostic`].
+const GAP_VIDEO_CHAPTER_SOURCE_UNREADABLE: &str = "chapter_source_unreadable";
 
 /// The installation-relative spelling of the airframe library the paint-mask
 /// collection is read from.
@@ -5219,9 +5284,20 @@ fn unclassified_audio_statuses() -> Vec<CollectionStatus> {
 /// [`GAP_VIDEO_UNREADABLE_SOURCE`] and named in the diagnostic rather than
 /// failing the collection, because the other source's rows are real either
 /// way. What stays outside either source is
-/// `ASSETS/SCRIPTS/CAMPAIGNINTRO.SCRIPT`, which builds the chapter name as
-/// `"chap" conv$(FC) ".mpg"` — a binding Rally #1352 owns, so the files it
-/// produces stay counted under [`GAP_VIDEO_UNNAMED_FILE`].
+/// [`VIDEO_CHAPTER_INTRO_MEMBER`], which builds the chapter name as
+/// `"chap" conv$(FC) ".mpg"`: F14-D.VIDEO-CHAPTER (Rally #1352) measured
+/// the whole construction chain in [`VIDEO_CHAPTER_CHAIN`] — the trigger
+/// member calls the same callback and runs the intro member when `FC != 0`,
+/// the intro member builds the name, and the control member resolves it
+/// under `assets\graphics\mpg\` and plays it. No installation byte states
+/// which values `FC` takes: it is the return of native callback
+/// [`VIDEO_CHAPTER_CALLBACK_ID`], whose domain lives in the engine, not in
+/// the data. So a file whose name matches the construction shape stays
+/// counted under [`GAP_VIDEO_UNNAMED_FILE`] *and* under
+/// [`GAP_VIDEO_CHAPTER_NAME_UNBOUND`] — the explicit record that the
+/// binding was not read — and a chain member whose measured bytes cannot
+/// be verified is counted under [`GAP_VIDEO_CHAPTER_SOURCE_UNREADABLE`]
+/// and named in the diagnostic.
 ///
 /// What stays true is the rule: a file name is never identity on its own.
 /// Each name from either source is resolved against the inventory by its
@@ -5276,6 +5352,12 @@ fn video_rows(
 
     let playavi = playavi_video_names(install_root, files)?;
     let layout = layout_video_names(install_root, install_hash, files)?;
+    // The third read is not a name source: it verifies the chapter-name
+    // construction chain member by member, so the `chapter_name_unbound`
+    // record below is measured rather than a file-name guess. A member that
+    // cannot be verified is a reason string; the count becomes
+    // `chapter_source_unreadable`.
+    let chapter_reasons = chapter_chain_reasons(install_root, install_hash, files)?;
     let unreadable_reasons: Vec<String> = [&playavi, &layout]
         .iter()
         .filter_map(|reading| reading.unreadable.clone())
@@ -5347,21 +5429,27 @@ fn video_rows(
     }
 
     // Every `.mpg` file no name reaches stays accounted for: named as a gap,
-    // never minted into a row from its own file name.
-    let mut unnamed = 0usize;
+    // never minted into a row from its own file name. A file whose name
+    // additionally spells the chapter construction (`chap` + digits +
+    // `.mpg`) is counted under `chapter_name_unbound` too — the measured
+    // record that the construction could name it but the `FC` binding was
+    // not read.
+    let (mut unnamed, mut chapter_unbound) = (0usize, 0usize);
     for candidate in files.values() {
-        if candidate
-            .relative_spelling
-            .as_str()
-            .to_ascii_lowercase()
-            .ends_with(".mpg")
-            && !resolved.contains(&candidate.relative_spelling.logical_key())
+        let spelling = candidate.relative_spelling.as_str();
+        if !spelling.to_ascii_lowercase().ends_with(".mpg")
+            || resolved.contains(&candidate.relative_spelling.logical_key())
         {
-            unnamed += 1;
+            continue;
+        }
+        unnamed += 1;
+        let base = spelling.rsplit(['/', '\\']).next().unwrap_or(spelling);
+        if is_chapter_video_name(base) {
+            chapter_unbound += 1;
         }
     }
 
-    // All seven codes are always reported, so a collection reader sees the
+    // All nine codes are always reported, so a collection reader sees the
     // whole accounting shape even when a count is zero.
     status.gaps.insert(GAP_VIDEO_NAME_NOT_TEXT, not_text);
     status.gaps.insert(GAP_VIDEO_MOVIE_NOT_MPG, not_mpg);
@@ -5369,12 +5457,19 @@ fn video_rows(
     status.gaps.insert(GAP_VIDEO_NAME_AMBIGUOUS, ambiguous);
     status.gaps.insert(GAP_VIDEO_DUPLICATE_NAME, duplicate);
     status.gaps.insert(GAP_VIDEO_UNNAMED_FILE, unnamed);
+    status
+        .gaps
+        .insert(GAP_VIDEO_CHAPTER_NAME_UNBOUND, chapter_unbound);
+    status
+        .gaps
+        .insert(GAP_VIDEO_CHAPTER_SOURCE_UNREADABLE, chapter_reasons.len());
     status.gaps.insert(GAP_VIDEO_UNREADABLE_SOURCE, unreadable);
 
     status.rows = rows.len();
     if rows.is_empty() {
         let mut reasons = unreadable_reasons;
         reasons.extend(empty_reasons);
+        reasons.extend(chapter_reasons);
         if !names.is_empty() {
             reasons.push(format!(
                 "none of the {} name(s) the read sources state resolves to exactly one \
@@ -5384,11 +5479,23 @@ fn video_rows(
         }
         return Ok(unpopulated(status, reasons.join("; ")));
     }
+    let mut clauses = Vec::new();
     if unreadable > 0 {
-        status.diagnostic = Some(format!(
+        clauses.push(format!(
             "{unreadable} of the 2 video sources could not be read: {}",
             unreadable_reasons.join("; ")
         ));
+    }
+    if !chapter_reasons.is_empty() {
+        clauses.push(format!(
+            "{} of the {} chapter-name construction members could not be verified: {}",
+            chapter_reasons.len(),
+            VIDEO_CHAPTER_CHAIN.len(),
+            chapter_reasons.join("; ")
+        ));
+    }
+    if !clauses.is_empty() {
+        status.diagnostic = Some(clauses.join("; "));
     }
     Ok((rows, status))
 }
@@ -5656,6 +5763,216 @@ fn layout_video_names(
 /// `unnamed_video_file` scan applies to the inventory's own spellings.
 fn is_mpg_name(name: &[u8]) -> bool {
     name.len() >= 4 && name[name.len() - 4..].eq_ignore_ascii_case(b".mpg")
+}
+
+/// Whether `name` — a file name, not a path — spells the product of the
+/// measured chapter construction `"chap" conv$(FC) ".mpg"`: the `chap`
+/// prefix, one or more decimal digits (`conv$` renders a non-negative
+/// `FC` as digits; no member documents what a negative value would spell,
+/// so the shape claims digits only), then `.mpg`, ASCII case-folded like
+/// [`is_mpg_name`]. This is a name-shape match, never a binding: the
+/// values `FC` actually takes are the unread part
+/// ([`VIDEO_CHAPTER_CALLBACK_ID`]).
+fn is_chapter_video_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    let Some(digits) = lower
+        .strip_prefix("chap")
+        .and_then(|rest| rest.strip_suffix(".mpg"))
+    else {
+        return false;
+    };
+    !digits.is_empty() && digits.bytes().all(|byte| byte.is_ascii_digit())
+}
+
+/// One member of the chapter-name construction chain and the byte-level
+/// evidence the measurement requires of it.
+struct ChapterMemberSpec {
+    /// The member's spelling inside [`VIDEO_LAYOUT_CONTAINER`].
+    member: &'static str,
+    /// The native callback ids a [`DispatchForm::Callback`] site must state
+    /// an integer literal for.
+    sites: &'static [i64],
+    /// The byte sequences the member must contain, exactly as it spells
+    /// them.
+    fragments: &'static [&'static [u8]],
+}
+
+/// The measured chain the chapter video names ride on (F14-D.VIDEO-CHAPTER,
+/// Rally #1352), read from three members of [`VIDEO_LAYOUT_CONTAINER`]:
+///
+/// * [`VIDEO_CHAPTER_TRIGGER_MEMBER`] calls
+///   `callback($$E$$, `[`VIDEO_CHAPTER_CALLBACK_ID`]`, FC)`, and runs the
+///   intro member through `script_run "assets\\scripts\\"
+///   "campaignintro.script", 0x1999` only `if (FC != 0)` — the measured
+///   trigger, whose gate shows `0` is a value `FC` can take (and one the
+///   intro is deliberately skipped for);
+/// * [`VIDEO_CHAPTER_INTRO_MEMBER`] holds the matching site in its
+///   `gui_create` and builds `GC.BL = "chap" conv$(FC) ".mpg"` in
+///   `gui_init` — the construction itself;
+/// * [`VIDEO_CHAPTER_CONTROL_MEMBER`] declares `movie CL`, resolves
+///   `CL = "assets\\graphics\\mpg\\" BL` and plays it with `loop CL` /
+///   `getstatus(CL)` — where the constructed name becomes a played path.
+///
+/// Verifying the chain establishes that the names are constructed and
+/// played. It does not establish the names: `FC`'s value domain is the
+/// return of a native callback, which no member, record or flag of the
+/// installation states, so nothing in this chain may mint a row.
+const VIDEO_CHAPTER_CHAIN: [ChapterMemberSpec; 3] = [
+    ChapterMemberSpec {
+        member: VIDEO_CHAPTER_INTRO_MEMBER,
+        sites: &[VIDEO_CHAPTER_CALLBACK_ID],
+        fragments: &[b"\"chap\" conv$(FC) \".mpg\""],
+    },
+    ChapterMemberSpec {
+        member: VIDEO_CHAPTER_CONTROL_MEMBER,
+        sites: &[],
+        fragments: &[
+            b"movie CL",
+            b"\"assets\\\\graphics\\\\mpg\\\\\" BL",
+            b"loop CL",
+            b"getstatus(CL)",
+        ],
+    },
+    ChapterMemberSpec {
+        member: VIDEO_CHAPTER_TRIGGER_MEMBER,
+        sites: &[VIDEO_CHAPTER_CALLBACK_ID],
+        fragments: &[b"FC != 0", b"\"campaignintro.script\""],
+    },
+];
+
+/// The measured reasons the chapter-name construction chain of
+/// [`VIDEO_LAYOUT_CONTAINER`] cannot be verified, one per member —
+/// empty when every member reads and shows its measured sites and
+/// fragments.
+///
+/// The members live in the same shared archive the layout records are
+/// read from, mounted again under its own label so this measurement's
+/// failure domain is its own: an absent container or a member that does
+/// not mount, read or match yields a reason and never fails the
+/// collection.
+///
+/// # Errors
+///
+/// [`BaselineError::Identity`] when a member spelling cannot become a key
+/// and [`BaselineError::Session`] when the mount label is refused — both
+/// constant-string bugs, never data failures.
+fn chapter_chain_reasons(
+    install_root: &Path,
+    install_hash: ContentHash,
+    files: &BTreeMap<String, &InstallFileRecord>,
+) -> Result<Vec<String>, BaselineError> {
+    let Some(record) = files.get(&VIDEO_LAYOUT_CONTAINER.to_ascii_lowercase()) else {
+        return Ok(VIDEO_CHAPTER_CHAIN
+            .iter()
+            .map(|spec| {
+                format!(
+                    "the installation inventories no {VIDEO_LAYOUT_CONTAINER}, so chapter \
+                     member {} has no bytes to read",
+                    spec.member
+                )
+            })
+            .collect());
+    };
+    let path = install_root.join(record.relative_spelling.as_str());
+    let mut builder = SessionBuilder::new(ResolveContext::new(install_hash));
+    let mount = MountBuilder::new(
+        MountId::new("rof-video-chapter")
+            .map_err(|error| BaselineError::Session(error.to_string()))?,
+        MountNamespace::new(INSTALL_NAMESPACE)
+            .map_err(|error| BaselineError::Session(error.to_string()))?,
+        PrecedenceClass::Shared,
+        VIDEO_LAYOUT_CONTAINER,
+    )
+    .retail();
+    let source = match mount_rof_into(&mut builder, mount, &path) {
+        Ok(source) => source,
+        Err(error) => {
+            return Ok(VIDEO_CHAPTER_CHAIN
+                .iter()
+                .map(|spec| {
+                    format!(
+                        "the shared archive {VIDEO_LAYOUT_CONTAINER} does not mount as the \
+                         observed ROF container, so chapter member {} cannot be verified: \
+                         {error}",
+                        spec.member
+                    )
+                })
+                .collect());
+        }
+    };
+    let mut reasons = Vec::new();
+    for spec in &VIDEO_CHAPTER_CHAIN {
+        if let Some(reason) = chapter_member_reason(&source, spec)? {
+            reasons.push(reason);
+        }
+    }
+    Ok(reasons)
+}
+
+/// Why `spec`'s member of `source` cannot be verified as part of the
+/// chapter-name construction chain, or `None` when every measured piece
+/// is present: the member is absent, its bytes do not read, the program
+/// does not scan as a UI script, a measured `callback` site is missing,
+/// or a measured byte fragment is absent.
+fn chapter_member_reason(
+    source: &cs_assets::rof::RofSource,
+    spec: &ChapterMemberSpec,
+) -> Result<Option<String>, BaselineError> {
+    let key = AssetKey::from_spelling(source.namespace().as_str(), spec.member, "default")
+        .map_err(|error| BaselineError::Identity {
+            identity: spec.member.to_owned(),
+            reason: error.to_string(),
+        })?;
+    if source.member(&key).is_none() {
+        return Ok(Some(format!(
+            "the shared archive {VIDEO_LAYOUT_CONTAINER} holds no {} member",
+            spec.member
+        )));
+    }
+    let read = match source.read(&key) {
+        Ok(read) => read,
+        Err(error) => {
+            return Ok(Some(format!(
+                "chapter member {} does not read: {error}",
+                spec.member
+            )));
+        }
+    };
+    let bytes = read.data.as_slice();
+    let scan = match scan_ui_program(spec.member, bytes, UiScriptLimits::default()) {
+        Ok(scan) => scan,
+        Err(error) => {
+            return Ok(Some(format!(
+                "chapter member {} does not scan as a UI script program: {error}",
+                spec.member
+            )));
+        }
+    };
+    for id in spec.sites {
+        if !scan
+            .sites
+            .iter()
+            .any(|site| site.form == DispatchForm::Callback && site.native_id == Some(*id))
+        {
+            return Ok(Some(format!(
+                "chapter member {} shows no `callback` site stating native id {id}",
+                spec.member
+            )));
+        }
+    }
+    for fragment in spec.fragments {
+        if !bytes
+            .windows(fragment.len())
+            .any(|window| window == *fragment)
+        {
+            return Ok(Some(format!(
+                "chapter member {} does not spell its measured fragment {}",
+                spec.member,
+                String::from_utf8_lossy(fragment)
+            )));
+        }
+    }
+    Ok(None)
 }
 
 /// Every `PLAYAVI` action of a decoded FMV document, in document order.

@@ -350,6 +350,12 @@ fn accept_f14_d_video_named_file_is_one_row() {
             // The `crimflag.mpg` file is real and stays accounted for, but
             // nothing in the fixture's layout records names it.
             ("unnamed_video_file", 1),
+            // `crimflag.mpg` does not spell the chapter construction's
+            // `chap<digits>.mpg` shape (F14-D.VIDEO-CHAPTER, Rally #1352).
+            ("chapter_name_unbound", 0),
+            // The fixture holds no `GOSDATA/ASSETS/crimson.rof`, so none of
+            // the three chapter-construction members could be verified.
+            ("chapter_source_unreadable", 3),
             // The fixture holds no `GOSDATA/ASSETS/crimson.rof`, so the
             // layout source is the one source that could not be read.
             ("unreadable_video_source", 1),
@@ -444,6 +450,8 @@ fn accept_f14_d_video_unresolved_names_are_gaps() {
             ("ambiguous_file_name", 2),
             ("duplicate_video_name", 1),
             ("unnamed_video_file", 2),
+            ("chapter_name_unbound", 0),
+            ("chapter_source_unreadable", 3),
             ("unreadable_video_source", 1),
         ]),
         "each failure keeps its own code, and both `both.mpg` files stay named \
@@ -497,6 +505,13 @@ fn accept_f14_d_video_missing_member_is_diagnostic() {
             // The loose `.mpg` file no record of either source reaches; it
             // stays accounted for even with no source readable.
             ("unnamed_video_file", 1),
+            // `chap0.mpg` additionally spells the chapter construction's
+            // shape, so it is counted under that code too — the two codes
+            // count different facts about the same file (Rally #1352).
+            ("chapter_name_unbound", 1),
+            // All three chapter-construction members are unverifiable
+            // without the container.
+            ("chapter_source_unreadable", 3),
             // Neither source could be read: `zrdr.zbd` holds no `fmv.zrd`
             // member and the fixture holds no `crimson.rof`.
             ("unreadable_video_source", 2),
@@ -595,8 +610,10 @@ fn game_dir() -> PathBuf {
 /// `GOSDATA/ASSETS/GRAPHICS/MPG/`. The five chapter files
 /// (`chap1`…`chap5`) no record of either source reaches —
 /// `ASSETS/SCRIPTS/CAMPAIGNINTRO.SCRIPT` constructs the chapter name as
-/// `"chap" conv$(FC) ".mpg"`, a binding Rally #1352 owns — so they stay
-/// counted as gaps here.
+/// `"chap" conv$(FC) ".mpg"`, and F14-D.VIDEO-CHAPTER (Rally #1352)
+/// recorded that no installation byte states the values `FC` takes — so
+/// they stay counted as gaps here, under `unnamed_video_file` and the
+/// chapter task's own `chapter_name_unbound`.
 const RETAIL_VIDEO_ROWS: usize = 5;
 const RETAIL_UNNAMED_MPG_FILES: usize = 5;
 const RETAIL_DUPLICATE_NAMES: usize = 4;
@@ -747,6 +764,11 @@ fn accept_f14_d_video_retail_videos_are_rows() {
             // repeats are counted.
             ("duplicate_video_name", RETAIL_DUPLICATE_NAMES),
             ("unnamed_video_file", RETAIL_UNNAMED_MPG_FILES),
+            // The same five files spell the measured chapter construction's
+            // shape, so Rally #1352's record counts them too — different
+            // facts about the same files. All three chain members verify.
+            ("chapter_name_unbound", 5),
+            ("chapter_source_unreadable", 0),
             ("unreadable_video_source", 0),
         ]),
         "the five .mpg files no record of either source reaches are the only \

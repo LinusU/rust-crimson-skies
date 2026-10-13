@@ -249,6 +249,11 @@ fn evidence_report_f14_d_video_layout_writes_the_acceptance_report() {
                 "the five .mpg files no record of either source reaches are the only \
                  unaccounted-for entries"
             ),
+            "chapter_name_unbound" => assert_eq!(
+                *count, RETAIL_UNNAMED_MPG_FILES,
+                "the same five files spell the chapter construction's shape, so \
+                 F14-D.VIDEO-CHAPTER's record (Rally #1352) counts them too"
+            ),
             "duplicate_video_name" => assert_eq!(
                 *count, RETAIL_DUPLICATE_NAMES,
                 "the first CrimFlag.MPG record makes the row; the other four repeats are \
@@ -623,9 +628,12 @@ const UNKNOWN_LIMITATIONS: &[&str] = &[
      source reaches, so they are counted under the collection's `unnamed_video_file` gap and \
      have no row. They are not unnamed everywhere: ASSETS/SCRIPTS/CAMPAIGNINTRO.SCRIPT of \
      GOSDATA/ASSETS/crimson.rof constructs the chapter name as \"chap\" conv$(FC) \".mpg\" \
-     rather than spelling it, and this stage reads no script bindings, so no row is minted \
-     from them. Affected content: chap1.mpg through chap5.mpg. Resolving task: Rally #1352 \
-     (F14-D.VIDEO-CHAPTER, the chapter-name binding), which gates any completeness or \
+     rather than spelling it, and F14-D.VIDEO-CHAPTER (task #1352) measured the whole \
+     construction chain byte-for-byte and found no installation byte that states the values \
+     FC takes - the files are additionally counted under `chapter_name_unbound`, the \
+     machine-readable record that the binding was not read. Affected content: chap1.mpg \
+     through chap5.mpg. Resolving task: an original-run capture of native callback 2151's \
+     value domain, which gates any completeness or \
      fidelity claim for the video collection.",
     "No row carries a codec, duration, resolution or playback trigger: no original byte read \
      here states one, and reading the MPEG stream would produce numbers with no unit contract \

@@ -571,10 +571,23 @@ fn accept_f14_d_video_layout_movie_records_become_rows() {
             // `other.mpg` is spelled only by a non-movie record and
             // `unreferenced.mpg` by nothing.
             ("unnamed_video_file", 2),
+            // Neither unnamed file spells `chap<digits>.mpg`
+            // (F14-D.VIDEO-CHAPTER, Rally #1352), and the fixture's
+            // container holds no `ASSETS/SCRIPTS/` members at all, so the
+            // whole chapter construction chain is unverifiable here.
+            ("chapter_name_unbound", 0),
+            ("chapter_source_unreadable", 3),
             ("unreadable_video_source", 0),
         ])
     );
-    assert_eq!(status.diagnostic, None);
+    let diagnostic = status
+        .diagnostic
+        .as_deref()
+        .expect("the unverifiable chapter members are named");
+    assert!(
+        diagnostic.contains("ASSETS/SCRIPTS/CAMPAIGNINTRO.SCRIPT"),
+        "{diagnostic}"
+    );
 
     // The denominator did not move: a video is not launchable content.
     assert_eq!(baseline.roots, vec![cid(ContentKind::Mission, "ch1-m01")]);
@@ -618,7 +631,17 @@ fn accept_f14_d_video_layout_compressed_member_is_read() {
     let status = status_of(&baseline, ContentKind::Video);
     assert_eq!(status.rows, 1);
     assert_eq!(status.gaps["unreadable_video_source"], 0);
-    assert_eq!(status.diagnostic, None);
+    // The fixture's container holds only the layout member, so the
+    // chapter-name construction chain is the part that is not verifiable.
+    assert_eq!(status.gaps["chapter_source_unreadable"], 3);
+    let diagnostic = status
+        .diagnostic
+        .as_deref()
+        .expect("the unverifiable chapter members are named");
+    assert!(
+        diagnostic.contains("ASSETS/SCRIPTS/CAMPAIGNINTRO.SCRIPT"),
+        "{diagnostic}"
+    );
 }
 
 /// A layout member that states no movie record naming an `.mpg` file yields
@@ -659,10 +682,15 @@ fn accept_f14_d_video_layout_no_movie_record_names_nothing() {
             ("duplicate_video_name", 0),
             // `other.mpg` is spelled only by a non-movie record.
             ("unnamed_video_file", 1),
+            ("chapter_name_unbound", 0),
+            ("chapter_source_unreadable", 3),
             ("unreadable_video_source", 0),
         ])
     );
-    assert_eq!(status.diagnostic, None);
+    assert!(
+        status.diagnostic.is_some(),
+        "the unverifiable chapter members are named in the diagnostic"
+    );
 }
 
 /// An installation without the ROF container keeps the `PLAYAVI` rows: the
@@ -693,6 +721,9 @@ fn accept_f14_d_video_layout_absent_container_keeps_fmv_rows() {
     let status = status_of(&baseline, ContentKind::Video);
     assert_eq!(status.rows, 1);
     assert_eq!(status.gaps["unreadable_video_source"], 1);
+    // No container also means none of the chapter construction members
+    // could be verified.
+    assert_eq!(status.gaps["chapter_source_unreadable"], 3);
     let diagnostic = status
         .diagnostic
         .as_deref()
@@ -721,8 +752,9 @@ fn game_dir() -> PathBuf {
 /// `CF_MOVIE=M,Final.MPG,…` once. The first `CrimFlag.MPG` record resolves to
 /// the file, the four repeats are counted duplicates, and the five chapter
 /// files `chap1`…`chap5` — *constructed* by
-/// `ASSETS/SCRIPTS/CAMPAIGNINTRO.SCRIPT`, a binding Rally #1352 owns — stay
-/// counted `unnamed_video_file`.
+/// `ASSETS/SCRIPTS/CAMPAIGNINTRO.SCRIPT`, whose `FC` binding F14-D.VIDEO-CHAPTER
+/// (Rally #1352) recorded as unread — stay counted `unnamed_video_file` and
+/// `chapter_name_unbound`.
 const RETAIL_VIDEO_ROWS: usize = 5;
 const RETAIL_UNNAMED_MPG_FILES: usize = 5;
 const RETAIL_DUPLICATE_NAMES: usize = 4;
@@ -889,9 +921,13 @@ fn accept_f14_d_video_layout_retail_movie_records_are_rows() {
             // The first `CrimFlag.MPG` record makes the row; the other four
             // repeats are counted.
             ("duplicate_video_name", RETAIL_DUPLICATE_NAMES),
-            // `chap1`…`chap5`: constructed by CAMPAIGNINTRO.SCRIPT, owned by
-            // Rally #1352.
+            // `chap1`…`chap5`: constructed by CAMPAIGNINTRO.SCRIPT, bound by
+            // nothing the installation states (Rally #1352) — so the same
+            // five files are counted under both codes, and all three
+            // chapter-chain members verify.
             ("unnamed_video_file", RETAIL_UNNAMED_MPG_FILES),
+            ("chapter_name_unbound", 5),
+            ("chapter_source_unreadable", 0),
             ("unreadable_video_source", 0),
         ]),
         "the five .mpg files no record of either source reaches are the only \
