@@ -30,13 +30,9 @@ use cs_sim::interaction::{
     synthetic_docking_objective, synthetic_hook_trajectory,
 };
 use cs_types::Tick;
-use cs_types::net::{ActorId, PeerId, SessionId};
+use cs_types::net::{ActorId, PeerId};
 
 const PILOT: PilotId = PilotId(9);
-
-fn session_id() -> SessionId {
-    SessionId::new(SYNTHETIC_SESSION).expect("the synthetic session is nonzero")
-}
 
 fn ledger() -> TransferLedger {
     TransferLedger::new(
@@ -108,7 +104,7 @@ fn accept_f36_c2_each_consumer_follows_the_applied_report() {
     let mut world = world_with(session);
 
     let rebind = apply_transfer_consumers(&mut world, &report).expect("applies");
-    assert_eq!(rebind.rebound, false, "the first bind is not a rebind");
+    assert!(!rebind.rebound, "the first bind is not a rebind");
 
     let consumers = world
         .get_resource::<TransferConsumers>()
@@ -196,7 +192,7 @@ fn accept_f36_c2_swap_rebinds_a_second_time_and_drops_the_first_aircraft() {
         .expect("runtime") = InteractionRuntime(session);
 
     let rebind = apply_transfer_consumers(&mut world, &second).expect("applies");
-    assert_eq!(rebind.rebound, true, "the second pass rebinds");
+    assert!(rebind.rebound, "the second pass rebinds");
     assert_eq!(rebind.binding.interaction, second_id);
 
     let consumers = world
@@ -264,23 +260,24 @@ fn accept_f36_c2_aborted_transfer_never_rebinds_the_consumers() {
 
 #[test]
 fn accept_f36_c2_retry_tears_down_bindings_and_a_stale_report_is_refused() {
-    let (mut session, report) = applied_swap();
+    let (session, report) = applied_swap();
     let mut world = world_with(session);
     apply_transfer_consumers(&mut world, &report).expect("applies");
     assert!(world.get_resource::<TransferConsumers>().is_some());
 
     // Retry replaces the session generation and restores the initial
     // bindings (the F36-C retry path).
-    let mut runtime = world
-        .get_resource_mut::<InteractionRuntime>()
-        .expect("runtime");
-    runtime.on_retry(SYNTHETIC_SESSION + 1);
-    assert_eq!(
-        runtime.0.ledger().pilot_of(SYNTHETIC_INITIATOR),
-        Some(PILOT),
-        "the retry restored the starting pilot binding"
-    );
-    drop(runtime);
+    {
+        let mut runtime = world
+            .get_resource_mut::<InteractionRuntime>()
+            .expect("runtime");
+        runtime.on_retry(SYNTHETIC_SESSION + 1);
+        assert_eq!(
+            runtime.0.ledger().pilot_of(SYNTHETIC_INITIATOR),
+            Some(PILOT),
+            "the retry restored the starting pilot binding"
+        );
+    }
 
     // The teardown for the generation that ended clears the bindings.
     assert!(teardown_transfer_consumers(&mut world, SYNTHETIC_SESSION));
@@ -317,7 +314,10 @@ fn accept_f36_c2_teardown_refuses_a_different_sessions_bindings() {
     apply_transfer_consumers(&mut world, &report).expect("applies");
 
     // A late teardown for another generation cannot blank the live one.
-    assert!(!teardown_transfer_consumers(&mut world, SYNTHETIC_SESSION + 4));
+    assert!(!teardown_transfer_consumers(
+        &mut world,
+        SYNTHETIC_SESSION + 4
+    ));
     assert!(world.get_resource::<TransferConsumers>().is_some());
     assert!(teardown_transfer_consumers(&mut world, SYNTHETIC_SESSION));
 
@@ -465,7 +465,13 @@ fn accept_f36_c2_one_record_six_bindings_no_partial_write() {
         session.release(second_id).expect("released");
         assert!(
             session
-                .complete(second_id, &synthetic_docking_objective(), false, [6.0; 3], [5.0; 3])
+                .complete(
+                    second_id,
+                    &synthetic_docking_objective(),
+                    false,
+                    [6.0; 3],
+                    [5.0; 3]
+                )
                 .is_err(),
             "a lost target aborts instead of completing"
         );
@@ -498,7 +504,12 @@ fn accept_f36_c2_one_record_six_bindings_no_partial_write() {
         .get_resource::<TransferConsumers>()
         .expect("the previous record survives");
     assert_eq!(consumers.bound().map(|b| b.interaction), Some(first.id));
-    let committed = [consumers.input(), consumers.hud(), consumers.weapons(), consumers.network()];
+    let committed = [
+        consumers.input(),
+        consumers.hud(),
+        consumers.weapons(),
+        consumers.network(),
+    ];
     assert!(committed.iter().all(|a| *a == Some(SYNTHETIC_HOOK_TARGET)));
     assert_eq!(consumers.spyglass(), Some(first.camera_actor));
 }

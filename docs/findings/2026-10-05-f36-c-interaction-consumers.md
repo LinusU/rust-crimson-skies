@@ -17,5 +17,57 @@ Destroying the carrier while the transaction is Latching used to leave control w
 ## Known limits (not guessed)
 
 - ~~No ECS system calls `on_actor_destroyed` yet: `cs_app::damage` has no per-actor destroyed event to subscribe to, and adding one is outside the owner paths. Needs a follow-up task that emits an actor-destroyed event from the damage consumer.~~ Closed by task #658 (F36-C.1, 2026-10-13): `cs_app::damage::DamageActorDestroyed` / `publish_destroyed_actors` emit the event from the damage consumer's resolution output, and `cs_app::interaction::InteractionSchedulePlugin`'s `forward_actor_destroyed` forwards it to the runtime; `accept_f36_c1_` tests drive the real schedule end to end. The damage *driver* that hands each tick's resolution to `publish_destroyed_actors` in a running mission is still the app's damage-loop wiring, which no stage owns yet.
-- Rebinding input, HUD, spyglass, sounds, weapons and networking to the new actor on a swap is not implemented; the session reports `TransferReport.camera_actor`/`control_actor` for those consumers to read. No such consumers consume it yet.
 - Retail verification of any lifecycle rule is F36-D.
+
+## F36-C.2 follow-up: consumer rebinding from the applied report
+
+The report's `camera_actor`/`control_actor` now have their consumer entries
+(F36-C.2, task #659), all in `cs_app::interaction`:
+
+- `TransferConsumers` is the one resource that publishes the input, HUD,
+  spyglass, sound, weapons and network-ownership bindings together, and
+  `apply_transfer_consumers` is their only writer. It derives every binding
+  from one applied `TransferReport` and checks the report against the live
+  `InteractionRuntime` first: a report whose interaction the session does not
+  hold as `Completed` (aborted, unknown, or dropped by a retry) is refused
+  with `TransferConsumerError::NotCompleted`/`StaleSession` and changes
+  nothing, and a record that outlives its runtime is dropped
+  (`NoRuntime`).
+- `teardown_transfer_consumers` is the abort/retry/disconnect path: it
+  clears the bindings for their own session generation and refuses a late
+  teardown from a previous one.
+- `rebind_network_ownership` moves the server's peer-to-actor entry of
+  `cs_net::validation::ActorOwnership`: the destination binds first and the
+  old aircraft is released only after, so a refusal (a peer that is not the
+  pilot, or a destination another pilot owns) leaves the peer with exactly
+  the binding it had.
+
+`accept_f36_c2_consumer_rebind.rs` (11 tests) drives the real session's
+applied report through these entries over a real `World` and a real
+`ActorOwnership` table.
+
+### What is designed here, not recovered
+
+- **Which consumer follows which report field.** Input, HUD, sound, weapons
+  and network ownership follow `control_actor`; the spyglass follows
+  `camera_actor`. The original game's per-consumer rebind rules (does the
+  engine sound follow the camera or the airframe? does the HUD rebind at
+  latch or at release?) are unrecovered; F36-D owns recovering them from
+  reference runs.
+- **The six-view record.** Grouping exactly these six consumers into one
+  atomic record is project design following the F30-C `TargetConsumers`
+  precedent; the original's swap-commit boundary is unrecovered.
+
+### Still unwired (needs follow-up tasks, outside F36 owner paths)
+
+- No ECS schedule calls `apply_transfer_consumers` yet: nothing in the app
+  completes an interaction through `InteractionRuntime` (the mission host
+  does not drive a plane swap end-to-end), so the entries are production
+  code with a real consumer boundary but no producer system yet. The task
+  that drives a swap through the mission host should call
+  `apply_transfer_consumers` and `rebind_network_ownership` with the
+  session's real report.
+- No consumer module reads `TransferConsumers` yet (the HUD frame, camera
+  session, audio and weapons read their own authorities today). Reading the
+  record is wiring inside those features' owner paths (F46, F21, F41, F27)
+  and is deliberately not guessed from F36.

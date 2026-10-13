@@ -52,12 +52,12 @@ use bevy::ecs::message::MessageReader;
 use bevy::ecs::resource::Resource;
 use bevy::ecs::system::ResMut;
 use bevy::ecs::world::World;
-use cs_net::validation::{ActorOwnership, SessionViolation};
 use cs_content::interaction::{
     DeclaredCameraTransfer, DeclaredControlOwner, DeclaredEligibility, DeclaredInteraction,
     DeclaredInteractionKind, DeclaredInventoryTransfer, DeclaredPilotTransfer,
     DeclaredVelocityTransfer,
 };
+use cs_net::validation::{ActorOwnership, SessionViolation};
 use cs_sim::damage::ActorId;
 use cs_sim::interaction::{
     CameraTransfer, ControlOwner, EligibilityEnvelope, EnvelopeError, InteractionAbort,
