@@ -1621,8 +1621,11 @@ impl LocalPredictor {
         }
         let Some((_, predicted)) = self.history.front().filter(|(t, _)| *t == record.tick) else {
             // No predicted pose at that tick: nothing to compare, so trust the
-            // server and correct at once.
-            self.history.clear();
+            // server and correct at once. Entries *newer* than the record's
+            // tick stay: each later record's tick is newer still, and on a
+            // live wire the record's tick always lags the committed tick by
+            // at least the transit, so clearing them would make every later
+            // reconcile unmatchable too.
             return Ok(self.begin_correction(None, record));
         };
         let predicted = *predicted;
