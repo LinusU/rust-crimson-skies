@@ -16,6 +16,6 @@ Destroying the carrier while the transaction is Latching used to leave control w
 
 ## Known limits (not guessed)
 
-- No ECS system calls `on_actor_destroyed` yet: `cs_app::damage` has no per-actor destroyed event to subscribe to, and adding one is outside the owner paths. Needs a follow-up task that emits an actor-destroyed event from the damage consumer.
+- ~~No ECS system calls `on_actor_destroyed` yet: `cs_app::damage` has no per-actor destroyed event to subscribe to, and adding one is outside the owner paths. Needs a follow-up task that emits an actor-destroyed event from the damage consumer.~~ Closed by task #658 (F36-C.1, 2026-10-13): `cs_app::damage::DamageActorDestroyed` / `publish_destroyed_actors` emit the event from the damage consumer's resolution output, and `cs_app::interaction::InteractionSchedulePlugin`'s `forward_actor_destroyed` forwards it to the runtime; `accept_f36_c1_` tests drive the real schedule end to end. The damage *driver* that hands each tick's resolution to `publish_destroyed_actors` in a running mission is still the app's damage-loop wiring, which no stage owns yet.
 - Rebinding input, HUD, spyglass, sounds, weapons and networking to the new actor on a swap is not implemented; the session reports `TransferReport.camera_actor`/`control_actor` for those consumers to read. No such consumers consume it yet.
 - Retail verification of any lifecycle rule is F36-D.
