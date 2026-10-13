@@ -4087,15 +4087,32 @@ impl ContractDistinction {
     /// which is the vocabulary the contract's sentence is written about.
     ///
     /// All six distinctions resolve here, including [`Self::Detached`]: the
-    /// script IR declares all six states. **Nothing in the engine writes one
-    /// yet**, `detached` included — the states arrive as a
-    /// `cs_script::runtime::MissionFacts` the simulation's caller supplies, and
-    /// every caller in this repository passes an empty map, so a
-    /// `Condition::ActorIs` cannot be satisfied for any of the six today. That
-    /// is one limit on the whole vocabulary (populating `MissionFacts` is
-    /// F37/F38's remaining mission-runtime work), not a property of the sixth,
-    /// and it is why [`Self::unproduced_reason`] is about the **counted
-    /// category** rather than about this state.
+    /// script IR declares all six states. The writer this note once recorded
+    /// as missing exists now, in `cs_sim`:
+    /// [`cs_sim::mission::ActorFactTable`] folds the simulation's
+    /// authoritative lifecycle record into `MissionFacts::actors`, and
+    /// [`cs_sim::mission::MissionSession::advance_observed`] is the wired
+    /// path — the caller hands one tick's [`cs_sim::mission::ActorFactInput`]
+    /// and the session steps on the populated map. Registration writes
+    /// `Alive`, and the three measured transitions write `Dead`, `Captured`
+    /// and `Despawned` ([`cs_sim::mission::lifecycle_fact_effect`]); the
+    /// three states no event produces — `Disabled`, `Escaped` and
+    /// `Detached` — are refused by name through
+    /// [`cs_sim::mission::actor_state_producer`]
+    /// ([`cs_sim::mission::NO_TRANSITION_WRITES_THIS_STATE`],
+    /// [`cs_sim::mission::DETACHED_IS_AN_EVENT`]), so a state is still
+    /// never written because its variant exists.
+    ///
+    /// What is still missing is the **feed**, not the writer:
+    /// [`crate::world_facts::compose_mission_facts`] already folds the table
+    /// into the tick's map and [`crate::roster::ScriptActorBatch`] builds
+    /// the input, but the production host advances on
+    /// [`cs_sim::mission::MissionSession::advance`] — nothing hands an input
+    /// to `advance_observed` — so `actors` still arrives empty. Wiring that
+    /// observation in is F39-C's remaining surface. That is one limit on
+    /// the whole vocabulary, not a property of the sixth, and it is why
+    /// [`Self::unproduced_reason`] is about the **counted category** rather
+    /// than about this state.
     #[must_use]
     pub const fn condition_state(self) -> ActorState {
         match self {
