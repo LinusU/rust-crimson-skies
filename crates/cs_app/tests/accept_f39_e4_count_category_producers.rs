@@ -77,7 +77,7 @@ use cs_content::objectives::{
     DeclaredCountReaction, DeclaredObjective, DeclaredObjectiveProgram, DeclaredObjectiveState,
     DeclaredPrecedence, DeclaredRevealRule, MeasuredBranchPrecedence, MeasuredCategoryEvidence,
     MeasuredCountConditions, MeasuredTargetKinds, ObjectivesSchemaError, ProgramActor,
-    ProgramSymbol, UNDECLARED_COUNT_CATEGORY, UNMEASURED_COUNT_CATEGORY,
+    ProgramActorRef, ProgramSymbol, UNDECLARED_COUNT_CATEGORY, UNMEASURED_COUNT_CATEGORY,
     original_count_category_refusal,
 };
 use cs_content::stunts::{ZrdValue, decode_zrd};
@@ -568,7 +568,7 @@ fn program(
         vec![DeclaredCondition {
             symbol: ProgramSymbol(70),
             kind,
-            roster: vec![ProgramActor(41)],
+            roster: vec![ProgramActorRef::Placed(ProgramActor(41))],
             required: 1,
             reaction: DeclaredCountReaction::ReportOnly,
         }],

@@ -67,16 +67,36 @@
 //! # The actor id space
 //!
 //! Declared [`ProgramActor`]s and the wave instances the runtime allocates
-//! share one `cs_script::ir::ActorId` space. An admitted wave takes ids from
-//! 1 upward in admission order — the earlier tick first, and within a tick
-//! the expiring timers' symbol order — and a roster or trigger naming one
-//! of those ids names the spawned instance, which is the *only* way a
-//! condition counts a spawned wave. A pre-placed actor must therefore carry
-//! an id outside the range its program's waves allocate; the fixture keeps
-//! the player at `actor(7)` and the convoy at `actor(41)`, above the six
-//! ids its three two-raider waves take. Which actor ids original missions
-//! declared and how their spawn identities worked is unmeasured (F39-D);
-//! nothing here is an original-fidelity claim.
+//! share one `cs_script::ir::ActorId` space, and the contract that keeps them
+//! apart (F39-E-ACTORID-SPACE, recorded in
+//! `docs/findings/2026-10-13-f39-e-actorid-space.md`) is a **reserved band
+//! plus a typed reference**, both enforced here:
+//!
+//! * **Spawned instances own the high band.** The runtime's allocator starts
+//!   at [`SPAWNED_ACTOR_BASE`] and hands out ids upward in admission order —
+//!   the earlier tick first, and within a tick the expiring timers' symbol
+//!   order. It can never reach the placed range, so a placed actor such as
+//!   `actor(2)` can never *be* a wave instance: lifecycle facts, trigger
+//!   watches and counter attribution stay unambiguous by construction, not by
+//!   an importer convention.
+//! * **References say which side they mean.** A roster entry or a watched
+//!   trigger actor is a [`ProgramActorRef`]: [`Placed`](ProgramActorRef::Placed)
+//!   names a pre-placed actor by its declared [`ProgramActor`] id, which must
+//!   sit below the band, and [`Spawned`](ProgramActorRef::Spawned) names the
+//!   k-th instance the program's waves admit — the *only* way a condition
+//!   counts a spawned wave.
+//! * **The bound is computed, not assumed.** `try_new` sums each distinct
+//!   spawn emission key's largest declared `count` — the key's first
+//!   admission wins and a repeat is refused — into the program's
+//!   [`max_wave_instances`](DeclaredObjectiveProgram::max_wave_instances), and
+//!   refuses a `spawned(k)` beyond it, a `placed` actor inside the band, and a
+//!   program whose waves could overflow the band. The fixture keeps the
+//!   player at `placed actor(7)` and the convoy at `placed actor(41)`, outside
+//!   the six ids its three two-raider waves admit.
+//!
+//! Which actor ids original missions declared and how their spawn identities
+//! worked is unmeasured (F39-D); the boundary `0x4000_0000` is a designed
+//! choice, not an original-fidelity claim.
 //!
 //! # Designed vocabulary, not original data
 //!
@@ -285,6 +305,26 @@ impl fmt::Display for ProgramSymbol {
     }
 }
 
+/// The first `cs_script::ir::ActorId` a spawned wave instance ever takes: the
+/// low end of the band the runtime allocates from.
+///
+/// The declared-vs-spawned actor-id contract (F39-E-ACTORID-SPACE, recorded in
+/// `docs/findings/2026-10-13-f39-e-actorid-space.md`) splits one actor-id
+/// space in two: **placed** actors — the player, convoy ships and every actor
+/// an importer mints from a record — carry ids *below* this base, and
+/// **spawned** instances take `SPAWNED_ACTOR_BASE + k - 1` where `k` is the
+/// admission order. This crate validates the declared side: a
+/// [`ProgramActorRef::Placed`] id at or above the base is refused, a
+/// [`ProgramActorRef::Spawned`] index beyond the program's computed wave bound
+/// is refused, and the bound itself is refused when it would overflow the
+/// band. The runtime carries the same constant under the same name in
+/// `cs_sim::objectives::runtime`; `cs_app` pins the two equal at compile time.
+///
+/// `0x4000_0000` is a **designed** boundary — no original spawn-id space is
+/// measured — chosen to leave roughly 1.07 billion placed ids below it and
+/// 3.2 billion spawned ids at and above it.
+pub const SPAWNED_ACTOR_BASE: u32 = 0x4000_0000;
+
 /// The program-level identity of a mission actor a count roster or a watched
 /// trigger names. Mapped one-to-one onto `cs_script::ir::ActorId` at the
 /// lowering boundary.
@@ -294,6 +334,38 @@ pub struct ProgramActor(pub u32);
 impl fmt::Display for ProgramActor {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "actor({})", self.0)
+    }
+}
+
+/// Which side of the actor-id space a roster entry or a watched trigger
+/// names — the declared half of the F39-E-ACTORID-SPACE contract.
+///
+/// Both sides lower into the one `cs_script::ir::ActorId` space, but they
+/// name disjoint bands of it, so a program that means a wave instance can
+/// never spell a placed actor's id and vice versa:
+///
+/// * [`Placed`](Self::Placed) names a pre-placed actor by its declared
+///   [`ProgramActor`], which must sit **below** [`SPAWNED_ACTOR_BASE`] — the
+///   player, a convoy ship, any actor an importer mints.
+/// * [`Spawned`](Self::Spawned) names the k-th instance the program's waves
+///   admit (1-based), which lowers to `SPAWNED_ACTOR_BASE + k - 1`. The index
+///   must not exceed the program's
+///   [`max_wave_instances`](DeclaredObjectiveProgram::max_wave_instances): a
+///   larger index names an instance no admission order can ever produce.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ProgramActorRef {
+    /// A pre-placed actor, by declared id.
+    Placed(ProgramActor),
+    /// The k-th instance the program's waves admit (1-based).
+    Spawned(u32),
+}
+
+impl fmt::Display for ProgramActorRef {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Placed(actor) => write!(f, "placed {actor}"),
+            Self::Spawned(index) => write!(f, "spawned({index})"),
+        }
     }
 }
 
@@ -992,8 +1064,11 @@ pub struct DeclaredCondition {
     pub symbol: ProgramSymbol,
     /// The one category that satisfies it.
     pub kind: DeclaredCountKind,
-    /// The program actors that can satisfy it.
-    pub roster: Vec<ProgramActor>,
+    /// The program actors that can satisfy it. Each entry names its side of
+    /// the actor-id space: a [`ProgramActorRef::Placed`] below the spawned
+    /// band or a [`ProgramActorRef::Spawned`] inside the program's computed
+    /// wave bound — and only a `Spawned` entry can count a wave instance.
+    pub roster: Vec<ProgramActorRef>,
     /// How many roster actors in `kind` satisfy it.
     pub required: usize,
     /// What satisfying it does.
@@ -1020,8 +1095,11 @@ pub struct DeclaredTimer {
 pub struct DeclaredTrigger {
     /// The trigger's program symbol; also the source of its events.
     pub symbol: ProgramSymbol,
-    /// The program actor whose movement it sweeps.
-    pub actor: ProgramActor,
+    /// The program actor whose movement it sweeps. A
+    /// [`ProgramActorRef::Placed`] watches a pre-placed actor's real id below
+    /// the spawned band; a [`ProgramActorRef::Spawned`] watches the wave
+    /// instance that admission index produces.
+    pub actor: ProgramActorRef,
     /// The volume.
     pub volume: DeclaredVolume,
 }
@@ -1751,7 +1829,7 @@ pub enum ObjectivesSchemaError {
         /// The trigger symbol.
         trigger: ProgramSymbol,
         /// The watched actor.
-        actor: ProgramActor,
+        actor: ProgramActorRef,
     },
     /// Two spawn groups share one symbol.
     DuplicateSpawnGroup {
@@ -2033,6 +2111,47 @@ pub enum ObjectivesSchemaError {
         /// [`UNDECLARED_COUNT_CATEGORY`] or [`UNMEASURED_COUNT_CATEGORY`].
         reason: &'static str,
     },
+    /// A placed reference names an actor id inside the spawned-instance band.
+    ///
+    /// The F39-E-ACTORID-SPACE contract keeps the two sides of the actor-id
+    /// space apart by band, so a [`ProgramActorRef::Placed`] may only name an
+    /// id below [`SPAWNED_ACTOR_BASE`]. Above it the id belongs to a wave
+    /// instance — meaning a placed actor by it would alias whatever the waves
+    /// admit there, which is exactly the conflation the contract exists to
+    /// refuse.
+    PlacedActorInSpawnedBand {
+        /// The declaration carrying the reference.
+        by: ProgramSymbol,
+        /// The placed id inside the band.
+        actor: ProgramActor,
+    },
+    /// A spawned reference names an instance this program can never admit.
+    ///
+    /// `spawned(k)` lowers to the k-th id the runtime's allocator hands out,
+    /// so it is only meaningful for `1 <= k <=` the program's
+    /// [`max_wave_instances`](DeclaredObjectiveProgram::max_wave_instances) —
+    /// the most instances its spawn keys can ever admit. A larger `k` names a
+    /// wave instance no admission order can produce: a dead declaration,
+    /// refused rather than counted against nothing.
+    UnadmittedSpawnedActor {
+        /// The declaration carrying the reference.
+        by: ProgramSymbol,
+        /// The index the program can never admit.
+        index: u32,
+        /// The bound it exceeds.
+        wave_max: u64,
+    },
+    /// The program's waves can admit more instances than the spawned band
+    /// holds.
+    ///
+    /// The band runs [`SPAWNED_ACTOR_BASE`]..=`u32::MAX`, so a program whose
+    /// computed [`max_wave_instances`](DeclaredObjectiveProgram::max_wave_instances)
+    /// exceeds that capacity would have an admission hand out an id the space
+    /// cannot hold — refused here instead of halfway through a session.
+    SpawnedBandOverflow {
+        /// The computed admission bound that does not fit.
+        wave_max: u64,
+    },
 }
 
 impl fmt::Display for ObjectivesSchemaError {
@@ -2205,6 +2324,26 @@ impl fmt::Display for ObjectivesSchemaError {
                 f,
                 "count condition {condition} counts {kind} actors, which an original \
                  record may not claim: {reason}"
+            ),
+            Self::PlacedActorInSpawnedBand { by, actor } => write!(
+                f,
+                "{by} names placed {actor} inside the spawned-instance band (ids \
+                 {SPAWNED_ACTOR_BASE} and above belong to the waves, so a placed \
+                 actor id must stay below them)"
+            ),
+            Self::UnadmittedSpawnedActor {
+                by,
+                index,
+                wave_max,
+            } => write!(
+                f,
+                "{by} names spawned({index}), which this program can never admit \
+                 (its waves admit at most {wave_max} instances)"
+            ),
+            Self::SpawnedBandOverflow { wave_max } => write!(
+                f,
+                "the program's waves can admit {wave_max} instances, more than the \
+                 spawned-instance band holds (ids {SPAWNED_ACTOR_BASE}..=u32::MAX)"
             ),
         }
     }
@@ -2406,6 +2545,21 @@ impl DeclaredObjectiveProgram {
     pub fn spawn_groups(&self) -> &[DeclaredSpawnGroup] {
         &self.spawn_groups
     }
+
+    /// The most wave instances this program's spawn keys can ever admit: per
+    /// distinct emission `key` the largest declared `count`, summed over the
+    /// keys.
+    ///
+    /// `spawned(k)` references are validated against this bound, and the
+    /// runtime's allocator maps the k-th admission to
+    /// `ActorId(SPAWNED_ACTOR_BASE + k - 1)`, so the ids the program's waves
+    /// can wear are exactly `SPAWNED_ACTOR_BASE..SPAWNED_ACTOR_BASE +` this
+    /// number — the range an importer must keep its placed actor ids out of
+    /// (below the base, per the F39-E-ACTORID-SPACE contract).
+    #[must_use]
+    pub fn max_wave_instances(&self) -> u64 {
+        wave_instance_max(&self.timers)
+    }
 }
 
 /// The support a record's origin implies before anything is measured from it.
@@ -2573,7 +2727,76 @@ fn validate(
         check_timer(timer, &objective_by_symbol, &group_ids, &declared)?;
     }
     check_completion_effects(objectives, &objective_ids, &objective_by_symbol)?;
+
+    // The actor-id-space contract (F39-E-ACTORID-SPACE), checked last so a
+    // structural refusal above still names itself first: the program's wave
+    // bound is computed from the spawn declarations that just passed, then
+    // every roster entry and watched actor is held to its side of it — a
+    // placed id inside the spawned band, a spawned index the bound cannot
+    // reach, and a bound that overflows the band itself are each refused by
+    // name.
+    let wave_max = wave_instance_max(timers);
+    if wave_max > SPAWNED_BAND_CAPACITY {
+        return Err(ObjectivesSchemaError::SpawnedBandOverflow { wave_max });
+    }
+    for condition in conditions {
+        for actor in &condition.roster {
+            check_actor_ref(condition.symbol, actor, wave_max)?;
+        }
+    }
+    for trigger in triggers {
+        check_actor_ref(trigger.symbol, &trigger.actor, wave_max)?;
+    }
     Ok(())
+}
+
+/// How many `ActorId`s the spawned band holds: `SPAWNED_ACTOR_BASE..=u32::MAX`.
+const SPAWNED_BAND_CAPACITY: u64 = (u32::MAX as u64) - (SPAWNED_ACTOR_BASE as u64) + 1;
+
+/// The most wave instances a program's spawn keys can ever admit.
+///
+/// Per distinct emission `key` the bound takes the largest declared `count` —
+/// a key's first admission wins and a repeat is refused, so two actions
+/// sharing one key admit no more than the larger of the two — summed over the
+/// keys, because distinct keys admit distinct waves. The ledger shares one
+/// key space with dialogue cues, so a cue firing first can *steal* a spawn's
+/// key and admit nothing: the bound counts that spawn anyway, which only ever
+/// keeps the bound conservative — it can name an instance an unlucky ordering
+/// withholds, never one no ordering can produce. Computed in `u64` so a
+/// program whose waves overflow the band is refused by the number rather than
+/// by a wrap.
+fn wave_instance_max(timers: &[DeclaredTimer]) -> u64 {
+    let mut by_key: BTreeMap<&str, u64> = BTreeMap::new();
+    for timer in timers {
+        if let DeclaredTimerAction::SpawnGroup { key, count, .. } = &timer.action {
+            let entry = by_key.entry(key.as_str()).or_insert(0);
+            *entry = (*entry).max(u64::from(*count));
+        }
+    }
+    by_key.values().sum()
+}
+
+/// One roster entry or watched actor against the program's computed wave
+/// bound: a placed id must sit below the spawned band, and a spawned index
+/// must name an instance some admission order can produce.
+fn check_actor_ref(
+    by: ProgramSymbol,
+    actor: &ProgramActorRef,
+    wave_max: u64,
+) -> Result<(), ObjectivesSchemaError> {
+    match *actor {
+        ProgramActorRef::Placed(placed) if placed.0 >= SPAWNED_ACTOR_BASE => {
+            Err(ObjectivesSchemaError::PlacedActorInSpawnedBand { by, actor: placed })
+        }
+        ProgramActorRef::Spawned(index) if index == 0 || u64::from(index) > wave_max => {
+            Err(ObjectivesSchemaError::UnadmittedSpawnedActor {
+                by,
+                index,
+                wave_max,
+            })
+        }
+        _ => Ok(()),
+    }
 }
 
 fn check_reserved(symbol: ProgramSymbol) -> Result<(), ObjectivesSchemaError> {
@@ -2993,7 +3216,7 @@ pub fn declared_synthetic_objectives() -> DeclaredObjectiveProgram {
         vec![DeclaredCondition {
             symbol: SYNTHETIC_PROTECTED_LOST,
             kind: DeclaredCountKind::Destroyed,
-            roster: vec![SYNTHETIC_PROTECTED],
+            roster: vec![ProgramActorRef::Placed(SYNTHETIC_PROTECTED)],
             required: 1,
             reaction: DeclaredCountReaction::Finish(DeclaredTerminalOutcome::Failure),
         }],
@@ -3054,7 +3277,7 @@ pub fn declared_synthetic_objectives() -> DeclaredObjectiveProgram {
         ],
         vec![DeclaredTrigger {
             symbol: SYNTHETIC_APPROACH,
-            actor: SYNTHETIC_PLAYER,
+            actor: ProgramActorRef::Placed(SYNTHETIC_PLAYER),
             volume: DeclaredVolume::Aabb {
                 min_m: [-1.0, -1.0, -1.0],
                 max_m: [1.0, 1.0, 1.0],
@@ -5099,5 +5322,158 @@ mod tests {
                  the cross-objective check"
             );
         }
+    }
+
+    // ------------------------------------------------------------------
+    // F39-E-ACTORID-SPACE: the declared side of the actor-id contract.
+    // ------------------------------------------------------------------
+
+    /// Rebuilds the fixture's program with edited declaration lists, so a
+    /// test can spell one actor-space violation at a time.
+    fn rebuild_actor_space(
+        conditions: Vec<DeclaredCondition>,
+        timers: Vec<DeclaredTimer>,
+        triggers: Vec<DeclaredTrigger>,
+    ) -> Result<DeclaredObjectiveProgram, ObjectivesSchemaError> {
+        let base = program();
+        DeclaredObjectiveProgram::try_new(
+            base.subject.clone(),
+            base.origin.clone(),
+            base.provenance.clone(),
+            base.precedence.clone(),
+            base.objectives.clone(),
+            conditions,
+            timers,
+            triggers,
+            base.spawn_groups.clone(),
+        )
+    }
+
+    /// The bound the whole contract hangs on: each distinct spawn key admits
+    /// at most its largest declared `count` — a shared key is one wave, not a
+    /// sum — and distinct keys sum. The fixture's three two-raider keys bound
+    /// it at six, and the program reports that number.
+    #[test]
+    fn accept_f39_e_actorid_the_wave_bound_sums_each_spawn_key_once() {
+        let base = program();
+        assert_eq!(base.max_wave_instances(), 6);
+
+        // Give wave-2's timer wave-1's key but a larger count: one key is one
+        // admission, so the shared key contributes the larger count once —
+        // `max(2, 5)` — and wave-3's own key contributes its 2.
+        let mut timers = base.timers.clone();
+        timers[1].action = DeclaredTimerAction::SpawnGroup {
+            key: "synthetic.f39c.wave-1".to_owned(),
+            group: SYNTHETIC_RAIDERS,
+            count: 5,
+        };
+        let program = rebuild_actor_space(base.conditions.clone(), timers, base.triggers.clone())
+            .expect("a shared key is a legal program");
+        assert_eq!(program.max_wave_instances(), 7);
+    }
+
+    /// A placed actor id inside the spawned band would alias whatever the
+    /// waves admit there — the exact conflation the contract exists to
+    /// refuse — so the schema refuses it by name, in a roster and on a
+    /// watched trigger alike.
+    #[test]
+    fn accept_f39_e_actorid_a_placed_actor_inside_the_spawned_band_is_refused() {
+        let base = program();
+
+        let mut conditions = base.conditions.clone();
+        conditions[0].roster = vec![ProgramActorRef::Placed(ProgramActor(SPAWNED_ACTOR_BASE))];
+        assert_eq!(
+            rebuild_actor_space(conditions, base.timers.clone(), base.triggers.clone())
+                .unwrap_err(),
+            ObjectivesSchemaError::PlacedActorInSpawnedBand {
+                by: SYNTHETIC_PROTECTED_LOST,
+                actor: ProgramActor(SPAWNED_ACTOR_BASE)
+            }
+        );
+
+        let mut triggers = base.triggers.clone();
+        triggers[0].actor = ProgramActorRef::Placed(ProgramActor(SPAWNED_ACTOR_BASE + 5));
+        assert_eq!(
+            rebuild_actor_space(base.conditions.clone(), base.timers.clone(), triggers)
+                .unwrap_err(),
+            ObjectivesSchemaError::PlacedActorInSpawnedBand {
+                by: SYNTHETIC_APPROACH,
+                actor: ProgramActor(SPAWNED_ACTOR_BASE + 5)
+            }
+        );
+    }
+
+    /// `spawned(k)` lowers to the k-th id the waves admit, so `k = 0` and any
+    /// `k` past the program's bound name an instance no admission order can
+    /// produce — a dead declaration, refused by name on both reference sites.
+    #[test]
+    fn accept_f39_e_actorid_a_spawned_reference_outside_the_wave_bound_is_refused() {
+        let base = program();
+
+        for index in [0, 7] {
+            let mut conditions = base.conditions.clone();
+            conditions[0].roster = vec![ProgramActorRef::Spawned(index)];
+            assert_eq!(
+                rebuild_actor_space(conditions, base.timers.clone(), base.triggers.clone())
+                    .unwrap_err(),
+                ObjectivesSchemaError::UnadmittedSpawnedActor {
+                    by: SYNTHETIC_PROTECTED_LOST,
+                    index,
+                    wave_max: 6
+                },
+                "spawned({index}) is dead in a six-instance program"
+            );
+        }
+
+        let mut triggers = base.triggers.clone();
+        triggers[0].actor = ProgramActorRef::Spawned(9);
+        assert_eq!(
+            rebuild_actor_space(base.conditions.clone(), base.timers.clone(), triggers)
+                .unwrap_err(),
+            ObjectivesSchemaError::UnadmittedSpawnedActor {
+                by: SYNTHETIC_APPROACH,
+                index: 9,
+                wave_max: 6
+            }
+        );
+    }
+
+    /// The bound itself cannot overflow the band: an admission past
+    /// `u32::MAX` could never hand out the ids the program's waves declared,
+    /// so the program is refused at declaration rather than halfway through a
+    /// session.
+    #[test]
+    fn accept_f39_e_actorid_a_program_whose_waves_overflow_the_band_is_refused() {
+        let base = program();
+        let mut timers = base.timers.clone();
+        timers[0].action = DeclaredTimerAction::SpawnGroup {
+            key: "synthetic.f39c.wave-1".to_owned(),
+            group: SYNTHETIC_RAIDERS,
+            count: u32::MAX,
+        };
+        assert_eq!(
+            rebuild_actor_space(base.conditions.clone(), timers, base.triggers.clone())
+                .unwrap_err(),
+            ObjectivesSchemaError::SpawnedBandOverflow {
+                wave_max: u64::from(u32::MAX) + 4
+            }
+        );
+    }
+
+    /// The accepted middle: a `spawned(k)` inside the computed bound is a
+    /// legal reference — the only way a condition counts a wave — and a
+    /// placed id below the band is always legal, whatever the bound is.
+    #[test]
+    fn accept_f39_e_actorid_references_inside_their_bands_are_accepted() {
+        let base = program();
+        let mut conditions = base.conditions.clone();
+        conditions[0].roster = vec![
+            ProgramActorRef::Placed(SYNTHETIC_PROTECTED),
+            ProgramActorRef::Spawned(1),
+            ProgramActorRef::Spawned(6),
+        ];
+        conditions[0].required = 2;
+        rebuild_actor_space(conditions, base.timers.clone(), base.triggers.clone())
+            .expect("spawned(1..=6) inside the bound and placed(41) below the band are legal");
     }
 }

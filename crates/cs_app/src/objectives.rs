@@ -194,7 +194,7 @@ use cs_content::objectives::{
     DeclaredTimerStart, DeclaredVolume, DormantReadError, DormantReading, FAILURE_KEY_VOCABULARY,
     MeasuredBranchConflict, MeasuredBranchPrecedence, MeasuredBranchSite, MeasuredCategoryEvidence,
     MeasuredCountConditions, MeasuredDormantBlock, MeasuredRecordFields, MeasuredRepeatedEffect,
-    MeasuredTargetKinds, OBJECTIVE_INACTIVE_COUNT_KEY, ProgramActor, ProgramSymbol,
+    MeasuredTargetKinds, OBJECTIVE_INACTIVE_COUNT_KEY, ProgramActorRef, ProgramSymbol,
     RecordFieldError, UnmeasuredQuantity, inactive_stage_number, is_objective_inactive_stage,
     is_optional_objective_key, measure_dormant_declarations, measured_category_evidence,
 };
@@ -496,11 +496,13 @@ impl Plugin for SpawnTickTriggerPlugin {
 //
 // 1. [`lower_program`] — the declared→lowered boundary. A
 //    `cs_content::objectives::DeclaredObjectiveProgram` (its own vocabulary:
-//    `ProgramSymbol`, `ProgramActor`, declared enums) becomes the
+//    `ProgramSymbol`, `ProgramActorRef`, declared enums) becomes the
 //    [`LoweredObjectives`] a session launches. `cs_content` cannot depend on
 //    `cs_sim`/`cs_script`, so the boundary maps field-wise: `ProgramSymbol(u)`
-//    → `SymbolId(u)`, `ProgramActor(u)` → `ActorId(u)`, declared variants →
-//    runtime variants. What lowering refuses is named:
+//    → `SymbolId(u)`, `Placed(actor(u))` → `ActorId(u)`,
+//    `Spawned(k)` → `ActorId(SPAWNED_ACTOR_BASE + k - 1)` — the F39-E-ACTORID-SPACE
+//    band, so a wave instance can never wear a placed actor's id — declared
+//    variants → runtime variants. What lowering refuses is named:
 //    [`ProgramLowerError::UnknownPrecedence`], [`ProgramLowerError::NonGameplayDomain`]
 //    and the constructor failures of `CountCondition::new`, `MissionTimer::new`
 //    and `SweptTrigger::new` — each reported with the declared symbol.
@@ -648,9 +650,26 @@ const fn lower_symbol(symbol: ProgramSymbol) -> SymbolId {
     SymbolId(symbol.0)
 }
 
-const fn lower_actor(actor: ProgramActor) -> ActorId {
-    ActorId(actor.0)
+const fn lower_actor(actor: ProgramActorRef) -> ActorId {
+    match actor {
+        ProgramActorRef::Placed(placed) => ActorId(placed.0),
+        // The 1-based admission index → the k-th id the runtime's band
+        // allocator hands out. `DeclaredObjectiveProgram::try_new` has
+        // already held `index` to the program's computed wave bound, which the
+        // band always holds, so the addition cannot overflow here.
+        ProgramActorRef::Spawned(index) => {
+            ActorId(cs_content::objectives::SPAWNED_ACTOR_BASE + index - 1)
+        }
+    }
 }
+
+// `cs_content` cannot depend on `cs_sim` or `cs_script`, so the two crates
+// carry the band's base under the same name and this boundary pins them equal:
+// a divergence would silently misplace every wave reference.
+const _: () = assert!(
+    cs_content::objectives::SPAWNED_ACTOR_BASE == cs_sim::objectives::runtime::SPAWNED_ACTOR_BASE,
+    "the declared and runtime spawned-actor bases must stay equal"
+);
 
 const fn lower_state(state: DeclaredObjectiveState) -> ObjectiveState {
     match state {

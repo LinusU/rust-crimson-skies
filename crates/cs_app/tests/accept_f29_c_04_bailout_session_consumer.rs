@@ -37,7 +37,9 @@ use cs_script::runtime::SessionGeneration;
 use cs_sim::damage::LifecycleKind;
 use cs_sim::objectives::bailout::{BailoutRefusal, MissionTransition};
 use cs_sim::objectives::counters::CountKind;
-use cs_sim::objectives::runtime::{ACTOR_EVENT_SOURCE, ObjectiveEventKind, TickInput};
+use cs_sim::objectives::runtime::{
+    ACTOR_EVENT_SOURCE, ObjectiveEventKind, SPAWNED_ACTOR_BASE, TickInput,
+};
 use cs_sim::objectives::timer::TimerRequest;
 use cs_types::Tick;
 
@@ -45,9 +47,10 @@ const GEN1: SessionGeneration = SessionGeneration(1);
 
 /// The fixture's first spawn-wave timer.
 const WAVE_1: SymbolId = SymbolId(20);
-/// The two raiders wave 1 admits.
-const RAIDER_ONE: ActorId = ActorId(1);
-const RAIDER_TWO: ActorId = ActorId(2);
+/// The two raiders wave 1 admits: the first two ids of the
+/// F39-E-ACTORID-SPACE spawned band.
+const RAIDER_ONE: ActorId = ActorId(SPAWNED_ACTOR_BASE);
+const RAIDER_TWO: ActorId = ActorId(SPAWNED_ACTOR_BASE + 1);
 
 fn lowered() -> LoweredObjectives {
     lower_program(&declared_synthetic_objectives()).expect("the fixture lowers")

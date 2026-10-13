@@ -31,7 +31,9 @@ use cs_script::ir::{ActorId, SymbolId};
 use cs_script::runtime::SessionGeneration;
 use cs_sim::damage::LifecycleKind;
 use cs_sim::objectives::counters::CountKind;
-use cs_sim::objectives::runtime::{ObjectiveEventKind, RuntimeError, StopReason, TickInput};
+use cs_sim::objectives::runtime::{
+    ObjectiveEventKind, RuntimeError, SPAWNED_ACTOR_BASE, StopReason, TickInput,
+};
 use cs_sim::objectives::spawn::IdempotencyKey;
 use cs_sim::objectives::state::ObjectiveState;
 use cs_sim::objectives::terminal::TerminalOutcome;
@@ -57,6 +59,12 @@ const APPROACH: SymbolId = SymbolId(50);
 const PLAYER: ActorId = ActorId(7);
 const PROTECTED: ActorId = ActorId(41);
 const REACHED_WRECK: SymbolId = SymbolId(60);
+
+/// The actor id the runtime hands the k-th admitted wave instance: the
+/// F39-E-ACTORID-SPACE band, `SPAWNED_ACTOR_BASE` upward.
+const fn spawned(k: u32) -> ActorId {
+    ActorId(SPAWNED_ACTOR_BASE + k - 1)
+}
 
 fn lowered() -> LoweredObjectives {
     lower_program(&declared_synthetic_objectives()).expect("the fixture lowers")
@@ -202,9 +210,9 @@ fn accept_f39_c_one_tick_dispatches_the_wave_the_cue_and_nothing_else() {
     assert_eq!(wave.key, IdempotencyKey("synthetic.f39c.wave-1".to_owned()));
     assert_eq!(wave.group, RAIDERS);
     assert_eq!(wave.subject.as_str(), "airframe/synthetic.raider");
-    assert_eq!(wave.instances, vec![ActorId(1), ActorId(2)]);
-    assert_eq!(session.live_wave(RAIDERS), &[ActorId(1), ActorId(2)][..]);
-    assert_eq!(session.live_actors(), vec![ActorId(1), ActorId(2)]);
+    assert_eq!(wave.instances, vec![spawned(1), spawned(2)]);
+    assert_eq!(session.live_wave(RAIDERS), &[spawned(1), spawned(2)][..]);
+    assert_eq!(session.live_actors(), vec![spawned(1), spawned(2)]);
 
     // The dialogue cue is pending once; draining hands it over once.
     assert_eq!(session.pending_cues(), 1);
@@ -304,10 +312,10 @@ fn accept_f39_c_refusals_and_errors_are_reported_never_dropped() {
         vec![SessionRefusal::Spawn {
             key: IdempotencyKey("synthetic.f39c.wave-1".to_owned()),
             group: RAIDERS,
-            instances: vec![ActorId(1), ActorId(2)],
+            instances: vec![spawned(1), spawned(2)],
         }]
     );
-    assert_eq!(session.live_actors(), vec![ActorId(1), ActorId(2)]);
+    assert_eq!(session.live_actors(), vec![spawned(1), spawned(2)]);
 
     // A refused tick is an error, not a silent drop: the non-advancing tick
     // propagates the runtime's own error and no consumer moved.
@@ -369,12 +377,12 @@ fn accept_f39_c_retry_after_several_waves_leaves_no_old_timers_actors_or_cues() 
     assert_eq!(session.pending_cues(), 1);
 
     let t2 = arm_step(&mut session, 2, &[WAVE_2], 1);
-    assert_eq!(t2.spawns[0].instances, vec![ActorId(3), ActorId(4)]);
+    assert_eq!(t2.spawns[0].instances, vec![spawned(3), spawned(4)]);
 
     // A spawned raider is destroyed: a gone-category count releases it from
     // the live registry — the world no longer has to tear that one down —
     // while wave 3's deadline starts counting and has not run out.
-    let lifecycles = [(ActorId(1), LifecycleKind::Destroyed)];
+    let lifecycles = [(spawned(1), LifecycleKind::Destroyed)];
     let arm = [TimerRequest::Arm(WAVE_3)];
     let mut facts = input(3, 0);
     facts.lifecycles = &lifecycles;
@@ -383,7 +391,7 @@ fn accept_f39_c_retry_after_several_waves_leaves_no_old_timers_actors_or_cues() 
     assert!(t3.spawns.is_empty(), "wave 3 was armed, not expired");
     assert_eq!(
         session.live_actors(),
-        vec![ActorId(2), ActorId(3), ActorId(4)]
+        vec![spawned(2), spawned(3), spawned(4)]
     );
     assert_eq!(
         session.runtime().timer_state(WAVE_3),
@@ -415,7 +423,7 @@ fn accept_f39_c_retry_after_several_waves_leaves_no_old_timers_actors_or_cues() 
     // and the one deadline still counting.
     let teardown = session.retry(GEN2).expect("retry");
     assert_eq!(teardown.session, GEN1);
-    assert_eq!(teardown.actors, vec![ActorId(2), ActorId(3), ActorId(4)]);
+    assert_eq!(teardown.actors, vec![spawned(2), spawned(3), spawned(4)]);
     assert_eq!(teardown.cues.len(), 1);
     assert_eq!(teardown.cues[0].session, GEN1);
     assert_eq!(teardown.armed_timers, vec![WAVE_3]);
@@ -447,7 +455,7 @@ fn accept_f39_c_retry_after_several_waves_leaves_no_old_timers_actors_or_cues() 
     let gen2_t1 = arm_step(&mut session, 1, &[WAVE_1, RADIO], 1);
     assert_eq!(gen2_t1.spawns.len(), 1);
     assert_eq!(gen2_t1.spawns[0].session, GEN2);
-    assert_eq!(gen2_t1.spawns[0].instances, vec![ActorId(1), ActorId(2)]);
+    assert_eq!(gen2_t1.spawns[0].instances, vec![spawned(1), spawned(2)]);
     assert!(
         gen2_t1.refusals.is_empty(),
         "a fresh session's emission is never a stale key's refusal"
@@ -525,7 +533,7 @@ fn accept_f39_c_a_retry_cannot_rebuild_the_live_generation() {
     // The refusal left the session untouched: same generation, same wave,
     // same expired timer.
     assert_eq!(session.session(), GEN1);
-    assert_eq!(session.live_actors(), vec![ActorId(1), ActorId(2)]);
+    assert_eq!(session.live_actors(), vec![spawned(1), spawned(2)]);
     assert_eq!(
         session.runtime().timer_state(WAVE_1),
         Some(TimerState::Expired { at: Tick(1) })

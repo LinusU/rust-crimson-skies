@@ -74,7 +74,8 @@ use cs_content::objectives::{
     DeclaredTimerAction, DeclaredTimerStart, DeclaredTrigger, DeclaredVolume,
     FAILURE_KEY_VOCABULARY, MeasuredBranchPrecedence, MeasuredObjectiveRecord,
     OBJECTIVE_INACTIVE_COUNT_KEY, OBJECTIVE_INACTIVE_STAGE_PREFIX, ObjectivesSchemaError,
-    ProgramActor, ProgramSymbol, UNMEASURED_OBJECTIVE_SEMANTICS, is_optional_objective_key,
+    ProgramActor, ProgramActorRef, ProgramSymbol, UNMEASURED_OBJECTIVE_SEMANTICS,
+    is_optional_objective_key,
 };
 use cs_script::ir::{ActorId, SymbolId};
 use cs_script::runtime::SessionGeneration;
@@ -210,7 +211,7 @@ fn out_of_order_program() -> DeclaredObjectiveProgram {
         vec![DeclaredCondition {
             symbol: ProgramSymbol(PROTECTED_LOST),
             kind: DeclaredCountKind::Destroyed,
-            roster: vec![ProgramActor(PROTECTED.0)],
+            roster: vec![ProgramActorRef::Placed(ProgramActor(PROTECTED.0))],
             required: 1,
             reaction: DeclaredCountReaction::Finish(DeclaredTerminalOutcome::Failure),
         }],
@@ -245,7 +246,7 @@ fn out_of_order_program() -> DeclaredObjectiveProgram {
         ],
         vec![DeclaredTrigger {
             symbol: ProgramSymbol(50),
-            actor: ProgramActor(7),
+            actor: ProgramActorRef::Placed(ProgramActor(7)),
             volume: DeclaredVolume::Aabb {
                 min_m: [-1.0, -1.0, -1.0],
                 max_m: [1.0, 1.0, 1.0],
