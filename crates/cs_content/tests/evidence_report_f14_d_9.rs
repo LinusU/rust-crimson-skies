@@ -472,7 +472,7 @@ fn review_identity() -> String {
         "implementer: sonnet-1/sonnet-1 (Rally #558, implement claim of 2026-10-11T14:22:12Z), \
          model Sonnet 5.5. reviewer: sonnet-1/sonnet-1 (Rally #558 review claim of \
          2026-10-11T15:11:53Z), model Sonnet 5.5, a new session with fresh context but the same \
-         agent name and model as the implementer, so this is NOT an independent review and the \
+         agent name and model as the implementer, so this review is not independent, and the \
          format and identity claims still deserve a different agent instance or model. The \
          reviewer re-read the diff, reran fmt, clippy, the workspace tests and the \
          accept_f14_d_9_ suite with CS_GAME_DIR (all green). No agent review awards more than \
