@@ -40,6 +40,12 @@ mod propulsion_gate;
 #[path = "damage/propulsion_equipment.rs"]
 mod propulsion_equipment;
 
+/// The session-schedule driver for every F29-C consumer, from
+/// F29-C-SCHEDULE — also a module of this binary rather than its own test
+/// target, for the same measured CI-disk reason `propulsion_gate` records.
+#[path = "damage/schedule.rs"]
+mod schedule;
+
 use std::collections::BTreeMap;
 
 use cs_app::damage::{
