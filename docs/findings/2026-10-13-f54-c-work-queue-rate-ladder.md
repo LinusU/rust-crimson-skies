@@ -88,9 +88,14 @@ asserts that arithmetic rather than leaving it implicit.
   the derivation above, on F58-B's own type so that changing `DESIGNED` moves
   the cap with it.
 * `validation::RateBudget::forget(peer)` — a departing peer's charge is
-  dropped, so the budget tracks live membership (and a recycled peer id starts
-  fresh; `PeerJoined` forgets too). Without it a long session would eventually
-  refuse a *new* peer with `TooManyPeers`.
+  dropped, so the budget describes the members the session holds rather than
+  every peer the epoch has seen (`PeerJoined` also begins that id with no
+  charge). Without it, a departed peer's entry would stay until
+  `close`/`reopen`: peer ids are never reissued inside an epoch
+  (`compat::PeerAllocator` does not wrap) and the table is capped at
+  `MAX_SESSION_PEERS` keys, so that lingering entry is a hygiene problem and
+  not a reachable `TooManyPeers` — but the tables now track membership
+  directly.
 * `transport::DropReason::RateExceeded { limit, window }` and
   `DropReason::TooManyPeers { max }` — the two named rate/resource refusals.
 * `lifecycle::ServerNotice::RateLimited { peer, cap }` — the absorbed

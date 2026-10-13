@@ -552,8 +552,11 @@ impl ServerSession {
         for event in events {
             match event {
                 HostEvent::PeerJoined { peer } => {
-                    // Peer ids are recycled: a fresh member must start with a
-                    // fresh budget, not the last holder's spent one.
+                    // A new member's rate state starts empty. An epoch never
+                    // reissues a peer id (`compat::PeerAllocator` does not
+                    // wrap), so this is a guard that keeps the tables aligned
+                    // with membership rather than a wipe of someone else's
+                    // spent budget.
                     self.forget_peer(peer);
                     self.members.insert(peer);
                     notices.push(ServerNotice::PeerJoined { peer });
@@ -712,12 +715,16 @@ impl ServerSession {
     /// Drops `peer` from the session's rate state: its window charge and its
     /// current tick's share.
     ///
-    /// Called wherever a peer *relationship* starts or ends — a join (peer
-    /// ids are recycled, so a new client must not inherit the last one's
-    /// spent budget), a departure, `close` and `reopen` — so both tables
-    /// track live membership (`MAX_SESSION_PEERS` at most) rather than every
-    /// peer the epoch ever saw. A cut-off peer keeps its charge on purpose:
-    /// see [`Self::cut_off`].
+    /// Called wherever a peer *relationship* starts or ends — a join (a new
+    /// member's budget begins empty), a departure, `close` and `reopen` — so
+    /// the tables follow the members the session holds instead of every peer
+    /// the epoch has seen. A cut-off peer keeps its charge on purpose: see
+    /// [`Self::cut_off`].
+    ///
+    /// Peer ids are never reissued inside an epoch (`compat::PeerAllocator`
+    /// does not wrap onto an id it already issued), so a charge left behind
+    /// by a peer that is gone can never stand in a later member's way; the
+    /// table is in any case bounded by `MAX_SESSION_PEERS` keys.
     fn forget_peer(&mut self, peer: PeerId) {
         self.rate.forget(peer);
         self.tick_share.remove(&peer);
@@ -734,9 +741,12 @@ impl ServerSession {
     ///
     /// The peer's *window charge* is deliberately kept: the verdict stands
     /// for every later packet of the same epoch, which is what stops a
-    /// cut-off peer's tail from re-entering the queue. Its charge is dropped
-    /// when the peer departs or a (possibly recycled) peer id joins anew
-    /// ([`Self::forget_peer`]), so the table tracks live membership.
+    /// cut-off peer's tail from re-entering the queue. The transport has
+    /// already forgotten that connection when this hangs it up, so no later
+    /// `PeerDeparted` clears the entry: it stays until `close`/`reopen`
+    /// ([`Self::forget_peer`]) and — because an epoch never reissues a peer
+    /// id and the table holds at most `MAX_SESSION_PEERS` keys — it can
+    /// never refuse a peer that comes after it.
     fn cut_off(&mut self, peer: PeerId, threat: ThreatCase, notices: &mut Vec<ServerNotice>) {
         self.tick_share.remove(&peer);
         if self.members.remove(&peer) {
