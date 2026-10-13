@@ -164,14 +164,34 @@ plumbing. The tree was restored (`git checkout --`) and re-checked clean.
 Run on the working tree; exit codes as recorded.
 
 ```sh
+cargo fmt --all -- --check                                                       # 0
+cargo clippy --workspace --all-targets --all-features --locked -- -D warnings    # 0
 cargo check --workspace --all-targets                                            # 0
 cargo test -p cs_sim --locked --test accept_t601_ordnance_identity               # 0: 5 passed
 cargo test -p cs_sim --locked -- accept_f28_ accept_t548_                        # 0: 33 + 3 + 14 + 4 passed
 cargo test -p cs_app --locked -- accept_f28_                                     # 0: 43 passed
-cargo fmt --all -- --check                                                       # 0
-cargo clippy --workspace --all-targets --all-features --locked -- -D warnings    # 0
-cargo test --workspace --locked                                                  # 0
+cargo test -p cs_app --locked                                                   # 0: 221 test binaries ok
+cargo test --workspace --locked --exclude cs_app                                # 0: 2665 passed, 0 failed, 263 ignored
+cargo test --workspace --locked -- accept_t601_ --include-ignored               # 0: 5 passed
 ```
+
+The last two are exactly the split CI runs (`.github/workflows/ci.yml` runs
+`cargo test -p cs_app` and `cargo test --workspace --exclude cs_app`
+separately). One honest measurement a reviewer should know: a single combined
+`cargo test --workspace --locked` run (everything in one process tree, on a
+build host shared with several other agents' builds) failed once in
+`cs_app`'s `accept_f54_c_drive_the_session_round_trip_binds_every_boundary`
+("the mailbox still holds the last snapshot", tick 14 vs 13) — a timing
+sensitivity in the net drive, nothing this branch touches. That test passes
+standalone on this branch, inside the full `-p cs_app` run above, and in CI
+on `main`; no test was changed to accommodate it.
+
+After the rebase onto the then-latest `origin/main` (10 commits, none touching
+these files and no `Cargo.toml`/`Cargo.lock` among them, per the owner's
+2026-10-01 merge-race directive) the lighter check set was re-run on the
+rebased tree: `cargo fmt --all -- --check` (0), `cargo clippy … -D warnings`
+(0) and `cargo test --workspace --locked -- accept_t601_ --include-ignored`
+(0, 5 passed).
 
 ## Evidence
 
