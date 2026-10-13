@@ -1065,9 +1065,7 @@ fn yc_binding_offset(script: &[u8], key: &str) -> Option<usize> {
     let mut from = 0usize;
     while let Some(hit) = find_bytes(&script[from..], marker) {
         let value_at = from + hit + marker.len();
-        let Some(relative_end) = find_bytes(&script[value_at..], b"\"") else {
-            return None;
-        };
+        let relative_end = find_bytes(&script[value_at..], b"\"")?;
         let end = value_at + relative_end;
         let value = &script[value_at..end];
         if value.len() == key.len()
@@ -1088,9 +1086,7 @@ fn script_continue_target(block: &[u8]) -> Option<String> {
     let marker = b"script_continue @";
     let at = find_bytes(block, marker)? + marker.len();
     let end = find_bytes(&block[at..], b"@")? + at;
-    std::str::from_utf8(&block[at..end])
-        .ok()
-        .map(str::to_owned)
+    std::str::from_utf8(&block[at..end]).ok().map(str::to_owned)
 }
 
 /// The `script_run "assets\\scripts\\" "<file>"` target of a block.
@@ -1453,15 +1449,16 @@ pub fn measure_retail_cinematics(
         let file_superseded = find_bytes(page_script, b".BL = ").is_some();
         let guarded = yc_binding_offset(page_script, &movie.key)
             .is_some_and(|offset| freturntogame_guarded(page_script, offset));
-        triggers.entry(key(&movie.file)).or_default().push(
-            RetailTrigger::UiMoviePage {
+        triggers
+            .entry(key(&movie.file))
+            .or_default()
+            .push(RetailTrigger::UiMoviePage {
                 page: page_name.clone(),
                 layout_key: movie.key.clone(),
                 loops: movie.loops,
                 freturntogame_guarded: guarded,
                 file_superseded_by_constructed_name: file_superseded,
-            },
-        );
+            });
         if !order.contains(&key(&movie.file)) {
             order.push(key(&movie.file));
         }

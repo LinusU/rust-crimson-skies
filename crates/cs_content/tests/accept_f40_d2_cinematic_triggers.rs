@@ -30,10 +30,9 @@ use std::fs;
 use std::path::PathBuf;
 
 use cs_content::cinematics::{
-    CLAIM_RETAIL_SKIP_CAMPAIGN_INTRO, CLAIM_RETAIL_SKIP_ENGINE_FMV,
-    CLAIM_RETAIL_SKIP_FINAL_CINEMA, CLAIM_RETAIL_SKIP_MENU_BACKDROP, CLAIM_RETAIL_SKIP_UNREAD,
-    RetailCinematicSources, RetailSemanticEnd, RetailTrigger, UiPageSource,
-    measure_retail_cinematics,
+    CLAIM_RETAIL_SKIP_CAMPAIGN_INTRO, CLAIM_RETAIL_SKIP_ENGINE_FMV, CLAIM_RETAIL_SKIP_FINAL_CINEMA,
+    CLAIM_RETAIL_SKIP_MENU_BACKDROP, CLAIM_RETAIL_SKIP_UNREAD, RetailCinematicSources,
+    RetailSemanticEnd, RetailTrigger, UiPageSource, measure_retail_cinematics,
 };
 use cs_types::content::Resolved;
 
@@ -92,10 +91,7 @@ fn full_fmv() -> Vec<u8> {
         (
             "INTRO",
             vec![
-                zrd_list(vec![
-                    zrd_text("SHOWIMAGE"),
-                    zrd_text("MM_splashbackground"),
-                ]),
+                zrd_list(vec![zrd_text("SHOWIMAGE"), zrd_text("MM_splashbackground")]),
                 playavi("MSopen1.mpg"),
                 playavi("zipper.mpg"),
             ],
@@ -361,7 +357,13 @@ fn accept_f40_d2_full_chain_measures_every_video_and_trigger() {
         [RetailTrigger::FmvSequence { sequence, .. }] if sequence == "CHAP0"
     ));
 
-    for file in ["chap1.mpg", "chap2.mpg", "chap3.mpg", "chap4.mpg", "chap5.mpg"] {
+    for file in [
+        "chap1.mpg",
+        "chap2.mpg",
+        "chap3.mpg",
+        "chap4.mpg",
+        "chap5.mpg",
+    ] {
         let cinematic = cinematics
             .iter()
             .find(|cinematic| cinematic.video() == file)
@@ -571,10 +573,11 @@ fn accept_f40_d2_missing_construction_link_yields_no_chapter_records() {
          CrimFlag, Final only"
     );
     assert!(
-        cinematics
-            .iter()
-            .all(|cinematic| !cinematic.video().to_ascii_lowercase().starts_with("chap")
-                || cinematic.video().eq_ignore_ascii_case("Chap0.mpg")),
+        cinematics.iter().all(|cinematic| !cinematic
+            .video()
+            .to_ascii_lowercase()
+            .starts_with("chap")
+            || cinematic.video().eq_ignore_ascii_case("Chap0.mpg")),
         "only the FMV-named Chap0 remains"
     );
 }
@@ -595,8 +598,7 @@ fn accept_f40_d2_movie_record_without_mpg_name_is_not_a_trigger() {
         control: fixture.control.as_bytes(),
         mpg_files: &fixture.mpg,
     };
-    let inventory =
-        measure_retail_cinematics(&sources).expect("the fixture still measures");
+    let inventory = measure_retail_cinematics(&sources).expect("the fixture still measures");
     assert_eq!(
         inventory.movie_record_without_mpg_name(),
         2,
@@ -636,8 +638,7 @@ fn accept_f40_d2_non_text_playavi_is_counted_not_named() {
         control: fixture.control.as_bytes(),
         mpg_files: &fixture.mpg,
     };
-    let inventory =
-        measure_retail_cinematics(&sources).expect("the fixture still measures");
+    let inventory = measure_retail_cinematics(&sources).expect("the fixture still measures");
     assert_eq!(
         inventory.playavi_not_text(),
         1,
@@ -661,8 +662,7 @@ fn accept_f40_d2_undecodable_fmv_member_is_an_error() {
         control: fixture.control.as_bytes(),
         mpg_files: &fixture.mpg,
     };
-    let error =
-        measure_retail_cinematics(&sources).expect_err("an unknown .zrd tag must refuse");
+    let error = measure_retail_cinematics(&sources).expect_err("an unknown .zrd tag must refuse");
     assert!(
         error.to_string().contains("fmv.zrd"),
         "the error names the member it could not decode: {error}"
@@ -698,10 +698,9 @@ fn retail_rof_member(root: &std::path::Path, member: &str) -> Vec<u8> {
 /// The retail `fmv.zrd` member through the production container discovery.
 fn retail_fmv_member(root: &std::path::Path) -> Vec<u8> {
     let bytes = fs::read(root.join("ZBD/zrdr.zbd")).expect("zrdr.zbd reads");
-    let path = cs_types::install::RelativePath::new("ZBD/zrdr.zbd")
-        .expect("the spelling is relative");
-    let discovery =
-        cs_formats::script_raw::discover_container("ZBD/zrdr.zbd", &path, &bytes);
+    let path =
+        cs_types::install::RelativePath::new("ZBD/zrdr.zbd").expect("the spelling is relative");
+    let discovery = cs_formats::script_raw::discover_container("ZBD/zrdr.zbd", &path, &bytes);
     let fmv = discovery
         .programs()
         .iter()
@@ -714,7 +713,13 @@ fn retail_fmv_member(root: &std::path::Path) -> Vec<u8> {
 fn retail_mpg_names(root: &std::path::Path) -> Vec<String> {
     let mut names: Vec<String> = fs::read_dir(root.join("GOSDATA/ASSETS/GRAPHICS/MPG"))
         .expect("the MPG directory lists")
-        .map(|entry| entry.expect("a directory entry").file_name().to_string_lossy().into_owned())
+        .map(|entry| {
+            entry
+                .expect("a directory entry")
+                .file_name()
+                .to_string_lossy()
+                .into_owned()
+        })
         .filter(|name| name.to_ascii_lowercase().ends_with(".mpg"))
         .collect();
     names.sort();
@@ -724,8 +729,7 @@ fn retail_mpg_names(root: &std::path::Path) -> Vec<String> {
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_f40_d2_retail_triggers_remeasure_from_the_installation() {
-    let root =
-        PathBuf::from(std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR must be set"));
+    let root = PathBuf::from(std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR must be set"));
 
     let fmv = retail_fmv_member(&root);
     let layout = retail_rof_member(&root, "ASSETS/LAYOUT.CSV");
@@ -774,8 +778,7 @@ fn accept_f40_d2_retail_triggers_remeasure_from_the_installation() {
         control: &control,
         mpg_files: &mpg_refs,
     };
-    let inventory =
-        measure_retail_cinematics(&sources).expect("the retail installation measures");
+    let inventory = measure_retail_cinematics(&sources).expect("the retail installation measures");
 
     // Ten videos, each named by an original source, none minted from a file
     // name: the five chap files are the construction's product shape, every
@@ -817,13 +820,14 @@ fn accept_f40_d2_retail_triggers_remeasure_from_the_installation() {
             .unwrap_or_else(|| panic!("{video} is named by the {sequence} sequence"));
         assert!(
             matches!(
-                cinematic.triggers(),
-                [RetailTrigger::FmvSequence {
-                    sequence: found,
-                    archive: "ZBD/zrdr.zbd",
-                    member: "fmv.zrd",
-                }] if found == sequence
-        ),"{video} is triggered by the engine FMV sequence {sequence}: {:?}",
+                    cinematic.triggers(),
+                    [RetailTrigger::FmvSequence {
+                        sequence: found,
+                        archive: "ZBD/zrdr.zbd",
+                        member: "fmv.zrd",
+                    }] if found == sequence
+            ),
+            "{video} is triggered by the engine FMV sequence {sequence}: {:?}",
             cinematic.triggers()
         );
         assert_eq!(
@@ -840,7 +844,13 @@ fn accept_f40_d2_retail_triggers_remeasure_from_the_installation() {
 
     // The chapter construction: chap1..chap5, skippable via the measured
     // intro-page skip handlers, ending by resuming the cabin page.
-    for file in ["chap1.mpg", "chap2.mpg", "chap3.mpg", "chap4.mpg", "chap5.mpg"] {
+    for file in [
+        "chap1.mpg",
+        "chap2.mpg",
+        "chap3.mpg",
+        "chap4.mpg",
+        "chap5.mpg",
+    ] {
         let cinematic = inventory
             .by_video(file)
             .unwrap_or_else(|| panic!("{file} is a construction product"));
@@ -1031,7 +1041,11 @@ fn accept_f40_d2_retail_triggers_remeasure_from_the_installation() {
             fragment.source
         );
     }
-    for name in ["CAMPAIGNINTRO.SCRIPT", "PASSENGERCABIN.SCRIPT", "CTL.SCRIPT"] {
+    for name in [
+        "CAMPAIGNINTRO.SCRIPT",
+        "PASSENGERCABIN.SCRIPT",
+        "CTL.SCRIPT",
+    ] {
         assert!(
             inventory
                 .fragments()
