@@ -8,9 +8,10 @@
 
 use cs_net::authority::{AuthorityDomain, Owner};
 use cs_net::bounds::{
-    MAX_EDGES_PER_FRAME, MAX_INPUT_BATCH_SPAN_TICKS, MAX_INPUT_FRAMES_PER_PACKET, MAX_MODS,
-    MAX_PACKET_BYTES, MAX_SESSION_PEERS, MAX_SNAPSHOT_BYTES,
+    MAX_EDGES_PER_FRAME, MAX_INPUT_BATCH_SPAN_TICKS, MAX_INPUT_FRAMES_PER_PACKET, MAX_MOD_DIFF_IDS,
+    MAX_MODS, MAX_PACKET_BYTES, MAX_SESSION_PEERS, MAX_SNAPSHOT_BYTES,
 };
+use cs_net::codec::{ServerPacket, decode_server_packet, encode_server_packet};
 use cs_net::compat::{
     ClientHello, CompatError, HandshakeReject, HelloReply, PROTOCOL_VERSION, PeerAllocError,
     PeerAllocator, ProtocolVersion, admit_hello, evaluate_hello,
@@ -25,7 +26,7 @@ use cs_net::message::{
     SnapshotFrame, WireError,
 };
 use cs_types::Tick;
-use cs_types::content::{ContentId, ContentKind};
+use cs_types::content::{ContentId, ContentKind, MAX_CONTENT_KEY_LEN};
 use cs_types::evidence::ContentHash;
 use cs_types::input::{Action, AxisValue, FlightCommand, InputFrame, UiAction};
 use cs_types::net::{ActorAllocator, ActorId, EventId, PeerId, SessionId};
@@ -120,7 +121,8 @@ fn accept_f54_a_rules_and_mod_mismatches_are_distinct_rejections() {
         panic!("an extra enabled mod must be rejected");
     };
     assert!(missing.is_empty());
-    assert_eq!(unexpected, vec![synthetic_blueprint_id()]);
+    assert_eq!(unexpected.ids(), [synthetic_blueprint_id()]);
+    assert_eq!(unexpected.omitted(), 0, "one id needs no truncation");
 
     // The mirror image: the session requires a mod the client lacks.
     let mut required = synthetic_parameters();
@@ -132,7 +134,8 @@ fn accept_f54_a_rules_and_mod_mismatches_are_distinct_rejections() {
     else {
         panic!("a missing required mod must be rejected");
     };
-    assert_eq!(missing, vec![synthetic_blueprint_id()]);
+    assert_eq!(missing.ids(), [synthetic_blueprint_id()]);
+    assert_eq!(missing.omitted(), 0, "one id needs no truncation");
     assert!(unexpected.is_empty());
 }
 
@@ -192,6 +195,133 @@ fn accept_f54_a_mod_set_comparison_ignores_order() {
     hello.compatibility.mods = vec![second, first];
 
     assert_eq!(evaluate_hello(&params, &hello), Ok(()));
+}
+
+/// `count` distinct catalog ids at the id grammar's maximum key length, so
+/// each one takes the widest form the wire can carry
+/// ([`MAX_CONTENT_ID_WIRE_BYTES`]'s real bound is the key cap plus the
+/// namespace label and separator).
+fn maximum_length_mod_ids(prefix: &str, count: usize) -> Vec<ContentId> {
+    (0..count)
+        .map(|i| {
+            let head = format!("{prefix}{i:04}");
+            let key = format!("{head}{}", "a".repeat(MAX_CONTENT_KEY_LEN - head.len()));
+            debug_assert_eq!(key.len(), MAX_CONTENT_KEY_LEN, "the key is at its cap");
+            ContentId::from_source(ContentKind::MultiplayerScenario, &key)
+                .expect("the maximum-length key satisfies the id grammar")
+        })
+        .collect()
+}
+
+/// The widest single mod id as it travels: its `namespace/key` text plus the
+/// `u16` length prefix [`crate::codec`] writes in front of it.
+fn widest_mod_wire_bytes() -> usize {
+    let id = maximum_length_mod_ids("probe", 1).pop().expect("one id");
+    2 + id.as_str().len()
+}
+
+#[test]
+fn accept_f54_a_an_oversized_mod_diff_is_truncated_and_still_encodable() {
+    // The F54-B worst case: MAX_MODS maximum-length mods on both sides with
+    // no overlap. Untruncated the reply cannot be encoded inside
+    // MAX_PACKET_BYTES, and the client would see neither a grant nor a
+    // reason; truncated it must still say that the sets differ and how much
+    // was omitted.
+    let session_mods = maximum_length_mod_ids("session", MAX_MODS);
+    let client_mods = maximum_length_mod_ids("client", MAX_MODS);
+
+    let mut params = synthetic_parameters();
+    params.compatibility.mods = session_mods.clone();
+    let mut hello = synthetic_hello();
+    hello.compatibility.mods = client_mods.clone();
+
+    let Err(reject) = evaluate_hello(&params, &hello) else {
+        panic!("two disjoint mod sets must be rejected");
+    };
+    let HandshakeReject::ModSetMismatch {
+        missing,
+        unexpected,
+    } = &reject
+    else {
+        panic!("the rejection must name the mod-set mismatch: {reject:?}");
+    };
+
+    // The untruncated diff would not fit; that is the failure this cap
+    // exists to prevent.
+    let untruncated_bytes = 2 * MAX_MODS * widest_mod_wire_bytes();
+    assert!(
+        untruncated_bytes > MAX_PACKET_BYTES,
+        "the worst-case diff must genuinely overflow the cap: {untruncated_bytes}"
+    );
+
+    // Each direction names the first MAX_MOD_DIFF_IDS ids in catalog-id
+    // order and counts the rest — nothing is silently dropped.
+    let mut sorted_session = session_mods.clone();
+    sorted_session.sort();
+    let mut sorted_client = client_mods.clone();
+    sorted_client.sort();
+    assert_eq!(missing.ids(), &sorted_session[..MAX_MOD_DIFF_IDS]);
+    assert_eq!(missing.omitted() as usize, MAX_MODS - MAX_MOD_DIFF_IDS);
+    assert_eq!(unexpected.ids(), &sorted_client[..MAX_MOD_DIFF_IDS]);
+    assert_eq!(unexpected.omitted() as usize, MAX_MODS - MAX_MOD_DIFF_IDS);
+    assert_eq!(
+        missing.total(),
+        MAX_MODS,
+        "named plus omitted is the whole diff"
+    );
+
+    // The reason names both the mismatch and the truncation.
+    let reason = reject.to_string();
+    assert!(
+        reason.contains("mod set mismatch"),
+        "the reason names the mismatch: {reason}"
+    );
+    assert!(
+        reason.contains(&format!("{} omitted", MAX_MODS - MAX_MOD_DIFF_IDS)),
+        "the reason names the truncation: {reason}"
+    );
+
+    // The reply round-trips the codec inside the cap, and what decodes is
+    // exactly what was rejected with.
+    let reply = HelloReply::Rejected(reject.clone());
+    let bytes = encode_server_packet(&ServerPacket::Reply(reply.clone()))
+        .expect("the truncated worst-case reply must encode");
+    assert!(bytes.len() <= MAX_PACKET_BYTES);
+    assert_eq!(decode_server_packet(&bytes), Ok(ServerPacket::Reply(reply)));
+}
+
+#[test]
+fn accept_f54_a_a_mod_diff_within_the_cap_is_not_truncated() {
+    // Truncation only bounds the reply; a diff that already fits must
+    // arrive whole, so the cap never costs a caller information it had.
+    let session_mods = maximum_length_mod_ids("session", MAX_MOD_DIFF_IDS);
+    let client_mods = maximum_length_mod_ids("client", MAX_MOD_DIFF_IDS);
+
+    let mut params = synthetic_parameters();
+    params.compatibility.mods = session_mods.clone();
+    let mut hello = synthetic_hello();
+    hello.compatibility.mods = client_mods.clone();
+
+    let Err(HandshakeReject::ModSetMismatch {
+        missing,
+        unexpected,
+    }) = evaluate_hello(&params, &hello)
+    else {
+        panic!("two disjoint mod sets must be rejected");
+    };
+    assert_eq!(missing.ids(), session_mods.as_slice());
+    assert_eq!(unexpected.ids(), client_mods.as_slice());
+    assert_eq!(missing.omitted(), 0, "the whole diff fits");
+    assert_eq!(unexpected.omitted(), 0, "the whole diff fits");
+    let reason = HandshakeReject::ModSetMismatch {
+        missing,
+        unexpected,
+    }
+    .to_string();
+    assert!(
+        !reason.contains("omitted;"),
+        "an untruncated diff must not claim omission: {reason}"
+    );
 }
 
 #[test]

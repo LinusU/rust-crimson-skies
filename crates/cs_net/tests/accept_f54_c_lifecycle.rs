@@ -44,8 +44,8 @@ use cs_types::input::{AxisValueError, FlightCommand};
 use cs_types::net::{ActorId, PeerId, SessionAllocator, SessionId};
 
 use cs_net::bounds::{
-    MAX_INPUT_FRAMES_PER_PACKET, MAX_MODS, MAX_PACKET_BYTES, MAX_SEEN_EVENTS, MAX_SNAPSHOT_BYTES,
-    MAX_UNACKED_PACKETS, MAX_WORK_PER_PUMP,
+    MAX_INPUT_FRAMES_PER_PACKET, MAX_MOD_DIFF_IDS, MAX_MODS, MAX_PACKET_BYTES, MAX_SEEN_EVENTS,
+    MAX_SNAPSHOT_BYTES, MAX_UNACKED_PACKETS, MAX_WORK_PER_PUMP,
 };
 use cs_net::codec::{
     ClientPacket, CodecError, ServerPacket, decode_client_packet, decode_server_packet,
@@ -2431,13 +2431,17 @@ fn accept_f54_c_a_refused_client_is_told_why_and_then_hung_up_on() {
 }
 
 #[test]
-fn accept_f54_c_a_handshake_answer_that_cannot_be_sent_is_reported_not_swallowed() {
+fn accept_f54_c_a_worst_case_mod_mismatch_reaches_the_client_as_a_truncated_reason() {
     let _loopback = loopback();
 
-    // Two disjoint sets of maximum-length mod ids: the named rejection needs
-    // 128 catalog ids on the wire, which does not fit a packet. The refusal
-    // must surface as a reported fault and a hang-up, and the client must never
-    // become a peer.
+    // Two disjoint sets of maximum-length mod ids. Untruncated the named
+    // rejection needs 128 catalog ids on the wire and cannot be encoded
+    // inside `MAX_PACKET_BYTES`, so the client saw neither a grant nor a
+    // reason (F54-B/C finding). The bounded diff (F54-C follow-up) truncates
+    // each direction to `MAX_MOD_DIFF_IDS` and counts the rest, so this same
+    // worst case must now end in a delivered, decodable verdict that names
+    // both the mismatch and the truncation — and in no transport fault,
+    // because the reply encodes.
     let session = SessionAllocator::new()
         .allocate()
         .expect("an epoch allocates");
@@ -2451,7 +2455,7 @@ fn accept_f54_c_a_handshake_answer_that_cannot_be_sent_is_reported_not_swallowed
     let bind = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
 
     // The client's own hello stays inside the packet cap; only the *reply*
-    // cannot.
+    // ever overflowed it.
     let mut hello = synthetic_hello();
     hello.compatibility.mods = (MAX_MODS..MAX_MODS * 2).map(long_mod).collect();
     let client_bytes = encode_client_packet(&ClientPacket::Hello(hello.clone()))
@@ -2461,7 +2465,7 @@ fn accept_f54_c_a_handshake_answer_that_cannot_be_sent_is_reported_not_swallowed
         "the hello must be sendable, or the test proves nothing"
     );
 
-    let (host, raw, reported) = live_fixture(|| {
+    let (mut host, mut raw, mut seen) = live_fixture(|| {
         let mut host = ServerSession::bind(session, params.clone(), bind, Duration::ZERO)
             .expect("the host socket binds");
         let addr = host.local_addr().expect("the bound host has an address");
@@ -2476,50 +2480,90 @@ fn accept_f54_c_a_handshake_answer_that_cannot_be_sent_is_reported_not_swallowed
             .expect("the client socket binds"),
             events: Vec::new(),
         };
-        let mut reported = false;
         let mut seen: Vec<ServerNotice> = Vec::new();
         for _ in 0..MAX_ROUNDS {
-            let notices = host.pump(STEP);
-            if notices.iter().any(|notice| {
-                matches!(notice, ServerNotice::TransportFault { reason } if reason.contains("is") && reason.contains("bytes, max is"))
-            }) {
-                reported = true;
-            }
-            let hung_up = notices
-                .iter()
-                .any(|notice| matches!(notice, ServerNotice::HungUp { .. }));
-            seen.extend(notices);
-            if hung_up {
-                break;
+            seen.extend(raw.round(&mut host));
+            if raw.transport.rejection().is_some() {
+                return Ok((host, raw, seen));
             }
             if peer_path_dead(&raw) {
-                break;
+                return Err(peer_delivery(
+                    &raw,
+                    "the truncated answer's delivery",
+                    &seen,
+                ));
             }
-            raw.pump();
         }
-        if !seen
+        Err(peer_delivery(
+            &raw,
+            "the truncated answer's delivery",
+            &seen,
+        ))
+    });
+
+    // The client holds the named, truncated reason — the verdict F54-C could
+    // only surface as a fault and a hang-up.
+    let rejection = raw
+        .transport
+        .rejection()
+        .expect("the worst-case rejection was delivered");
+    let HandshakeReject::ModSetMismatch {
+        missing,
+        unexpected,
+    } = rejection
+    else {
+        panic!("the rejection must name the mod-set mismatch: {rejection:?}");
+    };
+    assert_eq!(missing.ids().len(), MAX_MOD_DIFF_IDS);
+    assert_eq!(missing.omitted() as usize, MAX_MODS - MAX_MOD_DIFF_IDS);
+    assert_eq!(unexpected.ids().len(), MAX_MOD_DIFF_IDS);
+    assert_eq!(unexpected.omitted() as usize, MAX_MODS - MAX_MOD_DIFF_IDS);
+    let reason = rejection.to_string();
+    assert!(
+        reason.contains("mod set mismatch"),
+        "the client can report that its mod set differs: {reason}"
+    );
+    assert!(
+        reason.contains("omitted"),
+        "the client can report the truncation: {reason}"
+    );
+
+    // The host *sent* the verdict: reported with its reason, with no
+    // transport fault, and the client never became a peer.
+    assert!(
+        seen.iter().any(|notice| matches!(
+            notice,
+            ServerNotice::PeerRefused {
+                reason: HandshakeReject::ModSetMismatch { .. }
+            }
+        )),
+        "the refusal was reported with its reason: {seen:?}"
+    );
+    assert!(
+        !seen
+            .iter()
+            .any(|notice| matches!(notice, ServerNotice::TransportFault { .. })),
+        "the reply encoded; nothing failed on the way out: {seen:?}"
+    );
+    assert!(raw.transport.grant().is_none(), "it never became a peer");
+    assert!(host.members().next().is_none(), "and left no member behind");
+
+    // The rejected connection is still hung up on: it holds no peer id and
+    // must not keep occupying one of the session's netcode slots.
+    for _ in 0..MAX_ROUNDS {
+        if seen
             .iter()
             .any(|notice| matches!(notice, ServerNotice::HungUp { .. }))
         {
-            return Err(peer_delivery(
-                &raw,
-                "the unencodable answer's hang-up",
-                &seen,
-            ));
+            break;
         }
-        Ok((host, raw, reported))
-    });
+        raw.pump();
+        seen.extend(host.pump(STEP));
+    }
     assert!(
-        reported,
-        "an unencodable handshake answer is reported, not swallowed; the host saw {host:?}"
-    );
-    assert!(
-        host.members().next().is_none(),
-        "and the client never became a peer"
-    );
-    assert!(
-        raw.transport.grant().is_none() && raw.transport.rejection().is_none(),
-        "the client holds neither a grant nor a reason, because neither was sent"
+        seen.iter()
+            .any(|notice| matches!(notice, ServerNotice::HungUp { .. })),
+        "the rejected connection was hung up on; the host saw {seen:?}"
     );
 }
 
@@ -3153,13 +3197,15 @@ fn accept_f54_c_a_client_without_a_grant_refuses_every_server_packet() {
 fn accept_f54_c_a_wrong_protocol_revision_is_refused_through_the_lifecycle() {
     // The revision rides inside the handshake, so the only way a lifecycle
     // owner can meet another one is a client that offers it. This runs the real
-    // handshake with a client offering revision 2: the host must refuse it with
-    // the named reason, tell the client, and never make it a peer.
+    // handshake with a client offering the next revision past this build's:
+    // the host must refuse it with the named reason, tell the client, and never
+    // make it a peer.
     let session = SessionAllocator::new()
         .allocate()
         .expect("an epoch allocates");
     let mut hello = synthetic_hello();
-    let offered = cs_net::compat::ProtocolVersion::new(2).expect("two is nonzero");
+    let offered =
+        cs_net::compat::ProtocolVersion::new(PROTOCOL_VERSION.get() + 1).expect("nonzero version");
     hello.protocol = offered;
     let hello_offered = hello.protocol;
     // The handshake's answer is the verdict under test: a `Refused` closure

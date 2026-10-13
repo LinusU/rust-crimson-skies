@@ -18,7 +18,7 @@ use std::net::{Ipv4Addr, SocketAddr};
 use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
-use cs_net::bounds::{MAX_INPUT_FRAMES_PER_PACKET, MAX_MODS, MAX_PACKET_BYTES};
+use cs_net::bounds::{MAX_INPUT_FRAMES_PER_PACKET, MAX_MOD_DIFF_IDS, MAX_MODS, MAX_PACKET_BYTES};
 use cs_net::codec::{
     ClientPacket, CodecError, ServerPacket, decode_client_packet, decode_server_packet,
     encode_client_message, encode_client_packet, encode_server_packet,
@@ -674,6 +674,85 @@ fn accept_f54_b_handshake_admits_and_returns_a_grant_over_udp() {
         "the host saw the second join: {:?}",
         link.host_events
     );
+}
+
+/// `count` distinct catalog ids at the id grammar's maximum key length: the
+/// widest mod ids the wire can carry, the F54-B worst case for a reply.
+fn maximum_length_mod_ids(prefix: &str, count: usize) -> Vec<cs_types::content::ContentId> {
+    (0..count)
+        .map(|i| {
+            let head = format!("{prefix}{i:04}");
+            let key = format!(
+                "{head}{}",
+                "a".repeat(cs_types::content::MAX_CONTENT_KEY_LEN - head.len())
+            );
+            cs_types::content::ContentId::from_source(
+                cs_types::content::ContentKind::MultiplayerScenario,
+                &key,
+            )
+            .expect("the maximum-length key satisfies the id grammar")
+        })
+        .collect()
+}
+
+/// The F54-C follow-up acceptance: a handshake whose mod sets differ by the
+/// worst case the grammar can produce — `MAX_MODS` maximum-length ids on
+/// each side, no overlap — still delivers a decodable
+/// [`cs_net::compat::HelloReply::Rejected`] that names both the mismatch and
+/// the truncation, over real UDP. Before the bounded diff this reply could
+/// not be encoded inside `MAX_PACKET_BYTES` at all: the host's send failed,
+/// the client saw neither grant nor reason, and the connection was hung up
+/// (`HostEvent::ReplyFailed`, F54-B/C finding).
+#[test]
+fn accept_f54_b_a_worst_case_mod_mismatch_reaches_the_client_as_a_truncated_reason() {
+    let mut params = synthetic_parameters();
+    params.compatibility.mods = maximum_length_mod_ids("session", MAX_MODS);
+    let mut hello = synthetic_hello();
+    hello.compatibility.mods = maximum_length_mod_ids("client", MAX_MODS);
+
+    let mut link = Link::new(SYNTHETIC_SESSION, params, hello, 42);
+    link.client_until(|event| matches!(event, ClientEvent::Rejected { .. }));
+
+    let rejection = link.client.rejection().expect("the rejection was stored");
+    let HandshakeReject::ModSetMismatch {
+        missing,
+        unexpected,
+    } = rejection
+    else {
+        panic!("the rejection must name the mod-set mismatch: {rejection:?}");
+    };
+    assert_eq!(missing.ids().len(), MAX_MOD_DIFF_IDS);
+    assert_eq!(missing.omitted() as usize, MAX_MODS - MAX_MOD_DIFF_IDS);
+    assert_eq!(unexpected.ids().len(), MAX_MOD_DIFF_IDS);
+    assert_eq!(unexpected.omitted() as usize, MAX_MODS - MAX_MOD_DIFF_IDS);
+    let reason = rejection.to_string();
+    assert!(
+        reason.contains("mod set mismatch"),
+        "the client can report that its mod set differs: {reason}"
+    );
+    assert!(
+        reason.contains("omitted"),
+        "the client can report the truncation: {reason}"
+    );
+
+    // The host *sent* the verdict: the encode succeeded and the rejection
+    // went out, rather than dying as a ReplyFailed hang-up.
+    assert!(
+        link.host_events
+            .iter()
+            .any(|event| matches!(event, HostEvent::PeerRejected { .. })),
+        "the host recorded the rejection: {:?}",
+        link.host_events
+    );
+    assert!(
+        !link
+            .host_events
+            .iter()
+            .any(|event| matches!(event, HostEvent::ReplyFailed { .. })),
+        "the reply encoded and sent; nothing failed: {:?}",
+        link.host_events
+    );
+    assert_eq!(link.client.grant(), None);
 }
 
 #[test]
