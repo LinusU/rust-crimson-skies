@@ -444,16 +444,19 @@ fn review_identity() -> String {
     let recorded = String::from(
         "the subject of this record, Rally #593 (F14-D-NODE-MESH-CODE): implementer \
          opencode/step-5-preview-free (bunny-alpha-2, implement claim of \
-         2026-10-13T05:20:56Z, resumed 2026-10-13T07:00:00Z on the same claim). No reviewer is \
-         recorded in this text, because no review claim on #593 had been opened when this report \
-         was written; Rally merges a stage only through `complete_review` or its landing queue, so \
-         the merge that lands this branch is where the reviewing agent and the freshness of that \
-         agent's context become facts, and the reviewing agent replaces this literal with its own \
-         text in the same commit that lands. Until then this record names its implementer and \
-         claims nothing more: `implemented`, and checked at best once a review runs. The \
-         reviewer's context was therefore not fresh, because there was no reviewer yet. Nothing in \
-         this record is independent original-reference evidence, and no agent review replaces the \
-         owner's human approval.",
+         2026-10-13T05:20:56Z, resumed twice after lease expiries), with the rebases and the \
+         evidence re-recording finished by an earlier Devin SWE-2/swe2-max-1 session after the \
+         last expiry. Reviewer Devin SWE-2/swe2-max-1 (review claim of 2026-10-13T18:27:53Z), a \
+         different agent instance with a fresh context — it did not write the change, it reviewed \
+         the diff against the task's criteria, made one consistency edit inside the task's owner \
+         path (the material edge's named-slot set now reads the same format-level verdicts rather \
+         than a third `meshes.get` lookup), re-ran the full `accept_f14_d_` selection locally with \
+         `retail` and re-recorded this report on the reviewed tree. The reviewer shares a model \
+         with the earlier swe2-max-1 session that prepared the submission, so the review is \
+         fresh-context but not a different model, and no agent review replaces the owner's human \
+         approval. Nothing in this record is independent original-reference evidence: `retail` \
+         is read access to the installation's own files, the original game was never run, and the \
+         format-level check measures what the files state rather than what the engine did.",
     );
     std::env::var("CS_EVIDENCE_REVIEW").unwrap_or(recorded)
 }
