@@ -184,7 +184,9 @@
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fmt;
 
-use cs_formats::gamez::{GameZNodes, NodeKind as StoredNodeKind, RawLodData, RawNode};
+use cs_formats::gamez::{
+    GameZNodes, NodeKind as StoredNodeKind, RawLodData, RawNode, RawObject3dData,
+};
 use cs_formats::interp::{DecodedInterp, InterpLine, InterpScript};
 use cs_types::content::{ContentId, ContentIdError, ContentKind, Known, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
@@ -1707,7 +1709,16 @@ const TRANSLATION_SOURCE_FIELDS: [&str; 3] = ["translation[0]", "translation[1]"
 /// the axis map (`A·L·Aᵀ`), and the translation scaled by `meters_per_unit`.
 /// The euler triple is in the source's declared angle unit, converted to
 /// radians through the adapter exactly once.
-fn canonical_local(
+///
+/// This is **the one conversion rule for a stored object3d transform**
+/// (task #645): the scene build ([`SceneGraph::build`], through
+/// [`scene_graph_from_gamez`]) and the world container import
+/// (`crate::world::import_world_container`) both call it, so one stored
+/// record can never be placed in two different places by two different
+/// precedence rules. The rule is a designed conversion precedence derived
+/// from the pinned reference's reader — it is not a measurement of where
+/// the original engine placed any record.
+pub(crate) fn canonical_local(
     transform: &AuthoredTransform,
     adapter: &SourceAdapter,
 ) -> Result<CanonicalTransform, SpaceError> {
@@ -3812,29 +3823,41 @@ fn parsed_node_from_gamez(
 /// whose record carries none.
 fn authored_transform(node: &RawNode) -> AuthoredTransform {
     match node.object3d() {
-        // A record the store flagged as storing no transform holds exactly the
-        // identity, so the identity is what crosses over rather than four
-        // words that happen to be zero. The check is on the flag **and** on the
-        // record really being the identity: a record whose flag says "no
-        // transform" while storing something else is reported by the reader as
-        // `ObjectIdentityNotIdentity`, and discarding its numbers here would
-        // throw away the only trace of the disagreement before any caller
-        // could see it. The store's own words cross over in that case.
-        Some(object)
-            if object.stores_identity()
-                && object.rotation == [0.0; 3]
-                && object.translation == [0.0; 3]
-                && object.scale == [1.0; 3] =>
-        {
-            AuthoredTransform::IDENTITY
-        }
-        Some(object) => AuthoredTransform {
-            rotation: object.rotation,
-            scale: object.scale,
-            matrix: object.matrix_disagrees().then_some(object.matrix),
-            translation: object.translation,
-        },
+        Some(object) => authored_object_transform(object),
         None => AuthoredTransform::IDENTITY,
+    }
+}
+
+/// The authored transform one stored object3d record carries — the single
+/// reading of the record both production conversion paths share (task #645).
+///
+/// A record the store flagged as storing no transform holds exactly the
+/// identity, so the identity is what crosses over rather than four words that
+/// happen to be zero. The check is on the flag **and** on the record really
+/// being the identity: a record whose flag says "no transform" while storing
+/// something else is reported by the reader as `ObjectIdentityNotIdentity`,
+/// and discarding its numbers here would throw away the only trace of the
+/// disagreement before any caller could see it. The store's own words cross
+/// over in that case.
+///
+/// The stored 3×3 crosses over only when it **disagrees** with the record's
+/// own euler triple (`RawObject3dData::matrix_disagrees`); when the two
+/// agree, the euler triple is the transform, and it — not the stored matrix —
+/// is what [`canonical_local`] converts, so the adapter's declared angle unit
+/// is applied exactly once.
+pub(crate) fn authored_object_transform(object: RawObject3dData) -> AuthoredTransform {
+    if object.stores_identity()
+        && object.rotation == [0.0; 3]
+        && object.translation == [0.0; 3]
+        && object.scale == [1.0; 3]
+    {
+        return AuthoredTransform::IDENTITY;
+    }
+    AuthoredTransform {
+        rotation: object.rotation,
+        scale: object.scale,
+        matrix: object.matrix_disagrees().then_some(object.matrix),
+        translation: object.translation,
     }
 }
 
@@ -5425,5 +5448,128 @@ pub fn discover_mission_only_airframes(
         issues,
         unknowns,
         followed,
+    }
+}
+
+// ------------------------------------------- one object3d transform rule ---
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cs_formats::gamez::{OBJECT3D_FLAGS_IDENTITY, OBJECT3D_FLAGS_TRANSFORMED};
+
+    /// The declared canonical conversion: identity axis map, radians, one
+    /// metre per unit, so a source-space value crosses unchanged.
+    fn canonical_adapter() -> SourceAdapter {
+        SourceAdapter::declared()
+            .into_iter()
+            .find(|adapter| adapter.source().label() == "canonical")
+            .expect("the F16-A registry declares the canonical source")
+    }
+
+    /// A stored object3d record that flags identity while storing something
+    /// else: the flag alone must not hand it the identity (task #645). The
+    /// stored 3×3 disagrees with its (zero) euler triple, so the stored words
+    /// win and the record keeps its placement.
+    #[test]
+    fn accept_t645_identity_flag_does_not_discard_a_stored_transform() {
+        let adapter = canonical_adapter();
+        let object = RawObject3dData {
+            flags: OBJECT3D_FLAGS_IDENTITY,
+            rotation: [0.0; 3],
+            scale: [1.0; 3],
+            matrix: [[2.0, 0.0, 0.0], [0.0, 3.0, 0.0], [0.0, 0.0, 4.0]],
+            translation: [5.0, 0.0, 0.0],
+        };
+        assert!(object.stores_identity());
+        assert!(object.matrix_disagrees());
+
+        let authored = authored_object_transform(object);
+        assert_ne!(
+            authored,
+            AuthoredTransform::IDENTITY,
+            "a record flagged identity while storing a transform must not be silently given the identity"
+        );
+        assert_eq!(authored.matrix, Some(object.matrix));
+
+        let canonical = canonical_local(&authored, &adapter).expect("the record is finite");
+        assert_eq!(
+            canonical.linear(),
+            object.matrix.map(|row| row.map(f64::from))
+        );
+        let translation = adapter
+            .position_to_canonical(object.translation.map(f64::from))
+            .expect("the translation is finite")
+            .to_array();
+        assert_eq!(canonical.translation(), translation);
+    }
+
+    /// When the stored 3×3 agrees with the record's own euler triple (within
+    /// the reader's agreement tolerance), the euler path is the transform:
+    /// the canonical value is the euler-derived matrix in full precision, not
+    /// the stored (perturbed) f32 one, so the adapter's declared angle unit
+    /// is applied exactly once.
+    #[test]
+    fn accept_t645_agreeing_matrix_uses_the_euler_path() {
+        let adapter = canonical_adapter();
+        let rotation = [0.25_f32, -0.5, 1.0];
+        let mut matrix = stored_euler_f32(rotation);
+        matrix[0][1] += 1.0e-5; // inside MATRIX_AGREEMENT_TOLERANCE (1.0e-4)
+        let object = RawObject3dData {
+            flags: OBJECT3D_FLAGS_TRANSFORMED,
+            rotation,
+            scale: [1.0; 3],
+            matrix,
+            translation: [0.0; 3],
+        };
+        assert!(!object.matrix_disagrees());
+
+        let authored = authored_object_transform(object);
+        assert_eq!(
+            authored.matrix, None,
+            "an agreeing stored matrix must not cross over; the euler triple is the transform"
+        );
+        let canonical = canonical_local(&authored, &adapter).expect("the record is finite");
+        assert_eq!(canonical.linear(), euler_matrix(rotation.map(f64::from)));
+        assert_ne!(
+            canonical.linear(),
+            matrix.map(|row| row.map(f64::from)),
+            "the perturbed stored matrix must not have been used"
+        );
+    }
+
+    /// When the stored 3×3 disagrees with the euler triple, the stored one
+    /// wins — the file's own numbers are the transform.
+    #[test]
+    fn accept_t645_disagreeing_matrix_wins() {
+        let adapter = canonical_adapter();
+        let rotation = [0.25_f32, -0.5, 1.0];
+        let matrix = [[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0]];
+        let object = RawObject3dData {
+            flags: OBJECT3D_FLAGS_TRANSFORMED,
+            rotation,
+            scale: [1.0; 3],
+            matrix,
+            translation: [0.0; 3],
+        };
+        assert!(object.matrix_disagrees());
+
+        let authored = authored_object_transform(object);
+        assert_eq!(authored.matrix, Some(matrix));
+        let canonical = canonical_local(&authored, &adapter).expect("the record is finite");
+        assert_eq!(canonical.linear(), matrix.map(|row| row.map(f64::from)));
+    }
+
+    /// The reference's own euler convention, computed in f32 — the comparison
+    /// base the reader's agreement check uses.
+    fn stored_euler_f32(rotation: [f32; 3]) -> [[f32; 3]; 3] {
+        RawObject3dData {
+            flags: OBJECT3D_FLAGS_TRANSFORMED,
+            rotation,
+            scale: [1.0; 3],
+            matrix: [[0.0; 3]; 3],
+            translation: [0.0; 3],
+        }
+        .euler_matrix()
     }
 }

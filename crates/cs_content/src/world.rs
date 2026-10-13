@@ -97,7 +97,7 @@ use std::fmt;
 use cs_assets::install::sha256;
 use cs_formats::gamez::{
     GameZNodes, NODE_TYPE_OBJECT3D, NODE_TYPE_WORLD, NodeKind as StoredNodeKind, RawNode,
-    RawObject3dData, WORLD_DATA_BYTES, WORLD_PARTITION_BYTES, WORLD_PARTITION_VALUE_BYTES,
+    WORLD_DATA_BYTES, WORLD_PARTITION_BYTES, WORLD_PARTITION_VALUE_BYTES,
 };
 use cs_types::content::{
     ContentId, ContentIdError, ContentKind, Known, Origin, Provenance, Resolved,
@@ -108,7 +108,7 @@ use cs_types::space::SpaceError;
 use crate::coordinates::{AngleUnit, CalibratedQuantity, RotationSense, SourceAdapter};
 use crate::scene::{
     BindingMap, CanonicalTransform, GameZSceneError, MeshSlot, ParsedNode, SceneError, SceneGraph,
-    parsed_nodes_from_gamez,
+    authored_object_transform, canonical_local, parsed_nodes_from_gamez,
 };
 
 /// The longest subordinate world key this module accepts, in bytes.
@@ -6162,43 +6162,6 @@ fn canonical_bounds(
     Aabb::try_new(min, max).map_err(WorldImportError::Bounds)
 }
 
-/// Converts one object record's authored transform into canonical metres.
-///
-/// The stored 3×3 wins over the record's own euler triple, which is the format
-/// reader's precedence rule
-/// ([`RawObject3dData::matrix`](cs_formats::gamez::RawObject3dData::matrix));
-/// the per-axis scale multiplies the matrix's columns; the whole linear map is
-/// then conjugated through the adapter's signed permutation and the translation
-/// scaled by its length factor. A record that stores the identity is the store
-/// saying so, not a default this conversion chose.
-fn canonical_transform(
-    object: &RawObject3dData,
-    adapter: &SourceAdapter,
-) -> Result<CanonicalTransform, WorldImportError> {
-    if object.stores_identity() {
-        return Ok(CanonicalTransform::IDENTITY);
-    }
-    let mut source = object.matrix.map(|row| row.map(f64::from));
-    for (column, scale) in object.scale.iter().enumerate() {
-        for row in &mut source {
-            row[column] *= f64::from(*scale);
-        }
-    }
-    let axes = adapter.source().convention().axes();
-    let mut linear = [[0.0f64; 3]; 3];
-    for (canonical_row, row) in axes.iter().enumerate() {
-        for (canonical_column, column) in axes.iter().enumerate() {
-            linear[canonical_row][canonical_column] = row.sign.factor()
-                * column.sign.factor()
-                * source[row.axis.index()][column.axis.index()];
-        }
-    }
-    let translation = adapter
-        .position_to_canonical(object.translation.map(f64::from))?
-        .to_array();
-    CanonicalTransform::try_new(linear, translation).map_err(WorldImportError::Space)
-}
-
 /// Imports one world container's node array and its own partition grid into a
 /// [`WorldDefinition`].
 ///
@@ -6562,7 +6525,17 @@ pub fn import_world_container(
         objects.push(WorldObjectInstance::try_new(
             WorldObjectId::new(&object_key(record.index))?,
             mesh,
-            canonical_transform(&object, adapter)?,
+            // One rule for a stored object3d transform (task #645): the world
+            // import and the scene build convert every record through the same
+            // `cs_content::scene` helper — the store's identity flag honoured
+            // only when the record really is the identity, the stored 3×3
+            // winning over the euler triple only when the two disagree, and
+            // the euler triple converted through the adapter's declared angle
+            // unit. `matrix_disagreements` above stays the honest count of
+            // records whose stored matrix disagrees with their euler triple,
+            // whichever arm places them.
+            canonical_local(&authored_object_transform(object), adapter)
+                .map_err(WorldImportError::Space)?,
             collision,
             shape,
             surface,
