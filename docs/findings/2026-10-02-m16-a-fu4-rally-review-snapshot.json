@@ -10,7 +10,7 @@
   "actor_meaning": "Rally actor strings are `<agent instance>/<session label>`. Two claims from the same actor string are the same agent instance, so the second is not independent of the first (owner ruling 2026-09-28, review policy).",
   "independent_is_derived": "The check derives independence from actor equality; this file records the actors and the event timestamps, not a verdict.",
   "every_merged_stage_has_a_review_claim": "Rally only merges a stage through complete_review or its landing queue, so every stage listed here has at least one review claim and a reviewer to name.",
-  "scope": "Only the stages whose committed `review.identity` was still a hand-over placeholder when this file was written. Every other committed report is either already honest or names no reviewer at all without carrying a placeholder; the latter are filed as follow-up #484 rather than rewritten here. F14-D.7 was added to this file later, under F14-D.7-SNAPSHOT (#578): its report already named the implementer and the reviewer honestly but was written before any snapshot covered it, so the snapshot-backed rules were not enforced for it; see `entries_added_after_writing`. F14-D.10.image, F14-D.10 and F14-D.9.mission-only were added to this file later, under #1380: their committed reports still carried the pre-review wording ('the Rally review claim opened after this submission; at the time of writing no review has taken place') after all three stages had merged, and that wording matches no PLACEHOLDERS entry, so the snapshot-backed rules were not enforced for them either; see `entries_added_after_writing`.",
+  "scope": "Only the stages whose committed `review.identity` was still a hand-over placeholder when this file was written. Every other committed report is either already honest or names no reviewer at all without carrying a placeholder; the latter are filed as follow-up #484 rather than rewritten here. F14-D.7 was added to this file later, under F14-D.7-SNAPSHOT (#578): its report already named the implementer and the reviewer honestly but was written before any snapshot covered it, so the snapshot-backed rules were not enforced for it; see `entries_added_after_writing`. F14-D.10.image, F14-D.10 and F14-D.9.mission-only were added to this file later, under #1380: their committed reports still carried the pre-review wording ('the Rally review claim opened after this submission; at the time of writing no review has taken place') after all three stages had merged, and that wording matches no PLACEHOLDERS entry, so the snapshot-backed rules were not enforced for them either; see `entries_added_after_writing`. F14-D.9 was added the same way, under F14-D.9-RECONCILE (#1382): its report named both agents but spelled the self-review as `NOT an independent review`, missing the contiguous `not independent` substring the check pins, so the wording was reconciled and the entry added once its merge event existed; see `entries_added_after_writing`.",
   "actor_spelling": "The check matches the recorded `actor` verbatim against the committed report's `review.identity`, so `actor` holds the spelling the report itself uses. Every entry this file's author wrote spells Rally's `<agent instance>/<session label>` actor string out in its report, so there `actor` is that whole string. F14-D.7's report spells the agent as `openrouter/stealth-space-bunny-alpha (bunny-alpha-2, ...)`, so its `actor` is the agent-instance name `bunny-alpha-2` and its `rally_actor` holds Rally's verbatim actor string. Both spellings name the same instance and the same session, and nothing else in the check reads the spelling: the equality that derives independence compares the two recorded actors, so it is unaffected.",
   "model_spelling": "`model` is the provider-qualified model id in the spelling the rest of this repository uses (`openrouter/stealth/space-bunny-alpha`; `docs/findings/2026-10-02-f28-d-original-ordnance-catalogue.md` records the same id as `stealth/space-bunny-alpha`), not the report's: F14-D.7's `review.identity` flattens the slashes into `openrouter/stealth-space-bunny-alpha`, which is that id inside prose and not an id of its own. Nothing in the check reads this field; it records which model ran both claims, because AGENTS.md asks for a different instance *or model* for an independent review.",
   "report_written_by_meaning": "Derived from the report's own `created_at` against the claim windows in the Rally log: a `created_at` inside a review claim means the reviewer regenerated the report, one inside the implement claim means the committed copy is the implementer's. `report_regenerated_on_reviewed_commit` is `true` only when the reviewer's run wrote the copy that reached `main`.",
@@ -22,6 +22,14 @@
       "added_by": "bunny-alpha-2/bunny-alpha-2",
       "read_at": "2026-10-03T08:52:00Z",
       "note": "The review of #490 was done by the same agent instance that implemented it and the branch landed through Rally's landing queue, so its `task.merged` event is a system event rather than a reviewer action. The entry was therefore added only after that event really existed (2026-10-03T08:47:46Z); the reviewer of #490 declined to predict one. Read with the `rally` MCP server (get_activity for #490) from the activity log, not from the hand-over summaries."
+    },
+    {
+      "task_key": "F14-D.9",
+      "rally_task": 558,
+      "added_under": "F14-D.9-RECONCILE (#1382)",
+      "added_by": "bunny-alpha-2/bunny-alpha-2",
+      "read_at": "2026-10-13T00:11:01Z",
+      "note": "#1380 found that F14-D.9's committed report spelled its non-independence as `NOT an independent review`, which lacks the contiguous `not independent` substring the check pins for a self-review, so adding a snapshot entry would have newly failed and the stage was left in the unrecorded advisory list by design. #1382 reconciled the wording (report and harness literal, byte-equal) and added this entry afterwards; the rule was not changed to tolerate the old spelling. Read with the `rally` MCP server (get_task for #558) from the activity log: the reviewer of #558 was the implementer's own instance, sonnet-1/sonnet-1, and the branch fast-forwarded directly, so `merge_event` is the reviewer's own `task.merged` at 2026-10-11T15:42:38Z."
     },
     {
       "task_key": "F14-D.10.image",
@@ -262,6 +270,26 @@
       "report_regenerated_on_reviewed_commit": true,
       "self_review": "The implementer and the reviewer are the same agent instance and model, so this review is not independent evidence and the check requires the report to keep saying so; the reviewer of #490 recorded the same in its `complete_review` notes.",
       "notes": "`merge_event` is a system event: the reviewer approved the stage at `approval_event` and Rally's landing queue rebased the branch onto main and fast-forwarded main to `merged_sha`, so the copy of the report on main is the one the reviewer's own run wrote (`created_at` 2026-10-03T08:32:27Z, inside the review claim). See `actor_spelling` for why `actor` is the agent-instance name rather than Rally's `<instance>/<session>` string."
+    },
+    {
+      "task_key": "F14-D.9",
+      "rally_task": 558,
+      "evidence_report": "docs/findings/evidence/F14-D.9.json",
+      "merged_sha": "08c1d2bcc1916434a996067956f57b853906e8b3",
+      "implementer": {
+        "actor": "sonnet-1/sonnet-1",
+        "claim_started": "2026-10-11T14:22:12Z",
+        "submitted": "2026-10-11T15:11:42Z"
+      },
+      "reviewer": {
+        "actor": "sonnet-1/sonnet-1",
+        "review_claim_started": "2026-10-11T15:11:53Z",
+        "merge_event": {"type": "task.merged", "actor": "sonnet-1/sonnet-1", "at": "2026-10-11T15:42:38Z"}
+      },
+      "report_written_by": "reviewer",
+      "report_regenerated_on_reviewed_commit": true,
+      "self_review": "The implementer and the reviewer are the same agent instance (sonnet-1/sonnet-1), so this review is not independent evidence and the check requires the report to keep saying so; #1382 reconciled the report's spelling of that fact to the pinned `not independent` substring after #1380 left the stage in the unrecorded advisory list by design.",
+      "notes": "Read with the `rally` MCP server (get_task for #558) from the activity log, not from a hand-over summary: task.started 2026-10-11T14:22:12Z, task.submitted 2026-10-11T15:11:42Z, review.started 2026-10-11T15:11:53Z, task.merged 2026-10-11T15:42:38Z, all by sonnet-1/sonnet-1 — a direct fast-forward by the reviewer, not the landing queue, so `merge_event.actor` is the reviewer itself. `report_written_by` is read off the report's own `created_at` (2026-10-11T15:17:58Z, inside the review claim) against those windows: the reviewer regenerated the committed copy, as the implementer's hand-over note asked, and CI was green on the merged sha. The report spells the model `Sonnet 5.5`; this file records no provider-qualified model id because the Rally log carries none."
     },
     {
       "task_key": "F14-D.10.image",
