@@ -439,6 +439,25 @@ pub enum DropReason {
         /// The queue's cap.
         limit: usize,
     },
+    /// A peer spent the whole rate budget the session designed for one
+    /// server-tick window, so an otherwise admitted packet was refused and
+    /// the peer was cut off (F58-B [`crate::validation::RateLimits`], the
+    /// `ImpossibleRate` class). This is the escalation the per-tick rate
+    /// limiting in [`crate::lifecycle::ServerSession`] leads to, not the
+    /// first thing a bursting peer meets.
+    RateExceeded {
+        /// The designed cap.
+        limit: u32,
+        /// The window the cap was reached in.
+        window: u64,
+    },
+    /// The per-peer rate budget refuses to track more peers than the session
+    /// has peer ids for, so it refuses the packet rather than grow (F58-B,
+    /// the `ResourceExhaustion` class).
+    TooManyPeers {
+        /// [`crate::bounds::MAX_SESSION_PEERS`].
+        max: usize,
+    },
     /// The session gate refused an otherwise well-formed packet — a replay, a
     /// stale epoch, or a payload outside the wire bounds. Its
     /// [`SessionViolation::disposition`] says whether it was absorbed or
@@ -461,6 +480,8 @@ impl DropReason {
             Self::Decode(_) | Self::ExtraHello => ThreatCase::MalformedMessage,
             Self::NoPeer => ThreatCase::UnauthenticatedPeer,
             Self::QueueOverflow { .. } => ThreatCase::ResourceExhaustion,
+            Self::RateExceeded { .. } => ThreatCase::ImpossibleRate,
+            Self::TooManyPeers { .. } => ThreatCase::ResourceExhaustion,
             Self::Refused(violation) => violation.threat(),
         }
     }
@@ -476,6 +497,15 @@ impl fmt::Display for DropReason {
             Self::NoPeer => f.write_str("session traffic from a client with no peer id"),
             Self::QueueOverflow { limit } => {
                 write!(f, "the host work queue is full ({limit} packets)")
+            }
+            Self::RateExceeded { limit, window } => {
+                write!(
+                    f,
+                    "the peer's rate budget for server-tick window {window} is spent ({limit} intents)"
+                )
+            }
+            Self::TooManyPeers { max } => {
+                write!(f, "the rate budget tracks at most {max} peers")
             }
             Self::Refused(violation) => write!(f, "the session gate refused it: {violation}"),
         }

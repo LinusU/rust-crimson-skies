@@ -740,6 +740,47 @@ impl RateLimits {
         window_ticks: 60,
         max_intents_per_window: 96,
     };
+
+    /// One window expressed in ticks, never zero (a zero-length window would
+    /// otherwise divide by nothing).
+    #[must_use]
+    pub const fn window(self) -> u64 {
+        if self.window_ticks == 0 {
+            1
+        } else {
+            self.window_ticks
+        }
+    }
+
+    /// The most intents one peer may spend in a **single** server tick: the
+    /// window's allowance divided over the window's ticks, rounded *up* to a
+    /// whole intent.
+    ///
+    /// This is not a second design. It is [`Self::DESIGNED`]'s own sustained
+    /// rate (96 intents over 60 ticks, i.e. 1.6 per tick) expressed in whole
+    /// packets, which is the number an admission path needs before it can
+    /// refuse one peer's surplus *within a tick* instead of letting that peer
+    /// spend a bound the whole session shares. The rounding is upward, so the
+    /// cap can never sit below the design's own rate, and for any window of at
+    /// least one tick it is at most `max_intents_per_window` itself.
+    ///
+    /// Used by [`crate::lifecycle::ServerSession`], which admits at most one
+    /// tick's work per pump round.
+    #[must_use]
+    pub const fn max_intents_per_tick(self) -> u32 {
+        let limit = self.max_intents_per_window;
+        let window = self.window();
+        if window == 1 {
+            return limit;
+        }
+        // `ceil(limit / window)` in u64: `window > 1` and `limit <= u32::MAX`
+        // keep the quotient well inside u32, and ceil division avoids
+        // truncating 1.6 intents per tick down to one.
+        let per_tick = (limit as u64).div_ceil(window);
+        // Narrowing is safe: for `window > 1` the quotient is strictly below
+        // `limit`, which is a `u32` to begin with.
+        per_tick as u32
+    }
 }
 
 impl Default for RateLimits {
@@ -849,7 +890,7 @@ impl RateBudget {
         server_tick: Tick,
         cost: u32,
     ) -> Result<u32, RateViolation> {
-        let window = server_tick.0 / self.limits.window_ticks.max(1);
+        let window = server_tick.0 / self.limits.window();
         let limit = self.limits.max_intents_per_window;
         match self.peers.get_mut(&peer) {
             Some(charge) if charge.window == window => {
@@ -889,6 +930,17 @@ impl RateBudget {
                 Ok(cost)
             }
         }
+    }
+
+    /// Forgets one peer's charge, as a peer leaving the session does.
+    ///
+    /// Without this the budget would remember every peer the epoch ever saw,
+    /// so [`Self::charge`] would eventually refuse a *new* peer with
+    /// [`RateViolation::TooManyPeers`] although the session never held more
+    /// than [`MAX_SESSION_PEERS`] members at once. The map is then bounded by
+    /// the live membership, not by everyone who ever joined.
+    pub fn forget(&mut self, peer: PeerId) {
+        self.peers.remove(&peer);
     }
 
     /// Forgets every peer's charge (a fresh session epoch starts empty).

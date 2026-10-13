@@ -32,8 +32,19 @@
 //! Every queue in this module has a cap from [`crate::bounds`], because a
 //! network peer is not a caller:
 //!
-//! * the host's work queue stops at [`MAX_WORK_PER_PUMP`]; the surplus is
-//!   refused and the offending peer is disconnected (`ResourceExhaustion`);
+//! * admitted input passes a **per-peer rate ladder** before it reaches the
+//!   work queue (F54-C follow-up task
+//!   `F54-C-followup-work-queue-last-resort`). One peer's share of one pump
+//!   round is [`RateLimits::max_intents_per_tick`]: the surplus is refused
+//!   and counted ([`ServerNotice::RateLimited`]) while the connection
+//!   continues, which is the rate limiting a bursting peer meets *first*.
+//!   A peer that keeps over-running the declared window budget
+//!   ([`RateBudget`], F58-B's [`RateLimits::DESIGNED`], charged on the
+//!   session's own clock) is refused with [`DropReason::RateExceeded`] and
+//!   cut off as [`ThreatCase::ImpossibleRate`]. Only then is the shared queue
+//!   bound — [`MAX_WORK_PER_PUMP`] — what a *session-wide* flood reaches, and
+//!   it is unchanged: the surplus is refused and the peer that spent it is
+//!   disconnected (`ResourceExhaustion`);
 //! * the client's dedup seen-set stops at [`MAX_SEEN_EVENTS`], evicting the
 //!   *oldest* id so a long session cannot grow it without limit;
 //! * the client's retransmit window stops at [`MAX_UNACKED_PACKETS`];
@@ -60,7 +71,7 @@
 //! claim is made about the original game's networking, and no original
 //! multiplayer content has been loaded.
 
-use std::collections::{BTreeSet, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
 use std::net::SocketAddr;
 use std::time::Duration;
@@ -86,7 +97,10 @@ use crate::transport::{
     AdmittedInput, CHANNEL_SEQUENCED, ClientEvent, ClientTransport, DropReason, HostEvent,
     HostTransport, SendOutcome, TransportError,
 };
-use crate::validation::{Admission, FireRequest, SessionGate, ThreatCase, ThreatDisposition};
+use crate::validation::{
+    Admission, FireRequest, RateBudget, RateLimits, RateViolation, SessionGate, ThreatCase,
+    ThreatDisposition,
+};
 
 /// The `EventId::producer` the host's own lifecycle events carry. The host is
 /// producer 0 in the session's event stream; gameplay systems own other
@@ -96,9 +110,10 @@ pub const HOST_EVENT_PRODUCER: u32 = 0;
 /// How long a client waits, with no newer input to send and no acknowledgment
 /// arriving, before retransmitting its oldest unacknowledged packet verbatim.
 ///
-/// This is a retransmission *window*, not a rate limiter: the pacing and
-/// per-tick request caps are F58-B's declared `ImpossibleRate` work, and this
-/// module deliberately does not invent numbers for them.
+/// This is a retransmission *window*, not a rate limiter: the per-tick request
+/// cap the host enforces comes from F58-B's declared [`RateLimits`] (see the
+/// rate ladder in `ServerSession::enqueue`), and this module deliberately
+/// does not invent numbers for either.
 pub const INPUT_RETRY_INTERVAL: Duration = Duration::from_millis(250);
 
 // ------------------------------------------------------------------ host ----
@@ -245,6 +260,23 @@ pub enum ServerNotice {
         /// Why the traffic was refused.
         reason: DropReason,
     },
+    /// The rate limiter refused this peer's surplus *without* cutting it off:
+    /// it had already spent its
+    /// [`per-tick share`](crate::validation::RateLimits::max_intents_per_tick)
+    /// of the work queue in this pump round.
+    ///
+    /// The packets are dropped and counted ([`ServerSession::rate_refused`])
+    /// and the connection continues — this is the rate limiting a bursting
+    /// peer meets first, before any cut-off. The declared
+    /// [`ThreatCase::ImpossibleRate`] hang-up is what
+    /// [`DropReason::RateExceeded`] reports when a peer blows its whole
+    /// per-tick-*window* budget instead of one tick's share of it.
+    RateLimited {
+        /// The peer whose surplus was refused.
+        peer: PeerId,
+        /// The per-tick share it had already spent this round.
+        cap: u32,
+    },
     /// A gate refusal whose declared disposition is
     /// [`ThreatDisposition::Disconnect`]; the peer was hung up.
     CutOff {
@@ -289,6 +321,10 @@ impl fmt::Display for ServerNotice {
                 Some(peer) => write!(f, "dropped traffic from {peer}: {reason}"),
                 None => write!(f, "dropped traffic from a client with no peer: {reason:?}"),
             },
+            Self::RateLimited { peer, cap } => write!(
+                f,
+                "refused {peer}'s surplus: it is already at its rate share of {cap} packet(s) this tick"
+            ),
             Self::CutOff { peer, threat } => match peer {
                 Some(peer) => write!(f, "hung up on {peer}: {}", threat.label()),
                 None => write!(f, "hung up on a client with no peer: {}", threat.label()),
@@ -315,6 +351,20 @@ pub struct ServerSession {
     hung_up: Vec<ClientId>,
     next_event: u32,
     overflowed: u32,
+    /// F58-B's declared per-peer window budget, charged on [`Self::rate_tick`].
+    rate: RateBudget,
+    /// The session's own rate clock: one tick per [`Self::pump`].
+    ///
+    /// No client can move it, which is what makes the rate windows in
+    /// [`RateBudget`] server-owned.
+    rate_tick: Tick,
+    /// How many packets each peer has had admitted in the *current* tick.
+    ///
+    /// Cleared at the top of every [`Self::pump`], so it is bounded by the
+    /// peers that spoke in one round and never accumulates.
+    tick_share: BTreeMap<PeerId, u32>,
+    /// Packets the rate ladder refused over this epoch.
+    rate_refused: u32,
 }
 
 impl ServerSession {
@@ -339,6 +389,10 @@ impl ServerSession {
             hung_up: Vec::new(),
             next_event: 0,
             overflowed: 0,
+            rate: RateBudget::designed(),
+            rate_tick: Tick(0),
+            tick_share: BTreeMap::new(),
+            rate_refused: 0,
         })
     }
 
@@ -402,6 +456,32 @@ impl ServerSession {
         self.overflowed
     }
 
+    /// How many packets the **rate ladder** has refused over this epoch: the
+    /// per-tick share refusals ([`ServerNotice::RateLimited`]) plus the
+    /// window-budget ones ([`DropReason::RateExceeded`]).
+    ///
+    /// This is the "refused and counted" half of the ladder — a count that
+    /// exists so a caller can see rate limiting happening without waiting for
+    /// a cut-off.
+    #[must_use]
+    pub const fn rate_refused(&self) -> u32 {
+        self.rate_refused
+    }
+
+    /// The declared rate limits this session enforces (F58-B's
+    /// [`RateLimits`], never a number this module invented).
+    #[must_use]
+    pub fn rate_limits(&self) -> RateLimits {
+        self.rate.limits()
+    }
+
+    /// The session's own rate clock, in server ticks: one tick per
+    /// [`Self::pump`], which is what keys the rate windows.
+    #[must_use]
+    pub const fn rate_tick(&self) -> Tick {
+        self.rate_tick
+    }
+
     /// Takes the admitted input the simulation should apply this tick, oldest
     /// first, leaving the queue empty.
     ///
@@ -443,10 +523,22 @@ impl ServerSession {
     /// Advances the connection layers and drains everything that arrived into
     /// session decisions.
     ///
-    /// `elapsed` is the host tick's duration. The returned notices are ordered:
+    /// `elapsed` is the host tick's duration. One call is one tick of the
+    /// session's own rate clock ([`Self::rate_tick`]), which is what the
+    /// per-peer rate windows are keyed on and what bounds the per-tick share
+    /// counted in `Self::enqueue`. The returned notices are ordered:
     /// membership changes first, then admitted input, then refusals.
     pub fn pump(&mut self, elapsed: Duration) -> Vec<ServerNotice> {
         let mut notices = Vec::new();
+
+        // One host tick. Advancing it here — from the host's own clock, never
+        // from anything a client sends — is what lets `RateBudget` say "this
+        // peer has already spent this window" without a client being able to
+        // refill the window by naming new ticks.
+        self.rate_tick = Tick(self.rate_tick.0.saturating_add(1));
+        // The per-tick share belongs to one round: it never accumulates into
+        // a second, longer cap nobody designed.
+        self.tick_share.clear();
 
         // Hang up on connections the *previous* pump condemned. Deferring by one
         // round lets renet flush the reliable handshake answer or the last
@@ -460,6 +552,9 @@ impl ServerSession {
         for event in events {
             match event {
                 HostEvent::PeerJoined { peer } => {
+                    // Peer ids are recycled: a fresh member must start with a
+                    // fresh budget, not the last holder's spent one.
+                    self.forget_peer(peer);
                     self.members.insert(peer);
                     notices.push(ServerNotice::PeerJoined { peer });
                 }
@@ -473,6 +568,7 @@ impl ServerSession {
                 }
                 HostEvent::PeerDeparted { peer } => {
                     self.members.remove(&peer);
+                    self.forget_peer(peer);
                     notices.push(ServerNotice::PeerLeft { peer });
                 }
                 HostEvent::PeerPacket {
@@ -498,12 +594,7 @@ impl ServerSession {
                                 reason: DropReason::Refused(violation.clone()),
                             });
                             if violation.disposition() == ThreatDisposition::Disconnect {
-                                notices.push(ServerNotice::CutOff {
-                                    peer: Some(peer),
-                                    threat: violation.threat(),
-                                });
-                                self.members.remove(&peer);
-                                self.transport.disconnect_peer(peer);
+                                self.cut_off(peer, violation.threat(), &mut notices);
                             }
                         }
                     }
@@ -532,27 +623,129 @@ impl ServerSession {
         notices
     }
 
-    /// Queues one admitted packet, or refuses it and disconnects the peer when
-    /// the queue is at [`MAX_WORK_PER_PUMP`].
+    /// Queues one admitted packet behind the per-peer rate ladder — rate
+    /// first, shared queue last — or refuses it with the named reason for the
+    /// step that refused it.
+    ///
+    /// The ladder, in order:
+    ///
+    /// 1. **the declared window budget** ([`RateBudget`], F58-B's
+    ///    [`RateLimits::DESIGNED`], charged for *every* offered packet,
+    ///    queued or not, on the session's own [`Self::rate_tick`]): a peer
+    ///    that already spent this window's `max_intents_per_window` is
+    ///    refused with [`DropReason::RateExceeded`] and hung up as
+    ///    [`ThreatCase::ImpossibleRate`] — the declared disposition of that
+    ///    threat, not a rule this module chose. This is the abuse verdict,
+    ///    and it is the *last* resort of the rate system;
+    /// 2. **this tick's share** ([`RateLimits::max_intents_per_tick`]): a
+    ///    peer may put at most its per-tick share into the queue in one pump
+    ///    round. The surplus is refused and counted
+    ///    ([`ServerNotice::RateLimited`], [`Self::rate_refused`]) and the
+    ///    connection continues — this is rate limiting, the step a bursting
+    ///    peer meets *first*;
+    /// 3. **the shared queue bound** ([`MAX_WORK_PER_PUMP`]), unchanged: a
+    ///    full queue still refuses the surplus and still hangs the peer up as
+    ///    [`ThreatCase::ResourceExhaustion`].
+    ///
+    /// Steps 1 and 2 are what make step 3 a backstop rather than the first
+    /// line of defence: with the designed numbers a single peer can offer at
+    /// most `max_intents_per_tick()` packets per round, and
+    /// `MAX_SESSION_PEERS` peers of that share are exactly
+    /// `MAX_WORK_PER_PUMP`, so one peer can no longer spend the shared bound
+    /// alone — reaching it takes a flood from the whole session, or a consumer
+    /// that stopped draining.
     fn enqueue(&mut self, input: PeerInput, notices: &mut Vec<ServerNotice>) {
+        let peer = input.peer;
+
+        // 1. The declared window budget, charged before anything is queued,
+        //    so a surplus cannot spend the queue while owing the budget.
+        if let Err(violation) = self.rate.charge(peer, self.rate_tick, 1) {
+            self.rate_refused = self.rate_refused.saturating_add(1);
+            match violation {
+                RateViolation::Exceeded { limit, window } => {
+                    notices.push(ServerNotice::Dropped {
+                        peer: Some(peer),
+                        reason: DropReason::RateExceeded { limit, window },
+                    });
+                    self.cut_off(peer, ThreatCase::ImpossibleRate, notices);
+                }
+                RateViolation::TooManyPeers { max } => {
+                    // The budget refuses to grow past the session's peer
+                    // space rather than tracking packets: the declared
+                    // `ResourceExhaustion` class.
+                    notices.push(ServerNotice::Dropped {
+                        peer: Some(peer),
+                        reason: DropReason::TooManyPeers { max },
+                    });
+                    self.cut_off(peer, ThreatCase::ResourceExhaustion, notices);
+                }
+            }
+            return;
+        }
+
+        // 2. This round's per-tick share: refuse and count, keep the peer.
+        let cap = self.rate.limits().max_intents_per_tick();
+        let used = self.tick_share.entry(peer).or_insert(0);
+        if *used >= cap {
+            self.rate_refused = self.rate_refused.saturating_add(1);
+            notices.push(ServerNotice::RateLimited { peer, cap });
+            return;
+        }
+        *used += 1;
+
+        // 3. The shared queue bound: the session-wide backstop.
         if self.work.len() >= MAX_WORK_PER_PUMP {
             self.overflowed = self.overflowed.saturating_add(1);
             notices.push(ServerNotice::Dropped {
-                peer: Some(input.peer),
+                peer: Some(peer),
                 reason: DropReason::QueueOverflow {
                     limit: MAX_WORK_PER_PUMP,
                 },
             });
-            notices.push(ServerNotice::CutOff {
-                peer: Some(input.peer),
-                threat: ThreatCase::ResourceExhaustion,
-            });
-            self.members.remove(&input.peer);
-            self.transport.disconnect_peer(input.peer);
+            self.cut_off(peer, ThreatCase::ResourceExhaustion, notices);
             return;
         }
         notices.push(ServerNotice::Admitted(input.clone()));
         self.work.push_back(input);
+    }
+
+    /// Drops `peer` from the session's rate state: its window charge and its
+    /// current tick's share.
+    ///
+    /// Called wherever a peer *relationship* starts or ends — a join (peer
+    /// ids are recycled, so a new client must not inherit the last one's
+    /// spent budget), a departure, `close` and `reopen` — so both tables
+    /// track live membership (`MAX_SESSION_PEERS` at most) rather than every
+    /// peer the epoch ever saw. A cut-off peer keeps its charge on purpose:
+    /// see [`Self::cut_off`].
+    fn forget_peer(&mut self, peer: PeerId) {
+        self.rate.forget(peer);
+        self.tick_share.remove(&peer);
+    }
+
+    /// Hangs up on `peer` because `threat` says to, once.
+    ///
+    /// The threat class is only carried here: the *decision* to disconnect
+    /// was already made by asking the declared [`ThreatCase::disposition`]
+    /// table (or, for the queue bound, by the bound itself), so this cannot
+    /// become a second, private rule about who gets cut off. The cut-off is
+    /// reported only if the peer was still a member, so a burst that keeps
+    /// arriving after the verdict does not repeat it.
+    ///
+    /// The peer's *window charge* is deliberately kept: the verdict stands
+    /// for every later packet of the same epoch, which is what stops a
+    /// cut-off peer's tail from re-entering the queue. Its charge is dropped
+    /// when the peer departs or a (possibly recycled) peer id joins anew
+    /// ([`Self::forget_peer`]), so the table tracks live membership.
+    fn cut_off(&mut self, peer: PeerId, threat: ThreatCase, notices: &mut Vec<ServerNotice>) {
+        self.tick_share.remove(&peer);
+        if self.members.remove(&peer) {
+            notices.push(ServerNotice::CutOff {
+                peer: Some(peer),
+                threat,
+            });
+        }
+        self.transport.disconnect_peer(peer);
     }
 
     /// Hangs up on one transport connection and records why.
@@ -711,6 +904,12 @@ impl ServerSession {
         }
         self.members.clear();
         self.work.clear();
+        // The membership is gone, so the per-peer rate state that only ever
+        // described membership goes with it; the epoch's *counts*
+        // (`overflowed`, `rate_refused`) survive until [`Self::reopen`], as
+        // they always have.
+        self.rate.reset();
+        self.tick_share.clear();
         self.phase = ServerPhase::Closed;
         Ok(peers.len())
     }
@@ -742,6 +941,10 @@ impl ServerSession {
         self.hung_up.clear();
         self.next_event = 0;
         self.overflowed = 0;
+        self.rate.reset();
+        self.rate_tick = Tick(0);
+        self.tick_share.clear();
+        self.rate_refused = 0;
         self.phase = ServerPhase::Gathering;
         Ok(hung_up)
     }
@@ -786,6 +989,8 @@ impl fmt::Debug for ServerSession {
             .field("members", &self.members)
             .field("queued", &self.work.len())
             .field("overflowed", &self.overflowed)
+            .field("rate_tick", &self.rate_tick)
+            .field("rate_refused", &self.rate_refused)
             .finish_non_exhaustive()
     }
 }
