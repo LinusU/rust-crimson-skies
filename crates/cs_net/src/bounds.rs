@@ -21,6 +21,20 @@ pub const MAX_SESSION_PEERS: usize = 32;
 /// Largest enabled-mod list a handshake offer may carry.
 pub const MAX_MODS: usize = 64;
 
+/// Most differing mod ids one direction of a handshake's mod-set diff names.
+///
+/// A [`crate::compat::HandshakeReject::ModSetMismatch`] is a *bounded*
+/// representation of the difference: each of its two id lists holds at most
+/// this many ids, and the matching omitted-count field says how many more
+/// differed. That cap is what keeps the refusal encodable inside
+/// [`MAX_PACKET_BYTES`]: at the worst case of [`MAX_MODS`] maximum-length
+/// catalog ids on both sides with no overlap, an untruncated diff cannot be
+/// encoded at all and the client sees neither a grant nor a reason (F54-B/C
+/// finding, task F54-C-followup-mods-diff-cap). The client can therefore
+/// always be told *that* its mod set differs, even when it cannot be shown
+/// every differing id.
+pub const MAX_MOD_DIFF_IDS: usize = 8;
+
 /// Most tick-stamped [`cs_types::input::InputFrame`]s one input packet may
 /// carry ("bounded tick-stamped inputs", spec F54 deliverable).
 pub const MAX_INPUT_FRAMES_PER_PACKET: usize = 8;

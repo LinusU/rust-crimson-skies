@@ -21,12 +21,17 @@ use cs_types::content::ContentId;
 use cs_types::evidence::ContentHash;
 use cs_types::net::{PeerId, SessionId};
 
-use crate::bounds::{MAX_MODS, MAX_SESSION_PEERS};
+use crate::bounds::{MAX_MOD_DIFF_IDS, MAX_MODS, MAX_SESSION_PEERS};
 
 /// The wire protocol revision this build speaks.
 ///
 /// `PROTOCOL_VERSION` is the single revision this build accepts; there is no
-/// negotiated range yet because no second revision exists.
+/// negotiated range yet. Revision 2 bounded the
+/// [`HandshakeReject::ModSetMismatch`] diff (F54-C follow-up): revision 1
+/// carried every differing mod id and could not be encoded inside
+/// [`crate::bounds::MAX_PACKET_BYTES`] at the worst case, so a build speaking
+/// either revision must be refused cleanly rather than misdecode the other's
+/// reply.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct ProtocolVersion(u16);
 
@@ -49,7 +54,7 @@ impl fmt::Display for ProtocolVersion {
 }
 
 /// The only protocol revision this build speaks.
-pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion(1);
+pub const PROTOCOL_VERSION: ProtocolVersion = ProtocolVersion(2);
 
 /// The signature a peer must match to join a session: which engine rules,
 /// which canonical content and which enabled mods it runs.
@@ -153,6 +158,108 @@ pub struct SessionParameters {
     pub compatibility: Compatibility,
 }
 
+/// One direction of a mod-set difference, as it travels on the wire: the
+/// first [`MAX_MOD_DIFF_IDS`] differing ids in catalog-id order plus how many
+/// more differed and were omitted.
+///
+/// The truncation happens exactly once, in [`ModDiff::from_diff`], which the
+/// handshake evaluation calls; the codec encodes and decodes the result
+/// verbatim. The bound is what keeps a rejection encodable inside
+/// [`crate::bounds::MAX_PACKET_BYTES`] at every reachable diff size — see
+/// [`crate::bounds::MAX_MOD_DIFF_IDS`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModDiff {
+    /// The named ids: the first [`MAX_MOD_DIFF_IDS`] differing ids in
+    /// catalog-id order. At most [`MAX_MOD_DIFF_IDS`] entries.
+    ids: Vec<ContentId>,
+    /// How many further differing ids were omitted by the truncation.
+    omitted: u32,
+}
+
+impl ModDiff {
+    /// Bounds one direction of a mod-set difference.
+    ///
+    /// Sorts the ids into catalog-id order — so the named head is the same
+    /// whichever side produced the diff and however its mod list was ordered
+    /// — keeps the first [`MAX_MOD_DIFF_IDS`] and counts the rest as omitted.
+    #[must_use]
+    pub fn from_diff(mut ids: Vec<ContentId>) -> Self {
+        ids.sort();
+        let omitted = ids.len().saturating_sub(MAX_MOD_DIFF_IDS);
+        ids.truncate(MAX_MOD_DIFF_IDS);
+        Self {
+            ids,
+            omitted: omitted as u32,
+        }
+    }
+
+    /// Rebuilds a diff from its wire parts: the decoded (already
+    /// cap-checked) ids and the decoded omitted count.
+    ///
+    /// The reader refuses a count past [`MAX_MOD_DIFF_IDS`] before this runs,
+    /// so the parts arrive inside the bound; the clamp here keeps that
+    /// invariant true for *every* construction of the type, and any surplus
+    /// is folded into `omitted` rather than silently dropped.
+    pub(crate) fn from_parts(mut ids: Vec<ContentId>, omitted: u32) -> Self {
+        let surplus = ids.len().saturating_sub(MAX_MOD_DIFF_IDS);
+        ids.truncate(MAX_MOD_DIFF_IDS);
+        Self {
+            ids,
+            omitted: omitted.saturating_add(surplus as u32),
+        }
+    }
+
+    /// The named ids, in catalog-id order. At most [`MAX_MOD_DIFF_IDS`].
+    #[must_use]
+    pub fn ids(&self) -> &[ContentId] {
+        &self.ids
+    }
+
+    /// How many further differing ids the truncation omitted.
+    #[must_use]
+    pub const fn omitted(&self) -> u32 {
+        self.omitted
+    }
+
+    /// The total number of differing ids in this direction, named and
+    /// omitted together.
+    #[must_use]
+    pub fn total(&self) -> usize {
+        self.ids.len() + self.omitted as usize
+    }
+
+    /// Whether this direction of the diff is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.ids.is_empty() && self.omitted == 0
+    }
+}
+
+impl fmt::Display for ModDiff {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{} differing ids", self.total())?;
+        if !self.ids.is_empty() {
+            write!(f, ", first {}: [", self.ids.len())?;
+            for (index, id) in self.ids.iter().enumerate() {
+                if index > 0 {
+                    f.write_str(", ")?;
+                }
+                write!(f, "{id}")?;
+            }
+            f.write_str("]")?;
+        }
+        if self.omitted > 0 {
+            let omitted = self.omitted;
+            write!(
+                f,
+                " ({omitted} omitted; the reply names at most \
+                 {MAX_MOD_DIFF_IDS} per direction)"
+            )?;
+        }
+        Ok(())
+    }
+}
+
 /// Why a [`ClientHello`] was rejected. Every variant names the exact
 /// mismatch so the client can report it ("rejected with a clear reason",
 /// spec F54 AC01) instead of failing as a bare disconnect.
@@ -184,11 +291,23 @@ pub enum HandshakeReject {
         offered: ContentHash,
     },
     /// The enabled-mod sets differ.
+    ///
+    /// The diff is **bounded**: each direction names at most
+    /// [`MAX_MOD_DIFF_IDS`] differing ids (the first ones in catalog-id
+    /// order, so the kept head is deterministic whatever order the two sides
+    /// listed their mods in) and its `*_omitted` count says how many more
+    /// differed. Without the bound a worst case — [`MAX_MODS`] maximum-length
+    /// catalog ids on each side with no overlap — cannot be encoded inside
+    /// [`crate::bounds::MAX_PACKET_BYTES`] at all, and the client would see
+    /// neither a grant nor a reason. The client can therefore always be told
+    /// *that* its mod set differs, even when it cannot be shown every id.
     ModSetMismatch {
-        /// Mods the session requires that the client does not enable.
-        missing: Vec<ContentId>,
-        /// Mods the client enables that the session does not run.
-        unexpected: Vec<ContentId>,
+        /// The first [`MAX_MOD_DIFF_IDS`] mods the session requires that the
+        /// client does not enable, in catalog-id order.
+        missing: ModDiff,
+        /// The first [`MAX_MOD_DIFF_IDS`] mods the client enables that the
+        /// session does not run, in catalog-id order.
+        unexpected: ModDiff,
     },
     /// The session already holds [`MAX_SESSION_PEERS`] peers, so no peer id is
     /// left to admit this client with.
@@ -220,7 +339,7 @@ impl fmt::Display for HandshakeReject {
                 unexpected,
             } => write!(
                 f,
-                "mod set mismatch: missing {missing:?}, unexpected {unexpected:?}"
+                "mod set mismatch: missing {missing}, unexpected {unexpected}"
             ),
             Self::SessionFull { max } => {
                 write!(f, "session already holds its maximum of {max} peers")
@@ -304,9 +423,11 @@ pub fn evaluate_hello(
     }
     // `missing_mods` answers "what does `other` enable that this signature
     // does not", so the client's copy names what the *session* requires that
-    // the client lacks, and the session's copy names the reverse.
-    let missing = hello.compatibility.missing_mods(&params.compatibility);
-    let unexpected = params.compatibility.missing_mods(&hello.compatibility);
+    // the client lacks, and the session's copy names the reverse. Both
+    // directions are bounded here, where the diff is computed: the reply a
+    // host sends can never exceed the packet cap because of its diff.
+    let missing = ModDiff::from_diff(hello.compatibility.missing_mods(&params.compatibility));
+    let unexpected = ModDiff::from_diff(params.compatibility.missing_mods(&hello.compatibility));
     if !missing.is_empty() || !unexpected.is_empty() {
         return Err(HandshakeReject::ModSetMismatch {
             missing,

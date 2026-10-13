@@ -33,11 +33,11 @@ use cs_types::input::{Action, AxisValue, FlightCommand, InputFrame, UiAction};
 use cs_types::net::{ActorId, EventId, PeerId, SessionId};
 
 use crate::bounds::{
-    MAX_EDGES_PER_FRAME, MAX_INPUT_FRAMES_PER_PACKET, MAX_MODS, MAX_PACKET_BYTES,
+    MAX_EDGES_PER_FRAME, MAX_INPUT_FRAMES_PER_PACKET, MAX_MOD_DIFF_IDS, MAX_MODS, MAX_PACKET_BYTES,
     MAX_SNAPSHOT_BYTES,
 };
 use crate::compat::{
-    ClientHello, CompatError, Compatibility, HandshakeReject, HelloReply, ProtocolVersion,
+    ClientHello, CompatError, Compatibility, HandshakeReject, HelloReply, ModDiff, ProtocolVersion,
     SessionGrant,
 };
 use crate::message::{
@@ -455,8 +455,12 @@ fn put_compat_error(w: &mut Writer, error: &CompatError) {
     }
 }
 
-fn content_id_list(r: &mut Reader<'_>, field: &'static str) -> Result<Vec<ContentId>, CodecError> {
-    let count = r.count(field, MAX_MODS)?;
+fn content_id_list(
+    r: &mut Reader<'_>,
+    field: &'static str,
+    max: usize,
+) -> Result<Vec<ContentId>, CodecError> {
+    let count = r.count(field, max)?;
     let mut ids = Vec::with_capacity(count);
     for _ in 0..count {
         ids.push(content_id(r, field)?);
@@ -464,11 +468,22 @@ fn content_id_list(r: &mut Reader<'_>, field: &'static str) -> Result<Vec<Conten
     Ok(ids)
 }
 
-fn put_content_id_list(w: &mut Writer, ids: &[ContentId]) {
-    put_count(w, ids.len());
-    for id in ids {
+fn mod_diff(
+    r: &mut Reader<'_>,
+    field: &'static str,
+    omitted_field: &'static str,
+) -> Result<ModDiff, CodecError> {
+    let ids = content_id_list(r, field, MAX_MOD_DIFF_IDS)?;
+    let omitted = r.u32(omitted_field)?;
+    Ok(ModDiff::from_parts(ids, omitted))
+}
+
+fn put_mod_diff(w: &mut Writer, diff: &ModDiff) {
+    put_count(w, diff.ids().len());
+    for id in diff.ids() {
         put_content_id(w, id);
     }
+    w.u32(diff.omitted());
 }
 
 fn handshake_reject(r: &mut Reader<'_>) -> Result<HandshakeReject, CodecError> {
@@ -490,8 +505,12 @@ fn handshake_reject(r: &mut Reader<'_>) -> Result<HandshakeReject, CodecError> {
             Ok(HandshakeReject::ContentMismatch { expected, offered })
         }
         4 => {
-            let missing = content_id_list(r, "reject.mods.missing")?;
-            let unexpected = content_id_list(r, "reject.mods.unexpected")?;
+            let missing = mod_diff(r, "reject.mods.missing", "reject.mods.missing_omitted")?;
+            let unexpected = mod_diff(
+                r,
+                "reject.mods.unexpected",
+                "reject.mods.unexpected_omitted",
+            )?;
             Ok(HandshakeReject::ModSetMismatch {
                 missing,
                 unexpected,
@@ -533,8 +552,8 @@ fn put_handshake_reject(w: &mut Writer, reject: &HandshakeReject) {
             unexpected,
         } => {
             w.u8(4);
-            put_content_id_list(w, missing);
-            put_content_id_list(w, unexpected);
+            put_mod_diff(w, missing);
+            put_mod_diff(w, unexpected);
         }
         HandshakeReject::SessionFull { max } => {
             w.u8(5);
