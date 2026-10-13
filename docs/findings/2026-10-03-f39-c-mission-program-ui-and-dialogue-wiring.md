@@ -117,8 +117,8 @@ fail the suite if removed:
 - `retry` keeping the old runtime: every post-retry check fails — armed
   `WAVE_3` surviving as `Armed`, expired wave timers surviving as `Expired`,
   the settled `Failure` still latched, instance ids continuing instead of
-  restarting at 1, and the re-admission of `synthetic.f39c.wave-1` becoming a
-  `SpawnRefused` under the stale ledger.
+  restarting at the band base, and the re-admission of
+  `synthetic.f39c.wave-1` becoming a `SpawnRefused` under the stale ledger.
 - The teardown report dropped or built after the rebuild: the
   `teardown.actors`/`teardown.cues`/`teardown.armed_timers` assertions fail.
 - Refusals swallowed: `SessionRefusal::{Request,Timer,Spawn,ObjectiveChange}`
@@ -147,14 +147,18 @@ fail the suite if removed:
   or a declared symbol is refused, and a move or watch may only target a
   state a declared event can produce — `Hidden`, `Pending` and `Optional`
   are unreachable targets and refused as dead declarations.
-- **Declared actors and spawned instances share one `ActorId` space.** The
-  runtime allocates wave instances from `ActorId(1)` upward in admission
-  order (earlier tick first, then the expiring timers' symbol order), so a
-  roster or trigger naming one of those ids names the spawned instance —
-  the only way a condition counts a wave. A pre-placed actor's id must
-  therefore sit outside the range its program's waves allocate; the fixture
-  keeps `actor(7)` and `actor(41)` above the six ids its three two-raider
-  waves take. Which actor ids original missions used is unmeasured.
+- **Declared actors and spawned instances share one `ActorId` type but
+  disjoint ranges** *(updated by task #594 / F39-E-ACTORID-SPACE — see
+  `docs/findings/2026-10-13-f39-e-actorid-space.md`)*. At the time this
+  stage shipped, wave instances allocated from `ActorId(1)` upward and the
+  fixture kept `actor(7)`/`actor(41)` above its waves by convention. The
+  decided contract reserves a band: the runtime allocates wave instances
+  from `SPAWNED_ACTOR_BASE` upward in admission order (earlier tick first,
+  then the expiring timers' symbol order), declared rosters and trigger
+  subjects carry `ProgramActorRef::{Placed, Spawned}`, and `try_new`
+  refuses a `Placed` id inside the band or a `Spawned` index beyond the
+  program's computed wave bound. Which actor ids original missions used is
+  unmeasured.
 - **A retry must advance the generation.** `retry` refuses the live
   `SessionGeneration` by name: the whole staleness guarantee is that the
   rebuilt session's artifacts carry a stamp the torn-down ones do not.
@@ -208,14 +212,11 @@ fail the suite if removed:
   spawn-group subject that is not an airframe still lower and run: the
   original vocabulary for both is unmeasured, so this stage keeps them
   open rather than guessing a kind.
-- **The declared-vs-spawned `ActorId` contract is documented, not
-  enforced.** A declared actor inside the range a program's waves can
-  allocate is not refused today — it is *defined* to name the spawned
-  instance, which is how a roster could count a wave, but an importer that
-  collides by accident would silently miscount. Choosing and enforcing a
-  policy (schema-computed bound, a reserved band, or a separate id type)
-  is task #594, which may need F38's importer shape and F39-D's
-  measurements first.
+- **The declared-vs-spawned `ActorId` contract is now decided and
+  enforced** *(task #594, F39-E-ACTORID-SPACE)*. This stage left the policy
+  documented but unenforced; the reserved-band decision, the
+  `ProgramActorRef` vocabulary and the `try_new` refusals are recorded in
+  `docs/findings/2026-10-13-f39-e-actorid-space.md`.
 - **Cue playback and spawn instantiation are hand-offs, not consumers.**
   `drain_cues` hands one `EmittedCue` to the dialogue system once; what plays
   the `dialogue` content id is the audio/dialogue stage's business (F41+).
