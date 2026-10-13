@@ -128,6 +128,15 @@ and the retail test both pin.
   gap. Every node that names such a slot says so on its own row and carries **no**
   mesh edge: a catalog row may not point at an id nothing holds. On this
   installation that count is 0: all 17 139 named slots hold a present record.
+  Task #593 later gave this bullet a second half: a stored `mesh_index` **past**
+  the container's mesh array is a different fact and is counted as the
+  `named_slot_past_mesh_array` gap with its own claim id, and the walk takes both
+  verdicts from `cs_formats::gamez::NodeMeshBindings` rather than resolving the
+  slot a second time — see
+  `docs/findings/2026-10-13-t593-f14-d-node-mesh-code.md`. The per-container sum
+  this note records as `mesh_rows + absent_meshes == named_meshes` is now
+  `mesh_rows + absent_meshes + out_of_range_meshes == named_meshes`, still 0 + 0
+  over this installation.
 - **Nothing is normalized and nothing is ready.** The stored translation, euler
   angles, LOD bounds and zone id are in source units and nothing in this
   workspace has established the original's world-vertex or angle unit, so every
@@ -257,10 +266,14 @@ comparison of something else.
   a mesh, so `<container>.<slot>` is the whole of what the bytes hold. Which
   airframe part a slot draws is F11-C's binding work, not this collection's.
 - **A node's mesh slot is not range-checked by the node reader** (an unknown
-  already recorded by F11-A). The baseline closes that gap for itself: it reads
+  already recorded by F11-A). The baseline closed that gap for itself: it reads
   the mesh section and counts a named slot with no present record as
   `named_slot_without_mesh` rather than minting a row. On this installation the
-  count is 0.
+  count is 0. Task #593 replaced that second resolution with the format-level
+  check `cs_formats::gamez::NodeMeshBindings` and split the one code into the two
+  the check reports (`mesh_slot_absent`, `mesh_slot_out_of_range`); see
+  `docs/findings/2026-10-13-t593-f14-d-node-mesh-code.md` for the measurement and
+  the limitations that survive it.
 - **The world containers' child lists do not cover every node that names a
   parent** (346 of 7 064 in `C1`), already recorded by F11-A. This collection
   walks the parent slots, so it is unaffected — but `SceneGraph::build` still
