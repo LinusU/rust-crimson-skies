@@ -132,6 +132,23 @@
 //! a key whose effect is known still has no host binding, and no original
 //! executable has been run.
 //!
+//! [`scenario_control`] is the scenario half of the same question (task
+//! `M01-LC-SCENARIOS`, #642): the 13 mission-scoped readers #630 measured as
+//! carrying **no** numbered objective block are instant-action or multiplayer
+//! scenarios, and
+//! [`scenario_control::scenario_control_member`] locates their control surface
+//! by the same contents-not-name discipline — the member whose decoded record
+//! declares the measured scenario descriptor (a `mission_type` field), with
+//! zero candidates a measured absence and two a refusal. What such a surface
+//! spells is measured beside it: every descriptor key with its shape
+//! ([`scenario_control::MeasuredScenarioDescriptor`]), the record-level keys of
+//! a scenario's `objectives.zrd` with the keys outside the measured vocabulary
+//! kept unclassified ([`scenario_control::ScenarioObjectiveRecord`]), the bare
+//! spawn-point list of a `net.zrd` ([`scenario_control::NetSpawnSurface`]) and
+//! the objective-marked target records ([`scenario_control::TargetMarkerCounts`]).
+//! An instant-action scenario is not a campaign mission: nothing here widens
+//! the campaign denominator, and what any of it does at runtime is unmeasured.
+//!
 //! [`coordinates`] holds source coordinate conventions and their adapters
 //! into canonical space (`specs/F16-coordinates-units-origin-management-and-
 //! clocks.md`, stage F16-A): one validated declaration per source, and every
@@ -572,6 +589,7 @@ pub mod pilots;
 pub mod replay;
 pub mod routes;
 pub mod save;
+pub mod scenario_control;
 pub mod scene;
 pub mod scrapbook;
 pub mod settings;
