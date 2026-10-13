@@ -47,7 +47,7 @@ use cs_app::damage::{
 };
 use cs_app::physics::{
     FixtureBodySpec, FlightAircraft, FlightForcesPlugin, FlightSpawnSpec, PhysicsFixture,
-    spawn_flight_body,
+    PropulsionGate, spawn_flight_body,
 };
 use cs_content::damage::declared_synthetic_airframe_damage;
 use cs_sim::damage::{
@@ -394,20 +394,17 @@ fn accept_f29_c_propulsion_an_unresolved_engine_pool_is_refused_and_leaves_the_g
     assert_eq!(record(&world, plane).damage(), DamageState::PRISTINE);
     assert!(thrust_after_tick(&mut world, plane) > 0.0);
 
-    // A cut the unknown state cannot confirm is not lifted either.
-    let cut = DamageState {
-        thrust_authority: 0.0,
-        ..DamageState::PRISTINE
-    };
+    // A gate cut the unknown state cannot confirm is not lifted either.
     world
         .world_mut()
         .get_mut::<FlightAircraft>(plane)
         .expect("a flight body")
-        .set_damage(cut)
-        .expect("a valid damage state");
+        .set_propulsion_gate(PropulsionGate::Cut);
     let outcome = apply(&mut world, plane, &resolver, actor(1));
     assert_eq!(outcome.log.events(), &[refusal]);
-    assert_eq!(record(&world, plane).damage(), cut);
+    let aircraft = record(&world, plane);
+    assert_eq!(aircraft.propulsion_gate(), PropulsionGate::Cut);
+    assert_eq!(aircraft.damage().thrust_authority, 0.0);
 }
 
 /// A foreign-session or unregistered actor is refused and the gate is left.
