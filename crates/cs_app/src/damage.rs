@@ -53,6 +53,17 @@
 //!   carrier destroyed mid-latch reaches
 //!   [`InteractionRuntime::on_actor_destroyed`](crate::interaction::InteractionRuntime::on_actor_destroyed)
 //!   in a running app.
+//! * [`PendingDamageEvents`], [`DamageSchedulePlugin`] and
+//!   [`drive_damage_schedule`] — the F29-C schedule (task #668): the session
+//!   publishes every resolution it drives — the hits handed to the
+//!   [`DamageResolver`] beside the events it emitted — and one fixed-tick
+//!   system drains them and runs the consumers in the order the seams above
+//!   assume: the batch's collider decisions per victim, then the convergent
+//!   per-actor passes (mounts, visuals, propulsion, debris), then the
+//!   destroyed-actor publication. [`release_debris`](crate::debris::release_debris)
+//!   runs beside the session/scene teardown so a reload or aircraft swap
+//!   leaves no instance behind, and every refusal and drop lands in the
+//!   [`DamageScheduleReport`].
 //!
 //! Nothing here owns damage state: pools, lifecycle records and event
 //! sequences are the resolver's; these are the conversion and binding
@@ -85,11 +96,13 @@
 //! designed behavior, recorded in
 //! `docs/findings/2026-10-02-f29-damage-zone-collider-call.md`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
+use bevy::app::{App, Plugin};
 use bevy::ecs::component::Component;
 use bevy::ecs::message::{Message, Messages};
-use bevy::prelude::{Entity, Resource, World};
+use bevy::ecs::schedule::IntoScheduleConfigs;
+use bevy::prelude::{Entity, FixedPostUpdate, Resource, World};
 use cs_content::damage::{
     AttributionRule as DeclaredAttributionRule, DamageNodeKind as DeclaredNodeKind,
     DeclaredDamageGraph, DeclaredDamageNode, SystemKind as DeclaredSystemKind,
@@ -98,18 +111,25 @@ use cs_content::scene::SceneNodeId;
 use cs_content::world::{WorldInstance, WorldObjectId};
 use cs_sim::damage::{
     ActorId, AttributionRule, DamageEvent, DamageEventKind, DamageGraph, DamageGraphError,
-    DamageNode, DamageNodeKey, DamageNodeKind, DamagePolicy, DamageResolver, InitialDamage,
-    InitialDamageReport, LifecycleKind, NodeKeyError, PartState, SystemKind, SystemState,
+    DamageNode, DamageNodeKey, DamageNodeKind, DamagePolicy, DamageResolver, HitEvent,
+    InitialDamage, InitialDamageReport, LifecycleKind, NodeKeyError, PartState, SystemKind,
+    SystemState,
 };
-use cs_sim::weapons::FireResolver;
+use cs_sim::weapons::{FireResolver, GunDefinition, WeaponState};
+use cs_types::Tick;
 use cs_types::content::{ContentId, Known, Resolved};
 use cs_types::evidence::ClaimId;
+use cs_types::net::SessionId;
 
-use crate::physics::{
-    ColliderDecisionError, FlightAircraft, PropulsionGate, remove_collider_for_damage,
-    restore_collider_after_repair,
+use crate::debris::{
+    DamageDebrisOutcome, PartDebrisBinding, SpawnedDebris, apply_debris_state, release_debris,
 };
-use crate::scene::{AirframeDamageState, SceneGeneration};
+use crate::physics::{
+    ColliderDecisionError, FlightAircraft, PhysicsTickLedger, PropulsionGate,
+    remove_collider_for_damage, restore_collider_after_repair,
+};
+use crate::scene::{AirframeDamageState, SceneGeneration, SceneGenerations};
+use crate::weapons::{SessionDamageResolver, WeaponSession, drive_weapon_session};
 
 /// Why a declared graph could not be lowered to the runtime records.
 #[derive(Clone, Debug, PartialEq)]
@@ -829,6 +849,14 @@ pub enum DamageConsumerRefusal {
         /// Why the pool is unknown.
         reason: String,
     },
+    /// The actor's damage graph declares a propulsion carrier, but no bound
+    /// entity carries the [`FlightAircraft`] gate to write it to. Named like
+    /// [`Self::UnarmedActor`]: the carrier exists but the consumer's gate is
+    /// not bound, so the schedule reports the gap rather than skipping it.
+    MissingFlightGate {
+        /// The actor whose propulsion state has no flight gate.
+        actor: ActorId,
+    },
 }
 
 /// One update the damage → consumer pass applied, or one refusal.
@@ -997,6 +1025,48 @@ pub struct DamageConsumerOutcome {
     pub log: DamageConsumerLog,
 }
 
+/// The weapon firing gate [`apply_damage_state`] writes a carrier's mount
+/// state through.
+///
+/// The pass needs three reads of the gate — the actor's [`WeaponState`]
+/// either way and the mounted-gun definition a [`SystemKind::Weapon`]
+/// carrier names — and two owners answer them:
+///
+/// * [`FireResolver`] — the gate a caller holding one drives directly, the
+///   seam's original shape;
+/// * [`crate::weapons::WeaponSession`] — the gate a running session owns.
+///   Its accessors are closed-aware, so a session after teardown serves
+///   `None` and a late consumer pass cannot reach a mount whose generation
+///   is gone.
+///
+/// The trait is the surface the session schedule drives the same pass
+/// through without reaching into `WeaponSession`'s cadence, which stays
+/// private.
+pub trait FiringGate {
+    /// The actor's weapon state, when the gate holds one.
+    fn state(&self, actor: &ActorId) -> Option<&WeaponState>;
+
+    /// The actor's mutable weapon state, when the gate holds one.
+    fn state_mut(&mut self, actor: &ActorId) -> Option<&mut WeaponState>;
+
+    /// The gun definition `actor` carries on `mount`, when one is mounted.
+    fn definition(&self, actor: &ActorId, mount: &DamageNodeKey) -> Option<&GunDefinition>;
+}
+
+impl FiringGate for FireResolver {
+    fn state(&self, actor: &ActorId) -> Option<&WeaponState> {
+        FireResolver::state(self, actor)
+    }
+
+    fn state_mut(&mut self, actor: &ActorId) -> Option<&mut WeaponState> {
+        FireResolver::state_mut(self, actor)
+    }
+
+    fn definition(&self, actor: &ActorId, mount: &DamageNodeKey) -> Option<&GunDefinition> {
+        FireResolver::definition(self, actor, mount)
+    }
+}
+
 /// Applies one actor's authoritative damage state to the consumers it drives:
 /// the weapon firing gate and the visual damage record.
 ///
@@ -1010,7 +1080,8 @@ pub struct DamageConsumerOutcome {
 /// * disables the mount on a destroyed [`SystemKind::Weapon`] carrier in
 ///   `fire`, and re-enables it when the state says it is not destroyed, so the
 ///   gate stops firing exactly while the mount is a wreck and comes back on a
-///   repair.
+///   repair. `fire` is any [`FiringGate`]: a held [`FireResolver`] or the
+///   running session's [`crate::weapons::WeaponSession`].
 ///
 /// The pass is **lifecycle-aware**: the same resolver's lifecycle ledger says
 /// whether the actor may act at all, and a mount whose carrier is intact is
@@ -1027,7 +1098,7 @@ pub struct DamageConsumerOutcome {
 pub fn apply_damage_state(
     resolver: &DamageResolver,
     actor: ActorId,
-    fire: &mut FireResolver,
+    fire: &mut impl FiringGate,
     visuals: &mut AirframeDamageState,
 ) -> DamageConsumerOutcome {
     let mut outcome = DamageConsumerOutcome::default();
@@ -1162,7 +1233,7 @@ fn apply_mount(
     mount: &DamageNodeKey,
     destroyed: bool,
     grounded: bool,
-    fire: &mut FireResolver,
+    fire: &mut impl FiringGate,
 ) {
     let state = fire
         .state_mut(&actor)
@@ -1407,6 +1478,653 @@ pub fn publish_destroyed_actors(world: &mut World, events: &[DamageEvent]) -> Ve
         world.write_message(DamageActorDestroyed { actor: *actor });
     }
     published
+}
+
+// ------------------------------------------------ the session schedule (F29-C) ---
+//
+// F29-C-SCHEDULE (task #668). The seams above are real consumer entries —
+// `apply_damage_events`, `apply_damage_state`, `apply_propulsion_state`,
+// `apply_debris_state`, `publish_destroyed_actors` and `release_debris` —
+// but until this section none of them had a caller in the running session:
+// a destroyed part in a live world resolved into the resolver and went no
+// further. `drive_damage_schedule` is that caller, and
+// `DamageSchedulePlugin` installs it in `FixedPostUpdate` behind
+// [`drive_weapon_session`], the tick's damage producer.
+//
+// One run, in order:
+//
+// 1. **Teardown.** The session the schedule last served is compared to the
+//    installed [`SessionDamageResolver`]'s. A removed or replaced session
+//    releases every debris instance its bound actors still own
+//    (`release_debris` per actor) and drops the pending batches it left;
+//    [`DamageScheduleReport::tore_down`] names the generation. The same
+//    release fires mid-session for an actor whose damage bindings went
+//    away between runs — the scene teardown that releases an actor's other
+//    bindings releases its debris too, so a reload, restart or aircraft
+//    swap cannot leave a spawned instance behind.
+// 2. **Pending damage.** Every published [`DamageTickBatch`] is drained:
+//    [`PendingDamageEvents`] is the record a producer — today the weapon
+//    step — publishes per [`DamageResolver::resolve`], the [`HitEvent`]s
+//    handed in beside the [`DamageEvent`]s emitted. A batch stamped by
+//    another session is dropped and named in `dropped`.
+// 3. **Colliders.** The events are attributed to the victim each fell on —
+//    a `PartTransition` belongs to the hit that produced it, and the hit's
+//    `target` is the victim — and [`apply_damage_events`] runs per victim
+//    against the zone's own [`DamageZoneBinding`].
+// 4. **Consumers.** Every actor the world binds a damage record to —
+//    [`DamageActorBinding`], `DamageZoneBinding` or [`PartDebrisBinding`] —
+//    plus this run's victims and every actor a [`SpawnedDebris`] instance
+//    still names, gets the convergent passes: [`apply_damage_state`]
+//    (mount gate and visual record), [`apply_propulsion_state`] when its
+//    graph declares a propulsion carrier (refused `MissingFlightGate`
+//    when no bound entity carries the [`FlightAircraft`] gate) and
+//    [`apply_debris_state`]. Every pass is state-driven, so a tick with no
+//    damage reconverges to a no-op and a repeated run is a second no-op.
+// 5. **Destruction publication.** [`publish_destroyed_actors`] turns the
+//    batch's `Lifecycle(Destroyed)` records into `DamageActorDestroyed`
+//    messages the interaction consumer subscribes to — after the
+//    consumers, so a subscriber that looks sees the applied state.
+//
+// The gate the mount pass writes is the session's own
+// [`WeaponSession`], through the [`FiringGate`] surface: a closed session
+// serves no mounts and the pass reports `UnarmedActor` rather than
+// reaching into a dead generation. A session-less tick still runs —
+// `report.session` says `None` — and a world without the gate or the
+// visual record keeps the rest of the passes and names what it missed in
+// `missing`.
+
+/// Resource: the damage record the session's producers publish for the
+/// consumer schedule.
+///
+/// One [`DamageTickBatch`] per [`DamageResolver::resolve`] call the session
+/// drove: the [`HitEvent`]s the resolver was handed beside the
+/// [`DamageEvent`]s it emitted. Keeping them together is what lets the
+/// schedule attribute each `PartTransition` to the victim it fell on — the
+/// transition names only a node — and what lets a foreign batch be checked
+/// before it is consumed: the batch's session is the session of the hits
+/// and events it carries.
+///
+/// [`DamageSchedulePlugin`] drains it once per committed fixed tick. A
+/// world that publishes without the plugin installed accumulates batches —
+/// the session composition installs both, so the accumulation is itself
+/// the reportable gap.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct PendingDamageEvents {
+    batches: Vec<DamageTickBatch>,
+}
+
+/// One resolution's input and output, published together.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DamageTickBatch {
+    /// The hits the resolver was handed.
+    pub hits: Vec<HitEvent>,
+    /// The events it emitted for them, in emitted order.
+    pub events: Vec<DamageEvent>,
+}
+
+impl DamageTickBatch {
+    /// The session generation the batch is stamped with: the hits', then
+    /// the events'. `None` on an empty batch.
+    #[must_use]
+    pub fn session(&self) -> Option<SessionId> {
+        self.hits
+            .iter()
+            .map(|hit| hit.id.session)
+            .chain(self.events.iter().map(|event| event.id.session))
+            .next()
+    }
+}
+
+impl PendingDamageEvents {
+    /// Publishes one resolved batch for the next scheduled run.
+    pub fn push(&mut self, hits: Vec<HitEvent>, events: Vec<DamageEvent>) {
+        self.batches.push(DamageTickBatch { hits, events });
+    }
+
+    /// Takes every pending batch, oldest first.
+    pub fn drain(&mut self) -> Vec<DamageTickBatch> {
+        std::mem::take(&mut self.batches)
+    }
+
+    /// Drops every pending batch stamped by `session`, returning how many
+    /// the dead generation left behind.
+    ///
+    /// The same rule the weapon inputs follow: a session teardown drops
+    /// only what the dead generation owned.
+    pub fn drop_session(&mut self, session: SessionId) -> usize {
+        let before = self.batches.len();
+        self.batches
+            .retain(|batch| batch.session() != Some(session));
+        before - self.batches.len()
+    }
+
+    /// How many batches are pending.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.batches.len()
+    }
+
+    /// Whether nothing is pending.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.batches.is_empty()
+    }
+}
+
+/// A consumer authority the schedule could not find, or found serving the
+/// wrong session.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DamageScheduleMissing {
+    /// No [`WeaponSession`] is installed, so the mount and visual pass had
+    /// no firing gate to write.
+    WeaponGate,
+    /// No [`AirframeDamageState`] is installed, so the mount and visual
+    /// pass had no record to write.
+    VisualRecord,
+    /// The installed [`WeaponSession`] still serves another session
+    /// generation: it is foreign, and the pass never writes another
+    /// generation's gate.
+    ForeignWeaponGate {
+        /// The generation the installed gate serves.
+        found: u64,
+    },
+}
+
+/// One published batch the schedule dropped without consuming, by name.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DroppedDamageBatch {
+    /// The session generation the batch was stamped with.
+    pub session: u64,
+    /// How many hits it carried.
+    pub hits: usize,
+    /// How many events it carried.
+    pub events: usize,
+}
+
+/// One actor whose spawned debris the schedule released mid-session
+/// because its damage bindings went away — the scene teardown's debris
+/// half, run beside the release of the actor's other bindings.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ReleasedDebris {
+    /// The actor whose debris left.
+    pub actor: ActorId,
+    /// How many instances [`release_debris`] despawned.
+    pub debris: u32,
+}
+
+/// What the schedule tore down when the session it last served went away.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DamageTeardownRecord {
+    /// The session generation that was released.
+    pub session: u64,
+    /// The debris instances released with it.
+    pub debris: u32,
+    /// The dead generation's pending batches dropped with it.
+    pub batches: usize,
+}
+
+/// Resource: what the scheduled damage-consumer passes did and did not do,
+/// one fixed tick at a time.
+///
+/// Every field answers for the run `at` names. `colliders`, `consumers`
+/// and `debris` carry each pass's own report merged across the actors it
+/// served, so a pass that did nothing — an already-converged world — is
+/// told apart from one that never ran (`None`). `missing` names the
+/// authorities a pass needed but the world did not have, `dropped` the
+/// published batches a foreign session left, `released` and `tore_down`
+/// the teardown work the run did.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct DamageScheduleReport {
+    /// Fixed ticks the schedule has run, including this one.
+    pub ticks: u64,
+    /// The damage session installed this run; `None` without one.
+    pub session: Option<u64>,
+    /// The committed tick this run served, when a
+    /// [`PhysicsTickLedger`] could name it. The passes themselves are
+    /// state-driven and do not wait on it.
+    pub at: Option<Tick>,
+    /// The authorities a pass needed but the world did not have.
+    pub missing: Vec<DamageScheduleMissing>,
+    /// Published batches dropped this run, each named by session and size.
+    pub dropped: Vec<DroppedDamageBatch>,
+    /// The collider pass's merged report; `None` when no accepted batch
+    /// carried events.
+    pub colliders: Option<DamageColliderReport>,
+    /// The mount/visual/propulsion passes' merged outcome; `None` when no
+    /// session ran. When `missing` names the gate or the visual record the
+    /// merged outcome carries only what could still run.
+    pub consumers: Option<DamageConsumerOutcome>,
+    /// The debris pass's merged outcome; `None` when no session ran.
+    pub debris: Option<DamageDebrisOutcome>,
+    /// The actors whose destruction was published this run.
+    pub destroyed: Vec<ActorId>,
+    /// Actors whose debris was released mid-session with their bindings.
+    pub released: Vec<ReleasedDebris>,
+    /// The session the schedule last served was removed or replaced.
+    pub tore_down: Option<DamageTeardownRecord>,
+    /// Events that could not be attributed to a victim: a `PartTransition`
+    /// or `SystemDisabled` the batch ties to no hit is a malformed
+    /// publication's own name, counted rather than guessed.
+    pub unclaimed: usize,
+}
+
+impl DamageScheduleReport {
+    /// Opens the next run: every field answers for it.
+    fn begin_tick(&mut self) {
+        self.ticks += 1;
+        self.session = None;
+        self.at = None;
+        self.missing.clear();
+        self.dropped.clear();
+        self.colliders = None;
+        self.consumers = None;
+        self.debris = None;
+        self.destroyed.clear();
+        self.released.clear();
+        self.tore_down = None;
+        self.unclaimed = 0;
+    }
+}
+
+/// Resource: the schedule's own bookkeeping across ticks — the session it
+/// last served and the actors it saw bound, so a vanished binding releases
+/// the actor's debris.
+#[derive(Resource, Clone, Debug, Default)]
+struct DamageScheduleState {
+    /// The session generation the last run served; `None` for none yet or
+    /// a session-less run.
+    session: Option<u64>,
+    /// The actors with damage bindings at the end of the last run, any
+    /// session — a binding that goes away releases the actor's debris.
+    bound: BTreeSet<ActorId>,
+}
+
+/// Attributes one drained stream's events to the victim each fell on.
+///
+/// The resolver emits one hit's records contiguously — `HitApplied`,
+/// `HitBlocked` or `HitRefused` first, then that hit's `PartTransition`s
+/// and `SystemDisabled`s — and a transition names only its node, so the
+/// victim is the *hit's* `target`, found in the batch's hits by id.
+/// `Lifecycle` and `KillAwarded` carry their actor outright and end the
+/// in-flight hit. An event that follows no hit — a publication no resolver
+/// emitted — is counted `unclaimed` rather than attributed by guessing.
+fn attribute_events(
+    hits: &[HitEvent],
+    events: &[DamageEvent],
+) -> (BTreeMap<ActorId, Vec<DamageEvent>>, usize) {
+    let mut by_victim: BTreeMap<ActorId, Vec<DamageEvent>> = BTreeMap::new();
+    let mut unclaimed = 0usize;
+    let mut in_flight: Option<ActorId> = None;
+    for event in events {
+        match &event.kind {
+            DamageEventKind::HitApplied { hit, .. }
+            | DamageEventKind::HitBlocked { hit, .. }
+            | DamageEventKind::HitRefused { hit, .. } => {
+                in_flight = hits
+                    .iter()
+                    .find(|candidate| &candidate.id == hit)
+                    .map(|candidate| candidate.target);
+                match in_flight {
+                    Some(victim) => {
+                        by_victim.entry(victim).or_default().push(event.clone());
+                    }
+                    None => unclaimed += 1,
+                }
+            }
+            DamageEventKind::PartTransition { .. } | DamageEventKind::SystemDisabled { .. } => {
+                match in_flight {
+                    Some(victim) => {
+                        by_victim.entry(victim).or_default().push(event.clone());
+                    }
+                    None => unclaimed += 1,
+                }
+            }
+            DamageEventKind::Lifecycle { actor, .. } => {
+                in_flight = None;
+                by_victim.entry(*actor).or_default().push(event.clone());
+            }
+            DamageEventKind::KillAwarded { victim, .. } => {
+                in_flight = None;
+                by_victim.entry(*victim).or_default().push(event.clone());
+            }
+        }
+    }
+    (by_victim, unclaimed)
+}
+
+/// Every actor the world binds a damage record to — the actor binding, the
+/// zone binding or the debris binding — filtered to `session` when one is
+/// given.
+///
+/// [`SpawnedDebris`] is deliberately not a binding: an actor whose only
+/// record is its own debris has already been released by the binding
+/// teardown, and a bound-actor set that counted it would re-bind the actor
+/// the release was meant to end.
+fn bound_damage_actors(world: &World, session: Option<SessionId>) -> BTreeSet<ActorId> {
+    let wanted = |actor: &ActorId| session.is_none_or(|wanted| actor.session == wanted);
+    let mut actors = BTreeSet::new();
+    for entity_ref in world.iter_entities() {
+        if let Some(binding) = entity_ref.get::<DamageActorBinding>()
+            && wanted(&binding.actor)
+        {
+            actors.insert(binding.actor);
+        }
+        if let Some(binding) = entity_ref.get::<DamageZoneBinding>()
+            && wanted(&binding.actor)
+        {
+            actors.insert(binding.actor);
+        }
+        if let Some(binding) = entity_ref.get::<PartDebrisBinding>()
+            && wanted(&binding.actor)
+        {
+            actors.insert(binding.actor);
+        }
+    }
+    actors
+}
+
+/// Every actor that owns a [`SpawnedDebris`] instance, filtered to
+/// `session` when one is given.
+fn debris_actors(world: &World, session: Option<SessionId>) -> BTreeSet<ActorId> {
+    world
+        .iter_entities()
+        .filter_map(|entity_ref| entity_ref.get::<SpawnedDebris>())
+        .filter(|debris| session.is_none_or(|wanted| debris.actor.session == wanted))
+        .map(|debris| debris.actor)
+        .collect()
+}
+
+/// The entity carrying `actor`'s flight-authority gate: the bound
+/// [`DamageActorBinding`] entity that also carries a [`FlightAircraft`].
+///
+/// When [`SceneGenerations`] is installed only a binding stamped with the
+/// live generation counts; without it the first bound carrier in entity
+/// order wins, the same first-bound rule the debris index and the
+/// damage → collider bridge follow. `None` when nothing bound carries the
+/// gate — which the caller reports rather than guesses.
+fn flight_gate_entity(world: &World, actor: ActorId) -> Option<Entity> {
+    let generation = world
+        .get_resource::<SceneGenerations>()
+        .map(SceneGenerations::latest);
+    for entity_ref in world.iter_entities() {
+        let Some(binding) = entity_ref.get::<DamageActorBinding>() else {
+            continue;
+        };
+        if binding.actor != actor || entity_ref.get::<FlightAircraft>().is_none() {
+            continue;
+        }
+        if generation.is_some_and(|live| binding.generation != live) {
+            continue;
+        }
+        return Some(entity_ref.id());
+    }
+    None
+}
+
+/// Merges one pass's report into the run's accumulated one: the counts
+/// sum, and the log keeps its oldest-first order across actors.
+fn merge_consumer(into: &mut DamageConsumerOutcome, outcome: DamageConsumerOutcome) {
+    into.report.mounts_disabled += outcome.report.mounts_disabled;
+    into.report.mounts_enabled += outcome.report.mounts_enabled;
+    into.report.mounts_grounded += outcome.report.mounts_grounded;
+    into.report.visuals_destroyed += outcome.report.visuals_destroyed;
+    into.report.visuals_repaired += outcome.report.visuals_repaired;
+    into.report.thrust_cut += outcome.report.thrust_cut;
+    into.report.thrust_restored += outcome.report.thrust_restored;
+    into.report.refused += outcome.report.refused;
+    for event in outcome.log.events() {
+        into.log.push(event.clone());
+    }
+}
+
+/// Merges one victim's collider report into the run's accumulated one.
+fn merge_collider(into: &mut DamageColliderReport, applied: DamageColliderReport) {
+    into.removed += applied.removed;
+    into.restored += applied.restored;
+    into.unbound += applied.unbound;
+    into.unmanaged += applied.unmanaged;
+    into.released += applied.released;
+}
+
+/// Merges one actor's debris report into the run's accumulated one.
+fn merge_debris(into: &mut DamageDebrisOutcome, outcome: DamageDebrisOutcome) {
+    into.report.spawned += outcome.report.spawned;
+    into.report.despawned += outcome.report.despawned;
+    into.report.refused += outcome.report.refused;
+    for event in outcome.log.events() {
+        into.log.push(event.clone());
+    }
+}
+
+/// Drives one committed fixed tick of the damage consumers — teardown,
+/// the published resolutions' collider decisions, then the convergent
+/// passes and the destruction publication — and records the run in
+/// [`DamageScheduleReport`].
+///
+/// [`DamageSchedulePlugin`] installs this system behind
+/// [`drive_weapon_session`]; see the section docs above for the order and
+/// the teardown rule. A world that runs it by hand — the direct-caller
+/// shape the consumer tests already use — gets the same order and the
+/// same report.
+pub fn drive_damage_schedule(world: &mut World) {
+    let mut report = world
+        .remove_resource::<DamageScheduleReport>()
+        .unwrap_or_default();
+    report.begin_tick();
+    let mut state = world
+        .remove_resource::<DamageScheduleState>()
+        .unwrap_or_default();
+
+    let installed = world
+        .get_resource::<SessionDamageResolver>()
+        .map(SessionDamageResolver::session);
+    report.session = installed;
+    report.at = world
+        .get_resource::<PhysicsTickLedger>()
+        .map(|ledger| Tick(ledger.ticks));
+
+    // --- session identity and teardown --------------------------------------
+    if state.session != installed {
+        if let Some(previous) = state.session.take() {
+            // The dead generation's wreckage: every debris instance its
+            // actors still own and every published batch it left behind.
+            let dead = SessionId::new(previous).expect("a served session is nonzero");
+            let mut debris = 0u32;
+            let actors: BTreeSet<_> = bound_damage_actors(world, Some(dead))
+                .into_iter()
+                .chain(debris_actors(world, Some(dead)))
+                .collect();
+            for actor in actors {
+                debris += release_debris(world, actor);
+            }
+            let batches = world
+                .get_resource_mut::<PendingDamageEvents>()
+                .map(|mut pending| pending.drop_session(dead))
+                .unwrap_or(0);
+            report.tore_down = Some(DamageTeardownRecord {
+                session: previous,
+                debris,
+                batches,
+            });
+        }
+        state.session = installed;
+        state.bound.clear();
+    }
+
+    // --- the world-facing actor set, and the binding-release half of teardown
+    //
+    // An actor whose damage bindings went away between runs is released
+    // here, beside the release of its other bindings: a scene teardown, an
+    // aircraft swap or a respawn leaves no spawned instance behind.
+    let bound = bound_damage_actors(world, None);
+    let gone: Vec<ActorId> = state.bound.difference(&bound).copied().collect();
+    for actor in gone {
+        let released = release_debris(world, actor);
+        report.released.push(ReleasedDebris {
+            actor,
+            debris: released,
+        });
+    }
+    state.bound = bound.clone();
+
+    let Some(session) = installed else {
+        world.insert_resource(state);
+        world.insert_resource(report);
+        return;
+    };
+
+    // --- the tick's published resolutions ------------------------------------
+    let mut pending = world
+        .remove_resource::<PendingDamageEvents>()
+        .unwrap_or_default();
+    let mut hits = Vec::new();
+    let mut events = Vec::new();
+    for batch in pending.drain() {
+        match batch.session() {
+            Some(found) if found.get() != session => {
+                report.dropped.push(DroppedDamageBatch {
+                    session: found.get(),
+                    hits: batch.hits.len(),
+                    events: batch.events.len(),
+                });
+            }
+            _ => {
+                hits.extend(batch.hits);
+                events.extend(batch.events);
+            }
+        }
+    }
+    world.insert_resource(pending);
+
+    // --- colliders: the resolution's per-victim part transitions -------------
+    let mut victims = BTreeSet::new();
+    if !events.is_empty() {
+        let (by_victim, unclaimed) = attribute_events(&hits, &events);
+        report.unclaimed = unclaimed;
+        let mut colliders = DamageColliderReport::default();
+        for (victim, victim_events) in &by_victim {
+            merge_collider(
+                &mut colliders,
+                apply_damage_events(world, *victim, victim_events),
+            );
+        }
+        report.colliders = Some(colliders);
+        victims = by_victim.into_keys().collect();
+    }
+
+    // --- the consumer authorities --------------------------------------------
+    //
+    // The mount/visual pass needs both the gate and the record; each is
+    // named when absent, and the gate is refused — never written — while
+    // it still serves another session generation.
+    let mut gate = match world.remove_resource::<WeaponSession>() {
+        None => {
+            report.missing.push(DamageScheduleMissing::WeaponGate);
+            None
+        }
+        Some(gate) if gate.session() != session => {
+            report
+                .missing
+                .push(DamageScheduleMissing::ForeignWeaponGate {
+                    found: gate.session(),
+                });
+            world.insert_resource(gate);
+            None
+        }
+        gate => gate,
+    };
+    let mut visuals = world.remove_resource::<AirframeDamageState>();
+    if visuals.is_none() {
+        report.missing.push(DamageScheduleMissing::VisualRecord);
+    }
+
+    // --- the convergent passes, per actor --------------------------------------
+    //
+    // Bound actors, this run's victims and actors a spawned instance still
+    // names: the union of every world-facing damage record, so a pass can
+    // converge an actor whose bindings a scene change partially released.
+    let damage = world
+        .remove_resource::<SessionDamageResolver>()
+        .expect("the resolver was checked present above");
+    let resolver = damage.resolver();
+    let mut consumers = DamageConsumerOutcome::default();
+    let mut debris = DamageDebrisOutcome::default();
+    let mut actors = bound;
+    actors.extend(victims);
+    actors.extend(debris_actors(world, None));
+    for actor in actors {
+        if let (Some(gate), Some(visuals)) = (gate.as_mut(), visuals.as_mut()) {
+            merge_consumer(
+                &mut consumers,
+                apply_damage_state(resolver, actor, gate, visuals),
+            );
+        }
+        if resolver
+            .system_state(&actor, SystemKind::Propulsion)
+            .is_some()
+        {
+            match flight_gate_entity(world, actor) {
+                Some(entity) => {
+                    let mut entity_mut = world.entity_mut(entity);
+                    let mut flight = entity_mut
+                        .get_mut::<FlightAircraft>()
+                        .expect("the lookup only yields gate carriers");
+                    merge_consumer(
+                        &mut consumers,
+                        apply_propulsion_state(resolver, actor, &mut flight),
+                    );
+                }
+                None => {
+                    consumers.report.refused += 1;
+                    consumers.log.push(DamageConsumerEvent::Refused(
+                        DamageConsumerRefusal::MissingFlightGate { actor },
+                    ));
+                }
+            }
+        }
+        merge_debris(&mut debris, apply_debris_state(world, resolver, actor));
+    }
+    report.consumers = Some(consumers);
+    report.debris = Some(debris);
+
+    if let Some(gate) = gate {
+        world.insert_resource(gate);
+    }
+    if let Some(visuals) = visuals {
+        world.insert_resource(visuals);
+    }
+    world.insert_resource(damage);
+
+    // --- destruction publication, after the consumers applied -----------------
+    report.destroyed = publish_destroyed_actors(world, &events);
+
+    world.insert_resource(state);
+    world.insert_resource(report);
+}
+
+/// Installs the F29-C damage-consumer schedule: one
+/// [`drive_damage_schedule`] per committed fixed tick, in
+/// [`FixedPostUpdate`] behind [`drive_weapon_session`] — the tick's damage
+/// producer — so one tick resolves hits, applies their collider decisions
+/// and converges the firing gates, visuals, propulsion and debris in
+/// order.
+///
+/// A session composition installs this beside the weapon schedule; the
+/// direct callers the F29 seams already had keep working unchanged. Add it
+/// once: a second install would run the convergent passes twice a tick —
+/// harmless but a second `DamageScheduleReport` update nobody asked for.
+pub struct DamageSchedulePlugin;
+
+impl Plugin for DamageSchedulePlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<DamageScheduleReport>();
+        app.init_resource::<DamageScheduleState>();
+        app.init_resource::<PendingDamageEvents>();
+        app.add_systems(
+            FixedPostUpdate,
+            drive_damage_schedule.after(drive_weapon_session),
+        );
+    }
 }
 
 /// The refusal constructors, so [`apply_damage_state`] stays readable.

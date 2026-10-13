@@ -86,6 +86,7 @@ use cs_types::evidence::ClaimId;
 use cs_types::input::{Action, FlightCommand};
 use cs_types::space::{Radians, UnitVec3, WorldPosition};
 
+use crate::damage::PendingDamageEvents;
 use crate::physics::PhysicsTickLedger;
 use crate::scene::{NodeVisualTransform, SceneGeneration, SceneGenerations};
 use crate::targeting::TargetingSession;
@@ -1737,6 +1738,31 @@ impl WeaponSession {
     }
 }
 
+/// The session's own firing gate as the F29-C damage consumer sees it.
+///
+/// `state`/`state_mut` are the session's closed-aware accessors: after
+/// [`WeaponSession::close`] both answer `None`, so a damage pass that lands
+/// after teardown finds an actor with no weapon state — the named
+/// [`crate::damage::DamageConsumerRefusal::UnarmedActor`] gap — rather than
+/// a mount it could still write inside a dead generation. `definition`
+/// answers `None` in the same state for the same reason.
+impl crate::damage::FiringGate for WeaponSession {
+    fn state(&self, actor: &ActorId) -> Option<&WeaponState> {
+        WeaponSession::state(self, actor)
+    }
+
+    fn state_mut(&mut self, actor: &ActorId) -> Option<&mut WeaponState> {
+        WeaponSession::state_mut(self, actor)
+    }
+
+    fn definition(&self, actor: &ActorId, mount: &DamageNodeKey) -> Option<&GunDefinition> {
+        if self.is_closed() {
+            return None;
+        }
+        self.cadence().resolver().definition(actor, mount)
+    }
+}
+
 /// What one session teardown released.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct TeardownReport {
@@ -2751,6 +2777,23 @@ pub fn drive_weapon_session(world: &mut World) {
         &orders,
         &step,
     ));
+
+    // The resolved batches go to the session's damage-consumer schedule: each
+    // routed round's hits beside the `DamageEvent`s the authority emitted for
+    // them, in resolve order. A refused resolution has no events — its refusal
+    // already lives in the step's own record — and a round that hit nothing
+    // resolves an empty batch, which publishes nothing.
+    if let Some(stepped) = &report.stepped {
+        world.init_resource::<PendingDamageEvents>();
+        let mut pending = world.resource_mut::<PendingDamageEvents>();
+        for routed in &stepped.routed {
+            if let Ok(resolution) = &routed.outcome.damage
+                && !resolution.events.is_empty()
+            {
+                pending.push(routed.outcome.sweep.damage(), resolution.events.clone());
+            }
+        }
+    }
 
     world.insert_resource(session);
     world.insert_resource(damage);

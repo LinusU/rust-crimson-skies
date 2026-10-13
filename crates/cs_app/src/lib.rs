@@ -415,7 +415,15 @@
 //! session-qualified actor and damage-graph subject; and the damage-to-collider
 //! bridge ([`damage::DamageZoneBinding`], [`damage::apply_damage_events`],
 //! [`damage::repair_damage_zone`]) that decides a destroyed zone's collider and
-//! calls the F20-C.04 collision seam.
+//! calls the F20-C.04 collision seam. F29-C adds the consumer seams —
+//! [`damage::apply_damage_state`] (the firing gate through
+//! [`damage::FiringGate`] and the visual record),
+//! [`damage::apply_propulsion_state`] (the flight-authority gate) — and the
+//! session schedule that drives all of them: [`damage::DamageSchedulePlugin`]
+//! runs [`damage::drive_damage_schedule`] once per committed fixed tick behind
+//! the weapon step, drains the resolutions producers publish through
+//! [`damage::PendingDamageEvents`], releases debris beside the session/scene
+//! teardown and reports every pass in [`damage::DamageScheduleReport`].
 //!
 //! [`debris`] is the F29-C.2 debris consumer
 //! (`specs/F29-damage-zones-armor-destruction-and-bailout.md`, stage
