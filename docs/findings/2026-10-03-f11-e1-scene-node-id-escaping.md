@@ -251,7 +251,10 @@ only its column entry needs the retail capability:
   archives (`pzhookpoint.hoop.hook_seg.mid_seg.top_seg.hook_base.pzhookup_crane.
   underneath.rock_zeppelin.tilt_zeppelin.move_zeppelin.piratezep.world1`) and
   **150 bytes** in `C1C`; `planes.zbd`'s longest is 82 bytes, so its longest
-  derived key is 104. **This is a second, separate decision** — whether a long
+  derived key is 104. **Correction (2026-10-13, #586):** the crane chain is the
+  longest path in **seven** archives (`C1`, `C1B`, `C2`, `C2B`, `C3`, `C4`,
+  `C5`), re-measured through `world_scene_graph_from_gamez`; "six" undercounted
+  one, and `C1C` holds the chain too, as a non-maximal path. **This is a second, separate decision** — whether a long
   path is shortened, folded or refused — and it is F18's to take together with
   the parentage question, not this stage's. A follow-up task is filed.
   **Resolved 2026-10-04 by #628 (M01-LC-WORLD-SCENE,
