@@ -618,16 +618,21 @@ impl CampaignState {
         let prior_victories = prior.map_or(0, |p| p.victories);
         let prior_best = prior.map_or(0, |p| p.best_score);
         plan.best_score_raised = outcome.outcome == Outcome::Succeeded
-            && if prior_victories == 0 {
-                // The first victory establishes the record in the subject's
-                // direction. Under the default higher-is-better rule this
-                // keeps the F43-A comparison against the 0 sentinel exactly
-                // (a 0-score first victory raises nothing); a
-                // lower-is-better subject has no record to beat yet, so any
-                // first victory sets one.
-                outcome.score != 0 || rule.better == BetterIs::Lower
-            } else {
-                rule.better.is_better(outcome.score, prior_best)
+            && match rule.better {
+                // Exactly the F43-A comparison (`score > prior_best`), which
+                // doubles as the 0-sentinel rule: before any victory the
+                // record reads 0, so a 0-score first victory raises nothing.
+                BetterIs::Higher => rule.better.is_better(outcome.score, prior_best),
+                // A lower-is-better subject has no record to beat before its
+                // first victory (0 is a sentinel, not a time), so any first
+                // victory establishes one; later scores must beat it. The
+                // `best_score == 0` guard keeps a degenerate restored record
+                // (a best with no victories) from being clobbered without
+                // being beaten, symmetrically with the higher-is-better arm.
+                BetterIs::Lower => {
+                    (prior_victories == 0 && prior_best == 0)
+                        || rule.better.is_better(outcome.score, prior_best)
+                }
             };
         if progresses && let Some(edge) = graph.transition(&node_key, outcome.outcome) {
             plan.progress_to = Some(edge.to.clone());
@@ -650,12 +655,22 @@ impl CampaignState {
         let record = self.progress.entry(node_key.clone()).or_default();
         match outcome.outcome {
             Outcome::Succeeded => {
-                if record.victories == 0 {
-                    // The first victory establishes the record; the 0
-                    // sentinel is not a score a lower-is-better subject's
-                    // victory has to beat.
-                    record.best_score = outcome.score;
-                } else if rule.better.is_better(outcome.score, record.best_score) {
+                let establish = match rule.better {
+                    // The F43-A `max` comparison exactly: only a strictly
+                    // better score replaces the record, and the 0 sentinel
+                    // means the first victory with any positive score wins.
+                    BetterIs::Higher => rule.better.is_better(outcome.score, record.best_score),
+                    // Before the first victory the record is a 0 sentinel,
+                    // not a time: any first victory establishes it; after,
+                    // only a faster score replaces it. The `best_score == 0`
+                    // guard mirrors the plan arm: a degenerate restored
+                    // record must be beaten, not overwritten.
+                    BetterIs::Lower => {
+                        (record.victories == 0 && record.best_score == 0)
+                            || rule.better.is_better(outcome.score, record.best_score)
+                    }
+                };
+                if establish {
                     record.best_score = outcome.score;
                 }
                 record.victories += 1;

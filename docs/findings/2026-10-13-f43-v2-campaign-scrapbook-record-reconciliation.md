@@ -98,7 +98,12 @@ of these policies with measurements.
 * **0-score sentinel.** Under `RecordRule::DEFAULT` a first victory with
   score 0 still raises nothing (exact F43-A comparison preserved); a
   lower-is-better subject's first victory sets the record regardless of
-  score, because 0 is a sentinel, not a time.
+  score, because 0 is a sentinel, not a time. A degenerate restored record
+  (a `best_score` with no victories behind it, which `restore` does not
+  reject) is never lowered without being beaten in either direction: the
+  comparison is always against the stored best, and only a genuinely
+  record-less `(victories == 0, best_score == 0)` state lets a first
+  victory establish one.
 
 ## Where the code and tests live
 

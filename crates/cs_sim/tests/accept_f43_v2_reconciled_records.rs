@@ -452,6 +452,134 @@ fn accept_f43_v2_refused_outcome_touches_neither_store() {
     assert_eq!(book, untouched_book, "the scrapbook store is untouched too");
 }
 
+/// The 0-sentinel rules, in both directions, and the restored-snapshot case
+/// they protect.
+///
+/// * Under the default (higher-is-better) rule a first victory with score 0
+///   raises nothing — exactly F43-A's `score > prior_best` comparison, which
+///   the findings entry pins.
+/// * A pre-existing best (a restored save the graph could have produced)
+///   is never lowered by a weaker first victory under the default rule: the
+///   comparison stays `score > best`, not "first victory wins".
+/// * Under a lower-is-better rule the 0 sentinel is not a time, so any
+///   first victory establishes the record — even a 0-score one — and later
+///   scores must beat it.
+#[test]
+fn accept_f43_v2_zero_score_sentinel_rules() {
+    // The default rule: a 0-score first victory raises nothing.
+    let (graph, mut state, mut book) = fresh_run("standard");
+    let zero = outcome("run.one", 1, 100, 0, "m01", Outcome::Succeeded, 0);
+    let receipt = apply_mission_record(
+        &mut state,
+        &graph,
+        &mut book,
+        submit(&zero, &mission("m01"), RecordRule::DEFAULT),
+    )
+    .expect("a 0-score victory is a legitimate outcome");
+    let OutcomeReceipt::Applied(plan) = receipt.campaign.receipt else {
+        panic!("the campaign half must apply, got {:?}", receipt.campaign)
+    };
+    assert!(
+        !plan.best_score_raised,
+        "under the default rule a 0-score first victory raises nothing (F43-A)"
+    );
+    assert_eq!(
+        state.progress(&node("m01")).expect("recorded").best_score,
+        0
+    );
+    // A later positive victory still establishes the record.
+    let positive = outcome("run.one", 2, 200, 0, "m01", Outcome::Succeeded, 700);
+    apply_mission_record(
+        &mut state,
+        &graph,
+        &mut book,
+        submit(&positive, &mission("m01"), RecordRule::DEFAULT),
+    )
+    .expect("the second victory applies");
+    assert_eq!(
+        state.progress(&node("m01")).expect("recorded").best_score,
+        700
+    );
+    assert_eq!(slot(&book, &key_of("m01")).best.score, 700);
+
+    // A restored best is never lowered by a weaker first victory under the
+    // default rule: the comparison is `score > best`, not "first wins".
+    let (graph, mut state, _book) = fresh_run("standard");
+    let mut snapshot = state.snapshot();
+    snapshot.progress.push((
+        node("m01"),
+        cs_sim::campaign::NodeProgress {
+            victories: 0,
+            defeats: 0,
+            aborts: 0,
+            best_score: 900,
+            latest: None,
+        },
+    ));
+    state = CampaignState::restore(&graph, snapshot).expect("the save restores");
+    let weaker = outcome("run.one", 1, 100, 0, "m01", Outcome::Succeeded, 400);
+    let receipt = state
+        .apply_outcome(&graph, &weaker)
+        .expect("the victory applies");
+    let OutcomeReceipt::Applied(plan) = receipt.receipt else {
+        panic!("the campaign half must apply, got {receipt:?}")
+    };
+    assert!(
+        !plan.best_score_raised,
+        "a weaker first victory does not raise a restored best"
+    );
+    assert_eq!(
+        state.progress(&node("m01")).expect("recorded").best_score,
+        900,
+        "the restored best survives the weaker first victory"
+    );
+
+    // The lower-is-better rule: 0 is a sentinel, not a time, so the first
+    // victory establishes the record whatever its score.
+    let lower = RecordRule {
+        better: BetterIs::Lower,
+        scope: DifficultyScope::AllDifficulties,
+    };
+    let (graph, mut state, mut book) = fresh_run("standard");
+    let zero = outcome("run.one", 1, 100, 0, "m01", Outcome::Succeeded, 0);
+    let receipt = apply_mission_record(
+        &mut state,
+        &graph,
+        &mut book,
+        submit(&zero, &mission("m01"), lower),
+    )
+    .expect("the 0-score victory applies");
+    let OutcomeReceipt::Applied(plan) = receipt.campaign.receipt else {
+        panic!("the campaign half must apply, got {:?}", receipt.campaign)
+    };
+    assert!(
+        plan.best_score_raised,
+        "a lower-is-better first victory establishes the record at any score"
+    );
+    // …and a slower second run cannot displace it.
+    let slower = outcome("run.one", 2, 200, 0, "m01", Outcome::Succeeded, 50);
+    let receipt = apply_mission_record(
+        &mut state,
+        &graph,
+        &mut book,
+        submit(&slower, &mission("m01"), lower),
+    )
+    .expect("the slower run applies");
+    let OutcomeReceipt::Applied(plan) = receipt.campaign.receipt else {
+        panic!("the campaign half must apply, got {:?}", receipt.campaign)
+    };
+    assert!(
+        !plan.best_score_raised,
+        "a slower run does not beat a 0 sentinel kept as the record"
+    );
+    assert_eq!(
+        state.progress(&node("m01")).expect("recorded").best_score,
+        0
+    );
+    assert_eq!(slot(&book, &key_of("m01")).best.score, 0);
+    assert_eq!(slot(&book, &key_of("m01")).latest.score, 50);
+}
+
 /// The difficulty scope is honored where runs meet: the profile-level book
 /// keeps one slot per difficulty (`PerDifficulty`) or one shared slot
 /// (`AllDifficulties`), while each run's campaign state keeps its own
