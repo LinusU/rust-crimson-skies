@@ -158,6 +158,12 @@ struct BodyTrack {
 /// own measurable record — how many casts ran, how many volume touches and
 /// transitions they produced — so a finding can quote the pass rather than a
 /// test's proxy for it.
+///
+/// The counters count **transitions**, one per `(body, volume)` pair per
+/// tick: the tick's decision list is deduplicated, so a volume that is both
+/// inside at the segment's start and touched along it — or touched and ended
+/// inside — is still decided once, and a transition can never be counted
+/// twice by being walked twice.
 #[derive(Resource, Debug, Default)]
 pub struct SweptBodyTracks {
     bodies: HashMap<Entity, BodyTrack>,
@@ -195,7 +201,10 @@ impl SweptBodyTracks {
 
     /// Entry transitions delivered into [`TriggerCrossings`].
     ///
-    /// A refused second record is not counted here: it is
+    /// Counted once per transition: each `(body, volume)` pair is decided
+    /// once per tick, so an entry decided with the volume both touched along
+    /// the segment and inside at its end is still one count. A refused second
+    /// record is not counted here either: it is
     /// [`TriggerCrossings::duplicates`], which is where once-per-pair is
     /// enforced.
     #[must_use]
@@ -204,8 +213,11 @@ impl SweptBodyTracks {
     }
 
     /// Exit transitions observed: a body leaving a volume it was inside, or a
-    /// pass-through's exit half. Exits are bookkeeping for the inside bit —
-    /// the stream is once-per-pair, so they are never second records.
+    /// pass-through's exit half. Counted once per transition: each
+    /// `(body, volume)` pair is decided once per tick, so an exit whose volume
+    /// the cast still reported from inside is still one count. Exits are
+    /// bookkeeping for the inside bit — the stream is once-per-pair, so they
+    /// are never second records.
     #[must_use]
     pub fn exits(&self) -> u64 {
         self.exits
