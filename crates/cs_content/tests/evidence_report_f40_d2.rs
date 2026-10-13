@@ -587,15 +587,20 @@ fn retail_mpg_names(root: &Path) -> Vec<String> {
 fn review_identity() -> String {
     let recorded = String::from(
         "implementer: mimo-1/mimo-1 (Rally #661, implement claim of \
-         2026-10-13T16:54:50Z), model MiMo. This report is the implementer's own record: \
-         every check it reports was run by the implementer, it names no reviewer because \
-         none has reviewed it, and the reviewing agent records their own identity in its \
-         place (through CS_EVIDENCE_REVIEW) when they regenerate it; the format, trigger \
-         and identity claims still deserve a different agent instance or model with a \
-         fresh context. No agent review awards more than checked, and nothing here is \
-         verified_original: retail is read access to the installation's own files, the \
-         original game was never run, and the trigger inventory is structural. No agent \
-         review replaces the owner's human approval",
+         2026-10-13T16:54:50Z), model MiMo; reviewer: mimo-1/mimo-1 (Rally #661, review \
+         claim of 2026-10-13T19:56:22Z), the same agent name and model in a new session \
+         with fresh context, so this review is not independent original-reference \
+         evidence. The review re-derived the retail readings against the decoded original \
+         members (their SHA-256 equal to this report's cinematic-inventory.json), \
+         confirmed that each page's skip inputs and the movie control's natural \
+         completion converge on that page's single EC-guarded 11006 handler, confirmed \
+         the CM_MOVIE file supersede and the brace-scoped freturntogame guards, re-ran \
+         the full acceptance suite including the retail test, strengthened the retail \
+         fragment-offset validation to cover the four backdrop page members, and \
+         regenerated this report on the reviewed tree. No agent review awards more than \
+         checked, and nothing here is verified_original: retail is read access to the \
+         installation's own files, the original game was never run, and the trigger \
+         inventory is structural. No agent review replaces the owner's human approval",
     );
     std::env::var("CS_EVIDENCE_REVIEW").unwrap_or(recorded)
 }
@@ -666,6 +671,13 @@ const UNKNOWN_LIMITATIONS: &[&str] = &[
      inventory verifies that the named sources state each trigger, never that the \
      original plays a given file for a given player action. Affected content: every \
      fidelity claim about the ten videos. Resolving evidence: an original-run capture.",
+    "The teardown path is unread: the pages send no 11000 stop to the movie control when \
+     they skip or end (the measured FINALCINEMA and CAMPAIGNINTRO done handlers run only \
+     script_run/script_continue/script_end plus a mail to the ambient page), so how the \
+     engine stops a movie handle whose owning page ended is engine-side state no named \
+     source states. Affected content: the skip paths of chap1.mpg through chap5.mpg and \
+     final.mpg, and any claim that skipping cleanly stops playback. Resolving task: \
+     F40-D4's executable analysis, or an original-run capture.",
 ];
 
 // ------------------------------------------------------------- inputs ---

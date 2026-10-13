@@ -1023,6 +1023,10 @@ fn accept_f40_d2_retail_triggers_remeasure_from_the_installation() {
         ("FINALCINEMA.SCRIPT", &finalcinema),
         ("PASSENGERCABIN.SCRIPT", &cabin),
         ("CTL.SCRIPT", &control),
+        ("MAINMENU.SCRIPT", &mainmenu),
+        ("SAVE.SCRIPT", &save),
+        ("LOAD.SCRIPT", &load),
+        ("PREFERENCES.SCRIPT", &preferences),
     ];
     for fragment in inventory.fragments() {
         let Some(offset) = fragment.first_offset else {
