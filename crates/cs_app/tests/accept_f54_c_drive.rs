@@ -22,7 +22,11 @@
 //!   `recovery::fire_intent`, waiting for the weapon schedule's tick.
 //! * A `Live` host publishes the ledger's snapshot every committed tick, and
 //!   the client's mirror is constructed by the drive at grant time and fed
-//!   `ClientSession::snapshot()` at most once each.
+//!   `ClientSession::snapshot()` at most once each. The freeze a host
+//!   teardown asserts is measured only after the wire has drained — the
+//!   fixture ends the match and waits for the last published snapshot to
+//!   land — because a loopback datagram written before the host resource
+//!   goes away can still be read after it.
 //! * A peer departure releases its control state — buffer, held axes and
 //!   gate ownership together — and a session resource that goes away is
 //!   recorded as a teardown by name.
@@ -50,6 +54,7 @@ use cs_app::physics::PhysicsSession;
 use cs_app::weapons::WeaponOrder;
 use cs_net::fixture::{synthetic_hello, synthetic_parameters};
 use cs_net::lifecycle::{ClientNotice, ClientPhase, ClientSession, ServerNotice, ServerSession};
+use cs_net::message::FinishReason;
 use cs_net::transport::ConnectWindow;
 use cs_sim::net_state::{NetActorState, NetStateError, NetStateLedger};
 use cs_types::Tick;
@@ -451,11 +456,70 @@ fn accept_f54_c_drive_the_session_round_trip_binds_every_boundary() {
     // new snapshot arriving, further ticks ingest nothing. Removing the host
     // freezes the mailbox at its last value — and is itself recorded as the
     // session teardown it is.
+    //
+    // The freeze is only sound once the *wire* is drained, because the wire is
+    // not part of the resource: `publish_snapshot` only queues, the next host
+    // pump writes the datagram, and on this host a loopback `sendto` never
+    // becomes readable the moment it returns (measured 2026-10-14: p50 ~2 µs
+    // idle and ~7 µs under eight-way load, tailing to ~580 µs). A snapshot
+    // written before the host resource is removed can therefore still be read
+    // after it and move the mailbox by one — the flake Rally #1386 recorded
+    // as `Tick(14)` against a `last_fed` of `Tick(13)`. Capturing `last_fed`
+    // while a datagram was still in flight demanded an immediate freeze the
+    // drive never promised.
+    //
+    // Ending the match is the drain: `finish` stops the host publishing, the
+    // transport flushes its queue on the next pump, and the snapshot it
+    // published on the last Live tick is the final datagram the wire will
+    // carry. Waiting for exactly that tick to land leaves nothing that could
+    // arrive after the teardown.
+    let last_published = report.at.expect("a committed tick exists");
+    linked
+        .world()
+        .resource_mut::<NetHost>()
+        .session_mut()
+        .finish(last_published, FinishReason::Completed)
+        .expect("a live session finishes");
+    let mut drained = false;
+    for _ in 0..MAX_TICKS {
+        linked.step(1);
+        let report = linked.report();
+        assert_eq!(
+            report.published,
+            Some(NetPublish::Skipped("finished")),
+            "the finished host publishes nothing further"
+        );
+        if linked
+            .world()
+            .resource::<NetClient>()
+            .session()
+            .snapshot_tick()
+            == Some(last_published)
+        {
+            drained = true;
+            break;
+        }
+    }
+    assert!(
+        drained,
+        "the last snapshot the host published never arrived; mailbox {:?}",
+        linked
+            .world()
+            .resource::<NetClient>()
+            .session()
+            .snapshot_tick()
+    );
     let last_fed = linked
         .world()
         .resource::<NetClient>()
         .session()
         .snapshot_tick();
+    assert_eq!(
+        last_fed,
+        Some(last_published),
+        "the drained wire left its final snapshot in the mailbox"
+    );
+
     linked.world().remove_resource::<NetHost>();
     linked.step(1);
     let report = linked.report();
@@ -467,6 +531,11 @@ fn accept_f54_c_drive_the_session_round_trip_binds_every_boundary() {
         "the host resource's removal was recorded: {:?}",
         report.tore_down
     );
+    assert_eq!(
+        report.published, None,
+        "a host resource that is gone publishes nothing"
+    );
+    assert_eq!(report.ingested, None, "teardown itself feeds nothing new");
     linked.step(3);
     let report = linked.report();
     assert_eq!(report.ingested, None, "a snapshot already fed is not refed");
