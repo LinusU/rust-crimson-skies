@@ -433,6 +433,17 @@ pub enum RowError {
         /// The measured value; `None` for a computed dispatch.
         native_id: Option<i64>,
     },
+    /// The row's shape table does not cover its own widest observed arity, so
+    /// a site at that arity would be judged only up to the table's width and
+    /// its remaining positions would go unchecked.
+    ProtocolWidthMismatch {
+        /// The measured value; `None` for a computed dispatch.
+        native_id: Option<i64>,
+        /// Argument positions the shape table claims.
+        args: usize,
+        /// The widest argument count the row observed.
+        widest_arity: u32,
+    },
     /// The row carries no evidence, or a summary over
     /// [`MAX_EVIDENCE_BYTES`].
     NoEvidence {
@@ -448,6 +459,7 @@ impl RowError {
             Self::IdOutOfRange { .. } => "id_out_of_range",
             Self::TooManyArguments { .. } => "too_many_arguments",
             Self::NoArity { .. } => "no_arity",
+            Self::ProtocolWidthMismatch { .. } => "protocol_width_mismatch",
             Self::NoEvidence { .. } => "no_evidence",
         }
     }
@@ -479,6 +491,16 @@ impl fmt::Display for RowError {
             Self::NoArity { native_id } => {
                 write!(f, "{}: no observed argument count", describe_id(*native_id))
             }
+            Self::ProtocolWidthMismatch {
+                native_id,
+                args,
+                widest_arity,
+            } => write!(
+                f,
+                "{}: the shape table covers {args} position(s), its widest \\
+                 observed arity is {widest_arity}",
+                describe_id(*native_id)
+            ),
             Self::NoEvidence { native_id } => {
                 write!(f, "{}: no measurement evidence", describe_id(*native_id))
             }
@@ -534,14 +556,15 @@ impl MeasuredCall {
     /// a mode/index argument, so one key legitimately appears with several
     /// arities and shapes (owner note, Rally #159). What is refused is a row
     /// that cannot state a protocol at all: a value out of range, more
-    /// positions than [`MAX_PROTOCOL_ARGS`], no observed arity, or no
-    /// evidence.
+    /// positions than [`MAX_PROTOCOL_ARGS`], no observed arity, a shape table
+    /// that does not cover the widest observed arity, or no evidence.
     ///
     /// # Errors
     ///
     /// [`RowError`] for a dispatch value out of range, an argument width over
-    /// [`MAX_PROTOCOL_ARGS`], a row with no observed arity or with an empty or
-    /// over-long evidence summary.
+    /// [`MAX_PROTOCOL_ARGS`], a row with no observed arity, a shape table
+    /// shorter than the widest observed arity, or with an empty or over-long
+    /// evidence summary.
     pub fn from_row(row: &MeasuredCallRow) -> Result<Self, RowError> {
         if let Some(native_id) = row.native_id
             && (native_id < 0 || native_id > i64::from(i32::MAX))
@@ -558,6 +581,20 @@ impl MeasuredCall {
         if row.arities.is_empty() {
             return Err(RowError::NoArity {
                 native_id: row.native_id,
+            });
+        }
+        // The shape table must cover the protocol's own widest arity: `judge`
+        // checks a site's positions against it, and a table shorter than an
+        // observed arity would leave that site's trailing positions unchecked.
+        // The producer always grows the table to the maximum width its sites
+        // spell, so `arg_shapes.len() == widest arity` for every corpus row;
+        // a row that disagrees cannot state its protocol.
+        let widest_arity = row.arities.iter().copied().max().unwrap_or(0);
+        if row.arg_shapes.len() != widest_arity as usize {
+            return Err(RowError::ProtocolWidthMismatch {
+                native_id: row.native_id,
+                args: row.arg_shapes.len(),
+                widest_arity,
             });
         }
         if row.evidence.trim().is_empty() || row.evidence.len() > MAX_EVIDENCE_BYTES {

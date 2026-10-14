@@ -442,16 +442,33 @@ fn accept_f38_b_a_measured_row_is_validated_or_named() {
     // Arity and shape variation are protocol variation, not refusals: the
     // natives take a mode/index argument, so one key legitimately appears with
     // several counts and shapes (owner note, Rally #159). The row is accepted
-    // with the variation kept visible.
+    // with the variation kept visible. The shape table covers the protocol's
+    // widest arity — the producer grows it to the widest site it measured —
+    // so a position only the 2-arg sites spell is still stated.
     let mut varied = base.clone();
     varied.arities = vec![1, 2];
-    varied.arg_shapes = vec![None];
+    varied.arg_shapes = vec![None, None];
     let protocol = MeasuredCall::from_row(&varied).expect("a protocol row is valid");
     assert_eq!(protocol.arities, vec![1, 2]);
     assert_eq!(
         protocol.arg_shapes,
-        vec![None],
+        vec![None, None],
         "a varying position stays `None`; no shape is picked for it"
+    );
+
+    // A shape table shorter than the widest observed arity is refused: a site
+    // at that arity would be judged only up to the table's width, silently
+    // leaving its trailing positions unchecked.
+    let mut short = base.clone();
+    short.arities = vec![1, 2];
+    short.arg_shapes = vec![None];
+    assert_eq!(
+        MeasuredCall::from_row(&short),
+        Err(RowError::ProtocolWidthMismatch {
+            native_id: Some(100),
+            args: 1,
+            widest_arity: 2,
+        })
     );
 
     // A duplicate (host, value) pair yields no table at all…
