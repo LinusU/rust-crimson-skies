@@ -43,7 +43,7 @@ P0→P1→P2 run counter-clockwise**, i.e. the right-hand normal
 In `docs/contracts/IDENTITY-CONTENT.md` / `cs_content::coordinates` terms:
 the conversion applies the **identity axis map** (`X→X, Y→Y, Z→Z`, a signed
 permutation with `det(M) = +1`, i.e. orientation-preserving —
-`AxisMap::preserves_orientation`), the world is right-handed with `+Y` up,
+`AxisMap::is_orientation_preserving`), the world is right-handed with `+Y` up,
 and the front-face rule is **CCW**: the stored positions and stored corner
 order upload bit-exact (the F17-B adapter's existing invariant) and
 counter-clockwise is front. That is exactly Bevy's default
@@ -162,12 +162,13 @@ All three cite `OWNER-STATIC-2026-10-05` and this document only:
   plumbed into `RenderMesh`/`MaterialFacts::two_sided`. Until it is,
   per-surface two-sidedness stays `MaterialUnknown::TwoSided` and
   `StateError::CullFaceUnknown` refuses undeclared surfaces. **Resolving
-  task:** the follow-up filed with this task (0x400 plumbing).
+  task:** F10-F.1 (#1406).
 * **Billboard meshes.** The mesh record words that identify a billboard
   (word0 == 1, word1 ∈ {0,1}) are not surfaced in the render IR, so nothing
   yet produces `CullingClass::Billboard`; the decision is recorded so the
   plumbing task only has to feed it. Word1 == 2 (40 retail meshes) does
   **not** skip the test in the original and stays one-sided by this rule.
+  **Resolving task:** F10-F.2 (#1407).
 * **Strip culling parity.** The original draws strips with D3DCULL_CW and
   never per-polygon-tests them; this repository's reader triangulates
   everything into plain triangle lists (F10-B). How D3DCULL_CW parity maps
@@ -177,7 +178,8 @@ All three cite `OWNER-STATIC-2026-10-05` and this document only:
   whose first-three-corner normal is exactly zero, and culls `|d| ≤ 0.00005`
   — a *view-dependent* band. This repository does not implement that test;
   every uploaded triangle reaches the GPU. Only "exactly zero normal is
-  never drawn" is unconditional, and it is unreplicated.
+  never drawn" is unconditional, and it is unreplicated. **Resolving task:**
+  F17-F.3 (#1408).
 * **The software-renderer shoelace drop** (`|sum| < 4.0`) is specific to the
   original's software path and is not replicated.
 * **The batch flag `[batch+0x1c] & 0x100`** that keeps D3DCULL_NONE on a
