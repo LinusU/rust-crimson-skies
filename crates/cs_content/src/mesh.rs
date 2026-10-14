@@ -107,7 +107,15 @@
 //!
 //! # Validation gate
 //!
-//! A mesh whose topology is not complete is refused with
+//! The gate works on the original renderer's measured view of the topology,
+//! [`cs_formats::gamez::RawMesh::draw_topology`]: an outline polygon is a
+//! triangle fan rooted at its first stored corner — never ear-clipped —
+//! and the polygons are processed independently. A face the measured test
+//! culls on every frame (zero normal over its first three corners) draws
+//! nothing and is named on [`RenderMesh::culled_faces`] — per-face
+//! accounting, not a refusal. A mesh that still has a **rejected** face —
+//! stored data no consumer can use, not merely an outline the canonical
+//! view could not triangulate — is refused with
 //! [`RenderMeshError::IncompleteTopology`], which names every rejected
 //! polygon and its [`cs_formats::gamez::FaceIssue`] code; it is never
 //! silently dropped (F10 non-negotiable #4). A topology that does not have
@@ -487,6 +495,7 @@ pub struct RenderMesh {
     degenerate_triangles: usize,
     extra_group_triangles: usize,
     extra_group_degenerate: usize,
+    culled_faces: Vec<usize>,
 }
 
 /// Where a render mesh's per-corner material and texture coordinate come from.
@@ -521,8 +530,14 @@ impl RenderMesh {
     /// # Errors
     ///
     /// Any [`RenderMeshError`] [`Self::from_parts`] returns.
+    ///
+    /// The topology is the original renderer's measured view,
+    /// [`RawMesh::draw_topology`]: an outline polygon is fanned from its
+    /// first stored corner — never ear-clipped — and an outline whose first
+    /// three corners have a zero normal is culled per face, which is
+    /// accounted on [`Self::culled_faces`] instead of refusing the mesh.
     pub fn build(mesh: &RawMesh) -> Result<Self, RenderMeshError> {
-        Self::from_parts(mesh, &mesh.topology())
+        Self::from_parts(mesh, &mesh.draw_topology())
     }
 
     /// Builds the render mesh from `mesh` and a topology the caller already
@@ -530,10 +545,16 @@ impl RenderMesh {
     /// [`Self::from_stored_groups_with_topology`] for the one that keeps every
     /// stored material group.
     ///
-    /// `topology` must belong to `mesh`: one face status per polygon, all
-    /// decoded. Stored attribute indices are re-checked while resolving, so a
-    /// topology that claims a face decoded while the mesh stores an
-    /// out-of-range index is refused instead of indexed.
+    /// `topology` must belong to `mesh`: one face status per polygon. A
+    /// [`FaceStatus::Rejected`] face is refused as
+    /// [`RenderMeshError::IncompleteTopology`]; a [`FaceStatus::Culled`] face
+    /// — [`RawMesh::draw_topology`]'s answer for an outline whose first
+    /// three corners have a zero normal — produces no triangles of its own
+    /// and is named on [`Self::culled_faces`], so the mesh's other faces
+    /// still draw, which is the original's per-face behaviour. Stored
+    /// attribute indices are re-checked while resolving, so a topology that
+    /// claims a face decoded while the mesh stores an out-of-range index is
+    /// refused instead of indexed.
     ///
     /// # Errors
     ///
@@ -570,11 +591,15 @@ impl RenderMesh {
     ///
     /// Any [`RenderMeshError`] [`Self::from_stored_groups_with_topology`]
     /// returns.
+    ///
+    /// The topology is the original renderer's measured view,
+    /// [`RawMesh::draw_topology`]: outlines fan from corner 0 and a
+    /// zero-normal outline is culled per face, not refused per mesh.
     pub fn from_stored_groups(
         mesh: &RawMesh,
         groups: &[Vec<RawMaterialGroup>],
     ) -> Result<Self, RenderMeshError> {
-        Self::from_stored_groups_with_topology(mesh, &mesh.topology(), groups)
+        Self::from_stored_groups_with_topology(mesh, &mesh.draw_topology(), groups)
     }
 
     /// [`Self::from_stored_groups`] with a topology the caller already has.
@@ -607,18 +632,21 @@ impl RenderMesh {
                 faces: topology.faces.len(),
             });
         }
-        let rejected: Vec<RejectedFace> = topology
-            .faces
-            .iter()
-            .enumerate()
-            .filter_map(|(polygon, face)| match face {
-                FaceStatus::Rejected(issue) => Some(RejectedFace {
+        let mut rejected: Vec<RejectedFace> = Vec::new();
+        let mut culled_faces: Vec<usize> = Vec::new();
+        for (polygon, face) in topology.faces.iter().enumerate() {
+            match face {
+                FaceStatus::Rejected(issue) => rejected.push(RejectedFace {
                     polygon,
                     code: issue.code(),
                 }),
-                FaceStatus::Decoded { .. } => None,
-            })
-            .collect();
+                // The measured outline test culls this face on every frame:
+                // it contributes no triangles and is named on the built
+                // mesh, never a reason to drop the mesh itself.
+                FaceStatus::Culled => culled_faces.push(polygon),
+                FaceStatus::Decoded { .. } => {}
+            }
+        }
         if !rejected.is_empty() {
             return Err(RenderMeshError::IncompleteTopology { rejected });
         }
@@ -753,6 +781,7 @@ impl RenderMesh {
             degenerate_triangles,
             extra_group_triangles,
             extra_group_degenerate,
+            culled_faces,
         })
     }
 
@@ -780,11 +809,23 @@ impl RenderMesh {
         &self.groups
     }
 
-    /// Stored polygons that fed this mesh. Every one decoded (the gate
-    /// refuses an incomplete topology), so this is the exact face count.
+    /// Stored polygons that fed this mesh. Every one either decoded or was
+    /// culled by the measured per-face test (the gate still refuses a
+    /// *rejected* face's mesh), so this is the exact stored face count.
     #[must_use]
     pub fn source_faces(&self) -> usize {
         self.source_faces
+    }
+
+    /// Stored polygon indices the original's measured face test culls on
+    /// every frame — the outlines whose first three corners have a zero
+    /// normal (`OWNER-STATIC-2026-10-05`). They produced no triangle, they
+    /// are counted on [`MeshFaceCounts::culled`] and the census's
+    /// `culled_faces`, and their mesh still built: the original processes
+    /// faces independently, so culling is per face and never a refusal.
+    #[must_use]
+    pub fn culled_faces(&self) -> &[usize] {
+        &self.culled_faces
     }
 
     /// Stored topology triangles that fed this mesh, degenerate ones included.
@@ -3023,7 +3064,10 @@ impl MeshContainer {
                         &mesh.mesh,
                         &mesh.material_groups,
                     )));
-                    topologies.push(Some(mesh.topology()));
+                    // The gate's own accounting is in the same view the
+                    // render build used: the original's measured outline
+                    // rule, not the canonical ear-clipped one.
+                    topologies.push(Some(mesh.draw_topology()));
                 }
             }
         }
@@ -3212,6 +3256,7 @@ impl MeshContainer {
                 .iter()
                 .filter(|face| matches!(face, FaceStatus::Rejected(_)))
                 .count(),
+            culled: topology.culled_faces(),
             degenerate: topology
                 .triangles
                 .iter()
@@ -3254,6 +3299,12 @@ pub struct MeshFaceCounts {
     /// `FaceIssue` code in [`RenderMeshError::IncompleteTopology`]. Zero for a
     /// mesh that produced a render mesh.
     pub rejected: usize,
+    /// Stored polygons the original's measured face test culls on every
+    /// frame: outlines whose first three corners have a zero normal
+    /// (`OWNER-STATIC-2026-10-05`). They produced no triangle — and did not
+    /// refuse the mesh, because the original processes faces independently.
+    /// [`RenderMesh::culled_faces`] names them on a built mesh.
+    pub culled: usize,
     /// Triangles with two equal stored position indices. They are kept; a
     /// consumer that draws may skip them.
     ///
@@ -4122,7 +4173,7 @@ impl MeshUpload {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cs_formats::gamez::{MeshTriangle, PrimitiveKind, RawCorner, RawPolygon};
+    use cs_formats::gamez::{FaceIssue, MeshTriangle, PrimitiveKind, RawCorner, RawPolygon};
 
     /// ```text
     /// 2 (0,1) ---- 3 (1,1)
@@ -4436,8 +4487,20 @@ mod tests {
             triangle(0, vec![corner(0), corner(1), corner(2)]),
             // 1: position index past the four positions
             strip(0, &[0, 1, 9]),
-            // 2: self-intersecting bow tie, cannot be triangulated
-            triangle(0, vec![corner(0), corner(1), corner(2), corner(3)]),
+            // 2: a normal index past the two stored normals
+            triangle(
+                0,
+                vec![
+                    corner(0),
+                    corner(1),
+                    RawCorner {
+                        position: 2,
+                        normal: Some(9),
+                        uv: None,
+                        color: None,
+                    },
+                ],
+            ),
             // 3: two-corner polygon
             triangle(0, vec![corner(0), corner(1)]),
         ]);
@@ -4453,7 +4516,7 @@ mod tests {
                     },
                     RejectedFace {
                         polygon: 2,
-                        code: "unsupported_ngon"
+                        code: "normal_index_out_of_range"
                     },
                     RejectedFace {
                         polygon: 3,
@@ -4465,11 +4528,69 @@ mod tests {
         let text = error.to_string();
         for code in [
             "position_index_out_of_range",
-            "unsupported_ngon",
+            "normal_index_out_of_range",
             "too_few_corners",
         ] {
             assert!(text.contains(code), "{text}");
         }
+    }
+
+    /// **F10-D.1's per-face cull.** An outline whose first three stored
+    /// corners have a zero normal is culled by the original's measured face
+    /// test on every frame (`OWNER-STATIC-2026-10-05`): it produces no
+    /// triangle and never refuses its mesh, because the original processes
+    /// polygons independently. The canonical ear-clipped view rejects the
+    /// same stored data instead — the two topologies diverge exactly where
+    /// the original does.
+    #[test]
+    fn accept_f10_d_a_culled_face_is_named_and_never_refuses_its_mesh() {
+        let mesh = mesh(vec![
+            // 0: a quad outline, fanned into two triangles from corner 0.
+            triangle(0, vec![corner(0), corner(1), corner(2), corner(3)]),
+            // 1: corners 0 and 1 share a position, so the first three have a
+            // zero normal — the measured face test culls it on every frame,
+            // two-sided flag or not (the retail C4 mesh 191 poly 20 shape).
+            triangle(
+                0,
+                vec![corner(0), corner(0), corner(1), corner(2), corner(3)],
+            ),
+            // 2: an ordinary triangle.
+            triangle(0, vec![corner(1), corner(3), corner(2)]),
+        ]);
+
+        // The canonical view refuses the second face's stored data; the draw
+        // view culls it per frame. Both are accounted, neither is dropped.
+        assert!(
+            matches!(
+                mesh.topology().faces[1],
+                FaceStatus::Rejected(FaceIssue::UnsupportedNgon { .. })
+            ),
+            "the ear-clipped view keeps its refusal: {:?}",
+            mesh.topology().faces[1]
+        );
+        assert_eq!(mesh.draw_topology().faces[1], FaceStatus::Culled);
+        assert_eq!(mesh.draw_topology().culled_faces(), 1);
+
+        let render = RenderMesh::build(&mesh)
+            .expect("a culled face is per-face accounting, never a refusal");
+        assert_eq!(render.source_faces(), 3);
+        assert_eq!(
+            render.culled_faces(),
+            &[1],
+            "the culled polygon is named by its stored index"
+        );
+        assert_eq!(
+            render.triangles().len(),
+            3,
+            "the quad's two fan triangles plus the triangle — none from face 1"
+        );
+        assert!(
+            render
+                .triangles()
+                .iter()
+                .all(|triangle| triangle.source.polygon != 1),
+            "the culled face produces nothing"
+        );
     }
 
     #[test]
@@ -6658,11 +6779,17 @@ mod tests {
     /// are adjacent and equally sized, so a reader that swapped them would
     /// consume exactly the right bytes, walk to `nodes_offset` and satisfy every
     /// count — it would only be wrong.
+    ///
+    /// The quadratic `y` keeps any three **distinct-index** points
+    /// non-collinear (they lie on a parabola in `x`/`y`): the measured
+    /// face test culls an outline whose first three corners have a zero
+    /// normal, and a collinear ramp would cull every outline these fixtures
+    /// store.
     fn block(base: f32, count: usize) -> Vec<[f32; 3]> {
         (0..count)
             .map(|index| {
                 let value = (index + 1) as f32;
-                [base + value, base + value * 2.0, base + value * 3.0]
+                [base + value, base + value * value, base + value * 3.0]
             })
             .collect()
     }
@@ -7403,15 +7530,16 @@ mod tests {
     /// its logical field and its byte offset, reaches the row.
     #[test]
     fn accept_f10_c_03_a_refused_mesh_is_a_row_and_nothing_is_uploaded_for_it() {
-        // Mesh 0: a four-corner outline over the quad's four positions whose
-        // stored order crosses itself, so validated triangulation refuses it. A
-        // three-corner polygon would not do: a triangle needs no triangulation,
-        // so it would have been accepted and the row would have been `Blocked`.
+        // Mesh 0: a four-corner outline whose last corner names a position the
+        // mesh does not hold, so the gate refuses the face and the mesh. A
+        // self-intersecting stored order would not do: the original submits
+        // every outline as a corner-0 fan, so that is a valid face, and the
+        // row would have been `Blocked`, never `Failed`.
         let refused = StoredMesh::new(
             block(0.0, 4),
             block(1000.0, 4),
             vec![StoredPolygon::new(
-                &[0, 1, 2, 3],
+                &[0, 1, 2, 9],
                 0,
                 &[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0], [1.0, 1.0]],
             )],
@@ -7463,7 +7591,7 @@ mod tests {
         );
         assert!(
             failure.diagnostic.contains("rejected face")
-                && failure.diagnostic.contains("unsupported_ngon"),
+                && failure.diagnostic.contains("position_index_out_of_range"),
             "{failure}"
         );
 
@@ -8219,8 +8347,12 @@ mod tests {
         missing_faces: u64,
         /// Stored faces whose data is invalid.
         invalid_faces: u64,
-        /// Stored faces this triangulator refuses.
+        /// Stored faces the canonical view refuses.
         unsupported_faces: u64,
+        /// Stored outline faces the original's measured per-frame face test
+        /// culls (a zero normal over the first three corners,
+        /// `OWNER-STATIC-2026-10-05`). They draw nothing but refuse nothing.
+        culled_faces: u64,
         /// Stored faces the render gate lost, i.e. every face of every
         /// `Failed` row's mesh.
         faces_in_failed_rows: u64,
@@ -8331,13 +8463,14 @@ mod tests {
 
         println!(
             "F10-D render {label} ({kind}): rows {} ready {rows_ready} blocked {rows_blocked} \
-             failed {rows_failed}; stored faces {} missing {} invalid {} unsupported {}; \
-             faces in failed rows {faces_in_failed_rows}",
+             failed {rows_failed}; stored faces {} missing {} invalid {} unsupported {} \
+             culled {}; faces in failed rows {faces_in_failed_rows}",
             records.len(),
             census.stored_faces,
             census.missing_faces(),
             census.invalid_faces,
             census.unsupported_faces,
+            census.culled_faces,
         );
         F10DRenderRow {
             path: label.to_owned(),
@@ -8350,6 +8483,7 @@ mod tests {
             missing_faces: census.missing_faces(),
             invalid_faces: census.invalid_faces,
             unsupported_faces: census.unsupported_faces,
+            culled_faces: census.culled_faces,
             faces_in_failed_rows,
             refused_meshes: refused_meshes.clone(),
         }
@@ -8358,18 +8492,22 @@ mod tests {
     /// **AC04 through the render gate, over every private world and the
     /// airframes.** The format layer's census (reported by
     /// `accept_f10_d_retail_every_world_and_airframe_reports_exact_missing_and_invalid_face_counts`
-    /// in `cs_formats`) says exactly which stored faces draw nothing: eleven of
-    /// the 128 734 faces the nine containers store. This test mounts each of
-    /// those containers through the production VFS, dispatch, readers and
-    /// catalog, and states the other half of "render-critical":
+    /// in `cs_formats`) says exactly which stored faces draw nothing under the
+    /// original's measured outline rule (`OWNER-STATIC-2026-10-05`, reconciled
+    /// in F10-D.1): three of the 128 734 faces the nine containers store — the
+    /// C4 outlines whose first three corners have a zero normal, culled per
+    /// face on every frame — while every other outline fans from corner 0.
+    /// This test mounts each of those containers through the production VFS,
+    /// dispatch, readers and catalog, and states the other half of
+    /// "render-critical":
     ///
     /// * every stored face reaches a row (`rows' faces == the census's stored
     ///   faces), so the report cannot be short by a mesh the gate never saw;
     /// * the refused faces the gate reports are the census's refused faces,
     ///   count for count;
     /// * the rows that failed to build are exactly the meshes that lost a
-    ///   face — one refused face costs its whole mesh, and no mesh that built
-    ///   lost anything;
+    ///   **rejected** face — one refused face still costs its whole mesh, a
+    ///   culled face costs only itself, and no mesh that built lost anything;
     /// * a row that is merely `Blocked` (an open presentation decision) still
     ///   has its render mesh, so it is reported but never counted as missing.
     ///
@@ -8496,12 +8634,12 @@ mod tests {
         document.push_str(&format!("candidate_tree\t{tree}\n"));
         document.push_str(
             "path\tkind\trows\tready\tblocked\tfailed\tfaces\tmissing_faces\tinvalid_faces\t\
-             unsupported_faces\tfaces_in_failed_rows\trefused_meshes\n",
+             unsupported_faces\tculled_faces\tfaces_in_failed_rows\trefused_meshes\n",
         );
         for row in report {
             let meshes: Vec<String> = row.refused_meshes.iter().map(u32::to_string).collect();
             document.push_str(&format!(
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\n",
                 row.path,
                 row.kind,
                 row.rows,
@@ -8512,6 +8650,7 @@ mod tests {
                 row.missing_faces,
                 row.invalid_faces,
                 row.unsupported_faces,
+                row.culled_faces,
                 row.faces_in_failed_rows,
                 meshes.join(","),
             ));
