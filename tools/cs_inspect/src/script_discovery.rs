@@ -3511,8 +3511,20 @@ mod tests {
     ///    `$CS_GAME_DIR` and keeps its report as the artifact `scripts.json`.
     /// 3. ```sh
     ///    python3 tools/validate_evidence.py private/evidence/F13-D/acceptance.json \
-    ///      --artifact-root private/evidence/F13-D --require-pass
+    ///      --artifact-root private/evidence/F13-D
     ///    ```
+    ///    **Without** `--require-pass`: that flag rejects a report that still
+    ///    lists unresolved issues (it exits 3, "Unresolved issues"), and this
+    ///    task's `unknowns` are exactly the limitations its own recording
+    ///    pins — the unmeasured mission opcode table, the two unreconciled
+    ///    anim vocabularies (#1415), the four unjoined event ids (#1416), the
+    ///    free-text record keys (#1417), the header-only anim gate (#1421),
+    ///    the four empty scripts and the provenance of the finding's
+    ///    2026-10-14 questions. They are recorded rather than dropped: an
+    ///    empty list would be a report claiming this stage closed questions it
+    ///    did not close, and never dropping an unresolved issue to pass a
+    ///    validator is the owner's rule (T685's harness records the same
+    ///    decision).
     /// 4. Commit a copy of `acceptance.json` as `docs/findings/evidence/F13-D.json`.
     #[test]
     #[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_GAME_DIR"]
@@ -3614,8 +3626,10 @@ mod tests {
              binary walk and no `unknown_opcode` stop. The classification basis is the owner note \
              of #640 (static analysis of the decrypted executable, never verified_original) plus \
              this project's own structural decodes; the correction is recorded in \
-             docs/findings/2026-10-14-f13-d-every-program-family-has-its-real-model.md. Validated \
-             with tools/validate_evidence.py --require-pass.",
+             docs/findings/2026-10-14-f13-d-every-program-family-has-its-real-model.md. \
+             Validated structurally with tools/validate_evidence.py — not with --require-pass, \
+             which exits 3 while a report lists unresolved issues and this one lists seven, \
+             recorded rather than dropped.",
             summary.programs,
             summary.directive_programs,
             summary.modelled_programs,

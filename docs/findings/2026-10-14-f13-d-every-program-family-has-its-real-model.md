@@ -320,8 +320,11 @@ The reviewer ran `cargo fmt --check`, `cargo clippy -D warnings`, the full
 `--include-ignored` (7/7), re-applied two mutation probes (the classification
 removed → the three CLI tests fail; the `establishes_semantics` refusal
 removed → the session test fails), regenerated
-`docs/findings/evidence/F13-D.json` on the reviewed commit with
-`tools/validate_evidence.py --require-pass`, and fixed what it found: the
+`docs/findings/evidence/F13-D.json` on the reviewed commit and checked it with
+`tools/validate_evidence.py` (structurally valid; `--require-pass` exits 3 by
+design while a report lists unresolved issues, and this one lists seven —
+recorded rather than dropped, as T685's harness records too), and fixed what
+it found: the
 owner attributions above, the F13-C banner's missing addresses, the report's
 row/model invariant (a program row now carries a `model` only when that
 program was actually filed with it), the report's recorded unknowns, a
