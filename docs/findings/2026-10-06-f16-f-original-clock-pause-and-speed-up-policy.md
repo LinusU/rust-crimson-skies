@@ -27,10 +27,11 @@ the correction of the same date). The answers are then **declared in code**
   verify the original still claims `inferred`.
 * Four divergences came out of the comparison. Two are already decided by the
   spec (non-negotiable 3 and 4: integer ticks with a fixed dt, speed-up as
-  fixed ticks); two are open and were filed as **#721** (the original's
-  0.125 s frame-dt cap versus the project's unbounded advance) and **#722**
-  (the original's speed-up scales the cooldown and objective timers, the
-  project's gameplay clock grants no local authority).
+  fixed ticks); one was filed as **#721** and is now **resolved** — F16-F-CAP
+  adopted the original's 0.125 s frame-dt cap as `MAX_FRAME_DT`
+  (`docs/findings/2026-10-14-f16-f-cap-frame-dt-cap-decision.md`) — and one
+  remains open as **#722** (the original's speed-up scales the cooldown and
+  objective timers, the project's gameplay clock grants no local authority).
 * What only a run could give — measured frame pacing, the distribution of
   frame deltas, timing uncertainty — stays **unmeasured** and is recorded as
   such below.
@@ -205,7 +206,7 @@ produces 14 findings:
 | `pause.bank` | agrees | not banked ↔ `PausePolicy::Freeze` clocks drop paused wall time (`SimClock::advance` returns 0, carry untouched) |
 | `clock.tick-source` | **diverges** | one variable `game_dt` per frame ↔ fixed dt of 15 625 000 ns (integer accumulator at 64 Hz) |
 | `clock.frame-dt-bound` | agrees | 15 625 000 ns lies inside the measured [0, 125 000 000 ns] window with 0 ns slack |
-| `clock.frame-dt-cap` | **diverges** | a stalled frame advances ≤ 125 ms ↔ `SimClock::advance` accepts any `Duration` |
+| `clock.frame-dt-cap` | agrees — **resolved by #721** | a stalled frame advances ≤ 125 ms ↔ `SimClock::advance` clamps every frame to `MAX_FRAME_DT` = 125 ms |
 | `timers.shared-dt-source` | agrees | one dt source, separate accumulators ↔ one `SimClock` commit feeding two `TickTimer`s, each with its own remaining count |
 | `timers.player-down-gate` | not-modeled | mission update skipped while the player is down ↔ `GameplayTimeline` has no player-down gate |
 | `speed-up.network-gate` | agrees | 2× only while not networked ↔ single player `AdvanceFixedTicks`, multiplayer `NoLocalAuthority` |
@@ -219,20 +220,22 @@ produces 14 findings:
 | --- | --- |
 | `clock.tick-source` — the original's variable dt versus the project's fixed 64 Hz tick | **Owner decision already standing:** F16 non-negotiable 3 ("simulation time is integer tick count with fixed dt") and 4. Recorded here, not changed. The 64 Hz rate itself is a designed development value, not a measured original rate. |
 | `speed-up.mechanism` — the original's 2× variable-dt multiplier versus whole fixed ticks | **Owner decision already standing:** F16 non-negotiable 4 ("speed-up advances fixed ticks, not a variable dt"). Recorded here, not changed. |
-| `clock.frame-dt-cap` — the original clamps every frame to 0.125 s, `SimClock::advance` is unbounded | **Filed: #721** (`F16-F-CAP`) — adopt a per-frame cap or record it as accepted; either way update the finding and this entry. |
+| `clock.frame-dt-cap` — the original clamps every frame to 0.125 s, `SimClock::advance` was unbounded | **Resolved: #721** (`F16-F-CAP`) adopted the measured bound as `MAX_FRAME_DT`, enforced inside `SimClock::advance`; the finding now reports `agrees`. Decision: `docs/findings/2026-10-14-f16-f-cap-frame-dt-cap-decision.md`. |
 | `speed-up.reaches-gameplay-timers` — the original's speed-up scales cooldowns and objective timers, `ClockPolicy::authoritative_gameplay` grants no local authority and `GameplayTimeline::advance_fixed_ticks` always refuses | **Filed: #722** (`F16-F-SPEEDUP`) — decide how extra fixed ticks reach the gameplay timers, or accept the divergence; keep the multiplayer refusal and AC04. |
 
-No `ClockPolicy`/`PausePolicy` pairing was changed, and no `accept_f16_d_`
-test was touched. The four `not-modeled` findings are coverage gaps rather
+F16-F changed no `ClockPolicy`/`PausePolicy` pairing and touched no
+`accept_f16_d_` test; #721 later extended those tests for the adopted cap.
+The four `not-modeled` findings are coverage gaps rather
 than divergences and are attributed above to the subsystems that own them
 (F41/F46 audio pause, the networking crate, the mission runtime, F22 input
 bindings); they are listed so a reader cannot mistake silence for agreement.
 
 ## Tests (`accept_f16_f_`)
 
-`crates/cs_sim/tests/accept_f16_f_original_clock_policy_comparison.rs`, five
-tests, all driving production code in `cs_sim::time` (plus one that pins this
-findings entry against the declaration):
+`crates/cs_sim/tests/accept_f16_f_original_clock_policy_comparison.rs`, seven
+tests (the last two added by #721), all driving production code in
+`cs_sim::time` (plus one that pins this findings entry against the
+declaration):
 
 | Test | Covers |
 | --- | --- |
@@ -241,6 +244,8 @@ findings entry against the declaration):
 | `accept_f16_f_comparison_pins_the_measured_policies_against_the_project_clocks` | the exact three-way split of the 14 findings, the declared 0 ns tolerance, `claim == inferred` and `verified_original() == false`, and that every finding states both sides |
 | `accept_f16_f_tolerance_is_selected_before_the_comparison` | 4 Hz (250 ms of game time per tick) falls outside the original's window at the declared tolerance and inside it when a larger slack is declared *beforehand*; the `-freq` fixed-dt variant agrees exactly at 64 Hz and diverges at 30 Hz, admitting the declared slack only |
 | `accept_f16_f_project_clock_behaves_where_the_policies_agree` | the project actually behaves as the declaration requires where the comparison says "agrees": pause commits zero ticks and empties neither timer, resume banks nothing, and the multiplayer policy refuses local speed-up while the single-player policy accepts whole ticks |
+| `accept_f16_f_cap_a_stalled_frame_advances_exactly_the_cap` (#721) | `MAX_FRAME_DT` is the measured 125 ms and matches the declared policy; a stalled frame commits the cap's ticks on every domain's clock, drops the excess without banking, and feeds the gameplay timers the same bound |
+| `accept_f16_f_cap_a_frame_within_the_cap_is_untouched` (#721) | a frame at or under the cap is unchanged: the 125 ms boundary commits its ticks and the sub-tick carry still accumulates exactly across short frames |
 
 ## Mutation probes (implementation neutered → tests fail; all reverted)
 
@@ -306,15 +311,16 @@ No command needed `CS_GAME_DIR`, and no `accept_f16_f_` test is `#[ignore]`d;
   command and mission-specific gates are named as `not-modeled` findings so
   the gap stays visible.
 
-## Follow-ups filed
+## Follow-ups
 
-- **#721 (`F16-F-CAP`)** — decide whether the fixed-step accumulator needs
-  the original's 0.125 s frame-dt cap.
-- **#722 (`F16-F-SPEEDUP`)** — decide how single-player speed-up reaches
-  weapon cooldowns and objective timers.
-
-Both are `todo` with `ordinary build/test` as the required capability; neither
-may be settled by silently changing a policy pairing.
+- **#721 (`F16-F-CAP`)** — **resolved** 2026-10-14: the accumulator adopted
+  the original's 0.125 s frame-dt cap as `MAX_FRAME_DT`, enforced inside
+  `SimClock::advance` with the excess dropped. Decision and consequences:
+  `docs/findings/2026-10-14-f16-f-cap-frame-dt-cap-decision.md`.
+- **#722 (`F16-F-SPEEDUP`)** — still open: decide how single-player speed-up
+  reaches weapon cooldowns and objective timers. It is `todo` with
+  `ordinary build/test` as the required capability and may not be settled by
+  silently changing a policy pairing.
 
 ## Wiring edits (outside owner paths, logic-free)
 
