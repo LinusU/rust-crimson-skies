@@ -170,6 +170,7 @@ use crate::objectives::{
 use crate::physics::{BASELINE_FIXED_HZ, PhysicsTickLedger};
 use crate::playtest::PlaytestState;
 use crate::playtest::scene::SceneError;
+use crate::score::SessionScoreLedger;
 use crate::world::residency::{load_world, unload_world};
 use crate::world_actors::{
     LoweredWorldActors, WorldActorLaunchError, WorldActorSession, WorldActorSessionTick,
@@ -273,6 +274,18 @@ pub enum MissionHostRefusal {
         /// How many loops the router still held.
         count: usize,
     },
+    /// The session's kill-score ledger was missing, or still scored a
+    /// torn-down generation, when the run settled.
+    ///
+    /// The ledger ([`crate::score::SessionScoreLedger`]) is the only store a
+    /// `KillAwarded` event can move, so this run could not have recorded a
+    /// score: the terminal's `score` is `0` — the honest answer for a run
+    /// nothing could score — and this name says why, instead of a zero that
+    /// looks like a run that scored nothing on its own.
+    ScoreLedger {
+        /// What the read-back found instead of this session's ledger.
+        detail: String,
+    },
 }
 
 impl fmt::Display for MissionHostRefusal {
@@ -298,6 +311,7 @@ impl fmt::Display for MissionHostRefusal {
                  EmitterStopReason measures no mission-end reason to stop them under; the \
                  teardown stops them as despawned"
             ),
+            Self::ScoreLedger { detail } => write!(f, "the kill score: {detail}"),
         }
     }
 }
@@ -1116,7 +1130,12 @@ impl MissionHost {
     ///    reported rather than stopped under a reason they did not have (the
     ///    teardown that follows despawns their emitters, which stops them as
     ///    `Despawned`);
-    /// 4. the one report line the run writes is produced and printed.
+    /// 4. the session's kill-score ledger
+    ///    ([`crate::score::SessionScoreLedger`]) is read back for the score
+    ///    this run recorded — the store only a `KillAwarded` event can move,
+    ///    so a world without it for this generation answers `0` and names the
+    ///    absence under [`MissionHostRefusal::ScoreLedger`];
+    /// 5. the one report line the run writes is produced and printed.
     ///
     /// Returns the terminal the first call settled, and `None` on every later
     /// call and on a tick neither source settled.
@@ -1170,7 +1189,32 @@ impl MissionHost {
                 });
         }
 
-        // 4. The one line, from the terminal's own record of it.
+        // 4. The score: read back from this session's own kill-score ledger,
+        //    because nothing else in the process could have scored this run —
+        //    a world without the ledger for this generation answers 0, and
+        //    the absence is named rather than left to look like a run that
+        //    scored nothing by itself.
+        let score = match world.get_resource::<SessionScoreLedger>() {
+            Some(ledger) if ledger.session() == self.served => ledger.score(),
+            found => {
+                let detail = match found {
+                    Some(ledger) => format!(
+                        "the installed ledger scores session {}, but this run serves session {}",
+                        ledger.session().get(),
+                        self.served.get(),
+                    ),
+                    None => format!(
+                        "the world carries no kill-score ledger for session {}",
+                        self.served.get(),
+                    ),
+                };
+                self.refusals
+                    .push(MissionHostRefusal::ScoreLedger { detail });
+                0
+            }
+        };
+
+        // 5. The one line, from the terminal's own record of it.
         let terminal = MissionTerminal::new(
             outcome,
             source,
@@ -1179,6 +1223,7 @@ impl MissionHost {
             requested_by,
             undrained_cues,
             audio_loops_bound,
+            score,
         );
         println!("{}", terminal.report_line);
         self.settled = Some(terminal.clone());
@@ -1508,6 +1553,21 @@ pub fn mission_host_restart(world: &mut World) {
     let result = host.restart(world, &stage, generation);
     world.insert_resource(host);
     world.insert_resource(stage);
+    // The score follows the session the host serves: a generation that was
+    // rebuilt gets a fresh ledger at zero, and a restart that refused before
+    // the sessions were rebuilt keeps the ledger (and its tally) of the
+    // generation still standing. Either way the two can never disagree about
+    // which session the score belongs to
+    // (`docs/contracts/STATE-TRANSACTIONS.md`: retry restores the authored
+    // initial state, results are always generation-qualified).
+    let served = world.resource::<MissionHost>().served();
+    if world
+        .get_resource::<SessionScoreLedger>()
+        .map(SessionScoreLedger::session)
+        != Some(served)
+    {
+        world.insert_resource(SessionScoreLedger::open(served));
+    }
     match result {
         Ok(report) => {
             world.remove_resource::<MissionHostRestartFailure>();
@@ -1521,7 +1581,10 @@ pub fn mission_host_restart(world: &mut World) {
 }
 
 /// Installs [`mission_host_tick`] in the fixed-tick schedule, after the
-/// physics step of the same tick, and [`mission_host_restart`] in
+/// physics step of the same tick **and after that tick's damage consumers**
+/// ([`crate::damage::drive_damage_schedule`]) — so a run that settles on a
+/// tick settles on the score that tick's kills resolved, never on the tick
+/// before them — and [`mission_host_restart`] in
 /// [`PostUpdate`] — after the playtest's `Update`-schedule reset has run and
 /// incremented [`PlaytestState::resets`].
 ///
@@ -1533,7 +1596,9 @@ pub fn install_mission_host(app: &mut App) {
 
     app.add_systems(
         FixedPostUpdate,
-        mission_host_tick.after(PhysicsSystems::StepSimulation),
+        mission_host_tick
+            .after(PhysicsSystems::StepSimulation)
+            .after(crate::damage::drive_damage_schedule),
     );
     app.add_systems(PostUpdate, mission_host_restart);
     let resets = app

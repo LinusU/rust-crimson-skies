@@ -871,9 +871,26 @@ fn add_composition(
     //    itself stays on the world as a resource: the composed restart
     //    (`mission_host_restart`, VS-M01-RT-MISSION-HOST `.03`) rebuilds the
     //    world half and the sessions from its own records.
+    //
+    //    The session's fixed-tick damage path is installed here beside it —
+    //    the F27 weapon step and the F29 damage consumers, exactly the pair
+    //    `crate::physics::PhysicsSession::production_builder` declares — so a
+    //    resolution this mission's producers publish is applied and *scored*
+    //    (`crate::score`) on the same fixed tick the host steps and settles
+    //    on. Stage records that have not opened a weapon session or a damage
+    //    authority yet run those two steps session-less, which is what they
+    //    report (`WeaponScheduleReport::session`,
+    //    `DamageScheduleReport::session`), never a score nobody resolved.
+    app.add_plugins(crate::weapons::WeaponSchedulePlugin);
+    app.add_plugins(crate::damage::DamageSchedulePlugin);
     let generation = mint_host_generation();
     let host = MissionHost::launch(stage, generation, host_session_id(generation))
         .map_err(MissionCompositionError::Host)?;
+    // The session's score ledger, opened for the session this host serves:
+    // the store the damage consumers hand their kill awards to, installed
+    // before the first tick and replaced by the composed restart for a fresh
+    // generation (`crate::score`).
+    app.insert_resource(crate::score::SessionScoreLedger::open(host.served()));
     app.insert_resource(host);
     app.insert_resource(stage.clone());
     install_mission_host(app);
@@ -1092,6 +1109,7 @@ pub fn teardown(app: &mut App) {
     world.remove_resource::<MissionPlayerStart>();
     world.remove_resource::<MissionPlayerVisual>();
     world.remove_resource::<AircraftSpawner>();
+    world.remove_resource::<crate::score::SessionScoreLedger>();
     world.remove_resource::<ExpectedLoad>();
     world.remove_resource::<MissionStage>();
     world.remove_resource::<MissionHost>();

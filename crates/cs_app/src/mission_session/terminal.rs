@@ -122,7 +122,9 @@ impl MissionExit {
 /// Every field is read off the records that produced it: the outcome and the
 /// requesting symbol come from the settling runtime's own tick, the tick is
 /// the composed entry's committed host tick, the session is the generation
-/// [`super::host::MissionHost`] launched, and the counts are what the
+/// [`super::host::MissionHost`] launched, the score is what that session's
+/// kill-score ledger had recorded when the run settled, and the counts are
+/// what the
 /// objective session and the audio session still owned when the run ended.
 /// Nothing here is a default the host invented.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -149,6 +151,18 @@ pub struct MissionTerminal {
     /// [`super::host::MissionHostRefusal::MissionAudioStillBound`] rather
     /// than stopped under a reason it did not have.
     pub audio_loops_bound: usize,
+    /// The score this run recorded, read back from the session's kill-score
+    /// ledger ([`crate::score::SessionScoreLedger`]) when the run settled.
+    ///
+    /// Nothing else computes it and nothing recomputes it here: the ledger is
+    /// the only store a `KillAwarded` event can move, so a world without one
+    /// for this session — or with one still serving a torn-down generation —
+    /// had scored nothing for this run and the read-back answers `0`, with
+    /// the absence named under
+    /// [`super::host::MissionHostRefusal::ScoreLedger`]. It is the number
+    /// [`crate::score::mission_outcome`] and [`crate::score::mission_result`]
+    /// hand to the campaign's and the scrapbook's outcome records.
+    pub score: i64,
     /// The exit this outcome maps to.
     pub exit: MissionExit,
     /// The one line this run writes when it ends.
@@ -168,6 +182,7 @@ impl MissionTerminal {
         requested_by: Option<SymbolId>,
         undrained_cues: usize,
         audio_loops_bound: usize,
+        score: i64,
     ) -> Self {
         let exit = MissionExit::of(outcome);
         let requested = requested_by.map_or_else(
@@ -176,7 +191,7 @@ impl MissionTerminal {
         );
         let report_line = format!(
             "mission terminal: outcome={} source={} tick={} session={} requested_by={} \
-             undrained_cues={} audio_loops_bound={} exit_code={}",
+             undrained_cues={} audio_loops_bound={} score={} exit_code={}",
             outcome.label(),
             source.label(),
             tick.0,
@@ -184,6 +199,7 @@ impl MissionTerminal {
             requested,
             undrained_cues,
             audio_loops_bound,
+            score,
             exit.code(),
         );
         Self {
@@ -194,6 +210,7 @@ impl MissionTerminal {
             requested_by,
             undrained_cues,
             audio_loops_bound,
+            score,
             exit,
             report_line,
         }

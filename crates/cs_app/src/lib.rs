@@ -749,6 +749,7 @@ pub mod roster;
 pub mod run;
 pub mod scenario_control;
 pub mod scene;
+pub mod score;
 pub mod stunts;
 pub mod synthetic;
 pub mod targeting;

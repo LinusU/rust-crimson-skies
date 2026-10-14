@@ -115,6 +115,7 @@ use cs_sim::damage::{
     InitialDamage, InitialDamageReport, LifecycleKind, NodeKeyError, PartState, SystemKind,
     SystemState,
 };
+use cs_sim::net_state::KillAwardReport;
 use cs_sim::weapons::{FireResolver, GunDefinition, WeaponState};
 use cs_types::Tick;
 use cs_types::content::{ContentId, Known, Resolved};
@@ -129,6 +130,7 @@ use crate::physics::{
     remove_collider_for_damage, restore_collider_after_repair,
 };
 use crate::scene::{AirframeDamageState, SceneGeneration, SceneGenerations};
+use crate::score::SessionScoreLedger;
 use crate::weapons::{SessionDamageResolver, WeaponSession, drive_weapon_session};
 
 /// Why a declared graph could not be lowered to the runtime records.
@@ -1507,6 +1509,13 @@ pub fn publish_destroyed_actors(world: &mut World, events: &[DamageEvent]) -> Ve
 //    step — publishes per [`DamageResolver::resolve`], the [`HitEvent`]s
 //    handed in beside the [`DamageEvent`]s emitted. A batch stamped by
 //    another session is dropped and named in `dropped`.
+// 2b. **Kill score.** The same accepted batch goes to the session's
+//    [`SessionScoreLedger`] (`crate::score`), the one store a
+//    `KillAwarded` event can move, and its [`KillAwardReport`] — awards,
+//    absorbed replays and refusals alike — is carried in
+//    [`DamageScheduleReport::score`]. No ledger installed means nothing
+//    scores, which is `None`; a ledger of another generation is named in
+//    `missing` instead of being written to.
 // 3. **Colliders.** The events are attributed to the victim each fell on —
 //    a `PartTransition` belongs to the hit that produced it, and the hit's
 //    `target` is the victim — and [`apply_damage_events`] runs per victim
@@ -1628,6 +1637,14 @@ pub enum DamageScheduleMissing {
         /// The generation the installed gate serves.
         found: u64,
     },
+    /// The installed [`SessionScoreLedger`] scores another session
+    /// generation: it is foreign, so this run's batch is never handed to it.
+    /// The score of the generation this run serves stays whatever *its* own
+    /// ledger recorded — no ledger, so zero — and this name says why.
+    ForeignScoreLedger {
+        /// The generation the installed ledger scores.
+        found: u64,
+    },
 }
 
 /// One published batch the schedule dropped without consuming, by name.
@@ -1698,6 +1715,13 @@ pub struct DamageScheduleReport {
     pub debris: Option<DamageDebrisOutcome>,
     /// The actors whose destruction was published this run.
     pub destroyed: Vec<ActorId>,
+    /// What this run's kill-score consumer did with the accepted batches:
+    /// [`None`] when the world carries no [`SessionScoreLedger`] for this
+    /// session — nothing scores then, because nothing but that ledger scores
+    /// — and otherwise the ledger's own report, refusals included. The
+    /// report is what makes a kill resolved during a session observable here
+    /// as exactly one `Awarded`, with a replayed batch absorbed.
+    pub score: Option<KillAwardReport>,
     /// Actors whose debris was released mid-session with their bindings.
     pub released: Vec<ReleasedDebris>,
     /// The session the schedule last served was removed or replaced.
@@ -1720,6 +1744,7 @@ impl DamageScheduleReport {
         self.consumers = None;
         self.debris = None;
         self.destroyed.clear();
+        self.score = None;
         self.released.clear();
         self.tore_down = None;
         self.unclaimed = 0;
@@ -1995,6 +2020,27 @@ pub fn drive_damage_schedule(world: &mut World) {
         }
     }
     world.insert_resource(pending);
+
+    // --- the kill score: this tick's accepted batch, to the session's ledger --
+    //
+    // The score store is [`SessionScoreLedger`] (`crate::score`), the one
+    // consumer `DamageEventKind::KillAwarded` has: this is where a kill
+    // resolved during a single-player session actually moves a number, and
+    // the ledger decides what scores, what a replayed batch absorbs and what
+    // it refuses. A ledger that scores another generation is never written
+    // to — it is named instead, and this run then keeps whatever *its* own
+    // ledger recorded (no ledger for it, so zero).
+    if let Some(mut score) = world.get_resource_mut::<SessionScoreLedger>() {
+        if score.session().get() == session {
+            report.score = Some(score.apply_kill_awards(&events));
+        } else {
+            report
+                .missing
+                .push(DamageScheduleMissing::ForeignScoreLedger {
+                    found: score.session().get(),
+                });
+        }
+    }
 
     // --- colliders: the resolution's per-victim part transitions -------------
     let mut victims = BTreeSet::new();
