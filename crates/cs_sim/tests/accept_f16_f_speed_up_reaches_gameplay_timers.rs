@@ -154,13 +154,13 @@ fn accept_f16_f_multiplayer_session_refuses_the_sped_up_frame() {
 
     // Ordinary frames are not refused: only the speed-up request is.
     assert_eq!(
-        multi.advance_frame(Duration::from_secs(1), SpeedUpRequest::Off),
-        Ok(64),
+        multi.advance_frame(FRAME, SpeedUpRequest::Off),
+        Ok(6),
         "multiplayer still commits its ordinary wall-time ticks"
     );
     assert_eq!(
         multi.gameplay_timeline().cooldown().elapsed_ticks(),
-        64,
+        6,
         "ordinary frames reach the gameplay timers as before"
     );
 }
@@ -200,17 +200,18 @@ fn accept_f16_f_paused_session_frame_commits_nothing_even_when_sped_up() {
     driver.set_paused(false);
     assert_eq!(
         driver.advance_frame(Duration::from_secs(1), SpeedUpRequest::On),
-        Ok(128),
-        "resume banks nothing: one sped-up second is 128 ticks, not 30 s of them"
+        Ok(16),
+        "resume banks nothing: one sped-up frame is twice the capped 125 ms \
+         of ticks (8 at 64 Hz), not 30 s of them"
     );
     assert_eq!(
         driver.gameplay_timeline().cooldown().elapsed_ticks(),
-        134,
-        "the cooldown counted the 6 pre-pause ticks and the 128 resumed ones"
+        22,
+        "the cooldown counted the 6 pre-pause ticks and the 16 resumed ones"
     );
     assert_eq!(
         driver.gameplay_timeline().objective_timer().elapsed_ticks(),
-        134,
+        22,
         "the objective timer moved by the same committed ticks"
     );
 }
@@ -264,13 +265,10 @@ fn accept_f16_f_comparison_agrees_on_speed_up_reaching_gameplay_timers() {
     divergences.sort_unstable();
     assert_eq!(
         divergences,
-        vec![
-            "clock.frame-dt-cap",
-            "clock.tick-source",
-            "speed-up.mechanism"
-        ],
+        vec!["clock.tick-source", "speed-up.mechanism"],
         "speed-up.reaches-gameplay-timers left the divergence set when #722 \
-         implemented the decided wiring; the other three are unchanged"
+         implemented the decided wiring; the two spec-decided divergences \
+         remain (clock.frame-dt-cap left the set when #721 adopted the cap)"
     );
     assert_eq!(
         comparison.claim(),

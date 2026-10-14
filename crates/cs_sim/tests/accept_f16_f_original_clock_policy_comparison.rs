@@ -386,7 +386,7 @@ fn accept_f16_f_comparison_pins_the_measured_policies_against_the_project_clocks
         comparison.summary()
     );
     assert!(
-        comparison.summary().contains("3 diverge"),
+        comparison.summary().contains("2 diverge"),
         "{}",
         comparison.summary()
     );
