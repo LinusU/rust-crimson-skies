@@ -167,8 +167,10 @@ All three cite `OWNER-STATIC-2026-10-05` and this document only:
   (word0 == 1, word1 ∈ {0,1}) are not surfaced in the render IR, so nothing
   yet produces `CullingClass::Billboard`; the decision is recorded so the
   plumbing task only has to feed it. Word1 == 2 (40 retail meshes) does
-  **not** skip the test in the original and stays one-sided by this rule.
-  **Resolving task:** F10-F.2 (#1407).
+  **not** skip the test in the original, so it is not exempt: it draws under
+  the normal per-polygon rule, and whether one of its polygons is two-sided
+  is the same unread `0x400` data as above — nothing here assumes such a
+  polygon is one-sided. **Resolving task:** F10-F.2 (#1407).
 * **Strip culling parity.** The original draws strips with D3DCULL_CW and
   never per-polygon-tests them; this repository's reader triangulates
   everything into plain triangle lists (F10-B). How D3DCULL_CW parity maps

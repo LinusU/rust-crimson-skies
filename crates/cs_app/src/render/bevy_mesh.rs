@@ -249,8 +249,11 @@ pub enum CullingClass {
     TwoSided,
     /// A camera-facing billboard mesh (mesh word0 == 1, word1 ∈ {0, 1};
     /// 1 340 such retail meshes): the original skipped the back-face test
-    /// for the whole mesh, so nothing is culled. Word1 == 2 billboards do
-    /// *not* skip the test in the original and belong to [`Self::OneSided`].
+    /// for the whole mesh, so nothing is culled. Word1 == 2 billboards (40
+    /// retail meshes) do *not* skip the test in the original: they draw
+    /// under the normal per-polygon rule, so whether one of their polygons
+    /// is two-sided is their own unread `0x400` data (F10-F.1) — this
+    /// adapter makes no assumption about them.
     Billboard,
 }
 
