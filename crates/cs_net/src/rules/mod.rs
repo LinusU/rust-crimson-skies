@@ -34,9 +34,15 @@
 //! `cs_sim::multiplayer::session`, which owns the running match.
 //!
 //! The vocabulary (what a respawn policy or a disconnect policy *can be*) is
-//! engine design. Which value the original game uses for each mode is unknown
-//! (`docs/findings/2026-10-02-f56-a-multiplayer-catalog.md`); nothing here
-//! supplies one.
+//! engine design. Which values the original game uses is measured per field in
+//! [`measured`] (task #476, static analysis of the owner-supplied decrypted
+//! executable, `docs/findings/2026-10-14-f476-measured-per-mode-rules.md`):
+//! there [`measured::draft`] fills every slot the original answers — as a
+//! value or as the host option that chooses it — and leaves the still-unmeasured
+//! fields empty, so a measured mode stays blocked until what is genuinely
+//! unknown is measured too.
+
+pub mod measured;
 
 use std::fmt;
 
@@ -129,12 +135,18 @@ pub enum Limit {
 }
 
 /// Lives per pilot.
+///
+/// The original's launch code stores a count of `10000` when the Limited
+/// Lives option is off (`0x4136e0`,
+/// `docs/findings/2026-10-14-f476-measured-per-mode-rules.md`), which is why
+/// the count is wide enough to hold it; [`measured::LIVES_UNLIMITED`] is that
+/// value.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lives {
     /// A pilot is never out.
     Unlimited,
     /// A pilot is out after this many losses; never zero.
-    Limited(u8),
+    Limited(u32),
 }
 
 /// What follows a shoot-down.
@@ -144,6 +156,11 @@ pub enum Respawn {
     Immediate,
     /// Back in after this many ticks; never zero.
     AfterTicks(u32),
+    /// Back in when the pilot presses the rebound fire-weapons command (the
+    /// original rebinds command 19 while a pilot is dead, `0x4709f0`), not
+    /// before. The measured Auto Respawn off policy
+    /// ([`measured::MissionOptions::auto_respawn`]).
+    OnCommand,
     /// Out for the rest of the match.
     Never,
 }

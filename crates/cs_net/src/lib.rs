@@ -41,7 +41,12 @@
 //! and the start-time check of human count, custom planes and component limit.
 //! F56-B adds the `spawn`/`victory` fields the F56-A review found missing and
 //! [`rules::ResolverLimits`], the one bridge from a resolved `MatchRules` onto
-//! the limits `cs_sim`'s match resolver holds.
+//! the limits `cs_sim`'s match resolver holds. Task #476 adds
+//! [`rules::measured`]: the per-mode rules measured from the original by
+//! static analysis of the owner-supplied decrypted executable — the host
+//! options that choose a value, the fixed policies with their citations, the
+//! scoring events and the end triggers — filling every measured field of a
+//! [`rules::RuleDraft`] and leaving the unmeasured ones blocked.
 //!
 //! F58-A adds [`validation`] and [`recovery`]: the threat model, the session
 //! epoch/replay gate and the peer-to-actor ownership table ([`validation`]),
