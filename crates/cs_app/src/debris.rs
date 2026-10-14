@@ -28,6 +28,15 @@
 //!   surviving pointer (the `STATE-TRANSACTIONS` generation discipline, the
 //!   same rule [`crate::scene::SceneNodeBinding`] and
 //!   [`crate::damage::DamageZoneBinding`] follow).
+//! * [`present_debris`] is the presentation stage (task F29-C.5): it resolves
+//!   every live instance's `source` to the authored [`DebrisObject`] the
+//!   content boundary delivered and gives the record the wreck the consumer
+//!   deliberately does not own — a [`DebrisWreck`] placed at the destroyed
+//!   part's own pose, on the designed lifetime, as a dynamic rigid body on the
+//!   debris collision layer. It is convergent exactly like the pass it reads:
+//!   one wreck per instance, a wreck whose instance is gone (repair, reload,
+//!   scene release) leaves with it, and a source or a placement the boundary
+//!   cannot name is refused by name rather than guessed.
 //! * [`apply_debris_state`] is the pass. It is **state-driven** and
 //!   convergent exactly like [`crate::damage::apply_damage_state`]: a
 //!   destroyed part with a resolved binding spawns its debris once, a second
@@ -54,13 +63,19 @@
 
 use std::collections::BTreeMap;
 
+use avian3d::prelude::{
+    Collider, CollisionLayers as AvianCollisionLayers, LinearVelocity, RigidBody,
+};
 use bevy::ecs::component::Component;
-use bevy::prelude::{Entity, World};
+use bevy::prelude::{Entity, GlobalTransform, World};
 use cs_sim::damage::{ActorId, DamageNodeKey, DamageResolver, PartState};
+use cs_types::Tick;
 use cs_types::content::{ContentId, Resolved};
 use cs_types::evidence::ClaimId;
+use cs_types::space::Meters;
 
-use crate::scene::SceneGeneration;
+use crate::physics::BodyLayer;
+use crate::scene::{NodeVisualTransform, SceneGeneration};
 
 /// Component: the authored debris one damage part presents when it is
 /// destroyed.
@@ -434,6 +449,536 @@ pub fn release_debris(world: &mut World, actor: ActorId) -> u32 {
         released += 1;
     }
     released
+}
+
+// -------------------------------------------------- the presentation stage ---
+//
+// F29-C.5. The pass above owns the *decision* and the *record*: one
+// `SpawnedDebris` per destroyed part that carries an authored binding, gone
+// again when the authority stops calling the part destroyed. It deliberately
+// stores no pose, mesh, velocity or collider, so this stage makes those
+// decisions instead of retro-fitting them into the consumer.
+//
+// What `present_debris` decides, and on what authority:
+//
+// * **The object is resolved, never guessed.** `SpawnedDebris::source` names
+//   the authored object; the content boundary's [`DebrisObjects`] table is the
+//   only thing that can answer what that object is. An id the table does not
+//   know is refused by name ([`DebrisPresentationRefusal::UnresolvedObject`])
+//   and spawns nothing — the same rule the weapon-effects consumer follows for
+//   a sound the load did not deliver.
+// * **The placement is the destroyed part's own pose**, read off the part
+//   entity's [`NodeVisualTransform`] through the part's published
+//   [`PartDebrisBinding`] — the single pose owner (F11 non-negotiable behavior
+//   4), so a wreck cannot drift from the wreckage it fell off. A part entity
+//   that carries no pose is refused by name
+//   ([`DebrisPresentationRefusal::UnplacedDebris`]) rather than placed at a
+//   guessed position.
+// * **The wreck is simulated, not a static prop**: a dynamic rigid body with
+//   the object's own collider radius, on the declared debris collision layer
+//   (`cs_sim::collision::CollisionLayer::Debris`, which the designed matrix
+//   already lets meet aircraft, projectiles, world geometry and other
+//   debris), left to the physics step with **zero initial velocity** — an
+//   invented impulse would be a rule nobody measured.
+// * **The lifetime is the caller's designed value**, in integer ticks, and the
+//   wreck is removed when a pass runs at or after `placed_at + lifetime`. How
+//   long the original left wreckage around is unmeasured (F29 "Research
+//   boundary"), so the stage takes the number instead of asserting one; the
+//   designed default [`DESIGNED_DEBRIS_LIFETIME`] exists so a caller has a
+//   stated value, not a hidden one.
+//
+// The stage is convergent, which is also its teardown: one wreck per live
+// instance, a second pass over unchanged state changes nothing, and a wreck
+// whose instance left — the state-driven half of the teardown, `release_debris`,
+// or a scene release that took the actor's part entities with it — is
+// despawned by the next pass, so a repair or a reload leaves no wreckage
+// entity behind.
+
+/// The designed default wreck lifetime, in integer ticks.
+///
+/// **Designed, not measured.** How long the original left wreckage around is
+/// unmeasured (F29 "Research boundary"); this constant is a stated default so
+/// a caller has one, and at the designed 120 Hz fixed tick
+/// ([`BASELINE_FIXED_HZ`](crate::physics::BASELINE_FIXED_HZ), F23-A) it is
+/// five seconds. [`present_debris`] takes the lifetime as an argument: a
+/// session that measures one replaces this value instead of inheriting it.
+pub const DESIGNED_DEBRIS_LIFETIME: DebrisLifetime = DebrisLifetime(600);
+
+/// How long a wreck is presented, in integer ticks.
+///
+/// A wreck placed at `placed_at` is presented at ticks
+/// `placed_at .. placed_at + lifetime` and expires at the first pass whose
+/// `now` is at or after `placed_at + lifetime`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct DebrisLifetime(pub u64);
+
+impl DebrisLifetime {
+    /// The lifetime in ticks.
+    #[must_use]
+    pub const fn ticks(self) -> u64 {
+        self.0
+    }
+}
+
+/// The authored debris object one [`SpawnedDebris`] source resolved to.
+///
+/// This is the content boundary's record of *what* the wreck is: the stable
+/// id (the one the instance's `source` named) and the object's authored
+/// extent, from which the wreck's collider is built. It carries **no mesh,
+/// sprite or material** — which drawable asset the id resolves to is the
+/// render path's decision, exactly as [`crate::weapon_effects::MuzzleEffectSpawn`]
+/// states its own boundary, so this stage hardcodes no mesh and claims no id
+/// matches the original.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DebrisObject {
+    id: ContentId,
+    radius: Meters,
+}
+
+impl DebrisObject {
+    /// Records one resolved object with its collider radius in metres.
+    ///
+    /// # Errors
+    ///
+    /// [`DebrisObjectError::UnusableRadius`] when the radius is not finite or
+    /// not positive: a wreck collider with such a radius is not a body, and
+    /// the refusal names the value instead of fitting a default sphere.
+    pub fn new(id: ContentId, radius: Meters) -> Result<Self, DebrisObjectError> {
+        if !radius.0.is_finite() || radius.0 <= 0.0 {
+            return Err(DebrisObjectError::UnusableRadius { radius });
+        }
+        Ok(Self { id, radius })
+    }
+
+    /// The object's stable id.
+    #[must_use]
+    pub const fn id(&self) -> &ContentId {
+        &self.id
+    }
+
+    /// The object's authored collider radius, in metres.
+    #[must_use]
+    pub const fn radius(&self) -> Meters {
+        self.radius
+    }
+}
+
+/// Why a [`DebrisObject`] record was refused.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum DebrisObjectError {
+    /// The object's radius is not a usable extent.
+    UnusableRadius {
+        /// The refused radius, in metres.
+        radius: Meters,
+    },
+}
+
+impl core::fmt::Display for DebrisObjectError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::UnusableRadius { radius } => {
+                write!(
+                    f,
+                    "the debris object radius {radius:?} is not a usable extent"
+                )
+            }
+        }
+    }
+}
+
+impl std::error::Error for DebrisObjectError {}
+
+/// The content boundary's debris resolution: what each authored object id is.
+///
+/// The stage reads nothing else to resolve an instance's `source`, so a
+/// session whose load delivered no debris record presents nothing and says so
+/// by id, instead of drawing a guessed wreck.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct DebrisObjects {
+    objects: BTreeMap<ContentId, DebrisObject>,
+}
+
+impl DebrisObjects {
+    /// An empty table: no authored object is known.
+    #[must_use]
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Records one resolved object. A repeated id replaces the earlier record:
+    /// the table is the boundary's current state, and the last word about an
+    /// id is the one that stands.
+    #[must_use]
+    pub fn with(mut self, object: DebrisObject) -> Self {
+        self.objects.insert(object.id().clone(), object);
+        self
+    }
+
+    /// The object resolved for `id`, if the boundary knows it.
+    #[must_use]
+    pub fn get(&self, id: &ContentId) -> Option<&DebrisObject> {
+        self.objects.get(id)
+    }
+
+    /// How many objects the table holds.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.objects.len()
+    }
+
+    /// Whether the table holds no object.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.objects.is_empty()
+    }
+}
+
+/// Component: one debris instance's rendered, simulated wreck.
+///
+/// The presentation stage spawns at most one of these per [`SpawnedDebris`],
+/// linked to the instance by entity rather than by a copy of its fields, and
+/// carrying the actor and destroyed part it presents (so a teardown can name
+/// them once the instance is gone), the resolved object, the tick it was
+/// placed at, the lifetime it was placed with and the generation it was
+/// stamped with. The wreck entity itself carries the placement
+/// ([`GlobalTransform`]), the physics (an Avian [`RigidBody::Dynamic`] with the
+/// object's [`Collider`], on the debris collision layer) and a zero initial
+/// [`LinearVelocity`].
+#[derive(Component, Clone, Debug, PartialEq, Eq)]
+pub struct DebrisWreck {
+    /// The actor whose part spawned the debris the wreck presents.
+    pub actor: ActorId,
+    /// The destroyed part the wreck presents.
+    pub node: DamageNodeKey,
+    /// The instance this wreck presents.
+    pub instance: Entity,
+    /// The authored object the instance's source resolved to.
+    pub object: ContentId,
+    /// The tick the wreck was placed at.
+    pub placed_at: Tick,
+    /// The designed lifetime the wreck was placed with.
+    pub lifetime: DebrisLifetime,
+    /// The scene generation the wreck is stamped with.
+    pub generation: SceneGeneration,
+}
+
+impl DebrisWreck {
+    /// Whether the wreck's designed lifetime ran out at `now`.
+    #[must_use]
+    pub fn expired(&self, now: Tick) -> bool {
+        now.0.saturating_sub(self.placed_at.0) >= self.lifetime.ticks()
+    }
+}
+
+/// Why one instance's wreck could not be presented.
+///
+/// A refusal is a returned record, not a dropped wreck: the pass names the
+/// instance it could not present and why, and spawns nothing for it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DebrisPresentationRefusal {
+    /// The instance's source names no object the content boundary resolved,
+    /// so what the wreck is cannot be said. No wreck is spawned and no mesh,
+    /// radius or pose is guessed.
+    UnresolvedObject {
+        /// The actor whose part spawned the debris.
+        actor: ActorId,
+        /// The destroyed part.
+        node: DamageNodeKey,
+        /// The unresolved source id.
+        source: ContentId,
+    },
+    /// No part entity carries the destroyed part's pose, so the wreck cannot
+    /// be placed at the wreckage it fell off. No wreck is spawned rather than
+    /// one placed at a guessed position.
+    UnplacedDebris {
+        /// The actor whose part spawned the debris.
+        actor: ActorId,
+        /// The destroyed part.
+        node: DamageNodeKey,
+    },
+}
+
+/// One update the debris presentation stage applied, or one refusal.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DebrisPresentationEvent {
+    /// A wreck was placed for one live instance.
+    Presented {
+        /// The actor.
+        actor: ActorId,
+        /// The destroyed part.
+        node: DamageNodeKey,
+        /// The object the source resolved to.
+        object: ContentId,
+        /// The wreck entity.
+        wreck: Entity,
+    },
+    /// A wreck reached the end of its designed lifetime and left.
+    Expired {
+        /// The actor.
+        actor: ActorId,
+        /// The destroyed part.
+        node: DamageNodeKey,
+        /// The object the wreck had presented.
+        object: ContentId,
+        /// The wreck entity that left.
+        wreck: Entity,
+    },
+    /// The instance the wreck presented is gone — a repair, a reload, an
+    /// aircraft swap or a scene release — so the wreck left with it.
+    Released {
+        /// The actor.
+        actor: ActorId,
+        /// The destroyed part.
+        node: DamageNodeKey,
+        /// The object the wreck had presented.
+        object: ContentId,
+        /// The wreck entity that left.
+        wreck: Entity,
+    },
+    /// The update could not be applied; see [`DebrisPresentationRefusal`].
+    Refused(DebrisPresentationRefusal),
+}
+
+/// The append-only record of what the debris presentation stage changed,
+/// oldest first.
+///
+/// A log entry is written only for a real change or a refusal, never for a
+/// wreck that already agrees with the state: a re-run over an unchanged
+/// session logs nothing more.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DebrisPresentationLog {
+    events: Vec<DebrisPresentationEvent>,
+}
+
+impl DebrisPresentationLog {
+    /// Appends one event.
+    pub fn push(&mut self, event: DebrisPresentationEvent) {
+        self.events.push(event);
+    }
+
+    /// Every event, oldest first.
+    #[must_use]
+    pub fn events(&self) -> &[DebrisPresentationEvent] {
+        &self.events
+    }
+
+    /// The most recent event.
+    #[must_use]
+    pub fn last(&self) -> Option<&DebrisPresentationEvent> {
+        self.events.last()
+    }
+
+    /// Whether the log is empty.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.events.is_empty()
+    }
+}
+
+/// What one debris presentation pass changed.
+///
+/// The counters are how a caller observes convergence: the same state applied
+/// twice reports zero the second time.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct DebrisPresentationReport {
+    /// Wrecks placed for live instances.
+    pub presented: u32,
+    /// Wrecks removed at the end of their designed lifetime.
+    pub expired: u32,
+    /// Wrecks removed with the instance they presented.
+    pub released: u32,
+    /// Updates that could not be applied.
+    pub refused: u32,
+}
+
+impl DebrisPresentationReport {
+    /// Whether the pass changed nothing and refused nothing.
+    #[must_use]
+    pub const fn is_noop(&self) -> bool {
+        self.presented == 0 && self.expired == 0 && self.released == 0 && self.refused == 0
+    }
+}
+
+/// One debris presentation pass's report and its log.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct DebrisPresentationOutcome {
+    /// What the pass changed.
+    pub report: DebrisPresentationReport,
+    /// Every change and refusal, oldest first.
+    pub log: DebrisPresentationLog,
+}
+
+/// The one pose the wreck of `(actor, node)` is placed at: the part entity's
+/// own composed canonical pose, read from its [`NodeVisualTransform`] — the
+/// single visual pose owner (F11 non-negotiable behavior 4), so a wreck cannot
+/// drift from the wreckage it fell off.
+///
+/// The first bound entity for a `(actor, node)` pair wins, the same rule
+/// [`debris_bindings`] applies. A part whose entity carries no pose is absent
+/// from the map, and the pass refuses it by name.
+fn part_poses(world: &World) -> BTreeMap<(ActorId, DamageNodeKey), GlobalTransform> {
+    let mut poses: BTreeMap<(ActorId, DamageNodeKey), GlobalTransform> = BTreeMap::new();
+    for entity_ref in world.iter_entities() {
+        let (Some(binding), Some(pose)) = (
+            entity_ref.get::<PartDebrisBinding>(),
+            entity_ref.get::<NodeVisualTransform>(),
+        ) else {
+            continue;
+        };
+        poses
+            .entry((binding.actor, binding.node.clone()))
+            .or_insert_with(|| pose.global());
+    }
+    poses
+}
+
+/// The collision layers one wreck is placed on: the declared debris layer and
+/// its designed partners, the same construction the scene node collider uses
+/// for the aircraft layer (`cs_sim::collision`).
+fn wreck_collision_layers() -> AvianCollisionLayers {
+    let layer = cs_sim::collision::CollisionLayer::Debris;
+    AvianCollisionLayers::from_bits(
+        u32::from(layer.bit()),
+        u32::from(layer.designed_partners().bits()),
+    )
+}
+
+/// Presents every live debris instance as a rendered, simulated wreck.
+///
+/// For each [`SpawnedDebris`] in the world this pass:
+///
+/// * keeps an existing [`DebrisWreck`] that already links the instance —
+///   unless the wreck's designed lifetime ran out at `now`, in which case it
+///   leaves and a later pass presents a fresh one: the lifetime bounds **one
+///   placement**, while the authority decides whether a wreck exists at all;
+/// * otherwise resolves the instance's `source` through `objects` and places a
+///   wreck at the destroyed part's own pose, as a dynamic rigid body on the
+///   debris collision layer with zero initial velocity, stamped with `now`,
+///   the caller's `lifetime` and the instance's `generation`.
+///
+/// A wreck whose instance is gone is despawned: that is the teardown, and it
+/// is what leaves a repair, a reload, an aircraft swap or a scene release with
+/// no wreckage entity. The pass is convergent — running it twice over an
+/// unchanged session changes nothing.
+///
+/// `events` are unnecessary here: like [`apply_debris_state`], the pass reads
+/// the world's own state, so it holds no memory between calls.
+#[must_use]
+pub fn present_debris(
+    world: &mut World,
+    objects: &DebrisObjects,
+    now: Tick,
+    lifetime: DebrisLifetime,
+) -> DebrisPresentationOutcome {
+    let mut outcome = DebrisPresentationOutcome::default();
+
+    // Both indexes are collected before the pass mutates the world, so no
+    // borrow of the world survives into the spawn/despawn loop.
+    let instances: Vec<(Entity, SpawnedDebris)> = world
+        .iter_entities()
+        .filter_map(|entity_ref| {
+            let debris = entity_ref.get::<SpawnedDebris>()?;
+            Some((entity_ref.id(), debris.clone()))
+        })
+        .collect();
+    let wrecks: Vec<(Entity, DebrisWreck)> = world
+        .iter_entities()
+        .filter_map(|entity_ref| {
+            let wreck = entity_ref.get::<DebrisWreck>()?;
+            Some((entity_ref.id(), wreck.clone()))
+        })
+        .collect();
+    let poses = part_poses(world);
+
+    for (instance, debris) in &instances {
+        if let Some((wreck_entity, wreck)) =
+            wrecks.iter().find(|(_, each)| each.instance == *instance)
+        {
+            // The wreck exists: it only leaves at the end of its lifetime, so
+            // a converged pass changes nothing.
+            if wreck.expired(now) {
+                world.entity_mut(*wreck_entity).despawn();
+                outcome.report.expired += 1;
+                outcome.log.push(DebrisPresentationEvent::Expired {
+                    actor: debris.actor,
+                    node: debris.node.clone(),
+                    object: wreck.object.clone(),
+                    wreck: *wreck_entity,
+                });
+            }
+            continue;
+        }
+
+        let Some(object) = objects.get(&debris.source) else {
+            outcome.report.refused += 1;
+            outcome.log.push(DebrisPresentationEvent::Refused(
+                DebrisPresentationRefusal::UnresolvedObject {
+                    actor: debris.actor,
+                    node: debris.node.clone(),
+                    source: debris.source.clone(),
+                },
+            ));
+            continue;
+        };
+        let Some(&pose) = poses.get(&(debris.actor, debris.node.clone())) else {
+            outcome.report.refused += 1;
+            outcome.log.push(DebrisPresentationEvent::Refused(
+                DebrisPresentationRefusal::UnplacedDebris {
+                    actor: debris.actor,
+                    node: debris.node.clone(),
+                },
+            ));
+            continue;
+        };
+
+        let wreck = world
+            .spawn((
+                DebrisWreck {
+                    actor: debris.actor,
+                    node: debris.node.clone(),
+                    instance: *instance,
+                    object: object.id().clone(),
+                    placed_at: now,
+                    lifetime,
+                    generation: debris.generation,
+                },
+                pose,
+                RigidBody::Dynamic,
+                Collider::sphere(object.radius().0 as f32),
+                LinearVelocity::ZERO,
+                wreck_collision_layers(),
+                BodyLayer(cs_sim::collision::CollisionLayer::Debris),
+            ))
+            .id();
+        outcome.report.presented += 1;
+        outcome.log.push(DebrisPresentationEvent::Presented {
+            actor: debris.actor,
+            node: debris.node.clone(),
+            object: object.id().clone(),
+            wreck,
+        });
+    }
+
+    // The teardown: a wreck whose instance is gone leaves with it. A wreck this
+    // pass expired above was already despawned and is skipped here.
+    for (wreck_entity, wreck) in &wrecks {
+        let instance_live = world
+            .get_entity(wreck.instance)
+            .is_ok_and(|entity| entity.contains::<SpawnedDebris>());
+        if instance_live || world.get_entity(*wreck_entity).is_err() {
+            continue;
+        }
+        world.entity_mut(*wreck_entity).despawn();
+        outcome.report.released += 1;
+        outcome.log.push(DebrisPresentationEvent::Released {
+            actor: wreck.actor,
+            node: wreck.node.clone(),
+            object: wreck.object.clone(),
+            wreck: *wreck_entity,
+        });
+    }
+
+    outcome
 }
 
 /// Indexes the debris bindings `actor`'s world carries, one per node: the

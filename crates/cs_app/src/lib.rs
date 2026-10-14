@@ -434,8 +434,12 @@
 //! resolved binding, despawns it again when the authority stops calling the
 //! part destroyed, refuses an unresolved binding by name and invents nothing
 //! for a part that has none — with [`debris::release_debris`] as the
-//! reload/restart/swap teardown entry. The debris asset and its presentation
-//! belong to another stage; this module owns the decision and the record.
+//! reload/restart/swap teardown entry. F29-C.5 adds the other two halves:
+//! [`scene::PartDebrisPublish`] is the source the airframe scene load publishes
+//! `PartDebrisBinding`s from, and [`debris::present_debris`] resolves each
+//! instance's authored source and presents it as a placed, lifetime-bound,
+//! simulated [`debris::DebrisWreck`], convergently — a repair or a reload
+//! leaves no wreckage entity.
 //!
 //! [`targeting`] is the F30-A/F30-B targeting boundary
 //! (`specs/F30-targeting-classification-aim-assistance-and-threat-cues.md`,
