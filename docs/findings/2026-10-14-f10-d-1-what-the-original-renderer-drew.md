@@ -226,3 +226,21 @@ present mesh builds a render mesh.
   modelled; the engine's own path is D3D.
 * Front-face winding/handedness stays deferred to F10-D.2 (#396) — the fan
   order is stored order, and which side a fan shows is that task's question.
+* The original submits the fan as one `D3DPT_TRIANGLEFAN` primitive and never
+  materialises a triangle list, so the slot order of each emitted triple is
+  this engine's free choice — all three cyclic rotations are the same drawn
+  triangle. `outline_draw` emits `(i+1, 0, i)` (root in the middle slot)
+  rather than the literal `(0, i, i+1)`: measured on the swept-CCD fixtures
+  (`accept_f18_b_`), both literal and `(i, i+1, 0)` produce one spurious
+  `cast_shapes_nonlinear` hit — a leaf lying perpendicular to the probing
+  cuboid's face axis ties all three corners on parry's
+  `Triangle::local_support_point`, which returns `c`, and
+  `closest_points_cuboid_triangle` then trusts that pick as the closest
+  vertex, so `compute_toi`'s bisection lands mid-window and the solver
+  clamps half a tick of travel — while the middle-root rotation produces
+  none on the measured paths. The choice is engine-side, not a claim about
+  the original, and it is empirical: a leaf set on other geometry could trip
+  the same upstream artefact under any rotation, which is the real reason
+  `topology()` — not `draw_topology()` — is documented as the collision
+  view. Filed for the physics owner as task #1424 (a dedicated collision
+  topology, or the upstream fix).

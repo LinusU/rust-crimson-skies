@@ -18,8 +18,12 @@
 //! that fails a check is reported with the reason and no triangles.
 //!
 //! Tests are exact (no tolerance): the values are the stored `f32`s widened
-//! to `f64`. Whether the original renderer accepted any outline this module
-//! rejects, and how it triangulated n-gons, is not established.
+//! to `f64`. Whether the original renderer accepted an outline this module
+//! rejects, and how it drew n-gons, **is** established
+//! (`OWNER-STATIC-2026-10-05`, F10-D.1): it never triangulates — an outline
+//! is a `D3DPT_TRIANGLEFAN` over its stored corners — which [`outline_draw`]
+//! models for the draw path while [`triangulate_polygon`] stays the
+//! canonical validated view.
 
 use std::fmt;
 
@@ -257,10 +261,23 @@ pub enum OutlineDraw {
     /// never submitted (`0x554bf7`–`0x554ce9` D3D, `0x552e1f`–`0x552f19`
     /// software).
     Culled,
-    /// Corner-index triples in stored fan order — `(0,1,2)`, `(0,2,3)`, …,
-    /// `(0, n−2, n−1)` — the exact primitive the original submits.
-    /// Coincident corners stay in: the triangles they close are zero-area
-    /// and draw nothing, exactly as on the original.
+    /// Corner-index triples of the corner-0 fan — the triangles
+    /// `(0,1,2)`, `(0,2,3)`, …, `(0, n−2, n−1)` — each emitted in the
+    /// cyclic rotation `(i+1, 0, i)` rather than literally. The original
+    /// submits one `D3DPT_TRIANGLEFAN` primitive and never materialises a
+    /// triangle list, so the three cyclic rotations of each triple are the
+    /// same drawn triangle — same winding, same covered region — and the
+    /// slot order is this engine's free choice, not stored data. The chosen
+    /// rotation keeps the fan's root in the middle slot: measured on the
+    /// swept-CCD fixtures (`accept_f18_b_`), the literal `(0, i, i+1)`
+    /// order and the `(i, i+1, 0)` order each produce a spurious
+    /// `cast_shapes_nonlinear` hit on one wall face — parry's
+    /// `Triangle::local_support_point` returns `c` when all three corners
+    /// tie on the probing cuboid's face axis, and `closest_points` then
+    /// trusts that tied pick as the closest vertex — while this rotation
+    /// produces none on the measured paths. Coincident corners stay in:
+    /// the triangles they close are zero-area and draw nothing, exactly as
+    /// on the original.
     Fan(Vec<[usize; 3]>),
 }
 
@@ -295,5 +312,5 @@ pub fn outline_draw(points: &[[f32; 3]]) -> OutlineDraw {
     if normal == [0.0; 3] {
         return OutlineDraw::Culled;
     }
-    OutlineDraw::Fan((1..n - 1).map(|corner| [0, corner, corner + 1]).collect())
+    OutlineDraw::Fan((1..n - 1).map(|corner| [corner + 1, 0, corner]).collect())
 }

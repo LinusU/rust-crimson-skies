@@ -4319,9 +4319,10 @@ mod tests {
         assert!(at_two.contains(&[0.0, 1.0]));
         assert!(at_two.contains(&[0.5, 0.5]));
 
-        // Each triangle samples the UVs authored on its own polygon.
-        assert_eq!(uvs_of(&render, 0), [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]);
-        assert_eq!(uvs_of(&render, 1), [[0.5, 0.5], [1.0, 0.0], [1.0, 1.0]]);
+        // Each triangle samples the UVs authored on its own polygon, in the
+        // emitted (2,0,1) draw order — see `outline_draw`'s fan rotation.
+        assert_eq!(uvs_of(&render, 0), [[0.0, 1.0], [0.0, 0.0], [1.0, 0.0]]);
+        assert_eq!(uvs_of(&render, 1), [[1.0, 1.0], [0.5, 0.5], [1.0, 0.0]]);
     }
 
     #[test]
@@ -4362,8 +4363,10 @@ mod tests {
         assert_eq!(at_two.len(), 2);
         assert!(at_two.contains(&[0.0, 0.0, 1.0]));
         assert!(at_two.contains(&[1.0, 1.0, 1.0]));
-        assert_eq!(colors_of(&render, 0)[2], [0.0, 0.0, 1.0]);
-        assert_eq!(colors_of(&render, 1)[0], [1.0, 1.0, 1.0]);
+        // Position 2 carries each polygon's own color: it is slot 0 of the
+        // first emitted (2,0,1) triangle and slot 1 of the second.
+        assert_eq!(colors_of(&render, 0)[0], [0.0, 0.0, 1.0]);
+        assert_eq!(colors_of(&render, 1)[1], [1.0, 1.0, 1.0]);
     }
 
     #[test]
@@ -4396,8 +4399,10 @@ mod tests {
         assert_eq!(at_two.len(), 2);
         assert!(at_two.contains(&Some([0.0, 0.0, 1.0])));
         assert!(at_two.contains(&Some([0.0, 1.0, 0.0])));
-        assert_eq!(normals_of(&render, 0)[2], Some([0.0, 0.0, 1.0]));
-        assert_eq!(normals_of(&render, 1)[0], Some([0.0, 1.0, 0.0]));
+        // Position 2 carries each polygon's own normal index, at the slots
+        // the emitted (2,0,1) order puts it in.
+        assert_eq!(normals_of(&render, 0)[0], Some([0.0, 0.0, 1.0]));
+        assert_eq!(normals_of(&render, 1)[1], Some([0.0, 1.0, 0.0]));
     }
 
     #[test]
@@ -4436,15 +4441,17 @@ mod tests {
         let render = RenderMesh::build(&mesh).expect("complete topology");
 
         assert_eq!(render.vertices().len(), 4);
+        // Emitted in the (2,0,1) draw order: triangle 0 samples positions
+        // (2,0,1) and triangle 1 samples (3,2,1).
         let [first, second] = [render.triangles()[0], render.triangles()[1]];
-        assert_eq!(first.vertices[1], second.vertices[1], "position 1 merges");
-        assert_eq!(first.vertices[2], second.vertices[0], "position 2 merges");
+        assert_eq!(first.vertices[2], second.vertices[2], "position 1 merges");
+        assert_eq!(first.vertices[0], second.vertices[1], "position 2 merges");
         let positions: Vec<u32> = render
             .vertices()
             .iter()
             .map(|vertex| vertex.position_index)
             .collect();
-        assert_eq!(positions, [0, 1, 2, 3]);
+        assert_eq!(positions, [2, 0, 1, 3]);
     }
 
     #[test]
@@ -4474,9 +4481,11 @@ mod tests {
             .map(|vertex| vertex.position_index)
             .collect();
         assert_eq!(coincident, [0, 3]);
+        // Emitted in the (2,0,1) draw order, the coincident pair — position 0
+        // on the first polygon, position 3 on the second — is slot 1 of each.
         assert_ne!(
-            render.triangles()[0].vertices[0],
-            render.triangles()[1].vertices[0]
+            render.triangles()[0].vertices[1],
+            render.triangles()[1].vertices[1]
         );
     }
 
@@ -7307,13 +7316,14 @@ mod tests {
         assert_eq!(at_two.len(), 2, "the seam survived the whole path");
         assert!(at_two.contains(&[0.0, 1.0]));
         assert!(at_two.contains(&[0.5, 0.5]));
+        // The emitted (2,0,1) draw order — see `outline_draw`'s fan rotation.
         assert_eq!(
             uploaded_uvs(&upload, 0),
-            [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]
+            [[0.0, 1.0], [0.0, 0.0], [1.0, 0.0]]
         );
         assert_eq!(
             uploaded_uvs(&upload, 1),
-            [[0.5, 0.5], [1.0, 0.0], [1.0, 1.0]]
+            [[1.0, 1.0], [0.5, 0.5], [1.0, 0.0]]
         );
 
         // The payload carries the mesh's own audit row and nothing else, so a
@@ -7717,11 +7727,11 @@ mod tests {
         assert_eq!(upload.render().vertices().len(), 5);
         assert_eq!(
             uploaded_uvs(&upload, 0),
-            [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]]
+            [[0.0, 1.0], [0.0, 0.0], [1.0, 0.0]]
         );
         assert_eq!(
             uploaded_uvs(&upload, 1),
-            [[0.5, 0.5], [1.0, 0.0], [1.0, 1.0]]
+            [[1.0, 1.0], [0.5, 0.5], [1.0, 0.0]]
         );
         assert_eq!(upload.generation(), expected.generation());
         assert!(upload.material(0).is_some());

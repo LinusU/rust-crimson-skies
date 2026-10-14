@@ -416,8 +416,8 @@ impl RawMesh {
     fn face_draw(&self, face: &RawPolygon) -> Result<Option<Vec<[usize; 3]>>, FaceIssue> {
         let corners = face.corners.len();
         let positions: Vec<u32> = face.corners.iter().map(|c| c.position).collect();
-        // A three-corner polygon is one fan triangle: same corners, same
-        // order as the one-step strip.
+        // A three-corner polygon is one fan triangle: the same corners and
+        // winding as the one-step strip, in [`outline_draw`]'s emitted order.
         let triangles = decode_strip(&positions).map_err(|error| match error {
             StripError::TooShort { .. } => FaceIssue::TooFewCorners {
                 kind: face.kind,
