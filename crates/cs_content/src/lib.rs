@@ -514,10 +514,16 @@
 //! string table names and their briefings, [`multiplayer::discover_slots`]
 //! inventories the `MP<n>` scenario slots of every world group and binds each
 //! to the [`multiplayer::ScenarioMode`] family its own decoded `targets.zrd`
-//! names, and what the installation does not state (every per-mode rule, and
-//! which deathmatch variant a [`multiplayer::ScenarioMode::Deathmatch`] slot
-//! launches under) stays an explicit
-//! [`cs_types::content::Resolved::Unknown`].
+//! names. Task #476 adds the per-mode rules static analysis of the original
+//! measured: each mode carries a [`multiplayer::MeasuredRule`] per answered
+//! field — the policy, where it was measured and the analyzed image,
+//! `observed_tool` and never `verified_original` — while what nothing measured
+//! answers (spawn-point selection, the winner/draw rule, launch player-count
+//! thresholds, human-count scaling, and the custom-plane and component-limit
+//! enforcement, plus the team play no name states) stays an explicit
+//! [`cs_types::content::Resolved::Unknown`], and which deathmatch variant a
+//! [`multiplayer::ScenarioMode::Deathmatch`] slot launches under stays open
+//! too.
 //!
 //! [`replay`] is the F59-A replay, capture and evidence schema
 //! (`specs/F59-replays-captures-probes-and-acceptance-evidence.md`, stage

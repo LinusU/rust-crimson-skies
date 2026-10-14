@@ -14,8 +14,8 @@ use std::path::PathBuf;
 
 use cs_content::config::StringRow;
 use cs_content::multiplayer::{
-    BRIEFING_FIRST_ID, BRIEFING_STRIDE, ModeError, RULE_LABELS, ScenarioMode, SlotMarker, TeamPlay,
-    discover_modes, discover_slots, scan_markers,
+    BRIEFING_FIRST_ID, BRIEFING_STRIDE, ModeError, RESIDUAL_UNKNOWN_RULES, RULE_LABELS,
+    ScenarioMode, SlotMarker, TeamPlay, discover_modes, discover_slots, scan_markers,
 };
 use cs_types::asset_id::SourceSpan;
 use cs_types::content::{ContentKind, Resolved};
@@ -176,8 +176,13 @@ fn accept_f56_a_unstated_rules_stay_unknown_and_team_play_keeps_its_evidence_cla
     assert_eq!(class(0), "observed_tool");
     assert_eq!(class(2), "inferred");
     for mode in &catalog.modes {
+        // Task #476: the fields static analysis measured left the unknown list
+        // (pinned by `accept_f476_*`); only the unmeasured fields remain.
         let labels: Vec<&str> = mode.unknown_rules.iter().map(|rule| rule.field).collect();
-        let expected: Vec<&str> = RULE_LABELS.into_iter().filter(|l| *l != "teams").collect();
+        let expected: Vec<&str> = RESIDUAL_UNKNOWN_RULES
+            .iter()
+            .map(|(label, _)| *label)
+            .collect();
         assert_eq!(labels, expected, "{}", mode.name.text);
         assert!(
             mode.unknown_rules

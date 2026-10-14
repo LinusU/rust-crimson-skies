@@ -2,9 +2,15 @@
 //!
 //! # Documented resolution order
 //!
-//! These rules are **engine design**, not measured original behavior (the
-//! original tie, limit and simultaneity rules are unknown; see the F56-A
-//! finding). They exist so that every host computes one result:
+//! These rules are **engine design**, not measured original behavior. Task
+//! #476's static analysis of the original executable found the original's
+//! end-of-match code computing **no** winner at all: a match ends on time
+//! expiry, a score limit, a destroyed zeppelin or no enemies left, and the
+//! result is the final scoreboard, with tie/draw handling unmeasured
+//! (`docs/findings/2026-10-14-f476-measured-per-mode-rules.md`). This
+//! resolution order — including equal top scores being a [`Outcome::Draw`] —
+//! is therefore a declared design choice where the original has no measured
+//! rule. It exists so that every host computes one result:
 //!
 //! 1. Events are applied in [`EventId`] order (tick, producer, sequence), not
 //!    arrival order, and only when their tick is *closed* with
@@ -143,8 +149,12 @@ impl Roster {
     }
 }
 
-/// The points one lethal event is worth. Caller-supplied: the original values
-/// are unknown, so there is no `Default`.
+/// The points one lethal event is worth. Caller-supplied: the measured
+/// original constants (task #476: `player.zrd` `score_kill` 2 and
+/// `score_suicide` -2, recorded with their evidence in
+/// `cs_net::rules::measured`) are handed in by the wiring, never a silent
+/// default here, so this resolver cannot drift from the rules the host
+/// resolved — and there is no `Default`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ScoreTable {
     /// Credited to the killer's side for downing an opponent.

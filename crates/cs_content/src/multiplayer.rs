@@ -30,10 +30,13 @@
 //! # What is known and what is not
 //!
 //! The mode *names*, the briefing text (including the point values the
-//! briefing prints) and the slot objective records are observed. Everything a
-//! mode must define (spawn, respawn, lives, limits, friendly fire, victory
-//! and draw, disconnect, human scaling) stays [`Resolved::Unknown`] except
-//! team play, which the name or the briefing states. A slot's `targets.zrd`
+//! briefing prints) and the slot objective records are observed. Of what a
+//! mode must define, team play is stated by the name or the briefing, and task
+//! #476 measured more of them by static analysis of the original executable —
+//! see [`MeasuredRule`] and the section below — while spawn-point selection,
+//! the winner/draw rule, the launch player-count thresholds, human-count
+//! scaling and the custom-plane and component-limit enforcement stay an
+//! explicit [`UnknownRule`] with their reasons. A slot's `targets.zrd`
 //! binds it to one of the three measured mode families: a flag objective is
 //! Capture the Flag, a zeppelin objective is Zeppelin vs. Zeppelin, and no
 //! such objective is Deathmatch (whose two named variants the slot programs
@@ -43,7 +46,23 @@
 //! mode unknown — never a guess. What the original does with an objective in
 //! play (possession, drop, return, delivery, its point worth) is not in this
 //! data; that is the designed machine in `cs_sim::multiplayer::objective`,
-//! gated by the still-unknown per-mode rules.
+//! gated by the per-mode rules that stay unknown.
+//!
+//! # Task #476: what static analysis measured
+//!
+//! The owner note of 2026-10-05 on task #476 measured the per-mode rules by
+//! static analysis of the owner-supplied decrypted executable (evidence class
+//! `observed_tool`, never `verified_original`; image sha256
+//! [`EVIDENCE_IMAGE_SHA256`]). Every field it answers leaves
+//! [`ModeEntry::unknown_rules`] and appears as a [`MeasuredRule`] with the
+//! policy the original applies and the addresses it was read at; the typed
+//! values live in `cs_net::rules::measured` (mirrored here by label, pinned by
+//! a dev-dependency test). What static analysis did **not** answer stays an
+//! explicit unknown with its reason — spawn-point selection, the winner/draw
+//! rule (no winner computation was found at match end), launch player-count
+//! thresholds, human-count scaling, and the custom-plane and outlawed-component
+//! enforcement. The measured values therefore still do not resolve a mode: they
+//! replace an unknown with a measured value, never with a launch default.
 //!
 //! # F56-C: how a selection reaches a match
 //!
@@ -144,8 +163,8 @@ pub enum TeamPlay {
     Teams,
 }
 
-/// A rule the original defines per mode and the installation does not answer
-/// anywhere the catalog can read.
+/// A rule the original defines per mode and nothing measured answers anywhere
+/// the catalog can read.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct UnknownRule {
     /// The rule's label (`cs_net::rules::RuleField::label`).
@@ -154,6 +173,140 @@ pub struct UnknownRule {
     pub claim: ClaimId,
     /// Why it is unknown.
     pub reason: String,
+}
+
+/// The image task #476's static analysis read: the owner-supplied decrypted
+/// `crimson.decrypted.exe`, kept outside the installation. The same value
+/// `cs_net::rules::measured::EVIDENCE_IMAGE_SHA256` reports (pinned equal by
+/// a dev-dependency test).
+pub const EVIDENCE_IMAGE_SHA256: &str =
+    "43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75";
+
+/// The rule labels static analysis measured, with the policy label it read
+/// for them and the owner-note addresses it read at. Mirrors
+/// `cs_net::rules::measured::POLICY_ADDRESSES`; the fields not listed here are
+/// exactly [`RESIDUAL_UNKNOWN_RULES`].
+///
+/// The policies are the same for all four mode identities: the original's
+/// Mission Options screen is one screen for every mode, so which value the
+/// time limit, score limit, lives or respawn policy takes is the **host's**
+/// choice, while late join, friendly fire and the disconnect policy are fixed
+/// in code for every mode. The typed values and the per-type differences (the
+/// two-team restriction, the scoring events) live in
+/// `cs_net::rules::measured`; this crate may not depend on that crate, so the
+/// mirror is labels and citations, pinned by a test.
+pub const MEASURED_RULE_POLICIES: [(&str, &str, &str); 7] = [
+    (
+        "late_join",
+        "closed",
+        "task #476 owner note 2026-10-05: 0x412ed2 (session state 3 in progress \
+         -> langui 7083 \"game in progress\")",
+    ),
+    (
+        "time_limit",
+        "host_time_option",
+        "task #476 owner note 2026-10-05: 0x4972c0 -> 0x46c510 (minutes x 60 s), \
+         end reason 1 at 0x496d60, langui 10106 default \"10\"",
+    ),
+    (
+        "score_limit",
+        "host_score_option",
+        "task #476 owner note 2026-10-05: 0x499270 (player >= limit), 0x46ea40 \
+         (team total = bonus + member scores), end reason 2, langui default \"40\"",
+    ),
+    (
+        "lives",
+        "host_lives_option_else_10000",
+        "task #476 owner note 2026-10-05: 0x4136e0 (count else 10000), 0x498c41 \
+         (death decrements), langui 209/210/211",
+    ),
+    (
+        "respawn",
+        "host_auto_respawn_option_else_fire_guns",
+        "task #476 owner note 2026-10-05: 0x470a10 (auto respawns at once), \
+         0x4709f0 (command 19 rebound while dead), player.zrd respawn_rad 1200 / \
+         respawn_el 100",
+    ),
+    (
+        "friendly_fire",
+        "on_by_scoring",
+        "task #476 owner note 2026-10-05: 0x46ecd0 (a same-side kill scores \
+         score_suicide to the killer, so team damage occurs); the damage routine \
+         itself was not traced",
+    ),
+    (
+        "disconnect",
+        "strike_score",
+        "task #476 owner note 2026-10-05: 0x4995a0 -> 0x46e1f0 (leaver removed \
+         from the scoreboard), 0x46ea40 (team totals recomputed), 0x49ab50 \
+         (carried flag reset)",
+    ),
+];
+
+/// The rule labels nothing measured answers, with the reason they stay
+/// unknown. The `teams` label is absent here on purpose: it is unknown only
+/// when neither the name nor the briefing states it, and carries its own
+/// reason (see [`entry`]).
+pub const RESIDUAL_UNKNOWN_RULES: [(&str, &str); 6] = [
+    (
+        "spawn",
+        "static analysis measured the respawn placement offsets (player.zrd \
+         respawn_rad 1200 / respawn_el 100) but not which of a scenario's spawn \
+         points a pilot enters at (task #476 owner note 2026-10-05)",
+    ),
+    (
+        "victory",
+        "no winner or draw computation was found at match end — the result is \
+         the final scoreboard — so how a winner is decided stays unmeasured and \
+         cs_sim's highest-score resolver remains a declared engine design choice \
+         (task #476 owner note 2026-10-05)",
+    ),
+    (
+        "humans",
+        "the launch player-count thresholds were not recovered; the lobby only \
+         shows \"There are not enough players in the game.\" (langui 10520, task \
+         #476 owner note 2026-10-05)",
+    ),
+    (
+        "human_scaling",
+        "no human-count scaling mechanism was found in the executable, and the \
+         absence of a mechanism is not a measured \"none\" (task #476 owner note \
+         2026-10-05)",
+    ),
+    (
+        "custom_planes",
+        "the lobby flag exists (Mission Options +0x25, message 0x26) but its \
+         launch and match enforcement was not traced (task #476 owner note \
+         2026-10-05)",
+    ),
+    (
+        "component_limit",
+        "the outlawed-components list (uidata 5044) and its enforcement were not \
+         traced (task #476 owner note 2026-10-05)",
+    ),
+];
+
+/// One rule static analysis measured for a mode (task #476): the field, the
+/// policy the original applies, the claim the rule's earlier unknown carried,
+/// where it was measured and the image that was analyzed.
+///
+/// Evidence class is fixed to `observed_tool` at construction (a disassembler
+/// tool run on the owner-supplied image): **never** `verified_original`, which
+/// only an original run can award.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MeasuredRule {
+    /// The rule's label (`cs_net::rules::RuleField::label`).
+    pub field: &'static str,
+    /// The stable policy label (`cs_net::rules::measured::POLICY_ADDRESSES`).
+    pub policy: &'static str,
+    /// The claim the rule belongs to — the same id its unknown used.
+    pub claim: ClaimId,
+    /// `observed_tool`: static code evidence, never `verified_original`.
+    pub class: ClaimStatus,
+    /// Where it was measured (owner-note addresses).
+    pub citation: &'static str,
+    /// The analyzed image ([`EVIDENCE_IMAGE_SHA256`]).
+    pub image_sha256: &'static str,
 }
 
 /// One discovered multiplayer mode.
@@ -167,7 +320,9 @@ pub struct ModeEntry {
     pub briefing: Briefing,
     /// Team play, when the name or briefing states it.
     pub team_play: Resolved<TeamPlay>,
-    /// Every rule the catalog could not resolve, in canonical order.
+    /// Every rule static analysis measured, in canonical order (task #476).
+    pub measured_rules: Vec<MeasuredRule>,
+    /// Every rule nothing measured answers, in canonical order.
     pub unknown_rules: Vec<UnknownRule>,
 }
 
@@ -484,17 +639,35 @@ fn entry(name: TextRef, briefing: Briefing) -> Result<ModeEntry, ModeError> {
         .map_err(|error| ModeError::Identity(error.to_string()))?
     };
 
+    let mut measured_rules = Vec::new();
+    for (label, policy, citation) in MEASURED_RULE_POLICIES {
+        measured_rules.push(MeasuredRule {
+            field: label,
+            policy,
+            claim: claim(&format!("f56.mode.name-{}.{label}", name.id))?,
+            class: ClaimStatus::ObservedTool,
+            citation,
+            image_sha256: EVIDENCE_IMAGE_SHA256,
+        });
+    }
+
     let mut unknown_rules = Vec::new();
-    for label in RULE_LABELS {
-        if label == "teams" && team_play.is_known() {
-            continue;
-        }
+    if !team_play.is_known() {
+        // `teams` is the one rule that can stay unknown here: the executable
+        // measures the lobby types (Dogfight takes its grouping from the host's
+        // team-count restriction, CTF and Zeppelin are two-team), not which of
+        // the two deathmatch names a catalog identity is.
+        unknown_rules.push(UnknownRule {
+            field: "teams",
+            claim: claim(&format!("f56.mode.name-{}.teams", name.id))?,
+            reason: "neither the name nor the briefing says whether pilots form teams".to_owned(),
+        });
+    }
+    for (label, reason) in RESIDUAL_UNKNOWN_RULES {
         unknown_rules.push(UnknownRule {
             field: label,
             claim: claim(&format!("f56.mode.name-{}.{label}", name.id))?,
-            reason: "the installation's string table does not state this rule and the mode's \
-                     script or code path is not decoded"
-                .to_owned(),
+            reason: reason.to_owned(),
         });
     }
     Ok(ModeEntry {
@@ -502,6 +675,7 @@ fn entry(name: TextRef, briefing: Briefing) -> Result<ModeEntry, ModeError> {
         name,
         briefing,
         team_play,
+        measured_rules,
         unknown_rules,
     })
 }

@@ -36,7 +36,8 @@ use cs_content::catalog::baseline::{
     retail_baseline,
 };
 use cs_content::multiplayer::{
-    BRIEFING_FIRST_ID, BRIEFING_STRIDE, MODE_NAME_IDS, RULE_LABELS, mode_name_id,
+    BRIEFING_FIRST_ID, BRIEFING_STRIDE, MEASURED_RULE_POLICIES, MODE_NAME_IDS,
+    RESIDUAL_UNKNOWN_RULES, RULE_LABELS, mode_name_id,
 };
 use cs_formats::{RT_STRING, STRING_UNITS_PER_BLOCK};
 use cs_types::content::{
@@ -283,22 +284,35 @@ fn accept_f14_d_2_a_synthetic_installation_yields_source_derived_mode_rows() {
         );
     }
 
-    // What F56-A could not resolve stays on the row: every rule the mode
-    // leaves unknown, with that stage's own claim id.
+    // What nothing measured answers stays on the row: task #476's measured
+    // rules left the unknown list, and the residual fields keep that stage's
+    // claim ids and their own reasons.
+    let residual: Vec<&str> = RESIDUAL_UNKNOWN_RULES
+        .iter()
+        .map(|(label, _)| *label)
+        .collect();
+    let claims_of = |name_id: u32, teams: bool| -> Vec<String> {
+        let mut labels: Vec<&str> = Vec::new();
+        if teams {
+            labels.push("teams");
+        }
+        labels.extend(residual.iter().copied());
+        labels
+            .into_iter()
+            .map(|label| format!("f56.mode.name-{name_id}.{label}"))
+            .collect()
+    };
     let free_fight = rules_row(&baseline, 7011);
     assert_eq!(
         unknown_claims(free_fight),
-        RULE_LABELS
-            .iter()
-            .map(|label| format!("f56.mode.name-7011.{label}"))
-            .collect::<Vec<_>>(),
-        "a mode whose team play the table does not state is unknown for every rule label"
+        claims_of(7011, true),
+        "the fixture's name states no team play, so only teams and the unmeasured \
+         fields are unknown"
     );
     let team_fight = rules_row(&baseline, 7012);
-    let team_claims = unknown_claims(team_fight);
-    assert_eq!(team_claims.len(), RULE_LABELS.len() - 1);
-    assert!(
-        !team_claims.contains(&"f56.mode.name-7012.teams".to_owned()),
+    assert_eq!(
+        unknown_claims(team_fight),
+        claims_of(7012, false),
         "the briefing states team play, so that rule is not unknown"
     );
     for row in [free_fight, team_fight] {
@@ -445,10 +459,12 @@ fn accept_f14_d_2_a_named_mode_without_a_briefing_is_a_row_with_an_explicit_unkn
     assert!(reason.contains("7013"), "{reason}");
     assert!(reason.contains("briefing"), "{reason}");
 
-    // The paired rows are untouched by the gap.
+    // The paired rows are untouched by the gap; the measured rules left the
+    // unknown list, so a paired mode is unknown for the residual fields plus
+    // (here) the team play the fixture's name does not state.
     assert_eq!(
         unknown_claims(rules_row(&baseline, 7011)).len(),
-        RULE_LABELS.len()
+        RULE_LABELS.len() - MEASURED_RULE_POLICIES.len()
     );
 
     let status = &baseline.collection_status[0];
