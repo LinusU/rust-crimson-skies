@@ -83,6 +83,7 @@
 //! this section **and** the mesh array and reports every node whose index names
 //! no present mesh.
 
+use std::collections::BTreeSet;
 use std::fmt;
 use std::mem::size_of;
 
@@ -588,6 +589,15 @@ impl NodeKind {
     }
 }
 
+/// The stored-name prefix whose nodes the original destroys during world
+/// load (`OWNER-STATIC-2026-10-05`, `dzpath.cpp` `0x4459f0`…): the AI
+/// danger-zone route records of `DZPathList`. The match is the plain
+/// prefix — the `dzpaths` grouping node itself starts with it — and the
+/// removal takes each matched node **with its subtree**. The records stay
+/// readable here; the removal is a scene-presentation fact, and the route
+/// data remains meaningful to detection-zone consumers.
+pub const LOAD_REMOVED_NODE_PREFIX: &str = "dzpath";
+
 /// One stored node record, decoded.
 #[derive(Debug, Clone, PartialEq)]
 pub struct RawNode {
@@ -939,6 +949,39 @@ impl GameZNodes {
         self.nodes
             .iter()
             .filter(move |node| node.kind.tag() == kind)
+    }
+
+    /// The node slots the original destroys during world load, in array
+    /// order: every node whose stored name starts with
+    /// [`LOAD_REMOVED_NODE_PREFIX`], plus everything below a matched node —
+    /// the measured routine (`dzpath.cpp` `0x4459f0` collecting,
+    /// `0x4cd800` detaching, `0x4d7a50` destroying) takes a node with its
+    /// whole subtree. A mesh such a node binds therefore never reaches a
+    /// draw call.
+    ///
+    /// Static code evidence (`OWNER-STATIC-2026-10-05`), not an original
+    /// run. The nodes stay in the array: this is the presentation fact,
+    /// not a parse exclusion, and detection-zone consumers still read them.
+    #[must_use]
+    pub fn removed_at_load(&self) -> BTreeSet<u32> {
+        let mut removed = BTreeSet::new();
+        let mut pending: Vec<u32> = Vec::new();
+        for node in &self.nodes {
+            if node.name.starts_with(LOAD_REMOVED_NODE_PREFIX) && removed.insert(node.index) {
+                pending.push(node.index);
+            }
+        }
+        while let Some(index) = pending.pop() {
+            let Some(node) = self.get(index) else {
+                continue;
+            };
+            for &child in &node.children {
+                if removed.insert(child) {
+                    pending.push(child);
+                }
+            }
+        }
+        removed
     }
 
     /// Which mesh-array slots the nodes of this container name.

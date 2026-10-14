@@ -8,13 +8,15 @@
 //!
 //! * [`mesh`] is the IR: a [`RawMesh`] keeps stored positions, normals,
 //!   polygons, raw flags, raw material indices and per-corner attributes,
-//!   and [`RawMesh::topology`] reports source-mapped triangles plus the
-//!   status of every polygon, invalid and unsupported ones included.
+//!   and reports two topologies for it — [`RawMesh::topology`], the canonical
+//!   ear-clipped view, and [`RawMesh::draw_topology`], the original
+//!   renderer's measured outline rule — each with source-mapped triangles
+//!   plus the status of every polygon, invalid and culled ones included.
 //! * [`strip`] decodes triangle strips with parity that degenerate steps
 //!   still advance.
-//! * [`polygon`] triangulates polygon outlines with more than three corners
-//!   by validated ear clipping, never a fan, and names why an outline it
-//!   cannot triangulate was rejected.
+//! * [`polygon`] holds both outline rules: [`triangulate_polygon`]'s
+//!   validated ear clipping for the canonical view, and [`outline_draw`]'s
+//!   measured corner-0 fan and zero-normal face test for the original's.
 //! * [`reader`] is the layout: the 40-byte container header, the
 //!   non-sequential mesh index with its measured fixup tables, the 100-byte
 //!   mesh record, the 40-byte polygon record with its packed corner/flag
@@ -89,7 +91,7 @@ pub mod polygon;
 pub mod reader;
 pub mod strip;
 
-pub use bindings::{MeshSlotIssue, NodeMeshBindings, NodeMeshFinding};
+pub use bindings::{MeshSlotIssue, NodeMeshBindings, NodeMeshFinding, RemovedBinding};
 pub use census::{FaceCensus, MissingFace, MissingFaceReason};
 
 pub use materials::{
@@ -106,7 +108,8 @@ pub use mesh::{
 };
 pub use nodes::{
     CAMERA_DATA_BYTES, DISPLAY_DATA_BYTES, GameZNodeError, GameZNodes, LIGHT_DATA_BYTES,
-    LOD_DATA_BYTES, MATRIX_AGREEMENT_TOLERANCE, MeshIndexBounds, NODE_INDEX_BOT_MASK,
+    LOAD_REMOVED_NODE_PREFIX, LOD_DATA_BYTES, MATRIX_AGREEMENT_TOLERANCE, MeshIndexBounds,
+    NODE_INDEX_BOT_MASK,
     NODE_INDEX_BYTES, NODE_INDEX_INVALID, NODE_INDEX_TOP, NODE_INDEX_TOP_MASK, NODE_INFO_BYTES,
     NODE_NAME_BYTES, NODE_SLOT_BYTES, NODE_TYPE_CAMERA, NODE_TYPE_DISPLAY, NODE_TYPE_EMPTY,
     NODE_TYPE_LIGHT, NODE_TYPE_LOD, NODE_TYPE_OBJECT3D, NODE_TYPE_OFFSET, NODE_TYPE_WINDOW,
@@ -115,7 +118,7 @@ pub use nodes::{
     RawObject3dData, RawWorldData, WINDOW_DATA_BYTES, WORLD_DATA_BYTES, WORLD_PARTITION_BYTES,
     WORLD_PARTITION_VALUE_BYTES, read_gamez_nodes,
 };
-pub use polygon::{NgonIssue, triangulate_polygon};
+pub use polygon::{NgonIssue, OutlineDraw, outline_draw, triangulate_polygon};
 pub use reader::{
     CORNER_COUNT_MASK, FLAG_MASK, FLAG_NORMALS, FLAG_SHIFT, FLAG_TRIANGLE_STRIP, FLAG_UNK2,
     FLAG_UNK3, FLAG_UNK6, GAMEZ_HEADER_BYTES, GameZError, GameZHeader, GameZMesh, GameZMeshes,

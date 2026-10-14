@@ -12,7 +12,7 @@
 
 use std::fmt;
 
-use super::polygon::{NgonIssue, triangulate_polygon};
+use super::polygon::{NgonIssue, OutlineDraw, outline_draw, triangulate_polygon};
 use super::strip::{StripError, decode_strip};
 
 /// How a polygon's corners form triangles. Which stored flag selects which
@@ -22,7 +22,9 @@ pub enum PrimitiveKind {
     /// Corners in triangle-strip order ([`decode_strip`]).
     TriangleStrip,
     /// One polygon outline. Three corners are one triangle; more are
-    /// triangulated by [`triangulate_polygon`], never fanned.
+    /// triangulated by [`triangulate_polygon`] in [`RawMesh::topology`] and
+    /// fanned from corner 0 ([`outline_draw`]) in [`RawMesh::draw_topology`],
+    /// which is what the original submits.
     Polygon,
 }
 
@@ -193,6 +195,21 @@ pub enum FaceStatus {
         /// Of those, triangles with two equal position indices.
         degenerate: usize,
     },
+    /// The face produced no triangles because the original's per-polygon
+    /// face test culls it on every frame: its first three stored corners
+    /// have a zero normal, so the measured `|d| ≤ tol` always holds and the
+    /// fan is never submitted — two-sided flag or not. Only
+    /// [`RawMesh::draw_topology`] reports it; [`RawMesh::topology`]'s
+    /// ear-clipped view rejects the same data as
+    /// [`FaceIssue::UnsupportedNgon`] instead. It is not a defect: the face
+    /// is accounted for, and its mesh is not.
+    ///
+    /// Measured on the owner-supplied decrypted executable
+    /// (`OWNER-STATIC-2026-10-05`): `N = (P1 − P0) × (P2 − P0)` over the
+    /// first three corners, `d = N · P0`, drawn only when `d < −tol` (or
+    /// `d > +tol` under the two-sided bit `0x400`), `tol = 0.00005`; a zero
+    /// `N` can never pass (`0x554bf7`–`0x554ce9`, `0x552e1f`–`0x552f19`).
+    Culled,
     /// The polygon produced no triangles because of this issue.
     Rejected(FaceIssue),
 }
@@ -252,6 +269,17 @@ impl MeshTopology {
             .count()
     }
 
+    /// Polygons the measured outline face test culls on every frame: their
+    /// first three stored corners have a zero normal. Always zero on a
+    /// [`RawMesh::topology`] report — that view ear-clips and rejects where
+    /// this one culls — and the count [`RawMesh::draw_topology`] can carry.
+    pub fn culled_faces(&self) -> usize {
+        self.faces
+            .iter()
+            .filter(|face| matches!(face, FaceStatus::Culled))
+            .count()
+    }
+
     /// Every polygon was decoded: the mesh may be uploaded.
     pub fn is_complete(&self) -> bool {
         self.decoded_faces() == self.faces.len()
@@ -265,7 +293,7 @@ impl MeshTopology {
     fn rejected(&self) -> impl Iterator<Item = &FaceIssue> {
         self.faces.iter().filter_map(|face| match face {
             FaceStatus::Rejected(issue) => Some(issue),
-            FaceStatus::Decoded { .. } => None,
+            FaceStatus::Decoded { .. } | FaceStatus::Culled => None,
         })
     }
 }
@@ -274,33 +302,77 @@ impl RawMesh {
     /// Validates every polygon's indices and values, then decodes its
     /// triangles. A bad polygon is reported in [`MeshTopology::faces`] and
     /// the remaining polygons are still decoded.
+    ///
+    /// This is the canonical, validated view: an outline with more than
+    /// three corners is ear-clipped by [`triangulate_polygon`] and an
+    /// outline it cannot triangulate is rejected. It is **not** what the
+    /// original submits — that is [`Self::draw_topology`].
     pub fn topology(&self) -> MeshTopology {
         let mut topology = MeshTopology::default();
         for (polygon, face) in self.polygons.iter().enumerate() {
             let status = match self.face_triangles(face) {
-                Ok(triangles) => {
-                    let before = topology.triangles.len();
-                    topology
-                        .triangles
-                        .extend(triangles.into_iter().enumerate().map(|(step, corners)| {
-                            MeshTriangle {
-                                polygon,
-                                step,
-                                corners,
-                                positions: corners.map(|c| face.corners[c].position),
-                            }
-                        }));
-                    let added = &topology.triangles[before..];
-                    FaceStatus::Decoded {
-                        triangles: added.len(),
-                        degenerate: added.iter().filter(|t| t.is_degenerate()).count(),
-                    }
-                }
+                Ok(triangles) => Self::extend_decoded(&mut topology, polygon, face, triangles),
                 Err(issue) => FaceStatus::Rejected(issue),
             };
             topology.faces.push(status);
         }
         topology
+    }
+
+    /// The topology under the original renderer's measured outline rule
+    /// (`OWNER-STATIC-2026-10-05`): strips decode exactly as in
+    /// [`Self::topology`]; an outline polygon is fanned from its first
+    /// stored corner (`D3DPT_TRIANGLEFAN`), and an outline whose first three
+    /// corners have a zero normal is [`FaceStatus::Culled`] — the original's
+    /// per-frame face test removes it instead of it reaching a draw call,
+    /// two-sided flag or not.
+    ///
+    /// This is the topology the render mesh is built from, and the one the
+    /// private-corpus face census counts. It diverges from
+    /// [`Self::topology`]'s ear-clipped triangulation exactly where the
+    /// original diverges: a self-intersecting or coincident-corner outline
+    /// fans into whatever triangles its stored corners spell. The malformed
+    /// data that view rejects — out-of-range corner indices, too few
+    /// corners, non-finite attributes — stays [`FaceStatus::Rejected`] here:
+    /// the original has no better treatment for a corner that names a
+    /// position the mesh does not hold.
+    pub fn draw_topology(&self) -> MeshTopology {
+        let mut topology = MeshTopology::default();
+        for (polygon, face) in self.polygons.iter().enumerate() {
+            let status = match self.face_draw(face) {
+                Ok(Some(triangles)) => {
+                    Self::extend_decoded(&mut topology, polygon, face, triangles)
+                }
+                Ok(None) => FaceStatus::Culled,
+                Err(issue) => FaceStatus::Rejected(issue),
+            };
+            topology.faces.push(status);
+        }
+        topology
+    }
+
+    fn extend_decoded(
+        topology: &mut MeshTopology,
+        polygon: usize,
+        face: &RawPolygon,
+        triangles: Vec<[usize; 3]>,
+    ) -> FaceStatus {
+        let before = topology.triangles.len();
+        topology
+            .triangles
+            .extend(triangles.into_iter().enumerate().map(|(step, corners)| {
+                MeshTriangle {
+                    polygon,
+                    step,
+                    corners,
+                    positions: corners.map(|c| face.corners[c].position),
+                }
+            }));
+        let added = &topology.triangles[before..];
+        FaceStatus::Decoded {
+            triangles: added.len(),
+            degenerate: added.iter().filter(|t| t.is_degenerate()).count(),
+        }
     }
 
     /// Corner triples of `face` in drawing order, one per strip step or
@@ -330,6 +402,41 @@ impl RawMesh {
                 .map_err(|reason| FaceIssue::UnsupportedNgon { corners, reason });
         }
         Ok(triangles.into_iter().map(|t| t.corners).collect())
+    }
+
+    /// What the original renderer submits for one already-read polygon:
+    /// `Ok(Some(..))` is the triangle fan for an outline or the strip steps
+    /// for a strip, `Ok(None)` is the outline the measured face test culls
+    /// on every frame, and `Err` is stored data no consumer can use —
+    /// the polygons are processed independently, so one `Err` or `Ok(None)`
+    /// never withholds the mesh's other faces.
+    fn face_draw(&self, face: &RawPolygon) -> Result<Option<Vec<[usize; 3]>>, FaceIssue> {
+        let corners = face.corners.len();
+        let positions: Vec<u32> = face.corners.iter().map(|c| c.position).collect();
+        // A three-corner polygon is one fan triangle: same corners, same
+        // order as the one-step strip.
+        let triangles = decode_strip(&positions).map_err(|error| match error {
+            StripError::TooShort { .. } => FaceIssue::TooFewCorners {
+                kind: face.kind,
+                corners,
+            },
+        })?;
+        for (corner, raw) in face.corners.iter().enumerate() {
+            self.check_corner(corner, raw)?;
+        }
+        if face.kind == PrimitiveKind::Polygon {
+            // Indices were checked above.
+            let outline: Vec<[f32; 3]> = face
+                .corners
+                .iter()
+                .map(|c| self.positions[c.position as usize])
+                .collect();
+            return Ok(match outline_draw(&outline) {
+                OutlineDraw::Culled => None,
+                OutlineDraw::Fan(fan) => Some(fan),
+            });
+        }
+        Ok(Some(triangles.into_iter().map(|t| t.corners).collect()))
     }
 
     fn check_corner(&self, corner: usize, raw: &RawCorner) -> Result<(), FaceIssue> {

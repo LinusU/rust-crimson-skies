@@ -47,6 +47,7 @@
 //! `ObservedTool`. It is never `VerifiedOriginal` here — that needs an original
 //! run, which has not happened.
 
+use std::collections::BTreeSet;
 use std::fmt;
 
 use super::nodes::GameZNodes;
@@ -149,6 +150,21 @@ impl fmt::Display for NodeMeshFinding {
     }
 }
 
+/// One node the original destroys during world load, with the mesh slot it
+/// binds.
+///
+/// The binding itself is ordinary — the slot may hold a present mesh that
+/// decodes cleanly — but the node carrying it is removed
+/// ([`GameZNodes::removed_at_load`], `OWNER-STATIC-2026-10-05`), so that mesh
+/// reaches no draw call *through this node*.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RemovedBinding {
+    /// Node array index of the removed node.
+    pub node: u32,
+    /// The stored `mesh_index` it binds, signed and unchanged.
+    pub mesh_index: i32,
+}
+
 /// The cross-section verdict for one container: which of its nodes name a
 /// stored mesh, and which do not.
 ///
@@ -178,6 +194,16 @@ pub struct NodeMeshBindings {
     /// order. Empty means every non-negative `mesh_index` in this container
     /// names a present mesh, which is the strongest claim this module makes.
     pub findings: Vec<NodeMeshFinding>,
+    /// Every **bound** node the original destroys at world load, in stored
+    /// node order: the `dzpath` records and their subtrees
+    /// ([`GameZNodes::removed_at_load`]). The meshes they name are never
+    /// drawn through these nodes.
+    pub removed: Vec<RemovedBinding>,
+    /// Mesh-array slots that **only** removed nodes bind, ascending: stored
+    /// geometry no surviving node refers to. These are the `dzpath` route
+    /// outlines the original shows for nothing — geometry the container
+    /// holds that is never drawn.
+    pub never_drawn: Vec<u32>,
 }
 
 impl NodeMeshBindings {
@@ -192,12 +218,15 @@ impl NodeMeshBindings {
     #[must_use]
     pub fn of(nodes: &GameZNodes, meshes: &GameZMeshes) -> Self {
         let slots = u32::try_from(meshes.slot_count()).unwrap_or(u32::MAX);
+        let removed_nodes = nodes.removed_at_load();
         let mut bindings = Self {
             nodes: u32::try_from(nodes.nodes.len()).unwrap_or(u32::MAX),
             slots,
             present: u32::try_from(meshes.present_count()).unwrap_or(u32::MAX),
             ..Self::default()
         };
+        let mut live_slots = BTreeSet::new();
+        let mut removed_slots = BTreeSet::new();
         for node in &nodes.nodes {
             let mesh_index = node.mesh_index();
             // A negative index is the `-1` "no mesh" sentinel and names no
@@ -207,6 +236,15 @@ impl NodeMeshBindings {
                 continue;
             };
             bindings.bound += 1;
+            if removed_nodes.contains(&node.index) {
+                bindings.removed.push(RemovedBinding {
+                    node: node.index,
+                    mesh_index,
+                });
+                removed_slots.insert(slot);
+            } else {
+                live_slots.insert(slot);
+            }
             if meshes.get(slot).is_some() {
                 bindings.resolved += 1;
                 continue;
@@ -227,6 +265,9 @@ impl NodeMeshBindings {
                 issue,
             });
         }
+        // A slot a surviving node also binds is still drawn through that
+        // node; only the slots no other node left behind name are gone.
+        bindings.never_drawn = removed_slots.difference(&live_slots).copied().collect();
         bindings
     }
 

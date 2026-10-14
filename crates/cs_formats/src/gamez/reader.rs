@@ -728,9 +728,18 @@ pub struct GameZMesh {
 
 impl GameZMesh {
     /// The topology report for this mesh: the exact decoded, invalid and
-    /// unsupported face counts over its own polygons.
+    /// unsupported face counts over its own polygons, in the canonical
+    /// ear-clipped view of [`RawMesh::topology`].
     pub fn topology(&self) -> super::mesh::MeshTopology {
         self.mesh.topology()
+    }
+
+    /// The topology under the original renderer's measured outline rule —
+    /// [`RawMesh::draw_topology`]: outlines fan from corner 0, a zero-normal
+    /// outline is [`super::mesh::FaceStatus::Culled`], and faces are
+    /// processed independently.
+    pub fn draw_topology(&self) -> super::mesh::MeshTopology {
+        self.mesh.draw_topology()
     }
 
     /// The stored material groups of one polygon, in stored order.

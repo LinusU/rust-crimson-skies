@@ -231,3 +231,69 @@ fn on_segment(a: [f64; 2], b: [f64; 2], p: [f64; 2]) -> bool {
         && p[1] >= a[1].min(b[1])
         && p[1] <= a[1].max(b[1])
 }
+
+/// What the original renderer makes of one stored outline's corners.
+///
+/// Measured from the owner-supplied decrypted executable
+/// (`OWNER-STATIC-2026-10-05`; image `crimson.decrypted.exe`, SHA-256
+/// `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`): an
+/// outline polygon is sent to Direct3D as a `D3DPT_TRIANGLEFAN` over its
+/// stored corners, fanned from corner 0, with culling off — the primitive
+/// setup at `0x557334`/`0x5573f6` reaching `DrawPrimitive` at `0x5a336c`. It
+/// is **never** ear-clipped or otherwise triangulated: a concave or
+/// self-intersecting outline draws whatever the fan covers, and a zero-area
+/// fan triangle rasterises nothing.
+///
+/// This is static code evidence, not `verified_original`: no original run
+/// happened.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OutlineDraw {
+    /// The face test on the first three stored corners removes the polygon
+    /// on every frame: `N = (P1 − P0) × (P2 − P0)` and `d = N · P0` is
+    /// computed per frame, the face is drawn only when `d < −tol` (or
+    /// `d > +tol` under the two-sided flag `0x400`), and `tol = 0.00005`
+    /// (`SetBFETolerance`, configured from `support\init.gw`). A zero `N`
+    /// keeps `|d| ≤ tol` whatever the transform or the flag, so the fan is
+    /// never submitted (`0x554bf7`–`0x554ce9` D3D, `0x552e1f`–`0x552f19`
+    /// software).
+    Culled,
+    /// Corner-index triples in stored fan order — `(0,1,2)`, `(0,2,3)`, …,
+    /// `(0, n−2, n−1)` — the exact primitive the original submits.
+    /// Coincident corners stay in: the triangles they close are zero-area
+    /// and draw nothing, exactly as on the original.
+    Fan(Vec<[usize; 3]>),
+}
+
+/// The original's measured outline rule applied to `points` (corners in
+/// stored order): the face test on the first three corners, then the
+/// triangle fan.
+///
+/// The test is exact `f64` arithmetic over the stored `f32`s — the same
+/// convention [`triangulate_polygon`] states — so only a stored normal that
+/// is exactly zero culls here. A merely small one is the per-frame `d`'s
+/// question in *camera* space, which reading files cannot answer, so the
+/// face is reported as fanned.
+///
+/// Fewer than three corners is the caller's to reject, the same contract
+/// [`triangulate_polygon`] states; this yields an empty fan.
+pub fn outline_draw(points: &[[f32; 3]]) -> OutlineDraw {
+    let n = points.len();
+    if n < 3 {
+        return OutlineDraw::Fan(Vec::new());
+    }
+    let [p0, p1, p2] = [points[0], points[1], points[2]];
+    let u = p1.map(f64::from);
+    let v = p2.map(f64::from);
+    let w = p0.map(f64::from);
+    let u = [u[0] - w[0], u[1] - w[1], u[2] - w[2]];
+    let v = [v[0] - w[0], v[1] - w[1], v[2] - w[2]];
+    let normal = [
+        u[1] * v[2] - u[2] * v[1],
+        u[2] * v[0] - u[0] * v[2],
+        u[0] * v[1] - u[1] * v[0],
+    ];
+    if normal == [0.0; 3] {
+        return OutlineDraw::Culled;
+    }
+    OutlineDraw::Fan((1..n - 1).map(|corner| [0, corner, corner + 1]).collect())
+}
