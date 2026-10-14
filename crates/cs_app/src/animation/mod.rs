@@ -85,10 +85,16 @@
 //! [`schedule::CommittedSessionTick`] and installs the fixed-tick advance, so
 //! a real [`PhysicsSession`](crate::physics::PhysicsSession) that adds the
 //! plugin through its `configure` seam drives the whole path. The mission
-//! marker consumer is still absent (the mission/objective layers are F37/F39);
-//! the [`AnimationLog`](playback::AnimationLog) drain is the seam it will bind
-//! to, recorded in
-//! `docs/findings/2026-10-02-f20-c-wired-session-integration.md`.
+//! marker consumer that
+//! `docs/findings/2026-10-02-f20-c-wired-session-integration.md` recorded as
+//! absent exists now: task #507 added [`crate::mission_markers`], the layer
+//! that takes the marker records out of the
+//! [`AnimationLog`](playback::AnimationLog) through the seam that finding
+//! named and raises each declared cue binding into a mission signal
+//! (`docs/findings/2026-10-05-f20-c-mission-marker-consumer.md`). What is
+//! still not wired is the production composition:
+//! [`crate::objectives::ObjectiveSession`] is host-owned and no production
+//! mission host drives that path yet (filed as #509).
 //!
 //! Stage `### F20-D` adds the two measured halves of the original-family
 //! validation:

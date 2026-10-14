@@ -32,15 +32,22 @@
 //! three hold. Nothing here is original data: the spawn-side contract is
 //! **designed**, and F20-D keeps the original-family validation gate.
 //!
-//! # The mission-marker consumer is still absent
+//! # The mission-marker consumer
 //!
 //! The other half of "wire it into its actual producer and consumer" — the
-//! mission/objective layer that drains [`AnimationLog`](super::AnimationLog)
-//! gameplay events — has no consumer in the crate yet (the mission and
-//! objective layers are F37/F39 work). This stage does **not** stub one; the
-//! seam is the log's [`drain`](super::AnimationLog::drain), recorded in
-//! `docs/findings/2026-10-02-f20-c-wired-session-integration.md` and filed as a
-//! follow-up.
+//! mission/objective layer that takes the
+//! [`AnimationLog`](super::AnimationLog) gameplay markers — was absent when
+//! this stage landed, and the seam it would bind to (the log's
+//! [`take_markers`](super::AnimationLog::take_markers)) was recorded in
+//! `docs/findings/2026-10-02-f20-c-wired-session-integration.md`. Task #507
+//! added that consumer: [`crate::mission_markers`] takes the marker records
+//! through that seam, resolves each fired cue through the mission host's
+//! **declared** cue → signal table and raises it into a mission signal
+//! (`docs/findings/2026-10-05-f20-c-mission-marker-consumer.md`). Nothing
+//! here stubs it and nothing here drains it; what is still not wired is a
+//! production mission host composing that consumer —
+//! [`crate::objectives::ObjectiveSession`] is host-owned and no production
+//! composition drives it yet (filed as #509).
 
 use std::fmt;
 
