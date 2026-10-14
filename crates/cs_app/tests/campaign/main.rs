@@ -248,6 +248,7 @@ mod closure;
 mod common;
 mod coverage;
 mod evidence;
+mod f29_c_3b_score;
 mod f37_c_fu1;
 mod f39_e3;
 mod f39_e3_evidence;
