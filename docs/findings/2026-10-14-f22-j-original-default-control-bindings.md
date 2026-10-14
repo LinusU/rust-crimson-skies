@@ -66,9 +66,15 @@ Sources:
   which refuses bytes that do not hash to the measured digest): the test-local
   scanner `decode_registrations` in
   `crates/cs_content/tests/f22_j_support/mod.rs` finds every `call 0x493630`
-  inside the table span, decodes the six `push` operands before it, and checks
-  the analog-default instructions and the Japanese-remap encoding. The retail
-  acceptance test runs it again; all 64 rows agree with the recorded table.
+  inside the table span and decodes the six `push` operands before it;
+  `decode_japanese_remap` decodes the three code pairs the Japanese-keyboard
+  remap encodes; and the two analog defaults are read at their recorded
+  `push` addresses. Every check reads the image at a recorded address (or
+  scans a recorded span) and compares what it finds with a **recorded code,
+  id, address or constant**; the sources carry no disassembly listing and no
+  reproduced function body — only the x86 opcode forms a scanner needs to
+  recognise each instruction. The retail acceptance test runs it again;
+  all 64 rows agree with the recorded table.
 - **Production readers** for the labels: `cs_assets::install::{discover,
   fingerprint, content_fingerprint, sha256}` over the installation and
   `cs_content::config::StringCatalog` over `strings.dll`, so every recorded
@@ -355,7 +361,7 @@ directive forbids. The structural check (`--artifact-root`, no
 ## Tests
 
 `cargo test --workspace --locked -- accept_f22_j_ --include-ignored`
-discovers 7 tests, all passing (5 unignored, so CI runs them without original
+discovers 8 tests, all passing (6 unignored, so CI runs them without original
 data; 2 retail, `#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]`):
 
 | Test | What it pins |
@@ -364,8 +370,9 @@ data; 2 retail, `#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]`):
 | `accept_f22_j_the_screen_enumerates_the_measured_labels_exactly` | the 60/4/5 label split, recomputed against F22-H's list |
 | `accept_f22_j_the_analog_defaults_and_remap_are_the_recorded_ones` | `FlyMode` 2, `MouseSens` 1.3, the axis mapping and the three remap pairs |
 | `accept_f22_j_the_recorded_chords_match_the_scancode_crosswalk` | the ten chord codes and the project's scancode crosswalk where both name the same key |
+| `accept_f22_j_the_remap_decoder_reads_what_it_is_given` | the remap decoder against a synthetic chain with foreign codes (and against an image that holds no chain), so CI catches a decoder that stopped reading the image |
 | `accept_f22_j_the_designed_default_comparison_is_recorded` | every declared subject and original-only command is compared once, with the recorded agreement for each |
-| `accept_f22_j_retail_the_image_registers_the_recorded_defaults` (ignored) | production discovery + fingerprint, the engine-image loader's digest, the 64 decoded registration calls, the remap bytes and the two default immediates |
+| `accept_f22_j_retail_the_image_registers_the_recorded_defaults` (ignored) | production discovery + fingerprint, the engine-image loader's digest, the 64 decoded registration calls, the decoded Japanese-remap code pairs and the two default immediates |
 | `accept_f22_j_retail_strings_dll_names_every_recorded_label` (ignored) | every recorded label id resolves through `StringCatalog`, and every symbol is named with its id |
 
 The evidence harness `crates/cs_content/tests/evidence_report_f22_j.rs` is
@@ -384,7 +391,7 @@ prefix) were caught before this report was produced.
 `private/evidence/F22-J/` (Git-ignored) holds `cargo-test.log`,
 `bindings.json` and `acceptance.json`; a copy of the report is committed as
 `docs/findings/evidence/F22-J.json`. Claim: **`implemented`**, capability
-`retail`, 7/7 tests passing, 7 assertions.
+`retail`, 8/8 tests passing, 8 assertions.
 
 ```sh
 cargo test --workspace --locked -- accept_f22_j_ --include-ignored \
@@ -420,10 +427,10 @@ cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
                                                                    # exit 0
 cargo test --workspace --locked                                   # exit 0
 cargo test --workspace --locked -- accept_f22_j_ --include-ignored
-                                                                   # exit 0, 7/7
+                                                                   # exit 0, 8/8
 ```
 
-Each of the 7 discovered `accept_f22_j_` tests also passes alone with
+Each of the 8 discovered `accept_f22_j_` tests also passes alone with
 `--exact --include-ignored`. CI runs the same first three checks on the
 pushed commit without original data; the two retail tests are `#[ignore]`
 there and were run locally by the implementer.

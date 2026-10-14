@@ -409,6 +409,32 @@ fn accept_f22_j_the_recorded_chords_match_the_scancode_crosswalk() {
     }
 }
 
+/// **The remap decoder reads the image, not the constant.** The retail test
+/// only runs with the image, so this synthetic chain — assembled from the
+/// same x86 forms with codes that are **not** the recorded ones — pins the
+/// decoder itself in CI: it recovers the pairs the chain encodes, and an
+/// image holding no chain decodes to nothing rather than to the recorded
+/// table.
+#[test]
+fn accept_f22_j_the_remap_decoder_reads_what_it_is_given() {
+    let synthetic = [(0x0011, 0x0021), (0x002f, 0x0044), (0x0145, 0x028a)];
+    let code = support::synthetic_remap(synthetic);
+    let start = (ORIGINAL_JAPANESE_REMAP_VA - ORIGINAL_IMAGE_VA_BIAS) as usize;
+    let mut image = vec![0u8; start + code.len()];
+    image[start..].copy_from_slice(&code);
+
+    assert_eq!(
+        support::decode_japanese_remap(&image),
+        Some(synthetic),
+        "the decoder recovers exactly the pairs the chain encodes"
+    );
+    assert_eq!(
+        support::decode_japanese_remap(&vec![0u8; start + code.len()]),
+        None,
+        "an image that holds no chain decodes to nothing, not to the table"
+    );
+}
+
 /// The recorded comparison of the designed default against the original
 /// default: one entry per declared command and UI action, in the order
 /// [`compare_with_original_default`] emits them.
@@ -681,17 +707,14 @@ fn accept_f22_j_retail_the_image_registers_the_recorded_defaults() {
         "the image registers more commands than the table holds"
     );
 
-    // The Japanese-keyboard remap function holds exactly the bytes the
-    // recorded code pairs derive.
-    let expected_remap = support::expected_japanese_remap_bytes(ORIGINAL_JAPANESE_REMAP);
+    // The Japanese-keyboard remap: the three code pairs its function at the
+    // recorded address encodes are exactly the recorded ones. The scanner
+    // reads them out of the image, so what is asserted here is the recorded
+    // code pairs — never a reproduced copy of the function's body.
     assert_eq!(
-        image_bytes(
-            &image.bytes,
-            ORIGINAL_JAPANESE_REMAP_VA,
-            expected_remap.len()
-        ),
-        expected_remap.as_slice(),
-        "the remap function must encode the recorded code pairs"
+        support::decode_japanese_remap(&image.bytes),
+        Some(ORIGINAL_JAPANESE_REMAP),
+        "the remap at {ORIGINAL_JAPANESE_REMAP_VA:#x} must encode the recorded code pairs"
     );
 
     // The two analog defaults: a `push 2` (FlyMode) and a `push 1.3f`

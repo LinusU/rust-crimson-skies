@@ -21,14 +21,20 @@
 //! 2. [`decode_registrations`], the bounded x86 scanner itself: it finds every
 //!    `call 0x493630` inside the table span and decodes the six `push`
 //!    operands that precede it;
-//! 3. the checks behind the two analog defaults and the Japanese-keyboard
-//!    remap.
+//! 3. [`decode_japanese_remap`], which decodes the three code pairs the
+//!    Japanese-keyboard remap encodes straight out of the image, so the
+//!    check compares recorded *codes* with decoded *codes* and never with a
+//!    recorded instruction sequence;
+//! 4. the checks behind the two analog defaults (the `push 2` / `push 1.3f`
+//!    immediates, read at their recorded addresses).
 //!
 //! **Commit rules.** Only ids, codes, addresses, spans and digests are
-//! recorded here. No image bytes are stored as constants, no executable is
-//! committed and no original display text is reproduced: the expected
-//! Japanese-remap instruction bytes are *derived* from the recorded code
-//! pairs, never copied out of the image.
+//! recorded here, together with the x86 opcode forms a scanner has to
+//! recognise to read them. No original instruction sequence, no expected byte
+//! string of the image, no executable and no original display text is written
+//! into this source: every value compared against the image comes from the
+//! recorded codes and addresses, and the Japanese-remap pairs are decoded out
+//! of the image instead of being expected as bytes.
 //!
 //! F22-H's measurement support is reused, not re-stated: the 65 measured
 //! command labels, the category headers and the installation fingerprints
@@ -39,7 +45,8 @@
 #![allow(dead_code)]
 
 use cs_types::input::{
-    ORIGINAL_IMAGE_VA_BIAS, ORIGINAL_REGISTER_VA, ORIGINAL_TABLE_SPAN, OriginalControlCategory,
+    ORIGINAL_IMAGE_VA_BIAS, ORIGINAL_JAPANESE_REMAP_VA, ORIGINAL_REGISTER_VA, ORIGINAL_TABLE_SPAN,
+    OriginalControlCategory,
 };
 
 /// The four command labels the controls screen enumerates whose ids lie
@@ -834,51 +841,148 @@ fn decode_row(span: &[u8], call: usize, span_start: u32) -> Option<Registration>
     })
 }
 
-/// The instruction bytes the Japanese-keyboard remap function at
-/// `ORIGINAL_JAPANESE_REMAP_VA` must hold, derived from the recorded
-/// `(input, remapped)` code pairs.
+/// Decodes the three `(input, remapped)` code pairs the Japanese-keyboard
+/// remap at [`ORIGINAL_JAPANESE_REMAP_VA`] encodes, read out of the image
+/// bytes themselves.
 ///
-/// The bytes are *constructed* from the recorded codes — `cmp`/`je`/`jne`
-/// opcodes with the recorded immediates — never copied out of the image, so
-/// the check commits ids and codes only. A different remap table produces
-/// different bytes and fails the check.
-pub fn expected_japanese_remap_bytes(pairs: [(u16, u16); 3]) -> Vec<u8> {
-    let [
-        (input_a, remapped_a),
-        (input_b, remapped_b),
-        (input_c, remapped_c),
-    ] = pairs;
-    let mut bytes = vec![
-        0x8b,
-        0x44,
-        0x24,
-        0x04, // mov eax, [esp+4]
-        0x83,
-        0xf8, // cmp eax, imm8 (input a)
-        input_a as u8,
-        0x74,
-        0x18, // je -> the remapped-a block
-        0x83,
-        0xf8, // cmp eax, imm8 (input b)
-        input_b as u8,
-        0x74,
-        0x0d, // je -> the remapped-b block
-        0x3d, // cmp eax, imm32 (input c)
-    ];
-    bytes.extend_from_slice(&u32::from(input_c).to_le_bytes());
-    bytes.extend_from_slice(&[
-        0x75, 0x11, // jne -> the identity return
-        0xb8, // mov eax, imm32 (remapped c)
-    ]);
-    bytes.extend_from_slice(&u32::from(remapped_c).to_le_bytes());
-    bytes.extend_from_slice(&[0xc3]); // ret
-    bytes.extend_from_slice(&[0xb8]); // mov eax, imm32 (remapped b)
-    bytes.extend_from_slice(&u32::from(remapped_b).to_le_bytes());
-    bytes.extend_from_slice(&[0xc3]); // ret
-    bytes.extend_from_slice(&[0xb8]); // mov eax, imm32 (remapped a)
-    bytes.extend_from_slice(&u32::from(remapped_a).to_le_bytes());
-    bytes.extend_from_slice(&[0xc3]); // ret
-    bytes
+/// The walk models only generic x86 instruction forms — `mov eax, [esp+disp8]`,
+/// `cmp eax, imm8`, `cmp eax, imm32`, `je`/`jne rel8`, `mov eax, imm32` and
+/// `ret` — and pairs each comparison with the immediate loaded on the path
+/// where that comparison **holds**: the destination of a `je`, the
+/// fall-through of a `jne`. This source holds those opcode forms and the
+/// recorded codes; what is asserted against the image is always an id, a code
+/// or an address, never an expected byte string of the function.
+///
+/// Returns `None` when the bytes there are not that chain of instructions, so
+/// a remap this scanner does not model fails the caller's assertion instead of
+/// quietly satisfying it.
+pub fn decode_japanese_remap(image: &[u8]) -> Option<[(u16, u16); 3]> {
+    let start =
+        usize::try_from(ORIGINAL_JAPANESE_REMAP_VA.checked_sub(ORIGINAL_IMAGE_VA_BIAS)?).ok()?;
+
+    let byte = |offset: usize| -> Option<u8> {
+        let index = start.checked_add(offset)?;
+        image.get(index).copied()
+    };
+    let dword = |offset: usize| -> Option<u32> {
+        let index = start.checked_add(offset)?;
+        let bytes: [u8; 4] = image.get(index..index + 4)?.try_into().ok()?;
+        Some(u32::from_le_bytes(bytes))
+    };
+
+    let mut pairs: Vec<(u16, u16)> = Vec::with_capacity(3);
+    let mut comparison: Option<u16> = None;
+    let mut cursor = 0usize;
+    while pairs.len() < 3 {
+        match byte(cursor)? {
+            // mov eax, [esp+disp8]: the function reads its argument.
+            0x8b if byte(cursor + 1) == Some(0x44) && byte(cursor + 2) == Some(0x24) => {
+                cursor += 4;
+            }
+            // cmp eax, imm8
+            0x83 if byte(cursor + 1) == Some(0xf8) => {
+                comparison = Some(u16::from(byte(cursor + 2)?));
+                cursor += 3;
+            }
+            // cmp eax, imm32
+            0x3d => {
+                comparison = Some(u16::try_from(dword(cursor + 1)?).ok()?);
+                cursor += 5;
+            }
+            // je / jne rel8: the path on which the comparison holds starts
+            // with `mov eax, imm32`, whose immediate is the remapped code.
+            0x74 | 0x75 => {
+                let input = comparison.take()?;
+                let next = cursor + 2;
+                let holds = if byte(cursor)? == 0x74 {
+                    let displacement = i64::from(i8::from_ne_bytes([byte(cursor + 1)?]));
+                    let target = i64::try_from(next).ok()? + displacement;
+                    usize::try_from(target).ok()?
+                } else {
+                    next
+                };
+                if byte(holds)? != 0xb8 {
+                    return None;
+                }
+                pairs.push((input, u16::try_from(dword(holds + 1)?).ok()?));
+                cursor = next;
+            }
+            // mov eax, imm32: already accounted for on the path above.
+            0xb8 => cursor += 5,
+            // Anything else — including a `ret` that ends the chain before
+            // three pairs — is a layout this scanner does not model.
+            _ => return None,
+        }
+    }
+    Some([pairs[0], pairs[1], pairs[2]])
+}
+
+/// Assembles a synthetic three-pair remap chain from the x86 forms
+/// [`decode_japanese_remap`] models, computing every jump displacement from
+/// the layout it produces.
+///
+/// Every immediate comes from `pairs`, never from the image, so this commits
+/// nothing original: it exists so the decoder is exercised against a chain
+/// whose codes are **not** the recorded ones, and so it cannot pass by
+/// returning [`ORIGINAL_JAPANESE_REMAP`](cs_types::input::ORIGINAL_JAPANESE_REMAP)
+/// unconditionally.
+pub fn synthetic_remap(pairs: [(u16, u16); 3]) -> Vec<u8> {
+    let [first, second, third] = pairs;
+    let mut out = vec![0x8b, 0x44, 0x24, 0x04]; // mov eax, [esp+disp8]
+
+    // Two `je rel8` with placeholder displacements, then the third
+    // comparison behind a `jne rel8`: its *equal* path is the fall-through.
+    let mut jumps: Vec<(usize, char)> = Vec::new();
+    for (input, which) in [(first.0, 'a'), (second.0, 'b')] {
+        emit_cmp(&mut out, input);
+        jumps.push((out.len(), which));
+        out.extend_from_slice(&[0x74, 0x00]);
+    }
+    emit_cmp(&mut out, third.0);
+    jumps.push((out.len(), 'c'));
+    out.extend_from_slice(&[0x75, 0x00]);
+
+    // The three `mov eax, imm32` / `ret` blocks: c is the fall-through of
+    // the `jne`, then the two the `je` instructions jump to.
+    emit_block(&mut out, third.1);
+    let block_b = emit_block(&mut out, second.1);
+    let block_a = emit_block(&mut out, first.1);
+    let end = out.len();
+
+    // Patch the displacements: `a` and `b` jump to their blocks, `c` to the
+    // end of the chain (the identity return).
+    for (at, which) in jumps {
+        let target = match which {
+            'a' => block_a,
+            'b' => block_b,
+            _ => end,
+        };
+        let displacement = i32::try_from(target).expect("a small synthetic image")
+            - i32::try_from(at + 2).expect("a small synthetic image");
+        let displacement = i8::try_from(displacement).expect("the synthetic blocks are near");
+        out[at + 1] = displacement as u8;
+    }
+    out
+}
+
+/// `cmp eax, imm8` for a code the byte can hold, `cmp eax, imm32` otherwise:
+/// `imm8` sign-extends, so it only ever encodes a code below `0x80`.
+fn emit_cmp(out: &mut Vec<u8>, input: u16) {
+    if input < 0x0080 {
+        out.extend_from_slice(&[0x83, 0xf8, u8::try_from(input).expect("a byte-sized code")]);
+    } else {
+        out.extend_from_slice(&[0x3d]);
+        out.extend_from_slice(&u32::from(input).to_le_bytes());
+    }
+}
+
+/// `mov eax, imm32` followed by `ret`; returns the block's start.
+fn emit_block(out: &mut Vec<u8>, remapped: u16) -> usize {
+    let start = out.len();
+    out.push(0xb8);
+    out.extend_from_slice(&u32::from(remapped).to_le_bytes());
+    out.push(0xc3);
+    start
 }
 
 /// The bits of the f32 `value`, as the image stores them.
