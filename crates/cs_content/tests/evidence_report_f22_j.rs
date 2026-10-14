@@ -182,14 +182,14 @@ fn evidence_report_f22_j_writes_the_acceptance_report() {
         &bindings_path,
         format!(
             "{{\"install_sha256\": {}, \"content_sha256\": {}, \"candidate_tree\": {}, \
-             \"engine_image\": {{\"sha256\": {}, \"len\": {}, \"va_bias\": {:#x}}}, \
-             \"spans\": {{\"table\": [{:#x}, {:#x}], \"register_call\": {:#x}, \
-             \"binding_store\": {:#x}, \"key_name\": {:#x}, \
-             \"modifier_match\": [{:#x}, {:#x}], \"joystick_input\": {:#x}, \
-             \"analog_defaults\": [{:#x}, {:#x}]}}, \
+             \"engine_image\": {{\"sha256\": {}, \"len\": {}, \"va_bias\": {}}}, \
+             \"spans\": {{\"table\": [{}, {}], \"register_call\": {}, \
+             \"binding_store\": {}, \"key_name\": {}, \
+             \"modifier_match\": [{}, {}], \"joystick_input\": {}, \
+             \"analog_defaults\": [{}, {}]}}, \
              \"fly_mode_default\": {}, \"mouse_sens_default\": {}, \
-             \"fly_mode_default_va\": {:#x}, \"mouse_sens_default_va\": {:#x}, \
-             \"japanese_remap_va\": {:#x}, \"japanese_remap\": [{}], \
+             \"fly_mode_default_va\": {}, \"mouse_sens_default_va\": {}, \
+             \"japanese_remap_va\": {}, \"japanese_remap\": [{}], \
              \"joystick_axes\": [{}], \"bindings\": [{}], \
              \"screen_only_labels\": [{}], \"not_on_screen_labels\": [{}], \
              \"comparison\": [{}], \"image_rows_agree\": {}}}\n",
@@ -198,22 +198,22 @@ fn evidence_report_f22_j_writes_the_acceptance_report() {
             jstr(&candidate_tree),
             jstr(ORIGINAL_IMAGE_SHA256),
             image.bytes.len(),
-            ORIGINAL_IMAGE_VA_BIAS,
-            ORIGINAL_TABLE_SPAN.0,
-            ORIGINAL_TABLE_SPAN.1,
-            ORIGINAL_REGISTER_VA,
-            ORIGINAL_BINDING_STORE_VA,
-            ORIGINAL_KEY_NAME_VA,
-            ORIGINAL_MODIFIER_MATCH_SPAN.0,
-            ORIGINAL_MODIFIER_MATCH_SPAN.1,
-            ORIGINAL_JOYSTICK_INPUT_VA,
-            ORIGINAL_ANALOG_DEFAULTS_SPAN.0,
-            ORIGINAL_ANALOG_DEFAULTS_SPAN.1,
+            hex(ORIGINAL_IMAGE_VA_BIAS),
+            hex(ORIGINAL_TABLE_SPAN.0),
+            hex(ORIGINAL_TABLE_SPAN.1),
+            hex(ORIGINAL_REGISTER_VA),
+            hex(ORIGINAL_BINDING_STORE_VA),
+            hex(ORIGINAL_KEY_NAME_VA),
+            hex(ORIGINAL_MODIFIER_MATCH_SPAN.0),
+            hex(ORIGINAL_MODIFIER_MATCH_SPAN.1),
+            hex(ORIGINAL_JOYSTICK_INPUT_VA),
+            hex(ORIGINAL_ANALOG_DEFAULTS_SPAN.0),
+            hex(ORIGINAL_ANALOG_DEFAULTS_SPAN.1),
             ORIGINAL_FLY_MODE_DEFAULT,
             ORIGINAL_MOUSE_SENS_DEFAULT,
-            ORIGINAL_FLY_MODE_DEFAULT_VA,
-            ORIGINAL_MOUSE_SENS_DEFAULT_VA,
-            ORIGINAL_JAPANESE_REMAP_VA,
+            hex(ORIGINAL_FLY_MODE_DEFAULT_VA),
+            hex(ORIGINAL_MOUSE_SENS_DEFAULT_VA),
+            hex(ORIGINAL_JAPANESE_REMAP_VA),
             remap_items(),
             joystick_axis_items(),
             binding_items().join(", "),
@@ -224,6 +224,10 @@ fn evidence_report_f22_j_writes_the_acceptance_report() {
         ),
     )
     .expect("write bindings.json");
+    assert_json_grammar(
+        &fs::read_to_string(&bindings_path).expect("read bindings.json"),
+        "bindings.json",
+    );
 
     let artifacts = vec![
         artifact(&log_path, "log", &evidence_dir),
@@ -256,6 +260,7 @@ fn evidence_report_f22_j_writes_the_acceptance_report() {
         jstr(REVIEW_METHOD),
     );
     let out = evidence_dir.join("acceptance.json");
+    assert_json_grammar(&report, "acceptance.json");
     fs::write(&out, report).expect("write acceptance.json");
     assert!(
         suite.failed == 0 && exit_code == 0,
@@ -283,17 +288,17 @@ fn binding_items() -> Vec<String> {
         .iter()
         .map(|row| {
             format!(
-                "{{\"command_id\": {}, \"label_id\": {}, \"category\": {}, \"key_a\": {:#05x}, \
-                 \"key_b\": {:#05x}, \"joystick_button\": {}, \"mouse_button\": {}, \
-                 \"registration_va\": {:#x}}}",
+                "{{\"command_id\": {}, \"label_id\": {}, \"category\": {}, \"key_a\": {}, \
+                 \"key_b\": {}, \"joystick_button\": {}, \"mouse_button\": {}, \
+                 \"registration_va\": {}}}",
                 row.command_id,
                 row.label_id,
                 jstr(row.category.label()),
-                row.key_a.code(),
-                row.key_b.code(),
+                hex(row.key_a.code()),
+                hex(row.key_b.code()),
                 row.joystick_button,
                 row.mouse_button,
-                row.registration_va
+                hex(row.registration_va)
             )
         })
         .collect()
@@ -304,7 +309,11 @@ fn remap_items() -> String {
     ORIGINAL_JAPANESE_REMAP
         .iter()
         .map(|(input, remapped)| {
-            format!("{{\"input\": {input:#05x}, \"remapped\": {remapped:#05x}}}")
+            format!(
+                "{{\"input\": {}, \"remapped\": {}}}",
+                hex(input),
+                hex(remapped)
+            )
         })
         .collect::<Vec<String>>()
         .join(", ")
@@ -616,6 +625,50 @@ fn artifact_array(artifacts: &[(String, String, String)]) -> String {
 fn str_array(items: &[String]) -> String {
     let quoted: Vec<String> = items.iter().map(|item| jstr(item)).collect();
     format!("[{}]", quoted.join(", "))
+}
+
+/// Checks that `document` is structurally JSON: outside a string literal it
+/// may hold only structure, number characters and the letters of `true`,
+/// `false` and `null`.
+///
+/// The renderer quotes every address and key code, and this is the guard that
+/// keeps it doing so: an unquoted `0x…` is valid in Rust's `format!` but not
+/// in JSON, and it would otherwise reach an artifact the report advertises as
+/// `kind: json`. It is deliberately not a full parser — `serde_json` is not a
+/// dependency of this crate — it covers exactly the defect this document can
+/// produce.
+fn assert_json_grammar(document: &str, name: &str) {
+    let mut in_string = false;
+    let mut escaped = false;
+    for (index, character) in document.char_indices() {
+        if in_string {
+            if escaped {
+                escaped = false;
+            } else if character == '\\' {
+                escaped = true;
+            } else if character == '"' {
+                in_string = false;
+            }
+            continue;
+        }
+        match character {
+            '"' => in_string = true,
+            _ if character.is_ascii_whitespace() || "{}[],:".contains(character) => {}
+            _ if character.is_ascii_digit() || "-+.eE".contains(character) => {}
+            't' | 'r' | 'u' | 'e' | 'f' | 'a' | 'l' | 's' | 'n' => {}
+            other => panic!(
+                "{name}: character {other:?} at byte {index} is not JSON outside a string — \
+                 an address or key code escaped its quotes"
+            ),
+        }
+    }
+    assert!(!in_string, "{name}: an unterminated string");
+}
+
+/// A JSON string holding one address or key code in hexadecimal: JSON has no
+/// hex number literal, so the value is quoted and the `0x` prefix kept.
+fn hex(value: impl std::fmt::LowerHex) -> String {
+    jstr(&format!("{value:#x}"))
 }
 
 /// A JSON string literal: quoted and escaped, so no report field can break
