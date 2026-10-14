@@ -6,12 +6,20 @@
 //! can invoke, so what can be pinned is pinned here — (1) the two paragraphs
 //! name `crate::mission_markers` and the #507 finding and no longer claim the
 //! consumer is absent or unstubbed (source-level, through `include_str!` of
-//! the crate's own files, so reverting the prose fails these tests), and (2)
-//! the production items the paragraphs cross-link exist and are the seam they
-//! say they are (compile-level: this test drives them).
+//! the crate's own files, so reverting the prose fails these tests), (2) the
+//! seam attribution is the recorded one (the 2026-10-02 finding recorded
+//! `AnimationLog::drain`; the consumer binds the marker-specific
+//! `AnimationLog::take_markers`), (3) the remaining "still not wired" claim
+//! is the true one (the production mission host drives the path; the F39
+//! declarations cannot be recovered, Rally #1219) and the stale #509 claim is
+//! gone, and (4) the production items the paragraphs cross-link exist and are
+//! the seam they say they are (compile-level: this test drives/references
+//! them).
 
 use cs_app::animation::AnimationLog;
 use cs_app::mission_markers::{MissionMarkerBindings, MissionMarkerConsumer};
+use cs_app::mission_session::{MissionHost, MissionHostRefusal};
+use cs_app::objectives::LoweredObjectives;
 use cs_types::net::SessionId;
 
 /// The animation modules' docs, read from the crate's own sources.
@@ -51,12 +59,47 @@ fn accept_f20_c_stale_consumer_docs_name_the_real_consumer() {
 }
 
 #[test]
+fn accept_f20_c_stale_consumer_docs_name_the_recorded_seam() {
+    for (path, source) in DOC_SOURCES {
+        assert!(
+            source.contains("AnimationLog::drain"),
+            "{path} must name `AnimationLog::drain` as the seam the \
+             2026-10-02 finding recorded"
+        );
+        assert!(
+            source.contains("AnimationLog::take_markers"),
+            "{path} must name `AnimationLog::take_markers` as the \
+             marker-specific take the consumer binds"
+        );
+    }
+}
+
+#[test]
 fn accept_f20_c_stale_consumer_docs_keep_the_unwired_claim_true() {
     for (path, source) in DOC_SOURCES {
         assert!(
-            source.contains("#509"),
-            "{path} must name #509 as the remaining gap: `ObjectiveSession` \
-             is host-owned and no production composition drives it"
+            source.contains("crate::mission_session"),
+            "{path} must name `crate::mission_session`, the production \
+             mission host that now composes and drives the consumer"
+        );
+        assert!(
+            source.contains("#1219"),
+            "{path} must name #1219 as the remaining gap: the F39 objective \
+             declarations cannot be recovered, so the host launches the \
+             session from the empty `LoweredObjectives`"
+        );
+        assert!(
+            !source.contains("#509"),
+            "{path} must not cite #509 as an open gap: #509 was the \
+             AnimationPlugin registration and is done, and the production \
+             mission host drives the marker path since VS-M01-RT-MISSION-HOST"
+        );
+        assert!(
+            !source.contains("no production mission host drives")
+                && !source.contains("no production composition drives it"),
+            "{path} must not claim no production composition drives the \
+             path: `MissionHost::step` drives `step_mission_animations` on \
+             every committed tick"
         );
     }
 }
@@ -76,4 +119,13 @@ fn accept_f20_c_stale_consumer_docs_cross_links_compile() {
     let taken: AnimationLog = log.take_markers();
     assert!(log.is_empty(), "the marker records were taken out");
     assert!(taken.is_empty(), "an empty log hands over an empty batch");
+
+    // The production composition the paragraphs now point at: the mission
+    // host and its declared-program refusal are nameable, the composed tick
+    // is the public function they say it is, and the program the host
+    // launches for original missions is the empty `LoweredObjectives`.
+    let _host_is_public: Option<MissionHost> = None;
+    let _refusal_is_public: Option<MissionHostRefusal> = None;
+    let _empty_program: LoweredObjectives = cs_app::mission_session::no_declared_objectives();
+    let _composed_tick = cs_app::mission_animations::step_mission_animations;
 }

@@ -87,14 +87,25 @@
 //! plugin through its `configure` seam drives the whole path. The mission
 //! marker consumer that
 //! `docs/findings/2026-10-02-f20-c-wired-session-integration.md` recorded as
-//! absent exists now: task #507 added [`crate::mission_markers`], the layer
-//! that takes the marker records out of the
-//! [`AnimationLog`](playback::AnimationLog) through the seam that finding
-//! named and raises each declared cue binding into a mission signal
-//! (`docs/findings/2026-10-05-f20-c-mission-marker-consumer.md`). What is
-//! still not wired is the production composition:
-//! [`crate::objectives::ObjectiveSession`] is host-owned and no production
-//! mission host drives that path yet (filed as #509).
+//! absent (and whose seam that finding recorded as
+//! [`drain`](playback::AnimationLog::drain)) exists now: task #507 added
+//! [`crate::mission_markers`], the layer that takes the marker records out
+//! of the [`AnimationLog`](playback::AnimationLog) through
+//! [`take_markers`](playback::AnimationLog::take_markers) — the
+//! marker-specific take of that seam — and raises each declared cue binding
+//! into a mission signal
+//! (`docs/findings/2026-10-05-f20-c-mission-marker-consumer.md`). The
+//! production composition exists too: the mission host
+//! [`crate::mission_session::MissionHost`] drives that consumer on every
+//! committed tick through
+//! [`crate::mission_animations::step_mission_animations`]. What is honestly
+//! still missing on that path is the declared program, not the plumbing:
+//! [`crate::objectives::ObjectiveSession`] stays host-owned (not a
+//! resource), and for every original mission the host launches it from the
+//! **empty** [`crate::objectives::LoweredObjectives`] because the F39
+//! objective declarations cannot be recovered yet — reporting
+//! [`crate::mission_session::MissionHostRefusal::ObjectiveDeclarations`]
+//! instead (that measurement is Rally #1219).
 //!
 //! Stage `### F20-D` adds the two measured halves of the original-family
 //! validation:

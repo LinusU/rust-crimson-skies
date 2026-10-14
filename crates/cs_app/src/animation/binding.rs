@@ -35,19 +35,28 @@
 //! # The mission-marker consumer
 //!
 //! The other half of "wire it into its actual producer and consumer" — the
-//! mission/objective layer that takes the
-//! [`AnimationLog`](super::AnimationLog) gameplay markers — was absent when
-//! this stage landed, and the seam it would bind to (the log's
-//! [`take_markers`](super::AnimationLog::take_markers)) was recorded in
-//! `docs/findings/2026-10-02-f20-c-wired-session-integration.md`. Task #507
+//! mission/objective layer that turns the
+//! [`AnimationLog`](super::AnimationLog) gameplay markers into gameplay —
+//! was absent when this stage landed; the finding recorded the seam as the
+//! log's [`drain`](super::AnimationLog::drain) and filed the consumer as #507
+//! (`docs/findings/2026-10-02-f20-c-wired-session-integration.md`). Task #507
 //! added that consumer: [`crate::mission_markers`] takes the marker records
-//! through that seam, resolves each fired cue through the mission host's
+//! through [`take_markers`](super::AnimationLog::take_markers) — the
+//! marker-specific take of that seam, leaving the other record kinds for
+//! their consumers — resolves each fired cue through the mission host's
 //! **declared** cue → signal table and raises it into a mission signal
-//! (`docs/findings/2026-10-05-f20-c-mission-marker-consumer.md`). Nothing
-//! here stubs it and nothing here drains it; what is still not wired is a
-//! production mission host composing that consumer —
-//! [`crate::objectives::ObjectiveSession`] is host-owned and no production
-//! composition drives it yet (filed as #509).
+//! (`docs/findings/2026-10-05-f20-c-mission-marker-consumer.md`). The
+//! production composition exists too: the mission host
+//! [`crate::mission_session::MissionHost`] drives that consumer on every
+//! committed tick through
+//! [`crate::mission_animations::step_mission_animations`]. What is honestly
+//! still missing on that path is the declared program, not the plumbing:
+//! [`crate::objectives::ObjectiveSession`] stays host-owned (not a resource),
+//! and for every original mission the host launches it from the **empty**
+//! [`crate::objectives::LoweredObjectives`] because the F39 objective
+//! declarations cannot be recovered yet — reporting
+//! [`crate::mission_session::MissionHostRefusal::ObjectiveDeclarations`]
+//! instead (that measurement is Rally #1219).
 
 use std::fmt;
 
