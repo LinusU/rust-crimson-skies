@@ -139,7 +139,10 @@ fn evidence_report_f38_b_writes_the_acceptance_report() {
         measurement.callback_families, 389,
         "native-host families: 385 (native, id) pairs plus 4 computed-dispatch families"
     );
-    assert_eq!(measurement.mail_families, 91, "90 message ids plus one computed");
+    assert_eq!(
+        measurement.mail_families, 91,
+        "90 message ids plus one computed"
+    );
     assert_eq!(
         measurement.callback_sites, 709,
         "callback sites, per the owner census on Rally #159"

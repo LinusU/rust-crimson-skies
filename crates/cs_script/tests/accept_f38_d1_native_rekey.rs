@@ -152,11 +152,18 @@ fn accept_f38_d1_the_family_key_keeps_the_native() {
             "code {} names the same native in both crates",
             native.code()
         );
-        assert_eq!(MeasuredHost::from_code(native.code()).map(MeasuredHost::label), Some(native.label()));
+        assert_eq!(
+            MeasuredHost::from_code(native.code()).map(MeasuredHost::label),
+            Some(native.label())
+        );
     }
     assert_eq!(MeasuredHost::from_code(6), Some(MeasuredHost::Mail));
     assert_eq!(MeasuredHost::from_code(7), Some(MeasuredHost::Unmeasured));
-    assert_eq!(MeasuredHost::from_code(8), None, "an unknown code is refused");
+    assert_eq!(
+        MeasuredHost::from_code(8),
+        None,
+        "an unknown code is refused"
+    );
 
     let corpus = corpus_of(TWO_NATIVES_ONE_ID);
     assert_eq!(corpus.sites, 2);
@@ -175,7 +182,8 @@ fn accept_f38_d1_the_family_key_keeps_the_native() {
 
     let table = ObservedBindingTable::measure(&rows(&corpus)).expect("both rows are valid");
     assert_eq!(
-        table.coverage().families, 2,
+        table.coverage().families,
+        2,
         "the dedup key kept the native: the same id twice is not a duplicate"
     );
     let family = |native: MeasuredNative| {
@@ -248,7 +256,10 @@ fn accept_f38_d1_the_measured_hosts_bind_with_their_measured_meanings() {
                 (spelling.as_str(), meaning.label())
             }
             ObservedDisposition::Unimplemented { reason, .. } => {
-                panic!("{} must be bound, not refused: {reason}", family.call.spelling())
+                panic!(
+                    "{} must be bound, not refused: {reason}",
+                    family.call.spelling()
+                )
             }
         })
         .collect();
@@ -286,10 +297,7 @@ fn accept_f38_d1_the_measured_hosts_bind_with_their_measured_meanings() {
     // site carries a NameRef argument where the literal-id site carries an
     // integer, and both still bind — the protocol keeps the variation.
     let computed = table
-        .family(
-            MeasuredHost::Native(MeasuredNative::GosLocalize),
-            None,
-        )
+        .family(MeasuredHost::Native(MeasuredNative::GosLocalize), None)
         .expect("the computed-dispatch goslocalize family");
     assert_eq!(computed.call.spelling(), "goslocalize#computed");
     assert!(computed.is_bound());
@@ -307,7 +315,11 @@ fn accept_f38_d1_unmeasured_families_are_named_and_never_bound() {
     let audit = audit_sites(&table, &site_rows("C.SCRIPT", UNMEASURED_HOSTS), 0).expect("audit");
 
     // Every site of every unmeasured host is refused, never bound.
-    assert_eq!(audit.bound(), 0, "no unmeasured id may be reported as bound");
+    assert_eq!(
+        audit.bound(),
+        0,
+        "no unmeasured id may be reported as bound"
+    );
     for site in &audit.sites {
         assert_eq!(
             site.verdict.code(),
@@ -319,10 +331,15 @@ fn accept_f38_d1_unmeasured_families_are_named_and_never_bound() {
     // The audit names each unmeasured family by native and id.
     assert_eq!(
         audit.unmeasured_families(),
-        ["goscallback#13", "uidata#2133", "uicontrol#6", "unmeasured#42"]
-            .into_iter()
-            .map(str::to_owned)
-            .collect::<std::collections::BTreeSet<_>>()
+        [
+            "goscallback#13",
+            "uidata#2133",
+            "uicontrol#6",
+            "unmeasured#42"
+        ]
+        .into_iter()
+        .map(str::to_owned)
+        .collect::<std::collections::BTreeSet<_>>()
     );
 
     // Each refusal names its handler address, so the open question stays

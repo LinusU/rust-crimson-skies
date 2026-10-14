@@ -112,10 +112,7 @@ fn accept_f38_d1_retail_the_native_census_matches_the_owner_measurement() {
     for (native, expected) in &census {
         let families: Vec<_> = corpus.hosts(HostKind::Native(*native)).collect();
         let sites: u32 = families.iter().map(|c| c.sites).sum();
-        let ids = families
-            .iter()
-            .filter(|c| c.native_id.is_some())
-            .count();
+        let ids = families.iter().filter(|c| c.native_id.is_some()).count();
         let computed: u32 = families
             .iter()
             .filter(|c| c.native_id.is_none())
@@ -215,7 +212,10 @@ fn accept_f38_d1_retail_the_audit_binds_the_measured_hosts_and_names_the_rest() 
         .collect();
     let table = ObservedBindingTable::measure(&family_rows).expect("every row is valid");
     let coverage = table.coverage();
-    assert_eq!(coverage.families, 481, "389 native + 91 mail + 1 unmeasured");
+    assert_eq!(
+        coverage.families, 481,
+        "389 native + 91 mail + 1 unmeasured"
+    );
     assert_eq!(
         coverage.bound_families, 236,
         "144 goslocalize + 1 gospageinit + 91 mail families bind"
@@ -225,16 +225,18 @@ fn accept_f38_d1_retail_the_audit_binds_the_measured_hosts_and_names_the_rest() 
         "58 goscallback + 170 uidata + 16 uicontrol + 1 unmeasured-target family"
     );
     assert!(!coverage.complete() && !coverage.campaign_ready());
-    assert!(table.registry().is_empty(), "no UI host call enters the mission registry");
+    assert!(
+        table.registry().is_empty(),
+        "no UI host call enters the mission registry"
+    );
 
     let mut site_rows = Vec::new();
     for (spelling, bytes) in &scripts {
         let scan = scan_ui_program(spelling, bytes, UiScriptLimits::default()).expect("scans");
         for site in &scan.sites {
             site_rows.push(SiteRow {
-                host: MeasuredHost::from_code(site.host().code()).unwrap_or_else(|| {
-                    panic!("code {} is a measured host", site.host().code())
-                }),
+                host: MeasuredHost::from_code(site.host().code())
+                    .unwrap_or_else(|| panic!("code {} is a measured host", site.host().code())),
                 native_id: site.native_id,
                 arg_shape_codes: site.args.iter().map(|s| s.code()).collect(),
                 origin: SiteOrigin {
@@ -262,7 +264,11 @@ fn accept_f38_d1_retail_the_audit_binds_the_measured_hosts_and_names_the_rest() 
         525,
         "524 goscallback/uidata/uicontrol sites + 1 unmeasured-target site refuse"
     );
-    assert_eq!(audit.malformed(), 0, "no site disagrees with its own corpus");
+    assert_eq!(
+        audit.malformed(),
+        0,
+        "no site disagrees with its own corpus"
+    );
     assert!(!audit.campaign_ready(), "the gate stays closed");
 
     // Every bound site carries a measured host's name; every unmeasured family
@@ -282,9 +288,7 @@ fn accept_f38_d1_retail_the_audit_binds_the_measured_hosts_and_names_the_rest() 
         .sites
         .iter()
         .filter_map(|site| match &site.verdict {
-            cs_script::bindings::located::SiteVerdict::Bound { spelling } => {
-                Some(spelling.clone())
-            }
+            cs_script::bindings::located::SiteVerdict::Bound { spelling } => Some(spelling.clone()),
             _ => None,
         })
         .collect();
@@ -301,9 +305,9 @@ fn accept_f38_d1_retail_the_audit_binds_the_measured_hosts_and_names_the_rest() 
     // A refused verdict always names its native and handler address.
     for site in audit.with_code("refused") {
         let text = site.to_string();
-        let named = ["0x407670", "0x4093a0", "0x404960"].into_iter().any(|address| {
-            text.contains(address)
-        });
+        let named = ["0x407670", "0x4093a0", "0x404960"]
+            .into_iter()
+            .any(|address| text.contains(address));
         assert!(
             named || text.contains("`unmeasured#"),
             "every refusal names its handler (or its unmeasured host): {text}"

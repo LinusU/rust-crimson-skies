@@ -172,13 +172,10 @@ fn accept_f38_b_retail_ui_script_host_calls_are_measured_with_provenance() {
     // goslocalize), one per mail message id, plus each host's
     // computed-dispatch family. The owner's census (#159) is pinned here: 709
     // callback sites across 385 distinct (native, id) pairs (the id 6 is
-    // spelled under two natives, which the value-only F38-B key merged), 1103
-    // mail sites, and 480 families in total.
-    let callbacks = corpus
-        .calls
-        .iter()
-        .filter(|c| c.host.is_native())
-        .count();
+    // spelled under two natives, which the value-only F38-B key merged), 1102
+    // mail sites, and 481 families in total (389 native + 91 mail + 1
+    // unmeasured-target).
+    let callbacks = corpus.calls.iter().filter(|c| c.host.is_native()).count();
     let mails = corpus
         .calls
         .iter()

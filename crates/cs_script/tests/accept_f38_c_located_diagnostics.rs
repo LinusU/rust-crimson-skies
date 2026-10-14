@@ -153,10 +153,7 @@ fn accept_f38_c_a_scan_that_disagrees_with_its_bytes_is_refused_not_indexed() {
 fn registry_with_callback_100() -> HostBindingRegistry {
     let table = table_of(MEASURED);
     let family = table
-        .family(
-            MeasuredHost::Native(MeasuredNative::GosCallback),
-            Some(100),
-        )
+        .family(MeasuredHost::Native(MeasuredNative::GosCallback), Some(100))
         .expect("measured family");
     let mut registry = HostBindingRegistry::new();
     register_measured(
@@ -373,10 +370,7 @@ fn accept_f38_c_an_empty_audit_and_an_unbound_table_are_never_ready() {
     let gos_localize: &'static [u8] = b"main\n{\ncallback($$NB$$, 500, 1)\n}\n";
     let table = table_of(gos_localize);
     let family = table
-        .family(
-            MeasuredHost::Native(MeasuredNative::GosLocalize),
-            Some(500),
-        )
+        .family(MeasuredHost::Native(MeasuredNative::GosLocalize), Some(500))
         .expect("the measured family");
     assert!(matches!(
         family.disposition,
