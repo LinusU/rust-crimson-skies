@@ -16,13 +16,13 @@
 //! because the world still owns it. Remove either dispatch arm and the test
 //! below fails.
 //!
-//! The case this file pins is the **honest current state**, not the intended
-//! one: no host registers a bailout confirmation yet (F29-C.6 / Rally #674 owns
-//! the producer that calls `ObjectiveRuntime::confirm_bailout`, and
-//! `ObjectiveSession` exposes no mutable path to its runtime at all), so every
-//! bailout reported to a launched session is refused as unconfirmed. That is
-//! the refusal working, not a silent pass — and it must not shield the actor:
-//! a real destruction afterwards still counts as a kill.
+//! The case this file pins is the **unconfirmed** path, not the intended one:
+//! this scenario registers no bailout confirmation (the F29-C.6 producer —
+//! `InputSession`'s eject records and
+//! [`ObjectiveSession::confirm_bailout`] — exists, but nothing here calls it),
+//! so every bailout reported to a launched session is refused as unconfirmed.
+//! That is the refusal working, not a silent pass — and it must not shield the
+//! actor: a real destruction afterwards still counts as a kill.
 //!
 //! Every value here is newly authored synthetic fixture data. **No rule here is
 //! an original-fidelity claim**: the mission-result policy a bailout should

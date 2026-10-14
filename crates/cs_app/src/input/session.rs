@@ -90,6 +90,7 @@ use std::time::Duration;
 use cs_sim::control::{
     ControlAuthority, ControlBuffer, ControlError, ControlGate, LocalSeatId, ThrottleSteps,
 };
+use cs_sim::objectives::bailout::BailoutConfirmation;
 use cs_sim::time::{ClockPolicy, SimClock, TickRate, TimeError};
 use cs_types::Tick;
 use cs_types::input::{
@@ -303,6 +304,32 @@ pub struct UiRequest {
     pub tick: Tick,
     /// The context the request was produced in.
     pub context: InputContext,
+}
+
+/// The bailout confirmation one delivered eject edge carries (F29-C.6).
+///
+/// [`InputSession::pump_frame`] records one of these for every
+/// [`FlightCommand::Eject`] edge [`ControlBuffer::begin_tick`] delivers —
+/// **once per press**, at the input boundary that delivered it, stamped with
+/// the boundary's tick and the context that owned the devices there. A
+/// context change discards the buffer's undelivered edges
+/// ([`InputSession::set_context`]), so the stamped context is always the one
+/// the press was made under; the mission layer's gate re-checks it where the
+/// confirmation is registered, so a record a caller produced under a context
+/// that accepts no flight command is refused by name rather than trusted.
+///
+/// The mission host registers each record through
+/// [`ObjectiveSession::confirm_bailout`](crate::objectives::ObjectiveSession::confirm_bailout)
+/// before the tick whose lifecycle facts report that actor's pilot bailout —
+/// and [`InputSession::take_eject_confirmations`] is the once-only handoff,
+/// so a consumer that runs more than once per frame still confirms exactly
+/// once per press.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct EjectConfirmation {
+    /// The input boundary tick the eject edge was delivered at.
+    pub tick: Tick,
+    /// The confirmation the edge carries for the mission's bailout gate.
+    pub confirmation: BailoutConfirmation,
 }
 
 /// Why content was suppressed rather than consumed.
@@ -765,6 +792,9 @@ pub struct InputSession {
     context_before_focus_loss: InputContext,
     pause: Option<PauseReason>,
     ui_requests: Vec<UiRequest>,
+    /// The eject confirmations the boundaries delivered and no consumer has
+    /// taken yet — one per eject press (F29-C.6).
+    eject_confirmations: Vec<EjectConfirmation>,
     faults: Vec<InputFault>,
     losses: Vec<DeviceLoss>,
     stream: CommandStream,
@@ -802,6 +832,7 @@ impl InputSession {
             context_before_focus_loss: InputContext::Flight,
             pause: None,
             ui_requests: Vec::new(),
+            eject_confirmations: Vec::new(),
             faults: Vec::new(),
             losses: Vec::new(),
             stream: CommandStream::new(),
@@ -941,6 +972,19 @@ impl InputSession {
     /// Takes the pending UI requests, so the path handles each exactly once.
     pub fn take_ui_requests(&mut self) -> Vec<UiRequest> {
         std::mem::take(&mut self.ui_requests)
+    }
+
+    /// The eject confirmations the input boundaries produced and no consumer
+    /// has taken yet (F29-C.6).
+    #[must_use]
+    pub fn eject_confirmations(&self) -> &[EjectConfirmation] {
+        &self.eject_confirmations
+    }
+
+    /// Takes the pending eject confirmations, so the mission host registers
+    /// each exactly once.
+    pub fn take_eject_confirmations(&mut self) -> Vec<EjectConfirmation> {
+        std::mem::take(&mut self.eject_confirmations)
     }
 
     /// The faults reported since the last [`take_faults`](Self::take_faults).
@@ -1218,6 +1262,7 @@ impl InputSession {
         self.focused = true;
         self.pause = None;
         self.ui_requests.clear();
+        self.eject_confirmations.clear();
         self.faults.clear();
         self.losses.clear();
         self.stream = CommandStream::new();
@@ -1423,6 +1468,22 @@ impl InputSession {
         for _ in 0..boundaries {
             let edges = self.controls.begin_tick(self.tick);
             self.throttle.apply_tick(&edges);
+            // F29-C.6: one delivered eject edge is one bailout confirmation,
+            // recorded at the boundary that delivered it — never per frame
+            // and never per substep, so a consumer that drains the queue more
+            // than once in a frame still confirms once per press — and
+            // stamped with the context that owns the devices here, which the
+            // mission gate re-checks where the confirmation is registered.
+            for edge in &edges {
+                if let Action::Flight(FlightCommand::Eject) = edge {
+                    self.eject_confirmations.push(EjectConfirmation {
+                        tick: self.tick,
+                        confirmation: BailoutConfirmation::PlayerEject {
+                            context: self.context(),
+                        },
+                    });
+                }
+            }
             if self.recording
                 && let Err(error) = self.record_tick(&edges, &mut faults)
             {

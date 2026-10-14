@@ -50,9 +50,10 @@ pub use devices::{
     SuppressedHolds, designed_axis_calibration, normalize_gamepad_axis,
 };
 pub use session::{
-    CommandReplay, ControlHandover, FlightContent, FocusOutcome, FrameInput, FrameOutcome,
-    HandoverReason, InputFault, InputSession, PauseDecision, PauseReason, ReplayCursor,
-    ReplayError, ReplayReport, ReplayWindow, SessionError, SessionMode, SuppressReason, UiRequest,
+    CommandReplay, ControlHandover, EjectConfirmation, FlightContent, FocusOutcome, FrameInput,
+    FrameOutcome, HandoverReason, InputFault, InputSession, PauseDecision, PauseReason,
+    ReplayCursor, ReplayError, ReplayReport, ReplayWindow, SessionError, SessionMode,
+    SuppressReason, UiRequest,
 };
 
 /// The active action map and input context of one local session.

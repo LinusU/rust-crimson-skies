@@ -214,7 +214,7 @@ use cs_content::stunts::{
 };
 use cs_script::ir::{ActorId, SymbolId};
 use cs_script::runtime::SessionGeneration;
-use cs_sim::objectives::bailout::BailoutRefusal;
+use cs_sim::objectives::bailout::{BailoutConfirmation, BailoutRefusal};
 use cs_sim::objectives::counters::CountKind;
 use cs_sim::objectives::runtime::{
     CompletionEffect, CompletionEffectKind, CountCondition, CountReaction, NapTime,
@@ -1136,8 +1136,10 @@ pub enum SessionRefusal {
         /// The dialogue that was not played.
         dialogue: ContentId,
     },
-    /// A lifecycle transition produced no mission transition (F29-C.4). The
-    /// actor's record keeps the transition it had already reached.
+    /// A lifecycle transition produced no mission transition (F29-C.4), or a
+    /// bailout confirmation the producer registered and the gate refused
+    /// (F29-C.6, [`ObjectiveSession::confirm_bailout`]). The actor's record
+    /// keeps the transition it had already reached.
     ///
     /// Reported rather than dropped, because "a destruction arrived after a
     /// bailout and was refused" is a fact no consumer can recover by reading the
@@ -1258,7 +1260,9 @@ pub struct SessionTick {
     pub tick: ObjectiveTick,
     /// The waves admitted this tick, for the world to instantiate.
     pub spawns: Vec<SpawnDirective>,
-    /// Every refusal the stream reported, named.
+    /// Every refusal this tick reports, named: the producer-side refusals
+    /// the session was asked to record since the previous step first
+    /// (F29-C.6), then every refusal the stream reported.
     pub refusals: Vec<SessionRefusal>,
     /// The session's outcome once settled.
     pub outcome: Option<TerminalOutcome>,
@@ -1317,6 +1321,12 @@ pub struct ObjectiveSession {
     /// `Disabled`, which still exists in the world) leaves the registry, so a
     /// teardown names exactly the actors the world still has to remove.
     live: BTreeMap<SymbolId, Vec<ActorId>>,
+    /// The refusals producer-side calls recorded between steps — today the
+    /// bailout confirmations [`confirm_bailout`](Self::confirm_bailout)
+    /// refused — lifted into the next [`SessionTick::refusals`] so a consumer
+    /// that reads only the tick report still learns the registration was
+    /// refused.
+    pending_refusals: Vec<SessionRefusal>,
 }
 
 impl ObjectiveSession {
@@ -1381,6 +1391,7 @@ impl ObjectiveSession {
             display,
             pending_cues: VecDeque::new(),
             live: BTreeMap::new(),
+            pending_refusals: Vec::new(),
         })
     }
 
@@ -1449,6 +1460,45 @@ impl ObjectiveSession {
         self.pending_cues.drain(..).collect()
     }
 
+    /// Registers the bailout confirmation an eject edge carried for `actor`
+    /// (F29-C.6).
+    ///
+    /// This is the session's producer surface for the bailout's declaration
+    /// gate: the mission host's input side calls it once per
+    /// [`EjectConfirmation`](crate::input::EjectConfirmation) the input
+    /// boundary delivered — with the mission `ActorId` the edge belongs to —
+    /// ahead of the [`step`](Self::step) whose `TickInput::lifecycles`
+    /// reports that actor's `LifecycleKind::PilotBailout`. The confirmation
+    /// is tick-qualified at the input boundary
+    /// ([`crate::input::InputSession::take_eject_confirmations`]), so one call
+    /// per delivered record is once per press; a caller that re-registers
+    /// meets [`BailoutRefusal::AlreadyConfirmed`].
+    ///
+    /// The gate is the runtime's, not this method's: the confirmation's
+    /// context is re-checked where it is recorded, so a record produced
+    /// under a context that accepts no flight command is refused here and
+    /// nothing is written. A refused registration is also queued for the
+    /// next `step`'s [`SessionTick::refusals`] as
+    /// [`SessionRefusal::Transition`], so a consumer that reads only the tick
+    /// report still learns the press was refused — the same "a refusal is a
+    /// queryable fact" rule the stream-side refusals follow.
+    ///
+    /// # Errors
+    ///
+    /// [`BailoutRefusal`] naming why the gate refused the confirmation.
+    pub fn confirm_bailout(
+        &mut self,
+        actor: ActorId,
+        confirmation: BailoutConfirmation,
+    ) -> Result<(), BailoutRefusal> {
+        self.runtime
+            .confirm_bailout(actor, confirmation)
+            .inspect_err(|reason| {
+                self.pending_refusals
+                    .push(SessionRefusal::Transition { reason: *reason });
+            })
+    }
+
     /// Applies one tick's facts and dispatches the ordered stream to the
     /// consumers.
     ///
@@ -1462,7 +1512,9 @@ impl ObjectiveSession {
     pub fn step(&mut self, input: &TickInput<'_>) -> Result<SessionTick, RuntimeError> {
         let tick = self.runtime.step(input)?;
         let mut spawns = Vec::new();
-        let mut refusals = Vec::new();
+        // Producer-side refusals the session recorded between steps are
+        // reported ahead of the stream's own: they happened before this tick.
+        let mut refusals = std::mem::take(&mut self.pending_refusals);
         let mut display_changed = false;
         for event in &tick.events {
             match &event.kind {
@@ -1556,13 +1608,11 @@ impl ObjectiveSession {
                 // does with it is a declared [`CountReaction`]'s business, and
                 // the unmeasured bailout policy requests nothing.
                 //
-                // This arm is reached only once a host registers a confirmation
-                // through the runtime; nothing does yet (F29-C.6, Rally #674),
-                // and this session exposes no mutable path to its runtime, so
-                // today a bailout reported here arrives as the
-                // [`ObjectiveEventKind::TransitionRefused`] below instead. The
-                // arm stays because the confirmed transition is what the next
-                // task turns on, not because anything reaches it today.
+                // This arm is reached once a producer registers a confirmation
+                // through [`confirm_bailout`](Self::confirm_bailout) (F29-C.6)
+                // ahead of the tick that reports the lifecycle fact; without
+                // one the report arrives as the
+                // [`ObjectiveEventKind::TransitionRefused`] below instead.
                 ObjectiveEventKind::PilotBailedOut { .. } => {}
                 // A refused transition is named, never dropped: the stream says
                 // the world reported a destruction after a bailout and the
@@ -1646,6 +1696,9 @@ impl ObjectiveSession {
         self.runtime = fresh;
         self.display = ObjectiveDisplay::seed(&self.program.objectives);
         self.live.clear();
+        // The refused registrations were already answered to their caller;
+        // a dead generation's queue must not bleed into the new one.
+        self.pending_refusals.clear();
         Ok(report)
     }
 }
