@@ -47,7 +47,10 @@
 //! and nothing is warm; the [`ReadyBundle::closure_hash`] /
 //! [`LoadedItemBinding`] fields gone and the comparisons do not compile; the
 //! reader-archive pipeline gone and the conversion fails, so no load ever
-//! reaches `Ready`. The expected values are each pass's own measured output,
+//! reaches `Ready`; a closure walker that stopped expanding the mission's
+//! edges fails the degenerate-closure guard, so the stage can never silently
+//! shrink to measuring the launchable root alone. The expected values are
+//! each pass's own measured output,
 //! and every retail input is hashed at run time from the mounted
 //! installation.
 //!
@@ -77,7 +80,7 @@ use cs_content::catalog::closure::{Closure, CompatibilityOptions};
 use cs_types::asset_id::{
     AssetKey, MountId, MountNamespace, PrecedenceClass, ResolveContext, SourceSpan,
 };
-use cs_types::content::{ContentId, Origin};
+use cs_types::content::{ContentId, ContentKind, Origin};
 
 // --------------------------------------------------------------- inputs ---
 
@@ -604,6 +607,33 @@ fn accept_f15_e_mission_closures_resolve_through_the_production_closure_and_cli(
             "{}: the closure reaches at least one servable span",
             mission.root
         );
+        // AC1 names a **mission dependency closure**, and a degenerate one
+        // would make this stage vacuous: if the production walker ever
+        // stopped expanding the mission's edges, the closure would shrink to
+        // the launchable root alone, every assertion here would still hold,
+        // and AC04 would be measured over a single row instead of a closure.
+        // The production catalog reaches mission -> program -> install-file
+        // for every campaign mission today (recorded in the F15-E findings
+        // doc), so pin that as a lower bound — never an exact count, which
+        // F50-B/M01-B will legitimately grow once mission->content edges land.
+        let kinds: Vec<ContentKind> = mission
+            .closure
+            .node_ids()
+            .iter()
+            .filter_map(|id| baseline().catalog.get(id).map(|element| element.kind))
+            .collect();
+        for required in [
+            ContentKind::Mission,
+            ContentKind::Script,
+            ContentKind::InstallFile,
+        ] {
+            assert!(
+                kinds.contains(&required),
+                "{}: the closure must reach a {required:?} node, else AC04 is measured over a \
+                 degenerate closure (reached kinds: {kinds:?})",
+                mission.root,
+            );
+        }
         // AC3's total accounting: every reached node is either served by an
         // item or explicitly named with a reason.
         let nodes = mission.closure.node_ids().len();
