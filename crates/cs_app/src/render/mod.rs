@@ -165,6 +165,11 @@ pub mod bevy_state;
 pub mod capture;
 pub mod detail;
 pub mod golden;
+/// The drawn horizon — sky dome, sea and fog — of a windowed scene
+/// (task #1434 `M01-PLAY-SKY`): the one production path that paints them,
+/// installed by the original-assets playtest and by a composed mission.
+pub mod horizon;
+pub use horizon::HorizonPlugin;
 pub mod material;
 pub mod matrix;
 pub mod paint;

@@ -750,6 +750,13 @@ pub fn windowed_app(
     }
     app.add_plugins(PlaytestPlugin);
     app.add_plugins(visuals::PlaytestVisualsPlugin);
+    if retail.is_some() {
+        // The original-assets scene draws a sky, a sea and fog (#1434
+        // `M01-PLAY-SKY`); the synthetic scene keeps the flat clear colour it
+        // was captured under. Added after the visuals so its clear colour and
+        // ambient replace theirs.
+        app.add_plugins(crate::render::HorizonPlugin::designed());
+    }
     if let (Some(request), Some(sources)) = (retail, &sources) {
         retail::install(&mut app, sources, request)?;
     }

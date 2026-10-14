@@ -745,6 +745,15 @@ fn add_composition(
     app.add_plugins(PlaytestPlugin);
     if visuals {
         app.add_plugins(crate::playtest::visuals::PlaytestVisualsPlugin);
+        // The composed mission draws the sky, the sea and the fog from its
+        // own environment record (#1434 `M01-PLAY-SKY`): the spec reads
+        // `weather.zrd`'s bind through the stage's `EnvironmentSession`, and
+        // every value that record leaves unknown stays labelled designed.
+        // Added after the visuals so its clear colour and ambient replace
+        // theirs.
+        app.add_plugins(crate::render::HorizonPlugin::from_environment(
+            stage.host.environment.definition(),
+        ));
     }
 
     // 1. The announced load: a fresh content session over the stage's
