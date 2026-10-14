@@ -63,6 +63,15 @@
 //!   loading and unloading the same airframe a hundred times leaves the live
 //!   entity count unchanged (AC03).
 //!
+//! A successful load also publishes the damage side's debris bindings
+//! (F29-C.5) when the producer inserted the one-shot
+//! [`PartDebrisPublish`] source beside the request: one
+//! [`PartDebrisBinding`](crate::debris::PartDebrisBinding) per authored debris
+//! part of the import, placed from the damage graph's own scene bindings and
+//! stamped with the load generation. A part whose scene identity is
+//! unresolved is reported in [`SceneEvent::Loaded`]'s `unpublished_debris`
+//! rather than bound by guess.
+//!
 //! [`apply_airframe_damage`] is the consumer of the bound parts: the
 //! recorded [`AirframeDamageState`] — part identities as stable
 //! [`SceneNodeId`]s, never positions — is made equal to the
@@ -137,10 +146,12 @@ use cs_content::scene::{
     CanonicalTransform, CollisionRole, LodInfo, LodSelectError, PartRole, PartSocket, SceneGraph,
     SceneNode, SceneNodeId, select_lod_variant,
 };
+use cs_sim::damage::{ActorId, DamageGraph, DamageNodeKey};
 use cs_types::content::{ContentId, Provenance, Resolved};
 use cs_types::space::Meters;
 
 use crate::airframe_visual::AirframeVisual;
+use crate::debris::PartDebrisBinding;
 use crate::world::affine::{AffinePlacement, AffinePlacementError};
 use crate::world::spawn::InstanceTransform;
 
@@ -1068,6 +1079,86 @@ fn node_collider_bundle(
 
 // ------------------------------------------------- load / unload wiring ---
 
+/// Resource: the damage-side debris source one airframe scene load publishes
+/// from (task F29-C.5, `specs/F29-…` stage `### F29-C`).
+///
+/// The session that registered the actor inserts it beside the
+/// [`AirframeSceneRequest::Load`] that imports the airframe's visual subtree —
+/// the same beside-the-request, one-shot shape [`SceneCollisionGeometry`] has —
+/// and the load **takes** it on every path, a refused load included, so a
+/// source can never outlive the load it was authored for and be applied by a
+/// later one.
+///
+/// What the load publishes from it, per damage graph node the actor's graph
+/// names:
+///
+/// * the node's **own** [`scene_binding`](DamageNode::scene_binding) is the
+///   node → scene-node identity the load inverts to find the part entity —
+///   the damage side's record, never a second map this resource could drift
+///   from — and a node whose binding names no entity of *this* import belongs
+///   to another airframe and is skipped silently;
+/// * `objects` is the **content boundary's** per-node debris resolution, keyed
+///   by [`DamageNodeKey`]. A node with no entry is not an authored debris
+///   part — whether the original authored debris per part is **unmeasured**
+///   (F29 "Research boundary"), so absence is not a gap and the load binds
+///   nothing for it, exactly the rule the consumer's pass applies. A node with
+///   an `Resolved::Unknown` entry *is* bound, verbatim: the consumer refuses
+///   it by name with its claim rather than the spawn path inventing an object.
+///
+/// Every published [`PartDebrisBinding`] is stamped with the load's own
+/// [`SceneGeneration`], so a reload's bindings are distinguishable from the
+/// ones it superseded.
+///
+/// # Not original data
+///
+/// Which object a part's destruction presents, and whether it presents one at
+/// all, is unmeasured for the original; the designed rule above and the
+/// findings doc `docs/findings/2026-10-14-f29-c5-debris-bindings-and-presentation.md`
+/// record it. Today no production caller inserts this resource, so no retail
+/// airframe publishes a debris binding yet.
+#[derive(Resource, Clone, Debug, PartialEq)]
+pub struct PartDebrisPublish {
+    actor: ActorId,
+    graph: DamageGraph,
+    objects: BTreeMap<DamageNodeKey, Resolved<ContentId>>,
+}
+
+impl PartDebrisPublish {
+    /// Publishes from `actor`'s lowered `graph` and the content boundary's
+    /// per-node `objects` resolution.
+    #[must_use]
+    pub fn new(
+        actor: ActorId,
+        graph: DamageGraph,
+        objects: BTreeMap<DamageNodeKey, Resolved<ContentId>>,
+    ) -> Self {
+        Self {
+            actor,
+            graph,
+            objects,
+        }
+    }
+
+    /// The session-qualified actor the published bindings belong to.
+    #[must_use]
+    pub const fn actor(&self) -> ActorId {
+        self.actor
+    }
+
+    /// The actor's lowered damage graph the load reads node identities from.
+    #[must_use]
+    pub const fn graph(&self) -> &DamageGraph {
+        &self.graph
+    }
+
+    /// The content boundary's debris resolution for one damage node, if it
+    /// resolved one (or recorded the explicit unknown).
+    #[must_use]
+    pub fn object(&self, node: &DamageNodeKey) -> Option<&Resolved<ContentId>> {
+        self.objects.get(node)
+    }
+}
+
 /// Resource: the request the scene loader processes on its next run.
 ///
 /// This is the producer → consumer hand-off of stage `### F11-C`. The producer
@@ -1319,6 +1410,18 @@ pub enum SceneEvent {
         /// instead: it was authored to collide and cannot, and that is a hole a
         /// shot passes through.
         uncollidable: Vec<(SceneNodeId, NodeCollisionError)>,
+        /// Authored debris parts (task F29-C.5) whose
+        /// [`PartDebrisBinding`](crate::debris::PartDebrisBinding) could not be
+        /// published: the damage graph named the node in the publish source, but
+        /// its own scene binding is unresolved or absent, so no entity of this
+        /// scene can carry the binding. Reported by node key instead of being
+        /// dropped silently — the consumer treats a part with no binding as one
+        /// the original authored no debris for, which is a different statement
+        /// from "this part's scene identity is unresolved".
+        ///
+        /// A node whose scene binding names another airframe's subtree is not a
+        /// gap and is not listed.
+        unpublished_debris: Vec<DamageNodeKey>,
     },
     /// A load request was refused. Nothing was spawned and the running scene
     /// was left exactly as it was, so the request can be retried.
@@ -1685,6 +1788,10 @@ fn load_airframe_scene(
 ) {
     let airframe = visual.airframe().clone();
     let root = visual.root().root().clone();
+    // The debris publish source is taken on every path, a refused load
+    // included, exactly like the collision geometry table: a source can never
+    // outlive the load it was authored for.
+    let publish = world.remove_resource::<PartDebrisPublish>();
     // The generation is consumed before the attempt, so a refused load does
     // not hand its stamp to the retry.
     let generation = {
@@ -1748,6 +1855,48 @@ fn load_airframe_scene(
         }
     }
 
+    // Publish the damage side's debris bindings onto the part entities of
+    // this import. The decision is the damage graph's own: which node is which
+    // scene identity, and what (if anything) the content boundary resolved for
+    // it. Nothing here invents an object.
+    let mut unpublished_debris: Vec<DamageNodeKey> = Vec::new();
+    if let Some(publish) = &publish {
+        for node in publish.graph().nodes() {
+            // Only an authored debris part publishes: a node the content
+            // boundary says nothing about is not one, and that absence is not
+            // a gap to report.
+            let Some(debris) = publish.object(node.key()) else {
+                continue;
+            };
+            match node.scene_binding() {
+                Some(Resolved::Known(known)) => {
+                    match SceneNodeId::from_content_id(known.value.clone()) {
+                        Ok(scene_node) => match import.entity(&scene_node) {
+                            // A binding naming another root of the container is
+                            // another airframe's part, not this scene's.
+                            None => continue,
+                            Some(entity) if world.get_entity(entity).is_ok() => {
+                                world.entity_mut(entity).insert(PartDebrisBinding::new(
+                                    publish.actor(),
+                                    node.key().clone(),
+                                    debris.clone(),
+                                    generation,
+                                ));
+                            }
+                            Some(_) => unpublished_debris.push(node.key().clone()),
+                        },
+                        Err(_) => unpublished_debris.push(node.key().clone()),
+                    }
+                }
+                // The part is authored for debris but its scene identity is
+                // unresolved: the gap is named, not dropped.
+                Some(Resolved::Unknown { .. }) | None => {
+                    unpublished_debris.push(node.key().clone())
+                }
+            }
+        }
+    }
+
     // Commit: the superseded scene goes only now, so a load that succeeded is
     // never the reason an aircraft loses its model.
     if let Some(previous) = world.remove_resource::<LiveAirframeScene>() {
@@ -1782,6 +1931,7 @@ fn load_airframe_scene(
             sockets: bound,
             unresolved,
             uncollidable,
+            unpublished_debris,
         },
     );
 }
@@ -3004,6 +3154,7 @@ mod tests {
                     sockets: 5,
                     unresolved: vec![node_id("fix_planes.main.wing.pod")],
                     uncollidable: uncollidable.clone(),
+                    unpublished_debris: vec![],
                 },
                 SceneEvent::Released {
                     airframe: cid(ContentKind::Airframe, "alpha"),
@@ -3018,6 +3169,7 @@ mod tests {
                     sockets: 5,
                     unresolved: vec![node_id("fix_planes.main.wing.pod")],
                     uncollidable,
+                    unpublished_debris: vec![],
                 },
             ],
             "the reload released the superseded generation and then published the new one"
