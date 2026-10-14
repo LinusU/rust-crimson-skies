@@ -19,7 +19,13 @@
 //! installation or world key, `gos_registration`/`inferred` for a GOS key —
 //! report version 2 replaced the flat `precedence_status` field with the
 //! `order` object, because a GOS lookup is not decided by precedence at
-//! all).
+//! all), and, beside the order, the GOS name-matching rule the lookup
+//! answered under (`"name_match": "ascii_insensitive"`,
+//! `"exact_spelling"` or `"request_uppercase"` — #714's rule, the literal
+//! shape of `MetaOpenFile`'s own container rule — and `null` for a key
+//! space where no chain states a rule). That field is additive, so report
+//! version stays `cs-inspect-resolve/2`: existing consumers key on
+//! `order`, `result` and `trace`, which are unchanged.
 //!
 //! `--export-dir` is the explicit private research export of spec F04
 //! non-negotiable behavior 5: the resolved member is read (digest-checked)
@@ -544,6 +550,7 @@ pub fn resolve_report_json(
          \x20\"session\": {{\"generation\": {}, \"mounts\": [{}]}},\n\
          \x20\"key\": {{\"namespace\": {}, \"path\": {}, \"variant\": {}, \"logical_key\": {}}},\n\
          \x20\"order\": {{\"kind\": {}, \"status\": {}}},\n\
+         \x20\"name_match\": {},\n\
          \x20\"result\": {},\n\
          \x20\"trace\": {},\n\
          \x20\"export\": {}\n\
@@ -572,6 +579,9 @@ pub fn resolve_report_json(
         jstr(&key.logical_key()),
         jstr(trace.order.order.label()),
         jstr(trace.order.status.label()),
+        trace
+            .name_match
+            .map_or_else(|| "null".to_owned(), |rule| jstr(rule.label())),
         result,
         trace_json(trace),
         export,
@@ -856,6 +866,65 @@ mod tests {
             Some(tree.0.clone().into_os_string()),
         );
         assert_eq!(from_env.exit_code, 0, "{:?}", from_env.diagnostics);
+    }
+
+    /// #714: the report carries the GOS name-matching rule beside the
+    /// deciding order — `null` for a key space where no chain states one,
+    /// the chain's rule for a GOS key — and the report version stays
+    /// `cs-inspect-resolve/2`, because the added field is additive:
+    /// `order`, `result` and `trace` are unchanged for existing consumers.
+    #[test]
+    fn accept_f04_d_gos_request_fold_rule_cli_report_carries_name_match() {
+        let tree = install();
+
+        let world = resolve_command_result(
+            &args(&[
+                "--cs-path",
+                path_arg(&tree.0),
+                "--world",
+                "zbd/C2",
+                "--asset",
+                "world:texture.zbd",
+            ]),
+            None,
+        );
+        assert_eq!(world.exit_code, 0, "{:?}", world.diagnostics);
+        let report = world.report.expect("the lookup ran");
+        assert!(
+            report.contains("\"report\": \"cs-inspect-resolve/2\""),
+            "{report}"
+        );
+        assert!(
+            report.contains("\"name_match\": null"),
+            "an installation-namespace key reports no chain-stated rule: {report}"
+        );
+
+        // A GOS key is decided by the GOS registration order, and the report
+        // names the rule its attempts answer under. This command mounts no
+        // GOS chain, so the rule is the session's documented default —
+        // reported, not assumed silently — and the key is not found because
+        // no GOS source is registered here.
+        let gos = resolve_command_result(
+            &args(&[
+                "--cs-path",
+                path_arg(&tree.0),
+                "--asset",
+                "gos:ASSETS/GRAPHICS/ARIAL8.TGA",
+            ]),
+            None,
+        );
+        assert_eq!(gos.exit_code, 3, "{:?}", gos.diagnostics);
+        let report = gos.report.expect("the trace is reported on failure");
+        assert!(
+            report
+                .contains("\"order\": {\"kind\": \"gos_registration\", \"status\": \"inferred\"}"),
+            "{report}"
+        );
+        assert!(
+            report.contains("\"name_match\": \"ascii_insensitive\""),
+            "{report}"
+        );
+        assert!(report.contains("\"status\": \"not_found\""), "{report}");
     }
 
     /// Retail: the installation mounts into one session with the designed

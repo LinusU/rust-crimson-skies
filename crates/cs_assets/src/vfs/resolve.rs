@@ -196,7 +196,9 @@ impl fmt::Display for ResolutionAttempt {
 ///
 /// A successful resolution and every failure kind carry the same trace, so
 /// a caller can always explain the answer — including *why* another
-/// world's mount did not serve this context.
+/// world's mount did not serve this context, and, for a GOS key, *which
+/// name-matching rule* ([`ResolutionTrace::name_match`]) each attempt was
+/// answered under.
 ///
 /// The attempts are ordered by [`ResolutionTrace::order`]: descending
 /// precedence with registration order as the tiebreak for
@@ -214,6 +216,17 @@ pub struct ResolutionTrace {
     /// `verified_original`: neither order was measured by running the
     /// original.
     pub order: LookupOrderStatus,
+    /// The GOS name-matching rule this lookup answered under, when the key
+    /// is a [`GOS_NAMESPACE`] key.
+    ///
+    /// The rule the chain stated ([`crate::vfs::gos::GosNameMatch`], one of
+    /// `ascii_insensitive`, `exact_spelling` or `request_uppercase` — the
+    /// last being the literal shape of `MetaOpenFile`'s own container rule,
+    /// #714), reported so a reader can see **which rule** turned each
+    /// attempt's outcome into a candidate or a miss. `None` for every other
+    /// key space: there the VFS's fixed ASCII fold applies and no chain
+    /// states a rule.
+    pub name_match: Option<GosNameMatch>,
 }
 
 impl fmt::Display for ResolutionTrace {
@@ -405,10 +418,15 @@ fn effective_rank(mount: &Mount, context: &ResolveContext) -> (u8, usize) {
 /// [`LookupOrder::Precedence`] sorts highest precedence first and breaks a
 /// tie by registration order; [`LookupOrder::GosRegistration`] sorts by
 /// registration order alone, because that is the whole rule.
+///
+/// `name_match` is the matching rule a GOS key answered under, or `None`
+/// when the lookup is not a GOS one (see
+/// [`ResolutionTrace::name_match`]).
 fn trace_of(
     mut considered: Vec<Considered<'_>>,
     selected: Option<usize>,
     order: LookupOrder,
+    name_match: Option<GosNameMatch>,
 ) -> ResolutionTrace {
     match order {
         LookupOrder::Precedence => considered.sort_by(|left, right| {
@@ -435,6 +453,7 @@ fn trace_of(
     ResolutionTrace {
         attempts,
         order: LookupOrderStatus::of(order),
+        name_match,
     }
 }
 
@@ -448,6 +467,7 @@ fn origin_of(mount: &Mount, key: &AssetKey, matching: GosNameMatch) -> ConflictO
     let member = match matching {
         GosNameMatch::AsciiInsensitive => mount.member(key),
         GosNameMatch::ExactSpelling => mount.member_spelled_exactly(key),
+        GosNameMatch::RequestUppercase => mount.member_request_uppercased(key),
     }
     .expect("a conflict origin is a mount that holds the key under the matching rule");
     ConflictOrigin {
@@ -593,6 +613,7 @@ impl Vfs {
         match matching {
             GosNameMatch::AsciiInsensitive => mount.member(key),
             GosNameMatch::ExactSpelling => mount.member_spelled_exactly(key),
+            GosNameMatch::RequestUppercase => mount.member_request_uppercased(key),
         }
     }
 
@@ -610,6 +631,10 @@ impl Vfs {
     ) -> Result<ResolvedAsset, ResolveError> {
         let order = LookupOrder::for_namespace(key.namespace());
         let matching = self.matching_for(key);
+        // The rule this lookup answers under is reported on the trace for a
+        // GOS key — the key space where a chain states it — and is absent
+        // everywhere else, where the VFS's fixed ASCII fold applies.
+        let name_match = (key.namespace().as_str() == GOS_NAMESPACE).then_some(matching);
         let mut considered: Vec<Considered<'_>> = Vec::new();
         for (index, mount) in self.mounts().enumerate() {
             if mount.namespace() != key.namespace() {
@@ -657,7 +682,7 @@ impl Vfs {
                             .iter()
                             .map(|index| origin_of(considered[*index].mount, key, matching))
                             .collect();
-                        let trace = trace_of(considered, None, order);
+                        let trace = trace_of(considered, None, order, name_match);
                         return Err(ResolveError::Ambiguous {
                             key: Box::new(key.clone()),
                             candidates,
@@ -681,7 +706,7 @@ impl Vfs {
             }
         };
 
-        let trace = trace_of(considered, selected, order);
+        let trace = trace_of(considered, selected, order, name_match);
         let Some(index) = selected else {
             return Err(ResolveError::NotFound {
                 key: Box::new(key.clone()),

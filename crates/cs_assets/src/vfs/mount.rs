@@ -486,7 +486,9 @@ impl Mount {
     /// while a stored name holding a lowercase letter could never be
     /// answered. This lookup is the exact-spelling candidate: it
     /// reports a member only when the two spellings are identical, so a
-    /// caller can offer both rules instead of assuming one.
+    /// caller can offer the matching rules it implements instead of assuming
+    /// one. The literal shape of the original's own rule is
+    /// [`Mount::member_request_uppercased`].
     ///
     /// The namespace and variant must match exactly, as in
     /// [`Mount::member`], so a key of another key space is never answered.
@@ -498,6 +500,36 @@ impl Mount {
         self.members
             .values()
             .find(|member| member.spelling().as_str() == asked)
+    }
+
+    /// The member serving `key` **only when its stored spelling equals the
+    /// request's spelling upper-cased**, byte for byte — separators and every
+    /// other byte included unchanged.
+    ///
+    /// This is `MetaOpenFile`'s own container rule, implemented literally
+    /// (#714; #693 settled it from addresses in `roffile.dll`,
+    /// `docs/findings/2026-10-06-t693-metaopenfile-name-matching.md`
+    /// section B): the requested name is upper-cased
+    /// (`0x10004be5` → `CharUpperA`) and compared byte for byte against the
+    /// name the container stores, which is inserted unfolded (`0x10005017`),
+    /// so `upper(request) == stored`. Two consequences are part of the rule,
+    /// not defects of it: a stored name holding a lowercase ASCII letter can
+    /// never be answered, and a stored ASCII-uppercase name answers under
+    /// every casing of the request. Only the request's case is folded —
+    /// separators compare as spelled, and non-ASCII bytes are left alone
+    /// (the finding records the ANSI-codepage behaviour of `CharUpperA` for
+    /// completeness; every retail GOS name measured is ASCII).
+    ///
+    /// The namespace and variant must match exactly, as in
+    /// [`Mount::member`], so a key of another key space is never answered.
+    pub fn member_request_uppercased(&self, key: &AssetKey) -> Option<&MemberRecord> {
+        if self.namespace != *key.namespace() || *key.variant() != AssetVariant::default() {
+            return None;
+        }
+        let uppercased = key.path().as_str().to_ascii_uppercase();
+        self.members
+            .values()
+            .find(|member| member.spelling().as_str() == uppercased)
     }
 }
 

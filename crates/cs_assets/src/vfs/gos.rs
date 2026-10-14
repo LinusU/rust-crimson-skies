@@ -56,8 +56,11 @@
 //!   loose tree's `ASSETS/GRAPHICS/arial8.tga` from the **container**, under
 //!   every casing of the request. It is still an explicit input
 //!   ([`GosNameMatch`]), with the case-insensitive fold as the documented
-//!   default, never assumed silently. `crimptch.rof` shadows `crimson.rof`
-//!   for `ASSETS/SCRIPTS/AIRFRAME.SCRIPT` under either rule, so that part of
+//!   default, never assumed silently; #714 added
+//!   [`GosNameMatch::RequestUppercase`] as the rule that implements that
+//!   shape literally (fold the request, leave the stored spelling alone).
+//!   `crimptch.rof` shadows `crimson.rof`
+//!   for `ASSETS/SCRIPTS/AIRFRAME.SCRIPT` under any rule, so that part of
 //!   the order does not depend on it.
 //!
 //! Mounting a chain reads the two containers and walks the loose directories
@@ -170,16 +173,17 @@ impl fmt::Display for GosSource {
 
 /// How a GOS request's name is matched against a registered source's names.
 ///
-/// Which of the original's two spellings of the same image a request gets
+/// Which of the original's spellings of the same image a request gets
 /// depends on this rule. #693 settled what the original does
 /// (`docs/findings/2026-10-06-t693-metaopenfile-name-matching.md`): it
 /// upper-cases the request and compares it byte for byte against the stored
-/// name, so a container whose names are all uppercase — this installation's,
-/// measured — is answered the way [`GosNameMatch::AsciiInsensitive`] answers
-/// it, and [`GosNameMatch::ExactSpelling`] is **not** what it does. The rule
-/// is still an explicit input rather than an assumption, so a caller states
-/// it and the rule it chose is recorded with the chain and reported on every
-/// lookup.
+/// name, which is never folded — the shape [`GosNameMatch::RequestUppercase`]
+/// implements literally. On this installation, where every name both
+/// containers store is ASCII-uppercase (measured there), that answers the
+/// same way [`GosNameMatch::AsciiInsensitive`] does on **case**, and
+/// [`GosNameMatch::ExactSpelling`] is **not** what it does. The rule is still
+/// an explicit input rather than an assumption, so a caller states it and the
+/// rule it chose is recorded with the chain and reported on every lookup.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum GosNameMatch {
     /// Fold ASCII case and separators, like every other legacy lookup in
@@ -195,6 +199,25 @@ pub enum GosNameMatch {
     /// A source answers only when its stored spelling equals the request's
     /// spelling byte for byte.
     ExactSpelling,
+    /// Upper-case the requested name, then compare it byte for byte against
+    /// the stored spelling, which is never folded: `upper(request) == stored`
+    /// — the literal shape of `MetaOpenFile`'s own container rule (#693,
+    /// `docs/findings/2026-10-06-t693-metaopenfile-name-matching.md`
+    /// section B, the `CharUpperA` call at `0x10004be5` over an index built
+    /// unfolded at `0x10005017`).
+    ///
+    /// Both consequences of that shape follow here as they do in the
+    /// original: a stored name holding a lowercase ASCII letter can never be
+    /// answered, because no request can upper-case into it; and a stored
+    /// name that is already ASCII-uppercase answers under every casing of the
+    /// request. Only the request's **case** is folded — separators are
+    /// compared as spelled, exactly as under
+    /// [`GosNameMatch::ExactSpelling`], because how a caller spells `\` or
+    /// `/` is the request side of the finding and stays runtime-unsettled;
+    /// non-ASCII bytes are left alone rather than folded per an ANSI
+    /// codepage, which the finding records for completeness only (every
+    /// retail GOS name measured is ASCII).
+    RequestUppercase,
 }
 
 impl GosNameMatch {
@@ -203,13 +226,18 @@ impl GosNameMatch {
         match self {
             Self::AsciiInsensitive => "ascii_insensitive",
             Self::ExactSpelling => "exact_spelling",
+            Self::RequestUppercase => "request_uppercase",
         }
     }
 
-    /// Whether this rule folds case and separators.
+    /// Whether this rule folds case at all: both sides for
+    /// [`GosNameMatch::AsciiInsensitive`], the request only for
+    /// [`GosNameMatch::RequestUppercase`], neither side for
+    /// [`GosNameMatch::ExactSpelling`]. No rule folds separators except
+    /// [`GosNameMatch::AsciiInsensitive`].
     pub const fn folds(self) -> bool {
         match self {
-            Self::AsciiInsensitive => true,
+            Self::AsciiInsensitive | Self::RequestUppercase => true,
             Self::ExactSpelling => false,
         }
     }
