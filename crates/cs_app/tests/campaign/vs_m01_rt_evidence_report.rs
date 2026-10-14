@@ -329,7 +329,7 @@ fn accept_vs_m01_runtime_evidence_report_writes_the_acceptance_report() {
     println!("wrote {}", evidence_dir.join("acceptance.json").display());
 }
 
-fn workspace_path(as_described: &str) -> PathBuf {
+pub(crate) fn workspace_path(as_described: &str) -> PathBuf {
     let path = PathBuf::from(as_described);
     if path.is_absolute() {
         return path;
@@ -337,7 +337,7 @@ fn workspace_path(as_described: &str) -> PathBuf {
     Path::new(&git(&["rev-parse", "--show-toplevel"])).join(path)
 }
 
-fn git(args: &[&str]) -> String {
+pub(crate) fn git(args: &[&str]) -> String {
     let output = Command::new("git").args(args).output().expect("git runs");
     assert!(
         output.status.success(),
@@ -347,7 +347,7 @@ fn git(args: &[&str]) -> String {
     String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
-fn rustc_version() -> String {
+pub(crate) fn rustc_version() -> String {
     let output = Command::new("rustc")
         .arg("--version")
         .output()
@@ -358,7 +358,7 @@ fn rustc_version() -> String {
 
 /// The locked version of one `Cargo.lock` package: read, never asserted from
 /// memory.
-fn locked_version(package: &str) -> String {
+pub(crate) fn locked_version(package: &str) -> String {
     let lock_path = Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
         .expect("crates/")
@@ -385,7 +385,7 @@ fn locked_version(package: &str) -> String {
 
 /// A JSON string literal: quoted and escaped, so no report field can break
 /// out of its string.
-fn jstr(value: &str) -> String {
+pub(crate) fn jstr(value: &str) -> String {
     let mut out = String::with_capacity(value.len() + 2);
     out.push('"');
     for character in value.chars() {
@@ -407,7 +407,7 @@ fn jstr(value: &str) -> String {
 
 /// RFC 3339 with whole seconds and `Z`, which `datetime.fromisoformat`
 /// accepts after the validator's `Z` → `+00:00` replacement.
-fn iso_utc_now() -> String {
+pub(crate) fn iso_utc_now() -> String {
     let epoch = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .expect("the system clock is after 1970")

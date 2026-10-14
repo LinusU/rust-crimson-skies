@@ -282,6 +282,10 @@ pub(crate) fn synthetic_stage(scratch: &Path) -> MissionStage {
         // from: the player body spawns without a visual, as it did before
         // #1216.
         player_aircraft: None,
+        // No installation to read the world's stored materials from either:
+        // the world's geometry is loaded without being drawn, and
+        // `MissionWorldParts` stays empty.
+        world_draw: None,
         // No installation, no sound archive: the synthetic stage installs no audio.
         launch_sound: None,
         label: "SYNTHETIC MISSION COMPOSITION".to_owned(),
