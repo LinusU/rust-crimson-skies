@@ -37,6 +37,18 @@
 //!   whether the original engine collided with it. The retail half asserts the
 //!   split per container, the per-object consequences on the definition, and
 //!   the spawn report the split produces.
+//! * **The prose that describes those claims says what the record says**
+//!   (task #719, `F16-E-2`). Three sources state the convention and the split
+//!   in words: this suite's subjects' own docs (`cs_app`'s world-import
+//!   module, `cs_content`'s `WORLD_UNIT_UNMEASURED`), the M01-LC
+//!   world-unit-roles evidence harness's `review.method` template, and through
+//!   it the committed report. F16-E (#390) measured the axis map, handedness
+//!   and angle unit by static analysis of the decrypted image, and #716
+//!   resolved the `fvol*` half of the split, so a source that still called
+//!   those quantities "declared" or the fog volumes an "explicit unknown"
+//!   would describe a state the repository no longer has. The non-retail test
+//!   below reads those sources at compile time and fails when the sync is
+//!   reverted; no assertion, gap list or claim class changes with the wording.
 //!
 //! **What this file does not claim.** `retail` is file access: every number
 //! here was read out of the owner's bytes by the production readers, and no
@@ -877,4 +889,97 @@ fn accept_m01_lc_world_unit_roles_the_c1c_spawn_reports_the_measured_split() {
          `None` is not a skip"
     );
     assert_eq!(spawned.presentation_gap_count(), 0);
+}
+
+/// **The prose this suite's claims rest on describes the measured record, not
+/// the pre-F16-E one** (task #719, `F16-E-2`).
+///
+/// Three sources state the GameZ convention and the unindexed split in words:
+/// the world-import module's docs, `cs_content`'s `WORLD_UNIT_UNMEASURED` doc,
+/// and the evidence harness's `review.method` template (which the committed
+/// `docs/findings/evidence/M01-LC-WORLD-UNIT-ROLES.json` is generated from).
+/// Each was written when the axis map, handedness and angle unit were
+/// "declared"/"unmeasured" and the `fvol*` half of the split was an explicit
+/// unknown. F16-E (#390) measured those quantities by static analysis of the
+/// decrypted image and #716 resolved the `fvol*` records as fog volumes, so
+/// the wording is synced here — and pinned, so reverting it fails: no
+/// assertion, gap list or claim class is involved, only whether the sentences
+/// still say what the repository's own record says.
+#[test]
+fn accept_m01_lc_world_unit_roles_the_synced_prose_matches_the_measured_record() {
+    const WORLD_IMPORT_RS: &str = include_str!("../src/world/retail.rs");
+    const WORLD_RS: &str = include_str!("../../cs_content/src/world.rs");
+    const HARNESS_RS: &str = include_str!("evidence_report_m01_lc_world_unit_roles.rs");
+
+    // crates/cs_app/src/world/retail.rs: retail_gamez's other quantities are
+    // measured by static analysis, each gap kept only for the missing
+    // behavior landmark — never "stay declared".
+    assert!(
+        !WORLD_IMPORT_RS.contains("its other quantities stay declared"),
+        "crates/cs_app/src/world/retail.rs must not say retail_gamez's other \
+         quantities stay declared: F16-E (#390) measured them"
+    );
+    assert!(
+        WORLD_IMPORT_RS.contains("measured by static")
+            && WORLD_IMPORT_RS.contains("task F16-E, #390")
+            && WORLD_IMPORT_RS.contains("(#358)"),
+        "crates/cs_app/src/world/retail.rs must state that the axis map, \
+         handedness and angle unit are measured by static analysis (F16-E, \
+         #390) and that the behavior landmark (#358) is what the gap waits on"
+    );
+
+    // crates/cs_content/src/world.rs: WORLD_UNIT_UNMEASURED's doc names both
+    // measurements and the one thing still missing.
+    assert!(
+        !WORLD_RS.contains("What remains unmeasured under this claim is the rest"),
+        "crates/cs_content/src/world.rs must not call the rest of the \
+         convention unmeasured: the axis convention is measured too"
+    );
+    assert!(
+        WORLD_RS.contains("REF-OWNER-FIRST-CAPTURE")
+            && WORLD_RS.contains("not because no landmark exists"),
+        "crates/cs_content/src/world.rs must state that each quantity is a \
+         gap only for want of its behavior landmark (#358, \
+         REF-OWNER-FIRST-CAPTURE), not for want of a landmark"
+    );
+
+    // The evidence harness's review.method template: the quantities are
+    // measured (artifact landmarks, observed_tool at best); the fvol* half of
+    // the split resolves as fog volumes under FOG_VOLUME_RECORD_NEVER_BLOCKS;
+    // the c1c spawn reports no unknown_collision_role; the convention is
+    // never "declared, not measured".
+    assert!(
+        !HARNESS_RS.contains("handedness and angle unit are unmeasured"),
+        "the review.method template must not call the axis map, handedness \
+         and angle unit unmeasured"
+    );
+    assert!(
+        !HARNESS_RS.contains("the container never says whether the"),
+        "the review.method template must not describe the fvol* volumes as \
+         an unresolved unknown: #716 measured their consumer"
+    );
+    assert!(
+        !HARNESS_RS.contains("volumes report unknown_collision_role"),
+        "the review.method template must not report unknown_collision_role \
+         for the volumes: c1c's spawn reports none"
+    );
+    assert!(
+        !HARNESS_RS.contains("decoration is still unmeasured"),
+        "the review.method template must not leave the fvol* volumes' role \
+         unmeasured: they are fog volumes (#716)"
+    );
+    assert!(
+        !HARNESS_RS.contains("are declared, not measured"),
+        "the review.method template must not call the GameZ convention \
+         declared: F16-E (#390) measured it by static analysis"
+    );
+    assert!(
+        HARNESS_RS.contains("FOG_VOLUME_RECORD_NEVER_BLOCKS")
+            && HARNESS_RS.contains("axis_class accessor reports")
+            && HARNESS_RS.contains("(#358, REF-OWNER-FIRST-CAPTURE)")
+            && HARNESS_RS.contains("objects_unindexed_fog"),
+        "the review.method template must name the fog-volume resolution \
+         (#716), the axis_class accessor and the missing behavior landmark, \
+         and the census must record the fog class"
+    );
 }

@@ -5073,12 +5073,17 @@ pub const INTERSECTION_QUERY_GAMEPLAY_CONSUMER_UNMEASURED: &str =
 /// ([`crate::coordinates::GAMEZ_VERTEX_UNIT_IS_THE_METRE`], at
 /// `observed_tool`). The **axis convention** is measured too, by static
 /// analysis of the owner-supplied decrypted image (task #436's owner note of
-/// 2026-10-05): identity axis map, `+Y` up, right-handed, radians in GameZ
-/// binaries — see [`WORLD_AXIS_CONVENTION_MEASURED`], which is what the import
+/// 2026-10-05, whose artifact landmarks F16-E, #390, recorded on
+/// [`crate::coordinates::CoordinateSource::retail_gamez`]'s calibration):
+/// identity axis map, `+Y` up, right-handed, radians in GameZ binaries — see
+/// [`WORLD_AXIS_CONVENTION_MEASURED`], which is what the import
 /// reports through [`WorldImportReport::axis_class`] for the quantities this
 /// conversion applies. The container family itself still stores no handedness,
 /// axis-order or angle-unit declaration anyone has tied to an original
-/// behavior: both measurements are code-derived, never observed in a run. The
+/// behavior: both measurements are code-derived at `observed_tool` at best,
+/// never observed in a run, so the calibration reports each of those
+/// quantities as a gap only for want of its behavior landmark (#358,
+/// REF-OWNER-FIRST-CAPTURE) — not because no landmark exists. The
 /// import takes its conversion from the caller's [`SourceAdapter`] and reports
 /// the factor it used, the axis map it applied and each quantity's own
 /// evidence class, so a consumer always knows which numbers turned stored

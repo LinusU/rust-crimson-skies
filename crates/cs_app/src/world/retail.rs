@@ -452,9 +452,14 @@ impl RetailWorldContainer {
     /// This module never supplies one of its own: for the retail container the
     /// measured choice is
     /// [`CoordinateSource::retail_gamez`](cs_content::coordinates::CoordinateSource::retail_gamez),
-    /// whose scale is pinned to the metre by task #677's landmark census while
-    /// its other quantities stay declared. Whatever the caller passes, the
-    /// factor and its own evidence class travel on the returned
+    /// whose scale is pinned to the metre by task #677's landmark census and
+    /// whose axis map, handedness and angle unit are measured by static
+    /// analysis of the owner-supplied decrypted image (task F16-E, #390):
+    /// artifact landmarks at `observed_tool` at best, each of those quantities
+    /// keeping a gap only because no behavior landmark exists until an
+    /// original run supplies one (#358) — no landmark is missing. Whatever the
+    /// caller passes, the factor and its own evidence class travel on the
+    /// returned
     /// [`WorldImportReport`](cs_content::world::WorldImportReport).
     pub fn definition(
         &self,

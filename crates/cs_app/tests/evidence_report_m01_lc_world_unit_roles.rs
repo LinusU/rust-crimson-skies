@@ -50,7 +50,7 @@ const ACCEPTANCE_PREFIX: &str = "accept_m01_lc_world_unit_roles_";
 /// The prose is a template: the counts are interpolated from the production
 /// imports rather than written down, so a report regenerated on another
 /// installation cannot describe this one's numbers.
-fn review_method(imported: usize, tests: usize) -> String {
+fn review_method(census: &CensusTotals, tests: usize) -> String {
     format!(
         "Acceptance suite run locally with the retail capability; this harness derives every field \
          from the recorded log, production discovery of $CS_GAME_DIR, and a second production run \
@@ -58,34 +58,49 @@ fn review_method(imported: usize, tests: usize) -> String {
          Claim is implemented only. MEASURED: (a) the GameZ stored-vertex unit — the landmark \
          census recorded on CoordinateSource::retail_gamez's own calibration, re-observed here, \
          pins the scale quantity to one stored unit per metre at observed_tool: all 61 animation \
-         containers store the f32 -9.8 gravity word, the pilot-figure and airframe subtrees measure \
-         their known real-world sizes only at the metre, the LOD switch bands read as metres, and \
-         the world bounds corroborate; the axis map, handedness and angle unit are unmeasured and \
-         the source's gap list says so, so no whole-convention claim is made and nothing is \
-         verified_original. (b) the unindexed-record split — over all {imported} world containers, \
-         every record the partition grid omits stores either a mesh index and a non-zero bounding \
-         box or neither of them; the no-geometry half resolves to WorldCollisionRole::None \
-         (UNINDEXED_RECORD_STORES_NO_GEOMETRY, the store gives the record nothing a collider could \
-         be built from) and the geometry-bearing half keeps an explicit unknown \
-         (UNINDEXED_ROLE_UNMEASURED, the container never says whether the engine collided with the \
-         fvol* volumes). The spawn's own report was checked: anchors are presented and never block \
-         and are not skips, volumes report unknown_collision_role, and no substitute geometry was \
-         introduced. LIMITS OF WHAT WAS MEASURED, each recorded in \
+         containers store the f32 -9.8 gravity word, the pilot-figure and airframe subtrees \
+         measure their known real-world sizes only at the metre, the LOD switch bands read as \
+         metres, and the world bounds corroborate; the axis map, handedness and angle unit are \
+         measured too, by static analysis of the owner-supplied decrypted image (F16-E #390's \
+         artifact landmarks, observed_tool evidence at best), and the source's gap list still \
+         names them because each lacks the one behavior landmark that would close it — an \
+         original run (#358, REF-OWNER-FIRST-CAPTURE) — so no whole-convention claim is made and \
+         nothing is verified_original. (b) the unindexed-record split — over all {containers} \
+         world containers, every record the partition grid omits stores either a mesh index and \
+         a non-zero bounding box or neither of them; the no-geometry half resolves to \
+         WorldCollisionRole::None (UNINDEXED_RECORD_STORES_NO_GEOMETRY, the store gives the \
+         record nothing a collider could be built from), the {fog} records carrying the measured \
+         fvol* prefix resolve to WorldCollisionRole::None as fog volumes \
+         (FOG_VOLUME_RECORD_NEVER_BLOCKS, the image's only name-keyed consumer is the fog \
+         system, task #716), and the remaining {unresolved} geometry-bearing records, which no \
+         measured prefix names, keep an explicit unknown (UNINDEXED_ROLE_UNMEASURED). The \
+         spawn's own report was checked: anchors and fog volumes are presented and never block \
+         and are not skips, no substitute geometry was introduced, and c1c's spawn reports no \
+         unknown_collision_role at all. LIMITS OF WHAT WAS MEASURED, each recorded in \
          docs/findings/2026-10-05-m01-lc-world-unit-roles.md: (1) retail is file access — no \
          original executable ran, so the metre claim is a byte census, not an observation of \
          original behaviour, and it never reaches verified_original without fingerprinted \
-         original-run evidence; (2) the None resolution is about the record's OWN stored geometry \
-         only — the content parked under an anchor (the airship a *zep record parents, the \
-         instances a g* group scatters) is other records' business and is measured by the actor \
-         and animation surfaces, not here; (3) which fvol* volumes are sensors, triggers or \
-         decoration is still unmeasured and stays an explicit unknown — M01's mission data names \
-         none of them; (4) the axis map, handedness, angle unit, rotation sense and front-face \
-         rule of the GameZ convention are declared, not measured — the world import's \
-         unit_class accessor reports the scale quantity's class only. `unknowns` is empty because \
-         every unresolved item above is a limit on the claim rather than an unresolved \
-         measurement: every container imported, every unindexed record classified by its own \
-         stored fields. The {tests} assertions discovered under this task's own prefix are the \
-         tests of this report. Validated with tools/validate_evidence.py --require-pass.",
+         original-run evidence; (2) the None resolution is about each record's OWN stored \
+         geometry and measured consumer only — the content parked under an anchor (the airship \
+         a *zep record parents, the instances a g* group scatters) is other records' business \
+         and is measured by the actor and animation surfaces, not here; (3) the {fog} fvol* \
+         volumes resolve as fog volumes from their measured consumer (#716); whether the 2000 \
+         engine ever intersected a fog box, which of them a script can still switch at run time, \
+         and which gameplay query the candidate walk serves remain unmeasured (#771, #358) — \
+         M01's mission data names none of them; (4) the axis map, handedness, angle unit, \
+         rotation sense and front-face rule of the GameZ convention are measured by static \
+         analysis of the decrypted image (#436's owner note, F16-E #390), at observed_tool and \
+         never verified_original — the world import's unit_class accessor reports the scale \
+         quantity's class only and its axis_class accessor reports the applied axis map's. \
+         `unknowns` is empty because every unresolved item above is a limit on the claim rather \
+         than an unresolved measurement: every container imported, every unindexed record \
+         classified by its own stored fields. The {tests} assertions discovered under this \
+         task's own prefix are the tests of this report. Validated with \
+         tools/validate_evidence.py --require-pass.",
+        containers = census.containers,
+        fog = census.fog,
+        unresolved = census.unresolved,
+        tests = tests,
     )
 }
 
@@ -134,7 +149,7 @@ fn evidence_report_m01_lc_world_unit_roles_writes_the_acceptance_report() {
     let census_path = evidence_dir.join("world-unit-roles-census.json");
     let census = render_census(&game_dir, &install_sha256, &candidate_tree, &census_path);
     assert!(
-        census > 0,
+        census.containers > 0,
         "the report must not be written over an empty census"
     );
 
@@ -165,7 +180,7 @@ fn evidence_report_m01_lc_world_unit_roles_writes_the_acceptance_report() {
         assertion_array(&suite.assertions),
         artifact_array(&artifacts),
         jstr(&reviewer),
-        jstr(&review_method(census, suite.discovered as usize)),
+        jstr(&review_method(&census, suite.discovered as usize)),
     );
     let out = evidence_dir.join("acceptance.json");
     fs::write(&out, &report).expect("write acceptance.json");
@@ -181,17 +196,18 @@ fn evidence_report_m01_lc_world_unit_roles_writes_the_acceptance_report() {
 /// through the measured GameZ source and record what the import reports —
 /// counts, digests and claim labels, no original bytes.
 ///
-/// Returns how many containers imported, and writes the census JSON.
+/// Returns the totals the review prose interpolates, and writes the census
+/// JSON.
 fn render_census(
     game_dir: &Path,
     install_sha256: &str,
     candidate_tree: &str,
     path: &Path,
-) -> usize {
+) -> CensusTotals {
     let found =
         read_world_containers(game_dir).expect("production world-container discovery reads");
     let mut groups: Vec<String> = Vec::new();
-    let mut imported = 0usize;
+    let mut totals = CensusTotals::default();
     for group in found.groups() {
         let container = found
             .container(&group, &WorldTextureLoad::project_default())
@@ -208,13 +224,15 @@ fn render_census(
                 panic!("{}: the container imports: {error}", container.group())
             });
         let report = imported_world.report();
-        imported += 1;
+        totals.containers += 1;
+        totals.fog += report.objects_unindexed_fog();
+        totals.unresolved += report.objects_unindexed_unresolved();
         groups.push(format!(
             "{{\"group\": {}, \"container\": {}, \"container_sha256\": {}, \"objects\": {}, \
              \"stored_child_list\": {}, \"objects_solid\": {}, \"objects_unindexed_none\": {}, \
-             \"objects_unindexed_unresolved\": {}, \"objects_resident\": {}, \"sectors\": {}, \
-             \"sectors_without_extent\": {}, \"empty_cells\": {}, \"meters_per_unit\": {}, \
-             \"unit_class\": {}}}",
+             \"objects_unindexed_fog\": {}, \"objects_unindexed_unresolved\": {}, \
+             \"objects_resident\": {}, \"sectors\": {}, \"sectors_without_extent\": {}, \
+             \"empty_cells\": {}, \"meters_per_unit\": {}, \"unit_class\": {}}}",
             jstr(container.group()),
             jstr(container.container_key()),
             jstr(container.container_sha256()),
@@ -222,6 +240,7 @@ fn render_census(
             report.stored_child_list(),
             report.objects_solid(),
             report.objects_unindexed_none(),
+            report.objects_unindexed_fog(),
             report.objects_unindexed_unresolved(),
             report.objects_resident(),
             report.sectors(),
@@ -277,11 +296,14 @@ fn render_census(
         path,
         format!(
             "{{\n \"install_sha256\": {},\n \"candidate_tree\": {},\n \"containers\": {},\n \
-             \"measured_source\": {{\"label\": {}, \"claim_status\": {}, \"complete\": {}, \
-             \"quantities\": [{}], \"gaps\": [{}]}},\n \"groups\": [{}]\n}}\n",
+             \"unindexed_fog\": {},\n \"unindexed_unresolved\": {},\n \"measured_source\": \
+             {{\"label\": {}, \"claim_status\": {}, \"complete\": {}, \"quantities\": [{}], \
+             \"gaps\": [{}]}},\n \"groups\": [{}]\n}}\n",
             jstr(install_sha256),
             jstr(candidate_tree),
-            imported,
+            totals.containers,
+            totals.fog,
+            totals.unresolved,
             jstr(source.label()),
             jstr(calibration.claim_status().label()),
             calibration.is_complete(),
@@ -291,7 +313,17 @@ fn render_census(
         ),
     )
     .expect("write world-unit-roles-census.json");
-    imported
+    totals
+}
+
+/// The census totals the review prose interpolates instead of writing down:
+/// how many world containers imported, and how the unindexed records split
+/// into the measured fog-volume class and the still-unknown class.
+#[derive(Default)]
+struct CensusTotals {
+    containers: usize,
+    fog: usize,
+    unresolved: usize,
 }
 
 /// The conversion the census imports through: the measured GameZ source over
