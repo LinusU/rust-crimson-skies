@@ -624,6 +624,8 @@ reading the generated code rather than the diff, which is why the first
 - **Front-face winding and handedness.** Still unknown (F10-A). The reader stores
   the corners in stored order and lets `RawMesh::topology` keep the stored
   winding; nothing here says which winding the original engine treated as front.
+  *(Resolved 2026-10-14 by #396 from owner evidence `OWNER-STATIC-2026-10-05`:
+  CCW front, see `2026-10-14-f10-d-2-front-face-winding-and-culling.md`.)*
 - **How the original renderer handled n-gons.** Nine of the 129 933 stored
   polygons in the corpus are outlines this triangulator refuses (1 in C4, 8 in
   C5, 0 elsewhere), and the reader counts them as unsupported rather than
