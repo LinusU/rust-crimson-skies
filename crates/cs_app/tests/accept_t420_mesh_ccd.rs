@@ -61,6 +61,7 @@ use cs_app::asset_stack::{
     spawn_static_mesh_collider_on_body,
 };
 use cs_app::physics::{BASELINE_FIXED_HZ, PhysicsAdapterPlugin};
+use cs_app::render::bevy_mesh::ColliderMesh;
 use cs_app::world::{ProbeSpec, spawn_discrete_probe, spawn_swept_probe, static_world_layers};
 use cs_sim::collision::{CollisionLayer, CollisionLayers};
 
@@ -126,6 +127,25 @@ fn wall_mesh() -> Mesh {
     mesh
 }
 
+/// The wall's collision view: the same eight corners and four triangles
+/// [`wall_mesh`] draws, stated as the pair a mesh-derived collider is built
+/// from (task #1424).
+fn wall_collision() -> ColliderMesh {
+    ColliderMesh::new(
+        vec![
+            [-0.5_f32, 0.0, -2.0],
+            [-0.5, 4.0, -2.0],
+            [-0.5, 4.0, 2.0],
+            [-0.5, 0.0, 2.0],
+            [0.5, 0.0, -2.0],
+            [0.5, 4.0, -2.0],
+            [0.5, 4.0, 2.0],
+            [0.5, 0.0, 2.0],
+        ],
+        vec![[0, 2, 1], [0, 3, 2], [4, 5, 6], [4, 6, 7]],
+    )
+}
+
 /// The wall as raw collider geometry, for the arms that do not derive from a
 /// `Mesh` asset.
 fn wall_trimesh_collider() -> Collider {
@@ -152,11 +172,13 @@ fn wall_cuboid_collider() -> Collider {
 
 /// The decided shipping layout, through the production helper world import
 /// uses: one entity is the static body *and* the mesh node, so the collider
-/// `TrimeshFromMesh` derives lands on the body itself and swept CCD sees it.
+/// the mesh's collision view derives lands on the body itself and swept CCD
+/// sees it.
 fn wall_mesh_on_body(app: &mut App) -> Entity {
     spawn_static_mesh_collider_on_body(
         app,
         wall_mesh(),
+        wall_collision(),
         Transform::from_xyz(0.0, 0.0, 0.0),
         CollisionLayers::from(CollisionLayer::StaticWorld),
     )

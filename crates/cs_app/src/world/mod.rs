@@ -26,10 +26,11 @@
 //!   and stamped with the same [`contacts::WorldObjectBinding`], so visual and
 //!   collision cannot drift apart (F18 non-negotiable behavior 1). A `FromMesh`
 //!   object is presented and collided by **one** node holding one `Mesh3d`
-//!   handle, which Avian derives a `TrimeshFromMesh` collider from — and that
+//!   handle, whose collider is built from that mesh's own canonical collision
+//!   view rather than from the drawn index buffer (task #1424) — and that
 //!   handle is the **shared** one in [`spawn::WorldMeshAssets`], so every record
-//!   naming a given mesh presents and collides from a single engine asset rather
-//!   than one copy per object. No hull, no
+//!   naming a given mesh presents from a single engine asset and collides from a
+//!   single stored triangulation, rather than one copy per object. No hull, no
 //!   bounding box, no decimation, so a traversable opening cannot be closed by a
 //!   simplification this stage never made. That node is also the static rigid
 //!   body, so the derived collider lands on the body entity itself and the

@@ -80,9 +80,12 @@
 //!   F00 `SYNTHETIC` scene asset-free in the sense F00 non-negotiable behavior 2
 //!   means (see [`crate::synthetic`]).
 //! * **It picks no geometry.** [`spawn_static_mesh_collider_on_body`] takes the
-//!   mesh and the transform it is given. Whether an original mesh is simplified,
-//!   and how, is F18-B's decision under F18 non-negotiable behavior 1; nothing
-//!   here may pre-empt it by, say, convex-hulling a shape.
+//!   mesh, the collision view and the transform it is given. Whether an
+//!   original mesh is simplified, and how, is F18-B's decision under F18
+//!   non-negotiable behavior 1; nothing here may pre-empt it by, say,
+//!   convex-hulling a shape — and nothing here chooses *which* triangles
+//!   either: [`ColliderMesh`] is the caller's, built by the content pipeline
+//!   from the same stored mesh the drawn [`Mesh`] was (task #1424).
 //! * **It invents no collision semantics.** The layer membership is the
 //!   caller's [`cs_sim::collision::CollisionLayers`], mapped by the one
 //!   conversion the workspace already owns.
@@ -104,7 +107,8 @@ use bevy::tasks::IoTaskPool;
 use bevy::world_serialization::WorldSerializationPlugin;
 use cs_sim::collision::CollisionLayers;
 
-use crate::world::spawn::avian_layers;
+use crate::render::bevy_mesh::ColliderMesh;
+use crate::world::spawn::{avian_layers, mesh_collider_constructor};
 
 /// Installs the Bevy asset stack Avian's mesh-derived colliders require.
 ///
@@ -353,6 +357,19 @@ pub fn undeclared_swept_invisible_bodies(world: &mut World) -> Vec<SweptInvisibl
 /// is [`spawn_static_mesh_collider_on_body`]. Task #424 made that split
 /// explicit after task #420 measured the two layouts against each other.
 ///
+/// **This layout still derives from the drawn [`Mesh3d`].** It is the one
+/// place in `cs_app` that does: `ColliderConstructorHierarchy` builds one
+/// constructor per descendant from that descendant's own mesh handle, and it
+/// has no per-descendant form that carries an explicit triangle list, so the
+/// collision view cannot be threaded through it without replacing the
+/// hierarchy constructor outright. It is therefore not a world-geometry path —
+/// its body is [`SweptInvisible`], a swept body passes through it at any speed
+/// above the discrete sampling rate, and the F18-B world import does not use
+/// it — and task #1424's fix covers the paths a body is actually stopped by:
+/// [`spawn_static_mesh_collider_on_body`] and `crate::world::spawn`. If a
+/// caller ever needs a swept-eligible hierarchy body, that is a new task, not
+/// a silent extension of this one.
+///
 /// # Panics
 ///
 /// If `app` was not built by [`headless_app`] (or otherwise given
@@ -399,19 +416,32 @@ pub fn spawn_static_mesh_collider(
 /// This is the layout the collider-on-body rule asks for, and the one world
 /// geometry uses (`crate::world::spawn`). Compared with
 /// [`spawn_static_mesh_collider`] it is a strict reduction of the same thing:
-/// same upload, same `ColliderConstructor::TrimeshFromMesh`, same every stored
-/// triangle, same layer membership, same `transform` — one entity instead of a
-/// body and a child. Nothing about the geometry changes; only where the
-/// `Collider` component lands does.
+/// same upload, same layer membership, same `transform`, one entity instead of
+/// a body and a child. Only **which triangles** the collider is built from is
+/// the caller's second argument: `collision` is the mesh's collision view
+/// ([`ColliderMesh`]), so this helper no longer derives the collider from the
+/// drawn index buffer (task #1424).
 ///
-/// The difference is that Avian's `init_collider_constructors` inserts the
-/// derived collider **on the entity that holds the `ColliderConstructor`**, and
-/// that entity is the body, so `SweptCcdBodyQuery` can resolve the body and a
-/// swept body is stopped by the mesh instead of passing through it. Measured:
-/// the production 400 m/s `SweptCcd` probe (3.33 m of travel per tick against
-/// a 1 m wall) is clamped at the wall's near face with all four stored triangles
-/// in the collider, where the child-node layout tunnels with an empty contact
-/// log. See "The collider-on-body rule" in the module docs and
+/// `mesh` is what the entity presents from and `collision` is what a body is
+/// stopped by, and the two are deliberately allowed to index different
+/// triangles: the drawn buffer is the original's measured `D3DPT_TRIANGLEFAN`
+/// outline fanned from corner 0 — the folding of which is exactly what parry's
+/// `Triangle::local_support_point` tie-break turns into a phantom time of
+/// impact — while the collision view is `RawMesh::topology()`, the
+/// `cs_formats`-documented collision view. Both are handed in together so a
+/// caller cannot present one mesh and collide another; the provenance is the
+/// [`crate::render::bevy_mesh`] adapter that produced both from the same
+/// `cs_content::mesh::RenderMesh`.
+///
+/// The difference from [`spawn_static_mesh_collider`] is that Avian's
+/// `init_collider_constructors` inserts the derived collider **on the entity
+/// that holds the `ColliderConstructor`**, and that entity is the body, so
+/// `SweptCcdBodyQuery` can resolve the body and a swept body is stopped by the
+/// mesh instead of passing through it. Measured: the production 400 m/s
+/// `SweptCcd` probe (3.33 m of travel per tick against a 1 m wall) is clamped
+/// at the wall's near face with all four stored triangles in the collider,
+/// where the child-node layout tunnels with an empty contact log. See "The
+/// collider-on-body rule" in the module docs and
 /// `docs/findings/2026-09-30-t420-mesh-ccd-decision.md`.
 ///
 /// The entity returned is the presentation *and* the collider *and* the body,
@@ -424,18 +454,28 @@ pub fn spawn_static_mesh_collider(
 ///
 /// If `app` was not built by [`headless_app`] (or otherwise given
 /// [`AssetStackPlugin`]), because there is then no `Assets<Mesh>` to add to.
+///
+/// If `collision` carries no triangle: Avian's explicit triangle-mesh
+/// constructors panic on an empty index buffer. `crate::world::spawn` checks
+/// this before it spawns and reports
+/// [`SkipReason::CollisionTopologyUnavailable`](crate::world::SkipReason::CollisionTopologyUnavailable)
+/// instead (task #1424); a caller of this helper has to do the same, because
+/// this function reports nothing.
 #[must_use]
 pub fn spawn_static_mesh_collider_on_body(
     app: &mut App,
     mesh: Mesh,
+    collision: ColliderMesh,
     transform: Transform,
     membership: CollisionLayers,
 ) -> Entity {
     let handle: Handle<Mesh> = app.world_mut().resource_mut::<Assets<Mesh>>().add(mesh);
 
-    // `ColliderConstructor::TrimeshFromMesh` needs the `Mesh3d` it derives from
-    // on the *same* entity, which is why the body, the presentation and the
-    // constructor are one entity here rather than a body with a child node.
+    // The constructor carries the mesh's own collision view, so it needs no
+    // `Mesh3d` to derive from; the handle beside it is the presentation, and
+    // the body, the presentation and the constructor are one entity because
+    // that is the collider-on-body rule rather than because they share an
+    // index buffer.
     //
     // The layers go on the entity rather than through
     // `ColliderConstructorHierarchy::with_default_layers`, which the hierarchy
@@ -445,7 +485,7 @@ pub fn spawn_static_mesh_collider_on_body(
         .spawn((
             RigidBody::Static,
             Mesh3d(handle),
-            ColliderConstructor::TrimeshFromMesh,
+            mesh_collider_constructor(&collision),
             avian_layers(membership),
             transform,
             Position(transform.translation),

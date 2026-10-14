@@ -77,6 +77,7 @@ use cs_app::asset_stack::{
     spawn_static_mesh_collider_on_body, swept_invisible_bodies, undeclared_swept_invisible_bodies,
 };
 use cs_app::physics::{BASELINE_FIXED_HZ, BodyMode, BodySpec, PhysicsAdapterPlugin, spawn_body};
+use cs_app::render::bevy_mesh::ColliderMesh;
 use cs_app::world::{
     HARBOR_OBJECT_ABSENT, HARBOR_OBJECT_BANNER, HARBOR_OBJECT_GROUND, HARBOR_OBJECT_HANGAR,
     HARBOR_OBJECT_SENSOR, HARBOR_OBJECT_WATER, ProbeSpec, harbor_meshes, harbor_world, load_world,
@@ -149,12 +150,36 @@ fn wall_mesh() -> Mesh {
     mesh
 }
 
+/// The same wall's **collision** view: the eight corners and the four
+/// triangles `wall_mesh` draws, stated as the pair a mesh-derived collider is
+/// built from (task #1424).
+///
+/// A test that presented one geometry and collided another would prove nothing,
+/// so this is the very index buffer `wall_mesh` carries, handed as its own view
+/// rather than left to be derived from the drawn one.
+fn wall_collision() -> ColliderMesh {
+    ColliderMesh::new(
+        vec![
+            [-0.5_f32, 0.0, -2.0],
+            [-0.5, 4.0, -2.0],
+            [-0.5, 4.0, 2.0],
+            [-0.5, 0.0, 2.0],
+            [0.5, 0.0, -2.0],
+            [0.5, 4.0, -2.0],
+            [0.5, 4.0, 2.0],
+            [0.5, 0.0, 2.0],
+        ],
+        vec![[0, 1, 2], [0, 2, 3], [4, 6, 5], [4, 7, 6]],
+    )
+}
+
 /// The wall built through the production body-entity conversion: one entity
 /// that is the static body, the mesh node and the collider.
 fn wall_on_body(app: &mut App) -> Entity {
     spawn_static_mesh_collider_on_body(
         app,
         wall_mesh(),
+        wall_collision(),
         Transform::default(),
         static_world_membership(),
     )
@@ -796,6 +821,7 @@ fn accept_t424_the_body_layout_keeps_every_stored_triangle_and_the_authored_tran
     let on_body = spawn_static_mesh_collider_on_body(
         &mut app,
         wall_mesh(),
+        wall_collision(),
         transform,
         static_world_membership(),
     );
@@ -858,6 +884,7 @@ fn accept_t424_the_body_layout_honours_a_scaled_placement_without_simplifying_th
     let on_body = spawn_static_mesh_collider_on_body(
         &mut app,
         wall_mesh(),
+        wall_collision(),
         transform,
         static_world_membership(),
     );

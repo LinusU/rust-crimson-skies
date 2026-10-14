@@ -102,8 +102,9 @@
 //! validated `cs_content::world::WorldDefinition` into a presented entity and a
 //! collider built from *one* authored transform and one
 //! [`world::WorldObjectBinding`] — for `WorldCollisionShape::FromMesh` from
-//! *one* uploaded asset handle, whose `TrimeshFromMesh` collider keeps every
-//! stored triangle — [`world::WorldContacts`] records which authored object, in
+//! *one* uploaded asset handle, whose collider keeps every triangle of that
+//! mesh's own canonical collision view — [`world::WorldContacts`] records which
+//! authored object, in
 //! which sector, under which surface rule an actor reached,
 //! [`world::load_world`] and its sector calls are the one-world-at-a-time load
 //! transaction whose per-object condition survives an unload, and

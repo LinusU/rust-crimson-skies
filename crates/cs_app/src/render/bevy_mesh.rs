@@ -23,8 +23,8 @@
 //!   adapter keeps them that way). The single stated exception is
 //!   [`SUBNORMAL_POSITION_CLAIM`]: a **subnormal** stored position component
 //!   uploads as the signed zero of its own sign, because the engine consumer
-//!   that reads positions — parry's binned BVH builder behind Avian's
-//!   `TrimeshFromMesh` — cannot bin a subnormal extent (it divides by that
+//!   that reads positions — parry's binned BVH builder behind a mesh-derived
+//!   collider — cannot bin a subnormal extent (it divides by that
 //!   extent, the `f32` quotient overflows and the bin index saturates out of
 //!   bounds; measured on c3's stored mesh slot 447, task #656). Every other
 //!   stored value — `±0.0` itself, `f32::MIN_POSITIVE`, every normal, UV and
@@ -73,7 +73,7 @@ use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, Mesh, PrimitiveTopology};
 use bevy::render::render_resource::{Face, FrontFace};
 use cs_assets::install::sha256;
-use cs_content::mesh::{MeshPresentationUnknown, RenderMesh};
+use cs_content::mesh::{CollisionMesh, MeshPresentationUnknown, RenderMesh};
 use cs_types::evidence::ContentHash;
 
 /// Which per-corner attribute a refusal is about.
@@ -291,9 +291,9 @@ impl CullingClass {
 /// `ZBD/C3/gamez.zbd` mesh slot 447 stores two position `y` components as
 /// subnormals — `4e-45` and `-8e-45` — on a plane that is otherwise exactly
 /// `y = 0` (`docs/findings/2026-10-05-f18-world-units-containers.md`, task
-/// #656). The faithful reader decodes them verbatim, Avian's
-/// `ColliderConstructor::TrimeshFromMesh` derives the collider from *this*
-/// upload, and parry 0.27's binned BVH builder computes
+/// #656). The faithful reader decodes them verbatim, the collision view
+/// [`ColliderMesh`] canonicalises them at this same boundary before Avian
+/// hands them to parry, and parry 0.27's binned BVH builder computes
 /// `NUM_BINS * (1 - eps) / (centroid_extent)` — a division that overflows to
 /// `inf` when the extent is subnormal, so the bin index saturates to
 /// `usize::MAX` and the 8-entry bin array is indexed out of bounds
@@ -351,6 +351,91 @@ pub struct GroupReport {
     pub colors: bool,
 }
 
+/// The collision view of one mesh as the physics backend consumes it.
+///
+/// The input is [`cs_content::mesh::CollisionMesh`] — the canonical
+/// [`cs_content::mesh::RenderMesh::collision`] view, whose positions are the
+/// **stored** values the reader decoded. This adapter applies the one
+/// canonicalisation the engine's physics consumer needs
+/// ([`SUBNORMAL_POSITION_CLAIM`]) and hands back the pair a triangle-mesh
+/// collider is built from, so a collider sees exactly the values
+/// `TrimeshFromMesh` would have read out of the drawn upload — subnormal
+/// position flush included — while indexing a different set of triangles.
+///
+/// A collider built from this never shares an index buffer with the drawn
+/// mesh (task #1424): render fidelity and collision geometry are two views of
+/// one [`cs_content::mesh::RenderMesh`], not one buffer with two consumers.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct ColliderMesh {
+    vertices: Vec<[f32; 3]>,
+    indices: Vec<[u32; 3]>,
+}
+
+impl ColliderMesh {
+    /// Builds the view directly from its two buffers, canonicalised exactly as
+    /// [`Self::of`] does.
+    ///
+    /// This is the entry point for a caller that authors its geometry instead
+    /// of reading it — a synthetic fixture, or a test that needs a collider for
+    /// a [`Mesh`] it wrote by hand. The pair is stated together so a caller
+    /// cannot hand in vertices its indices do not name: they are one view, and
+    /// [`Self::of`] is the same pair read out of a stored mesh.
+    #[must_use]
+    pub fn new(vertices: Vec<[f32; 3]>, indices: Vec<[u32; 3]>) -> Self {
+        Self {
+            vertices: vertices
+                .iter()
+                .map(|position| position.map(canonicalise_position_component))
+                .collect(),
+            indices,
+        }
+    }
+
+    /// Canonicalises `collision` for the physics backend.
+    ///
+    /// Positions are copied through [`canonicalise_position_component`], the
+    /// same rule the drawn upload applies, so both views of one mesh agree
+    /// bit-for-bit on every position they share — including on the subnormal
+    /// extent that would otherwise overflow parry's binned BVH builder
+    /// ([`SUBNORMAL_POSITION_CLAIM`]).
+    #[must_use]
+    pub fn of(collision: &CollisionMesh) -> Self {
+        Self {
+            vertices: collision
+                .positions()
+                .iter()
+                .map(|position| position.map(canonicalise_position_component))
+                .collect(),
+            indices: collision.indices().to_vec(),
+        }
+    }
+
+    /// The vertices the index triples name, in first-reached stored order.
+    #[must_use]
+    pub fn vertices(&self) -> &[[f32; 3]] {
+        &self.vertices
+    }
+
+    /// The index triples of the canonical topology.
+    #[must_use]
+    pub fn indices(&self) -> &[[u32; 3]] {
+        &self.indices
+    }
+
+    /// Triangles this view carries, degenerate ones included.
+    #[must_use]
+    pub fn triangles(&self) -> usize {
+        self.indices.len()
+    }
+
+    /// Whether this view carries no triangle at all, so no collider can be
+    /// derived from it (see `SkipReason::CollisionTopologyUnavailable`).
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.indices.is_empty()
+    }
+}
+
 /// One material group's geometry, as Bevy buffers plus the counts and the
 /// presentation unknowns that travel with it.
 #[derive(Debug)]
@@ -362,6 +447,7 @@ pub struct GroupUpload {
     report: GroupReport,
     unknowns: Vec<MeshPresentationUnknown>,
     fingerprint: ContentHash,
+    collision: ColliderMesh,
 }
 
 /// Uploads one material group of `render` into a Bevy [`Mesh`], carrying
@@ -575,6 +661,7 @@ fn build_upload(
         report,
         unknowns: unknowns.to_vec(),
         fingerprint,
+        collision: ColliderMesh::of(render.collision()),
     })
 }
 
@@ -713,5 +800,17 @@ impl GroupUpload {
     /// A digest of the exact `f32`/`u32` bit patterns handed to Bevy.
     pub const fn fingerprint(&self) -> ContentHash {
         self.fingerprint
+    }
+
+    /// The **mesh-level** collision view this group was uploaded alongside.
+    ///
+    /// It is not this group's geometry: every group of one [`RenderMesh`]
+    /// carries the same value, because the collision view is a property of the
+    /// stored mesh, not of a material split. It travels here so a consumer
+    /// handed only group uploads — [`crate::world::meshes::WorldMesh`] — can
+    /// build a collider without a second handle on the render mesh, and the
+    /// first group's copy is the one that consumer takes.
+    pub const fn collision(&self) -> &ColliderMesh {
+        &self.collision
     }
 }

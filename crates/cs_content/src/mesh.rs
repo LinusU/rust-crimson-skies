@@ -484,6 +484,106 @@ impl fmt::Display for RenderMeshError {
 
 impl std::error::Error for RenderMeshError {}
 
+/// The **collision** view of one stored mesh: the canonical
+/// [`RawMesh::topology`] triangulation over the stored positions it names.
+///
+/// [`RenderMesh`] is the draw view — the measured `D3DPT_TRIANGLEFAN` outline
+/// fanned from corner 0, one triangle per stored topology triangle *per material
+/// group*, because that is what the original submitted. Physics must not be
+/// built from it (task #1424): a folded or self-intersecting fan is a set of
+/// triangles the outline never meant, and parry's
+/// `Triangle::local_support_point` tie-break turns a leaf perpendicular to a
+/// swept body's face axis into a phantom time of impact. `RawMesh::topology()`
+/// is documented as the collision view — a simple polygon ear-clipped into a
+/// simple triangulation — and this is that view, made ownable so a renderer
+/// adapter and a collider can consume one mesh without sharing an index buffer.
+///
+/// Two deliberate differences from [`RenderMesh`]:
+///
+/// * **one triangle per topology triangle**, whatever the material group: a
+///   multi-group polygon is one polygon drawn with several materials, so the
+///   *union* of its geometry is one copy of each of its triangles;
+/// * **positions only**, compacted in first-reached order: a collider indexes
+///   stored positions, never the per-corner `(position, normal, uv, colour,
+///   material)` split a renderer needs. Positions keep their stored bit
+///   patterns here; the engine-compatibility canonicalisation
+///   (`SUBNORMAL_POSITION_CLAIM`) is applied by the upload boundary that hands
+///   them to parry, not by the content pipeline that read them.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CollisionMesh {
+    /// Stored positions the index triples name, in first-reached order.
+    positions: Vec<[f32; 3]>,
+    /// Index triples into [`Self::positions`], in polygon then step order.
+    indices: Vec<[u32; 3]>,
+}
+
+impl CollisionMesh {
+    /// Builds the collision view of `mesh` from its canonical
+    /// [`RawMesh::topology`].
+    ///
+    /// A polygon that topology rejects contributes nothing — that is the
+    /// difference the view exists for: the draw view fans an outline the
+    /// original would have submitted whatever it looks like, while the
+    /// collision view refuses a triangulation it cannot make. Positions are
+    /// kept in first-reached order so identical input always yields identical
+    /// buffers.
+    #[must_use]
+    pub fn of(mesh: &RawMesh) -> Self {
+        let topology = mesh.topology();
+        let mut slot_of: HashMap<u32, u32> = HashMap::new();
+        let mut positions: Vec<[f32; 3]> = Vec::new();
+        let mut indices: Vec<[u32; 3]> = Vec::with_capacity(topology.triangles.len());
+        for triangle in &topology.triangles {
+            let mut corners = [0u32; 3];
+            let mut complete = true;
+            for (slot, &position) in triangle.positions.iter().enumerate() {
+                let Some(stored) = mesh.positions.get(position as usize) else {
+                    // `topology()` rejects a face whose position index is out
+                    // of range, so this cannot happen for a triangle it
+                    // produced; skipping the triangle is the refusal, never an
+                    // invented corner.
+                    complete = false;
+                    break;
+                };
+                let next = u32::try_from(positions.len())
+                    .expect("a stored mesh addresses its positions with u32, so they fit");
+                corners[slot] = *slot_of.entry(position).or_insert_with(|| {
+                    positions.push(*stored);
+                    next
+                });
+            }
+            if complete {
+                indices.push(corners);
+            }
+        }
+        Self { positions, indices }
+    }
+
+    /// The stored positions the index triples name, in first-reached order.
+    #[must_use]
+    pub fn positions(&self) -> &[[f32; 3]] {
+        &self.positions
+    }
+
+    /// The index triples, in polygon then step order of the canonical topology.
+    #[must_use]
+    pub fn indices(&self) -> &[[u32; 3]] {
+        &self.indices
+    }
+
+    /// Triangles this view carries, degenerate ones included.
+    #[must_use]
+    pub fn triangles(&self) -> usize {
+        self.indices.len()
+    }
+
+    /// Whether this view carries no triangle at all.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.indices.is_empty()
+    }
+}
+
 /// A canonical, Bevy-free render mesh built from a [`RawMesh`], its
 /// [`MeshTopology`] and the stored material groups of every polygon.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -496,6 +596,7 @@ pub struct RenderMesh {
     extra_group_triangles: usize,
     extra_group_degenerate: usize,
     culled_faces: Vec<usize>,
+    collision: CollisionMesh,
 }
 
 /// Where a render mesh's per-corner material and texture coordinate come from.
@@ -782,7 +883,24 @@ impl RenderMesh {
             extra_group_triangles,
             extra_group_degenerate,
             culled_faces,
+            collision: CollisionMesh::of(mesh),
         })
+    }
+
+    /// The **collision** view of the same stored mesh: the canonical
+    /// [`RawMesh::topology`] triangulation, one triangle per topology
+    /// triangle, over the stored positions it names.
+    ///
+    /// This is not [`Self::triangles`]: the draw view fans an outline from
+    /// corner 0 exactly as the original submitted it and repeats every
+    /// topology triangle once per material group, while this one is the
+    /// ear-clipped view a collision consumer needs (task #1424). Both are
+    /// built from the same [`RawMesh`] in the same call, so a consumer that
+    /// presents and collides one mesh never has to choose which index buffer
+    /// to trust — it is handed both.
+    #[must_use]
+    pub const fn collision(&self) -> &CollisionMesh {
+        &self.collision
     }
 
     /// Every render vertex, in first-encounter order.

@@ -226,15 +226,18 @@ pub enum AffinePlacementError {
     /// The object is **mesh-derived** and sheared, and this stage does not
     /// build that combination.
     ///
-    /// Not an engine limit: Avian's `ColliderConstructor::TrimeshFromMesh`
-    /// derives the collider from the presented `Mesh3d` handle, so the authored
-    /// linear map would have to be baked into a *second* upload. That upload's
-    /// fingerprint would no longer be the authored one, which is exactly the
-    /// one-asset provenance claim
-    /// [`super::spawn::MeshReference`] carries, so the decision belongs to
-    /// F18-B's mesh policy and F18-D's census of whether such an object exists
-    /// — not to this module. Refused by name rather than placed from a derived
-    /// asset the report would misattribute.
+    /// Not an engine limit, although it used to look like one: until task
+    /// #1424 the collider was `ColliderConstructor::TrimeshFromMesh` over the
+    /// presented `Mesh3d`, so baking the authored linear map into the shape
+    /// would have meant a *second* upload whose fingerprint is no longer the
+    /// authored one — exactly the one-asset provenance claim
+    /// [`super::spawn::MeshReference`] carries. The collider now carries its
+    /// own collision view, which makes the question openable rather than
+    /// answered: **which** view bakes the shear, what that does to the
+    /// provenance claim, and whether such an object exists at all are still
+    /// F18-B's mesh policy and F18-D's census to decide, so this stage keeps
+    /// refusing rather than picking for them: refused by name rather than
+    /// placed from a derived asset the report would misattribute.
     ShearedMeshUndecided,
 }
 

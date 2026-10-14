@@ -750,7 +750,8 @@ fn accept_playtest_retail_retail_c1c_area_and_bloodhawk_mesh_spawn_and_capture()
         "the scene draws original textures, not only the neutral fallback"
     );
 
-    // -- colliders exist, are triangle meshes, and carry the record's own count
+    // -- colliders exist, are triangle meshes, and carry the record's own
+    //    collision view (which is no longer the drawn fan: task #1424)
     let settled = cs_app::playtest_retail::settle_playtest_colliders(&mut app, &scene);
     assert_eq!(
         settled, area.mesh_records,
@@ -772,8 +773,18 @@ fn accept_playtest_retail_retail_c1c_area_and_bloodhawk_mesh_spawn_and_capture()
             .unwrap_or_else(|| panic!("{} has no derived collider", object.object));
         let triangles = collider_triangles(collider);
         assert_eq!(
-            triangles, mesh.triangles,
-            "{} collides from exactly the triangles it draws",
+            triangles, mesh.collision_triangles,
+            "{} collides from exactly its recorded collision view — a substituted \
+             shape (hull, box, decimation) would carry another count, and so would a \
+             collider built back from the drawn fan: this area's records really do \
+             differ between the two views (task #1424)",
+            object.object
+        );
+        assert!(
+            mesh.collision_triangles > 0,
+            "{} collided, so its collision view carried a triangle: no retail record \
+             in this area is one the spawn had to report as \
+             `collision_topology_unavailable`",
             object.object
         );
         // One asset behind both consumers: the collider's body entity is the node

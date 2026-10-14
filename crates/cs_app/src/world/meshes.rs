@@ -11,10 +11,12 @@
 //! conversion to the engine's mesh type, and one fingerprint to compare.
 //!
 //! [`WorldMesh`] keeps that upload's **provenance**: the F17-B
-//! [`GroupUpload::fingerprint`] of the exact geometry both consumers use and the
-//! triangle count that geometry stored. A test can therefore assert that the
-//! collider Avian derived carries the record's triangles and no substitute
-//! shape, instead of trusting that it does.
+//! [`GroupUpload::fingerprint`] of the exact geometry both consumers use, the
+//! triangle count that geometry stored, and — separately — the **collision**
+//! view a collider is built from ([`WorldMesh::collision`]). A test can
+//! therefore assert that the derived collider carries the record's canonical
+//! triangles and no substitute shape, instead of trusting that it does, and can
+//! also tell that count apart from the drawn one.
 //!
 //! # The catalog is the source; the map is only the last hop
 //!
@@ -39,11 +41,13 @@
 //! group's triangles are the *same stored topology triangles* re-drawn with that
 //! group's own material and UVs (F10-E measured this — a multi-group polygon is
 //! one polygon, not two). Collision with a static world must be the union of
-//! every stored triangle, so the world path builds **one** mesh and Avian
-//! derives **one** `TrimeshFromMesh` collider from it. Drawing one node per
-//! group and colliding one collider per group would be equivalent geometry with
-//! more entities; refusing a multi-group mesh would drop 307 of the
-//! installation's 17 139 stored meshes (`docs/findings/2026-09-29-f10-e-...`).
+//! every stored polygon, so the world path builds **one** mesh and hands Avian
+//! **one** collider — built from [`WorldMesh::collision`], which carries each
+//! topology triangle exactly once whatever the group count (task #1424).
+//! Drawing one node per group and colliding one collider per group would be
+//! equivalent geometry with more entities; refusing a multi-group mesh would
+//! drop 307 of the installation's 17 139 stored meshes
+//! (`docs/findings/2026-09-29-f10-e-...`).
 //!
 //! The merge is lossless for geometry: positions and indices are appended
 //! verbatim, with every index offset by the preceding groups' vertex count. A
@@ -73,7 +77,9 @@ use cs_content::mesh::{MeshPresentationUnknown, MeshUpload, RenderMesh};
 use cs_types::content::ContentId;
 use cs_types::evidence::ContentHash;
 
-use crate::render::bevy_mesh::{AttributeKind, GroupUpload, MeshAdapterError, upload_groups};
+use crate::render::bevy_mesh::{
+    AttributeKind, ColliderMesh, GroupUpload, MeshAdapterError, upload_groups,
+};
 
 /// One material group's provenance inside a [`WorldMesh`].
 ///
@@ -138,6 +144,7 @@ pub struct WorldMesh {
     triangles: usize,
     groups: Vec<WorldMeshGroup>,
     dropped_attributes: Vec<AttributeKind>,
+    collision: ColliderMesh,
 }
 
 impl WorldMesh {
@@ -156,12 +163,14 @@ impl WorldMesh {
             vertices: upload.report().vertices,
             subnormal_components: upload.report().subnormal_components,
         };
+        let collision = upload.collision().clone();
         Self {
             fingerprint: group.fingerprint,
             triangles: group.triangles,
             mesh: upload.into_mesh(),
             groups: vec![group],
             dropped_attributes: Vec::new(),
+            collision,
         }
     }
 
@@ -203,12 +212,17 @@ impl WorldMesh {
         }
         let (mesh, dropped_attributes) = merge_group_meshes(&groups)?;
         let triangles = provenance.iter().map(|group| group.triangles).sum();
+        // Every group of one render mesh carries the same mesh-level collision
+        // view, so the first group's is the mesh's (see
+        // `GroupUpload::collision`).
+        let collision = groups[0].collision().clone();
         Ok(Self {
             mesh,
             fingerprint: combined_fingerprint(&provenance),
             triangles,
             groups: provenance,
             dropped_attributes,
+            collision,
         })
     }
 
@@ -229,12 +243,35 @@ impl WorldMesh {
         self.fingerprint
     }
 
-    /// How many triangles the upload stored, every group's included. A
-    /// mesh-derived collider that carries a different count has been
-    /// substituted, which F18 non-negotiable behavior 1 forbids.
+    /// How many triangles the upload stored, every group's included — the
+    /// **drawn** count.
+    ///
+    /// It is deliberately not the collider's count: a multi-group polygon is
+    /// one polygon drawn once per material group, so the drawn buffer repeats
+    /// its triangles while [`Self::collision`] carries each stored polygon's
+    /// once (task #1424). What a collider must never carry is a *substitute* —
+    /// a hull or a decimated shell of these corners — and comparing it against
+    /// [`Self::collision`] is what keeps that checkable.
     #[must_use]
     pub const fn triangles(&self) -> usize {
         self.triangles
+    }
+
+    /// The **collision** view of this geometry: the canonical topology's
+    /// triangles over the stored positions, canonicalised for the physics
+    /// backend.
+    ///
+    /// This is what a collider is built from, and it is deliberately not
+    /// [`Self::mesh`]'s index buffer (task #1424): the drawn buffer fans every
+    /// outline from corner 0 exactly as the original submitted it, repeats
+    /// each topology triangle once per material group, and can fold where the
+    /// stored outline does not — all of which are drawing facts, not
+    /// collision facts. [`Self::triangles`] counts the drawn triangles;
+    /// `collision().triangles()` counts the ones a body is stopped by, and the
+    /// two differ exactly where drawing and colliding differ.
+    #[must_use]
+    pub const fn collision(&self) -> &ColliderMesh {
+        &self.collision
     }
 
     /// Every material group that was uploaded, in group order.
