@@ -13,25 +13,33 @@
 //!   panics on untrusted input; a call with no mapped origin is reported
 //!   without one rather than with an invented one.
 //! * [`audit_sites`] judges **every measured site** — not every family — against
-//!   an [`ObservedBindingTable`]: bound, refused for a named reason, or a
-//!   located disagreement with its own family (arity, argument shape, an
-//!   unknown shape code, a dispatch expression that names no id). It also
-//!   carries the call-shaped heads the corpus measured that it cannot judge, so
-//!   the [`SiteAudit`] is a whole-corpus report and not a silent subset. The
-//!   audit is the instruction-coverage report: `campaign_ready` only when the
-//!   audit is non-empty, every site is bound and nothing is left unjudged, so
-//!   one unimplemented or malformed site refuses it (AC04's rule, per site).
+//!   an [`ObservedBindingTable`]: bound with its measured meaning, refused for
+//!   a named reason that names the family's native and dispatch value, or a
+//!   located disagreement with its own family (an argument count outside the
+//!   family's observed protocol, a position the family measured uniform that
+//!   the site spells differently, an unknown shape code, a dispatch target no
+//!   measured native claims). It also carries the call-shaped heads the corpus
+//!   measured that it cannot judge, so the [`SiteAudit`] is a whole-corpus
+//!   report and not a silent subset. The audit is the instruction-coverage
+//!   report: `campaign_ready` only when the audit is non-empty, every site is
+//!   bound and nothing is left unjudged, so one unimplemented or malformed
+//!   site refuses it (AC04's rule, per site).
+//!
+//! F38-D.1 re-keyed the family lookup to (**host**, dispatch value) and treats
+//! arity/argument-shape variation inside a family as protocol variation the
+//! producer recorded, so a site is judged against the protocol its own corpus
+//! measured — never against one arbitrarily chosen signature.
 //!
 //! `cs_script` may depend on `cs_types` only, so the producer's types
 //! (`cs_formats::script_raw::source_map`) cross as primitives: [`SiteOrigin`]
 //! and [`SiteRow`] are filled field for field by the consumer that reads the
 //! installation.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use crate::bindings::observed::{
-    MeasuredForm, MeasuredShape, ObservedBindingTable, ObservedDisposition, UnimplementedReason,
+    MeasuredHost, MeasuredShape, ObservedBindingTable, ObservedDisposition, UnimplementedReason,
 };
 use crate::bindings::{BindingError, CallSite, HostBindingRegistry, RawProgram, lower_program};
 use crate::ir::{MissionProgram, SymbolId};
@@ -213,7 +221,8 @@ pub fn lower_program_located(
 /// One measured site as the consumer reads it from the producer.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SiteRow {
-    pub form: MeasuredForm,
+    /// The dispatch host: the named native, `mail`, or an unmeasured target.
+    pub host: MeasuredHost,
     /// The dispatch value; `None` when the dispatch expression is not an
     /// integer literal.
     pub native_id: Option<i64>,
@@ -226,18 +235,27 @@ pub struct SiteRow {
 /// What the table says about one site.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SiteVerdict {
-    /// The site's family lowers to an engine operation and the site fits it.
+    /// The site's family has a measured meaning and the site fits its
+    /// protocol.
     Bound { spelling: String },
-    /// The site's family is measured and refused for a named reason.
-    Refused(UnimplementedReason),
-    /// The dispatch expression names no integer id, so no family claims it.
-    NoNativeId,
-    /// No valid family exists for this form and id (for example its sites
-    /// disagreed and the row was refused).
+    /// The site's family is measured and refused for a named reason; the
+    /// spelling names the native (or `mail`/`unmeasured`) and the dispatch
+    /// value.
+    Refused {
+        spelling: String,
+        reason: UnimplementedReason,
+    },
+    /// No valid family exists for this (host, dispatch value) pair.
     NoFamily,
-    /// The site spells a different number of arguments than its family.
-    ArityMismatch { expected: usize, found: usize },
-    /// An argument's shape differs from its family's.
+    /// The site's argument count is outside the family's observed protocol.
+    ArityMismatch {
+        /// The argument counts the family observed, ascending.
+        expected: Vec<u32>,
+        /// The count this site spells.
+        found: usize,
+    },
+    /// An argument position the family measured uniform is spelled with
+    /// another shape.
     ShapeMismatch {
         position: usize,
         expected: MeasuredShape,
@@ -252,8 +270,7 @@ impl SiteVerdict {
     pub const fn code(&self) -> &'static str {
         match self {
             Self::Bound { .. } => "bound",
-            Self::Refused(_) => "refused",
-            Self::NoNativeId => "no_native_id",
+            Self::Refused { .. } => "refused",
             Self::NoFamily => "no_family",
             Self::ArityMismatch { .. } => "arity_mismatch",
             Self::ShapeMismatch { .. } => "shape_mismatch",
@@ -274,23 +291,14 @@ impl fmt::Display for LocatedSite {
         write!(f, "{}: ", self.origin)?;
         match &self.verdict {
             SiteVerdict::Bound { spelling } => write!(f, "bound as `{spelling}`"),
-            SiteVerdict::Refused(UnimplementedReason::ArgumentShapeHasNoDomain {
-                position,
-                shape,
-            }) => write!(
-                f,
-                "refused: argument {position} ({}) has no engine value",
-                shape.label()
-            ),
-            SiteVerdict::Refused(UnimplementedReason::MeaningNotMeasured { detail }) => {
-                write!(f, "refused: {detail}")
+            SiteVerdict::Refused { spelling, reason } => {
+                write!(f, "refused as `{spelling}`: {reason}")
             }
-            SiteVerdict::NoNativeId => write!(f, "the dispatch expression names no integer id"),
             SiteVerdict::NoFamily => write!(f, "no valid measured family for this call"),
             SiteVerdict::ArityMismatch { expected, found } => {
                 write!(
                     f,
-                    "takes {expected} arguments in its family, spells {found}"
+                    "takes one of {expected:?} arguments in its family, spells {found}"
                 )
             }
             SiteVerdict::ShapeMismatch {
@@ -330,7 +338,7 @@ impl SiteAudit {
     }
 
     pub fn refused(&self) -> usize {
-        self.count(|v| matches!(v, SiteVerdict::Refused(_)))
+        self.count(|v| matches!(v, SiteVerdict::Refused { .. }))
     }
 
     /// Sites that disagree with their own family or name no family at all.
@@ -341,6 +349,20 @@ impl SiteAudit {
     /// The located sites whose verdict is `code`.
     pub fn with_code<'a>(&'a self, code: &'a str) -> impl Iterator<Item = &'a LocatedSite> {
         self.sites.iter().filter(move |s| s.verdict.code() == code)
+    }
+
+    /// The distinct spellings of every family the audit refused, ascending:
+    /// each names the family's native (or `unmeasured`) **and** its dispatch
+    /// value, so "which reachable families are still unmeasured?" has an
+    /// exact, enumerable answer while the gate is closed.
+    pub fn unmeasured_families(&self) -> BTreeSet<String> {
+        self.sites
+            .iter()
+            .filter_map(|site| match &site.verdict {
+                SiteVerdict::Refused { spelling, .. } => Some(spelling.clone()),
+                _ => None,
+            })
+            .collect()
     }
 
     /// Whether the whole corpus is covered: a non-empty audit whose every site
@@ -403,10 +425,7 @@ pub fn audit_sites(
 }
 
 fn judge(table: &ObservedBindingTable, row: &SiteRow) -> SiteVerdict {
-    let Some(native_id) = row.native_id else {
-        return SiteVerdict::NoNativeId;
-    };
-    let Some(family) = table.family(row.form, native_id) else {
+    let Some(family) = table.family(row.host, row.native_id) else {
         return SiteVerdict::NoFamily;
     };
     let mut shapes = Vec::with_capacity(row.arg_shape_codes.len());
@@ -416,17 +435,24 @@ fn judge(table: &ObservedBindingTable, row: &SiteRow) -> SiteVerdict {
             None => return SiteVerdict::UnknownShapeCode { position, code },
         }
     }
-    if shapes.len() != family.call.arity {
+    // The family is a protocol: the site must spell one of the argument
+    // counts the corpus observed for this key, and — where the family measured
+    // a uniform position — the shape it measured there. A position the family
+    // recorded as varying accepts every known shape: that variation is the
+    // mode/index argument, recorded not resolved.
+    if !family.call.arities.contains(&(shapes.len() as u32)) {
         return SiteVerdict::ArityMismatch {
-            expected: family.call.arity,
+            expected: family.call.arities.clone(),
             found: shapes.len(),
         };
     }
-    for (position, (&found, &expected)) in shapes.iter().zip(&family.call.arg_shapes).enumerate() {
-        if found != expected {
+    for (position, (&found, expected)) in shapes.iter().zip(&family.call.arg_shapes).enumerate() {
+        if let Some(expected) = expected
+            && found != *expected
+        {
             return SiteVerdict::ShapeMismatch {
                 position,
-                expected,
+                expected: *expected,
                 found,
             };
         }
@@ -435,6 +461,9 @@ fn judge(table: &ObservedBindingTable, row: &SiteRow) -> SiteVerdict {
         ObservedDisposition::Bound { spelling, .. } => SiteVerdict::Bound {
             spelling: spelling.clone(),
         },
-        ObservedDisposition::Unimplemented { reason, .. } => SiteVerdict::Refused(reason.clone()),
+        ObservedDisposition::Unimplemented { reason, .. } => SiteVerdict::Refused {
+            spelling: family.call.spelling(),
+            reason: reason.clone(),
+        },
     }
 }

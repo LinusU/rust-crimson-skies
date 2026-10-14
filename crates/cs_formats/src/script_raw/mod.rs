@@ -23,7 +23,10 @@
 //! * [`ui_host_calls`] is the F38-B measured host-call corpus of the shipped UI
 //!   script programs: the two native dispatch forms their text contains, the
 //!   shape of every argument expression and the byte span of every site — a
-//!   measurement, never a meaning.
+//!   measurement, never a meaning. F38-D.1 adds the measured five-native
+//!   dispatch-target table (`$$A$$` goscallback, `$$E$$` uidata, `$$UB$$`
+//!   uicontrol, `$$JI$$` gospageinit, `$$NB$$` goslocalize; owner static
+//!   analysis on Rally #159) that keys every family by (host, dispatch value).
 //! * [`source_map`] (F38-C) gives every measured site its member, byte offset,
 //!   line and column, read from the program's own bytes and never retained.
 //! * [`probe`] is the isolated signature probe (F13-C): a caller-supplied set
@@ -75,8 +78,8 @@ pub use probe::{
     SignatureTable, probe_records,
 };
 pub use ui_host_calls::{
-    ArgShape, ArgShapeCounts, CorpusMember, DispatchForm, HostCallCorpus, HostCallSite,
+    ArgShape, ArgShapeCounts, CorpusMember, DispatchForm, HostCallCorpus, HostCallSite, HostKind,
     MAX_ARG_EXPR_BYTES, MAX_BLOCK_LABEL_BYTES, MAX_HOST_CALL_ARGS, MAX_HOST_CALL_SITES,
-    MAX_UI_SCRIPT_BYTES, ObservedHostCall, OtherCallHead, UiProgramScan, UiScriptError,
+    MAX_UI_SCRIPT_BYTES, ObservedHostCall, OtherCallHead, UiNative, UiProgramScan, UiScriptError,
     UiScriptLimits, measure_host_call_corpus, scan_ui_program,
 };

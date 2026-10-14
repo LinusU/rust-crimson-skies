@@ -286,7 +286,8 @@ pub struct RawCall {
 }
 
 /// F38-B: a measured original program handed to this crate as the rows
-/// [`observed::ObservedBindingTable::measure`] validates.
+/// [`observed::ObservedBindingTable::measure`] validates (family key re-keyed
+/// to (host, dispatch value) by F38-D.1).
 ///
 /// `cs_script` may depend on `cs_types` only
 /// (`docs/01-ARCHITECTURE.md`), so it cannot name
@@ -296,19 +297,25 @@ pub struct RawCall {
 ///
 /// | `cs_formats` | `cs_script::bindings::observed` |
 /// | --- | --- |
-/// | `DispatchForm::Callback` / `::Mail` | `MeasuredForm::Callback` / `::Mail` |
+/// | `HostCallSite::form` + `::native` (derived as `HostCallSite::host()`) | `SiteRow::host`, through `HostKind::code()` and [`MeasuredHost::from_code`] |
+/// | `HostKind::Native(::UiNative)` / `::Mail` / `::Unmeasured` | `MeasuredHost::Native(`[`MeasuredNative`]`)` / `::Mail` / `::Unmeasured` |
+/// | `UiNative` | `MeasuredNative`, through `UiNative::code()` and [`MeasuredNative::from_code`] |
+/// | `DispatchForm::Callback` / `::Mail` | `MeasuredForm::Callback` / `::Mail` (spellings and the differential trace only) |
 /// | `ArgShape` | `MeasuredShape`, through `ArgShape::code()` and [`MeasuredShape::from_code`] |
-/// | `HostCallCorpus::calls[].native_id` | `MeasuredCallRow::native_id` |
+/// | `HostCallCorpus::calls[].host` | `MeasuredCallRow::host` |
+/// | `HostCallCorpus::calls[].native_id` (`Option<i64>`) | `MeasuredCallRow::native_id` |
 /// | `…sites` / `…scripts` | `MeasuredCallRow::sites` / `::scripts` |
 /// | `…arities` | `MeasuredCallRow::arities` |
-/// | `…arg_shapes[position]` (dominant shape, `None` when sites disagree) | `MeasuredCallRow::arg_shapes[position]` |
+/// | `…arg_shapes[position]` (dominant shape, `None` when sites vary) | `MeasuredCallRow::arg_shapes[position]` |
 /// | `…evidence.note()` | `MeasuredCallRow::evidence` |
 ///
-/// The shape codes are a **wire vocabulary** both crates publish, so neither
-/// needs the other's types and a code this build does not know is refused on
-/// both sides rather than read as a different shape.
+/// The shape codes and the native codes are a **wire vocabulary** both crates
+/// publish, so neither needs the other's types and a code this build does not
+/// know is refused on both sides rather than read as a different shape.
 pub mod measured {
-    pub use super::observed::{MeasuredCallRow, MeasuredForm, MeasuredShape, RowError};
+    pub use super::observed::{
+        MeasuredCallRow, MeasuredForm, MeasuredHost, MeasuredNative, MeasuredShape, RowError,
+    };
 
     /// The engine-side reading of a wire shape code.
     ///

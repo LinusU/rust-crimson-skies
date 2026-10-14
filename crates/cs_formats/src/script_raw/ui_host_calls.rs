@@ -16,6 +16,14 @@
 //!   optionally with arguments;
 //! * `mail(<message>, <recipient>)` — a message to a recipient object.
 //!
+//! Since F38-D.1 the `$$<handler>$$` target is additionally matched against
+//! the measured five-native table ([`UiNative`], owner static analysis on
+//! Rally #159) and carried as the site's [`HostCallSite::native`]; the family
+//! key of the corpus is **(host, dispatch value)** ([`HostKind`]), never the
+//! dispatch value alone, because the same value is spelled under two different
+//! natives. That a site *names* a native claims nothing about what the native
+//! does with a value.
+//!
 //! What is measured is the **shape**, never the meaning: the dispatch form, the
 //! enclosing block label, whether the dispatch expression is an integer
 //! literal (and then its value), the *class* of each argument expression and
@@ -88,6 +96,186 @@ impl DispatchForm {
             Self::Callback => "callback",
             Self::Mail => "mail",
         }
+    }
+}
+
+/// The five native functions a `callback($$X$$, …)` dispatch target names.
+///
+/// **Measured, not designed** (owner static analysis of the decrypted
+/// executable, recorded on Rally #159, 2026-10-05; image sha256
+/// `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`):
+/// `0x4075d0` registers these five natives with GOS, and the DebugInfo map
+/// (`ASSETS/SCRIPTS/DEBUGINFO.TXT` inside `crimson.rof`, which the game loads
+/// at `0x406e40`) translates each `$$X$$` token to the name below. The
+/// handler address is the native's entry point in that image — a **claimed
+/// static-analysis constant, never `verified_original`**.
+///
+/// The token is read to decide which native a site names and is then
+/// discarded: this module retains no original text.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum UiNative {
+    /// `$$A$$` — goscallback, handler `0x407670`.
+    GosCallback,
+    /// `$$E$$` — uidata, handler `0x4093a0`.
+    UiData,
+    /// `$$UB$$` — uicontrol, handler `0x404960`.
+    UiControl,
+    /// `$$JI$$` — gospageinit, handler `0x403680`.
+    GosPageInit,
+    /// `$$NB$$` — goslocalize, handler `0x404630`.
+    GosLocalize,
+}
+
+impl UiNative {
+    /// Every measured native, in wire-code order.
+    pub const ALL: [UiNative; 5] = [
+        UiNative::GosCallback,
+        UiNative::UiData,
+        UiNative::UiControl,
+        UiNative::GosPageInit,
+        UiNative::GosLocalize,
+    ];
+
+    /// The stable wire code this native crosses as; 0 is deliberately unused so
+    /// a default-zeroed field is refused rather than read as `goscallback`.
+    pub const fn code(self) -> u8 {
+        match self {
+            UiNative::GosCallback => 1,
+            UiNative::UiData => 2,
+            UiNative::UiControl => 3,
+            UiNative::GosPageInit => 4,
+            UiNative::GosLocalize => 5,
+        }
+    }
+
+    /// The native a wire code names; `None` for a code this build does not
+    /// know, so a stale consumer is refused rather than silently mis-read.
+    pub const fn from_code(code: u8) -> Option<UiNative> {
+        match code {
+            1 => Some(UiNative::GosCallback),
+            2 => Some(UiNative::UiData),
+            3 => Some(UiNative::UiControl),
+            4 => Some(UiNative::GosPageInit),
+            5 => Some(UiNative::GosLocalize),
+            _ => None,
+        }
+    }
+
+    /// The DebugInfo name of this native, as the owner's table records it.
+    pub const fn label(self) -> &'static str {
+        match self {
+            UiNative::GosCallback => "goscallback",
+            UiNative::UiData => "uidata",
+            UiNative::UiControl => "uicontrol",
+            UiNative::GosPageInit => "gospageinit",
+            UiNative::GosLocalize => "goslocalize",
+        }
+    }
+
+    /// The `$$X$$` token the corpus spells as this native's dispatch target.
+    pub const fn token(self) -> &'static str {
+        match self {
+            UiNative::GosCallback => "$$A$$",
+            UiNative::UiData => "$$E$$",
+            UiNative::UiControl => "$$UB$$",
+            UiNative::GosPageInit => "$$JI$$",
+            UiNative::GosLocalize => "$$NB$$",
+        }
+    }
+
+    /// The handler address of this native in the owner-supplied decrypted
+    /// executable (virtual address; static-analysis constant, see the type
+    /// documentation for provenance).
+    pub const fn handler_address(self) -> u32 {
+        match self {
+            UiNative::GosCallback => 0x407670,
+            UiNative::UiData => 0x4093a0,
+            UiNative::UiControl => 0x404960,
+            UiNative::GosPageInit => 0x403680,
+            UiNative::GosLocalize => 0x404630,
+        }
+    }
+
+    /// The native a full `$$X$$` dispatch-target token names; `None` for a
+    /// token outside the measured table. The token bytes are matched and
+    /// discarded.
+    pub fn from_token(token: &str) -> Option<UiNative> {
+        match token {
+            "$$A$$" => Some(UiNative::GosCallback),
+            "$$E$$" => Some(UiNative::UiData),
+            "$$UB$$" => Some(UiNative::UiControl),
+            "$$JI$$" => Some(UiNative::GosPageInit),
+            "$$NB$$" => Some(UiNative::GosLocalize),
+            _ => None,
+        }
+    }
+}
+
+/// What one measured dispatch site's key is: which native it names.
+///
+/// A family is keyed by **(host, dispatch value)** — never by the dispatch
+/// value alone. The owner's census (#159) shows why: id 6 is spelled under two
+/// different natives, so a value-only key merges two unrelated protocols.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum HostKind {
+    /// A `callback` site whose `$$X$$` target is one of the five measured
+    /// natives ([`UiNative`]).
+    Native(UiNative),
+    /// A `mail` site: GOS script-to-script messaging, not a native call. Its
+    /// dispatch value is the message id.
+    Mail,
+    /// A `callback` site whose dispatch target token is **not** one of the
+    /// five measured natives. It is counted and keyed, never folded into a
+    /// native family.
+    Unmeasured,
+}
+
+impl HostKind {
+    /// Stable lowercase label for reports.
+    pub const fn label(self) -> &'static str {
+        match self {
+            HostKind::Native(native) => native.label(),
+            HostKind::Mail => "mail",
+            HostKind::Unmeasured => "unmeasured",
+        }
+    }
+
+    /// The wire code this host crosses as; native codes pass through, and
+    /// `mail` / `unmeasured` take the two codes above the native range.
+    pub const fn code(self) -> u8 {
+        match self {
+            HostKind::Native(native) => native.code(),
+            HostKind::Mail => 6,
+            HostKind::Unmeasured => 7,
+        }
+    }
+
+    /// The host a wire code names; `None` for an unknown code.
+    pub const fn from_code(code: u8) -> Option<HostKind> {
+        match code {
+            1 => Some(HostKind::Native(UiNative::GosCallback)),
+            2 => Some(HostKind::Native(UiNative::UiData)),
+            3 => Some(HostKind::Native(UiNative::UiControl)),
+            4 => Some(HostKind::Native(UiNative::GosPageInit)),
+            5 => Some(HostKind::Native(UiNative::GosLocalize)),
+            6 => Some(HostKind::Mail),
+            7 => Some(HostKind::Unmeasured),
+            _ => None,
+        }
+    }
+
+    /// The measured dispatch form this host is spelled in: every host but
+    /// [`HostKind::Mail`] is a `callback` site.
+    pub const fn form(self) -> DispatchForm {
+        match self {
+            HostKind::Mail => DispatchForm::Mail,
+            HostKind::Native(_) | HostKind::Unmeasured => DispatchForm::Callback,
+        }
+    }
+
+    /// Whether this host is one of the five measured natives.
+    pub const fn is_native(self) -> bool {
+        matches!(self, HostKind::Native(_))
     }
 }
 
@@ -198,12 +386,31 @@ pub struct HostCallSite {
     /// this module keeps none, so a report can say "the site targets a named
     /// reference" without naming it.
     pub target: Option<ArgShape>,
+    /// The native the `$$X$$` dispatch-target token names when it is one of
+    /// the five measured natives ([`UiNative`]); `None` for a `mail` site and
+    /// for a target token outside the measured table. The token is matched
+    /// against the table and discarded; no text is retained.
+    pub native: Option<UiNative>,
     /// The class of each argument expression, in argument order, **excluding**
     /// the dispatch expression and the `callback` target reference. Empty for a
     /// `callback` with no argument and for a `mail` site without a recipient.
     pub args: Vec<ArgShape>,
     /// The byte range of the whole call statement in the member.
     pub span: ByteSpan,
+}
+
+impl HostCallSite {
+    /// The host half of this site's family key: the named native, `mail`, or
+    /// an unmeasured dispatch target.
+    pub fn host(&self) -> HostKind {
+        match self.form {
+            DispatchForm::Mail => HostKind::Mail,
+            DispatchForm::Callback => self
+                .native
+                .map(HostKind::Native)
+                .unwrap_or(HostKind::Unmeasured),
+        }
+    }
 }
 
 /// One call-shaped head that is **not** one of the two measured dispatch forms.
@@ -629,12 +836,14 @@ impl<'a> Scanner<'a> {
         // as an argument, so a variant of the form cannot be silently reshaped
         // into the common one.
         let mut target = None;
+        let mut native = None;
         let mut dispatch_at = 0usize;
         if form == DispatchForm::Callback
             && let Some(first) = exprs.first()
             && target_is_reference(self.bytes, first)
         {
             target = Some(classify(self.bytes, first));
+            native = native_target(self.bytes, first);
             dispatch_at = 1;
         }
         let dispatch = exprs.get(dispatch_at);
@@ -651,6 +860,7 @@ impl<'a> Scanner<'a> {
             block,
             native_id,
             target,
+            native,
             args: shapes,
             span,
         });
@@ -761,6 +971,14 @@ fn target_is_reference(bytes: &[u8], expr: &std::ops::Range<usize>) -> bool {
     };
     let text = text.trim();
     text.len() >= 4 && text.starts_with("$$") && text.ends_with("$$")
+}
+
+/// The measured native a `$$X$$` dispatch-target expression names, matched
+/// against [`UiNative`]'s table and discarded: the token bytes are read, compared
+/// to five short constants and dropped, never retained.
+fn native_target(bytes: &[u8], expr: &std::ops::Range<usize>) -> Option<UiNative> {
+    let text = std::str::from_utf8(&bytes[expr.clone()]).ok()?;
+    UiNative::from_token(text.trim())
 }
 
 fn is_ident_byte(byte: u8) -> bool {
@@ -895,12 +1113,22 @@ impl ArgShapeCounts {
     }
 }
 
-/// Every measured site of one dispatch form and one dispatch value.
+/// Every measured site of one dispatch host and one dispatch value.
+///
+/// A **protocol**, not a fixed signature: the natives take a mode/index
+/// argument, so one (host, dispatch value) legitimately appears with several
+/// arities and argument shapes (owner note, Rally #159). The record keeps the
+/// observed arities and per-position shape counts; it never resolves a
+/// disagreement by picking one reading.
 #[derive(Clone, Debug, PartialEq)]
 pub struct ObservedHostCall {
-    /// The dispatch value the sites spell as an integer literal.
-    pub native_id: i64,
-    /// The dispatch form every site of this record was found in.
+    /// The dispatch host: the named native, `mail`, or an unmeasured target.
+    pub host: HostKind,
+    /// The dispatch value the sites spell as an integer literal; `None` when
+    /// the dispatch expression is not an integer literal.
+    pub native_id: Option<i64>,
+    /// The dispatch form every site of this record was found in. Derived from
+    /// [`ObservedHostCall::host`] by construction, carried for reports.
     pub form: DispatchForm,
     /// Sites measured across the corpus.
     pub sites: u32,
@@ -930,8 +1158,8 @@ pub struct HostCallCorpus {
     /// Sites whose dispatch expression is some other expression. They are
     /// counted, never folded into an id.
     pub sites_without_native_id: u32,
-    /// One record per distinct dispatch form and dispatch value, in
-    /// (form, native_id) order.
+    /// One record per distinct dispatch host and dispatch value, in
+    /// (host, native_id) order.
     pub calls: Vec<ObservedHostCall>,
     /// Call-shaped heads outside the two measured dispatch forms, in spelling
     /// order with their counts: the batch's measured boundary.
@@ -955,11 +1183,25 @@ impl HostCallCorpus {
         self.calls.len()
     }
 
-    /// The record for one dispatch form and value.
-    pub fn call(&self, form: DispatchForm, native_id: i64) -> Option<&ObservedHostCall> {
+    /// The record for one dispatch host and value.
+    pub fn call(&self, host: HostKind, native_id: Option<i64>) -> Option<&ObservedHostCall> {
         self.calls
             .iter()
-            .find(|c| c.form == form && c.native_id == native_id)
+            .find(|c| c.host == host && c.native_id == native_id)
+    }
+
+    /// Sites measured for one dispatch host, summed over its records.
+    pub fn sites_of_host(&self, host: HostKind) -> u32 {
+        self.calls
+            .iter()
+            .filter(|c| c.host == host)
+            .map(|c| c.sites)
+            .sum()
+    }
+
+    /// The records of one dispatch host, in (host, native_id) order.
+    pub fn hosts(&self, host: HostKind) -> impl Iterator<Item = &ObservedHostCall> {
+        self.calls.iter().filter(move |c| c.host == host)
     }
 
     /// Sites of call-shaped heads outside this batch's two dispatch forms.
@@ -1005,8 +1247,11 @@ pub fn measure_host_call_corpus<'a>(
     let mut heads_after_semicolon = 0u32;
     let mut sites_after_semicolon = 0u32;
     let mut braces_after_semicolon = 0u32;
-    // (form, native_id) -> accumulator
-    let mut acc: BTreeMap<(DispatchForm, i64), Accumulator> = BTreeMap::new();
+    // (host, native_id) -> accumulator. Sites whose dispatch expression is not
+    // an integer literal accumulate too, under `None`: they belong to their
+    // host's computed-dispatch protocol and are never dropped or folded into
+    // an id.
+    let mut acc: BTreeMap<(HostKind, Option<i64>), Accumulator> = BTreeMap::new();
 
     for member in members {
         let scan = scan_ui_program(member.spelling, member.bytes, limits)?;
@@ -1020,43 +1265,47 @@ pub fn measure_host_call_corpus<'a>(
             *other_heads.entry(head.head.clone()).or_default() += head.sites;
         }
         for site in &scan.sites {
-            match site.native_id {
-                Some(native_id) => {
-                    with_id += 1;
-                    let entry = acc
-                        .entry((site.form, native_id))
-                        .or_insert_with(|| Accumulator {
-                            spelling: member.spelling.to_owned(),
-                            first_site: site.span,
-                            scripts: BTreeMap::new(),
-                            arities: BTreeMap::new(),
-                            arg_shapes: Vec::new(),
-                        });
-                    *entry.scripts.entry(member.spelling.to_owned()).or_default() += 1;
-                    *entry.arities.entry(site.args.len() as u32).or_default() += 1;
-                    let widths = entry.arg_shapes.len();
-                    for (index, shape) in site.args.iter().enumerate() {
-                        if index < widths {
-                            entry.arg_shapes[index].add(*shape);
-                        } else {
-                            entry.arg_shapes.push(ArgShapeCounts::default());
-                            entry.arg_shapes[index].add(*shape);
-                        }
-                    }
+            let native_id = site.native_id;
+            if native_id.is_some() {
+                with_id += 1;
+            } else {
+                without_id += 1;
+            }
+            let entry = acc
+                .entry((site.host(), native_id))
+                .or_insert_with(|| Accumulator {
+                    spelling: member.spelling.to_owned(),
+                    first_site: site.span,
+                    scripts: BTreeMap::new(),
+                    arities: BTreeMap::new(),
+                    arg_shapes: Vec::new(),
+                });
+            *entry.scripts.entry(member.spelling.to_owned()).or_default() += 1;
+            *entry.arities.entry(site.args.len() as u32).or_default() += 1;
+            let widths = entry.arg_shapes.len();
+            for (index, shape) in site.args.iter().enumerate() {
+                if index < widths {
+                    entry.arg_shapes[index].add(*shape);
+                } else {
+                    entry.arg_shapes.push(ArgShapeCounts::default());
+                    entry.arg_shapes[index].add(*shape);
                 }
-                None => without_id += 1,
             }
         }
     }
 
     let mut calls = Vec::with_capacity(acc.len());
-    for ((form, native_id), entry) in acc {
+    for ((host, native_id), entry) in acc {
+        let spelled = match native_id {
+            Some(id) => id.to_string(),
+            None => "a non-literal dispatch expression".to_owned(),
+        };
         let note = format!(
             "{} site(s) of `{}` spelling {} measured as a shape in {} program(s); arities \
              {:?}; no meaning is claimed for the id",
             entry.sites(),
-            form.label(),
-            native_id,
+            host.label(),
+            spelled,
             entry.scripts.len(),
             entry.arities.keys().copied().collect::<Vec<_>>()
         );
@@ -1070,8 +1319,9 @@ pub fn measure_host_call_corpus<'a>(
             note,
         )?;
         calls.push(ObservedHostCall {
+            host,
             native_id,
-            form,
+            form: host.form(),
             sites: entry.sites(),
             scripts: entry.scripts.len() as u32,
             arities: entry.arities.keys().copied().collect(),
