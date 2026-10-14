@@ -372,11 +372,12 @@ timers* — is answered by the wiring now implemented in
 
 The comparison's `speed-up.reaches-gameplay-timers` finding is now
 **computed by measuring that wiring**, not by reading a declared constant:
-`compare_project_clocks` drives one sped-up second through the production
-`SessionDriver` at the compared rate and agrees only when both timers and
-the session clock advance by exactly twice the plain frame's ticks *and* the
-multiplayer frame is refused with `NoSpeedUpAuthority` before anything
-moves. If the wiring ever stops working, the finding flips back to
+`compare_project_clocks` drives one sped-up second — delivered as the capped
+frames a real loop delivers, so a low rate cannot agree vacuously — through
+the production `SessionDriver` at the compared rate and agrees only when both
+timers and the session clock advance by exactly twice the plain run's ticks
+*and* the multiplayer frame is refused with `NoSpeedUpAuthority` before
+anything moves. If the wiring ever stops working, the finding flips back to
 `diverges` on its own. With `speed-up.network-gate` still `agrees` and
 `speed-up.mechanism` still `diverges` (whole fixed ticks are spec-decided),
 the comparison at 64 Hz now reports **two** divergences:
