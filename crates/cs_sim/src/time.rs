@@ -428,14 +428,7 @@ impl SimClock {
     /// [`TimeError::TickOverflow`] if the tick counter would wrap; the
     /// clock is left unchanged when it does.
     pub fn advance(&mut self, elapsed: Duration) -> Result<u64, TimeError> {
-        if self.paused && self.freezes_while_paused() {
-            return Ok(0);
-        }
-        let elapsed = elapsed.min(MAX_FRAME_DT);
-        let numerator = self.carry + elapsed.as_nanos() * u128::from(self.rate.ticks_per_second());
-        let ticks = numerator / NANOS_PER_SECOND;
-        let carry = numerator % NANOS_PER_SECOND;
-        let ticks = u64::try_from(ticks).map_err(|_| TimeError::TickOverflow)?;
+        let (ticks, carry) = self.project(elapsed)?;
         let next = self
             .tick
             .0
@@ -444,6 +437,32 @@ impl SimClock {
         self.tick = Tick(next);
         self.carry = carry;
         Ok(ticks)
+    }
+
+    /// The ticks one frame of `elapsed` would commit and the carry that frame
+    /// would leave behind, computed **without committing either**: the exact
+    /// arithmetic [`advance`](Self::advance) performs, exposed so a caller can
+    /// know a whole frame before any clock moves.
+    ///
+    /// This is what [`advance`](Self::advance) commits, so projection and
+    /// commit can never disagree: a paused [`PausePolicy::Freeze`] clock
+    /// projects zero ticks and its own unchanged carry, and `elapsed` is
+    /// clamped to [`MAX_FRAME_DT`] here the same way it is there.
+    ///
+    /// # Errors
+    ///
+    /// [`TimeError::TickOverflow`] when the projection itself does not fit a
+    /// `u64`. This method takes `&self`, so nothing is ever mutated by it.
+    fn project(&self, elapsed: Duration) -> Result<(u64, u128), TimeError> {
+        if self.paused && self.freezes_while_paused() {
+            return Ok((0, self.carry));
+        }
+        let elapsed = elapsed.min(MAX_FRAME_DT);
+        let numerator = self.carry + elapsed.as_nanos() * u128::from(self.rate.ticks_per_second());
+        let ticks = numerator / NANOS_PER_SECOND;
+        let carry = numerator % NANOS_PER_SECOND;
+        let ticks = u64::try_from(ticks).map_err(|_| TimeError::TickOverflow)?;
+        Ok((ticks, carry))
     }
 
     /// Advances the clock by whole ticks on local authority — the only way
@@ -901,12 +920,18 @@ impl SessionDriver {
     /// whole ticks committed on the session clock, doubled on request, and
     /// fed to the gameplay timeline.
     ///
+    /// The frame is **all-or-nothing**: it is projected with
+    /// [`project`](SimClock::project) first and every clock that must take it
+    /// is checked to have room before the first commit, so an overflowing
+    /// frame leaves the session clock and the gameplay timers it feeds exactly
+    /// where they were — they can never drift apart on an error path.
+    ///
     /// # Errors
     ///
     /// [`TimeError::NoSpeedUpAuthority`] when a [`SpeedUpRequest::On`] frame
     /// is asked of a session whose policy grants no local speed-up
-    /// authority, and [`TimeError::TickOverflow`] if the tick counter would
-    /// wrap during the session commit.
+    /// authority, and [`TimeError::TickOverflow`] if either tick counter
+    /// would wrap. Nothing is mutated on error.
     pub fn advance_frame(
         &mut self,
         elapsed: Duration,
@@ -920,7 +945,7 @@ impl SessionDriver {
         {
             return Err(TimeError::NoSpeedUpAuthority);
         }
-        let wall_ticks = self.session.advance(elapsed)?;
+        let (wall_ticks, _) = self.session.project(elapsed)?;
         let extra = if speed_up == SpeedUpRequest::On {
             wall_ticks
         } else {
@@ -929,6 +954,12 @@ impl SessionDriver {
         let total = wall_ticks
             .checked_add(extra)
             .ok_or(TimeError::TickOverflow)?;
+        if self.session.tick().0.checked_add(total).is_none()
+            || self.gameplay.tick().0.checked_add(total).is_none()
+        {
+            return Err(TimeError::TickOverflow);
+        }
+        self.session.advance(elapsed)?;
         if extra > 0 {
             self.session.advance_fixed_ticks(extra)?;
         }
@@ -2534,15 +2565,20 @@ fn speed_up_label(speed_up: SpeedUpPolicy) -> &'static str {
 ///
 /// One second of wall time must commit its ordinary ticks twice under
 /// [`SpeedUpRequest::On`]: both gameplay timers and the session clock advance
-/// by exactly twice the plain frame's ticks. The multiplayer side of the
-/// same gate must refuse the very same frame with
-/// [`TimeError::NoSpeedUpAuthority`] before anything moves. If the driver
-/// ever stops feeding committed ticks to the timeline — or starts granting
-/// the multiplayer frame — this returns `false` and the comparison reports
-/// the divergence again.
+/// by exactly twice the plain run's ticks. The multiplayer side of the same
+/// gate must refuse the same run with [`TimeError::NoSpeedUpAuthority`] before
+/// anything moves. If the driver ever stops feeding committed ticks to the
+/// timeline — or starts granting the multiplayer frame — this returns `false`
+/// and the comparison reports the divergence again.
+///
+/// The second is delivered the way a frame loop delivers it (see
+/// [`deliver_second`]) and must be non-empty, so the agreement is never
+/// vacuous: at a rate low enough that a single capped frame commits no tick,
+/// a probe of one frame would report "twice zero is twice zero" and agree
+/// while the wiring was in fact broken.
 fn speed_up_reaches_gameplay_timers(rate: TickRate) -> bool {
     // Periods four times a second's worth of ticks: long enough that the
-    // probe's one-second frames never saturate a timer, at any rate.
+    // probe's one-second runs never saturate a timer, at any rate.
     let Some(period) = u64::from(rate.ticks_per_second()).checked_mul(4) else {
         return false;
     };
@@ -2552,14 +2588,13 @@ fn speed_up_reaches_gameplay_timers(rate: TickRate) -> bool {
     let Ok(mut plain) = SessionDriver::single_player(rate, period, period) else {
         return false;
     };
-    let second = Duration::from_secs(1);
-    let Ok(plain_ticks) = plain.advance_frame(second, SpeedUpRequest::Off) else {
+    let Some(plain_ticks) = deliver_second(&mut plain, SpeedUpRequest::Off) else {
         return false;
     };
-    let Ok(sped_ticks) = single.advance_frame(second, SpeedUpRequest::On) else {
+    let Some(sped_ticks) = deliver_second(&mut single, SpeedUpRequest::On) else {
         return false;
     };
-    if sped_ticks != plain_ticks.saturating_mul(2) {
+    if plain_ticks == 0 || sped_ticks != plain_ticks.saturating_mul(2) {
         return false;
     }
     let gameplay = single.gameplay_timeline();
@@ -2573,13 +2608,36 @@ fn speed_up_reaches_gameplay_timers(rate: TickRate) -> bool {
     let Ok(mut multi) = SessionDriver::multiplayer(rate, period, period) else {
         return false;
     };
-    match multi.advance_frame(second, SpeedUpRequest::On) {
+    match multi.advance_frame(Duration::from_secs(1), SpeedUpRequest::On) {
         Err(TimeError::NoSpeedUpAuthority) => {}
         _ => return false,
     }
     multi.session_clock().tick().0 == 0
         && multi.gameplay_timeline().cooldown().elapsed_ticks() == 0
         && multi.gameplay_timeline().objective_timer().elapsed_ticks() == 0
+}
+
+/// One second of wall time through the production driver, delivered the way a
+/// frame loop delivers it: consecutive frames of at most [`MAX_FRAME_DT`],
+/// until the second is spent.
+///
+/// A single frame of one second would be capped to 125 ms, which at 4 Hz
+/// commits **zero** ticks — a probe built on it could only ever compare zero
+/// with zero. Splitting the second keeps the measurement real at every rate
+/// the project compares at, and it exercises the cap and the carry the same
+/// frames production hands in do.
+///
+/// Returns `None` when any frame of the run was refused, so the caller
+/// reports a divergence instead of a partial measurement.
+fn deliver_second(driver: &mut SessionDriver, speed_up: SpeedUpRequest) -> Option<u64> {
+    let mut remaining = Duration::from_secs(1);
+    let mut total = 0u64;
+    while remaining > Duration::ZERO {
+        let frame = remaining.min(MAX_FRAME_DT);
+        total = total.checked_add(driver.advance_frame(frame, speed_up).ok()?)?;
+        remaining -= frame;
+    }
+    Some(total)
 }
 
 #[cfg(test)]
@@ -3020,6 +3078,68 @@ mod tests {
             wrapped.commit_session_ticks(1),
             Err(TimeError::TickOverflow),
             "session-fed ticks must not wrap the counter"
+        );
+    }
+
+    /// The #722 frame is all-or-nothing: a frame whose commits would wrap a
+    /// tick counter is refused while every clock still sits where it was, so
+    /// the session clock can never end up ahead of the gameplay timers it
+    /// feeds — the drift an unguarded two-step commit would leave behind on
+    /// an error path.
+    #[test]
+    fn accept_f16_f_driver_frame_refuses_to_wrap_without_moving_a_clock() {
+        let rate = TickRate::new(64).expect("64 Hz is valid");
+        // 100 ms at 64 Hz commits 6 whole ticks, so a sped-up frame asks for
+        // 12: `near_wrap` leaves room for the first commit but not the second.
+        let frame = Duration::from_millis(100);
+        let near_wrap = Tick(u64::MAX - 9);
+
+        let mut session_side = SessionDriver::single_player(rate, 120, 600).expect("positive");
+        session_side.session =
+            SimClock::with_tick(ClockPolicy::single_player_simulation(), rate, near_wrap);
+        session_side.gameplay.clock =
+            SimClock::with_tick(ClockPolicy::authoritative_gameplay(), rate, near_wrap);
+        assert_eq!(
+            session_side.advance_frame(frame, SpeedUpRequest::On),
+            Err(TimeError::TickOverflow),
+            "a frame whose speed-up commit would wrap must be refused"
+        );
+        assert_eq!(
+            (
+                session_side.session_clock().tick().0,
+                session_side.gameplay_timeline().tick().0
+            ),
+            (near_wrap.0, near_wrap.0),
+            "a refused frame leaves both clocks untouched — the session clock \
+             must never run ahead of the timers it feeds"
+        );
+
+        let mut timeline_side = SessionDriver::single_player(rate, 120, 600).expect("positive");
+        timeline_side.gameplay.clock =
+            SimClock::with_tick(ClockPolicy::authoritative_gameplay(), rate, near_wrap);
+        assert_eq!(
+            timeline_side.advance_frame(frame, SpeedUpRequest::On),
+            Err(TimeError::TickOverflow),
+            "a frame the gameplay timeline cannot take must be refused whole"
+        );
+        assert_eq!(
+            (
+                timeline_side.session_clock().tick().0,
+                timeline_side.gameplay_timeline().tick().0
+            ),
+            (0, near_wrap.0),
+            "the session clock must not move when the timeline refuses the frame"
+        );
+        assert_eq!(
+            (
+                timeline_side.gameplay_timeline().cooldown().elapsed_ticks(),
+                timeline_side
+                    .gameplay_timeline()
+                    .objective_timer()
+                    .elapsed_ticks()
+            ),
+            (0, 0),
+            "no timer may consume part of a refused frame"
         );
     }
 
