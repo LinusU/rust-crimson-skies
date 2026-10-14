@@ -60,6 +60,29 @@
 //! the objective timer, and a 2× single-player speed-up that is capped and
 //! gated off in network games.
 //!
+//! # F16-F-SPEEDUP (task #722): how single-player speed-up reaches the
+//! gameplay timers
+//!
+//! In the original, the speed-up multiplies the one per-frame `game_dt`, and
+//! everything that reads `game_dt` scales together: the vehicle clock behind
+//! the weapon cooldowns and the mission update behind the objective timers
+//! (owner notes on task #391, [`ORIGINAL_POLICY_FINDINGS`]). F16
+//! non-negotiable 4 forbids the variable multiplier here — speed-up is whole
+//! fixed ticks — so the project's equivalent wiring is
+//! [`SessionDriver`]: the driver commits a frame's whole ticks on the
+//! **session clock** (the one clock whose [`ClockPolicy`] grants local
+//! speed-up authority) and, when the 2× is requested, commits the very same
+//! whole ticks again as extra fixed ticks there; the frame's total is then
+//! fed to the [`GameplayTimeline`], which applies it to the weapon cooldown
+//! and the objective timer. The multiplayer session clock grants no
+//! authority, so the same request is refused with
+//! [`TimeError::NoSpeedUpAuthority`] before anything mutates, and
+//! [`GameplayTimeline::advance_fixed_ticks`] keeps refusing for every
+//! caller. Pause freezes both timers: a paused frame commits nothing
+//! anywhere, and nothing is banked for resume. The comparison's
+//! `speed-up.reaches-gameplay-timers` finding now measures this wiring
+//! instead of declaring a divergence.
+//!
 //! [`OriginalClockPolicy::compare_project_clocks`] compares that declaration
 //! with this module's [`ClockPolicy`]s under a [`PolicyTolerance`] chosen
 //! *before* the comparison. Every finding is one of three relations:
@@ -447,6 +470,29 @@ impl SimClock {
         self.tick = Tick(next);
         Ok(())
     }
+
+    /// Advances the clock by whole ticks some other clock of the same
+    /// session already committed — the #722 wiring by which the session
+    /// driver feeds its committed ticks to the gameplay timeline.
+    ///
+    /// This is **not** local speed-up authority: the ticks entering here
+    /// were committed on a session clock whose own [`ClockPolicy`] decided
+    /// whether they were allowed ([`SpeedUpPolicy`]), so this method grants
+    /// nothing — it only mirrors a commit that already happened. A paused
+    /// freezing clock still refuses ([`TimeError::ClockPaused`]), because
+    /// paused time must produce no advancement at all.
+    fn commit_committed_ticks(&mut self, ticks: u64) -> Result<(), TimeError> {
+        if self.paused && self.freezes_while_paused() {
+            return Err(TimeError::ClockPaused);
+        }
+        let next = self
+            .tick
+            .0
+            .checked_add(ticks)
+            .ok_or(TimeError::TickOverflow)?;
+        self.tick = Tick(next);
+        Ok(())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -598,12 +644,15 @@ impl TickTimer {
 /// * a frame's wall delta never becomes a variable dt, because the clock
 ///   hands out whole ticks (AC03);
 /// * single-player speed-up, which is a number of whole ticks on the
-///   simulation clock, reaches these timers as ticks and never as wall time.
+///   session clock, reaches these timers as ticks and never as wall time
+///   through [`SessionDriver`] (task #722's decided wiring).
 ///
 /// The timeline deliberately exposes no speed-up of its own: the authoritative
 /// gameplay policy grants no local speed-up authority, so
 /// [`advance_fixed_ticks`](GameplayTimeline::advance_fixed_ticks) refuses and
-/// the session driver (F16-C) is the thing that runs extra fixed ticks.
+/// [`SessionDriver`] is the thing that runs extra fixed ticks — on the
+/// **session** clock, whose policy is the one that grants (or refuses) that
+/// authority — feeding the committed total to these timers.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GameplayTimeline {
     clock: SimClock,
@@ -705,10 +754,186 @@ impl GameplayTimeline {
         Ok(ticks)
     }
 
+    /// Feeds the gameplay quantities whole ticks the session's simulation
+    /// clock already committed — the #722 wiring by which single-player
+    /// speed-up reaches weapon cooldowns and objective timers.
+    ///
+    /// Private to this module: the only caller is [`SessionDriver`], which
+    /// commits the ticks on its session clock first, so the authority to
+    /// speed up is decided there (and refused for multiplayer) and this
+    /// method grants none of its own. The timeline's own clock mirrors the
+    /// commit, and a paused timeline still refuses
+    /// ([`TimeError::ClockPaused`]) — AC04 holds however the ticks arrive.
+    fn commit_session_ticks(&mut self, ticks: u64) -> Result<u64, TimeError> {
+        self.clock.commit_committed_ticks(ticks)?;
+        self.cooldown.commit(ticks);
+        self.objective.commit(ticks);
+        Ok(ticks)
+    }
+
     /// Fires the weapon: the cooldown re-arms to its full period. The
     /// objective timer is untouched — firing is not a pause.
     pub fn fire(&mut self) {
         self.cooldown.restart();
+    }
+}
+
+/// Whether a session frame requests the single-player speed-up (task #722).
+///
+/// The original's speed-up is a one-frame 2× multiplier on the per-frame
+/// `game_dt` (`0x59c1f0`, see [`ORIGINAL_POLICY_FINDINGS`]); F16
+/// non-negotiable 4 forbids scaling a variable dt here, so the same 2× is a
+/// number of **whole fixed ticks**: a [`SpeedUpRequest::On`] frame commits
+/// the frame's own wall-time ticks a second time.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum SpeedUpRequest {
+    /// An ordinary frame: commit only the frame's wall-time ticks.
+    Off,
+    /// A sped-up frame: commit the frame's whole wall-time ticks a second
+    /// time as extra fixed ticks, so the frame advances twice the ticks.
+    On,
+}
+
+/// One run's session driver: the session's simulation clock together with
+/// the gameplay timeline it feeds (task #722's decided wiring).
+///
+/// In the original, speed-up is one 2× multiplier on the per-frame `game_dt`
+/// and everything that reads it scales together — weapon cooldowns (the
+/// vehicle clock) and objective timers (the mission update) alike. F16
+/// non-negotiable 4 keeps speed-up as whole fixed ticks, so the 2× becomes:
+/// [`advance_frame`](Self::advance_frame) commits the frame's whole ticks on
+/// the **session clock** — the clock whose [`ClockPolicy`] is the one that
+/// grants local speed-up authority — and, when [`SpeedUpRequest::On`] was
+/// requested, commits the very same whole ticks again there; the frame's
+/// total is then fed to the [`GameplayTimeline`], which applies it to both
+/// gameplay timers.
+///
+/// What that wiring preserves:
+///
+/// * **Multiplayer refuses** (F16 non-negotiable 4): a
+///   [`multiplayer`](Self::multiplayer) session clock grants no local
+///   authority, so a [`SpeedUpRequest::On`] frame is refused with
+///   [`TimeError::NoSpeedUpAuthority`] *before anything mutates*.
+///   [`GameplayTimeline::advance_fixed_ticks`] still refuses for every
+///   caller — the timeline itself exposes no speed-up entry point.
+/// * **Pause freezes both timers** (AC04): a paused frame commits nothing
+///   anywhere, whether or not a speed-up was requested, and no paused time
+///   is banked for resume.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SessionDriver {
+    session: SimClock,
+    gameplay: GameplayTimeline,
+}
+
+impl SessionDriver {
+    /// A single-player session: the simulation clock that grants local
+    /// speed-up authority, feeding a gameplay timeline with a weapon
+    /// cooldown of `cooldown_ticks` and an objective timer of
+    /// `objective_ticks`.
+    ///
+    /// # Errors
+    ///
+    /// [`TimeError::ZeroTimerPeriod`] when either period is zero.
+    pub fn single_player(
+        rate: TickRate,
+        cooldown_ticks: u64,
+        objective_ticks: u64,
+    ) -> Result<Self, TimeError> {
+        Ok(Self {
+            session: SimClock::new(ClockPolicy::single_player_simulation(), rate),
+            gameplay: GameplayTimeline::new(rate, cooldown_ticks, objective_ticks)?,
+        })
+    }
+
+    /// A multiplayer session: the simulation clock that grants **no** local
+    /// speed-up authority, feeding a gameplay timeline with a weapon
+    /// cooldown of `cooldown_ticks` and an objective timer of
+    /// `objective_ticks`.
+    ///
+    /// # Errors
+    ///
+    /// [`TimeError::ZeroTimerPeriod`] when either period is zero.
+    pub fn multiplayer(
+        rate: TickRate,
+        cooldown_ticks: u64,
+        objective_ticks: u64,
+    ) -> Result<Self, TimeError> {
+        Ok(Self {
+            session: SimClock::new(ClockPolicy::multiplayer_simulation(), rate),
+            gameplay: GameplayTimeline::new(rate, cooldown_ticks, objective_ticks)?,
+        })
+    }
+
+    /// The session's simulation clock — the clock whose policy decides
+    /// whether local speed-up ticks may be committed at all.
+    #[must_use]
+    pub const fn session_clock(&self) -> &SimClock {
+        &self.session
+    }
+
+    /// The gameplay timeline fed by this session's committed ticks.
+    #[must_use]
+    pub const fn gameplay_timeline(&self) -> &GameplayTimeline {
+        &self.gameplay
+    }
+
+    /// Whether the local player is paused.
+    #[must_use]
+    pub const fn is_paused(&self) -> bool {
+        self.session.is_paused()
+    }
+
+    /// Pauses or resumes the session. Both clocks freeze together: while
+    /// paused, [`advance_frame`](Self::advance_frame) commits nothing.
+    pub fn set_paused(&mut self, paused: bool) {
+        self.session.set_paused(paused);
+        self.gameplay.set_paused(paused);
+    }
+
+    /// Advances one render frame of `elapsed` wall time, returning the whole
+    /// ticks committed to the session — and, with [`SpeedUpRequest::On`],
+    /// twice that many.
+    ///
+    /// The order of checks is the behaviour: a paused frame returns zero
+    /// before anything else (AC04 — no cooldown, no objective timer, no
+    /// banking), then the multiplayer refusal precedes every mutation (a
+    /// refused frame changes nothing at all), and only then are the frame's
+    /// whole ticks committed on the session clock, doubled on request, and
+    /// fed to the gameplay timeline.
+    ///
+    /// # Errors
+    ///
+    /// [`TimeError::NoSpeedUpAuthority`] when a [`SpeedUpRequest::On`] frame
+    /// is asked of a session whose policy grants no local speed-up
+    /// authority, and [`TimeError::TickOverflow`] if the tick counter would
+    /// wrap during the session commit.
+    pub fn advance_frame(
+        &mut self,
+        elapsed: Duration,
+        speed_up: SpeedUpRequest,
+    ) -> Result<u64, TimeError> {
+        if self.session.is_paused() && self.session.freezes_while_paused() {
+            return Ok(0);
+        }
+        if speed_up == SpeedUpRequest::On
+            && self.session.policy().speed_up() == SpeedUpPolicy::NoLocalAuthority
+        {
+            return Err(TimeError::NoSpeedUpAuthority);
+        }
+        let wall_ticks = self.session.advance(elapsed)?;
+        let extra = if speed_up == SpeedUpRequest::On {
+            wall_ticks
+        } else {
+            0
+        };
+        let total = wall_ticks
+            .checked_add(extra)
+            .ok_or(TimeError::TickOverflow)?;
+        if extra > 0 {
+            self.session.advance_fixed_ticks(extra)?;
+        }
+        self.gameplay.commit_session_ticks(total)?;
+        Ok(total)
     }
 }
 
@@ -1785,8 +2010,6 @@ impl OriginalClockPolicy {
             ClockPolicy::single_player_simulation().speed_up() == SpeedUpPolicy::AdvanceFixedTicks;
         let multiplayer_refuses_speed_up =
             ClockPolicy::multiplayer_simulation().speed_up() == SpeedUpPolicy::NoLocalAuthority;
-        let gameplay_has_no_local_authority =
-            ClockPolicy::authoritative_gameplay().speed_up() == SpeedUpPolicy::NoLocalAuthority;
 
         let dt_nanos = NANOS_PER_SECOND / u128::from(rate.ticks_per_second());
         let slack = u128::from(tolerance.dt_slack_nanos);
@@ -2003,14 +2226,22 @@ impl OriginalClockPolicy {
                      vehicle clock, the weapon cooldowns and the objective timers alike"
                         .to_string(),
                 project: format!(
-                    "authoritative gameplay {} and GameplayTimeline::advance_fixed_ticks \
-                     always refuses",
-                    speed_up_label(ClockPolicy::authoritative_gameplay().speed_up()),
+                    "decided wiring (task #722): SessionDriver commits a frame's whole ticks \
+                     on the session clock (single-player simulation {}) and the same whole \
+                     ticks again on a SpeedUpRequest::On frame, then feeds the total to \
+                     GameplayTimeline, which advances both timers by it; the multiplayer \
+                     session clock {} refuses the frame before anything moves, and \
+                     GameplayTimeline::advance_fixed_ticks still refuses for every caller",
+                    speed_up_label(ClockPolicy::single_player_simulation().speed_up()),
+                    speed_up_label(ClockPolicy::multiplayer_simulation().speed_up()),
                 ),
-                relation: if gameplay_has_no_local_authority {
-                    PolicyRelation::Diverges
-                } else {
+                relation: if self.speed_up.network_gated
+                    && (self.speed_up.factor - 2.0).abs() < f64::EPSILON
+                    && speed_up_reaches_gameplay_timers(rate)
+                {
                     PolicyRelation::Agrees
+                } else {
+                    PolicyRelation::Diverges
                 },
             },
             PolicyFinding {
@@ -2295,6 +2526,60 @@ fn speed_up_label(speed_up: SpeedUpPolicy) -> &'static str {
         SpeedUpPolicy::AdvanceFixedTicks => "advance-fixed-ticks",
         SpeedUpPolicy::NoLocalAuthority => "no-local-authority",
     }
+}
+
+/// Whether single-player speed-up actually reaches the weapon cooldown and
+/// the objective timer through the decided wiring (task #722) — **measured**
+/// against the production [`SessionDriver`] at `rate`, not declared.
+///
+/// One second of wall time must commit its ordinary ticks twice under
+/// [`SpeedUpRequest::On`]: both gameplay timers and the session clock advance
+/// by exactly twice the plain frame's ticks. The multiplayer side of the
+/// same gate must refuse the very same frame with
+/// [`TimeError::NoSpeedUpAuthority`] before anything moves. If the driver
+/// ever stops feeding committed ticks to the timeline — or starts granting
+/// the multiplayer frame — this returns `false` and the comparison reports
+/// the divergence again.
+fn speed_up_reaches_gameplay_timers(rate: TickRate) -> bool {
+    // Periods four times a second's worth of ticks: long enough that the
+    // probe's one-second frames never saturate a timer, at any rate.
+    let Some(period) = u64::from(rate.ticks_per_second()).checked_mul(4) else {
+        return false;
+    };
+    let Ok(mut single) = SessionDriver::single_player(rate, period, period) else {
+        return false;
+    };
+    let Ok(mut plain) = SessionDriver::single_player(rate, period, period) else {
+        return false;
+    };
+    let second = Duration::from_secs(1);
+    let Ok(plain_ticks) = plain.advance_frame(second, SpeedUpRequest::Off) else {
+        return false;
+    };
+    let Ok(sped_ticks) = single.advance_frame(second, SpeedUpRequest::On) else {
+        return false;
+    };
+    if sped_ticks != plain_ticks.saturating_mul(2) {
+        return false;
+    }
+    let gameplay = single.gameplay_timeline();
+    if gameplay.cooldown().elapsed_ticks() != sped_ticks
+        || gameplay.objective_timer().elapsed_ticks() != sped_ticks
+        || gameplay.tick().0 != single.session_clock().tick().0
+    {
+        return false;
+    }
+
+    let Ok(mut multi) = SessionDriver::multiplayer(rate, period, period) else {
+        return false;
+    };
+    match multi.advance_frame(second, SpeedUpRequest::On) {
+        Err(TimeError::NoSpeedUpAuthority) => {}
+        _ => return false,
+    }
+    multi.session_clock().tick().0 == 0
+        && multi.gameplay_timeline().cooldown().elapsed_ticks() == 0
+        && multi.gameplay_timeline().objective_timer().elapsed_ticks() == 0
 }
 
 #[cfg(test)]
@@ -2695,6 +2980,46 @@ mod tests {
             ),
             before,
             "a refused speed-up moves neither the tick nor a gameplay quantity"
+        );
+    }
+
+    /// The #722 wiring's internal boundary: ticks a session clock already
+    /// committed still refuse on a paused timeline and never wrap the tick
+    /// counter, so the private commit path can never become a back door
+    /// around AC04 — the authority check it bypasses is the speed-up
+    /// authority, not the pause or the overflow check.
+    #[test]
+    fn accept_f16_f_driver_fed_ticks_respect_pause_and_overflow() {
+        let rate = TickRate::new(64).expect("64 Hz is valid");
+        let mut timeline = GameplayTimeline::new(rate, 120, 600).expect("periods are positive");
+        assert_eq!(timeline.commit_session_ticks(5), Ok(5));
+        assert_eq!(timeline.tick().0, 5);
+        assert_eq!(timeline.cooldown().remaining_ticks(), 115);
+        assert_eq!(timeline.objective_timer().remaining_ticks(), 595);
+
+        timeline.set_paused(true);
+        assert_eq!(
+            timeline.commit_session_ticks(5),
+            Err(TimeError::ClockPaused),
+            "a paused timeline must accept no session-fed ticks either"
+        );
+        assert_eq!(
+            (
+                timeline.tick().0,
+                timeline.cooldown().remaining_ticks(),
+                timeline.objective_timer().remaining_ticks()
+            ),
+            (5, 115, 595),
+            "a refused commit changes nothing"
+        );
+
+        let mut wrapped = GameplayTimeline::new(rate, 120, 600).expect("periods are positive");
+        wrapped.clock =
+            SimClock::with_tick(ClockPolicy::authoritative_gameplay(), rate, Tick(u64::MAX));
+        assert_eq!(
+            wrapped.commit_session_ticks(1),
+            Err(TimeError::TickOverflow),
+            "session-fed ticks must not wrap the counter"
         );
     }
 
