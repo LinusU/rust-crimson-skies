@@ -60,8 +60,8 @@ use avian3d::prelude::{ColliderDisabled, LinearVelocity};
 use bevy::prelude::{ChildOf, Entity, GlobalTransform, Vec3, World};
 use cs_app::damage::{
     DamageActorBinding, DamageConsumerEvent, DamageConsumerRefusal, DamageScheduleReport,
-    DamageTeardownRecord, DamageZoneBinding, PendingDamageEvents, ReleasedDebris, lower_graph,
-    lower_policy,
+    DamageTeardownRecord, DamageZoneBinding, DroppedDamageBatch, PendingDamageEvents,
+    ReleasedDebris, lower_graph, lower_policy,
 };
 use cs_app::debris::{DamageDebrisEvent, DamageDebrisRefusal, PartDebrisBinding, SpawnedDebris};
 use cs_app::physics::{
@@ -85,8 +85,9 @@ use cs_content::weapons::{
 };
 use cs_sim::collision::{CollisionLayer, ShapeClass};
 use cs_sim::damage::{
-    ActorId, AttributionRule, DamageChannel, DamageEvent, DamageGraph, DamageNode, DamageNodeKey,
-    DamageNodeKind, DamagePolicy, DamageResolver, HitEvent, HitEventId, PartState, SystemKind,
+    ActorId, AttributionRule, DamageChannel, DamageEvent, DamageEventId, DamageEventKind,
+    DamageGraph, DamageNode, DamageNodeKey, DamageNodeKind, DamagePolicy, DamageResolver, HitEvent,
+    HitEventId, PartState, SystemKind,
 };
 use cs_sim::flight::{FlightModel, synthetic_fixed_wing};
 use cs_sim::targeting::{TargetClass, TargetRecord};
@@ -626,6 +627,11 @@ fn accept_f29_c_schedule_a_destroyed_mount_disables_the_victims_gun() {
     step(&mut session, 5);
 
     let ran = schedule_report(&session);
+    let colliders = ran
+        .colliders
+        .as_ref()
+        .expect("the mount's transition reached the collider pass");
+    assert_eq!(colliders.removed, 1, "{colliders:?}");
     let consumers = ran.consumers.as_ref().expect("the consumer passes ran");
     assert_eq!(
         consumers.report.mounts_disabled, 1,
@@ -865,6 +871,61 @@ fn accept_f29_c_schedule_refusals_stay_visible() {
         instances(world(&mut session), actor(2)).is_empty(),
         "nothing was guessed into the world"
     );
+
+    // A published batch stamped by another session is dropped and named,
+    // never consumed; an event no hit produced is counted `unclaimed`
+    // rather than attributed to a victim by guessing.
+    let mut pending = world(&mut session).resource_mut::<PendingDamageEvents>();
+    pending.push(
+        vec![
+            HitEvent::try_new(
+                HitEventId {
+                    session: session_id(SESSION + 1),
+                    tick: Tick(6),
+                    producer: DAMAGE_PRODUCER,
+                    sequence: 0,
+                },
+                Some(actor_in(SESSION + 1, 1)),
+                actor_in(SESSION + 1, 7),
+                key(ENGINE),
+                DamageChannel::Internal,
+                declared_internal_damage(),
+            )
+            .expect("a finite hit"),
+        ],
+        Vec::new(),
+    );
+    pending.push(
+        Vec::new(),
+        vec![DamageEvent {
+            id: DamageEventId {
+                session: session_id(SESSION),
+                tick: Tick(6),
+                producer: DAMAGE_PRODUCER,
+                sequence: 0,
+            },
+            kind: DamageEventKind::PartTransition {
+                node: key(ENGINE),
+                from: PartState::Intact,
+                to: PartState::Destroyed,
+            },
+        }],
+    );
+    step(&mut session, 1);
+    let ran = schedule_report(&session);
+    assert_eq!(
+        ran.dropped,
+        vec![DroppedDamageBatch {
+            session: SESSION + 1,
+            hits: 1,
+            events: 0,
+        }],
+        "the foreign batch is dropped by name: {ran:?}"
+    );
+    assert_eq!(
+        ran.unclaimed, 1,
+        "the event no hit produced is counted, not attributed: {ran:?}"
+    );
 }
 
 /// The teardown half: a replaced session's debris leaves with it, and an
@@ -895,6 +956,15 @@ fn accept_f29_c_schedule_teardown_releases_the_debris() {
         instances(world(&mut session), actor(2)).len(),
         1,
         "the engine's debris spawned under the live session"
+    );
+    let ran = schedule_report(&session);
+    assert_eq!(
+        ran.colliders
+            .as_ref()
+            .expect("the destruction tick reached the collider pass")
+            .removed,
+        1,
+        "the engine's transition was consumed, not just its state: {ran:?}"
     );
 
     // A batch the dead generation never got to consume.
@@ -970,6 +1040,14 @@ fn accept_f29_c_schedule_teardown_releases_the_debris() {
     }
     step(&mut session, 5);
     assert_eq!(instances(world(&mut session), actor(2)).len(), 1);
+    assert_eq!(
+        schedule_report(&session)
+            .colliders
+            .as_ref()
+            .expect("the second run's destruction came through the published batch")
+            .removed,
+        1
+    );
 
     // The scene teardown: every damage binding for the actor goes away.
     let bound_entities: Vec<Entity> = world(&mut session)

@@ -157,7 +157,7 @@ assertion fails without the schedule installed.
 | mutation | caught by |
 | --- | --- |
 | `DamageSchedulePlugin` not added in `production_builder` | all 5 `accept_f29_c_schedule_*` tests (every report assertion is `None`/zero) |
-| the pending batch is not published by `drive_weapon_session` | `the_tick_drives_every_consumer`, `a_destroyed_mount_disables_the_victims_gun`, `a_lethal_hit_publishes_the_destruction`, `refusals_stay_visible`, `teardown_releases_the_debris` (no events → no transitions, no debris, no destroyed) |
+| the pending batch is not published by `drive_weapon_session` | all 5 (no events → `colliders` `None` and `destroyed` empty; the convergent passes still read the resolver's *state*, so the mount disable and debris spawn alone do **not** catch this — the mount and teardown tests assert the collider evidence for exactly that reason) |
 | the mount pass drives `FireResolver`-only behavior (e.g. `is_closed` ignored) | `a_destroyed_mount_disables_the_victims_gun` (the victim's `WeaponSession` state is read back) |
 | `publish_destroyed_actors` runs before the consumers | `a_lethal_hit_publishes_the_destruction` (the report's `destroyed` is read with the grounded-mount count from the same run) |
 | the session teardown keeps the debris | `teardown_releases_the_debris` (`tore_down` and the world instance count) |
