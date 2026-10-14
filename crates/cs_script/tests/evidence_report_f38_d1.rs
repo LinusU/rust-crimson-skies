@@ -411,9 +411,8 @@ fn measure(game_dir: &Path, evidence_dir: &Path) -> (PathBuf, Audit) {
         let scan = scan_ui_program(spelling, bytes, UiScriptLimits::default()).expect("scans");
         for site in &scan.sites {
             site_rows.push(SiteRow {
-                host: MeasuredHost::from_code(site.host().code()).unwrap_or_else(|| {
-                    panic!("code {} is a measured host", site.host().code())
-                }),
+                host: MeasuredHost::from_code(site.host().code())
+                    .unwrap_or_else(|| panic!("code {} is a measured host", site.host().code())),
                 native_id: site.native_id,
                 arg_shape_codes: site.args.iter().map(|s| s.code()).collect(),
                 origin: SiteOrigin {

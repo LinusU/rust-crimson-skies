@@ -39,7 +39,7 @@ derived from production measurement.
   by native and id.
 - `crates/cs_script/src/bindings/mod.rs`: crossing-table doc update (wiring
   only).
-- Tests: `accept_f38_d1_native_rekey.rs` (4 synthetic), 
+- Tests: `accept_f38_d1_native_rekey.rs` (4 synthetic),
   `accept_f38_d1_retail_native_census.rs` (2 retail), plus the re-keyed
   `accept_f38_b_*`, `accept_f38_c_*` suites and their evidence harnesses.
 - This file and `docs/findings/evidence/F38-D.1.json`.
