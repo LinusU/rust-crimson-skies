@@ -1159,7 +1159,9 @@ impl FixedTickDriver {
     }
 
     /// Advances the session by one render frame of `elapsed` wall time,
-    /// returning the whole fixed ticks the frame produced.
+    /// returning the whole fixed ticks the frame produced. The clock clamps
+    /// `elapsed` to [`cs_sim::time::MAX_FRAME_DT`], so a stalled frame runs
+    /// at most the cap's ticks of catch-up steps (F16-F-CAP).
     ///
     /// # Errors
     ///

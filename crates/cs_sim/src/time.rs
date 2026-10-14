@@ -12,7 +12,10 @@
 //!   dt** ([`TickRate`]). [`SimClock::advance`] accumulates whole
 //!   nanoseconds with integer arithmetic, so the same wall time advances
 //!   exactly the same ticks whether it arrived as 30, 60 or 144 frames —
-//!   no floating accumulator can drift across frame boundaries.
+//!   no floating accumulator can drift across frame boundaries. One frame
+//!   may convert at most [`MAX_FRAME_DT`] of wall time into ticks (the
+//!   original's frame-dt clamp, adopted by F16-F-CAP / #721); a stalled
+//!   frame's excess is dropped, never banked.
 //! * **UI wall time, unscaled media time and authoritative gameplay time
 //!   are distinct** ([`TimeDomain`]), each with its own [`ClockPolicy`].
 //! * **Pause and time acceleration are explicit per subsystem.**
@@ -67,6 +70,12 @@
 //! [`claim_status`](OriginalClockPolicy::claim_status), capped at
 //! [`ORIGINAL_CLOCK_POLICY_STATUS`] (`inferred`): static code evidence never
 //! yields [`ClaimStatus::VerifiedOriginal`].
+//!
+//! The `clock.frame-dt-cap` divergence the first comparison recorded is
+//! resolved by **F16-F-CAP** (#721): the project adopted the measured 125 ms
+//! bound as [`MAX_FRAME_DT`], enforced inside [`SimClock::advance`], so the
+//! finding now reports [`PolicyRelation::Agrees`]. The decision lives in
+//! `docs/findings/2026-10-14-f16-f-cap-frame-dt-cap-decision.md`.
 
 use std::time::Duration;
 
@@ -78,6 +87,26 @@ use cs_types::evidence::{
 
 /// Nanoseconds in one second, the denominator of the tick accumulator.
 pub const NANOS_PER_SECOND: u128 = 1_000_000_000;
+
+/// The most wall time one [`SimClock::advance`] call may convert into ticks:
+/// the original frame clock's per-frame `game_dt` clamp, adopted by
+/// **F16-F-CAP** (#721).
+///
+/// Static analysis of the owner-supplied decrypted executable (sha256
+/// [`ORIGINAL_IMAGE_SHA256`], owner notes on task #391) shows the original
+/// frame clock (`0x59c0c0`) clamps every frame's `game_dt` to `[0, 0.125 s]`
+/// *after* scaling: clamp flag `0x63b160` (default 1), max `0x63b158` = 125 ms,
+/// min `0x63b15c` = 0. A stalled frame therefore advances at most 125 ms of
+/// game time and the excess is dropped, never banked — the analogue of Bevy
+/// `FixedUpdate`'s `max_delta_time`, bounding how many catch-up ticks a single
+/// rendered frame may release. The lower bound needs no enforcement here:
+/// a [`Duration`] cannot be negative.
+///
+/// The value is the measured original's, declared once and shared with
+/// [`OriginalClockPolicy::measured_original`]; it is not fitted to a test.
+/// The decision and its consequences are recorded in
+/// `docs/findings/2026-10-14-f16-f-cap-frame-dt-cap-decision.md`.
+pub const MAX_FRAME_DT: Duration = Duration::from_millis(125);
 
 /// Why a clock operation was refused.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -282,9 +311,12 @@ impl ClockPolicy {
 
 /// The fixed-tick accumulator of one subsystem.
 ///
-/// Time enters as a wall-clock [`Duration`] and leaves as integer ticks;
-/// paused wall time of a [`PausePolicy::Freeze`] clock is discarded rather
-/// than banked, so resuming never dumps a burst of ticks.
+/// Time enters as a wall-clock [`Duration`] — one rendered frame's delta —
+/// and leaves as integer ticks; a frame longer than [`MAX_FRAME_DT`]
+/// commits exactly the cap and drops the excess (F16-F-CAP, the original's
+/// `0x63b158` clamp), and paused wall time of a [`PausePolicy::Freeze`]
+/// clock is discarded rather than banked, so resuming never dumps a burst
+/// of ticks.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SimClock {
     policy: ClockPolicy,
@@ -351,14 +383,22 @@ impl SimClock {
         matches!(self.policy.pause(), PausePolicy::Freeze)
     }
 
-    /// Advances the clock by `elapsed` wall time and returns the ticks
-    /// gained.
+    /// Advances the clock by one rendered frame's `elapsed` wall time and
+    /// returns the ticks gained.
     ///
     /// The accumulation is integer-only: `carry + elapsed_ns · hz` divided
     /// by 10⁹, with the remainder carried over, so any frame split of the
-    /// same total wall time yields the same tick count. A paused
+    /// same total wall time yields the same tick count **while every frame
+    /// fits under the cap**. A frame longer than [`MAX_FRAME_DT`] commits
+    /// the cap's worth of ticks and drops the excess — the original's
+    /// frame-dt clamp (F16-F-CAP), so delivery below 8 fps converts less
+    /// game time than wall time, exactly as the original does. A paused
     /// [`PausePolicy::Freeze`] clock returns zero and drops the elapsed
     /// time instead of banking it.
+    ///
+    /// `elapsed` is one frame's delta at every production call site; a
+    /// caller holding a longer span must split it into frames itself, the
+    /// way [`BehavioralProbe`] does.
     ///
     /// # Errors
     ///
@@ -368,6 +408,7 @@ impl SimClock {
         if self.paused && self.freezes_while_paused() {
             return Ok(0);
         }
+        let elapsed = elapsed.min(MAX_FRAME_DT);
         let numerator = self.carry + elapsed.as_nanos() * u128::from(self.rate.ticks_per_second());
         let ticks = numerator / NANOS_PER_SECOND;
         let carry = numerator % NANOS_PER_SECOND;
@@ -628,6 +669,9 @@ impl GameplayTimeline {
 
     /// Advances one render frame of `elapsed` wall time, returning the whole
     /// ticks it committed and applying them to every gameplay quantity.
+    ///
+    /// `elapsed` is clamped to [`MAX_FRAME_DT`] by the clock, so a stalled
+    /// frame feeds the timers at most the cap's ticks (F16-F-CAP).
     ///
     /// # Errors
     ///
@@ -1545,7 +1589,7 @@ impl OriginalClockPolicy {
             name: "crimson-skies-2000-original.static-code-analysis",
             evidence: code_derived_evidence(),
             dt_source: OriginalDtSource::VariableFrameDelta,
-            max_frame_dt: Duration::from_millis(125),
+            max_frame_dt: MAX_FRAME_DT,
             min_frame_dt: Duration::ZERO,
             frame_dt_clamped: true,
             banks_paused_time: false,
@@ -1875,14 +1919,18 @@ impl OriginalClockPolicy {
                     "the frame clamp is off, so a stalled frame advances its whole delta"
                         .to_string()
                 },
-                project:
-                    "SimClock::advance accepts any Duration and commits all of its whole ticks; \
-                     the fixed-step accumulator declares no per-frame cap"
-                        .to_string(),
-                relation: if self.frame_dt_clamped {
-                    PolicyRelation::Diverges
-                } else {
+                project: format!(
+                    "SimClock::advance clamps every frame's delta to MAX_FRAME_DT ({} ns, the \
+                     measured original's bound adopted by F16-F-CAP) and drops the excess",
+                    MAX_FRAME_DT.as_nanos(),
+                ),
+                relation: if self.frame_dt_clamped
+                    && self.min_frame_dt == Duration::ZERO
+                    && self.max_frame_dt == MAX_FRAME_DT
+                {
                     PolicyRelation::Agrees
+                } else {
+                    PolicyRelation::Diverges
                 },
             },
             PolicyFinding {
@@ -2257,6 +2305,36 @@ mod tests {
         SimClock::new(policy, TickRate::new(60).expect("60 Hz is valid"))
     }
 
+    /// Delivers `total` wall time to `clock` as consecutive rendered frames
+    /// of at most [`MAX_FRAME_DT`]: a real frame loop never hands one advance
+    /// more than a frame, so a span longer than the cap arrives as several
+    /// frames rather than collapsing into one clamped advance.
+    fn advance_wall_time(clock: &mut SimClock, total: Duration) -> u64 {
+        let mut committed = 0;
+        let mut remaining = total;
+        while remaining > Duration::ZERO {
+            let frame = remaining.min(MAX_FRAME_DT);
+            committed += clock.advance(frame).expect("the clock advances");
+            remaining -= frame;
+        }
+        committed
+    }
+
+    /// The same per-frame delivery for a [`GameplayTimeline`]: `total` of
+    /// wall time in frames of at most [`MAX_FRAME_DT`].
+    fn advance_timeline(timeline: &mut GameplayTimeline, total: Duration) -> u64 {
+        let mut committed = 0;
+        let mut remaining = total;
+        while remaining > Duration::ZERO {
+            let frame = remaining.min(MAX_FRAME_DT);
+            committed += timeline
+                .advance_frame(frame)
+                .expect("the timeline advances");
+            remaining -= frame;
+        }
+        committed
+    }
+
     fn frames_at(frame_rate: u32, total_nanos: u128) -> Vec<Duration> {
         let frames = u128::from(frame_rate);
         let per_frame = total_nanos / frames;
@@ -2298,10 +2376,7 @@ mod tests {
             ClockPolicy::authoritative_gameplay(),
         ] {
             let mut clock = clock(policy);
-            assert_eq!(
-                clock.advance(Duration::from_secs(1)).expect("no overflow"),
-                60
-            );
+            assert_eq!(advance_wall_time(&mut clock, Duration::from_secs(1)), 60);
             clock.set_paused(true);
             assert_eq!(
                 clock.advance(Duration::from_secs(5)).expect("no overflow"),
@@ -2315,7 +2390,7 @@ mod tests {
         let mut wall = clock(ClockPolicy::ui_wall());
         wall.set_paused(true);
         assert_eq!(
-            wall.advance(Duration::from_secs(5)).expect("no overflow"),
+            advance_wall_time(&mut wall, Duration::from_secs(5)),
             300,
             "UI wall time must keep running while gameplay is paused"
         );
@@ -2326,7 +2401,7 @@ mod tests {
     #[test]
     fn accept_f16_a_paused_wall_time_is_never_banked() {
         let mut clock = clock(ClockPolicy::single_player_simulation());
-        clock.advance(Duration::from_secs(1)).expect("no overflow");
+        assert_eq!(advance_wall_time(&mut clock, Duration::from_secs(1)), 60);
         clock.set_paused(true);
         assert_eq!(
             clock.advance(Duration::from_secs(10)).expect("no overflow"),
@@ -2334,7 +2409,7 @@ mod tests {
         );
         clock.set_paused(false);
         assert_eq!(
-            clock.advance(Duration::from_secs(1)).expect("no overflow"),
+            advance_wall_time(&mut clock, Duration::from_secs(1)),
             60,
             "one second after resume is one second of ticks, not eleven"
         );
@@ -2476,11 +2551,9 @@ mod tests {
         let rate = TickRate::new(64).expect("64 Hz is valid");
         let mut timeline = GameplayTimeline::new(rate, 120, 600).expect("periods are positive");
         assert_eq!(
-            timeline
-                .advance_frame(Duration::from_millis(500))
-                .expect("runs"),
+            advance_timeline(&mut timeline, Duration::from_millis(500)),
             32,
-            "500 ms at 64 Hz is 32 ticks"
+            "500 ms at 64 Hz is 32 ticks delivered as four capped frames"
         );
         let before = (
             timeline.tick(),
@@ -2523,9 +2596,7 @@ mod tests {
 
         timeline.set_paused(false);
         assert_eq!(
-            timeline
-                .advance_frame(Duration::from_millis(500))
-                .expect("runs"),
+            advance_timeline(&mut timeline, Duration::from_millis(500)),
             32,
             "resume banks no paused time"
         );
@@ -2554,10 +2625,9 @@ mod tests {
 
         let mut timeline = GameplayTimeline::new(rate, 10, 10).expect("periods are positive");
         assert_eq!(
-            timeline
-                .advance_frame(Duration::from_secs(10))
-                .expect("runs"),
-            640
+            advance_timeline(&mut timeline, Duration::from_secs(10)),
+            640,
+            "10 s at 64 Hz is 640 ticks, delivered as eighty capped frames"
         );
         assert!(timeline.cooldown().is_expired());
         assert_eq!(timeline.cooldown().expirations(), 1);
@@ -2813,9 +2883,16 @@ mod tests {
         );
     }
 
-    /// The frame split loses nothing: the same wall time commits the same
-    /// ticks at every render rate, including one that does not divide a second
-    /// evenly, where the remainder frame carries the difference.
+    /// The frame split loses nothing **while every frame fits under the
+    /// cap**: the same wall time commits the same ticks at every render rate
+    /// whose frames stay within [`MAX_FRAME_DT`] — including 8 fps, whose
+    /// frame is exactly the cap, and 9 fps, which does not divide a second
+    /// evenly, so the remainder frame carries the difference.
+    ///
+    /// Below 8 fps a frame is longer than the cap and the excess is dropped,
+    /// never banked (F16-F-CAP, the original's `0x63b158` clamp): the second
+    /// half of this test pins the exact capped counts at 1 and 7 fps rather
+    /// than pretending agreement.
     #[test]
     fn accept_f16_d_frame_split_is_exact_at_every_delivery_rate() {
         static ONE_SECOND: &[ProbeStep] = &[
@@ -2824,7 +2901,7 @@ mod tests {
             },
             ProbeStep::Observe("after-one-second"),
         ];
-        for render_fps in [1_u32, 7, 30, 60, 144, 1000] {
+        for render_fps in [8_u32, 9, 30, 60, 144, 1000] {
             let probe = BehavioralProbe::new("split", render_fps, ONE_SECOND).expect("valid probe");
             let trace = probe
                 .run(|| GameplayTimeline::new(TickRate::new(64).expect("valid"), 120, 600))
@@ -2845,6 +2922,31 @@ mod tests {
                     .cooldown_remaining_ticks(),
                 120 - 64,
                 "the cooldown counted the same ticks at {render_fps} fps"
+            );
+        }
+
+        // A frame longer than the cap commits the cap and drops the excess:
+        // at 1 fps the whole second arrives as one stalled frame worth 8
+        // ticks; at 7 fps each 142 857 142 ns frame commits the 125 ms cap
+        // and the 6 ns remainder frame commits nothing.
+        for (render_fps, committed) in [(1_u32, 8_u64), (7, 56)] {
+            let probe = BehavioralProbe::new("split", render_fps, ONE_SECOND).expect("valid probe");
+            let trace = probe
+                .run(|| GameplayTimeline::new(TickRate::new(64).expect("valid"), 120, 600))
+                .expect("the probe runs");
+            assert_eq!(
+                trace.committed_ticks(),
+                committed,
+                "at {render_fps} fps every frame exceeds the 125 ms cap, so one second of wall \
+                 time commits only the capped ticks"
+            );
+            assert_eq!(
+                trace
+                    .sample("after-one-second")
+                    .expect("observed")
+                    .cooldown_remaining_ticks(),
+                120 - committed,
+                "the cooldown counted exactly the capped ticks at {render_fps} fps"
             );
         }
     }

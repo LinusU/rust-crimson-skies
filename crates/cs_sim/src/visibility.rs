@@ -258,7 +258,9 @@ impl<T: Clone> VisibilityTimeline<T> {
 
     /// Advances one render frame of `elapsed` wall time, installing every
     /// event whose tick the clock has now committed, and returns the whole
-    /// ticks that frame gained.
+    /// ticks that frame gained. `elapsed` is clamped to
+    /// [`MAX_FRAME_DT`](crate::time::MAX_FRAME_DT) by the clock, so a stalled
+    /// frame can install at most the cap's ticks of schedule (F16-F-CAP).
     ///
     /// # Errors
     ///
