@@ -302,6 +302,7 @@ mod m21_b;
 mod m24_a;
 mod m24_b;
 mod objaddr;
+mod owner_facts_table;
 mod record_objectives_sound;
 mod vs_m01_geometry_verdict;
 mod vs_m01_rt_content;

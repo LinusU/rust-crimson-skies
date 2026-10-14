@@ -177,6 +177,7 @@ mod m21_b;
 mod m24_a;
 mod m24_b;
 mod record_objectives_sound;
+mod t1432;
 mod t351;
 
 /// The recorded status of one test, or a loud failure naming the missing run.
