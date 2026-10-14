@@ -64,10 +64,11 @@
 use std::collections::BTreeMap;
 
 use avian3d::prelude::{
-    Collider, CollisionLayers as AvianCollisionLayers, LinearVelocity, RigidBody,
+    Collider, CollisionLayers as AvianCollisionLayers, LinearVelocity, Position, RigidBody,
+    Rotation, TransformInterpolation,
 };
 use bevy::ecs::component::Component;
-use bevy::prelude::{Entity, GlobalTransform, World};
+use bevy::prelude::{Entity, GlobalTransform, Transform, World};
 use cs_sim::damage::{ActorId, DamageNodeKey, DamageResolver, PartState};
 use cs_types::Tick;
 use cs_types::content::{ContentId, Resolved};
@@ -640,10 +641,13 @@ impl DebrisObjects {
 /// carrying the actor and destroyed part it presents (so a teardown can name
 /// them once the instance is gone), the resolved object, the tick it was
 /// placed at, the lifetime it was placed with and the generation it was
-/// stamped with. The wreck entity itself carries the placement
-/// ([`GlobalTransform`]), the physics (an Avian [`RigidBody::Dynamic`] with the
-/// object's [`Collider`], on the debris collision layer) and a zero initial
-/// [`LinearVelocity`].
+/// stamped with. The wreck entity itself carries the placement — the Bevy
+/// `Transform` and Avian's `Position`/`Rotation` pair, all three the part's
+/// pose, the way [`crate::physics::spawn_body`] binds every body's placement
+/// (Avian's body init never reads a bare [`GlobalTransform`]) — the physics
+/// (an Avian [`RigidBody::Dynamic`] with the object's [`Collider`], on the
+/// debris collision layer), a zero initial [`LinearVelocity`] and
+/// [`TransformInterpolation`] for the render easing (F23-C).
 #[derive(Component, Clone, Debug, PartialEq, Eq)]
 pub struct DebrisWreck {
     /// The actor whose part spawned the debris the wreck presents.
@@ -931,6 +935,20 @@ pub fn present_debris(
             continue;
         };
 
+        // The placement is bound the way the production body path binds one
+        // (`crate::physics::spawn_body`): the Bevy `Transform` **and** Avian's
+        // own `Position`/`Rotation` pair all carry the part's pose. Avian's
+        // body init reads `Position`/`Rotation` (falling back to `Transform`),
+        // never a bare `GlobalTransform`: a wreck spawned with only a
+        // `GlobalTransform` simulates from the world origin, because the
+        // required placeholder `Position` and the required identity
+        // `Transform` win and the init hook overwrites the `GlobalTransform`
+        // with them (measured in the F29-C.5 review through the real fixed
+        // loop; `accept_f29_c5_the_wreck_simulates_at_the_parts_pose` pins it).
+        // The part's scale is not inherited: the collider is the object's own
+        // radius, and a sphere cannot carry an authored scale — the same
+        // scale-free placement `spawn_body` uses.
+        let (_, rotation, translation) = pose.to_scale_rotation_translation();
         let wreck = world
             .spawn((
                 DebrisWreck {
@@ -942,10 +960,16 @@ pub fn present_debris(
                     lifetime,
                     generation: debris.generation,
                 },
-                pose,
+                Transform::from_translation(translation).with_rotation(rotation),
+                Position(translation),
+                Rotation::from(rotation),
                 RigidBody::Dynamic,
                 Collider::sphere(object.radius().0 as f32),
                 LinearVelocity::ZERO,
+                // A simulated body eases its render transform between fixed
+                // ticks (F23-C), the same marker `spawn_body` gives every
+                // simulated body.
+                TransformInterpolation,
                 wreck_collision_layers(),
                 BodyLayer(cs_sim::collision::CollisionLayer::Debris),
             ))

@@ -38,16 +38,22 @@
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
+use std::time::Duration;
 
-use avian3d::prelude::{Collider, CollisionLayers, LinearVelocity, RigidBody};
-use bevy::prelude::{Entity, GlobalTransform, World};
+use avian3d::prelude::{
+    Collider, CollisionLayers, Gravity, LinearVelocity, Position, RigidBody, Rotation,
+    TransformInterpolation,
+};
+use bevy::prelude::{Entity, Transform, World};
+use bevy::time::TimeUpdateStrategy;
+use cs_app::asset_stack::headless_app;
 use cs_app::damage::{lower_graph, lower_policy};
 use cs_app::debris::{
     DESIGNED_DEBRIS_LIFETIME, DebrisLifetime, DebrisObject, DebrisObjects, DebrisPresentationEvent,
     DebrisPresentationRefusal, DebrisWreck, PartDebrisBinding, SpawnedDebris, apply_debris_state,
     present_debris, release_debris,
 };
-use cs_app::physics::BodyLayer;
+use cs_app::physics::{BASELINE_FIXED_HZ, BodyLayer};
 use cs_app::scene::{
     AirframeSceneRequest, NodeVisualTransform, PartDebrisPublish, SceneEvent, SceneGeneration,
     process_airframe_scene_request,
@@ -582,17 +588,30 @@ fn accept_f29_c5_presenting_an_instance_gives_the_wreck_placement_lifetime_and_p
     assert_eq!(wreck.generation, spawned.generation);
 
     // Placement is the destroyed part's own composed pose — the one visual
-    // pose owner, not a second transform.
+    // pose owner — bound the production way: the Bevy `Transform` and Avian's
+    // `Position`/`Rotation` pair all carry it (Avian's body init reads those,
+    // never a bare `GlobalTransform`).
     let part_pose = world
         .get::<NodeVisualTransform>(engine_entity)
         .expect("the part entity carries its pose")
         .global();
+    let (_, rotation, translation) = part_pose.to_scale_rotation_translation();
     assert_eq!(
         world
-            .get::<GlobalTransform>(wreck_entity)
+            .get::<Transform>(wreck_entity)
             .expect("the wreck carries its placement"),
-        &part_pose,
+        &Transform::from_translation(translation).with_rotation(rotation),
         "the wreck sits where the wreckage came off"
+    );
+    assert_eq!(
+        world.get::<Position>(wreck_entity),
+        Some(&Position(translation)),
+        "the physics pose is the part's own"
+    );
+    assert_eq!(
+        world.get::<Rotation>(wreck_entity),
+        Some(&Rotation::from(rotation)),
+        "the physics rotation is the part's own"
     );
 
     // Physics: a dynamic body on the declared debris layer, the object's own
@@ -613,6 +632,11 @@ fn accept_f29_c5_presenting_an_instance_gives_the_wreck_placement_lifetime_and_p
         world.get::<LinearVelocity>(wreck_entity),
         Some(&LinearVelocity::ZERO),
         "the wreck starts at rest and the physics step takes it from there"
+    );
+    assert_eq!(
+        world.get::<TransformInterpolation>(wreck_entity),
+        Some(&TransformInterpolation),
+        "a simulated body eases its render transform between fixed ticks (F23-C)"
     );
     assert_eq!(
         world.get::<BodyLayer>(wreck_entity),
@@ -867,6 +891,58 @@ fn accept_f29_c5_a_wreck_expires_at_the_end_of_its_designed_lifetime() {
     assert_eq!(replaced.report.presented, 1, "{replaced:?}");
     let (_, wreck) = wrecks(&world).into_iter().next().expect("one wreck");
     assert_eq!(wreck.placed_at, Tick(14));
+}
+
+/// The placement is real physics, not a decorative component: through the
+/// real Avian init and transform-sync loop the wreck simulates at the
+/// destroyed part's pose — a body spawned with only a bare `GlobalTransform`
+/// would initialize at the world origin (the F29-C.5 review's measurement,
+/// which is why the wreck binds `Transform` + `Position` + `Rotation`).
+#[test]
+fn accept_f29_c5_the_wreck_simulates_at_the_parts_pose() {
+    let mut app = headless_app();
+    app.insert_resource(TimeUpdateStrategy::ManualDuration(Duration::from_secs_f64(
+        1.0 / BASELINE_FIXED_HZ as f64,
+    )));
+    app.insert_resource(Gravity::ZERO);
+
+    let world = app.world_mut();
+    load_with_publish(
+        world,
+        BTreeMap::from([(engine(), known(debris_id(SYNTHETIC_ENGINE_NODE)))]),
+    );
+    let engine_entity = node_entity(world, SYNTHETIC_ENGINE_NODE);
+    let part_pose = world
+        .get::<NodeVisualTransform>(engine_entity)
+        .expect("the part entity carries its pose")
+        .global();
+
+    let mut resolver = registered();
+    destroy(&mut resolver, &engine(), SYNTHETIC_ENGINE_INTEGRITY);
+    let outcome = apply_debris_state(world, &resolver, actor(1));
+    assert_eq!(outcome.report.spawned, 1, "{outcome:?}");
+    let presented = present_debris(
+        world,
+        &objects_of(SYNTHETIC_ENGINE_NODE),
+        Tick(0),
+        DESIGNED_DEBRIS_LIFETIME,
+    );
+    assert_eq!(presented.report.presented, 1, "{presented:?}");
+    let wreck = wrecks(world)[0].0;
+
+    // One fixed tick of the real physics loop: Avian initializes the body and
+    // the transform sync runs on the spawned wreck.
+    app.update();
+
+    let position = app
+        .world()
+        .get::<Position>(wreck)
+        .expect("the wreck is a simulated body");
+    let expected = part_pose.translation();
+    assert!(
+        (position.0 - expected).length() < 1e-4,
+        "the wreck simulated at the part's pose {expected:?}, not the origin: {position:?}"
+    );
 }
 
 /// The designed default lifetime is the stage's stated value, not a hidden

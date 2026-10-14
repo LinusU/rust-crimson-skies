@@ -36,7 +36,7 @@ pass unchanged.
 - `crates/cs_app/src/lib.rs` (doc only): the `debris` crate-doc paragraph names
   the presentation stage and the publish source instead of deferring them to
   "another stage".
-- `crates/cs_app/tests/debris/publish_and_present.rs` (**new**): the 8
+- `crates/cs_app/tests/debris/publish_and_present.rs` (**new**): the 9
   `accept_f29_c5_` tests, compiled into the F29-C.2 debris binary by
   `tests/accept_f29_c_debris_spawn.rs` — a module, not a new target, for the
   CI runner's disk budget (the same reason the propulsion tests are modules of
@@ -97,8 +97,21 @@ reads:
 * **the placement is the destroyed part's own pose**, read through the
   published `PartDebrisBinding` from the part entity's `NodeVisualTransform` —
   the single visual pose owner (F11 non-negotiable behavior 4) — so a wreck
-  cannot drift from the wreckage it fell off. A part entity with no pose is
-  refused by name (`UnplacedDebris`); no wreck is placed at a guessed position;
+  cannot drift from the wreckage it fell off. The pose is bound the production
+  body way (`spawn_body`): the Bevy `Transform` **and** Avian's own
+  `Position`/`Rotation` pair all carry it, plus `TransformInterpolation` for
+  the F23-C render easing. It is *not* bound as a bare `GlobalTransform`:
+  Avian's body init reads `Position`/`Rotation` (falling back to `Transform`),
+  and `RigidBody` requires a placeholder `Position` (which, under
+  `PhysicsPlugins`, also requires an identity `Transform`), so a body spawned
+  with only a `GlobalTransform` initializes at the world origin and the init
+  hook overwrites the `GlobalTransform` with it (measured in the review
+  through the real fixed loop; the
+  `accept_f29_c5_the_wreck_simulates_at_the_parts_pose` test pins it). The
+  part's scale is not inherited — the collider is the object's own radius and
+  a sphere cannot carry an authored scale, the same scale-free placement
+  `spawn_body` uses. A part entity with no pose is refused by name
+  (`UnplacedDebris`); no wreck is placed at a guessed position;
 * **the wreck is simulated, not a static prop**: an Avian `RigidBody::Dynamic`
   with the object's own collider radius, on the declared
   `CollisionLayer::Debris` (whose designed matrix already lets it meet
@@ -137,7 +150,7 @@ data and requires `retail`.
 Every test drives production code — the production scene load, the production
 declared → lowered path (`lower_graph` / `lower_policy`), the real
 `DamageResolver`, `apply_debris_state` / `release_debris` and `present_debris` —
-never a test-only bridge. Task test prefix: **`accept_f29_c5_`** (8 tests in
+never a test-only bridge. Task test prefix: **`accept_f29_c5_`** (9 tests in
 the F29-C.2 debris binary).
 
 | test | what it pins |
@@ -149,6 +162,7 @@ the F29-C.2 debris binary).
 | `accept_f29_c5_an_unresolvable_source_and_an_unplaced_part_are_refused_by_name` | an id the table does not know and a part entity with no pose are refused by name; neither spawns a wreck |
 | `accept_f29_c5_a_repair_and_a_reload_leave_no_wreckage_entity_and_no_dangling_binding` | the teardown the task names: repair → wreck Released; reload via `release_debris` → wreck Released; unload → every published binding gone; nothing left to present |
 | `accept_f29_c5_a_wreck_expires_at_the_end_of_its_designed_lifetime` | presented through `placed_at + lifetime - 1`, expired at `placed_at + lifetime` (named `Expired`), re-presented on the next pass while the authority still calls the part destroyed |
+| `accept_f29_c5_the_wreck_simulates_at_the_parts_pose` (review) | the placement is real physics: through the real `PhysicsPlugins::default()` fixed loop (`asset_stack::headless_app`, one manual tick, zero gravity) the wreck's Avian `Position` is the part's pose, not the world origin |
 | `accept_f29_c5_the_designed_default_lifetime_bounds_a_wreck` | the stated default is 600 ticks and `DebrisWreck::expired` agrees at age 599 / 600 |
 
 ## Mutation probes
@@ -163,6 +177,35 @@ tests and restored the file from Git:
 | the stage stops presenting | `objects.get(&debris.source)` → `objects.get(&debris.source).filter(|_| false)` in `present_debris` | 4 failed: `..._presenting_an_instance_gives_the_wreck_placement_lifetime_and_physics`, `..._an_unresolvable_source_and_an_unplaced_part_are_refused_by_name`, `..._a_repair_and_a_reload_leave_no_wreckage_entity_and_no_dangling_binding`, `..._a_wreck_expires_at_the_end_of_its_designed_lifetime` (0 wrecks, everything refused as `UnresolvedObject`) |
 | the teardown stops releasing | `let instance_live = world.get_entity(wreck.instance).is_ok_and(...)` → `let instance_live = true;` in `present_debris` | 1 failed: `..._a_repair_and_a_reload_leave_no_wreckage_entity_and_no_dangling_binding` (the wreck survived the repair and the reload) |
 | the placement is defaulted | `let Some(&pose) = poses.get(...)` → `poses.get(...).copied().unwrap_or(GlobalTransform::IDENTITY)` | 1 failed: `..._an_unresolvable_source_and_an_unplaced_part_are_refused_by_name` (the unplaced part was presented at identity instead of refused) |
+| **review:** the placement is a bare `GlobalTransform` again | the wreck spawn's `Transform`/`Position`/`Rotation` triple → the original single `pose` (`GlobalTransform`) component | 2 failed: `..._the_wreck_simulates_at_the_parts_pose` — through the real fixed loop the wreck's Avian `Position` was `Vec3(0, 0, 0)` (the origin) while the part's pose was `Vec3(0, 0, -2)` — and `..._presenting_an_instance_gives_the_wreck_placement_lifetime_and_physics` (its `Transform` placement assertion: a bare-`GlobalTransform` wreck carries no placement `Transform`). The 7 other tests still passed, which is exactly how the bug survived the original suite: a bare `World` never runs Avian's init hook against the required-component graph the way `PhysicsPlugins::default()` does |
+
+## Review fix (2026-10-14, bunny-alpha-1)
+
+The reviewer found one real defect and fixed it: the wreck's placement was
+spawned as a single bare `GlobalTransform` component. Avian's rigid-body
+initialization never reads a `GlobalTransform` — `RigidBody` requires a
+placeholder `Position` (which, under `PhysicsPlugins`, also requires an
+identity `Transform`) — so the moment a real physics schedule ran, the body
+initialized at the world origin and the init hook overwrote the spawned
+`GlobalTransform` with it. The stage's central designed rule ("the placement
+is the destroyed part's own pose") therefore held only for the bare-`World`
+tests, never in the runtime this crate targets. Measured: part pose
+`Vec3(0, 0, -2)`, simulated `Position(Vec3(0, 0, 0))` after one fixed tick.
+
+The fix binds the pose the production `spawn_body` way: `Transform` (Bevy) and
+`Position`/`Rotation` (Avian) all carry the part's translation/rotation, plus
+`TransformInterpolation` for the F23-C render easing; the part's scale is not
+inherited (the collider is the object's own radius; a sphere cannot carry an
+authored scale — the same scale-free placement `spawn_body` uses). The new
+test `accept_f29_c5_the_wreck_simulates_at_the_parts_pose` pins it through
+`asset_stack::headless_app()` (real `PhysicsPlugins::default()`, one manual
+fixed tick, zero gravity), and the placement assertion in
+`..._presenting_an_instance_gives_the_wreck_placement_lifetime_and_physics`
+now reads the `Transform`/`Position`/`Rotation` triple.
+
+Reviewer identity: `bunny-alpha-1` (fresh review context, a different agent
+instance from the implementer `bunny-alpha-2`); this review is independent of
+the implementation session.
 
 ## Unknowns
 
