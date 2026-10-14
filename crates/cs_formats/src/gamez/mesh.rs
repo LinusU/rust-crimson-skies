@@ -360,14 +360,17 @@ impl RawMesh {
         let before = topology.triangles.len();
         topology
             .triangles
-            .extend(triangles.into_iter().enumerate().map(|(step, corners)| {
-                MeshTriangle {
-                    polygon,
-                    step,
-                    corners,
-                    positions: corners.map(|c| face.corners[c].position),
-                }
-            }));
+            .extend(
+                triangles
+                    .into_iter()
+                    .enumerate()
+                    .map(|(step, corners)| MeshTriangle {
+                        polygon,
+                        step,
+                        corners,
+                        positions: corners.map(|c| face.corners[c].position),
+                    }),
+            );
         let added = &topology.triangles[before..];
         FaceStatus::Decoded {
             triangles: added.len(),

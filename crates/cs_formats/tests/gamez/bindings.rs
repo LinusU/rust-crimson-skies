@@ -17,8 +17,8 @@ use cs_formats::ParseContext;
 use cs_formats::gamez::reader::Fixup;
 use cs_formats::gamez::{
     GameZMeshes, GameZNodeError, GameZNodes, MeshSlotIssue, NODE_INDEX_TOP, NODE_SLOT_BYTES,
-    NodeMeshBindings, NodeMeshFinding, OBJECT3D_DATA_BYTES, OBJECT3D_FLAGS_IDENTITY, RemovedBinding,
-    UNK08_PLANES, read_gamez_meshes, read_gamez_nodes,
+    NodeMeshBindings, NodeMeshFinding, OBJECT3D_DATA_BYTES, OBJECT3D_FLAGS_IDENTITY,
+    RemovedBinding, UNK08_PLANES, read_gamez_meshes, read_gamez_nodes,
 };
 
 use super::reader::{
@@ -783,14 +783,26 @@ impl Corpus {
 fn accept_f10_d_retail_dzpath_route_nodes_are_removed_at_load_and_never_drawn() {
     /// `(spelling, removed nodes, bound removed nodes, never-drawn slots)`.
     const EXPECTED: [(&str, usize, usize, &[u32]); 9] = [
-        ("ZBD/C1/gamez.zbd", 7, 6, &[998, 999, 1000, 1001, 1002, 1003]),
-        ("ZBD/C1B/gamez.zbd", 8, 7, &[432, 433, 434, 435, 436, 437, 438]),
+        (
+            "ZBD/C1/gamez.zbd",
+            7,
+            6,
+            &[998, 999, 1000, 1001, 1002, 1003],
+        ),
+        (
+            "ZBD/C1B/gamez.zbd",
+            8,
+            7,
+            &[432, 433, 434, 435, 436, 437, 438],
+        ),
         ("ZBD/C1C/gamez.zbd", 0, 0, &[]),
         (
             "ZBD/C2/gamez.zbd",
             14,
             13,
-            &[593, 594, 595, 596, 597, 598, 599, 600, 601, 602, 603, 604, 605],
+            &[
+                593, 594, 595, 596, 597, 598, 599, 600, 601, 602, 603, 604, 605,
+            ],
         ),
         ("ZBD/C2B/gamez.zbd", 0, 0, &[]),
         ("ZBD/C3/gamez.zbd", 6, 5, &[802, 803, 804, 805, 806]),
@@ -807,9 +819,9 @@ fn accept_f10_d_retail_dzpath_route_nodes_are_removed_at_load_and_never_drawn() 
             35,
             34,
             &[
-                949, 950, 951, 952, 953, 954, 955, 956, 957, 958, 959, 960, 961, 962, 963,
-                964, 965, 966, 967, 968, 969, 970, 971, 972, 973, 974, 975, 976, 977, 978,
-                979, 980, 981, 982,
+                949, 950, 951, 952, 953, 954, 955, 956, 957, 958, 959, 960, 961, 962, 963, 964,
+                965, 966, 967, 968, 969, 970, 971, 972, 973, 974, 975, 976, 977, 978, 979, 980,
+                981, 982,
             ],
         ),
         ("ZBD/planes.zbd", 0, 0, &[]),
@@ -817,16 +829,15 @@ fn accept_f10_d_retail_dzpath_route_nodes_are_removed_at_load_and_never_drawn() 
 
     for (spelling, removed_nodes, bound_removed, never_drawn) in EXPECTED {
         let path = Path::new(&game_dir()).join(spelling);
-        let bytes = std::fs::read(&path)
-            .unwrap_or_else(|error| panic!("{spelling} must read: {error}"));
+        let bytes =
+            std::fs::read(&path).unwrap_or_else(|error| panic!("{spelling} must read: {error}"));
         let nodes = read_gamez_nodes(&mut ParseContext::with_defaults(spelling), &bytes)
             .unwrap_or_else(|error| panic!("{spelling}: the node array must read, got {error}"));
-        let meshes = read_gamez_meshes(
-            &mut ParseContext::with_defaults(spelling),
-            spelling,
-            &bytes,
-        )
-        .unwrap_or_else(|error| panic!("{spelling}: the mesh section must read, got {error}"));
+        let meshes =
+            read_gamez_meshes(&mut ParseContext::with_defaults(spelling), spelling, &bytes)
+                .unwrap_or_else(|error| {
+                    panic!("{spelling}: the mesh section must read, got {error}")
+                });
 
         // The removal is the prefix plus the subtree, and every bound node it
         // takes is a `dzpath` name: nothing else of the container is removed.
