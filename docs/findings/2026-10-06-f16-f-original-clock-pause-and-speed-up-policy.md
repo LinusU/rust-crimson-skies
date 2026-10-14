@@ -30,8 +30,12 @@ the correction of the same date). The answers are then **declared in code**
   fixed ticks); one was filed as **#721** and is now **resolved** — F16-F-CAP
   adopted the original's 0.125 s frame-dt cap as `MAX_FRAME_DT`
   (`docs/findings/2026-10-14-f16-f-cap-frame-dt-cap-decision.md`) — and one
-  remains open as **#722** (the original's speed-up scales the cooldown and
-  objective timers, the project's gameplay clock grants no local authority).
+  was filed as **#722** and is now **decided and implemented** (see the
+  update at the end): the session driver commits the 2× as whole fixed ticks
+  and feeds them to the gameplay timers, so the comparison computes
+  `speed-up.reaches-gameplay-timers` as **agrees** and the two
+  spec-decided divergences (`clock.tick-source`, `speed-up.mechanism`)
+  remain.
 * What only a run could give — measured frame pacing, the distribution of
   frame deltas, timing uncertainty — stays **unmeasured** and is recorded as
   such below.
@@ -211,7 +215,7 @@ produces 14 findings:
 | `timers.player-down-gate` | not-modeled | mission update skipped while the player is down ↔ `GameplayTimeline` has no player-down gate |
 | `speed-up.network-gate` | agrees | 2× only while not networked ↔ single player `AdvanceFixedTicks`, multiplayer `NoLocalAuthority` |
 | `speed-up.mechanism` | **diverges** | one-frame 2× multiplier on the variable dt ↔ whole fixed ticks |
-| `speed-up.reaches-gameplay-timers` | **diverges** | everything reading dt scales ↔ authoritative gameplay grants no local authority |
+| `speed-up.reaches-gameplay-timers` | **agrees** (since #722, update below) | everything reading dt scales ↔ the session driver commits the 2× as whole ticks on the session clock and feeds the total to both gameplay timers |
 | `speed-up.default-binding` | not-modeled | no default binding ↔ the clock API exists, the input layer binds no speed-up command yet |
 
 ## Divergences recorded and filed (acceptance criterion 4)
@@ -221,7 +225,7 @@ produces 14 findings:
 | `clock.tick-source` — the original's variable dt versus the project's fixed 64 Hz tick | **Owner decision already standing:** F16 non-negotiable 3 ("simulation time is integer tick count with fixed dt") and 4. Recorded here, not changed. The 64 Hz rate itself is a designed development value, not a measured original rate. |
 | `speed-up.mechanism` — the original's 2× variable-dt multiplier versus whole fixed ticks | **Owner decision already standing:** F16 non-negotiable 4 ("speed-up advances fixed ticks, not a variable dt"). Recorded here, not changed. |
 | `clock.frame-dt-cap` — the original clamps every frame to 0.125 s, `SimClock::advance` was unbounded | **Resolved: #721** (`F16-F-CAP`) adopted the measured bound as `MAX_FRAME_DT`, enforced inside `SimClock::advance`; the finding now reports `agrees`. Decision: `docs/findings/2026-10-14-f16-f-cap-frame-dt-cap-decision.md`. |
-| `speed-up.reaches-gameplay-timers` — the original's speed-up scales cooldowns and objective timers, `ClockPolicy::authoritative_gameplay` grants no local authority and `GameplayTimeline::advance_fixed_ticks` always refuses | **Filed: #722** (`F16-F-SPEEDUP`) — decide how extra fixed ticks reach the gameplay timers, or accept the divergence; keep the multiplayer refusal and AC04. |
+| `speed-up.reaches-gameplay-timers` — the original's speed-up scales cooldowns and objective timers, `ClockPolicy::authoritative_gameplay` grants no local authority and `GameplayTimeline::advance_fixed_ticks` always refuses | **Decided and implemented: #722** (`F16-F-SPEEDUP`, 2026-10-14, update below) — the session driver commits the frame's whole ticks on the session clock, commits the same whole ticks again on a 2× request and feeds the total to the gameplay timeline; multiplayer still refuses with `NoSpeedUpAuthority` before anything moves and pause still freezes both timers (AC04). The comparison now reports this finding as **agrees**. |
 
 F16-F changed no `ClockPolicy`/`PausePolicy` pairing and touched no
 `accept_f16_d_` test; #721 later extended those tests for the adopted cap.
@@ -317,10 +321,11 @@ No command needed `CS_GAME_DIR`, and no `accept_f16_f_` test is `#[ignore]`d;
   the original's 0.125 s frame-dt cap as `MAX_FRAME_DT`, enforced inside
   `SimClock::advance` with the excess dropped. Decision and consequences:
   `docs/findings/2026-10-14-f16-f-cap-frame-dt-cap-decision.md`.
-- **#722 (`F16-F-SPEEDUP`)** — still open: decide how single-player speed-up
-  reaches weapon cooldowns and objective timers. It is `todo` with
-  `ordinary build/test` as the required capability and may not be settled by
-  silently changing a policy pairing.
+- **#722 (`F16-F-SPEEDUP`)** — **decided and implemented** 2026-10-14: the
+  session driver commits the 2× as whole fixed ticks on the session clock
+  and feeds the committed total to the gameplay timers; multiplayer still
+  refuses and pause still freezes both timers. See the update at the end of
+  this entry.
 
 ## Wiring edits (outside owner paths, logic-free)
 
@@ -331,3 +336,70 @@ public module, and the new test file is auto-discovered by Cargo. No
 No protected path, original datum or binary file is involved: the only
 original-derived values committed are virtual addresses, behaviour in prose
 and one sha256.
+
+## Update, 2026-10-14 — F16-F-SPEEDUP (#722): the decided wiring
+
+`speed-up.reaches-gameplay-timers` is no longer an open divergence. The
+decision follows from the two owner decisions already on record: the owner's
+static analysis and note on #391 (2026-10-05) that in the original both
+timers "stop together on pause, and both scale together with the speed-up",
+and F16 non-negotiable 4 (spec) that single-player speed-up advances whole
+fixed ticks, never a variable dt. The question the divergence posed — *how
+do extra fixed ticks from the session driver reach `GameplayTimeline`'s
+timers* — is answered by the wiring now implemented in
+`crates/cs_sim/src/time.rs`:
+
+* **`SessionDriver`** owns the session's simulation clock together with the
+  `GameplayTimeline`. `advance_frame(elapsed, SpeedUpRequest)` commits the
+  frame's whole ticks on the **session clock** — the one clock whose
+  `ClockPolicy` grants (`single_player_simulation`) or refuses
+  (`multiplayer_simulation`) local speed-up authority — and, on a
+  `SpeedUpRequest::On` frame, commits the very same whole ticks again there
+  as extra fixed ticks: the original's measured 2× as whole ticks. The
+  frame's total is then fed to the timeline, which applies it to the weapon
+  cooldown and the objective timer, so both scale with the speed-up exactly
+  as the original's single `game_dt` scaled.
+* **The refusal boundary is untouched** (acceptance criterion 2): the
+  multiplayer session clock grants no authority, so a sped-up frame is
+  refused with `TimeError::NoSpeedUpAuthority` *before anything mutates*,
+  and `GameplayTimeline::advance_fixed_ticks` still refuses for every
+  caller — the timeline's new private commit path bypasses the *speed-up*
+  authority check only, never the pause or overflow checks, and is reachable
+  only through `SessionDriver`.
+* **Pause still freezes both timers** (AC04): a paused frame returns zero
+  before anything else, whether or not a speed-up was requested, and no
+  paused time is banked for resume.
+
+The comparison's `speed-up.reaches-gameplay-timers` finding is now
+**computed by measuring that wiring**, not by reading a declared constant:
+`compare_project_clocks` drives one sped-up second through the production
+`SessionDriver` at the compared rate and agrees only when both timers and
+the session clock advance by exactly twice the plain frame's ticks *and* the
+multiplayer frame is refused with `NoSpeedUpAuthority` before anything
+moves. If the wiring ever stops working, the finding flips back to
+`diverges` on its own. With `speed-up.network-gate` still `agrees` and
+`speed-up.mechanism` still `diverges` (whole fixed ticks are spec-decided),
+the comparison at 64 Hz now reports **two** divergences:
+`clock.tick-source` and `speed-up.mechanism`. (#721, which landed on main
+the same day, had already moved `clock.frame-dt-cap` to `agrees` by adopting
+the measured cap as `MAX_FRAME_DT`.) The tables above record the comparison
+as it stood when F16-F was written.
+
+Tests (all driving production code, prefix `accept_f16_f_`):
+
+| Test | Covers |
+| --- | --- |
+| `accept_f16_f_two_x_speed_up_advances_cooldown_and_objective_by_twice_the_ticks` (`crates/cs_sim/tests/accept_f16_f_speed_up_reaches_gameplay_timers.rs`) | the decided behaviour: ten lockstep frames where every `SpeedUpRequest::On` frame commits exactly twice the plain frame's whole ticks, both timers and both clocks moving in one lockstep count, 64 → 128 ticks over a second |
+| `accept_f16_f_multiplayer_session_refuses_the_sped_up_frame` | the same frame refused with `NoSpeedUpAuthority`, nothing mutated, ordinary frames still running |
+| `accept_f16_f_paused_session_frame_commits_nothing_even_when_sped_up` | AC04 through the driver: paused frames commit nothing even with the speed-up requested, resume banks nothing |
+| `accept_f16_f_driver_fed_ticks_respect_pause_and_overflow` (`crates/cs_sim/src/time.rs`, module tests) | the private commit path refuses a paused timeline and a wrapping counter, so it cannot become a back door around AC04 |
+| `accept_f16_f_comparison_agrees_on_speed_up_reaching_gameplay_timers` | the relation is `agrees`, points at #722, and the remaining divergences (`clock.tick-source`, `speed-up.mechanism`) are unchanged |
+
+The pinned three-way split in
+`crates/cs_sim/tests/accept_f16_f_original_clock_policy_comparison.rs` was
+updated accordingly — after #721's concurrent change it pins **two**
+divergences, `clock.tick-source` and `speed-up.mechanism`; no
+`accept_f16_d_` or `accept_f16_f_` test was weakened or deleted, and no
+`ClockPolicy`/`PausePolicy` pairing changed —
+`ClockPolicy::authoritative_gameplay` still grants no local authority. No
+`Cargo.toml`, `Cargo.lock` or `src/lib.rs` change was needed.
