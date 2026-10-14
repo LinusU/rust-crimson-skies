@@ -898,16 +898,16 @@ pub struct Objective {
 /// sort. Both now carry a source label (F37-D-FU2, [`crate::runtime::RuleSource`]):
 ///
 /// - **Execution order** is declaration order — the program's own index order.
-///   Within one tick the objectives resolve in the order they are declared
-///   here, then the deferred work queue drains. When two objectives write the
-///   same variable on the same tick, the later declaration's write is the one
-///   that lands. The *index order* matches what the owner measured in the
-///   original's completion scan (lowest index first,
-///   [`crate::runtime::TICK_ORDERING_RULE`]), but the original completes
-///   **at most one** objective per tick and this runtime completes every
-///   satisfied one — that divergence is the machine-readable
-///   `f37.d.limit.one_completion_per_tick` entry in
-///   [`crate::runtime::RULE_LIMITATIONS`].
+///   Within one tick the completion scan walks the objectives in the order
+///   they are declared here and admits **at most one**: the lowest
+///   declaration index whose condition holds — the rule the owner measured in
+///   the original's completion scan (lowest index first,
+///   [`crate::runtime::TICK_ORDERING_RULE`]) and the rule this runtime
+///   follows. Every condition is still evaluated each tick, so a satisfied
+///   objective that loses the scan stays unfired and is re-evaluated on a
+///   later tick. The admitted objective's actions run, then the deferred work
+///   queue drains — when the queue and the admitted objective write the same
+///   variable on the same tick, the queue's write is the one that lands.
 /// - **Observation order** is [`crate::runtime::EventKey`]: session, tick,
 ///   source symbol, sequence. It does not depend on declaration order at all,
 ///   so the same objectives declared in any order report the same event
