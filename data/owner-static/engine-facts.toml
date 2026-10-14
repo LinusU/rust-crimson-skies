@@ -1,0 +1,424 @@
+# Owner-static engine facts (task #1432, OWNER-FACTS-TABLE).
+#
+# Owner ruling of 2026-10-14: facts and small tables recovered from the
+# owner-supplied decrypted engine image may be committed to the repository,
+# with citations. The executable itself, disassembly and decompiled code may
+# not. Numbers and tables are facts, not code.
+#
+# Every row carries a `claim` id (the OWNER-STATIC-<date> id the fact was
+# recorded under), the deciding virtual address `va` in the image (the file
+# offset is `va - image_va_base`), and `provenance`. `static` means static
+# analysis of the image; `designed` means an engine-authored development
+# value the launch uses because the original's own value is not recovered.
+# Nothing here is `verified_original`: no original executable ran.
+#
+# The launch binds from this file only when `CS_ENGINE_IMAGE` does not name
+# the image (crates/cs_app/src/mission_start.rs); when it does, the image
+# itself is the source and the ignored owner_facts_table image test re-reads
+# these cited bytes so the table cannot silently drift.
+#
+# This file is parsed by crates/cs_app/src/engine_facts.rs, which accepts
+# exactly the strict subset of TOML written here — comments, `key = value`
+# scalars (string, integer in decimal or 0x hex, float, boolean), `[table]`
+# headers and `[[row]]` arrays. An edit outside that subset fails the parse
+# loudly, never silently.
+
+schema_version = 1
+image = "crimson.decrypted.exe"
+image_sha256 = "43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75"
+image_va_base = 0x400000
+
+# The stored-heading convention (#770, finding
+# docs/findings/2026-10-08-m01-lc-campaign-airframe-engine-state.md): the
+# sequence at `va` loads the record's field-2 degrees, multiplies by the
+# image's own f64 at `constant_va` (π/180 to fourteen digits, not the double
+# nearest π/180) and passes the f32 result to SetRotation(node, 0, yaw, 0).
+[heading]
+claim = "OWNER-STATIC-2026-10-08"
+provenance = "static"
+va = 0x47c4e5
+bytes = 0x1c
+constant_va = 0x6040e8
+degrees_to_radians = 0.01745329251994
+zero = "a yaw of 0 leaves the node's local axes on the world axes"
+positive = "a positive yaw turns the local +Z axis toward +X"
+compose = "0x53bf40 composes the (pitch, yaw, roll) triple stored at class+0x1c as M = Ry * Rx * Rz with right-handed matrices; the HUD's compass is given SetRotation(compass, 0, -yaw, 0) at 0x49f8ec and counter-rotates"
+
+# The stored-position unit (#436 owner note of 2026-10-05): world units are
+# metres, +Y up, right-handed; stored positions map to the canonical frame
+# with an identity axis map and scale 1.0. `va` is the feet conversion site;
+# the m/s to mph conversion at 0x453aa2 agrees.
+[position]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x48fc40
+metres_per_unit = 1.0
+axes = "metres, +Y up, right-handed, identity axis map to the canonical frame; 0x48fc40 converts position.y to feet with *3.2808399 and 0x453aa2 converts m/s to mph with *2.2369363"
+
+# The executable's airframe table (#715, finding
+# docs/findings/2026-10-06-m01-lc-player-airframe-source.md): eleven rows of
+# seven pointers, 0x620c70..0x620da4, in index order — the table the
+# name-to-index routine at 0x426d80 resolves `player_plane` names through
+# (comparing case-insensitively and answering 11 for no match). The fields of
+# each row below are written in the image's own pointer order — display,
+# scene_root, p, r, w, model, base — of which only three meanings are
+# measured: `display` is what a document writes and the routine compares,
+# `scene_root` is the node support\planes.gw creates, and `model` is the
+# common\planes\<model>\<model>.flt it loads. The remaining four pointers
+# are transcribed but uninterpreted — row 5's `w` field is the literal
+# `wingman`, not `wdevastator`, and `p` is the record name the launch's
+# flight law consumes.
+[[airframe]]
+index = 0
+va = 0x620c70
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+display = "Autogyro"
+scene_root = "player_autogyro"
+p = "pautogyro"
+r = "rautogyro"
+w = "wautogyro"
+model = "autogyro"
+base = "autogyro"
+
+[[airframe]]
+index = 1
+va = 0x620c8c
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+display = "Hellhound"
+scene_root = "player_avenger"
+p = "pavenger"
+r = "ravenger"
+w = "wavenger"
+model = "avenger"
+base = "avenger"
+
+[[airframe]]
+index = 2
+va = 0x620ca8
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+display = "Balmoral"
+scene_root = "player_balmoral"
+p = "pbalmoral"
+r = "rbalmoral"
+w = "wbalmoral"
+model = "balmoral"
+base = "balmoral"
+
+[[airframe]]
+index = 3
+va = 0x620cc4
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+display = "Bloodhawk"
+scene_root = "player_bhawk"
+p = "pbloodhawk"
+r = "rbloodhawk"
+w = "wbloodhawk"
+model = "bloodhawk"
+base = "bloodhawk"
+
+[[airframe]]
+index = 4
+va = 0x620ce0
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+display = "Brigand"
+scene_root = "player_brigand"
+p = "pbrigand"
+r = "rbrigand"
+w = "wbrigand"
+model = "brigand"
+base = "brigand"
+
+[[airframe]]
+index = 5
+va = 0x620cfc
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+display = "Devastator"
+scene_root = "player_pfighter"
+p = "pdevastator"
+r = "rdevastator"
+w = "wingman"
+model = "piratefighter"
+base = "devastator"
+
+[[airframe]]
+index = 6
+va = 0x620d18
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+display = "Firebrand"
+scene_root = "player_fbrand"
+p = "pfirebrand"
+r = "rfirebrand"
+w = "wfirebrand"
+model = "firebrand"
+base = "firebrand"
+
+[[airframe]]
+index = 7
+va = 0x620d34
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+display = "Fury"
+scene_root = "player_fury"
+p = "pfury"
+r = "rfury"
+w = "wfury"
+model = "fury"
+base = "fury"
+
+[[airframe]]
+index = 8
+va = 0x620d50
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+display = "Kestrel"
+scene_root = "player_kestrel"
+p = "pkestrel"
+r = "rkestrel"
+w = "wkestrel"
+model = "kestrel"
+base = "kestrel"
+
+[[airframe]]
+index = 9
+va = 0x620d6c
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+display = "Peacemaker"
+scene_root = "player_peacemaker"
+p = "ppeacemaker"
+r = "rpeacemaker"
+w = "wpeacemaker"
+model = "peacemaker"
+base = "peacemaker"
+
+[[airframe]]
+index = 10
+va = 0x620d88
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+display = "Warhawk"
+scene_root = "player_warhawk"
+p = "pwarhawk"
+r = "rwarhawk"
+w = "wwarhawk"
+model = "warhawk"
+base = "warhawk"
+
+# The per-mission player airframe: one row per campaign mission directory in
+# the installation. `status = "known"` rows carry the deciding `va` (the
+# `.data` plane-roster record a fresh, profile-less campaign launch copies,
+# whose +0x2c dword is `airframe_index`) and `record` — that airframe row's
+# `p` field, the vehicle.zrd record the flight law imports. `status =
+# "unknown"` rows carry `reason` instead: the refusal is the claim.
+#
+# #770 measured the engine-side default for every fresh, profile-less
+# campaign launch (roster init 0x4113b0, selection index 0x411477 = 0,
+# roster[0] +0x2c = 5, setter 0x41712c, spawn 0x474d48). It is committed as
+# M01's player airframe because M01's launch is the measured path; for every
+# other campaign mission no per-mission claim is committed — whether the
+# mission's undecoded program or campaign progression changes the selection
+# before launch is unmeasured.
+[[mission]]
+dir = "zbd/c1c/m01"
+label = "M01"
+status = "known"
+claim = "OWNER-STATIC-2026-10-08"
+provenance = "static"
+va = 0x61a81c
+airframe_index = 5
+record = "pdevastator"
+
+[[mission]]
+dir = "zbd/c1/m02"
+label = "M02"
+status = "unknown"
+claim = "OWNER-STATIC-2026-10-14"
+provenance = "static"
+reason = "no per-mission player airframe is committed for this mission: no campaign archive carries the player_plane key (#715), and whether campaign progression or the mission's undecoded mission-language statements (F13-B/C, F38) change the measured fresh-profile default before launch is unmeasured; the launch keeps the airframe unknown rather than assert the default"
+
+[[mission]]
+dir = "zbd/c1b/m03"
+label = "M03"
+status = "unknown"
+claim = "OWNER-STATIC-2026-10-14"
+provenance = "static"
+reason = "no per-mission player airframe is committed for this mission: no campaign archive carries the player_plane key (#715), and whether campaign progression or the mission's undecoded mission-language statements (F13-B/C, F38) change the measured fresh-profile default before launch is unmeasured; the launch keeps the airframe unknown rather than assert the default"
+
+[[mission]]
+dir = "zbd/c1/m04"
+label = "M04"
+status = "unknown"
+claim = "OWNER-STATIC-2026-10-14"
+provenance = "static"
+reason = "no per-mission player airframe is committed for this mission: no campaign archive carries the player_plane key (#715), and whether campaign progression or the mission's undecoded mission-language statements (F13-B/C, F38) change the measured fresh-profile default before launch is unmeasured; the launch keeps the airframe unknown rather than assert the default"
+
+[[mission]]
+dir = "zbd/c1/m05"
+label = "M05"
+status = "unknown"
+claim = "OWNER-STATIC-2026-10-14"
+provenance = "static"
+reason = "no per-mission player airframe is committed for this mission: no campaign archive carries the player_plane key (#715), and whether campaign progression or the mission's undecoded mission-language statements (F13-B/C, F38) change the measured fresh-profile default before launch is unmeasured; the launch keeps the airframe unknown rather than assert the default"
+
+[[mission]]
+dir = "zbd/c2/m01"
+label = "M06"
+status = "unknown"
+claim = "OWNER-STATIC-2026-10-14"
+provenance = "static"
+reason = "no per-mission player airframe is committed for this mission: no campaign archive carries the player_plane key (#715), and whether campaign progression or the mission's undecoded mission-language statements (F13-B/C, F38) change the measured fresh-profile default before launch is unmeasured; the launch keeps the airframe unknown rather than assert the default"
+
+[[mission]]
+dir = "zbd/c2/m02"
+label = "M07"
+status = "unknown"
+claim = "OWNER-STATIC-2026-10-14"
+provenance = "static"
+reason = "no per-mission player airframe is committed for this mission: no campaign archive carries the player_plane key (#715), and whether campaign progression or the mission's undecoded mission-language statements (F13-B/C, F38) change the measured fresh-profile default before launch is unmeasured; the launch keeps the airframe unknown rather than assert the default"
+
+[[mission]]
+dir = "zbd/c2/m03"
+label = "M08"
+status = "unknown"
+claim = "OWNER-STATIC-2026-10-14"
+provenance = "static"
+reason = "no per-mission player airframe is committed for this mission: no campaign archive carries the player_plane key (#715), and whether campaign progression or the mission's undecoded mission-language statements (F13-B/C, F38) change the measured fresh-profile default before launch is unmeasured; the launch keeps the airframe unknown rather than assert the default"
+
+[[mission]]
+dir = "zbd/c2b/m04"
+status = "unknown"
+claim = "OWNER-STATIC-2026-10-14"
+provenance = "static"
+reason = "no per-mission player airframe is committed for this mission: no campaign archive carries the player_plane key (#715), and whether campaign progression or the mission's undecoded mission-language statements (F13-B/C, F38) change the measured fresh-profile default before launch is unmeasured; the launch keeps the airframe unknown rather than assert the default"
+
+[[mission]]
+dir = "zbd/c2/m05"
+label = "M10"
+status = "unknown"
+claim = "OWNER-STATIC-2026-10-14"
+provenance = "static"
+reason = "no per-mission player airframe is committed for this mission: no campaign archive carries the player_plane key (#715), and whether campaign progression or the mission's undecoded mission-language statements (F13-B/C, F38) change the measured fresh-profile default before launch is unmeasured; the launch keeps the airframe unknown rather than assert the default"
+
+[[mission]]
+dir = "zbd/c3/m01"
+status = "unknown"
+claim = "OWNER-STATIC-2026-10-14"
+provenance = "static"
+reason = "no per-mission player airframe is committed for this mission: no campaign archive carries the player_plane key (#715), and whether campaign progression or the mission's undecoded mission-language statements (F13-B/C, F38) change the measured fresh-profile default before launch is unmeasured; the launch keeps the airframe unknown rather than assert the default"
+
+[[mission]]
+dir = "zbd/c3/m02"
+label = "M12"
+status = "unknown"
+claim = "OWNER-STATIC-2026-10-14"
+provenance = "static"
+reason = "no per-mission player airframe is committed for this mission: no campaign archive carries the player_plane key (#715), and whether campaign progression or the mission's undecoded mission-language statements (F13-B/C, F38) change the measured fresh-profile default before launch is unmeasured; the launch keeps the airframe unknown rather than assert the default"
+
+[[mission]]
+dir = "zbd/c3/m03"
+label = "M13"
+status = "unknown"
+claim = "OWNER-STATIC-2026-10-14"
+provenance = "static"
+reason = "no per-mission player airframe is committed for this mission: no campaign archive carries the player_plane key (#715), and whether campaign progression or the mission's undecoded mission-language statements (F13-B/C, F38) change the measured fresh-profile default before launch is unmeasured; the launch keeps the airframe unknown rather than assert the default"
+
+[[mission]]
+dir = "zbd/c3/m04"
+status = "unknown"
+claim = "OWNER-STATIC-2026-10-14"
+provenance = "static"
+reason = "no per-mission player airframe is committed for this mission: no campaign archive carries the player_plane key (#715), and whether campaign progression or the mission's undecoded mission-language statements (F13-B/C, F38) change the measured fresh-profile default before launch is unmeasured; the launch keeps the airframe unknown rather than assert the default"
+
+[[mission]]
+dir = "zbd/c3/m05"
+status = "unknown"
+claim = "OWNER-STATIC-2026-10-14"
+provenance = "static"
+reason = "no per-mission player airframe is committed for this mission: no campaign archive carries the player_plane key (#715), and whether campaign progression or the mission's undecoded mission-language statements (F13-B/C, F38) change the measured fresh-profile default before launch is unmeasured; the launch keeps the airframe unknown rather than assert the default"
+
+[[mission]]
+dir = "zbd/c4/m01"
+label = "M16"
+status = "unknown"
+claim = "OWNER-STATIC-2026-10-14"
+provenance = "static"
+reason = "no per-mission player airframe is committed for this mission: no campaign archive carries the player_plane key (#715), and whether campaign progression or the mission's undecoded mission-language statements (F13-B/C, F38) change the measured fresh-profile default before launch is unmeasured; the launch keeps the airframe unknown rather than assert the default"
+
+[[mission]]
+dir = "zbd/c4/m02"
+label = "M17"
+status = "unknown"
+claim = "OWNER-STATIC-2026-10-14"
+provenance = "static"
+reason = "no per-mission player airframe is committed for this mission: no campaign archive carries the player_plane key (#715), and whether campaign progression or the mission's undecoded mission-language statements (F13-B/C, F38) change the measured fresh-profile default before launch is unmeasured; the launch keeps the airframe unknown rather than assert the default"
+
+[[mission]]
+dir = "zbd/c4/m03"
+label = "M18"
+status = "unknown"
+claim = "OWNER-STATIC-2026-10-14"
+provenance = "static"
+reason = "no per-mission player airframe is committed for this mission: no campaign archive carries the player_plane key (#715), and whether campaign progression or the mission's undecoded mission-language statements (F13-B/C, F38) change the measured fresh-profile default before launch is unmeasured; the launch keeps the airframe unknown rather than assert the default"
+
+[[mission]]
+dir = "zbd/c4/m04"
+label = "M19"
+status = "unknown"
+claim = "OWNER-STATIC-2026-10-14"
+provenance = "static"
+reason = "no per-mission player airframe is committed for this mission: no campaign archive carries the player_plane key (#715), and whether campaign progression or the mission's undecoded mission-language statements (F13-B/C, F38) change the measured fresh-profile default before launch is unmeasured; the launch keeps the airframe unknown rather than assert the default"
+
+[[mission]]
+dir = "zbd/c4/m05"
+status = "unknown"
+claim = "OWNER-STATIC-2026-10-14"
+provenance = "static"
+reason = "no per-mission player airframe is committed for this mission: no campaign archive carries the player_plane key (#715), and whether campaign progression or the mission's undecoded mission-language statements (F13-B/C, F38) change the measured fresh-profile default before launch is unmeasured; the launch keeps the airframe unknown rather than assert the default"
+
+[[mission]]
+dir = "zbd/c5/m01"
+label = "M21"
+status = "unknown"
+claim = "OWNER-STATIC-2026-10-14"
+provenance = "static"
+reason = "no per-mission player airframe is committed for this mission: no campaign archive carries the player_plane key (#715), and whether campaign progression or the mission's undecoded mission-language statements (F13-B/C, F38) change the measured fresh-profile default before launch is unmeasured; the launch keeps the airframe unknown rather than assert the default"
+
+[[mission]]
+dir = "zbd/c5/m02"
+status = "unknown"
+claim = "OWNER-STATIC-2026-10-14"
+provenance = "static"
+reason = "no per-mission player airframe is committed for this mission: no campaign archive carries the player_plane key (#715), and whether campaign progression or the mission's undecoded mission-language statements (F13-B/C, F38) change the measured fresh-profile default before launch is unmeasured; the launch keeps the airframe unknown rather than assert the default"
+
+[[mission]]
+dir = "zbd/c5/m03"
+status = "unknown"
+claim = "OWNER-STATIC-2026-10-14"
+provenance = "static"
+reason = "no per-mission player airframe is committed for this mission: no campaign archive carries the player_plane key (#715), and whether campaign progression or the mission's undecoded mission-language statements (F13-B/C, F38) change the measured fresh-profile default before launch is unmeasured; the launch keeps the airframe unknown rather than assert the default"
+
+[[mission]]
+dir = "zbd/c5/m04"
+label = "M24"
+status = "unknown"
+claim = "OWNER-STATIC-2026-10-14"
+provenance = "static"
+reason = "no per-mission player airframe is committed for this mission: no campaign archive carries the player_plane key (#715), and whether campaign progression or the mission's undecoded mission-language statements (F13-B/C, F38) change the measured fresh-profile default before launch is unmeasured; the launch keeps the airframe unknown rather than assert the default"
+
+# Development values the launch uses because the original's own are not
+# recovered. `status = "designed"` values are choices, never measurements —
+# they exist so a launch does not refuse on an unknown it cannot resolve.
+[[provisional]]
+name = "player_spawn_speed_m_s"
+status = "designed"
+claim = "OWNER-STATIC-2026-10-14"
+provenance = "designed"
+value = 55.0
+reason = "the original's player spawn speed was never recovered (#796 records it as an open unknown, unresolved until an original run, #358), so the spawn velocity the launch gives the player is a declared development value — below the imported fd_speed cruise so a free flight begins with a run-up; it says nothing about the original"

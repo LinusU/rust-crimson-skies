@@ -724,6 +724,7 @@ pub mod control_lowering;
 pub mod damage;
 pub mod debris;
 pub mod diagnostics;
+pub mod engine_facts;
 pub mod environment;
 pub mod input;
 pub mod interaction;

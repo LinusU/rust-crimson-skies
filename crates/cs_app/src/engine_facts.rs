@@ -1,0 +1,1057 @@
+//! The committed owner-static engine-facts table.
+//!
+//! Task #1432 (`OWNER-FACTS-TABLE`), under the owner ruling of
+//! 2026-10-14: facts and small tables recovered from the owner-supplied
+//! decrypted executable may be committed to the repository with citations —
+//! the executable itself, disassembly and decompiled code may not.
+//!
+//! [`engine_facts`] parses the committed file
+//! `data/owner-static/engine-facts.toml`, embedded at build time. Every row
+//! carries a `claim` id (`OWNER-STATIC-<date>`), the deciding virtual
+//! address `va` in the image (a file offset is `va - image_va_base`), and a
+//! `provenance` of `static` — static analysis of the owner-supplied image —
+//! or `designed` for an engine-authored development value. Nothing in the
+//! file is `verified_original`: no original executable ran.
+//!
+//! The launch binds from this table when `$CS_ENGINE_IMAGE` does not name
+//! the measured image ([`crate::mission_start::MissionStartConfiguration::bind_engine_facts`]);
+//! when it does, the image itself is the source and the
+//! `accept_owner_facts_table_image_*` test re-reads these cited bytes, so
+//! the committed table cannot silently drift.
+//!
+//! The parser accepts exactly the strict TOML subset the file is written in:
+//! `#` comments, `key = value` scalars (string, decimal or `0x` integer,
+//! float, boolean), `[table]` headers and `[[row]]` arrays. Anything outside
+//! it — inline tables, value arrays, dotted keys, multi-line strings — is a
+//! parse error, so an edit the engine cannot read fails loudly instead of
+//! half-loading.
+
+use std::fmt;
+use std::sync::LazyLock;
+
+use cs_types::asset_id::SourceSpan;
+use cs_types::evidence::ClaimId;
+
+/// The committed table's repository-relative path, as errors and refusals
+/// spell it.
+pub const ENGINE_FACTS_PATH: &str = "data/owner-static/engine-facts.toml";
+
+/// The committed table's bytes, embedded at build time: the file cannot be
+/// missing at run time, only unparseable.
+const TABLE_TEXT: &str = include_str!("../../../data/owner-static/engine-facts.toml");
+
+/// The schema the committed file declares, checked before any row is read.
+const SCHEMA_VERSION: i64 = 1;
+
+/// The measured number of rows in the executable's airframe table
+/// (`.data` `0x620c70`..`0x620da4`, eleven rows of seven pointers).
+const AIRFRAME_ROWS: usize = 11;
+
+/// Byte stride of one airframe-table row (seven pointers).
+const AIRFRAME_STRIDE: u64 = 0x1c;
+
+/// The committed table, parsed once.
+///
+/// The file is committed and build-time embedded, so a parse failure is a
+/// defect in the checkout — the error names the line and key it refused
+/// rather than recovering a partial table.
+pub fn engine_facts() -> Result<&'static EngineFacts, EngineFactsError> {
+    static FACTS: LazyLock<Result<EngineFacts, EngineFactsError>> =
+        LazyLock::new(|| EngineFacts::parse(TABLE_TEXT));
+    match &*FACTS {
+        Ok(facts) => Ok(facts),
+        Err(error) => Err(error.clone()),
+    }
+}
+
+/// Why the committed table could not be read.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum EngineFactsError {
+    /// A line of `engine-facts.toml` is outside the accepted subset.
+    Parse {
+        /// The 1-based line number the refusal names.
+        line: usize,
+        /// What the line failed to be.
+        reason: String,
+    },
+    /// The parsed rows do not satisfy the table's schema — a missing section
+    /// or key, a value of the wrong kind, or a row that contradicts another.
+    Schema(String),
+}
+
+impl EngineFactsError {
+    fn schema(reason: impl Into<String>) -> Self {
+        Self::Schema(reason.into())
+    }
+}
+
+impl fmt::Display for EngineFactsError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Parse { line, reason } => {
+                write!(formatter, "{ENGINE_FACTS_PATH}:{line}: {reason}")
+            }
+            Self::Schema(reason) => write!(formatter, "{ENGINE_FACTS_PATH}: {reason}"),
+        }
+    }
+}
+
+impl std::error::Error for EngineFactsError {}
+
+/// The committed table, parsed and cross-checked.
+#[derive(Clone, Debug)]
+pub struct EngineFacts {
+    /// `crimson.decrypted.exe`, as the file names its evidence image.
+    image: String,
+    /// The sha256 the cited image must hash to.
+    image_sha256: String,
+    /// The virtual-address base of the image (`va - base` is a file offset).
+    image_va_base: u64,
+    /// The stored-heading convention row.
+    heading: HeadingFact,
+    /// The stored-position unit row.
+    position: PositionFact,
+    /// The eleven airframe rows, in index order.
+    airframes: Vec<AirframeFact>,
+    /// The per-mission player-airframe rows, in file order.
+    missions: Vec<MissionFact>,
+    /// The development-value rows.
+    provisionals: Vec<ProvisionalFact>,
+}
+
+/// The stored-heading convention: the image's own conversion of a record's
+/// field-2 value into the node's yaw.
+#[derive(Clone, Debug)]
+pub struct HeadingFact {
+    /// The claim id the fact was recorded under.
+    pub claim: String,
+    /// The deciding virtual address: the `fld`/`fmul`/`call SetRotation`
+    /// sequence (`0x47c4e5`).
+    pub va: u64,
+    /// The sequence's length in bytes.
+    pub bytes: u64,
+    /// The virtual address of the image's π/180 double (`0x6040e8`).
+    pub constant_va: u64,
+    /// That double's value, transcribed: `0.01745329251994`.
+    pub degrees_to_radians: f64,
+    /// What a zero yaw composes to.
+    pub zero: String,
+    /// What a positive yaw does to the node's axes.
+    pub positive: String,
+    /// How the stored triple composes (`M = Ry · Rx · Rz`).
+    pub compose: String,
+}
+
+/// The stored-position unit row.
+#[derive(Clone, Debug)]
+pub struct PositionFact {
+    /// The claim id the fact was recorded under.
+    pub claim: String,
+    /// The deciding virtual address (the feet conversion site `0x48fc40`).
+    pub va: u64,
+    /// Metres per stored unit — measured `1.0`.
+    pub metres_per_unit: f64,
+    /// The axes statement (`metres, +Y up, right-handed, identity axis map`).
+    pub axes: String,
+}
+
+/// One row of the executable's eleven-row airframe table.
+///
+/// `display`, `scene_root` and `model` are the measured meanings; `p`, `r`,
+/// `w` and `base` are the row's four other pointers, transcribed but
+/// uninterpreted — row 5's `w` is the literal `wingman`.
+#[derive(Clone, Debug)]
+pub struct AirframeFact {
+    /// The row's index in the table (0..10).
+    pub index: u32,
+    /// The row's virtual address (`0x620c70 + index * 0x1c`).
+    pub va: u64,
+    /// The claim id the row was recorded under.
+    pub claim: String,
+    /// The name a document's `player_plane` writes and `0x426d80` compares.
+    pub display: String,
+    /// The `player_*` scene root `support\planes.gw` creates.
+    pub scene_root: String,
+    /// The `common\planes\<model>` base name the script loads.
+    pub model: String,
+    /// The row's third pointer — the `p*` record name (`pdevastator` for
+    /// row 5); its selection is transcribed, not re-measured.
+    pub p: String,
+    /// The row's fourth pointer.
+    pub r: String,
+    /// The row's fifth pointer (literally `wingman` on row 5).
+    pub w: String,
+    /// The row's sixth pointer, a second base name.
+    pub base: String,
+}
+
+/// A campaign mission's committed player-airframe row.
+#[derive(Clone, Debug)]
+pub struct MissionFact {
+    /// The mission's logical directory key, e.g. `zbd/c1c/m01`.
+    pub dir: String,
+    /// The work-order label a committed binding gives it, when one does.
+    pub label: Option<String>,
+    /// The claim id the row was recorded under.
+    pub claim: String,
+    /// What the row commits.
+    pub airframe: MissionAirframe,
+}
+
+/// The player airframe a mission row commits.
+#[derive(Clone, Debug)]
+pub enum MissionAirframe {
+    /// A committed airframe: the airframe-table row the engine state
+    /// selects, the `p`-field record that row names, and the deciding
+    /// record's virtual address.
+    Known {
+        /// The selected airframe-table index (`5` for M01).
+        index: u32,
+        /// The `vehicle.zrd` record the row's `p` field spells
+        /// (`pdevastator`).
+        record: String,
+        /// The deciding `.data` record's virtual address (`0x61a81c`).
+        va: u64,
+    },
+    /// Explicitly not committed, with the reason the launch reports.
+    Unknown {
+        /// Why no airframe is committed for this mission.
+        reason: String,
+    },
+}
+
+/// One development value the launch uses because the original's own is not
+/// recovered — a declared design, never a measurement.
+#[derive(Clone, Debug)]
+pub struct ProvisionalFact {
+    /// The value's name (`player_spawn_speed_m_s`).
+    pub name: String,
+    /// `designed` or `provisional` — the label the task requires.
+    pub status: String,
+    /// The claim id the row was recorded under.
+    pub claim: String,
+    /// The value the launch uses.
+    pub value: f64,
+    /// Why the original's own value is not the one used.
+    pub reason: String,
+}
+
+impl EngineFacts {
+    /// Parses the committed table text, refusing anything outside the
+    /// declared subset or schema.
+    fn parse(text: &str) -> Result<Self, EngineFactsError> {
+        let document = subset::parse(text)?;
+        let schema = scalar_int_in(&document.root, "schema_version")?;
+        if schema != SCHEMA_VERSION {
+            return Err(EngineFactsError::schema(format!(
+                "schema_version is {schema}, this build reads {SCHEMA_VERSION}"
+            )));
+        }
+        let image = scalar_str_in(&document.root, "image")?;
+        let image_sha256 = scalar_str_in(&document.root, "image_sha256")?;
+        if image_sha256 != crate::mission_start::ENGINE_IMAGE_SHA256 {
+            return Err(EngineFactsError::schema(format!(
+                "image_sha256 {image_sha256} is not the measured {}",
+                crate::mission_start::ENGINE_IMAGE_SHA256
+            )));
+        }
+        let image_va_base = scalar_int_in(&document.root, "image_va_base")?;
+        if image_va_base <= 0 {
+            return Err(EngineFactsError::schema(
+                "image_va_base must be a positive virtual address",
+            ));
+        }
+        let image_va_base = image_va_base as u64;
+        let facts = Self {
+            image,
+            image_sha256,
+            image_va_base,
+            heading: heading_fact(&document, image_va_base)?,
+            position: position_fact(&document, image_va_base)?,
+            airframes: airframe_facts(&document, image_va_base)?,
+            missions: Vec::new(),
+            provisionals: provisional_facts(&document)?,
+        };
+        let missions = mission_facts(&document, &facts, image_va_base)?;
+        Ok(Self { missions, ..facts })
+    }
+
+    /// The image file name the table cites.
+    #[must_use]
+    pub fn image(&self) -> &str {
+        &self.image
+    }
+
+    /// The sha256 the table cites its image at.
+    #[must_use]
+    pub fn image_sha256(&self) -> &str {
+        &self.image_sha256
+    }
+
+    /// The stored-heading convention row.
+    #[must_use]
+    pub fn heading(&self) -> &HeadingFact {
+        &self.heading
+    }
+
+    /// The stored-position unit row.
+    #[must_use]
+    pub fn position(&self) -> &PositionFact {
+        &self.position
+    }
+
+    /// The eleven airframe-table rows, in index order.
+    #[must_use]
+    pub fn airframes(&self) -> &[AirframeFact] {
+        &self.airframes
+    }
+
+    /// The airframe-table row `index` names.
+    #[must_use]
+    pub fn airframe(&self, index: u32) -> Option<&AirframeFact> {
+        self.airframes.iter().find(|row| row.index == index)
+    }
+
+    /// The airframe-table row whose scene root is `scene_root`.
+    #[must_use]
+    pub fn airframe_by_scene_root(&self, scene_root: &str) -> Option<&AirframeFact> {
+        self.airframes
+            .iter()
+            .find(|row| row.scene_root == scene_root)
+    }
+
+    /// The per-mission player-airframe rows, in file order.
+    #[must_use]
+    pub fn missions(&self) -> &[MissionFact] {
+        &self.missions
+    }
+
+    /// The mission row for the logical directory key `dir`
+    /// (`zbd/c1c/m01`), case-insensitively.
+    #[must_use]
+    pub fn mission(&self, dir: &str) -> Option<&MissionFact> {
+        self.missions
+            .iter()
+            .find(|row| row.dir.eq_ignore_ascii_case(dir))
+    }
+
+    /// The development values, in file order.
+    #[must_use]
+    pub fn provisionals(&self) -> &[ProvisionalFact] {
+        &self.provisionals
+    }
+
+    /// The development value `name` records, when one does.
+    #[must_use]
+    pub fn provisional(&self, name: &str) -> Option<&ProvisionalFact> {
+        self.provisionals.iter().find(|row| row.name == name)
+    }
+
+    /// The file offset `va` names in the image (`va - image_va_base`).
+    ///
+    /// # Errors
+    ///
+    /// [`EngineFactsError::Schema`] when `va` is below the declared base.
+    pub fn image_offset(&self, va: u64) -> Result<u64, EngineFactsError> {
+        va.checked_sub(self.image_va_base).ok_or_else(|| {
+            EngineFactsError::schema(format!(
+                "va 0x{va:x} is below the declared image_va_base 0x{:x}",
+                self.image_va_base
+            ))
+        })
+    }
+
+    /// A [`SourceSpan`] over the image the table cites: container
+    /// `crimson.decrypted.exe`, digest the measured one, offset `va`'s file
+    /// offset. The claim is the committed row's — the span is the citation
+    /// the row carries.
+    ///
+    /// # Errors
+    ///
+    /// [`EngineFactsError::Schema`] when `va` is below the declared base or
+    /// the span cannot be built.
+    pub fn image_span(&self, va: u64, bytes: u64) -> Result<SourceSpan, EngineFactsError> {
+        let offset = self.image_offset(va)?;
+        SourceSpan::new(
+            cs_content::coordinates::original_image_digest(),
+            crate::mission_start::ENGINE_IMAGE,
+            None,
+            offset,
+            bytes,
+            None,
+        )
+        .map_err(|error| EngineFactsError::schema(error.to_string()))
+    }
+}
+
+/// Checks a row's `claim` is a well-formed claim id beginning `OWNER-STATIC-`
+/// and its `provenance` one of the declared spellings.
+fn cited(table: &subset::Table, section: &str) -> Result<String, EngineFactsError> {
+    let claim = scalar_str_in(table, "claim")?;
+    if !claim.starts_with("OWNER-STATIC-") {
+        return Err(EngineFactsError::schema(format!(
+            "{section}: claim {claim:?} does not begin OWNER-STATIC-"
+        )));
+    }
+    ClaimId::new(&claim).map_err(|error| {
+        EngineFactsError::schema(format!("{section}: claim {claim:?}: {error}"))
+    })?;
+    let provenance = scalar_str_in(table, "provenance")?;
+    match provenance.as_str() {
+        "static" | "designed" => {}
+        other => {
+            return Err(EngineFactsError::schema(format!(
+                "{section}: provenance {other:?} is not `static` or `designed`"
+            )));
+        }
+    }
+    Ok(claim)
+}
+
+/// The `[heading]` row.
+fn heading_fact(
+    document: &subset::Document,
+    image_va_base: u64,
+) -> Result<HeadingFact, EngineFactsError> {
+    let table = single(document, "heading")?;
+    known_keys(
+        table,
+        &[
+            "claim",
+            "provenance",
+            "va",
+            "bytes",
+            "constant_va",
+            "degrees_to_radians",
+            "zero",
+            "positive",
+            "compose",
+        ],
+        "heading",
+    )?;
+    let claim = cited(table, "heading")?;
+    let va = scalar_va(table, "va", image_va_base)?;
+    let bytes = scalar_int_in(table, "bytes")?;
+    if bytes <= 0 {
+        return Err(EngineFactsError::schema("heading: bytes must be positive"));
+    }
+    Ok(HeadingFact {
+        claim,
+        va,
+        bytes: bytes as u64,
+        constant_va: scalar_va(table, "constant_va", image_va_base)?,
+        degrees_to_radians: scalar_float_in(table, "degrees_to_radians")?,
+        zero: scalar_str_in(table, "zero")?,
+        positive: scalar_str_in(table, "positive")?,
+        compose: scalar_str_in(table, "compose")?,
+    })
+}
+
+/// The `[position]` row.
+fn position_fact(
+    document: &subset::Document,
+    image_va_base: u64,
+) -> Result<PositionFact, EngineFactsError> {
+    let table = single(document, "position")?;
+    known_keys(
+        table,
+        &["claim", "provenance", "va", "metres_per_unit", "axes"],
+        "position",
+    )?;
+    let claim = cited(table, "position")?;
+    Ok(PositionFact {
+        claim,
+        va: scalar_va(table, "va", image_va_base)?,
+        metres_per_unit: scalar_float_in(table, "metres_per_unit")?,
+        axes: scalar_str_in(table, "axes")?,
+    })
+}
+
+/// The `[[airframe]]` rows: exactly [`AIRFRAME_ROWS`], in index order at the
+/// measured stride.
+fn airframe_facts(
+    document: &subset::Document,
+    image_va_base: u64,
+) -> Result<Vec<AirframeFact>, EngineFactsError> {
+    let rows = array(document, "airframe")?;
+    if rows.len() != AIRFRAME_ROWS {
+        return Err(EngineFactsError::schema(format!(
+            "airframe: {AIRFRAME_ROWS} rows are measured, the file declares {}",
+            rows.len()
+        )));
+    }
+    let mut airframes = Vec::with_capacity(rows.len());
+    for (position, table) in rows.iter().enumerate() {
+        known_keys(
+            table,
+            &[
+                "index",
+                "va",
+                "claim",
+                "provenance",
+                "display",
+                "scene_root",
+                "model",
+                "p",
+                "r",
+                "w",
+                "base",
+            ],
+            "airframe",
+        )?;
+        let claim = cited(table, "airframe")?;
+        let index = scalar_int_in(table, "index")?;
+        if index != position as i64 {
+            return Err(EngineFactsError::schema(format!(
+                "airframe[{position}]: index is {index}, not its position {position}"
+            )));
+        }
+        let va = scalar_va(table, "va", image_va_base)?;
+        let expected = rows
+            .first()
+            .and_then(|first| first.get("va"))
+            .and_then(|(_, value)| value.as_int())
+            .map(|base| base as u64 + position as u64 * AIRFRAME_STRIDE)
+            .unwrap_or_default();
+        if va != expected {
+            return Err(EngineFactsError::schema(format!(
+                "airframe[{position}]: va 0x{va:x} is not the measured stride's 0x{expected:x}"
+            )));
+        }
+        airframes.push(AirframeFact {
+            index: index as u32,
+            va,
+            claim,
+            display: scalar_str_in(table, "display")?,
+            scene_root: scalar_str_in(table, "scene_root")?,
+            model: scalar_str_in(table, "model")?,
+            p: scalar_str_in(table, "p")?,
+            r: scalar_str_in(table, "r")?,
+            w: scalar_str_in(table, "w")?,
+            base: scalar_str_in(table, "base")?,
+        });
+    }
+    Ok(airframes)
+}
+
+/// The `[[mission]]` rows: `dir` unique, and a `known` row's `record` is its
+/// airframe row's own `p` field.
+fn mission_facts(
+    document: &subset::Document,
+    facts: &EngineFacts,
+    image_va_base: u64,
+) -> Result<Vec<MissionFact>, EngineFactsError> {
+    let mut missions = Vec::new();
+    for (position, table) in array(document, "mission")?.iter().enumerate() {
+        let section = format!("mission[{position}]");
+        known_keys(
+            table,
+            &[
+                "dir",
+                "label",
+                "status",
+                "claim",
+                "provenance",
+                "va",
+                "airframe_index",
+                "record",
+                "reason",
+            ],
+            &section,
+        )?;
+        let claim = cited(table, &section)?;
+        let dir = scalar_str_in(table, "dir")?;
+        if missions
+            .iter()
+            .any(|row: &MissionFact| row.dir.eq_ignore_ascii_case(&dir))
+        {
+            return Err(EngineFactsError::schema(format!(
+                "{section}: dir {dir:?} repeats an earlier row"
+            )));
+        }
+        let label = match table.get("label") {
+            Some((_, value)) => Some(
+                value
+                    .as_str()
+                    .ok_or_else(|| {
+                        EngineFactsError::schema(format!("{section}: label is not a string"))
+                    })?
+                    .to_owned(),
+            ),
+            None => None,
+        };
+        let airframe = match scalar_str_in(table, "status")?.as_str() {
+            "known" => {
+                let index = scalar_int_in(table, "airframe_index")?;
+                if index < 0 || index >= AIRFRAME_ROWS as i64 {
+                    return Err(EngineFactsError::schema(format!(
+                        "{section}: airframe_index {index} is outside the measured table"
+                    )));
+                }
+                let row = facts.airframe(index as u32).ok_or_else(|| {
+                    EngineFactsError::schema(format!(
+                        "{section}: no airframe row has index {index}"
+                    ))
+                })?;
+                let record = scalar_str_in(table, "record")?;
+                if record != row.p {
+                    return Err(EngineFactsError::schema(format!(
+                        "{section}: record {record:?} is not airframe row {index}'s own `p` field {:?}",
+                        row.p
+                    )));
+                }
+                MissionAirframe::Known {
+                    index: index as u32,
+                    record,
+                    va: scalar_va(table, "va", image_va_base)?,
+                }
+            }
+            "unknown" => {
+                let reason = scalar_str_in(table, "reason")?;
+                MissionAirframe::Unknown { reason }
+            }
+            other => {
+                return Err(EngineFactsError::schema(format!(
+                    "{section}: status {other:?} is not `known` or `unknown`"
+                )));
+            }
+        };
+        missions.push(MissionFact {
+            dir,
+            label,
+            claim,
+            airframe,
+        });
+    }
+    Ok(missions)
+}
+
+/// The `[[provisional]]` rows: development values, labelled, never measured.
+fn provisional_facts(
+    document: &subset::Document,
+) -> Result<Vec<ProvisionalFact>, EngineFactsError> {
+    let mut provisionals = Vec::new();
+    for (position, table) in array(document, "provisional")?.iter().enumerate() {
+        let section = format!("provisional[{position}]");
+        known_keys(
+            table,
+            &["name", "status", "claim", "provenance", "value", "reason"],
+            &section,
+        )?;
+        let claim = cited(table, &section)?;
+        let provenance = scalar_str_in(table, "provenance")?;
+        if provenance != "designed" {
+            return Err(EngineFactsError::schema(format!(
+                "{section}: a provisional row's provenance is `designed`, not {provenance:?}"
+            )));
+        }
+        let status = scalar_str_in(table, "status")?;
+        if status != "designed" && status != "provisional" {
+            return Err(EngineFactsError::schema(format!(
+                "{section}: status {status:?} is not `designed` or `provisional`"
+            )));
+        }
+        let name = scalar_str_in(table, "name")?;
+        if provisionals
+            .iter()
+            .any(|row: &ProvisionalFact| row.name == name)
+        {
+            return Err(EngineFactsError::schema(format!(
+                "{section}: name {name:?} repeats an earlier row"
+            )));
+        }
+        let value = scalar_float_in(table, "value")?;
+        if !value.is_finite() {
+            return Err(EngineFactsError::schema(format!(
+                "{section}: value {value} is not finite"
+            )));
+        }
+        provisionals.push(ProvisionalFact {
+            name,
+            status,
+            claim,
+            value,
+            reason: scalar_str_in(table, "reason")?,
+        });
+    }
+    Ok(provisionals)
+}
+
+/// The single `[name]` table a section must hold exactly once.
+fn single<'a>(
+    document: &'a subset::Document,
+    name: &str,
+) -> Result<&'a subset::Table, EngineFactsError> {
+    let mut matches = document
+        .sections
+        .iter()
+        .filter(|section| !section.array && section.name == name)
+        .map(|section| &section.table);
+    let table = matches
+        .next()
+        .ok_or_else(|| EngineFactsError::schema(format!("the file declares no [{name}] table")))?;
+    if matches.next().is_some() {
+        return Err(EngineFactsError::schema(format!(
+            "the file declares [{name}] twice"
+        )));
+    }
+    Ok(table)
+}
+
+/// Every `[[name]]` row.
+fn array<'a>(
+    document: &'a subset::Document,
+    name: &str,
+) -> Result<Vec<&'a subset::Table>, EngineFactsError> {
+    Ok(document
+        .sections
+        .iter()
+        .filter(|section| section.array && section.name == name)
+        .map(|section| &section.table)
+        .collect())
+}
+
+/// Refuses a key the schema does not name, so a typo is a parse error, not a
+/// dropped fact.
+fn known_keys(
+    table: &subset::Table,
+    allowed: &[&str],
+    section: &str,
+) -> Result<(), EngineFactsError> {
+    for (key, _) in table.keys() {
+        if !allowed.contains(&key) {
+            return Err(EngineFactsError::schema(format!(
+                "{section}: key {key:?} is not in the schema"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn scalar_str_in(table: &subset::Table, key: &str) -> Result<String, EngineFactsError> {
+    table
+        .get(key)
+        .ok_or_else(|| EngineFactsError::schema(format!("missing key {key:?}")))?
+        .1
+        .as_str()
+        .map(str::to_owned)
+        .ok_or_else(|| EngineFactsError::schema(format!("key {key:?} is not a string")))
+}
+
+fn scalar_int_in(table: &subset::Table, key: &str) -> Result<i64, EngineFactsError> {
+    table
+        .get(key)
+        .ok_or_else(|| EngineFactsError::schema(format!("missing key {key:?}")))?
+        .1
+        .as_int()
+        .ok_or_else(|| EngineFactsError::schema(format!("key {key:?} is not an integer")))
+}
+
+fn scalar_float_in(table: &subset::Table, key: &str) -> Result<f64, EngineFactsError> {
+    let (_, value) = table
+        .get(key)
+        .ok_or_else(|| EngineFactsError::schema(format!("missing key {key:?}")))?;
+    value
+        .as_number()
+        .ok_or_else(|| EngineFactsError::schema(format!("key {key:?} is not a number")))
+}
+
+fn scalar_va(
+    table: &subset::Table,
+    key: &str,
+    image_va_base: u64,
+) -> Result<u64, EngineFactsError> {
+    let va = scalar_int_in(table, key)?;
+    if va <= image_va_base as i64 {
+        return Err(EngineFactsError::schema(format!(
+            "key {key:?}: va 0x{va:x} is not above the image base 0x{image_va_base:x}"
+        )));
+    }
+    Ok(va as u64)
+}
+
+/// A strict subset of TOML, scoped to what `engine-facts.toml` writes.
+mod subset {
+    use super::EngineFactsError;
+
+    /// One scalar value in the accepted subset.
+    #[derive(Clone, Debug, PartialEq)]
+    pub enum Scalar {
+        /// A `"quoted"` string.
+        Text(String),
+        /// A decimal or `0x` integer.
+        Integer(i64),
+        /// A floating-point literal.
+        Float(f64),
+        /// `true` or `false`.
+        Bool(bool),
+    }
+
+    impl Scalar {
+        pub fn as_str(&self) -> Option<&str> {
+            match self {
+                Self::Text(text) => Some(text),
+                _ => None,
+            }
+        }
+
+        pub fn as_int(&self) -> Option<i64> {
+            match self {
+                Self::Integer(value) => Some(*value),
+                _ => None,
+            }
+        }
+
+        /// Integers and floats both answer here; a `va` or index must be an
+        /// integer through `as_int`.
+        pub fn as_number(&self) -> Option<f64> {
+            match self {
+                Self::Integer(value) => Some(*value as f64),
+                Self::Float(value) => Some(*value),
+                _ => None,
+            }
+        }
+    }
+
+    /// One `[table]` body or one `[[row]]` element.
+    #[derive(Clone, Debug, Default)]
+    pub struct Table {
+        /// `(line, key, value)` in file order; keys are unique.
+        entries: Vec<(usize, String, Scalar)>,
+    }
+
+    impl Table {
+        /// The value `key` carries, when it does, with its 1-based line.
+        pub fn get(&self, key: &str) -> Option<(usize, &Scalar)> {
+            self.entries
+                .iter()
+                .find(|(_, k, _)| k == key)
+                .map(|(line, _, value)| (*line, value))
+        }
+
+        /// The keys in file order.
+        pub fn keys(&self) -> impl Iterator<Item = (&str, usize)> + '_ {
+            self.entries
+                .iter()
+                .map(|(line, key, _)| (key.as_str(), *line))
+        }
+    }
+
+    /// One section: a `[table]` (`array` false) or a `[[row]]` (`array` true).
+    #[derive(Debug)]
+    pub struct Section {
+        pub name: String,
+        pub array: bool,
+        pub table: Table,
+    }
+
+    /// A parsed file: the top-level scalars plus every section in order.
+    #[derive(Debug, Default)]
+    pub struct Document {
+        pub root: Table,
+        pub sections: Vec<Section>,
+    }
+
+    /// Parses `text`, refusing anything outside the accepted subset.
+    ///
+    /// # Errors
+    ///
+    /// [`EngineFactsError::Parse`] with the offending 1-based line number.
+    pub fn parse(text: &str) -> Result<Document, EngineFactsError> {
+        let mut document = Document::default();
+        for (position, raw) in text.lines().enumerate() {
+            let line_no = position + 1;
+            let line = strip_comment(raw, line_no)?.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if let Some(inner) = line.strip_prefix("[[") {
+                let name = inner
+                    .strip_suffix("]]")
+                    .ok_or_else(|| EngineFactsError::Parse {
+                        line: line_no,
+                        reason: format!("a [[row]] header must end in ']]': {line:?}"),
+                    })?
+                    .trim();
+                check_name(name, line_no)?;
+                document.sections.push(Section {
+                    name: name.to_owned(),
+                    array: true,
+                    table: Table::default(),
+                });
+                continue;
+            }
+            if let Some(inner) = line.strip_prefix('[') {
+                let name = inner
+                    .strip_suffix(']')
+                    .ok_or_else(|| EngineFactsError::Parse {
+                        line: line_no,
+                        reason: format!("a [table] header must end in ']': {line:?}"),
+                    })?
+                    .trim();
+                check_name(name, line_no)?;
+                if document
+                    .sections
+                    .iter()
+                    .any(|section| !section.array && section.name == name)
+                {
+                    return Err(EngineFactsError::Parse {
+                        line: line_no,
+                        reason: format!("the table [{name}] is declared twice"),
+                    });
+                }
+                document.sections.push(Section {
+                    name: name.to_owned(),
+                    array: false,
+                    table: Table::default(),
+                });
+                continue;
+            }
+            let table = match document.sections.last_mut() {
+                Some(section) => &mut section.table,
+                None => &mut document.root,
+            };
+            let (key, value) = split_entry(line, line_no)?;
+            if table.entries.iter().any(|(_, k, _)| k == key) {
+                return Err(EngineFactsError::Parse {
+                    line: line_no,
+                    reason: format!("key {key:?} is set twice"),
+                });
+            }
+            check_name(key, line_no)?;
+            table.entries.push((line_no, key.to_owned(), value));
+        }
+        Ok(document)
+    }
+
+    /// Removes a trailing `#` comment outside string quotes.
+    fn strip_comment(raw: &str, line_no: usize) -> Result<&str, EngineFactsError> {
+        let mut in_string = false;
+        let mut escaped = false;
+        for (at, ch) in raw.char_indices() {
+            match ch {
+                '"' if !escaped => in_string = !in_string,
+                '\\' if in_string => escaped = !escaped,
+                '#' if !in_string => return Ok(&raw[..at]),
+                _ => escaped = false,
+            }
+        }
+        if in_string {
+            return Err(EngineFactsError::Parse {
+                line: line_no,
+                reason: "a string is not closed on its line (multi-line strings are not in the \
+                 accepted subset)"
+                    .to_owned(),
+            });
+        }
+        Ok(raw)
+    }
+
+    /// Splits `key = value` at the first `=` outside quotes.
+    fn split_entry(line: &str, line_no: usize) -> Result<(&str, Scalar), EngineFactsError> {
+        let mut in_string = false;
+        let mut escaped = false;
+        for (at, ch) in line.char_indices() {
+            match ch {
+                '"' if !escaped => in_string = !in_string,
+                '\\' if in_string => escaped = !escaped,
+                '=' if !in_string => {
+                    let key = line[..at].trim();
+                    let scalar = parse_value(line[at + 1..].trim(), line_no)?;
+                    return Ok((key, scalar));
+                }
+                _ => escaped = false,
+            }
+        }
+        Err(EngineFactsError::Parse {
+            line: line_no,
+            reason: format!("not a header or a `key = value` line: {line:?}"),
+        })
+    }
+
+    /// One scalar value: `"string"`, `true`/`false`, `0x` hex, integer or
+    /// float. Bare words beyond the booleans are refused — `nan`/`inf` are
+    /// not values this file can carry.
+    fn parse_value(text: &str, line_no: usize) -> Result<Scalar, EngineFactsError> {
+        if text.starts_with('"') {
+            return Ok(Scalar::Text(parse_string(text, line_no)?));
+        }
+        match text {
+            "true" => return Ok(Scalar::Bool(true)),
+            "false" => return Ok(Scalar::Bool(false)),
+            _ => {}
+        }
+        let digits = text.trim_start_matches(['+', '-']);
+        if digits.starts_with("0x") || digits.starts_with("0X") {
+            let value =
+                i64::from_str_radix(&digits[2..], 16).map_err(|_| EngineFactsError::Parse {
+                    line: line_no,
+                    reason: format!("{text:?} is not a hexadecimal integer"),
+                })?;
+            if text.starts_with('-') {
+                return Ok(Scalar::Integer(-value));
+            }
+            return Ok(Scalar::Integer(value));
+        }
+        if digits.bytes().next().is_some_and(|b| b.is_ascii_digit()) {
+            if let Ok(value) = text.parse::<i64>() {
+                return Ok(Scalar::Integer(value));
+            }
+            if let Ok(value) = text.parse::<f64>() {
+                return Ok(Scalar::Float(value));
+            }
+        }
+        Err(EngineFactsError::Parse {
+            line: line_no,
+            reason: format!("{text:?} is not a string, boolean or number in the accepted subset"),
+        })
+    }
+
+    /// A `"quoted"` string with `\"` `\\` `\n` `\t` `\r` escapes.
+    fn parse_string(text: &str, line_no: usize) -> Result<String, EngineFactsError> {
+        let bad = |reason: &str| EngineFactsError::Parse {
+            line: line_no,
+            reason: reason.to_owned(),
+        };
+        let body = text
+            .strip_prefix('"')
+            .and_then(|rest| rest.strip_suffix('"'))
+            .ok_or_else(|| bad("a string must open and close with '\"' on one line"))?;
+        let mut out = String::with_capacity(body.len());
+        let mut chars = body.chars();
+        while let Some(ch) = chars.next() {
+            if ch == '\\' {
+                match chars.next() {
+                    Some('n') => out.push('\n'),
+                    Some('t') => out.push('\t'),
+                    Some('r') => out.push('\r'),
+                    Some('"') => out.push('"'),
+                    Some('\\') => out.push('\\'),
+                    other => {
+                        return Err(bad(&format!(
+                            "escape \\{other:?} is not in the accepted subset"
+                        )));
+                    }
+                }
+            } else {
+                out.push(ch);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Bare keys and section names: `[A-Za-z0-9_-]+`.
+    fn check_name(name: &str, line_no: usize) -> Result<(), EngineFactsError> {
+        if name.is_empty()
+            || !name
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+        {
+            return Err(EngineFactsError::Parse {
+                line: line_no,
+                reason: format!("name {name:?} is not [A-Za-z0-9_-]+"),
+            });
+        }
+        Ok(())
+    }
+}
