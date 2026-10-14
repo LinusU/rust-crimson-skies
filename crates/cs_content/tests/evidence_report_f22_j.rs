@@ -191,7 +191,7 @@ fn evidence_report_f22_j_writes_the_acceptance_report() {
              \"fly_mode_default_va\": {}, \"mouse_sens_default_va\": {}, \
              \"japanese_remap_va\": {}, \"japanese_remap\": [{}], \
              \"joystick_axes\": [{}], \"bindings\": [{}], \
-             \"screen_only_labels\": [{}], \"not_on_screen_labels\": [{}], \
+             \"resolved_labels\": [{}], \"not_on_screen_labels\": [{}], \
              \"comparison\": [{}], \"image_rows_agree\": {}}}\n",
             jstr(&install_sha256),
             jstr(&content_sha256),
