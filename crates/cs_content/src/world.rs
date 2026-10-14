@@ -3822,10 +3822,12 @@ impl RetailTriggerVolume {
 /// The three variants are the three honest states, and the survey never picks
 /// one it has not earned: while the survey carries no stored-unit-to-metre
 /// factor, the answer is [`Self::UnitUnmeasured`] carrying the **break-even
-/// factor** — the factor at which the verdict would flip — so the missing
-/// input is a number a later stage can supply rather than a shrug. The factor
-/// is measured (task #677, one unit the metre); this survey deliberately does
-/// not carry it — see `RetailTriggerVolumeSurvey::vertex_scale_to_m`.
+/// factor** — the factor at which the verdict would flip — so a survey built
+/// without one still states the number it would take rather than a shrug. The
+/// factor is measured (task #677, one unit the metre) and the retail entry
+/// point supplies it (task #733), so a retail survey answers directly; the
+/// refusal stays for a survey that was assembled without a factor — see
+/// `RetailTriggerVolumeSurvey::vertex_scale_to_m`.
 #[derive(Clone, Debug, PartialEq)]
 pub enum TriggerTickVerdict {
     /// The survey measured no zone, so there is nothing to compare.
@@ -4129,10 +4131,13 @@ impl RetailTriggerVolumeSurvey {
     ///
     /// `vertex_scale_to_m` is the factor from the containers' stored vertex
     /// units to canonical metres. The retail GameZ unit is measured — one
-    /// unit is the metre (tasks #677 and #436) — but whether this survey
-    /// should carry that factor is a separate decision (task #733), and
-    /// passing `None` is what makes [`Self::tick_verdict`] refuse rather than
-    /// guess.
+    /// unit is the metre (tasks #677 and #436) — and the retail entry point
+    /// `survey_retail_trigger_volumes` supplies exactly that measured factor
+    /// (task #733), read from
+    /// [`CoordinateSource::retail_gamez`](crate::coordinates::CoordinateSource::retail_gamez)'s
+    /// convention rather than spelled as a literal. Passing `None` is for a
+    /// survey assembled **without** a factor; it is what makes
+    /// [`Self::tick_verdict`] refuse rather than guess.
     ///
     /// # Errors
     ///
@@ -4237,7 +4242,7 @@ impl RetailTriggerVolumeSurvey {
 
     /// The factor from the containers' stored vertex units to canonical metres,
     /// or `None` while the survey carries none — the unit itself is measured
-    /// (task #677); whether this survey consumes it is task #733.
+    /// (task #677), and a retail survey carries it (task #733).
     #[must_use]
     pub const fn vertex_scale_to_m(&self) -> Option<f64> {
         self.vertex_scale_to_m
@@ -4321,10 +4326,11 @@ impl RetailTriggerVolumeSurvey {
     /// thinnest zone this survey measured.
     ///
     /// The answer is a [`TriggerTickVerdict`], not a `bool`, because there are
-    /// three states and the interesting one is currently
-    /// [`TriggerTickVerdict::UnitUnmeasured`]. That variant carries the factor
-    /// at which the answer would change, so the factor the survey does not
-    /// carry is a number a later stage can supply rather than an open question.
+    /// three states: a survey carrying the measured factor (as a retail one
+    /// does, task #733) decides between the two one-tick answers, while a
+    /// survey built without a factor states
+    /// [`TriggerTickVerdict::UnitUnmeasured`] carrying the **break-even
+    /// factor** rather than guessing.
     ///
     /// # Errors
     ///

@@ -36,13 +36,6 @@
 //!
 //! What it does **not** do, deliberately:
 //!
-//! * it does not convert a stored extent to metres. The original's world-vertex
-//!   unit is measured now (the metre; tasks #677 and #436), but this survey
-//!   supplies no factor — the contract #427 pinned is that a stored extent is
-//!   never silently read as a length, so the survey reports
-//!   [`TriggerTickVerdict::UnitUnmeasured`](cs_content::world::TriggerTickVerdict::UnitUnmeasured)
-//!   with the **break-even factor** rather than a verdict. Whether the survey
-//!   *should* consume the measured unit is task #733;
 //! * it decodes the campaign's `dzones.zrd` **framing** (task #513: a list's
 //!   word is its child count plus one) but not its **meaning**: the survey
 //!   carries what each mission states under `disable`, `nosnapshot` and
@@ -51,6 +44,16 @@
 //!   and none of the three keys' meaning is claimed;
 //! * it does not claim the original detected these zones by sensor overlap at
 //!   all. Which native consumes them, and how, is F13/F39's question.
+//!
+//! What it **does** do, since task #733: it turns a stored extent into a length,
+//! because the original's world-vertex unit is measured (one stored GameZ unit is
+//! the metre; [`CoordinateSource::retail_gamez`], task #677, `observed_tool`, the
+//! same measured convention F18-E / #436 consumes per world group). The retail
+//! entry point supplies that factor — read from the measured convention, never
+//! spelled as a literal — so [`RetailTriggerVolumeSurvey::tick_verdict`] answers
+//! over the retail corpus. `TriggerTickVerdict::UnitUnmeasured` stays, for a
+//! survey assembled **without** a factor, so a stored extent is still never
+//! silently read as a length.
 //!
 //! **Not `verified_original`.** `retail` here is read access to files; no
 //! original run happened and nothing about the original's runtime behaviour is
@@ -61,6 +64,7 @@ use std::fs;
 use std::path::Path;
 
 use cs_assets::install::{self, DiscoveryError};
+use cs_content::coordinates::CoordinateSource;
 use cs_content::world::{
     DETECTION_ZONE_MEMBER, DETECTION_ZONE_PREFIX, MissionZoneDeclaration, RetailTriggerVolume,
     RetailTriggerVolumeSurvey, StoredVolume, TriggerVolumeError, TriggerVolumeSpan, WorldId,
@@ -71,6 +75,7 @@ use cs_formats::gamez::read_gamez_nodes;
 use cs_formats::io::ParseContext;
 use cs_formats::script_raw::discover_container;
 use cs_formats::zbd::detection_zones::{DetectionZoneKey, read_detection_zones};
+use cs_types::asset_id::SourceSpan;
 
 use super::audit::GEOMETRY_CONTAINER_FILE;
 
@@ -96,6 +101,21 @@ pub enum TriggerVolumeSurveyError {
     /// The installation declares no world group, so there is no world container
     /// a trigger volume could live in.
     NoWorldGroups,
+    /// A world group's geometry container could not be recorded as a source span,
+    /// so the measured stored-unit factor could not be read from the measured
+    /// GameZ convention ([`CoordinateSource::retail_gamez`]).
+    ///
+    /// An invariant guard rather than a case the corpus trips: a file production
+    /// discovery found has a non-empty spelling and a finite byte length, so the
+    /// span is always recordable here. It is a typed refusal instead of a panic
+    /// so the "every refusal names what it refused" rule holds even for a state
+    /// that only an upstream change could produce.
+    ScaleSource {
+        /// The container's logical key.
+        container: String,
+        /// Why the span was refused.
+        reason: String,
+    },
     /// A zone's stored box was not a box this workspace can carry.
     Volume {
         /// The world the zone is in.
@@ -176,6 +196,11 @@ impl fmt::Display for TriggerVolumeSurveyError {
                 )
             }
             Self::NoWorldGroups => write!(f, "the installation declares no world group"),
+            Self::ScaleSource { container, reason } => write!(
+                f,
+                "container {container} could not be recorded as a source span, so its \\
+                 measured stored-unit factor is unreadable: {reason}"
+            ),
             Self::Volume {
                 world,
                 zone,
@@ -308,10 +333,14 @@ fn widen(corner: [f32; 3]) -> [f64; 3] {
 ///
 /// One production discovery, and per group one read of that group's own geometry
 /// container through the production node reader. The survey's
-/// `vertex_scale_to_m` is **`None`**: this entry point supplies no factor even
-/// though the unit is measured (tasks #677 and #436), because the verdict this
-/// stage exists to state is the refusal-with-a-number — the break-even factor —
-/// not a converted length (task #427; consuming the measured unit is task #733).
+/// `vertex_scale_to_m` is the **measured** factor: one stored GameZ unit is the
+/// metre ([`CoordinateSource::retail_gamez`], task #677, `observed_tool`, with the
+/// axis convention code-derived per task #436's owner note), read from the
+/// measured convention rather than spelled as a literal (task #733). So the
+/// verdict this stage exists to state is the real one-tick answer over the
+/// retail corpus, not a refusal; a survey assembled **without** a factor still
+/// reports the break-even factor through
+/// [`TriggerTickVerdict::UnitUnmeasured`](cs_content::world::TriggerTickVerdict::UnitUnmeasured).
 /// Every zone's container SHA-256 comes from the
 /// same discovery's manifest, so a rerun over a different installation reports
 /// different fingerprints instead of the same numbers.
@@ -325,7 +354,8 @@ fn widen(corner: [f32; 3]) -> [f64; 3] {
 /// and [`TriggerVolumeSurveyError::TransformedZone`] when a numbered zone is not
 /// the identity object record this stage reads, [`TriggerVolumeSurveyError::Volume`]
 /// when a zone's stored box is not a box, [`TriggerVolumeSurveyError::NoBox`] when
-/// a zone stores no box at all, and
+/// a zone stores no box at all, [`TriggerVolumeSurveyError::ScaleSource`] when a
+/// container's measured stored-unit factor cannot be read, and
 /// [`TriggerVolumeSurveyError::Refused`] for a survey the content layer refuses.
 ///
 /// Every per-zone refusal **aborts** the survey rather than dropping the zone.
@@ -336,12 +366,18 @@ pub fn survey_retail_trigger_volumes(
     install_root: &Path,
 ) -> Result<RetailTriggerVolumeSurvey, TriggerVolumeSurveyError> {
     let found = install::discover(install_root).map_err(TriggerVolumeSurveyError::Discovery)?;
-    let install_sha256 = install::fingerprint(&found.manifest).to_hex();
+    let install_hash = install::fingerprint(&found.manifest);
+    let install_sha256 = install_hash.to_hex();
     let groups = found.diagnosis.world_groups.clone();
     if groups.is_empty() {
         return Err(TriggerVolumeSurveyError::NoWorldGroups);
     }
 
+    // The measured stored-unit factor, read from the measured convention
+    // (task #677: one stored GameZ unit is the metre) exactly as F18-E reads it
+    // per world group. It is a property of the GameZ container family, so every
+    // group reports the same value; a debug build re-checks that over the corpus.
+    let mut vertex_scale_to_m: Option<f64> = None;
     let mut volumes: Vec<RetailTriggerVolume> = Vec::new();
     for directory in &groups {
         let container_key = format!("{}/{GEOMETRY_CONTAINER_FILE}", directory.logical_key());
@@ -370,6 +406,41 @@ pub fn survey_retail_trigger_volumes(
             container: container_key.clone(),
             reason: error.to_string(),
         })?;
+
+        // The measured stored-unit factor, read from the measured convention the
+        // way F18-E (`WorldGroupCensus::vertex_scale_to_m`) reads it: one stored
+        // GameZ unit is the metre (task #677, `observed_tool`), with the axis
+        // convention code-derived per task #436's owner note. It is read from
+        // [`CoordinateSource::retail_gamez`]'s measured convention rather than
+        // spelled as a literal, so a reader that changed the convention would
+        // move this factor with it. A property of the container family, so every
+        // group reports the same value; a debug build re-checks that.
+        let group_scale = match SourceSpan::new(
+            install_hash,
+            record.relative_spelling.as_str(),
+            None,
+            0,
+            u64::try_from(bytes.len()).unwrap_or(u64::MAX),
+            Some(record.sha256),
+        ) {
+            Ok(span) => CoordinateSource::retail_gamez(span)
+                .convention()
+                .meters_per_unit(),
+            Err(reason) => {
+                return Err(TriggerVolumeSurveyError::ScaleSource {
+                    container: container_key.clone(),
+                    reason: reason.to_string(),
+                });
+            }
+        };
+        match vertex_scale_to_m {
+            None => vertex_scale_to_m = Some(group_scale),
+            Some(previous) => debug_assert!(
+                (previous - group_scale).abs() <= f64::EPSILON,
+                "every GameZ world group must report the same measured stored-unit factor: \
+                 {previous} vs {group_scale}"
+            ),
+        }
 
         let mut parse = ParseContext::with_defaults(container_key.clone());
         let nodes = read_gamez_nodes(&mut parse, &bytes).map_err(|error| {
@@ -469,7 +540,7 @@ pub fn survey_retail_trigger_volumes(
     }
 
     let declarations = read_mission_declarations(&found, &groups)?;
-    RetailTriggerVolumeSurvey::new(install_sha256, None, volumes)
+    RetailTriggerVolumeSurvey::new(install_sha256, vertex_scale_to_m, volumes)
         .and_then(|survey| survey.with_declarations(declarations))
         .map_err(TriggerVolumeSurveyError::Refused)
 }

@@ -12,14 +12,15 @@
 //! number implies for a fast aircraft. F18-C's depot volume (1 m) and F18-A's
 //! arch volume (8 m) are fixture choices, so they cannot answer it.
 //!
-//! Nine of the twelve tests here read no original data and CI runs them: they
-//! pin the contract — that a stored extent is never a length in metres, that the
-//! one-tick verdict refuses to decide without a unit factor and reports the
-//! factor at which it would flip, that a zone with no thickness cannot be
-//! thickened by any factor, and that the survey's own refusals are typed and
-//! name the zone they refused. The other three need `CS_GAME_DIR` and are
-//! ignored in CI: they measure the real corpus through the production node
-//! reader.
+//! Twelve of the fifteen tests here read no original data and CI runs them: they
+//! pin the contract — that the retail entry point supplies the **measured**
+//! stored-unit factor (one GameZ unit is the metre, task #677) so the one-tick
+//! verdict is decided over the real corpus, that a survey built **without** a
+//! factor still refuses and reports the factor at which it would flip, that a
+//! zone with no thickness cannot be thickened by any factor, and that the
+//! survey's own refusals are typed and name the zone they refused. The other
+//! three need `CS_GAME_DIR` and are ignored in CI: they measure the real corpus
+//! through the production node reader.
 //!
 //! Nothing here is `verified_original`: no original run happened, and reading
 //! the installation's files is not evidence of how the game behaves.
@@ -131,22 +132,25 @@ fn accept_t427_the_zone_name_rule_is_the_measured_one_and_nothing_else() {
 
 // ------------------------------------- a stored extent is not a length ---
 
-/// A stored extent is stored units, and the survey refuses to compare it with
-/// one tick of canonical travel while the survey carries no stored-unit
-/// factor — reporting the factor at which the answer would flip instead.
+/// A stored extent is stored units, and a survey assembled **without** a
+/// stored-unit factor refuses to compare it with one tick of canonical travel —
+/// reporting the factor at which the answer would flip instead.
 ///
-/// This is the whole of task #427's second acceptance criterion in its current
-/// state, and it is a refusal with a number in it: the factor itself is
-/// measured (task #677, one unit the metre), and whether this survey consumes
-/// it is task #733's decision.
+/// This is task #427's second acceptance criterion as it still stands for a
+/// consumer that holds only stored units: the factor itself is measured (task
+/// #677, one unit the metre) and the retail entry point supplies it (task
+/// #733), but building a survey with `None` — as this synthetic one does
+/// deliberately — must keep the refusal-with-a-number rather than silently
+/// treating a stored unit as a metre.
 #[test]
 fn accept_t427_a_stored_extent_is_never_read_as_a_length() {
     let survey = synthetic_survey(None);
     assert_eq!(
         survey.vertex_scale_to_m(),
         None,
-        "this survey carries no factor, even though the GameZ unit is measured (tasks #677/#436); \
-         whether it should carry that factor is task #733"
+        "this synthetic survey is built with no factor, so a stored extent must not be read as a \
+         length: the measured factor is supplied by the retail entry point (`Some(1.0)`), not \
+         invented here"
     );
 
     let verdict = survey
@@ -808,9 +812,10 @@ impl Drop for TempInstallation {
 ///
 /// This is the same production entry point the retail tests use — production
 /// discovery, the production node reader, the same content-layer records — with
-/// the corpus authored instead of read. It is what makes the two choices the
+/// the corpus authored instead of read. It is what makes the choices the
 /// measurement rests on falsifiable in CI: `unk140` is the field carrying the
-/// box, and the first stored corner is the minimum.
+/// box, the first stored corner is the minimum, and the entry point's
+/// `vertex_scale_to_m` is the measured GameZ metre (task #733).
 #[test]
 fn accept_t427_the_survey_reads_the_box_out_of_the_field_and_order_it_measured() {
     let install = TempInstallation::new("field");
@@ -883,17 +888,17 @@ fn accept_t427_the_survey_reads_the_box_out_of_the_field_and_order_it_measured()
         64,
         "the installation fingerprint"
     );
-    // The survey's own factor, which is the whole of the second acceptance
-    // criterion: this entry point measures **stored units** and supplies no
-    // factor, whatever the corpus it reads. A reader that supplied one — even
-    // 1.0, even a plausible-looking constant — would be inventing the original's
-    // world-vertex unit, which is exactly what task #427 was filed to replace
-    // with a measurement.
+    // The survey's own factor: the retail entry point now supplies the measured
+    // stored-unit-to-metre factor (task #733), read from
+    // `CoordinateSource::retail_gamez`'s measured convention (task #677, one
+    // stored GameZ unit is the metre) rather than spelled as a literal. A reader
+    // that supplied a *different* constant — a guess in place of the measured
+    // convention — would move this value away from the measured 1.0.
     assert_eq!(
         survey.vertex_scale_to_m(),
-        None,
-        "this entry point supplies no stored-unit-to-metre factor: nothing in the workspace has \
-         measured the original's world-vertex unit (task #436)"
+        Some(1.0),
+        "the retail entry point supplies the measured stored-unit-to-metre factor: one GameZ unit \
+         is the metre (`CoordinateSource::retail_gamez`, task #677)"
     );
 
     let second = &survey.volumes()[1];
@@ -1162,28 +1167,27 @@ fn accept_t427_retail_every_detection_zone_extent_is_measured_with_its_span() {
     );
 }
 
-/// The verdict task #427 asked for, over the measured corpus, stated the way
-/// the evidence supports it.
+/// The verdict task #427 asked for, over the measured corpus, now that the
+/// measured GameZ unit is supplied (task #733).
 ///
-/// This survey carries no stored-unit factor — deliberately, even though the
-/// GameZ unit is measured (tasks #677/#436; whether this survey consumes it is
-/// task #733) — so it refuses to answer and reports the factor at which the
-/// answer would change. That factor is the second acceptance criterion's
-/// answer: for the verdict to be "an original trigger is outrun by a tick",
-/// one stored unit would have to be worth more than
-/// `3.3333 m / 32 units ≈ 0.104 m` — roughly ten centimetres. A world whose
-/// trigger boxes are a tenth of a metre across in their own coordinate system
-/// would be a world whose *aircraft* are a tenth of a metre long, so the
-/// verdict is one the measurement effectively rules out, without this task
-/// having to guess the unit to say so.
+/// The survey carries the measured factor — one stored GameZ unit is the metre
+/// (`CoordinateSource::retail_gamez`, task #677) — so `tick_verdict` answers
+/// rather than refusing. The thinnest of the 80 zones is 32 stored units, i.e.
+/// 32 m, and a fast aircraft at 400 m/s on the 120 Hz world tick travels
+/// 3.3333 m: every measured zone is thicker than a tick, so the verdict is
+/// `EveryZoneSpansATick`. The "a fast aircraft steps over an original trigger"
+/// defect is therefore **not** what the original's zones produce, and that is
+/// now the real one-tick answer over the corpus rather than a break-even factor
+/// a reader has to interpret.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_t427_retail_the_thin_original_trigger_needs_a_tenth_of_a_metre_per_unit_to_be_outrun() {
+fn accept_t427_retail_every_original_trigger_spans_a_tick_at_the_measured_metre() {
     let survey = survey_retail_trigger_volumes(&retail_root()).expect("the retail corpus surveys");
     assert_eq!(
         survey.vertex_scale_to_m(),
-        None,
-        "this survey supplies no factor, so the verdict cannot be a guess"
+        Some(1.0),
+        "the retail entry point supplies the measured factor (one GameZ unit is the metre), so the \
+         verdict is the real one rather than a guess"
     );
 
     for speed in [FAST_M_S, ORDINARY_M_S, 30.0] {
@@ -1191,28 +1195,55 @@ fn accept_t427_retail_the_thin_original_trigger_needs_a_tenth_of_a_metre_per_uni
             .tick_verdict(speed, TICK_HZ)
             .expect("a finite speed and a non-zero rate");
         assert!(
-            !verdict.is_decided(),
-            "the verdict is undecided at {speed} m/s, and says so"
+            verdict.is_decided(),
+            "with the measured factor the verdict is decided at {speed} m/s"
         );
-        let break_even = verdict
-            .break_even_meters_per_unit()
-            .expect("a measured zone gives a break-even factor");
+        match &verdict {
+            TriggerTickVerdict::EveryZoneSpansATick {
+                thinnest_m,
+                thinnest_zone,
+                travel_m_per_tick,
+                ..
+            } => {
+                assert_eq!(
+                    *thinnest_m, 32.0,
+                    "the corpus's thinnest zone is 32 stored units at one metre per unit"
+                );
+                assert!(
+                    thinnest_zone.starts_with(DETECTION_ZONE_PREFIX),
+                    "the zone the measurement came from is a numbered zone: {thinnest_zone}"
+                );
+                assert!(
+                    *thinnest_m >= *travel_m_per_tick,
+                    "the thinnest zone is at least one tick of travel thick at {speed} m/s"
+                );
+            }
+            other => panic!("every measured zone spans a tick at {speed} m/s, got {other:?}"),
+        }
         let travel = verdict
             .travel_m_per_tick()
             .expect("one tick of travel is computable");
-        assert!(
-            break_even < 0.105,
-            "at {speed} m/s and {TICK_HZ} Hz the verdict only flips if one stored unit is worth \
-             more than {break_even:.6} m; the corpus's thinnest zone is 32 stored units, so the \
-             flip needs a stored unit worth ~10 cm"
-        );
         assert!(
             travel > 0.0,
             "the tick travel is a real quantity whatever the verdict is"
         );
     }
-    // The break-even falls with the tick: it is one tick's travel over the same
-    // stored extent, so a coarser tick or a slower body only raises it.
+    // The thinnest zone is the corpus's, so the zone the decided verdict names
+    // does not move with the speed.
+    let thinnest_zone =
+        |speed: f64, tick_hz: f64| match survey.tick_verdict(speed, tick_hz).expect("a valid tick")
+        {
+            TriggerTickVerdict::EveryZoneSpansATick { thinnest_zone, .. } => Some(thinnest_zone),
+            _ => None,
+        };
+    assert_eq!(
+        thinnest_zone(FAST_M_S, TICK_HZ),
+        thinnest_zone(30.0, 30.0),
+        "the thinnest zone is a property of the corpus, not of the tick it is compared against"
+    );
+    // The break-even factor falls with the tick: it is one tick's travel over the
+    // same stored extent, so a coarser tick or a slower body only raises it. Even
+    // the decided verdict still reports the factor at which it would flip.
     let fast = survey
         .tick_verdict(FAST_M_S, TICK_HZ)
         .expect("a valid tick")
