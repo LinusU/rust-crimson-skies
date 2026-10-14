@@ -12,17 +12,26 @@ used: `retail` (read-only `$CS_GAME_DIR`). Evidence report:
 > every located program as a stream of numeric opcode words and reported
 > "programs stopping at `unknown_opcode`: 1452 (all at their first counter)".
 > The owner's static analysis of the decrypted executable
-> (`crimson.decrypted.exe`, sha256 `43540fc9…6c37d75`; owner note on #640,
-> 2026-10-05; static code evidence, never `verified_original`) established
-> that the corpus holds **no numeric opcode stream at all**, so that count
-> was the probe misreading each family's real model:
+> (`crimson.decrypted.exe`, sha256
+> `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`; owner
+> note on #640, 2026-10-05; static code evidence, never `verified_original`)
+> established that the corpus holds **no numeric opcode stream at all**, so
+> that count was the probe misreading each family's real model:
 >
-> - **mission members** are `.zrd` typed trees read **by keyword** by native
->   consumers — data plus a native interpreter, not instructions;
-> - **INTERP bodies** are a **named text-command language** whose command
->   names are matched by string compare — there is no numeric opcode;
-> - **anim payloads** are streams of **typed event records** whose
->   event-type ids F20 (#690) resolved against the owner's keyword table.
+> - **mission members** are `.zrd` typed trees (tags 1..=4, a list holds its
+>   count minus one child) opened at VA `0x579c60` (`zrdr_main.cpp`) and read
+>   **by keyword** by native consumers — `objectives.zrd` by `CZMission`
+>   (`0x466b70` parse, `0x46a490` update) — so they are data plus a native
+>   interpreter, not instructions;
+> - **INTERP bodies** are a **named text-command language**: each line is a
+>   NUL-separated argument vector whose first token is the command name,
+>   matched by string compare in `zinterp_parse.cpp` (`0x5b845c`) — there is
+>   no numeric opcode;
+> - **anim payloads** are streams of **typed event records** (compiled ZBD,
+>   magic `0x08170616`, version `0x35`, loaded by `0x521b80`) whose
+>   event-type ids F20 (#690) joined to the installation's own event
+>   declarations — 31 of the 35 stored ids, with four (13, 17, 26, 28) still
+>   unjoined.
 >
 > The probe machinery of this finding is kept, but a stopped walk over a
 > `.zrd` or INTERP body is no longer presented as `unknown_opcode` evidence:

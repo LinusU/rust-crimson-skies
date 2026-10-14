@@ -27,7 +27,9 @@ used: `retail` (read-only `$CS_GAME_DIR`). Evidence report:
 >   no numeric opcode;
 > - **animation payloads** are streams of **typed event records** (compiled
 >   ZBD, magic `0x08170616`, version `0x35`, loaded by `0x521b80`), whose
->   event-type ids F20 (#690) resolved against the owner's keyword table.
+>   event-type ids F20 (#690) joined to the installation's own event
+>   declarations — 31 of the 35 stored ids, with four (13, 17, 26, 28) still
+>   unjoined.
 >
 > The probe machinery below is kept, but a stopped walk over a `.zrd` body or
 > an INTERP body is no longer counted or presented as `unknown_opcode`

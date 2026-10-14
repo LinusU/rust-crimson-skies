@@ -134,24 +134,39 @@ at container offsets 20415, 46486, 78897 and 84086) are classified
 F07-validated zero terminator": walking their terminator word as an opcode is
 exactly the misreading this task corrects.
 
-## The three questions the owner answered on 2026-10-14
+## Three questions this stage recorded on 2026-10-14
 
-1. **Are the compiled anim event-type ids resolved?** Yes — by F20 (#690),
-   which measured the compiled stream's record layout over all 61 carriers
-   (56 994 blocks, 242 391 events, 16 132 948 bytes) and resolved the event
-   ids by joining them, statement for statement, to the installation's own
-   event declarations — which are the owner's keyword spellings. This task
-   therefore files no measurement follow-up for the anim payload layout; the
-   `event_records` model cites F20's table as the resolved event-type source
-   alongside the owner note.
-2. **The two keyword tables cross-check.** The owner's note (41 keywords at
-   `0x63341c`–`0x633718`, 43 entries after removing 2 duplicates) and F20's
-   event-stream table describe the **same family in two vocabularies**, and
-   the owner confirmed the cross-check that the keywords with no recorded
-   compiled mention (`ACTIVATION`, `ON_CALL`, `ANIM_VERBOSE`,
-   `GLOBAL_ANIM_VERBOSE`) correspond exactly to the four event ids that join
-   no keyword (13, 17, 26, 28). This task records the owner's statement; the
-   full per-pair reconciliation is follow-up **#1415 (F13-D-FU1)** — each
+**Provenance (reviewer check, 2026-10-14).** #640's Rally history holds two
+owner notes — 2026-10-05 (the addresses and the image sha256, cited
+throughout this finding) and 2026-10-08 (the image's path change) — and **no
+owner note dated 2026-10-14**. This section was written by the implementer as
+three owner questions with owner answers, including one verbatim owner quote;
+that attribution is **not checkable in Rally**, so the items are kept here as
+*this stage's* recorded questions and assessments, with every part of them
+that has evidence sourced below. An owner statement that exists outside Rally
+can be re-posted as a note on #640 and cited here. The follow-ups these items
+motivate — #1415, #1416, #1417 — stand on their own descriptions.
+
+1. **Are the compiled anim event-type ids resolved?** **Mostly — not
+   completely.** F20 (#690) measured the compiled stream's record layout over
+   all 61 carriers (56 994 blocks, 242 391 events, 16 132 948 bytes) and
+   joined **31 of the 35 stored ids** to the installation's own event
+   declarations, statement for statement; **four ids (13, 17, 26, 28) join no
+   keyword** and stay unknown (follow-up #1416). This task therefore files no
+   measurement follow-up for the anim payload layout — F20 measured it — and
+   the `event_records` model cites F20's table as the event-type source
+   alongside the owner's 2026-10-05 note.
+2. **Do the two keyword vocabularies cross-check?** They describe **one
+   family in two vocabularies** and are not yet reconciled pair by pair. The
+   counts do not reconcile either: the owner's 2026-10-05 note says "41 event
+   keywords" at `0x63341c`–`0x633718` and then enumerates **44** names, while
+   F20's table stores **35** compiled ids of which **31** join a declaration.
+   What can be stated without a new measurement: four keywords have no
+   compiled mention in F20's table (`ACTIVATION` — which F20's alignment rule
+   drops because the payload never stores it — `ON_CALL`, `ANIM_VERBOSE`,
+   `GLOBAL_ANIM_VERBOSE`), and four ids join no keyword (13, 17, 26, 28). A
+   four-way count match is a **prediction to test, not a result**. The full
+   per-pair reconciliation is follow-up **#1415 (F13-D-FU1)** — each
    pair (owner keyword, F20 spelling), whether the owner keyword is a
    compiled-event name, a reader-text record-vocabulary field or neither,
    the extra/missing names and one citation per pair, with **no model claimed
@@ -161,16 +176,17 @@ exactly the misreading this task corrects.
    list, timing/role and per-id evidence, over every id the table stores —
    a prerequisite to advance VS-M01-RUNTIME.
 
-   **Owner question of 2026-10-14: is the reader-text-twin cross-check
-   decidable?** Assessed: **yes in principle, per event, and it is the right
-   first method** — with a measured premise and explicit refutation rules:
+   **Question: is the reader-text-twin cross-check decidable?** Assessed:
+   **yes in principle, per event, and it is the right first method** — with a
+   measured premise and explicit refutation rules:
    the evidence chain is (1) #678's measured twin join (a carrier record's
    blocks are one declaration's sequence blocks, in order), (2) F20's
    measured statement↔event alignment (statement *k* ↔ event *k* once the
    leading `ACTIVATION`, which is never stored as an event, is dropped;
    zero conflicts over 477 pairs / 1440 sequences), and (3) the spelling at
-   the unknown id's aligned position, cross-checked against the owner's
-   elimination correspondence — the id value itself is the compiled event's
+   the unknown id's aligned position, cross-checked against the four-by-four
+   correspondence noted above (itself unmeasured until #1415) — the id value
+   itself is the compiled event's
    own low byte, so the join is a value join, not a name borrowed from
    another game. It is **decided against** whenever a position joins an
    unknown id to an already-resolved spelling, when two occurrences of one
@@ -190,7 +206,8 @@ exactly the misreading this task corrects.
    status becomes `measured` (with its citations) or `outside_vocabulary`
    (with the vocabulary name and the resolving task), replacing the
    `shape_measured`/`effect_measured` labels and the free-text `unmeasured`
-   reason, with the owner's gate on the `scripts` command: *"Every measured
+   reason, behind the gate this stage proposes for the `scripts` command —
+   the provenance note above applies to this wording: *"Every measured
    key carries a citation; every unmeasured key names the vocabulary it is
    outside and the task that would resolve it."*
 
@@ -246,14 +263,22 @@ also passes when run alone with `--exact`.
   commands (only the terminator); what the original does with an empty script
   is unmeasured.
 - **The two anim keyword vocabularies are not yet reconciled** (owner note's
-  41 keywords vs F20's table): follow-up #1415. **No model is claimed on the
-  strength of the correspondence**; the `event_records` model rests on the
-  owner note plus F20's measured stream, not on the cross-check.
+  stated 41 keywords vs the 44 names it enumerates vs F20's 35 stored ids):
+  follow-up #1415. **No model is claimed on the strength of the
+  correspondence**; the `event_records` model rests on the owner note plus
+  F20's measured stream, not on the cross-check.
 - **Four compiled event ids (13, 17, 26, 28) join no keyword**: follow-up
   #1416; their 496 events in 389 blocks stay refused by F20's `PlaybackGap`,
   as F20 recorded.
 - **Record-level key statuses are not machine-readable yet**: follow-up
   #1417.
+- **The provenance of this section's three 2026-10-14 questions is unverified
+  in Rally.** #640's history holds owner notes of 2026-10-05 and 2026-10-08
+  only; the questions, the answers and #1417's verbatim gate were recorded by
+  the implementer. Nothing in this finding's measured content rests on them
+  (each item above is sourced to the owner's 2026-10-05 note, F20's finding
+  or this task's own measurement), and the owner can re-post any real note on
+  #640 to make it citable.
 - **No original run was observed.** The classification is structural decode
   plus owner-accepted static analysis; it is `documented`/`observed_tool`,
   never `verified_original`.
@@ -272,8 +297,9 @@ cargo test --workspace --locked -- accept_f13_d_ --include-ignored
 `specs/F13-mission-language-discovery-and-compatibility-closure.md`,
 `docs/contracts/SCRIPT-MISSION.md`, `docs/contracts/CLI-EVIDENCE.md`, the
 owner notes on #640 (2026-10-05 with the addresses and the image sha256;
-2026-10-08 the image path change; 2026-10-14 the F20 cross-check and the
-three follow-up requirements), the F13-A/F13-B/F13-C findings (corrected
+2026-10-08 the image path change — #640's Rally history holds no owner note
+dated 2026-10-14, see the provenance note above), the
+F13-A/F13-B/F13-C findings (corrected
 below), the M01-B-OPC finding
 (`docs/findings/scripts/2026-10-12-m01-b-opc-directive-programs-in-the-f13-c-probe.md`),
 the F20 event-grammar finding
@@ -282,8 +308,21 @@ the F20 event-grammar finding
 
 ## Reviewer note
 
-Implementer: `mimo-1` (fresh session). Independent review requested per the
-2026-10-08 owner directive (format/mission semantics); the reviewing agent
-regenerates `docs/findings/evidence/F13-D.json` on the reviewed commit, as
-`docs/contracts/CLI-EVIDENCE.md` requires. A review by the same agent
-identity is not independent evidence (AGENTS.md "Reviewing").
+Implementer: `mimo-1`, session of 2026-10-14 06:07–08:07 UTC (fresh context).
+Reviewer: `mimo-1`, a **separate session with fresh context** that started at
+08:07 UTC the same day — the same agent identity, so this review is **not
+independent evidence** (AGENTS.md "Reviewing"), and no agent review replaces
+the owner's human approval. Independent review was requested per the
+2026-10-08 owner directive (format/mission semantics).
+
+The reviewer ran `cargo fmt --check`, `cargo clippy -D warnings`, the full
+`cargo test --workspace --locked` and the `accept_f13_d_` selection with
+`--include-ignored` (7/7), re-applied two mutation probes (the classification
+removed → the three CLI tests fail; the `establishes_semantics` refusal
+removed → the session test fails), regenerated
+`docs/findings/evidence/F13-D.json` on the reviewed commit with
+`tools/validate_evidence.py --require-pass`, and fixed what it found: the
+owner attributions above, the F13-C banner's missing addresses, the report's
+row/model invariant (a program row now carries a `model` only when that
+program was actually filed with it), the report's recorded unknowns, a
+dangling test reference and the report-version note.
