@@ -63,22 +63,24 @@ pub const NOT_ON_SCREEN_LABELS: [(&str, u32); 5] = [
     ("MSG_MISSILE_NEXT", 11_085),
 ];
 
+/// One recorded measurement row: `(command_id, label_id, category, key_a,
+/// key_b, joystick_button, mouse_button, registration_va)`.
+///
+/// Key codes are the original's packed values (a DirectInput scancode plus
+/// the modifier bits `0x100` Alt, `0x200` Ctrl, `0x400` Shift); `0` is an
+/// unbound slot. The joystick button is 1-based, the mouse button is `1`
+/// left / `2` right / `3` middle.
+pub type MeasuredRow = (u16, u32, OriginalControlCategory, u16, u16, u8, u8, u32);
+
 /// The recorded measurement: one entry per registration call in the table
 /// span, in the order the screen enumerates them.
-///
-/// Each entry is `(command_id, label_id, category, key_a, key_b,
-/// joystick_button, mouse_button, registration_va)`. Key codes are the
-/// original's packed values (a DirectInput scancode plus the modifier bits
-/// `0x100` Alt, `0x200` Ctrl, `0x400` Shift); `0` is an unbound slot. The
-/// joystick button is 1-based, the mouse button is `1` left / `2` right /
-/// `3` middle.
 ///
 /// The values come from the owner's static analysis of the decrypted image
 /// and were confirmed by [`decode_registrations`] over the same image; this
 /// constant is the recorded expectation the production
 /// [`ORIGINAL_DEFAULT_BINDINGS`](cs_types::input::ORIGINAL_DEFAULT_BINDINGS)
 /// is pinned against, so a transcription error in either fails the test.
-pub const MEASURED_ROWS: [(u16, u32, OriginalControlCategory, u16, u16, u8, u8, u32); 64] = [
+pub const MEASURED_ROWS: [MeasuredRow; 64] = [
     (
         1,
         11057,

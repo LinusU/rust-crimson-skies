@@ -2766,6 +2766,10 @@ impl OriginalDefaultBinding {
 /// Panics when a field is outside the range the original's encoding allows,
 /// which would mean the recorded table is wrong rather than the original
 /// being unusual.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "one parameter per field of the original's registration call, plus category and address"
+)]
 const fn original_row(
     command_id: u16,
     label_id: u32,
