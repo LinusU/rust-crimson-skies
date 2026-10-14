@@ -282,8 +282,11 @@ fn evidence_report_f10_d_writes_the_acceptance_report() {
     // unresolved issue with the claim this report makes: the exact
     // missing/invalid face counts for every private world and airframe are
     // measured, cross-checked against the render gate and pinned by tests.
-    // What the original renderer *drew* for those faces is not established by
-    // reading files and is not claimed here.
+    // What the original renderer *drew* for those faces was answered by
+    // F10-D.1's static code evidence (`OWNER-STATIC-2026-10-05`), recorded in
+    // `docs/findings/2026-10-14-f10-d-1-what-the-original-renderer-drew.md`,
+    // and is reconciled here: the census this harness runs is the measured
+    // draw view, where only a zero-normal outline counts as missing.
     let unknowns: [&str; 0] = [];
 
     let report = format!(
@@ -348,8 +351,7 @@ fn evidence_report_f10_d_writes_the_acceptance_report() {
              render-gate.tsv, which the render-gate acceptance test measured in step 1; the \
              harness re-derives each archive's census and refuses any disagreement between the \
              two layers. The `unknowns` array is empty because every question this task could \
-             not answer from files alone — front-face winding, what the original renderer drew \
-             for the eleven faces that do not reach a drawable triangle, the meaning of the \
+             not answer from files alone — front-face winding, the meaning of the \
              stored `unk` words, and the zero-length mesh record the corpus never contains — \
              is a named deferred boundary with a resolving task in \
              docs/findings/2026-09-30-f10-d-private-corpus-face-census.md under \"Deferred \

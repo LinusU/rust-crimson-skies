@@ -78,6 +78,17 @@ still builds. That ratio is why "render-critical" is a stronger statement than
 "eleven broken faces": the smallest possible defect — one refused outline in
 C4's mesh 191 — costs 59 faces of world geometry.
 
+> **Superseded by F10-D.1 (#395).** The tables above are the
+> pre-reconciliation measurement, kept as the record of what this stage
+> reported. Under the original's measured outline rule
+> (`OWNER-STATIC-2026-10-05`,
+> `docs/findings/2026-10-14-f10-d-1-what-the-original-renderer-drew.md`) the
+> census walks `RawMesh::draw_topology`: the same corpus reports **3** missing
+> faces — C4's three zero-normal outlines, culled per face every frame —
+> and **0** meshes dropped by the gate; C5's eight outlines fan (mesh 370
+> poly 1 draws as its quad) or ride nodes the original destroys at load.
+> The "eleven faces" table below remains the identity list F10-D.1 reconciled.
+
 No row is `Ready`: every row carries at least one open presentation or material
 reason (F10-C's finding), which is reported, not counted as missing — a
 `Blocked` row still has its render mesh.
@@ -166,8 +177,10 @@ Closed on the corpus:
 
 Not closable with `retail` (files are not a run of the executable):
 
-* what the original engine drew for the eleven faces above — fanning them,
-  skipping them or refusing them is unobservable from files;
+* ~~what the original engine drew for the eleven faces above~~ — answered by
+  F10-D.1 (#395) through `OWNER-STATIC-2026-10-05` static code evidence and
+  reconciled in the code; see
+  `docs/findings/2026-10-14-f10-d-1-what-the-original-renderer-drew.md`;
 * front-face winding and handedness (deferred item 6) — **resolved
   2026-10-14** by #396 from owner evidence `OWNER-STATIC-2026-10-05`, see
   `2026-10-14-f10-d-2-front-face-winding-and-culling.md` (static code
@@ -186,7 +199,7 @@ report. Nothing was removed from the report to make a validator pass.
 
 | # | Deferred item | Affected content | Resolving task | Gates |
 | --- | --- | --- | --- | --- |
-| 1 | What the original renderer drew for the **eleven faces** that reach no drawable triangle, and for the nine meshes the gate drops | C4 mesh 191 (polygons 20 and 55) and 192 (polygon 142); C5 meshes 370, 970, 973, 974, 978, 980, 981, 982 — 89 of 128 734 faces will not render until it is answered | **F10-D.1** (#395), an original-run question: it needs `human_review`/an original capture, which no agent has | any claim that world geometry of C4/C5 is complete; `verified_original` for the mesh path |
+| 1 | ~~What the original renderer drew for the **eleven faces** that reach no drawable triangle, and for the nine meshes the gate drops~~ **Resolved** by **F10-D.1** (#395): the original fans every outline from corner 0 and culls per face the one whose first three corners have a zero normal; `dzpath*` nodes are destroyed at world load. Three faces are culled every frame, one draws as a quad, seven route meshes are never drawn, and no mesh is dropped for a bad face | C4 mesh 191 (polygons 20 and 55) and 192 (polygon 142); C5 meshes 370, 970, 973, 974, 978, 980, 981, 982 | `OWNER-STATIC-2026-10-05` static code evidence (decrypted image, sha256 `43540fc9…6c37d75`); recorded in `docs/findings/2026-10-14-f10-d-1-what-the-original-renderer-drew.md`. Static analysis, not an original run | `verified_original` for the mesh path still needs an original run; the pre-reconciliation counts above (11 missing faces, 9 dropped meshes, 89 unrendered faces) are superseded — the reconciled census reports 3 culled faces and 0 dropped meshes |
 | 2 | **Front-face winding and handedness** (F10-B item 6) | every polygon of every mesh in all nine archives | **F10-D.2** (#396), an original-run question; the render adapter that consumes the winding is F17-B — **resolved 2026-10-14** by #396 from owner evidence `OWNER-STATIC-2026-10-05` (static code evidence accepted by the owner in place of a capture), see `2026-10-14-f10-d-2-front-face-winding-and-culling.md`; per-surface two-sided data and the zero-normal elimination remain open follow-ups named there | any lighting, culling, normal or two-sided-material claim |
 | 3 | The meaning of every stored `unk` word (F10-B item 4), including the six refused outlines' shared flag byte `0x44`'s `FLAG_UNK6`/`FLAG_UNK2` bits | header `unk08`/`light_index`, mesh record `unk04/unk08/unk40/unk44/unk72/unk76/unk80/unk84`, polygon `unk04/unk28/unk32/unk36`, every `LightC` field | F11-A (nodes) and F18 (lights) where a field turns out to be needed | any claim that a stored value has a *meaning*; nothing may be read as specularity or soil (F10 non-negotiable #5) |
 | 4 | The **zero-length present mesh record** (F10-B item 11): this reader's bound excludes `nodes_offset`, the pinned reference's is inclusive, and no measured archive contains such a record | a present mesh record storing no data at all; none of the nine archives | F10-D measured that the corpus cannot decide it (`shortfall = 0` everywhere); the only place it can appear is an unmeasured container | any claim that this reader accepts exactly the reference's containers |
