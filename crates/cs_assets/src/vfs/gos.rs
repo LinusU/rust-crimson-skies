@@ -58,7 +58,7 @@
 //!   ([`GosNameMatch`]), with the case-insensitive fold as the documented
 //!   default, never assumed silently; #714 added
 //!   [`GosNameMatch::RequestUppercase`] as the rule that implements that
-//!   shape literally (fold the request, leave the stored spelling alone).
+//!   shape (fold the request, leave the stored spelling alone).
 //!   `crimptch.rof` shadows `crimson.rof`
 //!   for `ASSETS/SCRIPTS/AIRFRAME.SCRIPT` under any rule, so that part of
 //!   the order does not depend on it.
@@ -178,7 +178,7 @@ impl fmt::Display for GosSource {
 /// (`docs/findings/2026-10-06-t693-metaopenfile-name-matching.md`): it
 /// upper-cases the request and compares it byte for byte against the stored
 /// name, which is never folded — the shape [`GosNameMatch::RequestUppercase`]
-/// implements literally. On this installation, where every name both
+/// implements. On this installation, where every name both
 /// containers store is ASCII-uppercase (measured there), that answers the
 /// same way [`GosNameMatch::AsciiInsensitive`] does on **case**, and
 /// [`GosNameMatch::ExactSpelling`] is **not** what it does. The rule is still
@@ -199,24 +199,30 @@ pub enum GosNameMatch {
     /// A source answers only when its stored spelling equals the request's
     /// spelling byte for byte.
     ExactSpelling,
-    /// Upper-case the requested name, then compare it byte for byte against
-    /// the stored spelling, which is never folded: `upper(request) == stored`
-    /// — the literal shape of `MetaOpenFile`'s own container rule (#693,
+    /// Upper-case the requested name's components, then compare byte for
+    /// byte against the stored spelling, which is never folded:
+    /// `upper(request) == stored` — the shape of `MetaOpenFile`'s own
+    /// container rule (#693,
     /// `docs/findings/2026-10-06-t693-metaopenfile-name-matching.md`
     /// section B, the `CharUpperA` call at `0x10004be5` over an index built
-    /// unfolded at `0x10005017`).
+    /// unfolded at `0x10005017`), ported onto this VFS's flattened
+    /// `/`-joined member spellings
+    /// ([`crate::vfs::mount::Mount::member_request_uppercased`]).
     ///
     /// Both consequences of that shape follow here as they do in the
     /// original: a stored name holding a lowercase ASCII letter can never be
     /// answered, because no request can upper-case into it; and a stored
-    /// name that is already ASCII-uppercase answers under every casing of the
-    /// request. Only the request's **case** is folded — separators are
-    /// compared as spelled, exactly as under
-    /// [`GosNameMatch::ExactSpelling`], because how a caller spells `\` or
-    /// `/` is the request side of the finding and stays runtime-unsettled;
-    /// non-ASCII bytes are left alone rather than folded per an ANSI
-    /// codepage, which the finding records for completeness only (every
-    /// retail GOS name measured is ASCII).
+    /// name that is already ASCII-uppercase answers under every casing of
+    /// the request. The fold is on the request only — its case and its
+    /// separator *spelling* are canonicalized (a `RelativePath` reads `/`
+    /// and `\` as the same separators, so the two spellings of one path
+    /// answer alike), never the stored name's. The original splits a
+    /// request on `\` alone, so it would take a `/` for a literal name
+    /// character where this model reads a separator — the one extension the
+    /// flattened member spelling forces; how callers spell separators at
+    /// runtime stays unsettled regardless. Non-ASCII bytes are left alone
+    /// rather than folded per an ANSI codepage, which the finding records
+    /// for completeness only (every retail GOS name measured is ASCII).
     RequestUppercase,
 }
 
@@ -233,8 +239,11 @@ impl GosNameMatch {
     /// Whether this rule folds case at all: both sides for
     /// [`GosNameMatch::AsciiInsensitive`], the request only for
     /// [`GosNameMatch::RequestUppercase`], neither side for
-    /// [`GosNameMatch::ExactSpelling`]. No rule folds separators except
-    /// [`GosNameMatch::AsciiInsensitive`].
+    /// [`GosNameMatch::ExactSpelling`]. Separators are canonicalized on the
+    /// request side under [`GosNameMatch::AsciiInsensitive`] and
+    /// [`GosNameMatch::RequestUppercase`] (a `RelativePath` reads `/` and
+    /// `\` as the same separators), and compared as spelled under
+    /// [`GosNameMatch::ExactSpelling`].
     pub const fn folds(self) -> bool {
         match self {
             Self::AsciiInsensitive | Self::RequestUppercase => true,

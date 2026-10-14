@@ -503,22 +503,35 @@ impl Mount {
     }
 
     /// The member serving `key` **only when its stored spelling equals the
-    /// request's spelling upper-cased**, byte for byte — separators and every
-    /// other byte included unchanged.
+    /// request's components upper-cased**, byte for byte.
     ///
-    /// This is `MetaOpenFile`'s own container rule, implemented literally
-    /// (#714; #693 settled it from addresses in `roffile.dll`,
+    /// This is `MetaOpenFile`'s own container rule, ported onto this VFS's
+    /// flattened member spellings (#714; #693 settled it from addresses in
+    /// `roffile.dll`,
     /// `docs/findings/2026-10-06-t693-metaopenfile-name-matching.md`
-    /// section B): the requested name is upper-cased
+    /// section B): the request is split into components, each upper-cased
     /// (`0x10004be5` → `CharUpperA`) and compared byte for byte against the
     /// name the container stores, which is inserted unfolded (`0x10005017`),
-    /// so `upper(request) == stored`. Two consequences are part of the rule,
-    /// not defects of it: a stored name holding a lowercase ASCII letter can
-    /// never be answered, and a stored ASCII-uppercase name answers under
-    /// every casing of the request. Only the request's case is folded —
-    /// separators compare as spelled, and non-ASCII bytes are left alone
-    /// (the finding records the ANSI-codepage behaviour of `CharUpperA` for
-    /// completeness; every retail GOS name measured is ASCII).
+    /// so `upper(request) == stored`. Here the comparison is
+    /// `key.path_key().to_ascii_uppercase()` — the request's canonical
+    /// components — against the member's stored `/`-joined spelling, which
+    /// is never folded. Two consequences are part of the rule, not defects
+    /// of it: a stored name holding a lowercase ASCII letter can never be
+    /// answered, and a stored ASCII-uppercase name answers under every
+    /// casing of the request.
+    ///
+    /// The fold is on the request only — its case and its separator
+    /// *spelling* are canonicalized, never the stored name's. A `RelativePath`
+    /// reads `/` and `\` as the same separators, so the two spellings of one
+    /// path answer alike; the original splits a request on `\` alone
+    /// (`0x1001b238`), so a `/` it would take for a literal name character
+    /// is a separator here — the one extension the flattened `/`-joined
+    /// member spelling forces, since no `RelativePath` can spell a literal
+    /// `/` inside a component. How callers spell separators at runtime stays
+    /// unsettled regardless (the finding). Non-ASCII bytes pass through
+    /// unchanged rather than folding per an ANSI codepage, which the finding
+    /// records for completeness only (every retail GOS name measured is
+    /// ASCII).
     ///
     /// The namespace and variant must match exactly, as in
     /// [`Mount::member`], so a key of another key space is never answered.
@@ -526,7 +539,7 @@ impl Mount {
         if self.namespace != *key.namespace() || *key.variant() != AssetVariant::default() {
             return None;
         }
-        let uppercased = key.path().as_str().to_ascii_uppercase();
+        let uppercased = key.path_key().to_ascii_uppercase();
         self.members
             .values()
             .find(|member| member.spelling().as_str() == uppercased)

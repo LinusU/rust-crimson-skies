@@ -15,15 +15,17 @@
 //! What these tests pin, all through production code
 //! (`SessionBuilder::mount_gos_chain`, `Vfs::resolve`, `GosChain::read`):
 //!
-//! * [`GosNameMatch::RequestUppercase`] implements the original's shape
-//!   literally, and its answers **differ from both existing rules** on a
+//! * [`GosNameMatch::RequestUppercase`] implements the original's shape,
+//!   and its answers **differ from both existing rules** on a
 //!   mixed-case container key: the stored spelling is never folded, so
 //!   neither its exact spelling nor any case-folded spelling of it is found,
 //!   while `AsciiInsensitive` finds it and `ExactSpelling` finds only the
 //!   byte-equal request;
 //! * the two consequences the finding derives follow from the
 //!   implementation: a stored ASCII-uppercase name answers under every
-//!   casing of the request, and a stored name holding a lowercase ASCII
+//!   casing of the request (and under both separator spellings — the
+//!   request's `\` or `/` is part of the request, never of the stored
+//!   name), and a stored name holding a lowercase ASCII
 //!   letter can never be answered by any request;
 //! * the rule is selectable per chain like the existing two, a chain still
 //!   refuses a second, different rule, and `GosChain::name_match()` and the
@@ -246,6 +248,8 @@ fn accept_f04_d_gos_request_fold_rule_mixed_case_key_differs_from_both_existing_
         "ASSETS/GRAPHICS/BigDog.TGA",
         "ASSETS/GRAPHICS/BIGDOG.TGA",
         "assets/graphics/bigdog.tga",
+        "ASSETS\\GRAPHICS\\BIGDOG.TGA",
+        "assets\\graphics\\bigdog.tga",
     ] {
         assert!(
             matches!(
@@ -260,8 +264,13 @@ fn accept_f04_d_gos_request_fold_rule_mixed_case_key_differs_from_both_existing_
 /// The other side of the same shape, on retail-shaped content: a stored
 /// ASCII-uppercase name answers under **every** casing of the request, from
 /// the container — the loose tree's lowercase spelling of the same image is
-/// unreachable under this rule, so the container is the only answer. This is
-/// the measured #693 premise (`accept_t693_…`) expressed by the rule itself.
+/// unreachable under this rule, so the container is the only answer. The
+/// request's separator spelling is part of the request, not the stored
+/// name, so `\` and `/` spellings of one path answer alike — the original
+/// splits a request on `\` (`0x1001b238`), while this VFS's flattened
+/// member spellings are `/`-joined, so both separator spellings are the
+/// same canonical request here. This is the measured #693 premise
+/// (`accept_t693_…`) expressed by the rule itself.
 #[test]
 fn accept_f04_d_gos_request_fold_rule_uppercase_stored_name_answers_every_casing() {
     let main = nested_container(
@@ -276,7 +285,12 @@ fn accept_f04_d_gos_request_fold_rule_uppercase_stored_name_answers_every_casing
     );
     assert_eq!(chain.chain.name_match(), GosNameMatch::RequestUppercase);
 
-    for spelling in ["assets/graphics/arial8.tga", "ASSETS/GRAPHICS/ARIAL8.TGA"] {
+    for spelling in [
+        "assets/graphics/arial8.tga",
+        "ASSETS/GRAPHICS/ARIAL8.TGA",
+        "assets\\graphics\\arial8.tga",
+        "ASSETS\\GRAPHICS\\ARIAL8.TGA",
+    ] {
         let asset = chain
             .session
             .resolve(&key(spelling))
