@@ -16,10 +16,12 @@
 //!   mission alive; the recreation does the same, where before the guard
 //!   it ended the mission on the first such report.
 //! * `accept_f37_d_fu8_an_in_window_expiry_still_ends_the_mission` — the
-//!   guard gates staleness, not expiry: the normal path is untouched, at
-//!   the designed 64 Hz and at the coarsest rate a session can declare
-//!   (1 tick/s, dt = 1.0 s), where the first expiry report still lands in
-//!   `(-1.0, 0.0]`.
+//!   guard gates staleness, not expiry: the normal path is untouched at
+//!   the designed 64 Hz.
+//! * `accept_f37_d_fu8_the_coarsest_legal_rate_still_lands_in_the_window`
+//!   — and at the coarsest rate a session can declare (1 tick/s, dt =
+//!   1.0 s) the first expiry report still lands in `(-1.0, 0.0]`, so the
+//!   producer alone can never reach the skip.
 //! * `accept_f37_d_fu8_the_producer_carries_the_observed_remainder` — the
 //!   input carries `[+4]` on every tick, not only the expiring one.
 
