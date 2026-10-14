@@ -322,24 +322,25 @@ fn accept_f16_f_comparison_pins_the_measured_policies_against_the_project_clocks
             "pause.gameplay",
             "pause.presentation",
             "speed-up.network-gate",
+            "speed-up.reaches-gameplay-timers",
             "timers.shared-dt-source",
         ],
         "the original freezes the flight world, keeps presentation running, \
          banks nothing, shares one dt source between the two timers, gates \
-         the speed-up off in network games and clamps each frame's game_dt — \
-         all of which the project's policies do, the last since F16-F-CAP \
-         adopted the measured bound as MAX_FRAME_DT"
+         the speed-up off in network games, clamps each frame's game_dt — the \
+         project's policies do all of it, the last since F16-F-CAP adopted \
+         the measured bound as MAX_FRAME_DT — and scales the gameplay timers \
+         with the speed-up, which since task #722 the project's session \
+         driver does too, feeding the sped-up frame's committed ticks to \
+         those timers"
     );
     assert_eq!(
         fields(&comparison, PolicyRelation::Diverges),
-        vec![
-            "clock.tick-source",
-            "speed-up.mechanism",
-            "speed-up.reaches-gameplay-timers",
-        ],
-        "the fixed tick, the fixed-tick speed-up mechanism and the gameplay \
-         clock's missing speed-up authority are the divergences that remain \
-         after #721 adopted the frame-dt cap"
+        vec!["clock.tick-source", "speed-up.mechanism"],
+        "the fixed tick and the fixed-tick speed-up mechanism (spec-decided, \
+         F16 non-negotiable 4) are the divergences that remain after #721 \
+         adopted the frame-dt cap and #722 implemented the decided speed-up \
+         wiring"
     );
     assert_eq!(
         fields(&comparison, PolicyRelation::NotModeled),
