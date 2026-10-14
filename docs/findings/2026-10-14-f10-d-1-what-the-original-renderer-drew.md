@@ -221,6 +221,18 @@ present mesh builds a render mesh.
   in camera space, so for a *nonzero* stored `N` whether a given frame draws
   the fan is a runtime question this task does not claim to answer — the code
   keeps the culled set to exactly the always-culled (zero `N`) case.
+* The measured face test applies to **outline** polygons: the same evidence
+  (`OWNER-STATIC-2026-10-05`, the #396 owner note) has strips drawn with
+  `D3DCULL_CW` instead, so `draw_topology` never culls a strip. Verified on
+  the corpus during review: no stored strip has a zero first-three-corner
+  normal anywhere in the nine archives, so the boundary is unobservable on
+  all known data either way.
+* A **billboard** mesh (mesh word0 `1`, word1 `0`/`1`) skips the test per the
+  same note. `RawMesh` does not carry the mesh-type word, so a zero-normal
+  outline inside a billboard mesh would be reported `Culled` here while the
+  original fans it — unobservable on this corpus, whose three zero-normal
+  outlines are exactly the faces the owner measured as culled. The type word
+  is surfaced by F10-F.2 (#1407).
 * The software renderer's projected-area drop (`|shoelace| < 4.0` px²,
   `0x9fddfc`/`0x63b214`) applies only on the software path and is not
   modelled; the engine's own path is D3D.

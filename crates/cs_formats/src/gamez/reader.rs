@@ -956,8 +956,10 @@ impl GameZMeshes {
     }
 
     /// Every mesh's topology report, in array order, with the present meshes
-    /// only: the exact decoded, invalid and unsupported face counts F10-D's AC04
-    /// report aggregates.
+    /// only: the exact decoded, invalid and unsupported face counts in the
+    /// canonical ear-clipped view of [`RawMesh::topology`]. F10-D's AC04
+    /// report aggregates the measured draw view instead — it is
+    /// [`Self::face_census`], which walks [`RawMesh::draw_topology`].
     pub fn topologies(&self) -> impl Iterator<Item = (u32, super::mesh::MeshTopology)> {
         self.present()
             .map(|mesh| (mesh.index, mesh.mesh.topology()))

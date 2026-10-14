@@ -280,7 +280,11 @@ impl MeshTopology {
             .count()
     }
 
-    /// Every polygon was decoded: the mesh may be uploaded.
+    /// Every polygon was decoded. On a [`RawMesh::draw_topology`] report a
+    /// [`FaceStatus::Culled`] face keeps this false, yet the mesh still
+    /// builds through the render gate — completeness is "every face
+    /// decoded", not "every face draws"; the gate's refusal is the
+    /// rejected-face list, not this.
     pub fn is_complete(&self) -> bool {
         self.decoded_faces() == self.faces.len()
     }
