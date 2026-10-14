@@ -164,8 +164,8 @@ fn evidence_report_f22_j_writes_the_acceptance_report() {
             .iter()
             .map(|row| {
                 let subject = match row.subject {
-                    DefaultSubject::Declared(label) => format!("declared:{}", jstr(label)),
-                    DefaultSubject::OriginalOnly(id) => format!("original_only:{id}"),
+                    DefaultSubject::Declared(label) => jstr(&format!("declared:{label}")),
+                    DefaultSubject::OriginalOnly(id) => jstr(&format!("original_only:{id}")),
                 };
                 format!(
                     "{{\"subject\": {}, \"agreement\": {}, \"designed\": {}, \"original\": {}}}",
