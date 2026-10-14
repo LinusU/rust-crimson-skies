@@ -8,7 +8,7 @@
 //! expiry, a score limit, a destroyed zeppelin or no enemies left, and the
 //! result is the final scoreboard, with tie/draw handling unmeasured
 //! (`docs/findings/2026-10-14-f476-measured-per-mode-rules.md`). This
-//! resolution order — including equal top scores being a [`Outcome::Draw`] —
+//! resolution order — including equal top scores being an [`Outcome::Draw`] —
 //! is therefore a declared design choice where the original has no measured
 //! rule. It exists so that every host computes one result:
 //!
