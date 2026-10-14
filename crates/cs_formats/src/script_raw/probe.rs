@@ -36,6 +36,15 @@
 //!   through a measured record vocabulary with its value's shapes
 //!   ([`RecordKeyRow`]) or explicitly unknown with its reason. No numeric
 //!   [`SignatureClaim`] ever describes such a program.
+//! * [`ModelledProgramProbe`] is the third accounted-for shape (F13-D,
+//!   task #640): a program whose family's **real model** the owner's static
+//!   analysis established — a `.zrd` typed tree, a named text-command script
+//!   or a stream of typed animation events ([`ProgramModel`]). A program with
+//!   such a model is filed with
+//!   [`ProbeSession::record_modelled_program`] and the evidence that
+//!   classifies it, never walked as numeric words: a stopped walk over text
+//!   or data is not an unknown opcode. A family whose model the evidence does
+//!   not establish keeps the binary walk and its honest stop.
 //! * [`probe_records`] answers the other half of AC03: for **every** record of
 //!   one container it attaches [`RecordReachability`] — which located programs
 //!   overlap the record, or that none does. A record no reader decodes, no
@@ -61,6 +70,7 @@ use super::inventory::{
 use super::ledger::{
     MAX_OPCODE_BYTES, OpcodeEntry, OpcodeLedger, ProgramError, ProgramLocator, ReachedOpcode,
 };
+use super::model::{ModelledProgramProbe, ProgramModel};
 
 /// Why a [`SignatureClaim`] was refused.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -129,6 +139,51 @@ impl fmt::Display for ClaimError {
 }
 
 impl std::error::Error for ClaimError {}
+
+/// Why a [`ProbeSession::record_modelled_program`] listing was refused.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ModelError {
+    /// The evidence cannot establish a model: a scan, or a confidence below
+    /// [`Confidence::Documented`]. Such a classification stays a hypothesis
+    /// and the program keeps its binary walk.
+    WeakEvidence {
+        /// The model the claim wanted to record.
+        model: ProgramModel,
+        /// The evidence's method.
+        method: ResearchMethod,
+        /// The evidence's confidence.
+        confidence: Confidence,
+    },
+}
+
+impl ModelError {
+    /// Stable lowercase identifier for logs and structured diagnostics.
+    pub const fn code(&self) -> &'static str {
+        match self {
+            Self::WeakEvidence { .. } => "weak_evidence",
+        }
+    }
+}
+
+impl fmt::Display for ModelError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::WeakEvidence {
+                model,
+                method,
+                confidence,
+            } => write!(
+                f,
+                "model `{}`: {} evidence at `{}` cannot classify a program family",
+                model.label(),
+                method.label(),
+                confidence.label()
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ModelError {}
 
 /// The argument, effect, timing and error shape one probe resolved for an
 /// opcode. The four strings are the caller's measured summary (SCRIPT-MISSION
@@ -396,6 +451,8 @@ pub enum ProbeError {
         /// `unknown_without_reason`.
         reason: &'static str,
     },
+    /// A modelled-program classification was refused.
+    Model(ModelError),
     /// A claim could not be added to the table.
     Claim(ClaimError),
 }
@@ -410,6 +467,7 @@ impl ProbeError {
             Self::NotRetryable { .. } => "not_retryable",
             Self::MismatchedProgram { .. } => "mismatched_program",
             Self::InvalidDirectiveProgram { .. } => "invalid_directive_program",
+            Self::Model(error) => error.code(),
             Self::Claim(error) => error.code(),
         }
     }
@@ -449,6 +507,7 @@ impl fmt::Display for ProbeError {
                 f,
                 "directive program {locator} lists key `{key}` invalidly ({reason})"
             ),
+            Self::Model(error) => write!(f, "{error}"),
             Self::Claim(error) => write!(f, "{error}"),
         }
     }
@@ -585,6 +644,7 @@ pub struct ProbeReport {
     config: ProbeConfig,
     probes: Vec<ProgramProbe>,
     directive_programs: Vec<DirectiveProgramProbe>,
+    modelled_programs: Vec<ModelledProgramProbe>,
 }
 
 impl ProbeReport {
@@ -606,6 +666,26 @@ impl ProbeReport {
     /// The text directive programs the session classified instead of walking.
     pub fn directive_programs(&self) -> &[DirectiveProgramProbe] {
         &self.directive_programs
+    }
+
+    /// The programs the session classified with their family's real model
+    /// (F13-D) instead of walking them as numeric opcode words.
+    pub fn modelled_programs(&self) -> &[ModelledProgramProbe] {
+        &self.modelled_programs
+    }
+
+    /// Number of modelled programs.
+    pub fn modelled(&self) -> usize {
+        self.modelled_programs.len()
+    }
+
+    /// Modelled programs per [`ProgramModel::label`], in label order.
+    pub fn modelled_by_model(&self) -> BTreeMap<&'static str, usize> {
+        let mut counts: BTreeMap<&'static str, usize> = BTreeMap::new();
+        for program in &self.modelled_programs {
+            *counts.entry(program.model().label()).or_default() += 1;
+        }
+        counts
     }
 
     /// Number of probes.
@@ -975,6 +1055,7 @@ pub struct ProbeSession {
     config: ProbeConfig,
     probes: Vec<ProgramProbe>,
     directive_programs: Vec<DirectiveProgramProbe>,
+    modelled_programs: Vec<ModelledProgramProbe>,
     closed: bool,
 }
 
@@ -986,6 +1067,7 @@ impl ProbeSession {
             config,
             probes: Vec::new(),
             directive_programs: Vec::new(),
+            modelled_programs: Vec::new(),
             closed: false,
         }
     }
@@ -1116,6 +1198,48 @@ impl ProbeSession {
         Ok(self.directive_programs.len() - 1)
     }
 
+    /// Files `program` under its family's real `model` without walking it as
+    /// numeric opcode words (F13-D, task #640), and returns its index among
+    /// the modelled programs.
+    ///
+    /// The caller measured the model from evidence that can establish a
+    /// meaning — a structural decode of the program's own bytes or the
+    /// owner's static analysis of the original executable — and this session
+    /// refuses anything weaker: the F13 census's mistake was exactly a
+    /// confident walk over bytes whose model nobody had established.
+    ///
+    /// # Errors
+    ///
+    /// [`ProbeError::SessionClosed`] after teardown and
+    /// [`ProbeError::Model`] when `evidence` cannot establish a meaning (a
+    /// [`ResearchMethod::ContainerScan`] lead or anything below
+    /// [`Confidence::Documented`]).
+    pub fn record_modelled_program(
+        &mut self,
+        program: &LocatedProgram<'_>,
+        model: ProgramModel,
+        evidence: ScriptEvidence,
+    ) -> Result<usize, ProbeError> {
+        if self.closed {
+            return Err(ProbeError::SessionClosed);
+        }
+        if !evidence.establishes_semantics() {
+            return Err(ProbeError::Model(ModelError::WeakEvidence {
+                model,
+                method: evidence.method(),
+                confidence: evidence.confidence(),
+            }));
+        }
+        self.modelled_programs.push(ModelledProgramProbe::file(
+            program.mission_label().to_owned(),
+            program.locator().clone(),
+            program.kind(),
+            model,
+            evidence,
+        ));
+        Ok(self.modelled_programs.len() - 1)
+    }
+
     /// Re-runs the probe at `index` against the current table.
     ///
     /// Only a probe that stopped at an unknown opcode can be retried: that is
@@ -1176,6 +1300,7 @@ impl ProbeSession {
             config: self.config,
             probes: std::mem::take(&mut self.probes),
             directive_programs: std::mem::take(&mut self.directive_programs),
+            modelled_programs: std::mem::take(&mut self.modelled_programs),
         }
     }
 }

@@ -63,8 +63,28 @@
 //!   and the per-program budget. Their defaults are reported as
 //!   `probe.assumed`, never hidden;
 //! * with `--signatures`, coverage additionally requires every program to be
-//!   resolved: an incomplete table exits 3. Without it the coverage check is
-//!   the F13-B one and is unchanged.
+//!   accounted for: an incomplete table exits 3. Without it the coverage check
+//!   is the F13-B one and is unchanged.
+//!
+//! F13-D (task #640, owner note 2026-10-05) corrects the census's premise:
+//! **none of the three families is a numeric opcode stream.** Before a
+//! program is walked, this command classifies it with its family's real model
+//! (`cs_formats::script_raw::model`):
+//!
+//! * a reader-archive member that decodes as a `.zrd` typed tree is a
+//!   **typed data tree** — data read by keyword by a native consumer;
+//! * an INTERP script body whose every line heads with a printable text
+//!   token is a **named command program** — the interpreter matches command
+//!   **names**, there is no numeric opcode;
+//! * an animation container's payload, behind its validated header, is a
+//!   stream of **typed event records** — F20 (#690) measured that stream's
+//!   layout and opcode census over all 61 retail carriers.
+//!
+//! A modelled program is filed with the evidence that classifies it
+//! (`probe.modelled_program_rows`) and is **not** walked, so the report never
+//! presents a stopped walk over text or data as an `unknown_opcode`. A
+//! program no model is established for keeps the binary walk and its honest
+//! stop — classification never guesses.
 //!
 //! Exit codes follow `docs/contracts/CLI-EVIDENCE.md`: `0` the command ran and
 //! — with `--coverage` — the corpus is covered; `3` a coverage check failed;
@@ -85,12 +105,15 @@ use cs_content::mission_control::{
     DecodedMember, DirectiveDisposition, FieldSupport, control_member, measure_control_record,
 };
 use cs_content::stunts::decode_zrd;
+use cs_formats::interp::{InterpRawLine, read_interp};
+use cs_formats::io::ParseContext;
 use cs_formats::script_raw::{
-    ClaimError, Confidence, ContainerDiscovery, DirectiveKeyRow, DirectiveKeyStatus,
-    DirectiveProgramProbe, EvidenceLocator, ProbeConfig, ProbeReport, ProbeSession, ProgramKind,
-    RecordFieldSupport, RecordKeyRow, RecordKeyStatus, RecordProbeError, RecordProbeStats,
-    RecordReachability, ResearchMethod, ScriptEvidence, ScriptRecord, ScriptSource, SignatureClaim,
-    SignatureShape, SignatureTable, discover_container, inventory_scripts, probe_records,
+    ByteSpan, ClaimError, Confidence, ContainerDiscovery, DirectiveKeyRow, DirectiveKeyStatus,
+    DirectiveProgramProbe, EvidenceLocator, ModelledProgramProbe, ProbeConfig, ProbeReport,
+    ProbeSession, ProgramKind, ProgramModel, RecordFieldSupport, RecordKeyRow, RecordKeyStatus,
+    RecordProbeError, RecordProbeStats, RecordReachability, ResearchMethod, ScriptEvidence,
+    ScriptRecord, ScriptSource, SignatureClaim, SignatureShape, SignatureTable, discover_container,
+    inventory_scripts, model_basis, probe_records, reads_as_named_commands,
 };
 use cs_formats::zbd::{HeaderStatus, ZbdFamily};
 use cs_types::install::RelativePath;
@@ -101,8 +124,13 @@ use cs_types::install::RelativePath;
 /// unresolved; version 4 adds the record-level axis to each directive
 /// program row (`record_keys`, `record_keys_classified`,
 /// `record_keys_unclassified`) and the summed `probe.directive_record_keys_*`
-/// counts (F13-C-RECKEYS); the F13-B fields are unchanged.
-pub const SCRIPTS_REPORT_VERSION: &str = "cs-inspect-scripts/4";
+/// counts (F13-C-RECKEYS); version 5 adds the F13-D model axis (task #640):
+/// each located program row carries its `model` (`typed_data_tree`,
+/// `named_commands`, `event_records` or `null` for the binary walk), the
+/// probe section counts the modelled programs per model, lists their rows
+/// with their evidence and states each model's static-analysis basis; the
+/// F13-B fields are unchanged.
+pub const SCRIPTS_REPORT_VERSION: &str = "cs-inspect-scripts/5";
 
 /// The instruction unit the walk assumes when `--word-bytes` is omitted. It
 /// is an **assumption**, reported as such in `probe.assumed`; F13 has not
@@ -222,6 +250,11 @@ pub struct ScriptsSummary {
     pub directive_record_keys_unclassified: usize,
     /// Blocks of directive programs that did not read as a directive list.
     pub directive_refused_blocks: usize,
+    /// Located programs classified with their family's real model (F13-D,
+    /// task #640) instead of being walked as binary opcode words.
+    pub modelled_programs: usize,
+    /// Modelled programs per [`ProgramModel::label`].
+    pub modelled_by_model: BTreeMap<&'static str, usize>,
 }
 
 impl ScriptsSummary {
@@ -232,12 +265,14 @@ impl ScriptsSummary {
     }
 
     /// Whether every located program was accounted for: walked to the end
-    /// against the signature table, or classified as a text directive program
+    /// against the signature table, classified as a text directive program
     /// whose every key is listed as measured or explicitly unknown (a block
-    /// that did not read as a directive list leaves the program unaccounted).
-    /// With no `--signatures` file the table ships empty, so this is `false`
-    /// for any corpus that holds a binary program — the honest state, never a
-    /// pass.
+    /// that did not read as a directive list leaves the program unaccounted),
+    /// or classified with its family's real model (F13-D, task #640: a `.zrd`
+    /// typed tree, a named command script, a stream of typed animation event
+    /// records — no numeric opcode stream exists to resolve there). With no
+    /// `--signatures` file the table ships empty, so a corpus that still
+    /// holds a binary program gets `false` — the honest state, never a pass.
     ///
     /// An **unclassified record key** (a record-level key outside both
     /// measured vocabularies) does *not* count against this check, and that
@@ -254,7 +289,8 @@ impl ScriptsSummary {
     /// being gated here; a caller that wants to fail on it has the count.
     pub fn signatures_complete(&self) -> bool {
         self.directive_refused_blocks == 0
-            && self.programs_resolved + self.directive_programs == self.programs
+            && self.programs_resolved + self.directive_programs + self.modelled_programs
+                == self.programs
     }
 }
 
@@ -400,9 +436,11 @@ pub fn scripts_command_result(args: &[String], env_cs_path: Option<OsString>) ->
         summary.records_used += record_stats.used;
         summary.records_unused += record_stats.unused;
         summary.unused_unknown_records += record_stats.unused_unknown;
-        rows.push(container_json(&discovery, &record_rows));
+        let interp_lines = interp_lines_by_offset(spelling, &discovery, &bytes);
         let directive = directive_program_of(&discovery);
+        let mut models: Vec<Option<ProgramModel>> = Vec::with_capacity(discovery.len());
         for (index, program) in discovery.programs().iter().enumerate() {
+            let modelled = model_selection(&discovery, index, &interp_lines);
             let outcome = match &directive {
                 Some(found) if found.index == index => session
                     .record_directive_program(
@@ -413,13 +451,24 @@ pub fn scripts_command_result(args: &[String], env_cs_path: Option<OsString>) ->
                         found.record_keys.clone(),
                     )
                     .map(|_| ()),
-                _ => session.probe(program).map(|_| ()),
+                _ => match &modelled {
+                    Some(selection) => session
+                        .record_modelled_program(
+                            program,
+                            selection.model,
+                            selection.evidence.clone(),
+                        )
+                        .map(|_| ()),
+                    None => session.probe(program).map(|_| ()),
+                },
             };
             if let Err(error) = outcome {
                 diagnostics.push(format!("{spelling}: signature probe failed: {error}"));
                 runtime_failed = true;
             }
+            models.push(modelled.map(|selection| selection.model));
         }
+        rows.push(container_json(&discovery, &record_rows, &models));
         match discovery.family() {
             None => summary.dispatch_refused += 1,
             Some(ZbdFamily::Texture | ZbdFamily::Sound | ZbdFamily::GameZ) => {
@@ -451,6 +500,8 @@ pub fn scripts_command_result(args: &[String], env_cs_path: Option<OsString>) ->
     summary.signature_claims = probe_report.table().len();
     summary.programs_resolved = probe_report.resolved();
     summary.programs_retryable = probe_report.retryable();
+    summary.modelled_programs = probe_report.modelled();
+    summary.modelled_by_model = probe_report.modelled_by_model();
     for program in probe_report.directive_programs() {
         summary.directive_programs += 1;
         summary.directive_keys_known += program.known_keys();
@@ -561,7 +612,15 @@ fn probe_container_records(
 }
 
 /// Renders one container's located programs, findings and inventory records.
-fn container_json(discovery: &ContainerDiscovery<'_>, record_rows: &[String]) -> String {
+///
+/// Every located program row carries its `model` — the label of the real
+/// model F13-D classified it with, or `null` when it keeps the binary
+/// opcode walk.
+fn container_json(
+    discovery: &ContainerDiscovery<'_>,
+    record_rows: &[String],
+    models: &[Option<ProgramModel>],
+) -> String {
     let path = discovery.path().logical_key();
     let family = discovery.family().map(ZbdFamily::as_str);
     let header = match discovery.header_status() {
@@ -579,11 +638,17 @@ fn container_json(discovery: &ContainerDiscovery<'_>, record_rows: &[String]) ->
     let programs: Vec<String> = discovery
         .programs()
         .iter()
-        .map(|program| {
+        .enumerate()
+        .map(|(index, program)| {
             let span = program.locator().span();
+            let model = models
+                .get(index)
+                .copied()
+                .flatten()
+                .map_or_else(|| "null".to_owned(), |model| jstr(model.label()));
             format!(
                 "{{\"kind\": {}, \"confidence\": {}, \"mission\": {}, \"member\": {}, \
-                 \"offset\": {}, \"length\": {}, \"reason\": {}}}",
+                 \"offset\": {}, \"length\": {}, \"reason\": {}, \"model\": {model}}}",
                 jstr(program.kind().label()),
                 jstr(program.confidence().label()),
                 opt_str(program.mission()),
@@ -634,6 +699,37 @@ fn probe_json(
         .map(directive_program_json)
         .collect::<Vec<_>>()
         .join(", ");
+    let modelled_rows = report
+        .modelled_programs()
+        .iter()
+        .map(modelled_program_json)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let modelled_by_model = summary
+        .modelled_by_model
+        .iter()
+        .map(|(label, count)| format!("{}: {count}", jstr(label)))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let model_basis_json = ProgramModel::ALL
+        .iter()
+        .map(|model| {
+            let basis = model_basis(*model);
+            let EvidenceLocator::Executable { module, rva } = basis.locator() else {
+                panic!("a model basis points at the executable: {basis:?}");
+            };
+            format!(
+                "{}: {{\"method\": {}, \"confidence\": {}, \"module\": {}, \"rva\": {rva}, \
+                 \"basis\": {}}}",
+                jstr(model.label()),
+                jstr(basis.method().label()),
+                jstr(basis.confidence().label()),
+                jstr(module),
+                jstr(basis.note()),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(", ");
     let stops = stops
         .iter()
         .map(|(code, count)| format!("{}: {count}", jstr(code)))
@@ -645,13 +741,19 @@ fn probe_json(
          \"retryable\": {}, \"complete\": {}, \"stops\": {{{stops}}}, \
          \"directive_programs\": {}, \"directive_keys_known\": {}, \
          \"directive_keys_unknown\": {}, \"directive_record_keys_classified\": {}, \
-         \"directive_record_keys_unclassified\": {}, \"directive_program_rows\": [{directive_rows}]}}",
+         \"directive_record_keys_unclassified\": {}, \"directive_program_rows\": [{directive_rows}], \
+         \"modelled\": {}, \"modelled_by_model\": {{{modelled_by_model}}}, \
+         \"model_basis\": {{{model_basis_json}}}, \
+         \"modelled_program_rows\": [{modelled_rows}]}}",
         report.config().word_bytes(),
         report.config().budget(),
         summary.signature_claims,
         summary.programs,
         summary.programs_resolved,
-        summary.programs - summary.programs_resolved - summary.directive_programs,
+        summary.programs
+            - summary.programs_resolved
+            - summary.directive_programs
+            - summary.modelled_programs,
         summary.programs_retryable,
         summary.signatures_complete(),
         summary.directive_programs,
@@ -659,6 +761,7 @@ fn probe_json(
         summary.directive_keys_unknown,
         summary.directive_record_keys_classified,
         summary.directive_record_keys_unclassified,
+        summary.modelled_programs,
     )
 }
 
@@ -797,6 +900,148 @@ fn directive_program_of(discovery: &ContainerDiscovery<'_>) -> Option<DirectiveS
     })
 }
 
+/// The model classification of one located program (F13-D, task #640): the
+/// real model and the evidence that classifies these bytes with it.
+struct ModelSelection {
+    model: ProgramModel,
+    evidence: ScriptEvidence,
+}
+
+/// Every INTERP script body's lines, keyed by the body's absolute offset.
+///
+/// The located loading programs are filed by exactly these offsets, so the
+/// model check joins each body to its own lines and never to a neighbour's.
+/// An interp container whose reader refuses it yields no lines, and the
+/// discovery located no programs for it either.
+fn interp_lines_by_offset<'bytes>(
+    spelling: &str,
+    discovery: &ContainerDiscovery<'_>,
+    bytes: &'bytes [u8],
+) -> BTreeMap<u64, Vec<InterpRawLine<'bytes>>> {
+    if discovery.family() != Some(ZbdFamily::Interp) {
+        return BTreeMap::new();
+    }
+    let mut context = ParseContext::with_defaults(spelling);
+    match read_interp(&mut context, bytes) {
+        Ok(file) => file
+            .scripts()
+            .iter()
+            .map(|script| (u64::from(script.entry.script_offset), script.lines.clone()))
+            .collect(),
+        Err(_) => BTreeMap::new(),
+    }
+}
+
+/// The structural evidence of one modelled program: this project's own
+/// decode of the program's own bytes, at [`Confidence::ObservedTool`] — a
+/// tool run, never original-verified (AGENTS.md rule 8).
+fn structural_evidence(container: &str, span: ByteSpan, note: &str) -> ScriptEvidence {
+    ScriptEvidence::new(
+        ResearchMethod::StructuralDecode,
+        Confidence::ObservedTool,
+        EvidenceLocator::ContainerSpan {
+            container: container.to_owned(),
+            span,
+        },
+        note,
+    )
+    .expect("a short structural note is valid evidence")
+}
+
+/// Classifies one located program with its family's real model, or `None`
+/// when no model is established and the program keeps its binary walk.
+///
+/// Three rules, each tied to the owner note of task #640 (static analysis of
+/// the owner-supplied decrypted executable, never `verified_original`):
+///
+/// * a reader-archive member that **decodes** as a `.zrd` typed tree is
+///   [`ProgramModel::TypedDataTree`] — the decode of these very bytes is the
+///   evidence, nothing is claimed from the name;
+/// * an INTERP script body whose every line heads with a printable text
+///   token is [`ProgramModel::NamedCommands`] — the F07-validated line
+///   layout plus the text command head;
+/// * an animation container's payload behind its **validated** header is
+///   [`ProgramModel::EventRecords`] — the compiled animation ZBD whose
+///   event stream F20 (#690) measured over all 61 retail carriers.
+///
+/// A member that does not decode, a body that does not read as text and an
+/// animation container whose header dispatch could not validate all answer
+/// `None` and keep the binary walk: the F13 census's failure was a confident
+/// walk over bytes nobody had classified, and this never repeats it.
+fn model_selection(
+    discovery: &ContainerDiscovery<'_>,
+    index: usize,
+    interp_lines: &BTreeMap<u64, Vec<InterpRawLine<'_>>>,
+) -> Option<ModelSelection> {
+    let program = discovery.programs().get(index)?;
+    let span = program.locator().span();
+    match discovery.family() {
+        Some(ZbdFamily::Reader) if program.locator().member().is_some() => {
+            decode_zrd(program.bytes()).ok()?;
+            Some(ModelSelection {
+                model: ProgramModel::TypedDataTree,
+                evidence: structural_evidence(
+                    discovery.container(),
+                    span,
+                    "the member decodes as a .zrd typed tree: tags 1..=4, a list holds one \
+                     fewer child than its count, no trailing bytes",
+                ),
+            })
+        }
+        Some(ZbdFamily::Interp) => {
+            let lines = interp_lines.get(&span.offset)?;
+            // An empty body is still a named-command program: the F07
+            // reader validated that the script holds zero lines and the body
+            // is only its zero terminator, so there is no instruction stream
+            // to walk — retail holds four such scripts, and reading their
+            // terminator word as an opcode is exactly the misreading this
+            // task corrects.
+            let note = if lines.is_empty() {
+                "the body holds only the F07-validated zero terminator: zero command lines, \
+                 nothing to walk"
+            } else {
+                reads_as_named_commands(lines).ok()?;
+                "every line of the body heads with a printable text command name inside the \
+                 F07-validated line layout"
+            };
+            Some(ModelSelection {
+                model: ProgramModel::NamedCommands,
+                evidence: structural_evidence(discovery.container(), span, note),
+            })
+        }
+        Some(ZbdFamily::Animation)
+            if program.locator().member().is_none()
+                && matches!(
+                    discovery.header_status(),
+                    Some(HeaderStatus::Validated { .. })
+                ) =>
+        {
+            Some(ModelSelection {
+                model: ProgramModel::EventRecords,
+                evidence: model_basis(ProgramModel::EventRecords),
+            })
+        }
+        _ => None,
+    }
+}
+
+/// Renders one modelled program: where it lives, which real model the
+/// evidence classified it with and that evidence's method, confidence and
+/// summary — never its bytes.
+fn modelled_program_json(program: &ModelledProgramProbe) -> String {
+    format!(
+        "{{\"mission\": {}, \"locator\": {}, \"kind\": {}, \"model\": {}, \"class\": \
+         \"modelled_program\", \"confidence\": {}, \"method\": {}, \"evidence\": {}}}",
+        jstr(program.mission()),
+        jstr(&program.locator().to_string()),
+        jstr(program.kind().label()),
+        jstr(program.model().label()),
+        jstr(program.evidence().confidence().label()),
+        jstr(program.evidence().method().label()),
+        jstr(program.evidence().note()),
+    )
+}
+
 /// Renders one record-level key of a directive program: a classified field
 /// with its measured shapes and support, or an unclassified key explicitly
 /// unknown with its reason. The row key is `record_key`, never `key`: `key`
@@ -925,7 +1170,7 @@ fn scripts_report_json(
          \"unlocated_containers\": {}, \"finding_containers\": {}, \"records\": {}, \
          \"records_used\": {}, \"records_unused\": {}, \"unused_unknown_records\": {}, \
          \"signature_claims\": {}, \"programs_resolved\": {}, \"programs_retryable\": {}, \
-         \"by_kind\": {{{}}}}},\n\
+         \"modelled_programs\": {}, \"by_kind\": {{{}}}}},\n\
          \x20\"containers\": [\n  {}\n ]\n\
          }}\n",
         jstr(SCRIPTS_REPORT_VERSION),
@@ -947,6 +1192,7 @@ fn scripts_report_json(
         summary.signature_claims,
         summary.programs_resolved,
         summary.programs_retryable,
+        summary.modelled_programs,
         by_kind.join(", "),
         rows.join(",\n  "),
     )
@@ -1760,7 +2006,12 @@ mod tests {
     }
 
     /// M01-B-OPC: a text member that is not a unique control program is never
-    /// classified; it keeps the binary probe and its stop is reported.
+    /// classified as a *directive program*; F13-D (#640) then classifies it
+    /// with its family's real model — both members decode as `.zrd` typed
+    /// trees, so neither is walked as binary words and neither stops at an
+    /// `unknown_opcode` any more. A member that does not decode as `.zrd`
+    /// keeps the binary probe (`accept_f13_d_cli_keeps_an_undecodable_member_
+    /// on_the_binary_walk`).
     #[test]
     fn accept_m01_b_opc_cli_does_not_classify_members_without_a_unique_control_rule() {
         let tree = Temp::new("opc-ambiguous");
@@ -1775,7 +2026,12 @@ mod tests {
         let summary = result.summary.as_ref().expect("the command ran");
         assert_eq!(summary.programs, 2);
         assert_eq!(summary.directive_programs, 0);
-        assert_eq!(summary.programs_retryable, 2);
+        assert_eq!(summary.programs_retryable, 0);
+        assert_eq!(summary.modelled_programs, 2);
+        assert_eq!(
+            summary.modelled_by_model.get("typed_data_tree").copied(),
+            Some(2)
+        );
     }
 
     /// M01-B-OPC: the session refuses a listing that cannot be evidence.
@@ -2114,6 +2370,182 @@ mod tests {
         assert_eq!(filed.record_keys()[1].sites(), None);
     }
 
+    // --- F13-D: the real model of every program family (#640) ----------------
+
+    /// An authored `.zrd` member that decodes as a typed tree: a list of a
+    /// text key and a list value, exactly the grammar `decode_zrd` reads.
+    fn authored_typed_tree() -> Vec<u8> {
+        zrd_list(&[zrd_text("wind"), zrd_list(&[zrd_int(7)])])
+    }
+
+    /// The F13-D production path: each program family is classified with its
+    /// real model instead of being walked as numeric opcode words — an
+    /// INTERP body that reads as named text commands, a `.zrd` member that
+    /// decodes as a typed tree and an animation payload behind its validated
+    /// header are modelled; a program no model is established for keeps the
+    /// binary walk and its honest `unknown_opcode` stop.
+    #[test]
+    fn accept_f13_d_cli_classifies_every_family_with_its_real_model() {
+        let tree = Temp::new("f13d-models");
+        // `boot` heads every line with a printable command name; `blob` is
+        // four binary words, exactly the shape F13-B misread as an opcode
+        // stream, and it must keep its walk.
+        tree.write(
+            "ZBD/interp.zbd",
+            &interp(&[
+                (
+                    b"boot",
+                    &[
+                        (1, b"SetBFETolerance\0".as_slice()),
+                        (1, b"GameGenSwapYZAxis\0".as_slice()),
+                    ],
+                ),
+                (b"blob", &[(1, b"\x11\x22\x33\x44".as_slice())]),
+                // An empty script: only the zero terminator. Its model is
+                // still named commands — walking the terminator as an opcode
+                // is the misreading this task corrects.
+                (b"empty", &[]),
+            ]),
+        );
+        // `weather.zrd` decodes as a `.zrd` typed tree; `blob.zrd` is not a
+        // tree (tag 0x0a is outside 1..=4), so nothing classifies it.
+        tree.write(
+            "ZBD/C1/M02/zrdr.zbd",
+            &reader_archive(&[
+                (b"weather.zrd", &authored_typed_tree()),
+                (b"blob.zrd", b"\x0a\x00\x00\x00\x0b\x00\x00\x00"),
+            ]),
+        );
+        tree.write("ZBD/C1/cam_anim.zbd", &animation(b"\x11\x22\x33\x44"));
+
+        let result = run(&tree.0, &["--coverage"]);
+        assert_eq!(result.exit_code, 0, "{:?}", result.diagnostics);
+        let summary = result.summary.as_ref().expect("the command ran");
+        assert_eq!(summary.programs, 6);
+        assert_eq!(summary.modelled_programs, 4);
+        assert_eq!(summary.directive_programs, 0);
+        // The two programs no model is established for keep the binary walk
+        // and stop at their first reached counter.
+        assert_eq!(summary.programs_resolved, 0);
+        assert_eq!(summary.programs_retryable, 2);
+        assert_eq!(
+            summary.modelled_by_model.get("named_commands").copied(),
+            Some(2)
+        );
+        assert_eq!(
+            summary.modelled_by_model.get("typed_data_tree").copied(),
+            Some(1)
+        );
+        assert_eq!(
+            summary.modelled_by_model.get("event_records").copied(),
+            Some(1)
+        );
+        assert!(!summary.signatures_complete());
+
+        let report = result.report.expect("a report");
+        assert!(report.contains("\"modelled\": 4"), "{report}");
+        assert!(
+            report.contains(
+                "\"modelled_by_model\": {\"event_records\": 1, \"named_commands\": 2, \
+                 \"typed_data_tree\": 1}"
+            ),
+            "{report}"
+        );
+        assert!(report.contains("\"unknown_opcode\": 2"), "{report}");
+        assert!(report.contains("\"complete\": false"), "{report}");
+        // Every located program row carries its model; only the two binary
+        // programs carry `null`.
+        assert!(report.contains("\"model\": \"named_commands\""), "{report}");
+        assert!(
+            report.contains("\"model\": \"typed_data_tree\""),
+            "{report}"
+        );
+        assert!(report.contains("\"model\": \"event_records\""), "{report}");
+        assert_eq!(
+            report.matches("\"model\": null").count(),
+            2,
+            "only the two programs without an established model keep the walk: {report}"
+        );
+        // The modelled rows carry the evidence that classified them: a
+        // structural decode of the program's own bytes for the text bodies,
+        // the executable static analysis for the compiled event records.
+        assert!(
+            report.contains(
+                "\"class\": \"modelled_program\", \"confidence\": \"observed_tool\", \
+             \"method\": \"structural_decode\""
+            ),
+            "{report}"
+        );
+        assert!(
+            report.contains(
+                "\"class\": \"modelled_program\", \"confidence\": \"documented\", \
+             \"method\": \"executable_static_analysis\""
+            ),
+            "{report}"
+        );
+        // The probe section states each model's basis: the owner note's
+        // executable addresses, never copied bytes.
+        for (model, rva) in [
+            ("typed_data_tree", 1_547_360_u32),
+            ("named_commands", 1_803_356_u32),
+            ("event_records", 1_186_688_u32),
+        ] {
+            assert!(
+                report.contains(&format!(
+                    "\"{model}\": {{\"method\": \"executable_static_analysis\", \
+                     \"confidence\": \"documented\", \"module\": \"crimson.decrypted.exe\", \
+                     \"rva\": {rva},"
+                )),
+                "the {model} basis names its executable address: {report}"
+            );
+        }
+    }
+
+    /// F13-D never classifies on a guess: with `--signatures` supplied and a
+    /// corpus that still holds binary programs, the completeness gate fails
+    /// closed exactly as F13-C defined it — a modelled program is accounted
+    /// for, a walk that stopped at an unknown opcode is not.
+    #[test]
+    fn accept_f13_d_cli_keeps_an_incomplete_table_failing_closed() {
+        let tree = Temp::new("f13d-fail-closed");
+        tree.write(
+            "ZBD/interp.zbd",
+            &interp(&[
+                (
+                    b"boot",
+                    &[
+                        (1, b"SetBFETolerance\0".as_slice()),
+                        (1, b"GameGenSwapYZAxis\0".as_slice()),
+                    ],
+                ),
+                (b"blob", &[(1, b"\x11\x22\x33\x44".as_slice())]),
+            ]),
+        );
+        tree.write(
+            "ZBD/C1/M02/zrdr.zbd",
+            &reader_archive(&[(b"blob.zrd", b"\x0a\x00\x00\x00\x0b\x00\x00\x00")]),
+        );
+
+        let claims = empty_claims_file("f13d-empty");
+        let result = run(
+            &tree.0,
+            &[
+                "--coverage",
+                "--signatures",
+                claims.to_str().expect("UTF-8"),
+            ],
+        );
+        let _ = fs::remove_file(&claims);
+        assert_eq!(result.exit_code, 3, "{:?}", result.diagnostics);
+        let summary = result.summary.as_ref().expect("the command ran");
+        assert_eq!(summary.modelled_programs, 1, "the command body is modelled");
+        assert_eq!(summary.programs_retryable, 2, "the two binary programs");
+        assert!(!summary.signatures_complete());
+        let report = result.report.expect("a report");
+        assert!(report.contains("\"passes\": false"), "{report}");
+        assert!(report.contains("\"unknown_opcode\": 2"), "{report}");
+    }
+
     // --- retail ---------------------------------------------------------------
 
     fn game_dir() -> PathBuf {
@@ -2330,7 +2762,8 @@ mod tests {
     /// AC03 over the original installation: the `scripts` command probes every
     /// located program in isolation, attaches a reachability verdict with
     /// evidence to every inventory record, resolves nothing with the empty
-    /// table and fails closed when a supplied table is incomplete.
+    /// table and — since F13-D (#640) classified every retail program with
+    /// its real model — walks no retail program as binary words.
     #[test]
     #[ignore = "requires CS_GAME_DIR"]
     fn accept_f13_c_retail_cli_probes_every_program_and_reaches_every_record() {
@@ -2360,19 +2793,27 @@ mod tests {
             summary.programs_resolved, 0,
             "an empty table resolves nothing, as it must"
         );
-        // 1452 located programs minus the 40 control members M01-B-OPC (#1356)
-        // classifies as directive programs instead of walking: only the other
-        // 1412 binary programs stop at `unknown_opcode`. (The 1452 pin here
-        // went stale with #1356 and was corrected by F13-C-RECKEYS (#1364).)
-        assert_eq!(summary.programs_retryable, 1412);
-        assert!(!summary.signatures_complete());
+        // F13-D (#640) corrects the census's premise: the retail corpus holds
+        // no binary opcode stream. Every located program is accounted for —
+        // the 40 control members M01-B-OPC (#1356) classifies as directive
+        // programs, and 1412 programs classified with their real model by the
+        // rules `accept_f13_d_retail_every_program_family_has_its_real_model`
+        // pins — so nothing stops at `unknown_opcode` any more. (This pin was
+        // 1412 before F13-D; the walks it counted were misreadings of `.zrd`
+        // text, INTERP command scripts and event-record payloads.)
+        assert_eq!(summary.programs_retryable, 0);
+        assert_eq!(summary.modelled_programs, 1412);
+        assert!(summary.signatures_complete());
 
         let report = result.report.expect("a report");
         assert!(report.contains("\"passes\": true"), "{report}");
         assert!(report.contains("\"supplied\": false"), "{report}");
         assert!(report.contains("\"assumed\": true"), "{report}");
-        assert!(report.contains("\"complete\": false"), "{report}");
-        assert!(report.contains("\"unknown_opcode\": 1412"), "{report}");
+        assert!(report.contains("\"complete\": true"), "{report}");
+        assert!(
+            report.contains("\"stops\": {}"),
+            "no retail program is walked as binary words: {report}"
+        );
         // Every record carries a verdict and its evidence; none is null.
         assert_eq!(
             report.matches("\"reachability\": {").count(),
@@ -2386,7 +2827,12 @@ mod tests {
             "every record carries its reachability evidence"
         );
 
-        // A supplied but incomplete table is never reported as success.
+        // Every retail program is accounted for, so a supplied table has
+        // nothing left to resolve: the run passes with the one claim unused.
+        // The fail-closed gate itself stays pinned on a corpus that still
+        // holds a binary program by
+        // `accept_f13_d_cli_keeps_an_incomplete_table_failing_closed` and
+        // `accept_f13_c_cli_fails_an_incomplete_table_and_refuses_a_malformed_file`.
         let claims = claims_file(
             "retail-partial",
             "0x0a mission_first mission 0 u32->unit records_immediately immediate never \
@@ -2401,13 +2847,97 @@ mod tests {
             ],
         );
         let _ = fs::remove_file(&claims);
-        assert_eq!(result.exit_code, 3, "{:?}", result.diagnostics);
+        assert_eq!(result.exit_code, 0, "{:?}", result.diagnostics);
         let summary = result.summary.as_ref().expect("the command ran");
         assert_eq!(summary.signature_claims, 1);
-        assert!(summary.programs_resolved < summary.programs);
-        assert!(!summary.signatures_complete());
+        assert_eq!(
+            summary.programs_resolved, 0,
+            "no retail program is a numeric opcode stream to resolve"
+        );
+        assert!(summary.signatures_complete());
         let report = result.report.expect("a report");
-        assert!(report.contains("\"passes\": false"), "{report}");
+        assert!(report.contains("\"passes\": true"), "{report}");
+    }
+
+    /// F13-D over the original installation (task #640): every retail program
+    /// family is classified with its real model, so the report presents no
+    /// stopped walk over a `.zrd` member, an INTERP body or an animation
+    /// payload as an `unknown_opcode` — the census's 1452 stops were
+    /// misreadings, and each program carries the evidence that classifies it.
+    #[test]
+    #[ignore = "requires CS_GAME_DIR"]
+    fn accept_f13_d_retail_every_program_family_has_its_real_model() {
+        let root = game_dir();
+        let result = run(&root, &["--coverage"]);
+        assert_eq!(result.exit_code, 0, "{:?}", result.diagnostics);
+        let summary = result.summary.as_ref().expect("the command ran");
+        assert_eq!(summary.programs, 1452, "F13-B located 1452 programs");
+        // The measured split over the installation: the 40 control members
+        // M01-B-OPC (#1356) classifies as directive programs, and every other
+        // program is classified by an F13-D rule — 98 named-command INTERP
+        // bodies (four of them empty scripts with only the zero terminator),
+        // 1253 `.zrd` typed trees (every reader member outside the directive
+        // programs decodes as a typed tree) and 61 compiled animation
+        // event-record payloads whose stream F20 (#690) measured.
+        assert_eq!(summary.directive_programs, 40);
+        assert_eq!(summary.modelled_programs, 1412);
+        for (model, count) in [
+            ("named_commands", 98),
+            ("typed_data_tree", 1253),
+            ("event_records", 61),
+        ] {
+            assert_eq!(
+                summary.modelled_by_model.get(model).copied(),
+                Some(count),
+                "the {model} count over the installation: {:?}",
+                summary.modelled_by_model
+            );
+        }
+        // No retail program is walked as binary words any more, and the
+        // mission opcode table stays unmeasured: resolved is still zero.
+        assert_eq!(summary.programs_resolved, 0);
+        assert_eq!(summary.programs_retryable, 0);
+        assert!(summary.signatures_complete());
+
+        let report = result.report.expect("a report");
+        assert!(report.contains("\"stops\": {}"), "{report}");
+        assert!(report.contains("\"modelled\": 1412"), "{report}");
+        assert!(
+            !report.contains("\"model\": null"),
+            "every retail program row carries its model: {report}"
+        );
+        assert_eq!(
+            report.matches("\"class\": \"modelled_program\"").count(),
+            1412,
+            "every modelled program is listed with its evidence: {report}"
+        );
+        // The evidence mix: structural decodes of the program's own bytes at
+        // `observed_tool` for the text families, the executable static
+        // analysis at `documented` for the compiled event records — never
+        // `verified_original`, never copied bytes.
+        for (needle, count) in [
+            (
+                "\"model\": \"typed_data_tree\", \"class\": \"modelled_program\", \
+                 \"confidence\": \"observed_tool\", \"method\": \"structural_decode\"",
+                1253,
+            ),
+            (
+                "\"model\": \"named_commands\", \"class\": \"modelled_program\", \
+                 \"confidence\": \"observed_tool\", \"method\": \"structural_decode\"",
+                98,
+            ),
+            (
+                "\"model\": \"event_records\", \"class\": \"modelled_program\", \
+                 \"confidence\": \"documented\", \"method\": \"executable_static_analysis\"",
+                61,
+            ),
+        ] {
+            assert_eq!(
+                report.matches(needle).count(),
+                count,
+                "the {needle} rows: {report}"
+            );
+        }
     }
 
     // --- evidence harness -----------------------------------------------------
@@ -2839,21 +3369,43 @@ mod tests {
             "acceptance suite run locally with the retail capability; this harness derives every \
              field from the recorded log, production discovery of $CS_GAME_DIR, and the production \
              `cs-inspect scripts --coverage` run over every retail ZBD container (scripts.json). \
-             The command routes all {} ZBD containers, locates {} programs in {} script containers, \
-             probes each one in isolation against the empty signature table ({} resolved, {} \
-             stopping at their first reached counter, probe.complete=false) and attaches a \
-             reachability verdict with structural evidence to all {} inventory records ({} used, \
-             {} unused, {} undecoded-and-unknown-and-unused). The mission opcode table is \
-             unmeasured by design: F13-C ships the probe machinery and the honest report, never \
-             invented signatures, and the recorded unknowns are listed in \
-             docs/findings/2026-09-29-f13-c-signature-probes-and-reachability.md. Validated with \
-             tools/validate_evidence.py --require-pass. Regenerated by the reviewing agent on the \
-             reviewed commit, as docs/contracts/CLI-EVIDENCE.md requires.",
+             The command routes all {} ZBD containers and locates {} programs in {} script \
+             containers. F13-D (#640) classifies {} of them with their real model instead of \
+             walking them ({} typed_data_tree, {} named_commands, {} event_records) and M01-B-OPC \
+             classifies the {} control members as directive programs, so {} programs remain on \
+             the binary walk and stop at their first reached counter against the empty signature \
+             table ({} resolved, probe.complete={}); a reachability verdict with structural \
+             evidence is attached to all {} inventory records ({} used, {} unused, {} \
+             undecoded-and-unknown-and-unused). The mission opcode table is unmeasured by design: \
+             F13-C ships the probe machinery and the honest report, never invented signatures, \
+             and the recorded unknowns are listed in \
+             docs/findings/2026-09-29-f13-c-signature-probes-and-reachability.md and the F13-D \
+             correction in docs/findings/2026-10-14-f13-d-every-program-family-has-its-real-model.md. \
+             Validated with tools/validate_evidence.py --require-pass. Regenerated by the \
+             reviewing agent on the reviewed commit, as docs/contracts/CLI-EVIDENCE.md requires.",
             summary.zbd_containers,
             summary.programs,
             summary.script_containers,
-            summary.programs_resolved,
+            summary.modelled_programs,
+            summary
+                .modelled_by_model
+                .get("typed_data_tree")
+                .copied()
+                .unwrap_or(0),
+            summary
+                .modelled_by_model
+                .get("named_commands")
+                .copied()
+                .unwrap_or(0),
+            summary
+                .modelled_by_model
+                .get("event_records")
+                .copied()
+                .unwrap_or(0),
+            summary.directive_programs,
             summary.programs_retryable,
+            summary.programs_resolved,
+            summary.signatures_complete(),
             summary.records,
             summary.records_used,
             summary.records_unused,
@@ -2908,6 +3460,210 @@ mod tests {
                  reviewing agent opencode-1 (fresh session, separate context) — the same agent \
                  identity, so this review is not independent evidence under AGENTS.md; Rally \
                  assigned the review",
+            ),
+            super::jstr(&method),
+        );
+        let out = evidence_dir.join("acceptance.json");
+        fs::write(&out, &report).unwrap_or_else(|error| panic!("write {}: {error}", out.display()));
+        assert!(
+            failed == 0 && exit_code == 0,
+            "the acceptance run failed (exit {exit_code}, {failed} failed): the report was \
+             written honestly and must not validate"
+        );
+        println!("wrote {}", out.display());
+    }
+
+    // --- F13-D evidence harness ------------------------------------------------
+
+    /// Evidence-report harness for F13-D (task #640;
+    /// `docs/contracts/CLI-EVIDENCE.md`, schema `schemas/evidence.schema.json`).
+    /// Not an acceptance test: it fails loudly when its inputs are missing.
+    /// From the workspace root:
+    ///
+    /// 1. ```sh
+    ///    mkdir -p private/evidence/F13-D
+    ///    cargo test --workspace --locked -- accept_f13_d_ --include-ignored \
+    ///      2>&1 | tee private/evidence/F13-D/cargo-test.log
+    ///    ```
+    ///    (record the exit status of `cargo test`, e.g. `${pipestatus[1]}` in zsh.)
+    /// 2. ```sh
+    ///    CS_EVIDENCE_DIR=private/evidence/F13-D \
+    ///    CS_CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}') \
+    ///    CS_EVIDENCE_ARGV="cargo test --workspace --locked -- accept_f13_d_ --include-ignored" \
+    ///    CS_EVIDENCE_EXIT_CODE=<status from step 1> \
+    ///      cargo test --locked -p cs_inspect --lib -- evidence_report_f13_d --ignored
+    ///    ```
+    ///    This runs the production `scripts --coverage` command over
+    ///    `$CS_GAME_DIR` and keeps its report as the artifact `scripts.json`.
+    /// 3. ```sh
+    ///    python3 tools/validate_evidence.py private/evidence/F13-D/acceptance.json \
+    ///      --artifact-root private/evidence/F13-D --require-pass
+    ///    ```
+    /// 4. Commit a copy of `acceptance.json` as `docs/findings/evidence/F13-D.json`.
+    #[test]
+    #[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_GAME_DIR"]
+    fn evidence_report_f13_d_writes_the_acceptance_report() {
+        let evidence_dir = {
+            let described = PathBuf::from(env_var("CS_EVIDENCE_DIR"));
+            if described.is_absolute() {
+                described
+            } else {
+                workspace_root().join(described)
+            }
+        };
+        let candidate_tree = env_var("CS_CANDIDATE_TREE");
+        let argv: Vec<String> = env_var("CS_EVIDENCE_ARGV")
+            .split_whitespace()
+            .map(str::to_owned)
+            .collect();
+        assert!(
+            !argv.is_empty(),
+            "CS_EVIDENCE_ARGV must hold the acceptance command"
+        );
+        let exit_code: i32 = env_var("CS_EVIDENCE_EXIT_CODE")
+            .parse()
+            .expect("CS_EVIDENCE_EXIT_CODE must be the exit status of the acceptance run");
+        let root = game_dir();
+        assert_eq!(
+            candidate_tree,
+            command_output("git", &["rev-parse", "HEAD^{tree}"]),
+            "CS_CANDIDATE_TREE must be the tree of the tested commit"
+        );
+
+        let log_path = evidence_dir.join("cargo-test.log");
+        let log = fs::read_to_string(&log_path)
+            .unwrap_or_else(|error| panic!("read {}: {error}", log_path.display()));
+        let ([passed, failed, ignored], results) = parse_suite(&log, "accept_f13_d_");
+        assert!(
+            passed > 0 && !results.is_empty(),
+            "no accept_f13_d_ tests in the log"
+        );
+        let retail = "accept_f13_d_retail_every_program_family_has_its_real_model";
+        let status = results
+            .iter()
+            .find(|(name, _)| short_name(name) == retail)
+            .map(|(_, status)| *status)
+            .unwrap_or_else(|| panic!("{retail} did not run: use --include-ignored"));
+        assert_eq!(status, "pass", "{retail} must pass");
+
+        // The production command over the installation, kept as the artifact.
+        let scripts_path = evidence_dir.join("scripts.json");
+        let modelled = run(
+            &root,
+            &["--coverage", "--out", scripts_path.to_str().expect("UTF-8")],
+        );
+        assert_eq!(modelled.out.as_deref(), Some(scripts_path.as_path()));
+        assert_eq!(modelled.exit_code, 0, "{:?}", modelled.diagnostics);
+        let summary = modelled.summary.as_ref().expect("the command ran");
+        assert!(
+            summary.covered(),
+            "the retail corpus coverage must hold: {summary:?}"
+        );
+        assert_eq!(summary.programs, 1452);
+        assert_eq!(summary.directive_programs, 40);
+        assert_eq!(summary.modelled_programs, 1412);
+        assert_eq!(
+            summary.programs_retryable, 0,
+            "no retail program is walked as binary words"
+        );
+        let report = modelled.report.expect("the retail report is rendered");
+        assert!(report.contains("\"passes\": true"), "{report}");
+        assert!(report.contains("\"stops\": {}"), "{report}");
+        assert!(!report.contains("\"model\": null"), "{report}");
+
+        let found = cs_assets::install::discover(&root).expect("discovery");
+        let install_sha256 = cs_assets::install::fingerprint(&found.manifest).to_hex();
+        let content_sha256 = cs_assets::install::content_fingerprint(&found.manifest).to_hex();
+
+        let artifact = |path: &Path, kind: &str| {
+            let bytes = fs::read(path).expect("artifact is readable");
+            format!(
+                "{{\"path\": {}, \"sha256\": \"{}\", \"kind\": \"{kind}\"}}",
+                super::jstr(&path.file_name().expect("name").to_string_lossy()),
+                cs_assets::install::sha256(&bytes).to_hex()
+            )
+        };
+        let method = format!(
+            "acceptance suite run locally with the retail capability; this harness derives every \
+             field from the recorded log, production discovery of $CS_GAME_DIR, and the production \
+             `cs-inspect scripts --coverage` run over every retail ZBD container (scripts.json). \
+             F13-D (#640) classifies every located program with its real model instead of \
+             walking it as numeric opcode words: of {} programs, {} are directive programs \
+             (M01-B-OPC) and {} are modelled ({} named_commands INTERP bodies, {} typed_data_tree \
+             `.zrd` members, {} event_records animation payloads), leaving {} programs on the \
+             binary walk and no `unknown_opcode` stop. The classification basis is the owner note \
+             of #640 (static analysis of the decrypted executable, never verified_original) plus \
+             this project's own structural decodes; the correction is recorded in \
+             docs/findings/2026-10-14-f13-d-every-program-family-has-its-real-model.md. Validated \
+             with tools/validate_evidence.py --require-pass.",
+            summary.programs,
+            summary.directive_programs,
+            summary.modelled_programs,
+            summary
+                .modelled_by_model
+                .get("named_commands")
+                .copied()
+                .unwrap_or(0),
+            summary
+                .modelled_by_model
+                .get("typed_data_tree")
+                .copied()
+                .unwrap_or(0),
+            summary
+                .modelled_by_model
+                .get("event_records")
+                .copied()
+                .unwrap_or(0),
+            summary.programs_retryable,
+        );
+        let report = format!(
+            "{{\n\
+             \x20\"schema_version\": 1,\n\
+             \x20\"task_id\": \"F13-D\",\n\
+             \x20\"candidate_tree\": {},\n\
+             \x20\"engine\": {{\"rust\": {}, \"bevy\": {}, \"avian\": {}}},\n\
+             \x20\"created_at\": {},\n\
+             \x20\"command\": {{\"argv\": [{}], \"cwd\": {}, \"exit_code\": {exit_code}}},\n\
+             \x20\"source\": {{\"install_sha256\": {}, \"content_sha256\": {}}},\n\
+             \x20\"seed\": 0,\n\
+             \x20\"ticks\": {{\"start\": 0, \"end\": 0}},\n\
+             \x20\"overrides\": [],\n\
+             \x20\"capabilities\": [\"retail\", \"synthetic\"],\n\
+             \x20\"tests\": {{\"discovered\": {}, \"executed\": {}, \"passed\": {passed}, \"failed\": {failed}, \"ignored\": {ignored}}},\n\
+             \x20\"assertions\": [{}],\n\
+             \x20\"artifacts\": [{}, {}],\n\
+             \x20\"unknowns\": [],\n\
+             \x20\"review\": {{\"identity\": {}, \"method\": {}}},\n\
+             \x20\"claim\": \"implemented\"\n\
+             }}\n",
+            super::jstr(&candidate_tree),
+            super::jstr(&command_output("rustc", &["--version"])),
+            super::jstr(&locked_version("bevy")),
+            super::jstr(&locked_version("avian3d")),
+            super::jstr(&iso_utc_now()),
+            argv.iter()
+                .map(|arg| super::jstr(arg))
+                .collect::<Vec<_>>()
+                .join(", "),
+            super::jstr(&command_output("git", &["rev-parse", "--show-toplevel"])),
+            super::jstr(&install_sha256),
+            super::jstr(&content_sha256),
+            passed + failed + ignored,
+            passed + failed,
+            results
+                .iter()
+                .map(|(name, status)| format!(
+                    "{{\"id\": {}, \"status\": \"{status}\", \"evidence\": [\"cargo-test.log\"]}}",
+                    super::jstr(short_name(name))
+                ))
+                .collect::<Vec<_>>()
+                .join(", "),
+            artifact(&log_path, "log"),
+            artifact(&scripts_path, "json"),
+            super::jstr(
+                "implementer: mimo-1 (fresh session); review pending — the reviewing agent \
+                 regenerates and validates this report on the reviewed commit, as \
+                 docs/contracts/CLI-EVIDENCE.md requires",
             ),
             super::jstr(&method),
         );

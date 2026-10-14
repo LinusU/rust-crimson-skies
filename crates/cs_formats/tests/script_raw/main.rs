@@ -7,16 +7,18 @@
 //! Every byte in this file is authored here. No original game data, no
 //! `CS_GAME_DIR` access.
 
+use cs_formats::interp::read_interp;
+use cs_formats::io::ParseContext;
 use cs_formats::script_raw::{
     ByteSpan, Candidacy, Confidence, DiscoveryFinding, DispatchOutcome, EXCLUDED_FAMILY_REASON,
     EvidenceError, EvidenceLocator, FormatDiscriminator, INTERP_BODY_UNESTABLISHED,
     InstructionClaimError, InstructionStatus, InventoryFinding, LocatorKind, MAX_LEADS_PER_RECORD,
-    MAX_NOTE_BYTES, OpcodeEntry, OpcodeLedger, ProbeConfig, ProbeSession, ProgramError,
-    ProgramKind, ProgramLocator, RecordKind, RecordReachability, ReferenceKind, ResearchMethod,
-    STRUCTURE_UNUSED_REASON, ScriptContainerEntry, ScriptEvidence, ScriptInventory, ScriptRole,
-    ScriptSource, SignatureClaim, SignatureShape, SignatureTable, UNDECODED_UNESTABLISHED,
-    UNREACHED_UNUSED_REASON, discover_container, inventory_scripts, mission_scope, probe_records,
-    walk_program,
+    MAX_NOTE_BYTES, NamedCommandsError, OpcodeEntry, OpcodeLedger, ProbeConfig, ProbeSession,
+    ProgramError, ProgramKind, ProgramLocator, ProgramModel, RecordKind, RecordReachability,
+    ReferenceKind, ResearchMethod, STRUCTURE_UNUSED_REASON, ScriptContainerEntry, ScriptEvidence,
+    ScriptInventory, ScriptRole, ScriptSource, SignatureClaim, SignatureShape, SignatureTable,
+    UNDECODED_UNESTABLISHED, UNREACHED_UNUSED_REASON, discover_container, inventory_scripts,
+    mission_scope, model_basis, probe_records, reads_as_named_commands, walk_program,
 };
 use cs_formats::zbd::{
     ANIMATION_SIGNATURE, ANIMATION_VERSION, INTERP_SIGNATURE, INTERP_VERSION, ZbdFamily,
@@ -1583,4 +1585,219 @@ fn accept_f13_c_retail_reachability_covers_the_campaign_programs() {
     assert_eq!(report.retryable(), report.unresolved());
     assert!(!report.complete());
     assert!(report.table().is_empty());
+}
+
+// --- F13-D: the real model of every program family (#640) -------------------
+//
+// Acceptance stage F13-D, task #640 (owner note 2026-10-05): the F13 census
+// walked every located program as a stream of numeric opcode words, but the
+// owner's static analysis of the decrypted executable established that none
+// of the three families is an opcode stream. These tests pin the typed path a
+// modelled program travels — classified with its evidence, filed instead of
+// walked — and the refusals that keep the classification honest.
+
+/// F13-D: a program whose family's real model is established is filed with
+/// the evidence that classifies it and never walked; evidence that cannot
+/// establish a meaning is refused, and the binary walk machinery is intact
+/// for a family no model is established for.
+#[test]
+fn accept_f13_d_modelled_programs_are_filed_not_walked() {
+    // One INTERP container: `boot` heads its line with a text command name,
+    // `blob` is four binary words exactly as F13-B's fixtures were.
+    let bytes = interp(
+        &[
+            (b"boot", &[(1, b"SetBFETolerance\0".as_slice())]),
+            (b"blob", &[(1, b"\x11\x22\x33\x44".as_slice())]),
+        ],
+        &[],
+    );
+    let relative = path("zbd/interp.zbd");
+    let discovery = discover_container("ZBD/interp.zbd", &relative, &bytes);
+    assert_eq!(discovery.len(), 2);
+    let boot = &discovery.programs()[0];
+    let blob = &discovery.programs()[1];
+
+    // The production named-commands check reads the parsed lines.
+    let file = read_interp(&mut ParseContext::with_defaults("ZBD/interp.zbd"), &bytes)
+        .expect("the authored container decodes");
+    assert_eq!(
+        reads_as_named_commands(&file.scripts()[0].lines).expect("boot is text commands"),
+        1
+    );
+
+    let config = ProbeConfig::new(4, 4096).expect("a valid instruction unit");
+    let mut session = ProbeSession::new(SignatureTable::new(), config);
+    let evidence = ScriptEvidence::new(
+        ResearchMethod::StructuralDecode,
+        Confidence::ObservedTool,
+        EvidenceLocator::ContainerSpan {
+            container: "ZBD/interp.zbd".to_owned(),
+            span: boot.locator().span(),
+        },
+        "the body heads its line with a text command name",
+    )
+    .expect("structural evidence is valid");
+    let index = session
+        .record_modelled_program(boot, ProgramModel::NamedCommands, evidence)
+        .expect("the text body is filed with its model");
+    assert_eq!(index, 0);
+    // A modelled program is not a probe: the walk never ran.
+    assert!(session.probes().is_empty());
+
+    // A scan lead cannot classify: the census's failure was confidence
+    // without meaning, and it stays refused.
+    let error = session
+        .record_modelled_program(
+            boot,
+            ProgramModel::NamedCommands,
+            scan_evidence("ZBD/interp.zbd", boot.locator().span()),
+        )
+        .expect_err("a scan cannot establish a model");
+    assert_eq!(error.code(), "weak_evidence");
+    assert!(session.probes().is_empty());
+
+    // The binary walk is intact for a body no model is established for: it
+    // stops at its first reached counter, exactly as F13-B pinned.
+    let binary = session.probe(blob).expect("the binary probe runs");
+    assert_eq!(binary, 0);
+    assert_eq!(session.probes()[binary].code(), "unknown_opcode");
+
+    let report = session.teardown();
+    assert_eq!(report.modelled(), 1);
+    assert_eq!(report.len(), 1, "the binary probe is still recorded");
+    assert_eq!(report.retryable(), 1);
+    assert_eq!(
+        report.modelled_by_model().get("named_commands"),
+        Some(&1),
+        "the model counts name the family"
+    );
+    let filed = &report.modelled_programs()[0];
+    assert_eq!(filed.model(), ProgramModel::NamedCommands);
+    assert_eq!(filed.kind(), ProgramKind::Loading);
+    assert_eq!(filed.confidence(), Confidence::ObservedTool);
+    assert_eq!(filed.evidence().method(), ResearchMethod::StructuralDecode);
+    assert_eq!(filed.locator(), boot.locator());
+    assert_eq!(filed.mission(), "ZBD/interp.zbd");
+
+    // The closed session files nothing more.
+    let error = session
+        .record_modelled_program(
+            blob,
+            ProgramModel::NamedCommands,
+            scan_evidence("ZBD/interp.zbd", blob.locator().span()),
+        )
+        .expect_err("the session was torn down");
+    assert_eq!(error.code(), "session_closed");
+}
+
+/// F13-D: the named-commands check reads the command head and refuses
+/// everything else — an empty body, an empty head and a head no text command
+/// name can hold — so a binary body is never classified on a name.
+#[test]
+fn accept_f13_d_reads_as_named_commands_checks_the_command_head() {
+    // A body of two printable-headed lines reads as two commands.
+    let bytes = interp(
+        &[(
+            b"boot",
+            &[
+                (1, b"SetBFETolerance\0".as_slice()),
+                (2, b"GameGenSwapYZAxis\0second\0".as_slice()),
+            ],
+        )],
+        &[],
+    );
+    let file = read_interp(&mut ParseContext::with_defaults("ZBD/interp.zbd"), &bytes)
+        .expect("the authored container decodes");
+    assert_eq!(reads_as_named_commands(&file.scripts()[0].lines), Ok(2));
+
+    // An empty body holds no command: the model still holds (the F07 reader
+    // validated the zero terminator), but the check reports it as such.
+    let bytes = interp(&[(b"empty", &[])], &[]);
+    let file = read_interp(&mut ParseContext::with_defaults("ZBD/interp.zbd"), &bytes)
+        .expect("the authored container decodes");
+    assert_eq!(
+        reads_as_named_commands(&file.scripts()[0].lines),
+        Err(NamedCommandsError::EmptyBody)
+    );
+
+    // A head of binary words is not a text command name.
+    let bytes = interp(&[(b"blob", &[(1, b"\x11\x22\x33\x44".as_slice())])], &[]);
+    let file = read_interp(&mut ParseContext::with_defaults("ZBD/interp.zbd"), &bytes)
+        .expect("the authored container decodes");
+    assert_eq!(
+        reads_as_named_commands(&file.scripts()[0].lines),
+        Err(NamedCommandsError::HeadNotText {
+            line: 0,
+            offset: file.scripts()[0].lines[0].offset,
+        })
+    );
+
+    // An empty head is not a command name either.
+    let bytes = interp(&[(b"blank", &[(1, b"\0".as_slice())])], &[]);
+    let file = read_interp(&mut ParseContext::with_defaults("ZBD/interp.zbd"), &bytes)
+        .expect("the authored container decodes");
+    assert_eq!(
+        reads_as_named_commands(&file.scripts()[0].lines),
+        Err(NamedCommandsError::EmptyHead {
+            line: 0,
+            offset: file.scripts()[0].lines[0].offset,
+        })
+    );
+}
+
+/// F13-D: every model's basis is the owner's static analysis of the
+/// executable — a documented method at an executable address, never a scan,
+/// never `verified_original`, never copied bytes.
+#[test]
+fn accept_f13_d_model_basis_is_the_owner_static_analysis() {
+    for model in ProgramModel::ALL {
+        let basis = model_basis(model);
+        assert_eq!(basis.method(), ResearchMethod::ExecutableStaticAnalysis);
+        assert_eq!(basis.confidence(), Confidence::Documented);
+        assert!(basis.establishes_semantics());
+        assert!(basis.note().contains("#640"), "{}", basis.note());
+        match basis.locator() {
+            EvidenceLocator::Executable { module, rva } => {
+                assert_eq!(module, "crimson.decrypted.exe");
+                assert_eq!(*rva, model.basis_rva());
+            }
+            other => panic!("the {model:?} basis points at the executable, got {other:?}"),
+        }
+    }
+    // The labels are stable and round-trip; an unknown label is refused
+    // rather than filed under a family.
+    for model in ProgramModel::ALL {
+        assert_eq!(ProgramModel::from_label(model.label()), Some(model));
+    }
+    assert_eq!(ProgramModel::from_label("opcode_stream"), None);
+}
+
+/// F13-D over the original installation: every retail INTERP body reads as a
+/// named-command program — including the four empty scripts whose body is
+/// only the F07-validated zero terminator — so none of them is a candidate
+/// for the binary opcode walk the F13 census used to run.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_f13_d_retail_every_interp_body_reads_as_named_commands() {
+    let root = game_dir();
+    let bytes = fs::read(root.join("ZBD/interp.zbd")).expect("the retail interp container");
+    let file = read_interp(&mut ParseContext::with_defaults("ZBD/interp.zbd"), &bytes)
+        .expect("the retail container decodes");
+    assert_eq!(file.scripts().len(), 98, "F13-B located 98 loading bodies");
+    let mut empty = 0usize;
+    for (index, script) in file.scripts().iter().enumerate() {
+        match reads_as_named_commands(&script.lines) {
+            Ok(0) => empty += 1,
+            Ok(_) => {}
+            Err(error) => panic!(
+                "script {index} ({} at 0x{:x}) is not a named-command program: {error}",
+                String::from_utf8_lossy(script.entry.name_bytes()),
+                script.entry.script_offset
+            ),
+        }
+    }
+    assert_eq!(
+        empty, 4,
+        "four retail scripts hold only the zero terminator (measured over the installation)"
+    );
 }

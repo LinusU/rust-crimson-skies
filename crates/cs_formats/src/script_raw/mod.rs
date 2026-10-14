@@ -34,9 +34,19 @@
 //!   whose stop is recorded as data, a retry for exactly the stops more
 //!   evidence fixes, and the reachability verdict every inventory record
 //!   keeps — an unused unknown record stays visible with its evidence.
+//! * [`model`] is the F13-D classification (task #640): which of the located
+//!   program families follow a **real model** — a `.zrd` typed tree read by
+//!   keyword, a named text-command script, a stream of typed animation event
+//!   records — instead of being an unknown numeric opcode stream. The owner's
+//!   static analysis of the decrypted executable established that none of the
+//!   three families F13-B walked as binary words is an opcode stream; a
+//!   program with such a model is filed with its evidence and never walked.
 //!
 //! The classification of the retail corpus is F13-B's `retail` work; F13-C
-//! resolves signatures. The design decisions and the recorded unknowns are in
+//! resolves signatures; F13-D (task #640, owner note 2026-10-05) corrects the
+//! premise that any of the three families is a numeric opcode stream — see
+//! `docs/findings/2026-10-14-f13-d-every-program-family-has-its-real-model.md`.
+//! The design decisions and the recorded unknowns are in
 //! `docs/findings/2026-09-29-f13-a-script-inventory-and-evidence-schema.md`
 //! and `docs/findings/2026-09-29-f13-b-locate-and-classify-programs.md`.
 //! Fixtures exercised by `crates/cs_formats/tests/script_raw/` are newly
@@ -46,6 +56,7 @@ pub mod discovery;
 pub mod evidence;
 pub mod inventory;
 pub mod ledger;
+pub mod model;
 pub mod probe;
 pub mod source_map;
 pub mod ui_host_calls;
@@ -71,11 +82,15 @@ pub use ledger::{
     LedgerError, MAX_OPCODE_BYTES, OpcodeEntry, OpcodeLedger, ProgramError, ProgramLocator,
     ReachedOpcode, walk_program,
 };
+pub use model::{
+    ANALYSIS_MODULE, EVENT_RECORDS_RVA, ModelledProgramProbe, NAMED_COMMANDS_RVA,
+    NamedCommandsError, ProgramModel, TYPED_TREE_RVA, model_basis, reads_as_named_commands,
+};
 pub use probe::{
-    ClaimError, DirectiveKeyRow, DirectiveKeyStatus, DirectiveProgramProbe, ProbeConfig,
-    ProbeError, ProbeReport, ProbeSession, ProgramProbe, RecordFieldSupport, RecordKeyRow,
-    RecordKeyStatus, RecordProbeError, RecordProbeStats, SignatureClaim, SignatureShape,
-    SignatureTable, probe_records,
+    ClaimError, DirectiveKeyRow, DirectiveKeyStatus, DirectiveProgramProbe, ModelError,
+    ProbeConfig, ProbeError, ProbeReport, ProbeSession, ProgramProbe, RecordFieldSupport,
+    RecordKeyRow, RecordKeyStatus, RecordProbeError, RecordProbeStats, SignatureClaim,
+    SignatureShape, SignatureTable, probe_records,
 };
 pub use ui_host_calls::{
     ArgShape, ArgShapeCounts, CorpusMember, DispatchForm, HostCallCorpus, HostCallSite, HostKind,
