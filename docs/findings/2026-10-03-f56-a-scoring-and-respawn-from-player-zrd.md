@@ -1,5 +1,13 @@
 # F56-A follow-up (task #476): scoring-event constants and respawn offsets decoded from `player.zrd`; the remaining per-mode rules stay unknown
 
+> **Superseded in part (2026-10-14):** the owner note of 2026-10-05 on task
+> #476 supplied static code evidence (analysis of the decrypted executable)
+> that measures most of the rules this file lists under "What stays unknown".
+> `docs/findings/2026-10-14-f476-measured-per-mode-rules.md` records that
+> measurement and its encoding into production. This file remains the record
+> of what the installation's **data files** state (with spans and digests) and
+> of the negative search that proved the rules are not in shipped data.
+
 Date: 2026-10-03. Task: #476 "Measure per-mode multiplayer rules (limits,
 respawn, lives, friendly fire, draw, disconnect, scoring events)" under stage
 `### F56-A` (`specs/F56-original-multiplayer-scenarios-and-mode-rules.md`).
