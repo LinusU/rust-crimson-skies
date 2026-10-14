@@ -83,7 +83,13 @@ Nothing resolves a disagreement by picking one reading. `RowError` no longer
 has the `DisagreeingArity` / `DisagreeingArgumentShape` refusals — they encoded
 the fixed-signature model the owner note corrected — and the `no_native_id`
 verdict is gone: a computed dispatch belongs to its host's computed-dispatch
-family instead of having no family at all.
+family instead of having no family at all. One consistency refusal remains
+(protocol review of this task): a row whose shape table is narrower than its
+own widest observed arity is refused (`RowError::ProtocolWidthMismatch`),
+because the audit checks a site's positions against that table and a shorter
+table would silently leave a wide site's trailing positions unchecked; the
+producer always grows the table to the widest site it measured, so no
+corpus row hits it.
 
 ## Re-keyed retail census (`$CS_GAME_DIR`, read-only, production measurement)
 
