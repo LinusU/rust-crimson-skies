@@ -1787,7 +1787,12 @@ fn accept_f13_d_retail_every_interp_body_reads_as_named_commands() {
     let mut empty = 0usize;
     for (index, script) in file.scripts().iter().enumerate() {
         match reads_as_named_commands(&script.lines) {
-            Ok(0) => empty += 1,
+            Ok(0) | Err(NamedCommandsError::EmptyBody) => {
+                // An empty script: the reader validated the zero terminator
+                // and the body holds no line, exactly as the CLI's
+                // `named_commands` rule classifies it.
+                empty += 1;
+            }
             Ok(_) => {}
             Err(error) => panic!(
                 "script {index} ({} at 0x{:x}) is not a named-command program: {error}",
