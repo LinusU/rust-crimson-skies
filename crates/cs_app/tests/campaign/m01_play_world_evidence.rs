@@ -33,8 +33,8 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use cs_app::mission_session::{
-    CAPABILITIES_ENV, CAPTURE_ENV, EVIDENCE_DIR_ENV, MIN_WORLD_COVERAGE_PERMILLE, PLAYBACK_FILE,
-    TRACE_FILE,
+    CAPABILITIES_ENV, CAPTURE_ENV, EVIDENCE_DIR_ENV, MIN_CLEAR_COVERAGE_PERMILLE,
+    MIN_WORLD_COVERAGE_PERMILLE, PLAYBACK_FILE, TRACE_FILE,
 };
 use cs_assets::install::{content_fingerprint, discover, fingerprint, sha256};
 
@@ -204,6 +204,16 @@ fn evidence_report_m01_play_world_writes_the_acceptance_report() {
         "the spawn frame must hold the world's own pixels: {world}"
     );
     assert!(world_pixels > 0 && total_pixels >= world_pixels, "{world}");
+    // The probe must also have found the window's clear colour in that frame:
+    // without it the designed sky's gradient — which fills the whole frame —
+    // would be counted as the world's, and a window with no terrain at all
+    // would pass.
+    let clear = field("\"clear_permille\":");
+    assert!(
+        clear >= i64::from(MIN_CLEAR_COVERAGE_PERMILLE),
+        "the probe frame must still hold the window's clear colour, or the sky was not hidden: \
+         {world}"
+    );
 
     // Both frames: real framebuffer PNGs with real content, the world probe's
     // among them.
@@ -282,8 +292,9 @@ fn evidence_report_m01_play_world_writes_the_acceptance_report() {
     let assertions = [
         assertion(
             "world: the frame around the spawn holds the world's own pixels, counted against the \
-             frame's own background with the designed sky and the player hidden (covered_permille \
-             over the 20-per-mille floor)",
+             window's declared clear colour with the designed sky and the player hidden \
+             (covered_permille over the 20-per-mille floor, the clear colour still visible over \
+             its own 20-per-mille floor)",
             &world_name,
         ),
         assertion(

@@ -100,8 +100,8 @@ pub use content::{
 };
 pub use evidence::{
     CAPABILITIES_ENV, CAPTURE_ENV, CaptureHandle, CaptureRefusal, CaptureSettings,
-    EVIDENCE_DIR_ENV, MIN_WORLD_COVERAGE_PERMILLE, MissionCapturePlugin, PLAYBACK_FILE, TRACE_FILE,
-    finish as finish_capture, write_playback,
+    EVIDENCE_DIR_ENV, MIN_CLEAR_COVERAGE_PERMILLE, MIN_WORLD_COVERAGE_PERMILLE,
+    MissionCapturePlugin, PLAYBACK_FILE, TRACE_FILE, finish as finish_capture, write_playback,
 };
 pub use host::{
     MissionHost, MissionHostLaunchError, MissionHostRefusal, MissionHostReport,

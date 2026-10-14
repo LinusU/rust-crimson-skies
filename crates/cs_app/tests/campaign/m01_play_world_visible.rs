@@ -40,7 +40,8 @@ use bevy::asset::Handle;
 use bevy::prelude::{Entity, MeshMaterial3d, StandardMaterial, With};
 use cs_app::mission_launch::plan_mission_launch;
 use cs_app::mission_session::{
-    MIN_WORLD_COVERAGE_PERMILLE, MissionWorldParts, build_headless, stage_for,
+    MIN_CLEAR_COVERAGE_PERMILLE, MIN_WORLD_COVERAGE_PERMILLE, MissionWorldParts, build_headless,
+    stage_for,
 };
 use cs_app::playtest_textures::PlaytestPart;
 use cs_app::world::contacts::WorldVisual;
@@ -185,9 +186,11 @@ fn accept_m01_play_world_retail_m01_stage_binds_and_draws_its_world() {
 ///
 /// Runs the real `cs --mission M01` capture and reads the `world` trace
 /// record: the fraction of the frame around the spawn that is geometry the
-/// world load drew, counted against the frame's own background with the
-/// designed sky and the player hidden. The check the capture exists for: a
-/// frame with no world pixels is the #1433 defect.
+/// world load drew, counted against the window's clear colour with the
+/// designed sky and the player hidden — and the clear colour the probe must
+/// still have found there, which is what proves the sky's own gradient was
+/// not counted as terrain. The check the capture exists for: a frame with no
+/// world pixels is the #1433 defect.
 #[test]
 #[ignore = "requires CS_GAME_DIR and a window-capable GPU host"]
 fn accept_m01_play_world_windowed_mission_capture_draws_world_pixels() {
@@ -216,15 +219,24 @@ fn accept_m01_play_world_windowed_mission_capture_draws_world_pixels() {
         .lines()
         .find(|line| line.contains("\"kind\":\"world\""))
         .expect("the trace must hold the world probe record");
-    let covered: u32 = world
-        .split("\"covered_permille\":")
-        .nth(1)
-        .and_then(|rest| rest.split([',', '}']).next())
-        .and_then(|value| value.trim().parse().ok())
-        .expect("the world record carries its coverage");
+    let field = |name: &str| -> u32 {
+        world
+            .split(name)
+            .nth(1)
+            .and_then(|rest| rest.split([',', '}']).next())
+            .and_then(|value| value.trim().parse().ok())
+            .unwrap_or_else(|| panic!("the world record has no {name}: {world}"))
+    };
+    let covered = field("\"covered_permille\":");
     assert!(
         covered >= MIN_WORLD_COVERAGE_PERMILLE,
         "the spawn frame must hold the world's own pixels: {world}"
+    );
+    let clear = field("\"clear_permille\":");
+    assert!(
+        clear >= MIN_CLEAR_COVERAGE_PERMILLE,
+        "the probe frame must still hold the window's clear colour, or the sky was not hidden \
+         and its own gradient would be the 'world' pixels: {world}"
     );
     assert!(
         dir.join("trace.jsonl").exists()

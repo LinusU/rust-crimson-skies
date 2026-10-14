@@ -39,8 +39,8 @@ use bevy::app::AppExit;
 use bevy::input::keyboard::KeyCode;
 use bevy::input::{ButtonInput, InputSystems};
 use bevy::prelude::{
-    App, Commands, DetectChanges, Entity, IntoScheduleConfigs, Last, MessageWriter, On, Or, Plugin,
-    PreUpdate, Query, Res, ResMut, Resource, Update, Visibility, With,
+    App, ClearColor, Commands, DetectChanges, Entity, IntoScheduleConfigs, Last, MessageWriter, On,
+    Or, Plugin, PreUpdate, Query, Res, ResMut, Resource, Update, Visibility, With,
 };
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk};
 
@@ -83,6 +83,18 @@ pub const TRACE_FILE: &str = "trace.jsonl";
 // the flat clear colour and every pixel off it is geometry the world load
 // drew. A frame with no world pixels is the pre-#1433 defect — the world's
 // meshes spawned with no material, so nothing drew.
+//
+// The pixels are counted against the window's **declared clear colour**
+// (`ClearColor`, what the render pass actually clears to), not against the
+// frame's own modal colour: the count then cannot be flipped by the world
+// covering more of the frame than the background does. The surface's channel
+// order and encoding vary by backend (`Bgra8UnormSrgb` on the pinned Metal
+// one), so both the sRGB and the linear 8-bit encodings of the clear colour
+// are counted and the **stricter** of the two off-colour counts is the
+// world's, with the more permissive one supplying `clear_pixels` — whichever
+// encoding the surface really stores, one of the two is the frame's own
+// background and the other is not, so the min/max pair cannot pass a frame
+// whose background merely happens to be a different encoding.
 
 /// The rendered frame the world probe starts hiding the sky and the player on.
 const WORLD_PROBE_HIDE_FRAME: u32 = 30;
@@ -91,15 +103,22 @@ const WORLD_PROBE_HIDE_FRAME: u32 = 30;
 const WORLD_PROBE_FRAME: u32 = 32;
 /// The rendered frame the probe restores the sky and the player on.
 const WORLD_PROBE_RESTORE_FRAME: u32 = 34;
-/// How far a channel may differ from the frame's own modal colour and still be
-/// called that colour: the renderer's clear colour is uniform, and a small
-/// tolerance absorbs any dither the post chain adds.
+/// How far a channel may differ from a reference colour and still be called
+/// that colour: the renderer's clear colour is uniform, and a small tolerance
+/// absorbs any dither the post chain adds.
 const BACKGROUND_CHANNEL_TOLERANCE: u8 = 6;
 /// The least fraction of the probe frame that must be world pixels, in parts
 /// per thousand. A frame that drew no world geometry is a single flat colour
 /// (zero), and a frame that drew the world around a spawn near a cliff and a
 /// valley covers far more than this.
 pub const MIN_WORLD_COVERAGE_PERMILLE: u32 = 20;
+/// The least fraction of the probe frame that must be the window's clear
+/// colour, in parts per thousand. The clear colour is only visible where
+/// neither the world nor the hidden sky and player draw, so a probe frame
+/// holding almost none of it did **not** hide the sky: its gradient is
+/// geometry, it fills the whole frame, and counting it as the world would
+/// pass a window with no terrain at all.
+pub const MIN_CLEAR_COVERAGE_PERMILLE: u32 = 20;
 
 /// Why a capture could not be set up or did not produce its evidence.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -210,13 +229,19 @@ struct Shot {
     height: u32,
     distinct_luminance: usize,
     mean_luminance: f32,
-    /// The world's own pixels, when this is the probe frame: every pixel that
-    /// differs from the frame's modal colour by more than
-    /// [`BACKGROUND_CHANNEL_TOLERANCE`] on any channel.
+    /// The world's own pixels, when this is the probe frame: the stricter of
+    /// the two off-clear-colour counts (see the world-probe note above).
     world_pixels: Option<usize>,
+    /// The pixels that are the window's clear colour, when this is the probe
+    /// frame: the more permissive of the two near-clear counts. It is what
+    /// proves the probe hid the sky and the player.
+    clear_pixels: Option<usize>,
     /// The frame's pixel count.
     total_pixels: usize,
-    /// The modal colour the world pixels were counted against.
+    /// The window's clear colour the probe counted against, its sRGB 8-bit
+    /// encoding, when the window declared one.
+    clear_colour: Option<[u8; 3]>,
+    /// The modal colour the frame drew most of, recorded as a diagnostic.
     background: Option<[u8; 3]>,
 }
 
@@ -224,12 +249,22 @@ impl Shot {
     /// The world's pixels over the frame's, in parts per thousand.
     #[must_use]
     fn covered_permille(&self) -> u32 {
-        if self.total_pixels == 0 {
-            return 0;
-        }
-        let permille = self.world_pixels.unwrap_or(0) as u64 * 1000 / self.total_pixels as u64;
-        u32::try_from(permille).unwrap_or(u32::MAX)
+        permille(self.world_pixels.unwrap_or(0), self.total_pixels)
     }
+
+    /// The clear colour's pixels over the frame's, in parts per thousand.
+    #[must_use]
+    fn clear_permille(&self) -> u32 {
+        permille(self.clear_pixels.unwrap_or(0), self.total_pixels)
+    }
+}
+
+/// `part` over `whole` in parts per thousand, `0` for an empty frame.
+fn permille(part: usize, whole: usize) -> u32 {
+    if whole == 0 {
+        return 0;
+    }
+    u32::try_from(part as u64 * 1000 / whole as u64).unwrap_or(u32::MAX)
 }
 
 /// Whether the world probe is currently hiding the sky and the player: the
@@ -252,6 +287,14 @@ struct CaptureData {
     last_input_changes: u64,
     shot_requested: bool,
     world_shot_requested: bool,
+    /// The probe was skipped because the player's aircraft had not spawned by
+    /// the probe's frame: [`finish`] names that instead of the renderer when
+    /// no world frame was taken for that reason.
+    world_probe_skipped: bool,
+    /// The window's clear colour, both 8-bit encodings, as it was when the
+    /// probe frame was requested (`None` while the probe has not run): what
+    /// the world pixels are counted against.
+    clear_colours: Option<[[u8; 3]; 2]>,
     io_error: Option<String>,
     shots: Vec<Shot>,
     /// The last host tick stepped, when one was.
@@ -376,6 +419,7 @@ fn capture_step(
     camera: Res<PlaytestCamera>,
     host: Option<Res<MissionHost>>,
     aircraft: Query<&Position, With<PlaytestAircraft>>,
+    clear: Option<Res<ClearColor>>,
     mut probe: ResMut<WorldProbeState>,
     mut commands: Commands,
     mut exit: MessageWriter<AppExit>,
@@ -461,10 +505,19 @@ fn capture_step(
     if frame == WORLD_PROBE_HIDE_FRAME {
         probe.hidden = true;
     }
-    if frame == WORLD_PROBE_FRAME && player.is_some() && !capture.world_shot_requested {
-        capture.world_shot_requested = true;
-        let path = capture.dir.join(format!("frame_{frame:05}_world.png"));
-        request_screenshot(&mut commands, path, "world");
+    if frame == WORLD_PROBE_FRAME && !capture.world_shot_requested {
+        if player.is_some() {
+            capture.world_shot_requested = true;
+            capture.clear_colours = clear.as_deref().map(clear_colour_encodings);
+            let path = capture.dir.join(format!("frame_{frame:05}_world.png"));
+            request_screenshot(&mut commands, path, "world");
+        } else {
+            // The player had not spawned on the probe's own frame, so no
+            // world-alone frame can be taken: the probe is skipped by name
+            // instead of leaving the run waiting for a request that will
+            // never come. `finish` refuses the capture for it.
+            capture.world_probe_skipped = true;
+        }
     }
     if frame == WORLD_PROBE_RESTORE_FRAME {
         probe.hidden = false;
@@ -476,7 +529,12 @@ fn capture_step(
     }
     let delivered = capture.shots.len();
     let requested = usize::from(capture.world_shot_requested) + usize::from(capture.shot_requested);
-    if requested >= 2 && (delivered >= requested || frame >= SHOT_FRAME + SHOT_GRACE_FRAMES) {
+    // A skipped probe still counts towards what the run asked for, and the
+    // grace frame bounds every capture: a run whose frames never arrive still
+    // ends, and `finish` says what is missing rather than the window never
+    // closing.
+    let wanted = requested + usize::from(capture.world_probe_skipped);
+    if (wanted >= 2 && delivered >= requested) || frame >= SHOT_FRAME + SHOT_GRACE_FRAMES {
         exit.write(AppExit::Success);
     }
 }
@@ -484,7 +542,8 @@ fn capture_step(
 fn request_screenshot(commands: &mut Commands, path: PathBuf, label: &'static str) {
     commands.spawn(Screenshot::primary_window()).observe(
         move |captured: On<ScreenshotCaptured>, handle: Res<CaptureHandle>| {
-            let shot = measure(&captured.image, path.clone(), label);
+            let clear_colours = handle.lock().clear_colours;
+            let shot = measure(&captured.image, path.clone(), label, clear_colours);
             let delivered = captured.image.data.is_some();
             save_to_disk(path.clone())(captured);
             if delivered {
@@ -494,7 +553,31 @@ fn request_screenshot(commands: &mut Commands, path: PathBuf, label: &'static st
     );
 }
 
-fn measure(image: &bevy::image::Image, path: PathBuf, label: &'static str) -> Shot {
+/// The window's clear colour in the two 8-bit encodings the probe counts
+/// against: the sRGB-encoded value an sRGB surface stores, and the linear one
+/// a plain surface stores.
+fn clear_colour_encodings(clear: &ClearColor) -> [[u8; 3]; 2] {
+    fn encode(red: f32, green: f32, blue: f32) -> [u8; 3] {
+        [
+            (red * 255.0).round() as u8,
+            (green * 255.0).round() as u8,
+            (blue * 255.0).round() as u8,
+        ]
+    }
+    let srgb = clear.0.to_srgba();
+    let linear = bevy::color::LinearRgba::from(srgb);
+    [
+        encode(srgb.red, srgb.green, srgb.blue),
+        encode(linear.red, linear.green, linear.blue),
+    ]
+}
+
+fn measure(
+    image: &bevy::image::Image,
+    path: PathBuf,
+    label: &'static str,
+    clear_colours: Option<[[u8; 3]; 2]>,
+) -> Shot {
     let mut levels = std::collections::BTreeSet::new();
     let mut sum = 0_u64;
     let mut count = 0_u64;
@@ -508,12 +591,15 @@ fn measure(image: &bevy::image::Image, path: PathBuf, label: &'static str) -> Sh
             count += 1;
         }
     }
-    let (world_pixels, background) = if label == "world" {
+    let counted = if label == "world" {
         let data = image.data.as_deref().unwrap_or(&[]);
-        let (pixels, background) = count_world_pixels(data, image.texture_descriptor.format);
-        (Some(pixels), Some(background))
+        Some(count_world_pixels(
+            data,
+            image.texture_descriptor.format,
+            clear_colours,
+        ))
     } else {
-        (None, None)
+        None
     };
     Shot {
         label,
@@ -526,28 +612,49 @@ fn measure(image: &bevy::image::Image, path: PathBuf, label: &'static str) -> Sh
         } else {
             sum as f32 / count as f32
         },
-        world_pixels,
+        world_pixels: counted.map(|counted| counted.world),
+        clear_pixels: counted.map(|counted| counted.clear),
         total_pixels: count as usize,
-        background,
+        clear_colour: clear_colours.map(|colours| colours[0]),
+        background: counted.map(|counted| counted.modal),
     }
 }
 
-/// Counts the frame's world pixels: every pixel that differs from the frame's
-/// **modal** colour (the background the world was drawn over) by more than
-/// [`BACKGROUND_CHANNEL_TOLERANCE`] on any channel, and the modal colour
-/// itself, in RGB order.
+/// What the probe frame measured against the window's clear colour.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+struct WorldPixelCount {
+    /// Pixels off the clear colour: the world's own geometry.
+    world: usize,
+    /// Pixels that are the clear colour: the background the probe left.
+    clear: usize,
+    /// The frame's modal colour, recorded as a diagnostic only — the counts
+    /// above are taken against the declared clear colour, never against it.
+    modal: [u8; 3],
+}
+
+/// Counts the frame's world pixels against the window's **declared clear
+/// colour** (`clear_colours`, the sRGB and the linear 8-bit encodings): every
+/// pixel further from both encodings than [`BACKGROUND_CHANNEL_TOLERANCE`] on
+/// any channel is the world's, and every pixel within tolerance of one of
+/// them is the background's.
 ///
-/// The modal colour is read off the frame rather than declared, so the count
-/// cannot disagree with what the renderer actually cleared to: a frame that
-/// drew no world geometry is one flat colour and counts zero. The window
-/// screenshot's bytes are in the surface's own channel order (BGRA on the
-/// pinned Metal backend), so `format` decides how the first three bytes are
-/// read; the count itself is order-independent, only the recorded colour is
-/// not.
+/// The stricter of the two off-colour counts is taken as the world's and the
+/// more permissive near-colour count as the background's, so the surface's
+/// encoding — `Bgra8UnormSrgb` on the pinned Metal backend, a plain
+/// `*Unorm` elsewhere — cannot turn the background into "world" or the world
+/// into "background". The window screenshot's bytes are in the surface's own
+/// channel order, so `format` decides how the first three bytes are read; the
+/// counts are order-independent, only the recorded colours are not.
+///
+/// With no declared clear colour the frame's own **modal** colour stands in
+/// for both encodings, so the measurement is still a measurement;
+/// [`finish`] refuses the probe for the missing declaration regardless, since
+/// a modal reference cannot prove the sky was hidden.
 fn count_world_pixels(
     data: &[u8],
     format: bevy::render::render_resource::TextureFormat,
-) -> (usize, [u8; 3]) {
+    clear_colours: Option<[[u8; 3]; 2]>,
+) -> WorldPixelCount {
     let rgb = |pixel: &[u8; 4]| match format {
         bevy::render::render_resource::TextureFormat::Bgra8Unorm
         | bevy::render::render_resource::TextureFormat::Bgra8UnormSrgb => {
@@ -555,25 +662,39 @@ fn count_world_pixels(
         }
         _ => [pixel[0], pixel[1], pixel[2]],
     };
+    let pixels = data.as_chunks::<4>().0;
     let mut counts: std::collections::HashMap<[u8; 3], usize> = std::collections::HashMap::new();
-    for pixel in data.as_chunks::<4>().0 {
+    for pixel in pixels {
         *counts.entry(rgb(pixel)).or_default() += 1;
     }
-    let Some((&background, _)) = counts.iter().max_by_key(|(_, count)| **count) else {
-        return (0, [0, 0, 0]);
-    };
-    let off_background = data
-        .as_chunks::<4>()
-        .0
+    let modal = counts
         .iter()
-        .map(rgb)
-        .filter(|pixel| {
-            pixel[0].abs_diff(background[0]) > BACKGROUND_CHANNEL_TOLERANCE
-                || pixel[1].abs_diff(background[1]) > BACKGROUND_CHANNEL_TOLERANCE
-                || pixel[2].abs_diff(background[2]) > BACKGROUND_CHANNEL_TOLERANCE
-        })
-        .count();
-    (off_background, background)
+        .max_by_key(|(_, count)| **count)
+        .map_or([0, 0, 0], |(colour, _)| *colour);
+    let references = clear_colours.unwrap_or([modal, modal]);
+    let mut off = [0_usize; 2];
+    let mut near = [0_usize; 2];
+    for pixel in pixels {
+        let colour = rgb(pixel);
+        for (index, reference) in references.iter().enumerate() {
+            if same_colour(colour, *reference) {
+                near[index] += 1;
+            } else {
+                off[index] += 1;
+            }
+        }
+    }
+    WorldPixelCount {
+        world: off[0].min(off[1]),
+        clear: near[0].max(near[1]),
+        modal,
+    }
+}
+
+/// Whether two colours are the same within [`BACKGROUND_CHANNEL_TOLERANCE`] on
+/// every channel.
+fn same_colour(left: [u8; 3], right: [u8; 3]) -> bool {
+    (0..3).all(|channel| left[channel].abs_diff(right[channel]) <= BACKGROUND_CHANNEL_TOLERANCE)
 }
 
 /// Writes `trace.jsonl` after the window has closed and judges the run.
@@ -604,20 +725,29 @@ pub fn finish(handle: &CaptureHandle) -> Result<(), CaptureRefusal> {
         ));
     }
     // The world probe's own record: the pixels the world load drew in the
-    // frame around the spawn, counted against the frame's own background
+    // frame around the spawn, counted against the window's clear colour
     // (M01-PLAY-WORLD-VISIBLE, #1433).
     if let Some(shot) = capture.shots.iter().find(|shot| shot.label == "world") {
         let background = shot.background.unwrap_or([0, 0, 0]);
+        let clear_colour = shot.clear_colour.map_or_else(
+            || "null".to_owned(),
+            |clear| format!("[{},{},{}]", clear[0], clear[1], clear[2]),
+        );
         lines.push(format!(
             "{{\"kind\":\"world\",\"label\":\"world\",\"path\":{},\"width\":{},\"height\":{},\
              \"world_pixels\":{},\"total_pixels\":{},\"covered_permille\":{},\
-             \"background\":[{},{},{}],\"min_covered_permille\":{MIN_WORLD_COVERAGE_PERMILLE}}}",
+             \"clear_pixels\":{},\"clear_permille\":{},\
+             \"background\":[{},{},{}],\"clear_colour\":{clear_colour},\
+             \"min_covered_permille\":{MIN_WORLD_COVERAGE_PERMILLE},\
+             \"min_clear_permille\":{MIN_CLEAR_COVERAGE_PERMILLE}}}",
             json_string(&shot.path.display().to_string()),
             shot.width,
             shot.height,
             shot.world_pixels.unwrap_or(0),
             shot.total_pixels,
             shot.covered_permille(),
+            shot.clear_pixels.unwrap_or(0),
+            shot.clear_permille(),
             background[0],
             background[1],
             background[2],
@@ -645,30 +775,84 @@ pub fn finish(handle: &CaptureHandle) -> Result<(), CaptureRefusal> {
         )));
     }
     // The world probe is the check this capture exists for: the frame around
-    // the spawn must hold the world's own pixels, or the mission is drawing
-    // only the player against an empty background.
-    match capture.shots.iter().find(|shot| shot.label == "world") {
-        Some(shot)
-            if shot.width > 0
-                && shot.height > 0
-                && shot.covered_permille() >= MIN_WORLD_COVERAGE_PERMILLE =>
-        {
-            Ok(())
-        }
-        Some(shot) => Err(CaptureRefusal::Incomplete(format!(
+    // the spawn must hold the world's own pixels, and the sky the probe hid
+    // must not be among them.
+    judge_world_probe(
+        capture.shots.iter().find(|shot| shot.label == "world"),
+        capture.clear_colours,
+        capture.world_probe_skipped,
+    )
+}
+
+/// Judges the probe frame — the check the mission capture exists for.
+///
+/// The frame around the spawn must hold the world's own pixels over
+/// [`MIN_WORLD_COVERAGE_PERMILLE`], counted against the window's **declared**
+/// clear colour, and that clear colour must itself still be visible over
+/// [`MIN_CLEAR_COVERAGE_PERMILLE`]: a probe frame the clear colour has
+/// vanished from did not hide the designed sky, whose gradient is geometry
+/// that would otherwise be counted as terrain and pass a worldless window.
+///
+/// # Errors
+///
+/// [`CaptureRefusal::Incomplete`], naming the first refusal in that order:
+/// no probe frame (and that the probe was skipped when the player had not
+/// spawned), an empty one, a window that declares no clear colour, a frame
+/// under the world floor, a frame under the clear floor.
+fn judge_world_probe(
+    shot: Option<&Shot>,
+    clear_colours: Option<[[u8; 3]; 2]>,
+    probe_skipped: bool,
+) -> Result<(), CaptureRefusal> {
+    let Some(shot) = shot else {
+        return Err(CaptureRefusal::Incomplete(if probe_skipped {
+            "the world probe never ran: the player's aircraft had not spawned by the probe's \
+             frame, so no frame of the world alone was taken"
+                .to_owned()
+        } else {
+            "the renderer delivered no world-probe framebuffer screenshot".to_owned()
+        }));
+    };
+    if shot.width == 0 || shot.height == 0 {
+        return Err(CaptureRefusal::Incomplete(format!(
+            "the world probe's frame is empty ({}x{}: {})",
+            shot.width,
+            shot.height,
+            shot.path.display()
+        )));
+    }
+    if clear_colours.is_none() {
+        return Err(CaptureRefusal::Incomplete(
+            "the window declares no clear colour, so the probe cannot tell the world's pixels \
+             from the background they were drawn over"
+                .to_owned(),
+        ));
+    }
+    if shot.covered_permille() < MIN_WORLD_COVERAGE_PERMILLE {
+        return Err(CaptureRefusal::Incomplete(format!(
             "the frame around the spawn drew no world: {} holds {} of {} pixels off the \
-             background ({} per mille, less than the {} required), so the world's geometry is \
-             not being drawn",
+             window's clear colour ({} per mille, less than the {} required), so the world's \
+             geometry is not being drawn",
             shot.path.display(),
             shot.world_pixels.unwrap_or(0),
             shot.total_pixels,
             shot.covered_permille(),
             MIN_WORLD_COVERAGE_PERMILLE,
-        ))),
-        None => Err(CaptureRefusal::Incomplete(
-            "the renderer delivered no world-probe framebuffer screenshot".to_owned(),
-        )),
+        )));
     }
+    if shot.clear_permille() < MIN_CLEAR_COVERAGE_PERMILLE {
+        return Err(CaptureRefusal::Incomplete(format!(
+            "the probe frame {} holds only {} of {} pixels of the window's clear colour ({} \
+             per mille, less than the {} required): the designed sky and the player were not \
+             hidden, so their own pixels would be counted as the world's",
+            shot.path.display(),
+            shot.clear_pixels.unwrap_or(0),
+            shot.total_pixels,
+            shot.clear_permille(),
+            MIN_CLEAR_COVERAGE_PERMILLE,
+        )));
+    }
+    Ok(())
 }
 
 fn write_trace(dir: &Path, lines: &[String]) -> Result<(), CaptureRefusal> {
@@ -769,4 +953,164 @@ pub fn write_playback(
     let path = dir.join(PLAYBACK_FILE);
     std::fs::write(&path, record)
         .map_err(|error| CaptureRefusal::Io(format!("cannot write {}: {error}", path.display())))
+}
+
+#[cfg(test)]
+mod tests {
+    use bevy::render::render_resource::TextureFormat;
+
+    use super::*;
+
+    /// The window's clear colour as the probe counts it: `[61,112,199]`
+    /// sRGB, `[12,41,145]` linear.
+    const CLEAR: [[u8; 3]; 2] = [[61, 112, 199], [12, 41, 145]];
+    /// A world colour the clear colour is nowhere near.
+    const TERRAIN: [u8; 3] = [120, 96, 60];
+
+    /// A frame of `clear` background pixels and `world` terrain pixels, in the
+    /// byte order `format` reads.
+    fn frame(
+        format: TextureFormat,
+        clear: [u8; 3],
+        world: [u8; 3],
+        clear_n: usize,
+        world_n: usize,
+    ) -> Vec<u8> {
+        let bgra = matches!(
+            format,
+            TextureFormat::Bgra8Unorm | TextureFormat::Bgra8UnormSrgb
+        );
+        let mut bytes = Vec::new();
+        for colour in std::iter::repeat_n(clear, clear_n).chain(std::iter::repeat_n(world, world_n))
+        {
+            if bgra {
+                bytes.extend_from_slice(&[colour[2], colour[1], colour[0], 255]);
+            } else {
+                bytes.extend_from_slice(&[colour[0], colour[1], colour[2], 255]);
+            }
+        }
+        bytes
+    }
+
+    /// **The probe counts the world's pixels off the declared clear colour,
+    /// whatever the surface's channel order or encoding.**
+    ///
+    /// A frame of 30 clear and 10 terrain pixels must count exactly the 10 as
+    /// the world's and the 30 as the background's on an RGBA surface, a BGRA
+    /// one, and a surface that stores the **linear** encoding of the same
+    /// clear colour — the stricter off-colour count and the more permissive
+    /// near-colour count are what make the encoding irrelevant.
+    #[test]
+    fn accept_m01_play_world_the_probe_counts_world_pixels_off_the_declared_clear_colour() {
+        for format in [
+            TextureFormat::Rgba8UnormSrgb,
+            TextureFormat::Bgra8UnormSrgb,
+            TextureFormat::Bgra8Unorm,
+        ] {
+            let bytes = frame(format, CLEAR[0], TERRAIN, 30, 10);
+            let counted = count_world_pixels(&bytes, format, Some(CLEAR));
+            assert_eq!(
+                counted,
+                WorldPixelCount {
+                    world: 10,
+                    clear: 30,
+                    modal: CLEAR[0],
+                },
+                "{format:?} reads the same frame the same way"
+            );
+        }
+        // The same frame as the *linear* surface stores it: the linear
+        // encoding is the second reference, so the counts do not change.
+        let linear = frame(TextureFormat::Rgba8Unorm, CLEAR[1], TERRAIN, 30, 10);
+        assert_eq!(
+            count_world_pixels(&linear, TextureFormat::Rgba8Unorm, Some(CLEAR)),
+            WorldPixelCount {
+                world: 10,
+                clear: 30,
+                modal: CLEAR[1],
+            }
+        );
+        // With no declared clear colour the frame's own modal colour stands
+        // in: the measurement is still a measurement.
+        let undeclared = frame(TextureFormat::Rgba8Unorm, CLEAR[0], TERRAIN, 30, 10);
+        assert_eq!(
+            count_world_pixels(&undeclared, TextureFormat::Rgba8Unorm, None).world,
+            10
+        );
+    }
+
+    /// **The judge refuses every frame the probe cannot prove: no frame, an
+    /// empty one, a worldless one, and one the sky was not hidden from.**
+    ///
+    /// The last is the case the clear-colour count exists for: the designed
+    /// sky's gradient is geometry, and a probe frame it fills counts no
+    /// clear colour at all — which must refuse, not pass.
+    #[test]
+    fn accept_m01_play_world_the_probe_judges_only_a_frame_that_holds_the_world() {
+        let shot = |world: usize, clear: usize, total: usize, size: (u32, u32)| Shot {
+            label: "world",
+            path: PathBuf::from("frame_00032_world.png"),
+            width: size.0,
+            height: size.1,
+            distinct_luminance: 2,
+            mean_luminance: 0.0,
+            world_pixels: Some(world),
+            total_pixels: total,
+            clear_pixels: Some(clear),
+            clear_colour: Some(CLEAR[0]),
+            background: Some(CLEAR[0]),
+        };
+        let total = 1_000_000;
+        assert!(
+            judge_world_probe(
+                Some(&shot(634_000, 366_000, total, (2560, 1440))),
+                Some(CLEAR),
+                false
+            )
+            .is_ok(),
+            "the measured M01 probe frame is accepted"
+        );
+        let worldless = shot(0, total, total, (2560, 1440));
+        let error = judge_world_probe(Some(&worldless), Some(CLEAR), false)
+            .expect_err("a flat frame drew no world");
+        assert!(error.to_string().contains("drew no world"), "{error}");
+        // The sky was not hidden: no clear colour is left in the frame.
+        let unhidden = shot(total, 0, total, (2560, 1440));
+        let error = judge_world_probe(Some(&unhidden), Some(CLEAR), false)
+            .expect_err("the sky's own pixels are not the world's");
+        assert!(error.to_string().contains("not hidden"), "{error}");
+        let empty = shot(0, 0, 0, (0, 0));
+        assert!(
+            judge_world_probe(Some(&empty), Some(CLEAR), false)
+                .expect_err("an empty frame is not evidence")
+                .to_string()
+                .contains("empty"),
+            "an empty frame is refused by name"
+        );
+        let skipped = judge_world_probe(None, Some(CLEAR), true)
+            .expect_err("a probe that never ran is refused by name");
+        assert!(skipped.to_string().contains("never ran"), "{skipped}");
+        let undeclared = judge_world_probe(
+            Some(&shot(634_000, 366_000, total, (2560, 1440))),
+            None,
+            false,
+        )
+        .expect_err("an undeclared clear colour is refused by name");
+        assert!(
+            undeclared.to_string().contains("declares no clear colour"),
+            "{undeclared}"
+        );
+    }
+
+    /// **The clear colour's two encodings are the values the render pass
+    /// clears to** — the sRGB one an sRGB surface stores and the linear one a
+    /// plain surface stores — measured, never remembered.
+    #[test]
+    fn accept_m01_play_world_the_probe_reads_the_window_s_clear_colour() {
+        let clear = ClearColor(bevy::prelude::Color::srgb(0.24, 0.44, 0.78));
+        assert_eq!(
+            clear_colour_encodings(&clear),
+            [[61, 112, 199], [12, 41, 145]]
+        );
+    }
 }

@@ -86,14 +86,20 @@ atmosphere or horizon.
 `mission_session/evidence.rs`'s capture now takes a **world probe** before the
 player shot: for a few frames it hides the designed sky dome and the player's
 aircraft, so the frame's background is the flat clear colour and every pixel off
-it is geometry the world load drew. The count is taken against the frame's own
-**modal** colour (read off the frame, not declared), in RGB order after undoing
-the surface's BGRA channel order, and the run is refused
+it is geometry the world load drew. The count is taken against the window's
+**declared clear colour** (`ClearColor`, read in the render pass, counted in
+both its 8-bit encodings so the surface's channel order and encoding cannot
+flip it — `Bgra8UnormSrgb` on the pinned Metal backend), in RGB order after
+undoing the surface's channel order, and the run is refused
 (`CaptureRefusal::Incomplete`) when fewer than `MIN_WORLD_COVERAGE_PERMILLE`
 (20 per mille) of the frame are world pixels — the exact pre-#1433 frame is one
-flat colour and counts zero. The trace carries a `world` record with
-`world_pixels`, `total_pixels`, `covered_permille`, `background` and the
-threshold.
+flat colour and counts zero. The clear colour must itself still be visible over
+`MIN_CLEAR_COVERAGE_PERMILLE` (20 per mille), which is what proves the probe
+hid the sky: its gradient is geometry, and a frame it filled would otherwise be
+counted as terrain. The trace carries a `world` record with `world_pixels`,
+`total_pixels`, `covered_permille`, `clear_pixels`, `clear_permille`,
+`background` (the modal colour, a diagnostic), `clear_colour` and the two
+thresholds.
 
 Measured on the owner's installation with this build (Apple M3 Pro, Metal):
 
@@ -113,6 +119,33 @@ artifacts (never committed, `private/`) are:
 * `private/m01-play-world-visible/frame_00180_player.png` — the Devastator over
   the terrain with the designed sky gradient behind it.
 * `private/m01-play-world-visible/trace.jsonl`, `playback.json`.
+
+## Review amendment (bunny-alpha-1, 2026-10-15)
+
+Two probe weaknesses were found in review and fixed in the same branch:
+
+* **A frame the sky was not hidden from could pass.** The first version
+  counted the probe frame's pixels against the frame's own *modal* colour.
+  The designed sky's gradient is geometry: had the probe failed to hide the
+  dome (a renamed or dropped `DesignedSkyDome` marker), its gradient would
+  have filled the frame, become the "off-background" pixels and passed a
+  window with no terrain at all. The count is now taken against the window's
+  declared clear colour in both of its 8-bit encodings (the stricter
+  off-colour count is the world's, so the surface's encoding cannot flip it),
+  and the run is refused unless that clear colour is itself still visible
+  over `MIN_CLEAR_COVERAGE_PERMILLE`. The modal colour stays in the trace as
+  a diagnostic.
+* **A capture could hang instead of failing.** The probe's screenshot was
+  requested on one exact frame and only when the player had already spawned;
+  a mission whose player never spawned never reached its exit condition and
+  the window never closed. The probe is now skipped by name when the player
+  is not there, every capture is bounded by the grace frame, and `finish`
+  refuses with the reason the probe did not run.
+
+Both are covered by `accept_m01_play_world_` unit members in
+`mission_session/evidence.rs` (the count, the judgement, the encodings) that
+run in CI, and the windowed and evidence members now assert the clear-colour
+floor beside the world floor.
 
 ## What this does *not* claim
 
