@@ -879,7 +879,9 @@ fn measure_textures(found: &Discovery, group_dir: &str, surface: LaunchSurface) 
 /// `aiv.zrd` through `recover_retail_start_configuration`. The records
 /// resolve; #770's engine-state measurement then binds the campaign airframe
 /// and the metric initial pose where `$CS_ENGINE_IMAGE` names the image
-/// (#798), so
+/// (#798), and the committed owner-static table
+/// (`data/owner-static/engine-facts.toml`, task #1432) stands in when it does
+/// not, so
 /// the surface is satisfied exactly when both arrive [`Resolved::Known`].
 /// Whatever still does not bind is named with the configuration's own refusal
 /// — never a picked default.

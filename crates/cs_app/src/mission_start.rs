@@ -99,12 +99,15 @@
 //!   unknown. Reading a number in the record as an airframe index would be a
 //!   guess (AGENTS.md rule 4). [`recover_retail_start_configuration`] then
 //!   binds the player's from the engine state above when `$CS_ENGINE_IMAGE`
-//!   names the image those bytes were read from, and otherwise names exactly
-//!   why it could not ([`EngineStateError`]).
+//!   names the image those bytes were read from, or from the committed
+//!   owner-static table when it does not (task #1432:
+//!   [`crate::engine_facts`], `data/owner-static/engine-facts.toml`), and
+//!   otherwise names exactly why it could not ([`EngineStateError`]).
 //! * **The metric pose, from the document alone.** The stored unit is measured
 //!   as the metre, but the record alone carries no conversion to it, so
 //!   [`MissionStartConfiguration::initial_pose`] stays unknown under
-//!   [`POSE_UNKNOWN_REASON`] until that same source is named. A `wingman_<n>`
+//!   [`POSE_UNKNOWN_REASON`] until that same source is named — the image, or
+//!   the committed table's own citation for it. A `wingman_<n>`
 //!   name still does not say whose wingmate it is.
 //!
 //! Nothing here is `verified_original`: the claims are
@@ -154,7 +157,9 @@ const HEADING_FIELD: usize = 2;
 ///
 /// [`recover_retail_start_configuration`] replaces this refusal with a
 /// [`Resolved::Known`] when `$CS_ENGINE_IMAGE` names the image the campaign
-/// chain was measured in; [`MissionStartConfiguration::read`] keeps it, since
+/// chain was measured in, or when the committed owner-static table
+/// (task #1432) carries a `known` row for the mission;
+/// [`MissionStartConfiguration::read`] keeps it, since
 /// the document alone carries no such source.
 pub const AIRFRAME_UNKNOWN_REASON: &str = "no source in this document assigns the player's airframe: no field of an aiv.zrd aircraft record names one (the player's field 0 is the none value 0xFFFFFFFF in all 53 retail missions that have a player record), no member of M01's zrdr.zbd carries the `player_plane` key the executable reads — that key is read only by the instant-action setup, from `ia.zrd`, and resolved through the executable's eleven-row airframe table — the installation holds no profile or hangar file, and the mission-language statements that may assign one are undecoded (F13-B/C, F38)";
 /// The reason a metric start pose cannot be bound **from the document alone**.
@@ -162,7 +167,8 @@ pub const AIRFRAME_UNKNOWN_REASON: &str = "no source in this document assigns th
 /// The stored unit is measured (#436); what the record does not carry is the
 /// executable's convention for the heading, which
 /// [`recover_retail_start_configuration`] names when `$CS_ENGINE_IMAGE` holds
-/// the image it was measured in, and which [`MissionStartConfiguration::read`]
+/// the image it was measured in or the committed owner-static table
+/// (task #1432) cites it, and which [`MissionStartConfiguration::read`]
 /// has no source to name.
 pub const POSE_UNKNOWN_REASON: &str = "the stored position unit is measured as the metre (#436, owner note 2026-10-05: 1 world unit = 1 metre, +Y up, right-handed, stored positions map to the canonical frame with identity axis map and scale 1.0), but this document carries no conversion for the heading: its zero direction and its handedness live in the executable's convention, not in the record (#770 measures them there), and the mission program may move the aircraft before launch (F13-B/C, F38)";
 
@@ -888,6 +894,135 @@ impl MissionStartConfiguration {
         Ok(())
     }
 
+    /// Binds the player's airframe and initial pose from the committed
+    /// owner-static engine-facts table (task #1432, `OWNER-FACTS-TABLE`).
+    ///
+    /// `facts` is [`crate::engine_facts::engine_facts`]'s parse of
+    /// `data/owner-static/engine-facts.toml` — the measured engine-state
+    /// facts committed under the owner ruling of 2026-10-14, so a normal
+    /// launch does not need `$CS_ENGINE_IMAGE`. `why` is
+    /// [`EngineStateError`]'s own message for the image the table is
+    /// standing in for, so a refusal still names the source the fact was
+    /// measured from.
+    ///
+    /// * **Airframe**: the mission's own `[[mission]]` row decides. A
+    ///   `known` row binds the airframe-table row it commits (the same
+    ///   [`Resolved::Known`] and image span [`bind_engine_state`] would
+    ///   produce — the table is the committed citation for those bytes);
+    ///   an `unknown` row or an absent one keeps the refusal, naming the
+    ///   table's reason or the missing row.
+    /// * **Pose**: the committed `[heading]` convention converts the stored
+    ///   pose, provided the table's constants are the production constants
+    ///   (a drifted table refuses instead of binding against different
+    ///   numbers). A record without a stored pose stays unknown — nothing
+    ///   is invented.
+    ///
+    /// The claim ids are the ones [`read`](Self::read) issued, and the
+    /// provenance is [`ClaimStatus::ObservedTool`] naming the image spans
+    /// the rows cite: the table is a committed transcription of those
+    /// bytes, never `verified_original`.
+    ///
+    /// # Errors
+    ///
+    /// [`MissionStartError::Provenance`] when a claim id, content id or
+    /// provenance cannot be built, or the table's own schema fails.
+    pub fn bind_engine_facts(
+        &mut self,
+        facts: &crate::engine_facts::EngineFacts,
+        why: &str,
+    ) -> Result<(), MissionStartError> {
+        let label = claim_label(&self.mission);
+        let provenance = |claim: &str, span: &SourceSpan| {
+            Provenance::new(
+                claim_id(&format!("{label}.{claim}"))?,
+                ClaimStatus::ObservedTool,
+                Some(span.clone()),
+            )
+            .map_err(|error| MissionStartError::Provenance(error.to_string()))
+        };
+
+        match facts.mission(&self.mission) {
+            Some(row) => match &row.airframe {
+                crate::engine_facts::MissionAirframe::Known { index, va, .. } => {
+                    let entry = facts.airframe(*index).ok_or_else(|| {
+                        MissionStartError::Provenance(format!(
+                            "the committed table commits airframe row {index}, outside the \
+                             measured table"
+                        ))
+                    })?;
+                    let span = facts
+                        .image_span(*va, CAMPAIGN_AIRFRAME_RECORD_LENGTH)
+                        .map_err(|error| MissionStartError::Provenance(error.to_string()))?;
+                    let airframe =
+                        ContentId::from_source(ContentKind::Airframe, entry.scene_root.as_str())
+                            .map_err(|error| MissionStartError::Provenance(error.to_string()))?;
+                    self.airframe = Resolved::Known(Known::new(
+                        airframe,
+                        provenance("player-airframe", &span)?,
+                    ));
+                }
+                crate::engine_facts::MissionAirframe::Unknown { reason } => {
+                    self.set_airframe_refusal(&format!(
+                        "{AIRFRAME_UNKNOWN_REASON} ({why}; and the committed table \
+                         {} records this mission's player airframe as unknown: {reason})",
+                        crate::engine_facts::ENGINE_FACTS_PATH
+                    ))?;
+                }
+            },
+            None => {
+                self.set_airframe_refusal(&format!(
+                    "{AIRFRAME_UNKNOWN_REASON} ({why}; and the committed table {} holds no \
+                     player-airframe row for {})",
+                    crate::engine_facts::ENGINE_FACTS_PATH,
+                    self.mission
+                ))?;
+            }
+        }
+
+        if let Resolved::Known(stored) = &self.stored_pose {
+            let pose_reason = |detail: String| -> Result<Resolved<StartPose>, MissionStartError> {
+                unknown(
+                    claim_id(&format!("{label}.initial-pose"))?,
+                    &format!("{POSE_UNKNOWN_REASON} ({detail})"),
+                )
+            };
+            self.initial_pose = if facts.heading().degrees_to_radians
+                == STORED_HEADING_DEGREES_TO_RADIANS
+                && facts.position().metres_per_unit == f64::from(STORED_POSITION_METRES_PER_UNIT)
+            {
+                let span = facts
+                    .image_span(facts.heading().va, facts.heading().bytes)
+                    .map_err(|error| MissionStartError::Provenance(error.to_string()))?;
+                Resolved::Known(Known::new(
+                    StartPose {
+                        position: stored.value.position_metres(),
+                        heading: stored_heading_radians(stored.value.heading),
+                    },
+                    provenance("initial-pose", &span)?,
+                ))
+            } else {
+                pose_reason(format!(
+                    "{why}; and the committed table {} drifts from the measured constants \
+                     ({} vs {STORED_HEADING_DEGREES_TO_RADIANS}, {} vs \
+                     {STORED_POSITION_METRES_PER_UNIT})",
+                    crate::engine_facts::ENGINE_FACTS_PATH,
+                    facts.heading().degrees_to_radians,
+                    facts.position().metres_per_unit
+                ))?
+            };
+        } else if !self.initial_pose.is_known() {
+            self.initial_pose = unknown(
+                claim_id(&format!("{label}.initial-pose"))?,
+                &format!(
+                    "{POSE_UNKNOWN_REASON} ({why}; and the committed table {}'s measured \
+                     convention is available, but this record carries no stored pose to convert)",
+                    crate::engine_facts::ENGINE_FACTS_PATH
+                ),
+            )?;
+        }
+        Ok(())
+    }
+
     /// Names why the measured engine-state source could not be used, keeping
     /// the document-only refusals from claiming that no such source exists.
     ///
@@ -938,8 +1073,11 @@ impl MissionStartConfiguration {
 /// and the metric initial pose come from the measured engine state: when
 /// `$CS_ENGINE_IMAGE` names [`ENGINE_IMAGE`] at [`ENGINE_IMAGE_SHA256`]
 /// ([`engine_state_source`]), they are [`Resolved::Known`] with the source
-/// span named above; otherwise [`MissionStartConfiguration::refuse_engine_state`]
-/// says exactly why, and nothing is invented in its place. The image is
+/// span named above; when it does not,
+/// [`MissionStartConfiguration::bind_engine_facts`] binds the same claims
+/// from the committed owner-static table `data/owner-static/engine-facts.toml`
+/// (task #1432 — the launch does not require the image) or names exactly why
+/// it could not, and nothing is invented in its place. The image is
 /// loaded separately from `$CS_ENGINE_IMAGE` and never looked for inside
 /// `install_root` (#798).
 ///
@@ -1007,13 +1145,24 @@ pub fn recover_retail_start_configuration(
     let mut configuration = MissionStartConfiguration::read(mission, &document, &source)?;
     // #798: the engine image is a separate owner-supplied input at
     // `$CS_ENGINE_IMAGE`, so it is loaded here rather than read out of the
-    // installation's inventory, and a refusal names that variable.
+    // installation's inventory, and a refusal names that variable. When the
+    // image is not named, the committed owner-static table (#1432) stands in
+    // for the two facts it carries — the launch does not require the image.
     let engine_state = cs_content::coordinates::load_engine_image()
         .map_err(EngineStateError::from)
         .and_then(|image| engine_state_source(&image));
     match engine_state {
         Ok(engine) => configuration.bind_engine_state(&engine)?,
-        Err(error) => configuration.refuse_engine_state(&error.to_string())?,
+        Err(error) => {
+            let facts = crate::engine_facts::engine_facts().map_err(|facts_error| {
+                MissionStartError::Provenance(format!(
+                    "{error}; and the committed owner-static table {} cannot be read: \
+                     {facts_error}",
+                    crate::engine_facts::ENGINE_FACTS_PATH
+                ))
+            })?;
+            configuration.bind_engine_facts(facts, &error.to_string())?;
+        }
     }
     // #715 measured that `player_plane` is read only by the instant-action
     // setup, from an archive's `ia.zrd` (`0x4593e5`), and that no campaign

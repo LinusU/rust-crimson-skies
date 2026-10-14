@@ -31,18 +31,32 @@ use crate::physics::BASELINE_FIXED_HZ;
 use crate::world::{WorldMeshes, retail};
 use crate::world_facts::MemberResolver;
 
-/// Row 5 of the measured airframe table: the scene root the campaign start
-/// recovery binds for M01, and the `vehicle.zrd` record that row maps to.
-///
-/// Both halves come from
-/// `docs/findings/2026-10-06-m01-lc-player-airframe-source.md`, whose table
-/// spells row 5 `Devastator | player_pfighter | piratefighter |
-/// pdevastator …`, and from `crate::mission_start::CAMPAIGN_AIRFRAME_ROW`,
-/// which is the row the engine-state byte selects. The pair is a table
-/// lookup, never a name match: a resolved airframe that is not
-/// [`CAMPAIGN_FLIGHT_ROW`]'s scene root is refused by name rather than
-/// mapped onto the nearest record.
-const CAMPAIGN_FLIGHT_ROW: (&str, &str) = ("player_pfighter", "pdevastator");
+/// The `vehicle.zrd` record a resolved player airframe flies, read off the
+/// committed owner-static engine-facts table (task #1432): the airframe
+/// row's `p` field is the record its scene root maps to — row 5 spells
+/// `player_pfighter` → `pdevastator`
+/// (`docs/findings/2026-10-06-m01-lc-player-airframe-source.md`, the same row
+/// `crate::mission_start::CAMPAIGN_AIRFRAME_ROW` measures the engine-state
+/// byte selecting). The lookup is a table row, never a name match: a
+/// resolved airframe the committed table does not carry is refused by name
+/// rather than mapped onto the nearest record.
+fn flight_record(airframe_key: &str) -> Result<String, MissionSessionError> {
+    let facts =
+        crate::engine_facts::engine_facts().map_err(|error| MissionSessionError::Provenance {
+            claim: "owner-static.engine-facts",
+            reason: format!(
+                "the committed table {} cannot be read: {error}",
+                crate::engine_facts::ENGINE_FACTS_PATH
+            ),
+        })?;
+    facts
+        .airframe_by_scene_root(airframe_key)
+        .map(|row| row.p.clone())
+        .ok_or_else(|| MissionSessionError::AirframeUnmapped {
+            airframe: airframe_key.to_owned(),
+            expected: "a scene root of the committed owner-static airframe table",
+        })
+}
 
 /// How many bytes an archive header probe reads before classification — the
 /// same bounded prefix the launch closure classifies sound archives with, so
@@ -188,12 +202,12 @@ pub enum MissionSessionError {
         /// The configuration's own reason for the unknown.
         reason: String,
     },
-    /// The start configuration resolved an airframe the measured row does not
-    /// map, so no flight record was picked for it.
+    /// The start configuration resolved an airframe the committed owner-static
+    /// airframe table does not map, so no flight record was picked for it.
     AirframeUnmapped {
         /// The airframe the configuration resolved, as its content key.
         airframe: String,
-        /// The scene root the measured row maps.
+        /// What the record must come from.
         expected: &'static str,
     },
     /// The flight record could not be imported or was refused.
@@ -286,8 +300,8 @@ impl fmt::Display for MissionSessionError {
             ),
             Self::AirframeUnmapped { airframe, expected } => write!(
                 formatter,
-                "the start configuration resolves the airframe {airframe}, which is not the \
-                 measured row {expected}; no flight record was picked for it \
+                "the start configuration resolves the airframe {airframe}, which is not \
+                 {expected}; no flight record was picked for it \
                  (docs/findings/2026-10-06-m01-lc-player-airframe-source.md)"
             ),
             Self::Flight { record, reason } => write!(formatter, "{record}: {reason}"),
@@ -546,18 +560,12 @@ fn prepare_flight(
             });
         }
     };
-    if airframe_key != CAMPAIGN_FLIGHT_ROW.0 {
-        return Err(MissionSessionError::AirframeUnmapped {
-            airframe: airframe_key,
-            expected: CAMPAIGN_FLIGHT_ROW.0,
-        });
-    }
-    let record = CAMPAIGN_FLIGHT_ROW.1;
+    let record = flight_record(&airframe_key)?;
     let refused = |reason: String| MissionSessionError::Flight {
-        record: record.to_owned(),
+        record: record.clone(),
         reason,
     };
-    let parameters = import_retail_airframe(install_root, record)
+    let parameters = import_retail_airframe(install_root, &record)
         .map_err(|error| refused(format!("the parameters could not be imported: {error}")))?;
     let law = import_retail_globals(install_root)
         .map_err(|error| refused(format!("the flight globals could not be imported: {error}")))?;
@@ -576,7 +584,7 @@ fn prepare_flight(
     };
     Ok(MissionFlight {
         model: OriginalFlightModel::full(airframe, globals),
-        record: record.to_owned(),
+        record,
         fuel,
         inheritance_chain: parameters.inheritance_chain.clone(),
         provenance: PROVENANCE_LABEL,
