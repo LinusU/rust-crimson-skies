@@ -47,8 +47,13 @@ const COOLDOWN_TICKS: u64 = 64;
 /// Objective deadline period: 600 ticks is 9.375 s at [`TICK_HZ`].
 const OBJECTIVE_TICKS: u64 = 600;
 /// Render frame rates the same script is delivered at, including one that
-/// does not divide a second evenly (7 fps leaves a 6 ns remainder frame).
-const RENDER_FPS: [u32; 4] = [7, 30, 60, 144];
+/// does not divide a second evenly (9 fps leaves a 1 ns remainder frame).
+/// Every rate here keeps a frame under the 125 ms
+/// [`MAX_FRAME_DT`](cs_sim::time::MAX_FRAME_DT) cap adopted by F16-F-CAP
+/// (#721); a slower delivery converts less game time than wall time — the
+/// measured original behavior — and is pinned separately in
+/// [`accept_f16_d_probe_traces_agree_across_render_frame_rates`].
+const RENDER_FPS: [u32; 4] = [9, 30, 60, 144];
 
 const MS: u64 = 1_000_000;
 const SECOND: u64 = 1_000_000_000;
@@ -198,20 +203,30 @@ fn accept_f16_d_pause_produces_zero_weapon_cooldown_and_objective_advancement() 
 
     // The control: the same script without the pause *does* advance both
     // quantities, so the equality above is about pausing and not about the
-    // fixture being inert.
+    // fixture being inert. The single 30 s frame commits only the cap's 8
+    // ticks (F16-F-CAP); the 30 s split into 30 fps frames is untouched.
     let control = BehavioralProbe::new("unpaused-control", 30, UNPAUSED_CONTROL)
         .expect("the control script is a valid probe")
         .run(timeline)
         .expect("the control runs");
     let before = control.sample("before-pause").expect("observed");
-    let later = control
-        .sample("during-pause-many-frames")
+    let stalled = control
+        .sample("during-pause-single-frame")
         .expect("observed");
     assert_eq!(before.cooldown_remaining_ticks(), 32);
     assert_eq!(
+        stalled.cooldown_remaining_ticks(),
+        24,
+        "the 30 s stall advances the cooldown only by the cap's 8 ticks"
+    );
+    let later = control
+        .sample("during-pause-many-frames")
+        .expect("observed");
+    assert_eq!(
         later.cooldown_remaining_ticks(),
         0,
-        "without a pause, 30.5 s of wall time empties the one-second cooldown"
+        "without a pause, the 30 s of play delivered as frames empties the \
+         one-second cooldown"
     );
     assert_eq!(later.cooldown_expirations(), 1);
     assert_eq!(before.objective_remaining_ticks(), 568);
@@ -222,16 +237,21 @@ fn accept_f16_d_pause_produces_zero_weapon_cooldown_and_objective_advancement() 
     );
     assert_eq!(
         control.committed_ticks(),
-        60_750 * 64 / 1_000,
-        "60.75 s of unpaused play at 64 Hz is 3888 ticks"
+        32 + 8 + 30 * 64 + 16,
+        "32 ticks of play, the stall's 8, then 30 s and 250 ms of unpaused \
+         play delivered as ordinary frames"
     );
 }
 
-/// The gameplay quantities are frame-rate independent: the same script at 7,
+/// The gameplay quantities are frame-rate independent: the same script at 9,
 /// 30, 60 and 144 render FPS commits the same ticks and reports the same
-/// cooldown and objective values at every labelled sample. 7 fps is included
+/// cooldown and objective values at every labelled sample. 9 fps is included
 /// because it does not divide a second evenly, so the remainder frame is on
-/// the path.
+/// the path — and it still keeps a frame under the 125 ms cap.
+///
+/// Below the cap threshold the script's frames are clamped, by the measured
+/// original's own rule (F16-F-CAP): the second half of this test pins the
+/// exact capped counts at 7 fps rather than pretending agreement.
 #[test]
 fn accept_f16_d_probe_traces_agree_across_render_frame_rates() {
     let traces: Vec<_> = RENDER_FPS
@@ -275,6 +295,33 @@ fn accept_f16_d_probe_traces_agree_across_render_frame_rates() {
             reference.render_fps()
         );
     }
+
+    // A rate below the cap threshold: at 7 fps every 142 857 142 ns frame is
+    // clamped to MAX_FRAME_DT, so the 500 ms of play commits 28 ticks (three
+    // capped frames of 8, then a 71 428 574 ns remainder worth 4) and the
+    // 250 ms after the resume 15 (a capped 8 plus the 107 142 858 ns
+    // remainder's 7). Paused frames still commit nothing.
+    let capped = BehavioralProbe::new("pause-zero-advancement", 7, PAUSE_SCRIPT)
+        .expect("the fixture script is a valid probe")
+        .run(timeline)
+        .expect("the probe runs");
+    assert_eq!(
+        capped.committed_ticks(),
+        43,
+        "at 7 fps the clamp converts 750 ms of play into 43 ticks"
+    );
+    let before = capped.sample("before-pause").expect("observed");
+    assert_eq!(before.tick(), Tick(28));
+    assert_eq!(before.cooldown_remaining_ticks(), 36);
+    assert_eq!(before.objective_remaining_ticks(), 572);
+    let after = capped.sample("after-resume").expect("observed");
+    assert_eq!(after.tick(), Tick(43));
+    assert_eq!(
+        after.cooldown_remaining_ticks(),
+        49,
+        "the re-armed cooldown counted the capped 15 ticks"
+    );
+    assert_eq!(after.objective_remaining_ticks(), 557);
 }
 
 /// The comparison half of the stage: a measured trace is compared against an
@@ -348,9 +395,9 @@ fn accept_f16_d_measured_trace_matches_an_attributed_reference() {
             .any(|d| d.label == paused_label
                 && d.field == "cooldown_remaining_ticks"
                 && d.measured == 32
-                && d.expected == 0),
-        "the reference claims pause emptied the cooldown; the measurement says \
-         it did not: {}",
+                && d.expected == 24),
+        "the reference claims the unpaused 30 s frame advanced the cooldown by \
+         the cap's 8 ticks; the paused measurement committed nothing: {}",
         comparison.summary()
     );
     assert!(

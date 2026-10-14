@@ -29,7 +29,7 @@ use cs_app::origin::{
     DriverError, FixedTickDriver, OriginError, RebasePolicy, SpatialError, SpatialId,
     SpatialSubsystem, WorldOrigin, local_round_trip_tolerance_m,
 };
-use cs_sim::time::{ClockPolicy, NANOS_PER_SECOND, TickRate};
+use cs_sim::time::{ClockPolicy, MAX_FRAME_DT, NANOS_PER_SECOND, TickRate};
 use cs_types::Tick;
 use cs_types::space::{LocalPosition, SpaceError, WorldPosition};
 
@@ -81,6 +81,23 @@ fn frames_at(frame_rate: u32, total_nanos: u128) -> Vec<Duration> {
     let rest = total_nanos - per_frame * frames;
     spans.push(Duration::from_nanos(rest as u64));
     spans
+}
+
+/// Delivers `total` wall time to `driver` as consecutive rendered frames of
+/// at most [`MAX_FRAME_DT`]: a real frame loop never hands one frame more
+/// than a frame, so a span longer than the cap arrives as several frames
+/// rather than collapsing into one clamped advance (F16-F-CAP).
+fn advance_wall_time(driver: &mut FixedTickDriver, total: Duration) -> u64 {
+    let mut committed = 0;
+    let mut remaining = total;
+    while remaining > Duration::ZERO {
+        let frame = remaining.min(MAX_FRAME_DT);
+        committed += driver
+            .advance_frame(frame)
+            .expect("the fixture never refuses a frame");
+        remaining -= frame;
+    }
+    committed
 }
 
 /// One record's final state, read back from the world.
@@ -295,11 +312,9 @@ fn accept_f16_c_rebase_lands_on_the_same_tick_at_every_frame_rate() {
 fn accept_f16_c_paused_session_advances_no_ticks_and_no_spatial_state() {
     let mut driver = driver_with_fixture();
     assert_eq!(
-        driver
-            .advance_frame(Duration::from_millis(500))
-            .expect("runs"),
+        advance_wall_time(&mut driver, Duration::from_millis(500)),
         32,
-        "500 ms at 64 Hz is 32 ticks"
+        "500 ms at 64 Hz is 32 ticks delivered as four capped frames"
     );
     let before = (driver.tick(), driver.world().clone());
 
@@ -317,13 +332,34 @@ fn accept_f16_c_paused_session_advances_no_ticks_and_no_spatial_state() {
 
     driver.set_paused(false);
     assert_eq!(
-        driver
-            .advance_frame(Duration::from_millis(500))
-            .expect("runs"),
+        advance_wall_time(&mut driver, Duration::from_millis(500)),
         32,
         "resume must not bank the paused time"
     );
     assert_eq!(driver.tick(), Tick(64));
+}
+
+/// The driver inherits the clock's frame-dt cap (F16-F-CAP, the original's
+/// `0x63b158` clamp): a 5 s stall is one rendered frame, so it commits the
+/// cap's 8 ticks and steps the world eight times, never 5 s of catch-up.
+#[test]
+fn accept_f16_c_stalled_frame_commits_at_most_the_cap() {
+    let mut driver = driver_with_fixture();
+    assert_eq!(
+        driver.advance_frame(Duration::from_secs(5)).expect("runs"),
+        8,
+        "a stalled frame commits the 125 ms cap's ticks at 64 Hz"
+    );
+    assert_eq!(driver.tick(), Tick(8));
+    assert_eq!(
+        driver.world().records()[0].world(),
+        world([
+            STARTS[0][0] + 8.0 * f64::from(DELTAS[0][0]),
+            STARTS[0][1] + 8.0 * f64::from(DELTAS[0][1]),
+            STARTS[0][2] + 8.0 * f64::from(DELTAS[0][2]),
+        ]),
+        "the world stepped exactly the cap's ticks, not the stall's"
+    );
 }
 
 /// Error propagation and retry: a rebase that cannot be expressed in the new
@@ -332,9 +368,7 @@ fn accept_f16_c_paused_session_advances_no_ticks_and_no_spatial_state() {
 #[test]
 fn accept_f16_c_refused_rebase_is_propagated_and_retry_starts_fresh() {
     let mut driver = driver_with_fixture();
-    driver
-        .advance_frame(Duration::from_secs(1))
-        .expect("the fixture runs");
+    advance_wall_time(&mut driver, Duration::from_secs(1));
     let before = (driver.tick(), driver.world().clone());
 
     let refused = driver.rebase(world([-1.0e40, 0.0, 0.0]));
@@ -364,9 +398,7 @@ fn accept_f16_c_refused_rebase_is_propagated_and_retry_starts_fresh() {
     assert_eq!(driver.world().epoch().0, 0);
 
     assert_eq!(
-        driver
-            .advance_frame(Duration::from_secs(1))
-            .expect("the fresh session runs"),
+        advance_wall_time(&mut driver, Duration::from_secs(1)),
         64,
         "the fresh session advances from tick 0"
     );

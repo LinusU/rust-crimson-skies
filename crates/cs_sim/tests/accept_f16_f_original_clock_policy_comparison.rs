@@ -33,10 +33,10 @@
 use std::time::Duration;
 
 use cs_sim::time::{
-    ClockPolicy, GameplayTimeline, ORIGINAL_CLOCK_POLICY_STATUS, ORIGINAL_IMAGE_SHA256,
-    ORIGINAL_POLICY_FINDINGS, ORIGINAL_POLICY_TOLERANCE, OriginalClockPolicy, OriginalDtSource,
-    OriginalSubsystem, PausePolicy, PolicyRelation, PolicyTolerance, SimClock, SpeedUpPolicy,
-    TickRate,
+    ClockPolicy, GameplayTimeline, MAX_FRAME_DT, ORIGINAL_CLOCK_POLICY_STATUS,
+    ORIGINAL_IMAGE_SHA256, ORIGINAL_POLICY_FINDINGS, ORIGINAL_POLICY_TOLERANCE,
+    OriginalClockPolicy, OriginalDtSource, OriginalSubsystem, PausePolicy, PolicyRelation,
+    PolicyTolerance, SimClock, SpeedUpPolicy, TickRate,
 };
 use cs_types::evidence::ClaimStatus;
 
@@ -44,7 +44,8 @@ use cs_types::evidence::ClaimStatus;
 /// below. 64 Hz is a designed development value, not a measured original
 /// rate.
 const TICK_HZ: u32 = 64;
-/// The original's measured per-frame `game_dt` cap (owner notes, `0x63b158`).
+/// The original's measured per-frame `game_dt` cap (owner notes, `0x63b158`),
+/// which F16-F-CAP (#721) adopted as [`MAX_FRAME_DT`].
 const ORIGINAL_MAX_FRAME_DT_NANOS: u128 = 125_000_000;
 
 fn rate() -> TickRate {
@@ -316,6 +317,7 @@ fn accept_f16_f_comparison_pins_the_measured_policies_against_the_project_clocks
         fields(&comparison, PolicyRelation::Agrees),
         vec![
             "clock.frame-dt-bound",
+            "clock.frame-dt-cap",
             "pause.bank",
             "pause.gameplay",
             "pause.presentation",
@@ -323,21 +325,21 @@ fn accept_f16_f_comparison_pins_the_measured_policies_against_the_project_clocks
             "timers.shared-dt-source",
         ],
         "the original freezes the flight world, keeps presentation running, \
-         banks nothing, shares one dt source between the two timers and gates \
-         the speed-up off in network games — all of which the project's \
-         policies already do"
+         banks nothing, shares one dt source between the two timers, gates \
+         the speed-up off in network games and clamps each frame's game_dt — \
+         all of which the project's policies do, the last since F16-F-CAP \
+         adopted the measured bound as MAX_FRAME_DT"
     );
     assert_eq!(
         fields(&comparison, PolicyRelation::Diverges),
         vec![
-            "clock.frame-dt-cap",
             "clock.tick-source",
             "speed-up.mechanism",
             "speed-up.reaches-gameplay-timers",
         ],
-        "the fixed tick, the missing frame-dt cap, the fixed-tick speed-up \
-         mechanism and the gameplay clock's missing speed-up authority are the \
-         four divergences the findings entry records"
+        "the fixed tick, the fixed-tick speed-up mechanism and the gameplay \
+         clock's missing speed-up authority are the divergences that remain \
+         after #721 adopted the frame-dt cap"
     );
     assert_eq!(
         fields(&comparison, PolicyRelation::NotModeled),
@@ -383,7 +385,7 @@ fn accept_f16_f_comparison_pins_the_measured_policies_against_the_project_clocks
         comparison.summary()
     );
     assert!(
-        comparison.summary().contains("4 diverge"),
+        comparison.summary().contains("3 diverge"),
         "{}",
         comparison.summary()
     );
@@ -512,11 +514,18 @@ fn accept_f16_f_project_clock_behaves_where_the_policies_agree() {
         relation_of(&comparison, "speed-up.network-gate"),
         Some(PolicyRelation::Agrees)
     );
+    assert_eq!(
+        relation_of(&comparison, "clock.frame-dt-cap"),
+        Some(PolicyRelation::Agrees),
+        "F16-F-CAP adopted the measured 125 ms bound as MAX_FRAME_DT"
+    );
 
     // `pause.bank`: paused wall time is dropped, so resume cannot release a
-    // burst the original never banks either.
+    // burst the original never banks either. The unpaused one-second frames
+    // exceed the cap, so each commits the cap's 8 ticks — the same thing the
+    // original's clamp does to a stalled frame.
     let mut clock = SimClock::new(ClockPolicy::single_player_simulation(), rate());
-    assert_eq!(clock.advance(Duration::from_secs(1)), Ok(64));
+    assert_eq!(clock.advance(Duration::from_secs(1)), Ok(8));
     clock.set_paused(true);
     assert_eq!(
         clock.advance(Duration::from_secs(30)),
@@ -526,24 +535,28 @@ fn accept_f16_f_project_clock_behaves_where_the_policies_agree() {
     clock.set_paused(false);
     assert_eq!(
         clock.advance(Duration::from_secs(1)),
-        Ok(64),
-        "one second after resume is one second of ticks, not thirty-one"
+        Ok(8),
+        "a stalled frame after resume commits the cap, not thirty-one seconds"
     );
     assert_eq!(
         clock.tick().0,
-        128,
-        "64 ticks before the pause and 64 after it, nothing from the pause"
+        16,
+        "8 ticks before the pause and 8 after it, nothing from the pause"
     );
 
     // `pause.gameplay`: both gameplay timers freeze together, because they
     // are fed only ticks the clock committed.
     let mut timeline = GameplayTimeline::new(rate(), 120, 600).expect("periods are positive");
-    assert_eq!(timeline.advance_frame(Duration::from_millis(500)), Ok(32));
+    assert_eq!(
+        timeline.advance_frame(Duration::from_millis(500)),
+        Ok(8),
+        "a 500 ms frame is over the cap and commits its 8 ticks"
+    );
     let before = (
         timeline.cooldown().remaining_ticks(),
         timeline.objective_timer().remaining_ticks(),
     );
-    assert_eq!(before, (88, 568));
+    assert_eq!(before, (112, 592));
     timeline.set_paused(true);
     assert_eq!(timeline.advance_frame(Duration::from_secs(30)), Ok(0));
     assert_eq!(
@@ -555,13 +568,13 @@ fn accept_f16_f_project_clock_behaves_where_the_policies_agree() {
         "pause advances neither the cooldown nor the objective timer"
     );
     timeline.set_paused(false);
-    assert_eq!(timeline.advance_frame(Duration::from_millis(500)), Ok(32));
+    assert_eq!(timeline.advance_frame(Duration::from_millis(500)), Ok(8));
     assert_eq!(
         (
             timeline.cooldown().remaining_ticks(),
             timeline.objective_timer().remaining_ticks()
         ),
-        (56, 536),
+        (104, 584),
         "resume banks none of the paused time"
     );
 
@@ -591,4 +604,94 @@ fn accept_f16_f_project_clock_behaves_where_the_policies_agree() {
         ),
         "the multiplayer side of the declared gate"
     );
+}
+
+/// F16-F-CAP (#721), the decided divergence: the original frame clock
+/// (`0x59c0c0`) clamps every frame's `game_dt` to `[0, 125 ms]` after scaling
+/// (clamp flag `0x63b160` default 1, max `0x63b158`, min `0x63b15c`), and the
+/// project adopted the same bound — [`MAX_FRAME_DT`], enforced inside
+/// `SimClock::advance`. A frame longer than the cap advances exactly the cap.
+#[test]
+fn accept_f16_f_cap_a_stalled_frame_advances_exactly_the_cap() {
+    // The enforced bound is the measured original's, declared once — not a
+    // value fitted to this test.
+    assert_eq!(MAX_FRAME_DT, Duration::from_millis(125));
+    assert_eq!(
+        OriginalClockPolicy::measured_original().max_frame_dt(),
+        MAX_FRAME_DT,
+        "the declared policy and the enforced cap share one bound"
+    );
+
+    // Every domain's clock is the frame-clock accumulator, so the cap is
+    // uniform: a stalled frame commits the cap's 8 ticks at 64 Hz, whatever
+    // the policy, and however far past the bound the frame ran.
+    for policy in [
+        ClockPolicy::single_player_simulation(),
+        ClockPolicy::multiplayer_simulation(),
+        ClockPolicy::authoritative_gameplay(),
+        ClockPolicy::ui_wall(),
+        ClockPolicy::media_unscaled(),
+    ] {
+        let mut clock = SimClock::new(policy, rate());
+        for stalled in [
+            Duration::from_millis(126),
+            Duration::from_secs(5),
+            Duration::from_secs(30),
+        ] {
+            assert_eq!(
+                clock.advance(stalled).expect("the clock advances"),
+                8,
+                "{}: {stalled:?} must commit the cap's 8 ticks at {TICK_HZ} Hz",
+                policy.domain().label()
+            );
+        }
+        assert_eq!(clock.tick().0, 24);
+    }
+
+    // The excess is dropped, never banked: after a 5 s stall the clock holds
+    // no debt, so the next ordinary frame commits only its own ticks.
+    let mut clock = SimClock::new(ClockPolicy::single_player_simulation(), rate());
+    assert_eq!(clock.advance(Duration::from_secs(5)), Ok(8));
+    assert_eq!(
+        clock.advance(Duration::from_nanos(15_625_000)),
+        Ok(1),
+        "the frame after the stall is one ordinary 1/64 s frame, not the banked remainder"
+    );
+    assert_eq!(clock.tick().0, 9);
+
+    // The gameplay quantities see the same bound: a stalled frame feeds the
+    // timers the cap's ticks and nothing more.
+    let mut timeline = GameplayTimeline::new(rate(), 120, 600).expect("periods are positive");
+    assert_eq!(timeline.advance_frame(Duration::from_secs(5)), Ok(8));
+    assert_eq!(timeline.cooldown().remaining_ticks(), 112);
+    assert_eq!(timeline.objective_timer().remaining_ticks(), 592);
+}
+
+/// The other side of the pin: a frame at or under [`MAX_FRAME_DT`] is
+/// untouched, and the sub-tick carry still accumulates exactly across
+/// consecutive short frames.
+#[test]
+fn accept_f16_f_cap_a_frame_within_the_cap_is_untouched() {
+    let mut clock = SimClock::new(ClockPolicy::single_player_simulation(), rate());
+
+    // The boundary itself is not clamped: exactly 125 ms commits its ticks.
+    assert_eq!(clock.advance(MAX_FRAME_DT), Ok(8));
+
+    // A frame one millisecond under the cap commits its own ticks; the
+    // sub-tick remainder carries, so a 1 ms frame after it commits the tick
+    // the pair was owed — inside the cap nothing is dropped or invented.
+    assert_eq!(clock.advance(Duration::from_millis(124)), Ok(7));
+    assert_eq!(
+        clock.advance(Duration::from_millis(1)),
+        Ok(1),
+        "the carry still delivers the tick the two frames sum to"
+    );
+    assert_eq!(clock.tick().0, 16);
+
+    // Five 100 ms frames of an ordinary delivery: 500 ms untouched, 32 ticks.
+    let mut clock = SimClock::new(ClockPolicy::authoritative_gameplay(), rate());
+    for _ in 0..5 {
+        clock.advance(Duration::from_millis(100)).expect("runs");
+    }
+    assert_eq!(clock.tick().0, 32, "frames inside the cap are untouched");
 }
