@@ -151,7 +151,7 @@ fn evidence_report_f22_j_writes_the_acceptance_report() {
             other => panic!("label {} must resolve, got {other:?}", row.label_id),
         }
         label_items.push(format!(
-            "{{\"command_id\": {}, \"symbol\": {}, \"label_id\": {}, \"code_units\": {}}}",
+            "{{\"command_id\": {}, \"symbol\": {}, \"label_id\": {}, \"resolved_code_units\": {}}}",
             row.command_id,
             jstr(symbol),
             row.label_id,
