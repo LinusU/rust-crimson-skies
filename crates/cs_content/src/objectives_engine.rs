@@ -644,6 +644,17 @@ impl EngineObjectives {
         &self.cues
     }
 
+    /// Takes the cues emitted since the last call, in emission order, leaving
+    /// the log empty for the next pass.
+    ///
+    /// This is the host's read: one pass takes each emitted cue exactly once,
+    /// so a cue is handed to the sound consumer once and can never be offered
+    /// twice — while [`Self::cues`] stays the whole history for a caller that
+    /// wants it.
+    pub fn take_cues(&mut self) -> Vec<CueEmission> {
+        std::mem::take(&mut self.cues)
+    }
+
     /// Drops every recorded cue and HUD notification.
     pub fn clear_outputs(&mut self) {
         self.cues.clear();

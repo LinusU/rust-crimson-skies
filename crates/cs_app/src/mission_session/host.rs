@@ -137,7 +137,7 @@ use std::time::Duration;
 use bevy::ecs::schedule::IntoScheduleConfigs;
 use bevy::prelude::{App, Entity, FixedPostUpdate, PostUpdate, Resource, With, World};
 use bevy::time::{Fixed, Time};
-use cs_content::objectives_engine::EngineObjectives;
+use cs_content::objectives_engine::{CueEmission, EngineObjectives};
 use cs_content::world::WorldObjectId;
 use cs_script::ir::{AnimationState, MissionProgram};
 use cs_script::runtime::{EventKind, SessionGeneration, TerminalState, TickError};
@@ -181,6 +181,7 @@ use crate::world_facts::{
 };
 
 use super::lifecycles::{ObjectiveLifecycleTick, ObjectiveLifecycles};
+use super::radio::{MissionRadio, RadioLineOutcome};
 
 /// The mission host's own session generation, minted from a process-wide
 /// counter the way `SessionBuilder::open` mints a content session's: the
@@ -367,6 +368,12 @@ pub struct MissionHostSeed {
     /// its program is then refused as `HostFault::UnknownReward` instead of
     /// being granted. An engine design, not an original rule.
     pub rewards: Vec<ContentId>,
+    /// The mission's sound-group cues resolved to voice lines
+    /// ([`super::radio`]): the group table, the members its declarations
+    /// reach and each member's measured length, read at content preparation.
+    /// A stage with no audio (the synthetic acceptance stages) carries
+    /// [`MissionRadio::empty`], which answers every cue by refusing it.
+    pub radio: MissionRadio,
 }
 
 /// Launches the control session of `seed` for `generation`.
@@ -539,6 +546,11 @@ pub struct MissionHostTick {
     pub lifecycles: ObjectiveLifecycleTick,
     /// What the control program answered for this tick.
     pub script: MissionTick,
+    /// What the mission's sound-group cues produced on this tick, in
+    /// emission order: the voice lines that reached the audio session's
+    /// radio queue, the music state requests, and every cue that was refused
+    /// by name ([`super::radio`]). Empty when this tick emitted no cue.
+    pub radio: Vec<RadioLineOutcome>,
 }
 
 /// The world's own report of what the mission's members, groups and
@@ -714,6 +726,7 @@ pub struct MissionHost {
     world_facts: WorldFactTable,
     operands: WorldOperands,
     sound_archives: Vec<SoundArchive>,
+    radio: MissionRadio,
     refusals: Vec<MissionHostRefusal>,
     generation: SessionGeneration,
     served: SessionId,
@@ -780,6 +793,7 @@ impl MissionHost {
             world_facts: WorldFactTable::new(seed.resolver.clone()),
             operands: WorldOperands::of(&seed.control),
             sound_archives: seed.sound_archives.clone(),
+            radio: seed.radio.clone(),
             refusals,
             generation,
             served,
@@ -1096,6 +1110,14 @@ impl MissionHost {
             completed,
         };
 
+        // 7. Sound: every sound-group cue this tick's lifecycle transitions
+        //    emitted, taken from the model so each is offered exactly once,
+        //    resolved through the mission's group table and offered to the
+        //    audio session's radio queue. A world with no audio session
+        //    answers every cue by naming it, never by dropping it.
+        let cues = self.lifecycles.take_cues();
+        let radio = self.offer_cues(&cues, world);
+
         Ok(MissionHostTick {
             tick,
             environment_ticks,
@@ -1105,7 +1127,38 @@ impl MissionHost {
             objectives: composed.mission.tick,
             lifecycles,
             script,
+            radio,
         })
+    }
+
+    /// Offers `cues` to the audio session the world holds, resolving each
+    /// through [`MissionRadio`] and answering with what each one became.
+    fn offer_cues(&self, cues: &[CueEmission], world: &mut World) -> Vec<RadioLineOutcome> {
+        if cues.is_empty() {
+            return Vec::new();
+        }
+        let Some(mut audio) = world.get_resource_mut::<AudioSession>() else {
+            return cues
+                .iter()
+                .map(|cue| RadioLineOutcome::NoAudioSession {
+                    group: cue.group.clone(),
+                })
+                .collect();
+        };
+        let audio = &mut *audio;
+        let mut outcomes = Vec::new();
+        for cue in cues {
+            for plan in self.radio.plan(cue) {
+                match self.radio.enqueue(&plan, audio) {
+                    Ok(()) => outcomes.push(plan),
+                    Err(refusal) => outcomes.push(RadioLineOutcome::Refused {
+                        group: cue.group.clone(),
+                        refusal,
+                    }),
+                }
+            }
+        }
+        outcomes
     }
 
     /// Runs the terminal sequence over one stepped tick, when either of the

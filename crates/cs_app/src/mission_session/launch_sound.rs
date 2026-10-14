@@ -124,7 +124,11 @@ fn find_record<'a>(node: &'a ZrdValue, name: &str) -> Option<&'a ZrdValue> {
     children.iter().find_map(|child| find_record(child, name))
 }
 
-fn reader_member(install_root: &Path, container: &str, member: &str) -> Result<Vec<u8>, String> {
+pub(crate) fn reader_member(
+    install_root: &Path,
+    container: &str,
+    member: &str,
+) -> Result<Vec<u8>, String> {
     let bytes = std::fs::read(install_root.join(container))
         .map_err(|error| format!("cannot read {container}: {error}"))?;
     let spelling = cs_types::install::RelativePath::new(container).map_err(|e| e.to_string())?;

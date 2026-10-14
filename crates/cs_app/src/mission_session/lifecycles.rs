@@ -35,7 +35,7 @@
 //! not present, and "not present" means no row at all, which is the
 //! fail-closed read every absent key gives.
 
-use cs_content::objectives_engine::{EngineObjective, EngineObjectives, EngineState};
+use cs_content::objectives_engine::{CueEmission, EngineObjective, EngineObjectives, EngineState};
 use cs_script::runtime::{MissionFacts, ObjectiveLifecycle};
 use cs_sim::mission::BlockLifecycleTable;
 
@@ -194,6 +194,20 @@ impl ObjectiveLifecycles {
         match self {
             Self::Declared { clock, .. } => *clock,
             Self::Engine(engine) => f64::from(engine.mission_clock()),
+        }
+    }
+
+    /// The sound-group cues the model emitted since the last call, in
+    /// emission order; the declared dormancy read emits none.
+    ///
+    /// This is how one host pass hands each cue to the sound consumer exactly
+    /// once: the engine model queues a `WAKEUP_SOUND_GROUP`/`COMPLETED_`
+    /// `SOUND_GROUP` emission on a wake or a completion, and this take leaves
+    /// the model's log empty for the next pass.
+    pub fn take_cues(&mut self) -> Vec<CueEmission> {
+        match self {
+            Self::Declared { .. } => Vec::new(),
+            Self::Engine(engine) => engine.take_cues(),
         }
     }
 

@@ -99,6 +99,7 @@ use super::launch_sound::{LaunchSound, LaunchSoundError, measure_launch_sound};
 use super::player_visual::{
     MissionPlayerVisual, PlayerAirframeSource, build_player_visual, spawn_player_visual,
 };
+use super::radio::{MissionRadio, declared_sound_groups};
 use super::world_draw::{
     MissionWorldDrawPlugin, MissionWorldParts, WorldDrawSource, build_world_draw,
 };
@@ -301,6 +302,9 @@ pub enum MissionCompositionError {
     Capture(crate::mission_session::CaptureRefusal),
     /// The launch sound could not be measured from the original data.
     LaunchSound(LaunchSoundError),
+    /// The mission's sound-group table or a member it names could not be read
+    /// for the radio dialogue ([`super::radio`]).
+    Radio(super::radio::RadioError),
     /// The audio backend refused: the machine cannot play the launch sound.
     /// The device error carries the stable code `audibility_exit_code` maps
     /// to the CLI exit status (4 for a missing `audio` capability).
@@ -342,6 +346,7 @@ impl fmt::Display for MissionCompositionError {
                 "add audio to CS_CAPABILITIES, e.g. CS_CAPABILITIES=retail,gpu,audio\n  \
                  the mission audio refuses: {error}"
             ),
+            Self::Radio(error) => write!(f, "the mission's radio dialogue refuses: {error}"),
             Self::Audio(error) => write!(f, "the mission audio refuses: {error}"),
             Self::Exit(reason) => write!(f, "the mission window exited with an error: {reason}"),
         }
@@ -479,6 +484,16 @@ pub fn stage_for(
 
     let mut refusals = Vec::new();
     let (objectives, engine_objectives) = declared_objectives(install_root, plan, &mut refusals);
+    // The sound-group table is read now, from the same record the lifecycle
+    // model was recovered from: those declarations are the only names this
+    // mission's cues can spell, so exactly they are resolved (and each
+    // member's length measured) before any window exists. A stage with no
+    // engine model emits no cue, so it carries the empty radio.
+    let radio = match &engine_objectives {
+        Some(engine) => MissionRadio::read(install_root, declared_sound_groups(engine))
+            .map_err(MissionCompositionError::Radio)?,
+        None => MissionRadio::empty(),
+    };
     let host = MissionHostSeed {
         environment: content.environment.clone(),
         world_actors: content.world_actors.lowered().cloned(),
@@ -504,6 +519,7 @@ pub fn stage_for(
         // survey is open), so the catalog is empty: a `GrantReward` in its
         // control program is refused by name, never granted from a guess.
         rewards: Vec::new(),
+        radio,
     };
 
     Ok(MissionStage {

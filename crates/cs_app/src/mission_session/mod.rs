@@ -85,6 +85,7 @@ mod host;
 mod launch_sound;
 mod lifecycles;
 mod player_visual;
+mod radio;
 mod terminal;
 mod world_draw;
 
@@ -119,6 +120,10 @@ pub use player_visual::{
     MISSION_PLAYER_INTACT_NODE_SLOT, MISSION_PLAYER_LOD_DISTANCE_M, MISSION_PLAYER_PROP_NODE_NAME,
     MISSION_PLAYER_PROP_NODE_SLOT, MissionPlayerVisual, PlayerAirframeSource, build_player_visual,
     spawn_player_visual,
+};
+pub use radio::{
+    MissionRadio, PreparedLine, RADIO_SOUND_CONTAINER, RadioError, RadioLineOutcome, RadioRefusal,
+    ResolvedGroup, SOUND_GROUPS_ARCHIVE, SOUND_GROUPS_MEMBER, declared_sound_groups,
 };
 pub use terminal::{MissionExit, MissionTerminal, MissionTerminalSource};
 pub use world_draw::{

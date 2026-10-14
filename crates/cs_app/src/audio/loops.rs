@@ -47,6 +47,10 @@ use super::AudioEmitterBinding;
 /// The producer serial stamped on loop bindings this system creates.
 pub const LOOP_PRODUCER: u32 = 0;
 
+/// The producer serial stamped on the radio lines the mission program's
+/// sound-group cues queue (`crate::mission_session::radio`).
+pub const MISSION_RADIO_PRODUCER: u32 = 1;
+
 /// Why a binding could not start a loop.
 #[derive(Clone, Debug, PartialEq)]
 pub enum LoopRefusal {
@@ -180,6 +184,25 @@ impl AudioSession {
     pub fn enqueue_radio(&mut self, line: RadioLine) {
         let events = self.radio.enqueue(line, self.tick);
         self.radio_events.extend(events);
+    }
+
+    /// Mints this session's next event id for a radio line the mission
+    /// program's own cue asked for.
+    ///
+    /// The id is stamped with this session, the session's current tick and
+    /// [`MISSION_RADIO_PRODUCER`], so a line the program queued can never be
+    /// confused with a loop binding's or another producer's event, and the
+    /// sequence it takes is this session's next one.
+    #[must_use]
+    pub fn mint_radio_id(&mut self) -> AudioEventId {
+        let id = AudioEventId {
+            session: self.router.session(),
+            tick: self.tick,
+            producer: MISSION_RADIO_PRODUCER,
+            sequence: self.next_sequence,
+        };
+        self.next_sequence += 1;
+        id
     }
 
     /// Requests an authored music cue.

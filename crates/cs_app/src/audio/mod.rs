@@ -80,7 +80,8 @@ pub use handoff::{
     AudioHandoffLog, AudioHandoffRefusal, AudioInstall, DeclaredAudioCatalog, insert_audio_session,
 };
 pub use loops::{
-    AudioSession, LOOP_PRODUCER, LoopRefusal, advance_radio, sync_audio_tick, sync_emitter_loops,
+    AudioSession, LOOP_PRODUCER, LoopRefusal, MISSION_RADIO_PRODUCER, advance_radio,
+    sync_audio_tick, sync_emitter_loops,
 };
 pub use lower::{
     AudioLowerError, LoweredAudioAsset, lower_bus, lower_catalog, lower_mode, lower_record,

@@ -38,7 +38,7 @@ use cs_app::mission_launch::{MissionLaunchPlan, plan_mission_launch};
 use cs_app::mission_markers::MissionMarkerBindings;
 use cs_app::mission_session::{
     MissionContent, MissionFlight, MissionHostRefusal, MissionHostSeed, MissionPlayerBody,
-    MissionPlayerStart, MissionStage, StageItem, StageMount, build_headless,
+    MissionPlayerStart, MissionRadio, MissionStage, StageItem, StageMount, build_headless,
     no_declared_objectives, stage_for, teardown,
 };
 use cs_app::mission_start::StartPose;
@@ -219,6 +219,7 @@ fn synthetic_host_seed() -> MissionHostSeed {
         block_lifecycles: BlockLifecycleTable::new(),
         engine_objectives: None,
         sound_archives: Vec::new(),
+        radio: MissionRadio::empty(),
         objectives: no_declared_objectives(),
         markers: MissionMarkerBindings::default(),
         resolver: MemberResolver::from_hierarchy([("harbor".to_owned(), None)]),
