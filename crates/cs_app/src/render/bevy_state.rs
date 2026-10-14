@@ -10,16 +10,21 @@
 //! are bound, and the addressing its image is sampled with. Every field is
 //! read from the classification; **no field is defaulted**.
 //!
-//! Two of them cannot be read, because nothing measured them:
+//! Two of them cannot be read, for different reasons:
 //!
-//! * `ClassifiedMaterial::two_sided()` is `None` while no reference
-//!   established whether the original renderer drew the surface
-//!   two-sided. Picking a cull face would silently halve or double every
-//!   polygon, so the state is refused ([`StateError::CullFaceUnknown`]).
-//! * `ClassifiedMaterial::addressing()` is `None` for the same reason. A
-//!   sampler with invented address modes tiles or stretches wrongly in a way
-//!   no other report would show, so the state is refused
-//!   ([`StateError::AddressModeUnknown`]).
+//! * `ClassifiedMaterial::two_sided()` is `None` when nothing declares the
+//!   surface. The *rule* is now measured (`OWNER-STATIC-2026-10-05`, task
+//!   #396: one-sided polygons cull their back face under the CCW front
+//!   convention, two-sided `0x400` polygons draw both sides —
+//!   [`CullingClass`](crate::render::bevy_mesh::CullingClass)), but which
+//!   stored surface carries `0x400` is per-polygon data no production reader
+//!   has interpreted yet. Picking a class would silently halve or double
+//!   every polygon of an undeclared surface, so the state is refused
+//!   ([`StateError::CullFaceUnknown`]).
+//! * `ClassifiedMaterial::addressing()` is `None` because nothing measured
+//!   the original sampler. A sampler with invented address modes tiles or
+//!   stretches wrongly in a way no other report would show, so the state is
+//!   refused ([`StateError::AddressModeUnknown`]).
 //!
 //! The per-class state table below is *new-engine design*, the same
 //! `Designed` status F17-A assigned to the class-to-phase map
@@ -77,13 +82,16 @@ use cs_formats::texture::AlphaTest;
 use cs_types::evidence::ContentHash;
 
 use crate::render::additive::AdditiveMaterial;
+use crate::render::bevy_mesh::CullingClass;
 use crate::render::material::{ClassifiedMaterial, Coverage, MaterialClass, TextureAddress};
 
 /// Why a classified material did not become a render state.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StateError {
-    /// Nothing established whether the original drew the surface
-    /// two-sided, so no cull face can be chosen.
+    /// Nothing established whether *this* surface is two-sided. The culling
+    /// rule itself is measured (`bevy_mesh::CullingClass`), but the
+    /// per-polygon `0x400` data is unread, so no class can be chosen for an
+    /// undeclared surface.
     CullFaceUnknown,
     /// Nothing established the texture addressing, so no sampler can be
     /// described.
@@ -281,11 +289,19 @@ pub fn render_state(material: &ClassifiedMaterial) -> Result<RenderState, StateE
     let class = material.class();
     let alpha_test = material.alpha_test();
 
-    // A two-sided surface is drawn from both faces, so nothing is culled; a
-    // one-sided surface culls its back face. `Face::Back` is Bevy's default
-    // and the only choice consistent with "one-sided": the *declared*
-    // two-sidedness is the fact, the face is the engine's convention.
-    let cull_face = (!two_sided).then_some(Face::Back);
+    // The measured culling rule (`WINDING_EVIDENCE`, task #396; the decision
+    // and its addresses are `bevy_mesh::{FRONT_FACE, CullingClass}` and
+    // `docs/findings/2026-10-14-f10-d-2-front-face-winding-and-culling.md`):
+    // under the CCW front convention a one-sided surface culls its back face,
+    // and a two-sided (`0x400`) surface is drawn from both faces, so nothing
+    // is culled. The declared two-sidedness selects the class; the face
+    // itself is the measured decision, not a convention picked here.
+    let culling = if two_sided {
+        CullingClass::TwoSided
+    } else {
+        CullingClass::OneSided
+    };
+    let cull_face = culling.cull_face();
     let blend = match class {
         MaterialClass::Opaque | MaterialClass::Emissive | MaterialClass::Masked => {
             BlendState::REPLACE

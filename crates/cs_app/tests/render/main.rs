@@ -40,6 +40,11 @@
 //! neutral stand-in. The retail and GPU halves are `#[ignore]`d (they need
 //! `$CS_GAME_DIR` and an adapter); `evidence.rs` is the stages'
 //! evidence-report harness and is deliberately not named with a task prefix.
+//! `winding.rs` is task #396 (`F10-D.2`): the front-face winding and culling
+//! decision measured from the original executable
+//! (`OWNER-STATIC-2026-10-05`), with the `accept_f10_d_2_` selection pinning
+//! CCW front faces, the one-sided back-face cull, and the two-sided and
+//! billboard exceptions.
 
 mod adapters;
 mod additive_material;
@@ -55,3 +60,4 @@ mod profiles;
 mod release_assets;
 mod released_image;
 mod visibility_consumer;
+mod winding;

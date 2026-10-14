@@ -44,12 +44,21 @@
 //!   index buffer: removing them here would be a presentation decision made
 //!   where nothing measured one (spec F17 non-negotiable 4 — culling must
 //!   not remove gameplay geometry).
-//! * **No winding is chosen.** Bevy treats counter-clockwise vertices as
-//!   front faces. Whether the stored triangles are wound that way is
-//!   unmeasured, so the adapter never reverses an index triple. The caller
-//!   hands in the [`MeshPresentationUnknown`] list the content pipeline
-//!   established ([`GroupUpload::unknowns`]) and the adapter carries it
-//!   through untouched, because settling it is not this stage's to do.
+//! * **The stored winding is kept, and it is now a measured front face.**
+//!   Static analysis of the owner-supplied decrypted executable settled which
+//!   winding the original engine drew (`OWNER-STATIC-2026-10-05`, task #396;
+//!   `docs/findings/2026-10-14-f10-d-2-front-face-winding-and-culling.md`):
+//!   the front face is the side from which stored corners 0→1→2 run
+//!   counter-clockwise, under the identity axis map of a right-handed `+Y`-up
+//!   world with no mirror. That is [`FRONT_FACE`], Bevy's own default, so the
+//!   adapter still never reverses an index triple — but the winding is no
+//!   longer an open question: it is a decision the culling rule below rests
+//!   on ([`CullingClass`]). The caller still hands in the
+//!   [`MeshPresentationUnknown`] list the content pipeline established
+//!   ([`GroupUpload::unknowns`]) and the adapter carries it through
+//!   untouched: which *stored surfaces* are two-sided is per-polygon data
+//!   (`0x400`) nothing has plumbed yet, so that question stays open on the
+//!   content side even though the rule is measured.
 //!
 //! [`GroupUpload::fingerprint`] digests the exact `f32`/`u32` bit patterns
 //! that were handed to Bevy, so a later frame capture can pin *what the GPU
@@ -62,6 +71,7 @@ use std::fmt;
 
 use bevy::asset::RenderAssetUsages;
 use bevy::mesh::{Indices, Mesh, PrimitiveTopology};
+use bevy::render::render_resource::{Face, FrontFace};
 use cs_assets::install::sha256;
 use cs_content::mesh::{MeshPresentationUnknown, RenderMesh};
 use cs_types::evidence::ContentHash;
@@ -191,6 +201,72 @@ pub const PARTIAL_NORMAL_POLICY: PartialNormalPolicy = PartialNormalPolicy::Spli
 /// about lossless upload, not a claim about the original.
 pub const ORIGINAL_NORMAL_FREE_BEHAVIOR: OriginalNormalFreeBehavior =
     OriginalNormalFreeBehavior::Unmeasured;
+
+/// The owner evidence the winding and culling decisions below are measured
+/// from: the owner note `OWNER-STATIC-2026-10-05` on task #396 — static
+/// analysis of the decrypted original executable (`crimson.decrypted.exe`,
+/// sha256 `43540fc9…6c37d75`), cross-checked on all nine GameZ archives and
+/// accepted by the owner in place of a capture.
+///
+/// Claim class: static code evidence, never `verified_original`. The full
+/// decision, its addresses and its retail counts are recorded in
+/// `docs/findings/2026-10-14-f10-d-2-front-face-winding-and-culling.md`.
+pub const WINDING_EVIDENCE: &str = "OWNER-STATIC-2026-10-05";
+
+/// The measured front-face winding: counter-clockwise is the front side.
+///
+/// `OWNER-STATIC-2026-10-05` (`WINDING_EVIDENCE`): the front face is the
+/// side from which stored corners 0→1→2 run counter-clockwise — the
+/// right-hand normal of `(P1−P0)×(P2−P0)` points at the viewer — in a
+/// right-handed `+Y`-up world reached through the **identity axis map**, with
+/// no mirror between content and screen. `FrontFace::Ccw` is exactly that
+/// convention, and it is also Bevy's default, so this constant is both the
+/// measured claim and the value the engine's own mesh pipeline already uses;
+/// the adapter uploads stored positions and corner order unchanged and never
+/// reverses an index triple.
+pub const FRONT_FACE: FrontFace = FrontFace::Ccw;
+
+/// Which culling rule one surface draws under, after the measured winding.
+///
+/// The rule itself is measured (`WINDING_EVIDENCE`): the original
+/// back-face-culls one-sided polygons, draws the back side of a two-sided
+/// (`0x400`) polygon with the negated normal, and skips the test entirely
+/// for billboard meshes. Which stored surface is two-sided or a billboard is
+/// per-polygon / per-mesh stored data nothing has plumbed into this adapter
+/// yet, so producers declare the class rather than the adapter deriving it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum CullingClass {
+    /// A one-sided surface: the back face is culled. With [`FRONT_FACE`],
+    /// that is `cull_mode: Some(Face::Back)` — the original's
+    /// per-polygon test (`d < −tol` on the first three stored corners)
+    /// culled exactly the back faces of a triangle list.
+    OneSided,
+    /// A two-sided surface (polygon flag `0x400`, on 52 621 retail outline
+    /// polygons and 0 retail strips): both sides are drawn, so nothing is
+    /// culled. The original drew the back side with the face normal
+    /// negated; that lighting path is not replicated here and stays an
+    /// open follow-up recorded in the finding.
+    TwoSided,
+    /// A camera-facing billboard mesh (mesh word0 == 1, word1 ∈ {0, 1};
+    /// 1 340 such retail meshes): the original skipped the back-face test
+    /// for the whole mesh, so nothing is culled. Word1 == 2 billboards do
+    /// *not* skip the test in the original and belong to [`Self::OneSided`].
+    Billboard,
+}
+
+impl CullingClass {
+    /// The cull face this class draws with, `None` when nothing is culled.
+    ///
+    /// Paired with [`FRONT_FACE`]: `Some(Face::Back)` means "counter-clockwise
+    /// front faces are kept, clockwise ones culled", exactly the side the
+    /// original's test kept.
+    pub const fn cull_face(self) -> Option<Face> {
+        match self {
+            Self::OneSided => Some(Face::Back),
+            Self::TwoSided | Self::Billboard => None,
+        }
+    }
+}
 
 /// The claim id of the adapter's one canonicalisation: a stored **position**
 /// component that is subnormal uploads as the signed zero of its own sign.
@@ -621,8 +697,12 @@ impl GroupUpload {
     }
 
     /// The presentation unknowns the caller handed in, carried unchanged.
-    /// The upload settles none of them: whether the stored winding is
-    /// front-facing and which way `V` runs are still unmeasured.
+    /// The upload settles none of them *in the list*: which way `V` runs is
+    /// still unmeasured, and although the winding is now measured
+    /// ([`FRONT_FACE`], [`WINDING_EVIDENCE`]), which stored surfaces are
+    /// two-sided (`0x400`) is per-polygon data no content-side reader has
+    /// interpreted yet, so the content pipeline's list still travels as
+    /// established.
     pub fn unknowns(&self) -> &[MeshPresentationUnknown] {
         &self.unknowns
     }

@@ -78,6 +78,8 @@ use bevy::render::render_resource::{
 };
 use bevy::shader::ShaderRef;
 
+use crate::render::bevy_mesh::FRONT_FACE;
+
 /// The additive class's fragment shader, as a path inside the asset root.
 ///
 /// The path is relative to the engine's asset folder, which for this crate is
@@ -131,25 +133,31 @@ impl AdditiveMaterialKey {
     ///
     /// This is the whole of what the material adds to the pipeline, and it is
     /// the one place it is done: [`Material::specialize`] does nothing else. The
-    /// three writes are the three decisions a `StandardMaterial` cannot carry
-    /// for this class — the blend, the depth write and the cull face — so a
-    /// material that skipped any of them would draw with a decision its render
-    /// state does not record.
+    /// three per-surface decisions are the three a `StandardMaterial` cannot
+    /// carry for this class — the blend, the depth write and the cull face —
+    /// so a material that skipped any of them would draw with a decision its
+    /// render state does not record. The fourth write,
+    /// `front_face = `[`FRONT_FACE`](crate::render::bevy_mesh::FRONT_FACE), is
+    /// not per-surface: it is the measured winding convention
+    /// (`OWNER-STATIC-2026-10-05`, task #396) written down explicitly instead
+    /// of being left to wgpu's default, so this pipeline cannot disagree with
+    /// the adapter's decision even if a default ever changed.
     ///
-    /// Two of the three have a fixed place to go. `cull_mode` is a
-    /// `PrimitiveState` field. The blend is **not** one: in wgpu 29 a blend
-    /// state belongs to each `ColorTargetState` of the fragment stage, and it
-    /// is set on every target, because a target the blend did not reach would
-    /// still be written with `REPLACE`. That is where the engine's own base
-    /// mesh pipeline puts it for `AlphaMode::Blend` (bevy_pbr 0.19.1,
-    /// `MeshPipeline::specialize`), so this replaces exactly the field that
-    /// path would have written `ALPHA_BLENDING` into.
+    /// Two of the per-surface decisions have a fixed place to go. `cull_mode`
+    /// is a `PrimitiveState` field. The blend is **not** one: in wgpu 29 a
+    /// blend state belongs to each `ColorTargetState` of the fragment stage,
+    /// and it is set on every target, because a target the blend did not
+    /// reach would still be written with `REPLACE`. That is where the engine's
+    /// own base mesh pipeline puts it for `AlphaMode::Blend` (bevy_pbr
+    /// 0.19.1, `MeshPipeline::specialize`), so this replaces exactly the
+    /// field that path would have written `ALPHA_BLENDING` into.
     ///
     /// `depth_stencil` is not always present: a pipeline with no depth
     /// attachment has nothing to configure, and a material that invented one
     /// would add a depth format the target does not have. A mesh pipeline
     /// always has it.
     pub fn apply(&self, descriptor: &mut RenderPipelineDescriptor) {
+        descriptor.primitive.front_face = FRONT_FACE;
         descriptor.primitive.cull_mode = self.cull_face;
         if let Some(fragment) = descriptor.fragment.as_mut() {
             for target in fragment.targets.iter_mut().flatten() {
