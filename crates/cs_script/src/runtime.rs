@@ -355,7 +355,15 @@ pub struct RuleLimitation {
 /// admits at most one objective per tick, the lowest declaration index whose
 /// condition holds, so the divergence it recorded is gone and the entry with
 /// it — a limitation is removed only together with the behaviour that caused
-/// it, never to empty a table.
+/// it, never to empty a table. F37-D-FU8 (#740) removed
+/// `f37.d.limit.mission_countdown_end_guards`: both guards it recorded are
+/// now measured and modelled — `0x440ad0()`'s byte is the registered
+/// `Network` game option (`MissionCountdown::network_game`) and the
+/// `remaining < -1.0f` skip is `MissionCountdown::preempts`'s stale-timer
+/// guard (`MissionCountdown::remaining_seconds`) — pinned by the
+/// `accept_f37_d_fu8_*` tests; what stays open is recorded in the
+/// `mission_countdown_tick_dt` and `mission_countdown_spec_sourcing`
+/// entries and in `docs/findings/2026-10-15-f37-d-fu8-mission-countdown-end-guards.md`.
 pub const RULE_LIMITATIONS: &[RuleLimitation] = &[
     RuleLimitation {
         id: "f37.d.limit.mission_countdown_tick_dt",
@@ -376,23 +384,6 @@ pub const RULE_LIMITATIONS: &[RuleLimitation] = &[
         resolving_task: "F16-F-CAP (#721) and F16-F-SPEEDUP (#722) hold the dt \
                          divergences; VS-M01-RUNTIME (#359) is where a wired \
                          session's real rate is sourced",
-    },
-    RuleLimitation {
-        id: "f37.d.limit.mission_countdown_end_guards",
-        open: "Two guards of the original's expiry path stay unmodelled: \
-               `0x440ad0()`'s global game-state byte, whose meaning is unknown and \
-               which nothing in this tree can source, and the `remaining < -1.0f` \
-               skip. The second cannot be reached in this layering — the producer \
-               reports expiry the first tick `remaining <= 0.0`, the consumer ends \
-               the mission on that same report and nothing defers it — but it is \
-               recorded so a future deferring end path re-checks it rather than \
-               inheriting a wrong poll.",
-        affected_content: "Every mission countdown's expiry: whichever game states \
-                           the byte gates may suppress or allow expiry in the \
-                           original with no equivalent here, and any future end \
-                           path that defers the report past one tick (the 3.0 s \
-                           end delay F37-D-FU7 adds) must re-derive the -1.0f skip.",
-        resolving_task: "F37-D-FU8 (#740)",
     },
     RuleLimitation {
         id: "f37.d.limit.mission_countdown_spec_sourcing",
@@ -497,7 +488,9 @@ pub const TERMINAL_PRECEDENCE_RULE: RuleLabel = RuleLabel {
                 no Aborted outcome.",
     evidence: "owner note on Rally #589 (2026-10-05), static analysis of the \
                owner-supplied decrypted executable; see \
-               docs/findings/2026-10-07-f37-d-fu2-mission-terminal-precedence-and-tick-ordering.md; \
+               docs/findings/2026-10-07-f37-d-fu2-mission-terminal-precedence-and-tick-ordering.md \
+               and the countdown end-path guard measurement in \
+               docs/findings/2026-10-15-f37-d-fu8-mission-countdown-end-guards.md; \
                image sha256 \
                43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75; \
                static code evidence, never an original run and never verified_original",
@@ -507,13 +500,20 @@ pub const TERMINAL_PRECEDENCE_RULE: RuleLabel = RuleLabel {
             statement: "A mission countdown that expires ends the mission immediately \
                         with neither WON nor LOST (message 0x1772), before the \
                         objective passes of that tick, so it pre-empts any objective \
-                        result in the same tick; the recorded result is failure.",
-            addresses: "countdown object 0x71b468; expiry check 0x46c640 (skipped with \
-                        NOLOSS and in network games); end call 0x463c30(1, 3.0); result \
-                        0x4194e0",
+                        result in the same tick; the recorded result is failure. The \
+                        end path runs only past the poll's guards: no NOLOSS, the \
+                        registered `Network` game option reading zero (a network \
+                        game's poll never ends the mission) and remaining `> -1.0f` \
+                        (a stale timer at or past -1.0 s no longer ends it).",
+            addresses: "countdown object 0x71b468; expiry check 0x46c640 (NOLOSS \
+                        zeroes [+4] and reports none); end-path guards: the Network \
+                        option gate 0x46a4ef, read through helper 0x440ad0 (value \
+                        cell [[0x64f750]], option name \"Network\" at 0x6237f4, \
+                        registered by 0x5bde90 at init 0x440238, cell writer 0x440ab0, \
+                        session start 0x4a8270) and stale-timer skip 0x46a517 vs \
+                        -1.0f at 0x6034e8; end call 0x463c30(1, 3.0); result 0x4194e0",
             limitations: &[
                 "f37.d.limit.mission_countdown_tick_dt",
-                "f37.d.limit.mission_countdown_end_guards",
                 "f37.d.limit.mission_countdown_spec_sourcing",
             ],
         },
@@ -613,7 +613,6 @@ pub const TICK_ORDERING_RULE: RuleLabel = RuleLabel {
                         0x46af7a then 0x46afad",
             limitations: &[
                 "f37.d.limit.mission_countdown_tick_dt",
-                "f37.d.limit.mission_countdown_end_guards",
                 "f37.d.limit.mission_countdown_spec_sourcing",
             ],
         },
@@ -717,12 +716,16 @@ impl PrecedencePolicy {
 /// only the *decision* the poll feeds: an expiry ends the mission at once
 /// as a failure, before that tick's objective passes
 /// (`f37.rule.terminal_precedence.countdown_preempts`, owner note on Rally
-/// #589 — static code evidence, never an original run).
+/// #589 — static code evidence, never an original run). The end path the
+/// poll feeds has three guards besides the poll itself — NOLOSS, the
+/// network-game skip and the stale-timer skip — and all three are measured
+/// and carried here (`docs/findings/2026-10-15-f37-d-fu8-mission-countdown-end-guards.md`,
+/// F37-D-FU8).
 ///
 /// `Default` is [`Self::NONE`], "no countdown expired", which is what
 /// [`MissionState::step`] passes: a session nobody feeds an expiry into can
 /// never end by timeout, exactly as before this input existed.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
 pub struct MissionCountdown {
     /// The countdown reached zero on this tick — the poll's
     /// `remaining <= 0` while the timer is running (`0x46c640`).
@@ -731,10 +734,28 @@ pub struct MissionCountdown {
     /// `MISSION_TIMER` sets it (`0x46c540`, field `[+0x14]`), and the poll
     /// then zeroes the remaining time and reports **no** expiry (`0x46c640`).
     pub no_loss: bool,
-    /// A network game: the original skips the expiry check in network games
-    /// (owner note on Rally #589). Session-constant, carried here so the
-    /// measured decision and both of its exclusions live in one place.
+    /// A network game — the registered game option named `Network`, read by
+    /// `0x440ad0` (`[[0x64f750]]`, the option's value cell): the original's
+    /// expiry end path runs only while that value is **zero** (`0x46a4ef`,
+    /// `test eax,eax; jne` skips the whole block), so in a network game the
+    /// poll's report never ends the mission and `[+4]` keeps falling. The
+    /// option is written `1` by the network-session start `0x4a8270(1)` and
+    /// `0` by the teardown paths (`0x4a8270(0)`, `0x496cf0`, `0x440460`),
+    /// and mission load stops the timer only while it reads zero
+    /// (`0x4646b0`). Session-constant, carried here so the measured
+    /// decision and both of its exclusions live in one place.
     pub network_game: bool,
+    /// `[+4]` at the moment the poll reported — remaining game-time
+    /// seconds, negative once the countdown is past zero. The end path
+    /// reads it after the poll and skips a stale timer: it runs only while
+    /// `remaining > -1.0f` (the constant `0xbf800000` at `0x6034e8`,
+    /// compared at `0x46a517`; `fnstsw`/`test ah, 0x41` is below **or
+    /// equal**, so a timer at or past -1.0 s no longer ends the mission —
+    /// the suppression that let it fall that far has lifted). An unordered
+    /// compare skips too, and x87 sets the same bits for NaN — a
+    /// non-finite remainder is a producer defect, refused by name at the
+    /// spec.
+    pub remaining_seconds: f64,
 }
 
 impl MissionCountdown {
@@ -744,15 +765,20 @@ impl MissionCountdown {
         expired: false,
         no_loss: false,
         network_game: false,
+        remaining_seconds: 0.0,
     };
 
     /// The measured decision: expiry ends the mission **unless** one of the
-    /// two measured exclusions holds — NOLOSS (the poll itself reports no
-    /// expiry, `0x46c640`) and the network-game skip (owner note on Rally
-    /// #589). `expired == false` is the stopped or still-running timer, which
-    /// the poll also reports as no expiry.
-    pub const fn preempts(self) -> bool {
-        self.expired && !self.no_loss && !self.network_game
+    /// three measured guards holds — NOLOSS (the poll itself reports no
+    /// expiry, `0x46c640`), the network-game skip (the end path runs only
+    /// while the `Network` option reads zero, `0x46a4ef`) and the
+    /// stale-timer skip (the end path requires `remaining > -1.0f`,
+    /// `0x46a517`). `expired == false` is the stopped or still-running
+    /// timer, which the poll also reports as no expiry.
+    ///
+    /// Not `const` since the stale-timer guard compares the f64 remainder.
+    pub fn preempts(self) -> bool {
+        self.expired && !self.no_loss && !self.network_game && self.remaining_seconds > -1.0
     }
 }
 
@@ -2087,8 +2113,9 @@ impl MissionState {
         // Phase 0 — the measured countdown pre-emption: an expiry ends the
         // mission here, before any condition is observed and before any
         // queued work runs, so this tick completes no objective and grants no
-        // reward. Both measured exclusions (NOLOSS, network game) are part of
-        // the input, not of this branch: see `MissionCountdown::preempts`.
+        // reward. All three measured guards (NOLOSS, network game, stale
+        // timer) are part of the input, not of this branch: see
+        // `MissionCountdown::preempts`.
         if countdown.preempts() {
             self.terminal = TerminalState::Failed;
             // The presentation half of the same tick (F37-D-FU5), built from

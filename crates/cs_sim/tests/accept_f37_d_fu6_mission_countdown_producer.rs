@@ -198,8 +198,14 @@ fn accept_f37_d_fu6_running_countdown_reaches_step_with_countdown() {
         let advanced = s.advance(&facts(), Tick(tick)).unwrap();
         assert_eq!(
             advanced.countdown.input,
-            MissionCountdown::NONE,
-            "tick {tick}: a still-running countdown reports no expiry and no flags"
+            MissionCountdown {
+                expired: false,
+                no_loss: false,
+                network_game: false,
+                remaining_seconds: s.countdown().remaining_seconds(),
+            },
+            "tick {tick}: a still-running countdown reports no expiry, no flags, \
+             and the [+4] the end path would read"
         );
         assert_eq!(advanced.terminal, TerminalState::Running, "tick {tick}");
         assert!(
@@ -257,8 +263,9 @@ fn accept_f37_d_fu6_expired_countdown_preempts_the_same_ticks_objectives() {
             expired: true,
             no_loss: false,
             network_game: false,
+            remaining_seconds: -0.5 * DT,
         },
-        "the produced input is exactly the measured observation"
+        "the produced input is exactly the measured observation, [+4] included"
     );
     assert_eq!(tick.terminal, TerminalState::Failed);
     assert!(
@@ -299,9 +306,14 @@ fn accept_f37_d_fu6_expired_countdown_preempts_the_same_ticks_objectives() {
     assert!(later.events.is_empty());
     assert_eq!(
         later.countdown.input,
-        MissionCountdown::NONE,
+        MissionCountdown {
+            expired: false,
+            no_loss: false,
+            network_game: false,
+            remaining_seconds: -0.5 * DT,
+        },
         "a stopped timer reports no expiry — the poll's answer on a timer \
-         that is not running"
+         that is not running — with [+4] frozen where the end path left it"
     );
     assert_eq!(
         s.countdown().remaining_seconds(),
@@ -342,6 +354,7 @@ fn accept_f37_d_fu6_noloss_clamps_the_countdown_and_the_mission_wins() {
             expired: false,
             no_loss: true,
             network_game: false,
+            remaining_seconds: DT,
         },
         "still running under NOLOSS: the flag is reported every tick"
     );
@@ -354,8 +367,10 @@ fn accept_f37_d_fu6_noloss_clamps_the_countdown_and_the_mission_wins() {
             expired: true,
             no_loss: true,
             network_game: false,
+            remaining_seconds: 0.0,
         },
-        "the poll observed zero under NOLOSS — reported, not hidden"
+        "the poll observed zero under NOLOSS — reported, not hidden — and \
+         the input carries the clamped [+4] the side effect left"
     );
     assert_eq!(
         s.countdown().remaining_seconds(),
@@ -398,6 +413,7 @@ fn accept_f37_d_fu6_network_game_skips_the_expiry_check() {
             expired: true,
             no_loss: false,
             network_game: true,
+            remaining_seconds: -0.5 * DT,
         },
         "below zero in a network game: the observation is reported, the check is skipped"
     );
@@ -417,8 +433,9 @@ fn accept_f37_d_fu6_network_game_skips_the_expiry_check() {
 /// Mission start runs the countdown iff the spelled value is `> 0.0f`
 /// (`0x469741`): zero and negative values leave it stopped — which is how
 /// M01's own `MISSION_TIMER [0.0]` never runs in the original. A stopped
-/// countdown reports `MissionCountdown::NONE` forever: no decrement, no
-/// expiry, the mission ends only on its program's own request.
+/// countdown reports no expiry forever — no decrement, no end — carrying
+/// `[+4]` unchanged at the spelled value; the mission ends only on its
+/// program's own request.
 #[test]
 fn accept_f37_d_fu6_zero_seconds_arms_nothing_at_mission_start() {
     for seconds in [0.0, -3.0] {
@@ -434,8 +451,14 @@ fn accept_f37_d_fu6_zero_seconds_arms_nothing_at_mission_start() {
         let tick = s.advance(&facts(), Tick(1)).unwrap();
         assert_eq!(
             tick.countdown.input,
-            MissionCountdown::NONE,
-            "{seconds}: a stopped countdown reports nothing, forever"
+            MissionCountdown {
+                expired: false,
+                no_loss: false,
+                network_game: false,
+                remaining_seconds: seconds,
+            },
+            "{seconds}: a stopped countdown reports nothing, forever, with \
+             [+4] the spelled value"
         );
         assert_eq!(
             s.countdown().remaining_seconds(),
@@ -889,9 +912,11 @@ fn accept_f37_d_fu6_expiry_on_an_ended_session_does_not_stop_the_timer() {
 /// **The producer limitation is closed — only together with these tests —
 /// and the residuals are recorded.** `f37.d.limit.mission_countdown_producer`
 /// may not come back while `cs_sim::mission::Countdown` feeds
-/// `step_with_countdown`; what remains open (the tick dt, the end-path
-/// guards, the spec sourcing) names its affected content and resolving
-/// task, and the measured fact they gate points at all three.
+/// `step_with_countdown`; what remains open (the tick dt, the spec
+/// sourcing) names its affected content and resolving task, and the
+/// measured fact they gate points at both. The end-path guards that were
+/// a third residual here are closed by F37-D-FU8 (#740): both are measured
+/// and modelled now, and the `accept_f37_d_fu8_*` tests pin that closure.
 #[test]
 fn accept_f37_d_fu6_producer_limitation_is_closed_and_the_residuals_recorded() {
     assert!(
@@ -902,7 +927,6 @@ fn accept_f37_d_fu6_producer_limitation_is_closed_and_the_residuals_recorded() {
     );
     for (id, needle) in [
         ("f37.d.limit.mission_countdown_tick_dt", "MISSION_TIMER"),
-        ("f37.d.limit.mission_countdown_end_guards", "countdown"),
         (
             "f37.d.limit.mission_countdown_spec_sourcing",
             "MISSION_TIMER",
@@ -931,7 +955,6 @@ fn accept_f37_d_fu6_producer_limitation_is_closed_and_the_residuals_recorded() {
         fact.limitations,
         [
             "f37.d.limit.mission_countdown_tick_dt",
-            "f37.d.limit.mission_countdown_end_guards",
             "f37.d.limit.mission_countdown_spec_sourcing",
         ],
         "the fact gates exactly the producer's residuals"

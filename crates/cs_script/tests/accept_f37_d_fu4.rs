@@ -382,6 +382,9 @@ fn accept_f37_d_fu4_the_measured_preemption_is_recorded_and_the_closed_limitatio
     for closed in [
         "f37.d.limit.mission_countdown_preemption",
         "f37.d.limit.mission_countdown_producer",
+        // F37-D-FU8 (#740) closed it: both guards it recorded are measured
+        // and modelled now, pinned by `accept_f37_d_fu8_*`.
+        "f37.d.limit.mission_countdown_end_guards",
     ] {
         assert!(
             !RULE_LIMITATIONS
@@ -392,7 +395,6 @@ fn accept_f37_d_fu4_the_measured_preemption_is_recorded_and_the_closed_limitatio
     }
     for (id, task) in [
         ("f37.d.limit.mission_countdown_tick_dt", "F16-F"),
-        ("f37.d.limit.mission_countdown_end_guards", "F37-D-FU8"),
         (
             "f37.d.limit.mission_countdown_spec_sourcing",
             "VS-M01-RUNTIME",
@@ -424,7 +426,6 @@ fn accept_f37_d_fu4_the_measured_preemption_is_recorded_and_the_closed_limitatio
         fact.limitations,
         [
             "f37.d.limit.mission_countdown_tick_dt",
-            "f37.d.limit.mission_countdown_end_guards",
             "f37.d.limit.mission_countdown_spec_sourcing",
         ],
         "the fact's divergences must be entries that exist and are open"

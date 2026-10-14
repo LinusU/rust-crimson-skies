@@ -704,7 +704,9 @@ impl Countdown {
     /// consumes, in the order `0x46a490` runs them: the decrement first
     /// (`0x46c5f0`, `[+4] -= dt` while running — the session's fixed tick
     /// dt as `game_dt`), then the expiry check (`0x46c640`), before the
-    /// tick's objective passes.
+    /// tick's objective passes. The input carries `[+4]` as observed, so
+    /// the end path's stale-timer guard (`0x46a517`, remaining `>
+    /// -1.0f`) is the consumer's to apply.
     ///
     /// `terminal` is the session's state at the tick's start: when the
     /// produced input [`MissionCountdown::preempts`] on a still-running
@@ -742,9 +744,9 @@ impl Countdown {
                 .expect("a running countdown holds its session rate")
                 .dt_seconds();
         }
-        // The poll's observation: running and at/past zero. Both measured
-        // exclusions stay out of `expired` — they are the input's own
-        // fields, and `MissionCountdown::preempts` is the single place the
+        // The poll's observation: running and at/past zero. The measured
+        // guards stay out of `expired` — they are the input's own fields,
+        // and `MissionCountdown::preempts` is the single place the
         // end-decision is taken. The poll's own side effect is kept here:
         // under NOLOSS (with the check not skipped — a network game does
         // not even compare) it zeroes `[+4]` instead of expiring, so the
@@ -753,10 +755,17 @@ impl Countdown {
         if expired && self.no_loss && !self.network_game {
             self.remaining_seconds = 0.0;
         }
+        // The input also carries `[+4]` as the end path would read it after
+        // the poll (`0x46a501`) — post-clamp, so NOLOSS reports the zeroed
+        // remainder — because the end path's stale-timer guard compares it
+        // against -1.0f (`0x46a517`), and a timer already that stale must
+        // not end the mission (`f37.d.limit.mission_countdown_end_guards`
+        // closed by F37-D-FU8, #740).
         let input = MissionCountdown {
             expired,
             no_loss: self.no_loss,
             network_game: self.network_game,
+            remaining_seconds: self.remaining_seconds,
         };
         // The expiry end path's last act on the timer: `0x46c5c0` stops
         // it. The stop runs iff this expiry is what ends the mission — on

@@ -528,11 +528,22 @@ fn accept_f37_d_fu2_recorded_divergences_match_what_the_runtime_does() {
             .any(|limitation| limitation.id == "f37.d.limit.mission_countdown_producer"),
         "the closed producer entry must not come back: the producer is implemented"
     );
+    // F37-D-FU8 (#740) closed `f37.d.limit.mission_countdown_end_guards`:
+    // both guards it recorded are measured and modelled — `0x440ad0()`'s
+    // byte is the registered `Network` game option (`network_game`) and the
+    // `remaining <= -1.0f` stale skip is `preempts`'s guard over the carried
+    // `[+4]` — pinned by `accept_f37_d_fu8_*`. A closed entry must not come
+    // back while those guards stand.
+    assert!(
+        !RULE_LIMITATIONS
+            .iter()
+            .any(|limitation| limitation.id == "f37.d.limit.mission_countdown_end_guards"),
+        "the closed end-guards entry must not come back: both guards are modelled"
+    );
     // What the producer leaves open is recorded instead — each entry named
     // exactly what stays unmeasured or unsourced.
     for id in [
         "f37.d.limit.mission_countdown_tick_dt",
-        "f37.d.limit.mission_countdown_end_guards",
         "f37.d.limit.mission_countdown_spec_sourcing",
     ] {
         assert!(
