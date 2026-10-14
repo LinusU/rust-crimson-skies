@@ -8,6 +8,36 @@ used: `retail` (read-only `$CS_GAME_DIR`). Evidence report:
 `private/evidence/F13-B/acceptance.json`, committed as
 `docs/findings/evidence/F13-B.json`.
 
+> **Correction (2026-10-14, F13-D task #640).** The owner's static analysis of
+> the owner-supplied decrypted executable (`crimson.decrypted.exe`, sha256
+> `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`; owner
+> note on #640, 2026-10-05; static code evidence, never `verified_original`)
+> established that **none of the three families this stage walked is a
+> numeric opcode stream**, so this finding's "unknown opcode" framing applies
+> to none of them:
+>
+> - **mission reader members** are `.zrd` typed trees (tags 1..=4, a list
+>   holds its count minus one child; opened at VA `0x579c60`) read **by
+>   keyword** by native consumers — `objectives.zrd` by `CZMission` (`0x466b70`
+>   parse, `0x46a490` update) — so they are **data plus a native
+>   interpreter**, not instructions;
+> - **INTERP script bodies** are a **named text-command language**: each line
+>   is a NUL-separated argument vector whose first token is the command name,
+>   matched by string compare in `zinterp_parse.cpp` (`0x5b845c`) — there is
+>   no numeric opcode;
+> - **animation payloads** are streams of **typed event records** (compiled
+>   ZBD, magic `0x08170616`, version `0x35`, loaded by `0x521b80`), whose
+>   event-type ids F20 (#690) resolved against the owner's keyword table.
+>
+> The probe machinery below is kept, but a stopped walk over a `.zrd` body or
+> an INTERP body is no longer counted or presented as `unknown_opcode`
+> evidence: each family is classified with its real model by F13-D, with
+> `accept_f13_d_*` tests and the measured retail result in
+> `docs/findings/2026-10-14-f13-d-every-program-family-has-its-real-model.md`.
+> This finding stays as the record of what F13-B located; its "Recorded
+> unknowns" about the opcode table, the instruction unit and the bodies'
+> semantics read in the light of that correction.
+
 ## Files and the one observable failure (listed before editing)
 
 - `crates/cs_formats/src/script_raw/ledger.rs` (new): `ProgramLocator`,

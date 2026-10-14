@@ -8,6 +8,32 @@ used: `retail` (read-only `$CS_GAME_DIR`). Evidence report:
 `private/evidence/F13-C/acceptance.json`, committed as
 `docs/findings/evidence/F13-C.json`.
 
+> **Correction (2026-10-14, F13-D task #640).** This stage's probe walked
+> every located program as a stream of numeric opcode words and reported
+> "programs stopping at `unknown_opcode`: 1452 (all at their first counter)".
+> The owner's static analysis of the decrypted executable
+> (`crimson.decrypted.exe`, sha256 `43540fc9…6c37d75`; owner note on #640,
+> 2026-10-05; static code evidence, never `verified_original`) established
+> that the corpus holds **no numeric opcode stream at all**, so that count
+> was the probe misreading each family's real model:
+>
+> - **mission members** are `.zrd` typed trees read **by keyword** by native
+>   consumers — data plus a native interpreter, not instructions;
+> - **INTERP bodies** are a **named text-command language** whose command
+>   names are matched by string compare — there is no numeric opcode;
+> - **anim payloads** are streams of **typed event records** whose
+>   event-type ids F20 (#690) resolved against the owner's keyword table.
+>
+> The probe machinery of this finding is kept, but a stopped walk over a
+> `.zrd` or INTERP body is no longer presented as `unknown_opcode` evidence:
+> F13-D classifies each family with its real model (`record_modelled_program`,
+> report `cs-inspect-scripts/5`), and the retail result is now 40 directive
+> programs + 1412 modelled programs + **0** binary walks. The `retryable`
+> stop, the `--signatures` completeness gate and the fail-closed behaviour
+> stay exactly as designed for corpora that still hold a binary program; see
+> `docs/findings/2026-10-14-f13-d-every-program-family-has-its-real-model.md`.
+> This finding stays as the record of the F13-C machinery and its refusals.
+
 ## Files and the one observable failure (listed before editing)
 
 - `crates/cs_formats/src/script_raw/probe.rs` (new): `ClaimError`,
