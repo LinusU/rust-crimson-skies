@@ -2831,7 +2831,7 @@ const fn original_row(
 /// [`ActionMap::designed_default`].
 #[rustfmt::skip]
 pub const ORIGINAL_DEFAULT_BINDINGS: &[OriginalDefaultBinding] = &[
-original_row(  1, 11057, OriginalControlCategory::Movement  , 0x0c8, 0x000, 0, 0, 0x00493718),
+    original_row(  1, 11057, OriginalControlCategory::Movement  , 0x0c8, 0x000, 0, 0, 0x00493718),
     original_row(  2, 11058, OriginalControlCategory::Movement  , 0x0d0, 0x000, 0, 0, 0x0049372f),
     original_row(  3, 11059, OriginalControlCategory::Movement  , 0x0cb, 0x000, 0, 0, 0x00493746),
     original_row(  4, 11060, OriginalControlCategory::Movement  , 0x0cd, 0x000, 0, 0, 0x00493760),
