@@ -40,7 +40,12 @@
 //!   containment, not asserted.
 //! * **The spawn attitude binds under the measured compose and the measured
 //!   write order (#792).** `yaw`/`pitch` are degrees→radians into
-//!   `obj+0x2c`/`obj+0x30` (measured at `0x4bda64`); at the end of the same
+//!   `obj+0x2c`/`obj+0x30` (measured at `0x4bda64`); that conversion runs
+//!   through the F16-E-measured `.zrd` source adapter
+//!   ([`CoordinateSource::retail_zrd`], F16-E-3 #720) exactly once — the
+//!   document's degrees arrive as canonical radians, and a source that
+//!   stops declaring degrees refuses the angle instead of being assumed;
+//!   at the end of the same
 //!   load routine the object hands both to `Object3d::SetRotation` for the
 //!   node its `node` key resolved (`0x4becf8` → `0x4bf930` → `0x4bf950` →
 //!   `0x4d1a30`), which stores them at `class+0x18` (pitch) and `class+0x1c`
@@ -93,10 +98,11 @@
 //! boundary and the residues verbatim.
 
 use std::collections::HashMap;
+use std::fmt;
 use std::path::Path;
 
 use cs_assets::install::Discovery;
-use cs_content::coordinates::SourceAdapter;
+use cs_content::coordinates::{AngleUnit, CoordinateSource, SourceAdapter};
 use cs_content::objectives::ProgramActor;
 use cs_content::scene::BindingMap;
 use cs_content::stunts::{ZrdValue, decode_zrd, zrd_field, zrd_flat_fields};
@@ -886,6 +892,90 @@ pub enum AttitudeBinding {
     Open(String),
 }
 
+/// Why a `zeppelins.zrd` record's angle fields could not be converted into
+/// canonical radians (F16-E-3, #720).
+///
+/// Every variant is a refusal, never a fallback: a `.zrd` document's number
+/// only means an angle because the F16-E measurement spells the format's
+/// angle fields in **degrees** and the engine converts each one exactly once
+/// through the π/180 double at `0x6040e8`, so a reader that cannot stand
+/// behind that measurement binds no angle at all.
+#[derive(Clone, Debug, PartialEq)]
+pub enum ZrdAngleError {
+    /// The adapter's source does not declare the measured `.zrd` angle
+    /// unit. The document text spells degrees; converting through a source
+    /// that declares any other unit would silently re-read the file's
+    /// numbers under that unit instead, so the conversion refuses rather
+    /// than assuming the declaration is harmless.
+    WrongAngleUnit {
+        /// The unit the adapter's source declares.
+        declared: AngleUnit,
+    },
+    /// The stored number is not finite, so the adapter's boundary
+    /// validation refuses it by name and no angle is bound from it.
+    NonFinite {
+        /// The record key the non-finite number was stored under.
+        key: &'static str,
+    },
+}
+
+impl fmt::Display for ZrdAngleError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::WrongAngleUnit { declared } => write!(
+                f,
+                "the source declares its angles as {declared:?}, but the F16-E measurement \
+                 spells `.zrd` angle fields in degrees — the engine converts each once through \
+                 the π/180 double at `0x6040e8` (task #390) — so a declaration that disagrees \
+                 with the measurement refuses instead of being assumed"
+            ),
+            Self::NonFinite { key } => write!(
+                f,
+                "the record's `{key}` value is not finite, so no angle is converted from it"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for ZrdAngleError {}
+
+/// One `zeppelins.zrd` angle field, converted to canonical radians through
+/// `adapter` (F16-E-3, #720).
+///
+/// The document text spells angles in degrees — the calibration
+/// [`CoordinateSource::retail_zrd`] carries (F16-E, #390: the π/180
+/// conversion the engine performs once, on the way in) — so this checks
+/// that the adapter's source declares [`AngleUnit::Degrees`] and converts
+/// through [`SourceAdapter::angle_to_canonical`] exactly once. A source
+/// that declares any other unit is a wrong declaration, and a wrong
+/// declaration refuses loudly ([`ZrdAngleError::WrongAngleUnit`]) instead
+/// of being assumed away; a non-finite stored number refuses the same way
+/// ([`ZrdAngleError::NonFinite`]).
+///
+/// `key` names the field in a refusal. The `f32` result keeps the engine's
+/// own stored width: the load stores the converted angle into the object's
+/// `obj+0x2c`/`obj+0x30` slots as `f32`.
+///
+/// # Errors
+///
+/// [`ZrdAngleError::WrongAngleUnit`] when `adapter` does not declare the
+/// measured `.zrd` angle unit, otherwise [`ZrdAngleError::NonFinite`]
+/// naming the offending key.
+pub fn zrd_angle_radians(
+    adapter: &SourceAdapter,
+    key: &'static str,
+    degrees: f32,
+) -> Result<f32, ZrdAngleError> {
+    let declared = adapter.source().convention().angle_unit();
+    if declared != AngleUnit::Degrees {
+        return Err(ZrdAngleError::WrongAngleUnit { declared });
+    }
+    adapter
+        .angle_to_canonical(f64::from(degrees))
+        .map(|radians| radians.0 as f32)
+        .map_err(|_| ZrdAngleError::NonFinite { key })
+}
+
 /// The position source the original's own write order leaves on the node
 /// last (#814).
 ///
@@ -1340,6 +1430,11 @@ pub fn bind_mission_world_actors(
         .as_ref()
         .ok()
         .map(|(_, nodes, _)| build_allegiance_lookup(install_root, found, &archives, nodes));
+    // The F16-E-measured `.zrd` convention (#720): every angle field this
+    // carrier states converts through this adapter exactly once — degrees
+    // in the document text out of the carrier's own bytes, canonical
+    // radians in — never through a hand-rolled π/180 at the call site.
+    let zrd_angles = SourceAdapter::new(CoordinateSource::retail_zrd(member_span.clone()));
     let rows: Vec<SpawnedZeppelinActor> = member
         .records()
         .iter()
@@ -1351,6 +1446,7 @@ pub fn bind_mission_world_actors(
                 scene.as_ref().ok(),
                 &startup,
                 allegiance.as_ref(),
+                &zrd_angles,
             )
         })
         .collect();
@@ -1605,18 +1701,30 @@ fn read_container_bytes(
 }
 
 /// The record's own spawn attitude, converted and clamped exactly as the
-/// load converts and clamps it: degrees→radians through
-/// [`crate::mission_start::stored_heading_radians`] (the image's
-/// `0x6040e8`, `0x4bda9b`/`0x4bdab2`), `pitch` then clamped to the record's
-/// `min_pitch`/`max_pitch` the way `0x4bdbc6` clamps it before the spawn
-/// hands the pair to `SetRotation` (`0x4bf950` clamps again on the way).
-fn spawn_attitude(record: &cs_formats::zbd::zeppelins::ZeppelinRecord) -> AttitudeSource {
-    use crate::mission_start::stored_heading_radians;
-    let min = stored_heading_radians(record.min_pitch());
-    let max = stored_heading_radians(record.max_pitch());
-    let pitch = stored_heading_radians(record.pitch());
-    AttitudeSource::CarrierSpawn {
-        yaw_radians: stored_heading_radians(record.yaw()),
+/// load converts and clamps it: each named angle through
+/// [`zrd_angle_radians`] on `adapter` — the F16-E-measured `.zrd`
+/// convention, degrees in the document text converted once through the
+/// adapter rather than a hand-rolled π/180 (F16-E-3, #720) — `pitch` then
+/// clamped to the record's `min_pitch`/`max_pitch` the way `0x4bdbc6`
+/// clamps it before the spawn hands the pair to `SetRotation` (`0x4bf950`
+/// clamps again on the way).
+///
+/// # Errors
+///
+/// [`ZrdAngleError`] — a stored number that is not finite, or an adapter
+/// whose source does not declare the measured `.zrd` angle unit. The
+/// caller keeps the attitude open under [`AttitudeBinding::Open`] with the
+/// refusal verbatim instead of assuming any angle.
+pub fn spawn_attitude(
+    record: &cs_formats::zbd::zeppelins::ZeppelinRecord,
+    adapter: &SourceAdapter,
+) -> Result<AttitudeSource, ZrdAngleError> {
+    let min = zrd_angle_radians(adapter, "min_pitch", record.min_pitch())?;
+    let max = zrd_angle_radians(adapter, "max_pitch", record.max_pitch())?;
+    let pitch = zrd_angle_radians(adapter, "pitch", record.pitch())?;
+    let yaw = zrd_angle_radians(adapter, "yaw", record.yaw())?;
+    Ok(AttitudeSource::CarrierSpawn {
+        yaw_radians: yaw,
         // A record that states an inverted range leaves the pitch alone
         // rather than panicking; M01's three records state a sane one.
         pitch_radians: if min <= max {
@@ -1624,7 +1732,7 @@ fn spawn_attitude(record: &cs_formats::zbd::zeppelins::ZeppelinRecord) -> Attitu
         } else {
             pitch
         },
-    }
+    })
 }
 
 /// The statements of `kind` writing `node`, split at the measured
@@ -1653,12 +1761,25 @@ fn startup_writes<'a>(
 /// second flag and `RELATIVE` each change what `0x4e8b80` applies — or
 /// several startup rotations for one node, whose order among themselves is
 /// not measured.
-fn attitude_for(node: &str, spawn: AttitudeSource, startup: &StartupRead) -> AttitudeBinding {
+///
+/// `spawn` is the record's own spawn attitude *or its refusal*
+/// ([`spawn_attitude`], F16-E-3): a conversion that refused — a
+/// non-finite stored number, or an adapter that does not declare the
+/// measured `.zrd` angle unit — keeps the attitude open by name in every
+/// branch where the spawn write would have applied, and is ignored in the
+/// branch where the startup placement overwrites it before any spawn
+/// angle could matter.
+fn attitude_for(
+    node: &str,
+    spawn: Result<AttitudeSource, ZrdAngleError>,
+    startup: &StartupRead,
+) -> AttitudeBinding {
+    let refused = |error: ZrdAngleError| AttitudeBinding::Open(error.to_string());
     match startup {
         StartupRead::Refused(reason) => AttitudeBinding::Open(format!(
             "{ATTITUDE_PRECEDENCE_UNKNOWN_REASON_PREFIX}{reason}"
         )),
-        StartupRead::Absent => AttitudeBinding::Measured(spawn),
+        StartupRead::Absent => spawn.map_or_else(refused, AttitudeBinding::Measured),
         StartupRead::Decoded(statements) => {
             let (writes, deferred) = startup_writes(statements, StateKind::Rotate, node);
             if let [first, ..] = deferred.as_slice() {
@@ -1671,8 +1792,10 @@ fn attitude_for(node: &str, spawn: AttitudeSource, startup: &StartupRead) -> Att
                 ));
             }
             match writes.as_slice() {
-                [] => AttitudeBinding::Measured(spawn),
+                [] => spawn.map_or_else(refused, AttitudeBinding::Measured),
                 [statement] if statement.unmodelled.is_empty() => {
+                    // The startup write overwrites the spawn write, so a
+                    // refused spawn conversion settles nothing here.
                     AttitudeBinding::Measured(AttitudeSource::StartupPlacement {
                         rotation_radians: statement.values,
                     })
@@ -1759,6 +1882,11 @@ fn position_for(node: &str, carrier_position: [f32; 3], startup: &StartupRead) -
 /// name joined against the canonical scene graph, the measured allegiance
 /// (#1155), and the [`DeclaredWorldActor`] when the join names a single
 /// node.
+///
+/// `adapter` is the F16-E-measured `.zrd` source adapter (F16-E-3, #720):
+/// the record's angle fields convert through it exactly once, so the
+/// attitude either binds canonical radians or stays open under
+/// [`AttitudeBinding::Open`] with the conversion's refusal verbatim.
 fn declare_row(
     index: usize,
     record: &cs_formats::zbd::zeppelins::ZeppelinRecord,
@@ -1769,6 +1897,7 @@ fn declare_row(
     )>,
     startup: &StartupRead,
     allegiance: Option<&AllegianceLookup<'_>>,
+    adapter: &SourceAdapter,
 ) -> SpawnedZeppelinActor {
     let subject = match scene {
         None => NodeJoin::Absent,
@@ -1792,7 +1921,7 @@ fn declare_row(
         stored_position: record.position(),
         stored_yaw: record.yaw(),
         stored_pitch: record.pitch(),
-        attitude: attitude_for(record.node(), spawn_attitude(record), startup),
+        attitude: attitude_for(record.node(), spawn_attitude(record, adapter), startup),
         position: position_for(record.node(), record.position(), startup),
         team: record.team().map(str::to_owned),
         allegiance: allegiance_for(record, scene.map(|(_, nodes, _)| nodes), allegiance),
@@ -2470,8 +2599,10 @@ mod tests {
     }
 
     /// One authored record: the sixteen keys `ZeppelinKey::required` demands
-    /// plus, when the fixture states one, a `team` spelling.
-    fn authored_record(node: &str, team: Option<&str>) -> Vec<u8> {
+    /// plus, when the fixture states one, a `team` spelling. `yaw` is the
+    /// authored `yaw` angle, in document degrees (#720's conversion tests
+    /// author their own, including a non-finite one).
+    fn authored_record(node: &str, team: Option<&str>, yaw: f32) -> Vec<u8> {
         let one_float = |value: f32| zrd_list(&[zrd_float(value)]);
         let pairs: Vec<(&str, Vec<u8>)> = vec![
             ("node", zrd_list(&[zrd_text(node)])),
@@ -2479,7 +2610,7 @@ mod tests {
                 "position",
                 zrd_list(&[zrd_float(1.0), zrd_float(2.0), zrd_float(3.0)]),
             ),
-            ("yaw", one_float(90.0)),
+            ("yaw", one_float(yaw)),
             ("pitch", one_float(0.0)),
             ("max_speed", one_float(5.0)),
             ("max_accel", one_float(4.47)),
@@ -2775,7 +2906,7 @@ mod tests {
         ];
         let records: Vec<Vec<u8>> = fixtures
             .iter()
-            .map(|(node, team)| authored_record(node, *team))
+            .map(|(node, team)| authored_record(node, *team, 90.0))
             .collect();
         let member = zrd_list(&[zrd_list(&records)]);
         let decoded = read_zeppelins_member(&member).expect("the authored member decodes");
@@ -3042,9 +3173,157 @@ mod tests {
             "ON_STARTUP",
             &["AT_NODE"],
         )]);
-        let AttitudeBinding::Open(reason) = attitude_for("piratezep", spawn(), &startup) else {
+        let AttitudeBinding::Open(reason) = attitude_for("piratezep", Ok(spawn()), &startup) else {
             panic!("a flagged rotate settles nothing");
         };
         assert!(reason.contains("AT_NODE"), "{reason}");
+    }
+
+    /// The F16-E-measured `.zrd` adapter over the test span (#720): the
+    /// source `bind_mission_world_actors` itself builds over the carrier's
+    /// member bytes.
+    fn retail_zrd_adapter() -> SourceAdapter {
+        SourceAdapter::new(CoordinateSource::retail_zrd(source_span()))
+    }
+
+    /// A wrong-unit adapter: the canonical source declares radians — the
+    /// one unit a `.zrd` document's angle text does not use (F16-E, #390).
+    fn radians_adapter() -> SourceAdapter {
+        SourceAdapter::declared()
+            .into_iter()
+            .find(|adapter| adapter.source().label() == "canonical")
+            .expect("the F16-A registry declares the canonical source")
+    }
+
+    /// The authored one-record member #720's conversion tests decode.
+    fn one_record_member(node: &str, yaw: f32) -> cs_formats::zbd::zeppelins::ZeppelinMember {
+        read_zeppelins_member(&zrd_list(&[zrd_list(&[authored_record(node, None, yaw)])]))
+            .expect("the authored member decodes")
+    }
+
+    /// **F16-E-3 (#720): the first production `.zrd` angle consumer reads
+    /// through the measured `retail_zrd` source.**
+    /// The `zeppelins.zrd` spawn attitude's named `yaw`/`pitch` arrive as
+    /// the document's degrees and leave this reader as canonical radians —
+    /// a quarter turn for the authored 90°, never the identity a
+    /// radians assumption would leave — and compose into the node's
+    /// orientation by the same measured `Ry(yaw)·Rx(pitch)` build (#770).
+    /// The adapter is the one production builds over the carrier's span.
+    #[test]
+    fn accept_f16_e3_zrd_spawn_attitude_arrives_as_canonical_radians() {
+        let decoded = one_record_member("piratezep", 90.0);
+        let record = fixture_record(&decoded, "piratezep");
+        let AttitudeSource::CarrierSpawn {
+            yaw_radians,
+            pitch_radians,
+        } = spawn_attitude(record, &retail_zrd_adapter())
+            .expect("the measured .zrd source declares degrees, so the angles convert")
+        else {
+            panic!("the spawn attitude is the carrier's own pose here");
+        };
+        assert!(
+            (f64::from(yaw_radians) - std::f64::consts::FRAC_PI_2).abs() < 1e-6,
+            "the document's 90° arrive as a quarter turn in radians: {yaw_radians}"
+        );
+        assert_ne!(
+            yaw_radians, 90.0,
+            "the stored degrees are never assumed to already be radians"
+        );
+        assert!(
+            f64::from(pitch_radians).abs() < 1e-6,
+            "the authored pitch is 0°, which converts to a zero angle: {pitch_radians}"
+        );
+        assert_eq!(
+            AttitudeSource::CarrierSpawn {
+                yaw_radians,
+                pitch_radians,
+            }
+            .orientation(),
+            object3d_orientation(0.0, f64::from(yaw_radians), 0.0),
+            "the converted radians compose as Ry(yaw)·Rx(pitch) with a clear roll slot"
+        );
+    }
+
+    /// **F16-E-3 (#720): a declaration that is not degrees fails loudly.**
+    /// A source whose declared angle unit is not the measured `.zrd` one
+    /// refuses at the conversion, the row keeps the attitude open with the
+    /// refusal verbatim, and the launch surface refuses the actor instead
+    /// of composing a guessed orientation — the wrong unit is never
+    /// assumed away.
+    #[test]
+    fn accept_f16_e3_zrd_angle_refuses_a_declaration_that_is_not_degrees() {
+        let decoded = one_record_member("piratezep", 90.0);
+        let record = fixture_record(&decoded, "piratezep");
+
+        // The conversion itself refuses, naming the unit it was handed.
+        let error = spawn_attitude(record, &radians_adapter())
+            .expect_err("a radians declaration refuses instead of being assumed");
+        assert!(
+            matches!(
+                error,
+                ZrdAngleError::WrongAngleUnit {
+                    declared: AngleUnit::Radians
+                }
+            ),
+            "the refusal is the wrong-unit one: {error:?}"
+        );
+        assert!(error.to_string().contains("degrees"), "{error}");
+
+        // The production row keeps the attitude open, verbatim.
+        let declared_row = declare_row(
+            0,
+            record,
+            None,
+            &StartupRead::Absent,
+            None,
+            &radians_adapter(),
+        );
+        let AttitudeBinding::Open(reason) = &declared_row.attitude else {
+            panic!(
+                "a wrong-unit declaration settles no attitude: {:?}",
+                declared_row.attitude
+            );
+        };
+        assert!(reason.contains("degrees"), "{reason}");
+
+        // And the lowering refuses the actor rather than spawning a
+        // guessed orientation: the open attitude arrives as an unknown
+        // `orientation`.
+        let mut open = row(0, "piratezep", scene_subject("world1.piratezep"));
+        open.attitude = AttitudeBinding::Open(reason.clone());
+        let program = assemble_program(
+            &mission(),
+            &source_span(),
+            None,
+            AllegianceSpans::default(),
+            SESSION_TICKS_PER_SECOND,
+            std::slice::from_ref(&open),
+        )
+        .expect("the joined record assembles a program");
+        let error =
+            lower_world_actors(&program).expect_err("an unconverted attitude refuses the lowering");
+        assert!(
+            matches!(
+                error,
+                WorldActorLowerError::UnknownValue { field, .. } if field == "orientation"
+            ),
+            "the refusal names the orientation: {error}"
+        );
+    }
+
+    /// **F16-E-3 (#720): a stored angle that is not finite refuses by
+    /// name.** The adapter's boundary validation names the offending key,
+    /// so a corrupt float can never become a plausible-looking angle.
+    #[test]
+    fn accept_f16_e3_zrd_angle_refuses_a_non_finite_stored_number() {
+        let decoded = one_record_member("piratezep", f32::NAN);
+        let record = fixture_record(&decoded, "piratezep");
+        let error = spawn_attitude(record, &retail_zrd_adapter())
+            .expect_err("a non-finite stored yaw refuses");
+        assert_eq!(
+            error,
+            ZrdAngleError::NonFinite { key: "yaw" },
+            "the refusal names the key the non-finite number came from"
+        );
     }
 }
