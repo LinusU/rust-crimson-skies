@@ -18,13 +18,11 @@
 //!   is a stream of **typed event records**, run over time by the animation
 //!   runtime and loaded by VA `0x521b80`; F20 (#690) then measured that
 //!   stream's record layout and opcode census over all 61 retail carriers
-//!   and resolved the event-type ids by joining them to the owner's keyword
-//!   table (`docs/findings/2026-10-06-f20-event-grammar.md`). The owner's
-//!   cross-check on #640 records that the owner keywords with no recorded
-//!   compiled mention correspond exactly to the four event ids that join no
-//!   keyword (13, 17, 26, 28); that correspondence and the two keyword
-//!   vocabularies are the follow-up tasks named on #640, not a claim this
-//!   module makes.
+//!   and joined **31 of the 35 stored event-type ids** to the installation's
+//!   own event declarations, leaving four (13, 17, 26, 28) unjoined
+//!   (`docs/findings/2026-10-06-f20-event-grammar.md`). Those four ids and
+//!   the reconciliation of the owner's 2026-10-05 keyword list with F20's
+//!   table are follow-ups #1415/#1416, not a claim this module makes.
 //!
 //! [`ProgramModel`] is that classification, and
 //! [`crate::script_raw::probe::ProbeSession::record_modelled_program`] files a
@@ -136,7 +134,7 @@ pub fn model_basis(model: ProgramModel) -> ScriptEvidence {
         ProgramModel::EventRecords => {
             "owner note #640: the compiled animation ZBD payload is typed event records loaded \
              at VA 0x521b80; their event-type ids are F20's measured event-stream table (#690, \
-             joined to the owner's keyword table); 4 ids stay unjoined"
+             31 of 35 joined to the installation's own declarations); 4 ids stay unjoined"
         }
     };
     ScriptEvidence::new(

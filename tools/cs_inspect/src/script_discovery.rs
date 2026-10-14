@@ -126,9 +126,10 @@ use cs_types::install::RelativePath;
 /// `record_keys_unclassified`) and the summed `probe.directive_record_keys_*`
 /// counts (F13-C-RECKEYS); version 5 adds the F13-D model axis (task #640):
 /// each located program row carries its `model` (`typed_data_tree`,
-/// `named_commands`, `event_records` or `null` for the binary walk), the
-/// probe section counts the modelled programs per model, lists their rows
-/// with their evidence and states each model's static-analysis basis; the
+/// `named_commands`, `event_records` or `null` when no model was filed with
+/// it — a program on the binary walk or a directive program), the top-level
+/// `summary.modelled_programs`, and in the probe section `modelled`,
+/// `modelled_by_model`, `model_basis` and `modelled_program_rows`; the
 /// F13-B fields are unchanged.
 pub const SCRIPTS_REPORT_VERSION: &str = "cs-inspect-scripts/5";
 
@@ -441,6 +442,12 @@ pub fn scripts_command_result(args: &[String], env_cs_path: Option<OsString>) ->
         let mut models: Vec<Option<ProgramModel>> = Vec::with_capacity(discovery.len());
         for (index, program) in discovery.programs().iter().enumerate() {
             let modelled = model_selection(&discovery, index, &interp_lines);
+            // The row's `model` is only the model this session actually filed
+            // the program with, so the rows and `probe.modelled*` always
+            // agree: a directive program, a program that kept the binary walk
+            // and a filing that was refused all carry `null`, never a model
+            // the program was not counted under.
+            let mut filed_model = None;
             let outcome = match &directive {
                 Some(found) if found.index == index => session
                     .record_directive_program(
@@ -458,7 +465,7 @@ pub fn scripts_command_result(args: &[String], env_cs_path: Option<OsString>) ->
                             selection.model,
                             selection.evidence.clone(),
                         )
-                        .map(|_| ()),
+                        .map(|_| filed_model = Some(selection.model)),
                     None => session.probe(program).map(|_| ()),
                 },
             };
@@ -466,7 +473,7 @@ pub fn scripts_command_result(args: &[String], env_cs_path: Option<OsString>) ->
                 diagnostics.push(format!("{spelling}: signature probe failed: {error}"));
                 runtime_failed = true;
             }
-            models.push(modelled.map(|selection| selection.model));
+            models.push(filed_model);
         }
         rows.push(container_json(&discovery, &record_rows, &models));
         match discovery.family() {
@@ -614,8 +621,10 @@ fn probe_container_records(
 /// Renders one container's located programs, findings and inventory records.
 ///
 /// Every located program row carries its `model` — the label of the real
-/// model F13-D classified it with, or `null` when it keeps the binary
-/// opcode walk.
+/// model F13-D filed the program with, or `null` when the program carries no
+/// model: it kept the binary opcode walk, it is a directive program
+/// (M01-B-OPC, filed on that axis instead) or the filing was refused. A row
+/// never names a model the program was not counted under.
 fn container_json(
     discovery: &ContainerDiscovery<'_>,
     record_rows: &[String],
@@ -2010,8 +2019,8 @@ mod tests {
     /// with its family's real model — both members decode as `.zrd` typed
     /// trees, so neither is walked as binary words and neither stops at an
     /// `unknown_opcode` any more. A member that does not decode as `.zrd`
-    /// keeps the binary probe (`accept_f13_d_cli_keeps_an_undecodable_member_
-    /// on_the_binary_walk`).
+    /// keeps the binary probe (`blob.zrd` in
+    /// `accept_f13_d_cli_classifies_every_family_with_its_real_model`).
     #[test]
     fn accept_m01_b_opc_cli_does_not_classify_members_without_a_unique_control_rule() {
         let tree = Temp::new("opc-ambiguous");
@@ -2902,9 +2911,14 @@ mod tests {
         let report = result.report.expect("a report");
         assert!(report.contains("\"stops\": {}"), "{report}");
         assert!(report.contains("\"modelled\": 1412"), "{report}");
-        assert!(
-            !report.contains("\"model\": null"),
-            "every retail program row carries its model: {report}"
+        // Only the 40 directive programs (M01-B-OPC) carry no model: they are
+        // filed on the directive axis instead, and every other retail row was
+        // filed with the model it is counted under — the rows and
+        // `probe.modelled*` reconcile exactly.
+        assert_eq!(
+            report.matches("\"model\": null").count(),
+            summary.directive_programs,
+            "only directive program rows carry no model: {report}"
         );
         assert_eq!(
             report.matches("\"class\": \"modelled_program\"").count(),
@@ -3569,7 +3583,13 @@ mod tests {
         let report = modelled.report.expect("the retail report is rendered");
         assert!(report.contains("\"passes\": true"), "{report}");
         assert!(report.contains("\"stops\": {}"), "{report}");
-        assert!(!report.contains("\"model\": null"), "{report}");
+        // Only the 40 directive programs carry no model; every other row was
+        // filed with the model it is counted under, and nothing is walked.
+        assert_eq!(
+            report.matches("\"model\": null").count(),
+            summary.directive_programs,
+            "only directive program rows carry no model: {report}"
+        );
 
         let found = cs_assets::install::discover(&root).expect("discovery");
         let install_sha256 = cs_assets::install::fingerprint(&found.manifest).to_hex();
@@ -3616,6 +3636,47 @@ mod tests {
                 .unwrap_or(0),
             summary.programs_retryable,
         );
+        // The unresolved issues this report carries (CLI-EVIDENCE puts
+        // "unresolved issues" in the evidence record minimum): each names the
+        // content it affects and the task that would resolve it.
+        let unknowns = [
+            "mission_opcode_table: no signature claim resolves any retail program \
+             (programs_resolved is 0): the model axis says the corpus holds no numeric opcode \
+             stream, not that every directive key, text command or event parameter is understood. \
+             Affected content: every campaign-reachable mission instruction. Resolving task: the \
+             remaining F13 stage of specs/F13 (a compare-two-original-runs measurement), never \
+             this one.",
+            "anim_keyword_vocabularies: the owner's 2026-10-05 keyword list (41 stated, 44 \
+             enumerated, at 0x63341c-0x633718) and F20's (#690) 35 stored ids are not reconciled \
+             pair by pair. Affected content: the name of every compiled anim event. Resolving \
+             task: Rally #1415 (F13-D-FU1). Gates: any fidelity claim over animation event names.",
+            "anim_event_ids: compiled event ids 13, 17, 26 and 28 join no keyword (496 events in \
+             389 of the 56 994 blocks). Affected content: playback of those animation records. \
+             Resolving task: Rally #1416 (F13-D-FU2); needs an original run or the original \
+             source. A prerequisite for VS-M01-RUNTIME.",
+            "record_key_status: record-level key statuses stay free text until every measured key \
+             carries a citation and every unmeasured key names its vocabulary and resolving task. \
+             Affected content: the scripts report's record-key axis. Resolving task: Rally #1417 \
+             (F13-D-FU3).",
+            "anim_payload_gate: the event_records rule validates the animation container's header, \
+             not each payload, so a foreign or corrupted payload inside a validated animation \
+             carrier is filed as event records instead of walked. Affected content: the 61 retail \
+             animation carriers. Resolving task: Rally #1421 (F13-D-FU4).",
+            "empty_interp_scripts: four retail INTERP scripts hold only the F07-validated zero \
+             terminator (container offsets 20415, 46486, 78897, 84086) and what the original does \
+             with an empty script is unmeasured. Affected content: those four loading scripts. \
+             Resolving task: an owner original run (#358 REF-OWNER-FIRST-CAPTURE).",
+            "owner_note_provenance: this task's Rally history holds owner notes of 2026-10-05 and \
+             2026-10-08 and none dated 2026-10-14, so the three questions the finding records for \
+             that date are this stage's own and nothing measured here rests on them. Affected \
+             content: their attribution in \
+             docs/findings/2026-10-14-f13-d-every-program-family-has-its-real-model.md. Resolving \
+             task: the owner, by re-posting any real note on Rally #640.",
+        ]
+        .iter()
+        .map(|unknown| super::jstr(unknown))
+        .collect::<Vec<_>>()
+        .join(", ");
         let report = format!(
             "{{\n\
              \x20\"schema_version\": 1,\n\
@@ -3632,7 +3693,7 @@ mod tests {
              \x20\"tests\": {{\"discovered\": {}, \"executed\": {}, \"passed\": {passed}, \"failed\": {failed}, \"ignored\": {ignored}}},\n\
              \x20\"assertions\": [{}],\n\
              \x20\"artifacts\": [{}, {}],\n\
-             \x20\"unknowns\": [],\n\
+             \x20\"unknowns\": [{unknowns}],\n\
              \x20\"review\": {{\"identity\": {}, \"method\": {}}},\n\
              \x20\"claim\": \"implemented\"\n\
              }}\n",
@@ -3661,9 +3722,11 @@ mod tests {
             artifact(&log_path, "log"),
             artifact(&scripts_path, "json"),
             super::jstr(
-                "implementer: mimo-1 (fresh session); review pending — the reviewing agent \
-                 regenerates and validates this report on the reviewed commit, as \
-                 docs/contracts/CLI-EVIDENCE.md requires",
+                "implementer: mimo-1 (fresh session, 2026-10-14 06:07-08:07 UTC); reviewer: \
+                 mimo-1 (a separate session with fresh context from 08:07 UTC the same day, the \
+                 same agent identity, so this review is not independent evidence); the reviewer \
+                 regenerated this report on the reviewed commit, as docs/contracts/CLI-EVIDENCE.md \
+                 requires",
             ),
             super::jstr(&method),
         );
