@@ -37,7 +37,10 @@
 //! counts, ids, digests and spans only.
 //!
 //! The claim is **`implemented`**. The measurement is structural; no original
-//! run was observed and no dispatch value's meaning is established.
+//! run was observed and no goscallback/uidata/uicontrol dispatch value's
+//! meaning is established (F38-D.1 bound the three hosts whose meaning the
+//! owner's static analysis measured; that census lives in the F38-D.1
+//! artifact).
 
 use std::collections::VecDeque;
 use std::fs;
@@ -48,7 +51,7 @@ use cs_assets::install::{content_fingerprint, discover, fingerprint, sha256};
 use cs_formats::ParseContext;
 use cs_formats::rof::{RofLimits, read_member, read_tree};
 use cs_formats::script_raw::ui_host_calls::{
-    ArgShape, CorpusMember, DispatchForm, UiScriptLimits, measure_host_call_corpus,
+    ArgShape, CorpusMember, HostKind, UiScriptLimits, measure_host_call_corpus,
 };
 
 /// The container the measured UI script programs live in.
@@ -133,10 +136,18 @@ fn evidence_report_f38_b_writes_the_acceptance_report() {
     );
     assert_eq!(measurement.sites, 1812, "measured host-call sites");
     assert_eq!(
-        measurement.callback_families, 384,
-        "measured callback families"
+        measurement.callback_families, 389,
+        "native-host families: 385 (native, id) pairs plus 4 computed-dispatch families"
     );
-    assert_eq!(measurement.mail_families, 90, "measured mail families");
+    assert_eq!(measurement.mail_families, 91, "90 message ids plus one computed");
+    assert_eq!(
+        measurement.callback_sites, 709,
+        "callback sites, per the owner census on Rally #159"
+    );
+    assert_eq!(
+        measurement.native_id_pairs, 385,
+        "distinct (native, id) pairs, per the owner census on Rally #159"
+    );
     assert!(
         measurement.sites_without_native_id > 0,
         "dispatch expressions that are not integer literals are counted, not folded into an id"
@@ -231,44 +242,47 @@ fn evidence_report_f38_b_writes_the_acceptance_report() {
              ROF reader plus the production host-call scanner run over the installation \
              (host-call-corpus.json), rustc and Cargo.lock. The measurement is structural: {} UI \
              script programs, {} host-call sites ({} spelling an integer dispatch value, {} not), \
-             {} callback families, {} mail families, {} other call-shaped sites counted so the \
-             batch's boundary is a measurement. {} `;` bytes outside string literals are present \
-             and nothing follows one (0 call heads, 0 measured sites, 0 braces), so no counted \
-             site depends on whether `;` introduces a comment -- the marker is unmeasured, so it \
-             was counted rather than assumed. 0 of {} families is bound and the coverage gate \
-             refuses, because no original observation states what any measured dispatch value \
-             does; the artifact records that as bound_families: 0 and coverage_complete: false. \
+             {} native-host families ({} callback sites over {} distinct (native, id) pairs, keyed \
+             by (host, dispatch value) since F38-D.1), {} mail families, {} other call-shaped sites \
+             counted so the batch's boundary is a measurement. {} `;` bytes outside string literals \
+             are present and nothing follows one (0 call heads, 0 measured sites, 0 braces), so no \
+             counted site depends on whether `;` introduces a comment -- the marker is unmeasured, \
+             so it was counted rather than assumed. This artifact is the producer's structural \
+             measurement only; which families have a measured meaning (goslocalize, gospageinit \
+             and mail, from the owner's static analysis on Rally #159) and which stay refused is \
+             the consumer's census, recorded in the F38-D.1 evidence artifact and its finding. \
              LIMITS (all outside F38-B's measurable scope and stated in full in \
-             docs/findings/scripts/2026-10-03-f38-b-measured-host-call-families.md, not removed to \
-             pass this validator): (1) the meaning of every measured dispatch value is unknown -- \
-             the corpus spells integers and the meanings live in the packed executable, so a \
-             binding that returned success would fabricate original behaviour (F38 \
-             non-negotiable #2); (2) no measured family has a measured argument domain, and a \
-             member/widget-class/index/unevaluated argument has no engine value standing for it, \
-             so such a family is refused at that position rather than losing the argument; (3) \
-             the mission-language host calls are NOT measured and not claimed -- F13-D has not \
-             run, the mission opcode table is unmeasured and all 1452 located programs stop at \
-             their first counter, so the reader-archive programs (objectives.zrd, targets.zrd, \
-             aiv.zrd and their siblings) are still located only by name; (4) these programs are \
-             the UI script family, not the mission language, and nothing asserts that a measured \
-             dispatch value means the same thing in a mission program or that the two share a VM; \
-             (5) cancellation semantics and the repeatability of any measured dispatch value are \
-             unknown, and no measured family has one yet; (6) a dispatch value's runtime \
-             behaviour needs an owner-supplied original run (Rally #358 REF-OWNER-FIRST-CAPTURE) \
-             and no original run was observed; (7) whether the dialect's `;` introduces a comment \
-             is unmeasured -- the corpus is exposure-free today, but a corpus that spelled a call \
-             head after a `;` would have to be re-measured before its counts could be used, and \
-             the scanner reports that exposure rather than hiding it. Validated with \
-             tools/validate_evidence.py --require-pass.",
+             docs/findings/scripts/2026-10-14-f38-d1-rekeyed-native-families.md, not removed to \
+             pass this validator): (1) the per-value meaning of every goscallback, uidata and \
+             uicontrol dispatch value is unknown -- the corpus spells integers and the meanings \
+             live in the packed executable, so a binding that returned success would fabricate \
+             original behaviour (F38 non-negotiable #2); (2) the five-native dispatch-target \
+             table (which `$$X$$` names which native) is the owner's static analysis of the \
+             decrypted executable, not an original run, and it is static code evidence, never \
+             verified_original; (3) the mission-language host calls are NOT measured and not \
+             claimed -- F13-D has not run, the mission opcode table is unmeasured and all 1452 \
+             located programs stop at their first counter, so the reader-archive programs \
+             (objectives.zrd, targets.zrd, aiv.zrd and their siblings) are still located only by \
+             name; (4) these programs are the UI script family, not the mission language, and \
+             nothing asserts that a measured dispatch value means the same thing in a mission \
+             program or that the two share a VM; (5) cancellation semantics and the repeatability \
+             of any measured dispatch value are unknown, and no measured family has one yet; \
+             (6) a dispatch value's runtime behaviour needs an owner-supplied original run \
+             (Rally #358 REF-OWNER-FIRST-CAPTURE) and no original run was observed; (7) whether \
+             the dialect's `;` introduces a comment is unmeasured -- the corpus is exposure-free \
+             today, but a corpus that spelled a call head after a `;` would have to be \
+             re-measured before its counts could be used, and the scanner reports that exposure \
+             rather than hiding it. Validated with tools/validate_evidence.py --require-pass.",
             measurement.programs,
             measurement.sites,
             measurement.sites_with_native_id,
             measurement.sites_without_native_id,
             measurement.callback_families,
+            measurement.callback_sites,
+            measurement.native_id_pairs,
             measurement.mail_families,
             measurement.other_call_sites,
             measurement.semicolon_bytes,
-            measurement.callback_families + measurement.mail_families,
         )),
     );
 
@@ -317,6 +331,10 @@ struct Measurement {
     sites_without_native_id: u32,
     callback_families: usize,
     mail_families: usize,
+    /// Sites whose host is one of the five measured natives (owner census: 709).
+    callback_sites: u32,
+    /// Distinct (native, id) pairs (owner census: 385).
+    native_id_pairs: usize,
     other_call_sites: u32,
     semicolon_bytes: u32,
     heads_after_semicolon: u32,
@@ -386,15 +404,22 @@ fn measure_corpus(game_dir: &Path, evidence_dir: &Path) -> (PathBuf, Measurement
     )
     .expect("every shipped UI script scans");
 
-    let callbacks = corpus
-        .calls
-        .iter()
-        .filter(|c| c.form == DispatchForm::Callback)
-        .count();
+    let callbacks = corpus.calls.iter().filter(|c| c.host.is_native()).count();
     let mails = corpus
         .calls
         .iter()
-        .filter(|c| c.form == DispatchForm::Mail)
+        .filter(|c| c.host == HostKind::Mail)
+        .count();
+    let callback_sites: u32 = corpus
+        .calls
+        .iter()
+        .filter(|c| c.host.is_native())
+        .map(|c| c.sites)
+        .sum();
+    let native_id_pairs = corpus
+        .calls
+        .iter()
+        .filter(|c| c.host.is_native() && c.native_id.is_some())
         .count();
     let other_sites: u32 = corpus.other_call_heads.iter().map(|h| h.sites).sum();
 
@@ -420,11 +445,13 @@ fn measure_corpus(game_dir: &Path, evidence_dir: &Path) -> (PathBuf, Measurement
             .collect::<Vec<_>>()
             .join(",");
         families.push_str(&format!(
-            "{{\"form\":{},\"native_id\":{},\"sites\":{},\"scripts\":{},\"arities\":[{}],\
+            "{{\"host\":{},\"native_id\":{},\"sites\":{},\"scripts\":{},\"arities\":[{}],\
              \"arg_shape_counts\":[{}],\"first_spelling\":{},\"first_site\":{{\"offset\":{},\
              \"len\":{}}},\"evidence\":{{\"method\":{},\"confidence\":{},\"note\":{}}}}}",
-            jstr(family.form.label()),
-            family.native_id,
+            jstr(family.host.label()),
+            family
+                .native_id
+                .map_or_else(|| "null".to_owned(), |id| id.to_string()),
             family.sites,
             family.scripts,
             family
@@ -464,17 +491,16 @@ fn measure_corpus(game_dir: &Path, evidence_dir: &Path) -> (PathBuf, Measurement
         .join(", ");
 
     let report = format!(
-        "{{\"schema\":\"cs-host-call-corpus/1\",\
+        "{{\"schema\":\"cs-host-call-corpus/2\",\
          \"container\":{},\"container_sha256\":{},\
          \"programs\":[{}],\
          \"totals\":{{\"programs\":{},\"sites\":{},\"sites_with_native_id\":{},\
          \"sites_without_native_id\":{},\"callback_families\":{},\"mail_families\":{},\
-         \"families\":{},\"other_call_sites\":{},\
+         \"families\":{},\"callback_sites\":{},\"native_id_pairs\":{},\"other_call_sites\":{},\
          \"semicolon_bytes\":{},\"heads_after_semicolon\":{},\"sites_after_semicolon\":{},\
          \"braces_after_semicolon\":{},\"semicolon_exposure_free\":{}}},\
          \"families\":[{}],\
          \"other_call_heads\":[{}],\
-         \"bound_families\":0,\"coverage_complete\":false,\
          \"note\":{}}}\n",
         jstr(CRIMSON_ROF),
         jstr(&container_digest),
@@ -486,6 +512,8 @@ fn measure_corpus(game_dir: &Path, evidence_dir: &Path) -> (PathBuf, Measurement
         callbacks,
         mails,
         corpus.calls.len(),
+        callback_sites,
+        native_id_pairs,
         other_sites,
         corpus.semicolon_bytes,
         corpus.heads_after_semicolon,
@@ -496,9 +524,14 @@ fn measure_corpus(game_dir: &Path, evidence_dir: &Path) -> (PathBuf, Measurement
         heads,
         jstr(
             "A structural measurement of the two native dispatch forms the shipped UI script \
-             programs contain. A `native_id` is the integer a site spells, not a behaviour; no \
-             family is bound and the coverage is deliberately incomplete, because a binding that \
-             returned success would fabricate an original behaviour. The `semicolon_*` totals \
+             programs contain, keyed by (host, dispatch value) since F38-D.1: `host` is the \
+             measured native the `$$X$$` target names (goscallback, uidata, uicontrol, \
+             gospageinit, goslocalize), `mail`, or `unmeasured` for a target outside the \
+             native table. A `native_id` is the integer a site spells, or null when the \
+             dispatch expression is computed; no behaviour is claimed for any value. Which \
+             families have a measured meaning (goslocalize, gospageinit, mail) and which stay \
+             refused is the consumer's census, recorded in the F38-D.1 evidence artifact and \
+             its finding, not in this producer-side artifact. The `semicolon_*` totals \
              answer whether the dialect's unmeasured `;` marker could hide or invent a site: the \
              markers are there, and no call head, measured site or brace follows one, so the \
              counts are the same whether or not `;` introduces a comment."
@@ -516,6 +549,8 @@ fn measure_corpus(game_dir: &Path, evidence_dir: &Path) -> (PathBuf, Measurement
             sites_without_native_id: corpus.sites_without_native_id,
             callback_families: callbacks,
             mail_families: mails,
+            callback_sites,
+            native_id_pairs,
             other_call_sites: other_sites,
             semicolon_bytes: corpus.semicolon_bytes,
             heads_after_semicolon: corpus.heads_after_semicolon,

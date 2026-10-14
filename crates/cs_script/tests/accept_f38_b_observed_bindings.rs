@@ -19,16 +19,17 @@
 //! (the comparison). Nothing asserts a stub's success.
 
 use cs_formats::script_raw::ui_host_calls::{
-    ArgShape, CorpusMember, DispatchForm, HostCallCorpus, UiScriptLimits, measure_host_call_corpus,
-    scan_ui_program,
+    ArgShape, CorpusMember, DispatchForm, HostCallCorpus, HostKind, UiNative, UiScriptLimits,
+    measure_host_call_corpus, scan_ui_program,
 };
 use cs_script::bindings::differential::{
     DeclaredStep, ScenarioRef, TraceDivergence, TraceError, compare_traces, normalize_declared,
     normalize_emitted,
 };
 use cs_script::bindings::observed::{
-    CoverageError, MeasuredCall, MeasuredCallRow, MeasuredForm, MeasuredShape,
-    ObservedBindingTable, ObservedDisposition, RowError, UnimplementedReason, register_measured,
+    CoverageError, MeasuredCall, MeasuredCallRow, MeasuredForm, MeasuredHost, MeasuredNative,
+    MeasuredShape, ObservedBindingTable, ObservedDisposition, RowError, UnimplementedReason,
+    register_measured,
 };
 use cs_script::bindings::{
     ArgDomain, HostBindingRegistry, HostFamily, Lowering, Repeatability, lower_program,
@@ -42,6 +43,13 @@ use cs_types::content::{ContentId, ContentKind};
 
 fn cid(kind: ContentKind, key: &str) -> ContentId {
     ContentId::from_source(kind, key).unwrap()
+}
+
+/// The engine-side host of one producer record, crossed field for field
+/// through the wire codes, as `cs_script::bindings::measured` documents.
+fn host_of(call: &cs_formats::script_raw::ui_host_calls::ObservedHostCall) -> MeasuredHost {
+    MeasuredHost::from_code(call.host.code())
+        .unwrap_or_else(|| panic!("code {} is a measured host", call.host.code()))
 }
 
 /// A small authored UI script in the measured dialect: two blocks, five host
@@ -83,10 +91,7 @@ fn rows(corpus: &HostCallCorpus) -> Vec<MeasuredCallRow> {
         .calls
         .iter()
         .map(|call| MeasuredCallRow {
-            form: match call.form {
-                DispatchForm::Callback => MeasuredForm::Callback,
-                DispatchForm::Mail => MeasuredForm::Mail,
-            },
+            host: host_of(call),
             native_id: call.native_id,
             sites: call.sites,
             scripts: call.scripts,
@@ -144,7 +149,7 @@ fn accept_f38_b_a_measured_call_no_binding_claims_fails_before_flight() {
                 content: cid(ContentKind::Objective, "synthetic-obj"),
                 condition: Condition::Const(true),
                 calls: vec![cs_script::bindings::RawCall {
-                    name: "callback#100".to_owned(),
+                    name: "goscallback#100".to_owned(),
                     args: vec![Value::Int(1)],
                     span: Some(cs_script::ir::SourceSpan {
                         start: 120,
@@ -159,7 +164,7 @@ fn accept_f38_b_a_measured_call_no_binding_claims_fails_before_flight() {
     assert_eq!(errors.len(), 1);
     let text = errors[0].to_string();
     assert!(
-        text.contains("unknown host call `callback#100`"),
+        text.contains("unknown host call `goscallback#100`"),
         "the diagnostic names the call: {text}"
     );
     assert!(
@@ -173,30 +178,37 @@ fn accept_f38_b_a_measured_call_no_binding_claims_fails_before_flight() {
     );
 }
 
-/// The measured table never turns a call into a stub: with the whole registry
-/// removed the table's coverage must be unchanged, and with the measurement
-/// removed the table must not exist. A stub that reports success would make the
-/// coverage non-zero; this pins that it is zero and says why.
+/// The gate refuses while one measured family is unmeasured: the three
+/// measured hosts (goslocalize, gospageinit, `mail`) are bound with their
+/// measured meanings, every goscallback/uidata/uicontrol value stays refused
+/// with its native and handler address named, and the registry ships nothing
+/// either way — a stub that reported success would make the coverage
+/// non-zero, and this pins that it is not.
 #[test]
-fn accept_f38_b_no_measured_family_is_bound_and_the_gate_refuses() {
+fn accept_f38_b_the_gate_refuses_while_a_family_is_unmeasured() {
     let measured = corpus();
     let table = ObservedBindingTable::measure(&rows(&measured)).expect("the corpus measures");
     let coverage = table.coverage();
 
+    // One family per (host, dispatch value): `$$A$$` 100 (goscallback),
+    // `$$NB$$` 100 (goslocalize), `mail` 200, and goscallback's computed
+    // dispatch. The two `#100` families are distinct because the host is part
+    // of the key (F38-D.1).
     assert_eq!(
-        coverage.families, 2,
-        "two distinct dispatch values: callback#100 (two sites) and mail#200"
+        coverage.families, 4,
+        "goscallback#100, goslocalize#100, mail#200 and goscallback#computed"
     );
     assert_eq!(
-        coverage.bound_families, 0,
-        "no original family has a measured meaning that an engine operation states"
+        coverage.bound_families, 2,
+        "goslocalize and mail have measured meanings"
     );
     assert_eq!(coverage.unimplemented_families, 2);
     assert_eq!(
-        coverage.sites, 3,
-        "the three sites that spell a dispatch value; the fourth names none"
+        coverage.sites, 4,
+        "every site, including the one whose dispatch expression is computed"
     );
-    assert_eq!(coverage.unimplemented_sites, 3);
+    assert_eq!(coverage.bound_sites, 2);
+    assert_eq!(coverage.unimplemented_sites, 2);
     assert!(
         !coverage.complete(),
         "a corpus with an unimplemented family is never complete"
@@ -206,31 +218,51 @@ fn accept_f38_b_no_measured_family_is_bound_and_the_gate_refuses() {
         "AC04's rule: the gate refuses while one measured family is unimplemented"
     );
 
-    // Every family states why, and never a success.
+    // The two bound families carry their measured meaning and a spelling that
+    // names the host and the value.
+    let bound: Vec<(&str, &str)> = table
+        .families()
+        .iter()
+        .filter_map(|family| match &family.disposition {
+            ObservedDisposition::Bound { spelling, meaning } => {
+                Some((spelling.as_str(), meaning.label()))
+            }
+            ObservedDisposition::Unimplemented { .. } => None,
+        })
+        .collect();
+    assert_eq!(
+        bound,
+        [
+            ("goslocalize#100", "localized_string_id"),
+            ("mail#200", "script_mailbox_message"),
+        ],
+        "a goslocalize family means a localized string id; a mail family means a \
+         receiving script's mailbox case"
+    );
+
+    // Every unimplemented family states why, names its native and its handler
+    // address, and never a success.
     for family in table.unimplemented() {
         match &family.disposition {
             ObservedDisposition::Unimplemented { reason, evidence } => {
                 assert!(!evidence.is_empty(), "every refusal keeps its provenance");
                 match reason {
-                    UnimplementedReason::ArgumentShapeHasNoDomain { position, shape } => {
-                        // `mail#200`'s recipient is a named reference, which the
-                        // engine has no value for; the refusal names the
-                        // position and the shape rather than dropping it.
-                        assert_eq!(family.call.spelling(), "mail#200");
-                        assert_eq!(*position, 0);
-                        assert_eq!(*shape, MeasuredShape::NameRef);
-                    }
-                    UnimplementedReason::MeaningNotMeasured { detail } => {
-                        // `callback#100`'s arguments are measurable, but no
-                        // original observation states what the call *does*.
-                        assert_eq!(family.call.spelling(), "callback#100");
-                        assert_eq!(family.call.sites, 2);
+                    UnimplementedReason::MeaningNotMeasured { native, detail } => {
+                        assert_eq!(*native, MeasuredNative::GosCallback);
+                        assert_eq!(native.label(), "goscallback");
                         assert!(
-                            family.call.arg_domains().is_ok(),
-                            "this refusal is about meaning, not about the argument shapes"
+                            family.call.spelling().starts_with("goscallback#"),
+                            "the refusal names its native: {}",
+                            family.call.spelling()
+                        );
+                        let text = reason.to_string();
+                        assert!(
+                            text.contains("0x407670"),
+                            "the refusal names the handler address: {text}"
                         );
                         assert!(!detail.is_empty());
                     }
+                    other => panic!("a native family refuses by meaning: {other:?}"),
                 }
             }
             ObservedDisposition::Bound { .. } => {
@@ -259,8 +291,8 @@ fn accept_f38_b_no_measured_family_is_bound_and_the_gate_refuses() {
 #[test]
 fn accept_f38_b_argument_domains_cover_only_shapes_with_a_value() {
     let call = MeasuredCallRow {
-        form: MeasuredForm::Callback,
-        native_id: 100,
+        host: MeasuredHost::Native(MeasuredNative::GosCallback),
+        native_id: Some(100),
         sites: 2,
         scripts: 1,
         arities: vec![1],
@@ -334,14 +366,16 @@ fn accept_f38_b_argument_domains_cover_only_shapes_with_a_value() {
     assert_eq!(ArgShape::from_code(8), None);
 }
 
-/// The row refusals: an out-of-range dispatch value, too many arguments, sites
-/// that disagree about arity or a position's shape, and a row with no evidence.
-/// Each names the measured value, so a diagnostic points at the family.
+/// The row refusals: an out-of-range dispatch value, more positions than the
+/// protocol bound, a row with no observed arity and a row with no evidence.
+/// Each names the measured value, so a diagnostic points at the family. What
+/// is **not** refused is arity or argument-shape variation: that is protocol
+/// variation, accepted and kept visible.
 #[test]
 fn accept_f38_b_a_measured_row_is_validated_or_named() {
     let base = MeasuredCallRow {
-        form: MeasuredForm::Callback,
-        native_id: 100,
+        host: MeasuredHost::Native(MeasuredNative::GosCallback),
+        native_id: Some(100),
         sites: 1,
         scripts: 1,
         arities: vec![1],
@@ -350,37 +384,32 @@ fn accept_f38_b_a_measured_row_is_validated_or_named() {
     };
 
     let mut bad = base.clone();
-    bad.native_id = -1;
+    bad.native_id = Some(-1);
     assert_eq!(
         MeasuredCall::from_row(&bad),
         Err(RowError::IdOutOfRange { native_id: -1 })
     );
 
     let mut bad = base.clone();
-    bad.arg_shapes = vec![Some(MeasuredShape::IntegerLiteral); 9];
+    bad.arg_shapes = vec![
+        Some(MeasuredShape::IntegerLiteral);
+        cs_script::bindings::observed::MAX_PROTOCOL_ARGS + 1
+    ];
     assert_eq!(
         MeasuredCall::from_row(&bad),
         Err(RowError::TooManyArguments {
-            native_id: 100,
-            args: 9,
-            limit: 8
+            native_id: Some(100),
+            args: cs_script::bindings::observed::MAX_PROTOCOL_ARGS + 1,
+            limit: cs_script::bindings::observed::MAX_PROTOCOL_ARGS,
         })
     );
 
     let mut bad = base.clone();
-    bad.arities = vec![1, 2];
+    bad.arities = Vec::new();
     assert_eq!(
         MeasuredCall::from_row(&bad),
-        Err(RowError::DisagreeingArity { native_id: 100 })
-    );
-
-    let mut bad = base.clone();
-    bad.arg_shapes = vec![None];
-    assert_eq!(
-        MeasuredCall::from_row(&bad),
-        Err(RowError::DisagreeingArgumentShape {
-            native_id: 100,
-            position: 0
+        Err(RowError::NoArity {
+            native_id: Some(100)
         })
     );
 
@@ -388,7 +417,9 @@ fn accept_f38_b_a_measured_row_is_validated_or_named() {
     bad.evidence = "   ".to_owned();
     assert_eq!(
         MeasuredCall::from_row(&bad),
-        Err(RowError::NoEvidence { native_id: 100 })
+        Err(RowError::NoEvidence {
+            native_id: Some(100)
+        })
     );
 
     // An over-long summary is refused: the row crosses into a provenance record
@@ -397,7 +428,9 @@ fn accept_f38_b_a_measured_row_is_validated_or_named() {
     bad.evidence = "e".repeat(cs_script::bindings::observed::MAX_EVIDENCE_BYTES + 1);
     assert_eq!(
         MeasuredCall::from_row(&bad),
-        Err(RowError::NoEvidence { native_id: 100 })
+        Err(RowError::NoEvidence {
+            native_id: Some(100)
+        })
     );
     let mut ok = base.clone();
     ok.evidence = "e".repeat(cs_script::bindings::observed::MAX_EVIDENCE_BYTES);
@@ -406,12 +439,51 @@ fn accept_f38_b_a_measured_row_is_validated_or_named() {
         "a summary at the cap is still evidence"
     );
 
-    // A duplicate dispatch value yields no table at all.
+    // Arity and shape variation are protocol variation, not refusals: the
+    // natives take a mode/index argument, so one key legitimately appears with
+    // several counts and shapes (owner note, Rally #159). The row is accepted
+    // with the variation kept visible.
+    let mut varied = base.clone();
+    varied.arities = vec![1, 2];
+    varied.arg_shapes = vec![None];
+    let protocol = MeasuredCall::from_row(&varied).expect("a protocol row is valid");
+    assert_eq!(protocol.arities, vec![1, 2]);
+    assert_eq!(
+        protocol.arg_shapes,
+        vec![None],
+        "a varying position stays `None`; no shape is picked for it"
+    );
+
+    // A duplicate (host, value) pair yields no table at all…
     let rows = vec![base.clone(), base.clone()];
     assert_eq!(
         ObservedBindingTable::measure(&rows),
-        Err(CoverageError::DuplicateCall { native_id: 100 }),
-        "a corpus that measures one value twice is refused whole"
+        Err(CoverageError::DuplicateCall {
+            host: MeasuredHost::Native(MeasuredNative::GosCallback),
+            native_id: Some(100),
+        }),
+        "a corpus that measures one (host, value) twice is refused whole"
+    );
+    // …but the same dispatch value under another host is a *different*
+    // family, not a duplicate: the family key keeps the native.
+    let twin = MeasuredCallRow {
+        host: MeasuredHost::Native(MeasuredNative::UiControl),
+        ..base.clone()
+    };
+    let table = ObservedBindingTable::measure(&[base.clone(), twin]).expect("two natives, one id");
+    assert_eq!(table.coverage().families, 2);
+    assert_ne!(
+        table
+            .family(MeasuredHost::Native(MeasuredNative::GosCallback), Some(100))
+            .expect("the goscallback family")
+            .call
+            .spelling(),
+        table
+            .family(MeasuredHost::Native(MeasuredNative::UiControl), Some(100))
+            .expect("the uicontrol family")
+            .call
+            .spelling(),
+        "the two families spell differently because the key kept the native"
     );
 }
 
@@ -465,6 +537,16 @@ fn accept_f38_b_the_measurement_counts_forms_and_refuses_a_broken_program() {
         "the callback's `$$…$$` target is measured as a shape, never as text"
     );
     assert_eq!(
+        scan.sites[0].native,
+        Some(UiNative::GosCallback),
+        "the `$$A$$` target is matched against the measured native table (F38-D.1)"
+    );
+    assert_eq!(
+        scan.sites[0].host(),
+        HostKind::Native(UiNative::GosCallback),
+        "the site's family key carries the native"
+    );
+    assert_eq!(
         scan.sites[0].args,
         vec![ArgShape::IntegerLiteral],
         "an integer argument is measured as its shape, not its value"
@@ -473,7 +555,17 @@ fn accept_f38_b_the_measurement_counts_forms_and_refuses_a_broken_program() {
         scan.sites[1].target, None,
         "a mail site has no target reference"
     );
+    assert_eq!(
+        scan.sites[1].native, None,
+        "a mail site names no native: it is script-to-script messaging"
+    );
+    assert_eq!(scan.sites[1].host(), HostKind::Mail);
     assert_eq!(scan.sites[1].native_id, Some(200));
+    assert_eq!(
+        scan.sites[2].native,
+        Some(UiNative::GosLocalize),
+        "the `$$NB$$` target names goslocalize"
+    );
     assert_eq!(
         scan.sites[2].args,
         vec![ArgShape::IntegerLiteral],
@@ -482,6 +574,11 @@ fn accept_f38_b_the_measurement_counts_forms_and_refuses_a_broken_program() {
     assert_eq!(
         scan.sites[3].native_id, None,
         "a dispatch expression that is not a literal yields no id"
+    );
+    assert_eq!(
+        scan.sites[3].native,
+        Some(UiNative::GosCallback),
+        "a computed dispatch still names its native: the id is unknown, the host is not"
     );
     assert_eq!(
         scan.sites[3].args,
@@ -636,9 +733,12 @@ fn accept_f38_b_the_corpus_names_each_family_and_counts_the_rest() {
     assert_eq!(measured.other_call_sites(), 2);
 
     let hundred = measured
-        .call(DispatchForm::Callback, 100)
+        .call(HostKind::Native(UiNative::GosCallback), Some(100))
         .expect("the family was measured");
-    assert_eq!(hundred.sites, 2, "two sites spell 100");
+    assert_eq!(
+        hundred.sites, 1,
+        "one site spells goscallback 100; the `$$NB$$` site is another native's family"
+    );
     assert_eq!(hundred.scripts, 1);
     assert_eq!(hundred.arities, vec![1]);
     assert_eq!(
@@ -657,7 +757,15 @@ fn accept_f38_b_the_corpus_names_each_family_and_counts_the_rest() {
          semantic-establishing; what it establishes is the *shape* and the span"
     );
 
-    let mail = measured.call(DispatchForm::Mail, 200).expect("measured");
+    let gos_localize = measured
+        .call(HostKind::Native(UiNative::GosLocalize), Some(100))
+        .expect("the same id under another native is its own family");
+    assert_eq!(
+        gos_localize.sites, 1,
+        "the `$$NB$$` 100 site belongs to goslocalize, not to goscallback"
+    );
+
+    let mail = measured.call(HostKind::Mail, Some(200)).expect("measured");
     assert_eq!(
         mail.arities,
         vec![1],
@@ -670,11 +778,13 @@ fn accept_f38_b_the_corpus_names_each_family_and_counts_the_rest() {
     );
 }
 
-/// Two sites of one value that disagree about an argument's shape make the
-/// family unimplementable at that position — the disagreement is never resolved
-/// by picking one shape.
+/// Two sites of one (native, value) that disagree about an argument's shape
+/// are **protocol variation**, kept visible and never resolved by picking one
+/// shape: the family crosses with `None` at that position, the row validates,
+/// and the table records the variation (F38-D.1; the reason F38-C's retail
+/// audit's `no_family` sites were not a corpus inconsistency).
 #[test]
-fn accept_f38_b_disagreeing_argument_shapes_are_refused_not_resolved() {
+fn accept_f38_b_disagreeing_argument_shapes_stay_visible_as_protocol_variation() {
     let bytes = b"main\n{\ncallback($$A$$, 7, 1)\ncallback($$A$$, 7, AA)\n}\n";
     let measured = measure_host_call_corpus(
         [CorpusMember {
@@ -685,7 +795,7 @@ fn accept_f38_b_disagreeing_argument_shapes_are_refused_not_resolved() {
     )
     .expect("the authored program scans");
     let family = measured
-        .call(DispatchForm::Callback, 7)
+        .call(HostKind::Native(UiNative::GosCallback), Some(7))
         .expect("one family");
     assert_eq!(family.sites, 2);
     let position = family.arg_shapes[0];
@@ -695,42 +805,34 @@ fn accept_f38_b_disagreeing_argument_shapes_are_refused_not_resolved() {
         !position.is_uniform(),
         "the two sites disagree, so the shape is not uniform"
     );
-    assert_eq!(
-        position.dominant(),
-        Some(ArgShape::IntegerLiteral),
-        "the reported dominant shape is the first in the fixed order on a tie"
-    );
 
     // The consumer hands `None` for a position that is not uniform, and the
-    // table refuses the row rather than binding one of the two shapes.
-    let mut row = MeasuredCallRow {
-        form: MeasuredForm::Callback,
-        native_id: 7,
+    // row is *accepted* with that `None`: the disagreement is the protocol,
+    // not a refusal.
+    let row = MeasuredCallRow {
+        host: MeasuredHost::Native(MeasuredNative::GosCallback),
+        native_id: Some(7),
         sites: 2,
         scripts: 1,
         arities: family.arities.clone(),
         arg_shapes: vec![None],
         evidence: family.evidence.note().to_owned(),
     };
+    let call = MeasuredCall::from_row(&row).expect("a varying position is protocol variation");
     assert_eq!(
-        MeasuredCall::from_row(&row),
-        Err(RowError::DisagreeingArgumentShape {
-            native_id: 7,
-            position: 0
-        })
+        call.arg_shapes,
+        vec![None],
+        "the variation is kept visible; no shape is picked for it"
     );
+    let table = ObservedBindingTable::measure(&[row]).expect("the protocol row measures");
+    let family = table
+        .family(MeasuredHost::Native(MeasuredNative::GosCallback), Some(7))
+        .expect("the family exists");
     assert_eq!(
-        ObservedBindingTable::measure(&[row.clone()]),
-        Err(CoverageError::BadRow(RowError::DisagreeingArgumentShape {
-            native_id: 7,
-            position: 0
-        }))
+        family.call.arg_shapes,
+        vec![None],
+        "the recorded family still shows the varying position"
     );
-
-    // With both sites agreeing the same row is valid, so the refusal is the
-    // disagreement and not the shape.
-    row.arg_shapes = vec![Some(MeasuredShape::IntegerLiteral)];
-    assert!(MeasuredCall::from_row(&row).is_ok());
 }
 
 // --- AC02, the differential trace -------------------------------------------
@@ -1160,8 +1262,8 @@ fn accept_f38_b_an_unmeasured_dispatch_value_surfaces_as_an_extra_step() {
 #[test]
 fn accept_f38_b_a_measured_family_with_an_operation_registers_and_binds() {
     let row = MeasuredCallRow {
-        form: MeasuredForm::Callback,
-        native_id: 100,
+        host: MeasuredHost::Native(MeasuredNative::GosCallback),
+        native_id: Some(100),
         sites: 2,
         scripts: 1,
         arities: vec![2],
@@ -1172,7 +1274,7 @@ fn accept_f38_b_a_measured_family_with_an_operation_registers_and_binds() {
         evidence: "measured in the authored fixture".to_owned(),
     };
     let call = MeasuredCall::from_row(&row).expect("valid");
-    assert_eq!(call.spelling(), "callback#100");
+    assert_eq!(call.spelling(), "goscallback#100");
 
     let mut registry = HostBindingRegistry::new();
     let spec = register_measured(
@@ -1183,7 +1285,7 @@ fn accept_f38_b_a_measured_family_with_an_operation_registers_and_binds() {
         Repeatability::Once,
     )
     .expect("the registry accepts the derived spelling");
-    assert_eq!(spec.name, "callback#100");
+    assert_eq!(spec.name, "goscallback#100");
     assert_eq!(registry.len(), 1);
     match &spec.provenance {
         cs_script::bindings::BindingProvenance::Observed { evidence } => {
@@ -1203,7 +1305,7 @@ fn accept_f38_b_a_measured_family_with_an_operation_registers_and_binds() {
                 content: cid(ContentKind::Objective, "synthetic-obj"),
                 condition: Condition::Const(true),
                 calls: vec![cs_script::bindings::RawCall {
-                    name: "callback#100".to_owned(),
+                    name: "goscallback#100".to_owned(),
                     args: vec![Value::Int(1), Value::Int(7)],
                     span: None,
                 }],
@@ -1232,7 +1334,7 @@ fn accept_f38_b_a_measured_family_with_an_operation_registers_and_binds() {
                 content: cid(ContentKind::Objective, "synthetic-obj"),
                 condition: Condition::Const(true),
                 calls: vec![cs_script::bindings::RawCall {
-                    name: "callback#100".to_owned(),
+                    name: "goscallback#100".to_owned(),
                     args: vec![Value::Str("nope".to_owned())],
                     span: Some(cs_script::ir::SourceSpan { start: 8, end: 16 }),
                 }],
@@ -1250,8 +1352,8 @@ fn accept_f38_b_a_measured_family_with_an_operation_registers_and_binds() {
     // A family with no domain for one of its measured shapes cannot be
     // registered at all: the registry is not the place to drop an argument.
     let member_row = MeasuredCallRow {
-        form: MeasuredForm::Callback,
-        native_id: 101,
+        host: MeasuredHost::Native(MeasuredNative::GosCallback),
+        native_id: Some(101),
         sites: 1,
         scripts: 1,
         arities: vec![1],

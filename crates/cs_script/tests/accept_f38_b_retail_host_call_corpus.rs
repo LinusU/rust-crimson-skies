@@ -17,9 +17,12 @@
 //! statement from one.
 //!
 //! What this test does **not** claim: nothing here establishes what any
-//! measured dispatch value means, that the corpus is the mission language, or
-//! that any measured family is implemented. The coverage gate must refuse, and
-//! the pinned counts are the measured denominator F38-C/D build on.
+//! measured goscallback/uidata/uicontrol dispatch value means, that the
+//! corpus is the mission language, or that any site can run. F38-D.1 bound
+//! the three hosts whose meaning the owner's static analysis measured
+//! (goslocalize, gospageinit, `mail`); the coverage gate must still refuse
+//! while the other natives' per-value meanings are unmeasured, and the pinned
+//! counts are the measured denominator F38-C/D build on.
 
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
@@ -27,10 +30,10 @@ use std::path::{Path, PathBuf};
 use cs_formats::ParseContext;
 use cs_formats::rof::{RofLimits, read_member, read_tree};
 use cs_formats::script_raw::ui_host_calls::{
-    ArgShape, CorpusMember, DispatchForm, UiScriptLimits, measure_host_call_corpus, scan_ui_program,
+    ArgShape, CorpusMember, UiScriptLimits, measure_host_call_corpus, scan_ui_program,
 };
 use cs_script::bindings::observed::{
-    MeasuredCall, MeasuredCallRow, MeasuredForm, MeasuredShape, ObservedBindingTable,
+    MeasuredCall, MeasuredCallRow, MeasuredHost, MeasuredShape, ObservedBindingTable,
 };
 
 /// The container the shipped UI script programs live in.
@@ -97,10 +100,8 @@ fn rows(corpus: &cs_formats::script_raw::ui_host_calls::HostCallCorpus) -> Vec<M
         .calls
         .iter()
         .map(|call| MeasuredCallRow {
-            form: match call.form {
-                DispatchForm::Callback => MeasuredForm::Callback,
-                DispatchForm::Mail => MeasuredForm::Mail,
-            },
+            host: MeasuredHost::from_code(call.host.code())
+                .unwrap_or_else(|| panic!("code {} is a measured host", call.host.code())),
             native_id: call.native_id,
             sites: call.sites,
             scripts: call.scripts,
@@ -166,22 +167,73 @@ fn accept_f38_b_retail_ui_script_host_calls_are_measured_with_provenance() {
          must stay counted rather than folded into an id"
     );
 
+    // F38-D.1 re-keyed families by (host, dispatch value): one family per
+    // measured native (goscallback, uidata, uicontrol, gospageinit,
+    // goslocalize), one per mail message id, plus each host's
+    // computed-dispatch family. The owner's census (#159) is pinned here: 709
+    // callback sites across 385 distinct (native, id) pairs (the id 6 is
+    // spelled under two natives, which the value-only F38-B key merged), 1103
+    // mail sites, and 480 families in total.
     let callbacks = corpus
         .calls
         .iter()
-        .filter(|c| c.form == DispatchForm::Callback)
+        .filter(|c| c.host.is_native())
         .count();
     let mails = corpus
         .calls
         .iter()
-        .filter(|c| c.form == DispatchForm::Mail)
+        .filter(|c| c.form == cs_formats::script_raw::ui_host_calls::DispatchForm::Mail)
         .count();
-    assert_eq!(callbacks, 384, "measured callback families");
-    assert_eq!(mails, 90, "measured mail families");
+    let callback_sites: u32 = corpus
+        .calls
+        .iter()
+        .filter(|c| c.host.is_native())
+        .map(|c| c.sites)
+        .sum();
+    let native_id_pairs = corpus
+        .calls
+        .iter()
+        .filter(|c| c.host.is_native() && c.native_id.is_some())
+        .count();
+    assert_eq!(
+        callbacks, 389,
+        "native-host families: 385 (native, id) pairs plus 4 computed-dispatch families"
+    );
+    assert_eq!(mails, 91, "mail families: 90 message ids plus one computed");
+    assert_eq!(callback_sites, 709, "callback sites, per the owner census");
+    assert_eq!(
+        native_id_pairs, 385,
+        "distinct (native, id) pairs, per the owner census"
+    );
+    let mail_sites: u32 = corpus
+        .calls
+        .iter()
+        .filter(|c| c.host.label() == "mail")
+        .map(|c| c.sites)
+        .sum();
+    assert_eq!(mail_sites, 1102, "mail sites");
+    assert_eq!(
+        callback_sites + mail_sites,
+        corpus.sites - 1,
+        "1812 sites: 709 native-attributed callback sites + 1102 mail sites + 1 \\
+         unmeasured-target callback site (pinned below)"
+    );
+    // A measured census surprise, pinned rather than smoothed over: exactly one
+    // callback site spells a `$$X$$` dispatch target the five-native table does
+    // not name (MULTIPLAYERGAMESLIST.SCRIPT, a computed dispatch with no
+    // arguments). The owner census's 709 callback sites are the sites
+    // attributable to the five measured natives; this one is attributed to
+    // nothing and keeps its own `unmeasured` family.
+    let unmeasured = corpus
+        .calls
+        .iter()
+        .filter(|c| !c.host.is_native() && c.host.label() != "mail")
+        .count();
+    assert_eq!(unmeasured, 1, "one unmeasured dispatch target");
     assert_eq!(
         corpus.call_count(),
-        callbacks + mails,
-        "a family belongs to exactly one dispatch form"
+        callbacks + mails + unmeasured,
+        "a family belongs to exactly one dispatch host"
     );
     assert_eq!(
         corpus.other_call_sites(),
@@ -240,7 +292,7 @@ fn accept_f38_b_retail_ui_script_host_calls_are_measured_with_provenance() {
             family.evidence.note()
         );
         assert!(
-            family.native_id >= 0,
+            family.native_id.is_none_or(|id| id >= 0),
             "{}: a measured dispatch value is not negative",
             family.evidence.note()
         );
@@ -317,9 +369,11 @@ fn accept_f38_b_retail_ui_script_host_calls_are_measured_with_provenance() {
         "every measured family is either valid or refused by name"
     );
 
-    // The coverage gate refuses: the corpus's families carry presentation,
-    // dialogue and control semantics that no measured engine operation states,
-    // and a stub is not a substitute.
+    // The coverage gate refuses: goslocalize, gospageinit and `mail` are bound
+    // with their measured meanings (F38-D.1), but every goscallback/uidata/
+    // uicontrol value still lacks a measured per-value meaning and stays
+    // refused — a stub is not a substitute, and the gate stays closed while
+    // one family is unmeasured.
     let measurable = rows
         .iter()
         .filter(|row| MeasuredCall::from_row(row).is_ok())
@@ -329,21 +383,32 @@ fn accept_f38_b_retail_ui_script_host_calls_are_measured_with_provenance() {
     let coverage = table.coverage();
     assert_eq!(coverage.families, valid);
     assert_eq!(
-        coverage.bound_families, 0,
-        "no original family has a measured meaning; a stub would be fabrication"
+        valid,
+        corpus.call_count(),
+        "every measured family row validates: arity and shape variation is protocol \
+         variation, not a refusal"
     );
-    assert_eq!(coverage.unimplemented_families, valid);
+    assert_eq!(
+        coverage.bound_families, 236,
+        "144 goslocalize + 1 gospageinit + 91 mail families have measured meanings"
+    );
+    assert_eq!(
+        coverage.unimplemented_families, 245,
+        "58 goscallback + 170 uidata + 16 uicontrol families plus the one \\
+         unmeasured-target family stay unmeasured"
+    );
     assert!(
         !coverage.complete() && !coverage.campaign_ready(),
         "the gate refuses while a measured family is unimplemented"
     );
     assert!(
         table.registry().is_empty(),
-        "the registry ships no measured binding"
+        "a measured UI-script host call is not a mission operation; the mission \
+         registry ships none of them"
     );
     assert!(
-        table.unimplemented().count() == valid,
-        "every family is counted as refused, none is dropped"
+        table.unimplemented().count() == coverage.unimplemented_families,
+        "every unmeasured family is counted, none is dropped"
     );
 
     println!(

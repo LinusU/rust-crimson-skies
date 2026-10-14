@@ -40,11 +40,11 @@ use cs_formats::ParseContext;
 use cs_formats::rof::{RofLimits, read_member, read_tree};
 use cs_formats::script_raw::source_map::map_sites;
 use cs_formats::script_raw::ui_host_calls::{
-    CorpusMember, DispatchForm, UiScriptLimits, measure_host_call_corpus, scan_ui_program,
+    CorpusMember, UiScriptLimits, measure_host_call_corpus, scan_ui_program,
 };
-use cs_script::bindings::located::{SiteOrigin, SiteRow, audit_sites};
+use cs_script::bindings::located::{SiteOrigin, SiteRow, SiteVerdict, audit_sites};
 use cs_script::bindings::observed::{
-    MeasuredCall, MeasuredCallRow, MeasuredForm, MeasuredShape, ObservedBindingTable,
+    MeasuredCall, MeasuredCallRow, MeasuredHost, MeasuredShape, ObservedBindingTable,
 };
 
 const CRIMSON_ROF: &str = "GOSDATA/ASSETS/crimson.rof";
@@ -129,15 +129,14 @@ fn evidence_report_f38_c_writes_the_acceptance_report() {
         audit.sites, 1812,
         "every measured host-call site is located"
     );
-    assert_eq!(audit.bound, 0, "no family has a measured meaning");
     assert_eq!(
-        audit.refused
-            + audit.no_native_id
-            + audit.no_family
-            + audit.shape_mismatch
-            + audit.arity_mismatch,
-        audit.sites,
-        "every site has exactly one verdict"
+        audit.bound, 1287,
+        "174 goslocalize + 11 gospageinit + 1102 mail sites bind to their measured meanings"
+    );
+    assert_eq!(
+        audit.refused + audit.no_family + audit.shape_mismatch + audit.arity_mismatch,
+        audit.sites - audit.bound,
+        "every unbound site has exactly one refusal verdict"
     );
     assert_eq!(
         audit.unjudged_heads, 3188,
@@ -165,10 +164,10 @@ fn evidence_report_f38_c_writes_the_acceptance_report() {
     //
     // What this task does *not* know is a different thing, and it is not
     // suppressed by being kept out of the array: it is stated in full below, in
-    // `source-map-audit.json` (whose `totals` carry `bound: 0`,
+    // `source-map-audit.json` (whose `totals` carry `refused: 524`,
     // `unjudged_heads: 3188` and `campaign_ready: false` in the artifact itself)
     // and in
-    // `docs/findings/scripts/2026-10-04-f38-c-source-maps-and-site-coverage.md`.
+    // `docs/findings/scripts/2026-10-14-f38-d1-rekeyed-native-families.md`.
     // F38-B's committed report uses the same split for the same reason.
     let unknowns: Vec<String> = Vec::new();
 
@@ -231,33 +230,36 @@ fn evidence_report_f38_c_writes_the_acceptance_report() {
             "acceptance suite run locally with the retail capability; this harness derives every \
              field from the recorded log, production discovery of $CS_GAME_DIR, and the \
              production ROF reader, host-call scanner, source map and site audit run over the \
-             installation (source-map-audit.json: member, offset, line, column and verdict per \
-             site, plus the unjudged call-shaped heads in its totals; no program text). The \
-             audit located {} sites in {} UI script programs: {} sit in a family the table \
-             refuses for want of a measured meaning, {} spell no integer dispatch id, {} sit in \
-             a family whose own sites disagree and which the engine refused by name, {} are \
-             shape mismatches and {} arity mismatches against their family; {} are bound, {} \
-             call-shaped heads outside the two measured dispatch forms are counted as unjudged, \
-             and campaign_ready is {}. LIMITS (stated in full in \
-             docs/findings/scripts/2026-10-04-f38-c-source-maps-and-site-coverage.md, not removed \
-             to pass this validator): (1) the meaning of every measured dispatch value is \
-             unknown, so no site is bound and the audit refuses campaign-ready; (2) these are the \
-             UI script programs, not the mission language -- the mission programs are not decoded \
-             (F13-D), so no mission instruction or native call is located or covered here; (3) the \
-             `Bound` verdict is reachable only through a family the table binds and none is, so it \
-             is exercised by no retail site and `campaign_ready` cannot be observed true at all; \
-             (4) no runtime event of a lowered program exists to trace, because nothing lowers \
-             (0 families bound); the source map is exercised through lower_program_located on \
-             authored programs; (5) no original run was observed. Validated with \
+             installation (source-map-audit.json: member, offset, line, column, verdict and \
+             family spelling per site, plus the unjudged call-shaped heads in its totals; no \
+             program text). The audit located {} sites in {} UI script programs: {} bind to a \
+             measured meaning (goslocalize, gospageinit, mail — owner static evidence, Rally \
+             #159), {} sit in a goscallback/uidata/uicontrol family refused for want of a \
+             measured per-value meaning ({} distinct (host, value) families, named in \
+             unmeasured_families), {} are shape mismatches and {} arity mismatches against \
+             their own corpus, {} have no family at all; {} call-shaped heads outside the two \
+             measured dispatch forms are counted as unjudged, and campaign_ready is {}. \
+             LIMITS (stated in full in \
+             docs/findings/scripts/2026-10-14-f38-d1-rekeyed-native-families.md, not removed \
+             to pass this validator): (1) the per-value meaning of every goscallback, uidata \
+             and uicontrol dispatch value is unknown, so those sites are refused and the audit \
+             refuses campaign-ready; (2) these are the UI script programs, not the mission \
+             language -- the mission programs are not decoded (F13-D), so no mission \
+             instruction or native call is located or covered here; (3) the bound families \
+             rest on the owner's static analysis of the decrypted executable, which is \
+             static code evidence, never verified_original, and no original run was \
+             observed; (4) no runtime event of a lowered program exists to trace, because a \
+             measured UI host call is not registered in the mission registry; the source map \
+             is exercised through lower_program_located on authored programs. Validated with \
              tools/validate_evidence.py --require-pass.",
             audit.sites,
             audit.programs,
+            audit.bound,
             audit.refused,
-            audit.no_native_id,
-            audit.no_family,
+            audit.unmeasured_families,
             audit.shape_mismatch,
             audit.arity_mismatch,
-            audit.bound,
+            audit.no_family,
             audit.unjudged_heads,
             audit.campaign_ready,
         )),
@@ -306,10 +308,12 @@ struct Audit {
     sites: usize,
     bound: usize,
     refused: usize,
-    no_native_id: usize,
     no_family: usize,
     shape_mismatch: usize,
     arity_mismatch: usize,
+    /// Distinct (host, value) families the audit refused, named by native (or
+    /// `unmeasured`) and dispatch value.
+    unmeasured_families: usize,
     /// Call-shaped heads the corpus spells outside the two measured dispatch
     /// forms: counted, not judged.
     unjudged_heads: u32,
@@ -355,10 +359,8 @@ fn measure(game_dir: &Path, evidence_dir: &Path) -> (PathBuf, Audit) {
         .calls
         .iter()
         .map(|call| MeasuredCallRow {
-            form: match call.form {
-                DispatchForm::Callback => MeasuredForm::Callback,
-                DispatchForm::Mail => MeasuredForm::Mail,
-            },
+            host: MeasuredHost::from_code(call.host.code())
+                .unwrap_or_else(|| panic!("code {} is a measured host", call.host.code())),
             native_id: call.native_id,
             sites: call.sites,
             scripts: call.scripts,
@@ -385,10 +387,9 @@ fn measure(game_dir: &Path, evidence_dir: &Path) -> (PathBuf, Audit) {
         let scan = scan_ui_program(spelling, bytes, UiScriptLimits::default()).expect("scans");
         for mapped in map_sites(&scan, bytes).expect("every site maps") {
             site_rows.push(SiteRow {
-                form: match mapped.site.form {
-                    DispatchForm::Callback => MeasuredForm::Callback,
-                    DispatchForm::Mail => MeasuredForm::Mail,
-                },
+                host: MeasuredHost::from_code(mapped.site.host().code()).unwrap_or_else(|| {
+                    panic!("code {} is a measured host", mapped.site.host().code())
+                }),
                 native_id: mapped.site.native_id,
                 arg_shape_codes: mapped.site.args.iter().map(|s| s.code()).collect(),
                 origin: SiteOrigin {
@@ -408,14 +409,22 @@ fn measure(game_dir: &Path, evidence_dir: &Path) -> (PathBuf, Audit) {
         .sites
         .iter()
         .map(|site| {
+            let family = match &site.verdict {
+                SiteVerdict::Bound { spelling } | SiteVerdict::Refused { spelling, .. } => {
+                    jstr(spelling)
+                }
+                _ => "null".to_owned(),
+            };
             format!(
-                "{{\"member\":{},\"offset\":{},\"len\":{},\"line\":{},\"column\":{},\"verdict\":{}}}",
+                "{{\"member\":{},\"offset\":{},\"len\":{},\"line\":{},\"column\":{},\
+                 \"verdict\":{},\"family\":{}}}",
                 jstr(&site.origin.member),
                 site.origin.offset,
                 site.origin.len,
                 site.origin.line,
                 site.origin.column,
                 jstr(site.verdict.code()),
+                family,
             )
         })
         .collect::<Vec<_>>()
@@ -438,19 +447,19 @@ fn measure(game_dir: &Path, evidence_dir: &Path) -> (PathBuf, Audit) {
         sites: audit.sites.len(),
         bound: audit.bound(),
         refused: audit.refused(),
-        no_native_id: count("no_native_id"),
         no_family: count("no_family"),
         shape_mismatch: count("shape_mismatch"),
         arity_mismatch: count("arity_mismatch"),
+        unmeasured_families: audit.unmeasured_families().len(),
         unjudged_heads: audit.unjudged_heads,
         campaign_ready: audit.campaign_ready(),
     };
     let report = format!(
-        "{{\"schema\":\"cs-source-map-audit/1\",\"container\":{},\"container_sha256\":{},\
+        "{{\"schema\":\"cs-source-map-audit/2\",\"container\":{},\"container_sha256\":{},\
          \"programs\":[{}],\
          \"totals\":{{\"programs\":{},\"sites\":{},\"bound\":{},\"refused\":{},\
-         \"no_native_id\":{},\"no_family\":{},\"shape_mismatch\":{},\"arity_mismatch\":{},\
-         \"unjudged_heads\":{}}},\
+         \"no_family\":{},\"shape_mismatch\":{},\"arity_mismatch\":{},\
+         \"unmeasured_families\":{},\"unjudged_heads\":{}}},\
          \"campaign_ready\":{},\"sites\":[{}],\
          \"note\":{}}}\n",
         jstr(CRIMSON_ROF),
@@ -460,10 +469,10 @@ fn measure(game_dir: &Path, evidence_dir: &Path) -> (PathBuf, Audit) {
         result.sites,
         result.bound,
         result.refused,
-        result.no_native_id,
         result.no_family,
         result.shape_mismatch,
         result.arity_mismatch,
+        result.unmeasured_families,
         result.unjudged_heads,
         result.campaign_ready,
         sites_json,
@@ -472,10 +481,12 @@ fn measure(game_dir: &Path, evidence_dir: &Path) -> (PathBuf, Audit) {
              (member, byte offset, length, 1-based line and column) and what the engine's \
              family table says about it, plus the call-shaped heads outside the two measured \
              dispatch forms that no family judges (`totals.unjudged_heads`). No program text. \
-             A verdict of `refused` means the site's family is measured and refused for want of \
-             a measured meaning; `no_family` means its family's own sites disagree, so the engine \
-             refused the row by name; `no_native_id` means its dispatch expression names no \
-             integer."
+             Families are keyed by (host, dispatch value) since F38-D.1: a verdict of `bound` \
+             means the site's host has a measured meaning (goslocalize, gospageinit or mail) \
+             and `family` names it; `refused` means the family's per-value meaning is \
+             unmeasured (goscallback, uidata or uicontrol) and `family` names its native and \
+             id; `no_family`, `shape_mismatch` and `arity_mismatch` mean the site disagrees \
+             with its own corpus and are counted, never resolved by guess."
         ),
     );
     let path = evidence_dir.join("source-map-audit.json");

@@ -16,8 +16,10 @@
 //! Nothing from the installation is written to the repository: only counts,
 //! offsets, lines and columns are asserted.
 //!
-//! What this does **not** claim: no dispatch value's meaning is established, so
-//! no site is bound and the audit must refuse `campaign_ready`.
+//! What this does **not** claim: no goscallback/uidata/uicontrol dispatch
+//! value's meaning is established, so those sites stay refused and the audit
+//! must refuse `campaign_ready`. The bound sites (goslocalize, gospageinit,
+//! `mail`) rest on the owner's static evidence, not on an original run.
 
 use std::path::{Path, PathBuf};
 
@@ -29,7 +31,7 @@ use cs_formats::script_raw::ui_host_calls::{
 };
 use cs_script::bindings::located::{SiteOrigin, SiteRow, audit_sites};
 use cs_script::bindings::observed::{
-    MeasuredCall, MeasuredCallRow, MeasuredForm, MeasuredShape, ObservedBindingTable,
+    MeasuredCall, MeasuredCallRow, MeasuredHost, MeasuredShape, ObservedBindingTable,
 };
 
 const CRIMSON_ROF: &str = "GOSDATA/ASSETS/crimson.rof";
@@ -96,10 +98,8 @@ fn family_rows(
         .calls
         .iter()
         .map(|call| MeasuredCallRow {
-            form: match call.form {
-                DispatchForm::Callback => MeasuredForm::Callback,
-                DispatchForm::Mail => MeasuredForm::Mail,
-            },
+            host: MeasuredHost::from_code(call.host.code())
+                .unwrap_or_else(|| panic!("code {} is a measured host", call.host.code())),
             native_id: call.native_id,
             sites: call.sites,
             scripts: call.scripts,
@@ -170,10 +170,9 @@ fn accept_f38_c_retail_every_site_is_located_and_audited() {
                 o.column
             );
             rows.push(SiteRow {
-                form: match site.site.form {
-                    DispatchForm::Callback => MeasuredForm::Callback,
-                    DispatchForm::Mail => MeasuredForm::Mail,
-                },
+                host: MeasuredHost::from_code(site.site.host().code()).unwrap_or_else(|| {
+                    panic!("code {} is a measured host", site.site.host().code())
+                }),
                 native_id: site.site.native_id,
                 arg_shape_codes: site.site.args.iter().map(|s| s.code()).collect(),
                 origin: SiteOrigin {
@@ -198,25 +197,37 @@ fn accept_f38_c_retail_every_site_is_located_and_audited() {
     // every call-shaped head outside the two forms is counted as unjudged, so
     // nothing is silently absent from the coverage report.
     assert_eq!(audit.unjudged_heads, 3188, "the corpus's other call heads");
-    assert_eq!(audit.bound(), 0, "no family has a measured meaning");
     assert_eq!(
         audit.bound() + audit.refused() + audit.malformed(),
         audit.sites.len(),
         "every site has exactly one verdict"
     );
-    assert_eq!(
-        audit.with_code("no_native_id").count() as u32,
-        corpus.sites_without_native_id,
-        "a dispatch expression that names no id is counted, never folded into one"
+    assert!(
+        !audit.campaign_ready(),
+        "the audit refuses campaign-ready while any reachable family is unmeasured"
     );
-    assert!(!audit.campaign_ready(), "the audit refuses campaign-ready");
-    // Pinned measurement: 704 sites sit in a family the table holds and
-    // refuses for want of a measured meaning; 114 spell no integer id; 994 sit
-    // in a family whose own sites disagree (arity or argument shape), which the
-    // engine refuses by name instead of choosing one reading.
-    assert_eq!(audit.with_code("refused").count(), 704);
-    assert_eq!(audit.with_code("no_native_id").count(), 114);
-    assert_eq!(audit.with_code("no_family").count(), 994);
+    // Pinned measurement (F38-D.1): every dispatch site now has a family,
+    // because families are keyed by (host, dispatch value) and each host also
+    // has a computed-dispatch family. 1287 sites are bound with a measured
+    // meaning (174 goslocalize + 11 gospageinit + 1102 mail); 525 sites sit in
+    // a family the table refuses for want of a measured meaning — 524 in a
+    // goscallback/uidata/uicontrol family plus the single callback site whose
+    // `$$X$$` target is outside the five-native table (`unmeasured#computed`,
+    // MULTIPLAYERGAMESLIST.SCRIPT); nothing disagrees with its own family.
+    assert_eq!(audit.bound(), 1287);
+    assert_eq!(audit.with_code("refused").count(), 525);
+    assert_eq!(audit.with_code("no_family").count(), 0);
     assert_eq!(audit.with_code("shape_mismatch").count(), 0);
     assert_eq!(audit.with_code("arity_mismatch").count(), 0);
+    assert_eq!(audit.malformed(), 0);
+    assert_eq!(
+        audit.unmeasured_families().len(),
+        245,
+        "58 goscallback + 170 uidata + 16 uicontrol + 1 unmeasured (host, value) families"
+    );
+    assert_eq!(
+        corpus.sites_without_native_id, 114,
+        "the computed-dispatch denominator: 34 callback sites and 80 mail sites spell \\
+         no integer dispatch value"
+    );
 }
