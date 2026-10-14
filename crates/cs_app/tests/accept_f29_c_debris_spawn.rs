@@ -29,6 +29,15 @@
 //! object it used and how many it spawned are unmeasured (F29 "Research
 //! boundary"); see `docs/findings/2026-10-05-f29-c-2-debris-spawn-consumer.md`.
 
+// The F29-C.5 stage compiles into this binary rather than its own target:
+// every Bevy/Avian-linked integration-test binary costs the CI runner's disk
+// ~100 MB it does not have
+// (`docs/findings/2026-10-05-f29-c-2-debris-spawn-consumer.md`'s rebound base,
+// and the same reason the propulsion tests are modules of the damage-consumer
+// binary).
+#[path = "debris/publish_and_present.rs"]
+mod publish_and_present;
+
 use bevy::prelude::{Entity, World};
 use cs_app::damage::{lower_graph, lower_policy};
 use cs_app::debris::{
