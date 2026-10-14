@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "T1432",
+ "candidate_tree": "45d44f118d88b15882876ba94e42b2ad22e3e6f3",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-10-14T21:37:04Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_owner_facts_table_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/swe2-max-1", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 7, "executed": 7, "passed": 7, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_owner_facts_table_binds_m01_like_the_image_does", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_owner_facts_table_unknown_missions_refuse_with_both_sources_named", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_owner_facts_table_parses_and_spells_the_measured_facts", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_owner_facts_table_retail_inventory_covers_every_campaign_dir", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_owner_facts_table_retail_m01_binds_through_the_committed_table", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_owner_facts_table_image_rows_match_the_image", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_owner_facts_table_retail_m01_plans_and_prepares", "status": "pass", "evidence": ["cargo-test.log"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "704ffe8b90ed24987dd45d6cbe281c52b81450d7695add4683b3b0c13e97cafd", "kind": "log"}, {"path": "engine-facts-observation.json", "sha256": "ea63d7f15d5a9fcf5f7f9bb2d8ae30c56fdee7a56c2a0af93bfa00fdd8daa7a0", "kind": "json"}, {"path": "engine-facts.toml", "sha256": "1d4b8d9d045e4e4242e446e56d00f52e55ad37a54df508e9e44010b9a29afac3", "kind": "toml"}],
+ "unknowns": [],
+ "review": {"identity": "implementer: Devin SWE-2/swe2-max-1 (Rally #1432 implement claim of 2026-10-14); reviewer: recorded by the Rally review claim that follows — per AGENTS.md an agent review is `checked` at best, is never independent original-reference evidence and never replaces the owner's human approval. The activity log records both claims.", "method": "acceptance suite run locally with the retail capability and the owner-supplied decrypted engine image; every field is derived from the recorded log, production discovery of $CS_GAME_DIR and the production parse of the committed data/owner-static/engine-facts.toml. The suite pins the table's strict-subset parse and self-consistency (eleven airframe rows at the measured stride, M01's record is its airframe row's own `p` field), the committed-table binding producing the same claims and image spans the engine-state binding produces for M01 while every other campaign mission's airframe stays an explicit unknown naming both sources, and — against the installation — M01's full launch plan closing and its content preparing on the table alone, so `cs --cs-path <retail> --mission M01` no longer requires CS_ENGINE_IMAGE. The ignored image row re-reads every cited byte — all seven pointers of each airframe row, the roster record's +0x2c, the π/180 double and the conversion sequence's operand — so the committed table cannot silently drift. The one development value the launch still needs, the player spawn speed, is committed as `designed`, not measured. Claim is implemented only; no original executable ran and nothing is verified_original. Validated with tools/validate_evidence.py --require-pass"},
+ "claim": "implemented"
+}
