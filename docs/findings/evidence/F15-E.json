@@ -1,9 +1,9 @@
 {
  "schema_version": 1,
  "task_id": "F15-E",
- "candidate_tree": "42a3250a8301169fc13efae51c711f589d4b813f",
+ "candidate_tree": "973f1e49f8b2f923117209854d6fb5147807087b",
  "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
- "created_at": "2026-10-14T02:53:27Z",
+ "created_at": "2026-10-14T03:17:50Z",
  "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_f15_e_", "--include-ignored", "--nocapture"], "cwd": "/Users/linus/coding/rust-crimson-skies/mimo-1", "exit_code": 0},
  "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
  "seed": 0,
@@ -12,7 +12,7 @@
  "capabilities": ["retail"],
  "tests": {"discovered": 2, "executed": 2, "passed": 2, "failed": 0, "ignored": 0},
  "assertions": [{"id": "accept_f15_e_retail_mission_closure_cold_warm_restart_deliver_equal_content_and_gameplay_state", "status": "pass", "evidence": ["cargo-test.log", "cycle.json"]}, {"id": "accept_f15_e_mission_closures_resolve_through_the_production_closure_and_cli", "status": "pass", "evidence": ["cargo-test.log", "cycle.json"]}],
- "artifacts": [{"path": "cargo-test.log", "sha256": "adbf2da44aed102cb93e9f7bca3f15a36e02d78a6063552ac3c761a8776a3606", "kind": "log"}, {"path": "cycle.json", "sha256": "bc492bcf3bcfc07f6ddc8b393c2d97ed2bfafcbe9f0999ec6617e0696c5f382b", "kind": "json"}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "e559d2cf5ed00d143baef06ce3483bdcc92801684251dd97521b83ffb5d0b1ce", "kind": "log"}, {"path": "cycle.json", "sha256": "beaefd8763789f6f0f1d284b9d7909ed417b9b68120e35d99031bb47c95f32fe", "kind": "json"}],
  "unknowns": [],
  "review": {"identity": "mimo-1 (opencode-go/mimo-v2.6-flash) fresh review context; same agent identity as implementer, so not an independent-agent review", "method": "Acceptance suite run locally with the retail capability, cross-checked here by recomputing every campaign mission's closure with the production catalog builder and closure walker (the code the cs-inspect closure CLI runs) and re-measuring the cold/warm/restart cycle through the production store over the mounted original installation. Every field is derived from the recorded log, that independent re-measurement, production discovery of $CS_GAME_DIR, rustc and Cargo.lock; nothing is typed in by hand, and a failing run would produce a report the validator rejects. SCOPE OF THIS MEASUREMENT, so no reader mistakes it for a fidelity claim: (1) the measured closure is each campaign mission's dependency closure as the production catalog and closure walker compute it — on this installation every mission closure reaches exactly its mission row, its reader-archive program row and the install-file row, one unique byte source per mission — and the derived asset is the archive's structural member listing decoded through the production F06 dispatch → trailer index → reader-archive pipeline, not a member-content interpretation or an original-engine derived format; (2) no reached closure member has a runtime consumer and none is catalog-ready, so nothing here is `verified_original` and the per-node accounting of served and not-served members is carried in full in the cycle.json artifact and in docs/findings; those are measured facts of today's product state with their resolving tasks named there, not unresolved issues inside F15-E's own scope, which is why `unknowns` is empty. The claim is `implemented`, and it gates no fidelity or release statement. Validated with tools/validate_evidence.py --require-pass."},
  "claim": "implemented"
