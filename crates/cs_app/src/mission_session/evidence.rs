@@ -39,12 +39,13 @@ use bevy::app::AppExit;
 use bevy::input::keyboard::KeyCode;
 use bevy::input::{ButtonInput, InputSystems};
 use bevy::prelude::{
-    App, Commands, IntoScheduleConfigs, Last, MessageWriter, On, Plugin, PreUpdate, Query, Res,
-    ResMut, Resource, Update, With,
+    App, Commands, DetectChanges, Entity, IntoScheduleConfigs, Last, MessageWriter, On, Or, Plugin,
+    PreUpdate, Query, Res, ResMut, Resource, Update, Visibility, With,
 };
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk};
 
 use super::host::MissionHost;
+use super::sky::DesignedSkyDome;
 use crate::audio::device::SampleLibrary;
 use crate::input::platform::PlatformInput;
 use crate::physics::PhysicsTickLedger;
@@ -72,6 +73,33 @@ const SHOT_FRAME: u32 = 180;
 const SHOT_GRACE_FRAMES: u32 = 600;
 /// Name of the trace file inside the capture directory.
 pub const TRACE_FILE: &str = "trace.jsonl";
+
+// --------------------------------------------------------- the world probe --
+//
+// The frame around the spawn must hold the world's own pixels
+// (M01-PLAY-WORLD-VISIBLE, #1433). The probe measures them without a second
+// spawn and without freezing the camera: it hides the designed sky dome and
+// the player's own aircraft for a few frames, so the frame's **background** is
+// the flat clear colour and every pixel off it is geometry the world load
+// drew. A frame with no world pixels is the pre-#1433 defect — the world's
+// meshes spawned with no material, so nothing drew.
+
+/// The rendered frame the world probe starts hiding the sky and the player on.
+const WORLD_PROBE_HIDE_FRAME: u32 = 30;
+/// The rendered frame the world probe's screenshot is requested on, with the
+/// sky and the player hidden and the world drawn.
+const WORLD_PROBE_FRAME: u32 = 32;
+/// The rendered frame the probe restores the sky and the player on.
+const WORLD_PROBE_RESTORE_FRAME: u32 = 34;
+/// How far a channel may differ from the frame's own modal colour and still be
+/// called that colour: the renderer's clear colour is uniform, and a small
+/// tolerance absorbs any dither the post chain adds.
+const BACKGROUND_CHANNEL_TOLERANCE: u8 = 6;
+/// The least fraction of the probe frame that must be world pixels, in parts
+/// per thousand. A frame that drew no world geometry is a single flat colour
+/// (zero), and a frame that drew the world around a spawn near a cliff and a
+/// valley covers far more than this.
+pub const MIN_WORLD_COVERAGE_PERMILLE: u32 = 20;
 
 /// Why a capture could not be set up or did not produce its evidence.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -175,11 +203,41 @@ impl CaptureSettings {
 /// What one delivered screenshot measured.
 #[derive(Clone, Debug, PartialEq)]
 struct Shot {
+    /// Which frame this is: `world` (the probe) or `player`.
+    label: &'static str,
     path: PathBuf,
     width: u32,
     height: u32,
     distinct_luminance: usize,
     mean_luminance: f32,
+    /// The world's own pixels, when this is the probe frame: every pixel that
+    /// differs from the frame's modal colour by more than
+    /// [`BACKGROUND_CHANNEL_TOLERANCE`] on any channel.
+    world_pixels: Option<usize>,
+    /// The frame's pixel count.
+    total_pixels: usize,
+    /// The modal colour the world pixels were counted against.
+    background: Option<[u8; 3]>,
+}
+
+impl Shot {
+    /// The world's pixels over the frame's, in parts per thousand.
+    #[must_use]
+    fn covered_permille(&self) -> u32 {
+        if self.total_pixels == 0 {
+            return 0;
+        }
+        let permille = self.world_pixels.unwrap_or(0) as u64 * 1000 / self.total_pixels as u64;
+        u32::try_from(permille).unwrap_or(u32::MAX)
+    }
+}
+
+/// Whether the world probe is currently hiding the sky and the player: the
+/// capture sets it for the probe's few frames and restores it after, and
+/// [`apply_world_probe`] is the one system that writes it to the entities.
+#[derive(Resource, Clone, Copy, Debug, Default)]
+struct WorldProbeState {
+    hidden: bool,
 }
 
 /// What the run collected. It lives behind a [`CaptureHandle`] because
@@ -193,6 +251,7 @@ struct CaptureData {
     lines: Vec<String>,
     last_input_changes: u64,
     shot_requested: bool,
+    world_shot_requested: bool,
     io_error: Option<String>,
     shots: Vec<Shot>,
     /// The last host tick stepped, when one was.
@@ -253,6 +312,7 @@ impl MissionCapturePlugin {
 impl Plugin for MissionCapturePlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(self.handle.clone())
+            .init_resource::<WorldProbeState>()
             // After Bevy's keyboard system and before the F22 pump, as the
             // smoke script: the held key is the keyboard state the pump reads.
             .add_systems(
@@ -261,8 +321,32 @@ impl Plugin for MissionCapturePlugin {
                     .in_set(InputSystems)
                     .after(bevy::input::keyboard::keyboard_input_system),
             )
-            .add_systems(Update, keep_focus)
+            .add_systems(Update, (keep_focus, apply_world_probe))
             .add_systems(Last, capture_step);
+    }
+}
+
+/// Writes the probe's hide flag to the two classes of entity it covers — the
+/// designed sky dome and the player's aircraft — so the probe frame's
+/// background is the flat clear colour and every pixel off it is the world's
+/// own geometry. The flag changes twice in a run, so the components are
+/// written only on those frames.
+#[allow(clippy::type_complexity)]
+fn apply_world_probe(
+    probe: Res<WorldProbeState>,
+    mut commands: Commands,
+    targets: Query<Entity, Or<(With<DesignedSkyDome>, With<PlaytestAircraft>)>>,
+) {
+    if !probe.is_changed() {
+        return;
+    }
+    let value = if probe.hidden {
+        Visibility::Hidden
+    } else {
+        Visibility::Inherited
+    };
+    for entity in &targets {
+        commands.entity(entity).insert(value);
     }
 }
 
@@ -292,6 +376,7 @@ fn capture_step(
     camera: Res<PlaytestCamera>,
     host: Option<Res<MissionHost>>,
     aircraft: Query<&Position, With<PlaytestAircraft>>,
+    mut probe: ResMut<WorldProbeState>,
     mut commands: Commands,
     mut exit: MessageWriter<AppExit>,
 ) {
@@ -369,21 +454,37 @@ fn capture_step(
     {
         capture.io_error = Some(format!("cannot create {}: {error}", capture.dir.display()));
     }
+    // The world probe (M01-PLAY-WORLD-VISIBLE, #1433): hide the sky and the
+    // player for a few frames, take one frame of the world alone, then
+    // restore. The probe frame's background is the flat clear colour, so
+    // every pixel off it is geometry the world load drew.
+    if frame == WORLD_PROBE_HIDE_FRAME {
+        probe.hidden = true;
+    }
+    if frame == WORLD_PROBE_FRAME && player.is_some() && !capture.world_shot_requested {
+        capture.world_shot_requested = true;
+        let path = capture.dir.join(format!("frame_{frame:05}_world.png"));
+        request_screenshot(&mut commands, path, "world");
+    }
+    if frame == WORLD_PROBE_RESTORE_FRAME {
+        probe.hidden = false;
+    }
     if !capture.shot_requested && frame >= SHOT_FRAME && player.is_some() {
         capture.shot_requested = true;
         let path = capture.dir.join(format!("frame_{frame:05}_player.png"));
-        request_screenshot(&mut commands, path);
+        request_screenshot(&mut commands, path, "player");
     }
     let delivered = capture.shots.len();
-    if capture.shot_requested && (delivered > 0 || frame >= SHOT_FRAME + SHOT_GRACE_FRAMES) {
+    let requested = usize::from(capture.world_shot_requested) + usize::from(capture.shot_requested);
+    if requested >= 2 && (delivered >= requested || frame >= SHOT_FRAME + SHOT_GRACE_FRAMES) {
         exit.write(AppExit::Success);
     }
 }
 
-fn request_screenshot(commands: &mut Commands, path: PathBuf) {
+fn request_screenshot(commands: &mut Commands, path: PathBuf, label: &'static str) {
     commands.spawn(Screenshot::primary_window()).observe(
         move |captured: On<ScreenshotCaptured>, handle: Res<CaptureHandle>| {
-            let shot = measure(&captured.image, path.clone());
+            let shot = measure(&captured.image, path.clone(), label);
             let delivered = captured.image.data.is_some();
             save_to_disk(path.clone())(captured);
             if delivered {
@@ -393,7 +494,7 @@ fn request_screenshot(commands: &mut Commands, path: PathBuf) {
     );
 }
 
-fn measure(image: &bevy::image::Image, path: PathBuf) -> Shot {
+fn measure(image: &bevy::image::Image, path: PathBuf, label: &'static str) -> Shot {
     let mut levels = std::collections::BTreeSet::new();
     let mut sum = 0_u64;
     let mut count = 0_u64;
@@ -407,7 +508,15 @@ fn measure(image: &bevy::image::Image, path: PathBuf) -> Shot {
             count += 1;
         }
     }
+    let (world_pixels, background) = if label == "world" {
+        let data = image.data.as_deref().unwrap_or(&[]);
+        let (pixels, background) = count_world_pixels(data, image.texture_descriptor.format);
+        (Some(pixels), Some(background))
+    } else {
+        (None, None)
+    };
     Shot {
+        label,
         path,
         width: image.width(),
         height: image.height(),
@@ -417,7 +526,54 @@ fn measure(image: &bevy::image::Image, path: PathBuf) -> Shot {
         } else {
             sum as f32 / count as f32
         },
+        world_pixels,
+        total_pixels: count as usize,
+        background,
     }
+}
+
+/// Counts the frame's world pixels: every pixel that differs from the frame's
+/// **modal** colour (the background the world was drawn over) by more than
+/// [`BACKGROUND_CHANNEL_TOLERANCE`] on any channel, and the modal colour
+/// itself, in RGB order.
+///
+/// The modal colour is read off the frame rather than declared, so the count
+/// cannot disagree with what the renderer actually cleared to: a frame that
+/// drew no world geometry is one flat colour and counts zero. The window
+/// screenshot's bytes are in the surface's own channel order (BGRA on the
+/// pinned Metal backend), so `format` decides how the first three bytes are
+/// read; the count itself is order-independent, only the recorded colour is
+/// not.
+fn count_world_pixels(
+    data: &[u8],
+    format: bevy::render::render_resource::TextureFormat,
+) -> (usize, [u8; 3]) {
+    let rgb = |pixel: &[u8; 4]| match format {
+        bevy::render::render_resource::TextureFormat::Bgra8Unorm
+        | bevy::render::render_resource::TextureFormat::Bgra8UnormSrgb => {
+            [pixel[2], pixel[1], pixel[0]]
+        }
+        _ => [pixel[0], pixel[1], pixel[2]],
+    };
+    let mut counts: std::collections::HashMap<[u8; 3], usize> = std::collections::HashMap::new();
+    for pixel in data.as_chunks::<4>().0 {
+        *counts.entry(rgb(pixel)).or_default() += 1;
+    }
+    let Some((&background, _)) = counts.iter().max_by_key(|(_, count)| **count) else {
+        return (0, [0, 0, 0]);
+    };
+    let off_background = data
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .map(rgb)
+        .filter(|pixel| {
+            pixel[0].abs_diff(background[0]) > BACKGROUND_CHANNEL_TOLERANCE
+                || pixel[1].abs_diff(background[1]) > BACKGROUND_CHANNEL_TOLERANCE
+                || pixel[2].abs_diff(background[2]) > BACKGROUND_CHANNEL_TOLERANCE
+        })
+        .count();
+    (off_background, background)
 }
 
 /// Writes `trace.jsonl` after the window has closed and judges the run.
@@ -437,13 +593,34 @@ pub fn finish(handle: &CaptureHandle) -> Result<(), CaptureRefusal> {
     let mut lines = capture.lines.clone();
     for shot in &capture.shots {
         lines.push(format!(
-            "{{\"kind\":\"screenshot\",\"label\":\"player\",\"path\":{},\"width\":{},\
+            "{{\"kind\":\"screenshot\",\"label\":{},\"path\":{},\"width\":{},\
              \"height\":{},\"distinct_luminance\":{},\"mean_luminance\":{}}}",
+            json_string(shot.label),
             json_string(&shot.path.display().to_string()),
             shot.width,
             shot.height,
             shot.distinct_luminance,
             json_f32(shot.mean_luminance),
+        ));
+    }
+    // The world probe's own record: the pixels the world load drew in the
+    // frame around the spawn, counted against the frame's own background
+    // (M01-PLAY-WORLD-VISIBLE, #1433).
+    if let Some(shot) = capture.shots.iter().find(|shot| shot.label == "world") {
+        let background = shot.background.unwrap_or([0, 0, 0]);
+        lines.push(format!(
+            "{{\"kind\":\"world\",\"label\":\"world\",\"path\":{},\"width\":{},\"height\":{},\
+             \"world_pixels\":{},\"total_pixels\":{},\"covered_permille\":{},\
+             \"background\":[{},{},{}],\"min_covered_permille\":{MIN_WORLD_COVERAGE_PERMILLE}}}",
+            json_string(&shot.path.display().to_string()),
+            shot.width,
+            shot.height,
+            shot.world_pixels.unwrap_or(0),
+            shot.total_pixels,
+            shot.covered_permille(),
+            background[0],
+            background[1],
+            background[2],
         ));
     }
     lines.push(capture.terminal.clone().unwrap_or_else(|| {
@@ -467,17 +644,29 @@ pub fn finish(handle: &CaptureHandle) -> Result<(), CaptureRefusal> {
             capture.label
         )));
     }
-    match capture.shots.first() {
-        Some(shot) if shot.width > 0 && shot.height > 0 && shot.distinct_luminance > 1 => Ok(()),
+    // The world probe is the check this capture exists for: the frame around
+    // the spawn must hold the world's own pixels, or the mission is drawing
+    // only the player against an empty background.
+    match capture.shots.iter().find(|shot| shot.label == "world") {
+        Some(shot)
+            if shot.width > 0
+                && shot.height > 0
+                && shot.covered_permille() >= MIN_WORLD_COVERAGE_PERMILLE =>
+        {
+            Ok(())
+        }
         Some(shot) => Err(CaptureRefusal::Incomplete(format!(
-            "the framebuffer screenshot {} is blank ({}x{}, {} luminance levels)",
+            "the frame around the spawn drew no world: {} holds {} of {} pixels off the \
+             background ({} per mille, less than the {} required), so the world's geometry is \
+             not being drawn",
             shot.path.display(),
-            shot.width,
-            shot.height,
-            shot.distinct_luminance
+            shot.world_pixels.unwrap_or(0),
+            shot.total_pixels,
+            shot.covered_permille(),
+            MIN_WORLD_COVERAGE_PERMILLE,
         ))),
         None => Err(CaptureRefusal::Incomplete(
-            "the renderer delivered no framebuffer screenshot".to_owned(),
+            "the renderer delivered no world-probe framebuffer screenshot".to_owned(),
         )),
     }
 }

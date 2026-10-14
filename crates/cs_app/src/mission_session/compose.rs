@@ -99,6 +99,9 @@ use super::launch_sound::{LaunchSound, LaunchSoundError, measure_launch_sound};
 use super::player_visual::{
     MissionPlayerVisual, PlayerAirframeSource, build_player_visual, spawn_player_visual,
 };
+use super::world_draw::{
+    MissionWorldDrawPlugin, MissionWorldParts, WorldDrawSource, build_world_draw,
+};
 use crate::loading::{
     Criticality, ExpectedLoad, LoadItem, LoadRequest, LoadState, LoadTarget, LoadedItemBinding,
     LoadingSession, SessionIo,
@@ -222,6 +225,13 @@ pub struct MissionStage {
     /// (#1216). The synthetic acceptance stages set `None` and spawn the
     /// body alone.
     pub player_aircraft: Option<PlayerAirframeSource>,
+    /// The mission world's drawn source — the group's stored material table and
+    /// texture archive plus the stored mesh-array slot of every definition mesh
+    /// reference — when the stage reads one from an installation
+    /// (M01-PLAY-WORLD-VISIBLE, #1433). The synthetic acceptance stages set
+    /// `None` and draw the world's geometry without materials, as they did
+    /// before this stage.
+    pub world_draw: Option<WorldDrawSource>,
     /// The one sound the launch starts: the player airframe's engine loop,
     /// measured from the original data (VS-M01-RT-EVIDENCE-B, #1313). The
     /// synthetic acceptance stages set `None` and install no audio.
@@ -273,6 +283,9 @@ pub enum MissionCompositionError {
     /// The player airframe's sources or drawn visual refused through the
     /// production selection-and-build path.
     AirframeVisual(String),
+    /// The mission world's drawn sources refused through the playtest's own
+    /// material/texture path (M01-PLAY-WORLD-VISIBLE, #1433).
+    WorldVisual(String),
     /// The player body could not be spawned through the production physics
     /// path.
     Player(String),
@@ -311,6 +324,9 @@ impl fmt::Display for MissionCompositionError {
             Self::World(error) => write!(f, "the mission's world refuses to load: {error}"),
             Self::AirframeVisual(reason) => {
                 write!(f, "the mission's player airframe visual refuses: {reason}")
+            }
+            Self::WorldVisual(reason) => {
+                write!(f, "the mission's world visual refuses: {reason}")
             }
             Self::Player(reason) => write!(f, "the mission's player body refuses: {reason}"),
             Self::Host(error) => write!(f, "the mission host refuses: {error}"),
@@ -508,6 +524,15 @@ pub fn stage_for(
         player_aircraft: Some(PlayerAirframeSource::read(
             install_root,
             plan.group_dir.trim_start_matches("zbd/"),
+        )?),
+        // The mission world's drawn source: the group's stored material table
+        // and texture archive, joined to the stored mesh-array slot of every
+        // definition mesh reference the import read (M01-PLAY-WORLD-VISIBLE,
+        // #1433).
+        world_draw: Some(WorldDrawSource::read(
+            install_root,
+            plan.group_dir.trim_start_matches("zbd/"),
+            content.world_mesh_slots.clone(),
         )?),
         launch_sound: Some(
             measure_launch_sound(
@@ -840,6 +865,23 @@ fn add_composition(
     load_world(app, &stage.world, &stage.instance, &stage.meshes)
         .map_err(MissionCompositionError::World)?;
 
+    // 2a. The world's drawn geometry (M01-PLAY-WORLD-VISIBLE, #1433): every
+    //     loaded mesh's stored material groups bound through the playtest's
+    //     own `TextureBinder` over the group's own texture archive, parented
+    //     under each object's node by `attach_world_parts` as it is spawned.
+    //     The whole-mesh node keeps its material-less `Mesh3d` — the collider
+    //     is derived from it — and the material-bound children are the only
+    //     drawn geometry, exactly as the playtest scene draws its area.
+    let world_parts = match &stage.world_draw {
+        Some(source) => build_world_draw(app, source, &stage.world, &stage.meshes),
+        // A stage with no installation to read materials from draws nothing;
+        // the attach system is still installed, so a composition never lacks
+        // the drawing path.
+        None => MissionWorldParts::default(),
+    };
+    app.insert_resource(world_parts);
+    app.add_plugins(MissionWorldDrawPlugin);
+
     // 2b. The player airframe's drawn visual, when the stage carries its
     //     source: the measured intact selection built through the same
     //     production path the playtest's airframe goes through. Synthetic
@@ -1109,6 +1151,7 @@ pub fn teardown(app: &mut App) {
                 With<MissionPlayerBody>,
                 With<PlaytestAircraft>,
                 With<LoadedItemBinding>,
+                With<crate::mission_session::DesignedSkyDome>,
             )>,
         )>();
         query.iter(world).collect()
@@ -1122,6 +1165,7 @@ pub fn teardown(app: &mut App) {
     world.remove_resource::<MissionComposition>();
     world.remove_resource::<MissionPlayerStart>();
     world.remove_resource::<MissionPlayerVisual>();
+    world.remove_resource::<super::world_draw::MissionWorldParts>();
     world.remove_resource::<AircraftSpawner>();
     world.remove_resource::<crate::score::SessionScoreLedger>();
     world.remove_resource::<ExpectedLoad>();
@@ -1191,6 +1235,22 @@ pub fn run_windowed(
         "mission flight: record {} provenance {} verified_original=false",
         stage.flight.record, stage.flight.provenance
     );
+    println!(
+        "mission sky: designed horizon cue {} verified_original=false human_review=false",
+        crate::mission_session::DESIGNED_SKY_CLAIM
+    );
+    if let Some(parts) = app
+        .world()
+        .get_resource::<crate::mission_session::MissionWorldParts>()
+    {
+        println!(
+            "mission world draw: {} meshes bound, {} drawn parts ({} textured), \
+             material binding is the designed playtest reading, verified_original=false",
+            parts.mesh_count(),
+            parts.part_count(),
+            parts.report().textured_parts,
+        );
+    }
     let exit = app.run();
     let captured = capture_handle.as_ref().map_or(Ok(()), |handle| {
         let trace = crate::mission_session::finish_capture(handle);

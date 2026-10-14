@@ -1432,6 +1432,70 @@ pub fn read_aircraft_sources(
     })
 }
 
+/// What a world's drawn area is read from when the caller's own load path
+/// supplies the geometry: the group's `gamez.zbd` container (for the stored
+/// material table a mesh's groups index) and the group's texture archive —
+/// the two members of [`PlaytestSources`] the world half of this module
+/// uses, without the aircraft container [`read_playtest_sources`] also reads.
+///
+/// The mission composition loads M01's world through its own residency path
+/// (the `cs_content` mesh catalog) and needs exactly this half to bind the
+/// stored materials to the loaded geometry, the way the playtest scene
+/// draws its area (`crate::mission_session::world_draw`).
+#[derive(Clone, Debug)]
+pub struct WorldSources {
+    installation: String,
+    world: PlaytestContainer,
+    textures: std::sync::Arc<PlaytestTextureArchive>,
+}
+
+impl WorldSources {
+    /// The installation fingerprint production discovery measured.
+    #[must_use]
+    pub fn installation(&self) -> &str {
+        &self.installation
+    }
+
+    /// The world container the area's stored material records are read from.
+    #[must_use]
+    pub const fn world(&self) -> &PlaytestContainer {
+        &self.world
+    }
+
+    /// The texture archive the area's materials are looked up in.
+    #[must_use]
+    pub fn textures(&self) -> &PlaytestTextureArchive {
+        &self.textures
+    }
+}
+
+/// Reads the world container and the texture archive out of an installation,
+/// through the same production discovery pass [`read_playtest_sources`] runs
+/// — one [`install::discover`], one [`read_container`] and one
+/// [`PlaytestTextureArchive::open`], never a second parser.
+///
+/// # Errors
+///
+/// The same variants [`read_playtest_sources`] documents, minus the aircraft
+/// container's read.
+pub fn read_world_sources(
+    install_root: &Path,
+    world_group: &str,
+) -> Result<WorldSources, PlaytestError> {
+    let found = install::discover(install_root)?;
+    let world = read_container(
+        &found,
+        world_group,
+        &format!("zbd/{}/gamez.zbd", world_group.to_ascii_lowercase()),
+    )?;
+    let textures = PlaytestTextureArchive::open(install_root, &found, world_group)?;
+    Ok(WorldSources {
+        installation: install::fingerprint(&found.manifest).to_string(),
+        world,
+        textures: std::sync::Arc::new(textures),
+    })
+}
+
 /// Reads one container out of an already-inventoried installation.
 ///
 /// The path comes from the manifest's own `relative_spelling`, not a re-joined

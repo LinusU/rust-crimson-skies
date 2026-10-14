@@ -542,6 +542,23 @@ impl RetailWorldContainer {
         Ok(out)
     }
 
+    /// The stored mesh-array position `id` names, when this container holds a
+    /// slot for it.
+    ///
+    /// A world definition's mesh references are elements of this container's
+    /// [`MeshCatalog`] ([`MeshId::content_id`](cs_content::mesh::MeshId::content_id)),
+    /// and a consumer that needs the **stored** slot — the playtest texture
+    /// binder names a material group by its stored mesh index — reads it here
+    /// rather than re-parsing the id's spelling. `None` for an id this
+    /// container declares no slot for.
+    #[must_use]
+    pub fn mesh_slot(&self, id: &ContentId) -> Option<u32> {
+        self.slots
+            .iter()
+            .position(|slot| slot.id() == id)
+            .and_then(|index| u32::try_from(index).ok())
+    }
+
     /// The refusal for a reference that is not an element of this container's
     /// catalog. It cannot happen for a definition [`Self::definition`] produced,
     /// so it is a refusal about the *caller* rather than a silent skip: a

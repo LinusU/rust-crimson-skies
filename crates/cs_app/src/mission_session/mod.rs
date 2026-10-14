@@ -85,7 +85,9 @@ mod host;
 mod launch_sound;
 mod lifecycles;
 mod player_visual;
+mod sky;
 mod terminal;
+mod world_draw;
 
 pub use compose::{
     MissionComposition, MissionCompositionError, MissionPlayerBody, MissionPlayerStart,
@@ -98,8 +100,8 @@ pub use content::{
 };
 pub use evidence::{
     CAPABILITIES_ENV, CAPTURE_ENV, CaptureHandle, CaptureRefusal, CaptureSettings,
-    EVIDENCE_DIR_ENV, MissionCapturePlugin, PLAYBACK_FILE, TRACE_FILE, finish as finish_capture,
-    write_playback,
+    EVIDENCE_DIR_ENV, MIN_WORLD_COVERAGE_PERMILLE, MissionCapturePlugin, PLAYBACK_FILE, TRACE_FILE,
+    finish as finish_capture, write_playback,
 };
 pub use host::{
     MissionHost, MissionHostLaunchError, MissionHostRefusal, MissionHostReport,
@@ -119,4 +121,12 @@ pub use player_visual::{
     MISSION_PLAYER_PROP_NODE_SLOT, MissionPlayerVisual, PlayerAirframeSource, build_player_visual,
     spawn_player_visual,
 };
+pub use sky::{
+    DESIGNED_SKY_CLAIM, DesignedSky, DesignedSkyDome, DesignedSkyPlugin, SKY_HORIZON_COLOR,
+    SKY_NEUTRAL_COLOR, SKY_RADIUS_M, SKY_ZENITH_COLOR, designed_sky_dome_mesh,
+};
 pub use terminal::{MissionExit, MissionTerminal, MissionTerminalSource};
+pub use world_draw::{
+    MissionWorldDrawPlugin, MissionWorldParts, WORLD_NEUTRAL_COLOR, WorldDrawReport,
+    WorldDrawSource, build_world_draw,
+};

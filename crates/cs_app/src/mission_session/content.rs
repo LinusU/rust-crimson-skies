@@ -2,7 +2,7 @@
 //! [`MissionContent::prepare`]. See the [module documentation](super) for the
 //! rule this stage is built on.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 
@@ -16,7 +16,7 @@ use cs_script::ir::MissionProgram;
 use cs_sim::flight::original::PROVENANCE_LABEL;
 use cs_sim::flight::{OriginalAirframe, OriginalFlightModel, OriginalGlobals};
 use cs_sim::time::TickRate;
-use cs_types::content::{Origin, Resolved};
+use cs_types::content::{ContentId, Origin, Resolved};
 use cs_types::evidence::ClaimId;
 use cs_types::install::InstallFileRecord;
 
@@ -125,6 +125,15 @@ pub struct MissionContent {
     /// The engine meshes the definition names, uploaded through the F17-B
     /// adapter.
     pub meshes: WorldMeshes,
+    /// Each definition mesh reference's **stored** mesh-array position in the
+    /// group container, read through [`crate::world::retail::RetailWorldContainer::mesh_slot`].
+    ///
+    /// The drawn world's material binding needs the stored slot (the playtest
+    /// texture binder names a material group by its stored mesh index,
+    /// `crate::mission_session::world_draw`), and the definition itself names
+    /// the catalog id, not the slot: this is the one place the two are joined,
+    /// so no consumer has to re-parse an id's spelling.
+    pub world_mesh_slots: BTreeMap<ContentId, u32>,
     /// This mission's load record: population, initial damage and provenance.
     pub instance: WorldInstance,
     /// The player's airframe and initial pose, as the `aiv.zrd` records and
@@ -370,7 +379,8 @@ impl MissionContent {
                 reason: error.to_string(),
             })?;
 
-        let (world, meshes, instance, resolver) = prepare_world(install_root, plan)?;
+        let (world, meshes, instance, resolver, world_mesh_slots) =
+            prepare_world(install_root, plan)?;
         let start = prepare_start(install_root, plan)?;
         let flight = prepare_flight(install_root, &start)?;
         let environment = prepare_environment(plan, &found)?;
@@ -388,6 +398,7 @@ impl MissionContent {
         Ok(Self {
             world,
             meshes,
+            world_mesh_slots,
             instance,
             start,
             flight,
@@ -424,12 +435,23 @@ pub fn prepare_mission_content(
     MissionContent::prepare(install_root, plan)
 }
 
+/// The records [`prepare_world`] reads: the import, its uploaded meshes, the
+/// load record, the member-chain resolver, and the definition mesh reference →
+/// stored mesh-array slot map.
+type PreparedWorld = (
+    ImportedWorld,
+    WorldMeshes,
+    WorldInstance,
+    MemberResolver,
+    BTreeMap<ContentId, u32>,
+);
+
 /// World: the container, its import, this mission's load record and the
 /// member-chain resolver the world fact fold answers through.
 fn prepare_world(
     install_root: &Path,
     plan: &MissionLaunchPlan,
-) -> Result<(ImportedWorld, WorldMeshes, WorldInstance, MemberResolver), MissionSessionError> {
+) -> Result<PreparedWorld, MissionSessionError> {
     let group = plan.group_dir.trim_start_matches("zbd/");
     let key = format!("{}/gamez.zbd", plan.group_dir);
     let container =
@@ -458,6 +480,20 @@ fn prepare_world(
             key: key.clone(),
             reason: error.to_string(),
         })?;
+    // The stored mesh-array slot of every definition mesh reference: the
+    // drawn world's material binding needs the stored index, and the
+    // definition names the catalog id. Joined once, here, from the very
+    // container the meshes were uploaded from.
+    let world_mesh_slots: BTreeMap<ContentId, u32> = imported
+        .definition()
+        .objects()
+        .iter()
+        .filter_map(|object| match object.mesh() {
+            Resolved::Known(known) => Some(known.value.clone()),
+            Resolved::Unknown { .. } => None,
+        })
+        .filter_map(|id| container.mesh_slot(&id).map(|slot| (id, slot)))
+        .collect();
 
     let world_id: WorldId = container
         .world()
@@ -507,7 +543,7 @@ fn prepare_world(
     // so the resolver and the definition it resolves against can never come
     // from different content.
     let resolver = MemberResolver::from_container(&container);
-    Ok((imported, meshes, instance, resolver))
+    Ok((imported, meshes, instance, resolver, world_mesh_slots))
 }
 
 /// Player start: the airframe and the metric initial pose, both known.
