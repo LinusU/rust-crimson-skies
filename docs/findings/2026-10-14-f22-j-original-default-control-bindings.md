@@ -418,14 +418,18 @@ reference it by SHA-256 only.
 
 ## Checks
 
-Run locally by the implementer before hand-over, on the rebased branch head
-(all exit 0):
+Run locally by the implementer before hand-over, and re-run by the reviewer
+after the review fix of 2026-10-14, on the branch head. The reviewer is the
+same agent identity that implemented the task (`bunny-alpha-2`), in a fresh
+session — self-review, recorded as such in the review hand-over, not
+independent evidence (all exit 0):
 
 ```sh
 cargo fmt --all -- --check                                        # exit 0
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
                                                                    # exit 0
-cargo test --workspace --locked                                   # exit 0
+cargo test --workspace --locked                                   # exit 0,
+                                                                   # 562 ok results
 cargo test --workspace --locked -- accept_f22_j_ --include-ignored
                                                                    # exit 0, 8/8
 ```
@@ -433,7 +437,15 @@ cargo test --workspace --locked -- accept_f22_j_ --include-ignored
 Each of the 8 discovered `accept_f22_j_` tests also passes alone with
 `--exact --include-ignored`. CI runs the same first three checks on the
 pushed commit without original data; the two retail tests are `#[ignore]`
-there and were run locally by the implementer.
+there and were run locally.
+
+The reviewer's one change to this branch: the retail test asserted the
+Japanese-remap function against a **reconstructed byte sequence of the
+original's code**, which the task's own commit rules forbid. It now decodes
+the three code pairs out of the image and asserts them against the recorded
+pairs, plus a new CI test that exercises the decoder against a synthetic
+chain with foreign codes. Everything else in the branch was reviewed and
+kept.
 
 ## Research boundary
 
