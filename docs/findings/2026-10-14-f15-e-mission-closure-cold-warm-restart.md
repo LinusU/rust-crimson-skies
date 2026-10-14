@@ -190,3 +190,17 @@ asserted equal to the row's origin span) → `SessionIo` →
 * Production output of `cs-inspect closure` and `cs-inspect catalog` over
   `$CS_GAME_DIR` on this branch (closure report and catalog JSON measured
   in `private/` scratch, ids and hashes only).
+
+## Review additions (2026-10-14)
+
+The reviewer regenerated the evidence report on the rebased, reviewed commit
+(`docs/findings/evidence/F15-E.json`, `candidate_tree` matching that tree) per
+`docs/contracts/CLI-EVIDENCE.md`; the re-measured closure hashes and payload
+digests were identical to the implementer's run, confirming the measurement is
+stable across the rebase. The reviewer also added a **degenerate-closure guard**
+to the resolution test: every campaign mission's closure must still reach a
+`mission`, a `script` and an `install_file` node, so a closure walker that
+stopped expanding the mission's edges can never make this stage measure the
+launchable root alone and pass vacuously. The three reached kinds are a lower
+bound, not an exact count, so the mission-to-content edges that F50-B / M01-B
+will add are not blocked by it.
