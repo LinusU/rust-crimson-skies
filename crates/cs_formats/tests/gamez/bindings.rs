@@ -17,8 +17,8 @@ use cs_formats::ParseContext;
 use cs_formats::gamez::reader::Fixup;
 use cs_formats::gamez::{
     GameZMeshes, GameZNodeError, GameZNodes, MeshSlotIssue, NODE_INDEX_TOP, NODE_SLOT_BYTES,
-    NodeMeshBindings, NodeMeshFinding, OBJECT3D_DATA_BYTES, OBJECT3D_FLAGS_IDENTITY, UNK08_PLANES,
-    read_gamez_meshes, read_gamez_nodes,
+    NodeMeshBindings, NodeMeshFinding, OBJECT3D_DATA_BYTES, OBJECT3D_FLAGS_IDENTITY, RemovedBinding,
+    UNK08_PLANES, read_gamez_meshes, read_gamez_nodes,
 };
 
 use super::reader::{
@@ -29,25 +29,40 @@ use std::path::Path;
 
 // --------------------------------------------------------------- fixtures ---
 
-/// One node to write: a name and the `mesh_index` it stores.
+/// One node to write: a name, the `mesh_index` it stores and the child slots
+/// its record declares.
 ///
 /// The record is an **object** node storing the identity transform, which is
-/// what the measured corpus holds for a geometry node, so the only thing a
-/// fixture varies is the association under test.
+/// what the measured corpus holds for a geometry node, so the only things a
+/// fixture varies are the association under test and the subtree under it.
 struct NodeSpec {
     name: &'static str,
     mesh_index: i32,
+    children: &'static [u32],
 }
 
 impl NodeSpec {
     const fn named(name: &'static str, mesh_index: i32) -> Self {
-        Self { name, mesh_index }
+        Self {
+            name,
+            mesh_index,
+            children: &[],
+        }
     }
 
-    /// Bytes of this node's own data record: the object record, and no parent
-    /// or child words (`parent_count` is 0 and `children_count` is 0).
+    const fn with_children(name: &'static str, mesh_index: i32, children: &'static [u32]) -> Self {
+        Self {
+            name,
+            mesh_index,
+            children,
+        }
+    }
+
+    /// Bytes of this node's own data record: the object record, no parent
+    /// word (`parent_count` is 0) and the child slots `children_count`
+    /// declares.
     const fn data_bytes(&self) -> usize {
-        OBJECT3D_DATA_BYTES as usize
+        OBJECT3D_DATA_BYTES as usize + 4 * self.children.len()
     }
 }
 
@@ -100,13 +115,14 @@ fn node_section(nodes_offset: u32, nodes: &[NodeSpec]) -> Vec<u8> {
         word(&mut out, at + 60, node.mesh_index as u32);
         word(&mut out, at + 68, 1); // action_priority
         half(&mut out, at + 84, 0); // parent_count
-        half(&mut out, at + 86, 0); // children_count
+        half(&mut out, at + 86, node.children.len() as u16); // children_count
         word(&mut out, at + 196, 160); // unk196
         word(&mut out, at + 208, NODE_INDEX_TOP | index as u32);
 
         // The object record: the identity transform the reference asserts for
         // `flags == 40`, with the rotation and translation zero and the matrix
-        // the identity those three derive.
+        // the identity those three derive. The child slots follow it, which is
+        // where the reader's own walk reads them.
         let record = data_offsets[index] as usize;
         word(&mut out, record, OBJECT3D_FLAGS_IDENTITY);
         for axis in 0..3 {
@@ -114,6 +130,13 @@ fn node_section(nodes_offset: u32, nodes: &[NodeSpec]) -> Vec<u8> {
             float(&mut out, record + 36 + 4 * axis, 1.0); // scale
             float(&mut out, record + 48 + 16 * axis, 1.0); // matrix diagonal
             float(&mut out, record + 84 + 4 * axis, 0.0); // translation
+        }
+        for (position, child) in node.children.iter().enumerate() {
+            word(
+                &mut out,
+                record + OBJECT3D_DATA_BYTES as usize + 4 * position,
+                *child,
+            );
         }
     }
     out[nodes_offset as usize..].to_vec()
@@ -519,6 +542,81 @@ fn accept_f10_c_05_a_broken_node_array_is_refused_before_the_check_runs() {
     );
 }
 
+/// **F10-D.1's node half:** the original destroys every `dzpath`-named node —
+/// with its whole subtree — during world load (`OWNER-STATIC-2026-10-05`,
+/// `dzpath.cpp` `0x4459f0` collecting, `0x4cd800` detaching, `0x4d7a50`
+/// destroying), so a mesh only those nodes bind is never drawn, while the
+/// faces of that mesh still **decode** (their not being drawn is a
+/// node-removal fact, never a face refusal).
+///
+/// The fixture exercises the three parts of the measured rule on one
+/// container: the plain prefix match (the `dzpaths` group node itself starts
+/// with `dzpath` and matches), the subtree propagation (`prop`'s own name
+/// does not match; it is removed because it hangs under `dzpath1`), and the
+/// live-binding exception (a slot a surviving node also binds still draws
+/// through that node, so it is never listed).
+#[test]
+fn accept_f10_d_a_dzpath_subtree_is_removed_at_load_and_its_mesh_is_never_drawn() {
+    let meshes = vec![
+        MeshSpec::triangle(),
+        MeshSpec::triangle(),
+        MeshSpec::triangle(),
+    ];
+    let nodes = [
+        NodeSpec::named("world1", -1),
+        NodeSpec::with_children("dzpaths", -1, &[2, 4]),
+        NodeSpec::with_children("dzpath1", 0, &[5]),
+        NodeSpec::named("hangar", 2),
+        NodeSpec::named("dzpath2", 1),
+        NodeSpec::named("prop", 0),
+        NodeSpec::named("tower", 0),
+    ];
+    let (nodes, section) = read_container(&container(1_234_567_890, &meshes, &[0, 1, 2], &nodes));
+
+    let removed = nodes.removed_at_load();
+    assert_eq!(
+        removed,
+        std::collections::BTreeSet::from([1, 2, 4, 5]),
+        "the `dzpaths` group, the two `dzpath` zones and `dzpath1`'s subtree — \
+         never `world1`, `hangar` or `tower`"
+    );
+
+    let bindings = section.node_bindings(&nodes);
+    assert_eq!(bindings.nodes, 7);
+    assert_eq!(bindings.bound, 5, "every node but `world1` and `dzpaths`");
+    assert_eq!(
+        bindings.removed,
+        vec![
+            RemovedBinding {
+                node: 2,
+                mesh_index: 0
+            },
+            RemovedBinding {
+                node: 4,
+                mesh_index: 1
+            },
+            RemovedBinding {
+                node: 5,
+                mesh_index: 0
+            },
+        ],
+        "the bound removed nodes, in stored node order — `dzpaths` binds no mesh"
+    );
+    assert_eq!(
+        bindings.never_drawn,
+        vec![1],
+        "slot 1 is bound only by `dzpath2`; slot 0 is also bound by the \
+         surviving `tower`, so it still draws through that node"
+    );
+
+    // The never-drawn fact is about the nodes, not the faces: the meshes the
+    // removed nodes bind decode cleanly, and the census reports no missing
+    // face for them.
+    let census = section.face_census();
+    assert_eq!(census.stored_faces, 3);
+    assert_eq!(census.missing_faces(), 0, "{:?}", census.missing);
+}
+
 // ---------------------------------------------------------- retail corpus ---
 
 /// The two archives whose mesh index is **remapped**, read through the
@@ -662,6 +760,149 @@ impl Corpus {
         );
         assert_eq!(bindings.unresolved(), 0, "{label}");
         assert!(bindings.is_complete(), "{label}: {:?}", bindings.findings);
+    }
+}
+
+/// **F10-D.1 on the real corpus:** every world container's `dzpath` route
+/// nodes are the nodes the original destroys at world load
+/// (`OWNER-STATIC-2026-10-05`), and the mesh slots no surviving node binds
+/// are exactly the route meshes of those zones.
+///
+/// The pinned rows are what the production readers measure on this
+/// installation: `removed` is the node count `removed_at_load` reports (the
+/// `dzpaths` group plus the numbered zones under it), `bound` how many of
+/// those bind a mesh, and `never_drawn` the exact slot list
+/// [`NodeMeshBindings::never_drawn`] produces — the stored route geometry no
+/// draw call can reach. A container that gains or loses a zone, or a slot
+/// that becomes reachable another way, changes the row on purpose.
+///
+/// `#[ignore]`d because CI has no `CS_GAME_DIR`; the implementer and the
+/// reviewer run it with `--include-ignored`.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_f10_d_retail_dzpath_route_nodes_are_removed_at_load_and_never_drawn() {
+    /// `(spelling, removed nodes, bound removed nodes, never-drawn slots)`.
+    const EXPECTED: [(&str, usize, usize, &[u32]); 9] = [
+        ("ZBD/C1/gamez.zbd", 7, 6, &[998, 999, 1000, 1001, 1002, 1003]),
+        ("ZBD/C1B/gamez.zbd", 8, 7, &[432, 433, 434, 435, 436, 437, 438]),
+        ("ZBD/C1C/gamez.zbd", 0, 0, &[]),
+        (
+            "ZBD/C2/gamez.zbd",
+            14,
+            13,
+            &[593, 594, 595, 596, 597, 598, 599, 600, 601, 602, 603, 604, 605],
+        ),
+        ("ZBD/C2B/gamez.zbd", 0, 0, &[]),
+        ("ZBD/C3/gamez.zbd", 6, 5, &[802, 803, 804, 805, 806]),
+        (
+            "ZBD/C4/gamez.zbd",
+            16,
+            15,
+            &[
+                863, 864, 865, 866, 867, 868, 869, 870, 871, 872, 873, 874, 875, 876, 877,
+            ],
+        ),
+        (
+            "ZBD/C5/gamez.zbd",
+            35,
+            34,
+            &[
+                949, 950, 951, 952, 953, 954, 955, 956, 957, 958, 959, 960, 961, 962, 963,
+                964, 965, 966, 967, 968, 969, 970, 971, 972, 973, 974, 975, 976, 977, 978,
+                979, 980, 981, 982,
+            ],
+        ),
+        ("ZBD/planes.zbd", 0, 0, &[]),
+    ];
+
+    for (spelling, removed_nodes, bound_removed, never_drawn) in EXPECTED {
+        let path = Path::new(&game_dir()).join(spelling);
+        let bytes = std::fs::read(&path)
+            .unwrap_or_else(|error| panic!("{spelling} must read: {error}"));
+        let nodes = read_gamez_nodes(&mut ParseContext::with_defaults(spelling), &bytes)
+            .unwrap_or_else(|error| panic!("{spelling}: the node array must read, got {error}"));
+        let meshes = read_gamez_meshes(
+            &mut ParseContext::with_defaults(spelling),
+            spelling,
+            &bytes,
+        )
+        .unwrap_or_else(|error| panic!("{spelling}: the mesh section must read, got {error}"));
+
+        // The removal is the prefix plus the subtree, and every bound node it
+        // takes is a `dzpath` name: nothing else of the container is removed.
+        let removed = nodes.removed_at_load();
+        assert_eq!(
+            removed.len(),
+            removed_nodes,
+            "{spelling}: nodes the original destroys at load"
+        );
+        for index in &removed {
+            let node = nodes.get(*index).expect("the slot exists");
+            assert!(
+                node.name.starts_with("dzpath")
+                    || removed.contains(&node.parent.unwrap_or(u32::MAX)),
+                "{spelling}: node {} ({:?}) is removed by the prefix or its ancestor",
+                node.index,
+                node.name
+            );
+        }
+
+        let bindings = meshes.node_bindings(&nodes);
+        assert_eq!(
+            bindings.removed.len(),
+            bound_removed,
+            "{spelling}: bound nodes the removal takes"
+        );
+        for binding in &bindings.removed {
+            let node = nodes.get(binding.node).expect("the slot exists");
+            assert!(
+                node.name.starts_with("dzpath"),
+                "{spelling}: node {} ({:?}) binds {} and is removed",
+                binding.node,
+                node.name,
+                binding.mesh_index
+            );
+            assert_eq!(
+                binding.mesh_index,
+                node.mesh_index(),
+                "{spelling}: the binding carries the stored index raw"
+            );
+        }
+        assert_eq!(
+            bindings.never_drawn, *never_drawn,
+            "{spelling}: the mesh slots no surviving node binds"
+        );
+
+        // Each never-drawn slot is a present mesh whose faces still decode —
+        // the route outline is stored geometry the census counts as decoded,
+        // not a face the format layer lost. And no missing face of the
+        // container lives on one of these meshes: the faces that draw nothing
+        // (C4's three zero-normal outlines) hang under surviving nodes.
+        for slot in never_drawn {
+            let mesh = meshes
+                .get(*slot)
+                .unwrap_or_else(|| panic!("{spelling}: slot {slot} is a present mesh"));
+            assert!(
+                !mesh.draw_topology().faces.is_empty(),
+                "{spelling}: mesh {slot} stores faces"
+            );
+            assert!(
+                !mesh
+                    .draw_topology()
+                    .faces
+                    .iter()
+                    .any(|face| matches!(face, cs_formats::gamez::FaceStatus::Rejected(_))),
+                "{spelling}: mesh {slot}'s faces all decode under the measured rule"
+            );
+        }
+        let census = meshes.face_census();
+        assert!(
+            census
+                .missing
+                .iter()
+                .all(|face| !never_drawn.contains(&face.mesh)),
+            "{spelling}: no missing face sits on a never-drawn mesh"
+        );
     }
 }
 

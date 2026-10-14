@@ -178,7 +178,10 @@ fn evidence_report_f10_d_writes_the_acceptance_report() {
             "{relative}: declared vs stored"
         );
         assert_eq!(
-            census.decoded_faces + census.invalid_faces + census.unsupported_faces,
+            census.decoded_faces
+                + census.invalid_faces
+                + census.unsupported_faces
+                + census.culled_faces,
             census.stored_faces,
             "{relative}: every stored face counted exactly once"
         );
@@ -210,6 +213,10 @@ fn evidence_report_f10_d_writes_the_acceptance_report() {
         assert_eq!(
             gate_row.unsupported_faces, census.unsupported_faces,
             "{relative}"
+        );
+        assert_eq!(
+            gate_row.culled_faces, census.culled_faces,
+            "{relative}: and the same faces culled by the measured per-face test"
         );
         assert_eq!(
             gate_row.failed,
@@ -564,6 +571,7 @@ struct GateRow {
     missing_faces: u64,
     invalid_faces: u64,
     unsupported_faces: u64,
+    culled_faces: u64,
     faces_in_failed_rows: u64,
     refused_meshes: Vec<u32>,
 }
@@ -595,7 +603,7 @@ fn parse_render_gate(path: &Path, candidate_tree: &str) -> BTreeMap<String, Gate
         lines.next(),
         Some(
             "path\tkind\trows\tready\tblocked\tfailed\tfaces\tmissing_faces\tinvalid_faces\t\
-             unsupported_faces\tfaces_in_failed_rows\trefused_meshes"
+             unsupported_faces\tculled_faces\tfaces_in_failed_rows\trefused_meshes"
         ),
         "{}: unexpected column header",
         path.display()
@@ -605,8 +613,8 @@ fn parse_render_gate(path: &Path, candidate_tree: &str) -> BTreeMap<String, Gate
         let fields: Vec<&str> = line.split('\t').collect();
         assert_eq!(
             fields.len(),
-            12,
-            "{}: a data row must have 12 columns, got {:?}",
+            13,
+            "{}: a data row must have 13 columns, got {:?}",
             path.display(),
             line
         );
@@ -619,10 +627,10 @@ fn parse_render_gate(path: &Path, candidate_tree: &str) -> BTreeMap<String, Gate
                 )
             })
         };
-        let refused: Vec<u32> = if fields[11].is_empty() {
+        let refused: Vec<u32> = if fields[12].is_empty() {
             Vec::new()
         } else {
-            fields[11]
+            fields[12]
                 .split(',')
                 .map(|index| {
                     index.parse::<u32>().unwrap_or_else(|error| {
@@ -645,7 +653,8 @@ fn parse_render_gate(path: &Path, candidate_tree: &str) -> BTreeMap<String, Gate
             missing_faces: number(7, "missing_faces"),
             invalid_faces: number(8, "invalid_faces"),
             unsupported_faces: number(9, "unsupported_faces"),
-            faces_in_failed_rows: number(10, "faces_in_failed_rows"),
+            culled_faces: number(10, "culled_faces"),
+            faces_in_failed_rows: number(11, "faces_in_failed_rows"),
             refused_meshes: refused,
         };
         assert!(
@@ -689,6 +698,7 @@ struct Counts {
     decoded_faces: u64,
     invalid_faces: u64,
     unsupported_faces: u64,
+    culled_faces: u64,
     degenerate_only_faces: u64,
     missing_faces: u64,
     triangles: u64,
@@ -709,6 +719,7 @@ impl Counts {
         self.decoded_faces += census.decoded_faces;
         self.invalid_faces += census.invalid_faces;
         self.unsupported_faces += census.unsupported_faces;
+        self.culled_faces += census.culled_faces;
         self.degenerate_only_faces += census.degenerate_only_faces;
         self.missing_faces += census.missing_faces();
         self.triangles += census.triangles;
@@ -741,7 +752,7 @@ fn census_json(candidate_tree: &str, rows: &[CorpusRow], totals: &Counts) -> Str
                 "{{\"path\": {}, \"kind\": {}, \"size_bytes\": {}, \"sha256\": {}, \"meshes\": \
                  {{\"slots\": {}, \"present\": {}, \"absent\": {}}}, \"faces\": {{\"declared\": {}, \
                  \"stored\": {}, \"shortfall\": {}, \"decoded\": {}, \"invalid\": {}, \"unsupported\": \
-                 {}, \"degenerate_only\": {}, \"missing\": {}}}, \"triangles\": {{\"stored\": {}, \
+                 {}, \"culled\": {}, \"degenerate_only\": {}, \"missing\": {}}}, \"triangles\": {{\"stored\": {}, \
                  \"degenerate\": {}, \"drawn\": {}}}, \"missing_faces\": [{}], \"render_gate\": \
                  {{\"rows\": {}, \"ready\": {}, \"blocked\": {}, \"failed\": {}, \
                  \"faces_in_failed_rows\": {}, \"refused_meshes\": [{}]}}}}",
@@ -758,6 +769,7 @@ fn census_json(candidate_tree: &str, rows: &[CorpusRow], totals: &Counts) -> Str
                 row.census.decoded_faces,
                 row.census.invalid_faces,
                 row.census.unsupported_faces,
+                row.census.culled_faces,
                 row.census.degenerate_only_faces,
                 row.census.missing_faces(),
                 row.census.triangles,
@@ -788,13 +800,16 @@ fn census_json(candidate_tree: &str, rows: &[CorpusRow], totals: &Counts) -> Str
          \x20\"claim\": \"implemented\",\n\
          \x20\"evidence_class\": \"observed_tool\",\n\
          \x20\"definitions\": {{\"missing\": \"a declared face that reaches no drawable triangle: \
-          the record's shortfall, a rejected face, or a face whose triangles are all degenerate\", \
+          the record's shortfall, a rejected face, a culled face, or a face whose triangles are \
+          all degenerate\", \
           \"invalid\": \"stored data that fails validation (a subset of missing)\", \
+          \"culled\": \"an outline the original's measured per-frame face test removes: a zero \
+          normal over its first three corners (OWNER-STATIC-2026-10-05, F10-D.1)\", \
           \"faces_in_failed_rows\": \"every stored face of a mesh the render gate refused, i.e. \
           the faces that will not be drawn at all\"}},\n\
          \x20\"totals\": {{\"archives\": {}, \"slots\": {}, \"present_meshes\": {}, \
           \"absent_meshes\": {}, \"declared_faces\": {}, \"stored_faces\": {}, \"shortfall\": {}, \
-          \"decoded\": {}, \"invalid\": {}, \"unsupported\": {}, \"degenerate_only\": {}, \
+          \"decoded\": {}, \"invalid\": {}, \"unsupported\": {}, \"culled\": {}, \"degenerate_only\": {}, \
           \"missing\": {}, \"triangles\": {}, \"degenerate_triangles\": {}, \
           \"faces_lost_from_render\": {}, \"meshes_dropped_by_the_gate\": {}}},\n\
          \x20\"note\": \"relative spellings, digests, stored indices and counts only; no original \
@@ -813,6 +828,7 @@ fn census_json(candidate_tree: &str, rows: &[CorpusRow], totals: &Counts) -> Str
         totals.decoded_faces,
         totals.invalid_faces,
         totals.unsupported_faces,
+        totals.culled_faces,
         totals.degenerate_only_faces,
         totals.missing_faces,
         totals.triangles,

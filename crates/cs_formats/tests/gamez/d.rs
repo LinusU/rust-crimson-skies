@@ -6,12 +6,14 @@
 //! The production code under test is
 //! [`cs_formats::gamez::FaceCensus`] — built through
 //! [`GameZMeshes::face_census`], which walks the same
-//! [`RawMesh::topology`] gate the upload path walks. The synthetic tests fix
-//! what each word of the report means (a face the section never held, a broken
-//! face, a face this triangulator refuses, a face that decodes to nothing); the
-//! retail test then reports those exact counts for **every** world group and
-//! for `planes.zbd` of the original installation, with the archive list derived
-//! from production discovery rather than assumed.
+//! [`RawMesh::draw_topology`] view the upload path walks: the original submits
+//! every outline as a corner-0 fan and culls, per face, the one whose first
+//! three corners have a zero normal (`OWNER-STATIC-2026-10-05`; reconciled in
+//! F10-D.1). The synthetic tests fix what each word of the report means (a face
+//! the section never held, a broken face, a culled face, a face that decodes to
+//! nothing); the retail test then reports those exact counts for **every**
+//! world group and for `planes.zbd` of the original installation, with the
+//! archive list derived from production discovery rather than assumed.
 //!
 //! Nothing in this file is original game content: the retail half asserts
 //! counts, mesh array indices and polygon indices — never a coordinate, a
@@ -24,8 +26,8 @@ use std::collections::BTreeMap;
 use cs_formats::ParseContext;
 use cs_formats::gamez::reader::{Fixup, RawMeshInfo};
 use cs_formats::gamez::{
-    FaceStatus, GameZHeader, GameZMesh, GameZMeshes, MeshIndex, MissingFace, MissingFaceReason,
-    PrimitiveKind, RawCorner, RawMesh, RawPolygon, read_gamez_meshes,
+    FaceIssue, FaceStatus, GameZHeader, GameZMesh, GameZMeshes, MeshIndex, MissingFace,
+    MissingFaceReason, PrimitiveKind, RawCorner, RawMesh, RawPolygon, read_gamez_meshes,
 };
 
 // ------------------------------------------------------------- synthetic ---
@@ -140,14 +142,15 @@ fn container(
     }
 }
 
-/// **AC04's three rejection words, on a container that fails all of them.**
-/// One mesh holds a stored face whose data is broken, an outline this
-/// triangulator refuses, and a face that decodes to triangles which all
-/// collapse; a second mesh is fine and one slot is an absent stub. Every count
-/// and every listed face is asserted, so an aggregation that drops a face,
-/// counts it twice, or files a refusal under "invalid" fails here rather than
-/// in the report. (The fourth word — a face the records declared and the
-/// section never held — is the next test.)
+/// **AC04's missing-face words, on a container that shows all of them.** One
+/// mesh holds a stored face whose data is broken, an outline the canonical
+/// ear-clipper refuses but the measured original *fans*, a face that decodes
+/// to triangles which all collapse, and an outline the original's per-frame
+/// face test culls; a second mesh is fine and one slot is an absent stub.
+/// Every count and every listed face is asserted, so an aggregation that
+/// drops a face, counts it twice, or files a cull under "invalid" fails here
+/// rather than in the report. (The remaining word — a face the records
+/// declared and the section never held — is the next test.)
 #[test]
 fn accept_f10_d_census_names_every_missing_face_with_its_exact_reason() {
     let square = |positions: &[u32]| {
@@ -162,41 +165,53 @@ fn accept_f10_d_census_names_every_missing_face_with_its_exact_reason() {
             corners.into_iter().map(corner).collect(),
         )
     };
-    // Mesh 0: a decoded strip, a face whose position index is past the four
-    // positions (invalid), a bow-tie outline whose two lobes cancel (valid
-    // data, refused: `zero_area`), and a strip whose every step repeats an
-    // index (decoded, but nothing draws).
+    // Mesh 0: a decoded strip; a face whose position index is past the four
+    // positions (invalid); the bow-tie outline the canonical view refuses —
+    // the original submits it as a fan, so the draw view decodes it; a strip
+    // whose every step repeats an index (decoded, but nothing draws); and an
+    // outline whose first and third corners share a position, so its
+    // first-three-corner normal is zero and the measured face test culls it
+    // on every frame.
     let first = vec![
         square(&[0, 1, 2, 3]),
         square(&[0, 1, 4]),
         outline(vec![0, 1, 2, 3]),
         square(&[2, 2, 2]),
+        outline(vec![0, 1, 0]),
     ];
     // Mesh 1: two faces, both decoded and both drawing.
     let second = vec![square(&[0, 1, 2]), outline(vec![0, 1, 2])];
-    let meshes = container(vec![(0, 4, first), (1, 2, second)], 3, &[]);
+    let meshes = container(vec![(0, 5, first), (1, 2, second)], 3, &[]);
     let census = meshes.face_census();
 
     assert_eq!(census.slots, 3, "two meshes and one stub slot");
     assert_eq!(census.present_meshes, 2);
     assert_eq!(census.absent_meshes, 1, "the stub is counted, not skipped");
     assert_eq!(
-        census.declared_faces, 6,
+        census.declared_faces, 7,
         "both records declare exactly what they hold"
     );
-    assert_eq!(census.stored_faces, 6, "the section held six");
+    assert_eq!(census.stored_faces, 7, "the section held seven");
     assert_eq!(census.shortfall_faces, 0);
-    assert_eq!(census.decoded_faces, 4);
-    assert_eq!(census.triangles, 5, "two strip triangles, then one each");
+    assert_eq!(census.decoded_faces, 5);
+    assert_eq!(
+        census.triangles, 7,
+        "two strip triangles, the bow tie's fan of two, the collapsed step, \
+         then one each"
+    );
     assert_eq!(
         census.degenerate_triangles, 1,
         "only the all-repeating strip collapses"
     );
-    assert_eq!(census.drawn_triangles(), 4);
+    assert_eq!(census.drawn_triangles(), 6);
     assert_eq!(census.invalid_faces, 1, "only the out-of-range face");
     assert_eq!(
-        census.unsupported_faces, 1,
-        "the bow tie is refused, never fanned and never called invalid"
+        census.unsupported_faces, 0,
+        "the measured fan accepts every outline the canonical view refuses"
+    );
+    assert_eq!(
+        census.culled_faces, 1,
+        "the zero-normal outline is culled per face, as the original does"
     );
     assert_eq!(
         census.degenerate_only_faces, 1,
@@ -225,30 +240,54 @@ fn accept_f10_d_census_names_every_missing_face_with_its_exact_reason() {
             },
             MissingFace {
                 mesh: 0,
-                polygon: 2,
-                corners: 4,
-                reason: MissingFaceReason::Unsupported("zero_area"),
-            },
-            MissingFace {
-                mesh: 0,
                 polygon: 3,
                 corners: 3,
                 reason: MissingFaceReason::DegenerateOnly,
+            },
+            MissingFace {
+                mesh: 0,
+                polygon: 4,
+                corners: 3,
+                reason: MissingFaceReason::Culled,
             },
         ],
         "mesh, polygon, corner count and reason, in stored order"
     );
     assert!(census.missing[0].reason.is_invalid());
     assert!(!census.missing[1].reason.is_invalid());
-    assert_eq!(census.missing[1].reason.code(), "zero_area");
-    assert_eq!(census.missing[2].reason.code(), "degenerate_only");
+    assert!(!census.missing[2].reason.is_invalid());
+    assert_eq!(census.missing[1].reason.code(), "degenerate_only");
+    assert_eq!(census.missing[2].reason.code(), "culled_zero_normal");
     // Only mesh 0 lost a *rejected* face, so only mesh 0 is refused by the
-    // render gate; mesh 1's faces are untouched.
+    // render gate; a culled face is per-frame accounting, never a refusal,
+    // and mesh 1's faces are untouched.
     assert_eq!(census.rejected_meshes(), vec![0]);
+
+    // The two views diverge on the bow tie exactly where the original does:
+    // the canonical ear-clipper still refuses it, the draw view fans it.
+    let mesh0 = meshes.get(0).expect("mesh 0 is present");
+    assert!(
+        matches!(
+            mesh0.topology().faces[2],
+            FaceStatus::Rejected(FaceIssue::UnsupportedNgon { .. })
+        ),
+        "the canonical view keeps its refusal"
+    );
+    assert_eq!(
+        mesh0.draw_topology().faces[2],
+        FaceStatus::Decoded {
+            triangles: 2,
+            degenerate: 0
+        },
+        "the measured fan submits it"
+    );
 
     // The counts add up to what was stored, exactly once each.
     assert_eq!(
-        census.decoded_faces + census.invalid_faces + census.unsupported_faces,
+        census.decoded_faces
+            + census.invalid_faces
+            + census.unsupported_faces
+            + census.culled_faces,
         census.stored_faces
     );
     assert_eq!(
@@ -496,6 +535,15 @@ fn read_retail(relative: &str) -> GameZMeshes {
 /// `(missing, invalid)` as measured on this installation and pinned here. The
 /// two numbers are AC04's subject: a corpus where a face stops drawing, or
 /// starts being called invalid, has to change this table on purpose.
+///
+/// Under the measured draw view (`OWNER-STATIC-2026-10-05`, reconciled in
+/// F10-D.1) the only faces that reach no drawable triangle are C4's three
+/// zero-normal outlines — the original culls each of them on every frame.
+/// C5's eight outlines the canonical ear-clipper refused are all fanned: one
+/// draws as its quad with one zero-area fan triangle (mesh 370 polygon 1),
+/// the other seven are `dzpath` route outlines the original never draws
+/// because their nodes are destroyed at world load — a node-removal fact the
+/// bindings report, not a face that draws nothing.
 const EXPECTED_MISSING_AND_INVALID: [(&str, u64, u64); 9] = [
     ("ZBD/planes.zbd", 0, 0),
     ("ZBD/C1/gamez.zbd", 0, 0),
@@ -505,25 +553,18 @@ const EXPECTED_MISSING_AND_INVALID: [(&str, u64, u64); 9] = [
     ("ZBD/C2B/gamez.zbd", 0, 0),
     ("ZBD/C3/gamez.zbd", 0, 0),
     ("ZBD/C4/gamez.zbd", 3, 0),
-    ("ZBD/C5/gamez.zbd", 8, 0),
+    ("ZBD/C5/gamez.zbd", 0, 0),
 ];
 
 /// Every face of the corpus that draws nothing, as `(archive, mesh, polygon,
-/// reason code)`. Eleven entries: three in C4 (one refused outline and two
-/// faces whose triangles all collapse) and eight refused outlines in C5.
+/// reason code)`. Three entries, all in C4, all `culled_zero_normal`: the
+/// measured face test culls them on every frame
+/// (`docs/findings/2026-10-14-f10-d-1-what-the-original-renderer-drew.md`).
 /// These are stored indices and stable codes — never a coordinate.
-const EXPECTED_MISSING_FACES: [(&str, u32, usize, &str); 11] = [
-    ("ZBD/C4/gamez.zbd", 191, 20, "coincident_corners"),
-    ("ZBD/C4/gamez.zbd", 191, 55, "degenerate_only"),
-    ("ZBD/C4/gamez.zbd", 192, 142, "degenerate_only"),
-    ("ZBD/C5/gamez.zbd", 370, 1, "coincident_corners"),
-    ("ZBD/C5/gamez.zbd", 970, 0, "self_intersecting"),
-    ("ZBD/C5/gamez.zbd", 973, 0, "self_intersecting"),
-    ("ZBD/C5/gamez.zbd", 974, 0, "self_intersecting"),
-    ("ZBD/C5/gamez.zbd", 978, 0, "self_intersecting"),
-    ("ZBD/C5/gamez.zbd", 980, 0, "self_intersecting"),
-    ("ZBD/C5/gamez.zbd", 981, 0, "self_intersecting"),
-    ("ZBD/C5/gamez.zbd", 982, 0, "self_intersecting"),
+const EXPECTED_MISSING_FACES: [(&str, u32, usize, &str); 3] = [
+    ("ZBD/C4/gamez.zbd", 191, 20, "culled_zero_normal"),
+    ("ZBD/C4/gamez.zbd", 191, 55, "culled_zero_normal"),
+    ("ZBD/C4/gamez.zbd", 192, 142, "culled_zero_normal"),
 ];
 
 /// **AC04: every private world and airframe, exact missing and invalid face
@@ -564,7 +605,10 @@ fn accept_f10_d_retail_every_world_and_airframe_reports_exact_missing_and_invali
             "{relative}: declared vs stored"
         );
         assert_eq!(
-            census.decoded_faces + census.invalid_faces + census.unsupported_faces,
+            census.decoded_faces
+                + census.invalid_faces
+                + census.unsupported_faces
+                + census.culled_faces,
             census.stored_faces,
             "{relative}: every stored face is counted exactly once"
         );
@@ -603,10 +647,11 @@ fn accept_f10_d_retail_every_world_and_airframe_reports_exact_missing_and_invali
                 face.mesh,
                 face.polygon
             );
-            let status = &mesh.topology().faces[face.polygon];
+            let status = &mesh.draw_topology().faces[face.polygon];
             match (status, &face.reason) {
                 (FaceStatus::Rejected(_), MissingFaceReason::Invalid(_))
-                | (FaceStatus::Rejected(_), MissingFaceReason::Unsupported(_)) => {}
+                | (FaceStatus::Rejected(_), MissingFaceReason::Unsupported(_))
+                | (FaceStatus::Culled, MissingFaceReason::Culled) => {}
                 (FaceStatus::Decoded { .. }, MissingFaceReason::DegenerateOnly) => {
                     let FaceStatus::Decoded {
                         triangles,
@@ -656,8 +701,8 @@ fn accept_f10_d_retail_every_world_and_airframe_reports_exact_missing_and_invali
 
         println!(
             "F10-D census {relative} ({kind}): slots {} present {} absent {} declared {} \
-             stored {} missing {} invalid {} unsupported {} degenerate-only {} triangles {} \
-             (degenerate {})",
+             stored {} missing {} invalid {} unsupported {} culled {} degenerate-only {} \
+             triangles {} (degenerate {})",
             census.slots,
             census.present_meshes,
             census.absent_meshes,
@@ -666,6 +711,7 @@ fn accept_f10_d_retail_every_world_and_airframe_reports_exact_missing_and_invali
             census.missing_faces(),
             census.invalid_faces,
             census.unsupported_faces,
+            census.culled_faces,
             census.degenerate_only_faces,
             census.triangles,
             census.degenerate_triangles,

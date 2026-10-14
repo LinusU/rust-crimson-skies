@@ -61,12 +61,17 @@ impl Default for HeaderSpec {
 /// consume exactly the right bytes, still walk to `nodes_offset` and still
 /// satisfy every count — it would only be wrong. Distinguishable blocks are what
 /// make such a reader fail instead of passing by coincidence.
+/// The quadratic `y` keeps any three **distinct-index** points non-collinear
+/// (they lie on a parabola in `x`/`y`): the measured face test
+/// (`OWNER-STATIC-2026-10-05`, F10-D.1) culls an outline whose first three
+/// corners have a zero normal, and a collinear ramp would cull every outline
+/// these fixtures store.
 fn vectors(block: u32, count: u32) -> Vec<[f32; 3]> {
     (0..count)
         .map(|index| {
             let value = (index + 1) as f32;
             let base = f32::from(block as u8) * 1000.0;
-            [base + value, base + value * 2.0, base + value * 3.0]
+            [base + value, base + value * value, base + value * 3.0]
         })
         .collect()
 }
