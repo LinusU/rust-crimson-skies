@@ -235,3 +235,40 @@ Task tests after the review pass: **21** (`asset_key_and_context` 7,
 (F04-B), byte reads and session mount lifetime (F04-B/F04-C), the
 `cs-inspect resolve` command (F04-B/F04-C) and the measurement of the
 original precedence order (F04-D).
+
+## Update (2026-10-14, task #701): the deciding-order contract
+
+Task #686 (`2026-10-06-f04-d-gos-registration-order.md`) changed the
+contract this finding recorded, in the same owner paths. Two statements
+above need its exception read into them:
+
+- **"Register order is never a tiebreak"** (No first-wins map, above)
+  still holds for every precedence-decided key space (`install`, `world`,
+  `reader`): two mounts at the top rank return `ResolveError::Ambiguous`
+  carrying both origins, and register order only stabilizes the trace.
+  The `gos` key space is the one exception — `MetaOpenFile`'s only rule
+  is registration order, first hit wins (`LookupOrder::GosRegistration`,
+  status `inferred`), so registration order *is* the tiebreak there by
+  the original's design and a GOS lookup is never ambiguous.
+- **The trace's deciding status is now a two-part field.**
+  `ResolutionTrace::precedence_status: ClaimStatus` was renamed to
+  `ResolutionTrace::order: LookupOrderStatus`, carrying the
+  `LookupOrder` that decided (`precedence` or `gos_registration`) plus
+  that order's `ClaimStatus` (`designed` or `inferred`). A consumer
+  asking what an answer rests on reads `order`; the flat
+  `precedence_status` name survives only on `CollisionReport`, which
+  compares the VFS with itself across contexts and never holds a GOS
+  comparison's deciding order (each `MemberLookup` carries its own).
+
+**Where the GOS order's acceptance lives.** The F04 sheet
+(`specs/F04-context-aware-virtual-filesystem-and-precedence.md`) states
+no field names, and its non-negotiables 2 and 3 remain true of the
+precedence-decided namespaces exactly as written, so no sheet text
+contradicts the current code and none needed changing. The GOS order's
+acceptance criteria and measurements live where this repo keeps per-stage
+evidence: `accept_f04_d_gos_registration_order_*` in
+`crates/cs_assets/tests/accept_f04_d_gos_registration_order.rs` and
+`2026-10-06-f04-d-gos-registration-order.md` — the findings doc, not the
+sheet, is the right home for them. Adding a sheet-level acceptance
+criterion is an owner decision (spec sheets are owner-protected); this
+task changed no spec text and nothing measured demands one.

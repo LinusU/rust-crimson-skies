@@ -85,7 +85,11 @@ silently keep one of them.
 
 The equal-priority cross-mount ambiguity (AC02 over two mounted
 directories) is decided by the F04-A `Vfs::resolve` rule; its test fails if
-registration order becomes a tiebreak.
+registration order becomes a tiebreak. (Still true of every
+precedence-decided key space; the `gos` key space, added later, is the one
+exception where registration order *is* the rule — task #686, see the
+2026-10-14 update in
+`2026-09-28-f04-a-asset-key-and-precedence-contracts.md`.)
 
 ## Recorded unknowns (recorded, not guessed)
 

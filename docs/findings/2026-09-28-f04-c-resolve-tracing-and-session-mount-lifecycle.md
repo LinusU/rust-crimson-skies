@@ -143,3 +143,22 @@ measurement of original lookup behavior.
 - Archive members (ZBD/ROF/ZIP) still cannot be mounted: their readers
   belong to the format tasks. Their names will go through
   `MountBuilder::add_member` and, on export, `export_components`.
+
+## Update (2026-10-14, task #701): report version 2 and `ResolutionTrace::order`
+
+Task #686 (`2026-10-06-f04-d-gos-registration-order.md`) changed the
+`cs-inspect resolve` report shape described above, in the same owner
+paths (`tools/cs_inspect/src/resolve.rs`,
+`crates/cs_assets/src/vfs/`):
+
+- `ResolutionTrace::precedence_status` became
+  `order: LookupOrderStatus`, carrying the `LookupOrder` that decided
+  the lookup (`precedence` or `gos_registration`) plus that order's
+  `ClaimStatus` (`designed` or `inferred`).
+- `cs-inspect resolve` bumped to report version `cs-inspect-resolve/2`:
+  the flat `precedence_status` field is replaced by
+  `"order": {"kind": ..., "status": ...}`, because a GOS lookup is not
+  decided by precedence at all. The rest of the report — mounts with
+  refused entries, context, key, result, ordered attempts, export
+  outcome, and the exit codes per CLI-EVIDENCE — is unchanged, and
+  every exit code above still holds.
