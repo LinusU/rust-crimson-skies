@@ -25,6 +25,17 @@
 //! `docs/findings/2026-09-29-f22-a-command-schema-and-action-map.md`). Nothing
 //! here claims otherwise.
 //!
+//! **Recorded original defaults, still not behaviour.** F22-J recorded the
+//! original's own default bindings ([`ORIGINAL_DEFAULT_BINDINGS`]) from the
+//! owner's static analysis of the decrypted engine image and from this
+//! project's bounded scan of the same image, and
+//! [`compare_with_original_default`] records how those defaults differ from
+//! [`ActionMap::designed_default`]. That table is static code evidence with a
+//! cited span per row — never `verified_original` (no original executable
+//! ran) and never wired into the flight path — so the designed map stays
+//! explicitly designed. See
+//! `docs/findings/2026-10-14-f22-j-original-default-control-bindings.md`.
+//!
 //! **`cs_types` stays dependency-free** (`docs/01-ARCHITECTURE.md`), so the
 //! device vocabulary is a small engine-owned enum set instead of winit,
 //! `gilrs` or Bevy input types. The app-side collector that consumes these
@@ -2449,6 +2460,787 @@ impl CalibrationStore {
     pub fn is_empty(&self) -> bool {
         self.entries.is_empty()
     }
+}
+
+// ---------------------------------------------------------------------------
+// F22-J: the original 2000 PC game's default bindings, recorded and compared
+// ---------------------------------------------------------------------------
+//
+// What this section is: the original game's default control bindings, as
+// recovered from the owner-supplied decrypted engine image and recorded here
+// as **evidence data**. Every value is an id, a code, an address, a span or a
+// digest; no original bytes, display text or executable content is committed
+// (`AGENTS.md` rule 3, and the commit rules of the Rally #505 owner note).
+//
+// Where it came from: the owner's bounded static analysis of the decrypted
+// `crimson.icd` image (`crimson.decrypted.exe`, Rally #505 owner note of
+// 2026-10-05), plus this task's own read-only scan of the same image, which
+// decoded every registration call in [`ORIGINAL_TABLE_SPAN`] and confirmed
+// all 64 rows against the owner's table. The scan and the acceptance tests
+// live in `crates/cs_content/tests/` (`accept_f22_j_*`); the measurement is
+// written up in
+// `docs/findings/2026-10-14-f22-j-original-default-control-bindings.md`.
+//
+// What this section may never claim: that the bindings are *behaviour*. This
+// is static code evidence — no original executable ran — so nothing here is
+// `verified_original` (`AGENTS.md` rule 8), and the project's own default
+// map stays [`ActionMap::designed_default`]: explicitly designed, never
+// original-verified. The recorded table is compared with that map by
+// [`compare_with_original_default`], which records the differences and
+// changes nothing.
+
+/// The virtual-address span of the engine image whose code builds the
+/// original's controls table (owner static analysis, Rally #505 owner note
+/// 2026-10-05). Every row of [`ORIGINAL_DEFAULT_BINDINGS`] is registered by a
+/// `call` inside this span.
+pub const ORIGINAL_TABLE_SPAN: (u32, u32) = (0x0049_36c0, 0x0049_3d00);
+
+/// The registration function every command row is built through, with the
+/// argument order of its call: `0x493630(command_id, label_string_id, key_a,
+/// key_b, joystick_button, mouse_button)`.
+pub const ORIGINAL_REGISTER_VA: u32 = 0x0049_3630;
+
+/// The bias between a virtual address and its file offset in the image's
+/// `.text`, `.rdata` and `.data` below VA `0x643000`:
+/// `file offset = VA - ORIGINAL_IMAGE_VA_BIAS`.
+pub const ORIGINAL_IMAGE_VA_BIAS: u32 = 0x0040_0000;
+
+/// Where the packed per-command binding record is written (`0x537360`), the
+/// store the getters `0x5370f0`/`0x537110`/`0x537130`/`0x537150` read.
+pub const ORIGINAL_BINDING_STORE_VA: u32 = 0x0053_7360;
+
+/// Where a bound key's name is built (`0x5375f0`): the modifier prefixes plus
+/// the platform's key name.
+pub const ORIGINAL_KEY_NAME_VA: u32 = 0x0053_75f0;
+
+/// The keyboard handler's modifier-matching span (`0x535ba0`–`0x535c3d`):
+/// when some modifier combination of a plain key is bound, the full code with
+/// the currently held modifiers must match exactly.
+pub const ORIGINAL_MODIFIER_MATCH_SPAN: (u32, u32) = (0x0053_5ba0, 0x0053_5c3d);
+
+/// The player flight input that reads the joystick axes (`0x487460`).
+pub const ORIGINAL_JOYSTICK_INPUT_VA: u32 = 0x0048_7460;
+
+/// The span the `FlyMode` and `MouseSens` defaults are registered in
+/// (`0x43ff61`–`0x43ffa7`). The two immediate arguments measured inside it
+/// are [`ORIGINAL_FLY_MODE_DEFAULT_VA`] and [`ORIGINAL_MOUSE_SENS_DEFAULT_VA`].
+pub const ORIGINAL_ANALOG_DEFAULTS_SPAN: (u32, u32) = (0x0043_ff61, 0x0043_ffa7);
+
+/// The `push 2` inside [`ORIGINAL_ANALOG_DEFAULTS_SPAN`] that registers the
+/// default `FlyMode` setting.
+pub const ORIGINAL_FLY_MODE_DEFAULT_VA: u32 = 0x0043_ff7a;
+
+/// The `push 1.3f` inside [`ORIGINAL_ANALOG_DEFAULTS_SPAN`] that registers the
+/// default `MouseSens` setting.
+pub const ORIGINAL_MOUSE_SENS_DEFAULT_VA: u32 = 0x0043_ff9d;
+
+/// The Japanese-keyboard remap (`0x493600`): the key codes remapped when
+/// `GetKeyboardType(0) == 7`. The recorded pairs are
+/// [`ORIGINAL_JAPANESE_REMAP`].
+pub const ORIGINAL_JAPANESE_REMAP_VA: u32 = 0x0049_3600;
+
+/// The Alt modifier bit of a packed original key code.
+pub const ORIGINAL_KEY_ALT: u16 = 0x0100;
+/// The Ctrl modifier bit of a packed original key code.
+pub const ORIGINAL_KEY_CTRL: u16 = 0x0200;
+/// The Shift modifier bit of a packed original key code.
+pub const ORIGINAL_KEY_SHIFT: u16 = 0x0400;
+/// The largest packed key code: an 8-bit DirectInput scancode plus the three
+/// modifier bits above.
+pub const ORIGINAL_KEY_MAX: u16 = 0x07ff;
+
+/// The original's default `FlyMode` setting: `2`, the keyboard-plus-joystick
+/// mode (`0` keyboard only, `1` mouse/keyboard, `2` joystick/key).
+pub const ORIGINAL_FLY_MODE_DEFAULT: u8 = 2;
+
+/// The original's default `MouseSens` setting.
+pub const ORIGINAL_MOUSE_SENS_DEFAULT: f32 = 1.3;
+
+/// One of the original's packed key codes.
+///
+/// The code is `0` when the slot is unbound; otherwise a DirectInput
+/// scancode (`DIK_*`) with any of [`ORIGINAL_KEY_ALT`],
+/// [`ORIGINAL_KEY_CTRL`] and [`ORIGINAL_KEY_SHIFT`]. A scancode is an id, so
+/// it is committed as-is; the key's *name* is the original's display text and
+/// is never rendered.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub struct OriginalKeyCode(u16);
+
+impl OriginalKeyCode {
+    /// The unbound code.
+    pub const NONE: Self = Self(0);
+
+    /// A packed key code.
+    ///
+    /// # Panics
+    ///
+    /// Panics when `code` exceeds [`ORIGINAL_KEY_MAX`], which would mean the
+    /// recorded table is wrong rather than the original being unusual.
+    pub const fn new(code: u16) -> Self {
+        assert!(
+            code <= ORIGINAL_KEY_MAX,
+            "an original key code is at most 0x7ff (a scancode plus modifiers)"
+        );
+        Self(code)
+    }
+
+    /// The packed code, exactly as the original stores it.
+    pub const fn code(self) -> u16 {
+        self.0
+    }
+
+    /// The DirectInput scancode alone, without the modifier bits.
+    pub const fn scancode(self) -> u16 {
+        self.0 & 0x00ff
+    }
+
+    /// Whether this is the unbound code.
+    pub const fn is_none(self) -> bool {
+        self.0 == 0
+    }
+
+    /// Whether the code carries the Alt modifier.
+    pub const fn has_alt(self) -> bool {
+        self.0 & ORIGINAL_KEY_ALT != 0
+    }
+
+    /// Whether the code carries the Ctrl modifier.
+    pub const fn has_ctrl(self) -> bool {
+        self.0 & ORIGINAL_KEY_CTRL != 0
+    }
+
+    /// Whether the code carries the Shift modifier.
+    pub const fn has_shift(self) -> bool {
+        self.0 & ORIGINAL_KEY_SHIFT != 0
+    }
+
+    /// A stable diagnostic spelling: the packed code in hexadecimal, or `-`
+    /// for the unbound code.
+    pub fn label(self) -> String {
+        if self.is_none() {
+            "-".to_owned()
+        } else {
+            format!("{:#05x}", self.0)
+        }
+    }
+}
+
+impl fmt::Display for OriginalKeyCode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.label())
+    }
+}
+
+/// The seven categories the original's controls screen groups its commands
+/// into, in the order the screen draws them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
+pub enum OriginalControlCategory {
+    /// Movement (`MSG_MOVEMENT_CONTROLS`).
+    Movement,
+    /// Throttle (`MSG_THROTTLE_CONTROLS`).
+    Throttle,
+    /// Weapons (`MSG_WEAPON_CONTROLS`).
+    Weapons,
+    /// Targeting (`MSG_TARGETING_CONTROLS`).
+    Targeting,
+    /// Views, first group (`MSG_VIEW1_CONTROLS`).
+    View1,
+    /// Views, second group (`MSG_VIEW2_CONTROLS`).
+    View2,
+    /// Other (`MSG_OTHER_CONTROLS`).
+    Other,
+}
+
+impl OriginalControlCategory {
+    /// Every category, in the order the controls screen enumerates them.
+    pub const ALL: &'static [Self] = &[
+        Self::Movement,
+        Self::Throttle,
+        Self::Weapons,
+        Self::Targeting,
+        Self::View1,
+        Self::View2,
+        Self::Other,
+    ];
+
+    /// The stable label used in reports.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Movement => "movement",
+            Self::Throttle => "throttle",
+            Self::Weapons => "weapons",
+            Self::Targeting => "targeting",
+            Self::View1 => "view1",
+            Self::View2 => "view2",
+            Self::Other => "other",
+        }
+    }
+
+    /// The `RT_STRING` label id of the category's header in `strings.dll`, as
+    /// measured by F22-H.
+    pub const fn label_id(self) -> u32 {
+        match self {
+            Self::Movement => 3_005,
+            Self::Throttle => 3_008,
+            Self::Weapons => 3_006,
+            Self::Targeting => 3_009,
+            Self::View1 => 3_007,
+            Self::View2 => 3_010,
+            Self::Other => 3_011,
+        }
+    }
+
+    /// The symbol `strings.dll`'s `.data` `{name, id}` table gives the header
+    /// label. A symbol name is an id, not display text, so it is committed.
+    pub const fn symbol(self) -> &'static str {
+        match self {
+            Self::Movement => "MSG_MOVEMENT_CONTROLS",
+            Self::Throttle => "MSG_THROTTLE_CONTROLS",
+            Self::Weapons => "MSG_WEAPON_CONTROLS",
+            Self::Targeting => "MSG_TARGETING_CONTROLS",
+            Self::View1 => "MSG_VIEW1_CONTROLS",
+            Self::View2 => "MSG_VIEW2_CONTROLS",
+            Self::Other => "MSG_OTHER_CONTROLS",
+        }
+    }
+}
+
+impl fmt::Display for OriginalControlCategory {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+/// One row of the original's default control table: which command, which
+/// label id names it, which category it sits in, and which inputs it starts
+/// bound to.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OriginalDefaultBinding {
+    /// The original's command id — the value the binding manager keys the
+    /// command by and the keyboard handler dispatches on.
+    pub command_id: u16,
+    /// The `RT_STRING` label id naming the command (`strings.dll`).
+    pub label_id: u32,
+    /// The category the row sits in.
+    pub category: OriginalControlCategory,
+    /// The primary key binding, or [`OriginalKeyCode::NONE`].
+    pub key_a: OriginalKeyCode,
+    /// The secondary key binding, or [`OriginalKeyCode::NONE`].
+    pub key_b: OriginalKeyCode,
+    /// The joystick button: 1-based, as DirectInput numbers them. `0` is none.
+    /// Only buttons 1–10 are polled.
+    pub joystick_button: u8,
+    /// The mouse button: `1` left, `2` right, `3` middle, `0` none. No default
+    /// row binds one.
+    pub mouse_button: u8,
+    /// The virtual address of the `call` that registers this row in the
+    /// decrypted engine image, so every row cites its own source span.
+    pub registration_va: u32,
+}
+
+impl OriginalDefaultBinding {
+    /// A stable diagnostic spelling: the row's ids and codes, never its
+    /// display text.
+    pub fn describe(&self) -> String {
+        format!(
+            "cmd {} label {} key_a {} key_b {} joy {} mouse {}",
+            self.command_id,
+            self.label_id,
+            self.key_a.label(),
+            self.key_b.label(),
+            self.joystick_button,
+            self.mouse_button
+        )
+    }
+}
+
+/// Builds one recorded row of [`ORIGINAL_DEFAULT_BINDINGS`].
+///
+/// `const` so the table can be a `const`. The first six parameters are the
+/// registration call's left-to-right arguments (`command_id,
+/// label_string_id, key_a, key_b, joystick_button, mouse_button`); the
+/// category and the call's own virtual address are added by this task's scan.
+///
+/// # Panics
+///
+/// Panics when a field is outside the range the original's encoding allows,
+/// which would mean the recorded table is wrong rather than the original
+/// being unusual.
+const fn original_row(
+    command_id: u16,
+    label_id: u32,
+    category: OriginalControlCategory,
+    key_a: u16,
+    key_b: u16,
+    joystick_button: u8,
+    mouse_button: u8,
+    registration_va: u32,
+) -> OriginalDefaultBinding {
+    assert!(
+        registration_va >= ORIGINAL_TABLE_SPAN.0 && registration_va < ORIGINAL_TABLE_SPAN.1,
+        "a row's registration call must sit inside ORIGINAL_TABLE_SPAN"
+    );
+    assert!(
+        joystick_button <= 10,
+        "the original polls joystick buttons 1-10 only"
+    );
+    assert!(
+        mouse_button <= 3,
+        "a mouse button is 1 left, 2 right or 3 middle"
+    );
+    OriginalDefaultBinding {
+        command_id,
+        label_id,
+        category,
+        key_a: OriginalKeyCode::new(key_a),
+        key_b: OriginalKeyCode::new(key_b),
+        joystick_button,
+        mouse_button,
+        registration_va,
+    }
+}
+
+/// The original 2000 PC game's default control bindings: **64 commands in 7
+/// categories**, in the order the controls screen enumerates them.
+///
+/// Every row cites its source span through
+/// [`OriginalDefaultBinding::registration_va`], the `call` that registers it
+/// inside [`ORIGINAL_TABLE_SPAN`] of the decrypted engine image. The image
+/// digests and the installation fingerprint are recorded in the finding and
+/// in the F22-J evidence report
+/// (`docs/findings/2026-10-14-f22-j-original-default-control-bindings.md`,
+/// `docs/findings/evidence/F22-J.json`).
+///
+/// Sixty of the 64 rows carry one of the 65 command labels F22-H measured
+/// from `strings.dll`; the other four use label ids outside F22-H's measured
+/// ranges — `MSG_LOOK_FORWARD` (158), `MSG_LOOK_FLYBY` (143),
+/// `MSG_CAM_ZOOM_IN` (175) and `MSG_CAM_ZOOM_OUT` (176). Five of F22-H's 65
+/// measured labels are **not** on the controls screen:
+/// `MSG_CMD_CYCLE_MODE` (10006), `MSG_CMD_INTERP` (10007),
+/// `MSG_CMD_ZONE_TOGGLE` (11040), `MSG_CMD_COLLISION_TOGGLE` (11041) and
+/// `MSG_MISSILE_NEXT` (11085).
+///
+/// This is **recorded evidence, not behaviour and not the project default**:
+/// static code evidence from the owner's analysis plus this task's bounded
+/// scan, never `verified_original`. Nothing in this table is wired into the
+/// flight path; the project's own default remains
+/// [`ActionMap::designed_default`].
+#[rustfmt::skip]
+pub const ORIGINAL_DEFAULT_BINDINGS: &[OriginalDefaultBinding] = &[
+original_row(  1, 11057, OriginalControlCategory::Movement  , 0x0c8, 0x000, 0, 0, 0x00493718),
+    original_row(  2, 11058, OriginalControlCategory::Movement  , 0x0d0, 0x000, 0, 0, 0x0049372f),
+    original_row(  3, 11059, OriginalControlCategory::Movement  , 0x0cb, 0x000, 0, 0, 0x00493746),
+    original_row(  4, 11060, OriginalControlCategory::Movement  , 0x0cd, 0x000, 0, 0, 0x00493760),
+    original_row(  5, 11062, OriginalControlCategory::Movement  , 0x033, 0x052, 0, 0, 0x00493774),
+    original_row(  6, 11063, OriginalControlCategory::Movement  , 0x034, 0x053, 0, 0, 0x00493788),
+    original_row( 47, 11061, OriginalControlCategory::Movement  , 0x426, 0x000, 0, 0, 0x004937a2),
+    original_row(  7, 11067, OriginalControlCategory::Throttle  , 0x00d, 0x000, 0, 0, 0x004937cb),
+    original_row(  8, 11068, OriginalControlCategory::Throttle  , 0x00c, 0x000, 0, 0, 0x004937df),
+    original_row(  9, 11069, OriginalControlCategory::Throttle  , 0x002, 0x000, 0, 0, 0x004937f6),
+    original_row( 10, 11070, OriginalControlCategory::Throttle  , 0x003, 0x000, 0, 0, 0x0049380a),
+    original_row( 11, 11071, OriginalControlCategory::Throttle  , 0x004, 0x000, 0, 0, 0x0049381e),
+    original_row( 12, 11072, OriginalControlCategory::Throttle  , 0x005, 0x000, 0, 0, 0x00493835),
+    original_row( 13, 11073, OriginalControlCategory::Throttle  , 0x006, 0x000, 0, 0, 0x00493849),
+    original_row( 14, 11074, OriginalControlCategory::Throttle  , 0x007, 0x000, 0, 0, 0x0049385d),
+    original_row( 15, 11075, OriginalControlCategory::Throttle  , 0x008, 0x000, 0, 0, 0x00493874),
+    original_row( 16, 11076, OriginalControlCategory::Throttle  , 0x009, 0x000, 0, 0, 0x00493888),
+    original_row( 17, 11077, OriginalControlCategory::Throttle  , 0x00a, 0x000, 0, 0, 0x0049389c),
+    original_row( 19, 11045, OriginalControlCategory::Weapons   , 0x039, 0x000, 1, 0, 0x004938c8),
+    original_row( 20, 11086, OriginalControlCategory::Weapons   , 0x02d, 0x000, 2, 0, 0x004938dc),
+    original_row( 25, 11089, OriginalControlCategory::Weapons   , 0x03d, 0x000, 0, 0, 0x004938f0),
+    original_row( 26, 11090, OriginalControlCategory::Weapons   , 0x03e, 0x000, 7, 0, 0x00493907),
+    original_row( 32, 11091, OriginalControlCategory::Weapons   , 0x03f, 0x000, 0, 0, 0x0049391b),
+    original_row( 33, 11092, OriginalControlCategory::Weapons   , 0x040, 0x000, 8, 0, 0x0049392f),
+    original_row( 36, 10015, OriginalControlCategory::Targeting , 0x012, 0x000, 3, 0, 0x0049395b),
+    original_row( 37, 10016, OriginalControlCategory::Targeting , 0x412, 0x000, 0, 0, 0x00493972),
+    original_row( 38, 10017, OriginalControlCategory::Targeting , 0x212, 0x000, 0, 0, 0x00493989),
+    original_row( 39, 10018, OriginalControlCategory::Targeting , 0x011, 0x000, 0, 0, 0x004939a0),
+    original_row( 40, 10019, OriginalControlCategory::Targeting , 0x411, 0x000, 0, 0, 0x004939b7),
+    original_row( 41, 10020, OriginalControlCategory::Targeting , 0x211, 0x000, 0, 0, 0x004939ce),
+    original_row( 42, 10021, OriginalControlCategory::Targeting , 0x013, 0x000, 6, 0, 0x004939e5),
+    original_row( 43, 10022, OriginalControlCategory::Targeting , 0x413, 0x000, 0, 0, 0x004939fc),
+    original_row( 44, 10023, OriginalControlCategory::Targeting , 0x213, 0x000, 0, 0, 0x00493a13),
+    original_row( 45, 10009, OriginalControlCategory::Targeting , 0x010, 0x000, 0, 0, 0x00493a2a),
+    original_row( 46, 10008, OriginalControlCategory::Targeting , 0x014, 0x000, 0, 0, 0x00493a3e),
+    original_row( 48, 11024, OriginalControlCategory::View1     , 0x41f, 0x000, 5, 0, 0x00493a6a),
+    original_row( 49,   158, OriginalControlCategory::View1     , 0x042, 0x000, 4, 0, 0x00493a81),
+    original_row( 50, 11020, OriginalControlCategory::View1     , 0x043, 0x000, 0, 0, 0x00493a95),
+    original_row( 51, 11021, OriginalControlCategory::View1     , 0x044, 0x000, 0, 0, 0x00493aa9),
+    original_row( 52, 11022, OriginalControlCategory::View1     , 0x057, 0x000, 0, 0, 0x00493ac0),
+    original_row( 53, 11023, OriginalControlCategory::View1     , 0x058, 0x000, 0, 0, 0x00493ad4),
+    original_row( 54,   143, OriginalControlCategory::View1     , 0x041, 0x000, 0, 0, 0x00493ae8),
+    original_row( 55, 11025, OriginalControlCategory::View1     , 0x025, 0x000, 0, 0, 0x00493aff),
+    original_row( 57, 11036, OriginalControlCategory::View1     , 0x024, 0x000, 0, 0, 0x00493b13),
+    original_row( 56, 11026, OriginalControlCategory::View1     , 0x026, 0x000, 0, 0, 0x00493b27),
+    original_row( 58, 11027, OriginalControlCategory::View2     , 0x04f, 0x000, 0, 0, 0x00493b53),
+    original_row( 59, 11028, OriginalControlCategory::View2     , 0x050, 0x000, 0, 0, 0x00493b67),
+    original_row( 60, 11029, OriginalControlCategory::View2     , 0x051, 0x000, 0, 0, 0x00493b7b),
+    original_row( 61, 11030, OriginalControlCategory::View2     , 0x04b, 0x000, 0, 0, 0x00493b92),
+    original_row( 62, 11031, OriginalControlCategory::View2     , 0x04c, 0x000, 0, 0, 0x00493ba6),
+    original_row( 63, 11032, OriginalControlCategory::View2     , 0x04d, 0x000, 0, 0, 0x00493bba),
+    original_row( 64, 11033, OriginalControlCategory::View2     , 0x047, 0x000, 0, 0, 0x00493bd1),
+    original_row( 65, 11034, OriginalControlCategory::View2     , 0x048, 0x000, 0, 0, 0x00493be5),
+    original_row( 66, 11035, OriginalControlCategory::View2     , 0x049, 0x000, 0, 0, 0x00493bf9),
+    original_row( 68,   176, OriginalControlCategory::View2     , 0x04a, 0x000, 0, 0, 0x00493c10),
+    original_row( 67,   175, OriginalControlCategory::View2     , 0x04e, 0x000, 0, 0, 0x00493c24),
+    original_row(106, 11054, OriginalControlCategory::Other     , 0x01e, 0x000, 0, 0, 0x00493c4d),
+    original_row( 18, 10010, OriginalControlCategory::Other     , 0x031, 0x000, 0, 0, 0x00493c64),
+    original_row( 34, 11053, OriginalControlCategory::Other     , 0x22d, 0x000, 0, 0, 0x00493c7b),
+    original_row( 69, 11037, OriginalControlCategory::Other     , 0x001, 0x000, 0, 0, 0x00493c8f),
+    original_row( 35, 11056, OriginalControlCategory::Other     , 0x00f, 0x000, 0, 0, 0x00493ca6),
+    original_row(109, 11087, OriginalControlCategory::Other     , 0x029, 0x000, 0, 0, 0x00493cba),
+    original_row(110, 11088, OriginalControlCategory::Other     , 0x429, 0x000, 0, 0, 0x00493cd1),
+    original_row(111, 10025, OriginalControlCategory::Other     , 0x03b, 0x000, 0, 0, 0x00493ce8),
+];
+
+/// The recorded row for `command_id`, or `None` when the original's default
+/// table holds no such command.
+pub fn original_binding(command_id: u16) -> Option<&'static OriginalDefaultBinding> {
+    ORIGINAL_DEFAULT_BINDINGS
+        .iter()
+        .find(|row| row.command_id == command_id)
+}
+
+/// The device axes the original's player flight input reads, and the flight
+/// axis each drives.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum OriginalJoystickAxis {
+    /// Stick X: roll, sign inverted (stick right = roll right).
+    X,
+    /// Stick Y: pitch (stick back = nose up).
+    Y,
+    /// Stick Z when the device reports at least three axes, else slider 0:
+    /// the throttle.
+    Z,
+    /// Rudder Rz, sign inverted, only when the device reports at least four
+    /// axes.
+    Rz,
+    /// Hat (POV 0): the look directions in Joystick fly mode, falling back to
+    /// the numpad look commands 58–66 when centred. It drives no flight axis.
+    Hat,
+}
+
+/// One axis of the original's joystick mapping ([`ORIGINAL_JOYSTICK_INPUT_VA`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OriginalJoystickBinding {
+    /// The device axis the original reads.
+    pub axis: OriginalJoystickAxis,
+    /// The continuous flight axis the device axis drives; `None` for the hat,
+    /// which drives the look commands instead.
+    pub flight_axis: Option<FlightCommand>,
+    /// Whether the axis reads inverted relative to the canonical rising
+    /// direction.
+    pub inverted: bool,
+}
+
+/// The original's joystick axis mapping: which device axis drives which
+/// flight axis, and how the throttle axis is derived (`0.5 - 0.5 *
+/// normalised`, clamped to `0..1`).
+///
+/// A gamepad is a DirectInput joystick to the original and uses this same
+/// mapping; there is no separate gamepad path.
+pub const ORIGINAL_JOYSTICK_AXES: &[OriginalJoystickBinding] = &[
+    OriginalJoystickBinding {
+        axis: OriginalJoystickAxis::X,
+        flight_axis: Some(FlightCommand::Roll),
+        inverted: true,
+    },
+    OriginalJoystickBinding {
+        axis: OriginalJoystickAxis::Y,
+        flight_axis: Some(FlightCommand::Pitch),
+        inverted: false,
+    },
+    OriginalJoystickBinding {
+        axis: OriginalJoystickAxis::Z,
+        flight_axis: Some(FlightCommand::Throttle),
+        inverted: false,
+    },
+    OriginalJoystickBinding {
+        axis: OriginalJoystickAxis::Rz,
+        flight_axis: Some(FlightCommand::Yaw),
+        inverted: true,
+    },
+    OriginalJoystickBinding {
+        axis: OriginalJoystickAxis::Hat,
+        flight_axis: None,
+        inverted: false,
+    },
+];
+
+/// The Japanese-keyboard remap the original applies when
+/// `GetKeyboardType(0) == 7` ([`ORIGINAL_JAPANESE_REMAP_VA`]): each pair is
+/// `(input code, remapped code)`.
+pub const ORIGINAL_JAPANESE_REMAP: [(u16, u16); 3] = [(0x0d, 0x90), (0x29, 0x7d), (0x429, 0x47d)];
+
+/// The DirectInput scancode the original's table would name the same physical
+/// key as a project [`Key`], or `None` when the project's vocabulary has no
+/// scancode for it.
+///
+/// This is a **project-authored crosswalk**, not a measurement: the values are
+/// the public DirectInput `DIK_*` constants. Every value the original's own
+/// rows also use is corroborated by those rows — Space `0x39`, Escape `0x01`,
+/// the arrows `0xc8`/`0xd0`/`0xcb`/`0xcd`, `1` `0x02`, `E` `0x12`, `W` `0x11`,
+/// `R` `0x13`, `T` `0x14`, `L` `0x26`, `X` `0x2d`, `A` `0x1e`, Tab `0x0f`,
+/// and the chords `Ctrl+X` `0x22d`, `Shift+L` `0x426`, `Shift+S` `0x41f` and
+/// `Shift+backquote` `0x429`.
+pub fn original_scancode(key: Key) -> Option<u16> {
+    match key {
+        Key::W => Some(0x11),
+        Key::A => Some(0x1e),
+        Key::S => Some(0x1f),
+        Key::D => Some(0x20),
+        Key::Q => Some(0x10),
+        Key::E => Some(0x12),
+        Key::R => Some(0x13),
+        Key::F => Some(0x21),
+        Key::Z => Some(0x2c),
+        Key::X => Some(0x2d),
+        Key::C => Some(0x2e),
+        Key::B => Some(0x30),
+        Key::G => Some(0x22),
+        Key::T => Some(0x14),
+        Key::L => Some(0x26),
+        Key::Space => Some(0x39),
+        Key::LeftShift => Some(0x2a),
+        Key::LeftControl => Some(0x1d),
+        Key::LeftAlt => Some(0x38),
+        Key::Escape => Some(0x01),
+        Key::Enter => Some(0x1c),
+        Key::Tab => Some(0x0f),
+        Key::Backspace => Some(0x0e),
+        Key::ArrowUp => Some(0xc8),
+        Key::ArrowDown => Some(0xd0),
+        Key::ArrowLeft => Some(0xcb),
+        Key::ArrowRight => Some(0xcd),
+        Key::Digit1 => Some(0x02),
+        Key::Digit2 => Some(0x03),
+        Key::Digit3 => Some(0x04),
+        Key::Digit4 => Some(0x05),
+    }
+}
+
+/// The original command ids each project command corresponds to.
+///
+/// This is a **project-authored crosswalk** carried forward from F22-H's
+/// measured label comparison (`docs/findings/2026-10-02-f22-h-original-control-vocabulary.md`):
+/// the original splits some controls this project keeps in one command (the
+/// target classes) and keeps some in one command this project splits (the
+/// throttle steps and direct settings). A command the original exposes no
+/// label for maps to no row at all.
+pub fn original_command_ids(command: FlightCommand) -> &'static [u16] {
+    match command {
+        FlightCommand::Pitch => &[1, 2],
+        FlightCommand::Roll => &[3, 4],
+        FlightCommand::Yaw => &[5, 6],
+        FlightCommand::Throttle => &[7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17],
+        FlightCommand::FirePrimary => &[19],
+        FlightCommand::FireSecondary => &[20],
+        FlightCommand::CycleWeapon => &[25, 26, 32, 33],
+        FlightCommand::DropOrdnance => &[],
+        FlightCommand::Eject => &[34],
+        FlightCommand::ToggleGear => &[],
+        FlightCommand::FlapStep => &[],
+        FlightCommand::TargetNext => &[36, 39, 42],
+        FlightCommand::TargetPrev => &[37, 40, 43],
+        FlightCommand::Countermeasure => &[],
+        FlightCommand::ThrottleStepUp => &[7],
+        FlightCommand::ThrottleStepDown => &[8],
+        FlightCommand::ThrottleIdle => &[9],
+        FlightCommand::ThrottleFull => &[17],
+        FlightCommand::LevelOff => &[47],
+    }
+}
+
+/// The original command ids each project UI action corresponds to, with the
+/// same crosswalk rule as [`original_command_ids`]. Only `pause` has a
+/// measured default row; the six navigation actions are the ones F22-H
+/// classified `runtime_only`, because no shipped file names them.
+pub fn original_command_ids_for_ui(action: UiAction) -> &'static [u16] {
+    match action {
+        UiAction::Confirm
+        | UiAction::Cancel
+        | UiAction::NavigateUp
+        | UiAction::NavigateDown
+        | UiAction::NavigateLeft
+        | UiAction::NavigateRight => &[],
+        UiAction::Pause => &[69],
+    }
+}
+
+/// How the original default and the project's designed default agree for one
+/// subject of [`compare_with_original_default`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DefaultAgreement {
+    /// Both sides name exactly the same inputs and nothing else.
+    Same,
+    /// They share at least one input but differ elsewhere.
+    Partial,
+    /// Both sides bind the subject and share no input.
+    Different,
+    /// The project declares the command and the original's default table binds
+    /// no command to it (F22-H's `absent` classification).
+    ProjectOnly,
+    /// The original binds the command and the project declares nothing for it.
+    OriginalOnly,
+    /// A UI action no shipped file names (F22-H's `runtime_only`
+    /// classification): the original almost certainly binds menu keys, but no
+    /// default row is measured for them.
+    RuntimeOnly,
+}
+
+/// The subject of one [`DefaultComparisonRow`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum DefaultSubject {
+    /// A declared project command or UI action, by its stable label.
+    Declared(&'static str),
+    /// An original command the project declares nothing for, by command id.
+    OriginalOnly(u16),
+}
+
+/// One row of the recorded comparison between the original default table and
+/// a project [`ActionMap`] (normally [`ActionMap::designed_default`]).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct DefaultComparisonRow {
+    /// What the row is about.
+    pub subject: DefaultSubject,
+    /// How the two sides agree.
+    pub agreement: DefaultAgreement,
+    /// The map's sources for the subject, in map order, by their labels.
+    pub designed: Vec<String>,
+    /// The original's rows for the subject, in screen order, by their
+    /// [`OriginalDefaultBinding::describe`] spellings.
+    pub original: Vec<String>,
+}
+
+/// Compares a project [`ActionMap`] with the original's recorded default table
+/// and returns one row per declared command, one per declared UI action and
+/// one per original-only command.
+///
+/// The comparison records differences; it **changes nothing**. In particular
+/// it does not rewrite [`ActionMap::designed_default`], which stays a designed
+/// map: a `Same` or `Partial` row says the two defaults share an input, not
+/// that the project's map is original-verified.
+///
+/// A designed source matches an original row when the source is a [`Key`]
+/// whose [`original_scancode`] equals one of that row's key codes. Mouse and
+/// gamepad sources and joystick buttons never match: the original's default
+/// table binds no mouse button and the joystick-button field is 1-based, so
+/// the project's index convention is not assumed to line up with it.
+pub fn compare_with_original_default(map: &ActionMap) -> Vec<DefaultComparisonRow> {
+    let mut rows = Vec::new();
+    for command in FlightCommand::ALL {
+        let designed = designed_sources(map, Action::Flight(*command));
+        let original = cited_rows(original_command_ids(*command));
+        rows.push(DefaultComparisonRow {
+            subject: DefaultSubject::Declared(command.label()),
+            agreement: agreement(&designed, &original, DefaultAgreement::ProjectOnly),
+            designed: source_labels(&designed),
+            original: row_descriptions(&original),
+        });
+    }
+    for action in UiAction::ALL {
+        let designed = designed_sources(map, Action::Ui(*action));
+        let original = cited_rows(original_command_ids_for_ui(*action));
+        rows.push(DefaultComparisonRow {
+            subject: DefaultSubject::Declared(action.label()),
+            agreement: agreement(&designed, &original, DefaultAgreement::RuntimeOnly),
+            designed: source_labels(&designed),
+            original: row_descriptions(&original),
+        });
+    }
+    for row in ORIGINAL_DEFAULT_BINDINGS {
+        if !is_cited(row.command_id) {
+            rows.push(DefaultComparisonRow {
+                subject: DefaultSubject::OriginalOnly(row.command_id),
+                agreement: DefaultAgreement::OriginalOnly,
+                designed: Vec::new(),
+                original: vec![row.describe()],
+            });
+        }
+    }
+    rows
+}
+
+/// The map's bindings for `action`, in map order.
+fn designed_sources(map: &ActionMap, action: Action) -> Vec<BindingSource> {
+    map.bindings()
+        .iter()
+        .filter(|binding| binding.target.action() == action)
+        .map(|binding| binding.source)
+        .collect()
+}
+
+/// The recorded rows of the original default table for `ids`, in screen order
+/// and skipping ids the table does not hold.
+fn cited_rows(ids: &[u16]) -> Vec<&'static OriginalDefaultBinding> {
+    ids.iter().filter_map(|id| original_binding(*id)).collect()
+}
+
+/// Whether any project command or UI action cites `command_id`.
+fn is_cited(command_id: u16) -> bool {
+    FlightCommand::ALL
+        .iter()
+        .any(|command| original_command_ids(*command).contains(&command_id))
+        || UiAction::ALL
+            .iter()
+            .any(|action| original_command_ids_for_ui(*action).contains(&command_id))
+}
+
+/// The agreement between one subject's designed sources and original rows.
+/// `empty` is the classification for a declared subject with no original row.
+fn agreement(
+    designed: &[BindingSource],
+    original: &[&OriginalDefaultBinding],
+    empty: DefaultAgreement,
+) -> DefaultAgreement {
+    if original.is_empty() {
+        return empty;
+    }
+    if designed.is_empty() {
+        return DefaultAgreement::OriginalOnly;
+    }
+    let designed_keys: Vec<u16> = designed
+        .iter()
+        .filter_map(|source| match source {
+            BindingSource::Key(key) => original_scancode(*key),
+            _ => None,
+        })
+        .collect();
+    let original_keys: Vec<u16> = original
+        .iter()
+        .flat_map(|row| [row.key_a.code(), row.key_b.code()])
+        .filter(|code| *code != 0)
+        .collect();
+    let shared = designed_keys
+        .iter()
+        .filter(|code| original_keys.contains(code))
+        .count();
+    if shared == 0 {
+        return DefaultAgreement::Different;
+    }
+    let every_designed_source_is_a_known_key = designed_keys.len() == designed.len();
+    let original_binds_no_button = original
+        .iter()
+        .all(|row| row.joystick_button == 0 && row.mouse_button == 0);
+    if every_designed_source_is_a_known_key
+        && original_binds_no_button
+        && shared == designed_keys.len()
+        && shared == original_keys.len()
+    {
+        DefaultAgreement::Same
+    } else {
+        DefaultAgreement::Partial
+    }
+}
+
+/// The labels of `sources`, in order.
+fn source_labels(sources: &[BindingSource]) -> Vec<String> {
+    sources.iter().map(|source| source.label()).collect()
+}
+
+/// The [`OriginalDefaultBinding::describe`] spellings of `rows`, in order.
+fn row_descriptions(rows: &[&OriginalDefaultBinding]) -> Vec<String> {
+    rows.iter().map(|row| row.describe()).collect()
 }
 
 #[cfg(test)]
