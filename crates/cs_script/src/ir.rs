@@ -801,22 +801,40 @@ pub enum Action {
         min: i32,
         max: i32,
     },
-    /// Request the mission's terminal outcome.
+    /// Request the mission's terminal outcome **with** the original's
+    /// instant-outcome marker.
     ///
-    /// This is the mission IR's one terminal action, and the measured
-    /// lowering vocabulary reaches it through the two keys that carry no
-    /// argument list — `INSTANTWIN`/`INSTANTLOSS`
+    /// The measured lowering vocabulary reaches this action through the two
+    /// keys that carry no argument list — `INSTANTWIN`/`INSTANTLOSS`
     /// (`cs_content::mission_control::terminal_outcome_of`, "the mission IR
-    /// has an action for it"). The runtime therefore reads a request that
-    /// resolves the mission on the tick it arrives as the original's
-    /// instant-outcome marker, which selects the 0.1 s end delay instead of
-    /// the 3.0 s one (`crate::runtime::MissionEndPresentation`). A *non-instant*
-    /// ending — the outcome-class aggregation (`WON`/`LOST`, which the IR
-    /// spells as [`DirectiveOperation::OutcomeClass`] and never as a terminal
-    /// request) or a countdown expiry — has no way to request an outcome
-    /// without that marker, so it cannot be expressed here yet; the gap and
-    /// its resolving task are recorded in `crate::runtime::TERMINAL_PRESENTATION_FINDINGS`.
+    /// has an action for it"). The runtime therefore reads a `Finish` that
+    /// resolves the mission on the tick it arrives as the instant-outcome
+    /// marker, which selects the 0.1 s end delay instead of the 3.0 s one
+    /// (`crate::runtime::MissionEndPresentation`). `Finish(Aborted)` is no
+    /// win or loss and stays the standard-delay shape of a teardown.
+    ///
+    /// The non-instant ending — the flags are set but no instant outcome
+    /// fired that tick, the outcome-class aggregation `WON`/`LOST` — is
+    /// [`Action::FinishStandard`] (F37-D-FU7).
     Finish(Outcome),
+    /// Request the mission's terminal outcome **without** the instant-outcome
+    /// marker: the mission's WON or LOST flag is set, but no
+    /// `INSTANTWIN`/`INSTANTLOSS` fired this tick, so the end presentation
+    /// takes the measured standard 3.0 s delay
+    /// ([`crate::runtime::EndDelay::Standard`]) instead of the instant 0.1 s
+    /// one. The branch, the cues and the recorded result are selected exactly
+    /// as for [`Action::Finish`]; only the delay differs.
+    ///
+    /// This is what a lowering of outcome-class aggregation (all WON-class
+    /// records completed, all LOST-class records completed) emits. *Designed
+    /// and unmeasured*: the original keeps the flags and the instant marker
+    /// as separate bytes and the IR spells them as separate actions; which
+    /// lowering emits this action is that lowering's own task, and no
+    /// lowering in the tree does yet. If a `Finish` and a `FinishStandard`
+    /// land on one tick, an instant outcome did fire, so the delay is the
+    /// instant one. `FinishStandard(Outcome::Aborted)` is the same request as
+    /// `Finish(Outcome::Aborted)`.
+    FinishStandard(Outcome),
     /// A reward intent; the host applies it, the runtime emits it once.
     GrantReward {
         reward: ContentId,
@@ -867,7 +885,7 @@ impl Action {
             | Self::Draw { .. }
             | Self::Schedule { .. }
             | Self::Reschedule { .. } => Phase::State,
-            Self::Finish(_) => Phase::Terminal,
+            Self::Finish(_) | Self::FinishStandard(_) => Phase::Terminal,
             Self::GrantReward { .. } | Self::Directive { .. } | Self::Unknown { .. } => Phase::Host,
         }
     }
@@ -1274,7 +1292,10 @@ impl Ctx<'_> {
             return Err(ValidationError::ActionsTooDeep { at: at() });
         }
         match a {
-            Action::Finish(_) | Action::GrantReward { .. } | Action::Reschedule { .. } => Ok(()),
+            Action::Finish(_)
+            | Action::FinishStandard(_)
+            | Action::GrantReward { .. }
+            | Action::Reschedule { .. } => Ok(()),
             Action::Directive { args, .. } => {
                 // A directive's top-level arguments are its argument list;
                 // the same bound a `Value::List` carries applies to it.

@@ -1564,6 +1564,9 @@ struct PendingWork {
 struct TickRun {
     writes: Vec<(SymbolId, Value)>,
     requested: BTreeSet<Outcome>,
+    /// The subset of `requested` that came with the instant-outcome marker
+    /// (`Action::Finish`, not `Action::FinishStandard`).
+    instant: BTreeSet<Outcome>,
     ready: VecDeque<PendingWork>,
     work: u64,
 }
@@ -2139,6 +2142,7 @@ impl MissionState {
         let mut run = TickRun {
             writes: Vec::new(),
             requested: BTreeSet::new(),
+            instant: BTreeSet::new(),
             // Every item already due — in (due, enqueue) order.
             ready: self.take_due(tick),
             work: 0,
@@ -2305,16 +2309,17 @@ impl MissionState {
             // before win), the WON flag chooses the mission sound, the
             // animation and — through the policy — the recorded result, and
             // an instant outcome fired this tick exactly when the program
-            // requested the win or the loss. `Action::Finish` is the mission
-            // IR's terminal action and the measured lowering vocabulary
-            // reaches it through `INSTANTWIN`/`INSTANTLOSS`
-            // (`cs_content::mission_control::terminal_outcome_of`), so a
-            // program request that resolves a mission *is* the original's
-            // instant-outcome marker; a transition with no such request (only
-            // a host teardown reaches one today) carries the standard delay.
+            // requested the win or the loss through `Action::Finish`, the
+            // action the measured `INSTANTWIN`/`INSTANTLOSS` keys lower to
+            // (`cs_content::mission_control::terminal_outcome_of`), which *is*
+            // the original's instant-outcome marker. `Action::FinishStandard`
+            // (F37-D-FU7) sets the same flag without the marker, and a
+            // transition with no request (a host teardown) carries the
+            // standard delay too.
             let lost = run.requested.contains(&Outcome::Failed);
             let won = run.requested.contains(&Outcome::Succeeded);
-            let instant = lost || won;
+            let instant =
+                run.instant.contains(&Outcome::Failed) || run.instant.contains(&Outcome::Succeeded);
             self.presentation = Some(MissionEndPresentation::new(
                 lost,
                 won,
@@ -2490,6 +2495,11 @@ impl MissionState {
                 run.writes.push((*variable, Value::Int(drawn)));
             }
             Action::Finish(outcome) => {
+                run.requested.insert(*outcome);
+                run.instant.insert(*outcome);
+                self.emit(result, key, EventKind::TerminalRequested(*outcome));
+            }
+            Action::FinishStandard(outcome) => {
                 run.requested.insert(*outcome);
                 self.emit(result, key, EventKind::TerminalRequested(*outcome));
             }

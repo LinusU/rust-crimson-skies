@@ -73,7 +73,9 @@ Same evidence as the rule it implements, not a new measurement:
 
 ## The two mapping decisions, and what stays open
 
-**1. A program's terminal request is the instant-outcome marker.**
+**1. A program's `Action::Finish` is the instant-outcome marker** (since
+F37-D-FU7, `Action::FinishStandard` is the same request without it; see the
+last bullet below).
 The original distinguishes an `INSTANTWIN`/`INSTANTLOSS` firing *this tick*
 (0.1 s) from a mission whose flags were already set (3.0 s). The measured
 lowering vocabulary reaches the mission IR's one terminal action
@@ -111,15 +113,21 @@ What is **not** closed by this entry, recorded so it cannot be lost:
   siblings is mission content read from the control record (M01 spells none of
   the seven), not a runtime answer. The measured "when that sound exists the
   countdown to the end screen is 0" therefore stays with the consumer.
-* **A non-instant win/loss ending.** The IR has one terminal action, mapped to
-  the instant spelling above, so a program cannot yet end a mission *without*
-  the instant marker: the outcome-class aggregation (`WON`/`LOST`, the 3.0 s
-  ending) has no terminal producer in this layer, and the countdown-expiry
-  ending is `F37-D-FU4` (`#730`)'s. No content in this tree reaches it today —
-  M01 ends through `INSTANTWIN`/`INSTANTLOSS` — so no `f37.d.limit.*` entry
-  gates it; the gap is filed as `F37-D-FU7` (`#739`), which depends on this
-  task. Until it exists, a lowering that ends a mission by class aggregation
-  would select the instant delay, and that statement must be revisited with it.
+* **A non-instant win/loss ending — closed by F37-D-FU7 (`#739`).** The IR
+  now has a second terminal action, `Action::FinishStandard(Outcome)`: it sets
+  the same WON/LOST flag as `Action::Finish` but carries no instant-outcome
+  marker, so the presentation selects `EndDelay::Standard` (3.0 s).
+  `Action::Finish` keeps its meaning (the `INSTANTWIN`/`INSTANTLOSS` keys,
+  0.1 s), and when both land on one tick an instant outcome did fire, so the
+  delay is the instant one. This is **designed and unmeasured**: the original
+  keeps the flag and the marker as separate bytes and the IR spells them as
+  separate actions, but nothing measures how the original's outcome-class
+  aggregation (`WON`/`LOST`) reaches the flag beyond that. No lowering emits
+  `FinishStandard` yet — that is the lowering of outcome-class aggregation's
+  own task — so the delay is reachable from a *program* but no retail content
+  in this tree ends that way (M01 ends through the instant keys). The
+  countdown-expiry ending stays `F37-D-FU4` (`#730`)'s. Tests:
+  `accept_f37_d_fu7_*` in `crates/cs_script/tests/accept_f37_d_fu7.rs`.
 
 ## Acceptance
 
