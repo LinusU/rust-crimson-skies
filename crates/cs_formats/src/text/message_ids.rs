@@ -32,9 +32,12 @@
 //!   array of pointers this scan would read as `{pointer, id}`, which the id
 //!   bound rejects);
 //! * the address is at least `ImageBase` and maps through
-//!   [`PeLayout::map_rva`] to raw bytes holding a NUL-terminated name of
+//!   [`PeLayout::map_rva`] to raw bytes holding a name of
 //!   [`MESSAGE_NAME_MIN_BYTES`]..=[`MESSAGE_NAME_MAX_BYTES`] bytes in which
-//!   every byte is an ASCII letter, digit or `_`.
+//!   every byte is an ASCII letter, digit or `_`, ending at the first byte
+//!   that is none of those (the pool stores NUL terminators, but the grammar
+//!   only needs *some* byte outside it, so it accepts what the pool holds
+//!   rather than insisting on one spelling of the terminator).
 //!
 //! A pair failing any of those is **skipped**, never repaired or guessed, and
 //! the scan never fails on content: like [`crate::text::resource_header`], the
@@ -56,13 +59,16 @@ pub const MESSAGE_IDS_ENTRYPOINT: &str = "pe.message_ids";
 /// Bytes of one `{name pointer, id}` record.
 pub const MESSAGE_ID_RECORD_BYTES: u64 = 8;
 
-/// Shortest name a record may carry: the installation's shortest names are
-/// two bytes, and a one-byte name in this position is a fragment, not a label.
+/// Shortest name a record may carry: the shortest name this grammar accepts
+/// anywhere in the installation is two bytes (measured with this exact
+/// grammar over every shipped PE image), and a one-byte name in this position
+/// is a fragment, not a label.
 pub const MESSAGE_NAME_MIN_BYTES: usize = 2;
 
-/// Longest name a record may carry: the installation's longest name is 34
-/// bytes, and the cap stops a run of printable bytes from being booked as a
-/// name.
+/// Longest name a record may carry: the longest name this grammar accepts
+/// anywhere in the installation is thirty bytes — the `MSG_CMD_*` labels of
+/// `strings.dll`'s own table — and the cap, well above it, stops a run of
+/// printable bytes from being booked as a name.
 pub const MESSAGE_NAME_MAX_BYTES: usize = 60;
 
 /// Lowest id a record may carry; see the module doc for why the bound is
@@ -241,8 +247,9 @@ fn record_at(
         return Ok(None);
     }
     // One byte past the cap is read on purpose: a name that continues past
-    // the cap then has no NUL inside the window and fails the length check,
-    // instead of being truncated into a name the image never spelled.
+    // the cap then has no terminating byte inside the window and fails the
+    // length check, instead of being truncated into a name the image never
+    // spelled.
     let want = mapped
         .available
         .min(u64::from(MESSAGE_NAME_MAX_BYTES as u32) + 1);
