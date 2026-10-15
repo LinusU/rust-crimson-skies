@@ -10,9 +10,9 @@ nothing here is `verified_original`.
 ## Files
 
 - `crates/cs_app/src/render/weather.rs` (new): `WeatherSpec` (the drawn layers
-  plus one [`WeatherOrigin`] per field), `WeatherLayerSpec` (`alpha_at`, `mesh`),
-  `designed_cloud_field` and `WeatherPlugin` (spawn plus the per-frame
-  placement under the camera).
+  plus one `WeatherOrigin` per field), `WeatherLayerSpec` (`mesh` and the
+  alpha profile it is built from), `designed_cloud_field` and `WeatherPlugin`
+  (spawn plus the per-frame placement under the camera).
 - Wiring only: `crates/cs_app/src/render/mod.rs` (module declaration and
   re-export), `crates/cs_app/src/playtest/mod.rs` (`windowed_app` installs it
   beside the horizon when `retail` content was requested),
@@ -104,13 +104,14 @@ the guess rule 4 forbids.
 
 - **A deck is a broken layer, not a sheet.** Its mesh is one grid whose every
   vertex carries the layer's colour in linear space and its own alpha: the
-  designed field [`designed_cloud_field`] (three sine lobes at 3/2, 2/5 and 7/3
-  cycles across the layer), painted wherever it is above a threshold, with a
-  soft edge (`CLOUD_PATTERN_EDGE` 0.06). The threshold is the field's own
-  quantile at `1 - coverage` **over that layer's own grid**, so the share of
-  the deck the pattern paints *is* the layer's coverage — a 0.55 deck paints
-  55% of its area and leaves the rest of the `M01-PLAY-SKY` sky visible, and
-  the same code draws a 0.25 record layer as a thin broken layer.
+  designed field `designed_cloud_field` (three sine lobes whose coefficient
+  pairs are `(3, 2)`, `(2, 5)` and `(7, 3)`), painted wherever it is above a
+  threshold, with a soft edge (`CLOUD_PATTERN_EDGE` 0.06). The threshold is the
+  field's own quantile at `1 - coverage` **over that layer's own grid**, so the
+  share of the deck the pattern paints — measured over that same grid — *is*
+  the layer's coverage: a 0.55 deck paints a little over half of its own grid
+  and leaves the rest of the `M01-PLAY-SKY` sky visible, and the same code
+  draws a 0.25 record layer as a thin broken layer.
 - **The haze is a profile, not a sheet.** Its alpha runs from
   `HAZE_OVERHEAD_FRACTION` (0.35) of the coverage directly over the camera to
   the coverage itself at the layer's edge, where the line of sight through it
