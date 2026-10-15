@@ -285,3 +285,42 @@ acceptance suite measures against. Every decal layer is listed with mesh,
 material group, stored material and texture in the `playtest sources` line and
 the smoke `report.json` (`decals`). See
 `docs/findings/2026-10-08-playtest-decal-zfight.md`.
+
+## Original mission M01
+
+```sh
+cargo build --release --locked -p cs_app --bin cs
+CS_CAPABILITIES=retail,gpu,audio \
+CS_ENGINE_IMAGE=/path/to/crimson.decrypted.exe \
+target/release/cs --cs-path /path/to/retail --mission M01
+```
+
+* `--cs-path` is the read-only retail installation. Never put anything in it:
+  an extra file there changes the installation fingerprint.
+* `CS_ENGINE_IMAGE` names the owner-supplied decrypted executable. The player's
+  airframe and start pose are read from it, so it is needed. It lives
+  **outside** the installation and is never searched for inside it. Without it
+  the launch refuses with `set CS_ENGINE_IMAGE=<path to crimson.decrypted.exe>`.
+* `CS_CAPABILITIES` must list `audio` (and `gpu` for the window; `retail` for
+  the data). The mission plays its launch sound and refuses to run mute.
+  Without `audio` it refuses with `add audio to CS_CAPABILITIES` and exit
+  code 4.
+* Both variables are checked before the dependency closure is measured, so a
+  missing one is reported at once. With both set, startup takes about a minute
+  while the closure is measured and the world loads; the window opens after.
+
+What the window shows: the original M01 world with its mission records,
+labelled `ORIGINAL MISSION M01 / ORIGINAL WORLD / PLAYER AIRFRAME MEASURED /
+PROP+LOD PICKS DESIGNED`, and the player airframe `pdevastator`. The terminal
+prints the flight law's provenance (`mission flight: record ... provenance ...
+verified_original=false`): the statically recovered fixed-wing law, still
+uncalibrated against an original run (#358).
+
+What it does not show yet: no mission dialogue and no music. The only sound is
+the launch sound and the player's engine loop. Nothing here is
+`verified_original`.
+
+Controls are the keyboard table above (`W`/`S`, `Q`/`E`, `A`/`D`, throttle,
+`Esc`, `F10`). `R` restarts the whole mission: it reloads the world and
+respawns the player from the start recipe, instead of only resetting the
+aircraft.

@@ -10,6 +10,9 @@ mission, it is not `M01`, and it does not block the synthetic flight loop
 is file access, not evidence of how the 2000 engine behaved. **Nothing in this
 document is `verified_original`.**
 
+To launch original mission M01 itself, see "Original mission M01" in
+`docs/PLAYTEST.md`.
+
 ## The label every surface carries
 
 ```
