@@ -316,6 +316,11 @@ impl fmt::Display for MissionCompositionError {
             Self::Host(error) => write!(f, "the mission host refuses: {error}"),
             Self::Capture(refusal) => write!(f, "{refusal}"),
             Self::LaunchSound(error) => write!(f, "{error}"),
+            Self::Audio(error) if error.code == crate::audio::CODE_CAPABILITY_ABSENT => write!(
+                f,
+                "add audio to CS_CAPABILITIES, e.g. CS_CAPABILITIES=retail,gpu,audio\n  \
+                 the mission audio refuses: {error}"
+            ),
             Self::Audio(error) => write!(f, "the mission audio refuses: {error}"),
             Self::Exit(reason) => write!(f, "the mission window exited with an error: {reason}"),
         }

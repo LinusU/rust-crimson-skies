@@ -1114,7 +1114,8 @@ impl std::fmt::Display for EngineImageError {
         match self {
             Self::Unset => write!(
                 formatter,
-                "{ENGINE_IMAGE_ENV_VAR} is not set: it must name the owner-supplied decrypted \
+                "set {ENGINE_IMAGE_ENV_VAR}=<path to crimson.decrypted.exe>\n  \
+                 {ENGINE_IMAGE_ENV_VAR} is not set: it must name the owner-supplied decrypted \
                  engine image (crimson.decrypted.exe), which lives outside the read-only retail \
                  installation (#798)"
             ),

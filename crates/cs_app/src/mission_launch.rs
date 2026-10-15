@@ -269,6 +269,102 @@ pub enum LaunchPlanError {
     /// The binding resolved but critical dependencies stayed unresolved —
     /// there is no mission to plan around.
     UnresolvedCritical { reasons: Vec<String> },
+    /// The environment the launch needs is not set up. Judged before the slow
+    /// closure measurement, so the fix is named without a minute's wait.
+    Preflight(LaunchPreflightError),
+}
+
+/// A launch precondition the environment does not meet.
+///
+/// `action` is the one short line that says what to do; `reason` is the
+/// detailed why, shown after it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LaunchPreflightError {
+    /// One short actionable line, e.g. `set CS_ENGINE_IMAGE=<path>`.
+    pub action: String,
+    /// The detailed reasoning that follows the action.
+    pub reason: String,
+    /// The CLI exit status this refusal maps to.
+    pub exit_code: u8,
+}
+
+impl fmt::Display for LaunchPreflightError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}\n  {}", self.action, self.reason)
+    }
+}
+
+impl LaunchPreflightError {
+    /// Judges the two environment variables an original mission needs from
+    /// the values given (`None` when unset), without touching the process
+    /// environment.
+    ///
+    /// # Errors
+    ///
+    /// The first precondition that fails: `CS_ENGINE_IMAGE` unset, empty or
+    /// naming a missing file, then `CS_CAPABILITIES` without `audio`.
+    pub fn check(
+        engine_image: Option<&std::ffi::OsStr>,
+        capabilities: Option<&str>,
+    ) -> Result<(), Self> {
+        match engine_image.filter(|value| !value.is_empty()) {
+            None => {
+                return Err(Self {
+                    action: "set CS_ENGINE_IMAGE=<path to crimson.decrypted.exe>".to_owned(),
+                    reason: "the player's airframe and start pose are read from the \
+                             owner-supplied decrypted engine image, which lives outside the \
+                             read-only retail installation and is never looked for in it \
+                             (docs/PLAYTEST-RETAIL.md, \"Original mission M01\")"
+                        .to_owned(),
+                    exit_code: crate::cli::EXIT_RUNTIME_FAILURE,
+                });
+            }
+            Some(path) if !std::path::Path::new(path).is_file() => {
+                return Err(Self {
+                    action: "point CS_ENGINE_IMAGE at an existing crimson.decrypted.exe".to_owned(),
+                    reason: format!(
+                        "CS_ENGINE_IMAGE names {}, which is not a readable file",
+                        std::path::Path::new(path).display()
+                    ),
+                    exit_code: crate::cli::EXIT_RUNTIME_FAILURE,
+                });
+            }
+            Some(_) => {}
+        }
+        let declaration = crate::audio::CapabilityDeclaration::parse(capabilities.unwrap_or(""));
+        if let Some(malformed) = &declaration.malformed {
+            return Err(Self {
+                action: "fix CS_CAPABILITIES so it lists audio, e.g. retail,gpu,audio".to_owned(),
+                reason: format!("the launch sound must be audible, but {malformed}"),
+                exit_code: crate::audio::EXIT_MISSING_CAPABILITY,
+            });
+        }
+        if !declaration.contains(cs_content::replay::CapabilityClass::Audio) {
+            return Err(Self {
+                action: "add audio to CS_CAPABILITIES, e.g. CS_CAPABILITIES=retail,gpu,audio"
+                    .to_owned(),
+                reason: format!(
+                    "the mission plays its launch sound and refuses to run mute; \
+                     CS_CAPABILITIES declares {:?}",
+                    declaration.label()
+                ),
+                exit_code: crate::audio::EXIT_MISSING_CAPABILITY,
+            });
+        }
+        Ok(())
+    }
+
+    /// [`Self::check`] against this process's environment.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::check`].
+    pub fn from_environment() -> Result<(), Self> {
+        Self::check(
+            std::env::var_os("CS_ENGINE_IMAGE").as_deref(),
+            std::env::var("CS_CAPABILITIES").ok().as_deref(),
+        )
+    }
 }
 
 impl fmt::Display for LaunchPlanError {
@@ -280,6 +376,7 @@ impl fmt::Display for LaunchPlanError {
                 "the mission identity never resolved; critical dependencies: {}",
                 reasons.join(", ")
             ),
+            Self::Preflight(error) => write!(f, "{error}"),
         }
     }
 }
@@ -288,7 +385,7 @@ impl std::error::Error for LaunchPlanError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Binding(source) => Some(source),
-            Self::UnresolvedCritical { .. } => None,
+            Self::UnresolvedCritical { .. } | Self::Preflight(_) => None,
         }
     }
 }
@@ -313,6 +410,22 @@ pub fn plan_mission_launch(
     install_root: &Path,
     label: MissionLabel,
     discovery_title: &str,
+) -> Result<MissionLaunchPlan, LaunchPlanError> {
+    plan_mission_launch_after(install_root, label, discovery_title, || Ok(()))
+}
+
+/// [`plan_mission_launch`] with a gate that runs once the identity binding has
+/// resolved and before the slow closure measurement starts, so a launch the
+/// environment cannot satisfy is refused without the wait.
+///
+/// # Errors
+///
+/// As [`plan_mission_launch`], and whatever `gate` returns.
+pub fn plan_mission_launch_after(
+    install_root: &Path,
+    label: MissionLabel,
+    discovery_title: &str,
+    gate: impl FnOnce() -> Result<(), LaunchPreflightError>,
 ) -> Result<MissionLaunchPlan, LaunchPlanError> {
     let context = SourceContext::read(install_root).map_err(LaunchPlanError::Binding)?;
     let binding = context
@@ -344,6 +457,8 @@ pub fn plan_mission_launch(
     let catalog_id = binding.catalog_id.clone().expect("checked above");
     let world_id = binding.world_id.clone().expect("checked above");
     let program_id = binding.program_id.clone().expect("checked above");
+
+    gate().map_err(LaunchPlanError::Preflight)?;
 
     let found = install::discover(install_root).map_err(|source| {
         LaunchPlanError::Binding(SourceBindingError::Discover {
@@ -448,6 +563,7 @@ impl MissionLaunchError {
             Self::Composition(crate::mission_session::MissionCompositionError::Audio(error)) => {
                 crate::audio::audibility_exit_code(error)
             }
+            Self::Plan(LaunchPlanError::Preflight(error)) => error.exit_code,
             _ => crate::cli::EXIT_RUNTIME_FAILURE,
         }
     }
@@ -469,8 +585,10 @@ pub fn launch_mission(request: &crate::cli::MissionRequest) -> Result<(), Missio
         .ok_or_else(|| MissionLaunchError::UndeclaredMission(request.mission.clone()))?;
     let label = MissionLabel::new(label)
         .map_err(|error| MissionLaunchError::UndeclaredMission(error.to_string()))?;
-    let plan =
-        plan_mission_launch(&request.cs_path, label, title).map_err(MissionLaunchError::Plan)?;
+    let plan = plan_mission_launch_after(&request.cs_path, label, title, || {
+        LaunchPreflightError::from_environment()
+    })
+    .map_err(MissionLaunchError::Plan)?;
     if !plan.launchable() {
         return Err(MissionLaunchError::Blocked(Box::new(plan)));
     }
@@ -1597,5 +1715,65 @@ mod tests {
              timeline ({BASELINE_FIXED_HZ} Hz)",
             player.ticks_per_second(),
         );
+    }
+
+    /// DOC-M01-LAUNCH-HOWTO: each missing environment variable is refused with
+    /// one short actionable first line naming the fix, and the exit code
+    /// stays 4 for a missing `audio` capability.
+    #[test]
+    fn accept_doc_m01_launch_howto_preflight_names_the_fix_first() {
+        use super::LaunchPreflightError;
+        use std::ffi::OsStr;
+        let exe = std::env::current_exe().expect("the test binary has a path");
+
+        let unset = LaunchPreflightError::check(None, Some("retail,gpu,audio"))
+            .expect_err("an unset image is refused");
+        assert_eq!(
+            unset.to_string().lines().next(),
+            Some("set CS_ENGINE_IMAGE=<path to crimson.decrypted.exe>")
+        );
+        let empty = LaunchPreflightError::check(Some(OsStr::new("")), Some("audio"))
+            .expect_err("an empty image is refused");
+        assert_eq!(empty.action, unset.action);
+        let missing = LaunchPreflightError::check(
+            Some(OsStr::new("/nonexistent/crimson.decrypted.exe")),
+            Some("audio"),
+        )
+        .expect_err("a missing file is refused");
+        assert!(missing.action.starts_with("point CS_ENGINE_IMAGE"));
+
+        for list in [None, Some("retail,gpu")] {
+            let absent = LaunchPreflightError::check(Some(exe.as_os_str()), list)
+                .expect_err("no audio is refused");
+            assert!(
+                absent.action.starts_with("add audio to CS_CAPABILITIES"),
+                "{absent}"
+            );
+            assert_eq!(absent.exit_code, 4);
+        }
+        let typo = LaunchPreflightError::check(Some(exe.as_os_str()), Some("retail,,audio"))
+            .expect_err("a malformed list is refused");
+        assert!(typo.action.starts_with("fix CS_CAPABILITIES"), "{typo}");
+        assert_eq!(typo.exit_code, 4);
+
+        LaunchPreflightError::check(Some(exe.as_os_str()), Some("retail,gpu,audio"))
+            .expect("both variables set passes");
+    }
+
+    /// DOC-M01-LAUNCH-HOWTO: the gate runs before the closure measurement, so
+    /// a refusal arrives as `Preflight` without any surface being measured,
+    /// and `--help` documents the launch next to its variables.
+    #[test]
+    fn accept_doc_m01_launch_howto_gate_runs_before_measurement_and_help_names_it() {
+        use super::{LaunchPlanError, LaunchPreflightError, MissionLaunchError};
+        let refusal = LaunchPreflightError::check(None, None).expect_err("unset");
+        let error = MissionLaunchError::Plan(LaunchPlanError::Preflight(refusal));
+        assert_eq!(error.exit_code(), crate::cli::EXIT_RUNTIME_FAILURE);
+        assert!(error.to_string().starts_with("set CS_ENGINE_IMAGE="));
+        let audio = LaunchPreflightError::check(Some(std::ffi::OsStr::new("/")), Some("retail"));
+        // "/" is not a file, so the image is refused first.
+        assert!(audio.expect_err("dir").action.starts_with("point"));
+        assert!(crate::cli::HELP_TEXT.contains("CS_ENGINE_IMAGE"));
+        assert!(crate::cli::HELP_TEXT.contains("CS_CAPABILITIES"));
     }
 }
