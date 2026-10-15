@@ -147,6 +147,19 @@ the one `offer_cues` calls.
 | `cargo test --workspace --locked` | 0 |
 | `cargo test --workspace --locked -- accept_m01_radio_sample_ --include-ignored` | 0 (3 run, 3 pass) |
 
+## Evidence
+
+`docs/findings/evidence/M01-RADIO-SAMPLE-IDENTITY.json` — the acceptance report
+the `retail` capability requires (`docs/contracts/CLI-EVIDENCE.md`), written by
+the harness `crates/cs_app/tests/evidence_report_m01_radio_sample.rs` from the
+recorded run. Its second production observation re-runs the
+read/decode/publish/lookup chain over the owner's installation (no original
+bytes: ids, digests and counts only) and records the member, its dialogue id,
+the decoded frames/rate/channels, and the device's own refusal codes for the
+delivered and the never-delivered id. The report is `implemented`, not
+`checked`: no reviewer looked at it here, no original executable ran and no
+person heard anything.
+
 ## Identity of this work
 
 Implementer: `bunny-alpha-2/bunny-alpha-2` (Rally #1465, implementation claim of
