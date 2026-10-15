@@ -32,7 +32,12 @@
 //! * **Not the original's appearance.** The material is a flat colour chosen
 //!   here, the lighting is a declared key light, and F17's presentation unknowns
 //!   (`FrontFaceWinding`, `UvOrigin`, `VertexColor`) are open. The capture is
-//!   evidence about *geometry*, drawn through the real pipeline.
+//!   evidence about *geometry*, drawn through the real pipeline. It draws under
+//!   the fidelity baseline — one sample per pixel, no tone curve,
+//!   ([`capture_camera`]) — and that is the comparison set this project chose,
+//!   never a claim that the original renderer used it (spec F17 non-negotiable
+//!   5: antialiasing is a designed improvement, not evidence of original
+//!   parity).
 //!
 //! # The refusals
 //!
@@ -67,7 +72,7 @@ use bevy::camera::{ClearColorConfig, PerspectiveProjection, Projection};
 use bevy::image::{Image, ImageSampler};
 use bevy::mesh::Mesh;
 use bevy::prelude::{
-    App, Assets, Camera, Camera3d, Color, DefaultPlugins, DirectionalLight, Handle, Mesh3d,
+    App, Assets, Bundle, Camera, Camera3d, Color, DefaultPlugins, DirectionalLight, Handle, Mesh3d,
     MeshMaterial3d, On, Res, Resource, StandardMaterial, Transform, WindowPlugin, default,
 };
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
@@ -77,6 +82,8 @@ use cs_content::mesh::{MeshPresentationUnknown, RenderMesh};
 use cs_types::evidence::ContentHash;
 
 use crate::render::bevy_mesh::{GroupUpload, upload_group_parts};
+use crate::render::capture::{COMPARISON_MSAA_SAMPLES, Tonemap};
+use crate::render::profile::{bevy_tonemapping, msaa_for};
 
 /// The capture frame's width in pixels.
 ///
@@ -564,32 +571,8 @@ fn spawn_scene(app: &mut App, uploads: &[Mesh], request: &CaptureRequest<'_>) ->
 
     let centre_f = bevy::math::Vec3::new(centre[0] as f32, centre[1] as f32, centre[2] as f32);
     let up = bevy::math::Vec3::Y;
-    // The camera clears onto [`CLEAR_COLOR`] **explicitly**. Left at
-    // `ClearColorConfig::Default` the background is the renderer's own clear
-    // colour, which is not the value `measure` compares against, so every
-    // background pixel would count as covered and the coverage measurement
-    // would be meaningless.
-    app.world_mut().spawn((
-        Camera3d::default(),
-        Camera {
-            clear_color: ClearColorConfig::Custom(Color::srgba(
-                CLEAR_COLOR[0],
-                CLEAR_COLOR[1],
-                CLEAR_COLOR[2],
-                CLEAR_COLOR[3],
-            )),
-            ..default()
-        },
-        RenderTarget::Image(handle.clone().into()),
-        // The planes are derived from the framing distance; see
-        // [`NEAR_PLANE_FRACTION`] for why the defaults cannot be used here.
-        Projection::Perspective(PerspectiveProjection {
-            near: (distance * NEAR_PLANE_FRACTION) as f32,
-            far: (distance * FAR_PLANE_FACTOR) as f32,
-            ..PerspectiveProjection::default()
-        }),
-        Transform::from_xyz(eye[0] as f32, eye[1] as f32, eye[2] as f32).looking_at(centre_f, up),
-    ));
+    app.world_mut()
+        .spawn(capture_camera(eye, centre_f, distance, handle.clone()));
     // The key light sits on the camera's own axis, offset towards the target's
     // `+y` by the bounding radius, so a sheet lying in a plane still catches it.
     app.world_mut().spawn((
@@ -634,6 +617,71 @@ fn spawn_scene(app: &mut App, uploads: &[Mesh], request: &CaptureRequest<'_>) ->
     }
 
     CaptureTarget { image: handle }
+}
+
+/// The camera every flat capture frame is drawn through: the declared framing
+/// and clear colour, **and the fidelity baseline as components**.
+///
+/// `CameraPlugin` registers `Msaa` as a required component of `Camera`
+/// (default `Sample4`) and `Core3dPlugin` registers `Tonemapping` on
+/// `Camera3d` (default `TonyMcMapface`), so a spawn that said nothing would
+/// silently render four-sample multisampling while the project's fidelity
+/// baseline (`crate::render::profile::Presentation::fidelity`, one sample per
+/// pixel through [`msaa_for`] with [`COMPARISON_MSAA_SAMPLES`], no tone curve
+/// through [`bevy_tonemapping`]) is the comparison set the textured sibling
+/// (`crate::world::textured_capture`) already draws under. Spec F17
+/// non-negotiable 5 classifies antialiasing as a designed improvement that is
+/// not evidence of original parity, so an antialiased flat capture would be
+/// two things the artifact never claims: an enhancement presented as the
+/// baseline, and a sibling pair drawn under different sample counts. Applied
+/// as the camera's own components — the way `crate::render::sync`'s
+/// `apply_presentation` applies the fidelity profile — so the pixels and the
+/// declared comparison set cannot disagree. No claim about the original
+/// renderer's sample count or tone curve is made or implied: one sample per
+/// pixel is the comparison set this project chose, not a measurement of the
+/// 2000 game.
+///
+/// Exposure and the rest of the HDR post chain need nothing here: no `Hdr`
+/// marker is spawned, so the tone-mapping component's own pass never runs —
+/// which is what "no exposure change" and "no tone curve" already mean — the
+/// sRGB target supplies the gamma encode, and `DirectionalLight` defaults to
+/// no shadow mapping.
+fn capture_camera(
+    eye: [f64; 3],
+    centre: bevy::math::Vec3,
+    distance: f64,
+    image: Handle<Image>,
+) -> impl Bundle {
+    (
+        Camera3d::default(),
+        // The camera clears onto [`CLEAR_COLOR`] **explicitly**. Left at
+        // `ClearColorConfig::Default` the background is the renderer's own clear
+        // colour, which is not the value `measure` compares against, so every
+        // background pixel would count as covered and the coverage measurement
+        // would be meaningless.
+        Camera {
+            clear_color: ClearColorConfig::Custom(Color::srgba(
+                CLEAR_COLOR[0],
+                CLEAR_COLOR[1],
+                CLEAR_COLOR[2],
+                CLEAR_COLOR[3],
+            )),
+            ..default()
+        },
+        RenderTarget::Image(image.into()),
+        // The planes are derived from the framing distance; see
+        // [`NEAR_PLANE_FRACTION`] for why the defaults cannot be used here.
+        Projection::Perspective(PerspectiveProjection {
+            near: (distance * NEAR_PLANE_FRACTION) as f32,
+            far: (distance * FAR_PLANE_FACTOR) as f32,
+            ..PerspectiveProjection::default()
+        }),
+        Transform::from_xyz(eye[0] as f32, eye[1] as f32, eye[2] as f32)
+            .looking_at(centre, bevy::math::Vec3::Y),
+        msaa_for(COMPARISON_MSAA_SAMPLES)
+            .expect("the comparison sample count is a count Bevy expresses"),
+        bevy_tonemapping(Tonemap::None),
+    )
 }
 
 /// The render target the frame is drawn into and read back from.
@@ -806,4 +854,47 @@ pub(super) fn adapter_name(app: &App) -> String {
             format!("{} ({:?})", info.name, info.backend)
         })
         .unwrap_or_else(|| "no adapter reported".to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use bevy::core_pipeline::tonemapping::Tonemapping as BevyTonemapping;
+    use bevy::ecs::world::World;
+    use bevy::render::view::Msaa;
+
+    use super::*;
+
+    /// The flat capture draws under the fidelity baseline, and this is what
+    /// makes that true rather than hoped for: `Camera` would otherwise take
+    /// `Msaa::Sample4` as a required component and `Camera3d` would take
+    /// `TonyMcMapface`, so a spawn that said nothing rendered 4x MSAA while
+    /// the baseline — and the textured sibling's camera — is one sample per
+    /// pixel with no tone curve (spec F17 non-negotiable 5: antialiasing is a
+    /// designed improvement, not evidence of original parity). Asserted on
+    /// the spawned entity, not on the settings constant, so a bundle that
+    /// forgets the components fails the test.
+    #[test]
+    fn accept_f17_e_the_flat_capture_camera_carries_the_fidelity_baseline_as_components() {
+        let mut world = World::new();
+        let entity = world
+            .spawn(capture_camera(
+                [10.0, 10.0, 10.0],
+                bevy::math::Vec3::ZERO,
+                10.0,
+                Handle::<Image>::default(),
+            ))
+            .id();
+        assert_eq!(
+            world.get::<Msaa>(entity),
+            Some(&Msaa::Off),
+            "the fidelity baseline is one sample per pixel — `msaa_for(COMPARISON_MSAA_SAMPLES)` \
+             — and `Camera`'s own required component is `Sample4`"
+        );
+        assert_eq!(
+            world.get::<BevyTonemapping>(entity),
+            Some(&BevyTonemapping::None),
+            "the fidelity baseline is no tone curve, and `Camera3d`'s own required component is \
+             `TonyMcMapface`"
+        );
+    }
 }
