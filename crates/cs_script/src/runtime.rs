@@ -317,8 +317,9 @@ pub const TERMINAL_RULE_FINDINGS: &str =
 
 /// The findings entry that records the mission-end presentation this runtime
 /// applies ([`MissionEndPresentation`], F37-D-FU5): which of the measured
-/// facts it now follows, how the mission IR's single terminal action maps onto
-/// the original's instant-outcome marker, and what closed
+/// facts it now follows, how the mission IR's terminal actions map onto the
+/// original's instant-outcome marker ([`Action::Finish`] carries it,
+/// [`Action::FinishStandard`] — F37-D-FU7 — does not), and what closed
 /// `f37.d.limit.terminal_branch_delay_and_sound`.
 pub const TERMINAL_PRESENTATION_FINDINGS: &str =
     "docs/findings/2026-10-07-f37-d-fu5-mission-end-presentation.md";
