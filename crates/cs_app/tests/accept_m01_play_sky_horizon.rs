@@ -74,9 +74,10 @@ fn accept_m01_play_sky_the_designed_horizon_labels_every_field_it_draws() {
 
 #[test]
 fn accept_m01_play_sky_a_bound_environment_value_reaches_the_screen_verbatim() {
-    // The clear-sky fixture authors a fog colour, an ambient colour and a sky
-    // texture identity: the spec must take all three with their provenance
-    // instead of substituting its own design.
+    // The clear-sky fixture authors a fog colour and an ambient colour: the
+    // spec must take both with their provenance instead of substituting its
+    // own design. It also names a sky texture, which this stage does *not*
+    // draw, so that field must stay designed (checked below).
     let environment = clear_sky_environment().expect("the fixture is representable");
     let spec = HorizonSpec::from_environment(&environment);
 
@@ -100,13 +101,19 @@ fn accept_m01_play_sky_a_bound_environment_value_reaches_the_screen_verbatim() {
         &HorizonOrigin::Bound(ambient.provenance.clone())
     );
 
-    let Resolved::Known(sky) = environment.sky().texture() else {
-        panic!("the clear-sky fixture authors a sky texture");
-    };
+    // The record names a sky texture, but this stage draws no authored art:
+    // the zenith colour stays the labelled design, so the drawn gradient can
+    // never be read as the record's own sky. A `Bound` zenith would claim art
+    // reached the screen when none did.
+    assert!(
+        matches!(environment.sky().texture(), Resolved::Known(_)),
+        "the clear-sky fixture authors a sky texture"
+    );
     assert_eq!(
         spec.origin(HorizonField::SkyZenith)
             .unwrap_or_else(|error| panic!("{error}")),
-        &HorizonOrigin::Bound(sky.provenance.clone())
+        &HorizonOrigin::Designed(DESIGNED_LABEL),
+        "the drawn zenith colour is this build's, not the record's sky art"
     );
 
     // The dome's horizon band follows the bound fog colour: one value, so

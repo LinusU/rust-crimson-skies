@@ -182,7 +182,7 @@ impl HorizonSpec {
     /// an ordinary monitor; none of them is a claim about the original.
     #[must_use]
     pub fn designed() -> Self {
-        Self::from_record(None, None, None)
+        Self::from_record(None, None)
     }
 
     /// The spec a mission's own environment definition asks for.
@@ -193,22 +193,25 @@ impl HorizonSpec {
     /// palette and is recorded as [`HorizonOrigin::Designed`]. M01 leaves all
     /// of them unknown, so its horizon is entirely designed — which is what
     /// `docs/findings/2026-10-14-m01-play-sky-horizon.md` records.
+    ///
+    /// The record's sky *texture* identity is deliberately not bound to any
+    /// field: this stage draws a designed gradient whatever art the record
+    /// names (see the module docs), so a [`HorizonOrigin::Bound`] sky colour
+    /// would claim authored art reached the screen when none did.
     #[must_use]
     pub fn from_environment(environment: &EnvironmentDefinition) -> Self {
         Self::from_record(
             known_pair(environment.fog().color_linear()),
             known_pair(environment.lighting().ambient_linear()),
-            known_provenance(environment.sky().texture()),
         )
     }
 
     /// Builds the spec from the fields an environment record can carry (fog
-    /// colour, ambient colour, sky texture identity), falling back to the
-    /// designed palette for whichever of them is absent.
+    /// colour, ambient colour), falling back to the designed palette for
+    /// whichever of them is absent.
     fn from_record(
         fog: Option<([f64; 3], Provenance)>,
         ambient: Option<([f64; 3], Provenance)>,
-        sky: Option<Provenance>,
     ) -> Self {
         let mut spec = Self {
             sky_zenith: DESIGNED_SKY_ZENITH,
@@ -245,9 +248,6 @@ impl HorizonSpec {
                 HorizonField::AmbientColour,
                 HorizonOrigin::Bound(provenance),
             );
-        }
-        if let Some(provenance) = sky {
-            spec.set_origin(HorizonField::SkyZenith, HorizonOrigin::Bound(provenance));
         }
         spec
     }
@@ -461,13 +461,6 @@ fn linear_to_srgb(linear: [f64; 3]) -> [f32; 3] {
 fn known_pair(resolved: &Resolved<[f64; 3]>) -> Option<([f64; 3], Provenance)> {
     match resolved {
         Resolved::Known(known) => Some((known.value, known.provenance.clone())),
-        Resolved::Unknown { .. } => None,
-    }
-}
-
-fn known_provenance(resolved: &Resolved<cs_types::content::ContentId>) -> Option<Provenance> {
-    match resolved {
-        Resolved::Known(known) => Some(known.provenance.clone()),
         Resolved::Unknown { .. } => None,
     }
 }
