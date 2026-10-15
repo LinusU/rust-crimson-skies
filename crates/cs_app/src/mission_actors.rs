@@ -344,17 +344,41 @@ pub fn spawn_mission_actors(world: &mut World) -> MissionActorSpawnReport {
         world.insert_resource(report.clone());
         return report;
     };
-    spawn_mission_actors_under(world, view)
+    // The stage is a world resource on this path; the restart hands it in
+    // directly (below), because the composed restart entry holds it out of the
+    // world for the whole rebuild.
+    let part_plan = part_plan_of(world.get_resource::<MissionStage>());
+    spawn_mission_actors_under(world, view, &part_plan)
 }
 
 /// `MissionHost::restart`'s entry: the host is mid-restart — already
 /// serving the fresh session and relaunched world actors — and not a
-/// world resource, so the caller hands it by reference.
-pub fn respawn_mission_actors(world: &mut World, host: &MissionHost) -> MissionActorSpawnReport {
-    spawn_mission_actors_under(world, host_view(host))
+/// world resource, so the caller hands it by reference. The stage comes in
+/// the same way: the composed restart entry (`mission_host_restart`) removes
+/// the [`MissionStage`] resource before it rebuilds, so a binder that read the
+/// resource here would silently rebind no part-state chain after a retry and
+/// every `INACTIVE` ladder over them would stall for the rest of the mission.
+pub fn respawn_mission_actors(
+    world: &mut World,
+    host: &MissionHost,
+    stage: &MissionStage,
+) -> MissionActorSpawnReport {
+    spawn_mission_actors_under(world, host_view(host), &parts::plan_part_states(stage))
 }
 
-fn spawn_mission_actors_under(world: &mut World, view: HostView) -> MissionActorSpawnReport {
+/// The part-state plan of a stage, or the empty plan when the composition has
+/// no stage — or the stage's host carries no bound world-actor program.
+fn part_plan_of(
+    stage: Option<&MissionStage>,
+) -> BTreeMap<WorldActorId, Vec<(MemberName, DamageNodeKey)>> {
+    stage.map(parts::plan_part_states).unwrap_or_default()
+}
+
+fn spawn_mission_actors_under(
+    world: &mut World,
+    view: HostView,
+    part_plan: &BTreeMap<WorldActorId, Vec<(MemberName, DamageNodeKey)>>,
+) -> MissionActorSpawnReport {
     let mut report = MissionActorSpawnReport::default();
     let roster = world
         .get_resource::<MissionAircraftRoster>()
@@ -370,12 +394,10 @@ fn spawn_mission_actors_under(world: &mut World, view: HostView) -> MissionActor
         .unwrap_or_default();
     // The part-state chains of every bound world actor, read from the stage's
     // own records through the container resolver (M01-PLAY-TRIGGERS-PARTS,
-    // #1481). A stage whose host carries no world-actor program has none, and
-    // so does every synthetic stage.
-    let part_plan: BTreeMap<WorldActorId, Vec<(MemberName, DamageNodeKey)>> = world
-        .get_resource::<MissionStage>()
-        .map(parts::plan_part_states)
-        .unwrap_or_default();
+    // #1481) by the caller, which is the only place that has the stage: on the
+    // Startup path as a world resource, on the restart path as an argument. A
+    // stage whose host carries no world-actor program plans none, and so does
+    // every synthetic stage.
     let mut part_report = parts::MissionPartReport::default();
     let mut allocator = ActorAllocator::new(session);
 
@@ -476,9 +498,12 @@ fn spawn_mission_actors_under(world: &mut World, view: HostView) -> MissionActor
         let actor = match allocator.allocate() {
             Ok(actor) => actor,
             Err(error) => {
-                report.refusals.push(format!(
-                    "zeppelin {world_actor:?}: the actor allocator refuses: {error}"
-                ));
+                let refusal =
+                    format!("zeppelin {world_actor:?}: the actor allocator refuses: {error}");
+                // A bound actor that never spawns binds no part-state chain
+                // either, so the parts report names the same refusal.
+                part_report.refusals.push(refusal.clone());
+                report.refusals.push(refusal);
                 continue;
             }
         };
@@ -487,9 +512,10 @@ fn spawn_mission_actors_under(world: &mut World, view: HostView) -> MissionActor
             .find(|(candidate, _)| candidate == world_actor)
             .and_then(|(_, pose)| *pose);
         let Some(pose) = pose else {
-            report.refusals.push(format!(
-                "zeppelin {world_actor:?}: the session holds no pose for the actor"
-            ));
+            let refusal =
+                format!("zeppelin {world_actor:?}: the session holds no pose for the actor");
+            part_report.refusals.push(refusal.clone());
+            report.refusals.push(refusal);
             continue;
         };
         let (position_m, orientation) = (pose.position_m, pose.orientation.0);
@@ -564,14 +590,20 @@ fn spawn_mission_actors_under(world: &mut World, view: HostView) -> MissionActor
                             part_report.nodes.insert(actor, part_nodes);
                         }
                     }
-                    Err(error) => report.refusals.push(format!(
-                        "zeppelin {world_actor:?}: damage registration refuses: {error}"
-                    )),
+                    Err(error) => {
+                        let refusal = format!(
+                            "zeppelin {world_actor:?}: damage registration refuses: {error}"
+                        );
+                        part_report.refusals.push(refusal.clone());
+                        report.refusals.push(refusal);
+                    }
                 }
             }
-            Err(reason) => report
-                .refusals
-                .push(format!("zeppelin {world_actor:?}: {reason}")),
+            Err(reason) => {
+                let refusal = format!("zeppelin {world_actor:?}: {reason}");
+                part_report.refusals.push(refusal.clone());
+                report.refusals.push(refusal);
+            }
         }
         report.zeppelins.push(BoundZeppelin {
             world_actor: *world_actor,
@@ -584,7 +616,9 @@ fn spawn_mission_actors_under(world: &mut World, view: HostView) -> MissionActor
     world.insert_resource(report.clone());
     // The part-state binding's own report: which chains got a live entity and
     // which damage nodes their actors' graphs carry (M01-PLAY-TRIGGERS-PARTS).
-    part_report.refusals = report.refusals.clone();
+    // Its refusals are the bound-actor ones above, pushed at their own sites:
+    // a refusal that stopped a scripted aircraft has nothing to say about the
+    // part-state chains, so it is deliberately not copied here.
     world.insert_resource(part_report);
     report
 }

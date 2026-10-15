@@ -24,8 +24,10 @@
 //!   fifth part, and the other actor's ladder (index 35, `piratezep`, threshold
 //!   2) is never satisfied by a `workersvoyagezep` part going out;
 //! * **fail-closed** — with the parts provider removed the chains are unobserved
-//!   again and the ladder stalls, exactly as it did before this stage; and a
-//!   part whose pool nothing resolved is **not** reported in play.
+//!   again and the ladder stalls, exactly as it did before this stage; a part
+//!   whose pool nothing resolved is **not** reported in play; and a composed
+//!   restart (which holds the stage out of the world while the host rebuilds)
+//!   rebinds the parts instead of dropping them.
 //!
 //! What makes a part destroyable at all is
 //! [`mission_session::parts::DESIGNED_PART_INTEGRITY`]: a **labelled designed**
@@ -41,11 +43,11 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use bevy::prelude::{App, Entity};
+use bevy::prelude::{App, Entity, With};
 use cs_app::mission_launch::plan_mission_launch;
 use cs_app::mission_session::{
-    MissionHost, MissionPartReport, MissionPartState, MissionStage, build_headless, part_in_play,
-    stage_for, teardown,
+    MissionHost, MissionHostRestartRequest, MissionPartReport, MissionPartState, MissionStage,
+    build_headless, part_in_play, stage_for, teardown,
 };
 use cs_app::weapons::SessionDamageResolver;
 use cs_app::world_actors::LoweredWorldActors;
@@ -601,6 +603,94 @@ fn accept_m01_play_triggers_parts_the_wrong_chain_and_a_missing_provider_never_s
     );
 
     teardown(&mut app);
+}
+
+/// **The composed restart entry rebinds the parts, though it holds the stage
+/// out of the world while the host rebuilds.**
+///
+/// `mission_host_restart` removes the [`MissionStage`] resource before it calls
+/// `MissionHost::restart`, and the restart's spawn host is what binds the
+/// part-state chains. A binder that read the stage *resource* would therefore
+/// rebind nothing after a retry: the parts would be gone, their chains
+/// unobserved, and every `INACTIVE` ladder over them would stall for the rest of
+/// the mission — the very defect this stage exists to repair. This leg drives
+/// the composed restart the way a terminal handler does (a
+/// [`MissionHostRestartRequest`] consumed by `app.update()`) and proves the
+/// parts are live again and still advance a ladder.
+#[test]
+fn accept_m01_play_triggers_parts_the_composed_restart_rebinds_the_parts() {
+    let scratch = Scratch::new("m01-play-parts-restart");
+    let stage = synthetic_parts_stage(scratch.path(), ladder_program(1, &SYNTHETIC_CHAINS));
+    let mut app = build_headless(&stage).expect("the synthetic parts stage composes");
+    app.update();
+    assert_eq!(
+        bound_parts(&mut app).len(),
+        2,
+        "the first generation binds both part-state chains"
+    );
+
+    // The production restart: the composed entry takes the host and the stage
+    // out of the world for the rebuild, exactly as it does for a terminal's
+    // retry.
+    app.world_mut().insert_resource(MissionHostRestartRequest);
+    app.update();
+    app.update();
+
+    let parts = bound_parts(&mut app);
+    assert_eq!(
+        parts.len(),
+        2,
+        "the restart rebinds both part-state chains: {parts:?}"
+    );
+
+    let chain = member(&[SYNTHETIC_ACTOR, SYNTHETIC_CHAINS[0], "healthy"]);
+    let (_, actor) = part_entity(&mut app, &chain);
+    assert_eq!(
+        destroy_part(&mut app, actor, SYNTHETIC_CHAINS[0]),
+        PartState::Destroyed
+    );
+    frames(&mut app, 2);
+    assert!(
+        completed(&app, 0),
+        "the rebound part still advances the ladder on the live world's own state"
+    );
+
+    teardown(&mut app);
+}
+
+/// **Teardown takes the part entities and the parts report with the
+/// composition.**
+///
+/// A part entity is a mission-actor entity like any other: the composition's
+/// teardown sweeps the actor markers it knows and removes their reports, and a
+/// new entity kind that is missing from that list is a leftover a second build
+/// in the same process would inherit. Pinned here so a later stage cannot add a
+/// part entity kind and forget the teardown.
+#[test]
+fn accept_m01_play_triggers_parts_teardown_takes_the_parts_with_the_composition() {
+    let scratch = Scratch::new("m01-play-parts-teardown");
+    let stage = synthetic_parts_stage(scratch.path(), ladder_program(1, &SYNTHETIC_CHAINS));
+    let mut app = build_headless(&stage).expect("the synthetic parts stage composes");
+    app.update();
+    assert_eq!(
+        bound_parts(&mut app).len(),
+        2,
+        "the parts are bound before teardown"
+    );
+
+    teardown(&mut app);
+
+    let world = app.world_mut();
+    let mut parts = world.query_filtered::<Entity, With<MissionPartState>>();
+    assert_eq!(
+        parts.iter(world).count(),
+        0,
+        "teardown despawns every part-state entity"
+    );
+    assert!(
+        world.get_resource::<MissionPartReport>().is_none(),
+        "teardown removes the parts report with the composition"
+    );
 }
 
 /// **A part whose pool nothing resolved is not reported in play.**

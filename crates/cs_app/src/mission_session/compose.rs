@@ -1239,6 +1239,10 @@ pub fn teardown(app: &mut App) {
                 With<LoadedItemBinding>,
                 With<crate::mission_actors::ScriptedAircraftActor>,
                 With<crate::mission_actors::MissionZeppelinActor>,
+                // The live part-state objects the mission actors bind
+                // (M01-PLAY-TRIGGERS-PARTS, #1481): a part entity belongs to
+                // the composition exactly as its owning actor does.
+                With<crate::mission_session::MissionPartState>,
             )>,
         )>();
         query.iter(world).collect()
@@ -1252,6 +1256,7 @@ pub fn teardown(app: &mut App) {
     world.remove_resource::<MissionComposition>();
     world.remove_resource::<crate::mission_actors::MissionAircraftRoster>();
     world.remove_resource::<crate::mission_actors::MissionActorSpawnReport>();
+    world.remove_resource::<crate::mission_session::MissionPartReport>();
     world.remove_resource::<MissionPlayerStart>();
     world.remove_resource::<MissionPlayerVisual>();
     world.remove_resource::<super::world_draw::MissionWorldParts>();

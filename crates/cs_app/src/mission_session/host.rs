@@ -959,7 +959,7 @@ impl MissionHost {
         // mid-restart here — not yet a world resource — so it is handed
         // over by reference.
         crate::mission_actors::despawn_mission_actors(world);
-        crate::mission_actors::respawn_mission_actors(world, self);
+        crate::mission_actors::respawn_mission_actors(world, self, stage);
 
         // The previous composed step's report describes the generation just
         // torn down; it is removed so this restart leaves no stale answer and
