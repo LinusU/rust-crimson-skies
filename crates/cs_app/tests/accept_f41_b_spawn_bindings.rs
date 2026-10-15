@@ -393,6 +393,7 @@ impl SpawnWorld {
                 ..FlightInput::NEUTRAL
             },
             hold_attitude: false,
+            is_player: true,
             provenance: "synthetic fixture: a body over the original law, for the bind path",
         };
         self.world_mut().entity_mut(entity).insert(record);
