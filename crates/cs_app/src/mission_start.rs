@@ -19,12 +19,38 @@
 //!   and every record named `wingman_<n>`.
 //! * **One cross-reference, as a reference.** Field 6 of a wingmate record is
 //!   text naming another record of the same table; it is reported only when
-//!   it resolves ([`StartRecord::field_six_record`]). What the reference
-//!   *means* is not claimed.
+//!   it resolves ([`StartRecord::field_six_record`]). #1453 measures the
+//!   field as the record's *primary target* ([`PRIMARY_TARGET_FIELD`]), but
+//!   what the target *means* to the AI is still not claimed.
 //!
 //! * **The start pose as stored** ([`MissionStartConfiguration::stored_pose`]):
 //!   field 1 (three floats) and field 2 (a float) of the player record, with
 //!   the measured facts about them on [`StoredStartPose`]. Task #676.
+//!
+//! # What #1453 measures: the aircraft-record layout
+//!
+//! Measured on the same decrypted image (same digest) plus the retail
+//! records; the finding is `docs/findings/2026-10-15-m01-aiv-layout.md` and
+//! the field map is committed as the `[aiv_layout]` row of
+//! `data/owner-static/engine-facts.toml`:
+//!
+//! * every retail record carries [`AIV_FIELD_COUNT`] positional fields, and
+//!   the parse routine `0x437620` (the CCEVeh record class, ctor `0x43bf10`)
+//!   maps them into a fixed-slot document;
+//! * the measured fields are [`NETIDS_FIELD`], [`POSITION_FIELD`],
+//!   [`HEADING_FIELD`], [`TEAM_FIELD`], [`GROUP_FIELD`],
+//!   [`ENABLED_FIELD`], [`PRIMARY_TARGET_FIELD`], [`TITLE_FIELD`] and
+//!   [`DEACTIVATED_FIELD`] — [`read_aircraft_records`] exposes them, plus
+//!   the stored pose and the spawn dispatch, for **every** record;
+//! * **no field names an airframe**: a scripted aircraft's vehicle type
+//!   comes from its record name truncated at the last `_`, matched against
+//!   the `vehicle.zrd` registry ([`spawn_dispatch`], `0x4752a8`);
+//! * an aircraft with a non-zero [`DEACTIVATED_FIELD`] spawns **asleep**
+//!   (`0x47ca14` calls the sleep routine `0x4b0f40(vehicle, 1)`), and the
+//!   mission program wakes it through `WAKEUP_ENEMIES` (#681), which wakes
+//!   only vehicles whose asleep byte is set.
+//!
+//! Everything else the records carry stays unknown, named in the finding.
 //!
 //! # Where the original does assign one (#715)
 //!
@@ -142,12 +168,64 @@ const PLAYER_RECORD: &str = "player";
 /// The prefix of a wingmate record name.
 const WINGMATE_PREFIX: &str = "wingman_";
 /// The field of an aircraft record that names another record, where one does.
-const REFERENCE_FIELD: usize = 6;
+///
+/// #1453 measures this field as the record's **primary target**: field 6 of
+/// the CCEVeh document is the text the loader strdups into the vehicle's
+/// primary-target slot (`0x47c6a0`), and the parse routine reads it at
+/// `0x437738` from the sixth field. [`MissionStartConfiguration::read`]
+/// still reports it only as a resolved cross-reference, because what the
+/// target *means* to the AI (attack target vs. formation leader) is not
+/// measured.
+pub const REFERENCE_FIELD: usize = 6;
 
+/// The field of an aircraft record that holds the **net ids** (#1453): a
+/// single integer or a list of integers (see [`Netids`]), parsed at
+/// `0x437685` into the document at `+0x10`/`+0x14`; the loader takes the
+/// single value into `vehicle+0x2e4` at `0x47c733` — the slot `SET_AI_NET`
+/// writes and the wake path restores a position from.
+pub const NETIDS_FIELD: usize = 0;
 /// The field of an aircraft record that holds the position vector.
-const POSITION_FIELD: usize = 1;
+///
+/// #1453: parsed at `0x4376f0` into the record document at `+0x18`, read by
+/// the loader at `0x47c2a6` and applied to the node at `0x47c4b3`.
+pub const POSITION_FIELD: usize = 1;
 /// The field of an aircraft record that holds the heading.
-const HEADING_FIELD: usize = 2;
+///
+/// #1453: parsed at `0x437717` into the document at `+0x24`, converted to the
+/// node's yaw at `0x47c4e5` through the committed `[heading]` convention.
+pub const HEADING_FIELD: usize = 2;
+/// The field of an aircraft record that holds the **team** (#1453): parsed at
+/// `0x43771d` into the document at `+0x34`, handed to the base-class team
+/// setter at `0x47c674` (the setter the `SET_AI_TEAM` directive reaches too,
+/// measured in `2026-10-06-m01-lc-directive-c-ai-world-and-animation-directives.md`).
+pub const TEAM_FIELD: usize = 3;
+/// The field of an aircraft record that holds the **AI group** (#1453):
+/// parsed at `0x437726` into the document at `+0x38`, stored at
+/// `vehicle+0x388` by `0x47c694` — the group `TRAVELERS` counts.
+pub const GROUP_FIELD: usize = 4;
+/// The field of an aircraft record that holds the **enabled** flag (#1453):
+/// parsed at `0x43772f` into the document at `+0x3c`; the spawn loop tests it
+/// at `0x474d10` and does not spawn an aircraft whose value is zero.
+pub const ENABLED_FIELD: usize = 5;
+/// The field of an aircraft record that holds the **primary target** name
+/// (#1453). It is the measured meaning of [`REFERENCE_FIELD`].
+pub const PRIMARY_TARGET_FIELD: usize = REFERENCE_FIELD;
+/// The field of an aircraft record that holds the **title** (#1453): a text
+/// field, usually a `MSG_*` localization key, parsed at `0x437841` into the
+/// document at `+0x0c`. What consumes a spawned vehicle's title is not
+/// measured here.
+pub const TITLE_FIELD: usize = 20;
+/// The field of an aircraft record that holds the **deactivated** flag
+/// (#1453): parsed at `0x43786c` (`setne`, so any non-zero value) into the
+/// document byte at `+0x40`; the loader reads it at `0x47ca14` and calls the
+/// sleep routine `0x4b0f40(vehicle, 1)` when it is set, so a non-zero field
+/// spawns the aircraft **asleep**.
+pub const DEACTIVATED_FIELD: usize = 21;
+
+/// The number of positional fields every measured `aiv.zrd` record carries
+/// (#1453): fields `0..=80`, of which only the ones named by the constants
+/// above are measured; the rest stay unknown.
+pub const AIV_FIELD_COUNT: usize = 81;
 
 /// The reason an airframe cannot be bound **from the document alone**.
 ///
@@ -551,6 +629,208 @@ pub fn scenario_player_airframe(scenario: &ZrdValue) -> Option<&str> {
     } else {
         None
     }
+}
+
+/// How the original's spawn loop dispatches one `aiv.zrd` record by its
+/// name (#1453, `M01-AIV-LAYOUT`).
+///
+/// Measured at `0x474cd9`..`0x47531e`: the loop compares each record's name
+/// against the literals `player` (`0x474d1b`), `wingman_1` (`0x474e3e`) and
+/// `wingman_4` (`0x475016`) **case-sensitively**, in that order, and every
+/// other name takes the generic branch (`0x4752a8`): `strrchr(name, '_')`
+/// truncates the name at its last `_`, the prefix is matched
+/// case-insensitively (`_stricmp`) against the vehicle registry loaded from
+/// `vehicle.zrd` (`0x474b5b`), and the matched record is the vehicle template
+/// the loader builds (`0x47c210`). So a scripted aircraft's vehicle type —
+/// and through that vehicle record its model — comes from the record's
+/// **name prefix**, never from a field: `bsfury_1` spawns the `bsfury`
+/// vehicle, `rusdevastator_3` the `rusdevastator` one, `wingman_2` and
+/// `wingman_3` the generic `wingman` one. Retail `ZBD/zrdr.zbd`'s vehicle
+/// definitions document carries a record of each of those names.
+///
+/// A name with no `_` at all matches nothing and spawns nothing — the
+/// original restores the name and skips the loader when no template matched
+/// (`0x475303`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SpawnDispatch {
+    /// The record named `player`: the airframe comes from the engine state
+    /// (#770), not from a name or a field.
+    Player,
+    /// The record named `wingman_1`: its vehicle template is matched against
+    /// the airframe row's model field (`0x426d60`), not the generic
+    /// registry.
+    WingmanOne,
+    /// The record named `wingman_4`: the player's own airframe is used only
+    /// when chapter/mission is `c3`/`m05` or `c4`/`m04` (`0x47502c`..
+    /// `0x4750a4`); otherwise it takes the generic branch.
+    WingmanFour,
+    /// Any other name: the vehicle.zrd record the name truncated at its last
+    /// `_` matches, case-insensitively. The prefix is returned as the record
+    /// spells it.
+    VehicleRecord(String),
+    /// A name with no `_` to truncate: it matches no registry entry and
+    /// spawns nothing.
+    Unmatched,
+}
+
+/// The spawn dispatch a record's name takes, exactly as the original
+/// decides it (#1453).
+///
+/// The three special names are compared case-sensitively, like the
+/// original's `repe cmpsb` / character compares; only the generic branch's
+/// registry match is case-insensitive.
+#[must_use]
+pub fn spawn_dispatch(name: &str) -> SpawnDispatch {
+    if name == "player" {
+        return SpawnDispatch::Player;
+    }
+    if name == "wingman_1" {
+        return SpawnDispatch::WingmanOne;
+    }
+    if name == "wingman_4" {
+        return SpawnDispatch::WingmanFour;
+    }
+    match name.rsplit_once('_') {
+        Some((prefix, _suffix)) => SpawnDispatch::VehicleRecord(prefix.to_owned()),
+        None => SpawnDispatch::Unmatched,
+    }
+}
+
+/// The net ids one `aiv.zrd` record spells in field 0 (#1453).
+///
+/// The parse routine (`0x437685`..`0x4376ee`) accepts the field either as a
+/// single integer or as a list of zero or more integers (the original's own
+/// format comment, `.data` `0x622508`, says the same), and stores a count
+/// plus an array in the record document. The loader (`0x47c733`) takes the
+/// array's single value into `vehicle+0x2e4` — the slot `SET_AI_NET` writes
+/// and the wake path restores a position from — exactly when the count is
+/// one.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Netids {
+    /// The field is one integer; the loader stores it into `vehicle+0x2e4`.
+    One(u32),
+    /// The field is a list of integers; the loader takes the single entry
+    /// when the list holds exactly one, and takes nothing otherwise.
+    Many(Vec<u32>),
+}
+
+/// One scripted aircraft record with the fields #1453 measured, for every
+/// record of an `aiv.zrd` — the player and the wingmates included.
+///
+/// Every value is `ObservedTool`-provenanced through the record's
+/// [`provenance`](Self::provenance), which cites the member's byte span.
+/// Fields the measurement did not reach stay `None` here and unknown in
+/// `docs/findings/2026-10-15-m01-aiv-layout.md`; nothing is guessed.
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScriptedAircraft {
+    /// The record's name as the original spells it.
+    pub name: String,
+    /// The record's position in the member's document (the header is `0`).
+    pub index: usize,
+    /// How many positional fields the record carries (measured: 81).
+    pub field_count: usize,
+    /// Field 0: the net ids, when they are integers.
+    pub netids: Option<Netids>,
+    /// Fields 1 and 2: the position vector and heading exactly as stored.
+    pub stored_pose: Option<StoredStartPose>,
+    /// Field 3: the team, an integer written into the vehicle's base team
+    /// field (`0x47c674`).
+    pub team: Option<u32>,
+    /// Field 4: the AI group, stored at `vehicle+0x388` (`0x47c694`).
+    pub group: Option<u32>,
+    /// Field 5: whether the aircraft spawns at all — the spawn loop skips a
+    /// record whose value is zero (`0x474d10`).
+    pub enabled: Option<bool>,
+    /// Field 6: the primary target's name, when it is non-empty text (the
+    /// loader strdups it into `vehicle+0x2f8`, `0x47c6a0`).
+    pub primary_target: Option<String>,
+    /// Field 20: the title, when it is non-empty text (usually a `MSG_*`
+    /// localization key).
+    pub title: Option<String>,
+    /// Field 21: whether the aircraft spawns **asleep** — non-zero makes the
+    /// loader call the sleep routine `0x4b0f40(vehicle, 1)` (`0x47ca14`),
+    /// and the mission program wakes it later (`WAKEUP_ENEMIES`, #681).
+    pub starts_asleep: Option<bool>,
+    /// The spawn dispatch the record's name takes (#1453): which vehicle
+    /// template the original builds for it.
+    pub dispatch: SpawnDispatch,
+    /// Where the record was read from.
+    pub provenance: Provenance,
+}
+
+/// Reads every scripted-aircraft record of a decoded `aiv.zrd` document,
+/// exposing the fields #1453 measured (#1453, `M01-AIV-LAYOUT`).
+///
+/// `source` is the member's span; every record read from it carries it. The
+/// header record (the `(id, name)` table) is skipped the way
+/// [`MissionStartConfiguration::read`] skips it: only `[name, fields]`
+/// records answer.
+///
+/// The claim status is [`ClaimStatus::ObservedTool`] for every record: the
+/// field map is static analysis of the owner-supplied image plus retail data,
+/// never a run of the original.
+///
+/// # Errors
+///
+/// [`MissionStartError::Provenance`] when a claim id cannot be built.
+pub fn read_aircraft_records(
+    mission: &str,
+    document: &ZrdValue,
+    source: &SourceSpan,
+) -> Result<Vec<ScriptedAircraft>, MissionStartError> {
+    let label = claim_label(mission);
+    let mut aircraft = Vec::new();
+    for (index, record) in document.as_list().unwrap_or_default().iter().enumerate() {
+        let Some([name, fields]) = record.as_list() else {
+            continue;
+        };
+        let (Some(name), Some(fields)) = (name.as_text(), fields.as_list()) else {
+            continue;
+        };
+        let non_empty_text = |value: Option<&ZrdValue>| -> Option<String> {
+            let text = value?.as_text()?;
+            if text.is_empty() {
+                None
+            } else {
+                Some(text.to_owned())
+            }
+        };
+        let netids = match fields.first() {
+            Some(ZrdValue::Int(value)) => Some(Netids::One(*value)),
+            Some(ZrdValue::List(items)) => {
+                let ids: Option<Vec<u32>> = items.iter().map(|item| item.as_int()).collect();
+                ids.map(Netids::Many)
+            }
+            _ => None,
+        };
+        aircraft.push(ScriptedAircraft {
+            name: name.to_owned(),
+            index,
+            field_count: fields.len(),
+            netids,
+            stored_pose: stored_pose(fields),
+            team: fields.get(TEAM_FIELD).and_then(ZrdValue::as_int),
+            group: fields.get(GROUP_FIELD).and_then(ZrdValue::as_int),
+            enabled: fields
+                .get(ENABLED_FIELD)
+                .and_then(ZrdValue::as_int)
+                .map(|value| value != 0),
+            primary_target: non_empty_text(fields.get(PRIMARY_TARGET_FIELD)),
+            title: non_empty_text(fields.get(TITLE_FIELD)),
+            starts_asleep: fields
+                .get(DEACTIVATED_FIELD)
+                .and_then(ZrdValue::as_int)
+                .map(|value| value != 0),
+            dispatch: spawn_dispatch(name),
+            provenance: Provenance::new(
+                claim_id(&format!("{label}.aircraft-{name}"))?,
+                ClaimStatus::ObservedTool,
+                Some(source.clone()),
+            )
+            .map_err(|error| MissionStartError::Provenance(error.to_string()))?,
+        });
+    }
+    Ok(aircraft)
 }
 
 /// A start pose: position and heading, in the units the simulation uses.
