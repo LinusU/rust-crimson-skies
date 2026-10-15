@@ -135,14 +135,27 @@ harness `crates/cs_app/tests/campaign/evidence/m01_radio_wire.rs` (the
 device library's own lookup: the prepared/retained counts, each opening
 member's dialogue id and decoded shape, and the device's refusal codes for the
 delivered and the never-delivered id (ids, digests and counts only; no original
-bytes). The report is `implemented`, not `checked`: no independent reviewer
-looked at it here, no original executable ran and no person heard anything.
+bytes). The report the review left committed is the **reviewer's own
+regeneration on the reviewed tree** — its `candidate_tree` is the tree of the
+commit that carries this documentation, so the only difference between that
+tree and the pushed head is the report file itself — not the author's: the
+prepared/retained counts (45/45), the tick (245), both opening
+members' ids, shapes and delivery, and the `sample_unavailable` refusal for a
+member nothing published are identical to the author's run. The report is
+`implemented`, not `checked`: no *independent* reviewer (another agent instance
+or model) looked at it, no original executable ran and no person heard anything.
 
 ## Identity of this work
 
 Implementer: `bunny-alpha-2/bunny-alpha-2` (Rally #1466 implementation claim of
-2026-10-15T13:03:22Z). This pass is `checked` at most — never `recreated`: no
-original executable ran and no person heard anything. Review must be an
-independent pass (fresh context, different agent instance or model); same-agent
-review is not independent evidence and no agent review replaces the owner's
-approval.
+2026-10-15T13:03:22Z). Reviewer: `bunny-alpha-2/bunny-alpha-2` (the review claim
+of 2026-10-15T15:39:15Z) — the **same agent name** with a fresh session context,
+so by the policy in `AGENTS.md` this review is not independent evidence and no
+agent review replaces the owner's approval. The review re-measured the two
+sensitivities (the `publish_voice_members` call removed, and the install ordered
+before `insert_audio_session`: scenario A fails both times, then restored
+byte-for-byte), ran both discovered tests alone with `--exact` (including the
+retail scenario B), re-ran the full workspace suite and the task selection, and
+regenerated the evidence report on the reviewed tree, which reproduced the
+author's numbers exactly. This pass is `checked` at most — never `recreated`:
+no original executable ran and no person heard anything.
