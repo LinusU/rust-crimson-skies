@@ -3,8 +3,43 @@
 Date: 2026-10-15. Task: `M01-PLAY-TRIGGERS-PARTS` (Rally #1481), the second
 slice of `M01-PLAY-TRIGGERS` (#1439). Capabilities used: `retail` (read-only
 `$CS_GAME_DIR`) plus build/test. No `gpu`, no `audio`, no original run.
-Implementer: bunny-alpha-2. Nothing here is `verified_original`; a Rally merge
-awards `checked` only.
+Implementer: bunny-alpha-2. Reviewer: bunny-alpha-2 in a **fresh session** —
+the same agent identity as the implementer, so this is not an independent
+review, and the owner's preference for a different agent instance/model on
+mission semantics is not satisfied by it. Nothing here is
+`verified_original`; a Rally merge awards `checked` only.
+
+## The review pass
+
+The review found and fixed one production defect, and one report-accuracy
+defect, in the implemented path:
+
+* **The composed restart dropped the whole binding.**
+  `mission_host_restart` (the `PostUpdate` entry the playtest's `R` reset and a
+  terminal's retry reach) takes the `MissionStage` **resource** out of the world
+  before it calls `MissionHost::restart`, and the binder read the plan from that
+  resource. After any restart the plan was therefore empty: no part entity, no
+  part node on the actor's graph, no row — the 39 chains went unobserved again
+  and every ladder over them stalled for the rest of the mission. The binder now
+  takes the plan from its caller, and `respawn_mission_actors` receives the stage
+  by reference (`mission_actors::part_plan_of`, `respawn_mission_actors`); the
+  Startup path still reads the resource. The new leg
+  `…_the_composed_restart_rebinds_the_parts` drives the composed entry through a
+  `MissionHostRestartRequest` and fails without the fix (it bound 0 parts before
+  it, 2 after).
+* **`MissionPartReport::refusals` carried the aircraft refusals.** The spawn
+  host copied the whole `MissionActorSpawnReport::refusals` into the parts
+  report, so a scripted aircraft that refused was reported as a part-state
+  refusal. Each bound-actor refusal is now pushed to both reports at its own
+  site, and nothing else is copied: the parts report's refusals are exactly the
+  ones that stopped a part binding.
+* **Teardown left the part entities and the parts report behind.**
+  `mission_session::compose::teardown` sweeps every mission-actor entity kind and
+  removes their reports; the new `MissionPartState` entities and
+  `MissionPartReport` were missing from both lists, so a part entity survived a
+  teardown inside the same world. Both are now in the sweep. Pinned by
+  `…_teardown_takes_the_parts_with_the_composition`, which counts 2 leftovers
+  without the fix and 0 with it.
 
 ## What this slice is, and what it is not
 
@@ -135,9 +170,9 @@ damage authority already routes a hit through — and report the pool it applies
 | Piece | What it does |
 | --- | --- |
 | `parts::plan_part_states(stage)` | reads the stage's own records — the program's `WorldOperands`, the container `MemberResolver`, the launched world-actor program's subjects — and plans one entry per chain that resolves, carries a part element and names a bound actor |
-| `mission_actors::spawn_mission_actors_under` | builds each zeppelin's damage graph with one designed node per planned part (the frame node #1435 declared is unchanged) and spawns one `MissionPartState` entity per chain at the actor's own bind-time pose |
+| `mission_actors::spawn_mission_actors_under` | takes that plan from its caller (the Startup resource read, or the stage the restart hands in) and builds each zeppelin's damage graph with one designed node per planned part (the frame node #1435 declared is unchanged) and spawns one `MissionPartState` entity per chain at the actor's own bind-time pose |
 | `observation::mission_world_observation` | writes one member row per part entity: `held_in_play` when the authority says `Intact`/`Damaged`, `no_longer_in_play` when it says `Destroyed`, **no row** when the pool is unresolved or the actor is unregistered |
-| `mission_actors::despawn_mission_actors` | takes the part entities and the report with the actors on restart/teardown |
+| `mission_actors::despawn_mission_actors` | takes the part entities and the report with the actors on restart; `mission_session::compose::teardown` sweeps the same entities and report when the composition itself is torn down |
 
 The fail-closed row rules are the point of the design: an unobserved chain is
 *not* a cleared member (`cs_script::runtime::MissionState::holds` counts only
@@ -182,7 +217,7 @@ different fact family, named as a residue below.
 ## What the acceptance suite proves
 
 `crates/cs_app/tests/campaign/m01_play_triggers_parts.rs`, prefix
-`accept_m01_play_triggers_parts_` — 6 tests (4 run in CI, 2 retail):
+`accept_m01_play_triggers_parts_` — 8 tests (6 run in CI, 2 retail):
 
 * `…_m01_binds_one_live_part_per_spelled_chain` (retail) — the composed run binds
   39 parts (27 + 12), every one observed in play, every one an intact node on its
@@ -204,14 +239,22 @@ different fact family, named as a residue below.
   provider's entity removed the chain is unobserved and the ladder stalls;
 * `…_an_unresolved_pool_writes_no_row` (CI) — the fail-closed read: an unresolved
   pool is not a statement about presence, so the chain gets **no row** and
-  `part_in_play` answers `None`.
+  `part_in_play` answers `None`;
+* `…_the_composed_restart_rebinds_the_parts` (CI) — the composed restart entry
+  (a `MissionHostRestartRequest` consumed by `app.update()`, which holds the
+  stage out of the world while the host rebuilds) rebinds both chains, and a
+  rebound part still advances the ladder. Added by the review; fails without the
+  review's fix.
+* `…_teardown_takes_the_parts_with_the_composition` (CI) — teardown despawns the
+  part entities and removes the parts report. Added by the review; fails without
+  the review's fix.
 
 The destruction in every leg is a `HitEvent` resolved by
 `DamageResolver::resolve` — the seam the F27 gun step and the F28 ordnance step
 publish into — never a despawn from the test.
 
 ```sh
-cargo test --workspace --locked -- accept_m01_play_triggers_parts_ --include-ignored   # 6 tests, 2 retail
+cargo test --workspace --locked -- accept_m01_play_triggers_parts_ --include-ignored   # 8 tests, 2 retail
 ```
 
 ## Evidence
@@ -277,3 +320,11 @@ ladder census read from the lowered program.
   `INACTIVE` number this slice makes reachable is reachable *given* that pool;
   no ladder is claimed to advance in the original, whose destruction rule is
   unmeasured.
+* The binding survives a composed restart: the parts are rebound under the fresh
+  generation, exactly as the scripted actors and the world are. A part entity is
+  still never *removed* to mean out of play — leaving play is a state of the
+  damage authority, and a restart is the one path that takes the entities with
+  the generation they belonged to.
+* The evidence report was regenerated by the review on the reviewed commit; its
+  `review.identity` names the review pass and says the reviewer shares the
+  implementer's agent identity.
