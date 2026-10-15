@@ -547,9 +547,14 @@ pub struct MissionHostTick {
     /// What the control program answered for this tick.
     pub script: MissionTick,
     /// What the mission's sound-group cues produced on this tick, in
-    /// emission order: the voice lines that reached the audio session's
-    /// radio queue, the music state requests, and every cue that was refused
+    /// emission order: the voice lines handed to the audio session's radio
+    /// queue, the music state requests, and every cue that was refused
     /// by name ([`super::radio`]). Empty when this tick emitted no cue.
+    ///
+    /// `Queued` is the offer, not the queue's own verdict: the radio queue
+    /// answers with `RadioEvent`s on the session, so a refusal of its own (a
+    /// full pending queue, a duplicate id, a foreign session) is named there
+    /// and in the mixer's radio report rather than dropped.
     pub radio: Vec<RadioLineOutcome>,
 }
 

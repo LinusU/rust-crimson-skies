@@ -277,7 +277,10 @@ impl std::fmt::Display for RadioRefusal {
 /// What one cue produced, in the order the host offered it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum RadioLineOutcome {
-    /// One voice member reached the audio session's radio queue.
+    /// One voice member was offered to the audio session's radio queue. The
+    /// queue's own verdict — a full pending queue, a duplicate id, a foreign
+    /// session — arrives as a `RadioEvent` on the session and is named by the
+    /// mixer's radio report, never dropped.
     Queued {
         /// The group the cue named.
         group: String,

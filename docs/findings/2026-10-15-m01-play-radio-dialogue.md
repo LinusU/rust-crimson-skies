@@ -113,16 +113,22 @@ voice line. **Subtitles therefore stay `None`** on every queued line
     `AudioSession`. **Measured on the owner's installation:** the opening
     conversation's two lines reach the radio queue at the 2.0 s wake,
     `VO_c2-NW-m1_WorkersVoyage_1.wav` first (1 137 ticks ≈ 9.5 s), then
-    `VO_c2-NW-m1_Zachary_2.wav` behind it.
+    `VO_c2-NW-m1_Zachary_2.wav` behind it — the review pinned that order in
+    the helper: the active line must be the group's first spelled member.
   * `accept_m01_play_radio_the_composition_queues_the_opening_conversation`
     (`CS_GAME_DIR` **and** `CS_ENGINE_IMAGE`, because M01's player start is
     only known from the owner's decrypted image) runs the whole
     `build_headless` composition and reads the answers off
     `MissionHostReport`. It fails loudly by design when the image is unset,
-    so it was **not run on the host that wrote this note** — the reviewer or
-    the owner runs it with the image.
-* Open, deliberately not guessed here — filed as follow-ups: device-side
-  playback and the missing radio tick (`M01-RADIO-DEVICE` #1461), the
+    so it was **not run on the host that wrote this note** — the reviewer ran
+    it green on 2026-10-15 with both capabilities set (`accept_m01_play_radio
+    --include-ignored`, exit 0), and the owner's listening test still stands
+    as the audible gate.
+* Follow-ups this task did not reach — filed as separate tasks: device-side
+  playback and the missing radio tick (`M01-RADIO-DEVICE` #1461, **landed on
+  main separately** — see `docs/findings/2026-10-15-m01-radio-device.md`, so
+  what still gates an audible line is the identity/population rule,
+  `M01-RADIO-SAMPLE-IDENTITY` #1465 and `M01-RADIO-SAMPLE-WIRE` #1466), the
   objective HUD and the text behind `MSG_BRF_NWM1_OBJ1..4`
   (`M01-HUD-OBJECTIVE` #1462), and the music state requests
   (`M01-PLAY-MUSIC` #1463).
