@@ -674,7 +674,7 @@ fn decide_mission_aircraft_ai(
                     None => {
                         report.no_target += 1;
                         ai.target = None;
-                        (hold_course_point(here, nose), START_THROTTLE, None)
+                        (hold_course_direction(nose), START_THROTTLE, None)
                     }
                 }
             }
@@ -705,11 +705,11 @@ fn decide_mission_aircraft_ai(
                     None => {
                         report.no_target += 1;
                         ai.leader = None;
-                        (hold_course_point(here, nose), START_THROTTLE, None)
+                        (hold_course_direction(nose), START_THROTTLE, None)
                     }
                 }
             }
-            MissionAiBehaviour::HoldCourse => (hold_course_point(here, nose), START_THROTTLE, None),
+            MissionAiBehaviour::HoldCourse => (hold_course_direction(nose), START_THROTTLE, None),
         };
         flight.command = pursuit_command(orientation, aim, throttle);
         ai.range_m = aim_point.map_or(f32::NAN, |point| (point - here).length());
@@ -941,21 +941,40 @@ fn arm_mission_ai(world: &mut World) {
 }
 
 /// Resolves a pursuit rule to the cast member it names, the player body
-/// being addressed by [`MissionPlayerBody`] rather than by a record name.
+/// being addressed by [`MissionPlayerBody`] rather than by a scripted
+/// record — except when the rule names the player's own record, which
+/// resolves to the player body itself.
 fn resolve(
     rule: &TargetRule,
     cast: &[CastMember],
     player: Option<&CastMember>,
 ) -> Option<CastMember> {
     match rule {
-        TargetRule::Record(name) => cast.iter().find(|(_, record, ..)| record == name).cloned(),
+        TargetRule::Record(name) => cast
+            .iter()
+            .find(|(_, record, ..)| record == name)
+            .cloned()
+            .or_else(|| {
+                // A stored primary target may spell the player's own record
+                // name (`player` is the name whose measured dispatch is
+                // `SpawnDispatch::Player`): the player body is then the
+                // named target, not an unknown one.
+                player.filter(|(_, record, ..)| record == name).cloned()
+            }),
         TargetRule::Player => player.cloned(),
     }
 }
 
-/// The point a hold-course aircraft flies toward: straight ahead on its own
-/// heading at its own altitude, so the same steering half keeps both.
-fn hold_course_point(here: Vec3, nose: Vec3) -> Vec3 {
+/// The direction a hold-course aircraft flies toward: straight ahead on its
+/// own heading at its own altitude, so the same steering half keeps both.
+///
+/// This is a vector **from the body**, never a world point, because that is
+/// the shape [`pursuit_command`] reads: the pursuit branch passes
+/// `target_position - here` and the station branch `station - here`, and a
+/// world point handed to the steering half would aim the nose at *where the
+/// body stands* rather than *where it is going* — a course that leaned on the
+/// body's distance from the world origin instead of its own heading.
+fn hold_course_direction(nose: Vec3) -> Vec3 {
     let flat = Vec3::new(nose.x, 0.0, nose.z);
     let forward = if flat.length_squared() > 1.0e-6 {
         flat.normalize()
@@ -964,11 +983,13 @@ fn hold_course_point(here: Vec3, nose: Vec3) -> Vec3 {
         // still has rather than inventing one.
         Vec3::NEG_Z
     };
-    here + forward * HOLD_COURSE_LOOKAHEAD_M
+    forward * HOLD_COURSE_LOOKAHEAD_M
 }
 
 #[cfg(test)]
 mod tests {
+    use bevy::ecs::system::RunSystemOnce;
+
     use super::*;
 
     fn record(
@@ -1158,6 +1179,211 @@ mod tests {
         assert!(
             (at_rest - cruise).abs() < 1.0e-9,
             "a leader still at rest never drags the wingman below the session cruise: {at_rest}"
+        );
+    }
+
+    // ------------------------------------------------- decision fixtures ---
+
+    /// The law the decision writes through: the recovered parameter tables
+    /// authored here as **synthetic** values and imported through the
+    /// production `from_values` boundaries (the same fixture F41-B's spawn
+    /// bindings declare). The decision reads only `fd_speed` off it, and the
+    /// command it writes is what the tests below assert — nothing here
+    /// claims a retail parameter.
+    fn synthetic_law() -> OriginalFlightModel {
+        let airframe = OriginalAirframe::from_values(&[
+            ("roll_torque", 7.5),
+            ("pitch_torque", 3.3),
+            ("rudder_torque", 2.0),
+            ("level_off_rate", 1.0),
+            ("return_rate", 3.0),
+            ("ang_momentum_damp", 5.0),
+            ("rec_moments_inertia_x", 1.18),
+            ("rec_moments_inertia_y", 1.0),
+            ("rec_moments_inertia_z", 1.1),
+            ("fd_speed", 135.0),
+            ("engine_factor", 0.62),
+            ("drag_factor", 0.37),
+            ("veh_weight", 1900.0),
+            ("ref_area", 330.0),
+            ("gravity", 20.0),
+        ])
+        .expect("the declared airframe fields are complete");
+        let globals = OriginalGlobals::from_values(&[
+            ("nom_gravity", 20.0),
+            ("lift_aoa_0_deg", 5.0),
+            ("lift_aoa_1_deg", 9.0),
+            ("max_aoa_deg", 46.0),
+            ("high_g_0", 9.0),
+            ("high_g_1", 15.0),
+            ("low_g_0", -6.0),
+            ("low_g_1", -9.0),
+            ("lift_accel_rate", 0.75),
+            ("stall_mag", 1.25),
+            ("turn_fade_in_mph", 10.0),
+            ("turn_fade_out_mph", 50.0),
+            ("yaw_low_speed", 0.0625),
+            ("yaw_high_speed", 0.17),
+            ("yaw_fade_in_mph", 10.0),
+            ("yaw_max_mph", 50.0),
+            ("yaw_fade_out_mph", 400.0),
+        ])
+        .expect("the declared globals are complete");
+        OriginalFlightModel::full(airframe, globals)
+    }
+
+    /// A world holding only what [`decide_mission_aircraft_ai`] mutates, so
+    /// a test can run the production decision on a hand-placed cast.
+    fn decision_world() -> World {
+        let mut world = World::new();
+        world.init_resource::<MissionAiReport>();
+        world.init_resource::<MissionAiFireOrders>();
+        world
+    }
+
+    /// One flown scripted aircraft, level with the world axes
+    /// ([`Quat::IDENTITY`], nose `-Z`) far from the world origin, with the
+    /// behaviour its measured fields select.
+    fn flown(world: &mut World, name: &str, team: Option<u32>, primary: Option<&str>) -> Entity {
+        let scripted = record(name, team, primary, false);
+        world
+            .spawn((
+                Position(Vec3::new(4_000.0, 900.0, -3_500.0)),
+                Rotation(Quat::IDENTITY),
+                MissionAircraftAi::for_record(&scripted, Some(1)),
+                PlaytestOriginalFlight {
+                    model: synthetic_law(),
+                    state: cs_sim::flight::OriginalState {
+                        position_m: [4_000.0, 900.0, -3_500.0],
+                        velocity_mps: [0.0, 0.0, 0.0],
+                        orientation: Quaternion::IDENTITY,
+                        angular_momentum_world: [0.0; 3],
+                        throttle: START_THROTTLE,
+                        fuel: 0.0,
+                        level_off: false,
+                    },
+                    command: FlightInput::NEUTRAL,
+                    hold_attitude: false,
+                    is_player: false,
+                    provenance: "synthetic fixture: the decision writes its command",
+                },
+                ScriptedAircraftActor {
+                    record: scripted,
+                    vehicle_record: "devastator".to_owned(),
+                    damage_actor: ActorId {
+                        session: cs_types::net::SessionId::new(1).expect("session 1 is a valid id"),
+                        serial: 1,
+                    },
+                    generation: crate::scene::SceneGeneration(1),
+                    asleep: false,
+                },
+            ))
+            .id()
+    }
+
+    /// The player body the fallback rule addresses through
+    /// [`MissionPlayerBody`], far enough away that no window opens.
+    fn player(world: &mut World) -> Entity {
+        world
+            .spawn((
+                MissionPlayerBody,
+                Position(Vec3::new(-6_000.0, 400.0, 2_000.0)),
+                Rotation(Quat::IDENTITY),
+                LinearVelocity(Vec3::ZERO),
+            ))
+            .id()
+    }
+
+    /// **A hold-course aircraft keeps its own heading.** The direction the
+    /// steering half receives is a vector from the body, never the body's
+    /// world point: the fixture stands 4 km from the world origin, so a
+    /// point handed over instead would aim the nose at where the body *is*
+    /// and saturate the roll and rudder axes.
+    #[test]
+    fn accept_m01_play_ai_the_decision_keeps_a_hold_course_aircraft_on_its_heading() {
+        let direction = hold_course_direction(Vec3::NEG_Z);
+        assert_eq!(
+            direction,
+            Vec3::NEG_Z * HOLD_COURSE_LOOKAHEAD_M,
+            "the hold-course direction is the nose ahead of the body, at the designed lookahead"
+        );
+
+        let mut world = decision_world();
+        let body = flown(&mut world, "devastator_2", Some(1), None);
+        world
+            .run_system_once(decide_mission_aircraft_ai)
+            .expect("the production decision system runs");
+        let flight = world.get::<PlaytestOriginalFlight>(body).expect("flown");
+        assert!(
+            flight.command.pitch.abs() < 1.0e-6
+                && flight.command.roll.abs() < 1.0e-6
+                && flight.command.yaw.abs() < 1.0e-6,
+            "already pointed where it is going, a hold-course record asks for no deflection: {:?}",
+            flight.command
+        );
+        assert_eq!(
+            flight.command.throttle, START_THROTTLE,
+            "a hold-course record flies the session cruise"
+        );
+        let ai = world.get::<MissionAircraftAi>(body).expect("flown");
+        assert_eq!(ai.decisions, 1, "the decision was written");
+        assert!(
+            ai.range_m.is_nan(),
+            "a record with no target has no range to it"
+        );
+        let report = world.resource::<MissionAiReport>();
+        assert_eq!(report.decisions, 1, "one record, one command");
+        assert_eq!(report.no_target, 0, "nothing was aimed at, nothing lost");
+        assert_eq!(
+            report.fire_orders, 0,
+            "a hold-course record never asks to fire"
+        );
+    }
+
+    /// **A stored primary target that names the player engages the player
+    /// body**, and a name that names nobody engages nothing: the fallback is
+    /// a name match on the player's own record, not a default answer.
+    #[test]
+    fn accept_m01_play_ai_a_stored_primary_target_that_names_the_player_engages_it() {
+        let mut world = decision_world();
+        let player_body = player(&mut world);
+        let attacker = flown(&mut world, "bsfury_1", Some(2), Some("player"));
+        world
+            .run_system_once(decide_mission_aircraft_ai)
+            .expect("the production decision system runs");
+        let ai = world.get::<MissionAircraftAi>(attacker).expect("flown");
+        assert_eq!(
+            ai.target,
+            Some(player_body),
+            "the stored primary target spelled `player`, so the player body is what it engaged"
+        );
+        let report = world.resource::<MissionAiReport>();
+        assert_eq!(report.no_target, 0, "the named target resolved");
+        assert_eq!(report.decisions, 1, "one record, one command");
+
+        let mut world = decision_world();
+        let _ = player(&mut world);
+        let orphan = flown(
+            &mut world,
+            "rusdevastator_1",
+            Some(2),
+            Some("no_such_record"),
+        );
+        world
+            .run_system_once(decide_mission_aircraft_ai)
+            .expect("the production decision system runs");
+        let ai = world.get::<MissionAircraftAi>(orphan).expect("flown");
+        assert_eq!(
+            ai.target, None,
+            "a name nobody carries resolves to nothing — never to the player by default"
+        );
+        let report = world.resource::<MissionAiReport>();
+        assert_eq!(report.no_target, 1, "the unresolved target is counted once");
+        let flight = world.get::<PlaytestOriginalFlight>(orphan).expect("flown");
+        assert!(
+            flight.command.roll.abs() < 1.0e-6 && flight.command.yaw.abs() < 1.0e-6,
+            "an unresolved pursuer falls back to holding its own course: {:?}",
+            flight.command
         );
     }
 }

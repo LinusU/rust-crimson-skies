@@ -157,7 +157,9 @@ mission's own publication, under the AI's producer serial.
 
 * `crates/cs_app/src/mission_ai.rs` — `accept_m01_play_ai_*` unit tests over
   the pure law (role split, steering signs and clamps, station point,
-  wingman throttle, fire window and cone). CI runs them: they need no
+  wingman throttle, fire window and cone) and, since §6, over the production
+  decision system itself (the hold-course direction and the stored-target
+  resolution, on a hand-placed cast). CI runs them: they need no
   installation.
 * `crates/cs_app/tests/campaign/m01_play_ai.rs` — the retail acceptance
   tests, `#[ignore = "requires CS_GAME_DIR"]`, driven with
@@ -191,3 +193,46 @@ original content).
 The report's `candidate_tree` is the tree of the tested commit; this file and
 the evidence copy are committed after it, so that commit changes the tree —
 the same order #1435 used.
+
+## 6. Review fixes (2026-10-15)
+
+Reviewed by a **fresh session of `mimo-1`** (same agent name and model as the
+implementer, new context): it re-read the task, this sheet, the shared
+contract and the whole diff, and ran every check itself. That is a second
+session, not an independent model, so it is not independent original-reference
+evidence and no agent review replaces the owner's human approval. Two defects
+in the designed law were found and fixed on the review head:
+
+1. **Hold course handed the steering half a world point.**
+   `decide_mission_aircraft_ai` passed `pursuit_command` the *point*
+   `here + forward * HOLD_COURSE_LOOKAHEAD_M`, where the pursuit and station
+   branches pass a *vector from the body* (`target_position - here`,
+   `station - here`). The steering half reads its argument as a direction, so
+   a hold-course record aimed its nose at where it **stood** instead of where
+   it was going, and how far it turned depended on its distance from the
+   world origin. Measured on the review head with the production decision
+   system on a level body 4 km from the origin: `roll 1.0` (saturated),
+   `yaw -0.353`, `pitch 0.261` — a turn, not a course. M01's two `HoldCourse`
+   records (`devastator_2`, `devastator_3`) were flying exactly that.
+   Fixed by returning the body-relative direction (`hold_course_direction`),
+   pinned by
+   `accept_m01_play_ai_the_decision_keeps_a_hold_course_aircraft_on_its_heading`,
+   which runs the production system on a hand-placed cast. The test fails on
+   the pre-fix code (checked by mutation).
+
+2. **A stored primary target that names the player never resolved.**
+   `behaviour_for` deliberately maps a record whose measured `primary_target`
+   is `player` to `Pursue { target: TargetRule::Record("player") }`, but
+   `resolve` searched only the scripted-aircraft cast — and the player body
+   is not a scripted aircraft — so the target resolved to nothing and the
+   record fell back to holding its course while counting `no_target`. Fixed
+   with a name match on the player's own record, pinned by
+   `accept_m01_play_ai_a_stored_primary_target_that_names_the_player_engages_it`,
+   which also asserts that a name nobody carries still resolves to nothing
+   rather than to the player. Also mutation-checked against the pre-fix code.
+
+Neither fix touches a measured input or a designed constant: the gains, the
+fire window, the station and the four acceptance bounds in §2 are unchanged.
+The acceptance suite and the evidence harness are re-run on the review head;
+§7 records that run.
+
