@@ -191,7 +191,7 @@ branch also changes — so the owner's 2026-10-01 lighter merge-race check did
 | Command | Exit |
 | --- | --- |
 | `cargo fmt --all -- --check` | 0 (after the review fixes and again after the harness fix) |
-| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 (first review head; the two harness-only commits after it were re-linted with `cargo clippy --locked -p cs_app --tests --all-features -- -D warnings`, 0 — only that test file changed) |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 (on each review head, most recently on the final rebased head after main's radio commit landed; the harness-only commits between heads were re-linted with `cargo clippy --locked -p cs_app --tests --all-features -- -D warnings`, 0 — only that test file changed) |
 | `cargo test --workspace --locked` | 0 (586 test binaries, no failures) |
 | `cargo test --workspace --locked -- accept_m01_hud_objective_ --include-ignored` | 0 (5 discovered, 5 executed, 5 passed; the run the report's `command` records) |
 | `CS_EVIDENCE_* cargo test --locked -p cs_app --test evidence_report_m01_hud_objective -- --ignored` | 0 (writes the report; asserts `CS_CANDIDATE_TREE == HEAD^{tree}` and that all five acceptance tests pass in the log) |
