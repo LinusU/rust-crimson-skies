@@ -769,6 +769,11 @@ fn accept_m01_play_triggers_observe_group_counts_come_from_the_live_entities() {
         Some(4),
         "group 1 is observed at its live count"
     );
+    assert!(
+        !log(&app).completed(DEDG_GROUP_ONE_BLOCK),
+        "the block reads group 1's live count, so it must not complete while its four members \
+         are still in play"
+    );
 
     // Take them away — the count follows the world, and the `DEDG` block
     // that reads it completes.
