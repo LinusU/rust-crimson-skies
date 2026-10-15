@@ -271,6 +271,7 @@ mod m01_play_triggers_actor_bit;
 mod m01_play_triggers_anims_arm;
 mod m01_play_triggers_observe;
 mod m01_play_triggers_parts;
+mod m01_play_triggers_turret_class;
 mod m01_play_weapons;
 mod m01_play_world_evidence;
 mod m01_play_world_visible;
