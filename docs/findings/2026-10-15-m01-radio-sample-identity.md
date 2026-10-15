@@ -151,6 +151,15 @@ the one `offer_cues` calls.
 | `cargo test --workspace --locked` | 0 |
 | `cargo test --workspace --locked -- accept_m01_radio_sample_ --include-ignored` | 0 (3 run, 3 pass) |
 
+The review re-ran all four on the rebased commit `b17232b0`: fmt 0, clippy 0,
+the prefix selection 0 (3 run, 3 pass), and the workspace suite 0 (582
+binaries, 0 failed). One earlier workspace run failed
+`accept_m01_play_weather_the_plugin_draws_each_layer_under_the_camera` with
+`Resource does not exist`; that test passes in isolation and the immediate
+rerun of the identical command was green, so it is a pre-existing flake
+unrelated to this branch (filed as **#1471** `M01-PLAY-WEATHER-FLAKE`), and the
+green rerun is the run of record.
+
 ## Evidence
 
 `docs/findings/evidence/M01-RADIO-SAMPLE-IDENTITY.json` — the acceptance report
@@ -171,3 +180,29 @@ Implementer: `bunny-alpha-2/bunny-alpha-2` (Rally #1465, implementation claim of
 executable ran and no person heard anything. Review must be an independent pass
 (fresh context, different agent instance or model); same-agent review is not
 independent evidence and no agent review replaces the owner's approval.
+
+## Review of this work
+
+Reviewer: `bunny-alpha-2/bunny-alpha-2` (Rally #1465 review claim of
+2026-10-15T08:32:15Z). The reviewer ran in a **fresh session context** but is
+the **same agent name as the implementer**, so this is not an independent
+review and is not independent evidence (owner directive, 2026-09-28).
+
+What the review changed: scenario A previously proved the library insert and
+the device lookup as two disconnected steps — its mixer branch used the
+recording stand-in, which never consults a sample library, so the delivered
+member was never *resolved* by the device the mixer drives (the
+delivered/never-delivered contrast lived in scenario B alone). Scenario A now
+adds a second world whose output is a real `AudibleDevice` sharing the
+published library; the line resolves the published member there and is refused
+only the absent output (`device_closed`), never `sample_unavailable`. Removing
+the publish now fails this boundary assertion on its own (measured: with the
+boundary library detached from the publish, the assertion fails with
+`sample_unavailable`). The finding's scenario-A description was updated to
+match.
+
+The `retail` acceptance report was regenerated on the rebased commit
+`b17232b0` (tree `b7999712`) and re-validated with
+`tools/validate_evidence.py --require-pass`; its `review.identity` records this
+same-agent review. The claim stays `implemented`; a Rally merge awards
+`checked`, and no agent review replaces the owner's F41-D listening gate.
