@@ -220,7 +220,11 @@ pub enum RadioRefusal {
     },
     /// The member would not decode under its own WAVE declaration, so its
     /// length — and therefore the line's duration — is unknown and the line
-    /// is never queued with a guessed one.
+    /// is never queued with a guessed one. Also the member's own decode yields
+    /// no shape the device can hold (no frames at all, or a channel count the
+    /// device cannot place): the line could never be delivered, so it is
+    /// refused by name rather than queued as an asset no device can ever play
+    /// (M01-RADIO-SAMPLE-WIRE, #1466).
     Undecodable {
         /// The member that would not decode.
         member: String,

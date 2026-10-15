@@ -128,8 +128,9 @@ radio queue. Resolving tasks: #1466 (this wiring).
 
 `docs/findings/evidence/M01-RADIO-SAMPLE-WIRE.json` — the acceptance report the
 `retail` capability requires (`docs/contracts/CLI-EVIDENCE.md`), written by the
-harness `crates/cs_app/tests/evidence_report_m01_radio_wire.rs` from the
-recorded run. Its second production observation composes M01 through the real
+harness `crates/cs_app/tests/campaign/evidence/m01_radio_wire.rs` (the
+`evidence_report_m01_radio_wire_writes_the_acceptance_report` test of the
+`campaign` binary) from the recorded run. Its second production observation composes M01 through the real
 `stage_for`/`build_headless`, pumps it past the opening wake and records the
 device library's own lookup: the prepared/retained counts, each opening
 member's dialogue id and decoded shape, and the device's refusal codes for the
