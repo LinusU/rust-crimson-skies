@@ -223,14 +223,16 @@ pub use events::{
     sequence_duration, walk_event_stream,
 };
 pub use mission::{
-    AMBIGUOUS_DECLARATION_REASON, AnimationRecordFacts, AnimationTarget, CarrierFact,
-    DECLARATION_MATCH_CLAIM, EVENTS_NOT_DECODED_CLAIM, EVENTS_NOT_DECODED_REASON,
-    MeasuredPlacement, MissionAnimationBinding, MissionAnimationError, MissionAnimationRun,
-    OBJECT_NAME_DISAGREES_REASON, PLACEMENT_FIELDS_CLAIM, PLACEMENT_FIELDS_REASON,
-    PLACEMENT_ROTATION_AXIS_CLAIM, PLACEMENT_ROTATION_AXIS_REASON, PLACEMENT_STATE_CLAIM,
-    PlayRefusal, RecordResolution, RecordSequence, SEQUENCE_NAMES_DISAGREE_REASON,
-    StartupAnimation, TargetResolution, TargetSource, UNDECLARED_REASON, UNREADABLE_TARGET_REASON,
-    WorldActorPlacement, bind_mission_animation, join_startup_animation,
+    AMBIGUOUS_DECLARATION_REASON, AnimationNameIndex, AnimationRecordFacts, AnimationTarget,
+    AuthoredMissionAnimations, CarrierFact, CarrierRecords, DECLARATION_MATCH_CLAIM,
+    EVENTS_NOT_DECODED_CLAIM, EVENTS_NOT_DECODED_REASON, MeasuredPlacement,
+    MissionAnimationBinding, MissionAnimationError, MissionAnimationRun, NamedAnimationResolution,
+    NamedRecordMatch, OBJECT_NAME_DISAGREES_REASON, PLACEMENT_FIELDS_CLAIM,
+    PLACEMENT_FIELDS_REASON, PLACEMENT_ROTATION_AXIS_CLAIM, PLACEMENT_ROTATION_AXIS_REASON,
+    PLACEMENT_STATE_CLAIM, PlayRefusal, RecordResolution, RecordSequence,
+    SEQUENCE_NAMES_DISAGREE_REASON, StartupAnimation, TargetResolution, TargetSource,
+    UNDECLARED_REASON, UNREADABLE_TARGET_REASON, WAKE_ANIMATION_SOURCE, WorldActorPlacement,
+    bind_mission_animation, join_named_animation, join_startup_animation, match_record_by_name,
 };
 pub use playback::{
     AnimationLog, AnimationPlayError, AnimationPlayback, AnimationRefusal, BlockedTrack,
@@ -249,7 +251,7 @@ pub use programs::{
     SEQUENCE_NAME_FIELD, SelectorMatch, SelectorSegment, StartupAnimationBinding,
     StartupAnimationTable, StartupEvent, StateBinding, UnmeasuredFieldFamily, WILDCARD_CHAR,
     WorldActorProgramBinding, WorldNodeNames, read_animation_definition_member,
-    read_startup_animations,
+    read_startup_animations, resolve_animation,
 };
 pub use schedule::{
     AnimationPlugin, AnimationSchedulePlugin, CommittedSessionTick,

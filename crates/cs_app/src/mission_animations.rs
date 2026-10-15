@@ -82,10 +82,12 @@
 //!   a cue label nobody authored would be an invented mission symbol, which
 //!   [`crate::mission_markers`] refuses even for the designed vocabulary.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
 use bevy::ecs::world::World;
+use cs_script::ir::{DirectiveOperation, Value};
+use cs_script::runtime::{ExecutionKey, MissionState};
 use cs_sim::objectives::runtime::TickInput;
 use cs_types::Tick;
 use cs_types::asset_id::SourceSpan;
@@ -93,7 +95,8 @@ use cs_types::net::SessionId;
 
 use crate::animation::events::EventClass;
 use crate::animation::mission::{
-    AnimationTarget, PlayRefusal, PlaybackGap, RecordPlayback, StartupAnimation,
+    AnimationNameIndex, AnimationTarget, NamedAnimationResolution, PlayRefusal, PlaybackGap,
+    RecordPlayback, StartupAnimation,
 };
 use crate::animation::survey::CarrierKind;
 use crate::mission_markers::{
@@ -548,6 +551,352 @@ impl StartupReport {
     }
 }
 
+/// What one activation answered — [`MissionAnimationPlayer::start`] per row,
+/// [`MissionAnimationPlayer::activate`] for one name-keyed row.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ActivationOutcome {
+    /// The record is now running on this activation.
+    Started,
+    /// The identity was already running, so this activation did nothing: one
+    /// activation per identity, never two at once.
+    AlreadyRunning,
+    /// The row was refused; the player's own ledger holds its refusals
+    /// ([`MissionAnimationPlayer::refused_record`]).
+    Refused,
+}
+
+/// One `WAKE_ANIM` directive the mission host consumed and what it started.
+///
+/// A `WAKE_ANIM` site names one animation; this is the record of the one
+/// activation that name reached, at the tick the host consumed the directive
+/// on. It is the directive side of the join — the record's own identity,
+/// carrier and span are on the running record the player holds.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WakeActivation {
+    /// The name as the directive spelled it.
+    name: String,
+    /// The committed tick the host consumed the directive on.
+    at: Tick,
+    /// What the record player answered.
+    outcome: ActivationOutcome,
+}
+
+impl WakeActivation {
+    /// The name as the directive spelled it.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The committed tick the host consumed the directive on.
+    #[must_use]
+    pub const fn at(&self) -> Tick {
+        self.at
+    }
+
+    /// Whether this activation started the record (as opposed to finding it
+    /// already running).
+    #[must_use]
+    pub const fn started(&self) -> bool {
+        matches!(self.outcome, ActivationOutcome::Started)
+    }
+
+    /// What the record player answered.
+    #[must_use]
+    pub const fn outcome(&self) -> ActivationOutcome {
+        self.outcome
+    }
+}
+
+/// Why a `WAKE_ANIM` directive started nothing, named.
+///
+/// Every refusal is by name — the name the site spelled, or an empty one when
+/// the site's own arguments were not the measured shape — with the reader's own
+/// or this project's own reason text and, for an ambiguous name, every record
+/// it matched. A name that resolves but whose row the join refuses is also
+/// here, with [`WAKE_ANIM_ROW_REFUSED_REASON`]; the record player's own refusal
+/// ledger then says which agreement or block refused it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WakeRefusal {
+    name: String,
+    reason: &'static str,
+    matches: Vec<(crate::animation::survey::CarrierKind, usize)>,
+    at: Tick,
+}
+
+impl WakeRefusal {
+    /// The name the site spelled, verbatim; empty when the site's own
+    /// arguments were not the measured shape.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Why nothing was started, verbatim.
+    #[must_use]
+    pub const fn reason(&self) -> &'static str {
+        self.reason
+    }
+
+    /// Every record the name matched, when it matched more than one.
+    #[must_use]
+    pub fn matches(&self) -> &[(crate::animation::survey::CarrierKind, usize)] {
+        &self.matches
+    }
+
+    /// The committed tick the directive was consumed on.
+    #[must_use]
+    pub const fn at(&self) -> Tick {
+        self.at
+    }
+}
+
+/// Why a `WAKE_ANIM` site's arguments started nothing: they are not the
+/// one-text shape the measured sites spell.
+pub const WAKE_ANIM_ARGUMENTS_REASON: &str = "the WAKE_ANIM site's arguments are not the one-animation-name shape the measured \
+     installation spells (the operation's own measured parse is an animation name and an optional \
+     node name), so no name was resolved and nothing was started";
+
+/// Why a `WAKE_ANIM` name that resolved to a record started nothing: the join
+/// refused the row.
+pub const WAKE_ANIM_ROW_REFUSED_REASON: &str = "the WAKE_ANIM name resolved to exactly one record, but the join refused to play \
+     it; the record player's own refusal ledger carries which name agreement or sequence block \
+     refused it";
+
+/// The mission host's `WAKE_ANIM` consumer.
+///
+/// It applies each `WakeAnimation` emission the session's directive log carries
+/// **exactly once**, deduplicating by execution key the way the mission
+/// countdown deduplicates the timer directives
+/// ([`cs_sim::mission::MissionState`] keeps the log for the whole session, so
+/// only the key says which entry is new), resolves the name the site spelled
+/// through the scope's [`AnimationNameIndex`], and starts the record through
+/// the record player at the tick being stepped.
+///
+/// Nothing is started twice and nothing is silently skipped: a name that binds
+/// nothing, a name that binds several records and a site whose arguments are
+/// not the measured shape are all kept as [`WakeRefusal`]s.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WakeAnimationLedger {
+    applied: BTreeSet<ExecutionKey>,
+    activations: Vec<WakeActivation>,
+    refused: Vec<WakeRefusal>,
+}
+
+impl WakeAnimationLedger {
+    /// Consumes every `WakeAnimation` emission of `state` this ledger has not
+    /// already applied, and answers the activations this call produced in
+    /// directive-key order.
+    ///
+    /// `names` is the mission scope's own name index — the join the name is
+    /// resolved through — and `player` the record player the record is started
+    /// in. Nothing is published here: the player's next `advance` publishes the
+    /// statements the record has reached, and the host's stage-4 fold is the
+    /// only thing that observes the record's state.
+    pub fn consume(
+        &mut self,
+        state: &MissionState,
+        names: &AnimationNameIndex,
+        player: &mut MissionAnimationPlayer,
+        tick: Tick,
+    ) -> Vec<WakeActivation> {
+        let mut activations = Vec::new();
+        for emission in state.directives() {
+            if emission.operation != DirectiveOperation::WakeAnimation {
+                continue;
+            }
+            let key = emission.key.execution_key();
+            if !self.applied.insert(key) {
+                continue;
+            }
+            let Some(name) = wake_animation_name(&emission.args) else {
+                self.refused.push(WakeRefusal {
+                    name: String::new(),
+                    reason: WAKE_ANIM_ARGUMENTS_REASON,
+                    matches: Vec::new(),
+                    at: tick,
+                });
+                continue;
+            };
+            match names.resolve(&name) {
+                NamedAnimationResolution::Bound(row) => {
+                    let outcome = player.activate(tick, &row);
+                    if outcome == ActivationOutcome::Refused {
+                        self.refused.push(WakeRefusal {
+                            name: name.clone(),
+                            reason: WAKE_ANIM_ROW_REFUSED_REASON,
+                            matches: Vec::new(),
+                            at: tick,
+                        });
+                    }
+                    activations.push(WakeActivation {
+                        name,
+                        at: tick,
+                        outcome,
+                    });
+                }
+                NamedAnimationResolution::Unbound { reason, matches } => {
+                    self.refused.push(WakeRefusal {
+                        name,
+                        reason,
+                        matches,
+                        at: tick,
+                    });
+                }
+            }
+        }
+        self.activations.extend(activations.iter().cloned());
+        activations
+    }
+
+    /// How many `WakeAnimation` emissions this ledger has applied.
+    #[must_use]
+    pub fn applied(&self) -> usize {
+        self.applied.len()
+    }
+
+    /// Every activation, in the order the host consumed the directives.
+    #[must_use]
+    pub fn activations(&self) -> &[WakeActivation] {
+        &self.activations
+    }
+
+    /// Every name a directive started nothing for, in the order it was
+    /// consumed.
+    #[must_use]
+    pub fn refused(&self) -> &[WakeRefusal] {
+        &self.refused
+    }
+}
+
+/// The animation name one `WAKE_ANIM` site spelled, or `None` when the site's
+/// arguments are not the measured one-text shape.
+///
+/// The measured sites spell exactly one text (`[text activate_dropoff_node]`);
+/// no other shape is interpreted, because the operation's own parse stores an
+/// animation name and an optional node name and **which** of those a site's
+/// stored arguments is has not been measured for every shape. An empty name is
+/// not a name either.
+fn wake_animation_name(args: &[Value]) -> Option<String> {
+    match args {
+        [Value::Str(name)] if !name.is_empty() => Some(name.clone()),
+        _ => None,
+    }
+}
+
+/// The installation's own statement spelling a record's node-arming statements
+/// carry (`OBJECT_ACTIVE_STATE`).
+pub const OBJECT_ACTIVE_STATE_STATEMENT: &str = "OBJECT_ACTIVE_STATE";
+
+/// The claim the designed node-arming surface is recorded under.
+///
+/// **Designed, not measured.** Whether the original evaluates an animation's
+/// `ACTIVATION_PREREQUISITE` / `OBJECT_ACTIVE_LIST before a call is explicitly
+/// unmeasured (`f20-anim.activation-prerequisite-unevaluated`,
+/// [`crate::animation::programs`]), and the event payloads' node fields are not
+/// decoded either, so which node one `OBJECT_ACTIVE_STATE` statement addresses
+/// is unmeasured too. This surface therefore records what is measured — the
+/// statement's own spelling and timing, the record that published it, and the
+/// node names the record's own node-reference table states — and claims
+/// nothing about the original's arming rule.
+pub const OBJECT_ACTIVE_ARMING_CLAIM: &str = "m01-anim.object-active-state-arming-designed";
+
+/// One active-state statement a running animation record published, with the
+/// node names the record's own node-reference table states.
+///
+/// This is the designed arming surface: what a woken record said while it ran,
+/// as the landing path's input. `nodes` is the **record's own** node table,
+/// verbatim and in stored order (entry `0` is the empty name every measured
+/// table starts with), because which of those names a given statement addressed
+/// is not decoded — see [`OBJECT_ACTIVE_ARMING_CLAIM`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct ArmedNode {
+    animation: String,
+    statement: &'static str,
+    opcode: u8,
+    tick: Tick,
+    nodes: Vec<String>,
+    span: SourceSpan,
+}
+
+impl ArmedNode {
+    /// The record that published the statement.
+    #[must_use]
+    pub fn animation(&self) -> &str {
+        &self.animation
+    }
+
+    /// The statement's own spelling ([`OBJECT_ACTIVE_STATE_STATEMENT`]).
+    #[must_use]
+    pub const fn statement(&self) -> &'static str {
+        self.statement
+    }
+
+    /// The stored opcode.
+    #[must_use]
+    pub const fn opcode(&self) -> u8 {
+        self.opcode
+    }
+
+    /// The committed tick the statement was published on.
+    #[must_use]
+    pub const fn tick(&self) -> Tick {
+        self.tick
+    }
+
+    /// The publishing record's own node-reference names, verbatim and in
+    /// stored order.
+    #[must_use]
+    pub fn nodes(&self) -> &[String] {
+        &self.nodes
+    }
+
+    /// The publishing record's own bytes.
+    #[must_use]
+    pub const fn span(&self) -> &SourceSpan {
+        &self.span
+    }
+
+    /// The claim under which this designed surface is recorded.
+    #[must_use]
+    pub const fn claim_id(&self) -> &'static str {
+        OBJECT_ACTIVE_ARMING_CLAIM
+    }
+}
+
+/// Reads the active-state statements one committed tick's report published, as
+/// the designed arming input the landing path consumes.
+///
+/// A statement is armed exactly when a record published it in this report and
+/// the name index still resolves the publishing record (the index is built from
+/// the same join the player is), so this never fabricates a node table for a
+/// record nobody bound. A record no report published is simply not in the
+/// answer: nothing is armed before its own statement runs.
+#[must_use]
+pub fn armed_nodes_from_report(report: &TickReport, names: &AnimationNameIndex) -> Vec<ArmedNode> {
+    let mut armed = Vec::new();
+    for statement in report.statements() {
+        if statement.statement() != OBJECT_ACTIVE_STATE_STATEMENT {
+            continue;
+        }
+        let Some(facts) = names
+            .row(statement.identity())
+            .and_then(|row| row.bound_record().cloned())
+        else {
+            continue;
+        };
+        armed.push(ArmedNode {
+            animation: statement.identity().to_owned(),
+            statement: statement.statement(),
+            opcode: statement.opcode(),
+            tick: statement.tick(),
+            nodes: facts.nodes().to_vec(),
+            span: facts.span().clone(),
+        });
+    }
+    armed
+}
+
 /// What one committed-tick advance published.
 #[derive(Clone, Debug, PartialEq)]
 pub struct TickReport {
@@ -772,100 +1121,104 @@ impl MissionAnimationPlayer {
         };
         for row in rows.iter().filter(|row| row.event() == event) {
             let identity = row.identity().to_owned();
-            if self.running.contains_key(&identity) {
-                report.already_running.push(identity);
-                continue;
+            match self.begin(at, row) {
+                ActivationOutcome::Started => report.started.push(identity),
+                ActivationOutcome::AlreadyRunning => report.already_running.push(identity),
+                ActivationOutcome::Refused => report.refused.push(identity),
             }
-            if !row.is_playable() {
-                report.refused.push(identity.clone());
-                self.refused.insert(
-                    identity.clone(),
-                    RefusedRecord {
-                        identity,
-                        event: row.event().to_owned(),
-                        span: row.bound_record().map(|facts| facts.span.clone()),
-                        refusals: row.refusals().to_vec(),
-                    },
-                );
-                continue;
-            }
-            // `is_playable()` is `refusals().is_empty()`, and the join pushes
-            // `Undeclared` for a row no member declares, so a playable row
-            // always has exactly one declaring site and one bound record. The
-            // arms exist so a future join rule cannot start a record whose
-            // member nobody named or whose bytes nobody holds.
-            let Some((archive, member)) = declaring_member(row) else {
-                report.refused.push(identity.clone());
-                self.refused.insert(
-                    identity.clone(),
-                    RefusedRecord {
-                        identity,
-                        event: row.event().to_owned(),
-                        span: row.bound_record().map(|facts| facts.span.clone()),
-                        refusals: vec![PlayRefusal::Undeclared {
-                            reason: crate::animation::UNDECLARED_REASON,
-                        }],
-                    },
-                );
-                continue;
-            };
-            let Some(playback) = row.playback().cloned() else {
-                report.refused.push(identity.clone());
-                self.refused.insert(
-                    identity.clone(),
-                    RefusedRecord {
-                        identity,
-                        event: row.event().to_owned(),
-                        span: row.bound_record().map(|facts| facts.span.clone()),
-                        refusals: vec![PlaybackGap::Absent.refusal()],
-                    },
-                );
-                continue;
-            };
-            let facts = match row.bound_record() {
-                Some(facts) => facts,
-                None => {
-                    report.refused.push(identity.clone());
-                    self.refused.insert(
-                        identity.clone(),
-                        RefusedRecord {
-                            identity,
-                            event: row.event().to_owned(),
-                            span: None,
-                            refusals: vec![PlaybackGap::Absent.refusal()],
-                        },
-                    );
-                    continue;
-                }
-            };
-            let statements = playback.events().count();
-            // The row's most recent verdict supersedes an earlier refusal of
-            // the same identity: an identity is never refused and running at
-            // once, so a host that re-offers a playable row clears the ledger
-            // entry the join refused before.
-            self.refused.remove(&identity);
-            report.started.push(identity.clone());
-            self.running.insert(
-                identity.clone(),
-                RunningRecord {
-                    identity,
-                    event: row.event().to_owned(),
-                    archive,
-                    member,
-                    targets: row.targets().to_vec(),
-                    carrier: facts.carrier,
-                    record_index: facts.index,
-                    span: facts.span.clone(),
-                    started_at: at,
-                    duration_time: playback.duration_time(),
-                    reached_time: None,
-                    published: vec![false; statements],
-                    playback,
-                    statements: 0,
-                },
-            );
         }
         report
+    }
+
+    /// Starts the record one joined row describes, exactly as [`Self::start`]
+    /// does for one startup row.
+    ///
+    /// This is the activation path a name a `WAKE_ANIM` directive spells
+    /// reaches: one activation per name — a repeated directive cannot start a
+    /// second timeline over the first — a row the join refused kept in the
+    /// same refusal ledger, and nothing published here. The first
+    /// [`Self::advance`] after the activation publishes the statements the
+    /// record has reached by its own tick, exactly as for a startup row, and
+    /// the row's own `event()` (`wake_animation` for a name-keyed row) is what
+    /// its record reports as its activation source.
+    pub fn activate(&mut self, at: Tick, row: &StartupAnimation) -> ActivationOutcome {
+        self.begin(at, row)
+    }
+
+    /// The one activation both entry points run: the identity gate, the join's
+    /// verdicts and the running-set insert, in one place so a startup row and
+    /// a name-keyed row can never be started by two different rules.
+    fn begin(&mut self, at: Tick, row: &StartupAnimation) -> ActivationOutcome {
+        let identity = row.identity().to_owned();
+        if self.running.contains_key(&identity) {
+            return ActivationOutcome::AlreadyRunning;
+        }
+        if !row.is_playable() {
+            self.refuse(row, row.refusals().to_vec());
+            return ActivationOutcome::Refused;
+        }
+        // `is_playable()` is `refusals().is_empty()`, and the join pushes
+        // `Undeclared` for a row no member declares, so a playable row
+        // always has exactly one declaring site and one bound record. The
+        // arms exist so a future join rule cannot start a record whose
+        // member nobody named or whose bytes nobody holds.
+        let Some((archive, member)) = declaring_member(row) else {
+            self.refuse(
+                row,
+                vec![PlayRefusal::Undeclared {
+                    reason: crate::animation::UNDECLARED_REASON,
+                }],
+            );
+            return ActivationOutcome::Refused;
+        };
+        let Some(playback) = row.playback().cloned() else {
+            self.refuse(row, vec![PlaybackGap::Absent.refusal()]);
+            return ActivationOutcome::Refused;
+        };
+        let Some(facts) = row.bound_record() else {
+            self.refuse(row, vec![PlaybackGap::Absent.refusal()]);
+            return ActivationOutcome::Refused;
+        };
+        let statements = playback.events().count();
+        // The row's most recent verdict supersedes an earlier refusal of
+        // the same identity: an identity is never refused and running at
+        // once, so a host that re-offers a playable row clears the ledger
+        // entry the join refused before.
+        self.refused.remove(&identity);
+        self.running.insert(
+            identity.clone(),
+            RunningRecord {
+                identity,
+                event: row.event().to_owned(),
+                archive,
+                member,
+                targets: row.targets().to_vec(),
+                carrier: facts.carrier,
+                record_index: facts.index,
+                span: facts.span.clone(),
+                started_at: at,
+                duration_time: playback.duration_time(),
+                reached_time: None,
+                published: vec![false; statements],
+                playback,
+                statements: 0,
+            },
+        );
+        ActivationOutcome::Started
+    }
+
+    /// Keeps one refused row in the ledger under its own identity, with the
+    /// refusals the join (or this activation) recorded for it.
+    fn refuse(&mut self, row: &StartupAnimation, refusals: Vec<PlayRefusal>) {
+        self.refused.insert(
+            row.identity().to_owned(),
+            RefusedRecord {
+                identity: row.identity().to_owned(),
+                event: row.event().to_owned(),
+                span: row.bound_record().map(|facts| facts.span.clone()),
+                refusals,
+            },
+        );
     }
 
     /// Advances every running record once for one committed tick.

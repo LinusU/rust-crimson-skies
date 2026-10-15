@@ -155,12 +155,12 @@ use cs_types::net::SessionId;
 
 use super::compose::{MissionPlayerBody, MissionStage, spawn_player};
 use super::terminal::{MissionTerminal, MissionTerminalSource};
-use crate::animation::mission::{MissionAnimationBinding, StartupAnimation};
+use crate::animation::mission::{AnimationNameIndex, MissionAnimationBinding, StartupAnimation};
 use crate::audio::AudioSession;
 use crate::environment::EnvironmentSession;
 use crate::mission_animations::{
-    MissionAnimationPlayer, MissionAnimationStepRefusal, PlayerError, TickReport,
-    step_mission_animations,
+    ArmedNode, MissionAnimationPlayer, MissionAnimationStepRefusal, PlayerError, TickReport,
+    WakeAnimationLedger, armed_nodes_from_report, step_mission_animations,
 };
 use crate::mission_markers::{
     MarkerDelivery, MarkerTeardown, MarkerTeardownError, MissionMarkerBindings,
@@ -728,6 +728,13 @@ pub struct MissionHost {
     environment: EnvironmentSession,
     world_actors: Option<WorldActorSession>,
     animation: MissionAnimationPlayer,
+    /// The mission scope's measured animation **name → carrier record** index:
+    /// the join a `WAKE_ANIM` directive's name resolves through. Empty when the
+    /// stage carries no animation join, in which case every name such a
+    /// directive spells is refused by name.
+    names: AnimationNameIndex,
+    wake: WakeAnimationLedger,
+    armed: Vec<ArmedNode>,
     markers: MissionMarkerConsumer,
     objectives: ObjectiveSession,
     script: MissionSession,
@@ -783,6 +790,12 @@ impl MissionHost {
         if let Some(binding) = &seed.animation {
             offer_startup_rows(&mut animation, binding);
         }
+        let names = seed
+            .animation
+            .as_ref()
+            .map_or_else(AnimationNameIndex::default, |binding| {
+                binding.names().clone()
+            });
         let markers = MissionMarkerConsumer::new(served, seed.markers.clone());
         let objectives = ObjectiveSession::launch(seed.objectives.clone(), generation)
             .map_err(MissionHostLaunchError::Objectives)?;
@@ -795,6 +808,9 @@ impl MissionHost {
             environment,
             world_actors,
             animation,
+            names,
+            wake: WakeAnimationLedger::default(),
+            armed: Vec::new(),
             markers,
             objectives,
             script,
@@ -903,6 +919,17 @@ impl MissionHost {
             offer_startup_rows(&mut animation, binding);
         }
         self.animation = animation;
+        // The name index and the two ledgers follow the generation: a rebuilt
+        // host resolves names through the same measured join and has applied
+        // no directive of the fresh session yet.
+        self.names = seed
+            .animation
+            .as_ref()
+            .map_or_else(AnimationNameIndex::default, |binding| {
+                binding.names().clone()
+            });
+        self.wake = WakeAnimationLedger::default();
+        self.armed.clear();
         // `markers.retry(served)` above already released the old ledger and
         // stamped the new session on the live consumer, whose declared cue
         // table is the stage's own — nothing else about it changes.
@@ -1112,6 +1139,25 @@ impl MissionHost {
         for index in &completed {
             self.lifecycles.complete(*index);
         }
+        // 6b. Wake animations: every `WAKE_ANIM` emission this host has not
+        //     already applied is resolved through the scope's own measured
+        //     name index and started through the record player at the tick
+        //     being stepped. The script advance has already run, so this
+        //     consumes the emissions of this tick and no earlier one (the
+        //     ledger deduplicates by execution key, the same rule the
+        //     countdown applies to the timer directives). A record started
+        //     here is not observed until the next step's stage 4: the fold
+        //     reads the player's state after this tick's `advance` already
+        //     ran, and the record's own statements publish on the `advance`
+        //     after its start tick.
+        let _woken = self
+            .wake
+            .consume(self.script.state(), &self.names, &mut self.animation, tick);
+        //     The designed arming input: the active-state statements this
+        //     tick's report published, with the publishing record's own node
+        //     names (see `OBJECT_ACTIVE_ARMING_CLAIM`).
+        self.armed
+            .extend(armed_nodes_from_report(&composed.records, &self.names));
         let lifecycles = ObjectiveLifecycleTick {
             woken: lifecycles_advanced.woken,
             napped: lifecycles_advanced.napped,
@@ -1307,6 +1353,29 @@ impl MissionHost {
     #[must_use]
     pub const fn animation(&self) -> &MissionAnimationPlayer {
         &self.animation
+    }
+
+    /// The mission scope's animation **name → carrier record** index: the join
+    /// every `WAKE_ANIM` name resolves through. Empty when the stage carries no
+    /// animation join.
+    #[must_use]
+    pub const fn animation_names(&self) -> &AnimationNameIndex {
+        &self.names
+    }
+
+    /// The `WAKE_ANIM` consumer's ledger: which directive keys were applied,
+    /// which records they started and which names started nothing.
+    #[must_use]
+    pub const fn wake_animations(&self) -> &WakeAnimationLedger {
+        &self.wake
+    }
+
+    /// The designed node-arming input: every active-state statement a running
+    /// record has published so far, with the publishing record's own node names
+    /// ([`ArmedNode`]).
+    #[must_use]
+    pub fn armed_nodes(&self) -> &[ArmedNode] {
+        &self.armed
     }
 
     /// The marker consumer.

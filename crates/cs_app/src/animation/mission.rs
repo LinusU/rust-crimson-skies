@@ -108,13 +108,15 @@ use cs_formats::zbd::{
     AnimationRecord, AnimationRecordSequenceKind, AnimationRecordTableKind, AnimationRecords,
     ZbdFamily, ZbdProbe, dispatch, family_record, read_animation_index,
 };
+use cs_script::ir::DirectiveOperation;
 use cs_types::asset_id::SourceSpan;
 use cs_types::content::{Known, Provenance, Resolved};
 use cs_types::evidence::{ClaimId, ClaimStatus, ContentHash};
 use cs_types::install::RelativePath;
 
 use super::carrier::{
-    STARTUP_MEMBER, SiblingReader, StartupBinding, StartupOutcome, UNBOUND_REASON_NOT_WALKED,
+    RecordFacts, STARTUP_MEMBER, SiblingReader, StartupBinding, StartupOutcome,
+    UNBOUND_REASON_AMBIGUOUS, UNBOUND_REASON_NO_RECORD, UNBOUND_REASON_NOT_WALKED,
     bind_animation_carrier, bind_startup_identities, carrier_name,
 };
 use super::events::{
@@ -124,7 +126,7 @@ use super::events::{
 use super::programs::{
     ANIMATION_DEFINITIONS_RECORD, AnimationDefinitionSite, BindingResolution, ObjectSelector,
     SelectorMatch, StartupAnimationBinding, WorldActorProgramBinding, WorldNodeNames,
-    read_animation_definition_member, read_startup_animations,
+    read_animation_definition_member, read_startup_animations, resolve_animation,
 };
 use super::survey::{CarrierKind, MISSION_CARRIER};
 use crate::world::retail::read_world_containers;
@@ -1520,6 +1522,491 @@ pub fn join_startup_animation(
     }
 }
 
+/// The activation source a row resolved by *name* carries: the installation's
+/// own spelling of the `WAKE_ANIM` directive operation
+/// ([`DirectiveOperation::WakeAnimation`]).
+///
+/// It is derived from the IR's own `code`, so the label a name-keyed
+/// activation reports can never drift from the operation that woke it.
+pub const WAKE_ANIMATION_SOURCE: &str = DirectiveOperation::WakeAnimation.code();
+
+/// How one animation NAME met the scope's two carrier record tables.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum NamedRecordMatch {
+    /// Exactly one record across the carriers given stores this name as its
+    /// `anim_name`.
+    One {
+        /// Which carrier stores it.
+        carrier: CarrierKind,
+        /// The record's index in that carrier's record list.
+        index: usize,
+    },
+    /// No record of either carrier stores it.
+    None,
+    /// More than one record stores it, in the order the carriers were given;
+    /// no measured rule picks one.
+    Ambiguous(Vec<(CarrierKind, usize)>),
+    /// A carrier's own record walk was refused (or the carrier is absent), so
+    /// "exactly one record" cannot be established.
+    NotWalked,
+}
+
+/// Resolves one animation NAME over a scope's carrier record tables.
+///
+/// `carriers` is **the mission carrier first, then the world group's camera
+/// carrier**, which is the order an ambiguous match list is reported in. A
+/// name binds only when the tables store it exactly once between them, byte
+/// for byte: the same "exactly one" rule
+/// [`super::carrier::bind_startup_identities`] measured for the identities
+/// `startanims.zrd` names, applied to a name a directive spells instead.
+/// Nothing is normalized and no nearest match is taken — a name nothing
+/// stores, a name two records store and a carrier whose walk refused are three
+/// different answers, and none of them is a record.
+#[must_use]
+pub fn match_record_by_name(carriers: &[CarrierRecords], name: &str) -> NamedRecordMatch {
+    let mut matched: Vec<(CarrierKind, usize)> = Vec::new();
+    for carrier in carriers {
+        let Some(records) = carrier.names() else {
+            return NamedRecordMatch::NotWalked;
+        };
+        matched.extend(
+            records
+                .indices_named(name.as_bytes())
+                .into_iter()
+                .map(|index| (carrier.kind(), index)),
+        );
+    }
+    match matched.as_slice() {
+        [] => NamedRecordMatch::None,
+        [(carrier, index)] => NamedRecordMatch::One {
+            carrier: *carrier,
+            index: *index,
+        },
+        _ => NamedRecordMatch::Ambiguous(matched),
+    }
+}
+
+/// One carrier of a scope, as the name index reads it.
+///
+/// The record table is the carrier's own walk (identities in carrier order);
+/// the facts of a matched record come from one of two places, so the index can
+/// be built both over an installation and over content a synthetic stage
+/// authored:
+///
+/// * the **installation path** keeps the carrier's bytes and re-reads the one
+///   matched record through the production record walk — `own_record` — when a
+///   name resolves, so a record nobody asks about is never decoded;
+/// * the **authored path** hands the facts themselves
+///   ([`CarrierRecords::authored`]).
+#[derive(Clone, PartialEq)]
+pub struct CarrierRecords {
+    kind: CarrierKind,
+    key: String,
+    names: Option<RecordFacts>,
+    source: CarrierRecordSource,
+}
+
+impl fmt::Debug for CarrierRecords {
+    /// The key and the record count, never the carrier's bytes: a binding's
+    /// `Debug` is read by a person, and the bytes are what a `SourceSpan`
+    /// already locates.
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("CarrierRecords")
+            .field("kind", &self.kind)
+            .field("key", &self.key)
+            .field(
+                "records",
+                &self.names.as_ref().map_or(0, |names| names.count),
+            )
+            .field("walked", &self.names.is_some())
+            .finish()
+    }
+}
+
+/// Where a matched record's facts come from.
+#[derive(Clone, Debug, PartialEq)]
+enum CarrierRecordSource {
+    /// The carrier's own bytes, re-walked on each match.
+    Bytes {
+        path: RelativePath,
+        bytes: Vec<u8>,
+        payload_offset: u64,
+        install_sha256: ContentHash,
+        container_sha256: Option<ContentHash>,
+    },
+    /// Facts the caller holds.
+    Facts(Vec<AnimationRecordFacts>),
+}
+
+impl CarrierRecords {
+    /// A carrier whose records the installation's own walk reached: the record
+    /// table it states, and the bytes a matched record is re-read from.
+    #[allow(clippy::too_many_arguments)]
+    fn walkable(
+        kind: CarrierKind,
+        key: String,
+        path: RelativePath,
+        bytes: Vec<u8>,
+        payload_offset: u64,
+        install_sha256: ContentHash,
+        container_sha256: Option<ContentHash>,
+        names: RecordFacts,
+    ) -> Self {
+        Self {
+            kind,
+            key,
+            names: Some(names),
+            source: CarrierRecordSource::Bytes {
+                path,
+                bytes,
+                payload_offset,
+                install_sha256,
+                container_sha256,
+            },
+        }
+    }
+
+    /// A carrier whose record walk refused (or which the installation does not
+    /// hold): no name can be resolved against it.
+    #[must_use]
+    pub fn unwalked(kind: CarrierKind, key: impl Into<String>) -> Self {
+        Self {
+            kind,
+            key: key.into(),
+            names: None,
+            source: CarrierRecordSource::Facts(Vec::new()),
+        }
+    }
+
+    /// A carrier whose records the caller authored, in carrier order.
+    ///
+    /// The record table is derived from the facts themselves — record `index`
+    /// is the facts' `anim_name` — so the two cannot disagree about which
+    /// record a matched index names.
+    #[must_use]
+    pub fn authored(
+        kind: CarrierKind,
+        key: impl Into<String>,
+        records: Vec<AnimationRecordFacts>,
+    ) -> Self {
+        let names = RecordFacts {
+            count: records.len(),
+            anim_names: records
+                .iter()
+                .map(|record| record.anim_name.clone().into_bytes())
+                .collect(),
+            trailing_offset: 0,
+            trailing_bytes: 0,
+        };
+        Self {
+            kind,
+            key: key.into(),
+            names: Some(names),
+            source: CarrierRecordSource::Facts(records),
+        }
+    }
+
+    /// Mission (`mis_anim.zbd`) or camera (`cam_anim.zbd`).
+    #[must_use]
+    pub const fn kind(&self) -> CarrierKind {
+        self.kind
+    }
+
+    /// The carrier's logical key.
+    #[must_use]
+    pub fn key(&self) -> &str {
+        &self.key
+    }
+
+    /// The carrier's record table, or `None` when its walk refused.
+    #[must_use]
+    pub const fn names(&self) -> Option<&RecordFacts> {
+        self.names.as_ref()
+    }
+
+    /// The facts of record `index`, read through the production record walk.
+    ///
+    /// `None` when this carrier has no such record, or when re-reading it
+    /// refuses (a walk that no longer matches its own table, or a provenance
+    /// error): the caller reports a name nothing could be read for, never a
+    /// partially decoded record.
+    #[must_use]
+    pub fn record(&self, index: usize) -> Option<AnimationRecordFacts> {
+        match &self.source {
+            CarrierRecordSource::Facts(records) => records.get(index).cloned(),
+            CarrierRecordSource::Bytes {
+                path,
+                bytes,
+                payload_offset,
+                install_sha256,
+                container_sha256,
+            } => {
+                let (_, walked) = walk_carrier_records(&self.key, path, bytes);
+                let walked = walked.ok()?;
+                let record = walked.get(index)?;
+                own_record(
+                    record,
+                    self.kind,
+                    self.key.clone(),
+                    *payload_offset,
+                    install_sha256,
+                    *container_sha256,
+                )
+                .ok()
+            }
+        }
+    }
+}
+
+/// Where an animation NAME resolved to, one scope's carriers and declarations
+/// read through the same join a startup identity's row is built by.
+///
+/// `Bound` carries the row [`join_named_animation`] produced: the same shape
+/// the startup rows carry (declaration, record, targets, playback, refusals),
+/// with the NAME as its identity and [`WAKE_ANIMATION_SOURCE`] as its
+/// activation source. `Unbound` names why, with the existing
+/// `UNBOUND_REASON_*` texts and every match found — never a nearest match and
+/// never a name-to-name mapping: the records a `WAKE_ANIM` names and the
+/// records an `ANIM_STATE` gate reads are measured to be different records.
+#[derive(Clone, Debug, PartialEq)]
+pub enum NamedAnimationResolution {
+    /// The name matched exactly one record and the join produced a row.
+    Bound(Box<StartupAnimation>),
+    /// The name is left open.
+    Unbound {
+        /// [`UNBOUND_REASON_NO_RECORD`], [`UNBOUND_REASON_AMBIGUOUS`] or
+        /// [`UNBOUND_REASON_NOT_WALKED`], verbatim.
+        reason: &'static str,
+        /// The records the name matched, if any.
+        matches: Vec<(CarrierKind, usize)>,
+    },
+}
+
+impl NamedAnimationResolution {
+    /// The row, when the name bound.
+    #[must_use]
+    pub fn bound(&self) -> Option<&StartupAnimation> {
+        match self {
+            Self::Bound(row) => Some(row.as_ref()),
+            Self::Unbound { .. } => None,
+        }
+    }
+
+    /// Why the name was left open, and every match found.
+    #[must_use]
+    pub fn unbound(&self) -> Option<(&'static str, &[(CarrierKind, usize)])> {
+        match self {
+            Self::Unbound { reason, matches } => Some((reason, matches)),
+            Self::Bound(_) => None,
+        }
+    }
+}
+
+/// Joins one animation NAME's declaration and carrier record into the row a
+/// name-keyed activation starts.
+///
+/// This is [`join_startup_animation`] over the same two halves, with the NAME
+/// as the row's identity and [`WAKE_ANIMATION_SOURCE`] as its activation
+/// source: the declaration is the one definition the scope's closure declares
+/// for the name ([`resolve_animation`], the rule the startup identities use)
+/// and the record is the one the carrier tables store it as. Every refusal the
+/// startup join can produce — an undeclared name, a name disagreement, a
+/// playback gap — is produced here too, so a woken name is held to exactly the
+/// same standard as a startup identity.
+#[must_use]
+pub fn join_named_animation(
+    name: &str,
+    record: AnimationRecordFacts,
+    declarations: &[AnimationDefinitionSite],
+    world: Option<&WorldNodeNames>,
+) -> StartupAnimation {
+    let declaration = StartupAnimationBinding::new(
+        WAKE_ANIMATION_SOURCE,
+        name,
+        resolve_animation(name, declarations),
+    );
+    join_startup_animation(
+        declaration,
+        RecordResolution::Bound(Box::new(record)),
+        world,
+    )
+}
+
+/// A mission scope's measured animation **name → carrier record** index.
+///
+/// This is the surface a `WAKE_ANIM` directive's name resolves through. Its
+/// carriers are the scope's own mission carrier first and its world group's
+/// camera carrier second, its declarations are the closure's definition sites
+/// in search order, and its resolution rule is the measured "exactly one
+/// record stores this name" one ([`match_record_by_name`]).
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct AnimationNameIndex {
+    carriers: Vec<CarrierRecords>,
+    declarations: Vec<AnimationDefinitionSite>,
+    world: Option<WorldNodeNames>,
+}
+
+impl AnimationNameIndex {
+    /// An index over `carriers` (mission carrier first), the scope's
+    /// `declarations` in search order and the world container the object
+    /// selectors resolve against.
+    #[must_use]
+    pub fn new(
+        carriers: Vec<CarrierRecords>,
+        declarations: Vec<AnimationDefinitionSite>,
+        world: Option<WorldNodeNames>,
+    ) -> Self {
+        Self {
+            carriers,
+            declarations,
+            world,
+        }
+    }
+
+    /// The carriers, in the order they are matched.
+    #[must_use]
+    pub fn carriers(&self) -> &[CarrierRecords] {
+        &self.carriers
+    }
+
+    /// The declaration sites a name is resolved against.
+    #[must_use]
+    pub fn declarations(&self) -> &[AnimationDefinitionSite] {
+        &self.declarations
+    }
+
+    /// How many records the walked carriers' own tables hold.
+    #[must_use]
+    pub fn record_count(&self) -> usize {
+        self.carriers
+            .iter()
+            .filter_map(CarrierRecords::names)
+            .map(|names| names.count)
+            .sum()
+    }
+
+    /// Whether no carrier's record table was read.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.carriers
+            .iter()
+            .all(|carrier| carrier.names().is_none())
+    }
+
+    /// Resolves one animation NAME, exactly as [`match_record_by_name`] and
+    /// [`join_named_animation`] state.
+    #[must_use]
+    pub fn resolve(&self, name: &str) -> NamedAnimationResolution {
+        match match_record_by_name(&self.carriers, name) {
+            NamedRecordMatch::None => NamedAnimationResolution::Unbound {
+                reason: UNBOUND_REASON_NO_RECORD,
+                matches: Vec::new(),
+            },
+            NamedRecordMatch::Ambiguous(matches) => NamedAnimationResolution::Unbound {
+                reason: UNBOUND_REASON_AMBIGUOUS,
+                matches,
+            },
+            NamedRecordMatch::NotWalked => NamedAnimationResolution::Unbound {
+                reason: UNBOUND_REASON_NOT_WALKED,
+                matches: Vec::new(),
+            },
+            NamedRecordMatch::One { carrier, index } => {
+                let facts = self
+                    .carriers
+                    .iter()
+                    .find(|records| records.kind() == carrier)
+                    .and_then(|records| records.record(index));
+                match facts {
+                    Some(facts) => NamedAnimationResolution::Bound(Box::new(join_named_animation(
+                        name,
+                        facts,
+                        &self.declarations,
+                        self.world.as_ref(),
+                    ))),
+                    // The match was published by the carrier's own table, so a
+                    // record that cannot be read back is reported as an
+                    // unwalked carrier, never as "no such record".
+                    None => NamedAnimationResolution::Unbound {
+                        reason: UNBOUND_REASON_NOT_WALKED,
+                        matches: vec![(carrier, index)],
+                    },
+                }
+            }
+        }
+    }
+
+    /// The joined row a name resolves to, when it binds.
+    #[must_use]
+    pub fn row(&self, name: &str) -> Option<StartupAnimation> {
+        match self.resolve(name) {
+            NamedAnimationResolution::Bound(row) => Some(*row),
+            NamedAnimationResolution::Unbound { .. } => None,
+        }
+    }
+}
+
+/// The pieces of a mission scope's animation binding a synthetic stage states
+/// directly — the shape [`bind_mission_animation`] fills from an installation.
+#[derive(Clone, Debug)]
+pub struct AuthoredMissionAnimations {
+    /// The mission scope, as `zbd/<group>/<mission>`.
+    pub scope: String,
+    /// The scope's world group directory name.
+    pub group: String,
+    /// The world group's container key the object selectors resolve against.
+    pub world_container: String,
+    /// Every reader archive read for the scope, in search order.
+    pub archives: Vec<String>,
+    /// The carriers, as a report reads them.
+    pub carriers: Vec<CarrierFact>,
+    /// The name index's carriers, mission carrier first.
+    pub records: Vec<CarrierRecords>,
+    /// Every definition the scope declares, in search order.
+    pub declarations: Vec<AnimationDefinitionSite>,
+    /// The startup rows the stage offers the record player.
+    pub startup: Vec<StartupAnimation>,
+    /// The world actors the mission's archive places at startup.
+    pub placements: Vec<WorldActorPlacement>,
+    /// What the placement member states for each placement.
+    pub measured_placements: Vec<MeasuredPlacement>,
+    /// The world container's node names, when the caller read one.
+    pub world: Option<WorldNodeNames>,
+}
+
+impl MissionAnimationBinding {
+    /// Assembles a binding from pieces the caller authored.
+    ///
+    /// The name index is built through the very rules
+    /// [`bind_mission_animation`] builds the installation's with, so a
+    /// synthetic stage exercises the same match and join — on content it
+    /// authored, never on a reading of an original mission.
+    ///
+    /// # Errors
+    ///
+    /// [`MissionAnimationError::Provenance`] when the static claim id is
+    /// malformed.
+    pub fn authored(input: AuthoredMissionAnimations) -> Result<Self, MissionAnimationError> {
+        let named = AnimationNameIndex::new(input.records, input.declarations, input.world);
+        Ok(Self {
+            scope: input.scope,
+            group: input.group,
+            archives: input.archives,
+            world_container: input.world_container,
+            carriers: input.carriers,
+            startup: input.startup,
+            placements: input.placements,
+            measured_placements: input.measured_placements,
+            named,
+            provenance: Provenance::new(
+                claim_id(DECLARATION_MATCH_CLAIM)?,
+                ClaimStatus::ObservedTool,
+                None,
+            )
+            .map_err(|error| MissionAnimationError::Provenance(error.to_string()))?,
+        })
+    }
+}
+
 /// The two name agreements, as refusals. An empty result is the measurement
 /// that the record and its declaring member are one animation.
 fn check_agreements(
@@ -1791,6 +2278,7 @@ pub struct MissionAnimationBinding {
     startup: Vec<StartupAnimation>,
     placements: Vec<WorldActorPlacement>,
     measured_placements: Vec<MeasuredPlacement>,
+    named: AnimationNameIndex,
     provenance: Provenance,
 }
 
@@ -1872,6 +2360,21 @@ impl MissionAnimationBinding {
     #[must_use]
     pub fn animation(&self, identity: &str) -> Option<&StartupAnimation> {
         self.startup.iter().find(|row| row.identity() == identity)
+    }
+
+    /// The scope's measured animation **name → carrier record** index: the
+    /// surface a `WAKE_ANIM` directive's name resolves through
+    /// ([`AnimationNameIndex`]).
+    #[must_use]
+    pub const fn names(&self) -> &AnimationNameIndex {
+        &self.named
+    }
+
+    /// Resolves one animation NAME, exactly as [`AnimationNameIndex::resolve`]
+    /// states.
+    #[must_use]
+    pub fn animation_by_name(&self, name: &str) -> NamedAnimationResolution {
+        self.named.resolve(name)
     }
 
     /// Every world-node name the scope's startup animations address, in join
@@ -2136,8 +2639,35 @@ pub fn bind_mission_animation(
         })
         .collect::<Result<Vec<RelativePath>, MissionAnimationError>>()?;
     let mut walks: Vec<(String, u64, Result<AnimationRecords<'_>, String>)> = Vec::new();
+    let mut carrier_records: Vec<CarrierRecords> = Vec::new();
     for ((fact, bytes), path) in carrier_facts.iter().zip(&carrier_bytes).zip(&paths) {
         let (payload_offset, walked) = walk_carrier_records(&fact.container_key, path, bytes);
+        // The name index's own view of this carrier: its record table, and the
+        // bytes a matched record is re-read from. A walk that refused leaves
+        // the table absent, so every name stays `NOT_WALKED` there — the same
+        // verdict the startup identity join reaches.
+        let records = match &walked {
+            Ok(walk) => CarrierRecords::walkable(
+                fact.kind,
+                fact.container_key.clone(),
+                path.clone(),
+                bytes.clone(),
+                payload_offset,
+                install_sha256,
+                archive_digest(&found, &fact.container_key),
+                RecordFacts {
+                    count: walk.len(),
+                    anim_names: walk
+                        .iter()
+                        .map(|record| record.anim_name().to_vec())
+                        .collect(),
+                    trailing_offset: walk.trailing_offset(),
+                    trailing_bytes: walk.trailing().len() as u64,
+                },
+            ),
+            Err(_) => CarrierRecords::unwalked(fact.kind, fact.container_key.clone()),
+        };
+        carrier_records.push(records);
         walks.push((fact.container_key.clone(), payload_offset, walked));
     }
 
@@ -2287,6 +2817,7 @@ pub fn bind_mission_animation(
         startup,
         placements,
         measured_placements,
+        named: AnimationNameIndex::new(carrier_records, declarations, Some(world.clone())),
         provenance,
     })
 }
@@ -2635,6 +3166,7 @@ mod tests {
             startup: rows,
             placements: Vec::new(),
             measured_placements: Vec::new(),
+            named: AnimationNameIndex::default(),
             provenance: Provenance::new(
                 claim_id(DECLARATION_MATCH_CLAIM).expect("the static claim id is valid"),
                 ClaimStatus::ObservedTool,

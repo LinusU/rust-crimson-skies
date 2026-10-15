@@ -1227,7 +1227,13 @@ impl StartupAnimationBinding {
 /// [`BindingResolution::Ambiguous`]. No hit order decides a winner: the search
 /// order is the *reporting* order, and preferring the mission archive over the
 /// shared one would be a rule this measurement does not support.
-fn resolve_animation(
+///
+/// It is public so the mission layer can resolve a name a directive spells
+/// through the same rule the startup identities use
+/// (`crate::animation::mission::join_named_animation`), instead of a second,
+/// drifting one.
+#[must_use]
+pub fn resolve_animation(
     animation: &str,
     declarations: &[AnimationDefinitionSite],
 ) -> BindingResolution {
