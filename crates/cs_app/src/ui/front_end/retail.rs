@@ -53,6 +53,7 @@ use cs_formats::texture::DecodedImage;
 use cs_types::asset_id::{AssetKey, MountId, MountNamespace, PrecedenceClass, ResolveContext};
 
 use super::capture::Artwork;
+use super::original::{LAYOUT_MEMBER, OriginalLayout, OriginalScreens};
 use crate::render::rgb565::{
     CoverageSource, ExpansionPolicy, coverage_byte, expand_texel, stores_texel_words,
 };
@@ -602,6 +603,81 @@ impl FrontEndScreens {
                 })
             }
         }
+    }
+
+    /// Reads and parses the original `ASSETS/LAYOUT.CSV`.
+    ///
+    /// # Errors
+    ///
+    /// [`RetailError::Member`] when the member will not read or its text does
+    /// not parse as a layout.
+    pub fn original_layout(&self) -> Result<OriginalLayout, RetailError> {
+        let (text, _) = self.layout_text()?;
+        OriginalLayout::parse(&text).map_err(|error| RetailError::Member {
+            name: LAYOUT_MEMBER.to_owned(),
+            reason: error.to_string(),
+        })
+    }
+
+    /// The layout member's text and its SHA-256 (of the decoded bytes).
+    ///
+    /// # Errors
+    ///
+    /// [`RetailError::Member`] when the member will not read or is not UTF-8
+    /// or Latin-1 text.
+    pub fn layout_text(&self) -> Result<(String, String), RetailError> {
+        let member_error = |reason: String| RetailError::Member {
+            name: LAYOUT_MEMBER.to_owned(),
+            reason,
+        };
+        let key = AssetKey::from_spelling(
+            self.rof.namespace().as_str(),
+            LAYOUT_MEMBER,
+            TEXTURE_ARCHIVE_VARIANT,
+        )
+        .map_err(|error| member_error(error.to_string()))?;
+        let read = self
+            .rof
+            .read(&key)
+            .map_err(|error| member_error(error.to_string()))?;
+        // The member is single-byte text; Latin-1 maps every byte, so a
+        // stray high byte can neither fail the read nor change a column.
+        let text: String = read.data.iter().map(|&byte| char::from(byte)).collect();
+        Ok((text, sha256(&read.data).to_hex()))
+    }
+
+    /// The `(width, height)` of the container graphic the layout names
+    /// `art` (matched ASCII case-insensitively under `ASSETS/GRAPHICS/`), or
+    /// `None` when there is no such member or it will not decode.
+    #[must_use]
+    pub fn art_extent(&self, art: &str) -> Option<(u32, u32)> {
+        let wanted = format!("{GRAPHICS_PREFIX}{art}");
+        let member = self
+            .rof
+            .members()
+            .find(|member| member.spelling.eq_ignore_ascii_case(&wanted))?;
+        let key = AssetKey::from_spelling(
+            self.rof.namespace().as_str(),
+            &member.spelling,
+            TEXTURE_ARCHIVE_VARIANT,
+        )
+        .ok()?;
+        let read = self.rof.read(&key).ok()?;
+        let (_, width, height, _) = decode_image(&member.spelling, &read.data).ok()?;
+        Some((width, height))
+    }
+
+    /// Reads every paired screen from the original layout over this
+    /// installation's own art.
+    ///
+    /// # Errors
+    ///
+    /// The errors of [`Self::original_layout`].
+    pub fn original_screens(&self) -> Result<OriginalScreens, RetailError> {
+        let layout = self.original_layout()?;
+        Ok(OriginalScreens::build(&layout, &|art: &str| {
+            self.art_extent(art)
+        }))
     }
 
     /// The recorded texture id of a UI-archive image, for a test that needs

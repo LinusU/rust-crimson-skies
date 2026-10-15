@@ -53,6 +53,7 @@
 mod capture;
 mod flow;
 mod machine;
+mod original;
 mod paths;
 mod retail;
 mod screens;
@@ -72,6 +73,10 @@ pub use flow::{
 pub use machine::{
     ConstructionDraft, Effect, FrontEnd, LoadFailure, Loadout, LoadoutProblem, MissionOutcome,
     Outcome, Plan, ProfileIntent, Refusal, Request,
+};
+pub use original::{
+    ArtExtents, BUTTON_STATE_FRAMES, BoundButton, LAYOUT_MEMBER, LayoutTextError, OriginalLayout,
+    OriginalScreens, SCREEN_SECTIONS, ScreenRefusal, ScreenReport, UnboundButton, UnboundReason,
 };
 pub use paths::{
     NavigationInputs, PathReview, PathStep, StepOutcome, SuppliedInput, review_navigation,

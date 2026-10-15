@@ -33,10 +33,18 @@
 //! measured, decoded and captured). The `retail` and `gpu` tests there are
 //! `#[ignore]`d because CI has neither; the evidence report this stage writes
 //! is `mod evidence`, deliberately **not** named `accept_f45_d_*`.
+//!
+//! Task F45-B.1 (#742, `mod original`) reads the original front end's own
+//! layout (`ASSETS/LAYOUT.CSV` in `crimson.rof`) into the F45-B deck and
+//! reports, per screen, what the original data supports and what it refuses;
+//! its evidence report is `mod evidence_f45_b_1`, deliberately **not** named
+//! `accept_f45_b_1_*`.
 
 mod evidence;
+mod evidence_f45_b_1;
 mod flow;
 mod layout;
+mod original;
 mod screens;
 mod stage_d;
 mod table;
