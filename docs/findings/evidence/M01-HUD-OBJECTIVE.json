@@ -1,0 +1,106 @@
+{
+  "schema_version": 1,
+  "task_id": "M01-HUD-OBJECTIVE",
+  "candidate_tree": "973751fe4d6a4f7cd820d9ead2d8c0ddb40e633f",
+  "engine": {
+    "rust": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "bevy": "0.19.1",
+    "avian": "0.7.0"
+  },
+  "created_at": "2026-10-15T09:54:23Z",
+  "command": {
+    "argv": [
+      "cargo",
+      "test",
+      "--workspace",
+      "--locked",
+      "--",
+      "accept_m01_hud_objective_",
+      "--include-ignored"
+    ],
+    "cwd": "/Users/linus/coding/rust-crimson-skies/bunny-alpha-1",
+    "exit_code": 0
+  },
+  "source": {
+    "install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978",
+    "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"
+  },
+  "seed": 0,
+  "ticks": {
+    "start": 0,
+    "end": 0
+  },
+  "overrides": [],
+  "capabilities": [
+    "synthetic",
+    "retail"
+  ],
+  "tests": {
+    "discovered": 5,
+    "executed": 5,
+    "passed": 5,
+    "failed": 0,
+    "ignored": 0
+  },
+  "assertions": [
+    {
+      "id": "accept_m01_hud_objective_read_model_lists_every_identity_in_objective_order",
+      "status": "pass",
+      "evidence": [
+        "cargo-test.log"
+      ]
+    },
+    {
+      "id": "accept_m01_hud_objective_read_model_follows_the_lifecycle_model",
+      "status": "pass",
+      "evidence": [
+        "cargo-test.log"
+      ]
+    },
+    {
+      "id": "accept_m01_hud_objective_read_model_of_a_record_without_identity_is_empty",
+      "status": "pass",
+      "evidence": [
+        "cargo-test.log"
+      ]
+    },
+    {
+      "id": "accept_m01_hud_objective_messages_absent_keeps_why_it_is_absent",
+      "status": "pass",
+      "evidence": [
+        "cargo-test.log"
+      ]
+    },
+    {
+      "id": "accept_m01_hud_objective_retail_installation_text_and_the_current_objective",
+      "status": "pass",
+      "evidence": [
+        "cargo-test.log"
+      ]
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "cargo-test.log",
+      "sha256": "f22d486e70e420c888d3b0d06374efb65522c4d02eb42228832f156adaa2897f",
+      "kind": "log"
+    },
+    {
+      "path": "workspace-test.log",
+      "sha256": "62ac768511b9aedd1fcdf94ea0b883274dab192b3c974675cbfd9e5a75b1e64a",
+      "kind": "log"
+    }
+  ],
+  "unknowns": [
+    "which of several awake objectives the original draws, and for how long, is unmeasured: the designed rule is the live row with the smallest (role code, ordinal, index); affected content is M01's four primary objective lines and every later mission's; resolved by an owner run of the original (REF-OWNER-FIRST-CAPTURE, #358) or a measurement of the briefing table builder's consumer at 0x4acd1b",
+    "whether a line persists between two identity objectives is unmeasured: M01 reaches OBJECTIVE11 through three identity-less latch hops, so the designed rule hides the line there; affected content is the same four lines; resolved by the same original-run evidence",
+    "the HUD layout (position, caption, font size, hide-when-empty) is designed and labelled on screen; affected content is every line this widget draws; resolved by F46-D's comparison and the owner's review",
+    "whether the original resolves an IDENTITY message name through strings.dll's {name, id} table at run time was not re-measured for this task; affected content is any claim that this pairing is the engine's own lookup; resolved by a static analysis around 0x4acd1b or an original-run capture",
+    "the table's position, the 1..=99999 id bound and the 1023-record count are single-installation observations (one English build); affected content is any other installation; resolved by a second build (F12-G's unknown #5)"
+  ],
+  "review": {
+    "identity": "implementer: bunny-alpha-1 (Rally #1462 implement claim); reviewer: recorded by the Rally review claim that follows this submission. A review by the same agent instance is a fresh-context re-derivation at best and never independent original-reference evidence, and no agent review replaces the owner's approval",
+    "method": "acceptance suite run locally with the retail capability: the task's own selection (prefix accept_m01_hud_objective_) through cargo on this tree, with the retail test reading $CS_GAME_DIR through the production readers. The log is the artefact; every count and assertion above is derived from it, the full workspace suite's log is the second artefact, and the installation/content fingerprints come from a production `cs-inspect inventory` run on the same installation. Claim is implemented: nothing here observed the original game running, no GPU frame and no human play"
+  },
+  "claim": "implemented"
+}
