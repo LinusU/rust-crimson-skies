@@ -22,10 +22,17 @@
 //!   `vehicle.zrd`; which record each prefix binds and what model it draws
 //!   is unmeasured, so the entity carries [`SpawnDispatch::VehicleRecord`]'s
 //!   measured prefix verbatim and nothing more.
-//! * **The flight model is absent by design**: AI behaviour is #1436's. A
-//!   scripted aircraft is a kinematic body held at its spawn pose — the
-//!   `BodyMode::Kinematic` "scripted actor" contract — so it collides and
-//!   can be damaged without an invented autopilot ever moving it.
+//! * **The flight model is the recovered original law, flown by the designed
+//!   AI (#1436)**: a record that is not asleep and whose measured
+//!   name-prefix resolved an imported `vehicle.zrd` airframe spawns a
+//!   **dynamic** body carrying
+//!   [`PlaytestOriginalFlight`](crate::playtest::scene::PlaytestOriginalFlight)
+//!   with `is_player: false` — the #796 law's own AI branch — and the
+//!   [`MissionAircraftAi`] component the designed pursuit-and-fire law
+//!   ([`crate::mission_ai`]) commands each fixed tick. A record that starts
+//!   asleep (#681) or whose airframe would not import keeps the kinematic
+//!   held body it has always had, because a body with no law to fly it must
+//!   never be dropped into the world by gravity alone.
 //! * **The damage model is designed**: every actor registers a single-node
 //!   graph (`airframe`, internal structure, lethal) whose integrity is
 //!   [`Resolved::Unknown`], so a routed hit blocks visibly in the
@@ -43,7 +50,7 @@
 //! respawns them through the same function, and `teardown` removes them
 //! with the rest of the composition.
 
-use avian3d::prelude::Rotation;
+use avian3d::prelude::{NoAutoMass, Rotation};
 use bevy::prelude::{Component, Entity, Quat, Resource, Transform, Vec3, World};
 use cs_sim::collision::{CollisionLayer, ShapeClass};
 use cs_sim::damage::{
@@ -54,7 +61,8 @@ use cs_types::evidence::ClaimId;
 use cs_types::net::{ActorAllocator, ActorId, SessionId};
 
 use crate::damage::DamageActorBinding;
-use crate::mission_session::MissionHost;
+use crate::mission_ai::{MissionAiReport, MissionAircraftAi, ai_flight_record, spawn_mass_kg};
+use crate::mission_session::{MissionHost, MissionStage};
 use crate::mission_start::{ScriptedAircraft, SpawnDispatch, stored_heading_radians};
 use crate::mission_world_actors::object3d_orientation;
 use crate::physics::{BodyMode, BodySpec, spawn_body};
@@ -333,6 +341,33 @@ fn spawn_mission_actors_under(world: &mut World, view: HostView) -> MissionActor
         .unwrap_or_default();
     let mut allocator = ActorAllocator::new(session);
 
+    // The AI half of the spawn (M01-PLAY-AI, #1436): the airframe table the
+    // stage imported for every name-prefix dispatch, and the measured team
+    // of the stage's `player` record, which is what splits the roster into
+    // the player's flight and the aircraft opposed to it.
+    let stage = world.get_resource::<MissionStage>();
+    let airframes = stage
+        .map(|stage| stage.ai_airframes.clone())
+        .unwrap_or_default();
+    let player_team = stage.and_then(|stage| {
+        stage
+            .aircraft
+            .iter()
+            .find(|record| record.dispatch == SpawnDispatch::Player)
+            .and_then(|record| record.team)
+    });
+    let mut ai_flown: Vec<String> = Vec::new();
+    let mut ai_held: Vec<String> = Vec::new();
+    let mut ai_refusals: Vec<String> = Vec::new();
+    if stage.is_none() {
+        ai_refusals.push(
+            "no MissionStage resource: the composition left no AI airframe table, so every \
+             scripted aircraft spawns held"
+                .to_owned(),
+        );
+    }
+    ai_refusals.extend(airframes.refusals.iter().cloned());
+
     for record in &roster.0 {
         let name = record.name.clone();
         let Some((position, orientation)) = measured_spawn_pose(record) else {
@@ -351,7 +386,27 @@ fn spawn_mission_actors_under(world: &mut World, view: HostView) -> MissionActor
                 continue;
             }
         };
-        let spec = BodySpec {
+        let asleep = record.starts_asleep.unwrap_or(false);
+        // Which records fly (M01-PLAY-AI, #1436): not asleep, and carrying
+        // an airframe the stage imported for this record's measured name
+        // prefix. Everything else keeps the kinematic held body — a body no
+        // law steps must never be released into the world to fall out of
+        // the sky under gravity.
+        let airframe = if asleep {
+            None
+        } else {
+            airframes.models.get(&vehicle_record)
+        };
+        if airframe.is_none() {
+            let reason = if asleep {
+                "the measured `deactivated` field starts the record asleep (#681) and no \
+                 WAKEUP_ENEMIES consumer exists yet, so it holds its spawn pose"
+            } else {
+                "the stage carries no imported airframe for this record's name prefix"
+            };
+            ai_held.push(format!("{name}: {reason}"));
+        }
+        let mut spec = BodySpec {
             layer: CollisionLayer::Aircraft,
             shape: ShapeClass::Solid,
             mode: BodyMode::Kinematic,
@@ -365,6 +420,13 @@ fn spawn_mission_actors_under(world: &mut World, view: HostView) -> MissionActor
             position_m: position.to_array(),
             linear_velocity_m_s: [0.0, 0.0, 0.0],
         };
+        if let Some(frame) = airframe {
+            // A flown aircraft is a dynamic body: the law's one force request
+            // must reach an integrator, and the declared mass is the imported
+            // weight over the law's own force scale (`W / 9.82`).
+            spec.mode = BodyMode::Dynamic;
+            spec.mass_kg = spawn_mass_kg(frame);
+        }
         let entity = match spawn_body(world, &spec) {
             Ok(entity) => entity,
             Err(error) => {
@@ -405,7 +467,6 @@ fn spawn_mission_actors_under(world: &mut World, view: HostView) -> MissionActor
             }
             Err(reason) => report.refusals.push(format!("{name}: {reason}")),
         }
-        let asleep = record.starts_asleep.unwrap_or(false);
         world.entity_mut(entity).insert((
             Rotation(orientation),
             Transform::from_translation(position).with_rotation(orientation),
@@ -418,6 +479,18 @@ fn spawn_mission_actors_under(world: &mut World, view: HostView) -> MissionActor
             },
             bevy::prelude::Visibility::Inherited,
         ));
+        if let Some(frame) = airframe {
+            // The flown record: the law's declared mass binding, the
+            // recovered law on the AI seat, and the designed behaviour the
+            // record's measured fields select. The decision system then
+            // commands it every fixed tick (`crate::mission_ai`).
+            world.entity_mut(entity).insert((
+                NoAutoMass,
+                ai_flight_record(frame, position, orientation),
+                MissionAircraftAi::for_record(record, player_team),
+            ));
+            ai_flown.push(name.clone());
+        }
         report.aircraft.push(SpawnedAircraft {
             record: name,
             entity,
@@ -504,6 +577,17 @@ fn spawn_mission_actors_under(world: &mut World, view: HostView) -> MissionActor
             actor,
         });
     }
+
+    // The AI spawn report: which records fly the designed law, which are
+    // held and why, and every refusal on this path. It replaces any report a
+    // previous generation left, so a restart reports its own spawn.
+    world.insert_resource(MissionAiReport {
+        flown: ai_flown,
+        held: ai_held,
+        refusals: ai_refusals,
+        decisions: 0,
+        no_target: 0,
+    });
 
     world.insert_resource(report.clone());
     report

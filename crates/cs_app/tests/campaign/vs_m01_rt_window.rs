@@ -281,6 +281,9 @@ pub(crate) fn synthetic_stage(scratch: &Path) -> MissionStage {
         // The synthetic stage has no `aiv.zrd` to read: the scripted-actor
         // roster is empty and no aircraft or zeppelin entity spawns.
         aircraft: Vec::new(),
+        // No installation to import a scripted aircraft's airframe from
+        // either: no record spawns, so the AI table stays empty.
+        ai_airframes: cs_app::mission_ai::MissionAiAirframes::default(),
         flight: synthetic_flight(),
         // The synthetic stage has no installation to read `zbd/planes.zbd`
         // from: the player body spawns without a visual, as it did before

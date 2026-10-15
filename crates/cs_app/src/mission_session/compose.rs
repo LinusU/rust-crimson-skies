@@ -231,6 +231,12 @@ pub struct MissionStage {
     /// composition filters this into the roster it spawns; the synthetic
     /// stages carry an empty list and spawn no scripted actors.
     pub aircraft: Vec<crate::mission_start::ScriptedAircraft>,
+    /// The flight records the scripted aircraft fly (M01-PLAY-AI, #1436),
+    /// imported from `vehicle.zrd` for every distinct name-prefix dispatch
+    /// in [`Self::aircraft`], built in [`stage_for`] where the installation
+    /// path exists. A prefix that will not import is a refusal on the table,
+    /// and its aircraft spawns held.
+    pub ai_airframes: crate::mission_ai::MissionAiAirframes,
     /// The flight law the player's body flies.
     pub flight: MissionFlight,
     /// The player airframe's drawn source — `zbd/planes.zbd` and the group's
@@ -562,6 +568,13 @@ pub fn stage_for(
         instance: content.instance.clone(),
         start,
         aircraft: content.aircraft.clone(),
+        // The scripted aircraft's own flight records (M01-PLAY-AI, #1436),
+        // imported for every distinct name-prefix dispatch the measured
+        // records carry.
+        ai_airframes: crate::mission_ai::MissionAiAirframes::prepare(
+            install_root,
+            &content.aircraft,
+        ),
         flight: content.flight.clone(),
         // The player airframe's visual source: `zbd/planes.zbd` under this
         // installation plus the world group's texture archive, read through
@@ -1031,6 +1044,11 @@ fn add_composition(
     app.insert_resource(crate::mission_actors::MissionAircraftRoster::from_records(
         &stage.aircraft,
     ));
+    // 6. The scripted aircraft's AI (M01-PLAY-AI, #1436): the designed
+    //    pursuit-and-fire decision on the fixed tick, before the flight
+    //    driver steps the records it commands. The plugin owns the spawn
+    //    report the acceptance tests read beside the spawn's own.
+    app.add_plugins(crate::mission_ai::MissionAiPlugin);
     app.add_systems(
         bevy::prelude::Startup,
         crate::mission_actors::mission_actor_spawn_system,
@@ -1187,6 +1205,7 @@ pub fn spawn_player(world: &mut World) -> Result<Entity, SceneError> {
             ..FlightInput::NEUTRAL
         },
         hold_attitude: false,
+        is_player: true,
         provenance: start.provenance,
     };
     // The body's `Transform` must carry the same start rotation as the
@@ -1252,6 +1271,7 @@ pub fn teardown(app: &mut App) {
     world.remove_resource::<MissionComposition>();
     world.remove_resource::<crate::mission_actors::MissionAircraftRoster>();
     world.remove_resource::<crate::mission_actors::MissionActorSpawnReport>();
+    world.remove_resource::<crate::mission_ai::MissionAiReport>();
     world.remove_resource::<MissionPlayerStart>();
     world.remove_resource::<MissionPlayerVisual>();
     world.remove_resource::<super::world_draw::MissionWorldParts>();

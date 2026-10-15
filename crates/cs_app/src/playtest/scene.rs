@@ -89,7 +89,11 @@ pub struct PlaytestOriginalFlight {
     /// The law's own state: pose, velocity, angular momentum, throttle, fuel
     /// and the Level-Off toggle.
     pub state: OriginalState,
-    /// The held command, written by the input producer once per frame.
+    /// The held command: the player's record takes it from the input
+    /// producer once per frame, a scripted aircraft's from the mission AI's
+    /// own fixed-tick decision ([`crate::mission_ai`]), which is why the
+    /// player's input producer addresses only records carrying
+    /// [`PlaytestAircraft`].
     pub command: FlightInput,
     /// Hold the attitude while the forces still integrate: the original's own
     /// dev tool (`0x491c60`) measures a top speed and a climb this way, and
@@ -97,6 +101,17 @@ pub struct PlaytestOriginalFlight {
     /// It is a field of the record so a test can fly the held-attitude probe
     /// the law documents instead of approximating it with stick input.
     pub hold_attitude: bool,
+    /// Which of the recovered law's two seats flies this record, verbatim
+    /// [`OriginalInput::is_player`]: `true` selects the player's lift blend
+    /// and weathervane, `false` the AI branch (#796: AI always aims the lift
+    /// target at the nose, gets the forward-speed floor and burns no fuel).
+    ///
+    /// Every aircraft the playtest and the mission spawn for a human seat is
+    /// `true`; a scripted mission aircraft flying the designed pursuit law
+    /// (`crate::mission_ai`) is `false`. The field only chooses a branch the
+    /// recovered law already owns — it is not a claim about how the original
+    /// selected the two.
+    pub is_player: bool,
     /// `OWNER-STATIC-2026-10-08`: static analysis, never `verified_original`.
     pub provenance: &'static str,
 }
@@ -134,27 +149,36 @@ impl PlaytestOriginalFlight {
                 ..FlightInput::NEUTRAL
             },
             hold_attitude: false,
+            is_player: true,
             provenance: retail.provenance,
         }
     }
 
     /// The engine the presentation systems read: the law's own **actual**
     /// (slewed) throttle is the spool, so the propeller follows the engine
-    /// rather than the key, and an exhausted fuel load stops it.
+    /// rather than the key. Only a player seat can run dry — the law gates
+    /// thrust on fuel for a player alone, and an AI record states no fuel
+    /// load at all (`OriginalState::fuel`), so a non-player seat reads as
+    /// running at its own throttle instead of as an engine that a fuel load
+    /// it never had has stopped.
     #[must_use]
     pub fn engine(&self) -> EngineState {
         EngineState {
-            running: self.state.fuel > 0.0,
+            running: if self.is_player {
+                self.state.fuel > 0.0
+            } else {
+                true
+            },
             spool: self.state.throttle,
         }
     }
 
     /// The held command as the original law reads it, already clamped by the
-    /// law's own boundary. `is_player` selects the player blend and
-    /// weathervane, [`Self::hold_attitude`] is the record's held-attitude
-    /// probe, and `nitro` is the boost button — which the playtest's input
-    /// layer never sets (`flight_command` passes `boost: false`), so nitro is
-    /// unreachable here rather than invented.
+    /// law's own boundary. [`Self::is_player`] selects the player blend and
+    /// weathervane against the AI branch, [`Self::hold_attitude`] is the
+    /// record's held-attitude probe, and `nitro` is the boost button — which
+    /// the playtest's input layer never sets (`flight_command` passes
+    /// `boost: false`), so nitro is unreachable here rather than invented.
     ///
     /// **Roll is negated.** [`FlightInput::roll`] is positive
     /// **right-wing-down** — the F22 action map's `E`, and the playtest's own
@@ -174,7 +198,7 @@ impl PlaytestOriginalFlight {
             throttle: self.command.throttle,
             nitro: self.command.boost,
             engine_out: false,
-            is_player: true,
+            is_player: self.is_player,
             hold_attitude: self.hold_attitude,
         }
     }

@@ -265,6 +265,7 @@ mod m01_lc_campaign_airframe_pose_evidence;
 mod m01_lc_player_airframe_source;
 mod m01_lc_player_config;
 mod m01_play_actors;
+mod m01_play_ai;
 mod m01_play_radio;
 mod m01_play_triggers_observe;
 mod m01_play_weapons;
