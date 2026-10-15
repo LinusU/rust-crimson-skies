@@ -162,7 +162,7 @@ fn evidence_report_m01_hud_objective_writes_the_acceptance_report() {
                 .collect::<Vec<_>>()
         ),
         jstr(&reviewer),
-        jstr(&review_method()),
+        jstr(review_method()),
     );
     let out = evidence_dir.join("acceptance.json");
     fs::write(&out, &report).expect("write acceptance.json");
