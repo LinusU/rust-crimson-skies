@@ -21,14 +21,16 @@
 //! | `["player"]` | the [`MissionPlayerBody`] entity's [`Position`] | the body's physics pose is the authoritative position the trigger has to measure from; nothing else in the composition is `player` |
 //! | `["<node>"]` per bound world actor | the [`WorldActorBinding`] entity's [`Transform`] | the binding entity is not a physics body, so its `Transform` is its live pose; its node name comes from the measured subject spelling (below) |
 //! | one row per group id | live [`ScriptedAircraftActor`] entities, keyed by the groups the composition **actually spawned** | a count is only reportable for a group whose members were spawned and can now be counted |
+//! | one row per bound part-state chain | the [`MissionPartState`] entity's own pose, with the presence the session's damage authority reports | a part-state chain now has a live entity (M01-PLAY-TRIGGERS-PARTS, below); its in-play bit is the one the `INACTIVE` evaluator reads |
 //!
-//! Nothing else is written: M01's 39 part-state chains
-//! (`["workersvoyagezep", "reng1", "healthy"]`, …) have **no entity** in the
-//! composed world — `import_world_container` only makes an object for an
-//! `object3d` node the world node owns directly — so this observer cannot see
-//! them and never pretends to. Those rows are M01-PLAY-TRIGGERS-PARTS's job;
-//! an unobserved chain simply stays absent, which is exactly the fail-closed
-//! read [`super::host`] documents.
+//! M01's 39 part-state chains (`["workersvoyagezep", "reng1", "healthy"]`, …)
+//! get their entities from [`super::parts`] through the spawn host — the
+//! composition binds one per chain beside the bound world actor that owns it —
+//! and their presence from the
+//! session's damage authority: `Intact`/`Damaged` is in play, `Destroyed` is the
+//! `OutOfPlay` an `INACTIVE` ladder counts, and an unresolved pool or an
+//! unregistered actor is **no row at all** (the fail-closed read
+//! [`super::parts`] documents).
 //!
 //! # Fail-closed, row by row
 //!
@@ -73,8 +75,11 @@ use super::host::{MissionHost, MissionWorldObservation};
 use crate::mission_actors::{
     MissionActorSpawnReport, MissionAircraftRoster, ScriptedAircraftActor,
 };
+use crate::weapons::SessionDamageResolver;
 use crate::world_actors::WorldActorBinding;
 use crate::world_facts::{MemberObservation, WorldObservation, member_chain};
+
+use super::parts::{MissionPartState, part_in_play};
 
 /// The member chain the record spells for the player's own body.
 ///
@@ -172,6 +177,44 @@ pub fn mission_world_observation(world: &mut World) {
                 member_chain([name]),
                 MemberObservation::held_in_play(position),
             );
+        }
+    }
+
+    // 2b. Every bound part-state chain, at its own entity's pose, with the
+    //     presence the session's damage authority reports. An unresolved pool
+    //     is not a presence statement, so such a chain gets no row at all.
+    let parts: Vec<(MissionPartState, [f64; 3])> = {
+        let mut query = world.query::<(&MissionPartState, &Transform)>();
+        query
+            .iter(world)
+            .map(|(part, transform)| {
+                let [x, y, z] = transform.translation.to_array();
+                (part.clone(), [f64::from(x), f64::from(y), f64::from(z)])
+            })
+            .collect()
+    };
+    if !parts.is_empty()
+        && let Some(damage) = world.get_resource::<SessionDamageResolver>()
+    {
+        let resolver = damage.resolver();
+        for (part, position) in parts {
+            match part_in_play(resolver, &part) {
+                Some(true) => {
+                    observation = observation.member(
+                        part.chain.clone(),
+                        MemberObservation::held_in_play(position),
+                    );
+                }
+                Some(false) => {
+                    observation = observation.member(
+                        part.chain.clone(),
+                        MemberObservation::no_longer_in_play(position),
+                    );
+                }
+                // An unresolved pool is not a statement about presence: the
+                // chain stays unobserved, fail-closed.
+                None => {}
+            }
         }
     }
 

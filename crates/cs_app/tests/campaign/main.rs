@@ -267,6 +267,7 @@ mod m01_lc_player_config;
 mod m01_play_actors;
 mod m01_play_radio;
 mod m01_play_triggers_observe;
+mod m01_play_triggers_parts;
 mod m01_play_weapons;
 mod m01_play_world_evidence;
 mod m01_play_world_visible;

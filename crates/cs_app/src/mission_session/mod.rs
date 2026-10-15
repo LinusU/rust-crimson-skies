@@ -95,6 +95,7 @@ mod host;
 mod launch_sound;
 mod lifecycles;
 mod observation;
+pub(crate) mod parts;
 mod player_visual;
 mod radio;
 mod terminal;
@@ -128,6 +129,11 @@ pub use launch_sound::{
 };
 pub use lifecycles::{LifecycleAdvance, ObjectiveLifecycleTick, ObjectiveLifecycles};
 pub use observation::{PLAYER_MEMBER, mission_world_observation, subject_node_name};
+pub use parts::{
+    BoundPart, DESIGNED_PART_INTEGRITY, M01_PART_STATE_CLAIM, MissionPartReport, MissionPartState,
+    designed_part_node, part_entities, part_in_play, part_state_chains, part_state_node,
+    plan_part_states, spawn_part_state,
+};
 pub use player_visual::{
     MISSION_PLAYER_AIRCRAFT_ROOT_NAME, MISSION_PLAYER_INTACT_NODE_NAME,
     MISSION_PLAYER_INTACT_NODE_SLOT, MISSION_PLAYER_LOD_DISTANCE_M, MISSION_PLAYER_PROP_NODE_NAME,

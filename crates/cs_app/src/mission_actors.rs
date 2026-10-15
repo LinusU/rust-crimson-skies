@@ -43,18 +43,22 @@
 //! respawns them through the same function, and `teardown` removes them
 //! with the rest of the composition.
 
+use std::collections::BTreeMap;
+
 use avian3d::prelude::Rotation;
 use bevy::prelude::{Component, Entity, Quat, Resource, Transform, Vec3, World};
+use cs_script::ir::{ActorId as WorldActorId, MemberName};
 use cs_sim::collision::{CollisionLayer, ShapeClass};
 use cs_sim::damage::{
-    AttributionRule, DamageGraph, DamageNode, DamageNodeKind, DamagePolicy, DamageResolver,
+    AttributionRule, DamageGraph, DamageNode, DamageNodeKey, DamageNodeKind, DamagePolicy,
+    DamageResolver,
 };
-use cs_types::content::{ContentId, ContentKind, DamageNodeKey, Resolved};
+use cs_types::content::{ContentId, ContentKind, Resolved};
 use cs_types::evidence::ClaimId;
 use cs_types::net::{ActorAllocator, ActorId, SessionId};
 
 use crate::damage::DamageActorBinding;
-use crate::mission_session::MissionHost;
+use crate::mission_session::{MissionHost, MissionStage, parts};
 use crate::mission_start::{ScriptedAircraft, SpawnDispatch, stored_heading_radians};
 use crate::mission_world_actors::object3d_orientation;
 use crate::physics::{BodyMode, BodySpec, spawn_body};
@@ -197,8 +201,49 @@ fn measured_spawn_pose(record: &ScriptedAircraft) -> Option<(Vec3, Quat)> {
 
 /// The designed damage graph one scripted actor registers: one lethal
 /// internal-structure node whose pool is unresolved — a hit routes in and
-/// blocks by name rather than draining an invented count.
-fn designed_damage_graph(spelling: &str) -> Result<(ContentId, DamageGraph, DamagePolicy), String> {
+/// blocks by name rather than draining an invented count — plus, for an actor
+/// whose parts this composition binds, one designed node per part.
+///
+/// The part nodes are what makes an engine addressable
+/// (`super::mission_session::parts`): M01's `INACTIVE` ladders count an engine
+/// leaving play, and a hit has to be able to name it. `parts` is empty for
+/// every scripted aircraft.
+fn designed_damage_graph(
+    spelling: &str,
+    parts: &[DamageNodeKey],
+) -> Result<(ContentId, DamageGraph, DamagePolicy), String> {
+    let (subject, graph, _) = designed_actor_graph(spelling, parts)?;
+    let policy = DamagePolicy {
+        attribution: AttributionRule::FirstLethalHit,
+    };
+    Ok((subject, graph, policy))
+}
+
+/// The graph itself, split out so the part-node composition is checkable on its
+/// own: the frame node first, then one designed node per part, duplicates
+/// skipped (two chains of one actor may name one part).
+fn designed_actor_graph(
+    spelling: &str,
+    parts: &[DamageNodeKey],
+) -> Result<(ContentId, DamageGraph, Vec<DamageNodeKey>), String> {
+    let (subject, frame) = designed_frame_node(spelling)?;
+    let mut nodes = vec![frame];
+    let mut added = Vec::new();
+    for key in parts {
+        if nodes.iter().any(|node| node.key() == key) {
+            continue;
+        }
+        nodes.push(crate::mission_session::designed_part_node(key));
+        added.push(key.clone());
+    }
+    let graph = DamageGraph::try_new(subject.clone(), nodes)
+        .map_err(|error| format!("the designed damage graph refuses: {error}"))?;
+    Ok((subject, graph, added))
+}
+
+/// The one lethal internal-structure frame node every scripted actor carries
+/// and the graph subject its spelling names.
+fn designed_frame_node(spelling: &str) -> Result<(ContentId, DamageNode), String> {
     let subject = ContentId::from_source(ContentKind::Blueprint, spelling)
         .map_err(|error| error.to_string())?;
     let node_key = DamageNodeKey::new(SCRIPTED_DAMAGE_NODE)
@@ -214,15 +259,7 @@ fn designed_damage_graph(spelling: &str) -> Result<(ContentId, DamageGraph, Dama
     .map_err(|error| format!("the unresolved pool refuses: {error}"))?;
     let node =
         DamageNode::new(node_key, DamageNodeKind::InternalStructure, integrity).with_lethal(true);
-    let graph = DamageGraph::try_new(subject.clone(), vec![node])
-        .map_err(|error| format!("the designed damage graph refuses: {error}"))?;
-    Ok((
-        subject,
-        graph,
-        DamagePolicy {
-            attribution: AttributionRule::FirstLethalHit,
-        },
-    ))
+    Ok((subject, node))
 }
 
 /// The session's damage authority: a resolver of this generation's own,
@@ -331,6 +368,15 @@ fn spawn_mission_actors_under(world: &mut World, view: HostView) -> MissionActor
         .get_resource::<SceneGenerations>()
         .map(SceneGenerations::latest)
         .unwrap_or_default();
+    // The part-state chains of every bound world actor, read from the stage's
+    // own records through the container resolver (M01-PLAY-TRIGGERS-PARTS,
+    // #1481). A stage whose host carries no world-actor program has none, and
+    // so does every synthetic stage.
+    let part_plan: BTreeMap<WorldActorId, Vec<(MemberName, DamageNodeKey)>> = world
+        .get_resource::<MissionStage>()
+        .map(parts::plan_part_states)
+        .unwrap_or_default();
+    let mut part_report = parts::MissionPartReport::default();
     let mut allocator = ActorAllocator::new(session);
 
     for record in &roster.0 {
@@ -388,7 +434,7 @@ fn spawn_mission_actors_under(world: &mut World, view: HostView) -> MissionActor
             "damage-graph.scripted-aircraft.{}",
             name.to_ascii_lowercase()
         );
-        match designed_damage_graph(&graph_spelling) {
+        match designed_damage_graph(&graph_spelling, &[]) {
             Ok((subject, graph, policy)) => {
                 match session_damage(world, session).register_actor(actor, graph, policy) {
                     Ok(()) => {
@@ -478,8 +524,18 @@ fn spawn_mission_actors_under(world: &mut World, view: HostView) -> MissionActor
             ))
             .id();
         let graph_spelling = format!("damage-graph.zeppelin.{}", subject.key());
-        match designed_damage_graph(&graph_spelling) {
+        // The part-state chains this actor's own record spells
+        // (M01-PLAY-TRIGGERS-PARTS, #1481): their part elements become nodes of
+        // this actor's graph, so a hit can name an engine.
+        let planned = part_plan.get(world_actor).cloned().unwrap_or_default();
+        let part_keys: Vec<DamageNodeKey> = planned.iter().map(|(_, node)| node.clone()).collect();
+        match designed_damage_graph(&graph_spelling, &part_keys) {
             Ok((graph_subject, graph, policy)) => {
+                let part_nodes: Vec<DamageNodeKey> = graph
+                    .nodes()
+                    .map(|node| node.key().clone())
+                    .filter(|key| part_keys.contains(key))
+                    .collect();
                 match session_damage(world, session).register_actor(actor, graph, policy) {
                     Ok(()) => {
                         world.entity_mut(entity).insert(DamageActorBinding {
@@ -487,6 +543,26 @@ fn spawn_mission_actors_under(world: &mut World, view: HostView) -> MissionActor
                             graph: graph_subject,
                             generation,
                         });
+                        for (chain, node) in &planned {
+                            let part_entity = parts::spawn_part_state(
+                                world,
+                                actor,
+                                subject.clone(),
+                                generation,
+                                chain.clone(),
+                                node.clone(),
+                                position_m,
+                            );
+                            part_report.parts.push(parts::BoundPart {
+                                chain: chain.clone(),
+                                node: node.clone(),
+                                actor,
+                                entity: part_entity,
+                            });
+                        }
+                        if !part_nodes.is_empty() {
+                            part_report.nodes.insert(actor, part_nodes);
+                        }
                     }
                     Err(error) => report.refusals.push(format!(
                         "zeppelin {world_actor:?}: damage registration refuses: {error}"
@@ -506,6 +582,10 @@ fn spawn_mission_actors_under(world: &mut World, view: HostView) -> MissionActor
     }
 
     world.insert_resource(report.clone());
+    // The part-state binding's own report: which chains got a live entity and
+    // which damage nodes their actors' graphs carry (M01-PLAY-TRIGGERS-PARTS).
+    part_report.refusals = report.refusals.clone();
+    world.insert_resource(part_report);
     report
 }
 
@@ -522,10 +602,12 @@ pub fn despawn_mission_actors(world: &mut World) {
         let mut query = world.query_filtered::<Entity, bevy::prelude::Or<(
             With<ScriptedAircraftActor>,
             With<MissionZeppelinActor>,
+            With<parts::MissionPartState>,
         )>>();
         query.iter(world).collect()
     };
     for entity in entities {
         let _ = world.despawn(entity);
     }
+    world.remove_resource::<parts::MissionPartReport>();
 }
