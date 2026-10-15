@@ -453,6 +453,14 @@ fn spawn_mission_actors_under(world: &mut World, view: HostView) -> MissionActor
                     position_m[0] as f32,
                     position_m[1] as f32,
                     position_m[2] as f32,
+                ))
+                // The session's canonical orientation, not an assumed one:
+                // the same `pose.orientation` the component records.
+                .with_rotation(Quat::from_xyzw(
+                    orientation[0] as f32,
+                    orientation[1] as f32,
+                    orientation[2] as f32,
+                    orientation[3] as f32,
                 )),
                 bevy::prelude::Visibility::Inherited,
                 WorldActorBinding {
