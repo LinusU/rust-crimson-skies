@@ -1,0 +1,1324 @@
+//! M01's playable weapons (M01-PLAY-WEAPONS, #1437).
+//!
+//! M01's Devastator carries guns and rockets; nothing opened a weapon session
+//! for the running mission, so the player could not shoot. This module is that
+//! session: the **designed** M01 loadout, the cockpit publication that turns
+//! the input boundary's delivered edges into fire orders, and the per-tick
+//! schedules that resolve them through the production F27 (guns) and F28
+//! (rockets) paths.
+//!
+//! # The loadout is designed, and says so
+//!
+//! The original's Devastator guns, ammunition and rocket loadout were not
+//! recovered: there is no production reader that returns M01's declared
+//! guns, ammunition or ordnance ([`crate::mission_launch`]'s
+//! `player_configuration` surface binds the airframe and the start pose and
+//! nothing else). Every record here is therefore [`Origin::Designed`] with a
+//! designed [`Provenance`] claim (`m01-play-weapons.designed-loadout`): a
+//! playable loadout that is **never** presented as original. When F27-E/F28-D
+//! measure the original's loadout, these records are what gets replaced.
+//!
+//! # What this module owns, and what it does not
+//!
+//! It owns the *player's* session: the [`WeaponSession`], the
+//! [`OrdnanceSession`], the shared [`SessionDamageResolver`], the
+//! [`TargetingSession`] and the publication of one tick's
+//! [`WeaponTickInput`]. It owns the player's **rig** — the
+//! [`MountPoseBinding`] nodes every gun and launcher fires from, hung under
+//! the live player body.
+//!
+//! It does **not** spawn mission targets. A victim is an entity the spawn
+//! host binds ([`crate::damage::DamageActorBinding`], a
+//! [`crate::weapons::PartSweptBox`], a
+//! [`crate::debris::PartDebrisBinding`]) and registers with the shared
+//! resolver; M01's own actors are another task's. A world with no bound
+//! victim fires into a world that resolves nothing, which is the honest
+//! state and is reported rather than papered over.
+
+use bevy::prelude::*;
+
+use cs_content::damage::DamageNodeKey;
+use cs_content::ordnance::DeclaredInheritanceRule as OrdnanceInheritanceRule;
+use cs_content::ordnance::{
+    DeclaredArmingRule, DeclaredEquipmentRules, DeclaredFuseRule, DeclaredGuidanceRule,
+    DeclaredHardpointKind, DeclaredLaunchGeometry, DeclaredOrdnance, DeclaredOrdnanceDetails,
+    DeclaredOrdnanceFamily, DeclaredOrdnanceMedia, DeclaredProjectile, DeclaredProximityFuse,
+    DeclaredStackLoad,
+};
+use cs_content::target_rules::{
+    DeclaredAllegiance, DeclaredRelation, DeclaredTargetRules, TargetRuleSet,
+};
+use cs_content::weapons::{
+    AmmunitionId, DeclaredAmmunition, DeclaredCaliber, DeclaredFriendlyFireRule,
+    DeclaredGunDefinition, DeclaredGunMountKind, DeclaredGunRate, DeclaredInheritanceRule,
+    DeclaredSelfHitRule, DeclaredSpreadCone, DeclaredWeaponDamage, InteractionRules,
+};
+use cs_sim::damage::{ActorId, DamageResolver, SystemKind};
+use cs_sim::targeting::{Allegiance, SelectionBinding, TargetClass, TargetRecord};
+use cs_sim::time::TickRate;
+use cs_sim::weapons::{
+    GunBank, OrdnanceId, OrdnanceRegistry, SYNTHETIC_STARTING_ROUNDS, StatusEffectTarget,
+    TargetPath,
+};
+use cs_types::Tick;
+use cs_types::content::{ContentId, ContentKind, Known, Origin, Provenance, Resolved};
+use cs_types::evidence::ClaimId;
+use cs_types::input::{Action, FlightCommand};
+use cs_types::net::SessionId;
+use cs_types::space::{Radians, WorldPosition};
+
+use crate::damage::{DamageActorBinding, PendingDamageEvents};
+use crate::input::platform::PlatformInput;
+use crate::ordnance::{
+    OrdnanceEngagement, OrdnanceLaunch, OrdnanceLaunchId, OrdnanceLauncherBinding, OrdnanceOrder,
+    OrdnanceSession, OrdnanceStep, lower_ordnance, step_ordnance_session,
+};
+use crate::physics::PhysicsTickLedger;
+use crate::scene::{NodeVisualTransform, SceneGeneration};
+use crate::score::SessionScoreLedger;
+use crate::targeting::{TargetingSession, lower_rules};
+use crate::weapons::{
+    CockpitInput, MountPoseBinding, SessionDamageResolver, WeaponActorBinding, WeaponSession,
+    WeaponTickInput, WeaponTickInputs,
+};
+
+/// The claim every designed M01 weapon record carries: the loadout is project
+/// design, not a measurement of the original.
+pub const MISSION_WEAPON_CLAIM: &str = "m01-play-weapons.designed-loadout";
+
+/// The claim the designed calm-air fallback binds under, when the mission's
+/// authored wind is an explicit unknown.
+pub const MISSION_WIND_CLAIM: &str = "m01-play-weapons.designed-calm-air";
+
+/// The player's actor serial within the mission session.
+pub const MISSION_PLAYER_SERIAL: u64 = 1;
+
+/// The gun path's router producer serial.
+pub const MISSION_ROUTER_PRODUCER: u32 = 201;
+/// The rocket path's producer serial.
+pub const MISSION_ORDNANCE_PRODUCER: u32 = 202;
+/// The shared damage authority's producer serial.
+pub const MISSION_DAMAGE_PRODUCER: u32 = 203;
+/// The local cockpit channel's producer serial.
+pub const MISSION_COCKPIT_PRODUCER: u32 = 204;
+
+/// The nose gun's damage-node mount.
+pub const MISSION_GUN_MOUNT_NOSE: &str = "gun_mount_1";
+/// The left wing gun's damage-node mount.
+pub const MISSION_GUN_MOUNT_WING_LEFT: &str = "gun_mount_2";
+/// The right wing gun's damage-node mount.
+pub const MISSION_GUN_MOUNT_WING_RIGHT: &str = "gun_mount_3";
+/// The rocket launcher's damage-node mount.
+pub const MISSION_ROCKET_MOUNT: &str = "ordnance_mount_1";
+
+/// The designed player faction.
+pub const MISSION_FACTION_PLAYER: &str = "designed.m01.player";
+/// The designed hostile faction.
+pub const MISSION_FACTION_HOSTILE: &str = "designed.m01.hostile";
+/// The designed neutral faction.
+pub const MISSION_FACTION_NEUTRAL: &str = "designed.m01.neutral";
+
+/// The mounted position of the nose gun, in metres, relative to the player
+/// body. Designed: the original's hardpoint offsets are unmeasured.
+const NOSE_MOUNT_OFFSET_M: [f32; 3] = [0.0, -0.4, -4.0];
+/// The left wing gun's designed offset.
+const WING_LEFT_OFFSET_M: [f32; 3] = [-3.2, -0.2, -0.4];
+/// The right wing gun's designed offset.
+const WING_RIGHT_OFFSET_M: [f32; 3] = [3.2, -0.2, -0.4];
+/// The rocket launcher's designed offset.
+const ROCKET_OFFSET_M: [f32; 3] = [0.0, -1.0, -2.0];
+
+fn claim() -> ClaimId {
+    ClaimId::new(MISSION_WEAPON_CLAIM).expect("the claim id is valid")
+}
+
+fn known<T>(value: T) -> Resolved<T> {
+    Resolved::Known(Known::new(value, Provenance::designed(claim())))
+}
+
+fn designed_faction(key: &str) -> ContentId {
+    ContentId::from_source(ContentKind::Faction, key).expect("the faction id is valid")
+}
+
+/// The mission's designed gun-loadout catalog ids, read by the rig and the
+/// audit rather than spelled twice.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MissionWeaponIds {
+    /// The ammunition type the guns carry.
+    pub ammunition: ContentId,
+    /// The loadout catalog subject the guns and rockets belong to.
+    pub loadout: ContentId,
+}
+
+/// The Devastator's designed M01 gun loadout.
+///
+/// Three guns — a nose cannon and one gun per wing — all firing the one
+/// designed ammunition type. Every number is project design.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MissionLoadout {
+    /// The declared guns, in mount order.
+    pub guns: Vec<DeclaredGunDefinition>,
+    /// The bank selected at open: every gun.
+    pub bank: GunBank,
+    /// The catalog ids the loadout names.
+    pub ids: MissionWeaponIds,
+}
+
+/// Builds the designed gun for `mount` of `kind`.
+fn designed_gun(mount: &str, kind: DeclaredGunMountKind, key: &str) -> DeclaredGunDefinition {
+    DeclaredGunDefinition::try_new(
+        ContentId::from_source(ContentKind::Weapon, key).expect("the gun id is valid"),
+        Origin::Designed,
+        cs_content::damage::DamageNodeKey::new(mount).expect("the mount key is valid"),
+        kind,
+        None,
+        known(DeclaredCaliber::try_new(MISSION_CALIBER).expect("the caliber text is valid")),
+        known(mission_ammunition()),
+        known(DeclaredGunRate {
+            ticks_between_shots: MISSION_TICKS_BETWEEN_SHOTS,
+        }),
+        known(MISSION_MUZZLE_VELOCITY_MPS),
+        known(MISSION_LIFETIME_TICKS),
+        DeclaredSpreadCone {
+            half_angle: known(Radians(MISSION_SPREAD_HALF_ANGLE_RAD)),
+        },
+        DeclaredWeaponDamage {
+            armor: known(MISSION_ARMOR_DAMAGE),
+            internal: known(MISSION_INTERNAL_DAMAGE),
+        },
+        known(DeclaredInheritanceRule::Full),
+        known(
+            ContentId::from_source(ContentKind::HardpointEquipment, MISSION_MUZZLE_EFFECT)
+                .expect("the effect id is valid"),
+        ),
+        known(
+            ContentId::from_source(ContentKind::Sound, MISSION_SHOT_SOUND)
+                .expect("the sound id is valid"),
+        ),
+        designed_interaction_rules(),
+        Provenance::designed(claim()),
+    )
+    .expect("the designed M01 gun is valid")
+}
+
+/// The designed ammunition id the loadout carries.
+#[must_use]
+pub fn mission_ammunition_id() -> ContentId {
+    ContentId::from_source(ContentKind::Ammo, MISSION_AMMUNITION_KEY).expect("the ammo id is valid")
+}
+
+/// The designed ammunition id in the `ammo` namespace.
+#[must_use]
+pub fn mission_ammunition() -> AmmunitionId {
+    AmmunitionId::try_new(mission_ammunition_id()).expect("the designed ammo id is in ammo")
+}
+
+/// The one designed ammunition type: the same damage profile the guns carry.
+///
+/// F27 non-negotiable 1 forbids deriving a gun's damage from a multiplier
+/// table, so the ammunition record carries its own designed profile and the
+/// guns repeat it rather than scaling one from the other.
+#[must_use]
+pub fn designed_ammunition() -> DeclaredAmmunition {
+    DeclaredAmmunition::try_new(
+        mission_ammunition(),
+        Origin::Designed,
+        known(DeclaredCaliber::try_new(MISSION_CALIBER).expect("the caliber text is valid")),
+        DeclaredWeaponDamage {
+            armor: known(MISSION_ARMOR_DAMAGE),
+            internal: known(MISSION_INTERNAL_DAMAGE),
+        },
+        designed_interaction_rules(),
+        Provenance::designed(claim()),
+    )
+    .expect("the designed M01 ammunition is valid")
+}
+
+/// The designed interaction rules every M01 gun runs under.
+///
+/// Self-hit excluded and friendly fire limited to declared hostiles: design,
+/// not measurement (F27 non-negotiable 4).
+#[must_use]
+pub fn designed_interaction_rules() -> InteractionRules {
+    InteractionRules {
+        self_hit: known(DeclaredSelfHitRule::Excluded),
+        friendly_fire: known(DeclaredFriendlyFireRule::HostileOnly),
+        penetration: known(false),
+        ricochet: known(false),
+        ammo_switching: known(false),
+    }
+}
+
+/// The Devastator's designed M01 gun loadout.
+#[must_use]
+pub fn designed_loadout() -> MissionLoadout {
+    let guns = vec![
+        designed_gun(
+            MISSION_GUN_MOUNT_NOSE,
+            DeclaredGunMountKind::Nose,
+            MISSION_GUN_NOSE_KEY,
+        ),
+        designed_gun(
+            MISSION_GUN_MOUNT_WING_LEFT,
+            DeclaredGunMountKind::WingLeft,
+            MISSION_GUN_WING_LEFT_KEY,
+        ),
+        designed_gun(
+            MISSION_GUN_MOUNT_WING_RIGHT,
+            DeclaredGunMountKind::WingRight,
+            MISSION_GUN_WING_RIGHT_KEY,
+        ),
+    ];
+    let bank = GunBank::try_new([
+        cs_content::damage::DamageNodeKey::new(MISSION_GUN_MOUNT_NOSE)
+            .expect("the nose mount key is valid"),
+        cs_content::damage::DamageNodeKey::new(MISSION_GUN_MOUNT_WING_LEFT)
+            .expect("the wing mount key is valid"),
+        cs_content::damage::DamageNodeKey::new(MISSION_GUN_MOUNT_WING_RIGHT)
+            .expect("the wing mount key is valid"),
+    ])
+    .expect("the designed bank names its mounts");
+    MissionLoadout {
+        guns,
+        bank,
+        ids: MissionWeaponIds {
+            ammunition: mission_ammunition_id(),
+            loadout: ContentId::from_source(ContentKind::Loadout, MISSION_LOADOUT_KEY)
+                .expect("the loadout id is valid"),
+        },
+    }
+}
+
+/// The designed rocket's catalog content id.
+#[must_use]
+pub fn rocket_content_id() -> ContentId {
+    ContentId::from_source(ContentKind::Weapon, MISSION_ROCKET_KEY)
+        .expect("the rocket content id is valid")
+}
+
+/// The Devastator's designed M01 rocket: a proximity-fused flak rocket.
+///
+/// The family, fuse, arming, lifetime and blast are all project design. The
+/// original's rocket records exist only as raw `weapons.zrd` blast numbers
+/// (`cs_content::ordnance::read_original_rocket_blasts`), which F28-D has not
+/// yet bound to an airframe loadout, so nothing here may claim to be the
+/// original's.
+#[must_use]
+pub fn designed_rocket() -> DeclaredOrdnance {
+    let projectile = DeclaredProjectile {
+        launch: DeclaredLaunchGeometry {
+            mount: DamageNodeKey::new(MISSION_ROCKET_MOUNT)
+                .expect("the launcher mount key is valid"),
+            hardpoint: known(DeclaredHardpointKind::Underslung),
+            launch_speed_mps: known(MISSION_ROCKET_LAUNCH_SPEED_MPS),
+            inheritance: known(OrdnanceInheritanceRule::Full),
+            release_delay_ticks: known(0),
+        },
+        stack: DeclaredStackLoad {
+            capacity_units: known(MISSION_ROCKET_CAPACITY),
+            unit_mass_kg: known(MISSION_ROCKET_MASS_KG),
+        },
+        arming: DeclaredArmingRule::AfterTicks(known(MISSION_ROCKET_ARM_TICKS)),
+        fuse: DeclaredFuseRule::Proximity(DeclaredProximityFuse {
+            trigger_radius_m: known(MISSION_ROCKET_TRIGGER_RADIUS_M),
+        }),
+        guidance: DeclaredGuidanceRule::Unguided,
+        lifetime_ticks: known(MISSION_ROCKET_LIFETIME_TICKS),
+        area_effect: None,
+        armor_damage: known(MISSION_ROCKET_ARMOR_DAMAGE),
+        internal_damage: known(MISSION_ROCKET_INTERNAL_DAMAGE),
+        status: Vec::new(),
+        media: DeclaredOrdnanceMedia {
+            visual: known(
+                ContentId::from_source(ContentKind::HardpointEquipment, MISSION_ROCKET_VISUAL)
+                    .expect("the rocket visual id is valid"),
+            ),
+            sound: known(
+                ContentId::from_source(ContentKind::Sound, MISSION_ROCKET_SOUND)
+                    .expect("the rocket sound id is valid"),
+            ),
+            particles: None,
+        },
+        equipment_rules: DeclaredEquipmentRules::default(),
+    };
+    DeclaredOrdnance::try_new(
+        rocket_content_id(),
+        Origin::Designed,
+        DeclaredOrdnanceFamily::ProximityFlak,
+        DeclaredOrdnanceDetails::Projectile(Box::new(projectile)),
+        None,
+        Provenance::designed(claim()),
+    )
+    .expect("the designed M01 rocket is valid")
+}
+
+/// The designed targeting rules the mission's session opens under.///
+/// Two factions, one directed hostile relation each way and a neutral pair:
+/// project design, because M01's own relations are not recovered. The
+/// selection table is deliberately empty — this task binds no cockpit target
+/// cycle, so nothing here invents the original's selection commands.
+#[must_use]
+pub fn designed_target_rules() -> DeclaredTargetRules {
+    let player = designed_faction(MISSION_FACTION_PLAYER);
+    let hostile = designed_faction(MISSION_FACTION_HOSTILE);
+    let neutral = designed_faction(MISSION_FACTION_NEUTRAL);
+    let relation = |from: &ContentId, to: &ContentId, allegiance| DeclaredRelation {
+        from: from.clone(),
+        to: to.clone(),
+        allegiance: known(allegiance),
+    };
+    DeclaredTargetRules::try_new(
+        ContentId::from_source(ContentKind::Mission, MISSION_TARGET_RULES_SUBJECT)
+            .expect("the rules subject is valid"),
+        Origin::Designed,
+        vec![player.clone(), hostile.clone(), neutral.clone()],
+        vec![
+            relation(&player, &hostile, DeclaredAllegiance::Hostile),
+            relation(&hostile, &player, DeclaredAllegiance::Hostile),
+            relation(&player, &neutral, DeclaredAllegiance::Neutral),
+            relation(&neutral, &player, DeclaredAllegiance::Neutral),
+            relation(&neutral, &hostile, DeclaredAllegiance::Hostile),
+            relation(&hostile, &neutral, DeclaredAllegiance::Hostile),
+        ],
+        TargetRuleSet {
+            threat_window: known(MISSION_THREAT_WINDOW_TICKS),
+            crosshair_cone: known(Radians(std::f64::consts::PI / 18.0)),
+            lead_indicator: known(true),
+            aim_assistance: known(false),
+        },
+        Provenance::designed(claim()),
+    )
+    .expect("the designed M01 target rules are valid")
+}
+
+/// The player's live weapon session: the generation, the actor, the scene
+/// generation the rig's mounts are stamped with, and the rocket the launcher
+/// fires.
+#[derive(Resource, Clone, Debug, PartialEq, Eq)]
+pub struct MissionWeapons {
+    session: SessionId,
+    player: ActorId,
+    generation: SceneGeneration,
+    rocket: OrdnanceId,
+}
+
+impl MissionWeapons {
+    /// The session generation this session is confined to.
+    #[must_use]
+    pub const fn session(&self) -> SessionId {
+        self.session
+    }
+
+    /// The player's actor, the shooter every minted order names.
+    #[must_use]
+    pub const fn player(&self) -> ActorId {
+        self.player
+    }
+
+    /// The scene generation live entities are stamped with.
+    #[must_use]
+    pub const fn generation(&self) -> SceneGeneration {
+        self.generation
+    }
+
+    /// The rocket component the launcher fires.
+    #[must_use]
+    pub const fn rocket(&self) -> &OrdnanceId {
+        &self.rocket
+    }
+}
+
+/// Every session and authority M01's weapons are opened as one unit.
+///
+/// [`install`](Self::install) puts them on the world the way a running
+/// session's open or restart does: the resources the F27/F29 schedules
+/// already expect, plus the marker resource the publisher and the rig read.
+pub struct MissionWeaponSessions {
+    /// The marker the publisher and the rig read.
+    pub mission: MissionWeapons,
+    /// The F27 gun session.
+    pub weapons: WeaponSession,
+    /// The F28 ordnance session.
+    pub ordnance: OrdnanceSession,
+    /// The shared damage authority, the one every producer routes into.
+    pub damage: DamageResolver,
+    /// The F27/F30 declared allegiance authority.
+    pub targeting: TargetingSession,
+}
+
+/// Why M01's weapon session could not be opened.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MissionWeaponError {
+    /// The M27/M28 session refused to open.
+    Weapons(String),
+    /// The declared targeting rules refused to lower.
+    Targeting(String),
+    /// No session was installed, so the rig or the publisher has nothing to
+    /// attach to.
+    NotInstalled,
+    /// The player entity named for the rig does not exist.
+    NoPlayer,
+}
+
+impl std::fmt::Display for MissionWeaponError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Weapons(reason) => write!(f, "the M01 weapon session refused: {reason}"),
+            Self::Targeting(reason) => write!(f, "the M01 targeting rules refused: {reason}"),
+            Self::NotInstalled => f.write_str("no M01 weapon session is installed"),
+            Self::NoPlayer => f.write_str("no live player entity exists for the weapon rig"),
+        }
+    }
+}
+
+impl std::error::Error for MissionWeaponError {}
+
+/// Opens M01's player weapon session for `session`.
+///
+/// # Errors
+///
+/// [`MissionWeaponError`] when the session generation is zero, the declared
+/// loadout refuses to register, or the designed target rules refuse to lower.
+pub fn open_mission_weapons(
+    session: SessionId,
+    rate: TickRate,
+    generation: SceneGeneration,
+) -> Result<MissionWeaponSessions, MissionWeaponError> {
+    let loadout = designed_loadout();
+    let player = ActorId {
+        session,
+        serial: MISSION_PLAYER_SERIAL,
+    };
+    let mut weapons = WeaponSession::new(session.get(), Tick(0), MISSION_ROUTER_PRODUCER)
+        .map_err(|error| MissionWeaponError::Weapons(error.to_string()))?;
+    weapons
+        .register(
+            player,
+            &loadout.guns,
+            loadout.bank.clone(),
+            SYNTHETIC_STARTING_ROUNDS,
+        )
+        .map_err(|error| MissionWeaponError::Weapons(error.to_string()))?;
+
+    // The rocket path: the designed component is lowered into the supported
+    // catalogue and registered for the player, exactly as a measured one
+    // would be.
+    let rocket = designed_rocket();
+    let mut catalogue = OrdnanceRegistry::new();
+    let component =
+        lower_ordnance(&rocket).map_err(|error| MissionWeaponError::Weapons(error.to_string()))?;
+    catalogue
+        .register(component)
+        .map_err(|error| MissionWeaponError::Weapons(error.to_string()))?;
+    let rocket_id = OrdnanceId::try_new(rocket.ordnance().clone())
+        .map_err(|error| MissionWeaponError::Weapons(error.to_string()))?;
+    let mut ordnance = OrdnanceSession::new(
+        session.get(),
+        Tick(0),
+        rate,
+        MISSION_ORDNANCE_PRODUCER,
+        catalogue,
+    )
+    .map_err(|error| MissionWeaponError::Weapons(error.to_string()))?;
+    ordnance
+        .register(player, std::slice::from_ref(&rocket))
+        .map_err(|error| MissionWeaponError::Weapons(error.to_string()))?;
+
+    let rules = designed_target_rules();
+    let lowered =
+        lower_rules(&rules).map_err(|error| MissionWeaponError::Targeting(error.to_string()))?;
+    let mut targeting = TargetingSession::new(
+        session,
+        lowered,
+        SelectionBinding::new(),
+        rules.subject().clone(),
+        generation,
+    );
+    targeting
+        .store_mut()
+        .register(TargetRecord {
+            actor: player,
+            faction: designed_faction(MISSION_FACTION_PLAYER),
+            class: TargetClass::Aircraft,
+            objective: false,
+            revealed: true,
+            phase_eligible: true,
+            position: WorldPosition::try_new([0.0, 0.0, 0.0])
+                .expect("the designed origin is finite"),
+        })
+        .map_err(|error| MissionWeaponError::Targeting(error.to_string()))?;
+
+    Ok(MissionWeaponSessions {
+        mission: MissionWeapons {
+            session,
+            player,
+            generation,
+            rocket: rocket_id,
+        },
+        weapons,
+        ordnance,
+        damage: DamageResolver::new(session, MISSION_DAMAGE_PRODUCER),
+        targeting,
+    })
+}
+
+impl MissionWeaponSessions {
+    /// Installs every session and authority on `world`.
+    ///
+    /// The score ledger is **not** opened here: the mission host already owns
+    /// it for the session it launches. When one is installed, the player is
+    /// admitted to it so a kill attributed to the player can score; a world
+    /// with no ledger scores nothing, which is the damage schedule's own
+    /// statement and not this function's to paper over.
+    ///
+    /// # Errors
+    ///
+    /// [`MissionWeaponError::NoPlayer`] is never returned; that variant
+    /// belongs to the rig.
+    pub fn install(self, world: &mut World) -> Result<(), MissionWeaponError> {
+        let player = self.mission.player;
+        let session = self.mission.session;
+        world.insert_resource(self.mission);
+        world.insert_resource(self.weapons);
+        world.insert_resource(MissionOrdnanceSession(self.ordnance));
+        world.insert_resource(SessionDamageResolver::new(self.damage));
+        world.insert_resource(self.targeting);
+        world.init_resource::<WeaponTickInputs>();
+        world.init_resource::<MissionOrdnanceOrders>();
+        world.init_resource::<MissionCockpitActions>();
+        world.init_resource::<MissionWeaponReport>();
+        // A generation a load never minted is generation zero; the rig and
+        // every live read must still agree on one, so the counter is present.
+        world.init_resource::<crate::scene::SceneGenerations>();
+        if let Some(mut ledger) = world.get_resource_mut::<SessionScoreLedger>()
+            && ledger.session() == session
+        {
+            let _ = admit_actor(&mut ledger, player);
+        }
+        Ok(())
+    }
+}
+
+/// Admits `actor` to the session's score ledger, the spawn host's own duty.
+///
+/// Idempotent in effect: a second admission of the same actor is refused by
+/// the ledger and reported as `false` rather than panicking, so a restart or
+/// a repeated pass is a no-op.
+pub fn admit_actor(ledger: &mut SessionScoreLedger, actor: ActorId) -> bool {
+    let state = cs_sim::net_state::NetActorState::spawn(
+        actor,
+        WorldPosition::try_new([0.0, 0.0, 0.0]).expect("the designed origin is finite"),
+        cs_types::space::Quaternion::IDENTITY,
+        MISSION_DESIGNED_HULL,
+    );
+    ledger.admit(state).is_ok()
+}
+
+/// One gun or launcher mount of the player's rig.
+#[derive(Clone, Copy, Debug, PartialEq)]
+struct RigMount {
+    mount: &'static str,
+    offset_m: [f32; 3],
+}
+
+/// Every mount the player's rig hangs on the body.
+const RIG_MOUNTS: &[RigMount] = &[
+    RigMount {
+        mount: MISSION_GUN_MOUNT_NOSE,
+        offset_m: NOSE_MOUNT_OFFSET_M,
+    },
+    RigMount {
+        mount: MISSION_GUN_MOUNT_WING_LEFT,
+        offset_m: WING_LEFT_OFFSET_M,
+    },
+    RigMount {
+        mount: MISSION_GUN_MOUNT_WING_RIGHT,
+        offset_m: WING_RIGHT_OFFSET_M,
+    },
+    RigMount {
+        mount: MISSION_ROCKET_MOUNT,
+        offset_m: ROCKET_OFFSET_M,
+    },
+];
+
+/// Attaches the player's weapon rig to `player`: the [`WeaponActorBinding`]
+/// that marks the live hierarchy and one [`MountPoseBinding`] node per gun.
+///
+/// The mounts hang under the body, so `live_mount_transforms` reads a pose
+/// that tracks the animated airframe and the inherited airframe velocity from
+/// the same live hierarchy — F27 non-negotiable 2. The offsets are designed:
+/// the original's hardpoint positions are unmeasured.
+///
+/// # Errors
+///
+/// [`MissionWeaponError::NotInstalled`] when no session was installed,
+/// [`MissionWeaponError::NoPlayer`] when `player` does not exist.
+pub fn attach_player_rig(world: &mut World, player: Entity) -> Result<usize, MissionWeaponError> {
+    let mission = world
+        .get_resource::<MissionWeapons>()
+        .cloned()
+        .ok_or(MissionWeaponError::NotInstalled)?;
+    let loadout = designed_loadout();
+    if world.get_entity(player).is_err() {
+        return Err(MissionWeaponError::NoPlayer);
+    }
+    world.entity_mut(player).insert((
+        WeaponActorBinding {
+            actor: mission.player,
+            guns: loadout.guns.iter().map(|gun| gun.gun().clone()).collect(),
+            loadout: loadout.ids.loadout.clone(),
+            generation: mission.generation,
+        },
+        OrdnanceLauncherBinding {
+            actor: mission.player,
+            ordnance: vec![rocket_content_id()],
+            loadout: loadout.ids.loadout.clone(),
+            generation: mission.generation,
+        },
+    ));
+    for rig in RIG_MOUNTS {
+        let offset = Vec3::new(rig.offset_m[0], rig.offset_m[1], rig.offset_m[2]);
+        world.spawn((
+            MountPoseBinding {
+                mount: DamageNodeKey::new(rig.mount).expect("the rig mount key is valid"),
+                generation: mission.generation,
+            },
+            NodeVisualTransform(GlobalTransform::from_translation(offset)),
+            Transform::from_translation(offset),
+            ChildOf(player),
+        ));
+    }
+    Ok(RIG_MOUNTS.len())
+}
+
+/// The mission's weapon report: what the publisher decided this tick, and what
+/// it could not.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct MissionWeaponReport {
+    /// Fixed ticks the publisher has published for.
+    pub ticks: u64,
+    /// The committed tick the last publication served.
+    pub at: Option<Tick>,
+    /// The wind the last record carried, and where it came from.
+    pub wind: Option<[f64; 3]>,
+    /// The record carried a designed calm-air fallback because the mission's
+    /// authored wind is an explicit unknown.
+    pub designed_calm_air: bool,
+    /// The player's delivered flight edges published in the last record.
+    pub actions: Vec<Action>,
+    /// The rockets that could not be launched, by name.
+    pub rocket_refusals: Vec<String>,
+    /// Why the publisher could not run at all.
+    pub refused: Option<String>,
+}
+
+impl MissionWeaponReport {
+    fn begin_tick(&mut self) {
+        self.ticks += 1;
+        self.at = None;
+        self.wind = None;
+        self.designed_calm_air = false;
+        self.actions.clear();
+        // `rocket_refusals` deliberately accumulates: a refusal is a fact
+        // about the world (no hostile target) that repeats every tick it
+        // holds, and a report that cleared it would make the reason
+        // unobservable from outside the tick that produced it.
+        self.refused = None;
+    }
+}
+
+/// The wind the mission's weapon publication carries.
+///
+/// The mission's own environment authority is the source; a record that
+/// authors no wind is an explicit unknown, and the session then publishes a
+/// **designed calm air** carrying [`MISSION_WIND_CLAIM`] rather than a
+/// silently invented one. `unknown` is true when that fallback was used, so
+/// the mission's report says which wind a flight actually resolved under.
+pub struct MissionWind {
+    /// The wind velocity in world metres per second.
+    pub velocity_m_s: [f64; 3],
+    /// The velocity is the designed calm-air fallback, not the mission's own
+    /// authored wind.
+    pub designed: bool,
+    /// The claim the fallback binds under, when it was used.
+    pub claim: Option<ClaimId>,
+}
+
+/// Resolves the wind the next published record carries.
+///
+/// The mission's own environment authority is the source; a record that
+/// authors no wind is an explicit unknown, and the session then publishes a
+/// **designed calm air** carrying [`MISSION_WIND_CLAIM`] rather than a
+/// silently invented one — the F27 contract leaves that policy to the
+/// session, and this is the policy, labelled.
+#[must_use]
+pub fn mission_wind(world: &World) -> MissionWind {
+    if let Some(host) = world.get_resource::<super::MissionHost>()
+        && let Ok(wind) = host.environment().wind()
+    {
+        return MissionWind {
+            velocity_m_s: wind.velocity_m_s(),
+            designed: false,
+            claim: None,
+        };
+    }
+    MissionWind {
+        velocity_m_s: [0.0, 0.0, 0.0],
+        designed: true,
+        claim: Some(ClaimId::new(MISSION_WIND_CLAIM).expect("the claim id is valid")),
+    }
+}
+
+/// Builds one tick's published record from the tick, the player and the
+/// delivered cockpit actions.
+///
+/// The production publisher and the acceptance test build the record through
+/// this one function, so a test drives exactly what a session runs.
+#[must_use]
+pub fn mission_tick_input(
+    session: SessionId,
+    at: Tick,
+    player: ActorId,
+    wind: [f64; 3],
+    actions: Vec<Action>,
+) -> WeaponTickInput {
+    WeaponTickInput {
+        session: session.get(),
+        at,
+        wind_velocity_m_s: Some(wind),
+        orders: Vec::new(),
+        cockpit: Some(CockpitInput {
+            shooter: player,
+            producer: MISSION_COCKPIT_PRODUCER,
+            actions,
+        }),
+    }
+}
+
+/// Publishes one committed tick's weapon input, the way a running session
+/// drives the F27 schedule.
+///
+/// Runs in `FixedPostUpdate` **before**
+/// [`drive_weapon_session`](crate::weapons::drive_weapon_session), so the
+/// record it pushes serves the tick the ledger has just committed. A world
+/// with no installed session, no committed tick or no delivered edge
+/// publishes nothing and says so.
+pub fn publish_mission_weapon_input(world: &mut World) {
+    ensure_mission_weapons(world);
+    let Some(mission) = world.get_resource::<MissionWeapons>().cloned() else {
+        return;
+    };
+    let mut report = world
+        .remove_resource::<MissionWeaponReport>()
+        .unwrap_or_default();
+    report.begin_tick();
+
+    let Some(at) = world
+        .get_resource::<PhysicsTickLedger>()
+        .map(|ledger| Tick(ledger.ticks))
+    else {
+        report.refused = Some("no committed fixed tick exists yet".to_owned());
+        world.insert_resource(report);
+        return;
+    };
+    let wind = mission_wind(world);
+    let actions: Vec<Action> = world
+        .get_resource_mut::<MissionCockpitActions>()
+        .map(|mut pending| std::mem::take(&mut pending.actions))
+        .unwrap_or_default();
+
+    // The fire-rockets edges mint launch orders for the ordnance driver.
+    let mut orders = MissionOrdnanceOrders::default();
+    let mut sequence = 0u32;
+    for _ in actions.iter().copied().filter(|a| is_fire_rockets(*a)) {
+        match rocket_launch(world, &mission, at, sequence) {
+            Ok(order) => {
+                orders.orders.push(order);
+                sequence += 1;
+            }
+            Err(reason) => {
+                if !report.rocket_refusals.contains(&reason) {
+                    report.rocket_refusals.push(reason);
+                }
+            }
+        }
+    }
+    if !orders.orders.is_empty() {
+        world.insert_resource(orders);
+    }
+
+    world
+        .get_resource_mut::<WeaponTickInputs>()
+        .expect("the installed session initialises the weapon input queue")
+        .push(mission_tick_input(
+            mission.session,
+            at,
+            mission.player,
+            wind.velocity_m_s,
+            actions.clone(),
+        ));
+    report.at = Some(at);
+    report.wind = Some(wind.velocity_m_s);
+    report.designed_calm_air = wind.designed;
+    report.actions = actions;
+    world.insert_resource(report);
+}
+
+/// Resource wrapper for the mission's F28 ordnance session.
+///
+/// [`OrdnanceSession`] is not itself an ECS [`Resource`]; the mission holds it
+/// behind this wrapper so the ordnance driver can take it out, step it and put
+/// it back, exactly as the weapon schedule does with [`WeaponSession`].
+#[derive(Resource)]
+pub struct MissionOrdnanceSession(pub OrdnanceSession);
+
+/// The delivered cockpit edges of the current rendered frame.
+///
+/// The input boundary delivers a press edge once per rendered frame, while the
+/// publisher runs once per committed fixed tick — two or more per frame at the
+/// baseline rate. A press must fire once, so the collector copies the frame's
+/// flight edges here and the first fixed tick of the frame takes them; later
+/// ticks of the same frame see none.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct MissionCockpitActions {
+    /// The frame's delivered flight edges, in boundary order.
+    pub actions: Vec<Action>,
+}
+
+/// Copies the rendered frame's delivered flight edges for the fixed ticks.
+///
+/// The edges are **appended** to whatever is pending: the boundary delivers a
+/// press once per rendered frame while the publisher runs once per committed
+/// fixed tick, and a frame that ran no fixed tick must carry its press into
+/// the next one rather than dropping it.
+pub fn collect_mission_cockpit_actions(world: &mut World) {
+    let delivered: Vec<Action> = world
+        .get_resource::<PlatformInput>()
+        .map(|platform| {
+            platform
+                .report()
+                .delivered
+                .iter()
+                .copied()
+                .filter(|action| matches!(action, Action::Flight(_)))
+                .collect()
+        })
+        .unwrap_or_default();
+    if delivered.is_empty() {
+        return;
+    }
+    let mut pending = world
+        .remove_resource::<MissionCockpitActions>()
+        .unwrap_or_default();
+    pending.actions.extend(delivered);
+    world.insert_resource(pending);
+}
+
+/// The pending rocket launches one tick's cockpit minted.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct MissionOrdnanceOrders {
+    /// The launch orders, in mint order.
+    pub orders: Vec<OrdnanceOrder>,
+}
+
+/// One rocket launch aimed at the nearest declared-hostile bound target.
+///
+/// The target is selected as design: the live actor with the lowest serial
+/// whose target record declares the player hostile. The original's lock and
+/// launch gesture are unmeasured, so this is labelled project design, not a
+/// reproduction. An unknown node on the victim is refused by the resolver by
+/// name rather than aimed somewhere else.
+fn rocket_launch(
+    world: &World,
+    mission: &MissionWeapons,
+    at: Tick,
+    sequence: u32,
+) -> Result<OrdnanceOrder, String> {
+    let targeting = world
+        .get_resource::<TargetingSession>()
+        .ok_or_else(|| "no targeting session is installed".to_owned())?;
+    let store = targeting.store();
+    let shooter = store
+        .record(&mission.player)
+        .ok_or_else(|| "the player is not rostered in the targeting store".to_owned())?;
+    let mut hostile: Option<ActorId> = None;
+    for entity_ref in world.iter_entities() {
+        let Some(binding) = entity_ref.get::<DamageActorBinding>() else {
+            continue;
+        };
+        if binding.generation != mission.generation || binding.actor == mission.player {
+            continue;
+        }
+        let Some(record) = store.record(&binding.actor) else {
+            continue;
+        };
+        if store.allegiance(&shooter.faction, &record.faction) != Some(Allegiance::Hostile) {
+            continue;
+        }
+        hostile = match hostile {
+            Some(current) if current.serial <= binding.actor.serial => Some(current),
+            _ => Some(binding.actor),
+        };
+    }
+    let Some(target) = hostile else {
+        return Err("no declared-hostile damage target is live".to_owned());
+    };
+    Ok(OrdnanceOrder::Launch(OrdnanceLaunch {
+        id: OrdnanceLaunchId {
+            session: mission.session.get(),
+            tick: at,
+            producer: MISSION_ORDNANCE_PRODUCER,
+            sequence,
+        },
+        shooter: mission.player,
+        ordnance: mission.rocket.clone(),
+        target: Some(target),
+        engagement: OrdnanceEngagement {
+            damage_target: target,
+            node: DamageNodeKey::new(MISSION_TARGET_NODE).expect("the target node key is valid"),
+            status_recipient: StatusEffectTarget::actor_system(target, SystemKind::Propulsion),
+        },
+    }))
+}
+
+/// The eligible targets' swept paths for the rockets' proximity test.
+///
+/// One path per live damage-bound actor: its centre now and, reconstructed
+/// from the body velocity the weapon path already uses, its centre at the
+/// start of the tick.
+fn rocket_target_paths(world: &World, mission: &MissionWeapons, dt_s: f64) -> Vec<TargetPath> {
+    let mut paths = Vec::new();
+    for entity_ref in world.iter_entities() {
+        let Some(binding) = entity_ref.get::<DamageActorBinding>() else {
+            continue;
+        };
+        if binding.generation != mission.generation || binding.actor == mission.player {
+            continue;
+        }
+        let Some(transform) = entity_ref.get::<GlobalTransform>() else {
+            continue;
+        };
+        let current = transform.translation();
+        let velocity = entity_ref
+            .get::<avian3d::prelude::LinearVelocity>()
+            .map(|velocity| velocity.0)
+            .unwrap_or(Vec3::ZERO);
+        let previous = current - velocity * dt_s as f32;
+        let path = TargetPath::try_new(
+            binding.actor,
+            [
+                f64::from(previous.x),
+                f64::from(previous.y),
+                f64::from(previous.z),
+            ],
+            [
+                f64::from(current.x),
+                f64::from(current.y),
+                f64::from(current.z),
+            ],
+        );
+        if let Ok(path) = path {
+            paths.push(path);
+        }
+    }
+    paths
+}
+
+/// Drives one committed fixed tick of M01's rocket path.
+///
+/// Runs in `FixedPostUpdate` after the gun step and before
+/// [`drive_damage_schedule`](crate::damage::drive_damage_schedule), so a
+/// rocket that detonates this tick hands its resolved batch to the same tick's
+/// damage consumers — colliders, debris and the score ledger.
+pub fn drive_mission_ordnance(world: &mut World) {
+    let Some(mission) = world.get_resource::<MissionWeapons>().cloned() else {
+        return;
+    };
+    if world.get_resource::<MissionOrdnanceSession>().is_none() {
+        return;
+    }
+    let Some(at) = world
+        .get_resource::<PhysicsTickLedger>()
+        .map(|ledger| Tick(ledger.ticks))
+    else {
+        return;
+    };
+    let Some(dt_s) = world
+        .get_resource::<Time<Fixed>>()
+        .map(|time| time.timestep().as_secs_f64())
+    else {
+        return;
+    };
+    let orders = world
+        .remove_resource::<MissionOrdnanceOrders>()
+        .map(|orders| orders.orders)
+        .unwrap_or_default();
+    let paths = rocket_target_paths(world, &mission, dt_s);
+    let wind = mission_wind(world).velocity_m_s;
+    let MissionOrdnanceSession(mut session) = world
+        .remove_resource::<MissionOrdnanceSession>()
+        .expect("the session was checked present above");
+    let mut damage = world
+        .remove_resource::<SessionDamageResolver>()
+        .expect("the installed session leaves the shared damage authority");
+    let tick = step_ordnance_session(
+        world,
+        &mut session,
+        damage.resolver_mut(),
+        &orders,
+        &OrdnanceStep {
+            at,
+            dt_s,
+            wind_velocity_m_s: wind,
+            generation: mission.generation,
+            guidance: None,
+            targets: &paths,
+            impacts: &[],
+        },
+    );
+    // A detonation's resolved batch goes to the same damage consumers the gun
+    // path's rounds go to, so a rocket kill scores and wrecks exactly once.
+    world.init_resource::<PendingDamageEvents>();
+    {
+        let mut pending = world.resource_mut::<PendingDamageEvents>();
+        for detonation in &tick.detonations {
+            if let Some(resolution) = &detonation.damage
+                && !resolution.events.is_empty()
+            {
+                pending.push(detonation.hits.clone(), resolution.events.clone());
+            }
+        }
+    }
+    world.insert_resource(MissionOrdnanceSession(session));
+    world.insert_resource(damage);
+}
+
+/// The command the fire-rockets binding carries.
+pub const MISSION_FIRE_ROCKETS: FlightCommand = FlightCommand::FireSecondary;
+
+/// Whether an action is a fire-guns edge.
+#[must_use]
+pub fn is_fire_guns(action: Action) -> bool {
+    action == Action::Flight(FlightCommand::FirePrimary)
+}
+
+/// Whether an action is a fire-rockets edge.
+#[must_use]
+pub fn is_fire_rockets(action: Action) -> bool {
+    action == Action::Flight(MISSION_FIRE_ROCKETS)
+}
+
+/// Opens the session on first use and re-opens it after a restart.
+///
+/// `MissionHost::restart` mints a fresh session generation and rebuilds the
+/// player body; a session serving the old generation is foreign to the new
+/// one. This compares the installed session to the host's served generation
+/// and re-opens on a mismatch, so a restart never leaves the player holding a
+/// dead generation's guns.
+fn ensure_mission_weapons(world: &mut World) {
+    let served = world
+        .get_resource::<super::MissionHost>()
+        .map(|host| host.served());
+    let installed = world.get_resource::<MissionWeapons>().map(|m| m.session);
+    if served.is_some() && served != installed {
+        open_composed_mission_weapons(world);
+    }
+}
+
+/// Composes the player's rig mounts' [`NodeVisualTransform`] poses from the
+/// live body.
+///
+/// [`live_mount_transforms`](crate::weapons::live_mount_transforms) reads a
+/// mount's `NodeVisualTransform` — the one pose owner F27 non-negotiable 2
+/// names — and that component is **not** what Bevy's transform propagation
+/// writes (it writes `GlobalTransform`). The rig's owner therefore composes
+/// it here, from the body's live global transform and each mount's local
+/// offset, so a muzzle tracks the animated airframe instead of a fixed origin.
+///
+/// Only the mission rig's own mount keys are touched: any other
+/// [`MountPoseBinding`] in a composed mission belongs to another stage's
+/// hierarchy and is left alone.
+pub fn compose_mission_mount_poses(world: &mut World) {
+    let mut updates: Vec<(Entity, GlobalTransform)> = Vec::new();
+    for entity_ref in world.iter_entities() {
+        let Some(binding) = entity_ref.get::<MountPoseBinding>() else {
+            continue;
+        };
+        if !RIG_MOUNTS
+            .iter()
+            .any(|rig| binding.mount == rig_mount_key(rig.mount))
+        {
+            continue;
+        }
+        let Some(parent) = entity_ref.get::<ChildOf>().map(ChildOf::parent) else {
+            continue;
+        };
+        let (Some(local), Some(parent_global)) = (
+            entity_ref.get::<Transform>().copied(),
+            world.get::<GlobalTransform>(parent).copied(),
+        ) else {
+            continue;
+        };
+        updates.push((entity_ref.id(), parent_global.mul_transform(local)));
+    }
+    for (entity, global) in updates {
+        if let Some(mut node) = world.get_mut::<NodeVisualTransform>(entity) {
+            node.0 = global;
+        }
+    }
+}
+
+/// The damage-node key of one rig mount.
+fn rig_mount_key(mount: &str) -> DamageNodeKey {
+    DamageNodeKey::new(mount).expect("the rig mount key is valid")
+}
+
+/// Installs M01's weapon session on a composed mission once the player exists.
+///
+/// The composition already installed [`crate::weapons::WeaponSchedulePlugin`]
+/// and [`crate::damage::DamageSchedulePlugin`]; this leaves the session
+/// resources those schedules serve, and the rig the mounts hang on. Refusals
+/// are named in [`MissionWeaponReport::refused`] rather than panicking.
+pub fn open_composed_mission_weapons(world: &mut World) {
+    let Some(session) = world
+        .get_resource::<super::MissionHost>()
+        .map(|host| host.served())
+    else {
+        return;
+    };
+    world.init_resource::<crate::scene::SceneGenerations>();
+    let generation = world
+        .get_resource::<crate::scene::SceneGenerations>()
+        .map(crate::scene::SceneGenerations::latest)
+        .unwrap_or(SceneGeneration(1));
+    let rate = TickRate::new(crate::mission_world_actors::SESSION_TICKS_PER_SECOND)
+        .expect("the composition's tick rate is nonzero");
+    match open_mission_weapons(session, rate, generation) {
+        Ok(sessions) => {
+            let _ = sessions.install(world);
+            let player = world
+                .get_resource::<super::MissionComposition>()
+                .map(|composition| composition.player);
+            match player {
+                Some(player) => {
+                    let _ = attach_player_rig(world, player);
+                }
+                None => {
+                    if let Some(mut report) = world.get_resource_mut::<MissionWeaponReport>() {
+                        report.refused =
+                            Some("the player body had not spawned when the rig opened".to_owned());
+                    }
+                }
+            }
+        }
+        Err(error) => {
+            let mut report = world
+                .remove_resource::<MissionWeaponReport>()
+                .unwrap_or_default();
+            report.refused = Some(error.to_string());
+            world.insert_resource(report);
+        }
+    }
+}
+
+/// The designed hull value every admitted actor starts with.
+///
+/// The score ledger refuses an actor nobody admitted; the pool value itself
+/// is the engine's designed network hull, not a measurement.
+const MISSION_DESIGNED_HULL: u32 = 400;
+
+// The designed loadout's own numbers. Every one is project design.
+const MISSION_CALIBER: &str = "designed .50 caliber";
+const MISSION_AMMUNITION_KEY: &str = "m01-play-weapons.designed-ammo";
+const MISSION_GUN_NOSE_KEY: &str = "m01-play-weapons.designed-nose-gun";
+const MISSION_GUN_WING_LEFT_KEY: &str = "m01-play-weapons.designed-left-gun";
+const MISSION_GUN_WING_RIGHT_KEY: &str = "m01-play-weapons.designed-right-gun";
+const MISSION_LOADOUT_KEY: &str = "m01-play-weapons.designed-loadout";
+const MISSION_TARGET_RULES_SUBJECT: &str = "m01-play-weapons.designed-target-rules";
+const MISSION_MUZZLE_EFFECT: &str = "m01-play-weapons.designed-muzzle";
+const MISSION_SHOT_SOUND: &str = "m01-play-weapons.designed-shot";
+const MISSION_ROCKET_KEY: &str = "m01-play-weapons.designed-rocket";
+const MISSION_ROCKET_VISUAL: &str = "m01-play-weapons.designed-rocket-visual";
+const MISSION_ROCKET_SOUND: &str = "m01-play-weapons.designed-rocket-sound";
+/// The damage node a launched rocket's hits name on its victim.
+///
+/// Designed: the original's part names per airframe are not recovered, so a
+/// rocket aims at one named part and the resolver refuses an unknown node by
+/// name rather than guessing a different one.
+pub const MISSION_TARGET_NODE: &str = "hull";
+/// Designed ticks between shots.
+const MISSION_TICKS_BETWEEN_SHOTS: u32 = 4;
+/// Designed muzzle velocity, in metres per second.
+const MISSION_MUZZLE_VELOCITY_MPS: f64 = 640.0;
+/// Designed round lifetime, in ticks.
+const MISSION_LIFETIME_TICKS: u64 = 90;
+/// Designed spread cone half-angle, in radians.
+const MISSION_SPREAD_HALF_ANGLE_RAD: f64 = 0.004;
+/// Designed armor-channel damage per round.
+const MISSION_ARMOR_DAMAGE: f64 = 12.0;
+/// Designed internal-channel damage per round.
+const MISSION_INTERNAL_DAMAGE: f64 = 12.0;
+/// Designed threat window, in ticks.
+const MISSION_THREAT_WINDOW_TICKS: u64 = 120;
+/// Designed rocket launch speed, in metres per second.
+const MISSION_ROCKET_LAUNCH_SPEED_MPS: f64 = 210.0;
+/// Designed rocket stack capacity, in units.
+const MISSION_ROCKET_CAPACITY: u64 = 6;
+/// Designed rocket unit mass, in kilograms.
+const MISSION_ROCKET_MASS_KG: f64 = 2.4;
+/// Designed ticks before the rocket's fuse arms.
+const MISSION_ROCKET_ARM_TICKS: u64 = 3;
+/// Designed proximity trigger radius, in metres.
+const MISSION_ROCKET_TRIGGER_RADIUS_M: f64 = 12.0;
+/// Designed rocket lifetime, in ticks.
+const MISSION_ROCKET_LIFETIME_TICKS: u64 = 240;
+/// Designed rocket armor-channel damage.
+const MISSION_ROCKET_ARMOR_DAMAGE: f64 = 28.0;
+/// Designed rocket internal-channel damage.
+const MISSION_ROCKET_INTERNAL_DAMAGE: f64 = 20.0;
+
+/// Wires M01's weapons into a composed mission.
+///
+/// The composition already installs [`crate::weapons::WeaponSchedulePlugin`]
+/// and [`crate::damage::DamageSchedulePlugin`]; this plugin adds the one
+/// session those schedules serve (once the player body exists) and the two
+/// per-tick entries the schedulers do not own:
+///
+/// * [`publish_mission_weapon_input`] runs before
+///   [`drive_weapon_session`](crate::weapons::drive_weapon_session) so the
+///   record it pushes serves the tick the ledger has just committed;
+/// * [`drive_mission_ordnance`] runs after the gun step and before
+///   [`drive_damage_schedule`](crate::damage::drive_damage_schedule), so a
+///   rocket's batch reaches the same tick's damage consumers.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MissionWeaponsPlugin;
+
+impl Plugin for MissionWeaponsPlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<MissionWeaponReport>()
+            .init_resource::<MissionOrdnanceOrders>()
+            .init_resource::<MissionCockpitActions>()
+            .add_systems(PostStartup, open_composed_mission_weapons)
+            .add_systems(PreUpdate, collect_mission_cockpit_actions)
+            .add_systems(
+                FixedPostUpdate,
+                publish_mission_weapon_input
+                    .after(compose_mission_mount_poses)
+                    .after(avian3d::prelude::PhysicsSystems::StepSimulation)
+                    .before(crate::weapons::drive_weapon_session)
+                    .before(crate::damage::drive_damage_schedule),
+            )
+            .add_systems(
+                FixedPostUpdate,
+                compose_mission_mount_poses
+                    .after(avian3d::prelude::PhysicsSystems::StepSimulation)
+                    .before(crate::weapons::drive_weapon_session),
+            )
+            .add_systems(
+                FixedPostUpdate,
+                drive_mission_ordnance
+                    .after(crate::weapons::drive_weapon_session)
+                    .before(crate::damage::drive_damage_schedule),
+            );
+    }
+}

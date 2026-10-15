@@ -87,6 +87,7 @@ mod lifecycles;
 mod player_visual;
 mod radio;
 mod terminal;
+mod weapons;
 mod world_draw;
 
 pub use compose::{
@@ -127,6 +128,20 @@ pub use radio::{
     dialogue_content_id, offer_cues,
 };
 pub use terminal::{MissionExit, MissionTerminal, MissionTerminalSource};
+pub use weapons::{
+    MISSION_FACTION_HOSTILE, MISSION_FACTION_NEUTRAL, MISSION_FACTION_PLAYER, MISSION_FIRE_ROCKETS,
+    MISSION_GUN_MOUNT_NOSE, MISSION_GUN_MOUNT_WING_LEFT, MISSION_GUN_MOUNT_WING_RIGHT,
+    MISSION_PLAYER_SERIAL, MISSION_ROCKET_MOUNT, MISSION_TARGET_NODE, MISSION_WEAPON_CLAIM,
+    MISSION_WIND_CLAIM, MissionCockpitActions, MissionLoadout, MissionOrdnanceOrders,
+    MissionOrdnanceSession, MissionWeaponError, MissionWeaponIds, MissionWeaponReport,
+    MissionWeaponSessions, MissionWeapons, MissionWeaponsPlugin, MissionWind, admit_actor,
+    attach_player_rig, collect_mission_cockpit_actions, compose_mission_mount_poses,
+    designed_ammunition, designed_interaction_rules, designed_loadout, designed_rocket,
+    designed_target_rules, drive_mission_ordnance, is_fire_guns, is_fire_rockets,
+    mission_ammunition, mission_ammunition_id, mission_tick_input, mission_wind,
+    open_composed_mission_weapons, open_mission_weapons, publish_mission_weapon_input,
+    rocket_content_id,
+};
 pub use world_draw::{
     MissionWorldDrawPlugin, MissionWorldParts, WORLD_NEUTRAL_COLOR, WorldDrawReport,
     WorldDrawSource, build_world_draw,

@@ -164,6 +164,8 @@ or reset. Nobody has played this by hand yet; that is for you.
 | `Left Shift` / `F` | throttle step up / down |
 | `1` / `4` | throttle idle / full |
 | `L` | Level-Off assist toggle (original law only) |
+| `Space` | fire guns (mission M01) |
+| `Left Ctrl` | fire rockets (mission M01) |
 | `R` | reset to the known flyable state |
 | `Esc` | pause / resume |
 | `F10` | quit (closing the window also quits) |
@@ -324,3 +326,51 @@ Controls are the keyboard table above (`W`/`S`, `Q`/`E`, `A`/`D`, throttle,
 `Esc`, `F10`). `R` restarts the whole mission: it reloads the world and
 respawns the player from the start recipe, instead of only resetting the
 aircraft.
+
+### Firing (#1437)
+
+The player can shoot in M01:
+
+| Key | Command | Effect |
+| --- | --- | --- |
+| `Space` | `FirePrimary` | fire the guns |
+| `Left Ctrl` | `FireSecondary` | fire a rocket |
+
+Both are the F22 designed default bindings, delivered as one press edge each
+and published to the mission's weapon session on the earliest committed fixed
+tick of the frame (a press fires once, not once per fixed tick).
+
+* **Guns** go through the F27 weapon path: three designed guns (a nose cannon
+  and one per wing) fire the one selected bank along their live mount poses,
+  the round's sweep reaches the F29 damage authority, and a destroyed part
+  spawns its authored debris and scores the kill.
+* **Rockets** go through the F28 ordnance path: one designed proximity-fused
+  flak rocket launches from its designed hardpoint, detonates when its flight
+  path comes within the declared trigger radius of a live damage-bound actor
+  the targeting store declares hostile, and the blast routes into the same
+  F29 damage authority — so a rocket kill also wrecks and scores. Firing a
+  rocket with no such target is refused by name (`no declared-hostile damage
+  target is live`), never aimed at a default.
+
+**The loadout is designed, not measured.** There is no production reader that
+returns M01's Devastator guns, ammunition or rocket loadout from the original
+installation (the launch closure binds the airframe and the start pose and
+nothing else), so every gun, ammunition and rocket record is
+`Origin::Designed` with the `m01-play-weapons.designed-loadout` claim. The
+original's numbers replace these when F27-E/F28-D measure them; nothing here
+is `verified_original`.
+
+**The wind is the mission's, or designed calm air.** The F27 step refuses to
+run without an authoritative wind. M01's authored weather declares no wind, so
+the mission's publisher falls back to a **designed calm air** carrying
+`m01-play-weapons.designed-calm-air` whenever the environment's own wind is an
+explicit unknown; the mission's weapon report says which one a tick resolved
+under (`designed_calm_air`). F19-C owns the permanent policy.
+
+**What must be present to hit anything.** Nothing in this slice spawns a
+victim. A target is an actor the spawn host binds (`DamageActorBinding`, a
+`PartSweptBox`, a `PartDebrisBinding`) and registers with the session's shared
+damage authority and its score ledger. M01's own actors are another task's
+(M01-PLAY-ACTORS, #1435; the score admission is VS-M01-SCORE-ADMIT, #1426);
+with none bound, the guns fire, the rockets refuse by name and nothing
+resolves — the honest state, reported, not papered over.

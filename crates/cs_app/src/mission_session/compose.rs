@@ -995,6 +995,10 @@ fn add_composition(
     //    `DamageScheduleReport::session`), never a score nobody resolved.
     app.add_plugins(crate::weapons::WeaponSchedulePlugin);
     app.add_plugins(crate::damage::DamageSchedulePlugin);
+    // M01-PLAY-WEAPONS (#1437): the session those two schedules serve. The
+    // plugin opens the player's designed gun/rocket loadout once the body
+    // exists and publishes one tick's weapon input before the gun step.
+    app.add_plugins(crate::mission_session::MissionWeaponsPlugin);
     let generation = mint_host_generation();
     let host = MissionHost::launch(stage, generation, host_session_id(generation))
         .map_err(MissionCompositionError::Host)?;
@@ -1239,6 +1243,16 @@ pub fn teardown(app: &mut App) {
     world.remove_resource::<super::world_draw::MissionWorldParts>();
     world.remove_resource::<AircraftSpawner>();
     world.remove_resource::<crate::score::SessionScoreLedger>();
+    // M01-PLAY-WEAPONS (#1437): the session resources this composition
+    // installed, so a second build in the same process starts from nothing.
+    world.remove_resource::<crate::mission_session::MissionWeapons>();
+    world.remove_resource::<crate::mission_session::MissionOrdnanceSession>();
+    world.remove_resource::<crate::mission_session::MissionOrdnanceOrders>();
+    world.remove_resource::<crate::mission_session::MissionWeaponReport>();
+    world.remove_resource::<crate::mission_session::MissionCockpitActions>();
+    world.remove_resource::<crate::weapons::WeaponSession>();
+    world.remove_resource::<crate::weapons::SessionDamageResolver>();
+    world.remove_resource::<crate::targeting::TargetingSession>();
     world.remove_resource::<ExpectedLoad>();
     world.remove_resource::<MissionStage>();
     world.remove_resource::<MissionHost>();
