@@ -171,3 +171,23 @@ an arbitrary actor entity) and the three-line hook in
 `publish_mission_weapon_input` that calls `append_ai_fire_orders`. Both
 reuse #1437's designed loadout, mounts and rules verbatim; neither changes
 what the player's seat does.
+
+## 5. Evidence
+
+`private/evidence/M01-PLAY-AI/` holds `acceptance.json`, the acceptance
+`cargo-test.log` and the second-observation `ai-flight.json`; the committed
+copy is `docs/findings/evidence/M01-PLAY-AI.json` (hashes and paths only, no
+original content).
+
+| Command | Exit |
+| --- | --- |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
+| `cargo test --workspace --locked` | 0 (the full workspace suite green) |
+| `cargo test --workspace --locked -- accept_m01_play_ai_ --include-ignored --nocapture` | 0 — 7 discovered, 7 passed (tee'd to `cargo-test.log`) |
+| `python3 tools/validate_evidence.py private/evidence/M01-PLAY-AI/acceptance.json --artifact-root private/evidence/M01-PLAY-AI` | 0 — `structurally_valid: true`, 2 artifacts |
+| the same with `--require-pass` | **3** (`Unresolved issues`) — expected and deliberate: §3's unknowns are declared in the report's `unknowns` field, and the owner directive of 2026-10-05 forbids removing an unresolved issue from machine-readable evidence just to pass a validator. Every assertion in the report is `pass`; the blocking entries are the still-open questions, exactly as `docs/findings/evidence/F12-G.json` records for its own pinned unknowns. |
+
+The report's `candidate_tree` is the tree of the tested commit; this file and
+the evidence copy are committed after it, so that commit changes the tree —
+the same order #1435 used.
