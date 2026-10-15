@@ -111,6 +111,8 @@ pub struct EngineFacts {
     heading: HeadingFact,
     /// The stored-position unit row.
     position: PositionFact,
+    /// The `aiv.zrd` aircraft-record field map (#1453).
+    aiv_layout: AivLayoutFact,
     /// The eleven airframe rows, in index order.
     airframes: Vec<AirframeFact>,
     /// The per-mission player-airframe rows, in file order.
@@ -153,6 +155,60 @@ pub struct PositionFact {
     pub metres_per_unit: f64,
     /// The axes statement (`metres, +Y up, right-handed, identity axis map`).
     pub axes: String,
+}
+
+/// The `[aiv_layout]` row: the measured `aiv.zrd` aircraft-record field map
+/// (task #1453, `M01-AIV-LAYOUT`).
+///
+/// Each `*_field` is the zero-based index into a record's positional field
+/// list; the `*_va` values are the deciding virtual addresses in the cited
+/// image, transcribed from
+/// `docs/findings/2026-10-15-m01-aiv-layout.md`.
+#[derive(Clone, Debug)]
+pub struct AivLayoutFact {
+    /// The claim id the fact was recorded under.
+    pub claim: String,
+    /// The record parser that maps field index to document slot (`0x437620`).
+    pub parse_va: u64,
+    /// The per-record spawn loop that dispatches on the record name
+    /// (`0x474cd9`).
+    pub spawn_va: u64,
+    /// The vehicle loader that consumes the parsed record (`0x47c210`).
+    pub loader_va: u64,
+    /// The deactivated-byte test that sleeps a record at spawn (`0x47ca14`).
+    pub sleep_va: u64,
+    /// The team-setter site (`0x47c674`).
+    pub team_va: u64,
+    /// The AI-group store site (`0x47c694`).
+    pub group_va: u64,
+    /// The enabled-field spawn gate (`0x474d10`).
+    pub spawn_gate_va: u64,
+    /// The generic name-truncation branch (`0x4752a8`).
+    pub name_dispatch_va: u64,
+    /// The site that opens `vehicle.zrd` for the template registry
+    /// (`0x474b5b`).
+    pub vehicle_zrd_va: u64,
+    /// The measured number of positional fields every retail record carries
+    /// (81).
+    pub field_count: u32,
+    /// Field 0: netids.
+    pub netids_field: u32,
+    /// Field 1: the position vector.
+    pub position_field: u32,
+    /// Field 2: the heading in stored degrees.
+    pub heading_field: u32,
+    /// Field 3: the team.
+    pub team_field: u32,
+    /// Field 4: the AI group.
+    pub group_field: u32,
+    /// Field 5: the enabled flag (zero skips the spawn).
+    pub enabled_field: u32,
+    /// Field 6: the primary target name.
+    pub primary_target_field: u32,
+    /// Field 20: the title (a `MSG_*` localization key or empty).
+    pub title_field: u32,
+    /// Field 21: the deactivated flag (non-zero spawns the aircraft asleep).
+    pub deactivated_field: u32,
 }
 
 /// One row of the executable's eleven-row airframe table.
@@ -268,6 +324,7 @@ impl EngineFacts {
             image_va_base,
             heading: heading_fact(&document, image_va_base)?,
             position: position_fact(&document, image_va_base)?,
+            aiv_layout: aiv_layout_fact(&document, image_va_base)?,
             airframes: airframe_facts(&document, image_va_base)?,
             missions: Vec::new(),
             provisionals: provisional_facts(&document)?,
@@ -298,6 +355,12 @@ impl EngineFacts {
     #[must_use]
     pub fn position(&self) -> &PositionFact {
         &self.position
+    }
+
+    /// The `aiv.zrd` aircraft-record field map (#1453).
+    #[must_use]
+    pub fn aiv_layout(&self) -> &AivLayoutFact {
+        &self.aiv_layout
     }
 
     /// The eleven airframe-table rows, in index order.
@@ -465,6 +528,99 @@ fn position_fact(
         metres_per_unit: scalar_float_in(table, "metres_per_unit")?,
         axes: scalar_str_in(table, "axes")?,
     })
+}
+
+/// The `[aiv_layout]` row: field indices inside the measured record size,
+/// distinct, and each virtual address inside the cited image.
+fn aiv_layout_fact(
+    document: &subset::Document,
+    image_va_base: u64,
+) -> Result<AivLayoutFact, EngineFactsError> {
+    let table = single(document, "aiv_layout")?;
+    known_keys(
+        table,
+        &[
+            "claim",
+            "provenance",
+            "parse_va",
+            "spawn_va",
+            "loader_va",
+            "sleep_va",
+            "team_va",
+            "group_va",
+            "spawn_gate_va",
+            "name_dispatch_va",
+            "vehicle_zrd_va",
+            "field_count",
+            "netids_field",
+            "position_field",
+            "heading_field",
+            "team_field",
+            "group_field",
+            "enabled_field",
+            "primary_target_field",
+            "title_field",
+            "deactivated_field",
+        ],
+        "aiv_layout",
+    )?;
+    let claim = cited(table, "aiv_layout")?;
+    let field_count = scalar_int_in(table, "field_count")?;
+    if field_count <= 0 {
+        return Err(EngineFactsError::schema(
+            "aiv_layout: field_count must be positive",
+        ));
+    }
+    let field = |key: &str| -> Result<u32, EngineFactsError> {
+        let value = scalar_int_in(table, key)?;
+        if value < 0 || value >= field_count {
+            return Err(EngineFactsError::schema(format!(
+                "aiv_layout: {key} is {value}, outside the record's {field_count} fields"
+            )));
+        }
+        Ok(value as u32)
+    };
+    let fact = AivLayoutFact {
+        claim,
+        parse_va: scalar_va(table, "parse_va", image_va_base)?,
+        spawn_va: scalar_va(table, "spawn_va", image_va_base)?,
+        loader_va: scalar_va(table, "loader_va", image_va_base)?,
+        sleep_va: scalar_va(table, "sleep_va", image_va_base)?,
+        team_va: scalar_va(table, "team_va", image_va_base)?,
+        group_va: scalar_va(table, "group_va", image_va_base)?,
+        spawn_gate_va: scalar_va(table, "spawn_gate_va", image_va_base)?,
+        name_dispatch_va: scalar_va(table, "name_dispatch_va", image_va_base)?,
+        vehicle_zrd_va: scalar_va(table, "vehicle_zrd_va", image_va_base)?,
+        field_count: field_count as u32,
+        netids_field: field("netids_field")?,
+        position_field: field("position_field")?,
+        heading_field: field("heading_field")?,
+        team_field: field("team_field")?,
+        group_field: field("group_field")?,
+        enabled_field: field("enabled_field")?,
+        primary_target_field: field("primary_target_field")?,
+        title_field: field("title_field")?,
+        deactivated_field: field("deactivated_field")?,
+    };
+    let distinct = [
+        fact.netids_field,
+        fact.position_field,
+        fact.heading_field,
+        fact.team_field,
+        fact.group_field,
+        fact.enabled_field,
+        fact.primary_target_field,
+        fact.title_field,
+        fact.deactivated_field,
+    ];
+    for (position, index) in distinct.iter().enumerate() {
+        if distinct[..position].contains(index) {
+            return Err(EngineFactsError::schema(format!(
+                "aiv_layout: field {index} is named by more than one measured role"
+            )));
+        }
+    }
+    Ok(fact)
 }
 
 /// The `[[airframe]]` rows: exactly [`AIRFRAME_ROWS`], in index order at the

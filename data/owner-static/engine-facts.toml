@@ -55,6 +55,46 @@ va = 0x48fc40
 metres_per_unit = 1.0
 axes = "metres, +Y up, right-handed, identity axis map to the canonical frame; 0x48fc40 converts position.y to feet with *3.2808399 and 0x453aa2 converts m/s to mph with *2.2369363"
 
+# The aiv.zrd aircraft-record layout (#1453 / M01-AIV-LAYOUT, finding
+# docs/findings/2026-10-15-m01-aiv-layout.md): the field map of the record
+# class the mission's aiv.zrd records are parsed into (the CCEVeh node,
+# 0x158 bytes, ctor 0x43bf10), and the code sites that consume the fields.
+# Each `*_field` is the zero-based index into a record's positional field
+# list `[name, [f0 .. f80]]`; every retail aiv.zrd record measured carries
+# `field_count` fields. `parse_va` is the parse routine that maps field index
+# to document slot; `spawn_va` is the per-record spawn loop that dispatches on
+# the record name; `loader_va` builds the vehicle from the template and the
+# record; `sleep_va` reads the deactivated byte and calls the sleep routine
+# (0x4b0f40, measured by #681); `team_va` / `group_va` write the team setter
+# and the AI-group slot; `spawn_gate_va` is the enabled-field test that skips
+# a record whose enabled field is zero; `name_dispatch_va` is the generic
+# branch that truncates the record name at its last `_` and matches the
+# vehicle registry; `vehicle_zrd_va` pushes the `vehicle.zrd` member name the
+# registry is loaded from. The airframe/vehicle type of a scripted aircraft
+# is NOT carried by any field: it comes from that name dispatch.
+[aiv_layout]
+claim = "OWNER-STATIC-2026-10-15"
+provenance = "static"
+parse_va = 0x437620
+spawn_va = 0x474cd9
+loader_va = 0x47c210
+sleep_va = 0x47ca14
+team_va = 0x47c674
+group_va = 0x47c694
+spawn_gate_va = 0x474d10
+name_dispatch_va = 0x4752a8
+vehicle_zrd_va = 0x474b5b
+field_count = 81
+netids_field = 0
+position_field = 1
+heading_field = 2
+team_field = 3
+group_field = 4
+enabled_field = 5
+primary_target_field = 6
+title_field = 20
+deactivated_field = 21
+
 # The executable's airframe table (#715, finding
 # docs/findings/2026-10-06-m01-lc-player-airframe-source.md): eleven rows of
 # seven pointers, 0x620c70..0x620da4, in index order — the table the
