@@ -134,6 +134,7 @@ mod f50_e4;
 mod m01_a;
 mod m01_b;
 mod m01_play_triggers_anims_arm;
+mod m01_play_triggers_turret_class;
 mod m01_radio_wire;
 mod m02_a;
 mod m02_b;
