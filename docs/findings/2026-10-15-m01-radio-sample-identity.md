@@ -90,8 +90,9 @@ publishes into that fresh library.
   `MissionRadio::read`/`offer_cues` prepare step is **not on main** and cannot
   be edited here. The wiring that makes the prepare step call
   `publish_voice_members` into the composition's `DeviceSampleLibrary` belongs
-  to #1438's `crates/cs_app/src/mission_session/` paths and is filed as the
-  follow-up to this task. This task proves the whole device-side half — a real
+  to #1438's `crates/cs_app/src/mission_session/` paths and is filed as
+  **#1466** (`M01-RADIO-SAMPLE-WIRE`, depends on #1438 and #1465). This task
+  proves the whole device-side half — a real
   member reaching the library under the exact id, and the device's own lookup
   telling delivered from never-delivered — through production code.
 * **The ordering contract.** `publish_voice_members` must run after the same
@@ -101,8 +102,8 @@ publishes into that fresh library.
   stays the owner's F41-D listening test.
 
 Affected content: every spoken line of every mission that plays through the
-radio queue. Resolving tasks: #1438 (the producer) and this task's follow-up for
-the call site.
+radio queue. Resolving tasks: #1438 (the prepare step that publishes) and #1466
+(its call site).
 
 ## Tests
 
