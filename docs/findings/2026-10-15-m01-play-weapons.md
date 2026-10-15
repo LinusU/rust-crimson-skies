@@ -90,6 +90,46 @@ The rocket's engagement node is the designed `hull` key: the original's
 per-airframe part names are unmeasured, so a rocket aims at one named part and
 the resolver refuses an unknown node by name rather than aiming somewhere else.
 
+## The rounds are records, not yet a picture
+
+The task's acceptance also asks that "projectiles and tracers are visible".
+That half is **not** implemented by this slice and is not claimed:
+
+* a fired round is mirrored into the world as a `WeaponRoundMirror` — a
+  `Transform` and a `ProjectileId` and nothing else (`sync_round_mirrors`);
+  the F27-C-FX muzzle effect is a `MuzzleEffectSpawn` record, and a live
+  rocket is a component in the ordnance session. None carries a mesh, a
+  material, a light or a `Visibility`;
+* `crate::weapon_effects::present_weapon_effects`, the consumer that drains
+  the session's effect log into a shot-sound cue and a muzzle-effect record,
+  is not driven from the composed fixed loop; **F27-C-FX-SCHED (#1304)** owns
+  registering that schedule;
+* no production pipeline resolves a `hardpoint_equipment` muzzle-effect id or
+  a projectile id to a drawable asset — the recorded follow-up is "a
+  follow-up render stage for weapon effects (not yet sequenced)"
+  (`docs/findings/2026-10-11-f27-c-fx-weapon-effect-presentation.md`).
+
+So in the composed mission the fire keys run the session and resolve damage,
+but nothing is drawn at the muzzle or along the round: firing is currently
+invisible and silent. This is a named gap, not a passed criterion; the visible
+half is owed to #1304 and to the sequenceless render stage it names, and no
+fidelity or release claim may treat "projectiles and tracers are visible" as
+met.
+
+## The player's actor serial is reserved
+
+M01's scripted actors (M01-PLAY-ACTORS, #1435) allocate one session actor per
+spawned aircraft and zeppelin from an `ActorAllocator` that issues serials from
+`1` upward under the served session. The player's own actor serial is therefore
+**not** a small number: `MISSION_PLAYER_SERIAL` is `u64::MAX`, the one serial
+`ActorAllocator::allocate` can never issue (its successor would overflow, so
+the allocator refuses instead of wrapping). A serial in the allocator's range
+would be handed to the first spawned actor too, making the player and that actor
+one identity — the F27 `SelfHitRule::Excluded` would read the player's own shot
+on it as a self-hit and the rocket target search would skip it as the shooter.
+`accept_m01_play_weapons_the_player_serial_is_reserved_from_the_actor_allocator`
+pins the invariant.
+
 ## One mechanical hazard worth recording
 
 `crate::weapons::live_mount_transforms` and `part_sweep_candidates` read a
@@ -111,7 +151,8 @@ producer of `MountPoseBinding` nodes in a composed mission must do the same.
 * `..._the_fire_guns_key_destroys_a_target_and_scores_it`;
 * `..._the_fire_rockets_key_destroys_a_target_and_scores_it`;
 * `..._a_rocket_with_no_target_is_refused_by_name`;
-* `..._the_loadout_is_designed_and_labelled`.
+* `..._the_loadout_is_designed_and_labelled`;
+* `..._the_player_serial_is_reserved_from_the_actor_allocator`.
 
 Every one drives the composed mission (`build_headless` over the campaign
 suite's synthetic stage) and waits for the destruction through the production

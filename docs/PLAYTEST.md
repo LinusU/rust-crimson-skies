@@ -352,6 +352,13 @@ tick of the frame (a press fires once, not once per fixed tick).
   rocket with no such target is refused by name (`no declared-hostile damage
   target is live`), never aimed at a default.
 
+**Firing is not drawn yet.** A round is a `WeaponRoundMirror` entity and a
+live rocket is an ordnance component, but neither carries a mesh, and the
+muzzle-effect/shot-sound consumer is not driven from the mission's fixed loop
+yet (F27-C-FX-SCHED, #1304). Until then a shot is invisible and silent; what
+this task proves is the session, the swept hit, the F29 damage, the wreck and
+the score, not the picture.
+
 **The loadout is designed, not measured.** There is no production reader that
 returns M01's Devastator guns, ammunition or rocket loadout from the original
 installation (the launch closure binds the airframe and the start pose and
