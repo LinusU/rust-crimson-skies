@@ -34,10 +34,12 @@
 //!   and `MountLimits::max_root_bytes_total` (F53-B-FU2) bound what each
 //!   mod root actually **holds** — every regular file below it, declared or
 //!   not — measured before the walk hashes it and re-checked against what
-//!   was indexed. A mod that declares one small override and ships a
-//!   multi-gigabyte directory beside it is refused
-//!   ([`MountError::RootFootprintExceeded`]) instead of walked, hashed and
-//!   enabled in full.
+//!   was indexed. Every root is held to its per-mod budget *and* to what is
+//!   left of the set's total, so a mount never hashes more than
+//!   `max_root_bytes_total` bytes however its roots are ordered. A mod that
+//!   declares one small override and ships a multi-gigabyte directory
+//!   beside it is refused ([`MountError::RootFootprintExceeded`]) instead of
+//!   walked, hashed and enabled in full.
 //! * **Mission and script content with no validator.** An override whose
 //!   target [`super::classify_validation`] calls
 //!   [`OverrideValidation::SandboxedProgram`] mounts only if the host
@@ -376,10 +378,13 @@ pub enum MountError {
         limit: u64,
     },
     /// The roots of the whole set hold more bytes than the mount was asked
-    /// to index in total (F53-B-FU2). Every root fitted its own per-mod
-    /// budget; the set does not fit this one, so nothing is enabled.
+    /// to index in total (F53-B-FU2). Every root is held to its own
+    /// per-mod budget **and** to what is left of this one, so the refusal
+    /// comes while the root that broke it is measured — before it is
+    /// hashed — and nothing is enabled.
     TotalRootFootprintExceeded {
-        /// The bytes the mount measured below every root of the set.
+        /// The bytes measured below the roots mounted before this one plus
+        /// the root that broke the budget: already more than `limit`.
         measured: u64,
         /// The budget.
         limit: u64,
@@ -616,10 +621,11 @@ struct Claim {
 /// 2. Each planned mod's root is measured, walked, indexed and hashed by
 ///    [`cs_assets::mods::ModRoot::mount`], held to
 ///    [`MountLimits::max_root_bytes_per_mod`](super::MountLimits::max_root_bytes_per_mod)
-///    so a root that holds too
-///    many bytes to index is refused before anything in it is hashed
-///    (F53-B-FU2); the set's roots together are then held to
-///    [`MountLimits::max_root_bytes_total`](super::MountLimits::max_root_bytes_total).
+///    **and** to what is left of
+///    [`MountLimits::max_root_bytes_total`](super::MountLimits::max_root_bytes_total)
+///    (F53-B-FU2): a root that holds too many bytes to index is refused
+///    while it is measured, before anything in it is hashed, so the set
+///    never asks for more indexing work than its total budget allows.
 ///    A planned mod with no
 ///    declared root is refused.
 /// 3. Every declared source is resolved against its own mod's root, with
@@ -644,35 +650,50 @@ pub fn mount_mods(
     let limits = request.limits();
 
     // 1 + 2: the plan first, then the roots, each held to the
-    // root-footprint budget before anything below it is hashed, and the
-    // set held to the total (F53-B-FU2).
+    // root-footprint budget before anything below it is hashed. A root is
+    // held to its own per-mod budget *and* to what is left of the set's
+    // total, so the refusal comes while the root that broke the total is
+    // measured — the mount never hashes more than the total allows
+    // (F53-B-FU2).
     let mut roots: BTreeMap<ModId, ModRoot> = BTreeMap::new();
     let mut root_bytes: u64 = 0;
     for id in plan.order() {
         let path = environment
             .root(id)
             .ok_or_else(|| MountError::RootNotSupplied { mod_id: id.clone() })?;
-        let root =
-            ModRoot::mount(id.clone(), path, limits.max_root_bytes_per_mod).map_err(|source| {
-                match source {
-                    ModMountError::RootFootprintExceeded {
-                        measured,
-                        limit,
-                        mod_id,
-                    } => MountError::RootFootprintExceeded {
-                        mod_id,
-                        measured,
-                        limit,
-                    },
-                    other => MountError::Root {
-                        mod_id: id.clone(),
-                        source: Box::new(other),
-                    },
+        let remaining = limits.max_root_bytes_total.saturating_sub(root_bytes);
+        let budget = limits.max_root_bytes_per_mod.min(remaining);
+        let root = ModRoot::mount(id.clone(), path, budget).map_err(|source| match source {
+            // The remaining total was the smaller bound, so this root
+            // broke the set budget — by itself when it also exceeds the
+            // per-mod figure, and on the set's behalf when it does not.
+            ModMountError::RootFootprintExceeded { measured, .. }
+                if budget < limits.max_root_bytes_per_mod =>
+            {
+                MountError::TotalRootFootprintExceeded {
+                    measured: root_bytes.saturating_add(measured),
+                    limit: limits.max_root_bytes_total,
                 }
-            })?;
+            }
+            ModMountError::RootFootprintExceeded {
+                measured,
+                limit,
+                mod_id,
+            } => MountError::RootFootprintExceeded {
+                mod_id,
+                measured,
+                limit,
+            },
+            other => MountError::Root {
+                mod_id: id.clone(),
+                source: Box::new(other),
+            },
+        })?;
         root_bytes = root_bytes.saturating_add(root.footprint_bytes());
         roots.insert(id.clone(), root);
     }
+    // Unreachable by construction — every root above fitted the budget
+    // left when it was mounted — and kept as the guard on that invariant.
     if root_bytes > limits.max_root_bytes_total {
         return Err(MountError::TotalRootFootprintExceeded {
             measured: root_bytes,
@@ -1340,6 +1361,60 @@ mod tests {
             3,
             "the two cosmetic winners and the tuning payload mount"
         );
+    }
+
+    /// **F53-B-FU2, the total bounds the work, not only the enabled set.**
+    /// The set's total budget is held *while each root is measured*, so a
+    /// set whose first root already breaks it is refused with
+    /// `total_root_footprint_exceeded` before the walk reaches the hashing
+    /// pass. The root here is far inside the per-mod budget — only the
+    /// total can refuse it — and it holds a file that pass could not read
+    /// (mode 000): had the mount got as far as hashing, it would have
+    /// failed as `root_unavailable` instead, which is what makes the
+    /// ordering an assertion rather than an assumption. A host running as
+    /// root can read that file anyway, and then only the refusal itself is
+    /// under test.
+    #[cfg(unix)]
+    #[test]
+    fn accept_f53_b_fu2_the_total_root_budget_refuses_before_the_roots_are_hashed() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let tuning = synthetic_tuning_mod();
+        let root = Temp::new("root-total-before-hashing");
+        write_mod(&root, &tuning);
+        // Half a megabyte the manifest cannot see: over the total below
+        // and well under the per-mod budget, so the total is the only
+        // budget that can refuse this root.
+        let undeclared = vec![b'z'; 512 * 1_024];
+        let extras = root.path().join("undeclared/extras.bin");
+        fs::create_dir_all(extras.parent().expect("has a parent")).expect("dirs");
+        fs::write(&extras, &undeclared).expect("the undeclared bytes are written");
+        let locked = root.path().join("undeclared/locked.bin");
+        fs::write(&locked, b"counted by stat, refused to open").expect("bytes are written");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000))
+            .expect("the file is made unreadable");
+
+        let set = ModSet::new(vec![tuning.clone()]);
+        let environment =
+            MountEnvironment::new(base_fingerprint()).with_root(tuning.id().clone(), root.path());
+        let request = MountRequest::new(synthetic_engine_version(), synthetic_base_ids())
+            .with_limits(MountLimits {
+                max_root_bytes_total: 64 * 1_024,
+                ..MountLimits::default()
+            });
+
+        let error = mount_mods(&set, &request, &environment)
+            .expect_err("a root over the set's total root budget is refused");
+        assert_eq!(
+            error.code(),
+            "total_root_footprint_exceeded",
+            "the total refused it, not the hashing walk: {error}"
+        );
+        assert!(
+            !error.to_string().contains("Permission denied"),
+            "the mount never reached the file it could not hash: {error}"
+        );
+        assert!(error.plan_error().is_none(), "the plan accepted the set");
     }
 
     /// **F53-B-FU2, unchanged path.** Inside the designed budgets the

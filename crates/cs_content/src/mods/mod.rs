@@ -297,9 +297,12 @@ pub struct MountLimits {
     /// files a real mod ships beside the ones it overrides.
     pub max_root_bytes_per_mod: u64,
     /// Most bytes the roots of the whole set may hold, measured the same
-    /// way. Without it a set would only be bounded by `max_mods` times the
-    /// per-mod figure, which is a far larger amount of indexing work than
-    /// any one mount should be asked for.
+    /// way. Each root is held to what is left of this figure *while it is
+    /// measured*, so a mount never hashes more than this many bytes in
+    /// total however many mods it is given. Without it a set would only be
+    /// bounded by `max_mods` times the per-mod figure, which is a far
+    /// larger amount of indexing work than any one mount should be asked
+    /// for.
     pub max_root_bytes_total: u64,
 }
 

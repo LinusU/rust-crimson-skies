@@ -47,7 +47,10 @@ budgets (they are documented as declared-size budgets and are folded into
   counted across every regular file below it, declared or not. Default
   **256 MiB**.
 * `max_root_bytes_total` — most bytes the roots of the whole set may hold,
-  measured the same way. Default **1 GiB**.
+  measured the same way. Default **1 GiB**. Every root is held to *what is
+  left of it* while that root is measured, so a mount never hashes more
+  than this many bytes in total, whatever order the plan mounts its roots
+  in.
 
 Why not the alternative ("a mod's measured root footprint must fit an
 existing declared budget"): that would make `max_declared_bytes_per_mod` mean
@@ -97,25 +100,32 @@ design.
   work" sentence is now true of both halves. One existing F53-A test that
   spelled every field out gained `..MountLimits::default()` for the new
   fields; its assertions are unchanged.
-- **`crates/cs_content/src/mods/mount.rs`** — `mount_mods` passes
-  `limits.max_root_bytes_per_mod` into each root mount, maps the
-  `ModMountError` refusal onto the mount's own vocabulary, sums
-  `footprint_bytes()` across the set and refuses it against
-  `limits.max_root_bytes_total`, all before a single declared source is
-  resolved (so nothing is enabled). New refusals with stable codes:
-  `MountError::RootFootprintExceeded` → **`mod_root_footprint_exceeded`** and
-  `MountError::TotalRootFootprintExceeded` → **`total_root_footprint_exceeded`**.
-  Module docs list the new refusal alongside the others.
+- **`crates/cs_content/src/mods/mount.rs`** — `mount_mods` holds each root
+  to `min(max_root_bytes_per_mod, what is left of max_root_bytes_total)`,
+  maps the `ModMountError` refusal onto the mount's own vocabulary (the
+  per-mod budget bound it → `mod_root_footprint_exceeded`; the set's
+  remaining total bound it → `total_root_footprint_exceeded`, reported
+  with the bytes measured up to and including that root), all before a
+  single declared source is resolved (so nothing is enabled). New refusals
+  with stable codes: `MountError::RootFootprintExceeded` →
+  **`mod_root_footprint_exceeded`** and `MountError::TotalRootFootprintExceeded` →
+  **`total_root_footprint_exceeded`**. Because each root is held to the
+  total that is left when it is mounted, the set never *hashes* more than
+  `max_root_bytes_total` bytes: the total bounds the indexing work as well
+  as the enabled set. Module docs list the new refusal alongside the
+  others.
 
-**One observable failure:** delete the `measured > max_root_bytes` check in
+**Observable failures:** delete the `measured > max_root_bytes` check in
 `ModRoot::mount` and `accept_f53_b_fu2_a_root_holding_more_than_the_footprint_budget_is_refused`
-fails; delete the `root_bytes > limits.max_root_bytes_total` check in
-`mount_mods` and `accept_f53_b_fu2_the_roots_of_the_set_are_held_to_the_total_footprint_budget`
-fails.
+fails; stop `mount_mods` from holding each root to the total that is left
+(`budget = limits.max_root_bytes_per_mod`, dropping the `.min(remaining)`)
+and `accept_f53_b_fu2_the_total_root_budget_refuses_before_the_roots_are_hashed`
+fails — the set is then refused only after every root has already been
+walked and hashed.
 
 ## Tests
 
-Task prefix `accept_f53_b_fu2_`, 5 tests, all unit tests calling production
+Task prefix `accept_f53_b_fu2_`, 6 tests, all unit tests calling production
 code, selected by
 `cargo test --workspace --locked -- accept_f53_b_fu2_ --include-ignored`:
 
@@ -146,17 +156,34 @@ code, selected by
    file mount, serve both winning payloads with their recorded digests, and
    produce the same compatibility signature twice; the undeclared file is
    counted in both roots' footprints and serves no content id.
+6. `cs_content` `…_the_total_root_budget_refuses_before_the_roots_are_hashed`
+   (unix): one mod whose root is far inside the per-mod budget and well over
+   the total, holding a file the hashing pass could not read (mode 000) —
+   refused with `total_root_footprint_exceeded`, so the total bounds the
+   *indexing work* and not only the set that is enabled.
 
 All pre-existing `accept_f53_a_*`, `accept_f53_b_*` (including F53-B-FU1's
 7 `accept_f53_b_fu1_*`) and the full workspace suite pass unchanged.
 
 ## Checks run (all exit 0)
 
+Implementation session (2026-10-15):
+
 - `cargo fmt --all -- --check` → 0
 - `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` → 0
 - `cargo test --workspace --locked -- accept_f53_b_fu2_ --include-ignored` →
   0, 5 tests executed (2 in `cs_assets`, 3 in `cs_content`), all passing
 - `cargo test --workspace --locked` → 0, 576 `test result: ok` lines, 0 failures
+
+Review of that branch (2026-10-15), before and after the amendment above and
+after rebasing onto `origin/main` `edb54951` (no path overlap with this
+branch, no `Cargo.toml`/`Cargo.lock` upstream):
+
+- `cargo fmt --all -- --check` → 0
+- `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` → 0
+- `cargo test --workspace --locked` → 0, 579 `test result: ok` lines, 0 failures
+- `cargo test --workspace --locked -- accept_f53_b_fu2_ --include-ignored` →
+  0, **6** tests executed (2 in `cs_assets`, 4 in `cs_content`), all passing
 
 ## Sensitivity probes (run on this branch and reverted; none committed)
 
@@ -182,6 +209,14 @@ verified clean afterwards, and the selection was re-run green (5/5).
    `…_the_roots_of_the_set_are_held_to_the_total_footprint_budget`, while
    `…_a_set_within_the_footprint_budget_serves_exactly_as_before` still
    passes — the unchanged path really is unchanged.
+4. *(Review, 2026-10-15)* **Each root held to the per-mod budget only**
+   (`budget = limits.max_root_bytes_per_mod`, the total checked once after
+   the loop instead of while the roots are mounted) → exactly **1** failure:
+   `…_the_total_root_budget_refuses_before_the_roots_are_hashed`, refused
+   as `root_unavailable` (`Permission denied`) because the mount had
+   already reached the hashing pass before the total was known to be
+   broken. The tree was restored by hand (no other edit reverted) and the
+   selection re-run green (6/6).
 
 ## Unknowns, limitations and where they are resolved
 
@@ -210,6 +245,13 @@ verified clean afterwards, and the selection was re-run green (5/5).
 
 Implementer: `bunny-alpha-1/bunny-alpha-1` (Rally agent `bunny-alpha-1`),
 session of 2026-10-15.
-Reviewer: recorded on the review, per the 2026-10-01 owner directive; an
-agent review does not substitute for the owner's human approval.
+Review amendment (2026-10-15): the set-total budget moved from a single
+check after every root had been walked and hashed to a per-root bound —
+each root held to `min(max_root_bytes_per_mod, what is left of the total)`
+— so the total bounds the indexing work its documentation claims; test 6
+and sensitivity probe 4 were added for it. Reviewer: `bunny-alpha-1` in a
+later session with fresh context but the **same agent identity and model**
+as the implementer, so this review is not independent evidence in the sense
+the 2026-10-01 owner directive describes; an agent review does not
+substitute for the owner's human approval.
 No evidence report: the task declares ordinary build/test capability only.
