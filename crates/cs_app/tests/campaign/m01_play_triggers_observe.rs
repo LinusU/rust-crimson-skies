@@ -12,7 +12,10 @@
 //!
 //! * **the rows it can see** — `["player"]` at the `MissionPlayerBody`'s
 //!   live `Position`, each bound world actor under the node name its measured
-//!   `scene_node/…world1.<name>` subject spells, and a living count per group
+//!   `scene_node/…world1.<name>` subject spells and with the presence the
+//!   world's own lifecycle state reports (M01-PLAY-TRIGGERS-ACTOR-BIT made
+//!   that presence fail-closed: a binding no world-actor session holds gets
+//!   no row), and a living count per group
 //!   the composition really spawned members for (measured: `1`, `3`, `5`);
 //! * **the rows it refuses to invent** — M01's 39 part-state chains have no
 //!   entity, groups `2`/`4` have no spawned member (their only `aiv.zrd`
@@ -305,12 +308,19 @@ fn proximity_program() -> cs_script::ir::MissionProgram {
     }
 }
 
-/// Binds one world actor in a synthetic run, the way the composition binds
-/// M01's zeppelins: an entity carrying the production [`WorldActorBinding`]
-/// whose subject is a `scene_node` id under the fixture container.
-fn spawn_binding(app: &mut App, node: &str, at: [f64; 3]) -> Entity {
-    use cs_app::scene::SceneGeneration;
+/// Registers one held world actor in the synthetic stage's **own world-actor
+/// program** — the way M01's `zeppelins.zrd` rows reach the world-actor
+/// session — so the production spawn host binds it and the observer can read
+/// the world's own lifecycle state for its row.
+///
+/// M01-PLAY-TRIGGERS-ACTOR-BIT (#1490) made the actor row fail-closed: a
+/// bare [`WorldActorBinding`] entity no session holds gets no row at all, so
+/// the anchor this suite's trigger reads has to be a real launched actor.
+fn register_held_actor(stage: &mut MissionStage, node: &str, at: [f64; 3]) {
+    use cs_app::mission_world_actors::SESSION_TICKS_PER_SECOND;
+    use cs_app::world_actors::LoweredWorldActors;
     use cs_script::ir::ActorId;
+    use cs_sim::world_actors::runtime::{ActorMotion, WorldActorKind, WorldActorSpec};
     use cs_types::content::{ContentId, ContentKind};
 
     let subject = ContentId::from_source(
@@ -318,16 +328,24 @@ fn spawn_binding(app: &mut App, node: &str, at: [f64; 3]) -> Entity {
         &format!("container.synthetic.window.{node}"),
     )
     .expect("the synthetic subject id is valid");
-    app.world_mut()
-        .spawn((
-            Transform::from_translation(Vec3::new(at[0] as f32, at[1] as f32, at[2] as f32)),
-            WorldActorBinding {
-                actor: ActorId(1),
-                subject,
-                generation: SceneGeneration(1),
+    stage.host.world_actors = Some(LoweredWorldActors {
+        ticks_per_second: SESSION_TICKS_PER_SECOND,
+        actors: vec![WorldActorSpec {
+            actor: ActorId(1),
+            kind: WorldActorKind::Kinematic,
+            faction: cid(ContentKind::Faction, "synthetic.faction"),
+            objective: None,
+            motion: ActorMotion::Held {
+                position_m: at,
+                orientation: cs_sim::world_actors::Quat::IDENTITY,
             },
-        ))
-        .id()
+        }],
+        subjects: BTreeMap::from([(ActorId(1), subject)]),
+        sockets: BTreeMap::new(),
+        support: Vec::new(),
+        pickups: Vec::new(),
+        transitions: Vec::new(),
+    });
 }
 
 /// **The composed run observes the player's live pose in the very tick the
@@ -404,13 +422,17 @@ fn accept_m01_play_triggers_observe_the_synthetic_trigger_fires_only_when_observ
     let scratch = Scratch::new("m01-play-observe-trigger");
     let mut stage = synthetic_stage(scratch.path());
     stage.host.control = proximity_program();
+    // The anchor is a *launched* world actor, held 100 km along +x: far
+    // enough from any composed start pose that the first leg is
+    // deterministic, and real enough that the observer reads the world's own
+    // lifecycle state for its row (M01-PLAY-TRIGGERS-ACTOR-BIT).
+    register_held_actor(&mut stage, "harbor", [100_000.0, 340.0, -560.0]);
     let mut app = build_headless(&stage).expect("the synthetic stage composes");
     arm(&mut app);
     app.update();
 
     let player = player_entity(&mut app);
-    let start = live_position(&mut app, player);
-    let anchor = spawn_binding(&mut app, "harbor", [start[0] + 5_000.0, start[1], start[2]]);
+    let anchor = bound_actor(&mut app, "harbor");
     frames(&mut app, 4);
     let row = observed_members(&app)
         .get(&member_chain(["harbor"]))
@@ -426,7 +448,7 @@ fn accept_m01_play_triggers_observe_the_synthetic_trigger_fires_only_when_observ
     );
     assert!(
         !log(&app).completed(0),
-        "5 km apart: the arm cannot hold on an unobserved or out-of-range anchor"
+        "100 km apart: the arm cannot hold on an unobserved or out-of-range anchor"
     );
 
     // The report is taken away before the host consumes it: parked inside

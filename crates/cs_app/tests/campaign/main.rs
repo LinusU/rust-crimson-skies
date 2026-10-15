@@ -267,6 +267,7 @@ mod m01_lc_player_config;
 mod m01_play_actors;
 mod m01_play_ai;
 mod m01_play_radio;
+mod m01_play_triggers_actor_bit;
 mod m01_play_triggers_anims_arm;
 mod m01_play_triggers_observe;
 mod m01_play_triggers_parts;
