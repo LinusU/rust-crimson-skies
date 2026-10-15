@@ -29,6 +29,15 @@
 //!   sizes because that stage reads nothing; this stage re-checks the same
 //!   limits against the sizes the mount indexed, so a manifest that
 //!   under-declares its payload still cannot ask for unbounded work.
+//! * **A root that holds too much to index.** Those budgets still only
+//!   cover what a manifest *declares*. `MountLimits::max_root_bytes_per_mod`
+//!   and `MountLimits::max_root_bytes_total` (F53-B-FU2) bound what each
+//!   mod root actually **holds** — every regular file below it, declared or
+//!   not — measured before the walk hashes it and re-checked against what
+//!   was indexed. A mod that declares one small override and ships a
+//!   multi-gigabyte directory beside it is refused
+//!   ([`MountError::RootFootprintExceeded`]) instead of walked, hashed and
+//!   enabled in full.
 //! * **Mission and script content with no validator.** An override whose
 //!   target [`super::classify_validation`] calls
 //!   [`OverrideValidation::SandboxedProgram`] mounts only if the host
@@ -58,9 +67,9 @@
 //!
 //! The original game's mod support is unmeasured (F53 "Research
 //! boundary"; F53-D). The signature's domain separator, the refusal
-//! vocabulary and the fixtures here are newly authored project design
-//! carrying designed provenance; nothing in this module is evidence about
-//! the original game.
+//! vocabulary, the root-footprint budgets and the fixtures here are newly
+//! authored project design carrying designed provenance; nothing in this
+//! module is evidence about the original game.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -352,6 +361,29 @@ pub enum MountError {
         /// Why it failed.
         source: Box<ModMountError>,
     },
+    /// A mod's root holds more bytes than the mount was asked to index,
+    /// counted across **every** regular file below it — declared by the
+    /// manifest or not (F53-B-FU2). The refusal happens while the root is
+    /// measured, before it is hashed and before any payload is enabled, so
+    /// the declared overrides of a mod that ships this much are refused
+    /// with it.
+    RootFootprintExceeded {
+        /// The mod whose root is too large to index.
+        mod_id: ModId,
+        /// The bytes the mount measured below the root.
+        measured: u64,
+        /// The budget.
+        limit: u64,
+    },
+    /// The roots of the whole set hold more bytes than the mount was asked
+    /// to index in total (F53-B-FU2). Every root fitted its own per-mod
+    /// budget; the set does not fit this one, so nothing is enabled.
+    TotalRootFootprintExceeded {
+        /// The bytes the mount measured below every root of the set.
+        measured: u64,
+        /// The budget.
+        limit: u64,
+    },
     /// A declared source is not a safe relative spelling (F53 AC02).
     UnsafeSource {
         /// The mod that declared it.
@@ -447,6 +479,8 @@ impl MountError {
             Self::Plan(_) => "plan_refused",
             Self::RootNotSupplied { .. } => "root_not_supplied",
             Self::Root { .. } => "root_unavailable",
+            Self::RootFootprintExceeded { .. } => "mod_root_footprint_exceeded",
+            Self::TotalRootFootprintExceeded { .. } => "total_root_footprint_exceeded",
             Self::UnsafeSource { .. } => "unsafe_source",
             Self::SourceMissing { .. } => "source_missing",
             Self::MeasuredByteBudgetExceeded { .. } => "measured_mod_budget_exceeded",
@@ -469,6 +503,18 @@ impl fmt::Display for MountError {
             Self::Root { mod_id, source } => {
                 write!(f, "cannot mount the root of mod {mod_id}: {source}")
             }
+            Self::RootFootprintExceeded {
+                mod_id,
+                measured,
+                limit,
+            } => write!(
+                f,
+                "mod {mod_id} ships {measured} bytes below its root, the root budget is {limit}"
+            ),
+            Self::TotalRootFootprintExceeded { measured, limit } => write!(
+                f,
+                "the mod set ships {measured} bytes below its roots, the root budget is {limit}"
+            ),
             Self::UnsafeSource {
                 mod_id,
                 target,
@@ -536,6 +582,8 @@ impl std::error::Error for MountError {
             Self::UnsafeSource { reason, .. } => Some(reason),
             Self::Read { source, .. } => Some(source.as_ref()),
             Self::RootNotSupplied { .. }
+            | Self::RootFootprintExceeded { .. }
+            | Self::TotalRootFootprintExceeded { .. }
             | Self::SourceMissing { .. }
             | Self::MeasuredByteBudgetExceeded { .. }
             | Self::TotalMeasuredByteBudgetExceeded { .. }
@@ -565,9 +613,15 @@ struct Claim {
 ///
 /// 1. [`plan_mods`] computes the plan. Every plan problem — a dependency
 ///    cycle above all — stops the mount here, with no root opened.
-/// 2. Each planned mod's root is walked, indexed and hashed by
-///    [`cs_assets::mods::ModRoot::mount`]. A planned mod with no declared
-///    root is refused.
+/// 2. Each planned mod's root is measured, walked, indexed and hashed by
+///    [`cs_assets::mods::ModRoot::mount`], held to
+///    [`MountLimits::max_root_bytes_per_mod`](super::MountLimits::max_root_bytes_per_mod)
+///    so a root that holds too
+///    many bytes to index is refused before anything in it is hashed
+///    (F53-B-FU2); the set's roots together are then held to
+///    [`MountLimits::max_root_bytes_total`](super::MountLimits::max_root_bytes_total).
+///    A planned mod with no
+///    declared root is refused.
 /// 3. Every declared source is resolved against its own mod's root, with
 ///    the spelling re-validated at the join, and its **measured** size is
 ///    checked against the per-mod and total budgets.
@@ -589,17 +643,41 @@ pub fn mount_mods(
     let plan = plan_mods(set, request).map_err(MountError::Plan)?;
     let limits = request.limits();
 
-    // 1 + 2: the plan first, then the roots.
+    // 1 + 2: the plan first, then the roots, each held to the
+    // root-footprint budget before anything below it is hashed, and the
+    // set held to the total (F53-B-FU2).
     let mut roots: BTreeMap<ModId, ModRoot> = BTreeMap::new();
+    let mut root_bytes: u64 = 0;
     for id in plan.order() {
         let path = environment
             .root(id)
             .ok_or_else(|| MountError::RootNotSupplied { mod_id: id.clone() })?;
-        let root = ModRoot::mount(id.clone(), path).map_err(|source| MountError::Root {
-            mod_id: id.clone(),
-            source: Box::new(source),
-        })?;
+        let root =
+            ModRoot::mount(id.clone(), path, limits.max_root_bytes_per_mod).map_err(|source| {
+                match source {
+                    ModMountError::RootFootprintExceeded {
+                        measured,
+                        limit,
+                        mod_id,
+                    } => MountError::RootFootprintExceeded {
+                        mod_id,
+                        measured,
+                        limit,
+                    },
+                    other => MountError::Root {
+                        mod_id: id.clone(),
+                        source: Box::new(other),
+                    },
+                }
+            })?;
+        root_bytes = root_bytes.saturating_add(root.footprint_bytes());
         roots.insert(id.clone(), root);
+    }
+    if root_bytes > limits.max_root_bytes_total {
+        return Err(MountError::TotalRootFootprintExceeded {
+            measured: root_bytes,
+            limit: limits.max_root_bytes_total,
+        });
     }
 
     // 3: resolve every declared claim against its own mod's root and
@@ -1141,6 +1219,208 @@ mod tests {
         let mounted = mount_mods(&set, &relaxed, &environment)
             .expect("the fixture payload is well inside the default budget");
         assert_eq!(mounted.measured_bytes(), 4_096);
+    }
+
+    /// **F53-B-FU2, per-mod root footprint.** A declared payload well
+    /// inside the declared-byte budgets cannot smuggle an undeclared
+    /// directory past the mount: the root is held to what it **holds**,
+    /// not to what its manifest claims, and the refusal happens while the
+    /// root is measured — before the payload could be enabled. The same
+    /// mod mounts unchanged the moment the budget covers its footprint.
+    #[test]
+    fn accept_f53_b_fu2_a_root_holding_more_than_the_footprint_budget_is_refused() {
+        let tuning = synthetic_tuning_mod();
+        let root = Temp::new("root-footprint");
+        write_mod(&root, &tuning);
+        // Nothing a manifest declares: half a megabyte the plan cannot
+        // see, which is exactly the gap this bound closes.
+        let undeclared = vec![b'z'; 512 * 1_024];
+        let extras = root.path().join("undeclared/extras.bin");
+        fs::create_dir_all(extras.parent().expect("has a parent")).expect("dirs");
+        fs::write(&extras, &undeclared).expect("the undeclared bytes are written");
+
+        let set = ModSet::new(vec![tuning.clone()]);
+        let environment = || {
+            MountEnvironment::new(base_fingerprint()).with_root(tuning.id().clone(), root.path())
+        };
+
+        let refused = MountRequest::new(synthetic_engine_version(), synthetic_base_ids())
+            .with_limits(MountLimits {
+                max_root_bytes_per_mod: 64 * 1_024,
+                ..MountLimits::default()
+            });
+        let error = mount_mods(&set, &refused, &environment())
+            .expect_err("a root holding more than the budget cannot be mounted");
+        assert!(
+            matches!(
+                error,
+                MountError::RootFootprintExceeded { measured, limit, .. }
+                    if limit == 64 * 1_024 && measured > 64 * 1_024
+            ),
+            "the refusal is the per-mod root footprint, got: {error}"
+        );
+        assert_eq!(error.code(), "mod_root_footprint_exceeded");
+        assert!(
+            error.to_string().contains("synthetic.tuning-pack"),
+            "the refusal names the mod: {error}"
+        );
+        assert!(
+            error.plan_error().is_none(),
+            "the plan accepted the declaration, so this refusal is the mount's"
+        );
+
+        // The same set mounts under a budget that covers what the root
+        // holds: nothing about the mod changed, only the bound it was
+        // measured under.
+        let within = MountRequest::new(synthetic_engine_version(), synthetic_base_ids())
+            .with_limits(MountLimits {
+                max_root_bytes_per_mod: 1024 * 1_024,
+                ..MountLimits::default()
+            });
+        let mounted = mount_mods(&set, &within, &environment())
+            .expect("the same root mounts inside the budget");
+        assert_eq!(
+            mounted.payloads().len(),
+            1,
+            "its one declared payload mounts"
+        );
+        assert!(
+            mounted.measured_bytes() < 1024,
+            "the payload bytes are still measured from the declared source only"
+        );
+    }
+
+    /// **F53-B-FU2, set root footprint.** Every root can fit its own
+    /// per-mod budget while the set as a whole asks to index more than the
+    /// total budget allows. The mount refuses the set, names the total it
+    /// measured, and enables nothing; the same three mods mount unchanged
+    /// under a total that covers them.
+    #[test]
+    fn accept_f53_b_fu2_the_roots_of_the_set_are_held_to_the_total_footprint_budget() {
+        let (first, second) = synthetic_conflicting_mods();
+        let tuning = synthetic_tuning_mod();
+        let root = Temp::new("root-total");
+        write_mod(&root, &first);
+        write_mod(&root, &second);
+        write_mod(&root, &tuning);
+        let undeclared = vec![b'z'; 128 * 1_024];
+        let extras = root.path().join("undeclared/extras.bin");
+        fs::create_dir_all(extras.parent().expect("has a parent")).expect("dirs");
+        fs::write(&extras, &undeclared).expect("the undeclared bytes are written");
+
+        let set = ModSet::new(vec![first.clone(), second.clone(), tuning.clone()]);
+        let environment = || {
+            MountEnvironment::new(base_fingerprint())
+                .with_root(first.id().clone(), root.path())
+                .with_root(second.id().clone(), root.path())
+                .with_root(tuning.id().clone(), root.path())
+        };
+
+        let refused = MountRequest::new(synthetic_engine_version(), synthetic_base_ids())
+            .with_limits(MountLimits {
+                max_root_bytes_total: 64 * 1_024,
+                ..MountLimits::default()
+            });
+        let error = mount_mods(&set, &refused, &environment())
+            .expect_err("a set shipping more than the total budget is refused");
+        assert!(
+            matches!(
+                error,
+                MountError::TotalRootFootprintExceeded { measured, limit }
+                    if limit == 64 * 1_024 && measured > limit
+            ),
+            "the refusal is the total root footprint, got: {error}"
+        );
+        assert_eq!(error.code(), "total_root_footprint_exceeded");
+
+        let mounted = mount_mods(&set, &synthetic_mount_request(), &environment())
+            .expect("the same set mounts under the designed default total");
+        assert_eq!(
+            mounted.payloads().len(),
+            3,
+            "the two cosmetic winners and the tuning payload mount"
+        );
+    }
+
+    /// **F53-B-FU2, unchanged path.** Inside the designed budgets the
+    /// footprint bound changes nothing a caller can observe: the set
+    /// mounts, every winning payload serves the bytes its digest attests
+    /// to, and the compatibility signature is what it was. The undeclared
+    /// file below the root is *counted* — it is part of the footprint —
+    /// but it still serves no content id.
+    #[test]
+    fn accept_f53_b_fu2_a_set_within_the_footprint_budget_serves_exactly_as_before() {
+        let (first, second) = synthetic_conflicting_mods();
+        let root = Temp::new("root-inside");
+        write_mod(&root, &first);
+        write_mod(&root, &second);
+        let readme = root.path().join("third-party/readme.txt");
+        fs::create_dir_all(readme.parent().expect("has a parent")).expect("dirs");
+        fs::write(&readme, b"undeclared notes").expect("the undeclared bytes are written");
+
+        let set = ModSet::new(vec![first.clone(), second.clone()]);
+        let environment = || {
+            MountEnvironment::new(base_fingerprint())
+                .with_root(first.id().clone(), root.path())
+                .with_root(second.id().clone(), root.path())
+        };
+
+        let mounted = mount_mods(&set, &synthetic_mount_request(), &environment())
+            .expect("a set inside the designed budgets mounts");
+        let again = mount_mods(&set, &synthetic_mount_request(), &environment())
+            .expect("and mounts the same way twice");
+        assert_eq!(mounted.signature(), again.signature());
+        assert_eq!(
+            mounted.payloads().len(),
+            2,
+            "the shared hull panel, won by the later mod, and the added stripe both mount"
+        );
+
+        for payload in mounted.payloads() {
+            let bytes = fs::read(root.path().join(payload.source().as_str()))
+                .expect("the payload is on disk");
+            assert_eq!(payload.size_bytes(), bytes.len() as u64);
+            let mut hasher = Sha256::new();
+            hasher.update(&bytes);
+            assert_eq!(
+                payload.sha256(),
+                hasher.finalize(),
+                "{} is still hashed from its own bytes",
+                payload.target()
+            );
+            let mod_root = mounted
+                .root(payload.mod_id())
+                .expect("a winning mod's root is mounted");
+            let member = mod_root
+                .resolve(payload.source().as_str())
+                .expect("the source still resolves against its own mod");
+            assert_eq!(
+                mod_root.read(member).expect("the payload reads"),
+                bytes,
+                "the mount serves what it indexed"
+            );
+        }
+
+        // The undeclared file is indexed, so it is part of the footprint
+        // both roots were measured at — and it serves nothing.
+        assert!(
+            mounted
+                .payloads()
+                .iter()
+                .all(|payload| payload.source().as_str() != "third-party/readme.txt"),
+            "an undeclared file is not a payload of any content id"
+        );
+        let notes = b"undeclared notes".len() as u64;
+        for (id, _) in mounted.roots() {
+            let footprint = mounted
+                .root(id)
+                .expect("the root is mounted")
+                .footprint_bytes();
+            assert!(
+                footprint > notes,
+                "the undeclared file is counted in {id}'s footprint: {footprint}"
+            );
+        }
     }
 
     /// A validator that refuses every payload, recording what it was asked.

@@ -249,13 +249,31 @@ impl MountRequest {
     }
 }
 
-/// The declared budgets a mount plan is held to.
+/// The budgets a mount is held to.
 ///
 /// Every field is a plain integer so a total can never round
 /// (`IDENTITY-CONTENT`: "Integers represent money, ticks, counts, ammo and
 /// ids"). The defaults are **designed bounds**, not measured original ones:
 /// they exist to keep a hostile or corrupt manifest from asking for an
 /// unbounded amount of work, and a host is free to set its own.
+///
+/// There are two pairs, and they bound two different things:
+///
+/// * `max_declared_bytes_*` bound what a manifest **claims**. The plan
+///   checks them because the plan reads nothing (F53-A), and the mount
+///   re-checks them against the sizes it measured for the declared
+///   sources (F53-B).
+/// * `max_root_bytes_*` (F53-B-FU2) bound what a mod root actually
+///   **holds**: every regular file below it, declared by a manifest or
+///   not. They are checked while each root is mounted, from a metadata
+///   measurement taken before anything is hashed and re-checked against
+///   the members that were indexed, so a manifest declaring one small
+///   override cannot have an arbitrarily large undeclared directory
+///   walked, hashed and enabled.
+///
+/// All four are folded into [`MountLimits::encode`], hence into
+/// [`ModPlan::hash`]: two plans computed under different budgets are
+/// different plans and can never be compared as if they agreed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct MountLimits {
     /// Most mods in one set.
@@ -268,6 +286,21 @@ pub struct MountLimits {
     pub max_declared_bytes_per_mod: u64,
     /// Most declared bytes the whole set may claim.
     pub max_declared_bytes_total: u64,
+    /// Most bytes one mod's root directory may hold, measured across every
+    /// regular file below it — declared by the manifest or not.
+    ///
+    /// Checked at mount time, before the root is hashed and indexed, so it
+    /// bounds the work as well as the enabled set. It is deliberately
+    /// larger than [`Self::max_declared_bytes_per_mod`]: a mod could
+    /// otherwise be refused for holding less than its own declared payload
+    /// already accounts for, and the designed default leaves room for the
+    /// files a real mod ships beside the ones it overrides.
+    pub max_root_bytes_per_mod: u64,
+    /// Most bytes the roots of the whole set may hold, measured the same
+    /// way. Without it a set would only be bounded by `max_mods` times the
+    /// per-mod figure, which is a far larger amount of indexing work than
+    /// any one mount should be asked for.
+    pub max_root_bytes_total: u64,
 }
 
 impl Default for MountLimits {
@@ -279,6 +312,8 @@ impl Default for MountLimits {
             max_overrides_per_mod: 4_096,
             max_declared_bytes_per_mod: 64 * 1_024 * 1_024,
             max_declared_bytes_total: 512 * 1_024 * 1_024,
+            max_root_bytes_per_mod: 256 * 1_024 * 1_024,
+            max_root_bytes_total: 1_024 * 1_024 * 1_024,
         }
     }
 }
@@ -289,12 +324,15 @@ impl MountLimits {
     #[must_use]
     pub fn encode(&self) -> String {
         format!(
-            "mods={};deps={};overrides={};bytes_per_mod={};bytes_total={}",
+            "mods={};deps={};overrides={};bytes_per_mod={};bytes_total={};\
+             root_bytes_per_mod={};root_bytes_total={}",
             self.max_mods,
             self.max_dependencies,
             self.max_overrides_per_mod,
             self.max_declared_bytes_per_mod,
-            self.max_declared_bytes_total
+            self.max_declared_bytes_total,
+            self.max_root_bytes_per_mod,
+            self.max_root_bytes_total
         )
     }
 }
@@ -2048,6 +2086,10 @@ mod tests {
                 max_overrides_per_mod: 1,
                 max_declared_bytes_per_mod: 8_192,
                 max_declared_bytes_total: 16_384,
+                // The root-footprint budgets are measured at mount time
+                // (F53-B-FU2), so the plan holds this manifest to the
+                // declared ones above; the defaults stand in here.
+                ..MountLimits::default()
             });
         let (first, second) = synthetic_conflicting_mods();
         let refused = plan_mods(&ModSet::new(vec![first, second]), &request)

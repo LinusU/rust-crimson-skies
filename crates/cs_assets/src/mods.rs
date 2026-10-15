@@ -18,6 +18,14 @@
 //!   regular file fails the mount by name, and two names that fold onto one
 //!   logical key are refused instead of flattened. Nothing here writes, and
 //!   no file handle outlives the call that opened it.
+//! * The mount is **bounded** (F53-B-FU2): [`ModRoot::mount`] is told the
+//!   most bytes the root may hold and measures every regular file below it
+//!   with a metadata-only walk *before* anything is opened for hashing, so
+//!   a root too large to index is refused as
+//!   [`ModMountError::RootFootprintExceeded`] instead of walked and
+//!   SHA-256 hashed in full. The footprint is checked once more against
+//!   the members the index walk recorded, so a file that grew between the
+//!   two walks cannot slip past the bound.
 //! * The mount is [`PrecedenceClass::Mod`] and carries its [`ModId`] in its
 //!   [`MountScope`], so it can only ever serve a
 //!   [`ResolveContext`](cs_types::asset_id::ResolveContext) that has opted
@@ -42,9 +50,13 @@
 //! directory layout, is unmeasured (F53 "Research boundary"; F53-D). The
 //! namespace, the mount ids and the refusal vocabulary here are newly
 //! authored project design carrying designed provenance; no original file,
-//! byte or behavior is reproduced.
+//! byte or behavior is reproduced. The root-footprint bound is designed
+//! vocabulary too: it is a caller-supplied budget, not a measurement of any
+//! original mod.
 
 use std::fmt;
+use std::fs;
+use std::io;
 use std::path::Path;
 
 use cs_types::asset_id::{
@@ -77,6 +89,20 @@ pub enum ModMountError {
         mod_id: ModId,
         /// Why the walk failed.
         source: SourceError,
+    },
+    /// The root holds more bytes than the mount was asked to index,
+    /// counted across **every** regular file below it — declared by a
+    /// manifest or not (F53-B-FU2). The bound is measured from metadata
+    /// before anything is hashed, and re-checked against the members the
+    /// index walk recorded, so neither the indexing work nor the enabled
+    /// set can exceed it.
+    RootFootprintExceeded {
+        /// The mod whose root is too large to index.
+        mod_id: ModId,
+        /// The bytes the measurement found below the root.
+        measured: u64,
+        /// The bound the host asked for.
+        limit: u64,
     },
     /// The mod id cannot be used as a mount id, so the mount could not be
     /// named. (Both labels are validated by the same rule, so this is the
@@ -115,6 +141,14 @@ impl fmt::Display for ModMountError {
             Self::Root { mod_id, source } => {
                 write!(f, "cannot mount the root of mod {mod_id}: {source}")
             }
+            Self::RootFootprintExceeded {
+                mod_id,
+                measured,
+                limit,
+            } => write!(
+                f,
+                "the root of mod {mod_id} holds {measured} bytes, the bound is {limit}"
+            ),
             Self::MountId { mod_id, reason } => {
                 write!(f, "mod id {mod_id} cannot name a mount: {reason}")
             }
@@ -139,7 +173,7 @@ impl std::error::Error for ModMountError {
             Self::Root { source, .. } => Some(source),
             Self::MountId { reason, .. } => Some(reason),
             Self::UnsafeSource { reason, .. } => Some(reason),
-            Self::SourceNotMounted { .. } => None,
+            Self::RootFootprintExceeded { .. } | Self::SourceNotMounted { .. } => None,
         }
     }
 }
@@ -154,10 +188,12 @@ pub struct ModRoot {
     mod_id: ModId,
     namespace: MountNamespace,
     mounted: MountedDirectory,
+    footprint_bytes: u64,
 }
 
 impl ModRoot {
-    /// Walks `root` and mounts it as this mod's payload mount.
+    /// Walks `root` and mounts it as this mod's payload mount, refusing a
+    /// root that holds more than `max_root_bytes`.
     ///
     /// The mount id is the mod id (both labels are the same validated
     /// `[a-z0-9._-]` vocabulary) and the container label — the provenance
@@ -169,17 +205,52 @@ impl ModRoot {
     /// link, and fails the whole mount on anything it cannot index rather
     /// than dropping it silently.
     ///
+    /// # The footprint bound (F53-B-FU2)
+    ///
+    /// `max_root_bytes` bounds **every** regular file below the root,
+    /// whether a manifest declares it or not. It is enforced twice, because
+    /// the two moments answer different questions:
+    ///
+    /// 1. before [`crate::vfs::source::mount_directory`] opens anything, a
+    ///    metadata-only measurement of the same tree (`measure_root_bytes`)
+    ///    refuses a root that is already too large — so the SHA-256 pass,
+    ///    which is the expensive work, never runs over an over-bound root;
+    /// 2. after the index walk, the members it actually recorded are summed
+    ///    and checked again, so a file that grew between the two walks is
+    ///    refused rather than indexed over the bound.
+    ///
+    /// A root inside the bound behaves exactly as an unbounded one: the
+    /// index walk is untouched, so refusal vocabulary, member digests and
+    /// rejection reporting are all what they were.
+    ///
     /// # Errors
     ///
-    /// [`ModMountError::Root`] when the root cannot be walked, and
-    /// [`ModMountError::MountId`] when the mod id cannot name a mount.
-    pub fn mount(mod_id: ModId, root: &Path) -> Result<Self, ModMountError> {
+    /// [`ModMountError::Root`] when the root cannot be walked,
+    /// [`ModMountError::RootFootprintExceeded`] when it holds more than
+    /// `max_root_bytes`, and [`ModMountError::MountId`] when the mod id
+    /// cannot name a mount.
+    pub fn mount(mod_id: ModId, root: &Path, max_root_bytes: u64) -> Result<Self, ModMountError> {
         let mount_id = MountId::new(mod_id.as_str()).map_err(|reason| ModMountError::MountId {
             mod_id: mod_id.clone(),
             reason,
         })?;
         let namespace = MountNamespace::new(MOD_NAMESPACE)
             .expect("the mod namespace constant is a valid label");
+
+        // 1: measure from metadata, so an over-bound root is refused before
+        // a single byte of it is hashed.
+        let measured = measure_root_bytes(root).map_err(|source| ModMountError::Root {
+            mod_id: mod_id.clone(),
+            source,
+        })?;
+        if measured > max_root_bytes {
+            return Err(ModMountError::RootFootprintExceeded {
+                mod_id,
+                measured,
+                limit: max_root_bytes,
+            });
+        }
+
         let builder = MountBuilder::new(
             mount_id,
             namespace.clone(),
@@ -191,10 +262,27 @@ impl ModRoot {
             mod_id: mod_id.clone(),
             source,
         })?;
+
+        // 2: the members the walk recorded are the bytes this mount would
+        // enable; they must still fit the same bound.
+        let footprint_bytes: u64 = mounted
+            .mount
+            .members()
+            .map(|(_, member)| member.size_bytes())
+            .sum();
+        if footprint_bytes > max_root_bytes {
+            return Err(ModMountError::RootFootprintExceeded {
+                mod_id,
+                measured: footprint_bytes,
+                limit: max_root_bytes,
+            });
+        }
+
         Ok(Self {
             mod_id,
             namespace,
             mounted,
+            footprint_bytes,
         })
     }
 
@@ -220,6 +308,18 @@ impl ModRoot {
     /// shipped.
     pub fn rejected(&self) -> &[RejectedEntry] {
         &self.mounted.rejected
+    }
+
+    /// How many bytes this root holds, counted across every regular file
+    /// below it — declared by a manifest or not (F53-B-FU2).
+    ///
+    /// This is what [`Self::mount`] checked against `max_root_bytes`, taken
+    /// from the members the index walk actually recorded, so it is the
+    /// footprint the mount really indexed rather than the one the earlier
+    /// metadata measurement predicted.
+    #[must_use]
+    pub fn footprint_bytes(&self) -> u64 {
+        self.footprint_bytes
     }
 
     /// Finds the member a declared source names.
@@ -281,6 +381,71 @@ impl ModRoot {
     }
 }
 
+/// Sums the length of every regular file below `root`, following no
+/// symbolic link, using metadata only — nothing under the root is opened.
+///
+/// This is the first half of the F53-B-FU2 footprint bound: it describes
+/// exactly the set of files [`crate::vfs::source::mount_directory`] would
+/// index (symlinks and non-regular files are refused by that walk, so they
+/// hold no indexed bytes and are not counted here either), and it costs a
+/// directory listing and a stat per file rather than a SHA-256 of every
+/// byte. A root that is too large is therefore refused without the hashing
+/// work having happened.
+fn measure_root_bytes(root: &Path) -> Result<u64, SourceError> {
+    let metadata = fs::symlink_metadata(root).map_err(|source| SourceError::RootUnavailable {
+        path: root.to_path_buf(),
+        source,
+    })?;
+    if !metadata.is_dir() {
+        return Err(SourceError::RootUnavailable {
+            path: root.to_path_buf(),
+            source: io::Error::new(
+                io::ErrorKind::NotADirectory,
+                "mount root is not a directory (a symbolic link is not followed)",
+            ),
+        });
+    }
+    let mut total: u64 = 0;
+    measure_directory_bytes(root, &mut total)?;
+    Ok(total)
+}
+
+/// Adds every regular file below `directory` to `total`, one directory at a
+/// time, following no symbolic link.
+fn measure_directory_bytes(directory: &Path, total: &mut u64) -> Result<(), SourceError> {
+    let entries = fs::read_dir(directory).map_err(|source| SourceError::UnreadableDirectory {
+        path: directory.to_path_buf(),
+        source,
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|source| SourceError::UnreadableDirectory {
+            path: directory.to_path_buf(),
+            source,
+        })?;
+        let file_type = entry
+            .file_type()
+            .map_err(|source| SourceError::UnreadableDirectory {
+                path: entry.path(),
+                source,
+            })?;
+        if file_type.is_dir() {
+            measure_directory_bytes(&entry.path(), total)?;
+        } else if file_type.is_file() {
+            // A symbolic link is never `is_file()` here, and
+            // `DirEntry::metadata` does not follow one either, so the
+            // length counted is the length the index walk would hash.
+            let length = entry
+                .metadata()
+                .map_err(|source| SourceError::UnreadableFile {
+                    path: entry.path(),
+                    source,
+                })?;
+            *total = (*total).saturating_add(length.len());
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     //! F53-B unit tests for the root join: the malicious-spelling refusal
@@ -295,6 +460,13 @@ mod tests {
     use super::*;
 
     static NEXT: AtomicU64 = AtomicU64::new(0);
+
+    /// The root-footprint bound the pre-existing fixture roots are mounted
+    /// under. Every fixture tree here is a handful of small synthetic
+    /// files, so a generous bound keeps these tests about what they were
+    /// about — spellings, links, digests and scoping — while every mount
+    /// still states the bound it is held to (F53-B-FU2).
+    const FIXTURE_ROOT_BOUND: u64 = 1024 * 1_024;
 
     /// A disposable directory, removed on drop.
     struct Temp(PathBuf);
@@ -348,7 +520,7 @@ mod tests {
     #[test]
     fn accept_f53_b_a_malicious_relative_path_is_refused_by_the_root_join() {
         let temp = rooted("unsafe");
-        let root = ModRoot::mount(mod_id("synthetic.repaint"), temp.path())
+        let root = ModRoot::mount(mod_id("synthetic.repaint"), temp.path(), FIXTURE_ROOT_BOUND)
             .expect("the fixture root mounts");
 
         for spelling in [
@@ -404,7 +576,7 @@ mod tests {
         )
         .expect("the link is created");
 
-        let root = ModRoot::mount(mod_id("synthetic.repaint"), temp.path())
+        let root = ModRoot::mount(mod_id("synthetic.repaint"), temp.path(), FIXTURE_ROOT_BOUND)
             .expect("the fixture root mounts");
         assert_eq!(
             root.rejected().len(),
@@ -434,7 +606,7 @@ mod tests {
     #[test]
     fn accept_f53_b_a_payload_swapped_after_the_walk_is_refused() {
         let temp = rooted("swap");
-        let root = ModRoot::mount(mod_id("synthetic.repaint"), temp.path())
+        let root = ModRoot::mount(mod_id("synthetic.repaint"), temp.path(), FIXTURE_ROOT_BOUND)
             .expect("the fixture root mounts");
         let member = root
             .resolve("art/panel.png")
@@ -470,7 +642,7 @@ mod tests {
     #[test]
     fn accept_f53_b_the_payload_mount_is_mod_precedence_and_mod_scoped() {
         let temp = rooted("scope");
-        let root = ModRoot::mount(mod_id("synthetic.repaint"), temp.path())
+        let root = ModRoot::mount(mod_id("synthetic.repaint"), temp.path(), FIXTURE_ROOT_BOUND)
             .expect("the fixture root mounts");
         let mount = root.mount_record();
 
@@ -501,6 +673,96 @@ mod tests {
             mount.scope().matches(&opted_in),
             "the context that opted in is admitted"
         );
+    }
+
+    /// **F53-B-FU2.** A root that holds more bytes than the mount was asked
+    /// to index is refused, and refused *before* the index walk opens
+    /// anything: the refusal comes from the metadata measurement, and the
+    /// probe is a file the index walk itself would have failed to hash
+    /// (`SourceError::UnreadableFile`) — so a mount that had reached the
+    /// hashing walk would report that instead. The bound names the mod,
+    /// the bytes found and the limit it broke.
+    #[cfg(unix)]
+    #[test]
+    fn accept_f53_b_fu2_a_root_over_the_footprint_bound_is_refused_before_indexing() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let temp = rooted("footprint-over");
+        let big = vec![b'p'; 4_096];
+        temp.write("art/extra.png", &big);
+        // A file the index walk cannot hash: `stat` can count it (so the
+        // measurement includes it) but `open` cannot read it. Were the
+        // footprint bound checked only *after* indexing, this mount would
+        // fail as `UnreadableFile` instead. A host running as root can
+        // read it anyway, and then only the bound itself is under test.
+        let locked = temp.path().join("art/locked.bin");
+        fs::write(&locked, b"counted by stat, refused to open").expect("bytes are written");
+        fs::set_permissions(&locked, fs::Permissions::from_mode(0o000))
+            .expect("the file is made unreadable");
+
+        let error = ModRoot::mount(mod_id("synthetic.repaint"), temp.path(), 1_024)
+            .expect_err("a root over the bound is refused, not indexed");
+
+        match &error {
+            ModMountError::RootFootprintExceeded {
+                mod_id: owner,
+                measured,
+                limit,
+            } => {
+                assert_eq!(owner, &mod_id("synthetic.repaint"));
+                assert_eq!(*limit, 1_024);
+                assert!(
+                    *measured > 1_024,
+                    "the measured footprint is what broke the bound: {measured}"
+                );
+            }
+            other => panic!("the refusal is the footprint bound, got: {other}"),
+        }
+        assert!(
+            error.to_string().contains("1024"),
+            "the refusal names the bound: {error}"
+        );
+    }
+
+    /// **F53-B-FU2.** A root inside the bound mounts exactly as before and
+    /// reports the footprint it was measured at — every regular file below
+    /// the root, declared by a manifest or not — and the members still
+    /// read back the hashed bytes they always did.
+    #[test]
+    fn accept_f53_b_fu2_a_root_within_the_footprint_bound_reports_its_footprint() {
+        let temp = rooted("footprint-under");
+        // A file no manifest declares: it is not a member claim, but it is
+        // part of what the root holds, so it is part of the footprint.
+        temp.write("art/undeclared-notes.txt", b"third-party notes");
+
+        let root = ModRoot::mount(mod_id("synthetic.repaint"), temp.path(), FIXTURE_ROOT_BOUND)
+            .expect("a root inside the bound mounts");
+
+        let expected = (b"synthetic panel bytes".len() + b"third-party notes".len()) as u64;
+        assert_eq!(
+            root.footprint_bytes(),
+            expected,
+            "the footprint counts every regular file below the root"
+        );
+
+        let member = root
+            .resolve("art/panel.png")
+            .expect("the shipped file still resolves");
+        assert_eq!(
+            root.read(member).expect("the member reads"),
+            b"synthetic panel bytes"
+        );
+        assert!(
+            root.resolve("art/undeclared-notes.txt").is_ok(),
+            "an undeclared file is still an indexed member; it simply serves nothing"
+        );
+
+        // The bound is exact: one byte less than the footprint is refused,
+        // so the limit is a real limit rather than an advisory figure.
+        ModRoot::mount(mod_id("synthetic.repaint"), temp.path(), expected - 1)
+            .expect_err("a root one byte over the bound is refused");
+        ModRoot::mount(mod_id("synthetic.repaint"), temp.path(), expected)
+            .expect("a root exactly at the bound mounts");
     }
 
     /// The digest helper this module's tests compare against is the
