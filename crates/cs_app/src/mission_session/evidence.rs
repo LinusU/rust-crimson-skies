@@ -40,17 +40,17 @@ use bevy::input::keyboard::KeyCode;
 use bevy::input::{ButtonInput, InputSystems};
 use bevy::prelude::{
     App, ClearColor, Commands, DetectChanges, Entity, IntoScheduleConfigs, Last, MessageWriter, On,
-    Or, Plugin, PreUpdate, Query, Res, ResMut, Resource, Update, Visibility, With,
+    Plugin, PreUpdate, Query, Res, ResMut, Resource, Update, Visibility, With,
 };
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk};
 
 use super::host::MissionHost;
-use super::sky::DesignedSkyDome;
 use crate::audio::device::SampleLibrary;
 use crate::input::platform::PlatformInput;
 use crate::physics::PhysicsTickLedger;
 use crate::playtest::scene::PlaytestAircraft;
 use crate::playtest::{PlaytestCamera, PlaytestState};
+use crate::render::horizon::{HorizonDome, HorizonSea};
 
 /// The environment variable that asks a `--mission` run to capture.
 pub const CAPTURE_ENV: &str = "CS_MISSION_CAPTURE";
@@ -78,11 +78,15 @@ pub const TRACE_FILE: &str = "trace.jsonl";
 //
 // The frame around the spawn must hold the world's own pixels
 // (M01-PLAY-WORLD-VISIBLE, #1433). The probe measures them without a second
-// spawn and without freezing the camera: it hides the designed sky dome and
-// the player's own aircraft for a few frames, so the frame's **background** is
-// the flat clear colour and every pixel off it is geometry the world load
-// drew. A frame with no world pixels is the pre-#1433 defect — the world's
-// meshes spawned with no material, so nothing drew.
+// spawn and without freezing the camera: it hides what is **not** the world —
+// the horizon's dome and sea (#1434) and the player's own aircraft — for a
+// few frames, so the frame's **background** is the flat clear colour and
+// every pixel off it is geometry the world load drew. A frame with no world
+// pixels is the pre-#1433 defect — the world's meshes spawned with no
+// material, so nothing drew — and a frame whose horizon was never hidden
+// would count *its* pixels instead, which is why the probe records which
+// entities it hid and [`judge_world_probe`] refuses a class it found nothing
+// of.
 //
 // The pixels are counted against the window's **declared clear colour**
 // (`ClearColor`, what the render pass actually clears to), not against the
@@ -96,12 +100,13 @@ pub const TRACE_FILE: &str = "trace.jsonl";
 // background and the other is not, so the min/max pair cannot pass a frame
 // whose background merely happens to be a different encoding.
 
-/// The rendered frame the world probe starts hiding the sky and the player on.
+/// The rendered frame the world probe starts hiding the horizon and the
+/// player on.
 const WORLD_PROBE_HIDE_FRAME: u32 = 30;
 /// The rendered frame the world probe's screenshot is requested on, with the
-/// sky and the player hidden and the world drawn.
+/// horizon and the player hidden and the world drawn.
 const WORLD_PROBE_FRAME: u32 = 32;
-/// The rendered frame the probe restores the sky and the player on.
+/// The rendered frame the probe restores the horizon and the player on.
 const WORLD_PROBE_RESTORE_FRAME: u32 = 34;
 /// How far a channel may differ from a reference colour and still be called
 /// that colour: the renderer's clear colour is uniform, and a small tolerance
@@ -114,10 +119,10 @@ const BACKGROUND_CHANNEL_TOLERANCE: u8 = 6;
 pub const MIN_WORLD_COVERAGE_PERMILLE: u32 = 20;
 /// The least fraction of the probe frame that must be the window's clear
 /// colour, in parts per thousand. The clear colour is only visible where
-/// neither the world nor the hidden sky and player draw, so a probe frame
-/// holding almost none of it did **not** hide the sky: its gradient is
-/// geometry, it fills the whole frame, and counting it as the world would
-/// pass a window with no terrain at all.
+/// neither the world nor the hidden horizon and player draw, so a probe
+/// frame holding almost none of it did **not** hide the horizon: its dome
+/// and sea are geometry, they fill the frame, and counting them as the world
+/// would pass a window with no terrain at all.
 pub const MIN_CLEAR_COVERAGE_PERMILLE: u32 = 20;
 
 /// Why a capture could not be set up or did not produce its evidence.
@@ -234,7 +239,7 @@ struct Shot {
     world_pixels: Option<usize>,
     /// The pixels that are the window's clear colour, when this is the probe
     /// frame: the more permissive of the two near-clear counts. It is what
-    /// proves the probe hid the sky and the player.
+    /// proves the probe hid the horizon and the player.
     clear_pixels: Option<usize>,
     /// The frame's pixel count.
     total_pixels: usize,
@@ -267,8 +272,8 @@ fn permille(part: usize, whole: usize) -> u32 {
     u32::try_from(part as u64 * 1000 / whole as u64).unwrap_or(u32::MAX)
 }
 
-/// Whether the world probe is currently hiding the sky and the player: the
-/// capture sets it for the probe's few frames and restores it after, and
+/// Whether the world probe is currently hiding the horizon and the player:
+/// the capture sets it for the probe's few frames and restores it after, and
 /// [`apply_world_probe`] is the one system that writes it to the entities.
 #[derive(Resource, Clone, Copy, Debug, Default)]
 struct WorldProbeState {
@@ -295,6 +300,11 @@ struct CaptureData {
     /// probe frame was requested (`None` while the probe has not run): what
     /// the world pixels are counted against.
     clear_colours: Option<[[u8; 3]; 2]>,
+    /// What the probe hid on the frame it requested its screenshot on —
+    /// horizon domes, horizon sea planes and player aircraft — read back from
+    /// [`WorldProbeHidden`] so a class the probe found nothing of is refused
+    /// rather than silently counted as the world.
+    probe_hidden: Option<[usize; 3]>,
     io_error: Option<String>,
     shots: Vec<Shot>,
     /// The last host tick stepped, when one was.
@@ -356,6 +366,7 @@ impl Plugin for MissionCapturePlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(self.handle.clone())
             .init_resource::<WorldProbeState>()
+            .init_resource::<WorldProbeHidden>()
             // After Bevy's keyboard system and before the F22 pump, as the
             // smoke script: the held key is the keyboard state the pump reads.
             .add_systems(
@@ -369,17 +380,38 @@ impl Plugin for MissionCapturePlugin {
     }
 }
 
-/// Writes the probe's hide flag to the two classes of entity it covers — the
-/// designed sky dome and the player's aircraft — so the probe frame's
-/// background is the flat clear colour and every pixel off it is the world's
-/// own geometry. The flag changes twice in a run, so the components are
-/// written only on those frames.
-#[allow(clippy::type_complexity)]
+/// What the probe's classes hold right now — how many horizon domes, horizon
+/// sea planes and player aircraft the hide transition covers. It is read back
+/// when the probe frame is requested, so the judge refuses a probe that found
+/// nothing of a class: its pixels were never hidden and would be counted as
+/// the world's.
+#[derive(Resource, Clone, Copy, Debug, Default)]
+struct WorldProbeHidden {
+    /// `crate::render::horizon`'s dome entities present.
+    domes: usize,
+    /// `crate::render::horizon`'s sea entities present.
+    seas: usize,
+    /// The player's aircraft body entities present.
+    players: usize,
+}
+
+/// Writes the probe's hide flag to the three classes of entity it covers —
+/// the horizon's dome and sea (#1434) and the player's aircraft — so the
+/// probe frame's background is the flat clear colour and every pixel off it
+/// is the world's own geometry. The flag changes twice in a run, so the
+/// components are written only on those frames; the counts are refreshed
+/// every frame so [`judge_world_probe`] reads what the frame really hid.
 fn apply_world_probe(
     probe: Res<WorldProbeState>,
+    mut hidden: ResMut<WorldProbeHidden>,
     mut commands: Commands,
-    targets: Query<Entity, Or<(With<DesignedSkyDome>, With<PlaytestAircraft>)>>,
+    domes: Query<Entity, With<HorizonDome>>,
+    seas: Query<Entity, With<HorizonSea>>,
+    players: Query<Entity, With<PlaytestAircraft>>,
 ) {
+    hidden.domes = domes.iter().count();
+    hidden.seas = seas.iter().count();
+    hidden.players = players.iter().count();
     if !probe.is_changed() {
         return;
     }
@@ -388,7 +420,13 @@ fn apply_world_probe(
     } else {
         Visibility::Inherited
     };
-    for entity in &targets {
+    for entity in &domes {
+        commands.entity(entity).insert(value);
+    }
+    for entity in &seas {
+        commands.entity(entity).insert(value);
+    }
+    for entity in &players {
         commands.entity(entity).insert(value);
     }
 }
@@ -420,6 +458,7 @@ fn capture_step(
     host: Option<Res<MissionHost>>,
     aircraft: Query<&Position, With<PlaytestAircraft>>,
     clear: Option<Res<ClearColor>>,
+    hidden: Res<WorldProbeHidden>,
     mut probe: ResMut<WorldProbeState>,
     mut commands: Commands,
     mut exit: MessageWriter<AppExit>,
@@ -498,8 +537,8 @@ fn capture_step(
     {
         capture.io_error = Some(format!("cannot create {}: {error}", capture.dir.display()));
     }
-    // The world probe (M01-PLAY-WORLD-VISIBLE, #1433): hide the sky and the
-    // player for a few frames, take one frame of the world alone, then
+    // The world probe (M01-PLAY-WORLD-VISIBLE, #1433): hide the horizon and
+    // the player for a few frames, take one frame of the world alone, then
     // restore. The probe frame's background is the flat clear colour, so
     // every pixel off it is geometry the world load drew.
     if frame == WORLD_PROBE_HIDE_FRAME {
@@ -509,6 +548,7 @@ fn capture_step(
         if player.is_some() {
             capture.world_shot_requested = true;
             capture.clear_colours = clear.as_deref().map(clear_colour_encodings);
+            capture.probe_hidden = Some([hidden.domes, hidden.seas, hidden.players]);
             let path = capture.dir.join(format!("frame_{frame:05}_world.png"));
             request_screenshot(&mut commands, path, "world");
         } else {
@@ -649,7 +689,7 @@ struct WorldPixelCount {
 /// With no declared clear colour the frame's own **modal** colour stands in
 /// for both encodings, so the measurement is still a measurement;
 /// [`finish`] refuses the probe for the missing declaration regardless, since
-/// a modal reference cannot prove the sky was hidden.
+/// a modal reference cannot prove the horizon was hidden.
 fn count_world_pixels(
     data: &[u8],
     format: bevy::render::render_resource::TextureFormat,
@@ -775,14 +815,18 @@ pub fn finish(handle: &CaptureHandle) -> Result<(), CaptureRefusal> {
         )));
     }
     // The world probe is the check this capture exists for: the frame around
-    // the spawn must hold the world's own pixels, and the sky the probe hid
-    // must not be among them.
+    // the spawn must hold the world's own pixels, and the horizon the probe
+    // hid must not be among them.
     judge_world_probe(
         capture.shots.iter().find(|shot| shot.label == "world"),
         capture.clear_colours,
         capture.world_probe_skipped,
+        capture.probe_hidden,
     )
 }
+
+/// Names the probe's three hidden classes for its refusals.
+const PROBE_CLASSES: [&str; 3] = ["horizon dome", "horizon sea", "player aircraft"];
 
 /// Judges the probe frame — the check the mission capture exists for.
 ///
@@ -790,19 +834,21 @@ pub fn finish(handle: &CaptureHandle) -> Result<(), CaptureRefusal> {
 /// [`MIN_WORLD_COVERAGE_PERMILLE`], counted against the window's **declared**
 /// clear colour, and that clear colour must itself still be visible over
 /// [`MIN_CLEAR_COVERAGE_PERMILLE`]: a probe frame the clear colour has
-/// vanished from did not hide the designed sky, whose gradient is geometry
+/// vanished from did not hide the horizon, whose dome and sea are geometry
 /// that would otherwise be counted as terrain and pass a worldless window.
 ///
 /// # Errors
 ///
 /// [`CaptureRefusal::Incomplete`], naming the first refusal in that order:
 /// no probe frame (and that the probe was skipped when the player had not
-/// spawned), an empty one, a window that declares no clear colour, a frame
-/// under the world floor, a frame under the clear floor.
+/// spawned), an empty one, a window that declares no clear colour, a class of
+/// entity the probe found nothing of to hide, a frame under the world floor,
+/// a frame under the clear floor.
 fn judge_world_probe(
     shot: Option<&Shot>,
     clear_colours: Option<[[u8; 3]; 2]>,
     probe_skipped: bool,
+    probe_hidden: Option<[usize; 3]>,
 ) -> Result<(), CaptureRefusal> {
     let Some(shot) = shot else {
         return Err(CaptureRefusal::Incomplete(if probe_skipped {
@@ -828,6 +874,19 @@ fn judge_world_probe(
                 .to_owned(),
         ));
     }
+    let Some(probe_hidden) = probe_hidden else {
+        return Err(CaptureRefusal::Incomplete(
+            "the probe did not record what it hid, so its frame cannot be judged".to_owned(),
+        ));
+    };
+    for (found, class) in probe_hidden.iter().zip(PROBE_CLASSES) {
+        if *found == 0 {
+            return Err(CaptureRefusal::Incomplete(format!(
+                "the probe found no {class} to hide, so the frame it took still draws one and \
+                 its pixels would be counted as the world's"
+            )));
+        }
+    }
     if shot.covered_permille() < MIN_WORLD_COVERAGE_PERMILLE {
         return Err(CaptureRefusal::Incomplete(format!(
             "the frame around the spawn drew no world: {} holds {} of {} pixels off the \
@@ -843,7 +902,7 @@ fn judge_world_probe(
     if shot.clear_permille() < MIN_CLEAR_COVERAGE_PERMILLE {
         return Err(CaptureRefusal::Incomplete(format!(
             "the probe frame {} holds only {} of {} pixels of the window's clear colour ({} \
-             per mille, less than the {} required): the designed sky and the player were not \
+             per mille, less than the {} required): the horizon and the player were not \
              hidden, so their own pixels would be counted as the world's",
             shot.path.display(),
             shot.clear_pixels.unwrap_or(0),
@@ -1040,11 +1099,13 @@ mod tests {
     }
 
     /// **The judge refuses every frame the probe cannot prove: no frame, an
-    /// empty one, a worldless one, and one the sky was not hidden from.**
+    /// empty one, a worldless one, one whose horizon was never hidden, and
+    /// one the horizon was not hidden from.**
     ///
-    /// The last is the case the clear-colour count exists for: the designed
-    /// sky's gradient is geometry, and a probe frame it fills counts no
-    /// clear colour at all — which must refuse, not pass.
+    /// The clear-colour floor is for the second: the horizon's dome and sea
+    /// are geometry, and a probe frame they fill counts no clear colour at
+    /// all — which must refuse, not pass. The hidden-class floor is for a
+    /// probe that found nothing of a class to hide in the first place.
     #[test]
     fn accept_m01_play_world_the_probe_judges_only_a_frame_that_holds_the_world() {
         let shot = |world: usize, clear: usize, total: usize, size: (u32, u32)| Shot {
@@ -1061,39 +1122,65 @@ mod tests {
             background: Some(CLEAR[0]),
         };
         let total = 1_000_000;
+        let hid = Some([1_usize, 1, 1]);
         assert!(
             judge_world_probe(
                 Some(&shot(634_000, 366_000, total, (2560, 1440))),
                 Some(CLEAR),
-                false
+                false,
+                hid,
             )
             .is_ok(),
             "the measured M01 probe frame is accepted"
         );
         let worldless = shot(0, total, total, (2560, 1440));
-        let error = judge_world_probe(Some(&worldless), Some(CLEAR), false)
+        let error = judge_world_probe(Some(&worldless), Some(CLEAR), false, hid)
             .expect_err("a flat frame drew no world");
         assert!(error.to_string().contains("drew no world"), "{error}");
-        // The sky was not hidden: no clear colour is left in the frame.
+        // The horizon was not hidden: no clear colour is left in the frame.
         let unhidden = shot(total, 0, total, (2560, 1440));
-        let error = judge_world_probe(Some(&unhidden), Some(CLEAR), false)
-            .expect_err("the sky's own pixels are not the world's");
+        let error = judge_world_probe(Some(&unhidden), Some(CLEAR), false, hid)
+            .expect_err("the horizon's own pixels are not the world's");
         assert!(error.to_string().contains("not hidden"), "{error}");
+        // Nothing of one class to hide: its pixels would be counted instead.
+        let nothing_to_hide = judge_world_probe(
+            Some(&shot(634_000, 366_000, total, (2560, 1440))),
+            Some(CLEAR),
+            false,
+            Some([0, 1, 1]),
+        )
+        .expect_err("a probe that found no dome is refused by name");
+        assert!(
+            nothing_to_hide.to_string().contains("horizon dome"),
+            "{nothing_to_hide}"
+        );
+        let unrecorded = judge_world_probe(
+            Some(&shot(634_000, 366_000, total, (2560, 1440))),
+            Some(CLEAR),
+            false,
+            None,
+        )
+        .expect_err("a probe that recorded nothing is refused by name");
+        assert!(
+            unrecorded.to_string().contains("did not record"),
+            "{unrecorded}"
+        );
         let empty = shot(0, 0, 0, (0, 0));
         assert!(
-            judge_world_probe(Some(&empty), Some(CLEAR), false)
+            judge_world_probe(Some(&empty), Some(CLEAR), false, hid)
                 .expect_err("an empty frame is not evidence")
                 .to_string()
                 .contains("empty"),
             "an empty frame is refused by name"
         );
-        let skipped = judge_world_probe(None, Some(CLEAR), true)
+        let skipped = judge_world_probe(None, Some(CLEAR), true, hid)
             .expect_err("a probe that never ran is refused by name");
         assert!(skipped.to_string().contains("never ran"), "{skipped}");
         let undeclared = judge_world_probe(
             Some(&shot(634_000, 366_000, total, (2560, 1440))),
             None,
             false,
+            hid,
         )
         .expect_err("an undeclared clear colour is refused by name");
         assert!(

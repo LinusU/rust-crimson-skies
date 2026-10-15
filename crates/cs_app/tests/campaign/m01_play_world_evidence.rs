@@ -5,7 +5,7 @@
 //! The retail member runs the real `cs --mission M01` launch under
 //! `CS_MISSION_CAPTURE=1` and checks the artifacts the windowed composition
 //! itself writes into `$CS_EVIDENCE_DIR`: the **world probe** frame (the world
-//! drawn with the designed sky and the player hidden, #1433), the player frame,
+//! drawn with the horizon and the player hidden, #1433), the player frame,
 //! `trace.jsonl` (whose `world` record carries the probe's pixel count) and
 //! `playback.json`. Nothing is typed in except the `unknowns` and `review`
 //! text, which state what they are.
@@ -205,9 +205,9 @@ fn evidence_report_m01_play_world_writes_the_acceptance_report() {
     );
     assert!(world_pixels > 0 && total_pixels >= world_pixels, "{world}");
     // The probe must also have found the window's clear colour in that frame:
-    // without it the designed sky's gradient — which fills the whole frame —
-    // would be counted as the world's, and a window with no terrain at all
-    // would pass.
+    // without it the horizon's dome and sea — which fill the frame — would
+    // be counted as the world's, and a window with no terrain at all would
+    // pass.
     let clear = field("\"clear_permille\":");
     assert!(
         clear >= i64::from(MIN_CLEAR_COVERAGE_PERMILLE),
@@ -292,7 +292,7 @@ fn evidence_report_m01_play_world_writes_the_acceptance_report() {
     let assertions = [
         assertion(
             "world: the frame around the spawn holds the world's own pixels, counted against the \
-             window's declared clear colour with the designed sky and the player hidden \
+             window's declared clear colour with the horizon and the player hidden \
              (covered_permille over the 20-per-mille floor, the clear colour still visible over \
              its own 20-per-mille floor)",
             &world_name,
@@ -340,7 +340,8 @@ fn evidence_report_m01_play_world_writes_the_acceptance_report() {
         install = install_sha256,
         content = content_sha256,
         overrides = jstr(
-            "world probe: the designed sky dome and the player are hidden for the probe frame; \
+            "world probe: the horizon's dome and sea and the player are hidden for the probe \
+             frame; \
              scripted input: hold S (pitch up) for one second of rendered frames"
         ),
         identity = jstr(

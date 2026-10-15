@@ -85,7 +85,6 @@ mod host;
 mod launch_sound;
 mod lifecycles;
 mod player_visual;
-mod sky;
 mod terminal;
 mod world_draw;
 
@@ -120,10 +119,6 @@ pub use player_visual::{
     MISSION_PLAYER_INTACT_NODE_SLOT, MISSION_PLAYER_LOD_DISTANCE_M, MISSION_PLAYER_PROP_NODE_NAME,
     MISSION_PLAYER_PROP_NODE_SLOT, MissionPlayerVisual, PlayerAirframeSource, build_player_visual,
     spawn_player_visual,
-};
-pub use sky::{
-    DESIGNED_SKY_CLAIM, DesignedSky, DesignedSkyDome, DesignedSkyPlugin, SKY_HORIZON_COLOR,
-    SKY_NEUTRAL_COLOR, SKY_RADIUS_M, SKY_ZENITH_COLOR, designed_sky_dome_mesh,
 };
 pub use terminal::{MissionExit, MissionTerminal, MissionTerminalSource};
 pub use world_draw::{

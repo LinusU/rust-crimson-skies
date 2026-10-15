@@ -70,38 +70,45 @@ the playtest's own production path rather than a second material binding:
   child under a parent without one is Bevy's B0004. The first capture produced
   42 such warnings; the fix removes all of them.
 
-A **designed horizon cue** (`mission_session/sky.rs`) lands beside it, until the
-original sky (F19) does: a `+Y`-up UV dome of radius 20 km parented to the chase
-camera, drawn unlit with a per-vertex vertical gradient — `SKY_HORIZON_COLOR`
-(`0.80, 0.86, 0.93`) at the eye's own height, deepening to `SKY_ZENITH_COLOR`
-(`0.24, 0.44, 0.78`) at the zenith and darkening to `SKY_NEUTRAL_COLOR`
-(`0.30, 0.33, 0.35`) below it — plus the zenith as the clear colour. It is
-labelled: `DESIGNED_SKY_CLAIM = "m01-play.designed-sky-horizon-cue"`, printed by
-`run_windowed` as `mission sky: designed horizon cue … verified_original=false
-human_review=false`. Nothing about it is a reading of the original's sky,
-atmosphere or horizon.
+A **temporary horizon cue** (`mission_session/sky.rs`) landed beside it as the
+task asked — a `+Y`-up gradient dome parented to the chase camera, labelled
+`DESIGNED_SKY_CLAIM = "m01-play.designed-sky-horizon-cue"` — until the separate
+sky task (F19's stage, `M01-PLAY-SKY` #1434) landed. It did, on `main`, while
+this branch was in review: `crate::render::horizon` is now the one production
+path that draws M01's sky, sea and fog, from the mission's own environment
+record, obeying F19 non-negotiable 3 (the dome keeps an identity rotation, so
+the horizon cannot tilt with the aircraft — a camera-parented cue cannot do
+that), and its own acceptance test asserts *exactly one* sky dome is drawn.
+The cue this task added was therefore **removed at rebase** rather than left to
+draw a second, spec-breaking dome over the landed one; orientation now comes
+from #1434's labelled horizon. See the review amendment below.
 
 ## The capture check
 
 `mission_session/evidence.rs`'s capture now takes a **world probe** before the
-player shot: for a few frames it hides the designed sky dome and the player's
-aircraft, so the frame's background is the flat clear colour and every pixel off
-it is geometry the world load drew. The count is taken against the window's
+player shot: for a few frames it hides what is not the world — the horizon's
+dome and sea (`crate::render::horizon`, #1434) and the player's aircraft — so
+the frame's background is the flat clear colour and every pixel off it is
+geometry the world load drew. The count is taken against the window's
 **declared clear colour** (`ClearColor`, read in the render pass, counted in
 both its 8-bit encodings so the surface's channel order and encoding cannot
 flip it — `Bgra8UnormSrgb` on the pinned Metal backend), in RGB order after
 undoing the surface's channel order, and the run is refused
 (`CaptureRefusal::Incomplete`) when fewer than `MIN_WORLD_COVERAGE_PERMILLE`
 (20 per mille) of the frame are world pixels — the exact pre-#1433 frame is one
-flat colour and counts zero. The clear colour must itself still be visible over
-`MIN_CLEAR_COVERAGE_PERMILLE` (20 per mille), which is what proves the probe
-hid the sky: its gradient is geometry, and a frame it filled would otherwise be
-counted as terrain. The trace carries a `world` record with `world_pixels`,
-`total_pixels`, `covered_permille`, `clear_pixels`, `clear_permille`,
-`background` (the modal colour, a diagnostic), `clear_colour` and the two
-thresholds.
+flat colour and counts zero. Two more floors keep the probe honest: the clear
+colour must itself still be visible over `MIN_CLEAR_COVERAGE_PERMILLE`
+(20 per mille), and each of the three hidden classes — horizon dome, horizon
+sea, player aircraft — must have been found and hidden on that frame. The
+horizon's dome and sea are geometry that fill the frame, so a probe that failed
+to hide them would count *them* as terrain and pass a window with no world at
+all. The trace carries a `world` record with `world_pixels`, `total_pixels`,
+`covered_permille`, `clear_pixels`, `clear_permille`, `background` (the modal
+colour, a diagnostic), `clear_colour` and the two thresholds.
 
-Measured on the owner's installation with this build (Apple M3 Pro, Metal):
+Measured on the owner's installation with this build, before #1434 landed
+(Apple M3 Pro, Metal) — the horizon lines are the implementer's own cue, which
+this branch no longer draws:
 
 ```
 mission composition: M01 — … world world/c1c
@@ -115,47 +122,52 @@ artifacts (never committed, `private/`) are:
 
 * `private/m01-play-world-visible/frame_00032_world.png` — the probe frame: the
   cliff and valley terrain and the sea-coloured far geometry around the spawn,
-  with the sky and the player hidden.
+  with the horizon and the player hidden.
 * `private/m01-play-world-visible/frame_00180_player.png` — the Devastator over
-  the terrain with the designed sky gradient behind it.
+  the terrain with the horizon behind it (that frame is the implementer's,
+  taken before #1434 landed).
 * `private/m01-play-world-visible/trace.jsonl`, `playback.json`.
 
 ## Review amendment (bunny-alpha-1, 2026-10-15)
 
-Two probe weaknesses were found in review and fixed in the same branch:
+Three problems were found in review and fixed in the same branch:
 
-* **A frame the sky was not hidden from could pass.** The first version
+* **A frame the horizon was not hidden from could pass.** The first version
   counted the probe frame's pixels against the frame's own *modal* colour.
-  The designed sky's gradient is geometry: had the probe failed to hide the
-  dome (a renamed or dropped `DesignedSkyDome` marker), its gradient would
-  have filled the frame, become the "off-background" pixels and passed a
-  window with no terrain at all. The count is now taken against the window's
-  declared clear colour in both of its 8-bit encodings (the stricter
+  The horizon's dome and sea are geometry: had the probe failed to hide them
+  (a renamed or dropped marker, or the horizon simply not installed), they
+  would have filled the frame, become the "off-background" pixels and passed
+  a window with no terrain at all. The count is now taken against the
+  window's declared clear colour in both of its 8-bit encodings (the stricter
   off-colour count is the world's, so the surface's encoding cannot flip it),
   and the run is refused unless that clear colour is itself still visible
-  over `MIN_CLEAR_COVERAGE_PERMILLE`. The modal colour stays in the trace as
-  a diagnostic.
+  over `MIN_CLEAR_COVERAGE_PERMILLE` **and** the probe records that it found
+  and hid a dome, a sea plane and the player's aircraft on the probe frame.
+  The modal colour stays in the trace as a diagnostic.
 * **A capture could hang instead of failing.** The probe's screenshot was
   requested on one exact frame and only when the player had already spawned;
   a mission whose player never spawned never reached its exit condition and
   the window never closed. The probe is now skipped by name when the player
   is not there, every capture is bounded by the grace frame, and `finish`
   refuses with the reason the probe did not run.
+* **This branch's temporary sky collided with #1434, which had landed.**
+  `crate::render::horizon` now owns the horizon (see "What was built" above):
+  two domes would have drawn, the plugin's own test asserting exactly one
+  would have failed, and both plugins fought over the window's clear colour.
+  `mission_session/sky.rs` and its wiring were removed at rebase, and the
+  probe hides #1434's dome and sea instead.
 
 The harness was re-run on the rebased head for this review (owner's
-installation, Apple M3 Pro, Metal): the launch exits 0 and the probe's
-`world` record reads
-`world_pixels=2342271, total_pixels=3686400, covered_permille=635,
-clear_pixels=1344129, clear_permille=364, background=[61,112,199],
-clear_colour=[61,112,199]` — 63.5 % of the spawn frame is the world's own
-pixels while the clear colour is still 36.4 % of it, and the modal colour
-agrees with the declared one. `docs/findings/evidence/1433.json` is that
-run's report, validated with `tools/validate_evidence.py --require-pass`.
+installation, Apple M3 Pro, Metal), now that #1434's horizon draws the sky:
+the launch exits 0, the probe hides that horizon and the player, and
+`docs/findings/evidence/1433.json` is the run's report — its `world` record
+carries the pixel counts quoted in the review note that lands with it,
+validated with `tools/validate_evidence.py --require-pass`.
 
-Both are covered by `accept_m01_play_world_` unit members in
+All three floors are covered by `accept_m01_play_world_` unit members in
 `mission_session/evidence.rs` (the count, the judgement, the encodings) that
-run in CI, and the windowed and evidence members now assert the clear-colour
-floor beside the world floor.
+run in CI, and the windowed and evidence members assert the clear-colour and
+hidden-class floors beside the world floor.
 
 ## What this does *not* claim
 
@@ -168,8 +180,10 @@ floor beside the world floor.
 * **Which stored node the original draws is still unmeasured** — LOD selection
   and variant choice are the playtest's own open question. This stage draws the
   definition's own records, every one.
-* **The horizon cue is designed** (`DESIGNED_SKY_CLAIM`), a temporary
-  orientation aid until F19's sky lands.
+* **The horizon is #1434's, not this task's.** What M01 shows above the
+  terrain is `crate::render::horizon`'s labelled sky, sea and fog, every value
+  of which #1434's finding fields as bound or designed; this task draws the
+  world geometry and measures it.
 * **No original run, no human judgment.** This is an automated capture of our
   own build; it is not `human_play`, not a comparison with an original
   screenshot, and nothing here is `verified_original` (claim: `implemented`).

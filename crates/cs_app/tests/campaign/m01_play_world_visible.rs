@@ -187,7 +187,7 @@ fn accept_m01_play_world_retail_m01_stage_binds_and_draws_its_world() {
 /// Runs the real `cs --mission M01` capture and reads the `world` trace
 /// record: the fraction of the frame around the spawn that is geometry the
 /// world load drew, counted against the window's clear colour with the
-/// designed sky and the player hidden — and the clear colour the probe must
+/// horizon's dome and sea and the player hidden — and the clear colour the probe must
 /// still have found there, which is what proves the sky's own gradient was
 /// not counted as terrain. The check the capture exists for: a frame with no
 /// world pixels is the #1433 defect.

@@ -1151,7 +1151,6 @@ pub fn teardown(app: &mut App) {
                 With<MissionPlayerBody>,
                 With<PlaytestAircraft>,
                 With<LoadedItemBinding>,
-                With<crate::mission_session::DesignedSkyDome>,
             )>,
         )>();
         query.iter(world).collect()
@@ -1236,8 +1235,8 @@ pub fn run_windowed(
         stage.flight.record, stage.flight.provenance
     );
     println!(
-        "mission sky: designed horizon cue {} verified_original=false human_review=false",
-        crate::mission_session::DESIGNED_SKY_CLAIM
+        "mission horizon: sky, sea and fog drawn by #1434 M01-PLAY-SKY, labelled designed \
+         where the original data binds nothing, verified_original=false"
     );
     if let Some(parts) = app
         .world()
