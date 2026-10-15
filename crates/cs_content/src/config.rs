@@ -60,10 +60,11 @@ use cs_formats::AllocationBudget;
 use cs_formats::ParseContext;
 use cs_formats::error::ParseError;
 use cs_formats::text::{
-    DialectReader, DocumentedField, Fields, KeyedList, LineKind, LineTerminator,
-    PlaceholderAccounting, PlaceholderScope, PlaceholderTable, QuoteIssue, RecordKind,
-    ResourceHeader, TextDialect, Unclassified, definition_scope, dialect_for_member,
-    documented_fields, documented_scrapbook_fields, read_keyed_list, read_placeholders,
+    DialectReader, DocumentedField, Fields, KeyedList, LineKind, LineTerminator, MessageIdError,
+    MessageIdLookup, MessageIdTable, PlaceholderAccounting, PlaceholderScope, PlaceholderTable,
+    QuoteIssue, RecordKind, ResourceHeader, TextDialect, Unclassified, definition_scope,
+    dialect_for_member, documented_fields, documented_scrapbook_fields, read_keyed_list,
+    read_message_ids, read_placeholders,
 };
 use cs_formats::{PeError, PeResources, RT_STRING, ResourceKey, ResourceLeaf, read_pe_resources};
 use cs_types::asset_id::SourceSpan;
@@ -805,6 +806,8 @@ pub enum StringCatalogError {
     },
     /// The bounded resource reader refused the image.
     Pe(PeError),
+    /// The image's message-name table could not be read.
+    MessageIds(MessageIdError),
 }
 
 impl StringCatalogError {
@@ -813,6 +816,7 @@ impl StringCatalogError {
         match self {
             Self::LengthMismatch { .. } => "length_mismatch",
             Self::Pe(error) => error.code(),
+            Self::MessageIds(error) => error.code(),
         }
     }
 }
@@ -826,11 +830,129 @@ impl fmt::Display for StringCatalogError {
                 source.length()
             ),
             Self::Pe(error) => write!(f, "{error}"),
+            Self::MessageIds(error) => write!(f, "{error}"),
         }
     }
 }
 
 impl std::error::Error for StringCatalogError {}
+
+/// One PE image's message vocabulary beside its localizable strings: the
+/// `{name, id}` records [`cs_formats::text::read_message_ids`] finds and the
+/// [`StringCatalog`] the ids those records carry point into.
+///
+/// Both halves come from the **same bytes**, which is what makes this the
+/// production pairing: a symbolic message name — the `MSG_BRF_NWM1_OBJ1`
+/// element an objective's `IDENTITY` carries — is only ever a name in the
+/// record; nothing in the shipped `#define` headers defines it. Resolve the
+/// name here, the id through [`StringCatalog::resolve`], and the text is the
+/// installation's own (`docs/findings/2026-10-15-m01-hud-objective-message-ids.md`).
+///
+/// Nothing here loads the image: it is parsed as inert data through the
+/// bounded readers, exactly as [`StringCatalog`] is (spec F12,
+/// non-negotiable #3).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MessageCatalog {
+    strings: StringCatalog,
+    messages: MessageIdTable,
+}
+
+impl MessageCatalog {
+    /// Reads `bytes` as the PE image `source` describes: its localizable
+    /// strings and its message-name table, in one pass over the same bytes.
+    ///
+    /// # Errors
+    ///
+    /// Everything [`StringCatalog::read`] reports, plus
+    /// [`StringCatalogError::MessageIds`] when the message table's own parse
+    /// refuses.
+    pub fn read(
+        context: &mut ParseContext,
+        source: SourceSpan,
+        bytes: &[u8],
+    ) -> Result<Self, StringCatalogError> {
+        let strings = StringCatalog::read(context, source, bytes)?;
+        let messages = read_message_ids(context, strings.resources().layout(), bytes)
+            .map_err(StringCatalogError::MessageIds)?;
+        Ok(Self { strings, messages })
+    }
+
+    /// The image's localizable strings, for a caller that wants the id space
+    /// on its own.
+    #[must_use]
+    pub const fn strings(&self) -> &StringCatalog {
+        &self.strings
+    }
+
+    /// The image's `{name, id}` records, for a caller that wants to iterate
+    /// the vocabulary rather than resolve one name.
+    #[must_use]
+    pub const fn messages(&self) -> &MessageIdTable {
+        &self.messages
+    }
+
+    /// The id `name` labels in this image, or why there is no single answer.
+    #[must_use]
+    pub fn id(&self, name: &str) -> MessageIdLookup {
+        self.messages.resolve(name)
+    }
+
+    /// The string `name` labels in `language` (any language when `None`).
+    ///
+    /// Every way this can fail to be one string is its own answer: no record
+    /// spells the name, several ids do, or the id has no row for that
+    /// language. Nothing picks between them.
+    #[must_use]
+    pub fn resolve(&self, name: &str, language: Option<u32>) -> MessageLookup<'_> {
+        match self.messages.resolve(name) {
+            MessageIdLookup::Missing => MessageLookup::Missing,
+            MessageIdLookup::Ambiguous(ids) => MessageLookup::Ambiguous(ids),
+            MessageIdLookup::Found(id) => match self.strings.resolve(id, language) {
+                StringLookup::Found(row) => MessageLookup::Found { id, row },
+                lookup => MessageLookup::NoString { id, lookup },
+            },
+        }
+    }
+}
+
+/// The answer to one [`MessageCatalog::resolve`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MessageLookup<'a> {
+    /// No record of the image spells the name.
+    Missing,
+    /// Exactly one record spells it, and exactly one string answers the id.
+    Found {
+        /// The id the record carries.
+        id: u32,
+        /// The string with that id.
+        row: &'a StringRow,
+    },
+    /// The name resolves to `id`, but the id has no single string in the
+    /// requested language — [`StringLookup::Missing`] or
+    /// [`StringLookup::Ambiguous`], kept so the caller can report which.
+    NoString {
+        /// The id the record carries.
+        id: u32,
+        /// What the catalog answered for it.
+        lookup: StringLookup<'a>,
+    },
+    /// Several distinct ids answer the name; none is returned, because
+    /// choosing one would hide the contradiction in the image.
+    Ambiguous(Vec<u32>),
+}
+
+impl MessageLookup<'_> {
+    /// The text, when there is exactly one: a name record, a row for it and
+    /// decoded units. Anything else is `None` — a caller that wants to know
+    /// *why* matches on the variant instead.
+    #[must_use]
+    pub fn text(&self) -> Option<&str> {
+        match self {
+            Self::Found { row, .. } => row.text.as_deref(),
+            _ => None,
+        }
+    }
+}
 
 /// Compares two section names as the original reader does (**R1**): the
 /// same absence on both sides, otherwise ASCII case does not matter. A

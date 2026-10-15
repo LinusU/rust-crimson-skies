@@ -107,6 +107,15 @@ pub const SIZE_OF_HEADERS_OFFSET: u64 = 60;
 /// indexed by the optional-header shape: `[PE32, PE32+]`.
 pub const DATA_DIRECTORIES_OFFSET: [u64; 2] = [96, 112];
 
+/// `IMAGE_OPTIONAL_HEADER.ImageBase`: its offset from the optional header's
+/// start for PE32 (a 4-byte field at 28) and PE32+ (an 8-byte field at 24)
+/// (`Documented`).
+pub const IMAGE_BASE_OFFSET: [u64; 2] = [28, 24];
+
+/// `IMAGE_OPTIONAL_HEADER.ImageBase`'s width in bytes, indexed like
+/// [`DATA_DIRECTORIES_OFFSET`] and [`IMAGE_BASE_OFFSET`].
+pub const IMAGE_BASE_BYTES: [u64; 2] = [4, 8];
+
 /// `IMAGE_DIRECTORY_ENTRY_RESOURCE`'s index in the data-directory array.
 pub const RESOURCE_DIRECTORY_INDEX: u32 = 2;
 
@@ -404,8 +413,9 @@ pub struct RvaSpan {
     pub available: u64,
 }
 
-/// The header layout of one PE image: what the resource walk needs, and
-/// nothing that would require mapping or executing the image.
+/// The header layout of one PE image: what the resource walk needs, what a
+/// virtual-address translation needs, and nothing that would require mapping
+/// or executing the image.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PeLayout {
     container: String,
@@ -414,6 +424,7 @@ pub struct PeLayout {
     machine: u16,
     optional_magic: u16,
     headers_size: u32,
+    image_base: u64,
     sections: Vec<PeSection>,
     resource: Option<DataDirectory>,
 }
@@ -444,6 +455,13 @@ impl PeLayout {
     /// [`OPTIONAL_MAGIC_PE32PLUS`].
     pub fn optional_magic(&self) -> u16 {
         self.optional_magic
+    }
+
+    /// `IMAGE_OPTIONAL_HEADER.ImageBase`: the value a virtual address in this
+    /// image is added to, so a caller holding a VA can subtract it to get the
+    /// RVA [`Self::map_rva`] translates (`Documented`).
+    pub const fn image_base(&self) -> u64 {
+        self.image_base
     }
 
     /// `SizeOfHeaders`.
@@ -543,6 +561,7 @@ impl SectionSpan {
 struct LayoutFacts {
     pe_offset: u32,
     headers_size: u32,
+    image_base: u64,
     sections_at: u64,
     section_count: u16,
     resource: Option<DataDirectory>,
@@ -610,9 +629,17 @@ fn read_header_fields(image: &Reader<'_>) -> Result<LayoutFacts, PeError> {
     let optional_size = u64::from(u16_at(image, coff + 16, "pe.coff.size_of_optional_header")?);
     let optional = coff + COFF_HEADER_BYTES;
     let magic = u16_at(image, optional, "pe.optional.magic")?;
-    let directories = match magic {
-        OPTIONAL_MAGIC_PE32 => DATA_DIRECTORIES_OFFSET[0],
-        OPTIONAL_MAGIC_PE32PLUS => DATA_DIRECTORIES_OFFSET[1],
+    let (directories, image_base_at, image_base_bytes) = match magic {
+        OPTIONAL_MAGIC_PE32 => (
+            DATA_DIRECTORIES_OFFSET[0],
+            IMAGE_BASE_OFFSET[0],
+            IMAGE_BASE_BYTES[0],
+        ),
+        OPTIONAL_MAGIC_PE32PLUS => (
+            DATA_DIRECTORIES_OFFSET[1],
+            IMAGE_BASE_OFFSET[1],
+            IMAGE_BASE_BYTES[1],
+        ),
         other => {
             return Err(PeError::malformed(
                 image,
@@ -628,6 +655,25 @@ fn read_header_fields(image: &Reader<'_>) -> Result<LayoutFacts, PeError> {
         optional + SIZE_OF_HEADERS_OFFSET,
         "pe.optional.size_of_headers",
     )?;
+    // `ImageBase` is a 4-byte field at 28 of the optional header for PE32 and
+    // an 8-byte field at 24 for PE32+ (`Documented`), so its width comes from
+    // the same magic that chose the data-directory offset above.
+    let image_base = if image_base_bytes == IMAGE_BASE_BYTES[1] {
+        let mut field = image.window(
+            optional + image_base_at,
+            image_base_bytes,
+            "pe.optional.image_base",
+        )?;
+        let low = u64::from(field.read_u32("pe.optional.image_base")?);
+        let high = u64::from(field.read_u32("pe.optional.image_base.high")?);
+        low | (high << 32)
+    } else {
+        u64::from(u32_at(
+            image,
+            optional + image_base_at,
+            "pe.optional.image_base",
+        )?)
+    };
     // `NumberOfRvaAndSizes` is the four bytes immediately before the first
     // `IMAGE_DATA_DIRECTORY` (offset 92 in PE32, 108 in PE32+).
     let directory_count = u32_at(
@@ -657,6 +703,7 @@ fn read_header_fields(image: &Reader<'_>) -> Result<LayoutFacts, PeError> {
     Ok(LayoutFacts {
         pe_offset,
         headers_size,
+        image_base,
         sections_at,
         section_count,
         resource,
@@ -1315,6 +1362,7 @@ fn read_layout(image: &Reader<'_>, allocation: &mut AllocationBudget) -> Result<
         machine,
         optional_magic,
         headers_size: facts.headers_size,
+        image_base: facts.image_base,
         sections,
         resource: facts.resource,
     })

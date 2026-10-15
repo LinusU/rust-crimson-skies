@@ -16,6 +16,11 @@
 //! * [`resource_header`] reads the `#define NAME value` resource-id headers
 //!   ([`dialect::TextDialect::ResourceHeader`]) that name the same ids
 //!   [`crate::pe_resources`] walks in a PE resource directory (stage F12-B).
+//! * [`message_ids`] reads the `{name, string id}` table an image keeps in its
+//!   data section beside its pool of name strings — the only pairing of a
+//!   symbolic message name (`MSG_BRF_NWM1_OBJ1`) with an `RT_STRING` id the
+//!   installation holds, since the shipped headers define no `MSG_*` id at all
+//!   (task #1462 `M01-HUD-OBJECTIVE`).
 //! * [`records`] transcribes the record kinds and the field lists the keyed
 //!   list members document in their own comments — names and structure only,
 //!   no types (task #371, keyed F12-I).
@@ -35,6 +40,7 @@
 pub mod dialect;
 pub mod keyed_list;
 pub mod lines;
+pub mod message_ids;
 pub mod placeholder;
 pub mod records;
 pub mod resource_header;
@@ -60,6 +66,11 @@ pub use keyed_list::{
 };
 pub use lines::{
     LINES_ENTRYPOINT, LineTerminator, TerminatorCounts, TextLine, TextLines, scan_lines,
+};
+pub use message_ids::{
+    MESSAGE_ID_MAX, MESSAGE_ID_MIN, MESSAGE_ID_RECORD_BYTES, MESSAGE_IDS_ENTRYPOINT,
+    MESSAGE_NAME_MAX_BYTES, MESSAGE_NAME_MIN_BYTES, MessageIdError, MessageIdLookup,
+    MessageIdRecord, MessageIdTable, read_message_ids,
 };
 pub use placeholder::{
     PLACEHOLDER_ENTRYPOINT, PlaceholderAccounting, PlaceholderDefinition, PlaceholderReference,
