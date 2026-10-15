@@ -126,9 +126,11 @@ voice line. **Subtitles therefore stay `None`** on every queued line
     as the audible gate.
 * Follow-ups this task did not reach — filed as separate tasks: device-side
   playback and the missing radio tick (`M01-RADIO-DEVICE` #1461, **landed on
-  main separately** — see `docs/findings/2026-10-15-m01-radio-device.md`, so
-  what still gates an audible line is the identity/population rule,
-  `M01-RADIO-SAMPLE-IDENTITY` #1465 and `M01-RADIO-SAMPLE-WIRE` #1466), the
+  main separately** — see `docs/findings/2026-10-15-m01-radio-device.md`),
+  the voice-member identity and publish API (`M01-RADIO-SAMPLE-IDENTITY`
+  #1465, **landed on main separately** — `crate::audio::voice`) and the
+  wiring that calls it from this prepare step (`M01-RADIO-SAMPLE-WIRE`
+  #1466, **open**: together #1466 is what still gates an audible line), the
   objective HUD and the text behind `MSG_BRF_NWM1_OBJ1..4`
   (`M01-HUD-OBJECTIVE` #1462), and the music state requests
   (`M01-PLAY-MUSIC` #1463).
