@@ -163,10 +163,10 @@ Mutation checks, applied to production code, run and reverted:
 
 | Command | Exit |
 | --- | --- |
-| `cargo fmt --all -- --check` | 0 |
-| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
-| `cargo test --workspace --locked` | 0 (see [Evidence](#evidence) for the recorded run) |
-| `cargo test --workspace --locked -- accept_m01_hud_objective_ --include-ignored` | 0 (5 discovered, 5 executed, 5 passed) |
+| `cargo fmt --all -- --check` | 0 (on the rebased head) |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 (pre-rebase head and rebased head) |
+| `cargo test --workspace --locked` | 0 (pre-rebase head; see [Evidence](#evidence)) |
+| `cargo test --workspace --locked -- accept_m01_hud_objective_ --include-ignored` | 0 (5 discovered, 5 executed, 5 passed; re-run on the rebased head) |
 | `cs-inspect inventory --cs-path "$CS_GAME_DIR" --out …` | 0 (the two fingerprints above) |
 | `cs-inspect config --file "$CS_GAME_DIR/strings.dll" --cs-path "$CS_GAME_DIR"` | 0 (`strings: 1792`, `other_leaves: 2`, `languages: [1033]`) |
 | `cs-inspect config-account --cs-path "$CS_GAME_DIR" --out …` | 0 (zero `MSG_` occurrences; both headers present) |
@@ -187,6 +187,17 @@ this file's [What stays unknown](#5-what-stays-unknown) list is the honest
 content of those `unknowns` — deleting it to turn the flag green is exactly
 what the contract forbids. Every other condition the flag checks is met: exit
 code 0, 5 executed, 5 passed, every assertion `pass` with evidence.
+
+**On the rebased head.** `origin/main` moved while this branch was built
+(mod-root footprint work: `crates/cs_assets/src/mods.rs`,
+`crates/cs_content/src/mods/{mod,mount}.rs` and two findings). The rebase
+applied without conflicts, brought in no file this branch changes and no
+`Cargo.toml`/`Cargo.lock` — the merge-race case of the owner's 2026-10-01
+directive — so the plain workspace run was not repeated there. What *was*
+re-run on the rebased head: `fmt`, `clippy`, the task selection (which is the
+report's `command`), and therefore the report's `candidate_tree`. The
+`workspace-test.log` artifact is the run on the **pre-rebase** head: same
+branch code, and the only bytes the rebase added are listed above.
 
 ## 5. What stays unknown
 
