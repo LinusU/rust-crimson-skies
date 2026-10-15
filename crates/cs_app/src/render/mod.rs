@@ -178,3 +178,9 @@ pub mod profile;
 pub mod rgb565;
 pub mod sync;
 pub mod visibility;
+/// The drawn weather — the cloud deck and the low haze — of a windowed scene
+/// (task #1440 `M01-PLAY-WEATHER`): the one production path that paints them,
+/// installed by the original-assets playtest and by a composed mission, right
+/// after [`horizon`].
+pub mod weather;
+pub use weather::WeatherPlugin;

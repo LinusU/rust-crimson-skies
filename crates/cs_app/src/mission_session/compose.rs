@@ -784,6 +784,13 @@ fn add_composition(
         app.add_plugins(crate::render::HorizonPlugin::from_environment(
             stage.host.environment.definition(),
         ));
+        // Under the horizon, the mission's own weather record decides the
+        // cloud deck and the haze (#1440 `M01-PLAY-WEATHER`): a record that
+        // authors cloud layers has them drawn; every value nobody measured —
+        // all of M01's are unknown — is the labelled design.
+        app.add_plugins(crate::render::WeatherPlugin::from_environment(
+            stage.host.environment.definition(),
+        ));
     }
 
     // 1. The announced load: a fresh content session over the stage's
