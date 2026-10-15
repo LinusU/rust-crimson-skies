@@ -28,7 +28,7 @@
 use bevy::asset::{AssetApp, Assets};
 use bevy::mesh::{Mesh, Mesh3d, VertexAttributeValues};
 use bevy::prelude::{
-    AlphaMode, Camera3d, Color, MeshMaterial3d, StandardMaterial, Transform, Vec3,
+    AlphaMode, Camera3d, Color, MeshMaterial3d, Quat, StandardMaterial, Transform, Vec3,
 };
 use cs_app::environment::fixture::{clear_sky_environment, storm_environment};
 use cs_app::environment::{RunSeeds, read_mission_weather};
@@ -294,12 +294,28 @@ fn accept_m01_play_weather_the_plugin_draws_each_layer_under_the_camera() {
     }
     drop(drawn);
 
-    // Climb: two frames later every layer has followed the camera, still at
-    // its own altitude.
+    // Nothing may leave a layer tilted, not even a value somebody else wrote:
+    // the placement re-asserts the layer's own frame on every frame.
+    {
+        let world = app.world_mut();
+        let mut query = world.query::<(&WeatherLayer, &mut Transform)>();
+        for (_, mut transform) in query.iter_mut(world) {
+            transform.rotation = Quat::from_rotation_x(0.7);
+        }
+    }
+
+    // Climb and roll: two frames later every layer has followed the camera
+    // horizontally, still at its own altitude, and none of them has inherited
+    // the camera's attitude or kept the tilt somebody else wrote (F19
+    // non-negotiable 3: rolling cannot tilt a layer).
     app.world_mut()
         .get_mut::<Transform>(camera)
         .expect("the camera keeps its transform")
         .translation = Vec3::new(0.0, 4_096.0, 0.0);
+    app.world_mut()
+        .get_mut::<Transform>(camera)
+        .expect("the camera keeps its transform")
+        .rotation = Quat::from_rotation_z(1.1) * Quat::from_rotation_x(0.4);
     app.update();
     app.update();
     let world = app.world_mut();
@@ -311,6 +327,12 @@ fn accept_m01_play_weather_the_plugin_draws_each_layer_under_the_camera() {
         assert_eq!(
             transform.translation.y,
             spec.layers()[layer.layer].altitude_m()
+        );
+        assert_eq!(
+            transform.rotation,
+            Quat::IDENTITY,
+            "layer {} must not inherit the camera's roll or pitch",
+            layer.layer
         );
         seen += 1;
     }

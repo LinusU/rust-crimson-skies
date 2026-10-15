@@ -75,8 +75,8 @@ use bevy::asset::{Assets, RenderAssetUsages};
 use bevy::mesh::{Indices, Mesh, Mesh3d, PrimitiveTopology};
 use bevy::prelude::{
     AlphaMode, App, Camera3d, Color, Commands, Component, GlobalTransform, MeshMaterial3d, Plugin,
-    Query, Res, ResMut, Resource, StandardMaterial, Startup, Transform, Update, Vec3, Visibility,
-    With, Without,
+    Quat, Query, Res, ResMut, Resource, StandardMaterial, Startup, Transform, Update, Vec3,
+    Visibility, With, Without,
 };
 use cs_content::environment::{CloudLayer, EnvironmentDefinition};
 use cs_types::content::{Provenance, Resolved};
@@ -751,7 +751,10 @@ fn spawn_weather(
 ///
 /// This is F19 non-negotiable 3 applied to a scene with no `WorldOrigin`:
 /// translation follows the camera, orientation never does, and the altitude
-/// is the layer's own — so rolling or climbing cannot tilt or drag it.
+/// is the layer's own — so rolling or climbing cannot tilt or drag it. The
+/// rotation is pinned to the identity every frame, exactly as
+/// [`crate::render::horizon`] pins the dome's, so a camera that rolls cannot
+/// rotate a layer through this system.
 fn place_weather_around_camera(
     spec: Res<WeatherSpec>,
     cameras: Query<&GlobalTransform, With<Camera3d>>,
@@ -766,5 +769,6 @@ fn place_weather_around_camera(
             continue;
         };
         transform.translation = Vec3::new(translation.x, layer.altitude_m(), translation.z);
+        transform.rotation = Quat::IDENTITY;
     }
 }
