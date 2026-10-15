@@ -11,11 +11,12 @@
 //! ```text
 //! PreUpdate   insert_audio_session    the load's handoff owns the session
 //! FixedUpdate smooth_engine_voices     one fixed tick of throttle state
+//! FixedPostUpdate sync_audio_tick      the session clock follows the ledger
 //! Update      bind_spawned_emitters -> sync_emitter_loops -> advance_radio
 //!                 -> mix_session
 //! ```
 //!
-//! Four of those orderings are load-bearing:
+//! Five of those orderings are load-bearing:
 //!
 //! * `insert_audio_session` runs **before** the loop systems, so the session the
 //!   load owns exists before anything reads it, and a reload's fresh session is
@@ -30,7 +31,13 @@
 //!   at a fixed rate, so a frame-rate change cannot change the mix (F41
 //!   non-negotiable behavior 1).
 //! * `mix_session` runs **after** `sync_emitter_loops`, so the loops of this
-//!   frame are the ones the mixer carries to the device.
+//!   frame are the ones the mixer carries to the device; it also drains the
+//!   radio events `advance_radio` produced and carries them to the device, so a
+//!   queued radio line is voiced in the frame its start is reported.
+//! * `sync_audio_tick` runs after the physics step and **before**
+//!   `mission_host_tick`, so the session's clock is the committed tick when the
+//!   host offers its cues — the ids it mints carry the tick the host itself
+//!   read, and the queue measures a line's length against the same timeline.
 //!
 //! # Which device it mixes to
 //!
@@ -58,7 +65,7 @@ use std::sync::{Arc, Mutex};
 
 use bevy::app::{App, Plugin};
 use bevy::ecs::schedule::IntoScheduleConfigs;
-use bevy::prelude::{FixedUpdate, PreUpdate, Update};
+use bevy::prelude::{FixedPostUpdate, FixedUpdate, PreUpdate, Update};
 use cs_content::audio::AudioCatalog;
 use cs_sim::audio_events::AudioDevice;
 
@@ -68,7 +75,7 @@ use super::device::{
 };
 use super::engine::{EngineVoices, smooth_engine_voices};
 use super::handoff::{AudioHandoffLog, DeclaredAudioCatalog, insert_audio_session};
-use super::loops::{advance_radio, sync_emitter_loops};
+use super::loops::{advance_radio, sync_audio_tick, sync_emitter_loops};
 use super::mixer::{AudioMixReport, AudioOutput, AudioSpatial, mix_session};
 use super::spawn::{AudioBindLog, bind_spawned_emitters};
 
@@ -215,6 +222,18 @@ impl Plugin for AudioPlugin {
         app.init_resource::<EngineVoices>();
         app.add_systems(PreUpdate, insert_audio_session);
         app.add_systems(FixedUpdate, smooth_engine_voices);
+        // The session's clock follows the world's own fixed-tick ledger. It runs
+        // in `FixedPostUpdate` after the physics step and before the mission
+        // host, which stamps radio ids with the tick it reads from the same
+        // ledger, so a cue offered in this tick carries this tick's stamp.
+        // `advance_radio` syncs the same clock again on its way to advancing the
+        // queue, so an `Update`-only world is correct too.
+        app.add_systems(
+            FixedPostUpdate,
+            sync_audio_tick
+                .after(avian3d::prelude::PhysicsSystems::StepSimulation)
+                .before(crate::mission_session::mission_host_tick),
+        );
         app.add_systems(
             Update,
             (

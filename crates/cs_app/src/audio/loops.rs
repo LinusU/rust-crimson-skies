@@ -30,7 +30,7 @@ use bevy::ecs::entity::Entity;
 use bevy::ecs::lifecycle::RemovedComponents;
 use bevy::ecs::query::Added;
 use bevy::ecs::resource::Resource;
-use bevy::ecs::system::{Query, ResMut};
+use bevy::ecs::system::{Query, Res, ResMut};
 use cs_sim::audio_events::{
     AudioAssetSpec, AudioEmitterId, AudioEventError, AudioEventId, AudioRouter, EmitterStopReason,
     LoopBinding, LoopOutcome, MusicCue, MusicDirector, MusicOutcome, RadioEvent, RadioLine,
@@ -39,6 +39,7 @@ use cs_sim::audio_events::{
 use cs_types::Tick;
 use cs_types::content::ContentId;
 
+use crate::physics::PhysicsTickLedger;
 use crate::scene::SceneGeneration;
 
 use super::AudioEmitterBinding;
@@ -316,11 +317,47 @@ pub fn sync_emitter_loops(
 /// Advances the radio queue to the session tick; completion is tick-driven.
 ///
 /// Like [`sync_emitter_loops`], a world with no session advances nothing.
-pub fn advance_radio(mut session: Option<ResMut<AudioSession>>) {
+///
+/// The session's clock is the world's own fixed-tick ledger
+/// ([`PhysicsTickLedger`]): the mission host stamps radio ids with that tick, so
+/// this system reads it too, and a world that has one — every composed app —
+/// keeps the queue on the same timeline as the mission. A world with **no**
+/// ledger (a unit scenario that drives the session directly) keeps whatever tick
+/// it was given, which is how the F41-C scenarios stamp the clock by hand.
+pub fn advance_radio(
+    mut session: Option<ResMut<AudioSession>>,
+    ledger: Option<Res<PhysicsTickLedger>>,
+) {
     let Some(session) = session.as_mut() else {
         return;
     };
+    if let Some(ledger) = ledger {
+        session.tick = Tick(ledger.ticks);
+    }
     let now = session.tick;
     let events = session.radio.advance(now);
     session.radio_events.extend(events);
+}
+
+/// Copies the world's fixed-tick ledger into the session's clock.
+///
+/// [`advance_radio`] does this on the way to advancing the queue, which is what
+/// a world that only runs [`Update`](bevy::prelude::Update) needs. This system
+/// exists for the **fixed** half: the mission host stamps radio ids during
+/// `FixedPostUpdate`, after the physics step that increments the ledger, so the
+/// session's clock is brought up to the committed tick there. [`AudioPlugin`]
+/// registers it after the physics step and before
+/// [`mission_host_tick`](crate::mission_session::mission_host_tick), so a cue the
+/// host offers in the same tick is stamped with the tick the host itself read;
+/// a world with no ledger or no host leaves the session's tick alone.
+///
+/// [`AudioPlugin`]: super::AudioPlugin
+pub fn sync_audio_tick(
+    mut session: Option<ResMut<AudioSession>>,
+    ledger: Option<Res<PhysicsTickLedger>>,
+) {
+    let (Some(session), Some(ledger)) = (session.as_mut(), ledger) else {
+        return;
+    };
+    session.tick = Tick(ledger.ticks);
 }
