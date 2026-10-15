@@ -929,11 +929,28 @@ pub struct MissionOrdnanceOrders {
 /// reproduction. An unknown node on the victim is refused by the resolver by
 /// name rather than aimed somewhere else.
 fn rocket_launch(
-    world: &World,
+    world: &mut World,
     mission: &MissionWeapons,
     at: Tick,
     sequence: u32,
 ) -> Result<OrdnanceOrder, String> {
+    // The live damage-bound actors, lowest serial first: a deterministic
+    // designed selection that does not depend on entity iteration order.
+    let candidates: Vec<ActorId> = {
+        let mut query = world.query::<(Entity, &DamageActorBinding)>();
+        let mut candidates: Vec<ActorId> = query
+            .iter(world)
+            .map(|(_, binding)| binding)
+            .filter(|binding| {
+                binding.generation == mission.generation && binding.actor != mission.player
+            })
+            .map(|binding| binding.actor)
+            .collect();
+        candidates.sort();
+        candidates.dedup();
+        candidates
+    };
+
     let targeting = world
         .get_resource::<TargetingSession>()
         .ok_or_else(|| "no targeting session is installed".to_owned())?;
@@ -941,28 +958,14 @@ fn rocket_launch(
     let shooter = store
         .record(&mission.player)
         .ok_or_else(|| "the player is not rostered in the targeting store".to_owned())?;
-    let mut hostile: Option<ActorId> = None;
-    for entity_ref in world.iter_entities() {
-        let Some(binding) = entity_ref.get::<DamageActorBinding>() else {
-            continue;
-        };
-        if binding.generation != mission.generation || binding.actor == mission.player {
-            continue;
-        }
-        let Some(record) = store.record(&binding.actor) else {
-            continue;
-        };
-        if store.allegiance(&shooter.faction, &record.faction) != Some(Allegiance::Hostile) {
-            continue;
-        }
-        hostile = match hostile {
-            Some(current) if current.serial <= binding.actor.serial => Some(current),
-            _ => Some(binding.actor),
-        };
-    }
-    let Some(target) = hostile else {
-        return Err("no declared-hostile damage target is live".to_owned());
-    };
+    let target = candidates
+        .into_iter()
+        .find(|actor| {
+            store.record(actor).is_some_and(|record| {
+                store.allegiance(&shooter.faction, &record.faction) == Some(Allegiance::Hostile)
+            })
+        })
+        .ok_or_else(|| "no declared-hostile damage target is live".to_owned())?;
     Ok(OrdnanceOrder::Launch(OrdnanceLaunch {
         id: OrdnanceLaunchId {
             session: mission.session.get(),
@@ -986,26 +989,30 @@ fn rocket_launch(
 /// One path per live damage-bound actor: its centre now and, reconstructed
 /// from the body velocity the weapon path already uses, its centre at the
 /// start of the tick.
-fn rocket_target_paths(world: &World, mission: &MissionWeapons, dt_s: f64) -> Vec<TargetPath> {
+fn rocket_target_paths(world: &mut World, mission: &MissionWeapons, dt_s: f64) -> Vec<TargetPath> {
+    let targets: Vec<(Entity, ActorId)> = {
+        let mut query = world.query::<(Entity, &DamageActorBinding)>();
+        query
+            .iter(world)
+            .filter(|(_, binding)| {
+                binding.generation == mission.generation && binding.actor != mission.player
+            })
+            .map(|(entity, binding)| (entity, binding.actor))
+            .collect()
+    };
     let mut paths = Vec::new();
-    for entity_ref in world.iter_entities() {
-        let Some(binding) = entity_ref.get::<DamageActorBinding>() else {
-            continue;
-        };
-        if binding.generation != mission.generation || binding.actor == mission.player {
-            continue;
-        }
-        let Some(transform) = entity_ref.get::<GlobalTransform>() else {
+    for (entity, actor) in targets {
+        let Some(transform) = world.get::<GlobalTransform>(entity) else {
             continue;
         };
         let current = transform.translation();
-        let velocity = entity_ref
-            .get::<avian3d::prelude::LinearVelocity>()
+        let velocity = world
+            .get::<avian3d::prelude::LinearVelocity>(entity)
             .map(|velocity| velocity.0)
             .unwrap_or(Vec3::ZERO);
         let previous = current - velocity * dt_s as f32;
         let path = TargetPath::try_new(
-            binding.actor,
+            actor,
             [
                 f64::from(previous.x),
                 f64::from(previous.y),
@@ -1138,32 +1145,24 @@ fn ensure_mission_weapons(world: &mut World) {
 /// Only the mission rig's own mount keys are touched: any other
 /// [`MountPoseBinding`] in a composed mission belongs to another stage's
 /// hierarchy and is left alone.
-pub fn compose_mission_mount_poses(world: &mut World) {
-    let mut updates: Vec<(Entity, GlobalTransform)> = Vec::new();
-    for entity_ref in world.iter_entities() {
-        let Some(binding) = entity_ref.get::<MountPoseBinding>() else {
-            continue;
-        };
+pub fn compose_mission_mount_poses(
+    mut mounts: Query<(
+        &MountPoseBinding,
+        &ChildOf,
+        &Transform,
+        &mut NodeVisualTransform,
+    )>,
+    globals: Query<&GlobalTransform>,
+) {
+    for (binding, parent, local, mut node) in &mut mounts {
         if !RIG_MOUNTS
             .iter()
             .any(|rig| binding.mount == rig_mount_key(rig.mount))
         {
             continue;
         }
-        let Some(parent) = entity_ref.get::<ChildOf>().map(ChildOf::parent) else {
-            continue;
-        };
-        let (Some(local), Some(parent_global)) = (
-            entity_ref.get::<Transform>().copied(),
-            world.get::<GlobalTransform>(parent).copied(),
-        ) else {
-            continue;
-        };
-        updates.push((entity_ref.id(), parent_global.mul_transform(local)));
-    }
-    for (entity, global) in updates {
-        if let Some(mut node) = world.get_mut::<NodeVisualTransform>(entity) {
-            node.0 = global;
+        if let Ok(parent_global) = globals.get(parent.parent()) {
+            node.0 = parent_global.mul_transform(*local);
         }
     }
 }
