@@ -137,7 +137,7 @@ use std::time::Duration;
 use bevy::ecs::schedule::IntoScheduleConfigs;
 use bevy::prelude::{App, Entity, FixedPostUpdate, PostUpdate, Resource, With, World};
 use bevy::time::{Fixed, Time};
-use cs_content::objectives_engine::{CueEmission, EngineObjectives};
+use cs_content::objectives_engine::EngineObjectives;
 use cs_content::world::WorldObjectId;
 use cs_script::ir::{AnimationState, MissionProgram};
 use cs_script::runtime::{EventKind, SessionGeneration, TerminalState, TickError};
@@ -1116,7 +1116,8 @@ impl MissionHost {
         //    audio session's radio queue. A world with no audio session
         //    answers every cue by naming it, never by dropping it.
         let cues = self.lifecycles.take_cues();
-        let radio = self.offer_cues(&cues, world);
+        let mut session = world.get_resource_mut::<AudioSession>();
+        let radio = super::radio::offer_cues(&cues, &self.radio, session.as_deref_mut());
 
         Ok(MissionHostTick {
             tick,
@@ -1129,36 +1130,6 @@ impl MissionHost {
             script,
             radio,
         })
-    }
-
-    /// Offers `cues` to the audio session the world holds, resolving each
-    /// through [`MissionRadio`] and answering with what each one became.
-    fn offer_cues(&self, cues: &[CueEmission], world: &mut World) -> Vec<RadioLineOutcome> {
-        if cues.is_empty() {
-            return Vec::new();
-        }
-        let Some(mut audio) = world.get_resource_mut::<AudioSession>() else {
-            return cues
-                .iter()
-                .map(|cue| RadioLineOutcome::NoAudioSession {
-                    group: cue.group.clone(),
-                })
-                .collect();
-        };
-        let audio = &mut *audio;
-        let mut outcomes = Vec::new();
-        for cue in cues {
-            for plan in self.radio.plan(cue) {
-                match self.radio.enqueue(&plan, audio) {
-                    Ok(()) => outcomes.push(plan),
-                    Err(refusal) => outcomes.push(RadioLineOutcome::Refused {
-                        group: cue.group.clone(),
-                        refusal,
-                    }),
-                }
-            }
-        }
-        outcomes
     }
 
     /// Runs the terminal sequence over one stepped tick, when either of the

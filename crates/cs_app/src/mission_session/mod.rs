@@ -91,8 +91,8 @@ mod world_draw;
 
 pub use compose::{
     MissionComposition, MissionCompositionError, MissionPlayerBody, MissionPlayerStart,
-    MissionStage, StageItem, StageMount, build_headless, build_windowed, run_windowed, stage_for,
-    teardown,
+    MissionStage, StageItem, StageMount, build_headless, build_windowed,
+    declared_engine_objectives, run_windowed, stage_for, teardown,
 };
 pub use content::{
     MissionContent, MissionFlight, MissionSessionError, SoundArchive, prepare_mission_content,
@@ -124,6 +124,7 @@ pub use player_visual::{
 pub use radio::{
     MissionRadio, PreparedLine, RADIO_SOUND_CONTAINER, RadioError, RadioLineOutcome, RadioRefusal,
     ResolvedGroup, SOUND_GROUPS_ARCHIVE, SOUND_GROUPS_MEMBER, declared_sound_groups,
+    dialogue_content_id, offer_cues,
 };
 pub use terminal::{MissionExit, MissionTerminal, MissionTerminalSource};
 pub use world_draw::{

@@ -644,7 +644,7 @@ fn declared_objectives(
 /// record does not declare) in its own load state, with the engine's range
 /// check the last reader — a target the record's count does not bound is a
 /// refusal, never a clamp.
-fn declared_engine_objectives(
+pub fn declared_engine_objectives(
     recovery: &crate::objectives::ObjectiveRecovery,
 ) -> Result<EngineObjectives, cs_content::objectives_engine::EngineEffectError> {
     let count = u32::try_from(recovery.engine_objective_count())

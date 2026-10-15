@@ -375,19 +375,16 @@ impl MissionRadio {
     }
 
     /// The groups this radio prepared, in name order.
-    #[must_use]
     pub fn groups(&self) -> impl Iterator<Item = &str> {
         self.groups.keys().map(String::as_str)
     }
 
     /// The members this radio prepared, in member order.
-    #[must_use]
     pub fn prepared(&self) -> impl Iterator<Item = &PreparedLine> {
         self.lines.values()
     }
 
     /// What refused to prepare, keyed by the group or member it refused.
-    #[must_use]
     pub fn failures(&self) -> impl Iterator<Item = (&str, &RadioRefusal)> {
         self.failures
             .iter()
@@ -593,6 +590,47 @@ impl MissionRadio {
     }
 }
 
+/// Offers `cues` to `audio` through `radio`, answering with what each one
+/// became, in emission order.
+///
+/// This is the host's whole sound step ([`super::MissionHost::step`] stage 7)
+/// factored out so the acceptance suite drives the same code the composition
+/// drives: a world with no audio session (`audio` is `None`) answers every
+/// cue by naming it, never by dropping it, and a line the line builder
+/// refuses is reported with that refusal instead of a queued line.
+#[must_use]
+pub fn offer_cues(
+    cues: &[CueEmission],
+    radio: &MissionRadio,
+    audio: Option<&mut AudioSession>,
+) -> Vec<RadioLineOutcome> {
+    if cues.is_empty() {
+        return Vec::new();
+    }
+    let Some(audio) = audio else {
+        return cues
+            .iter()
+            .map(|cue| RadioLineOutcome::NoAudioSession {
+                group: cue.group.clone(),
+            })
+            .collect();
+    };
+    let audio = &mut *audio;
+    let mut outcomes = Vec::new();
+    for cue in cues {
+        for plan in radio.plan(cue) {
+            match radio.enqueue(&plan, audio) {
+                Ok(()) => outcomes.push(plan),
+                Err(refusal) => outcomes.push(RadioLineOutcome::Refused {
+                    group: cue.group.clone(),
+                    refusal,
+                }),
+            }
+        }
+    }
+    outcomes
+}
+
 /// The group → child table of `sounds.zrd`.
 #[derive(Debug, Default, Clone)]
 struct SoundGroupTable {
@@ -614,7 +652,18 @@ impl SoundGroupTable {
             .map_err(RadioError::Read)?;
         let document = cs_content::stunts::decode_zrd(&bytes)
             .map_err(|error| RadioError::Read(format!("{SOUND_GROUPS_MEMBER}: {error}")))?;
-        let record = cs_content::stunts::objective_record(&document);
+        Self::from_document(&document)
+    }
+
+    /// The table one decoded `sounds.zrd` document holds, whatever asked for
+    /// it: the `SETS` rows become members, the `SOUND_GROUPS` records become
+    /// children.
+    ///
+    /// # Errors
+    ///
+    /// [`RadioError::Unmeasured`] when the document declares neither section.
+    fn from_document(document: &ZrdValue) -> Result<Self, RadioError> {
+        let record = cs_content::stunts::objective_record(document);
         let fields = cs_content::stunts::zrd_flat_fields(record);
 
         let mut table = Self::default();
@@ -655,19 +704,7 @@ impl SoundGroupTable {
                         };
                         let children = table.children.entry(name.to_owned()).or_default();
                         for child in &parts[1..] {
-                            match child {
-                                ZrdValue::Text(text) => children.push(text.clone()),
-                                // A child the record spelled as a one-element
-                                // list is the same name; any other shape
-                                // reaches the refusal path by never
-                                // resolving.
-                                ZrdValue::List(inner) => {
-                                    if let Some(text) = inner.first().and_then(as_text) {
-                                        children.push(text.to_owned());
-                                    }
-                                }
-                                _ => {}
-                            }
+                            collect_child_names(child, children);
                         }
                     }
                 }
@@ -743,6 +780,26 @@ fn as_text(value: &ZrdValue) -> Option<&str> {
     value.as_text()
 }
 
+/// The names one `SOUND_GROUPS` child holds, collected whole.
+///
+/// The record spells a child as a bare name (`"snd_a"`), as a list of names
+/// (`["snd_a", ["snd_b"]]`, the spelling `snd_NW1Start` uses for its second
+/// line), or as a name beside a property (`["MUSIC", "DYNAMIC_WEIGHTS", 0.5,
+/// ["snd_prebattle1"]]`). Every text leaf is a name candidate: a leaf nothing
+/// declares reaches [`RadioRefusal::UnresolvedLeaf`] when the cue fires,
+/// rather than being dropped because a list wrapped it.
+fn collect_child_names(child: &ZrdValue, out: &mut Vec<String>) {
+    match child {
+        ZrdValue::Text(text) => out.push(text.clone()),
+        ZrdValue::List(items) => {
+            for item in items {
+                collect_child_names(item, out);
+            }
+        }
+        ZrdValue::Int(_) | ZrdValue::Float(_) => {}
+    }
+}
+
 /// The dialogue content id of an archive member: F14-D.7's
 /// `install_file_key` derivation over [`ContentKind::Dialogue`], because the
 /// member is a spoken line.
@@ -750,7 +807,7 @@ fn as_text(value: &ZrdValue) -> Option<&str> {
 /// # Errors
 ///
 /// [`RadioError`] when the id grammar refuses the spelling.
-fn dialogue_content_id(container: &str, member: &str) -> Result<ContentId, RadioError> {
+pub fn dialogue_content_id(container: &str, member: &str) -> Result<ContentId, RadioError> {
     ContentId::from_source(
         ContentKind::Dialogue,
         &install_file_key(&format!("{container}/{member}")),
@@ -955,38 +1012,71 @@ mod tests {
         let id = dialogue_content_id(RADIO_SOUND_CONTAINER, "VO_c2-NW-m1_Jack_7.wav")
             .expect("the archive spells the member");
         assert_eq!(id.kind(), ContentKind::Dialogue);
+        // The id grammar encodes the source key (it escapes the separators and
+        // lowercases), so the member's own spelling is compared through the
+        // production derivation rather than by hand.
+        let expected = install_file_key(&format!("{RADIO_SOUND_CONTAINER}/VO_c2-NW-m1_Jack_7.wav"));
+        assert_eq!(
+            id.key(),
+            expected.as_str(),
+            "the id must embed the container and the member the line plays, got {id}"
+        );
         assert!(
-            id.key().contains("VO_c2-NW-m1_Jack_7.wav"),
-            "the id must name the member it plays, got {id}"
+            expected.contains("soundsh") && expected.ends_with("jack_5f_7.wav"),
+            "the derived key spells the labelled container and this member: {expected}"
         );
     }
 
     #[test]
     fn accept_m01_play_radio_a_group_expands_through_sets_and_children() {
-        let table = SoundGroupTable {
-            members: [
-                ("snd_a".to_owned(), "VO_x_a_1.wav".to_owned()),
-                ("snd_b".to_owned(), "VO_x_b_2.wav".to_owned()),
-            ]
-            .into_iter()
-            .collect(),
-            children: [
-                (
-                    "snd_pair".to_owned(),
-                    vec!["snd_a".to_owned(), "snd_b".to_owned()],
-                ),
-                (
-                    "snd_music".to_owned(),
-                    vec![MUSIC_LEAF.to_owned(), "DYNAMIC_WEIGHTS".to_owned()],
-                ),
-                ("snd_leaf".to_owned(), vec!["VO_x_c_3.wav".to_owned()]),
-            ]
-            .into_iter()
-            .collect(),
+        // The measured `sounds.zrd` shape: one record holding both sections,
+        // `SETS` rows of `[<name>, <member>.wav]`, and a `SOUND_GROUPS` child
+        // spelled the way `snd_NW1Start` spells its second line — a bare name
+        // beside a nested one-element list.
+        let row = |name: &str, member: &str| {
+            ZrdValue::List(vec![
+                ZrdValue::Text(name.to_owned()),
+                ZrdValue::Text(member.to_owned()),
+            ])
         };
+        let document = ZrdValue::List(vec![ZrdValue::List(vec![
+            ZrdValue::Text(SETS_KEY.to_owned()),
+            ZrdValue::List(vec![
+                ZrdValue::Text("c1cm01".to_owned()),
+                ZrdValue::List(vec![
+                    row("snd_a", "VO_x_a_1.wav"),
+                    row("snd_b", "VO_x_b_2.wav"),
+                ]),
+            ]),
+            ZrdValue::Text(SOUND_GROUPS_KEY.to_owned()),
+            ZrdValue::List(vec![
+                ZrdValue::List(vec![
+                    ZrdValue::Text("snd_pair".to_owned()),
+                    ZrdValue::List(vec![
+                        ZrdValue::Text("snd_a".to_owned()),
+                        ZrdValue::List(vec![ZrdValue::Text("snd_b".to_owned())]),
+                    ]),
+                ]),
+                ZrdValue::List(vec![
+                    ZrdValue::Text("snd_music".to_owned()),
+                    ZrdValue::Text(MUSIC_LEAF.to_owned()),
+                    ZrdValue::Text("DYNAMIC_WEIGHTS".to_owned()),
+                ]),
+                ZrdValue::List(vec![
+                    ZrdValue::Text("snd_leaf".to_owned()),
+                    ZrdValue::Text("VO_x_c_3.wav".to_owned()),
+                ]),
+            ]),
+        ])]);
+        let table =
+            SoundGroupTable::from_document(&document).expect("the record declares both sections");
 
         let pair = table.expand("snd_pair").expect("both children resolve");
-        assert_eq!(pair.members, ["VO_x_a_1.wav", "VO_x_b_2.wav"]);
+        assert_eq!(
+            pair.members,
+            ["VO_x_a_1.wav", "VO_x_b_2.wav"],
+            "a child list keeps every name it spells, however deeply the record nests them"
+        );
         assert!(!pair.music);
         assert!(pair.unresolved.is_empty());
 
