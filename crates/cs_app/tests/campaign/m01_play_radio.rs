@@ -121,7 +121,9 @@ fn assert_opening(queued: &[Queued], refused: &[String], no_audio: usize) {
     assert_eq!(
         opening.len(),
         2,
-        "the opening group cues exactly two lines, got {opening:?} (all answers: {queued:?})"
+        "the opening group cues exactly two lines, got {} (queued: {queued:?}, refused: \
+         {refused:?}, cues with no audio session: {no_audio})",
+        opening.len()
     );
     let members = BTreeSet::from(OPENING_MEMBERS);
     let queued_members: BTreeSet<&str> = opening.iter().map(|line| line.member.as_str()).collect();
@@ -268,6 +270,14 @@ fn accept_m01_play_radio_the_opening_conversation_is_queued_at_mission_start() {
 /// This member needs `CS_ENGINE_IMAGE` as well: M01's player start is only
 /// known from the owner's decrypted image, so without it the launch plan
 /// reports the gap and the test fails loudly rather than skipping.
+///
+/// The composition is pumped **one committed fixed tick per world update**
+/// (the frame pinned to the fixed timestep, the way
+/// `PhysicsSession::pump_frame` pumps it): an unpinned 1/60 s frame commits
+/// two ticks over the 120 Hz loop, and the composed entry's report for the
+/// frame's first tick is overwritten before this test can read it — which
+/// would lose OBJECTIVE1's own wake tick, the one tick that carries the
+/// conversation.
 #[test]
 #[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_play_radio_the_composition_queues_the_opening_conversation() {
@@ -299,9 +309,27 @@ fn accept_m01_play_radio_the_composition_queues_the_opening_conversation() {
     let mut outcomes: Vec<RadioLineOutcome> = Vec::new();
     let mut seen = 0u64;
     let mut tick = 0u64;
+    // A composed step that refuses answers nothing: the refusal itself is
+    // the reason, so it is carried out of the loop and quoted by the
+    // assertion instead of leaving an empty answer nobody can explain.
+    let mut answer_error: Option<String> = None;
+    // One headless frame is 1/60 s over the 120 Hz fixed loop, so an
+    // unpinned frame commits **two** ticks and the composed entry overwrites
+    // the first one's report before this test can read it — which is exactly
+    // what `PhysicsSession::pump_frame` prevents by pumping one fixed tick
+    // per world update. OBJECTIVE1 wakes two mission seconds in, so the
+    // report of that very tick has to be readable: the frame is pinned to
+    // one fixed tick the same way here.
+    let timestep = app
+        .world()
+        .resource::<bevy::time::Time<bevy::time::Fixed>>()
+        .timestep();
     // The wake fires at tick 240 (two seconds of the 120 Hz mission clock);
     // 600 is the guard that fails loudly instead of spinning if it never does.
     for _ in 0..200_000 {
+        *app.world_mut()
+            .resource_mut::<bevy::time::TimeUpdateStrategy>() =
+            bevy::time::TimeUpdateStrategy::ManualDuration(timestep);
         app.update();
         let Some(report) = app.world().get_resource::<MissionHostReport>() else {
             continue;
@@ -311,8 +339,12 @@ fn accept_m01_play_radio_the_composition_queues_the_opening_conversation() {
             continue;
         }
         seen = tick;
-        if let Ok(produced) = &report.answer {
-            outcomes.extend(produced.radio.iter().cloned());
+        match &report.answer {
+            Ok(produced) => outcomes.extend(produced.radio.iter().cloned()),
+            Err(error) => {
+                answer_error = Some(format!("composed step at tick {tick} refused: {error}"));
+                break;
+            }
         }
         if tick >= 600 {
             break;
@@ -323,6 +355,11 @@ fn accept_m01_play_radio_the_composition_queues_the_opening_conversation() {
             break;
         }
     }
+    assert!(
+        answer_error.is_none(),
+        "{}",
+        answer_error.unwrap_or_default()
+    );
     assert!(
         tick >= 245,
         "the composed run must pass OBJECTIVE1's two-second wake; it stopped at tick {tick}"
