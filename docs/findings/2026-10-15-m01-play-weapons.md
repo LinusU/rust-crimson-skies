@@ -67,6 +67,25 @@ state, reported, not papered over. The M01 objective ("blow up the fuel truck
 on the bridge and the cargo zeppelin's fuel tanks") therefore cannot complete
 until #1435 lands; that is a dependency, not a pared-down criterion.
 
+### Integration with #1435 after the rebase
+
+#1435 landed on `main` (`mission_actors`) while this branch was open. Its
+Startup spawner creates the session's `SessionDamageResolver` if absent and
+registers each scripted actor with a designed damage graph whose pool integrity
+is an explicit **unknown** (#668: "no M01 damage table is measured"), and it
+ranks no allegiances. Two consequences:
+
+* this module's `MissionWeaponSessions::install` **keeps** an installed resolver
+  that already serves the same session instead of replacing it, because
+  replacing it would drop every registration the actors committed. It only
+  installs its own when none is present or the installed one serves a torn-down
+  generation;
+* M01's own actors still resolve nothing from a gun or rocket hit: their
+  integrity pool is an explicit unknown (reported unresolved rather than
+  absorbed by an invented capacity) and no target record declares them hostile,
+  so the F27 resolution refuses the shot rather than inventing damage. Wiring
+  their measured damage table and allegiances is #668/#1435/#1426 work.
+
 The rocket's engagement node is the designed `hull` key: the original's
 per-airframe part names are unmeasured, so a rocket aims at one named part and
 the resolver refuses an unknown node by name rather than aiming somewhere else.

@@ -578,10 +578,21 @@ impl MissionWeaponSessions {
     pub fn install(self, world: &mut World) -> Result<(), MissionWeaponError> {
         let player = self.mission.player;
         let session = self.mission.session;
+        // The mission's actor spawner (M01-PLAY-ACTORS, #1435) runs at Startup
+        // and registers its damage actors with the session's shared resolver.
+        // This open runs after it, so a resolver already serving this session
+        // is **kept**: replacing it would drop every registration the actors
+        // committed. A resolver of another generation (a torn-down run) is
+        // replaced, exactly as the weapons session contract spells.
+        let reuse = world
+            .get_resource::<SessionDamageResolver>()
+            .is_some_and(|resolver| resolver.session() == session.get());
         world.insert_resource(self.mission);
         world.insert_resource(self.weapons);
         world.insert_resource(MissionOrdnanceSession(self.ordnance));
-        world.insert_resource(SessionDamageResolver::new(self.damage));
+        if !reuse {
+            world.insert_resource(SessionDamageResolver::new(self.damage));
+        }
         world.insert_resource(self.targeting);
         world.init_resource::<WeaponTickInputs>();
         world.init_resource::<MissionOrdnanceOrders>();
