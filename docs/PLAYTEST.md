@@ -327,6 +327,33 @@ Controls are the keyboard table above (`W`/`S`, `Q`/`E`, `A`/`D`, throttle,
 respawns the player from the start recipe, instead of only resetting the
 aircraft.
 
+### Placing the player and waiting for a block (#1486)
+
+An evidence capture (`CS_MISSION_CAPTURE=1`, `CS_EVIDENCE_DIR`, capabilities
+`gpu,audio`) can be given a scenario. M01 starts 5 311 m from
+`workersvoyagezep` against the proximity trigger's 700 m radius and its
+authored heading never passes inside about 1 400 m, so the trigger cannot fire
+from the measured start:
+
+| Variable | Meaning |
+| --- | --- |
+| `CS_MISSION_START_M=x,y,z` | replaces the measured start position (metres) |
+| `CS_MISSION_START_HEADING_RAD=<r>` | replaces the measured heading (radians) |
+| `CS_MISSION_WATCH_BLOCK=<n>` | zero-based block index the run waits for |
+| `CS_MISSION_WATCH_MAX_FRAMES=<n>` | rendered frames the wait may last |
+
+* The start pair and the watch pair are each all-or-nothing, and a malformed
+  or non-finite value is refused. Setting any of them without
+  `CS_MISSION_CAPTURE=1` is refused too; it is never ignored.
+* A watched run does not run the scripted pitch-up. The player is the
+  production body under the production flight law; the run ends once the block
+  completes (writing a `trigger` trace record with the observed member
+  positions and the record's nap/wake/kill states, and a
+  `frame_<n>_trigger.png`), or fails if the budget is spent first.
+* The trace header is followed by a `scenario` record naming the placement.
+  An overridden start is a test placement, not the measured start, and is
+  never original evidence of where the mission begins.
+
 ### Firing (#1437)
 
 The player can shoot in M01:
