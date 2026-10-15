@@ -197,9 +197,10 @@ pub fn world_actor_in_play(
 ) -> Option<bool> {
     match session?.set().presence(world_actor) {
         Some(Presence::Destroyed) => Some(false),
-        Some(Presence::Intact) => Some(!damage_actor.is_some_and(|actor| {
-            damage.is_some_and(|resolver| resolver.is_destroyed(&actor))
-        })),
+        Some(Presence::Intact) => Some(
+            !damage_actor
+                .is_some_and(|actor| damage.is_some_and(|resolver| resolver.is_destroyed(&actor))),
+        ),
         None => None,
     }
 }
@@ -246,8 +247,11 @@ pub fn mission_world_observation(world: &mut World) {
     //    lifecycle crossed with the damage authority's destruction ledger.
     //    Neither family speaks → no row at all, fail-closed.
     let bindings: Vec<(ContentId, WorldActorId, Option<ActorId>, [f64; 3])> = {
-        let mut query =
-            world.query::<(&WorldActorBinding, &Transform, Option<&MissionZeppelinActor>)>();
+        let mut query = world.query::<(
+            &WorldActorBinding,
+            &Transform,
+            Option<&MissionZeppelinActor>,
+        )>();
         query
             .iter(world)
             .map(|(binding, transform, zeppelin)| {

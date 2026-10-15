@@ -23,7 +23,8 @@
 //!    (`tools/validate_evidence.py`), and this report carries the unresolved
 //!    issues the owner's 2026-09-28 directive forbids deleting — the untraced
 //!    in-play-bit producers, the unreachable world-actor `Destroy` arm in a
-//!    composed run and the unresolved zeppelin pool. The pass/fail facts are
+//!    composed run, the unresolved zeppelin pool, block 55's wake chain behind
+//!    `OBJECTIVE22` and #1439's windowed criterion. The pass/fail facts are
 //!    carried by `command.exit_code` and the `tests` counts, which the plain
 //!    check does evaluate.
 //! 4. Commit a copy as `docs/findings/evidence/M01-PLAY-TRIGGERS-ACTOR-BIT.json`.
@@ -43,8 +44,8 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use cs_app::mission_launch::plan_mission_launch;
 use cs_app::mission_actors::MissionActorSpawnReport;
+use cs_app::mission_launch::plan_mission_launch;
 use cs_app::mission_session::{
     MissionHost, MissionStage, build_headless, stage_for, subject_node_name, teardown,
 };
@@ -244,10 +245,13 @@ fn observe_actor_bit(game_dir: &Path) -> ActorBitRun {
                 .resource::<MissionHost>()
                 .world_actors()
                 .and_then(|session| session.set().presence(zeppelin.world_actor))
-                .map_or_else(|| "unheld".to_owned(), |state| match state {
-                    Presence::Intact => "intact".to_owned(),
-                    Presence::Destroyed => "destroyed".to_owned(),
-                });
+                .map_or_else(
+                    || "unheld".to_owned(),
+                    |state| match state {
+                        Presence::Intact => "intact".to_owned(),
+                        Presence::Destroyed => "destroyed".to_owned(),
+                    },
+                );
             let ledger_destroyed = app
                 .world()
                 .resource::<SessionDamageResolver>()
@@ -288,9 +292,7 @@ fn observe_actor_bit(game_dir: &Path) -> ActorBitRun {
         "no zeppelin's destruction is recorded at the start"
     );
     assert!(
-        rows
-            .iter()
-            .all(|row| row.observed_in_play == Some(true)),
+        rows.iter().all(|row| row.observed_in_play == Some(true)),
         "every bound actor row is observed in play before any destruction"
     );
     assert!(
@@ -329,6 +331,12 @@ fn observe_actor_bit(game_dir: &Path) -> ActorBitRun {
          (Resolved::Unknown, #668/F27-E): a routed hit blocks, so no hit-produced destruction of \
          a zeppelin is possible today and no integrity pool was invented here. Affected content \
          is a live gun kill of a zeppelin; resolving task #668 (the measured damage table)."
+            .to_owned(),
+        "OBJECTIVE56 (block 55) is woken only by block 21 (OBJECTIVE22), which starts Dormant \
+         (measured from M01's recovered declarations): this suite does not drive that wake chain, \
+         so the block's COMPLETION is gated even though its ladder condition holds from this \
+         task's actor row. Affected content is OBJECTIVE56's completion in a live M01 run; \
+         resolving: the M01-B/F39 wake-chain work over OBJECTIVE22."
             .to_owned(),
         "The windowed firing criterion carried from #1439 is NOT met and not claimed here \
          (capabilities retail, synthetic only): the proximity trigger needs the player within \
@@ -371,7 +379,11 @@ fn ladder_census(program: &cs_script::ir::MissionProgram) -> Vec<(usize, u32, us
 }
 
 /// The observation as JSON: measured rows and counts, no original bytes.
-fn render_actor_bit(observation: &ActorBitRun, install_sha256: &str, candidate_tree: &str) -> String {
+fn render_actor_bit(
+    observation: &ActorBitRun,
+    install_sha256: &str,
+    candidate_tree: &str,
+) -> String {
     let zeppelins: Vec<String> = observation
         .zeppelins
         .iter()
@@ -504,7 +516,8 @@ fn civil_from_days(days: i64) -> (i64, u32, u32) {
     let era = shifted.div_euclid(146_097);
     let day_of_era = shifted.rem_euclid(146_097);
     let year = era * 400 + day_of_era / 1461 + day_of_era / 365 - day_of_era / 146_096;
-    let day_of_year = day_of_era - (365 * day_of_era / 1461 + day_of_era / 36_524 - day_of_era / 146_096);
+    let day_of_year =
+        day_of_era - (365 * day_of_era / 1461 + day_of_era / 36_524 - day_of_era / 146_096);
     let shifted_month = (5 * day_of_year + 2) / 153;
     let day = (day_of_year - (153 * shifted_month + 2) / 5 + 1) as u32;
     let month = if shifted_month < 10 {

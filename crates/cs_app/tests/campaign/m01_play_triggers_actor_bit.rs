@@ -23,7 +23,9 @@
 //!   nobody reported;
 //! * **retail** — M01's three zeppelins are observed in play, and a
 //!   scripted destruction of `piratezep` takes exactly its row out and
-//!   advances exactly the two ladders that count it.
+//!   advances `OBJECTIVE54` (block 53) once its measured wake from block 1
+//!   has armed it; `OBJECTIVE56` (block 55) stays behind its own measured
+//!   wake (`OBJECTIVE22`, which this suite does not drive) and says so.
 //!
 //! The destruction in every leg goes through the **production damage
 //! authority's own scripted-destruction port**
@@ -39,8 +41,8 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use bevy::prelude::{App, Entity, Transform};
-use cs_app::mission_launch::plan_mission_launch;
 use cs_app::mission_actors::MissionActorSpawnReport;
+use cs_app::mission_launch::plan_mission_launch;
 use cs_app::mission_session::{
     MissionHost, MissionStage, build_headless, stage_for, subject_node_name, teardown,
     world_actor_in_play,
@@ -63,12 +65,17 @@ use crate::common::{cid, label};
 use crate::vs_m01_rt_window::{Scratch, synthetic_stage};
 
 /// `OBJECTIVE54`: threshold 1 over the one-element chain `["piratezep"]`.
-const PIRATE_ACTOR_LADDER_BLOCK: u32 = 53;
-/// `OBJECTIVE56`: the same chain, threshold 1.
-const PIRATE_ACTOR_LADDER_TWO_BLOCK: u32 = 55;
+/// Starts Dormant: woken by block 1 (`OBJECTIVE2`), measured.
+const PIRATE_LADDER_BLOCK: u32 = 53;
+/// `OBJECTIVE56`: the same chain, threshold 1. Starts Dormant: woken by
+/// block 21 (`OBJECTIVE22`), which itself starts Dormant, measured.
+const PIRATE_LADDER_TWO_BLOCK: u32 = 55;
 /// `OBJECTIVE55`: `workersvoyagezep`'s 18 engine chains, threshold 2 — the
-/// part ladder that must not move when the *actor* leaves play.
+/// part ladder that must not move when the *actor* leaves play. Awake.
 const WORKERS_ENGINES_BLOCK: u32 = 54;
+/// `OBJECTIVE2`: the `DEDG` group-1 block that starts Awake — the measured
+/// waker of block 53.
+const GROUP_ONE_BLOCK: u32 = 1;
 /// The measured subject name M01's `piratezep` zeppelin binds under.
 const PIRATEZEP: &str = "piratezep";
 /// The measured subject name M01's `workersvoyagezep` zeppelin binds under.
@@ -110,11 +117,15 @@ fn observed_members(app: &App) -> BTreeMap<MemberName, MemberObservation> {
 /// Whether the host's lifecycle model projects `block` as completed (`Done` is
 /// what the engine's own completion sets, `+0x5c8 = 3`).
 fn completed(app: &App, block: u32) -> bool {
+    lifecycle_state(app, block) == Some(ObjectiveLifecycle::Done)
+}
+
+/// The host lifecycle model's projected state for `block`.
+fn lifecycle_state(app: &App, block: u32) -> Option<ObjectiveLifecycle> {
     app.world()
         .resource::<MissionHost>()
         .lifecycles()
         .state(block)
-        == Some(ObjectiveLifecycle::Done)
 }
 
 /// Runs `count` composed frames.
@@ -231,7 +242,10 @@ fn actor_ladder_program(actor: &str) -> MissionProgram {
         variables: Vec::new(),
         objectives: vec![Objective {
             id: SymbolId(0),
-            content: cid(ContentKind::Objective, "synthetic-m01-actor-bit.objective.1"),
+            content: cid(
+                ContentKind::Objective,
+                "synthetic-m01-actor-bit.objective.1",
+            ),
             condition: Condition::InactiveMembers {
                 members: vec![member(&[actor])],
                 threshold: 1,
@@ -356,15 +370,14 @@ fn accept_m01_play_triggers_actor_bit_an_actor_the_world_does_not_hold_gets_no_r
     // A bare binding, exactly the shape #1480 wrote rows from: an entity the
     // composition spawned whose subject spells the chain, but whose actor id
     // the world-actor session never registered.
-    app.world_mut()
-        .spawn((
-            Transform::from_translation(bevy::prelude::Vec3::new(0.0, 0.0, 0.0)),
-            WorldActorBinding {
-                actor: WorldActorId(99),
-                subject: synthetic_subject("ghostzep"),
-                generation: cs_app::scene::SceneGeneration(1),
-            },
-        ));
+    app.world_mut().spawn((
+        Transform::from_translation(bevy::prelude::Vec3::new(0.0, 0.0, 0.0)),
+        WorldActorBinding {
+            actor: WorldActorId(99),
+            subject: synthetic_subject("ghostzep"),
+            generation: cs_app::scene::SceneGeneration(1),
+        },
+    ));
     frames(&mut app, 3);
 
     let chain = member(&["ghostzep"]);
@@ -408,15 +421,26 @@ fn accept_m01_play_triggers_actor_bit_an_actor_the_world_does_not_hold_gets_no_r
 // ---------------------------------------------------------------- retail ---
 
 /// **M01's actor-level ladders read the `piratezep` row, and a scripted
-/// destruction of the actor advances exactly them.**
+/// destruction of the actor advances the ladder the engine model lets run.**
 ///
-/// The measured population: three bound zeppelins (`piratezep`,
-/// `workersvoyagezep`, `blackswanzep`), all observed in play; the two
-/// one-element ladders (block indexes 53 and 55, threshold 1 over
-/// `["piratezep"]`) incomplete; and after the damage authority records
-/// `piratezep`'s destruction through its scripted port, exactly those two
-/// rows' ladders complete while `workersvoyagezep` stays in play and its own
-/// engine ladder (block index 54, threshold 2) does not move.
+/// Measured lifecycle gating first: block 53 (`OBJECTIVE54`) starts
+/// **Dormant** and is woken by block 1 (`OBJECTIVE2`, the `DEDG` group-1
+/// block, which starts Awake); block 55 (`OBJECTIVE56`) starts Dormant and
+/// is woken by block 21 (`OBJECTIVE22`), which itself starts Dormant — this
+/// suite does not drive that chain and says so. Block 54 (`OBJECTIVE55`,
+/// `workersvoyagezep`'s engines at threshold 2) starts Awake and must not
+/// move when the *actor* leaves play.
+///
+/// The legs, all through the composed production schedule:
+///
+/// 1. three bound zeppelins, all observed in play; the measured lifecycle
+///    states above; group 1 observed at its live count of four;
+/// 2. group 1 leaves the world (the depletion mechanism #1480's own suite
+///    pins) → block 1 completes and wakes block 53, whose ladder still
+///    cannot hold while `piratezep` is in play;
+/// 3. the damage authority records `piratezep`'s destruction through its
+///    scripted port → exactly its row goes out of play, block 53 completes,
+///    `workersvoyagezep` stays in play and block 54 does not move.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m01_play_triggers_actor_bit_m01_s_actor_level_ladders_read_the_piratezep_row() {
@@ -425,20 +449,70 @@ fn accept_m01_play_triggers_actor_bit_m01_s_actor_level_ladders_read_the_piratez
     app.update();
     frames(&mut app, 3);
 
+    // --- 1. the measured baseline ------------------------------------------
     for name in [PIRATEZEP, WORKERSVOYAGEZEP, BLACKSWANZEP] {
         let row = observed_members(&app)
             .get(&member(&[name]))
             .cloned()
             .unwrap_or_else(|| panic!("the bound world actor `{name}` is observed"));
-        assert!(row.in_play, "`{name}` is bound and the world holds it in play");
-    }
-    for block in [PIRATE_ACTOR_LADDER_BLOCK, PIRATE_ACTOR_LADDER_TWO_BLOCK] {
         assert!(
-            !completed(&app, block),
-            "block {block} counts `piratezep`'s own in-play row, which is still in play"
+            row.in_play,
+            "`{name}` is bound and the world holds it in play"
         );
     }
+    assert_eq!(
+        lifecycle_state(&app, PIRATE_LADDER_BLOCK),
+        Some(ObjectiveLifecycle::Dormant),
+        "OBJECTIVE54 starts Dormant — the engine model, measured, gates it behind block 1"
+    );
+    assert_eq!(
+        lifecycle_state(&app, PIRATE_LADDER_TWO_BLOCK),
+        Some(ObjectiveLifecycle::Dormant),
+        "OBJECTIVE56 starts Dormant, woken only by OBJECTIVE22 (block 21, itself Dormant)"
+    );
+    assert!(
+        !completed(&app, PIRATE_LADDER_BLOCK) && !completed(&app, PIRATE_LADDER_TWO_BLOCK),
+        "both actor-level ladders are incomplete while the actor is in play"
+    );
 
+    // --- 2. wake block 53 through the engine model's own effects -----------
+    //     Group 1's four `rusdevastator_*` entities leave the world the way
+    //     #1480's own suite pins (nothing else declares their depletion);
+    //     `OBJECTIVE2` (block 1, Awake) completes and its record's wake list
+    //     arms `OBJECTIVE54`.
+    let group_one: Vec<Entity> = {
+        let world = app.world_mut();
+        let mut query =
+            world.query_filtered::<(Entity, &cs_app::mission_actors::ScriptedAircraftActor), ()>();
+        query
+            .iter(world)
+            .filter(|(_, actor)| {
+                actor.record.group.and_then(|id| i32::try_from(id).ok()) == Some(1)
+            })
+            .map(|(entity, _)| entity)
+            .collect()
+    };
+    assert_eq!(group_one.len(), 4, "M01 spawns four group-1 aircraft");
+    for entity in group_one {
+        app.world_mut().despawn(entity);
+    }
+    frames(&mut app, 10);
+    assert!(
+        completed(&app, GROUP_ONE_BLOCK),
+        "the group-1 depletion completes OBJECTIVE2; completed blocks: {:?}",
+        last_completed(&app)
+    );
+    assert_eq!(
+        lifecycle_state(&app, PIRATE_LADDER_BLOCK),
+        Some(ObjectiveLifecycle::Awake),
+        "OBJECTIVE2's own wake list armed OBJECTIVE54"
+    );
+    assert!(
+        !completed(&app, PIRATE_LADDER_BLOCK),
+        "waking is not completing: the ladder cannot hold while `piratezep` is in play"
+    );
+
+    // --- 3. the scripted destruction the ladder reads -----------------------
     let (actor, _) = bound_actor(&mut app, PIRATEZEP);
     destroy_actor(&mut app, actor);
     frames(&mut app, 3);
@@ -450,18 +524,22 @@ fn accept_m01_play_triggers_actor_bit_m01_s_actor_level_ladders_read_the_piratez
         "the destroyed zeppelin's own row is out of play — the INACTIVE read"
     );
     assert_eq!(
-        rows.get(&member(&[WORKERSVOYAGEZEP])).map(|row| row.in_play),
+        rows.get(&member(&[WORKERSVOYAGEZEP]))
+            .map(|row| row.in_play),
         Some(true),
         "the other zeppelin's row is untouched"
     );
-    for block in [PIRATE_ACTOR_LADDER_BLOCK, PIRATE_ACTOR_LADDER_TWO_BLOCK] {
-        assert!(
-            completed(&app, block),
-            "block {block} (threshold 1 over [`piratezep`]) advances from the live world's own \
-             state; completed blocks: {:?}",
-            last_completed(&app)
-        );
-    }
+    assert!(
+        completed(&app, PIRATE_LADDER_BLOCK),
+        "the woken block 53 (threshold 1 over [`piratezep`]) advances from the live world's own \
+         state; completed blocks: {:?}",
+        last_completed(&app)
+    );
+    assert!(
+        !completed(&app, PIRATE_LADDER_TWO_BLOCK),
+        "block 55 stays behind its own measured wake (OBJECTIVE22): this suite drives no \
+         OBJECTIVE22 chain, and nothing here may invent one"
+    );
     assert!(
         !completed(&app, WORKERS_ENGINES_BLOCK),
         "OBJECTIVE55 counts `workersvoyagezep`'s engine parts, not the actor's own row"
