@@ -12,8 +12,10 @@
 //! only — the real [`cs_app::audio::publish_voice_members`], the real
 //! [`AudibleDevice`]'s own lookup, and the real mixer in a real Bevy `App`:
 //!
-//! * a published member is **delivered**: the device finds its samples and the
-//!   mixer opens a one-shot for the line on the radio bus (scenario A);
+//! * a published member is **delivered**: the device finds its samples, the
+//!   mixer opens a one-shot for the line on the radio bus, and through a real
+//!   device under the mixer the line resolves the published member — only the
+//!   absent output refuses, never the sample (scenario A);
 //! * an id the prepare did not deliver is refused `sample_unavailable` by name,
 //!   and the *sound* id over the same key is a different asset that does not
 //!   satisfy the line (scenario B);
@@ -189,7 +191,9 @@ impl RadioWorld {
 }
 
 /// Scenario A: the prepare step publishes a decoded member and the device finds
-/// it — the line is delivered, voiced on the radio bus, and refused nothing.
+/// it — the line is delivered, voiced on the radio bus against a recording
+/// output, and carried through a real device under the mixer, which resolves
+/// the published member and refuses only its absent output.
 #[test]
 fn accept_m01_radio_sample_a_a_published_member_is_delivered_and_voiced_under_its_dialogue_id() {
     let id = voice_member_id(CONTAINER, M01_MEMBER).expect("the member derives a dialogue id");
@@ -259,6 +263,38 @@ fn accept_m01_radio_sample_a_a_published_member_is_delivered_and_voiced_under_it
     world.tick(4);
     world.update();
     assert_eq!(world.report().radio.stopped, vec![queued.id]);
+
+    // The same published library through the mixer's *own* device: the boundary
+    // resolves the member the prepare step published. This world's output is a
+    // real `AudibleDevice` sharing that library, so the line reaches the device
+    // and its lookup — the device resolves the id and refuses only the absent
+    // output, which is what tells a delivered member from one nothing published.
+    // Scenario B drives the same boundary for the never-delivered case, so the
+    // pair shows the device's own lookup distinguishing the two.
+    let mut boundary =
+        RadioWorld::with_device(Box::new(AudibleDevice::unopened(Arc::clone(&library))));
+    boundary.update();
+    let on_boundary = line(2, id.clone(), 4);
+    boundary.enqueue(on_boundary.clone());
+    boundary.update();
+    let boundary_refusals = &boundary.report().radio.refusals;
+    assert!(
+        boundary_refusals.iter().any(|refusal| matches!(
+            refusal,
+            RadioMixRefusal::Device { id: refused, code, .. }
+                if *refused == on_boundary.id && *code == CODE_DEVICE_CLOSED
+        )),
+        "the mixer carried the published member to the device, which resolved it \
+         and refused only the output: {boundary_refusals:?}"
+    );
+    assert!(
+        !boundary_refusals.iter().any(|refusal| matches!(
+            refusal,
+            RadioMixRefusal::Device { id: refused, code, .. }
+                if *refused == on_boundary.id && *code == CODE_SAMPLE_UNAVAILABLE
+        )),
+        "the published member is not refused as a missing sample: {boundary_refusals:?}"
+    );
 }
 
 /// Scenario B: an id the prepare did not deliver is refused by the device's own

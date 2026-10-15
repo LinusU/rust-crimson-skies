@@ -119,8 +119,12 @@ the one `offer_cues` calls.
    is **not** the sound id over the same key; before the publish the library
    holds nothing; after it the member is under the exact id; the device's own
    lookup finds the samples (only the absent output refuses, `device_closed`);
-   and the line is voiced as one `OneShotStarted` on `AudioBus::Radio` carrying
-   that asset, with nothing refused.
+   the line is voiced as one `OneShotStarted` on `AudioBus::Radio` carrying
+   that asset, with nothing refused; and the same published library is driven
+   through the mixer's **own** device (a real `AudibleDevice` sharing it), where
+   the line resolves the published member and is refused only the absent output
+   (`device_closed`), never `sample_unavailable` — the delivered half of the
+   boundary contrast whose never-delivered half is scenario B.
 2. `accept_m01_radio_sample_b_...` — the sound id over the same key does not
    satisfy the line; an id the prepare did not deliver is refused
    `sample_unavailable` by the device's own lookup and by the mixer against the
