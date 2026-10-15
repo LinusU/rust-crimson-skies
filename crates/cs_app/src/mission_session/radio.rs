@@ -59,7 +59,6 @@
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
 
-use cs_content::catalog::baseline::install_file_key;
 use cs_content::objectives_engine::{CueEmission, CueKind, EngineObjectives};
 use cs_content::stunts::ZrdValue;
 use cs_formats::io::ParseContext;
@@ -68,7 +67,7 @@ use cs_formats::zbd::{
     read_version_one_index,
 };
 use cs_sim::audio_events::{AudioEventId, RadioLine, RadioLineError};
-use cs_types::content::{ContentId, ContentKind};
+use cs_types::content::ContentId;
 
 use super::launch_sound::{LAUNCH_SOUND_CONTAINER, reader_member};
 use crate::audio::AudioSession;
@@ -321,8 +320,8 @@ pub struct PreparedLine {
     /// `VO_<mission>_<speaker>_<index>` spelling.
     pub speaker: String,
     /// The dialogue content id the member derives
-    /// ([`ContentKind::Dialogue`] over F14-D.7's `install_file_key`
-    /// spelling).
+    /// ([`cs_types::content::ContentKind::Dialogue`] over F14-D.7's
+    /// `install_file_key` spelling).
     pub asset: ContentId,
     /// The decoded length in fixed simulation ticks, at least one.
     pub duration_ticks: u64,
@@ -803,19 +802,22 @@ fn collect_child_names(child: &ZrdValue, out: &mut Vec<String>) {
     }
 }
 
-/// The dialogue content id of an archive member: F14-D.7's
-/// `install_file_key` derivation over [`ContentKind::Dialogue`], because the
-/// member is a spoken line.
+/// The dialogue content id of an archive member — F14-D.7's
+/// `install_file_key` derivation over
+/// [`cs_types::content::ContentKind::Dialogue`], because the member is a
+/// spoken line.
+///
+/// This is [`crate::audio::voice_member_id`], the one derivation #1465
+/// owns: the id a `RadioLine` names here and the id the publish step puts
+/// the member's samples under must be the same code path, so this wrapper
+/// exists only to keep this module's typed error.
 ///
 /// # Errors
 ///
 /// [`RadioError`] when the id grammar refuses the spelling.
 pub fn dialogue_content_id(container: &str, member: &str) -> Result<ContentId, RadioError> {
-    ContentId::from_source(
-        ContentKind::Dialogue,
-        &install_file_key(&format!("{container}/{member}")),
-    )
-    .map_err(|error| RadioError::Read(error.to_string()))
+    crate::audio::voice_member_id(container, member)
+        .map_err(|error| RadioError::Read(error.to_string()))
 }
 
 /// The speaker a voice member's own name spells.
@@ -984,6 +986,9 @@ pub fn declared_sound_groups(objectives: &EngineObjectives) -> BTreeSet<String> 
 
 #[cfg(test)]
 mod tests {
+    use cs_content::catalog::baseline::install_file_key;
+    use cs_types::content::ContentKind;
+
     use super::*;
 
     #[test]
