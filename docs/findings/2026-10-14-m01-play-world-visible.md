@@ -142,6 +142,16 @@ Two probe weaknesses were found in review and fixed in the same branch:
   is not there, every capture is bounded by the grace frame, and `finish`
   refuses with the reason the probe did not run.
 
+The harness was re-run on the rebased head for this review (owner's
+installation, Apple M3 Pro, Metal): the launch exits 0 and the probe's
+`world` record reads
+`world_pixels=2342271, total_pixels=3686400, covered_permille=635,
+clear_pixels=1344129, clear_permille=364, background=[61,112,199],
+clear_colour=[61,112,199]` — 63.5 % of the spawn frame is the world's own
+pixels while the clear colour is still 36.4 % of it, and the modal colour
+agrees with the declared one. `docs/findings/evidence/1433.json` is that
+run's report, validated with `tools/validate_evidence.py --require-pass`.
+
 Both are covered by `accept_m01_play_world_` unit members in
 `mission_session/evidence.rs` (the count, the judgement, the encodings) that
 run in CI, and the windowed and evidence members now assert the clear-colour
