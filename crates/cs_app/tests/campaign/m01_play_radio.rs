@@ -27,13 +27,17 @@
 //!   [`MissionHostReport`], which is where the host's own sound step
 //!   ([`MissionHost::step`]) publishes them.
 //!
-//! What is **not** claimed: nothing here is audible — no mixer or device
-//! consumes a radio event yet
-//! (`docs/findings/2026-10-01-f41-c-radio-queue-music-and-device-loss.md`) —
-//! so the owner's listening test waits on that work; there is no subtitle
-//! text in the data this reads (see `crates/cs_app/src/mission_session/radio.rs`
-//! and `docs/findings/2026-10-15-m01-play-radio-dialogue.md`); and no
-//! original executable ran, so nothing here is `verified_original`.
+//! What is **not** claimed: nothing here is audible. The mixer does hand a
+//! queued line to the device now (`M01-RADIO-DEVICE` #1461,
+//! `docs/findings/2026-10-15-m01-radio-device.md`), but no voice member
+//! reaches the device's sample library yet — `M01-RADIO-SAMPLE-IDENTITY`
+//! (#1465) and `M01-RADIO-SAMPLE-WIRE` (#1466) are the open work — so the
+//! device refuses each line by name (`sample_unavailable`) instead of
+//! sounding it, and the owner's listening test waits on that work; there is
+//! no subtitle text in the data this reads (see
+//! `crates/cs_app/src/mission_session/radio.rs` and
+//! `docs/findings/2026-10-15-m01-play-radio-dialogue.md`); and no original
+//! executable ran, so nothing here is `verified_original`.
 //!
 //! The synthetic members of this suite live beside them: the
 //! `accept_m01_play_radio_*` unit tests inside
@@ -54,7 +58,7 @@ use cs_app::objectives::recover_retail_objectives;
 use cs_app::physics::BASELINE_FIXED_HZ;
 use cs_app::scene::SceneGeneration;
 use cs_sim::audio_events::{AudioAssetSpec, AudioRouter};
-use cs_types::content::{ContentId, ContentKind};
+use cs_types::content::ContentKind;
 use cs_types::net::SessionId;
 
 use crate::common::label;
@@ -149,6 +153,10 @@ fn assert_opening(queued: &[Queued], refused: &[String], no_audio: usize) {
 
 /// Holds the queue's **active** line to the measured facts and answers how
 /// many lines wait behind it.
+///
+/// The active line must be the **first** member `sounds.zrd` spelled for the
+/// group: the table's child order is the order the conversation plays, so the
+/// helper pins the spelled order rather than accepting either member.
 fn assert_active_line(audio: &AudioSession) -> usize {
     let active = audio
         .radio
@@ -160,17 +168,13 @@ fn assert_active_line(audio: &AudioSession) -> usize {
         "the queued line plays a dialogue id, got {}",
         active.asset
     );
-    let expected: Vec<ContentId> = OPENING_MEMBERS
-        .iter()
-        .map(|member| {
-            dialogue_content_id(RADIO_SOUND_CONTAINER, member)
-                .expect("the archive spells the member")
-        })
-        .collect();
-    assert!(
-        expected.contains(&active.asset),
-        "the active line is one of the two opening members, got {}",
-        active.asset
+    let first = dialogue_content_id(RADIO_SOUND_CONTAINER, OPENING_MEMBERS[0])
+        .expect("the archive spells the member");
+    assert_eq!(
+        active.asset, first,
+        "the group's spelled child order is the order the conversation plays: {} must be the \
+         line already running, got {}",
+        OPENING_MEMBERS[0], active.asset
     );
     assert!(
         !active.speaker.is_empty(),
