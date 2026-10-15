@@ -123,6 +123,7 @@ use crate::playtest::scene::{
     AIRCRAFT_HALF_EXTENTS_M, PlaytestAircraft, PlaytestOriginalFlight, SceneError,
 };
 use crate::playtest::{AircraftSpawner, PlaytestPlugin, PlaytestState};
+use crate::ui::hud::MissionMessages;
 use crate::world::WorldMeshes;
 use crate::world::residency::{load_world, unload_world};
 
@@ -248,6 +249,13 @@ pub struct MissionStage {
     pub cache_root: PathBuf,
     /// The installation fingerprint the session binds under.
     pub installation: ContentHash,
+    /// The installation's message catalog — `strings.dll`'s string rows and
+    /// the `{name, id}` table a symbolic message name resolves through — read
+    /// from the **installation root** at stage build time, or the reason it
+    /// could not be read (M01-HUD-OBJECTIVE, #1462). The synthetic acceptance
+    /// stages carry the unread reason, so their objective line can only ever
+    /// draw a diagnostic key.
+    pub messages: MissionMessages,
     /// The records the mission host drives every committed tick: the five the
     /// announced-load stage used to drop, the declared control program, the
     /// objective program, the cue table, the chain resolver and every absence
@@ -522,6 +530,15 @@ pub fn stage_for(
         radio,
     };
 
+    // The message catalog is read once, here, from the installation root the
+    // launch plan resolved — the same root the stage's other retail sources
+    // (`player_aircraft`, `world_draw`, `launch_sound`) read from, because the
+    // mount host below is the world *group* directory one level down. A
+    // missing or unreadable `strings.dll` is kept as the resource's own
+    // reason rather than an error: the composition can run without the
+    // objective line, and the line then draws its diagnostic key.
+    let messages = MissionMessages::read(install_root, installation);
+
     Ok(MissionStage {
         target,
         mount: StageMount {
@@ -567,6 +584,7 @@ pub fn stage_for(
         label: MISSION_COMPOSITION_LABEL.to_owned(),
         cache_root: Path::new(DEFAULT_MISSION_CACHE_DIR).to_path_buf(),
         installation,
+        messages,
         host,
     })
 }
@@ -815,15 +833,12 @@ fn add_composition(
         ));
         // The current objective line (M01-HUD-OBJECTIVE, #1462): the
         // installation's own message catalog — `strings.dll`'s `{name, id}`
-        // table beside its string rows — read once here, then the widget that
-        // draws the identity row the recovered engine lifecycle model marks
-        // current. Both the layout and the choice of *which* row is current
-        // are designed and labelled so on screen; the text is the
-        // installation's own.
-        app.insert_resource(crate::ui::hud::MissionMessages::read(
-            &stage.mount.host,
-            stage.installation,
-        ));
+        // table beside its string rows, read on the stage from the
+        // installation root — then the widget that draws the identity row the
+        // recovered engine lifecycle model marks current. Both the layout and
+        // the choice of *which* row is current are designed and labelled so
+        // on screen; the text is the installation's own.
+        app.insert_resource(stage.messages.clone());
         app.add_plugins(crate::ui::hud::ObjectiveHudPlugin);
     }
 

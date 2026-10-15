@@ -41,6 +41,14 @@
 //! its world keeps flying. See
 //! `docs/findings/2026-10-08-f46-c-hud-pages-map-and-pause.md`.
 //!
+//! The `objectives` module is the current-objective line the
+//! *composed mission* draws (task #1462 `M01-HUD-OBJECTIVE`): a projection of
+//! the recovered engine lifecycle model rather than of
+//! [`crate::objectives::ObjectiveDisplay`], which has no rows for an original
+//! mission, plus the widget and the installation message catalog it draws
+//! from. Its layout and its choice of which objective is current are designed
+//! and say so, on screen and in the module doc.
+//!
 //! Everything is **designed** and synthetic. The original units, datum,
 //! thresholds, dial layouts, gauge semantics, map composition, page set and
 //! target appearance are F46-D's to compare; see

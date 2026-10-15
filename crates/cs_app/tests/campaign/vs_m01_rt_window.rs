@@ -296,6 +296,10 @@ pub(crate) fn synthetic_stage(scratch: &Path) -> MissionStage {
         cache_root: scratch.join("cache"),
         installation: ContentHash::from_hex(&"5a".repeat(32))
             .expect("the synthetic installation hash is valid"),
+        // No installation to read `strings.dll` from either: the resource
+        // keeps the unread reason, so the objective line can draw nothing but
+        // its diagnostic key (M01-HUD-OBJECTIVE, #1462).
+        messages: cs_app::ui::hud::MissionMessages::default(),
         host: synthetic_host_seed(),
     }
 }

@@ -17,7 +17,11 @@
 //! strings of a PE image through [`cs_formats::read_pe_resources`] and answers
 //! `(id, language)` lookups with provenance, retaining the leaves no string
 //! reader owns. Neither path loads an image or interprets a language it has not
-//! measured.
+//! measured. [`MessageCatalog`] reads both halves of one image — its strings
+//! and the `{name, id}` table that pairs a symbolic message name with an
+//! `RT_STRING` id, the only pairing the installation holds — so a consumer
+//! with a name (an objective's `IDENTITY`, task #1462) reaches the same rows
+//! a consumer with an id does.
 //!
 //! Task #370 adds the `<NAME>` placeholder pass: [`ConfigDocument::read`]
 //! resolves every reference of the member against its section-local and
