@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "M01-RADIO-SAMPLE-WIRE",
+ "candidate_tree": "0cb037063af7a4091ea1086ae7a270bbc9f32b8d",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-10-15T15:33:10Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_m01_radio_wire_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/bunny-alpha-2", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 245},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 2, "executed": 2, "passed": 2, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_m01_radio_wire_a_the_composition_publishes_a_prepared_member_into_the_library", "status": "pass", "evidence": ["cargo-test.log", "m01-radio-wire-census.json"]}, {"id": "accept_m01_radio_wire_b_the_composed_m01_run_delivers_its_opening_members", "status": "pass", "evidence": ["cargo-test.log", "m01-radio-wire-census.json"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "ff5481f81b2970a972fa135a62a8e5347f38b5a886c5853e0528db81a00141f1", "kind": "log"}, {"path": "m01-radio-wire-census.json", "sha256": "160dbf4c99eb580fa48f64c4efc2b1338f6e190e222596c87011d942ffc316cd", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "bunny-alpha-2/bunny-alpha-2 (implementer of Rally #1466, the implementation claim of 2026-10-15T13:03:22Z; this report was written before any independent review, so no reviewer is named here and the freshness of a review context cannot be claimed)", "method": "Acceptance suite run locally with the retail capability; this harness derives every field from the recorded log, production discovery of $CS_GAME_DIR, and a second production run (m01-radio-wire-census.json) that composes M01 through `stage_for`/`build_headless`, pumps it past OBJECTIVE1's wake and reads the device's own library and lookup. Claim is implemented only, not checked: no independent reviewer has looked at this run, no original executable ran and no person heard anything. MEASURED (retail, read-only): the prepare step prepared 45 line(s) and kept 45 decoded voice member(s); the composed run reached tick 245; the opening group's 2 member(s) reached the device library under the dialogue id their line names and the device's own lookup resolves them (only the absent output refuses, device_closed), while an id nothing published is refused sample_unavailable by name. LIMITS OF WHAT WAS MEASURED: the identity rule and route (b) are the owner's designed decision (task #1465 note of 2026-10-15) because the installation states no cue class (F14-D.7), so nothing here is verified_original; which of ZBD/soundsh.zbd and ZBD/soundsl.zbd the original opens is unmeasured, so the container is the labelled choice #1438 made; this is decoded-PCM evidence, not audible evidence — the F41-D listening test stays the owner's gate; and the composed run's world/presentation path needs CS_ENGINE_IMAGE (M01's player start), so this observation needs it too. The 2 assertion(s) discovered under this task's own prefix are the tests of this report. Validated with tools/validate_evidence.py --require-pass."},
+ "claim": "implemented"
+}
