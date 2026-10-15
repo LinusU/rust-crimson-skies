@@ -47,9 +47,14 @@
 //! `docs/findings/2026-10-01-f46-a-instrument-values.md`.
 
 mod frame;
+mod objectives;
 mod session;
 
 pub use frame::{DamageZone, HudFrame, HudSources, MountedGun, MountedOrdnance, WeaponGauge};
+pub use objectives::{
+    HudObjective, MESSAGE_IMAGE, MissionMessages, OBJECTIVE_HUD_CAPTION, ObjectiveHud,
+    ObjectiveHudPlugin,
+};
 pub use session::{
     ContactMark, GeographyMark, HudSession, HudTeardown, MapView, MissionPage, MissionSources,
     PageOutcome, PageView, PauseCommand, PlayerMark,

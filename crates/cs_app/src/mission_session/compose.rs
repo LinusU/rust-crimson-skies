@@ -813,6 +813,18 @@ fn add_composition(
         app.add_plugins(crate::render::WeatherPlugin::from_environment(
             stage.host.environment.definition(),
         ));
+        // The current objective line (M01-HUD-OBJECTIVE, #1462): the
+        // installation's own message catalog — `strings.dll`'s `{name, id}`
+        // table beside its string rows — read once here, then the widget that
+        // draws the identity row the recovered engine lifecycle model marks
+        // current. Both the layout and the choice of *which* row is current
+        // are designed and labelled so on screen; the text is the
+        // installation's own.
+        app.insert_resource(crate::ui::hud::MissionMessages::read(
+            &stage.mount.host,
+            stage.installation,
+        ));
+        app.add_plugins(crate::ui::hud::ObjectiveHudPlugin);
     }
 
     // 1. The announced load: a fresh content session over the stage's
