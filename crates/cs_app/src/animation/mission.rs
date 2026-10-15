@@ -1895,6 +1895,13 @@ impl AnimationNameIndex {
 
     /// Resolves one animation NAME, exactly as [`match_record_by_name`] and
     /// [`join_named_animation`] state.
+    ///
+    /// The matched record is read back from **the carrier whose own table
+    /// states the name at that index**, not merely the first carrier of the
+    /// matched kind: a scope that ever held two carriers of one kind (nothing
+    /// here forbids it; a synthetic stage authors its own list) would
+    /// otherwise silently read a different record than the one the match
+    /// named — the one thing this rule never does.
     #[must_use]
     pub fn resolve(&self, name: &str) -> NamedAnimationResolution {
         match match_record_by_name(&self.carriers, name) {
@@ -1914,7 +1921,12 @@ impl AnimationNameIndex {
                 let facts = self
                     .carriers
                     .iter()
-                    .find(|records| records.kind() == carrier)
+                    .find(|records| {
+                        records.kind() == carrier
+                            && records.names().is_some_and(|names| {
+                                names.indices_named(name.as_bytes()).contains(&index)
+                            })
+                    })
                     .and_then(|records| records.record(index));
                 match facts {
                     Some(facts) => NamedAnimationResolution::Bound(Box::new(join_named_animation(

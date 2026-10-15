@@ -91,8 +91,9 @@ fold stays the only observer.
 `advance`, so the record is not advanced on its start tick. Its start-time-0
 statements publish on the **next** advance, and stage 4 of that same next step
 is the first place the fold can observe the record. A retail record with a
-positive measured duration is therefore observed `RUNNING` for
-`ceil(duration × ticks_per_second)` ticks and `EXECUTED` after that; a record
+positive measured duration is therefore observed `RUNNING` on the
+`ceil(duration × ticks_per_second) - 1` committed steps before its end, and
+`EXECUTED` on the step its timeline reaches that duration; a record
 whose measured duration is zero (no `RUN_TIME` in any of its statements) goes
 from its activation straight to `EXECUTED` on the first advance, and is never
 observed `RUNNING`.
@@ -219,3 +220,34 @@ is validated with the plain structural form of `tools/validate_evidence.py`
   doc says; they are not evidence that the gates close.
 * No original executable ran: `retail` is read access to the owner's
   installation, and nothing here is `verified_original`.
+
+## Review pass
+
+Reviewed by `bunny-alpha-2/bunny-alpha-2` (Rally #1497 review claim of
+2026-10-15, a fresh session with no implementation context) — the **same agent
+identity as the implementer**, because Rally assigned the review of this task
+back to it. This is therefore *not* independent review in the owner directive's
+sense, and no agent review awards more than `checked`; a different agent
+instance or model is still preferred for this evidence and semantics. What the
+reviewer did:
+
+* Re-derived the acceptance criteria against the task description,
+  `docs/contracts/SCRIPT-MISSION.md` and `docs/contracts/CLI-EVIDENCE.md`,
+  read the measurement this task must not contradict, and re-ran all four
+  checks plus the full task selection with `--include-ignored` on the rebased
+  commit.
+* Found and fixed one latent correctness hazard: `AnimationNameIndex::resolve`
+  looked the matched carrier up by `CarrierKind` alone, so a scope holding two
+  carriers of one kind would have read back a *different* record than the one
+  the match named. It now reads only from the carrier whose own table states
+  the name at the matched index, and a CI assertion pins it (a decoy carrier of
+  the same kind whose record 0 is named otherwise). Nothing in the production
+  construction path reaches the hazard today (the two carriers have distinct
+  kinds), so no measured number changed.
+* Corrected one off-by-one in this finding: the `RUNNING` step count is
+  `ceil(duration × ticks_per_second) - 1`, not `ceil(duration ×
+  ticks_per_second)`.
+* Regenerated the evidence report on the reviewed and rebased commit, per
+  `docs/contracts/CLI-EVIDENCE.md`; the implementing round's copy named a
+  `candidate_tree` that did not contain this implementation, because it was
+  generated while the code was still uncommitted. No claim changed.

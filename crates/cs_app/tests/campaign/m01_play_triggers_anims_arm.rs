@@ -498,6 +498,33 @@ fn accept_m01_play_triggers_anims_arm_the_name_join_binds_one_match_and_refuses_
         }
         other => panic!("a name nothing binds must be refused, got {other:?}"),
     }
+
+    // A second carrier of the *same* kind does not shadow the match: the
+    // record read back is the one whose own table states the name, never the
+    // first carrier of that kind. The first carrier's record 0 is stored
+    // under another name.
+    let mut other = record.clone();
+    other.anim_name = "synthetic_other_anim".to_owned();
+    let decoy = CarrierRecords::authored(
+        CarrierKind::Mission,
+        "zbd/synthetic/mis_anim_first.zbd".to_owned(),
+        vec![other],
+    );
+    let two_mission = AnimationNameIndex::new(
+        vec![decoy, carrier.clone()],
+        vec![synthetic_declaration()],
+        None,
+    );
+    let shadowed = two_mission
+        .row(SYNTHETIC_WAKE)
+        .expect("the name binds in the second carrier");
+    assert_eq!(
+        shadowed
+            .bound_record()
+            .map(|facts| (facts.index(), facts.anim_name().to_owned())),
+        Some((0, SYNTHETIC_WAKE.to_owned())),
+        "the record read back must be the one the matched table states"
+    );
     match index.resolve(SYNTHETIC_WAKE) {
         NamedAnimationResolution::Bound(_) => {}
         other => panic!("the stored name must bind, got {other:?}"),
