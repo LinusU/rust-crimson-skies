@@ -135,8 +135,11 @@ pub const PURSUIT_PITCH_GAIN: f32 = 1.8;
 /// up in the first degrees; the bank does the fast turning.
 pub const PURSUIT_YAW_GAIN: f32 = 0.5;
 
-/// **Designed**: how far ahead a hold-course aircraft looks for the point it
-/// keeps flying toward, in metres.
+/// The fixed name a record's stored primary target uses for the player body.
+pub const PLAYER_TARGET_NAME: &str = "player";
+
+/// **Designed**: how far ahead a hold-course aircraft looks along its heading
+/// for the direction it keeps flying toward, in metres.
 pub const HOLD_COURSE_LOOKAHEAD_M: f32 = 1_200.0;
 
 /// **Designed**: the wingman's station in its leader's body frame — right,
@@ -330,6 +333,8 @@ pub fn behaviour_for(record: &ScriptedAircraft, player_team: Option<u32>) -> Mis
         };
     }
     let target = match &record.primary_target {
+        // The player body is addressed by its fixed name, not a cast record.
+        Some(name) if name == PLAYER_TARGET_NAME => TargetRule::Player,
         Some(name) => TargetRule::Record(name.clone()),
         None => TargetRule::Player,
     };
@@ -648,7 +653,7 @@ fn decide_mission_aircraft_ai(
             .map(|(entity, position, rotation, velocity)| {
                 (
                     entity,
-                    "player".to_owned(),
+                    PLAYER_TARGET_NAME.to_owned(),
                     position.0,
                     rotation.0,
                     velocity.0,
@@ -674,7 +679,7 @@ fn decide_mission_aircraft_ai(
                     None => {
                         report.no_target += 1;
                         ai.target = None;
-                        (hold_course_point(here, nose), START_THROTTLE, None)
+                        (hold_course_direction(nose), START_THROTTLE, None)
                     }
                 }
             }
@@ -705,11 +710,11 @@ fn decide_mission_aircraft_ai(
                     None => {
                         report.no_target += 1;
                         ai.leader = None;
-                        (hold_course_point(here, nose), START_THROTTLE, None)
+                        (hold_course_direction(nose), START_THROTTLE, None)
                     }
                 }
             }
-            MissionAiBehaviour::HoldCourse => (hold_course_point(here, nose), START_THROTTLE, None),
+            MissionAiBehaviour::HoldCourse => (hold_course_direction(nose), START_THROTTLE, None),
         };
         flight.command = pursuit_command(orientation, aim, throttle);
         ai.range_m = aim_point.map_or(f32::NAN, |point| (point - here).length());
@@ -953,9 +958,11 @@ fn resolve(
     }
 }
 
-/// The point a hold-course aircraft flies toward: straight ahead on its own
-/// heading at its own altitude, so the same steering half keeps both.
-fn hold_course_point(here: Vec3, nose: Vec3) -> Vec3 {
+/// The offset a hold-course aircraft steers along: straight ahead on its own
+/// heading at its own altitude, so the same steering half keeps both. It is
+/// a vector from the aircraft, like the other behaviours' `to_target`, not a
+/// world point.
+fn hold_course_direction(nose: Vec3) -> Vec3 {
     let flat = Vec3::new(nose.x, 0.0, nose.z);
     let forward = if flat.length_squared() > 1.0e-6 {
         flat.normalize()
@@ -964,12 +971,25 @@ fn hold_course_point(here: Vec3, nose: Vec3) -> Vec3 {
         // still has rather than inventing one.
         Vec3::NEG_Z
     };
-    here + forward * HOLD_COURSE_LOOKAHEAD_M
+    forward * HOLD_COURSE_LOOKAHEAD_M
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn accept_m01_play_ai_hold_course_steers_along_the_heading() {
+        // Level flight on a yawed heading, far from the origin: the steering
+        // half must read a direction, so the command stays near neutral.
+        let orientation = Quat::from_rotation_y(0.7);
+        let nose = orientation * Vec3::NEG_Z;
+        let direction = hold_course_direction(nose);
+        assert!((direction.length() - HOLD_COURSE_LOOKAHEAD_M).abs() < 1.0);
+        assert!(direction.y.abs() < 1.0e-3);
+        let command = pursuit_command(orientation, direction, 0.5);
+        assert!(command.roll.abs() < 0.05 && command.yaw.abs() < 0.05);
+    }
 
     fn record(
         name: &str,
@@ -1032,9 +1052,19 @@ mod tests {
         assert_eq!(
             behaviour_for(&record("bsfury_1", Some(2), Some("player"), false), Some(1)),
             MissionAiBehaviour::Pursue {
-                target: TargetRule::Record("player".to_owned())
+                target: TargetRule::Player
             },
-            "a stored primary target is engaged by name"
+            "a stored primary target naming the player engages the player body"
+        );
+        assert_eq!(
+            behaviour_for(
+                &record("bsfury_1", Some(2), Some("wingman_2"), false),
+                Some(1)
+            ),
+            MissionAiBehaviour::Pursue {
+                target: TargetRule::Record("wingman_2".to_owned())
+            },
+            "any other stored primary target is engaged by record name"
         );
         assert_eq!(
             behaviour_for(&record("unknown_team", None, None, false), Some(1)),
