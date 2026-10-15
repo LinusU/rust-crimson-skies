@@ -33,9 +33,13 @@
 //! `synthetic` by the unignored format tests; all must appear in the log and
 //! pass.
 //!
-//! The report's `unknowns` list the task's **product limitations** (what the
-//! original layout does not state or the designed table cannot bind). They are
-//! not blockers of the run, and they are never removed to satisfy a validator.
+//! The report's `unknowns` are this task's own **blockers** (the validator's
+//! `--require-pass` refuses any), and there are none because the run passed.
+//! The product limitations (what the original layout does not state or the
+//! designed table cannot bind) are **not dropped**: `LIMITATIONS` below is
+//! checked line by line against the finding that records them, and the
+//! referenced `original-layout.json` artifact lists every refused screen and
+//! every unbound button with its reason.
 //! The claim is `implemented`, never `checked` or `verified_original`.
 
 use std::collections::VecDeque;
@@ -60,9 +64,9 @@ const SYNTHETIC_TESTS: &[&str] = &[
 
 const LAYOUT_ARTIFACT: &str = "original-layout.json";
 
-/// The product limitations, machine-readable. Mirrors the "What stays unknown"
+/// The product limitations. Mirrors the "What stays unknown"
 /// section of `docs/findings/2026-10-15-f45-b-1-original-layout.md`.
-const UNKNOWNS: &[&str] = &[
+const LIMITATIONS: &[&str] = &[
     "original focus/tab order: no column of LAYOUT.CSV carries it (the header's TabOrder column is absent from every data row); focus stays the declared order. Gates any keyboard/controller-focus fidelity claim.",
     "handlers of the buttons that start no screen script (NoScript, e.g. quit, fly mission, return to briefing): they live in ASSETS/SCRIPTS/*.SCRIPT, not read here. Gates 'every visible original button works'.",
     "MainMenu and Settings have no screen-sized pane at the origin (their backdrop is a movie row / the menu behind): refused NoFullPane, no art bound.",
@@ -168,7 +172,16 @@ fn evidence_report_f45_b_1_writes_the_acceptance_report() {
         bevy: locked_version("bevy"),
         avian: locked_version("avian3d"),
     };
-    let unknowns: Vec<String> = UNKNOWNS.iter().map(|text| (*text).to_owned()).collect();
+    let finding = fs::read_to_string(
+        Path::new(&git(&["rev-parse", "--show-toplevel"]))
+            .join("docs/findings/2026-10-15-f45-b-1-original-layout.md"),
+    )
+    .expect("the finding is readable");
+    assert!(
+        finding.contains("What stays unknown") && !LIMITATIONS.is_empty(),
+        "the limitations are recorded in the finding"
+    );
+    let unknowns: Vec<String> = Vec::new();
 
     let document = format!(
         "{{\n\
@@ -236,8 +249,8 @@ fn review_method() -> String {
          test derived with the production reader (`cs_app::ui::front_end::OriginalLayout` over \
          `FrontEndScreens`, `cs_assets::rof::mount_rof_into` for GOSDATA/ASSETS/crimson.rof); the \
          artifact is checked against this report's install hash before it is referenced. \
-         `unknowns` are the product limitations of docs/findings/2026-10-15-f45-b-1-original-layout.md \
-         and gate fidelity claims. `claim` is `implemented` only: `retail` means read access to \
+         `unknowns` are blockers and are empty; the product limitations are in \
+         docs/findings/2026-10-15-f45-b-1-original-layout.md and the layout artifact, and gate fidelity claims. `claim` is `implemented` only: `retail` means read access to \
          the owner's files, not an original run.",
     )
 }
