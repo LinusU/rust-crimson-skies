@@ -214,6 +214,10 @@ decision (`MountLimits` fields are declared-size budgets and are folded into
 `ModPlan::hash` through `MountLimits::encode()`), so it is filed rather than
 guessed: **F53-B-FU2 (#745)**, affected content named there (every mod root
 mounted through `mount_mods`).
+*(Resolved 2026-10-15 by F53-B-FU2 #745: `MountLimits::max_root_bytes_per_mod`
+/ `max_root_bytes_total` bound every file below a mod root, declared or not,
+measured before the walk hashes it — see
+`docs/findings/2026-10-15-f53-b-fu2-bounded-mod-root-footprint.md`.)*
 
 **Deliberately left to F53-C:** `MountRequest::base_ids` — the F53-A note on
 the task says the stage that wires the mount "supplies it from the real
