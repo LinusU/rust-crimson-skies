@@ -390,18 +390,18 @@ fn spawn_mission_actors_under(world: &mut World, view: HostView) -> MissionActor
         );
         match designed_damage_graph(&graph_spelling) {
             Ok((subject, graph, policy)) => {
-                if let Err(error) =
-                    session_damage(world, session).register_actor(actor, graph, policy)
-                {
-                    report
+                match session_damage(world, session).register_actor(actor, graph, policy) {
+                    Ok(()) => {
+                        world.entity_mut(entity).insert(DamageActorBinding {
+                            actor,
+                            graph: subject,
+                            generation,
+                        });
+                    }
+                    Err(error) => report
                         .refusals
-                        .push(format!("{name}: damage registration refuses: {error}"));
+                        .push(format!("{name}: damage registration refuses: {error}")),
                 }
-                world.entity_mut(entity).insert(DamageActorBinding {
-                    actor,
-                    graph: subject,
-                    generation,
-                });
             }
             Err(reason) => report.refusals.push(format!("{name}: {reason}")),
         }
@@ -472,18 +472,18 @@ fn spawn_mission_actors_under(world: &mut World, view: HostView) -> MissionActor
         let graph_spelling = format!("damage-graph.zeppelin.{}", subject.key());
         match designed_damage_graph(&graph_spelling) {
             Ok((graph_subject, graph, policy)) => {
-                if let Err(error) =
-                    session_damage(world, session).register_actor(actor, graph, policy)
-                {
-                    report.refusals.push(format!(
+                match session_damage(world, session).register_actor(actor, graph, policy) {
+                    Ok(()) => {
+                        world.entity_mut(entity).insert(DamageActorBinding {
+                            actor,
+                            graph: graph_subject,
+                            generation,
+                        });
+                    }
+                    Err(error) => report.refusals.push(format!(
                         "zeppelin {world_actor:?}: damage registration refuses: {error}"
-                    ));
+                    )),
                 }
-                world.entity_mut(entity).insert(DamageActorBinding {
-                    actor,
-                    graph: graph_subject,
-                    generation,
-                });
             }
             Err(reason) => report
                 .refusals
