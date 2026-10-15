@@ -730,6 +730,7 @@ pub mod input;
 pub mod interaction;
 pub mod livery;
 pub mod loading;
+pub mod mission_actors;
 pub mod mission_animations;
 pub mod mission_control;
 pub mod mission_launch;

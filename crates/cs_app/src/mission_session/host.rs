@@ -928,6 +928,16 @@ impl MissionHost {
         }
         spawn_player(world).map_err(MissionHostRestartError::Player)?;
 
+        // The scripted actors go with their generation: despawned before
+        // the respawn so a restart leaves exactly the roster's set, and
+        // respawned under the new `served` session — their damage actors are
+        // re-registered on the fresh resolver `respawn_mission_actors`
+        // installs for that session (M01-PLAY-ACTORS, #1435). The host is
+        // mid-restart here — not yet a world resource — so it is handed
+        // over by reference.
+        crate::mission_actors::despawn_mission_actors(world);
+        crate::mission_actors::respawn_mission_actors(world, self);
+
         // The previous composed step's report describes the generation just
         // torn down; it is removed so this restart leaves no stale answer and
         // the next step writes this generation's own.

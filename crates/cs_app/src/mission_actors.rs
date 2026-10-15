@@ -1,0 +1,523 @@
+//! Scripted mission actors for the mission composition (M01-PLAY-ACTORS,
+//! #1435): the enabled non-player `aiv.zrd` aircraft and the
+//! `zeppelins.zrd` world actors, bound into the world the composition
+//! builds.
+//!
+//! What is measured here and what is not:
+//!
+//! * **The records** come from [`crate::mission_start::read_aircraft_records`]
+//!   (#1453) and [`crate::mission_world_actors::bind_mission_world_actors`]
+//!   (#574/#772): every field on [`ScriptedAircraftActor::record`] and every
+//!   zeppelin row is `ObservedTool`-provenanced retail data.
+//! * **Who spawns** is measured: the original's spawn loop skips a record
+//!   whose `enabled` field is `0` (`0x474d10`), builds the `player` record
+//!   through the engine-state path instead of this one
+//!   ([`SpawnDispatch::Player`]), and sleeps a record whose `deactivated`
+//!   field is non-zero (`0x47ca14` → `0x4b0f40`, #681).
+//! * **The pose** is measured: `stored_pose.position_metres()` (#436) and
+//!   `stored_heading_radians` composed through the production
+//!   [`object3d_orientation`] `Ry`, exactly as the player's own spawn does.
+//! * **The airframe/model selection is designed.** #1453 measured that the
+//!   original resolves the record's name-truncated prefix against
+//!   `vehicle.zrd`; which record each prefix binds and what model it draws
+//!   is unmeasured, so the entity carries [`SpawnDispatch::VehicleRecord`]'s
+//!   measured prefix verbatim and nothing more.
+//! * **The flight model is absent by design**: AI behaviour is #1436's. A
+//!   scripted aircraft is a kinematic body held at its spawn pose — the
+//!   `BodyMode::Kinematic` "scripted actor" contract — so it collides and
+//!   can be damaged without an invented autopilot ever moving it.
+//! * **The damage model is designed**: every actor registers a single-node
+//!   graph (`airframe`, internal structure, lethal) whose integrity is
+//!   [`Resolved::Unknown`], so a routed hit blocks visibly in the
+//!   `SessionDamageResolver` rather than being absorbed by an invented
+//!   pool — no M01 damage table has been measured (#668).
+//! * **Zeppelins** already exist as launched [`WorldActorSession`] actors
+//!   (#772); this module binds each one an ECS entity carrying
+//!   [`WorldActorBinding`] and [`DamageActorBinding`] so the actor is a
+//!   world-side identity the damage consumers and teardown can name. No
+//!   pose, route or faction is invented: the binding's pose comes from the
+//!   session's own canonical read.
+//!
+//! Teardown: every entity spawned here carries [`ScriptedAircraftActor`] or
+//! [`MissionZeppelinActor`]; `MissionHost::restart` despawns both kinds and
+//! respawns them through the same function, and `teardown` removes them
+//! with the rest of the composition.
+
+use avian3d::prelude::Rotation;
+use bevy::prelude::{Component, Entity, Quat, Resource, Transform, Vec3, World};
+use cs_sim::collision::{CollisionLayer, ShapeClass};
+use cs_sim::damage::{
+    AttributionRule, DamageGraph, DamageNode, DamageNodeKind, DamagePolicy, DamageResolver,
+};
+use cs_types::content::{ContentId, ContentKind, DamageNodeKey, Resolved};
+use cs_types::evidence::ClaimId;
+use cs_types::net::{ActorAllocator, ActorId, SessionId};
+
+use crate::damage::DamageActorBinding;
+use crate::mission_session::MissionHost;
+use crate::mission_start::{ScriptedAircraft, SpawnDispatch, stored_heading_radians};
+use crate::mission_world_actors::object3d_orientation;
+use crate::physics::{BodyMode, BodySpec, spawn_body};
+use crate::scene::SceneGenerations;
+use crate::weapons::SessionDamageResolver;
+use crate::world_actors::WorldActorBinding;
+
+/// The producer serial the mission's damage resolver stamps — designed:
+/// the session has no measured producer table, so the spawn path owns this
+/// one.
+const MISSION_DAMAGE_PRODUCER: u32 = 0;
+
+/// The designed single node every scripted actor's damage graph carries:
+/// a lethal internal-structure part with an unresolved pool.
+const SCRIPTED_DAMAGE_NODE: &str = "airframe";
+
+/// Resource: the scripted-aircraft records the composition spawns — every
+/// `aiv.zrd` record except the `player` one (the composition's own
+/// `MissionPlayerBody` is that record's runtime face), `enabled == 0`
+/// excluded exactly as the original's spawn loop skips it.
+#[derive(Resource, Clone, Debug, Default)]
+pub struct MissionAircraftRoster(pub Vec<ScriptedAircraft>);
+
+impl MissionAircraftRoster {
+    /// The roster a stage's record list becomes: every record except the
+    /// `player` one (the composition's `MissionPlayerBody` is its runtime
+    /// face) and the ones `enabled` drops, exactly the original's `== 0`
+    /// skip (`0x474d10`).
+    #[must_use]
+    pub fn from_records(records: &[ScriptedAircraft]) -> Self {
+        Self(
+            records
+                .iter()
+                .filter(|record| {
+                    record.enabled != Some(false) && record.dispatch != SpawnDispatch::Player
+                })
+                .cloned()
+                .collect(),
+        )
+    }
+}
+
+/// One record the spawn left an entity for.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SpawnedAircraft {
+    /// The record name, as `aiv.zrd` spells it.
+    pub record: String,
+    /// The spawned entity.
+    pub entity: Entity,
+    /// The session damage actor registered for it.
+    pub actor: ActorId,
+    /// The measured `deactivated` state the record spawned under.
+    pub asleep: bool,
+}
+
+/// One zeppelin world actor an entity was bound to.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BoundZeppelin {
+    /// The runtime actor of the world-actor session.
+    pub world_actor: cs_script::ir::ActorId,
+    /// The joined scene-node subject.
+    pub subject: ContentId,
+    /// The spawned binding entity.
+    pub entity: Entity,
+    /// The session damage actor registered for it.
+    pub actor: ActorId,
+}
+
+/// Resource: what [`spawn_mission_actors`] did — the entities spawned, the
+/// zeppelin bindings made, and every refusal by name. Replaced on each
+/// spawn, so a restart's report is the fresh generation's own.
+#[derive(Resource, Clone, Debug, Default)]
+pub struct MissionActorSpawnReport {
+    /// The session the actors were registered under.
+    pub session: Option<SessionId>,
+    /// The scripted aircraft that spawned, in roster order.
+    pub aircraft: Vec<SpawnedAircraft>,
+    /// The zeppelin world actors bound, in program order.
+    pub zeppelins: Vec<BoundZeppelin>,
+    /// Every refusal, verbatim.
+    pub refusals: Vec<String>,
+}
+
+/// Component: an `aiv.zrd` scripted aircraft's runtime binding. The
+/// entity's body is the kinematic `Aircraft` body [`spawn_mission_actors`]
+/// gives it; everything else the record measured rides here.
+#[derive(Component, Clone, Debug)]
+pub struct ScriptedAircraftActor {
+    /// The measured record (`ObservedTool` provenance).
+    pub record: ScriptedAircraft,
+    /// The `vehicle.zrd` registry prefix the measured dispatch names —
+    /// **designed** as an airframe/model selection: #1453 measured the
+    /// name-prefix lookup, not which record the prefix binds.
+    pub vehicle_record: String,
+    /// The session damage actor this entity's [`DamageActorBinding`]
+    /// registers.
+    pub damage_actor: ActorId,
+    /// The scene generation the entity spawned under.
+    pub generation: crate::scene::SceneGeneration,
+    /// The measured `deactivated` state: the original calls its sleep
+    /// routine on a non-zero field (#681), and the mission program's
+    /// `WAKEUP_ENEMIES` is the measured wake.
+    pub asleep: bool,
+}
+
+/// Component: one `zeppelins.zrd` world actor's ECS face — the entity the
+/// damage consumers and teardown name for a launched [`WorldActorSession`]
+/// actor. The zeppelin's drawn world object is the residency's own; this
+/// entity binds the actor identity to it by subject, never by a guessed
+/// pose.
+#[derive(Component, Clone, Debug)]
+pub struct MissionZeppelinActor {
+    /// The runtime actor of the world-actor session.
+    pub world_actor: cs_script::ir::ActorId,
+    /// The session damage actor this entity's [`DamageActorBinding`]
+    /// registers.
+    pub damage_actor: ActorId,
+    /// The scene generation the entity spawned under.
+    pub generation: crate::scene::SceneGeneration,
+    /// The session's canonical pose at bind time — the world's own read,
+    /// not a stored-field interpretation.
+    pub position_m: [f64; 3],
+    /// The canonical orientation at bind time.
+    pub orientation: [f64; 4],
+}
+
+/// The record's spawn pose in the simulation frame: measured position in
+/// metres (#436) and the measured heading conversion composed through the
+/// production `object3d_orientation` `Ry` — the same compose the player's
+/// own spawn uses.
+fn measured_spawn_pose(record: &ScriptedAircraft) -> Option<(Vec3, Quat)> {
+    let stored = record.stored_pose?;
+    let [x, y, z, w] =
+        object3d_orientation(0.0, f64::from(stored_heading_radians(stored.heading)), 0.0);
+    Some((
+        Vec3::from_array(stored.position_metres()),
+        Quat::from_xyzw(x as f32, y as f32, z as f32, w as f32),
+    ))
+}
+
+/// The designed damage graph one scripted actor registers: one lethal
+/// internal-structure node whose pool is unresolved — a hit routes in and
+/// blocks by name rather than draining an invented count.
+fn designed_damage_graph(spelling: &str) -> Result<(ContentId, DamageGraph, DamagePolicy), String> {
+    let subject = ContentId::from_source(ContentKind::Blueprint, spelling)
+        .map_err(|error| error.to_string())?;
+    let node_key = DamageNodeKey::new(SCRIPTED_DAMAGE_NODE)
+        .map_err(|error| format!("the damage node key refuses: {error}"))?;
+    let claim = ClaimId::new("m01-actors.damage-pool")
+        .map_err(|error| format!("the damage claim id refuses: {error}"))?;
+    let integrity = Resolved::unknown(
+        claim,
+        "no M01 damage table is measured (#668): the scripted actor's integrity pool \
+         is unresolved so a routed hit is reported unresolved instead of being absorbed \
+         by an invented capacity",
+    )
+    .map_err(|error| format!("the unresolved pool refuses: {error}"))?;
+    let node =
+        DamageNode::new(node_key, DamageNodeKind::InternalStructure, integrity).with_lethal(true);
+    let graph = DamageGraph::try_new(subject.clone(), vec![node])
+        .map_err(|error| format!("the designed damage graph refuses: {error}"))?;
+    Ok((
+        subject,
+        graph,
+        DamagePolicy {
+            attribution: AttributionRule::FirstLethalHit,
+        },
+    ))
+}
+
+/// The session's damage authority: a resolver of this generation's own,
+/// installed or replaced so registration never lands on a torn-down
+/// generation's ledger (a restart installs a new resolver for the new
+/// generation, exactly as the weapons session contract spells).
+fn session_damage(world: &mut World, session: SessionId) -> &mut DamageResolver {
+    if world
+        .get_resource::<SessionDamageResolver>()
+        .is_none_or(|resolver| resolver.resolver().session() != session)
+    {
+        world.insert_resource(SessionDamageResolver::new(DamageResolver::new(
+            session,
+            MISSION_DAMAGE_PRODUCER,
+        )));
+    }
+    world
+        .get_resource_mut::<SessionDamageResolver>()
+        .expect("the resolver was just installed")
+        .into_inner()
+        .resolver_mut()
+}
+
+/// The host state the spawn reads, lifted out of the resource so the two
+/// callers see the same thing: the Startup system whose host sits in the
+/// world, and `MissionHost::restart` whose host is a `&mut self` mid-call
+/// — freshly relaunched for the new generation — and is not yet a
+/// resource again.
+struct HostView {
+    /// The session the host serves.
+    served: SessionId,
+    /// The world-actor program's actor/subject pairs, in program order.
+    zeppelins: Vec<(cs_script::ir::ActorId, ContentId)>,
+    /// Each launched actor's canonical session pose.
+    poses: Vec<(
+        cs_script::ir::ActorId,
+        Option<cs_sim::world_actors::trajectory::Pose>,
+    )>,
+}
+
+fn host_view(host: &MissionHost) -> HostView {
+    let world_actors = host.world_actors();
+    HostView {
+        served: host.served(),
+        zeppelins: world_actors
+            .map(|actors| {
+                actors
+                    .program()
+                    .subjects
+                    .iter()
+                    .map(|(actor, subject)| (*actor, subject.clone()))
+                    .collect()
+            })
+            .unwrap_or_default(),
+        poses: world_actors
+            .map(|actors| {
+                actors
+                    .set()
+                    .actors()
+                    .map(|actor| (actor, actors.set().pose(actor).ok()))
+                    .collect()
+            })
+            .unwrap_or_default(),
+    }
+}
+
+/// Spawns the roster's scripted aircraft and binds the launched zeppelin
+/// world actors, under the host's served session — the composition's
+/// Startup seam, where the host is a resource.
+///
+/// Every entity is marked so the next teardown or restart takes exactly
+/// what this function made. The report it builds is left as
+/// [`MissionActorSpawnReport`] for the tests and the evidence record to
+/// read.
+pub fn spawn_mission_actors(world: &mut World) -> MissionActorSpawnReport {
+    let view = world.get_resource::<MissionHost>().map(host_view);
+    let Some(view) = view else {
+        let mut report = MissionActorSpawnReport::default();
+        report
+            .refusals
+            .push("no MissionHost resource: the composition did not install the host".to_owned());
+        world.insert_resource(report.clone());
+        return report;
+    };
+    spawn_mission_actors_under(world, view)
+}
+
+/// `MissionHost::restart`'s entry: the host is mid-restart — already
+/// serving the fresh session and relaunched world actors — and not a
+/// world resource, so the caller hands it by reference.
+pub fn respawn_mission_actors(world: &mut World, host: &MissionHost) -> MissionActorSpawnReport {
+    spawn_mission_actors_under(world, host_view(host))
+}
+
+fn spawn_mission_actors_under(world: &mut World, view: HostView) -> MissionActorSpawnReport {
+    let mut report = MissionActorSpawnReport::default();
+    let roster = world
+        .get_resource::<MissionAircraftRoster>()
+        .cloned()
+        .unwrap_or_default();
+    let session = view.served;
+    report.session = Some(session);
+    let zeppelins = view.zeppelins;
+    let zeppelin_poses = view.poses;
+    let generation = world
+        .get_resource::<SceneGenerations>()
+        .map(SceneGenerations::latest)
+        .unwrap_or_default();
+    let mut allocator = ActorAllocator::new(session);
+
+    for record in &roster.0 {
+        let name = record.name.clone();
+        let Some((position, orientation)) = measured_spawn_pose(record) else {
+            report.refusals.push(format!(
+                "{name}: the record carries no stored pose, so no spawn pose exists to apply"
+            ));
+            continue;
+        };
+        let vehicle_record = match &record.dispatch {
+            SpawnDispatch::VehicleRecord(prefix) => prefix.clone(),
+            dispatch => {
+                report.refusals.push(format!(
+                    "{name}: dispatch {dispatch:?} is not a vehicle-record spawn and this seam \
+                     does not build it"
+                ));
+                continue;
+            }
+        };
+        let spec = BodySpec {
+            layer: CollisionLayer::Aircraft,
+            shape: ShapeClass::Solid,
+            mode: BodyMode::Kinematic,
+            // No declared mass: a kinematic scripted actor integrates
+            // nothing, and a later release must declare the measured mass
+            // rather than fly a collider-density default.
+            mass_kg: 0.0,
+            // The playtest's declared development box: no scripted-aircraft
+            // collider extent is measured.
+            half_extents_m: crate::playtest::scene::AIRCRAFT_HALF_EXTENTS_M,
+            position_m: position.to_array(),
+            linear_velocity_m_s: [0.0, 0.0, 0.0],
+        };
+        let entity = match spawn_body(world, &spec) {
+            Ok(entity) => entity,
+            Err(error) => {
+                report
+                    .refusals
+                    .push(format!("{name}: the body spec refuses: {error}"));
+                continue;
+            }
+        };
+        let actor = match allocator.allocate() {
+            Ok(actor) => actor,
+            Err(error) => {
+                let _ = world.despawn(entity);
+                report
+                    .refusals
+                    .push(format!("{name}: the actor allocator refuses: {error}"));
+                continue;
+            }
+        };
+        let graph_spelling = format!(
+            "damage-graph.scripted-aircraft.{}",
+            name.to_ascii_lowercase()
+        );
+        match designed_damage_graph(&graph_spelling) {
+            Ok((subject, graph, policy)) => {
+                if let Err(error) =
+                    session_damage(world, session).register_actor(actor, graph, policy)
+                {
+                    report
+                        .refusals
+                        .push(format!("{name}: damage registration refuses: {error}"));
+                }
+                world.entity_mut(entity).insert(DamageActorBinding {
+                    actor,
+                    graph: subject,
+                    generation,
+                });
+            }
+            Err(reason) => report.refusals.push(format!("{name}: {reason}")),
+        }
+        let asleep = record.starts_asleep.unwrap_or(false);
+        world.entity_mut(entity).insert((
+            Rotation(orientation),
+            Transform::from_translation(position).with_rotation(orientation),
+            ScriptedAircraftActor {
+                record: record.clone(),
+                vehicle_record,
+                damage_actor: actor,
+                generation,
+                asleep,
+            },
+            bevy::prelude::Visibility::Inherited,
+        ));
+        report.aircraft.push(SpawnedAircraft {
+            record: name,
+            entity,
+            actor,
+            asleep,
+        });
+    }
+
+    for (world_actor, subject) in &zeppelins {
+        let actor = match allocator.allocate() {
+            Ok(actor) => actor,
+            Err(error) => {
+                report.refusals.push(format!(
+                    "zeppelin {world_actor:?}: the actor allocator refuses: {error}"
+                ));
+                continue;
+            }
+        };
+        let pose = zeppelin_poses
+            .iter()
+            .find(|(candidate, _)| candidate == world_actor)
+            .and_then(|(_, pose)| *pose);
+        let Some(pose) = pose else {
+            report.refusals.push(format!(
+                "zeppelin {world_actor:?}: the session holds no pose for the actor"
+            ));
+            continue;
+        };
+        let (position_m, orientation) = (pose.position_m, pose.orientation.0);
+        let entity = world
+            .spawn((
+                Transform::from_translation(Vec3::new(
+                    position_m[0] as f32,
+                    position_m[1] as f32,
+                    position_m[2] as f32,
+                )),
+                bevy::prelude::Visibility::Inherited,
+                WorldActorBinding {
+                    actor: *world_actor,
+                    subject: subject.clone(),
+                    generation,
+                },
+                MissionZeppelinActor {
+                    world_actor: *world_actor,
+                    damage_actor: actor,
+                    generation,
+                    position_m,
+                    orientation,
+                },
+            ))
+            .id();
+        let graph_spelling = format!("damage-graph.zeppelin.{}", subject.key());
+        match designed_damage_graph(&graph_spelling) {
+            Ok((graph_subject, graph, policy)) => {
+                if let Err(error) =
+                    session_damage(world, session).register_actor(actor, graph, policy)
+                {
+                    report.refusals.push(format!(
+                        "zeppelin {world_actor:?}: damage registration refuses: {error}"
+                    ));
+                }
+                world.entity_mut(entity).insert(DamageActorBinding {
+                    actor,
+                    graph: graph_subject,
+                    generation,
+                });
+            }
+            Err(reason) => report
+                .refusals
+                .push(format!("zeppelin {world_actor:?}: {reason}")),
+        }
+        report.zeppelins.push(BoundZeppelin {
+            world_actor: *world_actor,
+            subject: subject.clone(),
+            entity,
+            actor,
+        });
+    }
+
+    world.insert_resource(report.clone());
+    report
+}
+
+/// The composed Startup entry: [`spawn_mission_actors`] as a system.
+pub fn mission_actor_spawn_system(world: &mut World) {
+    spawn_mission_actors(world);
+}
+
+/// Despawns every entity [`spawn_mission_actors`] made — the restart and
+/// teardown share this list.
+pub fn despawn_mission_actors(world: &mut World) {
+    let entities: Vec<Entity> = {
+        use bevy::prelude::With;
+        let mut query = world.query_filtered::<Entity, bevy::prelude::Or<(
+            With<ScriptedAircraftActor>,
+            With<MissionZeppelinActor>,
+        )>>();
+        query.iter(world).collect()
+    };
+    for entity in entities {
+        let _ = world.despawn(entity);
+    }
+}

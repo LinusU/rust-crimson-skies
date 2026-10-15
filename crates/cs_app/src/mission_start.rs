@@ -1372,10 +1372,30 @@ impl MissionStartConfiguration {
 ///
 /// [`MissionStartError`] when the installation cannot be walked, the mission
 /// reader or its `aiv.zrd` is missing, or the document does not decode.
-pub fn recover_retail_start_configuration(
+/// The one mission reader archive, as read: its whole bytes, the
+/// installation-relative spelling and container key, and the `aiv.zrd`
+/// document with its member span.
+struct MissionAircraftArchive {
+    /// The container's bytes; a re-discovery for another member borrows
+    /// them.
+    bytes: Vec<u8>,
+    /// The spelling the manifest gave the container.
+    spelling: String,
+    /// The container's logical key (`zbd/<chapter>/<m>/zrdr.zbd`).
+    container_key: String,
+    /// The decoded `aiv.zrd` document.
+    document: ZrdValue,
+    /// The member's span, for every record's provenance.
+    source: SourceSpan,
+}
+
+/// Reads one mission archive's `aiv.zrd` member: its decoded document and
+/// the member's provenance span, through the same walk
+/// [`recover_retail_start_configuration`] uses.
+fn read_aircraft_archive(
     install_root: &Path,
     mission: &str,
-) -> Result<MissionStartConfiguration, MissionStartError> {
+) -> Result<MissionAircraftArchive, MissionStartError> {
     let found = cs_assets::install::discover(install_root)
         .map_err(|error| MissionStartError::Discovery(error.to_string()))?;
     let container_key = format!("{}/{READER_ARCHIVE}", mission.to_ascii_lowercase());
@@ -1422,7 +1442,43 @@ pub fn recover_retail_start_configuration(
         None,
     )
     .map_err(|error| MissionStartError::Provenance(error.to_string()))?;
-    let mut configuration = MissionStartConfiguration::read(mission, &document, &source)?;
+    Ok(MissionAircraftArchive {
+        bytes,
+        spelling,
+        container_key,
+        document,
+        source,
+    })
+}
+
+/// Reads every scripted-aircraft record of one installed mission's
+/// `aiv.zrd` — the player record, the wingmates and the AI aircraft alike —
+/// through the same archive walk [`recover_retail_start_configuration`]
+/// uses (#1435, `M01-PLAY-ACTORS`).
+///
+/// The records carry only what #1453 measured; the caller decides which of
+/// them spawn (`enabled`), which is the player's (`SpawnDispatch::Player`)
+/// and which start asleep (`starts_asleep`).
+///
+/// # Errors
+///
+/// [`MissionStartError`] when the installation cannot be walked, the mission
+/// reader or its `aiv.zrd` is missing, or the document does not decode.
+pub fn recover_retail_aircraft_records(
+    install_root: &Path,
+    mission: &str,
+) -> Result<Vec<ScriptedAircraft>, MissionStartError> {
+    let archive = read_aircraft_archive(install_root, mission)?;
+    read_aircraft_records(mission, &archive.document, &archive.source)
+}
+
+pub fn recover_retail_start_configuration(
+    install_root: &Path,
+    mission: &str,
+) -> Result<MissionStartConfiguration, MissionStartError> {
+    let archive = read_aircraft_archive(install_root, mission)?;
+    let mut configuration =
+        MissionStartConfiguration::read(mission, &archive.document, &archive.source)?;
     // #798: the engine image is a separate owner-supplied input at
     // `$CS_ENGINE_IMAGE`, so it is loaded here rather than read out of the
     // installation's inventory, and a refusal names that variable. When the
@@ -1452,6 +1508,14 @@ pub fn recover_retail_start_configuration(
     // airframe and the refusal names the scenario's own assignment. The pose
     // is unaffected: the record's pose goes through the same conversion
     // whatever the mode.
+    let read_error = |reason: String| MissionStartError::Read {
+        container: archive.container_key.clone(),
+        reason,
+    };
+    let path = RelativePath::new(&archive.spelling.to_lowercase())
+        .map_err(|error| read_error(error.to_string()))?;
+    let discovery =
+        cs_formats::script_raw::discover_container(&archive.container_key, &path, &archive.bytes);
     let instant_action = discovery
         .programs()
         .iter()

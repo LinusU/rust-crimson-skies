@@ -218,6 +218,11 @@ pub struct MissionStage {
     pub instance: WorldInstance,
     /// The player's measured start pose.
     pub start: StartPose,
+    /// The mission's scripted-aircraft records — every `aiv.zrd` record as
+    /// #1453 measured it, player included (M01-PLAY-ACTORS, #1435). The
+    /// composition filters this into the roster it spawns; the synthetic
+    /// stages carry an empty list and spawn no scripted actors.
+    pub aircraft: Vec<crate::mission_start::ScriptedAircraft>,
     /// The flight law the player's body flies.
     pub flight: MissionFlight,
     /// The player airframe's drawn source — `zbd/planes.zbd` and the group's
@@ -517,6 +522,7 @@ pub fn stage_for(
         meshes: content.meshes.clone(),
         instance: content.instance.clone(),
         start,
+        aircraft: content.aircraft.clone(),
         flight: content.flight.clone(),
         // The player airframe's visual source: `zbd/planes.zbd` under this
         // installation plus the world group's texture archive, read through
@@ -956,6 +962,18 @@ fn add_composition(
     app.insert_resource(crate::score::SessionScoreLedger::open(host.served()));
     app.insert_resource(host);
     app.insert_resource(stage.clone());
+    // 5. The scripted mission actors (M01-PLAY-ACTORS, #1435): the enabled
+    //    non-player `aiv.zrd` records — the measured `enabled == 0` skip —
+    //    plus one ECS binding per `zeppelins.zrd` world actor the host's
+    //    session launched. The player stays the composition's own
+    //    `MissionPlayerBody`; the Startup seam runs after the host exists.
+    app.insert_resource(crate::mission_actors::MissionAircraftRoster::from_records(
+        &stage.aircraft,
+    ));
+    app.add_systems(
+        bevy::prelude::Startup,
+        crate::mission_actors::mission_actor_spawn_system,
+    );
     install_mission_host(app);
     Ok(())
 }
@@ -1158,6 +1176,8 @@ pub fn teardown(app: &mut App) {
                 With<MissionPlayerBody>,
                 With<PlaytestAircraft>,
                 With<LoadedItemBinding>,
+                With<crate::mission_actors::ScriptedAircraftActor>,
+                With<crate::mission_actors::MissionZeppelinActor>,
             )>,
         )>();
         query.iter(world).collect()
@@ -1169,6 +1189,8 @@ pub fn teardown(app: &mut App) {
     }
     super::launch_sound::stop_launch_audio(world);
     world.remove_resource::<MissionComposition>();
+    world.remove_resource::<crate::mission_actors::MissionAircraftRoster>();
+    world.remove_resource::<crate::mission_actors::MissionActorSpawnReport>();
     world.remove_resource::<MissionPlayerStart>();
     world.remove_resource::<MissionPlayerVisual>();
     world.remove_resource::<super::world_draw::MissionWorldParts>();

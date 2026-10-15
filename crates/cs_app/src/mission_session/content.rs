@@ -145,6 +145,10 @@ pub struct MissionContent {
     pub environment: EnvironmentSession,
     /// The scope's world actors, with the session the composition spawns from.
     pub world_actors: MissionWorldActors,
+    /// Every scripted-aircraft record of the mission's `aiv.zrd` — player,
+    /// wingmates and AI aircraft alike — as #1453 measured it (#1435). The
+    /// composition's roster filters this list; nothing here is dropped.
+    pub aircraft: Vec<crate::mission_start::ScriptedAircraft>,
     /// The scope's animation join: startup rows, placements and carriers.
     pub animation: MissionAnimationBinding,
     /// The mission's declared objective program and the lowered control
@@ -385,6 +389,12 @@ impl MissionContent {
         let flight = prepare_flight(install_root, &start)?;
         let environment = prepare_environment(plan, &found)?;
         let world_actors = prepare_world_actors(install_root, &found, plan)?;
+        let aircraft =
+            crate::mission_start::recover_retail_aircraft_records(install_root, &plan.mission_dir)
+                .map_err(|error| MissionSessionError::Start {
+                    mission: plan.mission_dir.clone(),
+                    reason: format!("the scripted-aircraft records could not be read: {error}"),
+                })?;
         let animation =
             bind_mission_animation(install_root, &plan.mission_dir).map_err(|error| {
                 MissionSessionError::Animation {
@@ -404,6 +414,7 @@ impl MissionContent {
             flight,
             environment,
             world_actors,
+            aircraft,
             animation,
             control,
             sound_archives,
