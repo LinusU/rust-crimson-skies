@@ -147,8 +147,10 @@ hashes — is committed.
   same deck over the horizon band and the sea, with the airship in frame.
 - `CS_MISSION_CAPTURE=1 CS_EVIDENCE_DIR=private/evidence/M01-PLAY-WEATHER cs
   --cs-path $CS_GAME_DIR --mission M01` — `frame_00180_player.png`, the composed
-  mission at 1 322.9 m: the deck is above the aircraft and the haze is below it,
-  so the mission draws its weather where the layer altitudes say it is.
+  mission climbing through ~1 300 m: the deck is above the aircraft and the haze
+  is below it, so the mission draws its weather where the layer altitudes say
+  it is. (The composed run is real-time, so the altitude and the frame bytes
+  differ slightly between runs; the playtest capture above is deterministic.)
 
 ## What is not claimed
 
