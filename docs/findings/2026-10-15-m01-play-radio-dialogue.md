@@ -94,24 +94,35 @@ voice line. **Subtitles therefore stay `None`** on every queued line
 
 ## 5. What landed, and what is still open
 
-* `crates/cs_app/src/mission_session/radio.rs` — the group table reader, the
-  group expansion, the member preparation (identity, speaker, measured
-  length) and the cue → line plan; `MissionRadio` is read in
-  `mission_session::stage_for` from the declarations the engine model holds,
-  and the mission host offers each tick's cues to `AudioSession`'s radio
-  queue, reporting every answer on `MissionHostTick::radio`.
-* Acceptance: `accept_m01_play_radio_the_opening_conversation_is_queued_at_mission_start`
-  (retail, `#[ignore = "requires CS_GAME_DIR"]`, in
-  `crates/cs_app/tests/campaign/m01_play_radio.rs`) plus the
-  `accept_m01_play_radio_*` unit members inside `radio.rs`.
-* **Open, deliberately not guessed here:** nothing consumes a `RadioEvent`
-  on the device side — no mixer or device plays a radio line yet
-  (`docs/findings/2026-10-01-f41-c-radio-queue-music-and-device-loss.md`) —
-  and `AudioSession::tick` still has no production writer, so a queued line
-  neither completes nor is handed to the next one. The owner's listening
-  test waits on that work. Music state requests are reported
-  (`RadioLineOutcome::Music`) but no music asset is requested: minting a
-  `music` content id from a group name would be an invented identity.
-  Objective text on a HUD (the `MSG_BRF_NWM1_OBJ1..4` ids of M01's four
-  `PRIMARY`/`SECONDARY` identities) and subtitle rendering are separate UI
-  paths this task did not implement.
+* `crates/cs_app/src/mission_session/radio.rs` — the `sounds.zrd` reader (both
+  sections), the group expansion (a child keeps every name it spells, however
+  deeply the record nests it), the member preparation (identity, speaker,
+  measured length) and the cue → line plan;
+  `cs_app::mission_session::offer_cues` is the host's whole sound step,
+  factored out so the acceptance suite drives the very code the composition
+  drives. `MissionRadio` is read in `mission_session::stage_for` from the
+  declarations the engine model holds, and `MissionHost::step` publishes each
+  tick's answers on `MissionHostTick::radio`.
+* Acceptance: two retail members in
+  `crates/cs_app/tests/campaign/m01_play_radio.rs` plus the
+  `accept_m01_play_radio_*` unit members inside `radio.rs`:
+  * `accept_m01_play_radio_the_opening_conversation_is_queued_at_mission_start`
+    (`CS_GAME_DIR` only) drives the production path — recovery → engine
+    lifecycle model → `MissionRadio::read` → the model's own clock at 1/120 s
+    per pass → `ObjectiveLifecycles::take_cues` → `offer_cues` → a real
+    `AudioSession`. **Measured on the owner's installation:** the opening
+    conversation's two lines reach the radio queue at the 2.0 s wake,
+    `VO_c2-NW-m1_WorkersVoyage_1.wav` first (1 137 ticks ≈ 9.5 s), then
+    `VO_c2-NW-m1_Zachary_2.wav` behind it.
+  * `accept_m01_play_radio_the_composition_queues_the_opening_conversation`
+    (`CS_GAME_DIR` **and** `CS_ENGINE_IMAGE`, because M01's player start is
+    only known from the owner's decrypted image) runs the whole
+    `build_headless` composition and reads the answers off
+    `MissionHostReport`. It fails loudly by design when the image is unset,
+    so it was **not run on the host that wrote this note** — the reviewer or
+    the owner runs it with the image.
+* Open, deliberately not guessed here — filed as follow-ups: device-side
+  playback and the missing radio tick (`M01-RADIO-DEVICE` #1461), the
+  objective HUD and the text behind `MSG_BRF_NWM1_OBJ1..4`
+  (`M01-HUD-OBJECTIVE` #1462), and the music state requests
+  (`M01-PLAY-MUSIC` #1463).
