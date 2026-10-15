@@ -663,6 +663,10 @@ const RIG_MOUNTS: &[RigMount] = &[
     },
 ];
 
+/// How many of [`RIG_MOUNTS`] are guns: the player's rocket launcher is
+/// always the last entry, and no AI aircraft carries one (`attach_gun_rig`).
+const GUN_RIG_MOUNTS: usize = RIG_MOUNTS.len() - 1;
+
 /// Attaches the player's weapon rig to `player`: the [`WeaponActorBinding`]
 /// that marks the live hierarchy and one [`MountPoseBinding`] node per gun.
 ///
@@ -698,19 +702,76 @@ pub fn attach_player_rig(world: &mut World, player: Entity) -> Result<usize, Mis
             generation: mission.generation,
         },
     ));
-    for rig in RIG_MOUNTS {
+    Ok(hang_rig_mounts(
+        world,
+        player,
+        RIG_MOUNTS,
+        mission.generation,
+    ))
+}
+
+/// Attaches the mission's **gun** rig to a live actor entity that is not the
+/// player's seat: the same designed mounts the player's rig hangs and the
+/// same [`WeaponActorBinding`] shape, but no rocket launcher, because an AI
+/// aircraft fires guns only (M01-PLAY-AI, #1436).
+///
+/// The caller names the actor, so an AI aircraft's muzzles are the mission's
+/// own designed hardpoints under its own body — the same poses
+/// [`compose_mission_mount_poses`] composes every fixed tick.
+///
+/// # Errors
+///
+/// [`MissionWeaponError::NotInstalled`] when no session was installed,
+/// [`MissionWeaponError::NoPlayer`] when `root` does not exist.
+pub fn attach_gun_rig(
+    world: &mut World,
+    root: Entity,
+    actor: ActorId,
+) -> Result<usize, MissionWeaponError> {
+    let mission = world
+        .get_resource::<MissionWeapons>()
+        .cloned()
+        .ok_or(MissionWeaponError::NotInstalled)?;
+    if world.get_entity(root).is_err() {
+        return Err(MissionWeaponError::NoPlayer);
+    }
+    let loadout = designed_loadout();
+    world.entity_mut(root).insert(WeaponActorBinding {
+        actor,
+        guns: loadout.guns.iter().map(|gun| gun.gun().clone()).collect(),
+        loadout: loadout.ids.loadout.clone(),
+        generation: mission.generation,
+    });
+    // The gun mounts only: the rocket mount belongs to the player's
+    // launcher, which no AI aircraft carries.
+    Ok(hang_rig_mounts(
+        world,
+        root,
+        &RIG_MOUNTS[..GUN_RIG_MOUNTS],
+        mission.generation,
+    ))
+}
+
+/// Hangs one [`MountPoseBinding`] node per rig entry under `root`.
+fn hang_rig_mounts(
+    world: &mut World,
+    root: Entity,
+    mounts: &[RigMount],
+    generation: crate::scene::SceneGeneration,
+) -> usize {
+    for rig in mounts {
         let offset = Vec3::new(rig.offset_m[0], rig.offset_m[1], rig.offset_m[2]);
         world.spawn((
             MountPoseBinding {
                 mount: DamageNodeKey::new(rig.mount).expect("the rig mount key is valid"),
-                generation: mission.generation,
+                generation,
             },
             NodeVisualTransform(GlobalTransform::from_translation(offset)),
             Transform::from_translation(offset),
-            ChildOf(player),
+            ChildOf(root),
         ));
     }
-    Ok(RIG_MOUNTS.len())
+    mounts.len()
 }
 
 /// The mission's weapon report: what the publisher decided this tick, and what
@@ -869,16 +930,22 @@ pub fn publish_mission_weapon_input(world: &mut World) {
         world.insert_resource(orders);
     }
 
+    let mut input = mission_tick_input(
+        mission.session,
+        at,
+        mission.player,
+        wind.velocity_m_s,
+        actions.clone(),
+    );
+    // M01-PLAY-AI (#1436): an attacker's fire decisions join **this** tick's
+    // record. A tick's inputs are consumed exactly once, so the AI cannot
+    // publish a second record for the same tick — it rides the mission's own
+    // publication.
+    crate::mission_ai::append_ai_fire_orders(world, &mut input);
     world
         .get_resource_mut::<WeaponTickInputs>()
         .expect("the installed session initialises the weapon input queue")
-        .push(mission_tick_input(
-            mission.session,
-            at,
-            mission.player,
-            wind.velocity_m_s,
-            actions.clone(),
-        ));
+        .push(input);
     report.at = Some(at);
     report.wind = Some(wind.velocity_m_s);
     report.designed_calm_air = wind.designed;

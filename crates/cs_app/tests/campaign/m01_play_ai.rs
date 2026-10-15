@@ -1,7 +1,7 @@
 //! Acceptance suite M01-PLAY-AI (#1436): the designed pursuit-and-fire law
 //! that flies M01's scripted aircraft.
 //!
-//! Two things this suite proves against the retail mission:
+//! Three things this suite proves against the retail mission:
 //!
 //! 1. **Every scripted record gets a law.** `stage_for` imports the
 //!    `vehicle.zrd` record each measured name-prefix dispatch resolves, the
@@ -13,6 +13,11 @@
 //!    engagement window, and `wingman_2` (Betty) ends the run inside the
 //!    designed station distance of her measured leader — inside the window
 //!    `RUN_SECONDS` gives them.
+//! 3. **The attackers actually shoot.** Every flown record is armed through
+//!    the mission's own weapon session (the designed rig #1437 opened), the
+//!    law asks to fire inside the designed window and cone within
+//!    `RUN_SECONDS`, and at least one attacker's rounds leave the barrel
+//!    through the gun bank's own cadence.
 //!
 //! Every bound below is a **designed** constant of `crate::mission_ai`, not
 //! an original measurement: the original's AI control law (`0x48c220`) is
@@ -25,13 +30,17 @@ use bevy::prelude::{App, Entity, Time, Vec3, With};
 use bevy::time::TimeUpdateStrategy;
 
 use cs_app::mission_actors::ScriptedAircraftActor;
-use cs_app::mission_ai::{MissionAiAirframes, MissionAiReport, MissionAircraftAi};
+use cs_app::mission_ai::{
+    AI_STARTING_ROUNDS, MissionAiAirframes, MissionAiReport, MissionAircraftAi,
+};
 use cs_app::mission_launch::plan_mission_launch;
 use cs_app::mission_session::{
-    MissionPlayerBody, MissionStage, build_headless, stage_for, teardown,
+    MISSION_GUN_MOUNT_NOSE, MissionPlayerBody, MissionStage, build_headless, stage_for, teardown,
 };
 use cs_app::physics::BASELINE_FIXED_HZ;
 use cs_app::playtest::scene::PlaytestOriginalFlight;
+use cs_app::weapons::WeaponSession;
+use cs_content::damage::DamageNodeKey;
 
 use crate::common::label;
 use crate::vs_m01_rt_window::game_dir;
@@ -314,6 +323,20 @@ fn accept_m01_play_ai_hostiles_close_and_betty_holds_station_within_n_seconds() 
         "every attacker and the wingman kept a live target for the whole run"
     );
 
+    // The mission armed every flown record with its own designed rig, and
+    // the law asked to fire inside the designed window within N seconds.
+    assert_eq!(
+        report.armed.len(),
+        8,
+        "every flown record is armed through the mission's own weapon session: {:?}",
+        report.armed
+    );
+    assert!(
+        report.fire_orders > 0,
+        "an attacker asks to fire inside the designed window within {RUN_SECONDS} s: {} orders",
+        report.fire_orders
+    );
+
     let finals: Vec<(String, Vec3)> = roster
         .iter()
         .map(|(name, entity)| (name.clone(), position_of(&mut app, *entity)))
@@ -378,6 +401,30 @@ fn accept_m01_play_ai_hostiles_close_and_betty_holds_station_within_n_seconds() 
     assert!(
         sampled(&finals, "wingman_2").distance(betty_spawn) > 100.0,
         "Betty actually flew with her leader rather than staying parked"
+    );
+
+    // The ask reached the gun bank: at least one attacker's rounds actually
+    // left the barrel through the session's own cadence, not just through
+    // the AI's decision.
+    let world = app.world();
+    let session = world.resource::<WeaponSession>();
+    let mount =
+        DamageNodeKey::new(MISSION_GUN_MOUNT_NOSE).expect("the designed mount key is valid");
+    let mut fired: Vec<String> = Vec::new();
+    for (name, entity) in &attackers {
+        let Some(script) = world.get::<ScriptedAircraftActor>(*entity) else {
+            continue;
+        };
+        let Some(state) = session.state(&script.damage_actor) else {
+            continue;
+        };
+        if state.ammunition(&mount) < AI_STARTING_ROUNDS {
+            fired.push(name.clone());
+        }
+    }
+    assert!(
+        !fired.is_empty(),
+        "at least one attacker's guns fire through the weapon session's own cadence: {fired:?}"
     );
     teardown(&mut app);
 }
