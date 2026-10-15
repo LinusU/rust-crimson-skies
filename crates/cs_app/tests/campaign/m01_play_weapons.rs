@@ -46,7 +46,7 @@ use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind, Known, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
 use cs_types::input::{Action, DeviceClass, DeviceId, FlightCommand, Key};
-use cs_types::net::SessionId;
+use cs_types::net::{ActorAllocator, SessionId};
 use cs_types::space::WorldPosition;
 
 use crate::vs_m01_rt_window::{Scratch, synthetic_stage};
@@ -389,4 +389,35 @@ fn accept_m01_play_weapons_the_loadout_is_designed_and_labelled() {
     let rocket = cs_app::mission_session::designed_rocket();
     assert_eq!(rocket.origin(), &cs_types::content::Origin::Designed);
     assert!(!rocket.origin().is_original());
+}
+
+/// **The player's serial is one the mission's scripted-actor allocator can
+/// never issue.**
+///
+/// M01's scripted actors (M01-PLAY-ACTORS, #1435) are allocated from a
+/// per-session `ActorAllocator` that hands out `1`, `2`, `3`, ...; a player
+/// serial inside that range would collide with the first spawned actor and
+/// make the player and that actor one identity — the F27 self-hit exclusion
+/// would read the player's shot on it as a self-hit and the rocket's target
+/// search would skip it as the shooter. The player therefore owns the top of
+/// the space, the one serial `ActorAllocator::allocate` refuses to issue.
+#[test]
+fn accept_m01_play_weapons_the_player_serial_is_reserved_from_the_actor_allocator() {
+    let session = SessionId::new(7).expect("the test session id is valid");
+    let mut allocator = ActorAllocator::new(session);
+    for _ in 0..10_000 {
+        let actor = allocator
+            .allocate()
+            .expect("the serial space is not exhausted");
+        assert_ne!(
+            actor.serial,
+            cs_app::mission_session::MISSION_PLAYER_SERIAL,
+            "a scripted session actor never takes the player's reserved serial"
+        );
+    }
+    assert_eq!(
+        cs_app::mission_session::MISSION_PLAYER_SERIAL,
+        u64::MAX,
+        "the reserved serial is the top of the space, which `allocate` cannot issue"
+    );
 }

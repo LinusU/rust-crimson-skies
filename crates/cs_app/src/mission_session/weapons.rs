@@ -56,10 +56,7 @@ use cs_content::weapons::{
 use cs_sim::damage::{ActorId, DamageResolver, SystemKind};
 use cs_sim::targeting::{Allegiance, SelectionBinding, TargetClass, TargetRecord};
 use cs_sim::time::TickRate;
-use cs_sim::weapons::{
-    GunBank, OrdnanceId, OrdnanceRegistry, SYNTHETIC_STARTING_ROUNDS, StatusEffectTarget,
-    TargetPath,
-};
+use cs_sim::weapons::{GunBank, OrdnanceId, OrdnanceRegistry, StatusEffectTarget, TargetPath};
 use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind, Known, Origin, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
@@ -91,7 +88,20 @@ pub const MISSION_WEAPON_CLAIM: &str = "m01-play-weapons.designed-loadout";
 pub const MISSION_WIND_CLAIM: &str = "m01-play-weapons.designed-calm-air";
 
 /// The player's actor serial within the mission session.
-pub const MISSION_PLAYER_SERIAL: u64 = 1;
+///
+/// **Reserved at the top of the serial space.** The mission's scripted-actor
+/// spawner ([`crate::mission_actors`], M01-PLAY-ACTORS #1435) allocates one
+/// session actor per spawned aircraft and zeppelin from an
+/// [`ActorAllocator`](cs_types::net::ActorAllocator) that issues serials from
+/// `1` upward for the served session. A small player serial would therefore be
+/// handed to the first spawned actor as well, giving the player and that actor
+/// one identity: the F27 `SelfHitRule::Excluded` would read the player's own
+/// shot on it as a self-hit, and the rocket's target search would skip it as
+/// the shooter. `u64::MAX` is the one serial the allocator can never issue —
+/// [`ActorAllocator::allocate`](cs_types::net::ActorAllocator::allocate)
+/// refuses the id whose successor would overflow — so the player owns a serial
+/// no session actor ever shares.
+pub const MISSION_PLAYER_SERIAL: u64 = u64::MAX;
 
 /// The gun path's router producer serial.
 pub const MISSION_ROUTER_PRODUCER: u32 = 201;
@@ -352,7 +362,8 @@ pub fn designed_rocket() -> DeclaredOrdnance {
     .expect("the designed M01 rocket is valid")
 }
 
-/// The designed targeting rules the mission's session opens under.///
+/// The designed targeting rules the mission's session opens under.
+///
 /// Two factions, one directed hostile relation each way and a neutral pair:
 /// project design, because M01's own relations are not recovered. The
 /// selection table is deliberately empty — this task binds no cockpit target
@@ -496,7 +507,7 @@ pub fn open_mission_weapons(
             player,
             &loadout.guns,
             loadout.bank.clone(),
-            SYNTHETIC_STARTING_ROUNDS,
+            MISSION_STARTING_ROUNDS,
         )
         .map_err(|error| MissionWeaponError::Weapons(error.to_string()))?;
 
@@ -1244,6 +1255,10 @@ const MISSION_GUN_NOSE_KEY: &str = "m01-play-weapons.designed-nose-gun";
 const MISSION_GUN_WING_LEFT_KEY: &str = "m01-play-weapons.designed-left-gun";
 const MISSION_GUN_WING_RIGHT_KEY: &str = "m01-play-weapons.designed-right-gun";
 const MISSION_LOADOUT_KEY: &str = "m01-play-weapons.designed-loadout";
+/// Designed rounds the mission's guns start with, per its own designed
+/// loadout. The value is project design, not a measurement, and is kept here
+/// rather than borrowed from a synthetic fixture constant.
+const MISSION_STARTING_ROUNDS: u64 = 250;
 const MISSION_TARGET_RULES_SUBJECT: &str = "m01-play-weapons.designed-target-rules";
 const MISSION_MUZZLE_EFFECT: &str = "m01-play-weapons.designed-muzzle";
 const MISSION_SHOT_SOUND: &str = "m01-play-weapons.designed-shot";
