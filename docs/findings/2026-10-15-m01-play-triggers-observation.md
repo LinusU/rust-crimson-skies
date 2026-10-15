@@ -256,6 +256,42 @@ from machine-readable evidence merely to pass a validator"). The report's
 `command.exit_code` and the `tests` counts, which the plain validation does
 check.
 
+## Reviewer's regeneration (2026-10-15)
+
+The reviewer of #1480 re-ran every check and regenerated this report on the
+reviewed commit `46993f25` (tree `f0d1fda4…`), as
+`docs/contracts/CLI-EVIDENCE.md` asks of a reviewer: `cargo fmt --check` 0,
+`cargo clippy --workspace --all-targets --all-features --locked -- -D
+warnings` 0, `cargo test --workspace --locked` 0 (587 `test result: ok`,
+none failed), and the acceptance suite 5/5 with `--include-ignored` (exit
+0). Structural validation exits 0 with all four unknowns intact. Every
+measured value is unchanged from the implementer's run — 42 spelled chains,
+4 observed, groups `[1, 3, 5]`, 3 zeppelins, 62 `zeppelins.zrd` keys, `nap`
+index 3 for 20 s, wake `[26, 50]`, kill `[40, 47]`, ticks 0..8 — so the only
+differences in the committed copy are the run's own fingerprints
+(`candidate_tree`, `created_at`, the two artifact hashes) and
+`review.identity`, which now records the reviewer.
+
+Two review fixes ride on that regeneration:
+
+* the second artifact is now **valid JSON**. The harness spliced Rust's
+  `Debug` output (`Some(3)`, `Some(20.0)`) into `world-observation.json`'s
+  `nap_target_index` / `nap_seconds` fields, which made the whole artifact
+  unparseable — `python3 -m json.tool` failed at that offset — while the
+  structural validator still passed, because it hashes the artifact without
+  reading it. The harness now renders `null`, numbers and arrays
+  (`"nap_target_index": 3, "nap_seconds": 20`), and the committed copy's
+  `world-observation.json` hash changes with it.
+* the DEDG group-1 leg pins the negative half of its claim too: the block
+  does **not** complete while group 1's four members are still in play, read
+  before the despawn that completes it.
+
+The review could not be run by a different model or agent: it was done by a
+fresh session of the same agent identity that implemented the task, which is
+recorded in the report's `review.identity` and in the Rally review note. It
+is therefore not independent evidence, and no agent review replaces the
+owner's approval; nothing here is `verified_original`.
+
 ## Status and limits
 
 * `checked` only when merged. No original executable ran; `retail` is read
