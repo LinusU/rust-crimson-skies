@@ -266,6 +266,7 @@ mod m01_lc_player_airframe_source;
 mod m01_lc_player_config;
 mod m01_play_actors;
 mod m01_play_radio;
+mod m01_play_triggers_anims_arm;
 mod m01_play_triggers_observe;
 mod m01_play_triggers_parts;
 mod m01_play_weapons;
