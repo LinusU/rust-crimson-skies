@@ -22,8 +22,10 @@ use cs_app::mission_session::{
     MissionHost, MissionPlayerBody, MissionStage, build_headless, mint_host_generation, stage_for,
     teardown,
 };
-use cs_app::mission_start::SpawnDispatch;
+use cs_app::mission_start::{ScriptedAircraft, SpawnDispatch, spawn_dispatch};
 use cs_app::weapons::SessionDamageResolver;
+use cs_types::content::Provenance;
+use cs_types::evidence::ClaimId;
 
 use crate::common::label;
 use crate::vs_m01_rt_window::game_dir;
@@ -66,6 +68,52 @@ fn spawned_aircraft_names(app: &mut App) -> Vec<String> {
         .collect();
     names.sort();
     names
+}
+
+/// **The roster filter alone keeps exactly the enabled non-player records**
+/// — the one acceptance seam a synthetic fixture covers without the
+/// installation: the measured `enabled == 0` skip and the `player` record's
+/// engine-state path are exercised on fabricated records, so CI catches a
+/// roster regression without retail data.
+#[test]
+fn accept_m01_play_actors_the_roster_filter_is_the_measured_enabled_skip() {
+    let record = |name: &str, enabled: Option<bool>| ScriptedAircraft {
+        name: name.to_owned(),
+        index: 0,
+        field_count: 81,
+        netids: None,
+        stored_pose: None,
+        team: None,
+        group: None,
+        enabled,
+        primary_target: None,
+        title: None,
+        starts_asleep: None,
+        dispatch: spawn_dispatch(name),
+        provenance: Provenance::designed(
+            ClaimId::new("test.m01-play-actors.record").expect("the claim id is valid"),
+        ),
+    };
+    let records = vec![
+        record("player", Some(true)),
+        record("wingman_2", Some(true)),
+        record("bsfury_2", Some(false)),
+        record("rusdevastator_3", Some(false)),
+        record("devastator_2", None),
+    ];
+    let roster = MissionAircraftRoster::from_records(&records);
+    let names: Vec<&str> = roster.0.iter().map(|record| record.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["wingman_2", "devastator_2"],
+        "the filter keeps the enabled non-player records in order: `player` \
+         dispatches to the composition's own body, `enabled == Some(false)` is \
+         the measured skip, and an unmeasured `enabled` still spawns"
+    );
+    assert!(
+        matches!(records[0].dispatch, SpawnDispatch::Player),
+        "spawn_dispatch names `player`'s engine-state path"
+    );
 }
 
 /// **The stage carries M01's twelve measured records, and the roster the
