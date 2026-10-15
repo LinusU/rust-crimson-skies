@@ -79,8 +79,11 @@ fn review_method(
          contract, never an original measurement; nothing here is verified_original and no \
          original executable ran. TEST-SELECTION NOTE: the prefix \
          accept_m01_play_triggers_observe_ is unique to this task, so the {own_tests} discovered \
-         assertions are exactly this task's tests. Validated with tools/validate_evidence.py \
-         --require-pass."
+         assertions are exactly this task's tests. candidate_tree is the tree of the commit the \
+         acceptance suite and this harness both ran on; the only later delta on the branch is \
+         this report's own copy under docs/findings/evidence/ plus the finding's prose. \
+         Validated with tools/validate_evidence.py (structure, counts and artifact hashes; \
+         --require-pass is not used because the report's unknowns must not be deleted)."
     )
 }
 

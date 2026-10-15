@@ -216,6 +216,40 @@ The evidence report is produced by
 with `tools/validate_evidence.py … --require-pass`, and its copy is committed
 as `docs/findings/evidence/M01-PLAY-TRIGGERS-OBSERVE.json`.
 
+## Evidence
+
+The acceptance run of record (its recorded log is the first artifact):
+
+```sh
+set -o pipefail
+cargo test --workspace --locked -- accept_m01_play_triggers_observe_ --include-ignored \
+  2>&1 | tee private/evidence/M01-PLAY-TRIGGERS-OBSERVE/cargo-test.log
+```
+
+then the harness, on the same clean commit, and the structural check:
+
+```sh
+CS_EVIDENCE_DIR=private/evidence/M01-PLAY-TRIGGERS-OBSERVE \
+CS_CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}') \
+CS_EVIDENCE_ARGV="cargo test --workspace --locked -- accept_m01_play_triggers_observe_ --include-ignored" \
+CS_EVIDENCE_EXIT_CODE=<status> CS_EVIDENCE_REVIEWER=<identity> \
+  cargo test --locked -p cs_app --test evidence_report_m01_play_triggers_observe -- --ignored
+python3 tools/validate_evidence.py private/evidence/M01-PLAY-TRIGGERS-OBSERVE/acceptance.json \
+  --artifact-root private/evidence/M01-PLAY-TRIGGERS-OBSERVE
+```
+
+`--require-pass` is deliberately **not** used: it refuses any report whose
+`unknowns` array is non-empty (`tools/validate_evidence.py`, line 60), and
+this report carries four unresolved issues that must stay in machine-readable
+evidence — the three sibling gaps (#1481, #1482, #1483) and this slice's
+unmet windowed criterion (#1486). Deleting them to turn the flag green is
+exactly what the owner directive forbids ("never remove an unresolved issue
+from machine-readable evidence merely to pass a validator"). The report's
+`claim` is `implemented`, its capabilities are `[retail, synthetic]` — no
+`gpu` capability is claimed — and the pass/fail facts are carried by
+`command.exit_code` and the `tests` counts, which the plain validation does
+check.
+
 ## Status and limits
 
 * `checked` only when merged. No original executable ran; `retail` is read
