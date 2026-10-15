@@ -390,7 +390,11 @@ WINDOWED PLAYTEST (development, not original)
         the installation's own campaign binding and measures the mission's
         dependency closure first; a closure that is not satisfied exits
         non-zero naming every missing surface, and never falls back to
-        synthetic content
+        synthetic content. It needs two environment variables, checked before
+        the slow closure measurement: CS_ENGINE_IMAGE=<path to the owner's
+        crimson.decrypted.exe, outside <dir>> and CS_CAPABILITIES listing
+        audio (e.g. CS_CAPABILITIES=retail,gpu,audio). Startup takes about a
+        minute. See docs/PLAYTEST.md, section 'Original mission M01'
 
 `--help` and `--version` read no environment variable, open no installation
 and start no asset discovery: they succeed without a GPU and without a retail
