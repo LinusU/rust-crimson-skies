@@ -314,7 +314,7 @@ impl LaunchPreflightError {
                     reason: "the player's airframe and start pose are read from the \
                              owner-supplied decrypted engine image, which lives outside the \
                              read-only retail installation and is never looked for in it \
-                             (docs/PLAYTEST-RETAIL.md, \"Original mission M01\")"
+                             (docs/PLAYTEST.md, \"Original mission M01\")"
                         .to_owned(),
                     exit_code: crate::cli::EXIT_RUNTIME_FAILURE,
                 });
