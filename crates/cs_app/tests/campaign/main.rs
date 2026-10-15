@@ -270,6 +270,7 @@ mod m01_play_triggers_observe;
 mod m01_play_weapons;
 mod m01_play_world_evidence;
 mod m01_play_world_visible;
+mod m01_radio_wire;
 mod m02_a;
 mod m02_b;
 mod m02_b_fu2;

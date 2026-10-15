@@ -55,10 +55,30 @@
 //!   records carry no prose for a voice line (the longest string in the root
 //!   reader is a path), and no key maps a line to text, so every line is
 //!   queued without a caption rather than with a guessed one.
+//!
+//! # The publish step (M01-RADIO-SAMPLE-WIRE, #1466)
+//!
+//! A queued line names a [`ContentKind::Dialogue`](cs_types::content::ContentKind)
+//! id, but the device only plays what its [`DeviceSampleLibrary`] holds, and
+//! the load's population pass decodes declared *sound* members only. So the
+//! prepare step keeps the PCM it already decoded for each member it queues
+//! ([`MissionRadio::voices`]) and [`publish_prepared_voices`] hands exactly
+//! those members to the device library under the id the line names, through
+//! [`crate::audio::publish_voice_members`]. It runs **after** the same load's
+//! population pass, which is what installs the audio session and fills the
+//! library wholesale — see [`install_radio_voice_publication`] and
+//! `crates/cs_app/src/audio/voice.rs`. The identity rule and route (b) are the
+//! owner's designed decision (task #1465 note of 2026-10-15): the installation
+//! states no cue class (F14-D.7), so nothing here is `verified_original`, and
+//! this is not evidence that a person hears anything — the F41-D listening
+//! test stays the owner's gate.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::path::Path;
 
+use bevy::app::App;
+use bevy::ecs::schedule::IntoScheduleConfigs;
+use bevy::prelude::{PreUpdate, Resource, World};
 use cs_content::objectives_engine::{CueEmission, CueKind, EngineObjectives};
 use cs_content::stunts::ZrdValue;
 use cs_formats::io::ParseContext;
@@ -69,8 +89,13 @@ use cs_formats::zbd::{
 use cs_sim::audio_events::{AudioEventId, RadioLine, RadioLineError};
 use cs_types::content::ContentId;
 
+use super::host::MissionHost;
 use super::launch_sound::{LAUNCH_SOUND_CONTAINER, reader_member};
-use crate::audio::AudioSession;
+use crate::audio::{
+    AudioHandoffLog, AudioSession, DecodedVoiceMember, DeviceSampleLibrary, PcmAudio,
+    insert_audio_session, publish_voice_members,
+};
+use crate::loading::LoadIdentity;
 use crate::physics::BASELINE_FIXED_HZ;
 
 /// The reader archive `sounds.zrd` is a member of.
@@ -352,6 +377,10 @@ pub struct MissionRadio {
     groups: BTreeMap<String, ResolvedGroup>,
     /// The members those groups reach, prepared.
     lines: BTreeMap<String, PreparedLine>,
+    /// The PCM the prepare step decoded for each prepared member, in member
+    /// order: exactly what [`publish_prepared_voices`] hands to the device's
+    /// [`DeviceSampleLibrary`] under the id the member's line names.
+    voices: Vec<DecodedVoiceMember>,
     /// What refused to prepare, keyed by the group or member name it
     /// refused: an expansion that would not resolve, a member the container
     /// does not hold, a member that would not decode. A cue naming one of
@@ -384,6 +413,15 @@ impl MissionRadio {
     /// The members this radio prepared, in member order.
     pub fn prepared(&self) -> impl Iterator<Item = &PreparedLine> {
         self.lines.values()
+    }
+
+    /// The PCM the prepare step decoded for each prepared member, in member
+    /// order: exactly the members [`publish_prepared_voices`] publishes into
+    /// the device library, each under the dialogue id the line that names it
+    /// carries.
+    #[must_use]
+    pub fn voices(&self) -> &[DecodedVoiceMember] {
+        &self.voices
     }
 
     /// What refused to prepare, keyed by the group or member it refused.
@@ -437,10 +475,15 @@ impl MissionRadio {
             }
         }
 
-        let durations = decode_durations(install_root, &container, &members, &mut failures)?;
+        let decoded_members = decode_members(install_root, &container, &members, &mut failures)?;
         let mut lines = BTreeMap::new();
+        let mut voices = Vec::new();
         for member in members {
-            let Some(duration_ticks) = durations.get(&member).copied() else {
+            let Some(DecodedMember {
+                pcm,
+                duration_ticks,
+            }) = decoded_members.get(&member).cloned()
+            else {
                 continue;
             };
             let speaker = match speaker_of(&member) {
@@ -463,6 +506,23 @@ impl MissionRadio {
                     continue;
                 }
             };
+            // The voice carries the same dialogue id `asset` spells — both go
+            // through [`crate::audio::voice_member_id`] — so the line a cue
+            // queues and the samples the publish step inserts name one
+            // identity.
+            let voice = match DecodedVoiceMember::new(&container, &member, pcm) {
+                Ok(voice) => voice,
+                Err(error) => {
+                    failures.insert(
+                        member.clone(),
+                        RadioRefusal::Identity {
+                            member: member.clone(),
+                            reason: error.to_string(),
+                        },
+                    );
+                    continue;
+                }
+            };
             lines.insert(
                 member.clone(),
                 PreparedLine {
@@ -472,13 +532,75 @@ impl MissionRadio {
                     duration_ticks,
                 },
             );
+            voices.push(voice);
         }
 
         Ok(Self {
             groups: resolved,
             lines,
+            voices,
             failures,
             container,
+        })
+    }
+
+    /// A radio prepared from already-decoded synthetic members: the
+    /// synthetic-content seam, the counterpart of [`MissionRadio::empty`].
+    ///
+    /// [`MissionRadio::read`] is what a mission's own declarations drive; this
+    /// one exists so a composition over synthetic content can carry prepared
+    /// voice members and drive [`publish_prepared_voices`] end to end without
+    /// an installation. Every value is derived from what is handed in exactly
+    /// as [`MissionRadio::read`] derives it — the length from the PCM's own
+    /// frames and rate, the speaker from the member's own spelling, the
+    /// identity through [`crate::audio::voice_member_id`] — so it states no
+    /// retail fact. It resolves no group, so it answers every cue through
+    /// [`RadioRefusal::GroupNotPrepared`]; that is the point: this seam
+    /// exercises the publish path, not the table.
+    ///
+    /// # Errors
+    ///
+    /// [`RadioRefusal`] naming the member whose spelling yields no speaker
+    /// ([`RadioRefusal::NotAVoiceMember`] / [`RadioRefusal::NoSpeaker`]) or no
+    /// dialogue id ([`RadioRefusal::Identity`]).
+    pub fn from_synthetic_members(
+        container: &str,
+        members: impl IntoIterator<Item = (String, PcmAudio)>,
+    ) -> Result<Self, RadioRefusal> {
+        let mut lines = BTreeMap::new();
+        let mut voices = Vec::new();
+        for (member, pcm) in members {
+            let speaker = speaker_of(&member)?;
+            let id = crate::audio::voice_member_id(container, &member).map_err(|error| {
+                RadioRefusal::Identity {
+                    member: member.clone(),
+                    reason: error.to_string(),
+                }
+            })?;
+            let duration_ticks = duration_ticks(&pcm);
+            let voice = DecodedVoiceMember::new(container, &member, pcm).map_err(|error| {
+                RadioRefusal::Identity {
+                    member: member.clone(),
+                    reason: error.to_string(),
+                }
+            })?;
+            lines.insert(
+                member.clone(),
+                PreparedLine {
+                    member,
+                    speaker,
+                    asset: id,
+                    duration_ticks,
+                },
+            );
+            voices.push(voice);
+        }
+        Ok(Self {
+            groups: BTreeMap::new(),
+            lines,
+            voices,
+            failures: BTreeMap::new(),
+            container: container.to_owned(),
         })
     }
 
@@ -631,6 +753,90 @@ pub fn offer_cues(
         }
     }
     outcomes
+}
+
+// ------------------------------------------------------------ the publish --
+
+/// Resource: the load whose prepared voice members the publish step has
+/// already handed to the device's sample library.
+///
+/// One publish per load: the prepare step's members are the same on every
+/// frame, so re-inserting them frame after frame would only take the
+/// library's lock again for a value that is already there. A reload's own
+/// install is a different [`LoadIdentity`], so its prepare step publishes
+/// into the fresh library.
+#[derive(Resource, Debug, Default)]
+pub struct VoicePublicationWatch {
+    /// The load the last publish ran for, when one has run.
+    load: Option<LoadIdentity>,
+}
+
+/// Publishes this mission's prepared voice members into the world's device
+/// sample library, once per load (M01-RADIO-SAMPLE-WIRE, #1466).
+///
+/// # Ordering (load-bearing)
+///
+/// The same load's population pass
+/// ([`crate::audio::insert_audio_session`]) fills the library with
+/// [`SampleLibrary::replace_samples`](crate::audio::SampleLibrary::replace_samples)
+/// — **wholesale** — so a publish that ran before it would be discarded. This
+/// system therefore waits for that pass's own recorded install
+/// ([`AudioHandoffLog`]) and is installed
+/// [`after`](bevy::ecs::schedule::IntoScheduleConfigs::after) it, so it can
+/// only run once the pass has run.
+///
+/// # What it does not do
+///
+/// A world with no device library (a stage with no audible launch sound), no
+/// audio install yet, or a radio that prepared no voice member is left
+/// exactly as it is. Nothing is refused here: the members' ids were validated
+/// when they were built, so the refusal path is unchanged — an id no prepare
+/// step published is still refused `sample_unavailable` by name when a line
+/// names it.
+pub fn publish_prepared_voices(world: &mut World) {
+    let Some(installed) = world
+        .get_resource::<AudioHandoffLog>()
+        .and_then(|log| log.installed.as_ref())
+        .map(|install| install.load)
+    else {
+        return;
+    };
+    // Already published for this load: nothing below is even looked at, so the
+    // steady state costs one resource read per frame.
+    if world
+        .get_resource::<VoicePublicationWatch>()
+        .is_some_and(|watch| watch.load == Some(installed))
+    {
+        return;
+    }
+    let Some(library) = world.get_resource::<DeviceSampleLibrary>().cloned() else {
+        return;
+    };
+    let Some(members) = world
+        .get_resource::<MissionHost>()
+        .map(|host| host.radio().voices().to_vec())
+    else {
+        return;
+    };
+    if members.is_empty() {
+        return;
+    }
+    let mut watch = world.get_resource_or_insert_with(VoicePublicationWatch::default);
+    watch.load = Some(installed);
+    let _published = publish_voice_members(library.library().as_ref(), &members);
+}
+
+/// Installs [`publish_prepared_voices`] in the composition's `PreUpdate`,
+/// after the load's population pass ([`AudioHandoffLog`]'s own
+/// [`insert_audio_session`]) — the ordering the module note on the publish
+/// step explains. A world whose composition installs no audio plugin simply
+/// has no such pass and no publish.
+pub fn install_radio_voice_publication(app: &mut App) {
+    app.init_resource::<VoicePublicationWatch>();
+    app.add_systems(
+        PreUpdate,
+        publish_prepared_voices.after(insert_audio_session),
+    );
 }
 
 /// The group → child table of `sounds.zrd`.
@@ -878,13 +1084,15 @@ fn strip_voice_prefix(stem: &str) -> Option<&str> {
 ///
 /// The container is read once and each member is decoded exactly once: the
 /// line's duration is the decoded value count divided by the declared channel
-/// count and rate — never a guessed constant.
-fn decode_durations(
+/// count and rate — never a guessed constant — and the device-ready samples
+/// come from the same decode, so the publish step hands the device exactly the
+/// PCM this prepare step measured.
+fn decode_members(
     install_root: &Path,
     container: &str,
     members: &BTreeSet<String>,
     failures: &mut BTreeMap<String, RadioRefusal>,
-) -> Result<BTreeMap<String, u64>, RadioError> {
+) -> Result<BTreeMap<String, DecodedMember>, RadioError> {
     if members.is_empty() {
         return Ok(BTreeMap::new());
     }
@@ -902,7 +1110,7 @@ fn decode_durations(
     let archive = read_sound_archive(&mut context, &table, index.data())
         .map_err(|error| RadioError::Read(error.to_string()))?;
 
-    let mut durations = BTreeMap::new();
+    let mut decoded_members = BTreeMap::new();
     for entry in archive.entries() {
         let name = String::from_utf8_lossy(entry.name());
         if !members.contains(name.as_ref()) {
@@ -945,12 +1153,34 @@ fn decode_durations(
             failures.insert(member.clone(), RadioRefusal::NoDuration { member });
             continue;
         }
-        let seconds = decoded.sample_count() as f64 / f64::from(channels) / f64::from(rate_hz);
-        let ticks = (seconds * f64::from(BASELINE_FIXED_HZ)).round() as u64;
-        durations.insert(name.into_owned(), ticks.max(1));
+        // The device-ready shape of the same decode. A member the decoder
+        // produced values for but the device cannot hold (no samples at all,
+        // or a channel count it cannot place) is refused by name: the line
+        // could never be delivered, so queueing it as something the device
+        // cannot play would be a silent lie.
+        let pcm = match PcmAudio::from_decoded(&decoded) {
+            Ok(pcm) => pcm,
+            Err(error) => {
+                failures.insert(
+                    member.clone(),
+                    RadioRefusal::Undecodable {
+                        member,
+                        reason: format!("the decoded member is not a playable shape: {error}"),
+                    },
+                );
+                continue;
+            }
+        };
+        decoded_members.insert(
+            name.into_owned(),
+            DecodedMember {
+                duration_ticks: duration_ticks(&pcm),
+                pcm,
+            },
+        );
     }
     for member in members {
-        if !durations.contains_key(member) && !failures.contains_key(member) {
+        if !decoded_members.contains_key(member) && !failures.contains_key(member) {
             failures.insert(
                 member.clone(),
                 RadioRefusal::MemberAbsent {
@@ -959,7 +1189,25 @@ fn decode_durations(
             );
         }
     }
-    Ok(durations)
+    Ok(decoded_members)
+}
+
+/// One member's decode: the device-ready samples and the line length in fixed
+/// simulation ticks.
+#[derive(Debug, Clone, PartialEq)]
+struct DecodedMember {
+    /// The samples a device plays for this member.
+    pcm: PcmAudio,
+    /// The member's decoded length in fixed simulation ticks, at least one.
+    duration_ticks: u64,
+}
+
+/// The fixed-tick length of one decoded member: its own frame count over its
+/// own declared rate, at the baseline fixed rate, never below one tick — the
+/// duration the line that plays it carries.
+fn duration_ticks(pcm: &PcmAudio) -> u64 {
+    let seconds = pcm.frames() as f64 / f64::from(pcm.rate_hz());
+    ((seconds * f64::from(BASELINE_FIXED_HZ)).round() as u64).max(1)
 }
 
 /// The sound-group names an engine objective model can ever cue.

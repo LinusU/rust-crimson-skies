@@ -56,8 +56,14 @@
 //! * The one mission-bound sound is the player airframe's engine loop
 //!   (VS-M01-RT-EVIDENCE-B, #1313): measured in [`super::launch_sound`],
 //!   decoded through the load's population pass, played through the
-//!   [`crate::audio::AudioPlugin`] device and stopped by [`teardown`]. Mission
-//!   dialogue and music are not started here.
+//!   [`crate::audio::AudioPlugin`] device and stopped by [`teardown`]. The
+//!   mission's dialogue is the radio prepare step's own members
+//!   (M01-PLAY-RADIO, #1438): it decodes each queued voice member, and
+//!   [`super::radio::publish_prepared_voices`] — installed here, after the
+//!   load's population pass — hands them to the same device library under the
+//!   dialogue id the line names (M01-RADIO-SAMPLE-WIRE, #1466). Mission music
+//!   is still not started here: the group table's `MUSIC` leaf resolves to no
+//!   measured asset (F14-D.7).
 //! * `R` restarts the whole mission (VS-M01-RT-MISSION-HOST `.03`): the
 //!   playtest's own reset still replaces the player body, and the composed
 //!   restart that observes `PlaytestState::resets` rebuilds every session,
@@ -865,6 +871,14 @@ fn add_composition(
         )
         .map_err(MissionCompositionError::LaunchSound)?;
     }
+    // 1a. The radio prepare step's decoded voice members (M01-RADIO-SAMPLE-WIRE,
+    //     #1466): the device library the launch audio installed is filled by
+    //     the load's own population pass in `PreUpdate`, and this publish runs
+    //     after that pass, so the mission's dialogue members sit on top of the
+    //     closure's sound members rather than being replaced by them. A stage
+    //     with no audible launch sound installs the system over a world with no
+    //     library and no audio install, and it does nothing.
+    super::radio::install_radio_voice_publication(app);
     let session = open_session(stage, sound_root.as_deref())?;
     let request = LoadRequest {
         session: session.generation(),

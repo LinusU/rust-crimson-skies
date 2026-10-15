@@ -136,8 +136,9 @@ pub use player_visual::{
 };
 pub use radio::{
     MissionRadio, PreparedLine, RADIO_SOUND_CONTAINER, RadioError, RadioLineOutcome, RadioRefusal,
-    ResolvedGroup, SOUND_GROUPS_ARCHIVE, SOUND_GROUPS_MEMBER, declared_sound_groups,
-    dialogue_content_id, offer_cues,
+    ResolvedGroup, SOUND_GROUPS_ARCHIVE, SOUND_GROUPS_MEMBER, VoicePublicationWatch,
+    declared_sound_groups, dialogue_content_id, install_radio_voice_publication, offer_cues,
+    publish_prepared_voices,
 };
 pub use terminal::{MissionExit, MissionTerminal, MissionTerminalSource};
 pub use weapons::{

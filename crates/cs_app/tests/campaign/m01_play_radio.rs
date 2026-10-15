@@ -28,13 +28,14 @@
 //!   ([`MissionHost::step`]) publishes them.
 //!
 //! What is **not** claimed: nothing here is audible. The mixer does hand a
-//! queued line to the device now (`M01-RADIO-DEVICE` #1461,
-//! `docs/findings/2026-10-15-m01-radio-device.md`) and #1465 landed the
-//! voice-member identity and the publish API (`crate::audio::voice`), but
-//! nothing yet publishes the members this prepare step queues —
-//! `M01-RADIO-SAMPLE-WIRE` (#1466) is the open wiring — so the device
-//! refuses each line by name (`sample_unavailable`) instead of sounding it,
-//! and the owner's listening test waits on that work; there is
+//! queued line to the device (`M01-RADIO-DEVICE` #1461,
+//! `docs/findings/2026-10-15-m01-radio-device.md`), and
+//! `M01-RADIO-SAMPLE-WIRE` (#1466,
+//! `docs/findings/2026-10-15-m01-radio-sample-wire.md`) now publishes the
+//! members this prepare step decoded into the device library under the
+//! dialogue id a line names, so the device resolves them instead of refusing
+//! `sample_unavailable`; whether a person hears them stays the owner's F41-D
+//! listening test. There is
 //! no subtitle text in the data this reads (see
 //! `crates/cs_app/src/mission_session/radio.rs` and
 //! `docs/findings/2026-10-15-m01-play-radio-dialogue.md`); and no original

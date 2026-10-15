@@ -1353,6 +1353,15 @@ impl MissionHost {
         &self.sound_archives
     }
 
+    /// The mission's sound-group cues resolved to voice lines, and the PCM
+    /// its prepare step decoded for each — what
+    /// [`publish_prepared_voices`](super::radio::publish_prepared_voices)
+    /// hands to the device's sample library (M01-RADIO-SAMPLE-WIRE, #1466).
+    #[must_use]
+    pub const fn radio(&self) -> &MissionRadio {
+        &self.radio
+    }
+
     /// The generation every session this host launched serves.
     #[must_use]
     pub const fn generation(&self) -> SessionGeneration {
