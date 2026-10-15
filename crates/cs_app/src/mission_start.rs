@@ -191,7 +191,7 @@ pub const NETIDS_FIELD: usize = 0;
 pub const POSITION_FIELD: usize = 1;
 /// The field of an aircraft record that holds the heading.
 ///
-/// #1453: parsed at `0x437717` into the document at `+0x24`, converted to the
+/// #1453: parsed at `0x437714` into the document at `+0x24`, converted to the
 /// node's yaw at `0x47c4e5` through the committed `[heading]` convention.
 pub const HEADING_FIELD: usize = 2;
 /// The field of an aircraft record that holds the **team** (#1453): parsed at
