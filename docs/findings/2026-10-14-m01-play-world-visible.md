@@ -159,9 +159,16 @@ Three problems were found in review and fixed in the same branch:
 
 The harness was re-run on the rebased head for this review (owner's
 installation, Apple M3 Pro, Metal), now that #1434's horizon draws the sky:
-the launch exits 0, the probe hides that horizon and the player, and
-`docs/findings/evidence/1433.json` is the run's report — its `world` record
-carries the pixel counts quoted in the review note that lands with it,
+the launch exits 0, the probe hides that horizon and the player, and the
+probe's `world` record reads
+`world_pixels=2420797, total_pixels=3686400, covered_permille=656,
+clear_pixels=1265603, clear_permille=343, background=[78,83,86],
+clear_colour=[168,191,214]` — 65.6 % of the spawn frame is the world's own
+pixels while the window's clear colour is still 34.3 % of it. The frame's
+**modal** colour here is a terrain colour, not the clear colour: counting
+against the declared clear colour is what keeps that measured, where the
+modal reference this branch started with would have counted the background
+as world. `docs/findings/evidence/1433.json` is that run's report,
 validated with `tools/validate_evidence.py --require-pass`.
 
 All three floors are covered by `accept_m01_play_world_` unit members in
