@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "M01-PLAY-ACTORS",
+ "candidate_tree": "b89da0146bfeb64cd14b99fd91721fde42956f01",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-10-15T10:12:16Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_m01_play_actors_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/swe2-max-1", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 7, "executed": 7, "passed": 7, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "m01_play_actors::accept_m01_play_actors_the_roster_filter_is_the_measured_enabled_skip", "status": "pass", "evidence": ["cargo-test.log", "actor-spawn.json"]}, {"id": "m01_play_actors::accept_m01_play_actors_the_stage_and_roster_carry_the_measured_set", "status": "pass", "evidence": ["cargo-test.log", "actor-spawn.json"]}, {"id": "m01_play_actors::accept_m01_play_actors_every_actor_registers_with_the_damage_resolver", "status": "pass", "evidence": ["cargo-test.log", "actor-spawn.json"]}, {"id": "m01_play_actors::accept_m01_play_actors_a_restart_respawns_exactly_the_roster", "status": "pass", "evidence": ["cargo-test.log", "actor-spawn.json"]}, {"id": "m01_play_actors::accept_m01_play_actors_the_zeppelins_bind_through_the_world_actor_session", "status": "pass", "evidence": ["cargo-test.log", "actor-spawn.json"]}, {"id": "m01_play_actors::accept_m01_play_actors_a_composed_run_spawns_the_enabled_aircraft", "status": "pass", "evidence": ["cargo-test.log", "actor-spawn.json"]}, {"id": "m01_play_actors::accept_m01_play_actors_an_empty_record_set_spawns_no_scripted_aircraft", "status": "pass", "evidence": ["cargo-test.log", "actor-spawn.json"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "2fd2329de1c05dea5e456b811b9bf75184b13ba7b95bb968e3833ec4ee21ec20", "kind": "log"}, {"path": "actor-spawn.json", "sha256": "60d8b7f9e134129afd0cf4cfa98cb6590aaad1cbf34630cde010ff96189c97b9", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "swe2-max-1 (reviewer, fresh context)", "method": "Acceptance suite run locally with the retail capability; this harness derives every field from the recorded log, production discovery of $CS_GAME_DIR, and a second production run (actor-spawn.json): cs_app::mission_start::recover_retail_aircraft_records re-read M01's aiv.zrd and the composed mission's MissionActorSpawnReport was recorded verbatim — 12 measured records, 9 spawned scripted aircraft, 3 zeppelin bindings, no refusals. Claim is implemented only. MEASURED: the record census, the enabled == 0 skip (0x474d10), the player record's engine-state path, the sleeper mark and the name-prefix vehicle dispatch are #1453's measurements; the records' stored poses are #436's and the zeppelin bindings ride #772's launched world-actor session. DESIGNED, the one value the task authorizes: the dispatch prefix is carried as the airframe/model label verbatim — which vehicle.zrd record each prefix binds is unmeasured — and every spawned actor registers a designed single-node damage graph whose integrity pool is Resolved::Unknown (no M01 damage table is measured, #668), so a routed hit blocks by name rather than draining an invented capacity. The scripted aircraft are kinematic bodies held at their spawn pose: AI flight is #1436's, not this task's. TEST-SELECTION NOTE: the prefix accept_m01_play_actors_ is unique to this task, so the 7 discovered assertions are exactly this task's tests. Validated with tools/validate_evidence.py --require-pass."},
+ "claim": "implemented"
+}
