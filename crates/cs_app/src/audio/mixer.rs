@@ -35,7 +35,7 @@ use bevy::ecs::world::World;
 use bevy::prelude::{GlobalTransform, Query};
 use cs_sim::audio_events::{
     AudioDevice, AudioMixer, DeviceError, EmitterMix, Listener, MixerReport, MusicCue,
-    RecordingAudioDevice, SpatialPolicy,
+    RadioMixReport, RecordingAudioDevice, SpatialPolicy,
 };
 use cs_types::net::SessionId;
 
@@ -146,6 +146,13 @@ impl AudioSpatial {
 pub struct AudioMixReport {
     /// The last pass the mixer ran.
     pub last: MixerReport,
+    /// The last radio pass the mixer ran.
+    ///
+    /// Kept apart from [`Self::last`] because radio lines are not emitters: a
+    /// line's start, stop and refusal are keyed by the line's own event id, and
+    /// a report that folded them into the emitter lists could not say which
+    /// dialogue line was silent.
+    pub radio: RadioMixReport,
     /// How many passes have run since this world was built.
     pub passes: u64,
     /// How many emitter bindings carried no pose in the last pass, and so kept
@@ -167,15 +174,19 @@ pub struct AudioMixReport {
 /// nothing and records nothing: audio that was never loaded is silence, not an
 /// error.
 ///
-/// A world whose device is **lost** mixes nothing either, even though it still
-/// has a session, a mixer and an output. [`AudioMixer::mix`] opens a closed
-/// device on demand, so without this gate the frame after
-/// [`device_lost`] would re-open the very device that was just declared gone
-/// and the loss would be invisible to every observer of the device log. The
-/// session is the authority on whether an output exists — it is what
-/// [`device_lost`] clears and [`device_restored`] restores — so the gate lives
-/// here, above the mixer, and the device stays closed until a caller restores
-/// it.
+/// A world whose device is **lost** mixes no loop, even though it still has a
+/// session, a mixer and an output. [`AudioMixer::mix`] opens a closed device on
+/// demand, so without this gate the frame after [`device_lost`] would re-open
+/// the very device that was just declared gone and the loss would be invisible
+/// to every observer of the device log. The session is the authority on whether
+/// an output exists — it is what [`device_lost`] clears and [`device_restored`]
+/// restores — so the gate lives here, above the mixer, and the device stays
+/// closed until a caller restores it.
+///
+/// A lost output still gets its **radio** events read: the queue keeps its tick
+/// timing through a loss (F41 non-negotiable behavior 2), so a line that started
+/// unvoiced or completed unvoiced is named in [`AudioMixReport::radio`] rather
+/// than left to pile up in the session until the device returns.
 pub fn mix_session(
     mut mixing: Option<ResMut<AudioMixing>>,
     mut output: Option<ResMut<AudioOutput>>,
@@ -194,6 +205,15 @@ pub fn mix_session(
         return;
     };
     if !session.device_available() {
+        // The output is gone: the session's own device-lost path stopped the
+        // voices, but the radio events still have to be read so a line that
+        // stayed silent is named rather than left sitting in the queue. No
+        // device is handed to the radio pass, so this cannot re-open the output
+        // the session just declared lost. No loop pass runs, so `passes` does
+        // not move either — the world with no usable output records a mix only
+        // where one happened.
+        let lines = session.drain_radio();
+        report.radio = mixing.mixer_mut().mix_radio(&lines, None);
         return;
     }
     let mut placed = Vec::with_capacity(emitters.iter().len());
@@ -221,6 +241,15 @@ pub fn mix_session(
         &spatial.policy,
         output.device_mut(),
     );
+    // Radio follows the loop pass: `mix` opens the device if it was closed, so
+    // a line started this frame reaches an open output, and a device that
+    // refused to open refuses the line too and names it. The events are taken
+    // after the loop pass for the same reason the outcomes are: they are what
+    // `advance_radio` produced this frame.
+    let lines = session.drain_radio();
+    report.radio = mixing
+        .mixer_mut()
+        .mix_radio(&lines, Some(output.device_mut()));
     report.passes += 1;
     report.unplaced = unplaced;
 }

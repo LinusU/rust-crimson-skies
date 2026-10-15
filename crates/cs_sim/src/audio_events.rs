@@ -1306,8 +1306,10 @@ impl fmt::Display for DeviceError {
 impl std::error::Error for DeviceError {}
 
 /// Why a voice stopped, as the device records it: the router's own
-/// [`EmitterStopReason`], or `None` when the mixer stopped a voice whose loop
-/// no longer exists and has therefore no reason to report.
+/// [`EmitterStopReason`], or `None` when the mixer has no loop reason to
+/// report — a loop whose binding no longer exists, or a radio line the tick
+/// queue completed (a radio line is not an emitter and has no
+/// [`EmitterStopReason`] of its own).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct VoiceStop {
     /// The voice the device owned.
@@ -1368,6 +1370,22 @@ pub trait AudioDevice: fmt::Debug + Send + Sync {
         voice: DeviceVoiceId,
         update: VoiceUpdate,
     ) -> Result<(), DeviceError>;
+
+    /// Starts one **non-looping** voice: the asset plays once and ends.
+    ///
+    /// This is the radio and music path (F41-C): a line's completion is decided
+    /// by the tick queue (F41 non-negotiable behavior 2), so the device is only
+    /// *asked* to play the member once. [`Self::start_voice`] is the loop path;
+    /// a device that cannot tell the two apart plays a one-shot as a loop, and
+    /// the queue still stops it on completion.
+    ///
+    /// # Errors
+    ///
+    /// [`DeviceError`] when the device refuses the voice — a missing sample
+    /// (the dialogue member is not in the library) is named, never silence.
+    fn start_one_shot(&mut self, start: VoiceStart) -> Result<DeviceVoiceId, DeviceError> {
+        self.start_voice(start)
+    }
 }
 
 /// One command a [`RecordingAudioDevice`] received.
@@ -1377,8 +1395,15 @@ pub enum DeviceCommand {
     Opened,
     /// The device was closed.
     Closed,
-    /// A voice started.
+    /// A looping voice started.
     Started {
+        /// The id the device assigned.
+        voice: DeviceVoiceId,
+        /// What it was asked to play.
+        start: VoiceStart,
+    },
+    /// A non-looping voice started; the member plays once.
+    OneShotStarted {
         /// The id the device assigned.
         voice: DeviceVoiceId,
         /// What it was asked to play.
@@ -1408,6 +1433,11 @@ impl fmt::Display for DeviceCommand {
             Self::Started { voice, start } => write!(
                 f,
                 "voice {} started {} on {} at gain {} pan {} pitch {}",
+                voice.0, start.asset, start.bus, start.gain, start.pan, start.pitch
+            ),
+            Self::OneShotStarted { voice, start } => write!(
+                f,
+                "voice {} started one-shot {} on {} at gain {} pan {} pitch {}",
                 voice.0, start.asset, start.bus, start.gain, start.pan, start.pitch
             ),
             Self::Updated { voice, update } => write!(
@@ -1510,6 +1540,27 @@ impl RecordingAudioDevice {
     fn write(&self) -> std::sync::MutexGuard<'_, RecordingLog> {
         self.read()
     }
+
+    /// Records one started voice under the command its playback form names.
+    fn start_recorded(
+        &mut self,
+        start: VoiceStart,
+        one_shot: bool,
+    ) -> Result<DeviceVoiceId, DeviceError> {
+        let mut log = self.write();
+        if !log.open {
+            return Err(DeviceError::new("closed", "the device is not open"));
+        }
+        let voice = DeviceVoiceId(log.next_voice);
+        log.next_voice += 1;
+        log.voices.insert(voice, start.clone());
+        log.commands.push(if one_shot {
+            DeviceCommand::OneShotStarted { voice, start }
+        } else {
+            DeviceCommand::Started { voice, start }
+        });
+        Ok(voice)
+    }
 }
 
 impl AudioDevice for RecordingAudioDevice {
@@ -1532,15 +1583,11 @@ impl AudioDevice for RecordingAudioDevice {
     }
 
     fn start_voice(&mut self, start: VoiceStart) -> Result<DeviceVoiceId, DeviceError> {
-        let mut log = self.write();
-        if !log.open {
-            return Err(DeviceError::new("closed", "the device is not open"));
-        }
-        let voice = DeviceVoiceId(log.next_voice);
-        log.next_voice += 1;
-        log.voices.insert(voice, start.clone());
-        log.commands.push(DeviceCommand::Started { voice, start });
-        Ok(voice)
+        self.start_recorded(start, false)
+    }
+
+    fn start_one_shot(&mut self, start: VoiceStart) -> Result<DeviceVoiceId, DeviceError> {
+        self.start_recorded(start, true)
     }
 
     fn stop_voice(&mut self, stop: VoiceStop) -> Result<(), DeviceError> {
@@ -1671,9 +1718,96 @@ pub struct MixerReport {
     pub stopped: Vec<AudioEmitterId>,
     /// Voices whose mix was updated.
     pub updated: Vec<AudioEmitterId>,
+    /// Radio voices that stopped because the device was lost or released, in
+    /// id order. Radio lines are not emitters, so they cannot appear in
+    /// [`Self::stopped`].
+    pub radio_stopped: Vec<AudioEventId>,
     /// Everything the mixer could not do, in arrival order.
     pub refusals: Vec<MixerRefusal>,
 }
+
+/// Why a radio line did not become the voice it asked for.
+///
+/// Every variant names the line, so a line that stays silent is named rather
+/// than merely absent from the device log (F41-C: refusals by name, never
+/// silence).
+#[derive(Clone, Debug, PartialEq)]
+pub enum RadioMixRefusal {
+    /// The line started with no device available (the output was lost), so it
+    /// keeps its tick timing but is not voiced.
+    Unvoiced {
+        /// The line.
+        id: AudioEventId,
+        /// The dialogue asset it named.
+        asset: ContentId,
+    },
+    /// The device refused to start the line's voice — the member is not in the
+    /// sample library, or the output could not be opened.
+    Device {
+        /// The line.
+        id: AudioEventId,
+        /// The dialogue asset it named.
+        asset: ContentId,
+        /// The device's own stable refusal code.
+        code: &'static str,
+    },
+    /// A line reported completed as voiced, but the mixer owned no voice for
+    /// it, so it was never really sounded.
+    NoVoice {
+        /// The line.
+        id: AudioEventId,
+    },
+}
+
+impl fmt::Display for RadioMixRefusal {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Unvoiced { id, asset } => {
+                write!(f, "radio {id} ({asset}) started with no device available")
+            }
+            Self::Device { id, asset, code } => {
+                write!(f, "the device refused radio {id} ({asset}): {code}")
+            }
+            Self::NoVoice { id } => {
+                write!(
+                    f,
+                    "radio {id} completed as voiced but no voice was sounding"
+                )
+            }
+        }
+    }
+}
+
+/// What one radio mix pass did, in arrival order per phase.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct RadioMixReport {
+    /// Lines whose voice the device started.
+    pub started: Vec<AudioEventId>,
+    /// Lines whose voice the device stopped.
+    pub stopped: Vec<AudioEventId>,
+    /// Lines the output was lost under, in id order. The queue keeps a lost
+    /// line's timing and reports it as [`RadioEvent::PlaybackLost`]; recording
+    /// the id here keeps that fact observable after the event has been read.
+    pub lost: Vec<AudioEventId>,
+    /// Everything the mixer could not do, in arrival order.
+    pub refusals: Vec<RadioMixRefusal>,
+}
+
+/// The gain a radio voice plays at.
+///
+/// **Designed, not measured.** [`RadioLine`] carries no gain and F41-C records
+/// the original's radio mix as unmeasured, so a line plays at unity until a
+/// measured bus fader exists; applying a guessed level would be a fidelity
+/// claim this workspace cannot make.
+pub const RADIO_GAIN: f64 = 1.0;
+
+/// The refusal code a radio line is named with when the session's output is
+/// gone yet the queue reported it as voiced.
+///
+/// This is a contradiction the mixer resolves by naming the line rather than
+/// playing into a device that is not there; it is not one of the device's own
+/// codes because no device was consulted.
+pub const DEVICE_UNAVAILABLE: &str = "device_unavailable";
 
 /// One voice the mixer owns on the device.
 #[derive(Clone, Debug, PartialEq)]
@@ -1705,6 +1839,14 @@ struct MixerVoice {
 pub struct AudioMixer {
     session: SessionId,
     voices: BTreeMap<AudioEmitterId, MixerVoice>,
+    /// The device voice each radio line owns, keyed by the line's event id.
+    ///
+    /// Radio lines are not emitters and are not spatialized: they are the
+    /// session's dialogue queue, and their completion is the queue's tick
+    /// arithmetic rather than a loop's lifetime. They are kept apart from
+    /// [`Self::voices`] for exactly that reason — a reload's orphan sweep must
+    /// not silence a line the *new* session just started.
+    radio: BTreeMap<AudioEventId, DeviceVoiceId>,
 }
 
 impl AudioMixer {
@@ -1717,6 +1859,7 @@ impl AudioMixer {
         Self {
             session,
             voices: BTreeMap::new(),
+            radio: BTreeMap::new(),
         }
     }
 
@@ -1724,6 +1867,18 @@ impl AudioMixer {
     #[must_use]
     pub const fn session(&self) -> SessionId {
         self.session
+    }
+
+    /// The device voice one radio line owns, if any.
+    #[must_use]
+    pub fn radio_voice(&self, id: &AudioEventId) -> Option<DeviceVoiceId> {
+        self.radio.get(id).copied()
+    }
+
+    /// How many radio lines the mixer is currently sounding.
+    #[must_use]
+    pub fn radio_voice_count(&self) -> usize {
+        self.radio.len()
     }
 
     /// The voices the mixer owns, in emitter order.
@@ -1904,6 +2059,18 @@ impl AudioMixer {
                 .refusals
                 .push(MixerRefusal::OrphanedVoice { emitter });
         }
+        // Radio lines belong to the replaced session too: the new session's
+        // queue is what sounds afterwards, so the old lines must not survive.
+        let lines: Vec<AudioEventId> = self.radio.keys().copied().collect();
+        for id in lines {
+            if let Some(voice) = self.radio.remove(&id) {
+                let _ = device.stop_voice(VoiceStop {
+                    voice,
+                    reason: None,
+                });
+                report.radio_stopped.push(id);
+            }
+        }
         report
     }
 
@@ -1913,7 +2080,10 @@ impl AudioMixer {
     /// The mixer keeps no voice to restore — the session holds the loops it
     /// stopped and re-issues them when the device returns, so what sounds
     /// afterwards comes from the session's own state rather than from a second
-    /// copy of it here.
+    /// copy of it here. Radio lines are dropped the same way and are not
+    /// remembered either: the radio queue keeps its own tick timing through the
+    /// loss (F41 non-negotiable behavior 2) and a line already running stays
+    /// unvoiced to its end, so re-voicing it here would contradict the queue.
     pub fn device_lost(&mut self, device: &mut dyn AudioDevice) -> MixerReport {
         let mut report = MixerReport::default();
         let lost: Vec<AudioEmitterId> = self.voices.keys().copied().collect();
@@ -1926,7 +2096,160 @@ impl AudioMixer {
             );
             report.stopped.push(emitter);
         }
+        let lines: Vec<AudioEventId> = self.radio.keys().copied().collect();
+        for id in lines {
+            if let Some(voice) = self.radio.remove(&id) {
+                let _ = device.stop_voice(VoiceStop {
+                    voice,
+                    reason: Some(EmitterStopReason::DeviceLost),
+                });
+                report.radio_stopped.push(id);
+            }
+        }
         device.close();
+        report
+    }
+
+    /// One radio pass: the session's radio events become device voices.
+    ///
+    /// A [`RadioEvent::Started`] that was voiced opens a **non-looping** voice
+    /// for its dialogue asset on [`AudioBus::Radio`] at [`RADIO_GAIN`];
+    /// [`RadioEvent::Completed`], [`RadioEvent::Interrupted`] and
+    /// [`RadioEvent::PlaybackLost`] stop the voice it names. Nothing here
+    /// consults the device for a decision and nothing here moves the queue: the
+    /// line's length is the queue's tick arithmetic, so a refused or lost
+    /// device cannot change when the next line starts.
+    ///
+    /// A line that could not be voiced is named in the report — the device's own
+    /// refusal code for a missing sample or an unopenable output
+    /// ([`RadioMixRefusal::Device`]), the lack of a device for a line the queue
+    /// started unvoiced ([`RadioMixRefusal::Unvoiced`]), and a voiced
+    /// completion with no voice behind it ([`RadioMixRefusal::NoVoice`]) —
+    /// rather than disappearing into silence.
+    ///
+    /// Like [`Self::mix`], this opens a closed device on demand **when it is
+    /// given one**. A caller that knows the output is lost passes `None` — the
+    /// pass then reads and names every event without opening the very device the
+    /// session just declared gone, which is what keeps a loss from being undone
+    /// by the next frame.
+    pub fn mix_radio(
+        &mut self,
+        events: &[RadioEvent],
+        device: Option<&mut dyn AudioDevice>,
+    ) -> RadioMixReport {
+        let mut report = RadioMixReport::default();
+        let mut device = device;
+        if events.is_empty() {
+            return report;
+        }
+        // Open a closed output on demand, but do not let a failure here swallow
+        // the line: the device resolves the member **before** its open state
+        // (see `AudibleDevice::start`), so a missing sample is named as such even
+        // on an output that happens to be shut, and a device that refuses
+        // everything reports its own refusal code below.
+        if let Some(open) = device.as_deref_mut()
+            && !open.is_open()
+        {
+            let _ = open.open();
+        }
+        for event in events {
+            match event {
+                RadioEvent::Started {
+                    id, asset, audible, ..
+                } => {
+                    if !audible {
+                        report.refusals.push(RadioMixRefusal::Unvoiced {
+                            id: *id,
+                            asset: asset.clone(),
+                        });
+                        continue;
+                    }
+                    let Some(open) = device.as_deref_mut() else {
+                        // The queue thought an output existed while the session
+                        // said it did not: the line is silent and is named as
+                        // such rather than left to look played.
+                        report.refusals.push(RadioMixRefusal::Device {
+                            id: *id,
+                            asset: asset.clone(),
+                            code: DEVICE_UNAVAILABLE,
+                        });
+                        continue;
+                    };
+                    // One id may only own one voice: a reissued line replaces
+                    // its predecessor rather than leaking it.
+                    if let Some(previous) = self.radio.remove(id) {
+                        let _ = open.stop_voice(VoiceStop {
+                            voice: previous,
+                            reason: None,
+                        });
+                    }
+                    let start = VoiceStart {
+                        asset: asset.clone(),
+                        bus: AudioBus::Radio,
+                        gain: RADIO_GAIN,
+                        pan: 0.0,
+                        pitch: 1.0,
+                    };
+                    match open.start_one_shot(start) {
+                        Ok(voice) => {
+                            self.radio.insert(*id, voice);
+                            report.started.push(*id);
+                        }
+                        Err(error) => report.refusals.push(RadioMixRefusal::Device {
+                            id: *id,
+                            asset: asset.clone(),
+                            code: error.code,
+                        }),
+                    }
+                }
+                RadioEvent::Completed { id, voiced } => {
+                    if let Some(voice) = self.radio.remove(id) {
+                        if let Some(open) = device.as_deref_mut() {
+                            let _ = open.stop_voice(VoiceStop {
+                                voice,
+                                reason: None,
+                            });
+                        }
+                        report.stopped.push(*id);
+                    } else if *voiced {
+                        // The line was reported as voiced yet no voice was
+                        // sounding: its start must have been refused, and the
+                        // device log must not read as if it played.
+                        report.refusals.push(RadioMixRefusal::NoVoice { id: *id });
+                    }
+                }
+                RadioEvent::Interrupted { id, .. } => {
+                    if let Some(voice) = self.radio.remove(id) {
+                        if let Some(open) = device.as_deref_mut() {
+                            let _ = open.stop_voice(VoiceStop {
+                                voice,
+                                reason: None,
+                            });
+                        }
+                        report.stopped.push(*id);
+                    }
+                }
+                RadioEvent::PlaybackLost { id } => {
+                    // The device loss already stopped the voice; the line keeps
+                    // its place and its timing, and the report keeps the fact.
+                    if let Some(voice) = self.radio.remove(id)
+                        && let Some(open) = device.as_deref_mut()
+                    {
+                        let _ = open.stop_voice(VoiceStop {
+                            voice,
+                            reason: None,
+                        });
+                    }
+                    report.lost.push(*id);
+                }
+                // The queue refused the line before it ever started, so there is
+                // no voice to open or close. The queue names it in its own
+                // event; the mixer has nothing to add.
+                RadioEvent::SuppressedDuplicate { .. }
+                | RadioEvent::RefusedForeignSession { .. }
+                | RadioEvent::RefusedQueueFull { .. } => {}
+            }
+        }
         report
     }
 

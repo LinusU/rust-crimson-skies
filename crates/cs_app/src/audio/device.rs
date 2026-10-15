@@ -605,11 +605,13 @@ struct AudibleVoice {
     pan: Arc<AtomicF32>,
 }
 
-/// A looping stereo voice over one decoded asset.
+/// A stereo voice over one decoded asset, looping or playing once.
 ///
-/// The source loops forever (`current_span_len` is `None`) because every voice
-/// the mixer starts is a loop: a one-shot cue is F41-C's radio and music path,
-/// which is driven by tick-completion rather than by a voice's own end.
+/// [`Self::new`] loops forever (`current_span_len` is `None`) because every
+/// voice the loop path starts is a loop. [`Self::one_shot`] is the radio path
+/// (F41-C): the member plays through once and the source then ends. Either way
+/// the placement, the mono spread and the sample tap are identical, so what a
+/// probe records of a line is what it would record of a loop.
 ///
 /// A mono asset is spread to stereo **here** rather than by the device's
 /// channel converter, so the pan below is a real left/right placement instead of
@@ -620,10 +622,10 @@ struct AudibleVoice {
 /// allocation on the audio thread's start path for no gain.
 ///
 /// Public because it is the boundary a headless machine can still check: the
-/// pan law, the channel interleave, the mono spread and the loop seam are all
-/// observable by pulling samples from this iterator, with no output hardware at
-/// all. That is what makes them testable in CI rather than only on a machine
-/// with a sound card.
+/// pan law, the channel interleave, the mono spread, the loop seam and the
+/// end-of-one-shot are all observable by pulling samples from this iterator,
+/// with no output hardware at all. That is what makes them testable in CI rather
+/// than only on a machine with a sound card.
 pub struct LoopingVoice {
     /// The member's own interleaved samples, shared with the library rather than
     /// copied per voice.
@@ -636,6 +638,10 @@ pub struct LoopingVoice {
     cursor: usize,
     /// Whether the value at `cursor` still owes its right channel.
     pending_right: bool,
+    /// Whether the source repeats at the end of the asset or ends there.
+    repeat: bool,
+    /// Whether a one-shot source has emitted its last sample.
+    finished: bool,
     pan: Arc<AtomicF32>,
     probe: Option<Arc<SampleProbe>>,
 }
@@ -648,12 +654,28 @@ impl LoopingVoice {
     /// Never: every field a [`PcmAudio`] holds was validated when it was built.
     #[must_use]
     pub fn new(audio: &PcmAudio, pan: f32) -> Self {
+        Self::build(audio, pan, true)
+    }
+
+    /// A voice playing `audio` **once**, placed at `pan`.
+    ///
+    /// This is what a radio line starts: the queue decides when the line is
+    /// over, and the source ends at the member's own end rather than repeating
+    /// into it.
+    #[must_use]
+    pub fn one_shot(audio: &PcmAudio, pan: f32) -> Self {
+        Self::build(audio, pan, false)
+    }
+
+    fn build(audio: &PcmAudio, pan: f32, repeat: bool) -> Self {
         Self {
             samples: PcmAudio::shared_samples(audio),
             mono: audio.channels() == 1,
             rate_hz: audio.rate_hz(),
             cursor: 0,
             pending_right: false,
+            repeat,
+            finished: false,
             pan: Arc::new(AtomicF32::new(pan)),
             probe: None,
         }
@@ -697,7 +719,7 @@ impl Iterator for LoopingVoice {
     type Item = f32;
 
     fn next(&mut self) -> Option<Self::Item> {
-        if self.samples.is_empty() {
+        if self.finished || self.samples.is_empty() {
             return None;
         }
         let (left, right) = self.gains();
@@ -713,15 +735,26 @@ impl Iterator for LoopingVoice {
         if self.mono {
             self.pending_right = !self.pending_right;
             if !self.pending_right {
+                // The right channel of the frame just ended, so the cursor
+                // advances only here: a one-shot is not over until both
+                // channels of its last frame have been emitted.
                 self.cursor += 1;
                 if self.cursor == self.samples.len() {
-                    self.cursor = 0;
+                    if self.repeat {
+                        self.cursor = 0;
+                    } else {
+                        self.finished = true;
+                    }
                 }
             }
         } else {
             self.cursor += 1;
             if self.cursor == self.samples.len() {
-                self.cursor = 0;
+                if self.repeat {
+                    self.cursor = 0;
+                } else {
+                    self.finished = true;
+                }
             }
         }
         let out = if is_right {
@@ -736,14 +769,36 @@ impl Iterator for LoopingVoice {
     }
 
     fn size_hint(&self) -> (usize, Option<usize>) {
-        (usize::MAX, None)
+        if self.repeat {
+            (usize::MAX, None)
+        } else {
+            (0, Some(self.emitted_len()))
+        }
+    }
+}
+
+impl LoopingVoice {
+    /// How many sample values a one-shot source emits in its whole pass.
+    ///
+    /// A stereo member emits one value per stored value; a mono member is spread
+    /// across two channels, so it emits two per stored value.
+    fn emitted_len(&self) -> usize {
+        if self.mono {
+            self.samples.len().saturating_mul(2)
+        } else {
+            self.samples.len()
+        }
     }
 }
 
 impl Source for LoopingVoice {
     fn current_span_len(&self) -> Option<usize> {
-        // Infinite: the asset repeats until the voice is stopped.
-        None
+        if self.repeat {
+            // Infinite: the asset repeats until the voice is stopped.
+            None
+        } else {
+            Some(self.emitted_len())
+        }
     }
 
     fn channels(&self) -> ChannelCount {
@@ -757,8 +812,21 @@ impl Source for LoopingVoice {
     }
 
     fn total_duration(&self) -> Option<Duration> {
-        // A looping voice has no end, which rodio spells `None`.
-        None
+        if self.repeat {
+            // A looping voice has no end, which rodio spells `None`.
+            None
+        } else if self.rate_hz == 0 {
+            Some(Duration::ZERO)
+        } else {
+            let frames = if self.mono {
+                self.samples.len()
+            } else {
+                self.samples.len() / 2
+            };
+            Some(Duration::from_secs_f64(
+                frames as f64 / f64::from(self.rate_hz),
+            ))
+        }
     }
 
     fn try_seek(&mut self, _to: Duration) -> Result<(), SeekError> {
@@ -925,6 +993,64 @@ impl AudibleDevice {
     pub fn played_position(&self, voice: DeviceVoiceId) -> Option<Duration> {
         self.voices.get(&voice).map(|held| held.player.get_pos())
     }
+
+    /// Starts one voice in the form `form` names.
+    ///
+    /// The two forms differ in exactly one thing: whether the source repeats at
+    /// the end of the member. Every other step — resolving the asset, validating
+    /// the mix, opening the player onto the shared sink mixer, attaching the
+    /// probe — is shared, so a one-shot cannot drift from a loop in how it is
+    /// placed or recorded.
+    fn start(&mut self, start: VoiceStart, form: VoiceForm) -> Result<DeviceVoiceId, DeviceError> {
+        // The asset is resolved before the open state so an asset the load never
+        // delivered is named as such even on a device that happens to be shut.
+        let Some(audio) = self.library.pcm(&start.asset) else {
+            return Err(DeviceError::new(
+                CODE_SAMPLE_UNAVAILABLE,
+                format!("no decoded samples are registered for {}", start.asset),
+            ));
+        };
+        let (gain, pan, pitch) = validate_voice(&start)?;
+        let mut sink = self.sink.lock().unwrap_or_else(PoisonError::into_inner);
+        let Some(sink) = sink.as_mut() else {
+            return Err(DeviceError::new(
+                CODE_DEVICE_CLOSED,
+                format!("cannot start {} on a closed output", start.asset),
+            ));
+        };
+        let voice = DeviceVoiceId(self.next_voice);
+        let source = match form {
+            VoiceForm::Loop => LoopingVoice::new(&audio, pan),
+            VoiceForm::OneShot => LoopingVoice::one_shot(&audio, pan),
+        };
+        let pan_handle = source.pan_handle();
+        let source = match self.probe.clone() {
+            Some(probe) => source.with_probe(probe),
+            None => source,
+        };
+        let player = Player::connect_new(sink.mixer());
+        player.set_volume(gain);
+        player.set_speed(pitch);
+        player.append(source);
+        self.next_voice += 1;
+        self.voices.insert(
+            voice,
+            AudibleVoice {
+                player,
+                pan: pan_handle,
+            },
+        );
+        Ok(voice)
+    }
+}
+
+/// Whether one voice repeats its member or plays it once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum VoiceForm {
+    /// Repeats until the voice is stopped.
+    Loop,
+    /// Plays through once and ends.
+    OneShot,
 }
 
 /// Opens the default output device, if this machine may play sound.
@@ -1011,42 +1137,11 @@ impl AudioDevice for AudibleDevice {
     }
 
     fn start_voice(&mut self, start: VoiceStart) -> Result<DeviceVoiceId, DeviceError> {
-        // The asset is resolved before the open state so an asset the load never
-        // delivered is named as such even on a device that happens to be shut.
-        let Some(audio) = self.library.pcm(&start.asset) else {
-            return Err(DeviceError::new(
-                CODE_SAMPLE_UNAVAILABLE,
-                format!("no decoded samples are registered for {}", start.asset),
-            ));
-        };
-        let (gain, pan, pitch) = validate_voice(&start)?;
-        let mut sink = self.sink.lock().unwrap_or_else(PoisonError::into_inner);
-        let Some(sink) = sink.as_mut() else {
-            return Err(DeviceError::new(
-                CODE_DEVICE_CLOSED,
-                format!("cannot start {} on a closed output", start.asset),
-            ));
-        };
-        let voice = DeviceVoiceId(self.next_voice);
-        let source = LoopingVoice::new(&audio, pan);
-        let pan_handle = source.pan_handle();
-        let source = match self.probe.clone() {
-            Some(probe) => source.with_probe(probe),
-            None => source,
-        };
-        let player = Player::connect_new(sink.mixer());
-        player.set_volume(gain);
-        player.set_speed(pitch);
-        player.append(source);
-        self.next_voice += 1;
-        self.voices.insert(
-            voice,
-            AudibleVoice {
-                player,
-                pan: pan_handle,
-            },
-        );
-        Ok(voice)
+        self.start(start, VoiceForm::Loop)
+    }
+
+    fn start_one_shot(&mut self, start: VoiceStart) -> Result<DeviceVoiceId, DeviceError> {
+        self.start(start, VoiceForm::OneShot)
     }
 
     fn stop_voice(&mut self, stop: VoiceStop) -> Result<(), DeviceError> {
