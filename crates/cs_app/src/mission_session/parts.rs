@@ -66,6 +66,30 @@
 //! `docs/findings/2026-10-15-m01-play-triggers-part-state-presence.md`; F27-E's
 //! measured damage table replaces it.
 //!
+//! # What a turret node is (M01-PLAY-TRIGGERS-TURRET-CLASS, Rally #1491)
+//!
+//! Nine of the 39 chains — `utur1`…`utur4`, `ctur1`…`ctur4`, `maingun9` under
+//! `workersvoyagezep` — name nodes no `zeppelins.zrd` key declares. They are
+//! declared by the **other** record table the original loads at mission start:
+//! the shared `ai.zrd`'s `TURRET` list, whose `NODES` entries are `[mount, part]`
+//! patterns (`*` is one digit — [`pattern_matches`]). `workersvoyagezep` is
+//! named by record 27 (`maingun*`, `MSG_TUR_MAIN`), record 28 (`ctur*`,
+//! `MSG_TUR_BELLY`) and record 31 (`utur*`, `MSG_TUR_TOP`), each with its own
+//! `WEAPON` (name, ammunition, fire rate, detection range), `PARTS`
+//! (`turret`/`gun`/`firepoint`), pitch and yaw limits — a **weapon mount**, so
+//! [`turret_part_node`] gives the node [`DamageNodeKind::WeaponMount`]. Records
+//! 28 and 31 also state `HEALTH` (`10.0`); record 27 states none.
+//!
+//! What stays open, and is therefore not bound: whether destroying the mount
+//! clears the `+0x24` bit 4 the `INACTIVE` read counts (the producers are
+//! untraced), the unit of `HEALTH`, and a `disables` edge. The last is not
+//! merely unmeasured but wrong in this graph: [`SystemKind::Weapon`] is one
+//! aggregate per actor that reads `Disabled` as soon as **any** declaring node
+//! is destroyed, while every `TURRET` record carries its own `WEAPON`, ammunition
+//! and attack timers — the turrets fire independently — so one mount's loss
+//! would silence all nine. See
+//! `docs/findings/2026-10-16-m01-play-triggers-turret-class.md`.
+//!
 //! # What is observed, and the fail-closed rule
 //!
 //! A part entity's presence is read from the session's damage authority, never
@@ -84,6 +108,7 @@
 use std::collections::BTreeMap;
 
 use bevy::prelude::{Component, Entity, Resource, Transform, Vec3, World};
+use cs_content::stunts::ZrdValue;
 use cs_script::ir::{ActorId as WorldActorId, MemberName};
 use cs_sim::damage::{DamageNode, DamageNodeKey, DamageNodeKind, DamageResolver, PartState};
 use cs_types::content::{ContentId, Known, Provenance, Resolved};
@@ -209,6 +234,157 @@ pub fn designed_part_node(key: &DamageNodeKey) -> DamageNode {
             Provenance::designed(claim()),
         )),
     )
+}
+
+/// One `ai.zrd` `TURRET` record, as far as a part node needs it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct TurretRecord {
+    /// The record's position in the member's `TURRET` list — its turret type.
+    pub index: usize,
+    /// Every `NODES` entry, each an ancestor-to-descendant pattern chain.
+    pub nodes: Vec<Vec<String>>,
+    /// The `TITLE` message name.
+    pub title: Option<String>,
+    /// The `WEAPON`'s `NAME`.
+    pub weapon: Option<String>,
+    /// The record's `PARTS` node names.
+    pub parts: Vec<String>,
+    /// The record's `HEALTH`, in the unit the record states (unmeasured).
+    pub health: Option<f64>,
+}
+
+/// The `TURRET` list of a decoded `ai.zrd`, in record order.
+///
+/// A record without a `NODES` key is skipped — the original asserts "Turret
+/// entry #%d specifies no NODES" and skips it too — and so is a malformed
+/// shape; neither is guessed into a record.
+#[must_use]
+pub fn read_turret_records(ai_zrd: &ZrdValue) -> Vec<TurretRecord> {
+    let Some(entries) = ai_zrd.as_list() else {
+        return Vec::new();
+    };
+    let list = entries.iter().find_map(|entry| {
+        let kids = entry.as_list()?;
+        (kids.first()?.as_text() == Some("TURRET")).then(|| kids.get(1)?.as_list())?
+    });
+    let mut records = Vec::new();
+    for (index, record) in list.unwrap_or_default().iter().enumerate() {
+        let fields = cs_content::stunts::zrd_flat_fields(record);
+        let field = |name: &str| fields.iter().find(|(key, _)| *key == name).map(|(_, v)| *v);
+        let Some(nodes) = field("NODES").and_then(ZrdValue::as_list) else {
+            continue;
+        };
+        let nodes: Vec<Vec<String>> = nodes
+            .iter()
+            .filter_map(|element| match element {
+                ZrdValue::Text(text) => Some(vec![text.clone()]),
+                ZrdValue::List(chain) => chain
+                    .iter()
+                    .map(|part| part.as_text().map(str::to_owned))
+                    .collect::<Option<Vec<_>>>()
+                    .filter(|chain| !chain.is_empty()),
+                _ => None,
+            })
+            .collect();
+        let first_text =
+            |value: Option<&ZrdValue>| value?.as_list()?.first()?.as_text().map(str::to_owned);
+        let weapon = field("WEAPON").and_then(|weapon| {
+            let inner = zrd_pairs(weapon.as_list()?);
+            first_text(inner.iter().find(|(k, _)| *k == "NAME").map(|(_, v)| *v))
+        });
+        let parts = field("PARTS")
+            .and_then(ZrdValue::as_list)
+            .map(|parts| {
+                parts
+                    .iter()
+                    .filter_map(|p| p.as_text().map(str::to_owned))
+                    .collect()
+            })
+            .unwrap_or_default();
+        let health = field("HEALTH")
+            .and_then(ZrdValue::as_list)
+            .and_then(|values| match values.first()? {
+                ZrdValue::Float(value) => Some(f64::from(*value)),
+                _ => None,
+            });
+        records.push(TurretRecord {
+            index,
+            nodes,
+            title: first_text(field("TITLE")),
+            weapon,
+            parts,
+            health,
+        });
+    }
+    records
+}
+
+/// Key/value pairs of a flat `[key, value, key, value, …]` child list.
+fn zrd_pairs(children: &[ZrdValue]) -> Vec<(&str, &ZrdValue)> {
+    children
+        .chunks(2)
+        .filter_map(|pair| Some((pair.first()?.as_text()?, pair.get(1)?)))
+        .collect()
+}
+
+/// `0x4abea0`'s pattern rule (measured in #1155): `*` matches exactly one digit,
+/// every other byte is literal and the pattern consumes the whole name.
+#[must_use]
+pub fn pattern_matches(pattern: &str, name: &str) -> bool {
+    let (pattern, name) = (pattern.as_bytes(), name.as_bytes());
+    pattern.len() == name.len()
+        && pattern.iter().zip(name).all(|(&p, &n)| {
+            if p == b'*' {
+                n.is_ascii_digit()
+            } else {
+                p == n
+            }
+        })
+}
+
+/// The `TURRET` record that declares `part` of the actor named `actor`: the
+/// earliest record with a two-element `NODES` entry `[mount, part]` whose two
+/// patterns match (the original's earliest-record-wins binding, `0x4a9890`).
+///
+/// Longer or one-element entries (a nested part chain, a bare mount) are not
+/// part-of-actor declarations and never match here.
+#[must_use]
+pub fn turret_record_for<'a>(
+    records: &'a [TurretRecord],
+    actor: &str,
+    part: &str,
+) -> Option<&'a TurretRecord> {
+    records.iter().find(|record| {
+        record.nodes.iter().any(|chain| {
+            matches!(chain.as_slice(), [mount, node]
+                if pattern_matches(mount, actor) && pattern_matches(node, part))
+        })
+    })
+}
+
+/// The damage node of a part a `TURRET` record declares: a
+/// [`DamageNodeKind::WeaponMount`] with the same designed pool as every part
+/// and **no** `disables` edge (see the module's turret section).
+#[must_use]
+pub fn turret_part_node(key: &DamageNodeKey) -> DamageNode {
+    DamageNode::new(
+        key.clone(),
+        DamageNodeKind::WeaponMount,
+        Resolved::Known(Known::new(
+            DESIGNED_PART_INTEGRITY,
+            Provenance::designed(claim()),
+        )),
+    )
+}
+
+/// The designed node of a part of `actor`: a weapon mount when the `TURRET`
+/// table declares it, otherwise [`designed_part_node`]'s unclassed one.
+#[must_use]
+pub fn classed_part_node(records: &[TurretRecord], actor: &str, key: &DamageNodeKey) -> DamageNode {
+    match turret_record_for(records, actor, key.as_str()) {
+        Some(_) => turret_part_node(key),
+        None => designed_part_node(key),
+    }
 }
 
 /// The claim id [`M01_PART_STATE_CLAIM`] parsed.
