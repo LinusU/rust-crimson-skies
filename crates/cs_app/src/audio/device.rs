@@ -485,6 +485,24 @@ pub trait SampleLibrary: fmt::Debug + Send + Sync {
     /// ([`CODE_SAMPLE_UNAVAILABLE`]) instead of playing what the old closure
     /// delivered.
     fn replace_samples(&self, samples: BTreeMap<ContentId, PcmAudio>);
+
+    /// Adds one already-decoded member under `id`, leaving every other entry as
+    /// it is.
+    ///
+    /// This is the member-level publish of the radio prepare step
+    /// ([`super::voice::publish_voice_members`], task #1465): the prepare step
+    /// decodes the spoken voice members it queues and hands the device exactly
+    /// those, under the dialogue id a
+    /// [`RadioLine`](cs_sim::audio_events::RadioLine) names. It deliberately
+    /// does **not** replace: it runs on top of the same load's
+    /// [`SampleLibrary::replace_samples`] pass, after it, so the closure's
+    /// sound members and the prepare step's voice members are both reachable.
+    ///
+    /// It is not a path for re-adding a replaced load's samples. A reload's own
+    /// `replace_samples` empties the library of everything the previous load put
+    /// there — voice members included — and the new load's prepare step
+    /// publishes into that same fresh library.
+    fn insert_sample(&self, id: ContentId, pcm: PcmAudio);
 }
 
 /// Resource: the [`SampleLibrary`] this world's audible backend plays from,
@@ -591,6 +609,13 @@ impl SampleLibrary for InMemorySamples {
 
     fn replace_samples(&self, samples: BTreeMap<ContentId, PcmAudio>) {
         *self.entries.lock().unwrap_or_else(PoisonError::into_inner) = samples;
+    }
+
+    fn insert_sample(&self, id: ContentId, pcm: PcmAudio) {
+        self.entries
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .insert(id, pcm);
     }
 }
 

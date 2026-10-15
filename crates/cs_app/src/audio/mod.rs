@@ -42,6 +42,9 @@
 //! * [`samples`] — the population pass: the delivered closure's audio members
 //!   decoded into the library that same load's device plays from, so a
 //!   `VoiceStart` naming a delivered asset finds it (task #652, M01-LC);
+//! * [`voice`] — the radio voice members' publish step: the members a prepare
+//!   step decoded reach that same library under the exact dialogue id a
+//!   `RadioLine` names (task #1465, M01-RADIO-SAMPLE-IDENTITY);
 //! * [`handoff::insert_audio_session`] and [`AudioPlugin`] — the wiring: the
 //!   loading handoff owns the session, and the plugin registers the systems in
 //!   the app schedule.
@@ -63,6 +66,7 @@ pub mod mixer;
 pub mod plugin;
 pub mod samples;
 pub mod spawn;
+pub mod voice;
 
 pub use device::{
     AudibleDevice, AudioBackendKind, AudioBackendLog, AudioBackendRefusal, CODE_CAPABILITY_ABSENT,
@@ -90,6 +94,9 @@ pub use samples::{AudioSampleSource, CODE_SAMPLE_ABSENT, ContentSampleSource, Sa
 pub use spawn::{
     AudioBindLog, AudioBindRecord, AudioBindRefusal, AudioEmitterIds, AudioEmitterRole,
     bind_spawned_emitters,
+};
+pub use voice::{
+    DecodedVoiceMember, VoiceMemberError, VoicePublication, publish_voice_members, voice_member_id,
 };
 
 use bevy::ecs::component::Component;
