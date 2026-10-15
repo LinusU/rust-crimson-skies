@@ -19,7 +19,7 @@
 //! | Row | Source | Why that source |
 //! | --- | --- | --- |
 //! | `["player"]` | the [`MissionPlayerBody`] entity's [`Position`] | the body's physics pose is the authoritative position the trigger has to measure from; nothing else in the composition is `player` |
-//! | `["<node>"]` per bound world actor | the [`WorldActorBinding`] entity's [`Transform`] | the binding entity is not a physics body, so its `Transform` is its live pose; its node name comes from the measured subject spelling (below) |
+//! | `["<node>"]` per bound world actor | the [`WorldActorBinding`] entity's [`Transform`], with the presence the world's own state reports (M01-PLAY-TRIGGERS-ACTOR-BIT, below) | the binding entity is not a physics body, so its `Transform` is its live pose; its node name comes from the measured subject spelling (below), and whether it is *in play* is the world-actor session's lifecycle × the damage authority's destruction ledger — never a default |
 //! | one row per group id | live [`ScriptedAircraftActor`] entities, keyed by the groups the composition **actually spawned** | a count is only reportable for a group whose members were spawned and can now be counted |
 //! | one row per bound part-state chain | the [`MissionPartState`] entity's own pose, with the presence the session's damage authority reports | a part-state chain now has a live entity (M01-PLAY-TRIGGERS-PARTS, below); its in-play bit is the one the `INACTIVE` evaluator reads |
 //!
@@ -32,6 +32,33 @@
 //! unregistered actor is **no row at all** (the fail-closed read
 //! [`super::parts`] documents).
 //!
+//! # The bound actor's in-play bit (M01-PLAY-TRIGGERS-ACTOR-BIT, #1490)
+//!
+//! M01's two actor-level `INACTIVE` ladders — block indexes 53 and 55,
+//! `OBJECTIVE54`/`OBJECTIVE56`, threshold 1 over the **one-element** chain
+//! `["piratezep"]` — count the zeppelin's *own* node leaving play, not a
+//! part's. Before this slice the actor row was written `held_in_play` from the
+//! binding alone and nothing could ever take it out, so both ladders stalled
+//! forever. [`world_actor_in_play`] is the measured read that replaces the
+//! default, and it consults two fact families, **never the actor's damage
+//! pool** (an unresolved pool is not a presence statement):
+//!
+//! * the **world-actor session's lifecycle** — `Presence::Intact` is the
+//!   world's own statement the actor is still in the world; `Presence::Destroyed`
+//!   (monotonic, written only by the session's `Destroy` command) is the
+//!   measured destruction;
+//! * the **session damage authority's destruction ledger** — `Destroyed`
+//!   recorded there, by a lethal hit or by the resolver's own scripted port
+//!   `DamageResolver::record_lifecycle`, is the authoritative record of an
+//!   actor's destruction (F36-C.1) and takes the row out of play even while
+//!   the session presence still says `Intact`.
+//!
+//! A binding neither family speaks to gets **no row at all** — the fail-closed
+//! half, and the reason the row can never claim an actor is in play that the
+//! world does not hold. See
+//! `docs/findings/2026-10-15-m01-play-triggers-actor-bit.md` for the
+//! measurement behind both families and what stays unmeasured.
+//!
 //! # Fail-closed, row by row
 //!
 //! * **The player** is reported only when exactly one [`MissionPlayerBody`]
@@ -41,8 +68,11 @@
 //!   position from a world that did not describe one.
 //! * **A bound actor** is reported only when its subject is a `scene_node`
 //!   id whose last component is a name [`escape_scene_node_name`] could have
-//!   written verbatim (see [`subject_node_name`]). A subject this observer
-//!   cannot read back into a node name yields no row.
+//!   written verbatim (see [`subject_node_name`]), **and** the world's own
+//!   state holds the actor: the world-actor session must carry its lifecycle
+//!   presence ([`world_actor_in_play`]). A subject this observer cannot read
+//!   back into a node name — or a binding the world's lifecycle state does
+//!   not back — yields no row.
 //! * **A group** is reported only for a group id the composition spawned
 //!   members for (`MissionActorSpawnReport` × [`MissionAircraftRoster`]), and
 //!   its count is the live entity count of that group — `0` when every member
@@ -68,15 +98,19 @@ use std::collections::BTreeMap;
 use avian3d::prelude::Position;
 use bevy::prelude::{Entity, Transform, With, World};
 use cs_content::scene::escape_scene_node_name;
+use cs_script::ir::ActorId as WorldActorId;
+use cs_sim::damage::DamageResolver;
+use cs_sim::world_actors::graph::Presence;
 use cs_types::content::{ContentId, ContentKind};
+use cs_types::net::ActorId;
 
 use super::compose::MissionPlayerBody;
 use super::host::{MissionHost, MissionWorldObservation};
 use crate::mission_actors::{
-    MissionActorSpawnReport, MissionAircraftRoster, ScriptedAircraftActor,
+    MissionActorSpawnReport, MissionAircraftRoster, MissionZeppelinActor, ScriptedAircraftActor,
 };
 use crate::weapons::SessionDamageResolver;
-use crate::world_actors::WorldActorBinding;
+use crate::world_actors::{WorldActorBinding, WorldActorSession};
 use crate::world_facts::{MemberObservation, WorldObservation, member_chain};
 
 use super::parts::{MissionPartState, part_in_play};
@@ -120,6 +154,56 @@ pub fn subject_node_name(subject: &ContentId) -> Option<&str> {
     (escape_scene_node_name(last) == last).then_some(last)
 }
 
+/// The presence the world's own state reports for one **bound world actor**,
+/// or `None` when it says nothing about it — the fail-closed read behind the
+/// actor rows of [`mission_world_observation`] (M01-PLAY-TRIGGERS-ACTOR-BIT,
+/// #1490).
+///
+/// Two measured fact families decide, and **neither is the actor's damage
+/// pool** — an unresolved pool is not a presence statement:
+///
+/// * the **world-actor session's lifecycle**: [`WorldActorSet::presence`] is
+///   the world's own read. `Presence::Intact` says the actor is still in the
+///   world; `Presence::Destroyed` — monotonic, written only by the session's
+///   measured `Destroy` command (`WorldActorCommand::Destroy`, F34) — says it
+///   left. The composed host steps the session with no commands today
+///   (`MissionHost::step` stage 2 schedules nothing on its behalf), so that
+///   arm currently answers only through F34's own command surface; the
+///   measurement is recorded in
+///   `docs/findings/2026-10-15-m01-play-triggers-actor-bit.md`.
+/// * the **session damage authority's destruction ledger**: `Destroyed`
+///   recorded there — by a lethal hit or by the resolver's own scripted port
+///   [`DamageResolver::record_lifecycle`] — is the authoritative record of an
+///   actor's destruction (F36-C.1, the ledger [`DamageActorDestroyed`]
+///   publishes from) and takes the row out of play even while the session
+///   presence still says `Intact`. A missing resolver resource leaves the
+///   ledger unread; the session's presence still stands.
+///
+/// `None` (no row at all) covers every case the world's own state does not
+/// speak to: no world-actor session in the host, or a session that does not
+/// hold the actor. A binding the composition cannot back with the world's
+/// own lifecycle state is never reported in play — the fail-closed half,
+/// which also keeps an unresolved pool from ever *becoming* a presence
+/// statement by default.
+///
+/// [`WorldActorSet::presence`]: cs_sim::world_actors::runtime::WorldActorSet::presence
+/// [`DamageActorDestroyed`]: crate::damage::DamageActorDestroyed
+#[must_use]
+pub fn world_actor_in_play(
+    session: Option<&WorldActorSession>,
+    world_actor: WorldActorId,
+    damage: Option<&DamageResolver>,
+    damage_actor: Option<ActorId>,
+) -> Option<bool> {
+    match session?.set().presence(world_actor) {
+        Some(Presence::Destroyed) => Some(false),
+        Some(Presence::Intact) => Some(!damage_actor.is_some_and(|actor| {
+            damage.is_some_and(|resolver| resolver.is_destroyed(&actor))
+        })),
+        None => None,
+    }
+}
+
 /// The one composed observation of this tick: what the live ECS world holds
 /// for the player, for every bound world actor, and for every group the
 /// composition spawned members for.
@@ -157,26 +241,52 @@ pub fn mission_world_observation(world: &mut World) {
     }
 
     // 2. Every bound world actor, at its live pose, under the node name its
-    //    measured subject spells.
-    let bindings: Vec<(ContentId, [f64; 3])> = {
-        let mut query = world.query::<(&WorldActorBinding, &Transform)>();
+    //    measured subject spells — with the presence the world's own state
+    //    reports (M01-PLAY-TRIGGERS-ACTOR-BIT): the world-actor session's
+    //    lifecycle crossed with the damage authority's destruction ledger.
+    //    Neither family speaks → no row at all, fail-closed.
+    let bindings: Vec<(ContentId, WorldActorId, Option<ActorId>, [f64; 3])> = {
+        let mut query =
+            world.query::<(&WorldActorBinding, &Transform, Option<&MissionZeppelinActor>)>();
         query
             .iter(world)
-            .map(|(binding, transform)| {
+            .map(|(binding, transform, zeppelin)| {
                 let [x, y, z] = transform.translation.to_array();
                 (
                     binding.subject.clone(),
+                    binding.actor,
+                    zeppelin.map(|actor| actor.damage_actor),
                     [f64::from(x), f64::from(y), f64::from(z)],
                 )
             })
             .collect()
     };
-    for (subject, position) in bindings {
-        if let Some(name) = subject_node_name(&subject) {
-            observation = observation.member(
-                member_chain([name]),
-                MemberObservation::held_in_play(position),
-            );
+    let session = world
+        .get_resource::<MissionHost>()
+        .and_then(MissionHost::world_actors);
+    let damage = world
+        .get_resource::<SessionDamageResolver>()
+        .map(|shared| shared.resolver());
+    for (subject, world_actor, damage_actor, position) in bindings {
+        let Some(name) = subject_node_name(&subject) else {
+            continue;
+        };
+        match world_actor_in_play(session, world_actor, damage, damage_actor) {
+            Some(true) => {
+                observation = observation.member(
+                    member_chain([name]),
+                    MemberObservation::held_in_play(position),
+                );
+            }
+            Some(false) => {
+                observation = observation.member(
+                    member_chain([name]),
+                    MemberObservation::no_longer_in_play(position),
+                );
+            }
+            // The world's own state says nothing about this actor: the chain
+            // stays unobserved, fail-closed.
+            None => {}
         }
     }
 

@@ -84,8 +84,10 @@
 //! [`host::MissionWorldObservation`], installed beside
 //! [`host::install_mission_host`] so the report describes the same tick's
 //! physics. A row nobody can observe is not written — the player body's pose,
-//! each bound world actor's pose under its measured subject name, and the
-//! living count of a group the composition really spawned members for — and
+//! each bound world actor's pose under its measured subject name and
+//! presence (the world-actor session's lifecycle × the damage authority's
+//! destruction ledger, M01-PLAY-TRIGGERS-ACTOR-BIT), and the living count of
+//! a group the composition really spawned members for — and
 //! every other member chain the record spells stays unobserved, fail-closed.
 
 mod compose;
@@ -129,7 +131,9 @@ pub use launch_sound::{
     install_launch_audio, measure_launch_sound, member_content_id, stage_container,
 };
 pub use lifecycles::{LifecycleAdvance, ObjectiveLifecycleTick, ObjectiveLifecycles};
-pub use observation::{PLAYER_MEMBER, mission_world_observation, subject_node_name};
+pub use observation::{
+    PLAYER_MEMBER, mission_world_observation, subject_node_name, world_actor_in_play,
+};
 pub use parts::{
     BoundPart, DESIGNED_PART_INTEGRITY, M01_PART_STATE_CLAIM, MissionPartReport, MissionPartState,
     designed_part_node, part_entities, part_in_play, part_state_chains, part_state_node,

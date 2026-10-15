@@ -176,7 +176,9 @@ pub struct ScriptedAircraftActor {
 /// damage consumers and teardown name for a launched [`WorldActorSession`]
 /// actor. The zeppelin's drawn world object is the residency's own; this
 /// entity binds the actor identity to it by subject, never by a guessed
-/// pose.
+/// pose. The world observation reads [`Self::damage_actor`] beside the
+/// binding so the actor row can follow the damage authority's destruction
+/// ledger out of play (M01-PLAY-TRIGGERS-ACTOR-BIT, #1490).
 #[derive(Component, Clone, Debug)]
 pub struct MissionZeppelinActor {
     /// The runtime actor of the world-actor session.
