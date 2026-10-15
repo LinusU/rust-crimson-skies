@@ -52,8 +52,10 @@ open is recorded as three narrower entries —
 `f37.d.limit.mission_countdown_spec_sourcing` (nothing yet lowers a record's
 `MISSION_TIMER` field or a session's network mode into the spec). The expiry
 itself still reaches the host only as `TerminalState::Failed`: the original's
-end-path messages `0x1772`/`0x89` are presentation, which remains
-F37-D-FU5's `f37.d.limit.terminal_branch_delay_and_sound`.
+end-path messages `0x1772`/`0x89` are presentation, which is the
+`MissionEndPresentation` work of F37-D-FU5 (branch, delay, sound/animation
+selection); playback, handle presence and a non-instant ending stay unclaimed
+in `docs/findings/2026-10-07-f37-d-fu5-mission-end-presentation.md`.
 
 ## The short version
 
@@ -270,9 +272,12 @@ No test was deleted, skipped or made more tolerant.
   `CountdownSpec`, a session's network mode into `network_game`, and an
   adapter actually spelling the timer directives — is
   `f37.d.limit.mission_countdown_spec_sourcing`. And the expiry's
-  presentation (`0x1772`/`0x89`) is still F37-D-FU5's
-  `f37.d.limit.terminal_branch_delay_and_sound`: the producer ends the
-  mission as a plain `Failed`, it does not pretend the messages exist.
+  presentation (`0x1772`/`0x89`) is presentation work that F37-D-FU5
+  implemented as `MissionEndPresentation` (branch, delay, sound/animation
+  selection; playback, handle presence and a non-instant ending stay unclaimed
+  in `docs/findings/2026-10-07-f37-d-fu5-mission-end-presentation.md`): the
+  producer ends the mission as a plain `Failed`, it does not pretend the
+  messages exist.
 * **M01 check.** M01's authored `MISSION_TIMER [0.0]` arms nothing under
   the measured `> 0.0f` start rule, exactly as in the original — the
   acceptance suite pins a zero-armed countdown reporting
