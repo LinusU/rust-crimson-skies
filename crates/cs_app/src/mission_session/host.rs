@@ -60,9 +60,12 @@
 //!   instead; either raises no such refusal.
 //! * The stage folds whatever the world reports this tick: a
 //!   [`MissionWorldObservation`] the world's own observation system wrote
-//!   this step (consumed on use), the player body's position and the record
-//!   player's animation rows. A stage that never wrote one folds the empty
-//!   report under [`MissionHostRefusal::WorldObservation`].
+//!   this step (consumed on use) —
+//!   [`super::observation::mission_world_observation`] is that system, the
+//!   one [`install_mission_host`] installs before this entry — the player
+//!   body's position and the record player's animation rows. A stage that
+//!   never wrote one folds the empty report under
+//!   [`MissionHostRefusal::WorldObservation`].
 //! * A stage with no animation join, or whose scope lowered no world-actor
 //!   program, is named by [`MissionHostRefusal::AnimationJoin`] and
 //!   [`MissionHostRefusal::WorldActors`].
@@ -181,6 +184,7 @@ use crate::world_facts::{
 };
 
 use super::lifecycles::{ObjectiveLifecycleTick, ObjectiveLifecycles};
+use super::observation::mission_world_observation;
 use super::radio::{MissionRadio, RadioLineOutcome};
 
 /// The mission host's own session generation, minted from a process-wide
@@ -1627,12 +1631,26 @@ pub fn mission_host_restart(world: &mut World) {
 /// [`PostUpdate`] — after the playtest's `Update`-schedule reset has run and
 /// incremented [`PlaytestState::resets`].
 ///
+/// The world's own report for the same tick is installed here too:
+/// [`mission_world_observation`] runs in the fixed-tick schedule after the
+/// physics step and **before** [`mission_host_tick`], so the
+/// [`MissionWorldObservation`] port stage 4 consumes already carries this
+/// tick's player, world-actor and group rows (M01-PLAY-TRIGGERS-OBSERVE,
+/// #1480). A composition that installs this installs the writer and its
+/// consumer as one pair, in that order.
+///
 /// This is the half the windowed composition wires: it inserts the
 /// [`MissionHost`] resource and then calls here, so a composition installs
 /// nothing at all when its stage carries no records.
 pub fn install_mission_host(app: &mut App) {
     use avian3d::prelude::PhysicsSystems;
 
+    app.add_systems(
+        FixedPostUpdate,
+        mission_world_observation
+            .after(PhysicsSystems::StepSimulation)
+            .before(mission_host_tick),
+    );
     app.add_systems(
         FixedPostUpdate,
         mission_host_tick

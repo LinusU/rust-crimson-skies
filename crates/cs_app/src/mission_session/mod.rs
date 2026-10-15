@@ -77,6 +77,16 @@
 //! session generation, and [`host::mission_host_restart`] is the composed
 //! entry that observes the playtest's meta reset and a
 //! [`host::MissionHostRestartRequest`] and performs it.
+//!
+//! The `observation` submodule is the world's own report that host folds in
+//! stage 4 (M01-PLAY-TRIGGERS-OBSERVE, #1480): [`observation::mission_world_observation`]
+//! reads the live ECS world once per fixed tick and writes
+//! [`host::MissionWorldObservation`], installed beside
+//! [`host::install_mission_host`] so the report describes the same tick's
+//! physics. A row nobody can observe is not written — the player body's pose,
+//! each bound world actor's pose under its measured subject name, and the
+//! living count of a group the composition really spawned members for — and
+//! every other member chain the record spells stays unobserved, fail-closed.
 
 mod compose;
 mod content;
@@ -84,6 +94,7 @@ mod evidence;
 mod host;
 mod launch_sound;
 mod lifecycles;
+mod observation;
 mod player_visual;
 mod radio;
 mod terminal;
@@ -116,6 +127,7 @@ pub use launch_sound::{
     install_launch_audio, measure_launch_sound, member_content_id, stage_container,
 };
 pub use lifecycles::{LifecycleAdvance, ObjectiveLifecycleTick, ObjectiveLifecycles};
+pub use observation::{PLAYER_MEMBER, mission_world_observation, subject_node_name};
 pub use player_visual::{
     MISSION_PLAYER_AIRCRAFT_ROOT_NAME, MISSION_PLAYER_INTACT_NODE_NAME,
     MISSION_PLAYER_INTACT_NODE_SLOT, MISSION_PLAYER_LOD_DISTANCE_M, MISSION_PLAYER_PROP_NODE_NAME,
