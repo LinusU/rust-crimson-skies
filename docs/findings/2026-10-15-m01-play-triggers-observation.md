@@ -212,9 +212,15 @@ cargo test --workspace --locked -- accept_m01_play_triggers_observe_ --include-i
   over the installation.
 
 The evidence report is produced by
-`crates/cs_app/tests/evidence_report_m01_play_triggers_observe.rs`, validated
-with `tools/validate_evidence.py … --require-pass`, and its copy is committed
-as `docs/findings/evidence/M01-PLAY-TRIGGERS-OBSERVE.json`.
+`crates/cs_app/tests/evidence_report_m01_play_triggers_observe.rs`,
+structurally validated with `python3 tools/validate_evidence.py …
+--artifact-root …` (exit 0), and its copy is committed as
+`docs/findings/evidence/M01-PLAY-TRIGGERS-OBSERVE.json`. The `--require-pass`
+form of that check — the one `docs/contracts/CLI-EVIDENCE.md` names, and the
+one step 3 of the harness's module doc used to show — does **not** pass on
+this report, for the reason spelled out under Evidence below; the harness's
+doc now says so instead of prescribing a command that exits 3, and no unknown
+was removed to turn it green.
 
 ## Evidence
 

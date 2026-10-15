@@ -17,7 +17,15 @@
 //!    ```
 //! 3. `python3 tools/validate_evidence.py
 //!    private/evidence/M01-PLAY-TRIGGERS-OBSERVE/acceptance.json
-//!    --artifact-root private/evidence/M01-PLAY-TRIGGERS-OBSERVE --require-pass`
+//!    --artifact-root private/evidence/M01-PLAY-TRIGGERS-OBSERVE`
+//!    (exit 0, `structurally_valid`). The `--require-pass` form of that check
+//!    — the one `docs/contracts/CLI-EVIDENCE.md` names — exits **3** on this
+//!    report while its four `unknowns` stand: the owner's 2026-09-28 directive
+//!    forbids deleting an unresolved issue from machine-readable evidence to
+//!    turn that flag green, so the pass/fail facts are carried by
+//!    `command.exit_code` and the `tests` counts (both checked without the
+//!    flag) and the reason is recorded in
+//!    `docs/findings/2026-10-15-m01-play-triggers-observation.md`.
 //! 4. Commit a copy as `docs/findings/evidence/M01-PLAY-TRIGGERS-OBSERVE.json`.
 //!
 //! Every field is derived from the recorded log, the environment, production
@@ -211,10 +219,15 @@ struct WorldObservationRun {
     /// carrier census.
     zeppelin_keys: usize,
     /// `OBJECTIVE3`'s own effect lists, read from the recovered engine model.
-    nap_target: String,
-    nap_time: String,
-    wake_targets: String,
-    kill_targets: String,
+    ///
+    /// Typed values, not pre-rendered strings: this document is an artifact
+    /// named `world-observation.json`, so every number has to render as JSON
+    /// (`null`, a number, an array) rather than as Rust's `Debug` (`Some(3)`,
+    /// which is not JSON and would make the artifact unparseable).
+    nap_target: Option<usize>,
+    nap_time: Option<f32>,
+    wake_targets: Vec<usize>,
+    kill_targets: Vec<usize>,
     /// The absences the report names instead of filling in.
     unknowns: Vec<String>,
 }
@@ -353,10 +366,10 @@ fn observe_world(game_dir: &Path) -> WorldObservationRun {
         group_rows,
         zeppelins: M01_ZEPPELINS,
         zeppelin_keys,
-        nap_target: format!("{:?}", declaration.nap.and_then(|nap| nap.target)),
-        nap_time: format!("{:?}", declaration.nap.map(|nap| nap.time)),
-        wake_targets: format!("{:?}", declaration.wake.targets()),
-        kill_targets: format!("{:?}", declaration.kill.targets()),
+        nap_target: declaration.nap.and_then(|nap| nap.target),
+        nap_time: declaration.nap.map(|nap| nap.time),
+        wake_targets: declaration.wake.targets().to_vec(),
+        kill_targets: declaration.kill.targets().to_vec(),
         unknowns,
     }
 }
@@ -389,10 +402,14 @@ fn render_world_observation(
         observation.group_rows.join(", "),
         observation.zeppelins,
         observation.zeppelin_keys,
-        observation.nap_target,
-        observation.nap_time,
-        observation.wake_targets,
-        observation.kill_targets,
+        observation
+            .nap_target
+            .map_or_else(|| "null".to_owned(), |index| index.to_string()),
+        observation
+            .nap_time
+            .map_or_else(|| "null".to_owned(), |seconds| seconds.to_string()),
+        json_numbers(&observation.wake_targets),
+        json_numbers(&observation.kill_targets),
         observation
             .unknowns
             .iter()
@@ -686,6 +703,20 @@ fn unknown_array(unknowns: &[String]) -> String {
 fn str_array(items: &[String]) -> String {
     let quoted: Vec<String> = items.iter().map(|item| jstr(item)).collect();
     format!("[{}]", quoted.join(", "))
+}
+
+/// A JSON array of the measured indexes: rendered as numbers, never as Rust's
+/// `Debug`, because the document this lands in is an artifact named
+/// `world-observation.json`.
+fn json_numbers(values: &[usize]) -> String {
+    format!(
+        "[{}]",
+        values
+            .iter()
+            .map(ToString::to_string)
+            .collect::<Vec<_>>()
+            .join(", ")
+    )
 }
 
 /// A JSON string literal: quoted and escaped, so no report field can break out
