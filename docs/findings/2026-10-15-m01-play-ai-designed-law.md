@@ -192,7 +192,10 @@ original content).
 
 The report's `candidate_tree` is the tree of the tested commit; this file and
 the evidence copy are committed after it, so that commit changes the tree —
-the same order #1435 used.
+the same order #1435 used. The numbers above are the implementing run's;
+§7 records the same table re-run by the review session on the review head,
+and the committed `docs/findings/evidence/M01-PLAY-AI.json` is that later
+run.
 
 ## 6. Review fixes (2026-10-15)
 
@@ -235,4 +238,35 @@ Neither fix touches a measured input or a designed constant: the gains, the
 fire window, the station and the four acceptance bounds in §2 are unchanged.
 The acceptance suite and the evidence harness are re-run on the review head;
 §7 records that run.
+
+## 7. Evidence of the review head (2026-10-15)
+
+Every command below ran on `e57a9eb7` (`candidate_tree` `1e91e1aa…`, the
+tree of that commit, a clean working tree), by the review session:
+
+| Command | Exit |
+| --- | --- |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
+| `cargo test --workspace --locked` | 0 (the full workspace suite green) |
+| `cargo test --workspace --locked -- accept_m01_play_ai_ --include-ignored --nocapture` | 0 — **9 discovered, 9 passed** (the 7 unit tests including §6's two, plus the 2 retail tests), tee'd to `cargo-test.log` |
+| each of the 9 discovered tests alone, `-- <name> --exact --include-ignored` | 0 for every one — no test only passes in company |
+| the evidence harness with `CS_EVIDENCE_REVIEWER` naming this session and `CS_CANDIDATE_TREE=1e91e1aa…` | 0 — wrote `acceptance.json` (9/9 assertions `pass`) and `ai-flight.json` |
+| `python3 tools/validate_evidence.py private/evidence/M01-PLAY-AI/acceptance.json --artifact-root private/evidence/M01-PLAY-AI` | 0 — `structurally_valid: true`, 2 artifacts |
+| the same with `--require-pass` | **3** (`Unresolved issues`) — the six §3 unknowns, declared on purpose as §5 explains |
+
+Measurements of this run: `rusdevastator_1` 2944 m → **334 m** from the
+player (`_2` 3148 → 428, `_4` 3117 → 385, `_5` 2975 → 355), all four still
+airborne at ~1330 m; Betty (`wingman_2`) 270 m → **129 m** at the end
+(closest 108 m) against the designed ~89 m station. Betty's number moved
+from the implementing run's 136 m because her leader `devastator_2` now
+holds its course (§6.1) instead of turning away from it, and it still
+converges: 129 m < 270 m at spawn, inside the 250 m bound. The four
+attackers' numbers are unchanged, as expected — §6 touched neither the
+pursuit branch nor a designed constant.
+
+`candidate_tree` is the tree of `e57a9eb7`, the commit the suite and the
+harness ran on; the only later delta is this §7 and the evidence copy under
+`docs/findings/evidence/`, neither of which the acceptance suite reads — the
+same order #1435 and M12-B used.
 
