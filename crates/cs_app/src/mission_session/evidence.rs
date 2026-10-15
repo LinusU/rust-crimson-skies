@@ -35,7 +35,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use avian3d::prelude::Position;
-use bevy::app::AppExit;
+use bevy::app::{AppExit, FixedPostUpdate};
 use bevy::input::keyboard::KeyCode;
 use bevy::input::{ButtonInput, InputSystems};
 use bevy::prelude::{
@@ -44,7 +44,8 @@ use bevy::prelude::{
 };
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk};
 
-use super::host::MissionHost;
+use super::host::{MissionHost, mission_host_tick};
+use super::scenario::{Scenario, TriggerWatch, watch_trigger};
 use crate::audio::device::SampleLibrary;
 use crate::input::platform::PlatformInput;
 use crate::physics::PhysicsTickLedger;
@@ -142,6 +143,9 @@ pub enum CaptureRefusal {
     Io(String),
     /// The run ended without the evidence it was asked for.
     Incomplete(String),
+    /// The scenario variables (start override, trigger watch) are
+    /// incomplete, malformed, or were asked of a run that is not a capture.
+    Scenario(String),
 }
 
 impl fmt::Display for CaptureRefusal {
@@ -163,6 +167,7 @@ impl fmt::Display for CaptureRefusal {
             ),
             Self::Io(reason) => write!(f, "mission capture cannot write its evidence: {reason}"),
             Self::Incomplete(reason) => write!(f, "mission capture is incomplete: {reason}"),
+            Self::Scenario(reason) => write!(f, "mission capture scenario refused: {reason}"),
         }
     }
 }
@@ -170,10 +175,12 @@ impl fmt::Display for CaptureRefusal {
 impl std::error::Error for CaptureRefusal {}
 
 /// A capture that has been checked to be possible.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct CaptureSettings {
     /// Where the PNG and `trace.jsonl` are written.
     pub dir: PathBuf,
+    /// The start override and trigger watch the run was asked for.
+    pub scenario: Scenario,
 }
 
 impl CaptureSettings {
@@ -200,6 +207,7 @@ impl CaptureSettings {
         match dir {
             Some(dir) if !dir.is_empty() => Ok(Self {
                 dir: PathBuf::from(dir),
+                scenario: Scenario::default(),
             }),
             _ => Err(CaptureRefusal::MissingDirectory),
         }
@@ -213,14 +221,40 @@ impl CaptureSettings {
     ///
     /// The [`CaptureRefusal`] of [`Self::resolve`].
     pub fn from_env() -> Result<Option<Self>, CaptureRefusal> {
-        if std::env::var(CAPTURE_ENV).as_deref() != Ok("1") {
-            return Ok(None);
-        }
-        Self::resolve(
+        Self::gate(
+            std::env::var(CAPTURE_ENV).as_deref() == Ok("1"),
+            Scenario::from_env()?,
             std::env::var(CAPABILITIES_ENV).ok().as_deref(),
             std::env::var(EVIDENCE_DIR_ENV).ok().as_deref(),
         )
-        .map(Some)
+    }
+
+    /// [`Self::from_env`] over explicit values: a scenario is honoured only
+    /// by a capture, and asking an ordinary run for one is refused rather
+    /// than ignored.
+    ///
+    /// # Errors
+    ///
+    /// [`CaptureRefusal::Scenario`] for a non-empty `scenario` without
+    /// `requested`; otherwise the refusal of [`Self::resolve`].
+    pub fn gate(
+        requested: bool,
+        scenario: Scenario,
+        capabilities: Option<&str>,
+        dir: Option<&str>,
+    ) -> Result<Option<Self>, CaptureRefusal> {
+        if !requested {
+            if !scenario.is_empty() {
+                return Err(CaptureRefusal::Scenario(format!(
+                    "a start override or trigger watch needs {CAPTURE_ENV}=1: an ordinary run \
+                     starts at the measured start and never waits"
+                )));
+            }
+            return Ok(None);
+        }
+        let mut settings = Self::resolve(capabilities, dir)?;
+        settings.scenario = scenario;
+        Ok(Some(settings))
     }
 }
 
@@ -284,13 +318,17 @@ struct WorldProbeState {
 /// `App::run` takes the world with it: the handle is what [`finish`] reads
 /// once the window has closed.
 #[derive(Default)]
-struct CaptureData {
-    dir: PathBuf,
+pub(super) struct CaptureData {
+    pub(super) dir: PathBuf,
     label: String,
-    frame: u32,
-    lines: Vec<String>,
+    pub(super) frame: u32,
+    pub(super) lines: Vec<String>,
     last_input_changes: u64,
     shot_requested: bool,
+    /// The block the run waits for, when it was asked to.
+    pub(super) watch: Option<TriggerWatch>,
+    /// The watched block completed (the `trigger` record is in `lines`).
+    pub(super) trigger_fired: bool,
     world_shot_requested: bool,
     /// The probe was skipped because the player's aircraft had not spawned by
     /// the probe's frame: [`finish`] names that instead of the renderer when
@@ -318,7 +356,7 @@ struct CaptureData {
 pub struct CaptureHandle(Arc<Mutex<CaptureData>>);
 
 impl CaptureHandle {
-    fn lock(&self) -> std::sync::MutexGuard<'_, CaptureData> {
+    pub(super) fn lock(&self) -> std::sync::MutexGuard<'_, CaptureData> {
         self.0
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -344,6 +382,7 @@ impl MissionCapturePlugin {
         {
             let mut data = handle.lock();
             data.dir = settings.dir;
+            data.watch = settings.scenario.watch;
             data.label = label.to_owned();
             data.lines.push(format!(
                 "{{\"kind\":\"header\",\"trace\":\"mission-evidence-trace\",\"mission\":{},\
@@ -351,6 +390,9 @@ impl MissionCapturePlugin {
                  \"sample_every_frames\":{SAMPLE_EVERY_FRAMES}}}",
                 json_string(label)
             ));
+            if !settings.scenario.is_empty() {
+                data.lines.push(settings.scenario.trace_line());
+            }
         }
         Self { handle }
     }
@@ -375,6 +417,7 @@ impl Plugin for MissionCapturePlugin {
                     .in_set(InputSystems)
                     .after(bevy::input::keyboard::keyboard_input_system),
             )
+            .add_systems(FixedPostUpdate, watch_trigger.after(mission_host_tick))
             .add_systems(Update, (keep_focus, apply_world_probe))
             .add_systems(Last, capture_step);
     }
@@ -432,7 +475,13 @@ fn apply_world_probe(
 }
 
 fn drive_input(capture: Res<CaptureHandle>, mut keys: ResMut<ButtonInput<KeyCode>>) {
-    let frame = capture.lock().frame;
+    let capture = capture.lock();
+    // A watched run flies the production body untouched: the scripted
+    // pitch-up would only move the approach it is measuring.
+    if capture.watch.is_some() {
+        return;
+    }
+    let frame = capture.frame;
     if frame == INPUT_FROM_FRAME {
         keys.press(KeyCode::KeyS);
     }
@@ -574,12 +623,22 @@ fn capture_step(
     // ends, and `finish` says what is missing rather than the window never
     // closing.
     let wanted = requested + usize::from(capture.world_probe_skipped);
-    if (wanted >= 2 && delivered >= requested) || frame >= SHOT_FRAME + SHOT_GRACE_FRAMES {
+    let done = match capture.watch {
+        // A watched run ends once its block completed and the frame of the
+        // trigger was delivered, or when its frame budget is spent.
+        Some(watch) => {
+            let trigger_delivered = capture.shots.iter().any(|shot| shot.label == "trigger");
+            (capture.trigger_fired && trigger_delivered && delivered >= requested)
+                || frame >= watch.max_frames + SHOT_GRACE_FRAMES
+        }
+        None => (wanted >= 2 && delivered >= requested) || frame >= SHOT_FRAME + SHOT_GRACE_FRAMES,
+    };
+    if done {
         exit.write(AppExit::Success);
     }
 }
 
-fn request_screenshot(commands: &mut Commands, path: PathBuf, label: &'static str) {
+pub(super) fn request_screenshot(commands: &mut Commands, path: PathBuf, label: &'static str) {
     commands.spawn(Screenshot::primary_window()).observe(
         move |captured: On<ScreenshotCaptured>, handle: Res<CaptureHandle>| {
             let clear_colours = handle.lock().clear_colours;
@@ -814,6 +873,14 @@ pub fn finish(handle: &CaptureHandle) -> Result<(), CaptureRefusal> {
             capture.label
         )));
     }
+    if let Some(watch) = capture.watch
+        && !capture.trigger_fired
+    {
+        return Err(CaptureRefusal::Incomplete(format!(
+            "{} never completed block {} within {} frames",
+            capture.label, watch.block, watch.max_frames
+        )));
+    }
     // The world probe is the check this capture exists for: the frame around
     // the spawn must hold the world's own pixels, and the horizon the probe
     // hid must not be among them.
@@ -924,7 +991,7 @@ fn write_trace(dir: &Path, lines: &[String]) -> Result<(), CaptureRefusal> {
         .map_err(|error| CaptureRefusal::Io(format!("cannot write {}: {error}", path.display())))
 }
 
-fn json_string(text: &str) -> String {
+pub(super) fn json_string(text: &str) -> String {
     let mut out = String::from("\"");
     for character in text.chars() {
         match character {

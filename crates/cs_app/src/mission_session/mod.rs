@@ -98,6 +98,7 @@ mod observation;
 pub(crate) mod parts;
 mod player_visual;
 mod radio;
+mod scenario;
 mod terminal;
 mod weapons;
 mod world_draw;
@@ -145,6 +146,10 @@ pub use radio::{
     ResolvedGroup, SOUND_GROUPS_ARCHIVE, SOUND_GROUPS_MEMBER, VoicePublicationWatch,
     declared_sound_groups, dialogue_content_id, install_radio_voice_publication, offer_cues,
     publish_prepared_voices,
+};
+pub use scenario::{
+    START_ENV, START_HEADING_ENV, Scenario, StartOverride, TriggerWatch, WATCH_BLOCK_ENV,
+    WATCH_MAX_FRAMES_ENV,
 };
 pub use terminal::{MissionExit, MissionTerminal, MissionTerminalSource};
 pub use weapons::{

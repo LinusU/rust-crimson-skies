@@ -1325,7 +1325,10 @@ pub fn run_windowed(
     // A requested capture is judged before any content is read.
     let capture = crate::mission_session::CaptureSettings::from_env()
         .map_err(MissionCompositionError::Capture)?;
-    let stage = stage_for(install_root, plan)?;
+    let mut stage = stage_for(install_root, plan)?;
+    if let Some(settings) = &capture {
+        settings.scenario.apply(&mut stage.start);
+    }
     let mut app = build_windowed(&stage)?;
     // A machine that cannot play the launch sound is a named refusal before
     // the window runs, never a silent mute (docs/contracts/CLI-EVIDENCE.md).
