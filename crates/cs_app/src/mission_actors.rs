@@ -61,7 +61,9 @@ use cs_types::evidence::ClaimId;
 use cs_types::net::{ActorAllocator, ActorId, SessionId};
 
 use crate::damage::DamageActorBinding;
-use crate::mission_ai::{MissionAiReport, MissionAircraftAi, ai_flight_record, spawn_mass_kg};
+use crate::mission_ai::{
+    MissionAiFireOrders, MissionAiReport, MissionAircraftAi, ai_flight_record, spawn_mass_kg,
+};
 use crate::mission_session::{MissionHost, MissionStage};
 use crate::mission_start::{ScriptedAircraft, SpawnDispatch, stored_heading_radians};
 use crate::mission_world_actors::object3d_orientation;
@@ -590,6 +592,10 @@ fn spawn_mission_actors_under(world: &mut World, view: HostView) -> MissionActor
         no_target: 0,
         fire_orders: 0,
     });
+    // The pending fire intents go with the generation they were decided for:
+    // a restart's respawn must not publish the previous generation's actors
+    // into the fresh session's first tick, where they resolve to nothing.
+    world.insert_resource(MissionAiFireOrders::default());
 
     world.insert_resource(report.clone());
     report
