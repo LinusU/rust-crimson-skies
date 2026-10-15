@@ -75,11 +75,19 @@ table's own ids.
 | --- | --- |
 | Record | two little-endian `u32`s: an image virtual address, then an `RT_STRING` id |
 | First run | file `0x6030`–`0x8027`, 1 023 records |
-| Second run | file `0xcb88`–`0xeb87`, 1 023 records, byte-identical to the first |
-| Terminator after the second run | `{0x10001246, 0xffffffff}` at `0xeb80` |
+| Second run | file `0xcb88`–`0xeb7f`, 1 023 records, byte-identical to the first |
+| Terminator after the second run | `{0x10001246, 0xffffffff}` at `0xeb80` (the eight bytes after the run's last record) |
 | Name block | file `0x8028`–`0xcb86`: 1 023 NUL-terminated ASCII names, each 4-byte aligned |
 | Pointer order | strictly descending over the block in both runs (the runs walk the same block) |
 | Id span | 100 … 17 142, all distinct (1 023 ids) |
+
+Reviewer re-measurement (2026-10-15, independent scan of `strings.dll` before
+review): both runs re-derived record by record — 1 023 records each, byte
+identical, strictly descending pointers, distinct ids spanning 100…17 142; the
+second run's last record starts at `0xeb78` (run bytes `0xcb88`–`0xeb7f`) and
+the terminator sits immediately after it at `0xeb80`–`0xeb87`. The range
+`0xcb88`–`0xeb87` this table printed when first committed swallowed the
+terminator into the run and is corrected above.
 
 F22-H measured this table first (both runs, the `PDT` pair with id `0` that the
 scan drops, and the control vocabulary it labels); this task re-derived it and
@@ -119,7 +127,7 @@ so no original string is written into any test.
 
 | Piece | Where | What it is |
 | --- | --- | --- |
-| Message-table reader | `crates/cs_formats/src/text/message_ids.rs` | Scans an image for 8-byte `{virtual address, id}` records whose address maps through `PeLayout::map_rva` to a 4–60 byte NUL-terminated ASCII name of letters/digits/`_` and whose id lies in `1..=99_999`; collapses a repeated identical pair (the table is stored twice) and keeps a *differing* repeat so `resolve` reports `Ambiguous`. Bounded by the parse's allocation budget; content failures skip a record, never the read. |
+| Message-table reader | `crates/cs_formats/src/text/message_ids.rs` | Scans an image for 8-byte `{virtual address, id}` records whose address maps through `PeLayout::map_rva` to a 2–60 byte ASCII name of letters/digits/`_` and whose id lies in `1..=99_999`; collapses a repeated identical pair (the table is stored twice) and keeps a *differing* repeat so `resolve` reports `Ambiguous`. Bounded by the parse's allocation budget; content failures skip a record, never the read. The installation's accepted candidates span 2–30 bytes, re-measured by the reviewer with the exact grammar over every shipped PE image. |
 | `ImageBase` | `crates/cs_formats/src/pe_resources.rs` | `PeLayout::image_base`, read from the documented optional-header field (PE32 +28 / PE32+ +24) so a caller holding a virtual address can subtract it before `map_rva`. |
 | The pairing | `crates/cs_content/src/config.rs` | `MessageCatalog::read` reads a PE image's strings and its message table from the **same bytes**; `resolve(name, language)` answers `Found` / `NoString` / `Ambiguous` / `Missing`, never a choice between two rows. |
 | HUD read model | `crates/cs_app/src/ui/hud/objectives.rs` | `ObjectiveHud::from_engine` projects `EngineObjectives` into identity rows (role code, ordinal, verbatim message, live/completed) and picks `current`. `MissionMessages` keeps the installation catalog *or the reason it could not be read*. |
@@ -182,11 +190,18 @@ above, and a copy is committed as
 `docs/findings/evidence/M01-HUD-OBJECTIVE.json`.
 
 It is validated **without** `--require-pass`: that flag rejects any report
-whose `unknowns` are non-empty (exit 3, `Unresolved issues`), and section 5 of
-this file's [What stays unknown](#5-what-stays-unknown) list is the honest
+whose `unknowns` are non-empty (exit 3, `Unresolved issues`), and section 8 of
+this file's [What stays unknown](#8-what-stays-unknown) list is the honest
 content of those `unknowns` — deleting it to turn the flag green is exactly
 what the contract forbids. Every other condition the flag checks is met: exit
 code 0, 5 executed, 5 passed, every assertion `pass` with evidence.
+
+The report is written by the committed harness
+`crates/cs_app/tests/evidence_report_m01_hud_objective.rs` (added in review),
+which derives every count and assertion status from the recorded log's
+prefixed test lines and the fingerprints from production discovery — the
+implementer's first pass used a private script with the same derivation, and
+the committed harness replaces it so any reviewer can regenerate the report.
 
 **On the rebased head.** `origin/main` moved while this branch was built
 (mod-root footprint work: `crates/cs_assets/src/mods.rs`,
@@ -199,7 +214,7 @@ report's `command`), and therefore the report's `candidate_tree`. The
 `workspace-test.log` artifact is the run on the **pre-rebase** head: same
 branch code, and the only bytes the rebase added are listed above.
 
-## 5. What stays unknown
+## 8. What stays unknown
 
 Each names the affected content and what would resolve it.
 
