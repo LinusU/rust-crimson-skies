@@ -693,8 +693,10 @@ fn spawn_mission_actors_under(
         flown: ai_flown,
         held: ai_held,
         refusals: ai_refusals,
+        armed: Vec::new(),
         decisions: 0,
         no_target: 0,
+        fire_orders: 0,
     });
 
     world.insert_resource(report.clone());

@@ -29,9 +29,12 @@
 //!   2026-10-08-flight-original-fixed-wing-law.md`, open unknown). What the
 //!   task calls a pursuit-and-fire law is therefore project design: aim the
 //!   nose at the target, bank into the turn to build turn rate, add rudder
-//!   for the first degrees of alignment ([`pursuit_command`]). Every gain,
-//!   angle bound and range below is labelled **designed** with its own
-//!   comment and is not a claim about the original.
+//!   for the first degrees of alignment ([`pursuit_command`]), and open fire
+//!   inside a designed window and cone ([`should_fire`]). Every gain, angle
+//!   bound, range and round count below is labelled **designed** with its
+//!   own comment and is not a claim about the original. The guns themselves
+//!   are the mission's designed loadout (#1437): this module asks, the gun
+//!   bank's own cadence decides whether a round leaves the barrel.
 //! * **The role split reads measured fields with a designed meaning.**
 //!   [`behaviour_for`] uses only `aiv.zrd`'s own fields — `team`,
 //!   `primary_target` and `starts_asleep` (#1453 measured all three) — but
@@ -53,32 +56,58 @@
 //!
 //! # Schedule
 //!
-//! [`MissionAiPlugin`] registers [`decide_mission_aircraft_ai`] in
-//! `FixedPreUpdate`, before the fixed-tick flight driver of
-//! [`crate::playtest`] steps every record. The decision writes the held
-//! [`FlightInput`] on the aircraft's own [`PlaytestOriginalFlight`]; the
-//! existing driver then seeds the law from the authoritative Avian pose,
-//! steps it and hands the acceleration back as one force request — the same
-//! consumer mapping the player's seat uses, so there is one integrator and
-//! one command boundary.
+//! [`MissionAiPlugin`] registers two chained systems in `FixedPreUpdate`,
+//! before the fixed-tick flight driver of [`crate::playtest`] steps any
+//! record:
+//!
+//! * [`arm_mission_ai`] gives every flown record the mission's designed gun
+//!   rig once the weapon session exists — the guns registered for the
+//!   record's own session actor, the same hardpoint mounts the player's rig
+//!   hangs, and the faction the shot's relation reads
+//!   ([`crate::mission_session::designed_target_rules`]). It skips entities
+//!   already bound to this generation, so a restart's re-opened session
+//!   re-arms the actors the restart respawned;
+//! * [`decide_mission_aircraft_ai`] writes the held [`FlightInput`] on the
+//!   aircraft's own [`PlaytestOriginalFlight`] and, for a pursuer inside
+//!   the designed window and cone ([`should_fire`]), queues a fire intent.
+//!
+//! The existing flight driver then seeds the law from the authoritative
+//! Avian pose, steps it and hands the acceleration back as one force
+//! request — the same consumer mapping the player's seat uses, so there is
+//! one integrator and one command boundary. The queued fire intents leave
+//! through [`append_ai_fire_orders`], which the mission's own weapon
+//! publisher calls while it builds the tick's record: a tick's weapon
+//! inputs are consumed exactly once, so an attacker's shots ride the
+//! mission's publication instead of pushing a second one.
 
 use std::collections::BTreeMap;
 use std::path::Path;
 
 use avian3d::prelude::{LinearVelocity, Position, Rotation};
+use bevy::ecs::schedule::IntoScheduleConfigs;
 use bevy::prelude::{
     App, Component, Entity, FixedPreUpdate, Plugin, Quat, Query, ResMut, Resource, Vec3, With,
+    World,
 };
 
 use cs_content::original_airframe::{import_retail_airframe, import_retail_globals};
+use cs_sim::damage::ActorId;
 use cs_sim::flight::original::{FORCE_TO_ACCEL, PROVENANCE_LABEL};
 use cs_sim::flight::{FlightInput, OriginalAirframe, OriginalFlightModel, OriginalGlobals};
-use cs_types::space::Quaternion;
+use cs_sim::targeting::{TargetClass, TargetRecord};
+use cs_sim::weapons::{FireIntent, FireIntentId};
+use cs_types::content::{ContentId, ContentKind};
+use cs_types::space::{Quaternion, WorldPosition};
 
 use crate::mission_actors::ScriptedAircraftActor;
-use crate::mission_session::MissionPlayerBody;
+use crate::mission_session::{
+    MISSION_FACTION_HOSTILE, MISSION_FACTION_PLAYER, MissionPlayerBody, MissionWeapons,
+    attach_gun_rig, designed_loadout,
+};
 use crate::mission_start::{ScriptedAircraft, SpawnDispatch};
 use crate::playtest::scene::PlaytestOriginalFlight;
+use crate::targeting::TargetingSession;
+use crate::weapons::{WeaponActorBinding, WeaponOrder, WeaponSession, WeaponTickInput};
 
 /// The throttle the session starts every aircraft at, the player's own cruise
 /// ([`crate::playtest::command::CRUISE_THROTTLE`]).
@@ -127,6 +156,59 @@ pub const WINGMAN_MIN_THROTTLE: f64 = 0.2;
 /// **Designed**: the throttle a pursuer flies, full power. The original's AI
 /// throttle policy is part of the unrecovered control law (`0x48c220`).
 pub const PURSUIT_THROTTLE: f64 = 1.0;
+
+/// **Designed**: the range an attacker must be inside to open fire, in
+/// metres. The mission's designed round flies at 640 m/s for 90 ticks
+/// (~480 m), so a shot taken inside this window can still reach its target
+/// when the round expires; firing is judged, hitting is not — the aim is the
+/// law's own geometry.
+pub const FIRE_RANGE_M: f32 = 600.0;
+
+/// **Designed**: the half-angle the nose must be within of the target's
+/// direction to open fire (~12°).
+pub const FIRE_CONE_RAD: f32 = 0.209_439_51;
+
+/// **Designed**: fixed ticks between two fire intents of one aircraft. The
+/// gun bank's own cadence (`MISSION_TICKS_BETWEEN_SHOTS`, #1437) still
+/// decides whether a round actually leaves the barrel; this is only how
+/// often the AI asks.
+pub const FIRE_INTERVAL_TICKS: u32 = 8;
+
+/// **Designed**: rounds each AI aircraft's bank starts with. The mission's
+/// designed loadout gives the player 250 (#1437); an attacker that never
+/// reloads starts with more, and neither number is a measurement.
+pub const AI_STARTING_ROUNDS: u64 = 500;
+
+/// The producer serial the AI's fire intents carry: 201–204 are the
+/// mission's router, ordnance, damage and cockpit producers (#1437).
+pub const MISSION_AI_FIRE_PRODUCER: u32 = 205;
+
+/// Whether an attacker may open fire on a target `range_m` away when its
+/// nose points `alignment` (a cosine) off the target's direction: inside the
+/// designed window **and** inside the designed cone.
+#[must_use]
+pub fn should_fire(range_m: f32, alignment: f32) -> bool {
+    range_m.is_finite()
+        && alignment.is_finite()
+        && range_m <= FIRE_RANGE_M
+        && alignment >= FIRE_CONE_RAD.cos()
+}
+
+/// Resource: the fire decisions the fixed-tick law has written for the
+/// committed tick, waiting for the mission's own weapon publication to carry
+/// them.
+///
+/// A tick's [`WeaponTickInput`](crate::weapons::WeaponTickInput) is consumed
+/// exactly once, so an attacker never pushes a second record for the same
+/// tick: [`append_ai_fire_orders`] joins these shooters to the mission's own
+/// publication instead.
+#[derive(Resource, Clone, Debug, Default)]
+pub struct MissionAiFireOrders {
+    /// The session-qualified shooters that decided to fire this tick.
+    pending: Vec<cs_sim::damage::ActorId>,
+    /// The intent sequence within [`MISSION_AI_FIRE_PRODUCER`].
+    sequence: u32,
+}
 
 /// Why a scripted aircraft flies a law at all, or does not.
 ///
@@ -187,6 +269,10 @@ pub struct MissionAircraftAi {
     pub range_m: f32,
     /// How many fixed ticks this aircraft has been given a command.
     pub decisions: u64,
+    /// Fixed ticks left before this aircraft may ask to fire again.
+    pub cooldown: u32,
+    /// Fire intents this aircraft has asked for since the spawn.
+    pub shots: u64,
 }
 
 impl MissionAircraftAi {
@@ -207,7 +293,19 @@ impl MissionAircraftAi {
             leader: None,
             range_m: f32::NAN,
             decisions: 0,
+            cooldown: 0,
+            shots: 0,
         }
+    }
+
+    /// Whether this record is opposed to the player's flight — the faction
+    /// the targeting session roster it under. It is the same designed
+    /// reading of the measured `team` field the behaviour was decided from,
+    /// never a second opinion: a record with no measured side holds its
+    /// course and rosters with the player's flight.
+    #[must_use]
+    pub const fn opposed(&self) -> bool {
+        matches!(self.behaviour, MissionAiBehaviour::Pursue { .. })
     }
 }
 
@@ -472,11 +570,17 @@ pub struct MissionAiReport {
     pub held: Vec<String>,
     /// Every refusal on this path, verbatim.
     pub refusals: Vec<String>,
+    /// The record names the mission armed with the designed gun rig.
+    pub armed: Vec<String>,
     /// Commands written since this spawn.
     pub decisions: u64,
     /// Pursuit decisions that found no live target and fell back to holding
     /// the course.
     pub no_target: u64,
+    /// Fire intents the law has asked the weapon session for since this
+    /// spawn — how many, not whether a round left the barrel; the gun bank's
+    /// own cadence decides that, and the acceptance suite reads it there.
+    pub fire_orders: u64,
 }
 
 /// The mission's AI: one decision system on the fixed tick, before the
@@ -486,8 +590,12 @@ pub struct MissionAiPlugin;
 
 impl Plugin for MissionAiPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<MissionAiReport>();
-        app.add_systems(FixedPreUpdate, decide_mission_aircraft_ai);
+        app.init_resource::<MissionAiReport>()
+            .init_resource::<MissionAiFireOrders>();
+        app.add_systems(
+            FixedPreUpdate,
+            (arm_mission_ai, decide_mission_aircraft_ai).chain(),
+        );
     }
 }
 
@@ -500,12 +608,14 @@ impl Plugin for MissionAiPlugin {
 /// fallback, by [`MissionPlayerBody`].
 fn decide_mission_aircraft_ai(
     mut report: ResMut<MissionAiReport>,
+    mut orders: ResMut<MissionAiFireOrders>,
     mut aircraft: Query<(
         Entity,
         &mut MissionAircraftAi,
         &mut PlaytestOriginalFlight,
         &Position,
         &Rotation,
+        &ScriptedAircraftActor,
     )>,
     actors: Query<(
         Entity,
@@ -545,7 +655,8 @@ fn decide_mission_aircraft_ai(
                 )
             });
 
-    for (_entity, mut ai, mut flight, position, rotation) in &mut aircraft {
+    for (_entity, mut ai, mut flight, position, rotation, script) in &mut aircraft {
+        ai.cooldown = ai.cooldown.saturating_sub(1);
         let behaviour = ai.behaviour.clone();
         let here = position.0;
         let orientation = rotation.0;
@@ -556,11 +667,9 @@ fn decide_mission_aircraft_ai(
                 match resolve(target, &cast, player.as_ref()) {
                     Some((target_entity, _, target_position, _, _)) => {
                         ai.target = Some(target_entity);
-                        (
-                            target_position - here,
-                            PURSUIT_THROTTLE,
-                            Some(target_position),
-                        )
+                        let to_target = target_position - here;
+                        maybe_fire(&mut ai, &mut orders, script.damage_actor, nose, to_target);
+                        (to_target, PURSUIT_THROTTLE, Some(target_position))
                     }
                     None => {
                         report.no_target += 1;
@@ -612,6 +721,224 @@ fn decide_mission_aircraft_ai(
 /// One addressable aircraft: its entity, measured record name (or the
 /// player's fixed name), and the pose and velocity of this tick.
 type CastMember = (Entity, String, Vec3, Quat, Vec3);
+
+/// Queues one fire intent when the designed window and the designed cone
+/// both hold and this aircraft's own interval has run out.
+///
+/// The gun bank's cadence (`MISSION_TICKS_BETWEEN_SHOTS`, #1437) still
+/// decides whether a round actually leaves the barrel: this is the AI's ask,
+/// not the shot.
+fn maybe_fire(
+    ai: &mut MissionAircraftAi,
+    orders: &mut MissionAiFireOrders,
+    shooter: ActorId,
+    nose: Vec3,
+    to_target: Vec3,
+) {
+    if ai.cooldown > 0 {
+        return;
+    }
+    if !should_fire(to_target.length(), nose.dot(to_target.normalize_or_zero())) {
+        return;
+    }
+    orders.pending.push(shooter);
+    ai.cooldown = FIRE_INTERVAL_TICKS;
+    ai.shots += 1;
+}
+
+/// Joins this tick's fire decisions to the mission's own weapon publication.
+///
+/// A tick's [`WeaponTickInput`] is consumed exactly once, so an attacker
+/// never pushes a second record for the same tick: the publisher calls this
+/// while it builds the mission's record and the AI's
+/// [`WeaponOrder::Fire`] intents ride along, under their own producer
+/// serial.
+pub fn append_ai_fire_orders(world: &mut World, input: &mut WeaponTickInput) {
+    let drained = {
+        let Some(mut orders) = world.get_resource_mut::<MissionAiFireOrders>() else {
+            return;
+        };
+        if orders.pending.is_empty() {
+            return;
+        }
+        let pending = std::mem::take(&mut orders.pending);
+        let first = orders.sequence;
+        orders.sequence = orders.sequence.wrapping_add(pending.len() as u32);
+        (pending, first)
+    };
+    let (pending, first) = drained;
+    for (offset, shooter) in pending.iter().enumerate() {
+        input.orders.push(WeaponOrder::Fire(FireIntent {
+            id: FireIntentId {
+                session: input.session,
+                tick: input.at,
+                producer: MISSION_AI_FIRE_PRODUCER,
+                sequence: first + offset as u32,
+            },
+            shooter: *shooter,
+        }));
+    }
+    if let Some(mut report) = world.get_resource_mut::<MissionAiReport>() {
+        report.fire_orders += pending.len() as u64;
+    }
+}
+
+/// Arms every aircraft the law flies with the mission's designed gun rig,
+/// once the weapon session exists: the guns registered for the record's own
+/// session actor, the rig's designed mounts under its body, and the faction
+/// the shot's relation reads ([`crate::mission_session::designed_target_rules`]).
+///
+/// This runs on the fixed tick before the decision — a composed mission
+/// opens its session at `PostStartup`, and a restart re-opens it mid-run, so
+/// an entity already bound to **this** generation's session is skipped and
+/// anything else is armed now. Nothing here invents a gun: the loadout is
+/// the mission's own designed one (#1437).
+fn arm_mission_ai(world: &mut World) {
+    if world.get_resource::<WeaponSession>().is_none() {
+        // The session opens after Startup; the next tick arms the records.
+        return;
+    }
+    let Some(mission) = world.get_resource::<MissionWeapons>().cloned() else {
+        return;
+    };
+    let mut candidates: Vec<(Entity, ActorId, bool, Vec3, String)> = Vec::new();
+    let mut stale: Vec<String> = Vec::new();
+    {
+        let mut query = world.query::<(
+            Entity,
+            &MissionAircraftAi,
+            &ScriptedAircraftActor,
+            &Position,
+            Option<&WeaponActorBinding>,
+        )>();
+        for (entity, ai, script, position, binding) in query.iter(world) {
+            match binding {
+                Some(binding)
+                    if binding.generation == mission.generation()
+                        && binding.actor == script.damage_actor =>
+                {
+                    continue;
+                }
+                Some(_) => {
+                    stale.push(script.record.name.clone());
+                    continue;
+                }
+                None => {}
+            }
+            candidates.push((
+                entity,
+                script.damage_actor,
+                ai.opposed(),
+                position.0,
+                script.record.name.clone(),
+            ));
+        }
+    }
+    for name in &stale {
+        if let Some(mut report) = world.get_resource_mut::<MissionAiReport>() {
+            let entry = format!(
+                "{name}: a rig bound to another session generation is left alone; the composed \
+                 run respawns its actors together with the session"
+            );
+            if !report.refusals.contains(&entry) {
+                report.refusals.push(entry);
+            }
+        }
+    }
+
+    let loadout = designed_loadout();
+    let mut armed: Vec<String> = Vec::new();
+    let mut refusals: Vec<String> = Vec::new();
+    for (entity, actor, opposed, position, name) in candidates {
+        let registered = world
+            .get_resource_mut::<WeaponSession>()
+            .map(|mut session| {
+                session.register(
+                    actor,
+                    &loadout.guns,
+                    loadout.bank.clone(),
+                    AI_STARTING_ROUNDS,
+                )
+            });
+        match registered {
+            None => break,
+            Some(Err(error)) => {
+                refusals.push(format!(
+                    "{name}: the weapon session refuses the guns: {error}"
+                ));
+                continue;
+            }
+            Some(Ok(_)) => {}
+        }
+        if let Err(error) = attach_gun_rig(world, entity, actor) {
+            refusals.push(format!("{name}: the gun rig refuses: {error}"));
+            continue;
+        }
+        // The faction the shot's relation reads: opposed records roster as
+        // the designed hostile, everything else with the player's own
+        // flight, so friendly fire stays inside #1437's declared rules.
+        let Some(mut targeting) = world.get_resource_mut::<TargetingSession>() else {
+            refusals.push(format!(
+                "{name}: no targeting session to roster the faction into"
+            ));
+            continue;
+        };
+        let key = if opposed {
+            MISSION_FACTION_HOSTILE
+        } else {
+            MISSION_FACTION_PLAYER
+        };
+        let Ok(faction) = ContentId::from_source(ContentKind::Faction, key) else {
+            refusals.push(format!("{name}: the faction id {key:?} refuses"));
+            continue;
+        };
+        let Ok(position) = WorldPosition::try_new([
+            f64::from(position.x),
+            f64::from(position.y),
+            f64::from(position.z),
+        ]) else {
+            refusals.push(format!(
+                "{name}: the spawn position is not a world position, so the record cannot be \
+                 rostered"
+            ));
+            continue;
+        };
+        let record = TargetRecord {
+            actor,
+            faction,
+            class: TargetClass::Aircraft,
+            objective: false,
+            revealed: true,
+            phase_eligible: true,
+            position,
+        };
+        if let Err(error) = targeting.store_mut().register(record) {
+            refusals.push(format!(
+                "{name}: the targeting store refuses the record: {error}"
+            ));
+            continue;
+        }
+        armed.push(name);
+    }
+
+    if armed.is_empty() && refusals.is_empty() {
+        return;
+    }
+    if let Some(mut report) = world.get_resource_mut::<MissionAiReport>() {
+        for entry in armed {
+            if !report.armed.contains(&entry) {
+                report.armed.push(entry);
+            }
+        }
+        // A refusal that repeats every tick is recorded once: the reason
+        // stays visible without the report growing without bound.
+        for entry in refusals {
+            if !report.refusals.contains(&entry) {
+                report.refusals.push(entry);
+            }
+        }
+    }
+}
 
 /// Resolves a pursuit rule to the cast member it names, the player body
 /// being addressed by [`MissionPlayerBody`] rather than by a record name.
@@ -777,6 +1104,32 @@ mod tests {
         assert!(
             (turned.z - (-50.0 - STATION_OFFSET_M[2])).abs() < 1.0e-4,
             "the station follows the leader's heading: {turned:?}"
+        );
+    }
+
+    /// The fire window is a range **and** a cone: both must hold, and
+    /// neither side of either bound fires.
+    #[test]
+    fn accept_m01_play_ai_the_fire_window_is_range_and_cone() {
+        assert!(
+            should_fire(FIRE_RANGE_M * 0.5, 1.0),
+            "inside the window and pointed at the target: fire"
+        );
+        assert!(
+            !should_fire(FIRE_RANGE_M * 1.5, 1.0),
+            "outside the designed range: hold"
+        );
+        assert!(
+            !should_fire(FIRE_RANGE_M * 0.5, FIRE_CONE_RAD.cos() - 0.01),
+            "inside the range but outside the designed cone: hold"
+        );
+        assert!(
+            !should_fire(f32::NAN, 1.0),
+            "a non-finite range is never a firing solution"
+        );
+        assert!(
+            should_fire(FIRE_RANGE_M, FIRE_CONE_RAD.cos()),
+            "the bounds themselves are inclusive: the window is closed, not open"
         );
     }
 

@@ -86,6 +86,26 @@ What a team number means engine-wide, and what the original did with a
 stored primary target, remain unmeasured
 (`docs/findings/2026-10-15-m01-aiv-layout.md`, unknowns 4 and 5).
 
+### Fire, arming and the roster (all designed)
+
+The gun rig itself is #1437's designed M01 loadout (three `designed .50
+caliber` guns on the mission's designed hardpoints, 4-tick bank cadence,
+640 m/s muzzle). This task adds the AI side of it:
+
+| Constant | Value | Why this number |
+| --- | --- | --- |
+| `FIRE_RANGE_M` | 600 m | The designed round flies 640 m/s for 90 ticks (~480 m), so a shot taken inside this window can still reach its target when it expires. The measured run ends the four attackers 334–428 m from the player, inside it. |
+| `FIRE_CONE_RAD` | ~12° | A nose within 12° of the target's direction counts as aimed: tight enough that a pass is not a shot, loose enough that a closing attacker fires before the geometry is perfect. |
+| `FIRE_INTERVAL_TICKS` | 8 | How often the AI *asks* to fire (15 Hz). The bank's own cadence still decides whether a round leaves the barrel — this is only the ask. |
+| `AI_STARTING_ROUNDS` | 500 | The player's designed loadout starts with 250 (#1437); an attacker that never reloads starts with more. Neither number is a measurement. |
+| `MISSION_AI_FIRE_PRODUCER` | `205` | The intent serial the AI's shots carry; 201–204 are the mission's router, ordnance, damage and cockpit producers (#1437). |
+| Faction rostering | hostile for opposed records, the player's own flight otherwise | Read from the same designed team split as the behaviour, so friendly fire stays inside #1437's declared rules (`HostileOnly`) and an attacker's rounds resolve against the player and Betty. |
+| Mounts | #1437's designed hardpoints (`gun_mount_1..3`, 0/−0.4/−4.0 m, ±3.2/−0.2/−0.4 m) | The AI's rig hangs on exactly the player's gun mounts, so no second set of muzzle positions is invented. |
+
+A tick's weapon inputs are consumed exactly once, so an attacker never
+publishes its own record: `append_ai_fire_orders` joins its intents to the
+mission's own publication, under the AI's producer serial.
+
 ### Body and seat
 
 * A flown scripted aircraft is a **dynamic** body whose declared mass is the
@@ -108,7 +128,7 @@ stored primary target, remain unmeasured
 | Constant | Value | Why |
 | --- | --- | --- |
 | `RUN_SECONDS` | 45 | The four attackers spawn ~3.0 km from the player, both sides fly ~113 m/s-class airframes and the attackers start pointed within ~15° of the player, so the window allows for the turn-around and the stand-up acceleration from rest with margin. |
-| `ENGAGEMENT_RANGE_M` | 1000 m | The window the pursuit law is written to reach; the gun mount ranges themselves arrive with the weapon wiring. |
+| `ENGAGEMENT_RANGE_M` | 1000 m | The window the pursuit law must reach; the *fire* window (`FIRE_RANGE_M`, 600 m) sits inside it, so an aircraft that reaches the engagement window can already shoot. |
 | `MINIMUM_CLOSE_M` | 1500 m | The run must show real closure, not a token drift. |
 | `WINGMAN_DISTANCE_M` | 250 m | Tighter than the ~270 m `wingman_2` spawns from `devastator_2`, looser than the 89 m station, so doing nothing fails and a converged or converging station passes. |
 
@@ -137,9 +157,17 @@ stored primary target, remain unmeasured
 
 * `crates/cs_app/src/mission_ai.rs` — `accept_m01_play_ai_*` unit tests over
   the pure law (role split, steering signs and clamps, station point,
-  wingman throttle). CI runs them: they need no installation.
+  wingman throttle, fire window and cone). CI runs them: they need no
+  installation.
 * `crates/cs_app/tests/campaign/m01_play_ai.rs` — the retail acceptance
   tests, `#[ignore = "requires CS_GAME_DIR"]`, driven with
   `--include-ignored` locally and by the reviewer.
 * `crates/cs_app/tests/evidence_report_m01_play_ai.rs` — the evidence
   harness for `docs/contracts/CLI-EVIDENCE.md`; not prefixed.
+
+The two integration seams this slice makes in #1437's landed weapon module
+are `attach_gun_rig` (the player's rig without the rocket launcher, hung on
+an arbitrary actor entity) and the three-line hook in
+`publish_mission_weapon_input` that calls `append_ai_fire_orders`. Both
+reuse #1437's designed loadout, mounts and rules verbatim; neither changes
+what the player's seat does.

@@ -46,7 +46,6 @@ use cs_app::mission_launch::plan_mission_launch;
 use cs_app::mission_session::{
     MissionPlayerBody, MissionStage, build_headless, stage_for, teardown,
 };
-use cs_app::physics::BASELINE_FIXED_HZ;
 use cs_app::playtest::scene::PlaytestOriginalFlight;
 use cs_assets::install::{content_fingerprint, discover, fingerprint};
 use cs_content::campaign_bindings::MissionLabel;
@@ -310,7 +309,9 @@ fn observe_ai_flight(game_dir: &Path) -> AiFlightObservation {
         .iter()
         .map(|(prefix, airframe)| {
             format!(
-                "{{\"record\": {}, \"chain\": [{}], \"veh_weight\": {}, \"fd_speed\": {}}}",
+                "{{\"prefix\": {}, \"record\": {}, \"chain\": [{}], \"veh_weight\": {}, \
+                 \"fd_speed\": {}}}",
+                jstr(prefix),
                 jstr(&airframe.record),
                 airframe
                     .inheritance_chain
