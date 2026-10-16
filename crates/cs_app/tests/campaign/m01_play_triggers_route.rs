@@ -615,6 +615,12 @@ fn accept_m01_play_triggers_route_a_scripted_flight_reaches_instantwin() {
         }
     }
     let terminal = expect_win(&app);
+    // The tick the run settled on, printed so the evidence harness reads it
+    // out of the recorded log instead of writing a number down.
+    eprintln!(
+        "route: settled tick {} outcome={:?} source={:?} requested_by={:?}",
+        terminal.tick.0, terminal.outcome, terminal.source, terminal.requested_by
+    );
     assert_eq!(
         terminal.outcome,
         TerminalOutcome::Success,

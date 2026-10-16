@@ -203,16 +203,34 @@ asserted about the original:
   whose composed positions sit close enough that one placement runs the
   windowed row and its `auto` sibling.
 
-The **windowed** clause of the parent acceptance ("each trigger fires from the
-player's actual position or actions in the windowed mission") is **not** met
-here and is not claimed: it stays with `M01-PLAY-TRIGGERS-WINDOWED` (#1486),
-which owns the driven windowed run and its `gpu` evidence, as the #1480
-finding already records.
+The **windowed** clause of the parent acceptance is **not** this task's own: it
+is met by `M01-PLAY-TRIGGERS-WINDOWED` (#1486), which owns the driven windowed
+run and its `gpu` evidence, is done and merged, and carries its own report
+(`docs/findings/evidence/M01-PLAY-TRIGGERS-WINDOWED.json`). This task's
+evidence links that report; nothing here claims anything about the original's
+windowed behaviour beyond it.
 
 ## 7. Evidence
 
 Commands and their exit codes are recorded in the `submit_for_review` summary.
-The retail member composes the owner's installation read-only and writes no
-evidence report of its own: this task's required capability is `retail` (plain
-build/test plus read access), so a `private/evidence/<TASK-ID>/acceptance.json`
-report is not part of it.
+The task's required capability is `retail`, so it carries the report
+`private/evidence/M01-PLAY-TRIGGERS/acceptance.json` (schema
+`schemas/evidence.schema.json`), written by
+`crates/cs_app/tests/evidence_report_m01_play_triggers.rs`, validated with
+`tools/validate_evidence.py` (structurally valid: `--require-pass` is not used
+because the designed readings in §5 stay in machine-readable evidence, which the
+owner directive of 2026-09-28 requires), and committed as
+`docs/findings/evidence/M01-PLAY-TRIGGERS.json`. Its second production
+observation surveys M01's own lowered control program
+(`cs_app::mission_control::survey_mission_control_programs`): 58 numbered
+blocks, the one `TRAVELERS` site's operands, the three `INACTIVE` engine
+ladders, the three `ANIM_STATE` gates, the two `DEDG` groups and the terminal
+block's own `Finish(Succeeded)`, plus the committed reports of the child tasks
+this parent integrates, read back with their own claims and counts.
+
+The route member prints the mission clock tick it settled on
+(`route: settled tick …`) and the harness reads that line out of the recorded
+log, so the report's tick range is the run's rather than a number written down.
+libtest discards a passing test's output, so the recorded acceptance command
+carries `--nocapture`; without it the run's own progress lines would never
+reach the log.
