@@ -381,21 +381,32 @@ fn accept_m01_play_sky_retail_m01_horizon_is_bound_to_its_weather_and_labelled()
 
     // The record is M01's own, not a fixture.
     assert!(session.definition().origin().is_original());
-    // Every value M01's weather leaves unknown stays a labelled design, so
-    // nothing on screen can be mistaken for an original measurement.
-    assert!(
-        spec.is_entirely_designed(),
-        "M01's weather binds no fog colour, ambient colour or sky art, so the \
-         drawn horizon must be labelled designed end to end"
-    );
+    // Task #1460 measured `FOG_COLOR`'s scale, so the shared zone colour is
+    // bound; everything else M01's weather leaves unknown stays a labelled
+    // design, so no unmeasured value reaches the screen.
+    let Resolved::Known(fog) = session.definition().fog().color_linear() else {
+        panic!("M01's zones spell one shared fog colour");
+    };
+    assert_eq!(spec.fog_colour(), srgb_of(fog.value));
     for field in HORIZON_FIELDS {
+        let expected = match field {
+            HorizonField::FogColour => HorizonOrigin::Bound(fog.provenance.clone()),
+            HorizonField::SkyHorizon => {
+                HorizonOrigin::Designed("the dome's horizon band follows the fog colour")
+            }
+            _ => HorizonOrigin::Designed(DESIGNED_LABEL),
+        };
         assert_eq!(
             spec.origin(*field)
                 .unwrap_or_else(|error| panic!("{error}")),
-            &HorizonOrigin::Designed(DESIGNED_LABEL),
-            "{field:?} must be labelled designed for M01"
+            &expected,
+            "{field:?} for M01"
         );
     }
+    assert!(
+        !spec.is_entirely_designed(),
+        "the bound fog colour must show as bound"
+    );
     // The seam rule holds on the retail path too.
     assert_eq!(spec.sky_horizon(), spec.fog_colour());
 }

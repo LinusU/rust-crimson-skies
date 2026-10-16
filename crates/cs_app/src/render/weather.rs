@@ -20,13 +20,13 @@
 //! * **designed** — the value is this build's own, labelled by
 //!   [`DESIGNED_LABEL`].
 //!
-//! M01 leaves all of it unknown: `bind_weather` reads `CLOUD_COVER`'s
-//! `TOP`/`BOTTOM`/`THICKNESS` in units nobody measured, so it binds **no**
-//! cloud layer at all and names those fields in its unbound list, and its
-//! `FOG_COLOR`/`FOG_RANGES` are unbound for the same reason
-//! (`docs/findings/2026-10-05-m01-lc-weather-bind.md`). So the deck and the
-//! haze M01 draws today are the labelled design, and no number on screen can
-//! be mistaken for a measurement.
+//! M01 binds the parts task #1460 measured: `CLOUD_COVER.BOTTOM` is the
+//! cloud floor in metres, so its deck is drawn at 1 055 m as **bound**,
+//! and its zones spell one shared `FOG_COLOR`, so the haze takes the
+//! record's own colour. What the record still does not give — a coverage
+//! fraction, a layer colour or extent, `TOP`/`THICKNESS` and every fog
+//! range and altitude band — stays the labelled design
+//! (`docs/findings/2026-10-16-f19-weather-units-measure.md`).
 //!
 //! # Read the record, do not guess a layout
 //!
@@ -251,7 +251,8 @@ impl WeatherLayerSpec {
     ///
     /// `record` is the environment record's own provenance: a `CloudLayer`
     /// carries a provenance for its coverage but none for its altitude, so
-    /// the altitude is bound to the record that stated it.
+    /// the altitude is bound to the record that stated it. `CLOUD_COVER`'s
+    /// `BOTTOM` is the measured cloud-floor altitude in metres (task #1460).
     #[must_use]
     pub fn from_authored(layer: &CloudLayer, record: &Provenance) -> Self {
         let (coverage, coverage_origin) = match layer.coverage() {

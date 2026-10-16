@@ -47,9 +47,10 @@
 //! The claim is `implemented`, never `checked` or `verified_original`: the
 //! GPU runs are this machine's own frames and the original executable never
 //! ran. `docs/findings/2026-10-15-m01-play-weather-clouds-haze.md` lists what
-//! the frames show, what is original and what is designed, and what stays
-//! unmeasured (the unit and colour scale of `CLOUD_COVER`, and every
-//! `weather.zrd` fog convention).
+//! the frames show, what is original and what is designed, and what stayed
+//! unmeasured at capture time; task #1460 later measured `CLOUD_COVER`'s
+//! metre altitudes and `FOG_COLOR`'s normalized scale
+//! (`docs/findings/2026-10-16-f19-weather-units-measure.md`).
 
 use std::collections::VecDeque;
 use std::fs;
@@ -170,11 +171,12 @@ fn review_method() -> String {
      `CS_MISSION_CAPTURE=1 cs --cs-path $CS_GAME_DIR --mission M01` wrote frame_00180_player.png of \
      the composed mission. Both runs are automated, never `human_play`, and no original executable \
      ran. This harness derives every field from the recorded log, production discovery of \
-     $CS_GAME_DIR and the hashes of those artifacts. LIMITS: M01's `CLOUD_COVER` altitudes \
-     (TOP 1110, BOTTOM 1055, THICKNESS 30 in unmeasured file units) and its zone `FOG_COLOR`/ \
-     `FOG_RANGES`/`FOG_ALTITUDE` stay unbound (task #636), so every drawn cloud and haze value is \
-     labelled designed in code and in docs/findings/2026-10-15-m01-play-weather-clouds-haze.md: no \
-     number on screen is a measurement of the original, and how the original renderer consumed \
+     $CS_GAME_DIR and the hashes of those artifacts. LIMITS: at capture time every drawn cloud and \
+     haze value was labelled designed; task #1460 (`docs/findings/\
+     2026-10-16-f19-weather-units-measure.md`) then measured `CLOUD_COVER`'s altitudes as metres and \
+     `FOG_COLOR`'s channels as normalized 0-1, so the current build draws the deck at the record's \
+     1055 m floor and the haze in its (0.69) fog colour as `Bound` while coverage, extent, the fog \
+     ranges and every other unmeasured field stay designed, and how the original renderer consumed \
      `cloudlayer`/`cloud1`/`cloud2` remains unmeasured. Validated with tools/validate_evidence.py \
      --require-pass."
         .to_owned()

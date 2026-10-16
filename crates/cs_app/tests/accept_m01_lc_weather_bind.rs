@@ -46,8 +46,12 @@ fn fields(pairs: Vec<(&str, ZrdValue)>) -> ZrdValue {
 }
 
 fn zone() -> ZrdValue {
+    zone_colored(floats(&[0.5, 0.5, 0.5]))
+}
+
+fn zone_colored(fog_color: ZrdValue) -> ZrdValue {
     fields(vec![
-        ("FOG_COLOR", floats(&[0.5, 0.5, 0.5])),
+        ("FOG_COLOR", fog_color),
         ("FOG_RANGES", floats(&[100.0, 200.0])),
         (
             "FOG_ALTITUDE",
@@ -69,6 +73,10 @@ fn zone() -> ZrdValue {
 }
 
 fn tree(extra: Vec<(&str, ZrdValue)>) -> ZrdValue {
+    tree_with_zones(vec![("ZONE1", zone()), ("SW_ZONE1", zone())], extra)
+}
+
+fn tree_with_zones(zones: Vec<(&str, ZrdValue)>, extra: Vec<(&str, ZrdValue)>) -> ZrdValue {
     let tier = || {
         fields(vec![
             ("CLIP_SCALE", floats(&[1.0])),
@@ -97,10 +105,9 @@ fn tree(extra: Vec<(&str, ZrdValue)>) -> ZrdValue {
                 ("THICKNESS", fl(30.0)),
             ]),
         ),
-        ("ZONE1", zone()),
-        ("SW_ZONE1", zone()),
-        ("SHADOW_ANGLES", floats(&[-90.0, 0.0, 0.0])),
     ];
+    pairs.extend(zones);
+    pairs.push(("SHADOW_ANGLES", floats(&[-90.0, 0.0, 0.0])));
     pairs.extend(extra);
     list(vec![fields(pairs)])
 }
@@ -204,7 +211,22 @@ fn accept_m01_lc_weather_bind_binds_only_what_the_file_decides() {
     assert!(!definition.sun_direction().is_known());
     assert!(!definition.sky_orientation().is_known());
     assert!(!definition.fog().density_per_m().is_known());
-    assert!(definition.cloud_layers().is_empty());
+
+    // What the file does decide binds known: `CLOUD_COVER.BOTTOM` is the
+    // layer's floor altitude in measured metres (task #1460), and the one
+    // hardware-path zone's `FOG_COLOR` is the fog colour, already
+    // normalized because every channel sits at or below 1.0.
+    let layers = definition.cloud_layers();
+    assert_eq!(layers.len(), 1, "CLOUD_COVER binds one cloud layer");
+    assert_eq!(layers[0].altitude_m(), 1000.0, "BOTTOM is a metre altitude");
+    assert!(
+        !layers[0].coverage().is_known(),
+        "the record authors no coverage fraction"
+    );
+    let Resolved::Known(fog_color) = definition.fog().color_linear() else {
+        panic!("one hardware-path zone decides the fog colour");
+    };
+    assert_eq!(fog_color.value, [0.5, 0.5, 0.5]);
     running
         .advance_frame(std::time::Duration::from_nanos(15_625_000))
         .expect("the weather clock advances");
@@ -212,7 +234,8 @@ fn accept_m01_lc_weather_bind_binds_only_what_the_file_decides() {
     let keys: Vec<&str> = binding.unbound.iter().map(|f| f.key).collect();
     for expected in [
         "WIND.STATIC_VELOCITY",
-        "CLOUD_COVER.TOP/BOTTOM/THICKNESS",
+        "CLOUD_COVER.TOP/THICKNESS",
+        "ZONEn.FOG_RANGES/FOG_ALTITUDE",
         "ZONEn.SUNLIGHT_ORIENTATION",
         "ZONEn.CLIP_RANGES",
         "SHADOW_ANGLES",
@@ -220,6 +243,75 @@ fn accept_m01_lc_weather_bind_binds_only_what_the_file_decides() {
     ] {
         assert!(keys.contains(&expected), "{expected} must be named unbound");
     }
+    assert!(
+        !keys.contains(&"ZONEn.FOG_COLOR"),
+        "FOG_COLOR binds when the hardware-path zones agree"
+    );
+}
+
+/// The measured scale on the record: `BOTTOM` binds the layer's floor in
+/// metres, a `FOG_COLOR` channel above 1.0 is byte-scaled by 1/255 (the
+/// rule measured at 0x4bc350), and a fog colour the zones disagree on
+/// stays an explicit unknown rather than picking one zone's.
+#[test]
+fn accept_m01_lc_weather_bind_measured_units_and_colour_scale() {
+    // One hardware-path zone, mixed spellings: the integer 51 normalizes
+    // to 51/255 while the float 0.5 passes through verbatim.
+    let mixed = WeatherDocument::from_zrd(&tree_with_zones(
+        vec![(
+            "ZONE1",
+            zone_colored(list(vec![ZrdValue::Int(51), fl(0.5), ZrdValue::Int(255)])),
+        )],
+        vec![],
+    ))
+    .expect("the synthetic tree parses");
+    let binding = bind_weather(M01, &mixed, &span()).expect("binds");
+    let Resolved::Known(fog) = binding.definition.fog().color_linear() else {
+        panic!("a single hardware-path zone decides the fog colour");
+    };
+    assert_eq!(
+        fog.value,
+        [51.0 / 255.0, 0.5, 1.0],
+        "channels above 1.0 are byte-scaled, the rest pass verbatim"
+    );
+    let layer = &binding.definition.cloud_layers()[0];
+    assert_eq!(layer.altitude_m(), 1000.0);
+
+    // Two hardware-path zones that disagree: the contract holds one fog
+    // colour, so it stays unknown and the field is named.
+    let disagreeing = WeatherDocument::from_zrd(&tree_with_zones(
+        vec![
+            ("ZONE1", zone_colored(floats(&[0.5, 0.5, 0.5]))),
+            ("ZONE2", zone_colored(floats(&[0.6, 0.6, 0.6]))),
+        ],
+        vec![],
+    ))
+    .expect("the synthetic tree parses");
+    let binding = bind_weather(M01, &disagreeing, &span()).expect("binds");
+    assert!(
+        !binding.definition.fog().color_linear().is_known(),
+        "disagreeing zones must not pick a winner"
+    );
+    assert!(
+        binding.unbound.iter().any(|f| f.key == "ZONEn.FOG_COLOR"),
+        "the disagreement must be named unbound"
+    );
+
+    // The SW_ twin is the software-render path: it does not take part in
+    // the agreement the hardware-path zones reach.
+    let twin_differs = WeatherDocument::from_zrd(&tree_with_zones(
+        vec![
+            ("ZONE1", zone_colored(floats(&[0.5, 0.5, 0.5]))),
+            ("SW_ZONE1", zone_colored(floats(&[0.9, 0.9, 0.9]))),
+        ],
+        vec![],
+    ))
+    .expect("the synthetic tree parses");
+    let binding = bind_weather(M01, &twin_differs, &span()).expect("binds");
+    let Resolved::Known(fog) = binding.definition.fog().color_linear() else {
+        panic!("an SW_ twin's colour must not break the hardware agreement");
+    };
+    assert_eq!(fog.value, [0.5, 0.5, 0.5]);
 }
 
 #[test]

@@ -457,9 +457,10 @@ fn accept_m01_play_weather_the_deck_paints_its_coverage_and_leaves_the_sky_visib
 
 /// The retail half: M01's own `weather.zrd` through the production bind, so
 /// the weather a composed mission draws is the one the original mission's
-/// record asks for — which today is a labelled design, because the record's
-/// cloud altitudes and colour scales are unmeasured (`docs/findings/
-/// 2026-10-05-m01-lc-weather-bind.md`).
+/// record asks for — the cloud floor at `CLOUD_COVER.BOTTOM` metres and the
+/// shared zone `FOG_COLOR`, bound where task #1460 measured their units
+/// (`docs/findings/2026-10-16-f19-weather-units-measure.md`), labelled where
+/// the record still carries nothing a measurement reached.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m01_play_weather_retail_m01_weather_is_bound_to_its_record_and_labelled() {
@@ -475,52 +476,89 @@ fn accept_m01_play_weather_retail_m01_weather_is_bound_to_its_record_and_labelle
     let session = weather
         .session(TickRate::new(64).expect("64 Hz"), RunSeeds::from_root(7))
         .expect("M01's weather starts a session");
+    let definition = session.definition();
 
     // The record is M01's own, not a fixture, and it *does* describe cloud
-    // cover: that is why the fields below are named unbound rather than
-    // silently dropped.
-    assert!(session.definition().origin().is_original());
+    // cover: `BOTTOM 1055` binds the deck's floor altitude in metres and the
+    // shared zone colour `(0.69, 0.69, 0.69)` the haze's colour.
+    assert!(definition.origin().is_original());
+    let layers = definition.cloud_layers();
+    assert_eq!(layers.len(), 1, "CLOUD_COVER binds one cloud layer");
+    assert_eq!(layers[0].altitude_m(), 1055.0, "BOTTOM in metres");
+    let Resolved::Known(fog) = definition.fog().color_linear() else {
+        panic!("M01's zones spell one shared fog colour");
+    };
+    // The record spells 0.69f: the channels are at or below 1.0, so the
+    // measured rule takes them verbatim — f32 widened to f64.
+    assert_eq!(fog.value, [f64::from(0.69f32); 3]);
+    assert!(!definition.fog().density_per_m().is_known());
+
+    // `TOP`/`THICKNESS` and the fog ranges/bands still have no contract
+    // fields, so they stay named unbound rather than silently dropped.
+    for key in ["CLOUD_COVER.TOP/THICKNESS", "ZONEn.FOG_RANGES/FOG_ALTITUDE"] {
+        assert!(
+            weather.binding.unbound.iter().any(|field| field.key == key),
+            "{key} must stay named as unbound"
+        );
+    }
     assert!(
-        weather
+        !weather
             .binding
             .unbound
             .iter()
-            .any(|field| field.key == "CLOUD_COVER.TOP/BOTTOM/THICKNESS"),
-        "M01's cloud altitudes must stay named as unbound"
-    );
-    assert!(
-        weather
-            .binding
-            .unbound
-            .iter()
-            .any(|field| field.key == "ZONEn.FOG_COLOR/FOG_RANGES/FOG_ALTITUDE"),
-        "M01's fog zones must stay named as unbound"
-    );
-    assert!(
-        session.definition().cloud_layers().is_empty(),
-        "no layer may be bound from altitudes nobody measured"
+            .any(|field| field.key == "ZONEn.FOG_COLOR"),
+        "FOG_COLOR binds when the zones agree"
     );
 
-    let spec = WeatherPlugin::from_environment(session.definition())
-        .spec()
-        .clone();
-    // Everything M01's weather leaves unknown is drawn as the labelled design,
-    // so nothing on screen can be mistaken for an original measurement.
-    assert!(
-        spec.is_entirely_designed(),
-        "M01 binds no cloud layer and no fog colour, so the drawn weather must \
-         be labelled designed end to end"
-    );
+    let spec = WeatherPlugin::from_environment(definition).spec().clone();
     assert_eq!(spec.layers().len(), 2);
-    for (index, layer) in spec.layers().iter().enumerate() {
-        assert!(layer.is_entirely_designed());
-        for field in WEATHER_FIELDS {
-            assert_eq!(
-                spec.origin(index, *field)
-                    .unwrap_or_else(|error| panic!("{error}")),
-                &WeatherOrigin::Designed(DESIGNED_LABEL),
-                "{field:?} of layer {index} must be labelled designed for M01"
-            );
-        }
+    let deck = spec
+        .cloud_layers()
+        .next()
+        .expect("M01's bound layer is the drawn deck");
+    assert_eq!(deck.altitude_m(), 1055.0);
+    assert_eq!(
+        spec.origin(0, WeatherField::Altitude)
+            .unwrap_or_else(|error| panic!("{error}")),
+        &WeatherOrigin::Bound(definition.provenance().clone()),
+        "the deck's altitude is the record's own"
+    );
+    assert_eq!(
+        spec.origin(0, WeatherField::Coverage)
+            .unwrap_or_else(|error| panic!("{error}")),
+        &WeatherOrigin::Designed("the record authors no coverage fraction for this layer"),
+        "the record spells no coverage fraction, so the drawn coverage is labelled"
+    );
+    for field in [WeatherField::Colour, WeatherField::Extent] {
+        assert_eq!(
+            spec.origin(0, field)
+                .unwrap_or_else(|error| panic!("{error}")),
+            &WeatherOrigin::Designed(DESIGNED_LABEL),
+            "{field:?} of the deck has no authored value and stays labelled"
+        );
     }
+    let haze = spec.haze();
+    assert_eq!(haze.colour(), srgb_of(fog.value));
+    assert_eq!(
+        spec.origin(1, WeatherField::Colour)
+            .unwrap_or_else(|error| panic!("{error}")),
+        &WeatherOrigin::Bound(fog.provenance.clone()),
+        "the haze's colour is the record's own fog colour"
+    );
+    for field in [
+        WeatherField::Altitude,
+        WeatherField::Coverage,
+        WeatherField::Extent,
+    ] {
+        assert_eq!(
+            spec.origin(1, field)
+                .unwrap_or_else(|error| panic!("{error}")),
+            &WeatherOrigin::Designed(DESIGNED_LABEL),
+            "{field:?} of the haze has no authored value and stays labelled"
+        );
+    }
+    assert!(
+        !spec.is_entirely_designed(),
+        "the bound altitude and fog colour must show as bound"
+    );
 }

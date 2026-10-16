@@ -21,10 +21,14 @@
 //!   constructor here converts a fog or clip range into a gameplay sight
 //!   range.
 //!
-//! What is bound known: the precipitation kind (`TYPE`), and its absence as
-//! clear air (inferred, tagged so). What is not claimed: any wind, sun, fog,
-//! cloud or visibility number, because the original's world-unit scale and
-//! its angle/axis conventions are unmeasured (see the F18 and F19 findings).
+//! What is bound known: the precipitation kind (`TYPE`) and its absence as
+//! clear air (inferred, tagged so), the cloud layer's floor altitude
+//! (`CLOUD_COVER.BOTTOM`, measured metres), and the zone fog colour when
+//! every hardware-path zone spells it the same (`ZONEn.FOG_COLOR`,
+//! measured normalized scale — task #1460). What is not claimed: any wind,
+//! sun, fog-density, cloud-top/thickness, coverage or visibility number,
+//! whose units and consumers are still unmeasured (see the F18 and F19
+//! findings).
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -34,10 +38,10 @@ use cs_types::content::{Known, Origin, Provenance, Resolved};
 use cs_types::evidence::{ClaimId, ClaimStatus};
 
 use crate::environment::{
-    EnvironmentDefinition, EnvironmentError, EnvironmentId, EnvironmentKeyError,
-    EnvironmentProfile, EnvironmentState, EnvironmentTimeline, FogDefinition, GameplayVisibility,
-    LightingDefinition, PrecipitationDefinition, PrecipitationKind, SkyArt, SkyOrientation,
-    WindField,
+    CloudLayer, CloudLayerError, EnvironmentDefinition, EnvironmentError, EnvironmentId,
+    EnvironmentKeyError, EnvironmentProfile, EnvironmentState, EnvironmentTimeline, FogDefinition,
+    FogError, GameplayVisibility, LightingDefinition, PrecipitationDefinition, PrecipitationKind,
+    SkyArt, SkyOrientation, WindField,
 };
 use crate::stunts::{ZrdValue, zrd_flat_fields};
 
@@ -82,7 +86,7 @@ impl WeatherScalar {
 }
 
 /// Why a weather document was refused.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum WeatherError {
     /// The decoded tree has no record child.
     NoRecord,
@@ -125,6 +129,10 @@ pub enum WeatherError {
     Id(EnvironmentKeyError),
     /// A claim id was malformed (an internal error).
     Claim(String),
+    /// A bound cloud layer was refused.
+    CloudLayer(CloudLayerError),
+    /// A bound fog record was refused.
+    Fog(FogError),
     /// The assembled record was refused.
     Environment(EnvironmentError),
 }
@@ -152,6 +160,8 @@ impl fmt::Display for WeatherError {
             }
             Self::Id(error) => write!(f, "{error}"),
             Self::Claim(text) => write!(f, "malformed claim id: {text}"),
+            Self::CloudLayer(error) => write!(f, "{error}"),
+            Self::Fog(error) => write!(f, "{error}"),
             Self::Environment(error) => write!(f, "{error}"),
         }
     }
@@ -647,11 +657,46 @@ pub fn bind_weather(
         )?,
     )
     .map_err(|error| WeatherError::Claim(error.to_string()))?;
-    let fog = FogDefinition::unknown(
-        &claim_for("fog"),
-        "FOG_RANGES are near/far distances in unmeasured units and have no per-meter density; FOG_COLOR has an unmeasured scale",
+    // `CLOUD_COVER`'s band altitudes are metres above the ground plane:
+    // the engine stores `TOP`/`BOTTOM`/`THICKNESS` raw (static 0x4bc7ba)
+    // and compares the camera's world-space Y to them unscaled each frame
+    // (static 0x42ee8e-0x42ef1c), and the world unit is the measured metre
+    // (engine-facts 0x48fc40). The layer's altitude is the cloud floor
+    // `BOTTOM`; `TOP` and `THICKNESS` have no contract fields and stay
+    // named unbound. The record authors no coverage fraction, so coverage
+    // stays unknown rather than invented.
+    let cloud_layers = vec![
+        CloudLayer::try_new(
+            document.cloud_cover.bottom.as_f64(),
+            unknown::<f64>(
+                &claim_for("cloud-cover.coverage"),
+                "the record authors no coverage fraction",
+            )?,
+        )
+        .map_err(WeatherError::CloudLayer)?,
+    ];
+
+    // `ZONEn.FOG_COLOR` is a normalized RGB triple: the reader takes each
+    // channel at or below 1.0 verbatim and scales a channel above 1.0 by
+    // 1/255 (static 0x4bc350, constant 0x6081b8). The contract holds one
+    // fog colour, so it binds only while every hardware-path zone (`ZONEn`,
+    // never the `SW_ZONEn` software-render twin) spells the same normalized
+    // colour. The density stays unknown: `FOG_RANGES` are near/far
+    // distances, not a per-metre density.
+    let fog = FogDefinition::try_new(
+        unknown::<f64>(
+            &claim_for("fog.density"),
+            "FOG_RANGES are near/far distances, not a per-metre density",
+        )?,
+        match zones_fog_color(&document.zones) {
+            Some(color) => Resolved::Known(Known::new(color, observed("fog-color")?)),
+            None => unknown::<[f64; 3]>(
+                &claim_for("fog-color"),
+                "the zones do not spell one shared fog colour; the contract holds one",
+            )?,
+        },
     )
-    .map_err(|error| WeatherError::Claim(error.to_string()))?;
+    .map_err(WeatherError::Fog)?;
 
     let state = EnvironmentState::new(
         unknown::<WindField>(&claim_for("wind"), UNIT_REASON)?,
@@ -676,7 +721,7 @@ pub fn bind_weather(
         orientation,
         lighting,
         fog,
-        Vec::new(),
+        cloud_layers,
         state,
         EnvironmentTimeline::default(),
         observed("record")?,
@@ -687,6 +732,33 @@ pub fn bind_weather(
         definition,
         unbound: unbound_fields(document),
     })
+}
+
+/// One colour channel as the engine normalizes it: the reader at
+/// `0x4bc350` multiplies a channel above 1.0 by `0x6081b8` (1/255) and
+/// takes a channel at or below 1.0 verbatim.
+fn normalized_channel(channel: WeatherScalar) -> f64 {
+    let raw = channel.as_f64();
+    if raw > 1.0 { raw / 255.0 } else { raw }
+}
+
+/// The shared fog colour, when every hardware-path (`ZONEn`, never the
+/// `SW_ZONEn` software-render twin) zone spells the same normalized
+/// triple — `None` when no such zone exists or they disagree.
+fn zones_fog_color(zones: &[ZoneRecord]) -> Option<[f64; 3]> {
+    let mut agreed: Option<[f64; 3]> = None;
+    for zone in zones
+        .iter()
+        .filter(|zone| !zone.name.starts_with("SW_ZONE"))
+    {
+        let color = zone.fog_color.map(normalized_channel);
+        match agreed {
+            None => agreed = Some(color),
+            Some(previous) if previous == color => {}
+            Some(_) => return None,
+        }
+    }
+    agreed
 }
 
 fn unbound_fields(document: &WeatherDocument) -> Vec<UnboundField> {
@@ -712,9 +784,9 @@ fn unbound_fields(document: &WeatherDocument) -> Vec<UnboundField> {
             "no random-wind model exists in the environment contract and the field's meaning is unmeasured",
         ),
         field(
-            "CLOUD_COVER.TOP/BOTTOM/THICKNESS",
+            "CLOUD_COVER.TOP/THICKNESS",
             "EnvironmentDefinition::cloud_layers",
-            "altitudes are in unmeasured units and no coverage fraction is authored",
+            "TOP is the band ceiling and THICKNESS the colour-transition half-width; the contract's layer carries only the floor altitude BOTTOM",
         ),
     ];
     if document.cloud_cover.top_color.is_some() || document.cloud_cover.bottom_color.is_some() {
@@ -724,12 +796,19 @@ fn unbound_fields(document: &WeatherDocument) -> Vec<UnboundField> {
             "integer color of unmeasured scale and no cloud-color consumer",
         ));
     }
-    out.extend([
-        field(
-            "ZONEn.FOG_COLOR/FOG_RANGES/FOG_ALTITUDE",
+    out.push(field(
+        "ZONEn.FOG_RANGES/FOG_ALTITUDE",
+        "EnvironmentDefinition::fog",
+        "near/far distances and altitude bands have no per-metre density and no band consumer",
+    ));
+    if zones_fog_color(&document.zones).is_none() {
+        out.push(field(
+            "ZONEn.FOG_COLOR",
             "EnvironmentDefinition::fog",
-            "near/far fog, altitude bands and color scale are unmeasured; the contract has one density",
-        ),
+            "the zones do not spell one shared fog colour; the contract holds one",
+        ));
+    }
+    out.extend([
         field(
             "ZONEn.CLIP_RANGES",
             "none",
