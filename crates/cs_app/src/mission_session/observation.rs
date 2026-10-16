@@ -106,6 +106,7 @@ use cs_types::net::ActorId;
 
 use super::compose::MissionPlayerBody;
 use super::host::{MissionHost, MissionWorldObservation};
+use super::landings::MissionLandings;
 use crate::mission_actors::{
     MissionActorSpawnReport, MissionAircraftRoster, MissionZeppelinActor, ScriptedAircraftActor,
 };
@@ -225,6 +226,9 @@ pub fn mission_world_observation(world: &mut World) {
         return;
     }
     let mut observation = WorldObservation::new();
+    // The rows steps 1 and 2 write, kept by name so step 4 can anchor a
+    // landing node on them without reading the observation back.
+    let mut anchors: BTreeMap<String, [f64; 3]> = BTreeMap::new();
 
     // 1. The player: exactly one body, exactly one pose.
     let bodies: Vec<Entity> = {
@@ -235,9 +239,11 @@ pub fn mission_world_observation(world: &mut World) {
         && let Some(position) = world.get::<Position>(*body)
     {
         let [x, y, z] = position.0.to_array();
+        let position = [f64::from(x), f64::from(y), f64::from(z)];
+        anchors.insert(PLAYER_MEMBER.to_owned(), position);
         observation = observation.member(
             member_chain([PLAYER_MEMBER]),
-            MemberObservation::held_in_play([f64::from(x), f64::from(y), f64::from(z)]),
+            MemberObservation::held_in_play(position),
         );
     }
 
@@ -277,6 +283,12 @@ pub fn mission_world_observation(world: &mut World) {
         };
         match world_actor_in_play(session, world_actor, damage, damage_actor) {
             Some(true) => {
+                // An in-play actor anchors the landing nodes that hang from
+                // its subject node (M01-PLAY-TRIGGERS-ANIMS-LAND, #1498): a
+                // landing node composes its position from this row only, so
+                // an anchor the world reports out of play — or says nothing
+                // about — anchors nothing and the node stays unobserved.
+                anchors.insert(name.to_owned(), position);
                 observation = observation.member(
                     member_chain([name]),
                     MemberObservation::held_in_play(position),
@@ -373,6 +385,30 @@ pub fn mission_world_observation(world: &mut World) {
         }
         for (id, count) in living {
             observation = observation.group(id, count);
+        }
+    }
+
+    // 4. The landing nodes the table names (M01-PLAY-TRIGGERS-ANIMS-LAND,
+    //    #1498): a node's world position is the observed position of its
+    //    anchor — the container node a bound actor's subject spells, its
+    //    ancestor directly under the world root — plus the container's
+    //    measured offset from that anchor
+    //    (`LANDING_NODE_POSITION_CLAIM`). An anchor this tick's observation
+    //    has no row for gives **no node row**: the landing consumer then
+    //    finds no position there and runs nothing, because a position
+    //    nobody observed is not a position this writer may invent. Node
+    //    entries the reader refused (unknown or ambiguous node) are absent
+    //    from the table's `nodes` and are simply not looked up here.
+    if let Some(table) = world.get_resource::<MissionLandings>() {
+        for entry in &table.nodes {
+            if let Some(anchor) = anchors.get(&entry.anchor) {
+                let [ax, ay, az] = *anchor;
+                let [ox, oy, oz] = entry.offset;
+                observation = observation.member(
+                    member_chain([entry.node.as_str()]),
+                    MemberObservation::held_in_play([ax + ox, ay + oy, az + oz]),
+                );
+            }
         }
     }
 

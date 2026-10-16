@@ -101,6 +101,7 @@ use cs_types::content::{ContentId, ContentKind, Resolved};
 use cs_types::evidence::ContentHash;
 use cs_types::space::Quaternion;
 
+use super::landings::{MissionLandings, read_landings};
 use super::launch_sound::{LaunchSound, LaunchSoundError, measure_launch_sound};
 use super::player_visual::{
     MissionPlayerVisual, PlayerAirframeSource, build_player_visual, spawn_player_visual,
@@ -1036,6 +1037,35 @@ fn add_composition(
     app.insert_resource(crate::score::SessionScoreLedger::open(host.served()));
     app.insert_resource(host);
     app.insert_resource(stage.clone());
+    // 4b. The landing table (M01-PLAY-TRIGGERS-ANIMS-LAND, #1498): the
+    //     mount's own `landings.zrd` rows and the position rules for the
+    //     nodes they name, read from the very archives this mount spells
+    //     (`<group>/zrdr.zbd`, `<group>/gamez.zbd`) through the production
+    //     readers. The mount host is the **world-group directory** one level
+    //     under the installation root (that is how `stage_for` spells it),
+    //     so the reader — which discovers the installation and addresses
+    //     archives by their logical keys — is handed the root the mount's
+    //     own `directory` spelling is relative to. A fixture installation
+    //     that declares no landing member carries the reader's absence by
+    //     name instead — the landing path then has nothing to run and says
+    //     why — and a test that authors its own rows replaces this resource
+    //     after the build.
+    let mut install_root = stage.mount.host.clone();
+    for _ in stage
+        .mount
+        .directory
+        .split('/')
+        .filter(|part| !part.is_empty())
+    {
+        install_root.pop();
+    }
+    let landings = read_landings(&install_root, &stage.mount.directory).unwrap_or_else(|error| {
+        MissionLandings {
+            refusals: vec![error.to_string()],
+            ..MissionLandings::default()
+        }
+    });
+    app.insert_resource(landings);
     // 5. The scripted mission actors (M01-PLAY-ACTORS, #1435): the enabled
     //    non-player `aiv.zrd` records — the measured `enabled == 0` skip —
     //    plus one ECS binding per `zeppelins.zrd` world actor the host's
@@ -1275,6 +1305,10 @@ pub fn teardown(app: &mut App) {
     world.remove_resource::<MissionComposition>();
     world.remove_resource::<crate::mission_actors::MissionAircraftRoster>();
     world.remove_resource::<crate::mission_actors::MissionActorSpawnReport>();
+    // M01-PLAY-TRIGGERS-ANIMS-LAND (#1498): the landing table this
+    // composition read, so a second build in the same process starts from
+    // nothing.
+    world.remove_resource::<crate::mission_session::MissionLandings>();
     world.remove_resource::<crate::mission_session::MissionPartReport>();
     world.remove_resource::<crate::mission_ai::MissionAiReport>();
     world.remove_resource::<MissionPlayerStart>();

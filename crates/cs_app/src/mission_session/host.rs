@@ -142,8 +142,9 @@ use std::fmt;
 use std::sync::atomic::{AtomicU32, Ordering};
 use std::time::Duration;
 
+use avian3d::prelude::{LinearVelocity, Rotation};
 use bevy::ecs::schedule::IntoScheduleConfigs;
-use bevy::prelude::{App, Entity, FixedPostUpdate, PostUpdate, Resource, With, World};
+use bevy::prelude::{App, Entity, FixedPostUpdate, PostUpdate, Resource, Vec3, With, World};
 use bevy::time::{Fixed, Time};
 use cs_content::objectives_engine::EngineObjectives;
 use cs_content::world::WorldObjectId;
@@ -159,6 +160,7 @@ use cs_types::content::ContentId;
 use cs_types::net::SessionId;
 
 use super::compose::{MissionPlayerBody, MissionStage, spawn_player};
+use super::landings::{LandingLedger, LandingTick, MissionLandings, step_landings};
 use super::terminal::{MissionTerminal, MissionTerminalSource};
 use crate::animation::mission::{AnimationNameIndex, MissionAnimationBinding, StartupAnimation};
 use crate::audio::AudioSession;
@@ -745,6 +747,12 @@ pub struct MissionHost {
     /// they released, and every name that woke nothing and why.
     enemies: WakeEnemiesLedger,
     armed: Vec<ArmedNode>,
+    /// The landing path's own record of one generation (M01-PLAY-TRIGGERS-
+    /// ANIMS-LAND, #1498): which rows a landing has already attempted, what
+    /// those landings started or refused, and the call chains they opened.
+    /// Cleared on restart beside `wake` and `armed` — a fresh generation's
+    /// landings are its own.
+    landings: LandingLedger,
     markers: MissionMarkerConsumer,
     objectives: ObjectiveSession,
     script: MissionSession,
@@ -822,6 +830,7 @@ impl MissionHost {
             wake: WakeAnimationLedger::default(),
             enemies: WakeEnemiesLedger::default(),
             armed: Vec::new(),
+            landings: LandingLedger::default(),
             markers,
             objectives,
             script,
@@ -942,6 +951,7 @@ impl MissionHost {
         self.wake = WakeAnimationLedger::default();
         self.enemies = WakeEnemiesLedger::default();
         self.armed.clear();
+        self.landings = LandingLedger::default();
         // `markers.retry(served)` above already released the old ledger and
         // stamped the new session on the live consumer, whose declared cue
         // table is the stage's own — nothing else about it changes.
@@ -1177,6 +1187,16 @@ impl MissionHost {
         //     next fixed tick's arm/decide pass then flies it, so a release
         //     made on this tick is visible to the AI on the following one.
         let _woken_enemies = self.enemies.consume(world, self.script.state(), tick);
+        // 6d. Landings (M01-PLAY-TRIGGERS-ANIMS-LAND, #1498): the designed
+        //     landing path reads this tick's stage-4 observation — the sole
+        //     authority for the player's pose and for each node's composed
+        //     position — plus the armed set just extended above, and starts
+        //     every row a landing satisfies through this host's own player.
+        //     The records it starts publish their statements on the next
+        //     script advance, so the stage-4 fold of the **next** step is
+        //     the first place they (and the gates their calls satisfy) are
+        //     observed, exactly as a `WAKE_ANIM`-started record behaves.
+        self.step_landings(world, tick);
         let lifecycles = ObjectiveLifecycleTick {
             woken: lifecycles_advanced.woken,
             napped: lifecycles_advanced.napped,
@@ -1403,6 +1423,60 @@ impl MissionHost {
     #[must_use]
     pub fn armed_nodes(&self) -> &[ArmedNode] {
         &self.armed
+    }
+
+    /// The landing path's ledger: what this generation's landings have
+    /// attempted, started or refused (M01-PLAY-TRIGGERS-ANIMS-LAND, #1498).
+    #[must_use]
+    pub fn landings(&self) -> &LandingLedger {
+        &self.landings
+    }
+
+    /// One tick of the landing path — the host half of stage 6d.
+    ///
+    /// Reads the player body's committed velocity and tilt from the live
+    /// world: exactly **one** body carries them, the same one-body rule the
+    /// observation writer applies to the pose, so zero or two bodies mean
+    /// no landing (fail-closed, not a refusal). Everything else the
+    /// evaluation needs — the table, the stage-4 observation, the armed set
+    /// and the name index — is already a record of this host, so the
+    /// [`super::landings::step_landings`] rule borrows each field once and
+    /// mutates only the ledger and the player.
+    ///
+    /// A world with no landing table runs nothing: the composition always
+    /// installs one (an absent archive is its named absence), so this arm
+    /// only covers a world built without the composition — and runs nothing
+    /// there, by design.
+    fn step_landings(&mut self, world: &mut World, tick: Tick) {
+        let (velocity, tilt_deg) = {
+            let mut query =
+                world.query_filtered::<(&LinearVelocity, &Rotation), With<MissionPlayerBody>>();
+            let bodies: Vec<([f64; 3], f64)> = query
+                .iter(world)
+                .map(|(velocity, rotation)| {
+                    let [vx, vy, vz] = velocity.0.to_array();
+                    let up = rotation.0 * Vec3::Y;
+                    let tilt = f64::from(up.y).clamp(-1.0, 1.0).acos().to_degrees();
+                    ([f64::from(vx), f64::from(vy), f64::from(vz)], tilt)
+                })
+                .collect();
+            let [one] = bodies.as_slice() else {
+                return;
+            };
+            *one
+        };
+        let Some(table) = world.get_resource::<MissionLandings>() else {
+            return;
+        };
+        let input = LandingTick {
+            table,
+            observation: self.world_facts.observation(),
+            armed: &self.armed,
+            names: &self.names,
+            velocity,
+            tilt_deg,
+        };
+        step_landings(&mut self.landings, &mut self.animation, tick, &input);
     }
 
     /// The marker consumer.

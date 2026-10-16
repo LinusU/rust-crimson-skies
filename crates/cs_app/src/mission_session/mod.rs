@@ -94,6 +94,7 @@ mod compose;
 mod content;
 mod evidence;
 mod host;
+mod landings;
 mod launch_sound;
 mod lifecycles;
 mod observation;
@@ -125,6 +126,14 @@ pub use host::{
     MissionHostRestartRequest, MissionHostSeed, MissionHostStepError, MissionHostTick,
     MissionWorldObservation, host_session_id, install_mission_host, mint_host_generation,
     mission_host_restart, mission_host_tick, no_declared_objectives,
+};
+pub use landings::{
+    LANDING_CALL_CHAIN_CLAIM, LANDING_DETECTION_CLAIM, LANDING_NODE_POSITION_CLAIM,
+    LANDING_RADIUS_M, LANDING_ROWS_CLAIM, LANDING_SINK_RATE_MPS, LANDING_WINDOW_CLAIM,
+    LandingActivation, LandingCall, LandingLedger, LandingNodeEntry, LandingParseError,
+    LandingReadError, LandingRefusal, LandingRow, LandingTick, MissionLandings,
+    landing_node_entries, landing_reached, parse_landings, read_landings, step_landings,
+    window_satisfied,
 };
 pub use launch_sound::{
     LAUNCH_SOUND_CONTAINER, LaunchAudioProbe, LaunchSound, LaunchSoundError, backend_refusal,
