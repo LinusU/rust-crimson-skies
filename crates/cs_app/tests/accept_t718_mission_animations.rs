@@ -186,6 +186,7 @@ fn record(spec: &RecordSpec<'_>, carrier: CarrierKind, index: usize) -> Animatio
         objects: Vec::new(),
         nodes: Vec::new(),
         animation_refs: Vec::new(),
+        call_targets: Vec::new(),
         sequences: spec
             .sequences
             .iter()

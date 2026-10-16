@@ -203,6 +203,7 @@ fn record(spec: &RecordSpec<'_>, carrier: CarrierKind, index: usize) -> Animatio
             .iter()
             .map(|name| (*name).to_owned())
             .collect(),
+        call_targets: Vec::new(),
         sequences: spec
             .sequences
             .iter()

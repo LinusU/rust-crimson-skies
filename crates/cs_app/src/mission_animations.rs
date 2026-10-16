@@ -426,6 +426,7 @@ pub struct RecordStatement {
     class: EventClass,
     start_time: f32,
     end_time: f32,
+    spelled_name: Option<String>,
 }
 
 impl RecordStatement {
@@ -505,6 +506,14 @@ impl RecordStatement {
     #[must_use]
     pub const fn end_time(&self) -> f32 {
         self.end_time
+    }
+
+    /// The animation name the event's payload spelled, when it stores one —
+    /// the measured name field of the control-call opcodes
+    /// ([`crate::animation::SPELLED_NAME_CLAIM`]).
+    #[must_use]
+    pub fn spelled_name(&self) -> Option<&str> {
+        self.spelled_name.as_deref()
     }
 }
 
@@ -781,6 +790,250 @@ fn wake_animation_name(args: &[Value]) -> Option<String> {
     match args {
         [Value::Str(name)] if !name.is_empty() => Some(name.clone()),
         _ => None,
+    }
+}
+
+/// The claim the `CALL_ANIMATION` activation rule is recorded under.
+///
+/// A `CALL_ANIMATION` statement's payload spells the animation it calls
+/// (measured, [`crate::animation::SPELLED_NAME_CLAIM`]). **Designed, not
+/// measured**: this consumer starts the spelled record the tick its statement
+/// publishes, once per publication, the same way the landing path's own
+/// designed chain claims its `animation_refs` start. What the 2000 engine did
+/// with a call — whether the named record started then, queued, or replaced a
+/// running sibling — is unmeasured and stays this claim's unknown.
+pub const CALL_ANIMATION_ACTIVATION_CLAIM: &str = "m01-anim.call-animation-activation-designed";
+
+/// The stored opcode of a `CALL_ANIMATION` event (`crate::animation::events`
+/// statement table). Only calls activate: `STOP_ANIMATION` and
+/// `INVALIDATE_ANIMATION` spell the same measured name field but what they do
+/// to the named record is unmeasured, so this consumer publishes them and acts
+/// on neither.
+pub const CALL_ANIMATION_OPCODE: u8 = 24;
+
+/// One `CALL_ANIMATION` statement's spelled name this host consumed and what
+/// it started — the published-statement side of the join, so a reviewer can
+/// tie every activation to the record, sequence and event that made the call.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallActivation {
+    /// The startup identity whose record published the call.
+    caller: String,
+    /// The sequence block the call sits in.
+    sequence: usize,
+    /// The call event's index inside that block.
+    event_index: usize,
+    /// The name the event's payload spelled, verbatim.
+    name: String,
+    /// The committed tick the statement published on.
+    at: Tick,
+    /// What the record player answered.
+    outcome: ActivationOutcome,
+}
+
+impl CallActivation {
+    /// The startup identity whose record published the call.
+    #[must_use]
+    pub fn caller(&self) -> &str {
+        &self.caller
+    }
+
+    /// The sequence block the call sits in.
+    #[must_use]
+    pub const fn sequence(&self) -> usize {
+        self.sequence
+    }
+
+    /// The call event's index inside that block.
+    #[must_use]
+    pub const fn event_index(&self) -> usize {
+        self.event_index
+    }
+
+    /// The name the event's payload spelled, verbatim.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The committed tick the statement published on.
+    #[must_use]
+    pub const fn at(&self) -> Tick {
+        self.at
+    }
+
+    /// Whether this activation started the record.
+    #[must_use]
+    pub const fn started(&self) -> bool {
+        matches!(self.outcome, ActivationOutcome::Started)
+    }
+
+    /// What the record player answered.
+    #[must_use]
+    pub const fn outcome(&self) -> ActivationOutcome {
+        self.outcome
+    }
+}
+
+/// Why a `CALL_ANIMATION`'s spelled name started nothing, named.
+///
+/// The same by-name refusals the `WAKE_ANIM` consumer records: a name no
+/// record binds, a name several records bind, and a bound row the join
+/// refuses — each kept with the publishing record's identity and the
+/// statement's own locator.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CallRefusal {
+    /// The startup identity whose record published the call.
+    caller: String,
+    /// The sequence block the call sits in.
+    sequence: usize,
+    /// The call event's index inside that block.
+    event_index: usize,
+    /// The name the event's payload spelled, verbatim.
+    name: String,
+    /// Why nothing was started, verbatim.
+    reason: &'static str,
+    /// Every record the name matched, when it matched more than one.
+    matches: Vec<(crate::animation::survey::CarrierKind, usize)>,
+    /// The committed tick the statement published on.
+    at: Tick,
+}
+
+impl CallRefusal {
+    /// The startup identity whose record published the call.
+    #[must_use]
+    pub fn caller(&self) -> &str {
+        &self.caller
+    }
+
+    /// The sequence block the call sits in.
+    #[must_use]
+    pub const fn sequence(&self) -> usize {
+        self.sequence
+    }
+
+    /// The call event's index inside that block.
+    #[must_use]
+    pub const fn event_index(&self) -> usize {
+        self.event_index
+    }
+
+    /// The name the event's payload spelled, verbatim.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Why nothing was started, verbatim.
+    #[must_use]
+    pub const fn reason(&self) -> &'static str {
+        self.reason
+    }
+
+    /// Every record the name matched, when it matched more than one.
+    #[must_use]
+    pub fn matches(&self) -> &[(crate::animation::survey::CarrierKind, usize)] {
+        &self.matches
+    }
+
+    /// The committed tick the statement published on.
+    #[must_use]
+    pub const fn at(&self) -> Tick {
+        self.at
+    }
+}
+
+/// The mission host's `CALL_ANIMATION` consumer.
+///
+/// Each `CALL_ANIMATION` statement a tick's record report publishes names the
+/// animation it calls — a measured payload field
+/// ([`crate::animation::SPELLED_NAME_CLAIM`]) — and this ledger starts that
+/// name through the record player at the tick the statement published on
+/// ([`CALL_ANIMATION_ACTIVATION_CLAIM`], designed). A statement publishes
+/// exactly once per record run, so no deduplication is needed beyond the
+/// player's own one-activation-per-identity gate.
+///
+/// Only opcode `24` is consumed: `STOP_ANIMATION` and
+/// `INVALIDATE_ANIMATION` spell the same measured name field but what they do
+/// to the named record is unmeasured, so their names travel on the statement
+/// and nothing acts on them.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct CallAnimationLedger {
+    activations: Vec<CallActivation>,
+    refused: Vec<CallRefusal>,
+}
+
+impl CallAnimationLedger {
+    /// Consumes every `CALL_ANIMATION` statement `report` published, resolving
+    /// each spelled name through `names` and starting the bound row in
+    /// `player` at `tick`. Answers the activations this call produced, in
+    /// published order.
+    pub fn consume(
+        &mut self,
+        report: &TickReport,
+        names: &AnimationNameIndex,
+        player: &mut MissionAnimationPlayer,
+        tick: Tick,
+    ) -> Vec<CallActivation> {
+        let mut activations = Vec::new();
+        for statement in report.statements() {
+            if statement.opcode() != CALL_ANIMATION_OPCODE {
+                continue;
+            }
+            let Some(name) = statement.spelled_name().map(str::to_owned) else {
+                continue;
+            };
+            let caller = statement.identity().to_owned();
+            let (sequence, event_index) = (statement.sequence(), statement.event_index());
+            match names.resolve(&name) {
+                NamedAnimationResolution::Bound(row) => {
+                    let outcome = player.activate(tick, &row);
+                    if outcome == ActivationOutcome::Refused {
+                        self.refused.push(CallRefusal {
+                            caller: caller.clone(),
+                            sequence,
+                            event_index,
+                            name: name.clone(),
+                            reason: WAKE_ANIM_ROW_REFUSED_REASON,
+                            matches: Vec::new(),
+                            at: tick,
+                        });
+                    }
+                    activations.push(CallActivation {
+                        caller,
+                        sequence,
+                        event_index,
+                        name,
+                        at: tick,
+                        outcome,
+                    });
+                }
+                NamedAnimationResolution::Unbound { reason, matches } => {
+                    self.refused.push(CallRefusal {
+                        caller,
+                        sequence,
+                        event_index,
+                        name,
+                        reason,
+                        matches,
+                        at: tick,
+                    });
+                }
+            }
+        }
+        self.activations.extend(activations.iter().cloned());
+        activations
+    }
+
+    /// Every activation, in the order the statements published.
+    #[must_use]
+    pub fn activations(&self) -> &[CallActivation] {
+        &self.activations
+    }
+
+    /// Every spelled name a call started nothing for, in publish order.
+    #[must_use]
+    pub fn refused(&self) -> &[CallRefusal] {
+        &self.refused
     }
 }
 
@@ -1276,6 +1529,7 @@ impl MissionAnimationPlayer {
                             class: event.class,
                             start_time: event.start_time(),
                             end_time: event.end_time(),
+                            spelled_name: event.spelled_name.clone(),
                         });
                     }
                     index += 1;
@@ -1304,6 +1558,7 @@ impl MissionAnimationPlayer {
                     class: reached.class,
                     start_time: reached.start_time,
                     end_time: reached.end_time,
+                    spelled_name: reached.spelled_name,
                 });
                 record.statements += 1;
             }
@@ -1386,6 +1641,8 @@ struct ReachedStatement {
     start_time: f32,
     /// When the statement ends, in the original's stored time unit.
     end_time: f32,
+    /// The animation name the event's payload spelled, when it stores one.
+    spelled_name: Option<String>,
 }
 
 /// The declaring archive and member of a row the join resolved.

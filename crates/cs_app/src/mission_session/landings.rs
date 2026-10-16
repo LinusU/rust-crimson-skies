@@ -915,9 +915,18 @@ impl LandingLedger {
         self.done.iter().copied()
     }
 
-    /// The chain the row's record opened: every measured `animation_refs`
-    /// name transitively, each identity once, starting each playable row
-    /// through the player's own activation path ([`LANDING_CALL_CHAIN_CLAIM`]).
+    /// The chain the row's record opened: the measured `animation_refs`
+    /// names no `CALL_ANIMATION` event of the same record also spells,
+    /// transitively, each identity once, starting each playable row through
+    /// the player's own activation path ([`LANDING_CALL_CHAIN_CLAIM`]).
+    ///
+    /// The spelled calls themselves are the measured chain and start through
+    /// the publish path ([`crate::mission_animations::CallAnimationLedger`]),
+    /// never here — a name both the table and an event state fires exactly
+    /// once, at its statement's own time, and never twice. What remains for
+    /// this designed chain is the remainder: names the record's table
+    /// references but no event spells — in every one of M01's measured
+    /// records that set is empty, so this path is quiet on the owner's data.
     ///
     /// Returns the calls in the order the chain offered them: every name
     /// that bound, with the outcome the player gave it (a row the player
@@ -933,12 +942,25 @@ impl LandingLedger {
         root: &StartupAnimation,
         tick: Tick,
     ) -> Vec<LandingCall> {
+        // Names a record's `animation_refs` table states but no
+        // `CALL_ANIMATION` event spells: the designed remainder this chain
+        // exists for. The spelled calls are the publish path's business.
+        let remainder = |facts: &crate::animation::mission::AnimationRecordFacts| -> Vec<String> {
+            let spelled: BTreeSet<&str> = facts
+                .call_targets()
+                .iter()
+                .map(String::as_str)
+                .collect();
+            facts
+                .animation_refs()
+                .iter()
+                .filter(|name| !spelled.contains(name.as_str()))
+                .cloned()
+                .collect()
+        };
         let mut visited: BTreeSet<String> = BTreeSet::new();
         visited.insert(root.identity().to_owned());
-        let mut queue: Vec<String> = root
-            .bound_record()
-            .map(|facts| facts.animation_refs().to_vec())
-            .unwrap_or_default();
+        let mut queue: Vec<String> = root.bound_record().map(&remainder).unwrap_or_default();
         let mut calls = Vec::new();
         while let Some(name) = queue.pop() {
             if !visited.insert(name.clone()) {
@@ -950,7 +972,7 @@ impl LandingLedger {
                     if outcome == ActivationOutcome::Started
                         && let Some(facts) = anim_row.bound_record()
                     {
-                        queue.extend(facts.animation_refs().iter().cloned());
+                        queue.extend(remainder(facts));
                     }
                     calls.push(LandingCall {
                         name,

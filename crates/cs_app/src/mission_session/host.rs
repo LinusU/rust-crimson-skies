@@ -167,8 +167,9 @@ use crate::audio::AudioSession;
 use crate::environment::EnvironmentSession;
 use crate::mission_ai::WakeEnemiesLedger;
 use crate::mission_animations::{
-    ArmedNode, MissionAnimationPlayer, MissionAnimationStepRefusal, PlayerError, TickReport,
-    WakeAnimationLedger, armed_nodes_from_report, step_mission_animations,
+    ArmedNode, CallAnimationLedger, MissionAnimationPlayer, MissionAnimationStepRefusal,
+    PlayerError, TickReport, WakeAnimationLedger, armed_nodes_from_report,
+    step_mission_animations,
 };
 use crate::mission_markers::{
     MarkerDelivery, MarkerTeardown, MarkerTeardownError, MissionMarkerBindings,
@@ -742,6 +743,11 @@ pub struct MissionHost {
     /// directive spells is refused by name.
     names: AnimationNameIndex,
     wake: WakeAnimationLedger,
+    /// The `CALL_ANIMATION` consumer's ledger: every spelled call target a
+    /// published statement named and what it started, in publish order.
+    /// Cleared on restart beside `wake` — a fresh generation's calls are its
+    /// own.
+    calls: CallAnimationLedger,
     /// The `WAKEUP_ENEMIES` consumer's ledger (M01-PLAY-AI-WAKE, #1487):
     /// which directive keys were applied, which sleeping scripted aircraft
     /// they released, and every name that woke nothing and why.
@@ -834,6 +840,7 @@ impl MissionHost {
             animation,
             names,
             wake: WakeAnimationLedger::default(),
+            calls: CallAnimationLedger::default(),
             enemies: WakeEnemiesLedger::default(),
             armed: Vec::new(),
             landings: LandingLedger::default(),
@@ -959,6 +966,7 @@ impl MissionHost {
                 binding.names().clone()
             });
         self.wake = WakeAnimationLedger::default();
+        self.calls = CallAnimationLedger::default();
         self.enemies = WakeEnemiesLedger::default();
         self.armed.clear();
         self.landings = LandingLedger::default();
@@ -1125,6 +1133,16 @@ impl MissionHost {
             &input,
         )
         .map_err(MissionHostStepError::Composed)?;
+
+        // 3b. Call animations: every `CALL_ANIMATION` statement this tick's
+        //     record report published names the record it calls (a measured
+        //     payload field). Starting it here — inside the animation stage,
+        //     before the stage-4 observation — is what lets a call's target
+        //     report `RUNNING` on the tick its caller's statement published,
+        //     which is the only observation a zero-duration record can ever
+        //     report `RUNNING` in.
+        self.calls
+            .consume(&composed.records, &self.names, &mut self.animation, tick);
 
         // 4. World observation: the world's own report for this step —
         //    consumed, so it describes exactly this tick — merged with what
@@ -1434,6 +1452,14 @@ impl MissionHost {
     #[must_use]
     pub const fn wake_enemies(&self) -> &WakeEnemiesLedger {
         &self.enemies
+    }
+
+    /// The `CALL_ANIMATION` consumer's ledger: every spelled call target a
+    /// published statement named, what it started and which names started
+    /// nothing.
+    #[must_use]
+    pub const fn call_animations(&self) -> &CallAnimationLedger {
+        &self.calls
     }
 
     /// The designed node-arming input: every active-state statement a running

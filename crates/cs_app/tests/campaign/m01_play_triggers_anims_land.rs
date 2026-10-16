@@ -241,6 +241,7 @@ fn synthetic_record(
         objects: Vec::new(),
         nodes,
         animation_refs,
+        call_targets: Vec::new(),
         sequences: vec![RecordSequence {
             kind: AnimationRecordSequenceKind::Sequence,
             name: SYNTHETIC_SEQUENCE.to_owned(),
@@ -1175,24 +1176,41 @@ fn accept_m01_play_triggers_anims_land_a_retail_landing_runs_the_row_and_the_gat
         assert_eq!(activated[0].node, "wv_manual_land");
         assert_eq!(activated[0].anim, "wv_initiate_hookup");
         assert_eq!(activated[0].outcome, ActivationOutcome::Started);
-        let calls = &activated[0].calls;
+        // The measured call chain fired through the publish path:
+        // `wv_initiate_hookup`'s `CALL_ANIMATION` statements spell their
+        // targets, and the call ledger started each bound name at the tick
+        // the statement published. The landing row's own `calls` — the
+        // designed remainder of table refs no event spells — is empty on
+        // the owner's records, where every ref is also spelled.
         assert!(
-            calls.iter().any(|call| call.name == "wv_pickup_copilot"
-                && call.outcome == ActivationOutcome::Started),
+            activated[0].calls.is_empty(),
+            "every table ref of the row record is a spelled call: {:?}",
+            activated[0].calls
+        );
+        let calls = host.call_animations().activations();
+        assert!(
+            calls.iter().any(|call| call.name() == "wv_pickup_copilot"
+                && call.caller() == "wv_initiate_hookup"
+                && call.outcome() == ActivationOutcome::Started),
             "the measured call chain started wv_pickup_copilot: {calls:?}"
         );
         assert!(
-            calls.iter().any(|call| call.name == "wv_hookup_player"),
+            calls
+                .iter()
+                .any(|call| call.name() == "wv_hookup_player"
+                    && call.caller() == "wv_initiate_hookup"),
             "the measured call chain started wv_hookup_player: {calls:?}"
         );
         // `letterbox` matches a carrier record but no member declares it:
-        // the player refuses the row, and the chain records that outcome —
-        // the refusal's own reasons live on the player's ledger.
+        // the call ledger refuses the name, by name.
         assert!(
-            calls
+            host.call_animations()
+                .refused()
                 .iter()
-                .any(|call| call.name == "letterbox" && call.outcome == ActivationOutcome::Refused),
-            "the chain's undeclared name is refused by name: {calls:?}"
+                .any(|refusal| refusal.name() == "letterbox"
+                    && refusal.caller() == "wv_initiate_hookup"),
+            "the chain's undeclared name is refused by name: {:?}",
+            host.call_animations().refused()
         );
         assert!(
             !host

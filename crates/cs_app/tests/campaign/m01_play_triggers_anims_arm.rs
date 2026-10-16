@@ -247,6 +247,7 @@ fn synthetic_record() -> AnimationRecordFacts {
         objects: Vec::new(),
         nodes: synthetic_nodes(),
         animation_refs: vec!["synthetic_called_anim".to_owned()],
+        call_targets: Vec::new(),
         sequences: vec![RecordSequence {
             kind: AnimationRecordSequenceKind::Sequence,
             name: SYNTHETIC_SEQUENCE.to_owned(),
@@ -1085,4 +1086,56 @@ fn accept_m01_play_triggers_anims_arm_retail_a_woken_record_runs_through_the_hos
         armed_tick.is_some_and(|stepped| Tick(stepped) <= armed.tick()),
         "the arming tick must be one the host stepped"
     );
+}
+
+/// **On the owner's installation, the gated names resolve and the row
+/// record's measured `CALL_ANIMATION` targets spell the names the win path
+/// needs — the decode `call_targets()` exposes is production.**
+///
+/// `wv_initiate_hookup` is the record `wv_manual_land`'s landing row starts.
+/// Its compiled event stream's `CALL_ANIMATION` statements spell eight names
+/// — measured under `SPELLED_NAME_CLAIM` — and among them are the two the
+/// win path's `ANIM_STATE` gates read: `wv_drop_copilot` (the drop-off beat,
+/// `RUNNING`) and `wv_pickup_copilot` (the pick-up, `EXECUTED`). The
+/// `animation_refs` table names only four of them; this test asserts the
+/// spelled surface `call_targets()` reads so the gap cannot silently
+/// return.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_m01_play_triggers_anims_arm_the_row_records_spelled_calls_name_the_gated_states() {
+    let binding = bind_mission_animation(&game_dir(), "zbd/c1c/m01")
+        .expect("M01's animation closure reads");
+    let index = binding.names();
+
+    let row = match index.resolve("wv_initiate_hookup") {
+        NamedAnimationResolution::Bound(row) => row,
+        other => panic!("wv_initiate_hookup must bind: {other:?}"),
+    };
+    let facts = row
+        .bound_record()
+        .expect("wv_initiate_hookup carries a record");
+    for gated in ["wv_drop_copilot", "wv_pickup_copilot", "wv_hookup_player"] {
+        assert!(
+            facts.call_targets().iter().any(|name| name == gated),
+            "{gated} is spelled by a CALL_ANIMATION event: {:?}",
+            facts.call_targets()
+        );
+    }
+    // Every name the record's reference table states is a spelled call too:
+    // the designed landing remainder has nothing to add on the owner's data.
+    for reference in facts.animation_refs() {
+        assert!(
+            facts.call_targets().iter().any(|name| name == reference),
+            "ref {reference} is also spelled: {:?}",
+            facts.call_targets()
+        );
+    }
+
+    // The two gated names themselves bind to real records.
+    for gated in ["wv_drop_copilot", "wv_pickup_copilot", "hooked_to_klondike"] {
+        assert!(
+            matches!(index.resolve(gated), NamedAnimationResolution::Bound(_)),
+            "{gated} must bind"
+        );
+    }
 }

@@ -771,11 +771,19 @@ pub struct AnimationRecordFacts {
     /// The node-reference table's names, verbatim and in stored order.
     pub nodes: Vec<String>,
     /// The animation-reference table's names: the animations this record
-    /// calls. The `CALL_ANIMATION` statements that make those calls are decoded
-    /// as far as their spelling and their timing ([`super::events`]), but no
-    /// payload field is read out of an event, so no statement can yet be tied
-    /// to one of these names.
+    /// references. The `CALL_ANIMATION` statements' own spelled targets —
+    /// the calls the record's event stream actually makes — are
+    /// [`Self::call_targets`]: every one of this table's names is spelled
+    /// there too in every one of M01's 280+402 records (measured), so the
+    /// table is a subset of the calls, never the whole chain.
     pub animation_refs: Vec<String>,
+    /// The animation names the record's `CALL_ANIMATION` events spell, in
+    /// the event stream's own order — measured over M01's whole animation
+    /// closure under [`super::events::SPELLED_NAME_CLAIM`]. This is the
+    /// measured call chain: which of them the original started, and when,
+    /// is [`crate::mission_animations::CALL_ANIMATION_ACTIVATION_CLAIM`]'s
+    /// designed rule.
+    pub call_targets: Vec<String>,
     /// The record's sequence blocks, in stored order: the reset and damage
     /// blocks first, then the ordinary ones.
     pub sequences: Vec<RecordSequence>,
@@ -886,13 +894,19 @@ impl AnimationRecordFacts {
     }
 
     /// The animation-reference table's names: the animations this record
-    /// calls. The `CALL_ANIMATION` statements that make those calls are decoded
-    /// as far as their spelling and their timing ([`super::events`]), but no
-    /// payload field is read out of an event, so no statement can yet be tied
-    /// to one of these names.
+    /// references — a subset of [`Self::call_targets`] in every measured
+    /// record (see the field's own note).
     #[must_use]
     pub fn animation_refs(&self) -> &[String] {
         &self.animation_refs
+    }
+
+    /// The animation names the record's `CALL_ANIMATION` events spell, in
+    /// the event stream's own order — the measured call chain.
+    /// [`super::events::SPELLED_NAME_CLAIM`] names the claim.
+    #[must_use]
+    pub fn call_targets(&self) -> &[String] {
+        &self.call_targets
     }
 
     /// The record's sequence blocks, in stored order: the reset and damage
@@ -2857,6 +2871,25 @@ fn own_record(
         container_sha256,
     )
     .map_err(|error| MissionAnimationError::Provenance(error.to_string()))?;
+    let sequences: Vec<RecordSequence> = record
+        .sequences()
+        .iter()
+        .map(|block| RecordSequence {
+            kind: block.kind(),
+            name: text(block.name()),
+            event_bytes: block.events().len() as u64,
+            events: match super::events::decode_event_stream(block.events()) {
+                Ok(decoded) => SequenceEvents::Decoded(decoded),
+                Err(error) => SequenceEvents::refused(&error),
+            },
+        })
+        .collect();
+    let call_targets = sequences
+        .iter()
+        .flat_map(|sequence| sequence.events.decoded().into_iter().flatten())
+        .filter(|event| event.opcode == crate::mission_animations::CALL_ANIMATION_OPCODE)
+        .filter_map(|event| event.spelled_name().map(str::to_owned))
+        .collect();
     Ok(AnimationRecordFacts {
         carrier,
         carrier_key,
@@ -2880,19 +2913,8 @@ fn own_record(
         objects: table_names(record, AnimationRecordTableKind::Objects),
         nodes: table_names(record, AnimationRecordTableKind::Nodes),
         animation_refs: table_names(record, AnimationRecordTableKind::AnimationRefs),
-        sequences: record
-            .sequences()
-            .iter()
-            .map(|block| RecordSequence {
-                kind: block.kind(),
-                name: text(block.name()),
-                event_bytes: block.events().len() as u64,
-                events: match super::events::decode_event_stream(block.events()) {
-                    Ok(decoded) => SequenceEvents::Decoded(decoded),
-                    Err(error) => SequenceEvents::refused(&error),
-                },
-            })
-            .collect(),
+        call_targets,
+        sequences,
     })
 }
 

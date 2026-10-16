@@ -47,13 +47,15 @@
 //!   kind states `RUN_TIME` in the installation's declarations, so a duration
 //!   for such a record could only be guessed: it is refused under
 //!   [`RUN_TIME_NOT_MEASURED_CLAIM`] instead.
-//! * **Payload bodies beyond those two timing fields stay raw.** A name field,
-//!   a node index or a colour is not read here, so no transform, no unit and
-//!   no pose is recovered from an event. What a caller gets per tick is
-//!   therefore the record's **statement configuration**, not a transform: the
-//!   owner's ruling of 2026-10-06 records that under
+//! * **Payload bodies beyond the timing fields and the measured name stay
+//!   raw.** A node index or a colour is not read here, so no transform, no
+//!   unit and no pose is recovered from an event. What a caller gets per tick
+//!   is therefore the record's **statement configuration**, not a transform:
+//!   the owner's ruling of 2026-10-06 records that under
 //!   [`POSE_TRANSFORM_NOT_DECODED_CLAIM`], and that claim — not a guessed
 //!   transform — is what stands between this module and a real pose.
+//!   The one payload field that *is* read is the spelled animation name the
+//!   control-call opcodes carry — see [`SPELLED_NAME_CLAIM`].
 //! * **Nothing says what the 2000 engine did** with any of it. `retail` is
 //!   file access, not an original run: every measurement here is
 //!   [`ClaimStatus::ObservedTool`] and never `verified_original`.
@@ -91,6 +93,18 @@ pub const EVENT_STREAM_NOT_DECODED_CLAIM: &str = "f20-anim.sequence-event-stream
 /// machine-readable so a consumer, a report and the finding cannot drift apart
 /// on what the report still is not.
 pub const POSE_TRANSFORM_NOT_DECODED_CLAIM: &str = "f20-anim.event-pose-transform-not-decoded";
+
+/// The claim the spelled-name decode is recorded under.
+///
+/// Every `CALL_ANIMATION` (24), `STOP_ANIMATION` (25) and
+/// `INVALIDATE_ANIMATION` (27) event in the owner's installation stores the
+/// animation name it addresses as a NUL-terminated ASCII string beginning at
+/// payload byte `4`: measured over **3 893** such events in M01's mission and
+/// camera carriers, 100 % with no exception. An event of one of these opcodes
+/// whose bytes at that position do not form such a name simply decodes to
+/// `None` — no guessed name — so the field is an honest statement about the
+/// payload, never about what the 2000 engine did with it.
+pub const SPELLED_NAME_CLAIM: &str = "m01-anim.control-call-payload-name-measured";
 
 /// Why a record containing an unmeasured opcode is refused.
 pub const OPCODE_NOT_MEASURED_REASON: &str = "the block carries an opcode no declaration of the installation joins to a statement, so its \
@@ -753,6 +767,15 @@ pub struct DecodedEvent {
     /// contributes zero — or when the position is a named gap, which refuses
     /// the record before a duration is read.
     pub run_time: Option<f32>,
+    /// The animation name the event's payload spells, verbatim.
+    ///
+    /// `Some` only for the three control-call opcodes (24 `CALL_ANIMATION`,
+    /// 25 `STOP_ANIMATION`, 27 `INVALIDATE_ANIMATION`) whose payloads store a
+    /// NUL-terminated ASCII name at byte `4` — measured over every such event
+    /// in M01's closure under [`SPELLED_NAME_CLAIM`]. `None` for every other
+    /// opcode, and for a payload whose bytes do not form that name: a name is
+    /// never guessed.
+    pub spelled_name: Option<String>,
 }
 
 impl DecodedEvent {
@@ -780,6 +803,13 @@ impl DecodedEvent {
     #[must_use]
     pub const fn info(&self) -> Option<OpcodeInfo> {
         opcode_info(self.opcode)
+    }
+
+    /// The animation name the event's payload spells, when it stores one.
+    /// See [`Self::spelled_name`].
+    #[must_use]
+    pub fn spelled_name(&self) -> Option<&str> {
+        self.spelled_name.as_deref()
     }
 }
 
@@ -831,6 +861,7 @@ fn read_event(events: &[u8], raw: RawEvent) -> Result<DecodedEvent, EventStreamE
         // `OpcodeInfo::timing_gap_claim`) before any duration is read.
         RunTimeEvidence::Unmatched | RunTimeEvidence::Unmeasured => None,
     };
+    let spelled_name = spelled_animation_name(raw.opcode, payload);
     Ok(DecodedEvent {
         offset: raw.offset,
         opcode: raw.opcode,
@@ -840,7 +871,34 @@ fn read_event(events: &[u8], raw: RawEvent) -> Result<DecodedEvent, EventStreamE
         class: info.class,
         start_time,
         run_time,
+        spelled_name,
     })
+}
+
+/// The opcodes whose payloads store the addressed animation's name: the three
+/// control-call opcodes, measured over M01's whole animation closure under
+/// [`SPELLED_NAME_CLAIM`].
+const SPELLED_NAME_OPCODES: [u8; 3] = [24, 25, 27];
+
+/// The payload byte the spelled name begins at, counted from the payload's
+/// first byte (word `0` is `START_TIME`; the name follows it).
+const SPELLED_NAME_OFFSET: usize = 4;
+
+/// The animation name one event's payload spells at [`SPELLED_NAME_OFFSET`],
+/// or `None` when the opcode stores no name or the bytes there do not form a
+/// NUL-terminated ASCII name. Decoding `None` is an honest answer, never a
+/// refusal — a name is a fact about the payload, and an unshaped payload has
+/// none.
+fn spelled_animation_name(opcode: u8, payload: &[u8]) -> Option<String> {
+    if !SPELLED_NAME_OPCODES.contains(&opcode) {
+        return None;
+    }
+    let bytes = payload.get(SPELLED_NAME_OFFSET..)?;
+    let name: Vec<u8> = bytes.iter().take_while(|byte| **byte != 0).copied().collect();
+    if name.is_empty() || !name.iter().all(u8::is_ascii_graphic) {
+        return None;
+    }
+    String::from_utf8(name).ok()
 }
 
 /// Walks one block's bytes and decodes every event.
