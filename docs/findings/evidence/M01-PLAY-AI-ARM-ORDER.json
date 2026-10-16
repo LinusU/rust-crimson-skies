@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "M01-PLAY-AI-ARM-ORDER",
+ "candidate_tree": "089b751f125e0f7d31c8a07a73dcb361f785afdd",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-10-16T23:36:39Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_m01_play_ai_arm_order_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/swe2-max-1", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 2},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 2, "executed": 2, "passed": 2, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "m01_play_ai_arm_order::accept_m01_play_ai_arm_order_composed_restart_arms_into_the_fresh_session", "status": "pass", "evidence": ["cargo-test.log", "arm-order-census.json"]}, {"id": "m01_play_ai_arm_order::accept_m01_play_ai_arm_order_retail_restart_binds_every_flown_record_fresh", "status": "pass", "evidence": ["cargo-test.log", "arm-order-census.json"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "46a4a133833515bf279b4df10b87449da0f4898feeca02abf5ab71d3f65a411c", "kind": "log"}, {"path": "arm-order-census.json", "sha256": "2dfd6b7e4effa68d69aebffd00ae5e9650d80c52cd28a7e049a4fd0603395da6", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "swe2-max-1", "method": "Acceptance suite run locally with the retail capability; this harness derives every field from the recorded log, production discovery of $CS_GAME_DIR, and a second production run (arm-order-census.json) that re-executes the composed restart on M01's own stage — build_headless → spawn frame → 5 armed ticks → MissionHostRestartRequest → 2 fixed ticks — through the very code this task changed. Claim is implemented only, not checked: no independent reviewer has looked at this run, and no original executable ran. MEASURED (retail, read-only): M01's roster respawned 8 flown record(s) through the restart; after two fixed ticks the report's refusal list is empty and every record's WeaponActorBinding carries the fresh MissionWeapons generation — the arming pass registered into the session the host serves, because the pass now runs the same ensure_mission_weapons staleness check FixedPostUpdate already ran, one stage earlier. The task's honest-choice record is the finding docs/findings/2026-10-16-m01-play-ai-arm-order.md: option (a) re-open before the pass was chosen over (b) suppressing the transient refusal, because a session mismatch is a real signal where it can still occur. LIMITS OF WHAT WAS MEASURED: the defect and its fix are the project's own scheduling — nothing here is original-data evidence or verified_original, and the designed AI loadout is unchanged. The 2 assertion(s) discovered under this task's own prefix are the tests of this report. Validated with tools/validate_evidence.py --require-pass."},
+ "claim": "implemented"
+}
