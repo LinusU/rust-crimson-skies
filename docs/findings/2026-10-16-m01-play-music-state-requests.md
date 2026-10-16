@@ -1,4 +1,4 @@
-# M01-PLAY-MUSIC: what M01's music state requests resolve to, and what still needs an owner ruling
+# M01-PLAY-MUSIC: what M01's music state requests resolve to, the owner's ruling, and what landed
 
 Date: 2026-10-16. Task: `M01-PLAY-MUSIC` (#1463), follow-up of `M01-PLAY-RADIO`
 (#1438). Capabilities used: `retail` (read-only `$CS_GAME_DIR`, through
@@ -257,28 +257,60 @@ tests so neither can drift into the other.
 
 ## 7. What landed on this branch
 
-* `crates/cs_app/src/mission_session/radio.rs` — one read-only accessor,
-  `MissionRadio::resolved(group) -> Option<&ResolvedGroup>`, returning exactly
-  the expansion `MissionRadio::plan` already answers music cues from. No
-  behaviour change: `read`, `plan`, `enqueue` and the host's sound step are
-  untouched.
-* `crates/cs_app/tests/accept_m01_music_state_requests.rs` — prefix
-  `accept_m01_music_state_requests_`, two members, both `#[ignore]`d with their
-  capability named so CI (which has neither) skips them and a local run without
-  the variable fails loudly:
-  * `…_resolve_to_their_tracks` (`CS_GAME_DIR`) — production chain end to end:
-    launch plan → retail objective recovery → engine lifecycle model →
-    `declared_sound_groups` (asserts M01's own program cues exactly the five
-    measured states and neither of the two it does not spell) →
-    `MissionRadio::read` (asserts each of the seven states resolves with the
-    `MUSIC` leaf, the exact track list of §1, and `DYNAMIC_WEIGHTS` named) and
-    that no music track was prepared as a line;
-  * `…_match_the_executable_track_tables` (`CS_ENGINE_IMAGE`) — reads the
-    image through `cs_formats::pe_resources`, asserts each state's name at its
-    measured VA, each table slot's pointer and the name it spells, that each
-    table's address is referenced by code in `.text`, and that the four direct
-    clips' names exist.
-* `docs/findings/2026-10-16-m01-play-music-state-requests.md` — this document.
+The measurement half (first landing, pre-ruling):
+
+* `MissionRadio::resolved(group)` accessor; the two `#[ignore]`d retail/image
+  tests below; this document.
+
+The routing half (after the §9 ruling arrived):
+
+* `crates/cs_app/src/audio/music.rs` — `IMAGE_MUSIC_STATES` (the seven
+  measured track tables of §2), `music_state_spec`, `MusicSelector` (§3's
+  weighted draw with the post-draw `DYNAMIC_WEIGHTS` rescale for the four
+  six-slot states; the shared alternating counters for the three objective
+  states, with the measured tertiary oddity bounded and documented) over an
+  injected deterministic RNG — the ruling's designed choice — and
+  `music_member_id`, one `ContentKind::Music` id per track over
+  `install_file_key("<container>/<member>")`.
+* `crates/cs_app/src/audio/loops.rs` — `MISSION_MUSIC_PRODUCER = 2` and
+  `AudioSession::mint_music_id`, so music `AudioEventId`s cannot collide
+  with the radio producer's sequence.
+* `crates/cs_app/src/mission_session/radio.rs` —
+  `ResolvedGroup.dynamic_weights` (the spelled factor now survives the
+  decode), `MissionRadio::music_container`/`music_arms` (the labelled
+  container choice: `ZBD/soundsh.zbd` when the member is present, else
+  `ZBD/soundsl.zbd`), `RadioLineOutcome::MusicRequested` and the
+  `MusicStateUnknown`/`MusicMemberAbsent`/`MusicIdentity` refusals, and the
+  `offer_cues` routing that serves a `RadioLineOutcome::Music`
+  classification to `MusicDirector::request` under the ruled id.
+* `crates/cs_app/src/mission_session/host.rs` — the host arms one
+  `MusicSelector` per launch (seeded from `RunSeeds::mission_seed()`,
+  `MUSIC_DRAW_DOMAIN`) and passes it through `offer_cues`; `restart`
+  re-arms it.
+* `crates/cs_app/tests/accept_m01_music_state_requests.rs` — four members:
+  * `…_selects_by_the_measured_rules` (synthetic, CI) — fixed-seed weighted
+    draw with the post-draw rescale to 100, deterministic replay, the
+    shared counter's measured secondary/primary/tertiary reads,
+    `ContentKind::Music` identity, `RefusedNotMusic` for a foreign kind and
+    `Started` for the ruled one;
+  * `…_resolve_to_their_tracks` (`CS_GAME_DIR`) — the retail resolution end
+    to end (unchanged from the measurement half);
+  * `…_reach_the_music_director` (`CS_GAME_DIR`) — the drive of record:
+    M01's music blocks wake only as `WAKE_OBJECTIVE_WHEN_I_COMPLETE`
+    effects, so the test completes the blocks the record's own `WAKE` lists
+    name (`complete(index)` — the entry point the host calls when
+    conditions hold), offers every emitted cue through the production sound
+    step, and asserts one `MusicRequested` per declared music block: all
+    five states M01 spells served, each member named by the image table's
+    slot, each request carrying the owner-ruled id, no music refusal;
+  * `…_match_the_executable_track_tables` (`CS_ENGINE_IMAGE`) — the image
+    tables at their measured VAs (unchanged).
+* `crates/cs_app/tests/evidence_report_m01_play_music.rs` — the
+  evidence-report harness (`M01-PLAY-MUSIC`), whose second observation
+  (`music-census.json`) re-executes the same chain and records every
+  served request.
+* `docs/findings/2026-10-16-m01-play-music-state-requests.md` — this
+  document.
 
 Commands run on this branch (exit codes recorded in the hand-over):
 
@@ -287,48 +319,72 @@ Commands run on this branch (exit codes recorded in the hand-over):
 | `cargo fmt --all -- --check` | 0 |
 | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
 | `cargo test --workspace --locked` | 0 |
-| `cargo test --workspace --locked -- accept_m01_music_state_requests --include-ignored` | 0 (2 tests, both pass) |
+| `cargo test --workspace --locked -- accept_m01_music_ --include-ignored` | 0 (4 tests, all pass) |
 
 ## 8. Unknowns, each with its evidence
 
 1. **Slot ↔ track binding in the runtime tables.** Slots are filled by
    `handle − handle_of("music_<state>.wav")` in `fcn.00596ea0`; the order
-   handles are assigned at load is not measured (§3).
+   handles are assigned at load is not measured (§3). The implemented
+   selector indexes the image table's spelled order, as the owner ruled.
 2. **Which entry branch a music *group* handle takes** in `0x593590`
-   (`dword == 1` → weighted selection, or name-prefix → direct), which decides
-   whether a given request draws or reuses the last index (§4).
-3. **The music content identity.** No owner ruling exists; §6 item 2 lists the
-   two designed candidates. Nothing in this finding mints one.
-4. **Playback.** No consumer of `MusicOutcome` and no caller of
-   `AudioSession::request_music` in production (§6 item 3).
-5. **Audibility.** No original executable ran; no person heard anything; the
-   selection rule is static code evidence only.
-6. **`[0x9ad6c0]`'s range.** It is incremented by the secondary branch and read
-   unmasked by the tertiary branch (§2); whether anything keeps it in range is
-   untraced.
-7. **The three other `0x595140` call sites** (`0x59388a`, `0x5959b6`, plus the
-   routine around `0x59388a`) were not traced (§4).
-8. **Which container's music tracks the original opens** — F14-D.7's unknown,
-   unchanged: `soundsl`/`soundsh` both hold the names, no state reads which one
-   is chosen.
+   (`dword == 1` → weighted selection, or name-prefix → direct), which
+   decides whether a given request draws or reuses the last index (§4).
+   The implemented selector always draws per request, as the owner ruled.
+3. **The music content identity** — resolved by the owner's §9 ruling:
+   rule **(b)**, one `ContentKind::Music` id per track over
+   `install_file_key("<container>/<member>")`.
+4. **Playback.** No consumer of `MusicOutcome` in production (§6 item 3):
+   the request reaches `MusicDirector` and its verdict is recorded, but no
+   device routine plays it — the F41-D device half stays outside this
+   slice.
+5. **Audibility.** No original executable ran; no person heard anything;
+   the selection rule is static code evidence only and the RNG is the
+   designed project stream, not `MSVCRT!rand`.
+6. **`[0x9ad6c0]`'s range.** It is incremented by the secondary branch and
+   read unmasked by the tertiary branch (§2); whether anything keeps it in
+   range is untraced. The implemented counter bounds the table indexing.
+7. **The three other `0x595140` call sites** (`0x59388a`, `0x5959b6`, plus
+   the routine around `0x59388a`) were not traced (§4).
+8. **Which container's music tracks the original opens** — F14-D.7's
+   unknown, unchanged: `soundsl`/`soundsh` both hold the names, no state
+   reads which one is chosen. The implemented choice is the owner's
+   labelled one: prefer `soundsh`, fall back to `soundsl`.
 9. **`music_airtales.wav`** exists as an image string but no `music_` name
-   sweep of either sound archive finds it; its status is unknown and outside
-   this task's seven states.
+   sweep of either sound archive finds it; its status is unknown and
+   outside this task's seven states.
+10. **`music_battle_sg` and `music_tertiaryobj_sg` are never cued by M01.**
+    All seven states are armed and select correctly, but M01's objective
+    record spells `WAKEUP_SOUND_GROUP` for only five of them (the retail
+    test serves exactly those five; `music_battle_sg` and
+    `music_tertiaryobj_sg` appear in no declaration).
 
-## 9. What the owner must decide to unblock #1463
+## 9. The owner's ruling of 2026-10-17 (arrived while #1463 was blocked)
 
-The acceptance clause *"a test (prefix `accept_m01_music_`) that M01's music
-cues reach `MusicDirector` under the owner-ruled identity — never a guessed id"*
-cannot be written yet: the identity has no ruling (unknown #3). Concretely:
+Quoted from the task history in substance; this section replaces the
+ruling request the blocked session left here.
 
-* rule **(a)** state-level or **(b)** track-level from §6 item 2 (or a third
-  spelling of your own), including the container handling for (b);
-* confirm the selection rule of §3 as the behaviour to reproduce (weighted
-  random draw per request for the six-slot states, alternating counters for the
-  objective states), or say that it stays recorded-but-unimplemented until an
-  original run can confirm it;
-* say whether #1463 stays evidence-bound for the finishing session (§6 item 4).
+* **Identity** — rule **(b)**: "one `ContentKind::Music` id per track, over
+  `install_file_key("<container>/<member>")`".
+* **Container** — "use the same labelled choice #1438 made for voice.
+  `ZBD/soundsh.zbd` is preferred when the member is present there,
+  otherwise `ZBD/soundsl.zbd`." This is a labelled design choice, not a
+  measurement of which container the original opens (unknown #8 stands).
+* **Selection** — "the four six-slot states use the rand()-weighted draw
+  over `DYNAMIC_WEIGHTS`, including the post-draw weight rescale. The three
+  objective states use the alternating counters." The slot order is the
+  image table's spelled order (the §5 cross-check's resolution of the
+  prebattle disagreement: the image is followed, and `sounds.zrd`'s six
+  distinct `music_prebattle*.wav` members stay a recorded discrepancy).
+* **RNG** — "the RNG itself (seed and sequence) is not the original's;
+  label that as designed and make tests deterministic with an injected
+  seed." Implemented as `MusicSelector::launch(seed, …)` over the project's
+  `SplitMix64` stream under `MUSIC_DRAW_DOMAIN`; the host seeds it from
+  `RunSeeds::mission_seed()`.
+* **Acceptance** — "M01's music cues reach `MusicDirector` under these
+  ids"; a synthetic CI test pinning the draw, the counters and the
+  non-`Music` refusal; a retail test showing the M01 opening requesting its
+  state's tracks by these ids; the task stays evidence-bound (§6 item 4).
 
-Nothing in the repository was guessed to get past this: no `Music` id exists on
-this branch, `MusicDirector` is unchanged, and the two tests assert only what is
-measured above.
+Everything the ruling leaves designed is labelled as such where it is
+implemented; nothing here is `verified_original`.
