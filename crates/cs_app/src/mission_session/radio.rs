@@ -414,6 +414,19 @@ impl MissionRadio {
         self.groups.keys().map(String::as_str)
     }
 
+    /// The expansion one prepared group resolved to, when this radio read it:
+    /// the members it reaches in the spelled order, whether it spelled the
+    /// `MUSIC` leaf (a **music state request**, not an ordinary cue), and the
+    /// children nothing declared.
+    ///
+    /// This reads the same [`ResolvedGroup`] [`Self::plan`] answers a cue
+    /// from; it exists so a consumer can ask *what* a music state request
+    /// reaches without replaying the table.
+    #[must_use]
+    pub fn resolved(&self, group: &str) -> Option<&ResolvedGroup> {
+        self.groups.get(group)
+    }
+
     /// The members this radio prepared, in member order.
     pub fn prepared(&self) -> impl Iterator<Item = &PreparedLine> {
         self.lines.values()
