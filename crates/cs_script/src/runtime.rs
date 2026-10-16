@@ -1594,6 +1594,15 @@ pub struct MissionState {
     presentation: Option<MissionEndPresentation>,
     /// Session-unique ordinal for the next scheduled item.
     next_item_ordinal: u32,
+    /// The block indexes whose facts row read [`ObjectiveLifecycle::Awake`]
+    /// at the last evaluation — the wake-transition edge
+    /// [`Self::step_with_countdown`] emits wake-role directive sites on. The
+    /// set is rebuilt from `facts.objectives` every tick, so it is
+    /// deliberately **not** in the save record: a session restored
+    /// mid-mission re-detects already-awake blocks under the same execution
+    /// keys, which the `consumed` guard suppresses, and a block that had not
+    /// yet woken still fires its wake effects on the transition.
+    awake: BTreeSet<u32>,
     limits: WorkLimits,
     /// The mission's explicit RNG stream, seeded from the run's root seed so a
     /// replay of one run reproduces every draw bit-for-bit. Its `state` is
@@ -1631,6 +1640,7 @@ impl MissionState {
             pending_len: 0,
             presentation: None,
             next_item_ordinal: 0,
+            awake: BTreeSet::new(),
             limits: WorkLimits::default(),
             rng: SplitMix64::for_domain(seed, MISSION_EVALUATOR_DOMAIN),
             seed,
@@ -2001,6 +2011,10 @@ impl MissionState {
             pending,
             pending_len,
             next_item_ordinal: snapshot.next_item_ordinal,
+            // Rebuilt from the next tick's facts; a re-detected awake block
+            // re-derives the same execution keys its wake emission already
+            // consumed, so nothing fires twice (see the field's doc).
+            awake: BTreeSet::new(),
             limits,
             rng,
             seed: snapshot.seed,
@@ -2149,6 +2163,56 @@ impl MissionState {
             work: 0,
         };
         let budget = self.limits.max_work_per_tick;
+
+        // Wake-transition effects: a directive operation whose measured role
+        // is the block's wake (`DirectiveOperation::fires_on_wake`, the
+        // mirror of cs_content's `DirectiveRole::WakeEffect` table) emits on
+        // the tick its block's facts row **first** reads
+        // `ObjectiveLifecycle::Awake` — the transition itself — ahead of
+        // whatever the block's condition later completes on. The emission
+        // takes the very execution key the completion pass would have used
+        // for that action (`source`, `action index + 1`), so the block's own
+        // completion emits nothing twice: the `consumed` guard suppresses
+        // the second emit. The set is recomputed from `facts` each tick, so
+        // a nap re-wake is a new transition (the measured "skipped entirely
+        // when the animation is already in state 5" is then the consumer's
+        // answer), a restored session re-detects under already-consumed
+        // keys, and a facts table that never carries a block leaves its
+        // wake effects unfired until the block completes and the
+        // completion-path emit runs them once — the same answer the session
+        // gave before this phase existed.
+        let mut now_awake = BTreeSet::new();
+        for (index, lifecycle) in &facts.objectives {
+            if *lifecycle == ObjectiveLifecycle::Awake {
+                now_awake.insert(*index);
+            }
+        }
+        for index in now_awake
+            .difference(&self.awake)
+            .copied()
+            .collect::<Vec<_>>()
+        {
+            let Some(objective) = program.program().objectives.get(index as usize) else {
+                continue;
+            };
+            for (i, action) in objective.actions.iter().enumerate() {
+                if let Action::Directive { operation, args } = action
+                    && operation.fires_on_wake()
+                {
+                    self.emit_directive(
+                        EventKey {
+                            session: self.session,
+                            tick,
+                            source: objective.id,
+                            sequence: i as u32 + 1,
+                        },
+                        *operation,
+                        args,
+                    );
+                }
+            }
+        }
+        self.awake = now_awake;
 
         // Observe: every condition against the start-of-tick state. All of
         // them are evaluated — including the objectives that will not be

@@ -769,6 +769,99 @@ impl DirectiveOperation {
     pub fn from_code(code: &str) -> Option<Self> {
         Self::ALL.iter().find(|op| op.code() == code).copied()
     }
+
+    /// Which stage of an objective's life this operation feeds — the
+    /// mirror of `cs_content::mission_control::DirectiveOperation::role`'s
+    /// measured [`DirectiveRole`] table, kept here for the same reason the
+    /// operation enum itself is mirrored (see its doc comment): the runtime
+    /// has to know that a `WAKE_ANIM`/`WAKEUP_*`/`RESET_TIMER`/`HIDE_OBJ`
+    /// site belongs to the block's wake transition, not to its completion.
+    #[must_use]
+    pub const fn role(self) -> DirectiveRole {
+        match self {
+            Self::InactiveMembers
+            | Self::InactiveThreshold
+            | Self::DangerZoneFlags
+            | Self::DangerZoneThreshold
+            | Self::EnemyGroupDepletion
+            | Self::AnimationStates
+            | Self::Travelers
+            | Self::NamedCounters => DirectiveRole::CompletionCondition,
+            Self::DormantStart | Self::DependencyGate | Self::PresentationIdentity => {
+                DirectiveRole::ObjectiveRecord
+            }
+            Self::WakeObjectives
+            | Self::SleepObjectives
+            | Self::KillObjectives
+            | Self::NapObjective
+            | Self::SetTargetFlag { .. }
+            | Self::AdvanceStopPoint
+            | Self::ZeppelinCannons
+            | Self::AssignNet
+            | Self::AssignTeam
+            | Self::SetAttackRadius
+            | Self::ReleaseTaxi
+            | Self::SetHelpLabel
+            | Self::StopQueuedSounds
+            | Self::CompletedSoundGroup
+            | Self::AdjustMissionTimer
+            | Self::EndMissionTimer
+            | Self::WarpVehicle => DirectiveRole::CompletionEffect,
+            Self::WakeEnemies
+            | Self::WakeTurrets
+            | Self::WakeZeppelinTurrets
+            | Self::FeedGenerator
+            | Self::WakeAnimation
+            | Self::WakeSoundGroup
+            | Self::ResetMissionTimer
+            | Self::HideObjective => DirectiveRole::WakeEffect,
+            Self::TransitionAnimation | Self::WakeObjectivesOnTransition => {
+                DirectiveRole::TransitionEffect
+            }
+            Self::OutcomeClass { .. } => DirectiveRole::OutcomeAggregation,
+        }
+    }
+
+    /// Whether the operation's measured role is the block's **wake**
+    /// transition: the site emits when the block's lifecycle first reads
+    /// [`ObjectiveLifecycle::Awake`](crate::runtime::ObjectiveLifecycle) —
+    /// the "on wake" every `WAKEUP_*`/`WAKE_ANIM`/`RESET_TIMER`/`HIDE_OBJ`
+    /// summary states — instead of when the block completes. That order is
+    /// what M01's own content requires: `OBJECTIVE18`'s `WAKE_ANIM
+    /// pzhomebase` is what arms the landing nodes its own
+    /// `hooked_to_klondike EXECUTED` gate reads, which can only happen
+    /// before the block completes.
+    ///
+    /// This is the [`Self::role`] `WakeEffect` arm spelled as a predicate;
+    /// the table itself is the one `cs_content`'s measured enum publishes.
+    #[must_use]
+    pub const fn fires_on_wake(self) -> bool {
+        matches!(self.role(), DirectiveRole::WakeEffect)
+    }
+}
+
+/// The stage of an objective's life a directive operation feeds — the
+/// mirror of `cs_content::mission_control::DirectiveRole` (`cs_script`
+/// cannot name that type; see [`DirectiveOperation`]'s doc comment).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum DirectiveRole {
+    /// The block's completion predicate (an `INACTIVE`/`DEDG`/`ANIM_STATE`/
+    /// `TRAVELERS`/... site).
+    CompletionCondition,
+    /// The record's own metadata (`BEGIN_DORMANT`, `TICK_DEPENDS_ON_OBJ`,
+    /// `IDENTITY`).
+    ObjectiveRecord,
+    /// An effect of the block's completion (wake/nap/kill/sleep targets,
+    /// sound cues, timer edits, ...).
+    CompletionEffect,
+    /// An effect of the block's wake transition (`WAKEUP_*`, `WAKE_ANIM`,
+    /// `RESET_TIMER`, `HIDE_OBJ`).
+    WakeEffect,
+    /// An effect of the block's nap/done transition (`SLEEP_ANIM`,
+    /// `WAKE_OBJECTIVE_WHEN_I_SLEEP`).
+    TransitionEffect,
+    /// The block's outcome class (`WON`/`LOST` aggregation).
+    OutcomeAggregation,
 }
 
 /// The documented phase in which an action's effect is resolved. Effects are

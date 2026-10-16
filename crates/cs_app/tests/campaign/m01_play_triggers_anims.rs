@@ -79,7 +79,9 @@ const SYNTHETIC_NODE: &str = "synthetic_landing_node";
 /// through the real `WAKE_ANIM` directive when `wake` is set, and block 1 is
 /// the gate whose own condition reads the `ANIM_STATE` row the landing's call
 /// chain publishes. A `wake` of `false` is the negative leg's program: the
-/// same shape with a directive that never fires.
+/// same shape with a directive whose block never wakes — a `WAKE_ANIM` site
+/// runs on its block's wake transition (the measured role), so a block the
+/// lifecycle model never admits to `Awake` is what keeps it from firing.
 ///
 /// The second block mirrors M01's measured gate shape (`ANIM_STATE` with one
 /// appended pair) on authored names, so the composed member exercises the one
@@ -141,13 +143,19 @@ fn synthetic_parent_landings() -> MissionLandings {
 /// positive chain or the never-firing directive), and a declared lifecycle
 /// table that keeps both authored blocks awake so each evaluates every tick
 /// (an absent table leaves `state` answering `None`, which cannot show a
-/// completion).
+/// completion). The negative leg keeps block 0 **dormant**: a `WAKE_ANIM`
+/// site runs on its block's wake transition (the measured role, not on
+/// completion), so a block that never wakes is a directive that never fires.
 fn synthetic_parent_stage(scratch: &Path, wake: bool) -> MissionStage {
     let mut stage = synthetic_land_stage(scratch);
     stage.host.control = synthetic_gate_program(wake);
     let mut table = BlockLifecycleTable::new();
     table
-        .declare(0, LifecycleDecl::awake())
+        .declare(0, if wake {
+            LifecycleDecl::awake()
+        } else {
+            LifecycleDecl::dormant(None)
+        })
         .expect("block 0 is declared once");
     table
         .declare(1, LifecycleDecl::awake())
@@ -323,14 +331,18 @@ fn accept_m01_play_triggers_anims_the_whole_chain_closes_its_gate_only_on_the_la
     teardown(&mut app);
 }
 
-/// **A `WAKE_ANIM` directive that never fires leaves the whole chain dead: the
-/// landing node is never armed, a body that would otherwise land inside the
-/// row's window runs nothing, the gate's animation is never observed and the
-/// gate never completes.**
+/// **A `WAKE_ANIM` directive whose block never wakes leaves the whole chain
+/// dead: the landing node is never armed, a body that would otherwise land
+/// inside the row's window runs nothing, the gate's animation is never
+/// observed and the gate never completes.**
 ///
 /// The positive member proves the chain closes when the event runs its record;
 /// this one proves the same closure cannot happen without it, which is the
 /// acceptance's "a run where the event never fires never completes it" leg.
+/// `WAKE_ANIM` is a wake-role site (the measured `DirectiveRole::WakeEffect`),
+/// so "never fires" is the block never waking — its dormant declaration —
+/// not merely a condition that never holds: an awake block's wake effects
+/// run ahead of whatever its own completion gate later answers.
 #[test]
 fn accept_m01_play_triggers_anims_a_wake_that_never_fires_never_closes_the_gate() {
     let scratch = Scratch::new("triggers-anims-no-wake");
