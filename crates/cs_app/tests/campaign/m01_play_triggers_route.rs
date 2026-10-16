@@ -522,7 +522,13 @@ fn accept_m01_play_triggers_route_a_scripted_flight_reaches_instantwin() {
     let anchor_position = vec3(live_position(&mut app, anchor));
 
     // --- 1. the proximity trigger, from the player's own flown position -----
-    fly_to(&mut app, player, start, anchor_position);
+    //      The leg approaches the anchor **from above**: the drop-off node
+    //      hangs ~165 m astern and below it, and the route may not come inside
+    //      the landing radius before the designed drop-off beat, or an
+    //      accidental landing would run the record before its own gate block
+    //      is awake (the node is armed from the mission's own intro records).
+    let approach = anchor_position + Vec3::new(0.0, 500.0, 0.0);
+    fly_to(&mut app, player, start, approach);
     assert!(
         completed(&app, PROXIMITY_BLOCK),
         "OBJECTIVE3 completes when the observed player enters the observed anchor's 700 m \
@@ -549,6 +555,15 @@ fn accept_m01_play_triggers_route_a_scripted_flight_reaches_instantwin() {
     //      the low pass, so the landing's own output is what closes it.
     cruise_until_awake(&mut app, DROP_COPILOT_BLOCK, anchor_position, 8_000);
     cruise_until_armed(&mut app, DROPOFF_NODE, anchor_position, 4_000);
+    assert!(
+        app.world()
+            .resource::<MissionHost>()
+            .landings()
+            .activated()
+            .is_empty(),
+        "the route must not have landed before the drop-off beat: {:?}",
+        app.world().resource::<MissionHost>().landings().activated()
+    );
     eprintln!("route: {DROPOFF_NODE} armed and block {DROP_COPILOT_BLOCK} awake");
     let dropoff = composed_node_position(&app, DROPOFF_NODE);
     pump(&mut app, 4, Some(&landing(dropoff)));
@@ -664,7 +679,11 @@ fn accept_m01_play_triggers_route_a_scripted_flight_reaches_instantwin() {
         facts.groups
     );
 
-    // The two landing rows each ran exactly once, and nothing else landed.
+    // The route's own landings: the drop-off node, and **both** `piratezep`
+    // rows — `pzhomebase`'s own `OBJECT_ACTIVE_STATE` vocabulary arms both
+    // `pz_manual_land` and `pz_auto_land`, whose composed positions sit close
+    // enough that the docking pass satisfies the windowed row and its `auto`
+    // sibling in the same placement. Nothing else landed.
     let landed: BTreeSet<String> = host
         .landings()
         .activated()
@@ -673,8 +692,12 @@ fn accept_m01_play_triggers_route_a_scripted_flight_reaches_instantwin() {
         .collect();
     assert_eq!(
         landed,
-        BTreeSet::from([DROPOFF_NODE.to_owned(), hookup.clone()]),
-        "exactly the two route landings ran"
+        BTreeSet::from([
+            DROPOFF_NODE.to_owned(),
+            HOOKUP_NODE.to_owned(),
+            HOOKUP_AUTO_NODE.to_owned(),
+        ]),
+        "exactly the route's three landings ran"
     );
 
     teardown(&mut app);

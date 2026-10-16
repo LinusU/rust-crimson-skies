@@ -181,7 +181,27 @@ that nothing in the lowered program reads the tick-to-second ratio. The
 member asserts the terminal's outcome, source and requesting block, that every
 intervening gate really completed on the live world's own state, that the
 observed part rows and group counts really hold the win facts, and that exactly
-the two route landings ran.
+the route's own landings ran.
+
+Measured on the owner's installation (capability `retail`, implementer
+`bunny-alpha-2`, 2026-10-16): the route settles at tick **1066** with
+`outcome=success source=control_program requested_by=SymbolId(23)`. The
+blocks the route closes on the way are the engine ladders 5/7/8, the
+`wv_drop_copilot` gate 10, the `wv_pickup_copilot` gate 14, both `DEDG` blocks
+15/16, the `hooked_to_klondike` gate 17 and the terminal 23.
+
+Two designed route details the member pins, both recorded rather than
+asserted about the original:
+
+* the proximity leg approaches the anchor **from above**: the drop-off node
+  hangs ~165 m astern and below it and the node is armed by the mission's own
+  intro records, so a level approach would land there before the gate block
+  `OBJECTIVE11` is awake and its one-tick `wv_drop_copilot RUNNING` window
+  would pass unobserved;
+* the docking pass satisfies **both** `piratezep` rows: `pzhomebase`'s own
+  `OBJECT_ACTIVE_STATE` vocabulary arms `pz_manual_land` *and* `pz_auto_land`,
+  whose composed positions sit close enough that one placement runs the
+  windowed row and its `auto` sibling.
 
 The **windowed** clause of the parent acceptance ("each trigger fires from the
 player's actual position or actions in the windowed mission") is **not** met
