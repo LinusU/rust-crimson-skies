@@ -137,6 +137,7 @@ mod m01_play_parts_geometry;
 mod m01_play_triggers_anims_arm;
 mod m01_play_triggers_anims_land;
 mod m01_play_triggers_turret_class;
+mod m01_play_triggers_turret_wire;
 mod m01_radio_wire;
 mod m02_a;
 mod m02_b;
