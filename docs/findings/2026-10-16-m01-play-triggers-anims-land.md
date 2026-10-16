@@ -36,7 +36,8 @@ nodes but never run a gated record. The arming half is #1497's
 * The observation writer (`mission_session/observation.rs`, step 4) writes
   one row per landing node, composing its position from its anchor's
   observed row (§2).
-* The host's `MissionHost::step` runs the consumer at **stage 6c** (§5).
+* The host's `MissionHost::step` runs the consumer at **stage 6d** (§5),
+  after main's own stage 6c (wake enemies), so both keep their place.
 
 ## 2. Measured: the table and its three rows
 
@@ -135,7 +136,8 @@ inventing an arming.
 
 ## 5. Where the consumer runs, and why the state appears when it does
 
-Stage **6c** of `MissionHost::step`, immediately after stage 6b extends the
+Stage **6d** of `MissionHost::step`, after main's stage 6c (wake enemies) and
+so immediately after stage 6b extends the
 armed set with this tick's report and before the sound stage:
 
 * it reads the player's position and each node's composed position from
@@ -146,7 +148,7 @@ armed set with this tick's report and before the sound stage:
   observation writer applies to the pose), otherwise no landing;
 * it reads the landing table from the world's `MissionLandings` resource.
 
-A record started at stage 6c of tick *T* publishes its statements on the
+A record started at stage 6d of tick *T* publishes its statements on the
 script advance **after** its start tick, so the stage-4 fold of tick *T+1*
 is the first place the running record — and the gates its calls satisfy —
 are observed: exactly the behaviour a `WAKE_ANIM`-started record has
@@ -157,7 +159,7 @@ refused): one attempt per row per generation, cleared on restart beside
 
 Fail-closed throughout: a node with no composed row, a player with no
 observation row, an unarmed vocabulary, a distance beyond the radius, a
-descent beyond the sink bound, or a window outside the row's numbers each
+vertical speed beyond the sink bound, or a window outside the row's numbers each
 run **nothing** — absence is never a landing, and only the malformed-window
 case records a refusal (once per row).
 
@@ -221,7 +223,7 @@ Consequences, all verified in the composed retail member:
 
 | claim | rule | resolving measurement |
 | --- | --- | --- |
-| `m01-landing.player-landing-detection-designed` | landed = stage-4 position within **150 m** of the node's composed position **and** vertical speed ≤ **10 m/s** | decode the authored `half_cone`/`sphere` extents under `land_on` as an extent, or an owner original capture of the docking approach |
+| `m01-landing.player-landing-detection-designed` | landed = stage-4 position within **150 m** of the node's composed position **and** vertical speed magnitude ≤ **10 m/s** (near-level, either direction) | decode the authored `half_cone`/`sphere` extents under `land_on` as an extent, or an owner original capture of the docking approach |
 | `m01-landing.row-window-designed` | a non-`auto` row admits the landing when speed magnitude ∈ `speed[0]..=speed[1]` (inclusive, the composition's m/s) and tilt (body-up vs world-up, degrees) ≤ `angle[0]`; an `auto` row has no window; any other arity is a named refusal | the table's unit and `angle`'s/`auto`'s meaning in the original |
 | `m01-landing.node-position-designed` | node = observed anchor row + container offset; no anchor row → no node row | the original's join between the static container node and the live actor pose |
 | `m01-landing.call-chain-at-start-designed` | every record the landing starts activates its measured `animation_refs` at its start, transitively, each identity once per landing | tie a `CALL_ANIMATION` payload name to its statement's `START_TIME` |
@@ -240,7 +242,7 @@ consumer): the parse members, the refusal members, the pure rule pin, and
 legs — too-fast pass, off-window landing, unarmed node, then the landing —
 asserting one activation, its call chain, both refusal kinds each recorded
 exactly once, and the two non-landing rows never running. Removing the
-stage-6c call makes this member fail (mutation-checked).
+stage-6d call makes this member fail (mutation-checked).
 
 Retail (`CS_GAME_DIR` + `CS_ENGINE_IMAGE`, all
 `accept_m01_play_triggers_anims_land_*`):

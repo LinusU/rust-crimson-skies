@@ -776,6 +776,14 @@ fn accept_m01_play_triggers_anims_land_the_designed_detection_and_window_are_pin
         [0.0; 3],
         LANDING_SINK_RATE_MPS + 1.0
     ));
+    // The bound is on the magnitude, either direction: a near-level climb is
+    // as much a landing as a near-level descent, and a fast climb is not.
+    assert!(landing_reached([0.0; 3], [0.0; 3], -LANDING_SINK_RATE_MPS));
+    assert!(!landing_reached(
+        [0.0; 3],
+        [0.0; 3],
+        -(LANDING_SINK_RATE_MPS + 1.0)
+    ));
 
     let row = LandingRow::authored(0, "anim", "node", &[35.0], &[50.0, 220.0], false);
     assert_eq!(window_satisfied(&row, 60.0, 0.0), Ok(true));

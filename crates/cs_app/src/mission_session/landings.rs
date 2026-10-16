@@ -18,7 +18,7 @@
 //! | The three named nodes exist in the world container, with positions | `gamez.zbd`'s node array through `world_scene_graph_from_gamez` |
 //! | Which record publishes `OBJECT_ACTIVE_STATE` over which node vocabulary | the arm task's designed arming surface (`OBJECT_ACTIVE_ARMING_CLAIM`) |
 //! | **Where a node sits relative to the actor the observation reports** | designed: [`LANDING_NODE_POSITION_CLAIM`] |
-//! | **What counts as a landing** (radius + descent) | designed: [`LANDING_DETECTION_CLAIM`] |
+//! | **What counts as a landing** (radius + vertical speed) | designed: [`LANDING_DETECTION_CLAIM`] |
 //! | **What the row's `angle`/`speed` numbers gate** | designed: [`LANDING_WINDOW_CLAIM`] |
 //! | **When a record's `animation_refs` fire** | designed: [`LANDING_CALL_CHAIN_CLAIM`] |
 //!
@@ -101,14 +101,15 @@ pub const LANDING_NODE_POSITION_CLAIM: &str = "m01-landing.node-position-designe
 /// The designed geometric rule for "the player landed here".
 ///
 /// The player body has landed at a node when its stage-4 position is within
-/// [`LANDING_RADIUS_M`] of the node's composed position **and** its
-/// committed vertical speed is at most [`LANDING_SINK_RATE_MPS`] (a
-/// touchdown-scale descent, not a cruise descent). Both bounds are designed:
-/// the authored landing volumes the container keeps under the nodes
-/// (`half_cone`, `sphere` around `land_on`) are not decoded as extents, so
-/// no measurement sizes a radius, and no original run was watched. The
-/// resolving measurement is a decoded landing-volume extent or an owner
-/// original capture of the docking approach.
+/// [`LANDING_RADIUS_M`] of the node's composed position **and** the
+/// magnitude of its committed vertical speed is at most
+/// [`LANDING_SINK_RATE_MPS`] (near-level flight, not a cruise climb or a
+/// dive). Both bounds are designed: the authored landing volumes the
+/// container keeps under the nodes (`half_cone`, `sphere` around `land_on`)
+/// are not decoded as extents, so no measurement sizes a radius, and no
+/// original run was watched. The resolving measurement is a decoded
+/// landing-volume extent or an owner original capture of the docking
+/// approach.
 pub const LANDING_DETECTION_CLAIM: &str = "m01-landing.player-landing-detection-designed";
 
 /// The designed reading of one row's own numbers.
@@ -118,7 +119,7 @@ pub const LANDING_DETECTION_CLAIM: &str = "m01-landing.player-landing-detection-
 /// metres per second — the unit the flight law and every pose use) and its
 /// tilt off world-level — the angle between the body's up vector and world
 /// up, one number covering bank and pitch — must not exceed the row's single
-/// `angle` value. A row spelling `auto` has no window: proximity and descent
+/// `angle` value. A row spelling `auto` has no window: proximity and vertical speed
 /// alone satisfy it. The table's own unit, the meaning of `angle`, and what
 /// `auto` switched in the original are all unmeasured; an arity this rule
 /// cannot read is a **named refusal**, never a guessed bound.
@@ -142,8 +143,10 @@ pub const LANDING_CALL_CHAIN_CLAIM: &str = "m01-landing.call-chain-at-start-desi
 /// reached it, in metres. Designed — see [`LANDING_DETECTION_CLAIM`].
 pub const LANDING_RADIUS_M: f64 = 150.0;
 
-/// The largest downward speed (metres per second) that still counts as a
-/// landing rather than a pass. Designed — see [`LANDING_DETECTION_CLAIM`].
+/// The largest vertical speed magnitude (metres per second) that still counts
+/// as a landing rather than a pass — in either direction, so a near-level
+/// touchdown qualifies and a cruise climb or dive does not. Designed — see
+/// [`LANDING_DETECTION_CLAIM`].
 pub const LANDING_SINK_RATE_MPS: f64 = 10.0;
 
 /// The world-group reader's landing member, as the installation spells it.
@@ -816,17 +819,17 @@ pub fn window_satisfied(row: &LandingRow, speed_m_s: f64, tilt_deg: f64) -> Resu
 /// Whether the player body reached a landing at `node`.
 ///
 /// The designed geometric half of [`LANDING_DETECTION_CLAIM`]: within
-/// [`LANDING_RADIUS_M`] and descending no faster than
-/// [`LANDING_SINK_RATE_MPS`]. Pure, so the rule is unit-testable without a
-/// world.
+/// [`LANDING_RADIUS_M`] and its vertical speed no faster than
+/// [`LANDING_SINK_RATE_MPS`] in either direction. Pure, so the rule is
+/// unit-testable without a world.
 #[must_use]
-pub fn landing_reached(player: [f64; 3], node: [f64; 3], sink_m_s: f64) -> bool {
+pub fn landing_reached(player: [f64; 3], node: [f64; 3], vertical_m_s: f64) -> bool {
     let [px, py, pz] = player;
     let [nx, ny, nz] = node;
     let distance_squared =
         (px - nx).mul_add(px - nx, (py - ny) * (py - ny)) + (pz - nz) * (pz - nz);
     distance_squared <= LANDING_RADIUS_M * LANDING_RADIUS_M
-        && sink_m_s.abs() <= LANDING_SINK_RATE_MPS
+        && vertical_m_s.abs() <= LANDING_SINK_RATE_MPS
 }
 
 /// One name the landing's call chain started (or refused), and how.
