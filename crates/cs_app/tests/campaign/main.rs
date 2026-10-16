@@ -275,6 +275,7 @@ mod m01_play_triggers_anims;
 mod m01_play_triggers_anims_arm;
 mod m01_play_triggers_anims_land;
 mod m01_play_triggers_depletion;
+mod m01_play_triggers_group_refusal;
 mod m01_play_triggers_observe;
 mod m01_play_triggers_parts;
 mod m01_play_triggers_turret_class;
