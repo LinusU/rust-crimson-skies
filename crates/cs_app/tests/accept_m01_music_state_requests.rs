@@ -3,129 +3,64 @@
 //!
 //! A `WAKEUP_SOUND_GROUP` naming one of the executable's seven built-in
 //! `music_*_sg` groups is a **music state request**, not an ordinary cue
-//! (`docs/findings/2026-10-06-m01-lc-directive-d-sound-help-timer-directives.md`),
-//! and [`MissionRadio::plan`] answers such a cue with
+//! (`docs/findings/2026-10-06-m01-lc-directive-d-sound-help-timer-directives.md`).
+//! [`MissionRadio::plan`] answers such a cue with
 //! [`cs_app::mission_session::RadioLineOutcome::Music`] instead of a radio
-//! line. This suite pins, through production code, both halves of what a
-//! music state request resolves to:
+//! line, and [`offer_cues`] turns that classification into the request it
+//! is: the selector's measured pick, the labelled container choice's archive,
+//! the owner-ruled track-level [`ContentKind::Music`] id, and the audio
+//! session's [`MusicDirector`] verdict.
 //!
+//! This suite pins, through production code, every half of that chain:
+//!
+//! * the **measured rule** — the weighted draw's post-draw `DYNAMIC_WEIGHTS`
+//!   rescale and the three objective states' shared alternating counter,
+//!   driven by an injected seed (the ruling's designed RNG);
+//! * the **identity** — `music_member_id`, one `ContentKind::Music` id per
+//!   track over `install_file_key("<container>/<member>")`, the cue's id and
+//!   any published id minted through that one function, and
+//!   `MusicDirector`'s refusal of a non-`Music` id;
 //! * the **retail half** — what `sounds.zrd`'s own group table expands each
 //!   state to (the tracks it names), read by [`MissionRadio::read`] from the
-//!   owner's installation, plus the five of the seven states M01's own
-//!   program can cue;
+//!   owner's installation, the spelled `DYNAMIC_WEIGHTS` factor, plus the
+//!   five of the seven states M01's own program can cue, ending in the real
+//!   mission opening's music requests reaching `MusicDirector` under those
+//!   ids;
 //! * the **image half** — the seven built-in track tables the executable's
 //!   music dispatcher (`0x5954f0`) indexes, read from `$CS_ENGINE_IMAGE`
-//!   through `cs_formats`' own PE layout reader.
+//!   through `cs_formats`' own PE layout reader, pinned against the
+//!   production [`IMAGE_MUSIC_STATES`] table.
 //!
-//! The two halves are measured separately and cross-checked: for six of the
-//! seven states the executable's table and `sounds.zrd` name the same tracks
-//! in the same order, and `music_prebattle_sg` is the measured exception
-//! (three distinct names repeated to fill six slots in the image, six
-//! distinct tracks in the retail data) — pinned here so neither reading can
-//! drift into the other.
+//! The two measured halves are cross-checked: for six of the seven states
+//! the executable's table and `sounds.zrd` name the same tracks in the same
+//! order, and `music_prebattle_sg` is the measured exception (three distinct
+//! names repeated to fill six slots in the image, six distinct tracks in the
+//! retail data) — the image's table is followed, as the owner ruled.
 //!
-//! What is **not** claimed: nothing here mints a music content id, asks
-//! [`cs_sim::audio_events::MusicDirector`] for a cue, or plays anything.
-//! `MusicDirector::request` refuses a non-`Music`
-//! [`cs_types::content::ContentId`], F14-D.7 records that no container family
-//! states a cue class, and **no owner ruling for a music identity exists**,
-//! so this suite derives no id and the routing half of #1463's acceptance
-//! waits for that ruling
-//! (`docs/findings/2026-10-16-m01-play-music-state-requests.md`). Nothing
-//! here is `verified_original`: no original executable ran and no person
-//! heard anything.
+//! What is **not** claimed: nothing here plays anything. Whether a device
+//! outputs the requested cue stays the owner's F41-D listening gate, and
+//! nothing here is `verified_original`: no original executable ran and no
+//! person heard anything.
 
 use std::collections::BTreeSet;
 use std::path::PathBuf;
 
+use cs_app::audio::{
+    AudioSession, IMAGE_MUSIC_STATES, MusicArm, MusicSelector, MusicStateRule, music_member_id,
+};
 use cs_app::mission_launch::plan_mission_launch;
-use cs_app::mission_session::{MissionRadio, declared_engine_objectives, declared_sound_groups};
+use cs_app::mission_session::{
+    MissionRadio, RadioLineOutcome, declared_engine_objectives, declared_sound_groups, offer_cues,
+};
 use cs_app::objectives::recover_retail_objectives;
+use cs_app::physics::BASELINE_FIXED_HZ;
+use cs_app::scene::SceneGeneration;
 use cs_content::campaign_bindings::MissionLabel;
 use cs_formats::ParseContext;
 use cs_formats::pe_resources::{PeLayout, RvaSpan, read_pe_layout};
-
-/// The seven music state groups the executable names, with the virtual
-/// address of that name, the virtual address of the state's built-in track
-/// table, and the table's entries **as the image spells them**. Every address
-/// and every spelling was measured in `$CS_ENGINE_IMAGE` and is re-read by
-/// [`accept_m01_music_state_requests_match_the_executable_track_tables`].
-///
-/// Address convention: virtual address, image base `0x400000`.
-const STATES: [(&str, u32, u32, &[&str]); 7] = [
-    (
-        "music_battlesuccess_sg",
-        0x63a4a8,
-        0x63a088,
-        &[
-            "music_battlesuccess1.wav",
-            "music_battlesuccess2.wav",
-            "music_battlesuccess3.wav",
-            "music_battlesuccess4.wav",
-            "music_battlesuccess5.wav",
-            "music_battlesuccess6.wav",
-        ],
-    ),
-    (
-        "music_missionsuccess_sg",
-        0x63a4c0,
-        0x63a058,
-        &[
-            "music_missionsuccess1.wav",
-            "music_missionsuccess2.wav",
-            "music_missionsuccess3.wav",
-            "music_missionsuccess4.wav",
-            "music_missionsuccess5.wav",
-            "music_missionsuccess6.wav",
-        ],
-    ),
-    (
-        "music_tertiaryobj_sg",
-        0x63a4d8,
-        0x63a038,
-        &["music_tertiaryobj1.wav", "music_tertiaryobj2.wav"],
-    ),
-    (
-        "music_primaryobj_sg",
-        0x63a4f0,
-        0x63a028,
-        &["music_primaryobj1.wav", "music_primaryobj2.wav"],
-    ),
-    (
-        "music_secondaryobj_sg",
-        0x63a504,
-        0x63a030,
-        &["music_secondaryobj1.wav", "music_secondaryobj2.wav"],
-    ),
-    // Measured exception: the image's prebattle table repeats its three
-    // distinct names to fill the six slots.
-    (
-        "music_prebattle_sg",
-        0x63a51c,
-        0x63a070,
-        &[
-            "music_prebattle1.wav",
-            "music_prebattle2.wav",
-            "music_prebattle3.wav",
-            "music_prebattle1.wav",
-            "music_prebattle2.wav",
-            "music_prebattle3.wav",
-        ],
-    ),
-    (
-        "music_battle_sg",
-        0x63a530,
-        0x63a040,
-        &[
-            "music_battle1.wav",
-            "music_battle2.wav",
-            "music_battle3.wav",
-            "music_battle4.wav",
-            "music_battle5.wav",
-            "music_battle6.wav",
-        ],
-    ),
-];
+use cs_sim::audio_events::{AudioAssetSpec, AudioRouter, MusicCue, MusicDirector, MusicOutcome};
+use cs_types::content::ContentKind;
+use cs_types::net::SessionId;
 
 /// The tracks `sounds.zrd` expands each state to, measured through
 /// [`MissionRadio::read`]. The order is the spelled order the expansion
@@ -369,14 +304,19 @@ fn accept_m01_music_state_requests_match_the_executable_track_tables() {
     let text_len = usize::try_from(text.raw_size).expect("the section length fits usize");
     let code = &bytes[text_start..text_start + text_len];
 
-    for (state, name_va, table_va, tracks) in STATES {
+    // The production table is the one pinned against the image: every state
+    // the selector serves, its rule and its slots must be the dispatcher's
+    // own, at the measured addresses.
+    for spec in IMAGE_MUSIC_STATES {
+        let state = spec.group;
         assert_eq!(
-            text_at(&layout, &bytes, name_va),
+            text_at(&layout, &bytes, spec.name_va),
             state,
-            "the dispatcher's name table spells {state} at {name_va:#x}"
+            "the dispatcher's name table spells {state} at {:#x}",
+            spec.name_va
         );
-        for (index, expected) in tracks.iter().enumerate() {
-            let entry_va = table_va + 4 * u32::try_from(index).expect("the index fits u32");
+        for (index, expected) in spec.tracks.iter().enumerate() {
+            let entry_va = spec.table_va + 4 * u32::try_from(index).expect("the index fits u32");
             let pointer = word_at(&layout, &bytes, entry_va);
             assert_eq!(
                 text_at(&layout, &bytes, pointer),
@@ -387,8 +327,9 @@ fn accept_m01_music_state_requests_match_the_executable_track_tables() {
         assert!(
             code.windows(4).any(|window| u32::from_le_bytes(
                 window.try_into().expect("four bytes")
-            ) == table_va),
-            "{state}'s table at {table_va:#x} is indexed by code in .text"
+            ) == spec.table_va),
+            "{state}'s table at {:#x} is indexed by code in .text",
+            spec.table_va
         );
     }
 
@@ -408,4 +349,370 @@ fn accept_m01_music_state_requests_match_the_executable_track_tables() {
             "the image spells {name} in its music string cluster"
         );
     }
+}
+
+/// **The selector reproduces the measured rule — the weighted draw's
+/// post-draw `DYNAMIC_WEIGHTS` rescale and the objective states' shared
+/// counter — under an injected seed, and `MusicDirector` serves a request
+/// only under a `Music` id.**
+///
+/// This is the synthetic leg the owner ruling asks for: the arm is the shape
+/// `sounds.zrd` spells (six children, the `0.5` factor), the seed is the
+/// designed stream's own, and every pinned number derives from the measured
+/// arithmetic — nothing here touches the installation.
+#[test]
+fn accept_m01_music_state_requests_selects_by_the_measured_rules() {
+    let arm = |group: &str| MusicArm {
+        group: group.to_owned(),
+        children: 6,
+        factor: 0.5,
+    };
+    let mut selector = MusicSelector::launch(0, [arm("music_battle_sg")]);
+
+    // The weighted pick is the injected stream's: the slot names its table
+    // track, and the post-draw rescale is the measured arithmetic on the
+    // live weights — chosen × 0.5, 0.001 floor, renormalized to sum 100.
+    let first = selector
+        .select("music_battle_sg")
+        .expect("an armed state selects");
+    let battle = IMAGE_MUSIC_STATES
+        .iter()
+        .find(|spec| spec.group == "music_battle_sg")
+        .expect("a built-in state");
+    assert_eq!(battle.rule, MusicStateRule::WeightedDraw);
+    assert_eq!(first.member, battle.tracks[first.slot]);
+    let weights = selector
+        .weights("music_battle_sg")
+        .expect("an armed weighted state");
+    let mut expected = [1.0f32; 6];
+    expected[first.slot] = 0.5;
+    let expected_sum: f32 = expected.iter().sum();
+    for (index, weight) in weights.iter().enumerate() {
+        let expected = expected[index] * (100.0 / expected_sum);
+        assert!(
+            (weight - expected).abs() < 1e-4,
+            "slot {index}'s weight is the measured decay then renormalize: {weights:?}"
+        );
+    }
+    assert!(
+        (weights.iter().sum::<f32>() - 100.0).abs() < 1e-3,
+        "the weights renormalize to the measured 100.0: {weights:?}"
+    );
+
+    // The injected stream is deterministic: two selectors on the same seed
+    // replay the identical pick sequence from the first draw.
+    let mut stream_a = MusicSelector::launch(0, [arm("music_battle_sg")]);
+    let mut stream_b = MusicSelector::launch(0, [arm("music_battle_sg")]);
+    for _ in 0..8 {
+        assert_eq!(
+            stream_a.select("music_battle_sg"),
+            stream_b.select("music_battle_sg"),
+            "one seed replays one pick sequence exactly"
+        );
+    }
+
+    // A group no built-in state serves selects nothing — never a guessed
+    // track.
+    assert_eq!(selector.select("music_not_a_state_sg"), None);
+
+    // The objective states share one counter: secondary reads it `% 2` and
+    // advances it, primary reads it `% 2` without advancing, and tertiary
+    // reads it raw (bounded by the table's two slots — the designed bound on
+    // the measured oddity).
+    let mut objectives = MusicSelector::empty(0);
+    let member =
+        |selector: &mut MusicSelector, group: &str| selector.select(group).map(|pick| pick.member);
+    assert_eq!(
+        member(&mut objectives, "music_secondaryobj_sg").as_deref(),
+        Some("music_secondaryobj1.wav"),
+        "counter 0 reads slot 0"
+    );
+    assert_eq!(objectives.objective_counter(), 1);
+    assert_eq!(
+        member(&mut objectives, "music_secondaryobj_sg").as_deref(),
+        Some("music_secondaryobj2.wav"),
+        "counter 1 reads slot 1"
+    );
+    assert_eq!(objectives.objective_counter(), 2);
+    assert_eq!(
+        member(&mut objectives, "music_primaryobj_sg").as_deref(),
+        Some("music_primaryobj1.wav"),
+        "primary reads the shared counter's % 2 without advancing it"
+    );
+    assert_eq!(
+        objectives.objective_counter(),
+        2,
+        "the primary branch does not advance the counter"
+    );
+    assert_eq!(
+        member(&mut objectives, "music_tertiaryobj_sg").as_deref(),
+        Some("music_tertiaryobj1.wav"),
+        "tertiary reads the raw counter, bounded by its table"
+    );
+
+    // The owner-ruled identity: one Music id per track, the container part
+    // of the key.
+    let asset = music_member_id("ZBD/soundsh.zbd", "music_battle1.wav")
+        .expect("a track member derives an id");
+    assert_eq!(asset.kind(), ContentKind::Music);
+    assert_ne!(
+        asset,
+        music_member_id("ZBD/soundsl.zbd", "music_battle1.wav")
+            .expect("the same member under the other container"),
+        "the container is part of the identity"
+    );
+
+    // The director serves the request only under a `Music` id: the refusal
+    // the ruling makes impossible to hide.
+    let session = SessionId::new(7).expect("a nonzero session");
+    let mut director = MusicDirector::new(session);
+    let mut sequence = 0;
+    let mut id = |producer: u32| {
+        sequence += 1;
+        cs_sim::audio_events::AudioEventId {
+            session,
+            tick: cs_types::Tick(0),
+            producer,
+            sequence,
+        }
+    };
+    let not_music =
+        cs_types::content::ContentId::from_source(ContentKind::Dialogue, "synthetic.not-music")
+            .expect("a synthetic id");
+    assert_eq!(
+        director.request(MusicCue {
+            id: id(0),
+            asset: not_music
+        }),
+        MusicOutcome::RefusedNotMusic {
+            kind: ContentKind::Dialogue
+        },
+        "a non-Music asset is refused by kind"
+    );
+    assert_eq!(
+        director.request(MusicCue {
+            id: id(0),
+            asset: asset.clone()
+        }),
+        MusicOutcome::Started {
+            to: asset.clone(),
+            audible: true
+        },
+        "the same request under the owner-ruled id starts the cue"
+    );
+    assert_eq!(director.current().map(|cue| &cue.asset), Some(&asset));
+}
+
+/// **M01's music state requests reach `MusicDirector` under the owner-ruled
+/// track-level identity, through the production sound step.**
+///
+/// The drive is the mission's own cue chain: `ObjectiveLifecycles::engine`
+/// emits the `WAKEUP_SOUND_GROUP` cues M01's lifecycle transitions spell,
+/// `offer_cues` — the host's whole sound step — resolves each one, the armed
+/// selector picks the track by the state's measured rule, and the request
+/// carries a [`ContentKind::Music`] id minted through [`music_member_id`]
+/// over the labelled container's member. M01's music blocks wake only as
+/// `WAKE_OBJECTIVE_WHEN_I_COMPLETE` effects of other blocks, so the test
+/// completes exactly those blocks — `complete(index)` is the entry point
+/// the host calls when a block's conditions hold; the emitted cues, the
+/// effect cascade, the resolution and the request are the model's own.
+/// Whether a device plays the cue is the F41-D gate's question, not this
+/// test's.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_m01_music_state_requests_reach_the_music_director() {
+    let root = game_dir();
+    let plan = plan_mission_launch(
+        &root,
+        MissionLabel::new("M01").expect("M01 is a valid mission label"),
+        "The Lost Treasure",
+    )
+    .expect("M01's launch closure plans");
+    let mission_dir = plan.mission_dir.clone();
+    drop(plan);
+    let recovery = recover_retail_objectives(&root, &mission_dir)
+        .expect("M01's objective record reads through the production recovery");
+    let engine = declared_engine_objectives(&recovery)
+        .expect("M01's engine lifecycle model builds from its own declarations");
+    let radio = MissionRadio::read(&root, declared_sound_groups(&engine))
+        .expect("M01's sound groups read from sounds.zrd");
+
+    // The music-state blocks M01's objective record declares: each cues its
+    // state on `WAKEUP_SOUND_GROUP` and wakes only through another block's
+    // `WAKE` effect.
+    let mut music_blocks = Vec::new();
+    let mut declared_groups = std::collections::BTreeSet::new();
+    for index in 0.. {
+        let Some(objective) = engine.get(index) else {
+            break;
+        };
+        if let Some(group) = objective
+            .declaration
+            .wakeup_sound_group
+            .as_deref()
+            .filter(|group| cs_app::audio::music_state_spec(group).is_some())
+        {
+            music_blocks.push(index);
+            declared_groups.insert(group.to_owned());
+        }
+    }
+    assert!(
+        !music_blocks.is_empty(),
+        "M01's objective record declares music-state blocks"
+    );
+    // Every block whose own `WAKE` list reaches a music block — completing
+    // it is what the mission's record says wakes that block.
+    let mut completers = Vec::new();
+    for index in 0.. {
+        let Some(objective) = engine.get(index) else {
+            break;
+        };
+        if objective
+            .declaration
+            .wake
+            .targets()
+            .iter()
+            .any(|target| music_blocks.contains(target))
+        {
+            completers.push(index);
+        }
+    }
+
+    let mut lifecycles = cs_app::mission_session::ObjectiveLifecycles::engine(engine);
+    let mut music = MusicSelector::launch(0, radio.music_arms());
+    let session = SessionId::new(9).expect("a nonzero session");
+    let mut audio = AudioSession::new(
+        AudioRouter::new(session),
+        SceneGeneration(1),
+        std::iter::empty::<AudioAssetSpec>(),
+    );
+
+    let elapsed = 1.0 / f64::from(BASELINE_FIXED_HZ);
+    let mut requested: Vec<(
+        String,
+        usize,
+        String,
+        cs_types::content::ContentId,
+        MusicOutcome,
+    )> = Vec::new();
+    let mut music_refusals = Vec::new();
+    let serve = |lifecycles: &mut cs_app::mission_session::ObjectiveLifecycles,
+                 music: &mut MusicSelector,
+                 audio: &mut AudioSession,
+                 requested: &mut Vec<(
+        String,
+        usize,
+        String,
+        cs_types::content::ContentId,
+        MusicOutcome,
+    )>,
+                 music_refusals: &mut Vec<String>| {
+        for outcome in offer_cues(&lifecycles.take_cues(), &radio, music, Some(audio)) {
+            match outcome {
+                RadioLineOutcome::MusicRequested {
+                    group,
+                    slot,
+                    member,
+                    asset,
+                    outcome,
+                } => requested.push((group, slot, member, asset, outcome)),
+                RadioLineOutcome::Refused { group, refusal }
+                    if matches!(
+                        refusal,
+                        cs_app::mission_session::RadioRefusal::MusicStateUnknown { .. }
+                            | cs_app::mission_session::RadioRefusal::MusicMemberAbsent { .. }
+                            | cs_app::mission_session::RadioRefusal::MusicIdentity { .. }
+                    ) =>
+                {
+                    music_refusals.push(format!("{group:?}: {refusal}"));
+                }
+                _ => {}
+            }
+        }
+    };
+
+    // The opening: the mission clock's own wakes, then the completions that
+    // cascade the music blocks' wakes.
+    for _ in 0..4 * BASELINE_FIXED_HZ {
+        lifecycles.advance(elapsed);
+        serve(
+            &mut lifecycles,
+            &mut music,
+            &mut audio,
+            &mut requested,
+            &mut music_refusals,
+        );
+    }
+    for index in completers {
+        lifecycles.complete(index as u32);
+        serve(
+            &mut lifecycles,
+            &mut music,
+            &mut audio,
+            &mut requested,
+            &mut music_refusals,
+        );
+    }
+
+    assert!(
+        music_refusals.is_empty(),
+        "every music state request resolves a track and an identity: {music_refusals:?}"
+    );
+    // Every music state M01 declares was served: the groups the music
+    // blocks cue are exactly the groups the director was asked for.
+    let served: std::collections::BTreeSet<&String> =
+        requested.iter().map(|(group, ..)| group).collect();
+    assert!(
+        !requested.is_empty(),
+        "M01's opening emits at least one music state request"
+    );
+    assert_eq!(
+        served,
+        declared_groups
+            .iter()
+            .collect::<std::collections::BTreeSet<&String>>(),
+        "every music state M01's record declares was requested"
+    );
+    assert_eq!(
+        requested.len(),
+        music_blocks.len(),
+        "one request per declared music block: {requested:?}"
+    );
+    for (group, slot, member, asset, outcome) in &requested {
+        let spec = cs_app::audio::music_state_spec(group)
+            .unwrap_or_else(|| panic!("{group} is a built-in state"));
+        assert_eq!(
+            member.as_str(),
+            spec.tracks[slot % spec.tracks.len()],
+            "{group} slot {slot} names the image table's track"
+        );
+        let container = radio
+            .music_container(member)
+            .unwrap_or_else(|| panic!("{member} resolves to a container"));
+        assert_eq!(
+            asset,
+            &music_member_id(container, member).expect("the track derives an id"),
+            "the request carries the owner-ruled identity over {container}"
+        );
+        assert!(
+            matches!(
+                outcome,
+                MusicOutcome::Started { .. }
+                    | MusicOutcome::Transition { .. }
+                    | MusicOutcome::Unchanged
+            ),
+            "the director accepted the request: {outcome:?}"
+        );
+    }
+    // The session's director ends on the last requested cue — its current
+    // state is what the mission asked for, under the same identity.
+    let last = requested.last().expect("at least one request");
+    assert_eq!(
+        audio
+            .music
+            .current()
+            .map(|cue| (&cue.asset, cue.id.session)),
+        Some((&last.3, session)),
+        "the director's current cue is the last track the mission requested"
+    );
 }

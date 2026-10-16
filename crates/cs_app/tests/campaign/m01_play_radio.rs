@@ -49,7 +49,7 @@
 
 use std::collections::BTreeSet;
 
-use cs_app::audio::AudioSession;
+use cs_app::audio::{AudioSession, MusicSelector};
 use cs_app::mission_launch::{MissionLaunchPlan, plan_mission_launch};
 use cs_app::mission_session::{
     MissionHostReport, MissionRadio, ObjectiveLifecycles, RADIO_SOUND_CONTAINER, RadioLineOutcome,
@@ -108,7 +108,7 @@ fn collect(outcomes: &[RadioLineOutcome]) -> (Vec<Queued>, Vec<String>, usize) {
                 group.as_deref().unwrap_or("<unnamed>")
             )),
             RadioLineOutcome::NoAudioSession { .. } => no_audio += 1,
-            RadioLineOutcome::Music { .. } => {}
+            RadioLineOutcome::Music { .. } | RadioLineOutcome::MusicRequested { .. } => {}
         }
     }
     (queued, refused, no_audio)
@@ -241,6 +241,10 @@ fn accept_m01_play_radio_the_opening_conversation_is_queued_at_mission_start() {
         SceneGeneration(1),
         std::iter::empty::<AudioAssetSpec>(),
     );
+    // The same armed selector the host carries: music cues this drive emits
+    // reach the session's MusicDirector, and this leg's assertions ignore
+    // them as it always has.
+    let mut music = MusicSelector::launch(0, radio.music_arms());
 
     // Mission start, driven the way the host drives it: one fixed tick's
     // elapsed per pass, the model's own clock inside it, then the cues it
@@ -255,7 +259,7 @@ fn accept_m01_play_radio_the_opening_conversation_is_queued_at_mission_start() {
         if cues.is_empty() {
             continue;
         }
-        outcomes.extend(offer_cues(&cues, &radio, Some(&mut audio)));
+        outcomes.extend(offer_cues(&cues, &radio, &mut music, Some(&mut audio)));
         if !outcomes.is_empty() {
             break;
         }

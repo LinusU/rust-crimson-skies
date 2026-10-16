@@ -197,6 +197,28 @@ pub enum RadioRefusal {
         /// The group that resolved to nothing playable here.
         group: String,
     },
+    /// The group spelled `MUSIC`, but is not one of the executable's seven
+    /// built-in `music_*_sg` states: no measured table exists to select a
+    /// track from, and no track is guessed (Rally #1463, `M01-PLAY-MUSIC`).
+    MusicStateUnknown {
+        /// The music group that is no built-in state.
+        group: String,
+    },
+    /// The track the music selector picked is in neither archive of the
+    /// labelled container choice (`ZBD/soundsh.zbd` preferred,
+    /// `ZBD/soundsl.zbd` otherwise), so no identity can be minted for it.
+    MusicMemberAbsent {
+        /// The member neither archive declares.
+        member: String,
+    },
+    /// The picked track member's spelling would not become a content id, so
+    /// the request has no identity to be looked up under.
+    MusicIdentity {
+        /// The member whose spelling refused.
+        member: String,
+        /// The id grammar's own reason.
+        reason: String,
+    },
     /// A child leaf is neither `MUSIC`, a member, nor another group this
     /// table holds: the record spelled a word this consumer does not
     /// resolve, and it is named rather than dropped.
@@ -278,6 +300,23 @@ impl std::fmt::Display for RadioRefusal {
                     "sound group {group:?} resolves to no voice member"
                 )
             }
+            Self::MusicStateUnknown { group } => {
+                write!(
+                    formatter,
+                    "sound group {group:?} spells MUSIC but is no built-in music_*_sg state"
+                )
+            }
+            Self::MusicMemberAbsent { member } => {
+                write!(
+                    formatter,
+                    "neither {} nor {} declares member {member}",
+                    crate::audio::PREFERRED_MUSIC_CONTAINER,
+                    crate::audio::FALLBACK_MUSIC_CONTAINER,
+                )
+            }
+            Self::MusicIdentity { member, reason } => {
+                write!(formatter, "{member:?} has no music identity: {reason}")
+            }
             Self::UnresolvedLeaf { group, leaf } => write!(
                 formatter,
                 "sound group {group:?} has a leaf {leaf:?} that is neither MUSIC, a member nor a group"
@@ -319,11 +358,31 @@ pub enum RadioLineOutcome {
         /// The line's measured length, in fixed simulation ticks.
         duration_ticks: u64,
     },
-    /// The group is a music state request: it reaches no radio line here, and
-    /// this build holds no measured music asset to request either.
+    /// The group is a music state request: [`MissionRadio::plan`] answers a
+    /// cue with this classification. It is what a plan is, never what an
+    /// offer produced — [`offer_cues`] turns it into [`Self::MusicRequested`]
+    /// or a refusal, so this variant does not appear in offered outcomes.
     Music {
         /// The music group the cue named.
         group: String,
+    },
+    /// The music state request selected one track and asked the audio
+    /// session's [`MusicDirector`](cs_sim::audio_events::MusicDirector) for
+    /// it: the owner-ruled track-level identity under the measured selection
+    /// rule (Rally #1463, `M01-PLAY-MUSIC`).
+    MusicRequested {
+        /// The music group the cue named.
+        group: String,
+        /// The slot the state's measured rule picked.
+        slot: usize,
+        /// The track member that slot names in the state's built-in table.
+        member: String,
+        /// The [`ContentKind::Music`](cs_types::content::ContentKind) id the
+        /// request carried — `crate::audio::music_member_id` over the
+        /// labelled container's member.
+        asset: ContentId,
+        /// What the session's music director answered.
+        outcome: cs_sim::audio_events::MusicOutcome,
     },
     /// The cue reached no audio session, so nothing was queued for it.
     NoAudioSession {
@@ -357,13 +416,19 @@ pub struct PreparedLine {
 }
 
 /// One resolved sound group: the members it plays, whether it is a music
-/// state request, and the leaves the table could not resolve.
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// state request, the `DYNAMIC_WEIGHTS` factor a music group spells, and the
+/// leaves the table could not resolve.
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct ResolvedGroup {
     /// The archive members the group reaches, in the spelled order.
     pub members: Vec<String>,
     /// Whether the group spelled the `MUSIC` leaf.
     pub music: bool,
+    /// The `DYNAMIC_WEIGHTS` factor the group spells beside `MUSIC` — the
+    /// post-draw decay the measured selector multiplies the chosen weight by
+    /// (`docs/findings/2026-10-16-m01-play-music-state-requests.md` §3), when
+    /// the record spells one.
+    pub dynamic_weights: Option<f32>,
     /// The children that resolved to nothing, in the spelled order — named
     /// when the cue fires, never silently dropped.
     pub unresolved: Vec<String>,
@@ -393,6 +458,14 @@ pub struct MissionRadio {
     failures: BTreeMap<String, RadioRefusal>,
     /// The install-relative spelling the members were read from.
     container: String,
+    /// For every track a prepared music group's built-in table can select,
+    /// the archive that member lives in under the labelled container choice:
+    /// [`crate::audio::PREFERRED_MUSIC_CONTAINER`] when it declares the
+    /// member, [`crate::audio::FALLBACK_MUSIC_CONTAINER`] otherwise. A table
+    /// member neither archive declares is absent — its pick is refused at
+    /// cue time ([`RadioRefusal::MusicMemberAbsent`]), never minted under a
+    /// guessed container (Rally #1463, `M01-PLAY-MUSIC`).
+    music_containers: BTreeMap<String, String>,
 }
 
 impl MissionRadio {
@@ -425,6 +498,37 @@ impl MissionRadio {
     #[must_use]
     pub fn resolved(&self, group: &str) -> Option<&ResolvedGroup> {
         self.groups.get(group)
+    }
+
+    /// The archive `member` lives in under the labelled container choice —
+    /// `ZBD/soundsh.zbd` preferred, `ZBD/soundsl.zbd` otherwise — when the
+    /// prepare step found the member there.
+    ///
+    /// Every track a prepared music group's built-in table can select is
+    /// listed ([`Self::read`] enumerates them); `None` names a track neither
+    /// archive declares, which the cue that selects it answers with
+    /// [`RadioRefusal::MusicMemberAbsent`].
+    #[must_use]
+    pub fn music_container(&self, member: &str) -> Option<&str> {
+        self.music_containers.get(member).map(String::as_str)
+    }
+
+    /// What this radio's resolved music groups arm a
+    /// [`crate::audio::MusicSelector`] with: each group's child count — the
+    /// resolved member count, the domain the measured draw walks — and the
+    /// `DYNAMIC_WEIGHTS` factor it spells (a group that spells none arms
+    /// with `1.0`, the designed no-decay reading of an unspelled factor).
+    #[must_use]
+    pub fn music_arms(&self) -> Vec<crate::audio::MusicArm> {
+        self.groups
+            .iter()
+            .filter(|(_, resolved)| resolved.music)
+            .map(|(group, resolved)| crate::audio::MusicArm {
+                group: group.clone(),
+                children: resolved.members.len(),
+                factor: resolved.dynamic_weights.unwrap_or(1.0),
+            })
+            .collect()
     }
 
     /// The members this radio prepared, in member order.
@@ -487,6 +591,40 @@ impl MissionRadio {
                     failures.insert(
                         group.clone(),
                         RadioRefusal::GroupUnresolved { group, reason },
+                    );
+                }
+            }
+        }
+
+        // The music half of the same prepare step: every track a resolved
+        // music group's built-in table can select gets its container under
+        // the labelled choice — `soundsh` preferred, `soundsl` otherwise —
+        // and a track in neither is recorded as absent so the cue that
+        // selects it is refused by name rather than minted under a guessed
+        // container (the owner ruling's container rule, #1463).
+        let mut music_containers = BTreeMap::new();
+        let music_tracks: BTreeSet<String> = resolved
+            .iter()
+            .filter(|(_, expansion)| expansion.music)
+            .filter_map(|(group, _)| crate::audio::music_state_spec(group))
+            .flat_map(|spec| spec.tracks.iter().map(|track| (*track).to_owned()))
+            .collect();
+        if !music_tracks.is_empty() {
+            let preferred =
+                sound_archive_members(install_root, crate::audio::PREFERRED_MUSIC_CONTAINER)?;
+            let fallback =
+                sound_archive_members(install_root, crate::audio::FALLBACK_MUSIC_CONTAINER)?;
+            for track in music_tracks {
+                if preferred.contains(&track) {
+                    music_containers
+                        .insert(track, crate::audio::PREFERRED_MUSIC_CONTAINER.to_owned());
+                } else if fallback.contains(&track) {
+                    music_containers
+                        .insert(track, crate::audio::FALLBACK_MUSIC_CONTAINER.to_owned());
+                } else {
+                    failures.insert(
+                        track.clone(),
+                        RadioRefusal::MusicMemberAbsent { member: track },
                     );
                 }
             }
@@ -558,6 +696,7 @@ impl MissionRadio {
             voices,
             failures,
             container,
+            music_containers,
         })
     }
 
@@ -618,6 +757,7 @@ impl MissionRadio {
             voices,
             failures: BTreeMap::new(),
             container: container.to_owned(),
+            music_containers: BTreeMap::new(),
         })
     }
 
@@ -645,7 +785,8 @@ impl MissionRadio {
             }];
         };
         // A music state request plays no radio line: its children are that
-        // state's tracks, and this build holds no measured music asset.
+        // state's tracks, and `offer_cues` turns this classification into the
+        // `MusicDirector` request or the typed refusal it becomes.
         if resolved.music {
             return vec![RadioLineOutcome::Music { group }];
         }
@@ -739,10 +880,20 @@ impl MissionRadio {
 /// drives: a world with no audio session (`audio` is `None`) answers every
 /// cue by naming it, never by dropping it, and a line the line builder
 /// refuses is reported with that refusal instead of a queued line.
+///
+/// A music state request reaches the session's
+/// [`MusicDirector`](cs_sim::audio_events::MusicDirector): `music` — the
+/// mission seed's selector — picks the track by the state's measured rule
+/// ([`crate::audio::MusicSelector::select`]), the labelled container choice
+/// names its archive, and the request carries the owner-ruled
+/// [`crate::audio::music_member_id`] identity. A group the selector cannot
+/// serve (no measured state, a track in neither archive, a member whose
+/// spelling mints no id) is refused by name, never by a guessed track.
 #[must_use]
 pub fn offer_cues(
     cues: &[CueEmission],
     radio: &MissionRadio,
+    music: &mut crate::audio::MusicSelector,
     audio: Option<&mut AudioSession>,
 ) -> Vec<RadioLineOutcome> {
     if cues.is_empty() {
@@ -760,6 +911,10 @@ pub fn offer_cues(
     let mut outcomes = Vec::new();
     for cue in cues {
         for plan in radio.plan(cue) {
+            if let RadioLineOutcome::Music { group } = &plan {
+                outcomes.push(request_music(group, radio, music, audio));
+                continue;
+            }
             match radio.enqueue(&plan, audio) {
                 Ok(()) => outcomes.push(plan),
                 Err(refusal) => outcomes.push(RadioLineOutcome::Refused {
@@ -770,6 +925,53 @@ pub fn offer_cues(
         }
     }
     outcomes
+}
+
+/// Serves one music state request: the selector's measured pick, the labelled
+/// container choice's archive, the owner-ruled track identity, and the audio
+/// session's `MusicDirector` verdict — or the typed refusal of a request the
+/// chain cannot honour.
+fn request_music(
+    group: &str,
+    radio: &MissionRadio,
+    music: &mut crate::audio::MusicSelector,
+    audio: &mut AudioSession,
+) -> RadioLineOutcome {
+    let refused = |refusal: RadioRefusal| RadioLineOutcome::Refused {
+        group: Some(group.to_owned()),
+        refusal,
+    };
+    let Some(pick) = music.select(group) else {
+        return refused(RadioRefusal::MusicStateUnknown {
+            group: group.to_owned(),
+        });
+    };
+    let Some(container) = radio.music_container(&pick.member) else {
+        return refused(RadioRefusal::MusicMemberAbsent {
+            member: pick.member.clone(),
+        });
+    };
+    let asset = match crate::audio::music_member_id(container, &pick.member) {
+        Ok(asset) => asset,
+        Err(error) => {
+            return refused(RadioRefusal::MusicIdentity {
+                member: pick.member.clone(),
+                reason: error.to_string(),
+            });
+        }
+    };
+    let id = audio.mint_music_id();
+    let outcome = audio.request_music(cs_sim::audio_events::MusicCue {
+        id,
+        asset: asset.clone(),
+    });
+    RadioLineOutcome::MusicRequested {
+        group: group.to_owned(),
+        slot: pick.slot,
+        member: pick.member,
+        asset,
+        outcome,
+    }
 }
 
 // ------------------------------------------------------------ the publish --
@@ -863,6 +1065,12 @@ struct SoundGroupTable {
     members: BTreeMap<String, String>,
     /// `SOUND_GROUPS` records: group name → its spelled children.
     children: BTreeMap<String, Vec<String>>,
+    /// `SOUND_GROUPS` records: group name → the float its `DYNAMIC_WEIGHTS`
+    /// property spells, for the groups that carry one (the music states).
+    /// The property itself resolves to no member — it stays an
+    /// [`ResolvedGroup::unresolved`] leaf — but its spelled value is the
+    /// measured post-draw decay factor the music selector reproduces.
+    weight_factors: BTreeMap<String, f32>,
 }
 
 impl SoundGroupTable {
@@ -930,6 +1138,12 @@ impl SoundGroupTable {
                         let children = table.children.entry(name.to_owned()).or_default();
                         for child in &parts[1..] {
                             collect_child_names(child, children);
+                            if let Some(factor) = spelled_weight_factor(child) {
+                                table
+                                    .weight_factors
+                                    .entry(name.to_owned())
+                                    .or_insert(factor);
+                            }
                         }
                     }
                 }
@@ -963,6 +1177,12 @@ impl SoundGroupTable {
             if !seen.insert(name.clone()) {
                 continue;
             }
+            // A group that spells `DYNAMIC_WEIGHTS` carries its decay
+            // factor beside the marker: the first such group reached
+            // supplies it (the music records spell it on their own child).
+            resolved.dynamic_weights = resolved
+                .dynamic_weights
+                .or_else(|| self.weight_factors.get(&name).copied());
             if let Some(member) = self.members.get(&name) {
                 if !resolved.members.contains(member) {
                     resolved.members.push(member.clone());
@@ -1023,6 +1243,31 @@ fn collect_child_names(child: &ZrdValue, out: &mut Vec<String>) {
         }
         ZrdValue::Int(_) | ZrdValue::Float(_) => {}
     }
+}
+
+/// The `DYNAMIC_WEIGHTS` factor a `SOUND_GROUPS` child spells, when it does.
+///
+/// The property lives inside a child list like `["MUSIC", "DYNAMIC_WEIGHTS",
+/// 0.5, ["snd_prebattle1"]]`: the factor is the first numeric leaf after the
+/// property's own name. Nested children are searched the same way
+/// [`collect_child_names`] descends.
+fn spelled_weight_factor(child: &ZrdValue) -> Option<f32> {
+    let items = child.as_list()?;
+    for (index, item) in items.iter().enumerate() {
+        if let ZrdValue::Text(text) = item
+            && text.eq_ignore_ascii_case("DYNAMIC_WEIGHTS")
+        {
+            return items[index + 1..].iter().find_map(|value| match value {
+                ZrdValue::Float(factor) => Some(*factor),
+                ZrdValue::Int(int) => Some(*int as f32),
+                ZrdValue::Text(_) | ZrdValue::List(_) => None,
+            });
+        }
+        if let Some(factor) = spelled_weight_factor(item) {
+            return Some(factor);
+        }
+    }
+    None
 }
 
 /// The dialogue content id of an archive member — F14-D.7's
@@ -1094,6 +1339,40 @@ fn strip_voice_prefix(stem: &str) -> Option<&str> {
     } else {
         None
     }
+}
+
+/// The member names one sound archive declares.
+///
+/// This is the labelled container choice's presence probe for the music
+/// tracks (`ZBD/soundsh.zbd` preferred, `ZBD/soundsl.zbd` otherwise — the
+/// owner ruling's container rule): a name listing only, through the same
+/// production archive readers the voice decode uses, and no member is
+/// decoded — a music track's id is minted from its name, not its samples.
+///
+/// # Errors
+///
+/// [`RadioError::Read`] when a production reader refuses the archive.
+fn sound_archive_members(
+    install_root: &Path,
+    container: &str,
+) -> Result<BTreeSet<String>, RadioError> {
+    let path = install_root.join(container);
+    let bytes = std::fs::read(&path)
+        .map_err(|error| RadioError::Read(format!("cannot read {container}: {error}")))?;
+    let spelling = cs_types::install::RelativePath::new(container)
+        .map_err(|error| RadioError::Read(error.to_string()))?;
+    let mut context = ParseContext::with_defaults("mission_radio");
+    let decision = dispatch(ZbdProbe::new(container, &spelling, &bytes))
+        .map_err(|error| RadioError::Read(error.to_string()))?;
+    let index = read_version_one_index(&mut context, decision, &bytes)
+        .map_err(|error| RadioError::Read(error.to_string()))?;
+    let table = index.member_table();
+    let archive = read_sound_archive(&mut context, &table, index.data())
+        .map_err(|error| RadioError::Read(error.to_string()))?;
+    Ok(archive
+        .entries()
+        .map(|entry| String::from_utf8_lossy(entry.name()).into_owned())
+        .collect())
 }
 
 /// The fixed-tick length of every member, decoded through `cs_formats`' own

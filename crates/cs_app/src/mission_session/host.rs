@@ -761,6 +761,12 @@ pub struct MissionHost {
     operands: WorldOperands,
     sound_archives: Vec<SoundArchive>,
     radio: MissionRadio,
+    /// The music state selector behind this generation's `MusicDirector`
+    /// requests (M01-PLAY-MUSIC, #1463): the mission seed's own draw stream
+    /// and the resolved music groups' weights and counters, armed at launch
+    /// and rebuilt with every restart so one generation's picks never bleed
+    /// into the next's.
+    music: crate::audio::MusicSelector,
     refusals: Vec<MissionHostRefusal>,
     generation: SessionGeneration,
     served: SessionId,
@@ -839,6 +845,10 @@ impl MissionHost {
             operands: WorldOperands::of(&seed.control),
             sound_archives: seed.sound_archives.clone(),
             radio: seed.radio.clone(),
+            music: crate::audio::MusicSelector::launch(
+                seed.environment.seeds().mission_seed(),
+                seed.radio.music_arms(),
+            ),
             refusals,
             generation,
             served,
@@ -967,6 +977,14 @@ impl MissionHost {
         self.world_facts = WorldFactTable::new(seed.resolver.clone());
         self.operands = WorldOperands::of(&seed.control);
         self.sound_archives = seed.sound_archives.clone();
+        // The selector goes with its generation: the fresh session arms the
+        // same mission seed's stream from its first draw, with the authored
+        // weights and the shared objective counter at zero — a torn-down
+        // generation's picks never bleed into the rebuilt one's.
+        self.music = crate::audio::MusicSelector::launch(
+            seed.environment.seeds().mission_seed(),
+            seed.radio.music_arms(),
+        );
         self.refusals = stage_refusals(seed);
         self.stepped = None;
         // The terminal is this host's own record of a run that has ended
@@ -1211,7 +1229,8 @@ impl MissionHost {
         //    answers every cue by naming it, never by dropping it.
         let cues = self.lifecycles.take_cues();
         let mut session = world.get_resource_mut::<AudioSession>();
-        let radio = super::radio::offer_cues(&cues, &self.radio, session.as_deref_mut());
+        let radio =
+            super::radio::offer_cues(&cues, &self.radio, &mut self.music, session.as_deref_mut());
 
         Ok(MissionHostTick {
             tick,
