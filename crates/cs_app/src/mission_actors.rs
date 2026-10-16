@@ -469,8 +469,9 @@ fn spawn_mission_actors_under(
         };
         if airframe.is_none() {
             let reason = if asleep {
-                "the measured `deactivated` field starts the record asleep (#681) and no \
-                 WAKEUP_ENEMIES consumer exists yet, so it holds its spawn pose"
+                "the measured `deactivated` field starts the record asleep (#681) and the \
+                 mission's own WAKEUP_ENEMIES wake has not released it yet, so it holds its \
+                 spawn pose"
             } else {
                 "the stage carries no imported airframe for this record's name prefix"
             };
