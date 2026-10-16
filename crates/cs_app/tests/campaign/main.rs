@@ -266,6 +266,7 @@ mod m01_lc_player_airframe_source;
 mod m01_lc_player_config;
 mod m01_play_actors;
 mod m01_play_ai;
+mod m01_play_ai_restart;
 mod m01_play_ai_wake;
 mod m01_play_parts_geometry;
 mod m01_play_radio;
