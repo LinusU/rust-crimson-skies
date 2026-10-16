@@ -51,6 +51,12 @@ pub const LOOP_PRODUCER: u32 = 0;
 /// sound-group cues queue (`crate::mission_session::radio`).
 pub const MISSION_RADIO_PRODUCER: u32 = 1;
 
+/// The producer serial stamped on the music cues the mission program's
+/// music state requests ask for (`crate::mission_session::radio`), its own
+/// sequence space so a request's dedup key can never collide with a radio
+/// line's.
+pub const MISSION_MUSIC_PRODUCER: u32 = 2;
+
 /// Why a binding could not start a loop.
 #[derive(Clone, Debug, PartialEq)]
 pub enum LoopRefusal {
@@ -199,6 +205,24 @@ impl AudioSession {
             session: self.router.session(),
             tick: self.tick,
             producer: MISSION_RADIO_PRODUCER,
+            sequence: self.next_sequence,
+        };
+        self.next_sequence += 1;
+        id
+    }
+
+    /// Mints this session's next event id for a music cue the mission
+    /// program's own music state request asked for.
+    ///
+    /// The id is stamped with this session, the session's current tick and
+    /// [`MISSION_MUSIC_PRODUCER`] — its own producer space, so a request's
+    /// dedup key can never collide with a queued line's.
+    #[must_use]
+    pub fn mint_music_id(&mut self) -> AudioEventId {
+        let id = AudioEventId {
+            session: self.router.session(),
+            tick: self.tick,
+            producer: MISSION_MUSIC_PRODUCER,
             sequence: self.next_sequence,
         };
         self.next_sequence += 1;
