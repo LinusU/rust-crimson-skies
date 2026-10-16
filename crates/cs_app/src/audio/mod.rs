@@ -45,6 +45,9 @@
 //! * [`voice`] — the radio voice members' publish step: the members a prepare
 //!   step decoded reach that same library under the exact dialogue id a
 //!   `RadioLine` names (task #1465, M01-RADIO-SAMPLE-IDENTITY);
+//! * [`music`] — the mission's music state requests: the owner-ruled
+//!   track-level [`ContentKind::Music`] identity and the executable's
+//!   measured selection rule (task #1463, M01-PLAY-MUSIC);
 //! * [`handoff::insert_audio_session`] and [`AudioPlugin`] — the wiring: the
 //!   loading handoff owns the session, and the plugin registers the systems in
 //!   the app schedule.
@@ -63,6 +66,7 @@ pub mod handoff;
 pub mod loops;
 pub mod lower;
 pub mod mixer;
+pub mod music;
 pub mod plugin;
 pub mod samples;
 pub mod spawn;
@@ -80,8 +84,8 @@ pub use handoff::{
     AudioHandoffLog, AudioHandoffRefusal, AudioInstall, DeclaredAudioCatalog, insert_audio_session,
 };
 pub use loops::{
-    AudioSession, LOOP_PRODUCER, LoopRefusal, MISSION_RADIO_PRODUCER, advance_radio,
-    sync_audio_tick, sync_emitter_loops,
+    AudioSession, LOOP_PRODUCER, LoopRefusal, MISSION_MUSIC_PRODUCER, MISSION_RADIO_PRODUCER,
+    advance_radio, sync_audio_tick, sync_emitter_loops,
 };
 pub use lower::{
     AudioLowerError, LoweredAudioAsset, lower_bus, lower_catalog, lower_mode, lower_record,
@@ -89,6 +93,11 @@ pub use lower::{
 pub use mixer::{
     AudioMixReport, AudioMixing, AudioOutput, AudioSpatial, device_lost, device_restored,
     mix_session,
+};
+pub use music::{
+    FALLBACK_MUSIC_CONTAINER, IMAGE_MUSIC_STATES, MUSIC_DRAW_DOMAIN, MusicArm, MusicMemberError,
+    MusicPick, MusicSelector, MusicStateRule, MusicStateSpec, PREFERRED_MUSIC_CONTAINER,
+    music_member_id, music_state_spec,
 };
 pub use plugin::AudioPlugin;
 pub use samples::{AudioSampleSource, CODE_SAMPLE_ABSENT, ContentSampleSource, SampleSource};
