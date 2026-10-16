@@ -32,9 +32,11 @@
 //! unresolved issues the owner directive of 2026-09-28 says must stay in
 //! machine-readable evidence: four designed claims (detection geometry,
 //! window reading, node-position join, call-chain timing), the pz nodes'
-//! arming circularity under the designed arming surface, and the stored
+//! arming circularity under the designed arming surface, the stored
 //! animation-reference table's disagreement with the declaration's own
-//! call list for `wv_initiate_hookup`. Deleting them to turn the flag green
+//! call list for `wv_initiate_hookup`, and whether a prerequisite gates a
+//! call at all (`f20-anim.activation-prerequisite-unevaluated`). Deleting
+//! them to turn the flag green
 //! is exactly what the directive forbids. The pass/fail facts are carried
 //! by `command.exit_code` and the `tests` counts, which the plain
 //! structural validation does check.
@@ -359,6 +361,11 @@ fn evidence_report_m01_play_triggers_anims_land_writes_the_acceptance_report() {
          animations while its declaration's sequence calls eight (among them wv_drop_copilot): \
          OBJECTIVE11's gate wv_drop_copilot RUNNING is therefore not reachable through the \
          prescribed chain, and this task claims neither that it is nor what the original did",
+        "whether the original evaluated an animation's ACTIVATION_PREREQUISITE / \
+         OBJECT_ACTIVE_LIST before a CALL_ANIMATION is unmeasured (claim \
+         f20-anim.activation-prerequisite-unevaluated): the designed chain starts each name \
+         without evaluating any prerequisite, so a call it starts may in the original have been \
+         gated — neither is claimed here",
     ]
     .into_iter()
     .map(str::to_owned)

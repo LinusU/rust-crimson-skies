@@ -201,6 +201,16 @@ Consequences, all verified in the composed retail member:
   payloads (AGENTS rule 4): the resolving measurement is tying a
   `CALL_ANIMATION` event's payload name to its statement — the gap
   `m01-landing.call-chain-at-start-designed` names.
+* **Whether the original gated a call at all is unknown.** Whether an
+  animation's `ACTIVATION_PREREQUISITE` / `OBJECT_ACTIVE_LIST` is evaluated
+  before a `CALL_ANIMATION` runs is explicitly unmeasured
+  (`UnmeasuredFieldFamily::PrerequisiteEvaluation`,
+  `f20-anim.activation-prerequisite-unevaluated`, named by the arm finding
+  `2026-10-15-m01-play-triggers-anims-arm.md`). The designed chain above
+  starts each name **without** evaluating any prerequisite, so a call it
+  starts may in the original have been gated — or may not have been. Neither
+  is claimed here; the resolving measurement is the same one that would tie
+  a ref to its statement.
 * `OBJECTIVE15`'s gate (`wv_pickup_copilot EXECUTED`) **does** close, and
   the composed retail member asserts exactly that: the block completes only
   after the real landing (the same frames before the placement prove the
@@ -215,6 +225,11 @@ Consequences, all verified in the composed retail member:
 | `m01-landing.row-window-designed` | a non-`auto` row admits the landing when speed magnitude ∈ `speed[0]..=speed[1]` (inclusive, the composition's m/s) and tilt (body-up vs world-up, degrees) ≤ `angle[0]`; an `auto` row has no window; any other arity is a named refusal | the table's unit and `angle`'s/`auto`'s meaning in the original |
 | `m01-landing.node-position-designed` | node = observed anchor row + container offset; no anchor row → no node row | the original's join between the static container node and the live actor pose |
 | `m01-landing.call-chain-at-start-designed` | every record the landing starts activates its measured `animation_refs` at its start, transitively, each identity once per landing | tie a `CALL_ANIMATION` payload name to its statement's `START_TIME` |
+
+The call-chain row also carries an unknown it does not resolve: whether the
+original evaluated `ACTIVATION_PREREQUISITE` / `OBJECT_ACTIVE_LIST` before
+running a call at all (`f20-anim.activation-prerequisite-unevaluated`) is
+unmeasured, so the chain's unguarded starts are designed, not measured.
 
 ## 8. What the composed runs prove
 
@@ -264,7 +279,8 @@ declared unknowns stay machine-readable (owner directive of 2026-09-28).
 
 No original executable ran; nothing is `verified_original`; no `human_play`
 or `human_review` was available to an agent. The landing geometry, the
-table's units, the node-position join, the call-chain timing, the pz
-arming, and the `wv_drop_copilot` reachability are all recorded above with
-their resolving paths — none of them is claimed as measured original
+table's units, the node-position join, the call-chain timing, whether a
+prerequisite gates a call (`f20-anim.activation-prerequisite-unevaluated`),
+the pz arming, and the `wv_drop_copilot` reachability are all recorded above
+with their resolving paths — none of them is claimed as measured original
 behaviour, and none of them was deleted to make a check green.
