@@ -134,14 +134,13 @@ fn evidence_report_m01_play_parts_geometry_writes_the_acceptance_report() {
         assertion_array(&suite.assertions),
         artifact_array(&artifacts),
         str_array(&unknowns()),
-        jstr(&format!(
-            "implementer: bunny-alpha-2/bunny-alpha-2 (Rally #1492, DeepSeek V4.1 Flash); \
-             reviewer: {reviewer} — the identity is read at run time from CS_EVIDENCE_REVIEWER, \
-             so the reviewer's own regeneration names itself. No agent review replaces the \
-             owner's human approval"
-        )),
+        jstr(&reviewer),
         jstr(
-            "acceptance suite run locally with the retail capability; this harness derives every \
+            "implementer: bunny-alpha-2/bunny-alpha-2 (Rally #1492, DeepSeek V4.1 Flash); the \
+             reviewer identity is read at run time from CS_EVIDENCE_REVIEWER, so the reviewer's \
+             own regeneration names itself, and a review by the implementing agent would not be \
+             independent evidence. No agent review replaces the owner's human approval. The \
+             acceptance suite runs locally with the retail capability; this harness derives every \
              field from the recorded log and production discovery of $CS_GAME_DIR. The retail leg \
              reads M01's stage through plan_mission_launch + stage_for and the composed mission \
              through build_headless. MEASURED: each part's bind pose (the session's canonical \
