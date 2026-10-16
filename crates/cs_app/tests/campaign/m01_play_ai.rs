@@ -31,11 +31,12 @@ use bevy::time::TimeUpdateStrategy;
 
 use cs_app::mission_actors::ScriptedAircraftActor;
 use cs_app::mission_ai::{
-    AI_STARTING_ROUNDS, MissionAiAirframes, MissionAiReport, MissionAircraftAi,
+    AI_STARTING_ROUNDS, MissionAiAirframes, MissionAiFireOrders, MissionAiReport, MissionAircraftAi,
 };
 use cs_app::mission_launch::plan_mission_launch;
 use cs_app::mission_session::{
-    MISSION_GUN_MOUNT_NOSE, MissionPlayerBody, MissionStage, build_headless, stage_for, teardown,
+    MISSION_GUN_MOUNT_NOSE, MissionHost, MissionPlayerBody, MissionStage, build_headless,
+    mint_host_generation, stage_for, teardown,
 };
 use cs_app::physics::BASELINE_FIXED_HZ;
 use cs_app::playtest::scene::PlaytestOriginalFlight;
@@ -43,7 +44,7 @@ use cs_app::weapons::WeaponSession;
 use cs_content::damage::DamageNodeKey;
 
 use crate::common::label;
-use crate::vs_m01_rt_window::game_dir;
+use crate::vs_m01_rt_window::{Scratch, game_dir, synthetic_stage};
 
 /// How long the acceptance run drives the fixed loop: **N** in the task's
 /// "close on the player … within N seconds".
@@ -425,6 +426,81 @@ fn accept_m01_play_ai_hostiles_close_and_betty_holds_station_within_n_seconds() 
     assert!(
         !fired.is_empty(),
         "at least one attacker's guns fire through the weapon session's own cadence: {fired:?}"
+    );
+    teardown(&mut app);
+}
+
+/// A stand-in actor id for the pending-order fixtures: the identity a fire
+/// intent names, hand-built so the fixture never waits on a spawn.
+fn pending_shooter() -> cs_sim::damage::ActorId {
+    cs_sim::damage::ActorId {
+        session: cs_types::net::SessionId::new(9).expect("session 9 is a valid id"),
+        serial: 41,
+    }
+}
+
+/// **Teardown leaves no pending AI fire orders behind.** The plugin
+/// initialises [`MissionAiFireOrders`] only when it is missing, so a run
+/// torn down between a decision and its publication must drop its asks
+/// itself — a stale list would ride into the next composition's first tick
+/// under the wrong session, naming actors that no longer exist. The
+/// synthetic stage composes without an installation, so this runs in CI.
+#[test]
+fn accept_m01_play_ai_fire_orders_teardown_drops_the_pending_intents() {
+    let scratch = Scratch::new("ai_orders");
+    let stage = synthetic_stage(scratch.path());
+    let mut app = build_headless(&stage).expect("the synthetic stage composes");
+    app.update();
+    {
+        let world = app.world_mut();
+        let mut orders = world.resource_mut::<MissionAiFireOrders>();
+        orders.pending.push(pending_shooter());
+        orders.sequence = 3;
+    }
+
+    teardown(&mut app);
+    assert!(
+        !app.world().contains_resource::<MissionAiFireOrders>(),
+        "teardown must drop the pending fire orders with the run that decided them"
+    );
+}
+
+/// **A restart resets the pending fire orders to the generation it
+/// spawns.** The respawn replaces the AI report per generation; the asks go
+/// with it, because the previous generation's actors no longer exist in the
+/// fresh session and their intents would resolve to nothing. The synthetic
+/// stage composes without an installation, so this runs in CI.
+#[test]
+fn accept_m01_play_ai_fire_orders_a_restart_resets_the_pending_intents() {
+    let scratch = Scratch::new("ai_orders_restart");
+    let stage = synthetic_stage(scratch.path());
+    let mut app = build_headless(&stage).expect("the synthetic stage composes");
+    app.update();
+    {
+        let world = app.world_mut();
+        let mut orders = world.resource_mut::<MissionAiFireOrders>();
+        orders.pending.push(pending_shooter());
+        orders.sequence = 3;
+    }
+
+    let mut host = app
+        .world_mut()
+        .remove_resource::<MissionHost>()
+        .expect("the composed app carries the host");
+    let generation = mint_host_generation();
+    host.restart(app.world_mut(), &stage, generation)
+        .expect("the restart rebuilds the authored state");
+    app.world_mut().insert_resource(host);
+
+    let orders = app.world().resource::<MissionAiFireOrders>();
+    assert!(
+        orders.pending.is_empty(),
+        "the respawned generation starts with no asks of the previous one: {:?}",
+        orders.pending
+    );
+    assert_eq!(
+        orders.sequence, 0,
+        "the intent sequence restarts with the generation that spawns it"
     );
     teardown(&mut app);
 }

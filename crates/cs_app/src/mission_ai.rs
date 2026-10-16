@@ -237,9 +237,14 @@ pub fn should_fire(range_m: f32, alignment: f32) -> bool {
 #[derive(Resource, Clone, Debug, Default)]
 pub struct MissionAiFireOrders {
     /// The session-qualified shooters that decided to fire this tick.
-    pending: Vec<cs_sim::damage::ActorId>,
+    ///
+    /// Public like [`MissionAiReport`]'s own fields: the composed spawn and
+    /// teardown write this resource (a generation's pending intents never
+    /// ride into the next one), and the acceptance suite seeds and reads it
+    /// to pin that.
+    pub pending: Vec<cs_sim::damage::ActorId>,
     /// The intent sequence within [`MISSION_AI_FIRE_PRODUCER`].
-    sequence: u32,
+    pub sequence: u32,
 }
 
 /// Why a scripted aircraft flies a law at all, or does not.
