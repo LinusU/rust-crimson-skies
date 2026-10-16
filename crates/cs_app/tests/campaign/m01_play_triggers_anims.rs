@@ -14,7 +14,7 @@
 //! between a woken name and a gated name is invented (they are different
 //! measured records).
 //!
-//! Two members:
+//! Three members:
 //!
 //! * **The synthetic composed stage (runs in CI)** authors a control program
 //!   with a `WAKE_ANIM` site and a second block whose condition is
@@ -23,7 +23,11 @@
 //!   outside the row's window, and the landing itself — and asserts the gate
 //!   stays open on the first two, is still open on the tick the landing runs
 //!   its row, and closes only once the chain's own record reaches `EXECUTED`
-//!   through the production player.
+//!   through the production player, having been observed `RUNNING` on the way.
+//! * **The never-firing directive (runs in CI)** is the same synthetic stage
+//!   with a `WAKE_ANIM` site whose condition never runs: the node is never
+//!   armed, a body that would otherwise land inside the row's window runs
+//!   nothing, and the gate never completes.
 //! * **Against the owner's installation (ignored without `CS_GAME_DIR` and
 //!   `CS_ENGINE_IMAGE`)** the same three legs run over the composed retail M01:
 //!   the real program's `WAKE_ANIM` of `OBJECTIVE49` arms `wv_manual_land`, and
@@ -58,8 +62,8 @@ use cs_types::content::ContentKind;
 
 use crate::common::cid;
 use crate::m01_play_triggers_anims_land::{
-    Body, SYNTHETIC_ARM, SYNTHETIC_CALLED, SYNTHETIC_LAND, composed_node_position, last_tick,
-    observed_state, pump, pump_until_armed, retail_land_stage, synthetic_land_stage,
+    Body, SYNTHETIC_ARM, SYNTHETIC_CALLED, SYNTHETIC_LAND, armed_has, composed_node_position,
+    last_tick, observed_state, pump, pump_until_armed, retail_land_stage, synthetic_land_stage,
 };
 use crate::vs_m01_rt_window::Scratch;
 
@@ -72,13 +76,15 @@ const SYNTHETIC_NODE: &str = "synthetic_landing_node";
 // ---------------------------------------------------------------------------
 
 /// The synthetic control program of this member: block 0 wakes the arm record
-/// through the real `WAKE_ANIM` directive, and block 1 is the gate whose own
-/// condition reads the `ANIM_STATE` row the landing's call chain publishes.
+/// through the real `WAKE_ANIM` directive when `wake` is set, and block 1 is
+/// the gate whose own condition reads the `ANIM_STATE` row the landing's call
+/// chain publishes. A `wake` of `false` is the negative leg's program: the
+/// same shape with a directive that never fires.
 ///
 /// The second block mirrors M01's measured gate shape (`ANIM_STATE` with one
 /// appended pair) on authored names, so the composed member exercises the one
 /// path the retail member's `OBJECTIVE15` uses.
-fn synthetic_gate_program() -> MissionProgram {
+fn synthetic_gate_program(wake: bool) -> MissionProgram {
     MissionProgram {
         version: IR_VERSION,
         mission: cid(ContentKind::Mission, "synthetic-mission-anim-parent"),
@@ -87,7 +93,7 @@ fn synthetic_gate_program() -> MissionProgram {
             Objective {
                 id: SymbolId(0),
                 content: cid(ContentKind::Objective, "synthetic-parent-wake"),
-                condition: Condition::Const(true),
+                condition: Condition::Const(wake),
                 actions: vec![Action::Directive {
                     operation: DirectiveOperation::WakeAnimation,
                     args: vec![Value::Str(SYNTHETIC_ARM.to_owned())],
@@ -131,12 +137,14 @@ fn synthetic_parent_landings() -> MissionLandings {
 }
 
 /// The synthetic stage: the landing half's own composed stage with this
-/// member's gate program, and a declared lifecycle table that keeps both
-/// authored blocks awake so each evaluates every tick (an absent table leaves
-/// `state` answering `None`, which cannot show a completion).
-fn synthetic_parent_stage(scratch: &Path) -> MissionStage {
+/// member's gate program ([`synthetic_gate_program`]'s `wake` chooses the
+/// positive chain or the never-firing directive), and a declared lifecycle
+/// table that keeps both authored blocks awake so each evaluates every tick
+/// (an absent table leaves `state` answering `None`, which cannot show a
+/// completion).
+fn synthetic_parent_stage(scratch: &Path, wake: bool) -> MissionStage {
     let mut stage = synthetic_land_stage(scratch);
-    stage.host.control = synthetic_gate_program();
+    stage.host.control = synthetic_gate_program(wake);
     let mut table = BlockLifecycleTable::new();
     table
         .declare(0, LifecycleDecl::awake())
@@ -174,7 +182,7 @@ fn gate_state(app: &App) -> Option<ObjectiveLifecycle> {
 #[test]
 fn accept_m01_play_triggers_anims_the_whole_chain_closes_its_gate_only_on_the_landing() {
     let scratch = Scratch::new("triggers-anims");
-    let mut app = build_headless(&synthetic_parent_stage(scratch.path()))
+    let mut app = build_headless(&synthetic_parent_stage(scratch.path(), true))
         .expect("the synthetic stage composes");
     // The composed table is the fixture installation's absence; this member's
     // authored table replaces it before the first tick.
@@ -277,16 +285,26 @@ fn accept_m01_play_triggers_anims_the_whole_chain_closes_its_gate_only_on_the_la
     );
 
     // The chain runs through the production player and reaches EXECUTED; only
-    // then does the program complete the gate block.
+    // then does the program complete the gate block. The chain's own record is
+    // watched through the fold's own rows on the way, so the RUNNING -> EXECUTED
+    // order the player reports is asserted and not just the end state.
+    let mut running_seen = false;
     let mut closed_tick = None;
     for _ in 0..400 {
         pump(&mut app, 1, Some(&landed));
+        if observed_state(&app, SYNTHETIC_CALLED) == Some(AnimationState::Running.code()) {
+            running_seen = true;
+        }
         if gate_state(&app) == Some(ObjectiveLifecycle::Done) {
             closed_tick = Some(last_tick(&app));
             break;
         }
     }
     let closed_tick = closed_tick.expect("the gate closes after the landing runs the chain");
+    assert!(
+        running_seen,
+        "the chain's animation was observed RUNNING before it was observed EXECUTED"
+    );
     assert_eq!(
         observed_state(&app, SYNTHETIC_CALLED),
         Some(AnimationState::Executed.code()),
@@ -300,6 +318,56 @@ fn accept_m01_play_triggers_anims_the_whole_chain_closes_its_gate_only_on_the_la
         gate_state(&app),
         Some(ObjectiveLifecycle::Done),
         "the gate is closed once its animation ran"
+    );
+
+    teardown(&mut app);
+}
+
+/// **A `WAKE_ANIM` directive that never fires leaves the whole chain dead: the
+/// landing node is never armed, a body that would otherwise land inside the
+/// row's window runs nothing, the gate's animation is never observed and the
+/// gate never completes.**
+///
+/// The positive member proves the chain closes when the event runs its record;
+/// this one proves the same closure cannot happen without it, which is the
+/// acceptance's "a run where the event never fires never completes it" leg.
+#[test]
+fn accept_m01_play_triggers_anims_a_wake_that_never_fires_never_closes_the_gate() {
+    let scratch = Scratch::new("triggers-anims-no-wake");
+    let mut app = build_headless(&synthetic_parent_stage(scratch.path(), false))
+        .expect("the synthetic stage composes");
+    app.world_mut().insert_resource(synthetic_parent_landings());
+
+    // The body holds a state the row's own window fully admits (at the node,
+    // inside the speed bound, level), so only the missing arming can keep the
+    // row from running.
+    let landed = Body {
+        position: None,
+        velocity: Vec3::new(60.0, -2.0, 0.0),
+        rotation: Quat::IDENTITY,
+    };
+    pump(&mut app, 240, Some(&landed));
+
+    assert!(
+        !armed_has(&app, SYNTHETIC_NODE),
+        "no arm statement can run: its WAKE_ANIM directive never fired"
+    );
+    assert!(
+        app.world()
+            .resource::<MissionHost>()
+            .landings()
+            .activated()
+            .is_empty(),
+        "a landing at a node nothing armed runs nothing"
+    );
+    assert!(
+        observed_state(&app, SYNTHETIC_CALLED).is_none(),
+        "the gate's animation never ran"
+    );
+    assert_ne!(
+        gate_state(&app),
+        Some(ObjectiveLifecycle::Done),
+        "the gate stays open when the event that arms its node never fires"
     );
 
     teardown(&mut app);
