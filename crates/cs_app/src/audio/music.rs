@@ -44,12 +44,15 @@
 //!   multiplied by the group's `DYNAMIC_WEIGHTS` factor, every weight below
 //!   `0.001` is clamped up to it, and all weights are renormalized to sum
 //!   `100.0`;
-//! * **the three objective states** share the alternating counter
-//!   `[0x9ad6c0]`: `music_secondaryobj_sg` reads `% 2` and advances it,
-//!   `music_primaryobj_sg` reads `% 2` without advancing, and
-//!   `music_tertiaryobj_sg` reads it raw (the measured oddity — bounded here
-//!   by `% 2` so a counter past the table cannot index out of range, labelled
-//!   designed where the original's bound is untraced);
+//! * **the three objective states** read the played handle's index off the
+//!   shared counter `[0x9ad6c0]`: `music_secondaryobj_sg` reads `% 2` and
+//!   advances it, `music_primaryobj_sg` reads `% 2` without advancing, and
+//!   `music_tertiaryobj_sg` reads it raw (the measured oddity — bounded
+//!   here by `% tracks.len()` so a counter past the table cannot index out
+//!   of range, labelled designed where the original's bound is untraced).
+//!   Each state's own counter `[0x9ad6c4]`/`[0x9ad6c8]` indexes only the
+//!   name table its branch returns — a name the caller drops — so the
+//!   shared counter alone decides the played track;
 //! * the **track tables** are the image's built-in ones
 //!   ([`IMAGE_MUSIC_STATES`]): where the image and `sounds.zrd` disagree —
 //!   `music_prebattle_sg`, three distinct names filling six slots versus six
@@ -406,12 +409,17 @@ impl MusicSelector {
         let spec = music_state_spec(group)?;
         let slot = match spec.rule {
             MusicStateRule::WeightedDraw => self.weighted_slot(group)?,
+            // The measured branches mask the shared counter to the table's
+            // `% 2` index: secondary advances the unmasked word, primary
+            // only reads.
             MusicStateRule::CounterAdvance => {
-                let slot = self.counter as usize;
+                let slot = self.counter as usize % 2;
                 self.counter = self.counter.wrapping_add(1);
                 slot
             }
-            MusicStateRule::CounterPeek => self.counter as usize,
+            MusicStateRule::CounterPeek => self.counter as usize % 2,
+            // Tertiary reads the counter raw — the measured oddity; the
+            // member lookup below bounds it by `% tracks.len()`.
             MusicStateRule::CounterRaw => self.counter as usize,
         };
         Some(MusicPick {

@@ -150,13 +150,17 @@ the slot is a **per-request weighted-random draw over the group's own dynamic
 weights**, `rand()`-based, with a uniform fallback to slot 0 for a one-child
 group or a draw that passes no child.
 
-The three objective states hold their own counters instead
-(`[0x9ad6c0]`, `[0x9ad6c4]`, `[0x9ad6c8]` — `0x9ad6c0` is incremented by the
-secondary branch only, `0x9ad6c4`/`0x9ad6c8` by their own branches), so their
-two-slot selection advances by one per request rather than drawing. Note the
-measured oddity: the *tertiary* branch indexes its runtime table with the raw
-`[0x9ad6c0]` while the other two mask it to `mod 2`; whether the counter is
-kept in range elsewhere was not traced (unknown #6).
+The three objective states use counters instead
+(`[0x9ad6c0]`, `[0x9ad6c4]`, `[0x9ad6c8]`). Per the §2 table the *played
+handle* comes from the shared `[0x9ad6c0]` in all three branches —
+secondary reads `% 2` then increments it, primary reads `% 2` without
+incrementing, tertiary reads it raw; each state's own counter
+(`[0x9ad6c4]`/`[0x9ad6c8]`) indexes only the name table its branch returns,
+a name the caller drops (§4 step 4) — so the two-slot selection advances by
+one per *secondary* request rather than drawing. Note the measured oddity:
+the *tertiary* branch indexes its runtime table with the raw `[0x9ad6c0]`
+while the other two mask it to `mod 2`; whether the counter is kept in
+range elsewhere was not traced (unknown #6).
 
 **Still unknown here:** which runtime slot holds which track. The loader
 `fcn.00596ea0` fills the runtime tables by computing

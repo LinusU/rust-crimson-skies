@@ -434,9 +434,12 @@ fn accept_m01_music_state_requests_selects_by_the_measured_rules() {
         "counter 1 reads slot 1"
     );
     assert_eq!(objectives.objective_counter(), 2);
+    let primary = objectives
+        .select("music_primaryobj_sg")
+        .expect("an objective state selects");
+    assert_eq!(primary.slot, 0, "counter 2 masks to its % 2 index");
     assert_eq!(
-        member(&mut objectives, "music_primaryobj_sg").as_deref(),
-        Some("music_primaryobj1.wav"),
+        primary.member, "music_primaryobj1.wav",
         "primary reads the shared counter's % 2 without advancing it"
     );
     assert_eq!(
