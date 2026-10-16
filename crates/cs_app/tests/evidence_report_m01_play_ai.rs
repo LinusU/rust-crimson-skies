@@ -10,7 +10,7 @@
 //!    CS_EVIDENCE_DIR=private/evidence/M01-PLAY-AI \
 //!    CS_CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}') \
 //!    CS_EVIDENCE_ARGV="cargo test --workspace --locked -- accept_m01_play_ai_ --include-ignored" \
-//!    CS_EVIDENCE_EXIT_CODE=<status> CS_EVIDENCE_REVIEWER=<identity> \
+//!    CS_EVIDENCE_EXIT_CODE=<status> \
 //!      cargo test --locked -p cs_app --test evidence_report_m01_play_ai -- --ignored
 //!    ```
 //! 3. `python3 tools/validate_evidence.py
@@ -62,6 +62,43 @@ const M01_AIRFRAME_COUNT: usize = 4;
 /// How many committed fixed ticks the second observation drives of the
 /// designed pursuit law before it records where the aircraft ended.
 const OBSERVATION_TICKS: u64 = 600;
+
+/// The `review.identity` this harness records.
+///
+/// The literal below is the text the committed
+/// `docs/findings/evidence/M01-PLAY-AI.json` carries, and it is the first
+/// string in this function on purpose:
+/// `tools/tests/test_evidence_review_identity.py` reads a harness's recorded
+/// identity out of exactly this shape (`fn review_identity() -> String`, a
+/// literal) and cross-checks it against the committed report, so the text
+/// here and the report cannot drift apart silently. It names the implementer
+/// and the reviewer the Rally activity log records for #1436 — including the
+/// two earlier review claims that expired without merging anything — which
+/// the hand-over placeholder this harness used to pass through could not
+/// name.
+///
+/// A reviewing agent supplies their own text through `CS_EVIDENCE_REVIEW` and
+/// replaces the literal with it in the same commit, which is how the report
+/// names the review that actually happened.
+fn review_identity() -> String {
+    let recorded = String::from(
+        "implementer: mimo-1/mimo-1 (Rally #1436, implement claim of 2026-10-15T11:43:24Z, \
+         submitted at 15:11:49Z). reviewer: claude-2/claude-2 (Rally #1436, review claims of \
+         2026-10-15T20:13:13Z and 22:39:50Z — the first approved 8e805a22, whose landing failed \
+         on a rebase conflict, and the second approved 35ef11ea at 2026-10-15T23:15:13Z; Rally's \
+         landing queue rebased the branch and merged it as e602fa70 at 23:27:01Z), a different \
+         agent instance and model (Sonnet 5.5) than the implementer, in a separate session with \
+         fresh context, and still not independent original-reference evidence. Two earlier \
+         review claims expired without merging anything: the implementer's own instance \
+         mimo-1/mimo-1 (2026-10-15T15:12:24Z, expired 17:22:20Z) and bunny-alpha-1/bunny-alpha-1 \
+         (2026-10-15T17:24:22Z, expired 19:56:17Z; its unpushed edits survive on \
+         owner/1436-bunny-alpha-1-review-wip and were not merged). The committed copy is the \
+         implementer's own run — its created_at of 2026-10-15T15:04:08Z sits inside the \
+         implement claim and the reviewer did not regenerate it on the reviewed commit. No \
+         agent review replaces the owner's human approval",
+    );
+    std::env::var("CS_EVIDENCE_REVIEW").unwrap_or(recorded)
+}
 
 /// How this run was reviewed, with every number **derived** from the
 /// production reads this same run produced rather than written down.
@@ -145,7 +182,7 @@ fn open_unknowns(decisions: u64) -> Vec<String> {
 }
 
 #[test]
-#[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_EVIDENCE_REVIEWER, CS_GAME_DIR"]
+#[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_GAME_DIR"]
 fn evidence_report_m01_play_ai_writes_the_acceptance_report() {
     let evidence_dir = workspace_path(&env_var("CS_EVIDENCE_DIR"));
     let candidate_tree = env_var("CS_CANDIDATE_TREE");
@@ -160,7 +197,6 @@ fn evidence_report_m01_play_ai_writes_the_acceptance_report() {
     let exit_code: i32 = env_var("CS_EVIDENCE_EXIT_CODE")
         .parse()
         .expect("CS_EVIDENCE_EXIT_CODE must be the exit status of the acceptance run");
-    let reviewer = env_var("CS_EVIDENCE_REVIEWER");
     let game_dir = PathBuf::from(env_var("CS_GAME_DIR"));
 
     assert_eq!(
@@ -231,7 +267,7 @@ fn evidence_report_m01_play_ai_writes_the_acceptance_report() {
             .map(|unknown| jstr(unknown))
             .collect::<Vec<_>>()
             .join(", "),
-        jstr(&reviewer),
+        jstr(&review_identity()),
         jstr(&review_method(
             observation.records,
             observation.flown,
