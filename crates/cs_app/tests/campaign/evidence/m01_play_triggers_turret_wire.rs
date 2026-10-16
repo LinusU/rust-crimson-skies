@@ -168,8 +168,15 @@ fn evidence_report_m01_play_triggers_turret_wire_writes_the_acceptance_report() 
              declared by them (#1491). DESIGNED: the single-unit pool every part node carries \
              and the Weapon system a mount's destruction disables (F29 AC03). The synthetic legs \
              prove the same wiring without retail: one table that declares one of two parts, and \
-             a refused table that is reported by name. Claim is implemented only; no original \
-             executable ran and no engine-image trace was made"
+             a refused table that is reported by name. This report carries three product-level \
+             unresolved issues (the in-play-bit writers, the HEALTH unit and what the original \
+             does with a destroyed mount), so it is checked with the plain structural form of \
+             tools/validate_evidence.py, which exits 0; the --require-pass form refuses any \
+             report whose `unknowns` list is nonempty by design, and those issues are kept here \
+             rather than moved out of the machine-readable field to pass it (owner directive of \
+             2026-10-01), the same split docs/findings/2026-10-15-m01-play-triggers-anims-arm.md \
+             records. Claim is implemented only; no original executable ran and no engine-image \
+             trace was made"
         ),
     );
 
