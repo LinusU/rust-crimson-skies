@@ -358,17 +358,23 @@ fn measured_spawn_pose(record: &ScriptedAircraft) -> Option<(Vec3, Quat)> {
 /// The designed damage graph one scripted actor registers: one lethal
 /// internal-structure node whose pool is unresolved — a hit routes in and
 /// blocks by name rather than draining an invented count — plus, for an actor
-/// whose parts this composition binds, one designed node per part.
+/// whose parts this composition binds, one node per part.
 ///
 /// The part nodes are what makes an engine addressable
 /// (`super::mission_session::parts`): M01's `INACTIVE` ladders count an engine
 /// leaving play, and a hit has to be able to name it. `parts` is empty for
-/// every scripted aircraft.
+/// every scripted aircraft. Each part node is classed through
+/// `mission_session::parts::classed_part_node` against the stage's
+/// `ai.zrd` `TURRET` table: a part that table declares is a weapon mount whose
+/// destruction disables its own `Weapon` system, anything else stays the
+/// unclassed internal-structure node.
 fn designed_damage_graph(
     spelling: &str,
     parts: &[DamageNodeKey],
+    turrets: &[parts::TurretRecord],
+    actor: &str,
 ) -> Result<(ContentId, DamageGraph, DamagePolicy), String> {
-    let (subject, graph, _) = designed_actor_graph(spelling, parts)?;
+    let (subject, graph, _) = designed_actor_graph(spelling, parts, turrets, actor)?;
     let policy = DamagePolicy {
         attribution: AttributionRule::FirstLethalHit,
     };
@@ -376,11 +382,19 @@ fn designed_damage_graph(
 }
 
 /// The graph itself, split out so the part-node composition is checkable on its
-/// own: the frame node first, then one designed node per part, duplicates
-/// skipped (two chains of one actor may name one part).
+/// own: the frame node first, then one node per part, duplicates skipped (two
+/// chains of one actor may name one part).
+///
+/// `actor` is the name the `TURRET` table's `NODES` mount patterns match
+/// against: for a zeppelin, the bound subject's own node name (the first
+/// element of every chain in its part plan); for a scripted aircraft, the
+/// record's name. It is consulted only for a part node, so an actor with no
+/// parts never queries the table.
 fn designed_actor_graph(
     spelling: &str,
     parts: &[DamageNodeKey],
+    turrets: &[parts::TurretRecord],
+    actor: &str,
 ) -> Result<(ContentId, DamageGraph, Vec<DamageNodeKey>), String> {
     let (subject, frame) = designed_frame_node(spelling)?;
     let mut nodes = vec![frame];
@@ -389,7 +403,9 @@ fn designed_actor_graph(
         if nodes.iter().any(|node| node.key() == key) {
             continue;
         }
-        nodes.push(crate::mission_session::designed_part_node(key));
+        nodes.push(crate::mission_session::classed_part_node(
+            turrets, actor, key,
+        ));
         added.push(key.clone());
     }
     let graph = DamageGraph::try_new(subject.clone(), nodes)
@@ -536,8 +552,8 @@ pub fn spawn_mission_actors(world: &mut World) -> MissionActorSpawnReport {
     // The stage is a world resource on this path; the restart hands it in
     // directly (below), because the composed restart entry holds it out of the
     // world for the whole rebuild.
-    let part_plan = part_plan_of(world.get_resource::<MissionStage>());
-    spawn_mission_actors_under(world, view, &part_plan)
+    let binding = stage_binding(world.get_resource::<MissionStage>());
+    spawn_mission_actors_under(world, view, &binding)
 }
 
 /// `MissionHost::restart`'s entry: the host is mid-restart — already
@@ -547,6 +563,8 @@ pub fn spawn_mission_actors(world: &mut World) -> MissionActorSpawnReport {
 /// the [`MissionStage`] resource before it rebuilds, so a binder that read the
 /// resource here would silently rebind no part-state chain after a retry and
 /// every `INACTIVE` ladder over them would stall for the rest of the mission.
+/// The same holds for the `TURRET` table: read from the argument, a restarted
+/// composition classes its turrets exactly as the first spawn did.
 pub fn respawn_mission_actors(
     world: &mut World,
     host: &MissionHost,
@@ -555,16 +573,36 @@ pub fn respawn_mission_actors(
     spawn_mission_actors_under(
         world,
         host_view(host, player_team_of(Some(stage))),
-        &parts::plan_part_states(stage),
+        &stage_binding(Some(stage)),
     )
 }
 
-/// The part-state plan of a stage, or the empty plan when the composition has
-/// no stage — or the stage's host carries no bound world-actor program.
-fn part_plan_of(
-    stage: Option<&MissionStage>,
-) -> BTreeMap<WorldActorId, Vec<(MemberName, DamageNodeKey)>> {
-    stage.map(parts::plan_part_states).unwrap_or_default()
+/// The stage records the spawn reads through the one seam its two callers
+/// share (M01-PLAY-TRIGGERS-PARTS, #1481; M01-PLAY-TRIGGERS-TURRET-WIRE,
+/// #1499): which part-state chains a bound world actor's graph carries, and
+/// which `ai.zrd` `TURRET` records class them.
+#[derive(Default)]
+struct StageBinding {
+    /// The part-state chains of every bound world actor, by world actor id.
+    parts: BTreeMap<WorldActorId, Vec<(MemberName, DamageNodeKey)>>,
+    /// The scope's `TURRET` records, in record order, or empty when no carrier
+    /// held the member.
+    turrets: Vec<parts::TurretRecord>,
+    /// Why no table could be read, when one could not — surfaced on the parts
+    /// report instead of being folded into the empty record list above.
+    turret_refusal: Option<String>,
+}
+
+/// The binding of a stage, or the empty one when the composition has no stage
+/// — the world resource is absent on the Startup path before it is installed
+/// and on every synthetic composition that declares neither records nor a
+/// table.
+fn stage_binding(stage: Option<&MissionStage>) -> StageBinding {
+    stage.map_or_else(StageBinding::default, |stage| StageBinding {
+        parts: parts::plan_part_states(stage),
+        turrets: stage.turret_records.clone(),
+        turret_refusal: stage.turret_refusal.clone(),
+    })
 }
 
 /// The player record's own measured `team`, or `None` when the stage carries
@@ -586,7 +624,7 @@ fn player_team_of(stage: Option<&MissionStage>) -> Option<u32> {
 fn spawn_mission_actors_under(
     world: &mut World,
     view: HostView,
-    part_plan: &BTreeMap<WorldActorId, Vec<(MemberName, DamageNodeKey)>>,
+    binding: &StageBinding,
 ) -> MissionActorSpawnReport {
     let mut report = MissionActorSpawnReport::default();
     let roster = world
@@ -606,13 +644,20 @@ fn spawn_mission_actors_under(
         .get_resource::<SceneGenerations>()
         .map(SceneGenerations::latest)
         .unwrap_or_default();
-    // The part-state chains of every bound world actor, read from the stage's
-    // own records through the container resolver (M01-PLAY-TRIGGERS-PARTS,
-    // #1481) by the caller, which is the only place that has the stage: on the
-    // Startup path as a world resource, on the restart path as an argument. A
-    // stage whose host carries no world-actor program plans none, and so does
-    // every synthetic stage.
+    // The part-state chains of every bound world actor and the `TURRET` table
+    // that classes them, read from the stage's own records by the caller —
+    // the only place that has the stage: on the Startup path as a world
+    // resource, on the restart path as an argument (M01-PLAY-TRIGGERS-PARTS,
+    // #1481; M01-PLAY-TRIGGERS-TURRET-WIRE, #1499). A stage whose host carries
+    // no world-actor program plans none, and so does every synthetic stage.
     let mut part_report = parts::MissionPartReport::default();
+    if let Some(reason) = &binding.turret_refusal {
+        part_report.refusals.push(format!(
+            "{} cannot supply the TURRET table ({reason}), so no part of this composition is \
+             classed a weapon mount: every part keeps its unclassed node",
+            crate::mission_world_actors::TURRET_MEMBER
+        ));
+    }
     let mut allocator = ActorAllocator::new(session);
 
     // The AI half of the spawn (M01-PLAY-AI, #1436): the airframe table the
@@ -725,7 +770,7 @@ fn spawn_mission_actors_under(
             "damage-graph.scripted-aircraft.{}",
             name.to_ascii_lowercase()
         );
-        match designed_damage_graph(&graph_spelling, &[]) {
+        match designed_damage_graph(&graph_spelling, &[], &binding.turrets, &name) {
             Ok((subject, graph, policy)) => {
                 match session_damage(world, session).register_actor(actor, graph, policy) {
                     Ok(()) => {
@@ -848,10 +893,20 @@ fn spawn_mission_actors_under(
         let graph_spelling = format!("damage-graph.zeppelin.{}", subject.key());
         // The part-state chains this actor's own record spells
         // (M01-PLAY-TRIGGERS-PARTS, #1481): their part elements become nodes of
-        // this actor's graph, so a hit can name an engine.
-        let planned = part_plan.get(world_actor).cloned().unwrap_or_default();
+        // this actor's graph, so a hit can name an engine. Each node is classed
+        // against the stage's `TURRET` table by the graph builder, under the
+        // name the table's `NODES` mount patterns match — the bound subject's
+        // node name, which is the first element of every planned chain. A
+        // planned chain always has that element, so the empty fallback below is
+        // only reached by an actor with no parts, whose nodes never consult the
+        // table.
+        let planned = binding.parts.get(world_actor).cloned().unwrap_or_default();
         let part_keys: Vec<DamageNodeKey> = planned.iter().map(|(_, node)| node.clone()).collect();
-        match designed_damage_graph(&graph_spelling, &part_keys) {
+        let actor_name = planned
+            .first()
+            .and_then(|(chain, _)| chain.first().map(String::as_str))
+            .unwrap_or_default();
+        match designed_damage_graph(&graph_spelling, &part_keys, &binding.turrets, actor_name) {
             Ok((graph_subject, graph, policy)) => {
                 let part_nodes: Vec<DamageNodeKey> = graph
                     .nodes()

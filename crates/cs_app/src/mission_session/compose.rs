@@ -269,6 +269,31 @@ pub struct MissionStage {
     /// stages carry the unread reason, so their objective line can only ever
     /// draw a diagnostic key.
     pub messages: MissionMessages,
+    /// The shared `ai.zrd` `TURRET` list, in record order, read from this
+    /// scope's archives in the original's mission/group/shared mount order at
+    /// stage build time (M01-PLAY-TRIGGERS-TURRET-WIRE, Rally #1499). It is
+    /// what makes a part node a weapon mount: the spawn host builds each
+    /// actor's graph through `mission_session::parts::classed_part_node`
+    /// against these records. An empty list means **no carrier held the
+    /// member**, which is a measured absence exactly like the original
+    /// loader's; a carrier that could not be checked is
+    /// [`Self::turret_refusal`] instead. The synthetic acceptance stages carry
+    /// an empty list because there is no installation to read one from.
+    ///
+    /// This table rides as three fields rather than one value so that it needs
+    /// no new public type: `parts::TurretRecord` is the record type #1491
+    /// already published.
+    pub turret_records: Vec<super::parts::TurretRecord>,
+    /// The logical key of the container the member decoded from
+    /// (`zbd/zrdr.zbd`), or `None` when no searched carrier held it — the
+    /// provenance a reader can check the records against.
+    pub turret_carrier: Option<String>,
+    /// Why no table could be read, verbatim: a carrier that could hold the
+    /// member could not be checked, or the member refused to decode. It is
+    /// never folded into an empty [`Self::turret_records`], so an unread
+    /// table cannot pass for a measured absence, and the spawn host reports it
+    /// beside the parts it then leaves unclassed.
+    pub turret_refusal: Option<String>,
     /// The records the mission host drives every committed tick: the five the
     /// announced-load stage used to drop, the declared control program, the
     /// objective program, the cue table, the chain resolver and every absence
@@ -552,6 +577,15 @@ pub fn stage_for(
     // objective line, and the line then draws its diagnostic key.
     let messages = MissionMessages::read(install_root, installation);
 
+    // The shared `ai.zrd` `TURRET` table (M01-PLAY-TRIGGERS-TURRET-WIRE,
+    // #1499), read once from this scope's archives in the original's
+    // mission/group/shared mount order — the member the original decodes at
+    // mission start, beside the messages read above. A carrier that could
+    // hold it and could not be checked stays the read's own refusal instead
+    // of collapsing into "no turret declared".
+    let turrets =
+        super::parts::read_scope_turrets(install_root, &plan.mission_dir, &plan.group_dir);
+
     Ok(MissionStage {
         target,
         mount: StageMount {
@@ -605,6 +639,9 @@ pub fn stage_for(
         cache_root: Path::new(DEFAULT_MISSION_CACHE_DIR).to_path_buf(),
         installation,
         messages,
+        turret_records: turrets.records,
+        turret_carrier: turrets.carrier,
+        turret_refusal: turrets.refusal,
         host,
     })
 }

@@ -303,6 +303,12 @@ pub(crate) fn synthetic_stage(scratch: &Path) -> MissionStage {
         // keeps the unread reason, so the objective line can draw nothing but
         // its diagnostic key (M01-HUD-OBJECTIVE, #1462).
         messages: cs_app::ui::hud::MissionMessages::default(),
+        // No installation to read the shared `ai.zrd` from either: the
+        // synthetic stage declares no `TURRET` record, so every part it binds
+        // keeps its unclassed node (M01-PLAY-TRIGGERS-TURRET-WIRE, #1499).
+        turret_records: Vec::new(),
+        turret_carrier: None,
+        turret_refusal: None,
         host: synthetic_host_seed(),
     }
 }
