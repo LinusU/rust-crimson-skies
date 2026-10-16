@@ -100,7 +100,7 @@ recovered. This is the composed consequence of the unknown
 
 ## 4. The parent's end-to-end acceptance
 
-`crates/cs_app/tests/campaign/m01_play_triggers_anims.rs` adds two members
+`crates/cs_app/tests/campaign/m01_play_triggers_anims.rs` adds three members
 under the parent's own prefix `accept_m01_play_triggers_anims_`:
 
 * **`…_the_whole_chain_closes_its_gate_only_on_the_landing`** (runs in CI, on
@@ -116,7 +116,15 @@ under the parent's own prefix `accept_m01_play_triggers_anims_`:
   * the landing itself → the row runs, **the gate is still not `Done` on the
     tick the landing happens** (its chain has published nothing yet), and it
     closes only once its animation reaches `EXECUTED` through the production
-    player, on a strictly later tick.
+    player, on a strictly later tick, having been observed `RUNNING` in
+    between (the order the record player reports).
+* **`…_a_wake_that_never_fires_never_closes_the_gate`** (runs in CI). The same
+  composed stage with a `WAKE_ANIM` site whose condition never runs: the node
+  is never armed, a body that would otherwise land inside the row's window
+  runs nothing, the gate's animation is never observed and the gate never
+  completes. This is the acceptance's "a run where the event never fires never
+  completes it" leg, and it is what makes the positive member's closure
+  attributable to the directive.
 * **`…_retail_the_gate_closes_only_after_the_real_landing`** (ignored without
   `CS_GAME_DIR` + `CS_ENGINE_IMAGE`). The same three legs over the composed
   retail M01: `OBJECTIVE49`'s own `WAKE_ANIM` arms `wv_manual_land`, nothing
@@ -127,13 +135,22 @@ under the parent's own prefix `accept_m01_play_triggers_anims_`:
   `OBJECTIVE49` completes, no `pz` row runs, and `hooked_to_klondike` is never
   observed.
 
-Both members read the gate through the host's own lifecycle model
+All three members read the gate through the host's own lifecycle model
 (`ObjectiveLifecycles::state`) and the animation state through the host's own
-stage-4 fold; neither writes a fact row. The two halves' findings record the
+stage-4 fold; none writes a fact row. The two halves' findings record the
 mutation checks that show removing the stage-6d landing consumer, the stage-6b
 wake consumer or the name join makes the chain stop; the parent members read
 the very same states through the very same production path, so the same
-removal fails them.
+removal fails them. The reviewing agent re-ran three of those removals on the
+rebased commit and confirmed the parent suite fails each time: disabling the
+stage-6d landing consumer (`step_landings`), disabling the stage-6b wake
+consumer (`WakeAnimationLedger::consume`) and emptying the landing's call
+chain (`LandingLedger::run_call_chain`) each fail
+`accept_m01_play_triggers_anims_the_whole_chain_closes_its_gate_only_on_the_landing`
+(named panics: "the real landing runs the row", "no armed node vocabulary
+carried synthetic_landing_node within 600 frames" and "the gate closes after
+the landing runs the chain"). The mutations were reverted and are not on the
+branch.
 
 ## 5. What is designed, and what is unknown
 
