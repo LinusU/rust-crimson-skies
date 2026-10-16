@@ -151,11 +151,14 @@ fn synthetic_parent_stage(scratch: &Path, wake: bool) -> MissionStage {
     stage.host.control = synthetic_gate_program(wake);
     let mut table = BlockLifecycleTable::new();
     table
-        .declare(0, if wake {
-            LifecycleDecl::awake()
-        } else {
-            LifecycleDecl::dormant(None)
-        })
+        .declare(
+            0,
+            if wake {
+                LifecycleDecl::awake()
+            } else {
+                LifecycleDecl::dormant(None)
+            },
+        )
         .expect("block 0 is declared once");
     table
         .declare(1, LifecycleDecl::awake())

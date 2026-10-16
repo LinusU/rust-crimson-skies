@@ -168,8 +168,7 @@ use crate::environment::EnvironmentSession;
 use crate::mission_ai::WakeEnemiesLedger;
 use crate::mission_animations::{
     ArmedNode, CallAnimationLedger, MissionAnimationPlayer, MissionAnimationStepRefusal,
-    PlayerError, TickReport, WakeAnimationLedger, armed_nodes_from_report,
-    step_mission_animations,
+    PlayerError, TickReport, WakeAnimationLedger, armed_nodes_from_report, step_mission_animations,
 };
 use crate::mission_markers::{
     MarkerDelivery, MarkerTeardown, MarkerTeardownError, MissionMarkerBindings,

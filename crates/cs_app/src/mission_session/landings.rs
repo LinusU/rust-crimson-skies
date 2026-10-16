@@ -946,11 +946,7 @@ impl LandingLedger {
         // `CALL_ANIMATION` event spells: the designed remainder this chain
         // exists for. The spelled calls are the publish path's business.
         let remainder = |facts: &crate::animation::mission::AnimationRecordFacts| -> Vec<String> {
-            let spelled: BTreeSet<&str> = facts
-                .call_targets()
-                .iter()
-                .map(String::as_str)
-                .collect();
+            let spelled: BTreeSet<&str> = facts.call_targets().iter().map(String::as_str).collect();
             facts
                 .animation_refs()
                 .iter()

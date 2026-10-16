@@ -1103,8 +1103,8 @@ fn accept_m01_play_triggers_anims_arm_retail_a_woken_record_runs_through_the_hos
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m01_play_triggers_anims_arm_the_row_records_spelled_calls_name_the_gated_states() {
-    let binding = bind_mission_animation(&game_dir(), "zbd/c1c/m01")
-        .expect("M01's animation closure reads");
+    let binding =
+        bind_mission_animation(&game_dir(), "zbd/c1c/m01").expect("M01's animation closure reads");
     let index = binding.names();
 
     let row = match index.resolve("wv_initiate_hookup") {

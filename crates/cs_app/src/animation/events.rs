@@ -894,7 +894,11 @@ fn spelled_animation_name(opcode: u8, payload: &[u8]) -> Option<String> {
         return None;
     }
     let bytes = payload.get(SPELLED_NAME_OFFSET..)?;
-    let name: Vec<u8> = bytes.iter().take_while(|byte| **byte != 0).copied().collect();
+    let name: Vec<u8> = bytes
+        .iter()
+        .take_while(|byte| **byte != 0)
+        .copied()
+        .collect();
     if name.is_empty() || !name.iter().all(u8::is_ascii_graphic) {
         return None;
     }
