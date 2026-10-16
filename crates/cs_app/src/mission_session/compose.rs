@@ -888,6 +888,12 @@ fn add_composition(
         app.add_plugins(crate::render::WeatherPlugin::from_environment(
             stage.host.environment.definition(),
         ));
+        // The record's own precipitation kind (M01's `TYPE RAIN`) decides
+        // what falls (#1459 `M01-PLAY-PRECIPITATION`); size, speed, colour
+        // and count are labelled designed, the offsets the cosmetic stream's.
+        app.add_plugins(crate::render::PrecipitationPlugin::from_session(
+            &stage.host.environment,
+        ));
         // The current objective line (M01-HUD-OBJECTIVE, #1462): the
         // installation's own message catalog — `strings.dll`'s `{name, id}`
         // table beside its string rows, read on the stage from the

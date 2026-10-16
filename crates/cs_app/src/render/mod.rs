@@ -184,3 +184,8 @@ pub mod visibility;
 /// after [`horizon`].
 pub mod weather;
 pub use weather::WeatherPlugin;
+/// The drawn precipitation — the environment's authored rain or snow — of a
+/// windowed scene (task #1459 `M01-PLAY-PRECIPITATION`), installed right after
+/// [`weather`].
+pub mod precipitation;
+pub use precipitation::PrecipitationPlugin;

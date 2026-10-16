@@ -758,6 +758,9 @@ pub fn windowed_app(
         // clear colour and ambient replace theirs.
         app.add_plugins(crate::render::HorizonPlugin::designed());
         app.add_plugins(crate::render::WeatherPlugin::designed());
+        // This scene carries no environment record, so there is no authored
+        // precipitation to draw (#1459 `M01-PLAY-PRECIPITATION`).
+        app.add_plugins(crate::render::PrecipitationPlugin::none());
     }
     if let (Some(request), Some(sources)) = (retail, &sources) {
         retail::install(&mut app, sources, request)?;
