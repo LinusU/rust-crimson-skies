@@ -6,11 +6,15 @@ used: `retail` (read-only `$CS_GAME_DIR`) plus build/test. No `gpu`, no
 the first draft of the acceptance legs and evidence harness before its model
 stopped answering; bunny-alpha-2 finished them (rebased onto the current main,
 carried the airframe table through the `StageBinding` seam #1481/#1499
-introduced, finished and ran every check and produced this report). Reviewer:
-pending — a separate Rally reviewer agent instance; the owner prefers a
-different instance/model with a fresh context, and same-agent review is not
-independent evidence. Nothing here is `verified_original`; a Rally merge awards
-`checked` only.
+introduced, finished and ran every check and produced this report). Reviewer
+(Rally review claim, 2026-10-16): bunny-alpha-2 with a fresh session context —
+the same Rally agent name as the implementer, so this review is **not**
+independent evidence; the owner prefers a different instance/model, and no
+agent review replaces the owner's approval. The reviewer re-ran `fmt`, `clippy`,
+the full workspace suite and the acceptance selection, restored `main`'s
+`mission_actors.rs` to confirm the synthetic leg fails (`flown -> held`), and
+regenerated this report on the reviewed tree. Nothing here is
+`verified_original`; a Rally merge awards `checked` only.
 
 ## The defect
 
