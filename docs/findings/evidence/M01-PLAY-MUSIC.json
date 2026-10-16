@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "M01-PLAY-MUSIC",
+ "candidate_tree": "4cfc3c56eaca2577b77bad5bc36ccfc8a67d4346",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-10-16T21:30:15Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_m01_music_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/swe2-max-1", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 4, "executed": 4, "passed": 4, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_m01_music_state_requests_selects_by_the_measured_rules", "status": "pass", "evidence": ["cargo-test.log", "music-census.json"]}, {"id": "accept_m01_music_state_requests_match_the_executable_track_tables", "status": "pass", "evidence": ["cargo-test.log", "music-census.json"]}, {"id": "accept_m01_music_state_requests_resolve_to_their_tracks", "status": "pass", "evidence": ["cargo-test.log", "music-census.json"]}, {"id": "accept_m01_music_state_requests_reach_the_music_director", "status": "pass", "evidence": ["cargo-test.log", "music-census.json"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "56de6475ef6e050cf421bb044aa695694603c73c01dd4c21c06befe7c249ddd0", "kind": "log"}, {"path": "music-census.json", "sha256": "83687c1e9a9cb079e6b8a53f72d63d4b79209f16afacd9dfcf6cf4e651e40a8c", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "swe2-max-1 (Devin SWE-2 Max), implementer, no independent reviewer yet", "method": "Acceptance suite run locally with the retail capability; this harness derives every field from the recorded log, production discovery of $CS_GAME_DIR, and a second production run (music-census.json) that re-executes M01's music cue chain — recover → radio → lifecycle → complete-the-wakers → offer_cues — through the very code this task added. Claim is implemented only, not checked: no independent reviewer has looked at this run, no original executable ran and no person heard anything. MEASURED (retail, read-only): M01 declares 6 music-state block(s) over 5 distinct state(s) ({\"music_battlesuccess_sg\", \"music_missionsuccess_sg\", \"music_prebattle_sg\", \"music_primaryobj_sg\", \"music_secondaryobj_sg\"}), each waking only as a WAKE_OBJECTIVE_WHEN_I_COMPLETE effect; the drive served 6 request(s), one per block, each under the owner-ruled ContentKind::Music id over the labelled container's member, and the director answered every one. LIMITS OF WHAT WAS MEASURED: the selection tables and rules are static image evidence (the finding's measured VAs), the container preference is the labelled choice #1438/#1465 made — which of ZBD/soundsh.zbd and ZBD/soundsl.zbd the original opens is unmeasured — and the RNG is the owner's labelled designed choice (the original's MSVCRT!rand stream is not the project's). Which completions the mission's own world-fact gates produce is the mission-model's question, not this task's: the harness substitutes `complete(index)` for the conditions holding, exactly the entry point the host calls. The cue's audibility is the F41-D listening gate and is not claimed. The 4 assertion(s) discovered under this task's own prefix are the tests of this report. Validated with tools/validate_evidence.py --require-pass."},
+ "claim": "implemented"
+}
