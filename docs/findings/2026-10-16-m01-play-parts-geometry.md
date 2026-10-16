@@ -4,10 +4,12 @@ Date: 2026-10-16. Task `M01-PLAY-PARTS-GEOMETRY` (Rally #1492), the follow-up
 of `M01-PLAY-TRIGGERS-PARTS` (#1481) and `M01-PLAY-TRIGGERS-TURRET-CLASS`
 (#1491). Capabilities used: `retail` (read-only `$CS_GAME_DIR`) plus
 build/test. No `gpu`, no `audio`, no original run, no engine-image trace.
-Implementer: bunny-alpha-2/bunny-alpha-2. Reviewer: the Rally review claim;
-this report names only the implementer until that claim closes, and a review by
-the same agent identity would not be independent evidence. Nothing here is
-`verified_original`; a Rally merge awards `checked` only.
+Implementer: bunny-alpha-2/bunny-alpha-2 (Rally #1492 implementation session).
+Reviewer: bunny-alpha-2/bunny-alpha-2 (Rally #1492 review claim) — the **same
+agent identity and model as the implementer, with no fresh context**, so this
+review is **not independent** and is not independent original-reference
+evidence. Nothing here is `verified_original`; a Rally merge awards `checked`
+only.
 
 ## The defect this slice repairs
 
