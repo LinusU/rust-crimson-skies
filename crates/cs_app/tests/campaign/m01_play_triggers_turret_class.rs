@@ -10,8 +10,8 @@
 //!
 //! The legs prove: the nine chains resolve to the three records the finding
 //! names, with their weapon, parts and health; none of the thirty engine chains
-//! is a turret; the mount carries **no** `disables` edge (one aggregate
-//! `Weapon` system per actor would silence all nine on one loss); and a
+//! is a turret; each mount's destruction disables the F29 `Weapon` system on
+//! that mount's own node (so one loss never silences the others); and a
 //! synthetic table pins the reader's pattern rule and its skips without retail.
 //!
 //! Nothing here is `verified_original`: no original executable ran, and whether
@@ -26,7 +26,7 @@ use cs_app::mission_session::{
 };
 use cs_content::stunts::{ZrdValue, decode_zrd};
 use cs_formats::script_raw::discovery::discover_container;
-use cs_sim::damage::{DamageNodeKey, DamageNodeKind};
+use cs_sim::damage::{DamageNodeKey, DamageNodeKind, SystemKind};
 
 use crate::common::label;
 
@@ -107,8 +107,8 @@ fn accept_m01_play_triggers_turret_class_the_nine_chains_are_declared_weapon_mou
         assert_eq!(graph_node.kind(), DamageNodeKind::WeaponMount, "{node}");
         assert_eq!(
             graph_node.disables(),
-            None,
-            "{node} declares no system edge"
+            Some(SystemKind::Weapon),
+            "{node} disables the F29 weapon system"
         );
     }
     // The titles name the three mount families.
@@ -245,9 +245,14 @@ fn accept_m01_play_triggers_turret_class_a_synthetic_table_classes_only_what_it_
 
     let mount = classed_part_node(&table, "synthzep", &key("gun3"));
     assert_eq!(mount.kind(), DamageNodeKind::WeaponMount);
-    assert_eq!(mount.disables(), None);
+    assert_eq!(mount.disables(), Some(SystemKind::Weapon));
     let engine = classed_part_node(&table, "synthzep", &key("engine1"));
     assert_eq!(engine.kind(), DamageNodeKind::InternalStructure);
+    assert_eq!(
+        engine.disables(),
+        None,
+        "an unclassed part declares no system"
+    );
 }
 
 #[test]

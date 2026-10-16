@@ -77,17 +77,22 @@
 //! `MSG_TUR_BELLY`) and record 31 (`utur*`, `MSG_TUR_TOP`), each with its own
 //! `WEAPON` (name, ammunition, fire rate, detection range), `PARTS`
 //! (`turret`/`gun`/`firepoint`), pitch and yaw limits — a **weapon mount**, so
-//! [`turret_part_node`] gives the node [`DamageNodeKind::WeaponMount`]. Records
-//! 28 and 31 also state `HEALTH` (`10.0`); record 27 states none.
+//! [`turret_part_node`] gives the node [`DamageNodeKind::WeaponMount`] **and**
+//! the F29 system a weapon mount's destruction disables,
+//! [`SystemKind::Weapon`] (AC03). Records 28 and 31 also state `HEALTH`
+//! (`10.0`); record 27 states none.
 //!
-//! What stays open, and is therefore not bound: whether destroying the mount
-//! clears the `+0x24` bit 4 the `INACTIVE` read counts (the producers are
-//! untraced), the unit of `HEALTH`, and a `disables` edge. The last is not
-//! merely unmeasured but wrong in this graph: [`SystemKind::Weapon`] is one
-//! aggregate per actor that reads `Disabled` as soon as **any** declaring node
-//! is destroyed, while every `TURRET` record carries its own `WEAPON`, ammunition
-//! and attack timers — the turrets fire independently — so one mount's loss
-//! would silence all nine. See
+//! The `disables` edge is read **per node**: the F29 consumer
+//! (`cs_app::damage::apply_damage_state`) disables the mount the destroyed
+//! node's edge names, by its own [`DamageNodeKey`], so a destroyed turret stops
+//! firing exactly its own mount and never the zeppelin's other eight. The
+//! actor-level system-state query is a report and gates nothing.
+//!
+//! What stays open: whether the **original** counts a turret's `healthy` state
+//! the same way as an engine's, and whether it clears the `+0x24` bit 4 the
+//! `INACTIVE` read counts (its producers are untraced); the unit of `HEALTH`;
+//! and that nothing in the composition binds this class yet (the spawn host
+//! still calls [`designed_part_node`]). See
 //! `docs/findings/2026-10-16-m01-play-triggers-turret-class.md`.
 //!
 //! # What is observed, and the fail-closed rule
@@ -110,7 +115,9 @@ use std::collections::BTreeMap;
 use bevy::prelude::{Component, Entity, Resource, Transform, Vec3, World};
 use cs_content::stunts::ZrdValue;
 use cs_script::ir::{ActorId as WorldActorId, MemberName};
-use cs_sim::damage::{DamageNode, DamageNodeKey, DamageNodeKind, DamageResolver, PartState};
+use cs_sim::damage::{
+    DamageNode, DamageNodeKey, DamageNodeKind, DamageResolver, PartState, SystemKind,
+};
 use cs_types::content::{ContentId, Known, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
 use cs_types::net::ActorId;
@@ -364,7 +371,7 @@ pub fn turret_record_for<'a>(
 
 /// The damage node of a part a `TURRET` record declares: a
 /// [`DamageNodeKind::WeaponMount`] with the same designed pool as every part
-/// and **no** `disables` edge (see the module's turret section).
+/// and the F29 system its destruction disables, [`SystemKind::Weapon`] (AC03).
 #[must_use]
 pub fn turret_part_node(key: &DamageNodeKey) -> DamageNode {
     DamageNode::new(
@@ -375,6 +382,7 @@ pub fn turret_part_node(key: &DamageNodeKey) -> DamageNode {
             Provenance::designed(claim()),
         )),
     )
+    .with_disables(SystemKind::Weapon)
 }
 
 /// The designed node of a part of `actor`: a weapon mount when the `TURRET`
