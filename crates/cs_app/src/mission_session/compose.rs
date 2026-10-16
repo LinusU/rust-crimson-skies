@@ -1316,6 +1316,11 @@ pub fn teardown(app: &mut App) {
     world.remove_resource::<crate::mission_actors::MissionZeppelinAllegianceReport>();
     world.remove_resource::<crate::mission_session::MissionPartReport>();
     world.remove_resource::<crate::mission_ai::MissionAiReport>();
+    // The pending fire intents go with it: the plugin re-initialises the
+    // resource only when it is missing, so a run torn down between a
+    // decision and its publication must not leave its asks behind for the
+    // next composition in the same process to ride along.
+    world.remove_resource::<crate::mission_ai::MissionAiFireOrders>();
     world.remove_resource::<MissionPlayerStart>();
     world.remove_resource::<MissionPlayerVisual>();
     world.remove_resource::<super::world_draw::MissionWorldParts>();

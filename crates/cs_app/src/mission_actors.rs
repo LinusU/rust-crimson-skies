@@ -90,7 +90,9 @@ use cs_types::net::{ActorAllocator, ActorId, SessionId};
 use cs_types::space::WorldPosition;
 
 use crate::damage::DamageActorBinding;
-use crate::mission_ai::{MissionAiReport, MissionAircraftAi, ai_flight_record, spawn_mass_kg};
+use crate::mission_ai::{
+    MissionAiFireOrders, MissionAiReport, MissionAircraftAi, ai_flight_record, spawn_mass_kg,
+};
 use crate::mission_session::{MISSION_FACTION_PLAYER, MissionHost, MissionStage, parts};
 use crate::mission_start::{ScriptedAircraft, SpawnDispatch, stored_heading_radians};
 use crate::mission_world_actors::object3d_orientation;
@@ -896,6 +898,14 @@ fn spawn_mission_actors_under(
         no_target: 0,
         fire_orders: 0,
     });
+
+    // The pending fire intents go with the generation they were decided
+    // for: a restart's respawn must not publish the previous generation's
+    // asks into the fresh session's first tick, where the actors they name
+    // no longer exist. The plugin initialises the resource only when it is
+    // missing, so a respawn has to replace it the way it replaces the
+    // report above.
+    world.insert_resource(MissionAiFireOrders::default());
 
     world.insert_resource(report.clone());
     // The part-state binding's own report: which chains got a live entity and
