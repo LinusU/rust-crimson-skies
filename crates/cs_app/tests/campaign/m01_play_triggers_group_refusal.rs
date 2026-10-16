@@ -122,8 +122,15 @@ fn skipped(name: &str, group: u32) -> ScriptedAircraft {
     record
 }
 
-/// One `DEDG [group, 0]` objective per group.
-fn depletion_program(groups: &[i32]) -> MissionProgram {
+/// One `DEDG [group, remaining]` objective per `(group, remaining)` pair.
+///
+/// Group 5's `remaining` is `1`, not `0`: its true registry count is 2, so
+/// the original's evaluator (`living <= remaining`) never fires — but the
+/// undercount of 1 this task removes satisfies `1 <= 1` and completes the
+/// gate immediately. It is the sharpest pin of the acceptance criterion:
+/// under the old rule the gate completes, under this rule the group is
+/// unobserved and it never can.
+fn depletion_program(gates: &[(i32, i32)]) -> MissionProgram {
     MissionProgram {
         version: IR_VERSION,
         mission: cid(
@@ -131,10 +138,10 @@ fn depletion_program(groups: &[i32]) -> MissionProgram {
             "synthetic-m01-group-refusal",
         ),
         variables: Vec::new(),
-        objectives: groups
+        objectives: gates
             .iter()
             .enumerate()
-            .map(|(index, group)| Objective {
+            .map(|(index, (group, remaining))| Objective {
                 id: SymbolId(index as u32),
                 content: cid(
                     cs_types::content::ContentKind::Objective,
@@ -142,7 +149,7 @@ fn depletion_program(groups: &[i32]) -> MissionProgram {
                 ),
                 condition: Condition::EnemyGroupDepletion {
                     group: *group,
-                    remaining: 0,
+                    remaining: *remaining,
                     generator: None,
                 },
                 actions: Vec::new(),
@@ -179,7 +186,7 @@ fn accept_m01_play_triggers_group_refusal_a_partial_spawn_stays_unobserved_and_n
         spawnable("rusdevastator_7a", 7),
         spawnable("rusdevastator_7b", 7),
     ];
-    stage.host.control = depletion_program(&[5, 6, 7]);
+    stage.host.control = depletion_program(&[(5, 1), (6, 0), (7, 0)]);
     let mut app = build_headless(&stage).expect("the synthetic stage composes");
     arm(&mut app);
     for _ in 0..30 {
@@ -203,11 +210,12 @@ fn accept_m01_play_triggers_group_refusal_a_partial_spawn_stays_unobserved_and_n
         "the fully spawned group counts its two live members: {groups:?}"
     );
 
-    // Objectives are ordered [5, 6, 7]: index 0 must never complete, index 1
-    // completes on the skip's 0, index 2 waits on two live members.
+    // Objectives are ordered [5, 6, 7]: index 0 must never complete — its
+    // `remaining: 1` is exactly what the undercount of 1 would satisfy —
+    // index 1 completes on the skip's 0, index 2 waits on two live members.
     assert!(
         !completed(&app, 0),
-        "the mixed group's DEDG gate must never complete on an undercount"
+        "the mixed group's DEDG [5, 1] gate must never complete on the undercount of 1"
     );
     assert!(
         completed(&app, 1),
@@ -244,7 +252,7 @@ fn accept_m01_play_triggers_group_refusal_a_partial_spawn_stays_unobserved_and_n
     assert!(completed(&app, 2), "the emptied group's gate completes");
     assert!(
         !completed(&app, 0),
-        "the mixed group stays unobserved and uncompleted to the end"
+        "the mixed group stays unobserved and its gate never completes"
     );
 
     teardown(&mut app);

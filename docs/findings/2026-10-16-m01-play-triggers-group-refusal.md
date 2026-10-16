@@ -55,8 +55,10 @@ and reported the live count of the fraction that spawned. A `DEDG [group,
 * `accept_m01_play_triggers_group_refusal_a_partial_spawn_stays_unobserved_and_never_completes`
   (CI): a synthetic stage with groups 5 (spawned + refused), 6 (skip-only)
   and 7 (two spawned) observes `{6: 0, 7: 2}`, never reports 5, and never
-  completes group 5's `DEDG` gate — while 6's completes on 0 and 7's
-  completes only after both members leave the world.
+  completes group 5's `DEDG [5, 1]` gate — `remaining: 1` is exactly what
+  the undercount of 1 would satisfy, so the gate completing is the
+  fail-open itself — while 6's completes on 0 and 7's completes only after
+  both members leave the world.
 * `accept_m01_play_triggers_group_refusal_retail_m01s_groups_are_all_observed`
   (`retail`): M01's enabled records all spawn, so every group is observed
   exactly as before — `{1: 4, 2: 0, 3: 1, 4: 0, 5: 4}` (5 is the `player`
