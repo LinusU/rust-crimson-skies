@@ -20,7 +20,7 @@
 //! | --- | --- | --- |
 //! | `["player"]` | the [`MissionPlayerBody`] entity's [`Position`] | the body's physics pose is the authoritative position the trigger has to measure from; nothing else in the composition is `player` |
 //! | `["<node>"]` per bound world actor | the [`WorldActorBinding`] entity's [`Transform`], with the presence the world's own state reports (M01-PLAY-TRIGGERS-ACTOR-BIT, below) | the binding entity is not a physics body, so its `Transform` is its live pose; its node name comes from the measured subject spelling (below), and whether it is *in play* is the world-actor session's lifecycle × the damage authority's destruction ledger — never a default |
-//! | one row per group id | live [`ScriptedAircraftActor`] entities, keyed by the groups the composition **actually spawned** | a count is only reportable for a group whose members were spawned and can now be counted |
+//! | one row per group id | live [`ScriptedAircraftActor`] entities, keyed by the groups the composition **fully spawned** | a count is only reportable when every enabled record of a group spawned; a partial spawn is an unknown count, not a smaller one |
 //! | one row per bound part-state chain | the [`MissionPartState`] entity's own pose, with the presence the session's damage authority reports | a part-state chain now has a live entity (M01-PLAY-TRIGGERS-PARTS, below); its in-play bit is the one the `INACTIVE` evaluator reads |
 //!
 //! M01's 39 part-state chains (`["workersvoyagezep", "reng1", "healthy"]`, …)
@@ -79,11 +79,12 @@
 //!   are the original's `enabled == 0` skips (M01's `2` and `4`) is `0` too:
 //!   the original's counter `0x4658d0` counts registry members and a skipped
 //!   record never enters the registry
-//!   (`docs/findings/2026-10-15-m01-play-triggers-group-membership.md`). That
-//!   zero is never borrowed by a group an *enabled* record also carries: such
-//!   a group could have had a registry member, so a record of it this
-//!   composition refused to spawn leaves the count unknown, not `0`. A group
-//!   no record carries gets **no row**, and
+//!   (`docs/findings/2026-10-15-m01-play-triggers-group-membership.md`). A
+//!   group whose records are all enabled is observed only when **every** such
+//!   record spawned: one the composition refused leaves the registry count
+//!   unknown, and a fraction of the group's members is an undercount, not a
+//!   count (`docs/findings/2026-10-16-m01-play-triggers-group-refusal.md`).
+//!   A group no record carries gets **no row**, and
 //!   `Condition::EnemyGroupDepletion` over it answers `false` ("an unrecorded
 //!   group is unknown, not an empty one").
 //!
@@ -371,26 +372,40 @@ pub fn mission_world_observation(world: &mut World) {
             .map(|roster| roster.0.clone())
             .unwrap_or_default();
         let mut living: BTreeMap<i32, u32> = BTreeMap::new();
-        // Every group id an enabled (non-player) roster record carries: a
-        // group this composition *could* have spawned a member for. Its count
-        // may only come from real spawns — never from a skip — because an
-        // enabled record is one the original's registry would hold, so a
-        // record of it that this composition refused to spawn leaves the
-        // count unknown, not 0.
+        // A group's count is only a count when the composition can account
+        // for **every** enabled record carrying it: the original's counter
+        // (`0x4658d0`) counts vehicle-registry members and every enabled
+        // record enters that registry, so a record of this group the spawn
+        // refused leaves the true count unknown — observed only when all of
+        // the group's enabled records spawned, never on the fraction that
+        // did (the undercount a `DEDG` gate could complete early on).
         let mut roster_groups: BTreeSet<u32> = BTreeSet::new();
+        // Each spawned row accounts for exactly one roster record: two
+        // same-named records cannot both stand on a single spawn.
+        let mut spawn_rows: BTreeMap<&str, usize> = BTreeMap::new();
+        for name in &spawned {
+            *spawn_rows.entry(name.as_str()).or_default() += 1;
+        }
+        let mut expected: BTreeMap<u32, usize> = BTreeMap::new();
+        let mut admitted: BTreeMap<u32, usize> = BTreeMap::new();
         for record in &roster {
-            if let Some(group) = record.group {
-                roster_groups.insert(group);
-            }
-            if !spawned.contains(&record.name) {
-                // The record never spawned, so its group was never observed:
-                // an unobservable group stays unobserved, never 0.
+            let Some(group) = record.group else {
                 continue;
-            }
-            if let Some(group) = record.group
-                && let Ok(id) = i32::try_from(group)
+            };
+            roster_groups.insert(group);
+            *expected.entry(group).or_default() += 1;
+            if let Some(available) = spawn_rows.get_mut(record.name.as_str())
+                && *available > 0
             {
-                living.entry(id).or_insert(0);
+                *available -= 1;
+                *admitted.entry(group).or_default() += 1;
+            }
+        }
+        for (group, total) in &expected {
+            if admitted.get(group).copied().unwrap_or(0) == *total
+                && let Ok(id) = i32::try_from(*group)
+            {
+                living.insert(id, 0);
             }
         }
         // Records the original's spawn loop skips (`enabled == 0`) are never
