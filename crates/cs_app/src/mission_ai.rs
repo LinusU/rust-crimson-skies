@@ -130,7 +130,7 @@ use cs_types::space::{Quaternion, WorldPosition};
 use crate::mission_actors::ScriptedAircraftActor;
 use crate::mission_session::{
     MISSION_FACTION_HOSTILE, MISSION_FACTION_PLAYER, MissionPlayerBody, MissionStage,
-    MissionWeapons, attach_gun_rig, designed_loadout,
+    MissionWeapons, attach_gun_rig, designed_loadout, ensure_mission_weapons,
 };
 use crate::mission_start::{ScriptedAircraft, SpawnDispatch};
 use crate::physics::{BodyMode, set_body_mode};
@@ -1196,7 +1196,14 @@ pub fn append_ai_fire_orders(world: &mut World, input: &mut WeaponTickInput) {
 /// an entity already bound to **this** generation's session is skipped and
 /// anything else is armed now. Nothing here invents a gun: the loadout is
 /// the mission's own designed one (#1437).
+///
+/// The restart's re-open lands in `PostUpdate` (`mission_host_restart`),
+/// one schedule stage after this pass — so the pass runs
+/// [`ensure_mission_weapons`] first and never registers a fresh generation's
+/// actor into the dead generation's session for the one tick the ordering
+/// would otherwise allow.
 fn arm_mission_ai(world: &mut World) {
+    ensure_mission_weapons(world);
     if world.get_resource::<WeaponSession>().is_none() {
         // The session opens after Startup; the next tick arms the records.
         return;

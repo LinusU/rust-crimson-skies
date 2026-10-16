@@ -1211,7 +1211,13 @@ pub fn is_fire_rockets(action: Action) -> bool {
 /// one. This compares the installed session to the host's served generation
 /// and re-opens on a mismatch, so a restart never leaves the player holding a
 /// dead generation's guns.
-fn ensure_mission_weapons(world: &mut World) {
+///
+/// The arming pass [`crate::mission_ai`] runs in `FixedPreUpdate` calls this
+/// too: the restart that replaces the session lands in `PostUpdate`, one
+/// schedule stage after the pass — without the same staleness check ahead of
+/// registering, the first tick after a restart would arm against the dead
+/// generation and record a refusal the same tick resolves.
+pub fn ensure_mission_weapons(world: &mut World) {
     let served = world
         .get_resource::<super::MissionHost>()
         .map(|host| host.served());
