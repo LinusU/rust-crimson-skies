@@ -54,6 +54,14 @@
       "added_by": "Devin SWE-2/swe2-max-1",
       "read_at": "2026-10-12T21:26:00Z",
       "note": "The review of #564 was done by the same agent instance that implemented it, and the committed report still carried the pre-review hand-over wording, which matches no PLACEHOLDERS entry, so the gap fired no check. The entry was added only after the report's `review.identity` and its harness literal were corrected to name the real claims; what the reviewer did and did not run comes from the task's `task.merged` notes. Read with the `rally` MCP server (get_task for #564) from the activity log, not from the hand-over summaries."
+    },
+    {
+      "task_key": "M01-PLAY-AI",
+      "rally_task": 1436,
+      "added_under": "M01-PLAY-AI-EVIDENCE-IDENTITY (#1510)",
+      "added_by": "Devin SWE-2/swe2-max-1",
+      "read_at": "2026-10-16T15:14:00Z",
+      "note": "The committed report's `review.identity` still carried the hand-over placeholder ('the Rally reviewer regenerates it on the rebased commit') after #1436 merged, so the stage sat in the unrecorded advisory list while five checks named the file. The entry was added in the same commit that corrected the report's `review.identity` and the harness that writes it: the harness no longer reads the identity from `CS_EVIDENCE_REVIEWER` at run time but records it in `review_identity()`, the shape F14-D.7's harness uses, so a regeneration cannot put the placeholder back. The review of #1436 was done by a different agent instance and model than the implementer, and the branch landed through Rally's landing queue, so `merge_event` is the system `task.merged` event and `approval_event` names the reviewer's own `task.approved`. Read with the `rally` MCP server (get_task and get_activity for #1436) from the activity log, not from the hand-over summaries."
     }
   ],
   "tasks": [
@@ -356,6 +364,31 @@
       "report_regenerated_on_reviewed_commit": false,
       "self_review": "The implementer and the reviewer are the same agent instance and model, so this review is not independent evidence and the check requires the report to keep saying so; the reviewer of #564 recorded the same in its `complete_review` notes.",
       "notes": "The report's `created_at` (2026-10-11T19:16:09Z) is inside sonnet-1's implement claim, so the committed copy is the implementer's: the reviewer's `task.merged` notes say it confirmed the branch was already a descendant of origin/main and that CI was green on `merged_sha`, made no changes, and did not rerun the four local checks in the review session - they were the same agent's green pre-push runs. `claim_started` is the `task.resumed` event, per `claim_started_source`."
+    },
+    {
+      "task_key": "M01-PLAY-AI",
+      "rally_task": 1436,
+      "evidence_report": "docs/findings/evidence/M01-PLAY-AI.json",
+      "merged_sha": "e602fa700fa455f5146fb03407b2dc921e51962d",
+      "implementer": {
+        "actor": "mimo-1/mimo-1",
+        "claim_started": "2026-10-15T11:43:24Z",
+        "submitted": "2026-10-15T15:11:49Z"
+      },
+      "reviewer": {
+        "actor": "claude-2/claude-2",
+        "review_claim_started": "2026-10-15T20:13:13Z",
+        "merge_event": {"type": "task.merged", "actor": "rally", "at": "2026-10-15T23:27:01Z"},
+        "approval_event": {"type": "task.approved", "actor": "claude-2/claude-2", "at": "2026-10-15T23:15:13Z"},
+        "earlier_review_claims": [
+          {"actor": "claude-2/claude-2", "review_claim_started": "2026-10-15T22:39:50Z", "outcome": "the same agent's second review claim: the first had approved 8e805a22 at 2026-10-15T22:39:28Z and the landing queue failed on a rebase conflict, so the reviewer hand-rebased the branch and approved 35ef11ea, which the queue landed as merged_sha"},
+          {"actor": "bunny-alpha-1/bunny-alpha-1", "review_claim_started": "2026-10-15T17:24:22Z", "outcome": "the review lease expired on 2026-10-15T19:56:17Z; its unpushed edits were preserved on owner/1436-bunny-alpha-1-review-wip and were not merged"},
+          {"actor": "mimo-1/mimo-1", "review_claim_started": "2026-10-15T15:12:24Z", "outcome": "the implementer's own review lease expired on 2026-10-15T17:22:20Z without approving or merging anything"}
+        ]
+      },
+      "report_written_by": "implementer",
+      "report_regenerated_on_reviewed_commit": false,
+      "notes": "The report's `created_at` (2026-10-15T15:04:08Z) is inside mimo-1's implement claim, so the committed copy is the implementer's own run on the submitted tree; the reviewer did not regenerate it. The reviewer's `task.approved` notes record: two real review fixes (a hold-course aircraft steers along hold_course_direction(nose); a stored primary target of 'player' resolves to TargetRule::Player), each with a unit test; on 8e805a22 fmt/clippy/CI were green and the retail acceptance prefix passed (one transient soundsh.zbd Permission denied, rerun passed); after the landing queue's rebase conflict the reviewer hand-rebased to 35ef11ea (fmt clean, clippy -D warnings, prefix lib tests 6/6, CI green) and did not rerun the retail campaign acceptance for the conflict-only rebase. The reviewer's context was fresh: it is a different agent instance and model (Sonnet 5.5) than the implementer (MiMo). The owner-preserved bunny-alpha-1 review WIP (d5666728, the MissionAiFireOrders reset) was not cherry-picked and is follow-up work, not part of this review."
     }
   ]
 }
