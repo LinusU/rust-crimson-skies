@@ -82,23 +82,23 @@ use crate::vs_m01_rt_window::{Scratch, game_dir, synthetic_stage};
 // ---------------------------------------------------------------------------
 
 /// The record whose `OBJECT_ACTIVE_STATE` statement arms the landing nodes.
-const SYNTHETIC_ARM: &str = "synthetic_arm_anim";
+pub(crate) const SYNTHETIC_ARM: &str = "synthetic_arm_anim";
 
 /// The record a landing at `synthetic_landing_node` runs.
-const SYNTHETIC_LAND: &str = "synthetic_land_anim";
+pub(crate) const SYNTHETIC_LAND: &str = "synthetic_land_anim";
 
 /// A record a landing never reaches: its node is never armed.
-const SYNTHETIC_OTHER: &str = "synthetic_other_anim";
+pub(crate) const SYNTHETIC_OTHER: &str = "synthetic_other_anim";
 
 /// A record a landing never reaches: its node is ten kilometres away.
-const SYNTHETIC_FAR: &str = "synthetic_far_anim";
+pub(crate) const SYNTHETIC_FAR: &str = "synthetic_far_anim";
 
 /// The record [`SYNTHETIC_LAND`]'s `animation_refs` chain starts.
-const SYNTHETIC_CALLED: &str = "synthetic_called_anim";
+pub(crate) const SYNTHETIC_CALLED: &str = "synthetic_called_anim";
 
 /// A name in [`SYNTHETIC_LAND`]'s refs that no member declares: the chain's
 /// refusal leg.
-const SYNTHETIC_CHAIN_UNBOUND: &str = "synthetic_chain_binds_nothing";
+pub(crate) const SYNTHETIC_CHAIN_UNBOUND: &str = "synthetic_chain_binds_nothing";
 
 /// The one ordinary sequence block every synthetic record carries.
 const SYNTHETIC_SEQUENCE: &str = "PLAY";
@@ -391,7 +391,7 @@ fn synthetic_wake_program() -> MissionProgram {
 /// program wakes the arm record and whose animation join resolves every
 /// name the landing table and the call chain touch. Everything else is
 /// `synthetic_stage`'s own content.
-fn synthetic_land_stage(scratch: &Path) -> MissionStage {
+pub(crate) fn synthetic_land_stage(scratch: &Path) -> MissionStage {
     let mut stage = synthetic_stage(scratch);
     stage.host.control = synthetic_wake_program();
     stage.host.animation = Some(synthetic_binding());
@@ -408,7 +408,7 @@ fn synthetic_land_stage(scratch: &Path) -> MissionStage {
 /// anchor's observed row plus the authored offset
 /// (`LANDING_NODE_POSITION_CLAIM`) — while the retail members below anchor
 /// on the real bound zeppelins.
-fn synthetic_landings() -> MissionLandings {
+pub(crate) fn synthetic_landings() -> MissionLandings {
     MissionLandings {
         rows: vec![
             // The success row: armed, at the body, window satisfiable.
@@ -477,22 +477,22 @@ fn synthetic_landings() -> MissionLandings {
 
 /// One leg's player-body state: an optional position write, and the
 /// velocity and attitude the physics step of that tick starts from.
-struct Body {
+pub(crate) struct Body {
     /// When `Some`, the body's position is written too — a retail leg
     /// landing at a composed node. A synthetic leg never writes it: its
     /// nodes anchor on the player's own row, and a position write to an
     /// arbitrary point would slam the body into the world's geometry.
-    position: Option<Vec3>,
+    pub(crate) position: Option<Vec3>,
     /// The velocity the next physics tick integrates from.
-    velocity: Vec3,
+    pub(crate) velocity: Vec3,
     /// The attitude the next physics tick integrates from.
-    rotation: Quat,
+    pub(crate) rotation: Quat,
 }
 
 /// Commits `frames` composed frames, re-placing the player body (when the
 /// leg wants it placed) before each one so the physics step of that very
 /// tick starts from the leg's own state.
-fn pump(app: &mut App, frames: usize, place: Option<&Body>) {
+pub(crate) fn pump(app: &mut App, frames: usize, place: Option<&Body>) {
     for _ in 0..frames {
         *app.world_mut().resource_mut::<TimeUpdateStrategy>() =
             TimeUpdateStrategy::ManualDuration(app.world().resource::<Time<Fixed>>().timestep());
@@ -509,7 +509,7 @@ fn pump(app: &mut App, frames: usize, place: Option<&Body>) {
 /// The body spawns in the composition's `Startup` schedule, so the very
 /// first frame's placement finds nothing and skips: every frame after it
 /// has exactly one body, and the legs' assertions prove the states took.
-fn place_player(app: &mut App, position: Option<Vec3>, velocity: Vec3, rotation: Quat) {
+pub(crate) fn place_player(app: &mut App, position: Option<Vec3>, velocity: Vec3, rotation: Quat) {
     let world = app.world_mut();
     let mut query = world.query_filtered::<(
         &mut Position,
@@ -527,7 +527,7 @@ fn place_player(app: &mut App, position: Option<Vec3>, velocity: Vec3, rotation:
 }
 
 /// Whether any armed node vocabulary carries this node name.
-fn armed_has(app: &App, node: &str) -> bool {
+pub(crate) fn armed_has(app: &App, node: &str) -> bool {
     app.world()
         .resource::<MissionHost>()
         .armed_nodes()
@@ -541,7 +541,7 @@ fn armed_has(app: &App, node: &str) -> bool {
 /// node anchors on the player's own row must hold a state that **cannot**
 /// land (a too-fast descent here) while the wake records run, or the first
 /// armed tick would already satisfy a row.
-fn pump_until_armed(app: &mut App, node: &str, limit: usize, place: Option<&Body>) {
+pub(crate) fn pump_until_armed(app: &mut App, node: &str, limit: usize, place: Option<&Body>) {
     for _ in 0..limit {
         pump(app, 1, place);
         if armed_has(app, node) {
@@ -553,7 +553,7 @@ fn pump_until_armed(app: &mut App, node: &str, limit: usize, place: Option<&Body
 
 /// The state the host's own stage-4 fold holds for one record, as the
 /// observation carries it.
-fn observed_state(app: &App, name: &str) -> Option<u32> {
+pub(crate) fn observed_state(app: &App, name: &str) -> Option<u32> {
     app.world().get_resource::<MissionHost>().and_then(|host| {
         host.world_facts()
             .observation()
@@ -565,7 +565,7 @@ fn observed_state(app: &App, name: &str) -> Option<u32> {
 
 /// The composed landing position of one node — the stage-4 observation's
 /// own row for it, which is also the proof the writer composed one.
-fn composed_node_position(app: &App, node: &str) -> Vec3 {
+pub(crate) fn composed_node_position(app: &App, node: &str) -> Vec3 {
     app.world()
         .resource::<MissionHost>()
         .world_facts()
@@ -1014,7 +1014,7 @@ fn accept_m01_play_triggers_anims_land_a_composed_landing_starts_the_row_and_its
 /// declared awake and the recovered engine model set aside — the arm
 /// task's own declared-lifecycle device, so this test's subject (the
 /// landing chain) runs while nothing else can complete and settle the run.
-fn retail_land_stage(awake: &[u32]) -> MissionStage {
+pub(crate) fn retail_land_stage(awake: &[u32]) -> MissionStage {
     let root = game_dir();
     let plan = plan_mission_launch(&root, label("M01"), "The Lost Treasure")
         .expect("M01's launch closure plans");
@@ -1033,7 +1033,7 @@ fn retail_land_stage(awake: &[u32]) -> MissionStage {
 
 /// The composed entry's answer for the last tick, or a panic naming the
 /// refusal.
-fn last_tick(app: &App) -> u64 {
+pub(crate) fn last_tick(app: &App) -> u64 {
     let report = app
         .world()
         .get_resource::<MissionHostReport>()

@@ -270,6 +270,7 @@ mod m01_play_ai_wake;
 mod m01_play_parts_geometry;
 mod m01_play_radio;
 mod m01_play_triggers_actor_bit;
+mod m01_play_triggers_anims;
 mod m01_play_triggers_anims_arm;
 mod m01_play_triggers_anims_land;
 mod m01_play_triggers_depletion;
