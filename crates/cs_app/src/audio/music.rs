@@ -298,19 +298,21 @@ pub fn music_state_spec(group: &str) -> Option<&'static MusicStateSpec> {
 
 /// What one resolved music group arms the selector with: the child count its
 /// weights span (the `sounds.zrd` expansion's member count — the domain the
-/// draw runs over) and the `DYNAMIC_WEIGHTS` factor it spells.
+/// draw runs over) and the `DYNAMIC_WEIGHTS` factor it spells, if it spells
+/// one.
 ///
-/// A group that spells no factor arms with `1.0` — no decay, the designed
-/// reading of an unspelled `[group+0x10]` (measured only for groups that
-/// spell `DYNAMIC_WEIGHTS`, and `0.5` there).
+/// `factor` is `None` for a group that spells no `DYNAMIC_WEIGHTS`: the
+/// measured `[group+8]` flag then gates the whole post-draw block — no
+/// factor multiply, no floor, no renormalization — so an unspelled group's
+/// weights never move.
 #[derive(Clone, Debug, PartialEq)]
 pub struct MusicArm {
     /// The music group a cue can name.
     pub group: String,
     /// The child count the draw walks — the resolved member count.
     pub children: usize,
-    /// The `DYNAMIC_WEIGHTS` factor the group spells.
-    pub factor: f32,
+    /// The `DYNAMIC_WEIGHTS` factor the group spells, if any.
+    pub factor: Option<f32>,
 }
 
 /// The track one music state request selected: the slot the rule picked and
@@ -337,7 +339,9 @@ pub struct MusicSelector {
     /// The live child weights of each armed weighted state (the group's own
     /// dynamic weights — a `0x1c`-byte child record's `+8` float each).
     weights: BTreeMap<String, Vec<f32>>,
-    /// The `DYNAMIC_WEIGHTS` factor each armed weighted state spells.
+    /// The `DYNAMIC_WEIGHTS` factor each armed weighted state spells —
+    /// absent for a group that spells none, the measured `[group+8]` flag
+    /// that skips the whole post-draw block.
     factors: BTreeMap<String, f32>,
     /// The shared objective counter `[0x9ad6c0]`.
     counter: u32,
@@ -375,7 +379,9 @@ impl MusicSelector {
                 selector
                     .weights
                     .insert(arm.group.clone(), vec![1.0; arm.children]);
-                selector.factors.insert(arm.group, arm.factor);
+                if let Some(factor) = arm.factor {
+                    selector.factors.insert(arm.group, factor);
+                }
             }
         }
         selector
@@ -439,7 +445,6 @@ impl MusicSelector {
         if weights.len() == 1 {
             return Some(0);
         }
-        let factor = self.factors.get(group).copied().unwrap_or(1.0);
         let total: f32 = weights.iter().sum();
         // `rand()/32768` measured at `0x609430`; the designed stream's
         // unit-interval draw takes its place — same `[0, 1)` domain.
@@ -453,19 +458,23 @@ impl MusicSelector {
                 break;
             }
         }
-        // The post-draw `DYNAMIC_WEIGHTS` rescale: the chosen weight takes the
-        // spelled factor, every weight below `0.001` is clamped up to it
-        // (`0x59a536`), then all are rescaled by the inverse total to sum
-        // `100.0` (`0x59a574`, `0x6032e4`).
-        weights[slot] *= factor;
-        for weight in weights.iter_mut() {
-            if *weight < WEIGHT_EPSILON {
-                *weight = WEIGHT_EPSILON;
+        // The post-draw `DYNAMIC_WEIGHTS` block runs only under the
+        // `[group+8]` flag — a spelled factor: the chosen weight takes it,
+        // every weight below `0.001` is clamped up to it (`0x59a536`), then
+        // all are rescaled by the inverse total to sum `100.0` (`0x59a574`,
+        // `0x6032e4`). An unspelled group skips the whole block — its
+        // weights never move.
+        if let Some(factor) = self.factors.get(group).copied() {
+            weights[slot] *= factor;
+            for weight in weights.iter_mut() {
+                if *weight < WEIGHT_EPSILON {
+                    *weight = WEIGHT_EPSILON;
+                }
             }
-        }
-        let rescaled: f32 = weights.iter().sum();
-        for weight in weights.iter_mut() {
-            *weight *= WEIGHT_SUM_TARGET / rescaled;
+            let rescaled: f32 = weights.iter().sum();
+            for weight in weights.iter_mut() {
+                *weight *= WEIGHT_SUM_TARGET / rescaled;
+            }
         }
         Some(slot)
     }

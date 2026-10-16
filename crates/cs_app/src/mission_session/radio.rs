@@ -516,8 +516,8 @@ impl MissionRadio {
     /// What this radio's resolved music groups arm a
     /// [`crate::audio::MusicSelector`] with: each group's child count — the
     /// resolved member count, the domain the measured draw walks — and the
-    /// `DYNAMIC_WEIGHTS` factor it spells (a group that spells none arms
-    /// with `1.0`, the designed no-decay reading of an unspelled factor).
+    /// `DYNAMIC_WEIGHTS` factor it spells, when it spells one (the measured
+    /// `[group+8]` flag: unspelled groups skip the whole post-draw block).
     #[must_use]
     pub fn music_arms(&self) -> Vec<crate::audio::MusicArm> {
         self.groups
@@ -526,7 +526,7 @@ impl MissionRadio {
             .map(|(group, resolved)| crate::audio::MusicArm {
                 group: group.clone(),
                 children: resolved.members.len(),
-                factor: resolved.dynamic_weights.unwrap_or(1.0),
+                factor: resolved.dynamic_weights,
             })
             .collect()
     }

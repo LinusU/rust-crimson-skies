@@ -365,7 +365,7 @@ fn accept_m01_music_state_requests_selects_by_the_measured_rules() {
     let arm = |group: &str| MusicArm {
         group: group.to_owned(),
         children: 6,
-        factor: 0.5,
+        factor: Some(0.5),
     };
     let mut selector = MusicSelector::launch(0, [arm("music_battle_sg")]);
 
@@ -451,6 +451,26 @@ fn accept_m01_music_state_requests_selects_by_the_measured_rules() {
         member(&mut objectives, "music_tertiaryobj_sg").as_deref(),
         Some("music_tertiaryobj1.wav"),
         "tertiary reads the raw counter, bounded by its table"
+    );
+
+    // The measured `[group+8]` gate: a group that spells no
+    // `DYNAMIC_WEIGHTS` skips the whole post-draw block — its weights never
+    // move.
+    let mut unspelled = MusicSelector::launch(
+        0,
+        [MusicArm {
+            group: "music_battle_sg".to_owned(),
+            children: 6,
+            factor: None,
+        }],
+    );
+    unspelled
+        .select("music_battle_sg")
+        .expect("an armed state selects");
+    assert_eq!(
+        unspelled.weights("music_battle_sg"),
+        Some(&[1.0; 6][..]),
+        "an unspelled factor leaves every weight at its initial value"
     );
 
     // The owner-ruled identity: one Music id per track, the container part
