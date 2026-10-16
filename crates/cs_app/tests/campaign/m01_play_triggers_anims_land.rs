@@ -1110,7 +1110,7 @@ fn accept_m01_play_triggers_anims_land_the_retail_reader_reports_m01s_rows_and_n
 /// condition is `wv_pickup_copilot EXECUTED` — completes only after that
 /// real landing.**
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_play_triggers_anims_land_a_retail_landing_runs_the_row_and_the_gated_state() {
     // OBJECTIVE49 (block index 48) is the non-circular arming path: its
     // only condition is its own awakeness, and its action wakes
@@ -1249,7 +1249,7 @@ fn accept_m01_play_triggers_anims_land_a_retail_landing_runs_the_row_and_the_gat
 /// outside the row's window runs nothing, a too-fast pass runs nothing,
 /// and a landing at the (unarmed) pz nodes runs nothing.**
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_play_triggers_anims_land_retail_no_landing_and_off_window_landings_run_nothing() {
     let mut app =
         build_headless(&retail_land_stage(&[48])).expect("M01's stage composes headlessly");
