@@ -137,6 +137,30 @@ impl MissionAircraftRoster {
     }
 }
 
+/// Resource: the `aiv.zrd` records the original's spawn loop skips
+/// (`enabled == 0`, `0x474d10`). They never enter the vehicle registry, so
+/// the group counter `0x4658d0` — a pure registry count — finds none of them:
+/// a group whose only records are these counts **0**, which is the measured
+/// answer `DEDG` reads (docs/findings/2026-10-15-m01-play-triggers-group-membership.md).
+#[derive(Resource, Clone, Debug, Default)]
+pub struct MissionSkippedAircraft(pub Vec<ScriptedAircraft>);
+
+impl MissionSkippedAircraft {
+    /// The non-player records `enabled == 0` drops from a stage's list.
+    #[must_use]
+    pub fn from_records(records: &[ScriptedAircraft]) -> Self {
+        Self(
+            records
+                .iter()
+                .filter(|record| {
+                    record.enabled == Some(false) && record.dispatch != SpawnDispatch::Player
+                })
+                .cloned()
+                .collect(),
+        )
+    }
+}
+
 /// One record the spawn left an entity for.
 #[derive(Clone, Debug, PartialEq)]
 pub struct SpawnedAircraft {

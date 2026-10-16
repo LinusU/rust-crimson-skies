@@ -575,18 +575,16 @@ fn accept_m01_play_triggers_observe_the_trigger_fires_from_the_players_real_posi
     let groups = observed_groups(&app);
     assert_eq!(
         groups.keys().copied().collect::<Vec<i32>>(),
-        [1, 3, 5],
-        "exactly the groups the composition spawned members for are observed: {groups:?} \
-         (M01's group 2 and 4 records are the measured `enabled == 0` skips, so nothing of \
-         them ever spawned)"
+        [1, 2, 3, 4, 5],
+        "every group an `aiv.zrd` record carries is observed: {groups:?} (M01's group 2 and 4 \
+         records are the measured `enabled == 0` skips, so they count 0)"
     );
     let host = app.world().resource::<MissionHost>();
     let facts = host.world_facts().facts(host.world_operands());
     assert_eq!(
         facts.groups.keys().copied().collect::<Vec<i32>>(),
-        [1, 3],
-        "the program asks about groups 1..=4, so the fold carries the observed ones and no row \
-         at all for the unobserved 2 and 4: {:?}",
+        [1, 2, 3, 4],
+        "the program asks about groups 1..=4, so the fold carries exactly those: {:?}",
         facts.groups
     );
 
@@ -734,8 +732,7 @@ fn accept_m01_play_triggers_observe_the_trigger_fires_from_the_players_real_posi
     teardown(&mut app);
 }
 
-/// **Group counts come from the live entities, and a group nobody spawned
-/// stays unobserved.**
+/// **Group counts come from the live entities.**
 ///
 /// M01's eight `DEDG` sites name groups 1..=4. The composition spawns four
 /// `rusdevastator_*` (group 1), one `bsfury_1` (group 3) and four group-5
@@ -743,8 +740,7 @@ fn accept_m01_play_triggers_observe_the_trigger_fires_from_the_players_real_posi
 /// `rusdevastator_3` and `bsfury_2` — and both are the measured
 /// `enabled == 0` skips, so **nothing of them ever spawned**. This test
 /// despawns group 1's four entities and expects the measured count (`0`) and
-/// the resulting completion of `OBJECTIVE2`; it never expects a row for 2 or
-/// 4.
+/// the resulting completion of `OBJECTIVE2`; it expects 2 and 4 to count 0.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m01_play_triggers_observe_group_counts_come_from_the_live_entities() {
@@ -813,27 +809,12 @@ fn accept_m01_play_triggers_observe_group_counts_come_from_the_live_entities() {
         "OBJECTIVE2 completes only when its four members are really gone"
     );
 
-    // The two groups nobody spawned answer exactly as the fail-closed read
-    // documents: no row in the observation, no key in the fold, so
-    // `EnemyGroupDepletion` over them answers false forever.
+    // Groups 2 and 4 hold only records the original's spawn loop skips, so
+    // its registry count is 0 for them (M01-PLAY-TRIGGERS-DEPLETION); the
+    // depletion legs live in `m01_play_triggers_depletion`.
     let groups = observed_groups(&app);
-    assert!(
-        !groups.contains_key(&2) && !groups.contains_key(&4),
-        "groups 2 and 4 have no spawned member, so they stay unobserved: {groups:?}"
-    );
-    let host = app.world().resource::<MissionHost>();
-    let facts = host.world_facts().facts(host.world_operands());
-    assert!(
-        !facts.groups.contains_key(&2) && !facts.groups.contains_key(&4),
-        "the fold carries no row for an unobserved group: {:?}",
-        facts.groups
-    );
-    for block in [16u32, 41, 42, 20, 43] {
-        assert!(
-            !log(&app).completed(block),
-            "no block reading group 2 or 4 completes on a count nobody observed"
-        );
-    }
+    assert_eq!(groups.get(&2), Some(&0), "group 2 counts 0: {groups:?}");
+    assert_eq!(groups.get(&4), Some(&0), "group 4 counts 0: {groups:?}");
 
     teardown(&mut app);
 }

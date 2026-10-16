@@ -73,14 +73,16 @@
 //!   presence ([`world_actor_in_play`]). A subject this observer cannot read
 //!   back into a node name — or a binding the world's lifecycle state does
 //!   not back — yields no row.
-//! * **A group** is reported only for a group id the composition spawned
-//!   members for (`MissionActorSpawnReport` × [`MissionAircraftRoster`]), and
-//!   its count is the live entity count of that group — `0` when every member
-//!   is gone, which is a measured answer and not a default. A group nothing
-//!   spawned (M01's `2` and `4`) gets **no row**, never `0`:
-//!   [`WorldFactTable::facts`] then reports no key and
-//!   `Condition::EnemyGroupDepletion` answers `false` ("an unrecorded group is
-//!   unknown, not an empty one").
+//! * **A group** is reported only once the actor spawn has run, for a group id
+//!   some `aiv.zrd` record carries, and its count is the live entity count of
+//!   that group — `0` when every member is gone. A group whose only records
+//!   are the original's `enabled == 0` skips (M01's `2` and `4`) is `0` too:
+//!   the original's counter `0x4658d0` counts registry members and a skipped
+//!   record never enters the registry
+//!   (`docs/findings/2026-10-15-m01-play-triggers-group-membership.md`). A
+//!   group no record carries gets **no row**, and
+//!   `Condition::EnemyGroupDepletion` over it answers `false` ("an unrecorded
+//!   group is unknown, not an empty one").
 //!
 //! # What is not claimed
 //!
@@ -108,7 +110,8 @@ use super::compose::MissionPlayerBody;
 use super::host::{MissionHost, MissionWorldObservation};
 use super::landings::MissionLandings;
 use crate::mission_actors::{
-    MissionActorSpawnReport, MissionAircraftRoster, MissionZeppelinActor, ScriptedAircraftActor,
+    MissionActorSpawnReport, MissionAircraftRoster, MissionSkippedAircraft, MissionZeppelinActor,
+    ScriptedAircraftActor,
 };
 use crate::weapons::SessionDamageResolver;
 use crate::world_actors::{WorldActorBinding, WorldActorSession};
@@ -346,6 +349,9 @@ pub fn mission_world_observation(world: &mut World) {
 
     // 3. Groups: which ids the composition actually spawned members for, and
     //    how many of them are still in the world.
+    let spawn_ran = world
+        .get_resource::<MissionActorSpawnReport>()
+        .is_some_and(|report| report.session.is_some());
     let spawned: Vec<String> = world
         .get_resource::<MissionActorSpawnReport>()
         .map(|report| {
@@ -356,7 +362,7 @@ pub fn mission_world_observation(world: &mut World) {
                 .collect()
         })
         .unwrap_or_default();
-    if !spawned.is_empty() {
+    if spawn_ran {
         let roster = world
             .get_resource::<MissionAircraftRoster>()
             .map(|roster| roster.0.clone())
@@ -372,6 +378,17 @@ pub fn mission_world_observation(world: &mut World) {
                 && let Ok(id) = i32::try_from(group)
             {
                 living.entry(id).or_insert(0);
+            }
+        }
+        // Records the original's spawn loop skips (`enabled == 0`) are never
+        // in its registry, so their group counts 0 (`0x4658d0`).
+        if let Some(skipped) = world.get_resource::<MissionSkippedAircraft>() {
+            for record in &skipped.0 {
+                if let Some(group) = record.group
+                    && let Ok(id) = i32::try_from(group)
+                {
+                    living.entry(id).or_insert(0);
+                }
             }
         }
         let mut query = world.query::<&ScriptedAircraftActor>();

@@ -1074,6 +1074,9 @@ fn add_composition(
     app.insert_resource(crate::mission_actors::MissionAircraftRoster::from_records(
         &stage.aircraft,
     ));
+    app.insert_resource(crate::mission_actors::MissionSkippedAircraft::from_records(
+        &stage.aircraft,
+    ));
     // 6. The scripted aircraft's AI (M01-PLAY-AI, #1436): the designed
     //    pursuit-and-fire decision on the fixed tick, before the flight
     //    driver steps the records it commands. The plugin owns the spawn
@@ -1308,6 +1311,7 @@ pub fn teardown(app: &mut App) {
     super::launch_sound::stop_launch_audio(world);
     world.remove_resource::<MissionComposition>();
     world.remove_resource::<crate::mission_actors::MissionAircraftRoster>();
+    world.remove_resource::<crate::mission_actors::MissionSkippedAircraft>();
     world.remove_resource::<crate::mission_actors::MissionActorSpawnReport>();
     // M01-PLAY-TRIGGERS-ANIMS-LAND (#1498): the landing table this
     // composition read, so a second build in the same process starts from
