@@ -31,7 +31,12 @@
 //!    [`compose_mission_facts`] fold (which now carries the fresh lifecycle
 //!    rows), then the completion pass: every `ObjectiveCompleted` event's
 //!    block handed to [`ObjectiveLifecycles::complete`], so its
-//!    `WAKE`/`NAP`/`KILL`/`SLEEP` effects run in the engine's own order.
+//!    `WAKE`/`NAP`/`KILL`/`SLEEP` effects run in the engine's own order. The
+//!    two per-tick wake consumers follow: every `WAKE_ANIM` emission the
+//!    animation ledger has not applied starts its named record
+//!    ([`WakeAnimationLedger`]), and every `WAKEUP_ENEMIES` emission the enemy
+//!    ledger has not applied releases the sleeping scripted aircraft it names
+//!    ([`WakeEnemiesLedger`], M01-PLAY-AI-WAKE #1487).
 //!
 //! The answer is every record's **own** output for that tick
 //! ([`MissionHostTick`]): the environment's committed ticks, the world-actor
@@ -158,6 +163,7 @@ use super::terminal::{MissionTerminal, MissionTerminalSource};
 use crate::animation::mission::{AnimationNameIndex, MissionAnimationBinding, StartupAnimation};
 use crate::audio::AudioSession;
 use crate::environment::EnvironmentSession;
+use crate::mission_ai::WakeEnemiesLedger;
 use crate::mission_animations::{
     ArmedNode, MissionAnimationPlayer, MissionAnimationStepRefusal, PlayerError, TickReport,
     WakeAnimationLedger, armed_nodes_from_report, step_mission_animations,
@@ -734,6 +740,10 @@ pub struct MissionHost {
     /// directive spells is refused by name.
     names: AnimationNameIndex,
     wake: WakeAnimationLedger,
+    /// The `WAKEUP_ENEMIES` consumer's ledger (M01-PLAY-AI-WAKE, #1487):
+    /// which directive keys were applied, which sleeping scripted aircraft
+    /// they released, and every name that woke nothing and why.
+    enemies: WakeEnemiesLedger,
     armed: Vec<ArmedNode>,
     markers: MissionMarkerConsumer,
     objectives: ObjectiveSession,
@@ -810,6 +820,7 @@ impl MissionHost {
             animation,
             names,
             wake: WakeAnimationLedger::default(),
+            enemies: WakeEnemiesLedger::default(),
             armed: Vec::new(),
             markers,
             objectives,
@@ -919,9 +930,9 @@ impl MissionHost {
             offer_startup_rows(&mut animation, binding);
         }
         self.animation = animation;
-        // The name index and the two ledgers follow the generation: a rebuilt
-        // host resolves names through the same measured join and has applied
-        // no directive of the fresh session yet.
+        // The name index and the wake ledgers follow the generation: a
+        // rebuilt host resolves names through the same measured join and has
+        // applied no directive of the fresh session yet.
         self.names = seed
             .animation
             .as_ref()
@@ -929,6 +940,7 @@ impl MissionHost {
                 binding.names().clone()
             });
         self.wake = WakeAnimationLedger::default();
+        self.enemies = WakeEnemiesLedger::default();
         self.armed.clear();
         // `markers.retry(served)` above already released the old ledger and
         // stamped the new session on the live consumer, whose declared cue
@@ -1158,6 +1170,13 @@ impl MissionHost {
         //     names (see `OBJECT_ACTIVE_ARMING_CLAIM`).
         self.armed
             .extend(armed_nodes_from_report(&composed.records, &self.names));
+        // 6c. Wake enemies: every `WAKEUP_ENEMIES` emission this host has not
+        //     already applied releases the sleeping scripted aircraft it names
+        //     (M01-PLAY-AI-WAKE, #1487). The release swaps the held kinematic
+        //     body for the dynamic AI body the awake records spawn as; the
+        //     next fixed tick's arm/decide pass then flies it, so a release
+        //     made on this tick is visible to the AI on the following one.
+        let _woken_enemies = self.enemies.consume(world, self.script.state(), tick);
         let lifecycles = ObjectiveLifecycleTick {
             woken: lifecycles_advanced.woken,
             napped: lifecycles_advanced.napped,
@@ -1368,6 +1387,14 @@ impl MissionHost {
     #[must_use]
     pub const fn wake_animations(&self) -> &WakeAnimationLedger {
         &self.wake
+    }
+
+    /// The `WAKEUP_ENEMIES` consumer's ledger (M01-PLAY-AI-WAKE, #1487):
+    /// which directive keys were applied, which sleeping scripted aircraft
+    /// they released and which names woke nothing.
+    #[must_use]
+    pub const fn wake_enemies(&self) -> &WakeEnemiesLedger {
+        &self.enemies
     }
 
     /// The designed node-arming input: every active-state statement a running

@@ -47,12 +47,31 @@
 //! * **What stays unknown:** the ±5 % AI parameter roll the original applies
 //!   (`0x4771c6`, task #805) is *not* applied, so every AI airframe flies
 //!   the exact retail numbers; the original's rear-facing gunner is not
-//!   modelled (no measured mount); the `WAKEUP_ENEMIES` wake that would
-//!   start `bsfury_1` has no consumer yet, so a `starts_asleep` record is
-//!   spawned **held** (kinematic, at its measured pose) exactly as #1435
-//!   held it, and never flies; and M01's zeppelins declare
+//!   modelled (no measured mount); and M01's zeppelins declare
 //!   `DeclaredMotion::Held` with no route polyline, so "the cargo zeppelin
 //!   flies its route" has no measured route to fly.
+//!
+//! # The wake (M01-PLAY-AI-WAKE, #1487)
+//!
+//! M01's `OBJECTIVE13` spells the measured `WAKEUP_ENEMIES` directive
+//! `[text bsfury_1, text blackswanzep]` through the production readers
+//! (`crates/cs_app/tests/accept_m01_lc_directive_c.rs` pins the shipped site;
+//! `cs_content::mission_control::MeasuredDirective` pins the measured
+//! semantics: wake each named vehicle whose asleep byte is set, or each named
+//! zeppelin whose dormant byte is set, and do nothing for a name already
+//! awake). The composed host step consumes every such emission the control
+//! program has published and not already applied ([`WakeEnemiesLedger`]), and
+//! a name that resolves to a **sleeping** scripted aircraft is **released**
+//! ([`release_woken_aircraft`]): the held kinematic body becomes the dynamic
+//! body an awake record spawns as — the record's own measured airframe on the
+//! law's AI seat, the behaviour the record's measured fields select once the
+//! sleep is consumed, and the mass the law's force request integrates
+//! against. Its weapons follow on the next fixed tick through the same
+//! [`arm_mission_ai`] every other flown record goes through. A name that
+//! resolves to nothing this runtime drives is refused **by name**, never
+//! silently dropped: `blackswanzep` is a zeppelin, and the world-actor wake
+//! (dormant byte, route) is not modelled here (`WorldActorSession` declares
+//! no wake surface).
 //!
 //! # Schedule
 //!
@@ -79,11 +98,17 @@
 //! publisher calls while it builds the tick's record: a tick's weapon
 //! inputs are consumed exactly once, so an attacker's shots ride the
 //! mission's publication instead of pushing a second one.
+//!
+//! The wake consumer rides the mission host's step instead of this plugin:
+//! the control program's directive log is the host's own record, and the
+//! ledger that deduplicates it is host state ([`WakeEnemiesLedger`] on
+//! [`crate::mission_session::MissionHost`]). A release made there is visible
+//! to this plugin on the **next** fixed tick.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 
-use avian3d::prelude::{LinearVelocity, Position, Rotation};
+use avian3d::prelude::{LinearVelocity, Mass, NoAutoMass, Position, Rotation};
 use bevy::ecs::schedule::IntoScheduleConfigs;
 use bevy::prelude::{
     App, Component, Entity, FixedPreUpdate, Plugin, Quat, Query, ResMut, Resource, Vec3, With,
@@ -91,20 +116,24 @@ use bevy::prelude::{
 };
 
 use cs_content::original_airframe::{import_retail_airframe, import_retail_globals};
+use cs_script::ir::{DirectiveOperation, Value};
+use cs_script::runtime::{ExecutionKey, MissionState};
 use cs_sim::damage::ActorId;
 use cs_sim::flight::original::{FORCE_TO_ACCEL, PROVENANCE_LABEL};
 use cs_sim::flight::{FlightInput, OriginalAirframe, OriginalFlightModel, OriginalGlobals};
 use cs_sim::targeting::{TargetClass, TargetRecord};
 use cs_sim::weapons::{FireIntent, FireIntentId};
+use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind};
 use cs_types::space::{Quaternion, WorldPosition};
 
 use crate::mission_actors::ScriptedAircraftActor;
 use crate::mission_session::{
-    MISSION_FACTION_HOSTILE, MISSION_FACTION_PLAYER, MissionPlayerBody, MissionWeapons,
-    attach_gun_rig, designed_loadout,
+    MISSION_FACTION_HOSTILE, MISSION_FACTION_PLAYER, MissionPlayerBody, MissionStage,
+    MissionWeapons, attach_gun_rig, designed_loadout,
 };
 use crate::mission_start::{ScriptedAircraft, SpawnDispatch};
+use crate::physics::{BodyMode, set_body_mode};
 use crate::playtest::scene::PlaytestOriginalFlight;
 use crate::targeting::TargetingSession;
 use crate::weapons::{WeaponActorBinding, WeaponOrder, WeaponSession, WeaponTickInput};
@@ -215,14 +244,18 @@ pub struct MissionAiFireOrders {
 
 /// Why a scripted aircraft flies a law at all, or does not.
 ///
-/// The variant is decided once, at spawn, from the record's measured fields
+/// The variant is decided once, from the record's measured fields
 /// ([`behaviour_for`]) and never re-derived: a law that changed its own role
-/// mid-flight would hide the measured record it read.
+/// mid-flight would hide the measured record it read. The one exception is the
+/// measured sleep the mission's own `WAKEUP_ENEMIES` consumes: a woken record
+/// takes the behaviour its remaining measured fields select
+/// ([`woken_behaviour_for`]), because the sleep the spawn read is no longer
+/// true. The transition is one-way and is made by the wake, never by the law.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum MissionAiBehaviour {
     /// The record's measured `starts_asleep` field is set (#681): no law is
-    /// attached and the body stays kinematic at its measured pose until a
-    /// `WAKEUP_ENEMIES` consumer exists.
+    /// attached and the body stays kinematic at its measured pose until
+    /// `WAKEUP_ENEMIES` names it ([`release_woken_aircraft`]).
     Asleep,
     /// A record opposed to the player's flight: close on [`TargetRule`] and
     /// hold it.
@@ -289,8 +322,29 @@ impl MissionAircraftAi {
     /// invent one: it holds its course instead.
     #[must_use]
     pub fn for_record(record: &ScriptedAircraft, player_team: Option<u32>) -> Self {
+        Self::with_behaviour(record, behaviour_for(record, player_team))
+    }
+
+    /// The record a **woken** aircraft gets: the same measured fields, with
+    /// the measured `starts_asleep` value already consumed by the mission's
+    /// own `WAKEUP_ENEMIES`, so the behaviour is the one those remaining
+    /// fields select ([`woken_behaviour_for`]).
+    ///
+    /// The reading is designed exactly as [`Self::for_record`]'s is; the only
+    /// difference is which measured field the transition read — the wake
+    /// consumed the sleep, so the law does not re-sleep a record the mission
+    /// just woke.
+    #[must_use]
+    pub fn woken_for_record(record: &ScriptedAircraft, player_team: Option<u32>) -> Self {
+        Self::with_behaviour(record, woken_behaviour_for(record, player_team))
+    }
+
+    /// The common construction both entries share: the chosen behaviour and
+    /// the measured `team` beside it.
+    #[must_use]
+    fn with_behaviour(record: &ScriptedAircraft, behaviour: MissionAiBehaviour) -> Self {
         Self {
-            behaviour: behaviour_for(record, player_team),
+            behaviour,
             team: record.team,
             target: None,
             leader: None,
@@ -315,11 +369,32 @@ impl MissionAircraftAi {
 /// The behaviour a record's measured fields select — see
 /// [`MissionAircraftAi::for_record`] for what is measured and what is
 /// designed.
+///
+/// The measured `starts_asleep` field wins when it is set (#681): no law is
+/// attached until the mission's `WAKEUP_ENEMIES` consumes that sleep.
 #[must_use]
 pub fn behaviour_for(record: &ScriptedAircraft, player_team: Option<u32>) -> MissionAiBehaviour {
     if record.starts_asleep.unwrap_or(false) {
         return MissionAiBehaviour::Asleep;
     }
+    woken_behaviour_for(record, player_team)
+}
+
+/// The behaviour a record's measured fields select once its measured
+/// `starts_asleep` value has been consumed by the mission's own
+/// `WAKEUP_ENEMIES` wake.
+///
+/// It is [`behaviour_for`]'s reading with the sleep term removed: the same
+/// measured `team` against the stage's `player` record, the same reading of
+/// the stored `primary_target`, the same refusal to invent a side for a record
+/// whose team was never read. What a team number means engine-wide stays
+/// unmeasured (`docs/findings/2026-10-15-m01-aiv-layout.md`, unknowns 4 and
+/// 5) and so is this reading of it.
+#[must_use]
+pub fn woken_behaviour_for(
+    record: &ScriptedAircraft,
+    player_team: Option<u32>,
+) -> MissionAiBehaviour {
     let Some(team) = record.team else {
         // No measured side: hold the course rather than invent an enemy.
         return MissionAiBehaviour::HoldCourse;
@@ -561,6 +636,320 @@ pub fn ai_flight_record(
     }
 }
 
+// ----------------------------------------------------------------- the wake ---
+
+/// Why a `WAKEUP_ENEMIES` site's arguments named no release: they are not the
+/// top-level text list the measured M01 site spells.
+pub const WAKE_ENEMIES_ARGUMENTS_REASON: &str = "the WAKEUP_ENEMIES site's arguments are not the top-level text list the measured \
+     installation spells, so no name was resolved and nothing was woken";
+
+/// Why a `WAKEUP_ENEMIES` name woke nothing: no scripted aircraft of this
+/// mission carries that measured record name. The measured effect resolves
+/// such a name as a vehicle, else as a zeppelin; a zeppelin wake is a
+/// world-actor concern this runtime does not model, so a name that is not a
+/// scripted aircraft is named here instead of being silently treated as one.
+pub const WAKE_ENEMIES_UNKNOWN_NAME_REASON: &str = "no scripted aircraft of this mission carries this WAKEUP_ENEMIES name; the \
+     measured effect resolves a vehicle first and a zeppelin second, and the zeppelin wake is \
+     not modelled here (WorldActorSession declares no wake surface)";
+
+/// Why a `WAKEUP_ENEMIES` name woke nothing: the sleeping record's measured
+/// name-prefix dispatch has no imported `vehicle.zrd` airframe on the stage,
+/// so there is no law to release it under. It stays held rather than flying a
+/// body with no law.
+pub const WAKE_ENEMIES_NO_AIRFRAME_REASON: &str = "the record is asleep, but the stage carries no imported airframe for its \
+     measured name prefix, so there is no law to release it under; it stays held";
+
+/// Why a `WAKEUP_ENEMIES` name woke nothing: the entity carries no pose (or
+/// no rigid body) to release from, so the release refuses rather than
+/// teleporting or half-releasing it.
+pub const WAKE_ENEMIES_NOT_A_BODY_REASON: &str = "the named scripted aircraft carries no live body pose to release, so the \
+     release refused rather than half-building a flying record";
+
+/// One scripted aircraft a `WAKEUP_ENEMIES` wake released into the designed
+/// law.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WokenAircraft {
+    name: String,
+    at: Tick,
+}
+
+impl WokenAircraft {
+    /// The record name the directive spelled, verbatim.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// The committed tick the host consumed the directive on.
+    #[must_use]
+    pub const fn at(&self) -> Tick {
+        self.at
+    }
+}
+
+/// Why a `WAKEUP_ENEMIES` name released nothing, named.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct WakeRefusal {
+    name: String,
+    reason: &'static str,
+    at: Tick,
+}
+
+impl WakeRefusal {
+    /// The name the site spelled, verbatim; empty when the site's own
+    /// arguments were not the measured shape.
+    #[must_use]
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    /// Why nothing was woken, verbatim.
+    #[must_use]
+    pub const fn reason(&self) -> &'static str {
+        self.reason
+    }
+
+    /// The committed tick the directive was consumed on.
+    #[must_use]
+    pub const fn at(&self) -> Tick {
+        self.at
+    }
+}
+
+/// The mission host's `WAKEUP_ENEMIES` consumer.
+///
+/// It applies every `WakeEnemies` emission the control program's directive log
+/// carries **exactly once**, deduplicating by execution key the way
+/// [`crate::mission_animations::WakeAnimationLedger`] deduplicates the
+/// animation wakes (the log holds the whole session, so only the key says
+/// which entry is new), and releases each name that resolves to a sleeping
+/// scripted aircraft ([`release_woken_aircraft`]) at the tick being stepped.
+///
+/// The measured effect wakes a vehicle whose asleep byte is set and a
+/// zeppelin whose dormant byte is set, and does nothing for a name already
+/// awake. This ledger performs the vehicle half and the "already awake"
+/// half — the measured do-nothing — and names a name that is neither, rather
+/// than guessing which kind it meant.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct WakeEnemiesLedger {
+    applied: BTreeSet<ExecutionKey>,
+    released: Vec<WokenAircraft>,
+    refused: Vec<WakeRefusal>,
+}
+
+impl WakeEnemiesLedger {
+    /// Consumes every `WakeEnemies` emission of `state` this ledger has not
+    /// already applied, and answers the releases this call produced in
+    /// directive-key order.
+    ///
+    /// Nothing is released twice and nothing is silently skipped: a site whose
+    /// arguments are not the measured shape, a name no scripted aircraft
+    /// carries, a sleeping record whose airframe did not import and a record
+    /// with no live body are all kept as [`WakeRefusal`]s. The one measured
+    /// no-op — a name for something already awake — is neither a release nor a
+    /// refusal.
+    pub fn consume(
+        &mut self,
+        world: &mut World,
+        state: &MissionState,
+        tick: Tick,
+    ) -> Vec<WokenAircraft> {
+        let mut released = Vec::new();
+        for emission in state.directives() {
+            if emission.operation != DirectiveOperation::WakeEnemies {
+                continue;
+            }
+            let key = emission.key.execution_key();
+            if !self.applied.insert(key) {
+                continue;
+            }
+            let Some(names) = wake_enemy_names(&emission.args) else {
+                self.refused.push(WakeRefusal {
+                    name: String::new(),
+                    reason: WAKE_ENEMIES_ARGUMENTS_REASON,
+                    at: tick,
+                });
+                continue;
+            };
+            for name in names {
+                match release_woken_aircraft(world, &name) {
+                    WakeRelease::Released => {
+                        released.push(WokenAircraft { name, at: tick });
+                    }
+                    WakeRelease::AlreadyAwake => {}
+                    WakeRelease::Refused { reason } => self.refused.push(WakeRefusal {
+                        name,
+                        reason,
+                        at: tick,
+                    }),
+                }
+            }
+        }
+        self.released.extend(released.iter().cloned());
+        released
+    }
+
+    /// How many `WakeEnemies` emissions this ledger has applied.
+    #[must_use]
+    pub fn applied(&self) -> usize {
+        self.applied.len()
+    }
+
+    /// Every release, in the order the host consumed the directives.
+    #[must_use]
+    pub fn released(&self) -> &[WokenAircraft] {
+        &self.released
+    }
+
+    /// Every name that woke nothing and why, in the order it was consumed.
+    #[must_use]
+    pub fn refused(&self) -> &[WakeRefusal] {
+        &self.refused
+    }
+}
+
+/// The names one `WAKEUP_ENEMIES` site spells: every top-level text argument,
+/// in the site's own order. `None` when the arguments are not that measured
+/// shape — the operation's own measured parse is a list of names, and no other
+/// shape is interpreted rather than read as a name.
+fn wake_enemy_names(args: &[Value]) -> Option<Vec<String>> {
+    let mut names = Vec::with_capacity(args.len());
+    for value in args {
+        match value {
+            Value::Str(name) if !name.is_empty() => names.push(name.clone()),
+            _ => return None,
+        }
+    }
+    Some(names)
+}
+
+/// What releasing one `WAKEUP_ENEMIES` name did.
+enum WakeRelease {
+    /// A sleeping scripted aircraft was released into the designed law.
+    Released,
+    /// The name resolves to a scripted aircraft that is not asleep: the
+    /// measured wake does nothing for it.
+    AlreadyAwake,
+    /// Nothing was released, for the named reason.
+    Refused { reason: &'static str },
+}
+
+/// Releases the sleeping scripted aircraft `name` into the designed law: the
+/// held kinematic body becomes the dynamic AI body an awake record spawns as.
+///
+/// The release is exactly the awake half of the spawn
+/// ([`crate::mission_actors::spawn_mission_actors`]), run here on the live
+/// body instead of a fresh one:
+///
+/// * the body's declared mass becomes the record's imported weight over the
+///   law's own force scale ([`spawn_mass_kg`]), bound with [`NoAutoMass`] so
+///   the collider can never replace it — the kinematic spawn declared none
+///   precisely so the release would declare the measured one;
+/// * [`set_body_mode`] swaps kinematic → dynamic **without writing pose or
+///   velocity**, so the held body is not teleported and starts from rest;
+/// * the record's own airframe lands on the law's AI seat as
+///   [`ai_flight_record`] and the behaviour its measured fields select now the
+///   sleep is consumed as [`MissionAircraftAi::woken_for_record`];
+/// * the record's own [`ScriptedAircraftActor::asleep`] mark is cleared and
+///   the [`MissionAiReport`] moves the name from `held` to `flown` (and lists
+///   it in `woken`), so the report describes the record that is flying.
+///
+/// The weapons are not hung here: [`arm_mission_ai`] arms every record
+/// carrying a [`MissionAircraftAi`] on the next fixed tick, exactly as it arms
+/// a spawned one.
+fn release_woken_aircraft(world: &mut World, name: &str) -> WakeRelease {
+    let Some(entity) = ({
+        let mut query = world.query::<(Entity, &ScriptedAircraftActor)>();
+        query
+            .iter(world)
+            .find(|(_, actor)| actor.record.name == name)
+            .map(|(entity, _)| entity)
+    }) else {
+        return WakeRelease::Refused {
+            reason: WAKE_ENEMIES_UNKNOWN_NAME_REASON,
+        };
+    };
+    let Some((record, vehicle_record, asleep)) =
+        world.get::<ScriptedAircraftActor>(entity).map(|actor| {
+            (
+                actor.record.clone(),
+                actor.vehicle_record.clone(),
+                actor.asleep,
+            )
+        })
+    else {
+        return WakeRelease::Refused {
+            reason: WAKE_ENEMIES_UNKNOWN_NAME_REASON,
+        };
+    };
+    if !asleep {
+        // The measured effect does nothing for a name already awake.
+        return WakeRelease::AlreadyAwake;
+    }
+    // The airframe and the player's own measured team, read off the stage
+    // before the entity is touched (the stage borrow cannot outlive the
+    // mutation below).
+    let (airframe, player_team) = {
+        let Some(stage) = world.get_resource::<MissionStage>() else {
+            return WakeRelease::Refused {
+                reason: WAKE_ENEMIES_NO_AIRFRAME_REASON,
+            };
+        };
+        let Some(airframe) = stage.ai_airframes.models.get(&vehicle_record).cloned() else {
+            return WakeRelease::Refused {
+                reason: WAKE_ENEMIES_NO_AIRFRAME_REASON,
+            };
+        };
+        let player_team = stage
+            .aircraft
+            .iter()
+            .find(|record| record.dispatch == SpawnDispatch::Player)
+            .and_then(|record| record.team);
+        (airframe, player_team)
+    };
+    let Some((position, orientation)) = world
+        .get::<Position>(entity)
+        .zip(world.get::<Rotation>(entity))
+        .map(|(position, rotation)| (position.0, rotation.0))
+    else {
+        return WakeRelease::Refused {
+            reason: WAKE_ENEMIES_NOT_A_BODY_REASON,
+        };
+    };
+
+    // The measured mass the release declares, and no collider-derived one:
+    // `set_body_mode` refuses a dynamic release without a positive `Mass`, and
+    // `NoAutoMass` keeps the collider from overwriting the number the law's
+    // force request is scaled by.
+    world
+        .entity_mut(entity)
+        .insert((NoAutoMass, Mass(spawn_mass_kg(&airframe))));
+    if set_body_mode(world, entity, BodyMode::Dynamic).is_err() {
+        return WakeRelease::Refused {
+            reason: WAKE_ENEMIES_NOT_A_BODY_REASON,
+        };
+    }
+    world.entity_mut(entity).insert((
+        ai_flight_record(&airframe, position, orientation),
+        MissionAircraftAi::woken_for_record(&record, player_team),
+    ));
+    if let Some(mut actor) = world.get_mut::<ScriptedAircraftActor>(entity) {
+        actor.asleep = false;
+    }
+    if let Some(mut report) = world.get_resource_mut::<MissionAiReport>() {
+        report
+            .held
+            .retain(|entry| !entry.starts_with(&format!("{name}:")));
+        if !report.flown.iter().any(|flown| flown == name) {
+            report.flown.push(name.to_owned());
+        }
+        if !report.woken.iter().any(|woken| woken == name) {
+            report.woken.push(name.to_owned());
+        }
+    }
+    WakeRelease::Released
+}
+
 // ------------------------------------------------------------- the systems ---
 
 /// What the AI has done this run: which records fly, which are held and why,
@@ -573,6 +962,10 @@ pub struct MissionAiReport {
     pub flown: Vec<String>,
     /// The record names **not** flying it, each with the reason it is held.
     pub held: Vec<String>,
+    /// The record names a `WAKEUP_ENEMIES` wake has released since this
+    /// spawn: a record that spawned held and now flies. It is a subset of
+    /// [`Self::flown`] and empty for a spawn that woke nothing.
+    pub woken: Vec<String>,
     /// Every refusal on this path, verbatim.
     pub refusals: Vec<String>,
     /// The record names the mission armed with the designed gun rig.
@@ -1188,6 +1581,79 @@ mod tests {
         assert!(
             (at_rest - cruise).abs() < 1.0e-9,
             "a leader still at rest never drags the wingman below the session cruise: {at_rest}"
+        );
+    }
+
+    /// The wake consumes the measured sleep: the behaviour a woken record
+    /// flies is [`behaviour_for`]'s reading of the same fields with the sleep
+    /// term removed, and a record that never slept is unchanged.
+    #[test]
+    fn accept_m01_play_ai_wake_the_woken_behaviour_consumes_the_sleep() {
+        let asleep = record("bsfury_1", Some(2), Some("player"), true);
+        assert_eq!(
+            behaviour_for(&asleep, Some(1)),
+            MissionAiBehaviour::Asleep,
+            "the spawn reads the measured sleep"
+        );
+        assert_eq!(
+            woken_behaviour_for(&asleep, Some(1)),
+            MissionAiBehaviour::Pursue {
+                target: TargetRule::Player
+            },
+            "with the sleep consumed the same measured fields select the pursuit"
+        );
+        assert_eq!(
+            MissionAircraftAi::woken_for_record(&asleep, Some(1)).behaviour,
+            MissionAiBehaviour::Pursue {
+                target: TargetRule::Player
+            },
+            "the woken record component carries that behaviour"
+        );
+        let awake = record("rusdevastator_1", Some(2), None, false);
+        assert_eq!(
+            woken_behaviour_for(&awake, Some(1)),
+            behaviour_for(&awake, Some(1)),
+            "a record that never slept takes the same behaviour either way"
+        );
+        let unknown = record("unknown_team", None, None, true);
+        assert_eq!(
+            woken_behaviour_for(&unknown, Some(1)),
+            MissionAiBehaviour::HoldCourse,
+            "a woken record whose team was never read still states no side"
+        );
+    }
+
+    /// The wake site's names are the top-level texts the measured site spells;
+    /// any other shape resolves no name rather than being read as one.
+    #[test]
+    fn accept_m01_play_ai_wake_the_site_names_are_top_level_texts() {
+        assert_eq!(
+            wake_enemy_names(&[
+                Value::Str("bsfury_1".to_owned()),
+                Value::Str("blackswanzep".to_owned()),
+            ]),
+            Some(vec!["bsfury_1".to_owned(), "blackswanzep".to_owned()]),
+            "the measured two-text site resolves both names in its own order"
+        );
+        assert_eq!(
+            wake_enemy_names(&[]),
+            Some(Vec::new()),
+            "a site that spells no name wakes nothing and is not refused"
+        );
+        assert_eq!(
+            wake_enemy_names(&[Value::Str(String::new())]),
+            None,
+            "an empty text is not a name"
+        );
+        assert_eq!(
+            wake_enemy_names(&[Value::Int(3)]),
+            None,
+            "a scalar argument is not the measured shape"
+        );
+        assert_eq!(
+            wake_enemy_names(&[Value::List(vec![Value::Str("bsfury_1".to_owned())])]),
+            None,
+            "a nested list is not the measured shape"
         );
     }
 }

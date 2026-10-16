@@ -694,6 +694,7 @@ fn spawn_mission_actors_under(
     world.insert_resource(MissionAiReport {
         flown: ai_flown,
         held: ai_held,
+        woken: Vec::new(),
         refusals: ai_refusals,
         armed: Vec::new(),
         decisions: 0,
