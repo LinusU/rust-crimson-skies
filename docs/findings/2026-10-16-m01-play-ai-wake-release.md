@@ -96,10 +96,24 @@ mapping, one integrator and one command boundary.
 `private/evidence/M01-PLAY-AI-WAKE/` holds `acceptance.json`, the acceptance
 `cargo-test.log` and the second-observation `wake-release.json`; the
 committed copy is `docs/findings/evidence/M01-PLAY-AI-WAKE.json` (hashes and
-paths only, no original content). The report declares the still-open
-questions of §3, so `tools/validate_evidence.py … --require-pass` reports
-`Unresolved issues` (exit 3) — deliberately, exactly as
-`docs/findings/evidence/M01-PLAY-AI.json` records for its own pinned
-unknowns; the owner directive of 2026-10-05 forbids removing an unresolved
-issue from machine-readable evidence just to pass a validator. The
-structural check without `--require-pass` passes.
+paths only, no original content). The second observation over the owner's
+installation recorded: 12 measured records, `bsfury_1` held at the spawn,
+the record's own chain drove 57 committed ticks to reach the wake, the host
+released `bsfury_1` and refused `blackswanzep` by name, and the released
+record flew 51.4 m over 180 committed ticks with 1620 decisions written. The
+report declares the still-open questions of §3, so
+`tools/validate_evidence.py … --require-pass` reports `Unresolved issues`
+(exit 3) — deliberately, exactly as `docs/findings/evidence/M01-PLAY-AI.json`
+records for its own pinned unknowns; the owner directive of 2026-10-05
+forbids removing an unresolved issue from machine-readable evidence just to
+pass a validator. The structural check without `--require-pass` passes.
+
+| Command | Exit |
+| --- | --- |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
+| `cargo test --workspace --locked` | 0 |
+| `cargo test --workspace --locked -- accept_m01_play_ai_wake_ --include-ignored` | 0 — 5 discovered, 5 passed (tee'd to `cargo-test.log`) |
+| `python3 tools/validate_evidence.py private/evidence/M01-PLAY-AI-WAKE/acceptance.json --artifact-root private/evidence/M01-PLAY-AI-WAKE` | 0 — `structurally_valid: true`, 2 artifacts |
+| the same with `--require-pass` | **3** (`Unresolved issues`) — expected and deliberate, as above |
+
