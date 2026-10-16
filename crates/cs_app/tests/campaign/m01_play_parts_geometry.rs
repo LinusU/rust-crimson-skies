@@ -598,9 +598,9 @@ fn accept_m01_play_parts_geometry_m01_binds_the_measured_allegiance_and_a_labell
             .get(&part.actor)
             .unwrap_or_else(|| panic!("{}'s owner was bound", part.chain.join("/")));
         let translation = visual.global().translation();
-        for axis in 0..3 {
+        for (axis, expected) in pose.iter().enumerate() {
             assert!(
-                (f64::from(translation.to_array()[axis]) - pose[axis]).abs() < 1.0e-3,
+                (f64::from(translation.to_array()[axis]) - expected).abs() < 1.0e-3,
                 "{}'s box centre is its owner's measured bind pose",
                 part.chain.join("/")
             );
