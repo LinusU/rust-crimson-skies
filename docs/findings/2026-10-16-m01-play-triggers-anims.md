@@ -45,10 +45,11 @@ the only observer, exactly as the two halves document.
 
 Re-derived on every composed retail run and pinned by
 `accept_m01_play_triggers_anims_arm_retail_the_three_woken_names_join_their_records`
-(claim `m01-anim.wake-name-join`, evidence class **ObservedTool**). M01's
-`WAKE_ANIM` sites spell four names; the join binds them to four **distinct**
-carrier records of `mis_anim.zbd` (`bind_mission_animation`, scope
-`zbd/c1c/m01`):
+(evidence class **ObservedTool**). M01's `WAKE_ANIM` sites spell four names;
+the join binds them to four **distinct** carrier records of `mis_anim.zbd`
+(`bind_mission_animation`, scope `zbd/c1c/m01`), through the same "exactly one
+record stores the name byte for byte" rule the ARM half measured for
+`startanims.zrd`:
 
 | `WAKE_ANIM` name | carrier record | declaring member | measured duration | playable |
 | --- | --- | --- | --- | --- |
@@ -128,10 +129,11 @@ under the parent's own prefix `accept_m01_play_triggers_anims_`:
 
 Both members read the gate through the host's own lifecycle model
 (`ObjectiveLifecycles::state`) and the animation state through the host's own
-stage-4 fold; neither writes a fact row. Removing the stage-6d landing
-consumer, the stage-6b wake consumer, or the name join makes the chain stop and
-the parent members fail (mutation-checked during review of the two halves and
-re-checked here).
+stage-4 fold; neither writes a fact row. The two halves' findings record the
+mutation checks that show removing the stage-6d landing consumer, the stage-6b
+wake consumer or the name join makes the chain stop; the parent members read
+the very same states through the very same production path, so the same
+removal fails them.
 
 ## 5. What is designed, and what is unknown
 
