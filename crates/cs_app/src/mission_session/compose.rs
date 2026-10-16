@@ -1079,6 +1079,10 @@ fn add_composition(
     //    driver steps the records it commands. The plugin owns the spawn
     //    report the acceptance tests read beside the spawn's own.
     app.add_plugins(crate::mission_ai::MissionAiPlugin);
+    // M01-PLAY-PARTS-GEOMETRY: the bound world actors' targeting roster and
+    // the declared player relation the F27 gun step's pair check reads. The
+    // plugin lives in `mission_actors`; this is its wiring only.
+    app.add_plugins(crate::mission_actors::MissionZeppelinAllegiancePlugin);
     app.add_systems(
         bevy::prelude::Startup,
         crate::mission_actors::mission_actor_spawn_system,
@@ -1309,6 +1313,7 @@ pub fn teardown(app: &mut App) {
     // composition read, so a second build in the same process starts from
     // nothing.
     world.remove_resource::<crate::mission_session::MissionLandings>();
+    world.remove_resource::<crate::mission_actors::MissionZeppelinAllegianceReport>();
     world.remove_resource::<crate::mission_session::MissionPartReport>();
     world.remove_resource::<crate::mission_ai::MissionAiReport>();
     world.remove_resource::<MissionPlayerStart>();

@@ -144,10 +144,11 @@ pub use observation::{
     PLAYER_MEMBER, mission_world_observation, subject_node_name, world_actor_in_play,
 };
 pub use parts::{
-    BoundPart, DESIGNED_PART_INTEGRITY, M01_PART_STATE_CLAIM, MissionPartReport, MissionPartState,
-    TurretRecord, classed_part_node, designed_part_node, part_entities, part_in_play,
-    part_state_chains, part_state_node, pattern_matches, plan_part_states, read_turret_records,
-    spawn_part_state, turret_part_node, turret_record_for,
+    BoundPart, DESIGNED_PART_HALF_EXTENTS_M, DESIGNED_PART_INTEGRITY, M01_PART_GEOMETRY_CLAIM,
+    M01_PART_GEOMETRY_UNKNOWN_CLAIM, M01_PART_STATE_CLAIM, MissionPartReport, MissionPartState,
+    MissionPartSweep, TurretRecord, classed_part_node, designed_part_node, part_entities,
+    part_in_play, part_state_chains, part_state_node, part_sweep_geometry, pattern_matches,
+    plan_part_states, read_turret_records, spawn_part_state, turret_part_node, turret_record_for,
 };
 pub use player_visual::{
     MISSION_PLAYER_AIRCRAFT_ROOT_NAME, MISSION_PLAYER_INTACT_NODE_NAME,

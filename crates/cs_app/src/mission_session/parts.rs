@@ -95,6 +95,24 @@
 //! still calls [`designed_part_node`]). See
 //! `docs/findings/2026-10-16-m01-play-triggers-turret-class.md`.
 //!
+//! # What a fired round sweeps (M01-PLAY-PARTS-GEOMETRY, Rally #1492)
+//!
+//! Making a part *addressable* is not the same as letting a gun hit it. The
+//! F27 gun step sweeps [`PartSweptBox`] entities through
+//! [`part_sweep_candidates`], and until this slice M01's parts carried no box,
+//! no [`NodeVisualTransform`] and no velocity — so nothing in the composed run
+//! could destroy a part *geometrically*, only the damage authority could.
+//! [`spawn_part_state`] now gives every part the whole geometric face: a box at
+//! the owner's measured bind pose with the designed extents
+//! [`DESIGNED_PART_HALF_EXTENTS_M`], the pose itself, and the zero motion a
+//! `Held` world actor has.
+//!
+//! The box is **designed and labelled**: a part node's `object3d` record is one
+//! the world import makes no object for, and no reader in this tree decodes its
+//! authored transform or stored box, so the value a measurement would replace
+//! it with is carried as an explicit unknown beside it
+//! ([`MissionPartSweep`], [`M01_PART_GEOMETRY_UNKNOWN_CLAIM`]).
+//!
 //! # What is observed, and the fail-closed rule
 //!
 //! A part entity's presence is read from the session's damage authority, never
@@ -112,7 +130,8 @@
 
 use std::collections::BTreeMap;
 
-use bevy::prelude::{Component, Entity, Resource, Transform, Vec3, World};
+use avian3d::prelude::LinearVelocity;
+use bevy::prelude::{Component, Entity, GlobalTransform, Resource, Transform, Vec3, World};
 use cs_content::stunts::ZrdValue;
 use cs_script::ir::{ActorId as WorldActorId, MemberName};
 use cs_sim::damage::{
@@ -122,7 +141,8 @@ use cs_types::content::{ContentId, Known, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
 use cs_types::net::ActorId;
 
-use crate::scene::SceneGeneration;
+use crate::scene::{NodeVisualTransform, SceneGeneration};
+use crate::weapons::PartSweptBox;
 use crate::world_facts::{MemberResolver, WorldOperands};
 
 use super::compose::MissionStage;
@@ -130,6 +150,29 @@ use super::observation::subject_node_name;
 
 /// The claim every value this slice designed is filed under.
 pub const M01_PART_STATE_CLAIM: &str = "m01-play-triggers-parts.designed-part-integrity";
+
+/// The claim the designed sweep-box geometry of a part is filed under
+/// (M01-PLAY-PARTS-GEOMETRY).
+pub const M01_PART_GEOMETRY_CLAIM: &str = "m01-play-parts-geometry.designed-part-box";
+
+/// The claim the unmeasured container geometry of a part is filed under.
+pub const M01_PART_GEOMETRY_UNKNOWN_CLAIM: &str = "m01-play-parts-geometry.node-box-unmeasured";
+
+/// The designed half extents of one part's swept box, in metres.
+///
+/// Not a measurement. A part node — `reng1`, `utur1`, … — is an `object3d`
+/// record of the container hierarchy the world import makes no object for (it
+/// objectifies only a record the **world node owns directly**), and no reader
+/// in this tree decodes a per-node authored transform or stored box off such a
+/// record: the resolver reports existence only
+/// ([`crate::world_facts::MemberResolver`]), so the part's box centre and
+/// extents have no measured source. This is therefore a labelled designed box
+/// under [`M01_PART_GEOMETRY_CLAIM`], the same shape
+/// [`DESIGNED_PART_INTEGRITY`] is, and the unmeasured source it stands in for
+/// is carried beside it in [`MissionPartSweep::unmeasured`]. It is one value
+/// for every part, so it is explicitly not a per-part tuning table; the
+/// container record decode (F18/F35) or a measured original hit replaces it.
+pub const DESIGNED_PART_HALF_EXTENTS_M: [f64; 3] = [4.0, 4.0, 4.0];
 
 /// The designed integrity pool of one named part: **one damage unit**.
 ///
@@ -162,6 +205,27 @@ pub struct MissionPartState {
     pub actor: ActorId,
     /// The scene generation the entity spawned under.
     pub generation: SceneGeneration,
+}
+
+/// Component: where a part's swept-box geometry came from
+/// (M01-PLAY-PARTS-GEOMETRY).
+///
+/// The box the sweep actually reads lives on [`PartSweptBox`]; this record
+/// says **where it came from**, so a consumer can tell the designed value the
+/// mission runs under from a measured one. The container's own per-node box is
+/// the value that would replace it, and it is an explicit
+/// [`Resolved::Unknown`] here — never silently absent.
+#[derive(Component, Clone, Debug, PartialEq)]
+pub struct MissionPartSweep {
+    /// The half extents the sweep uses, in metres — the value of
+    /// [`PartSweptBox::half_extents_m`].
+    pub half_extents_m: [f64; 3],
+    /// Where `half_extents_m` came from: [`M01_PART_GEOMETRY_CLAIM`],
+    /// `designed`.
+    pub provenance: Provenance,
+    /// Why the container's own per-node box has no measured source, under
+    /// [`M01_PART_GEOMETRY_UNKNOWN_CLAIM`].
+    pub unmeasured: Resolved<[f64; 3]>,
 }
 
 /// One part-state chain that was given a live entity.
@@ -400,6 +464,37 @@ fn claim() -> ClaimId {
     ClaimId::new(M01_PART_STATE_CLAIM).expect("a claim id this module declares")
 }
 
+/// The claim id [`M01_PART_GEOMETRY_CLAIM`] parsed.
+fn geometry_claim() -> ClaimId {
+    ClaimId::new(M01_PART_GEOMETRY_CLAIM).expect("a claim id this module declares")
+}
+
+/// The designed swept-box geometry of one part, with the unmeasured container
+/// box it stands in for.
+///
+/// `node` is the part's damage node, so the recorded unknown names the exact
+/// record whose authored box was not decoded rather than a bare "unmeasured".
+#[must_use]
+pub fn part_sweep_geometry(node: &DamageNodeKey) -> MissionPartSweep {
+    let reason = format!(
+        "node {node} is an `object3d` record of the container hierarchy the world import makes \
+         no object for (it objectifies only a record the world node owns directly) and no reader \
+         in this tree decodes that record's authored transform or stored box, so the part's box \
+         centre and extents have no measured source; the designed half extents \
+         {DESIGNED_PART_HALF_EXTENTS_M:?} stand in for it until the container node decode \
+         (F18/F35) or a measured original hit replaces them"
+    );
+    MissionPartSweep {
+        half_extents_m: DESIGNED_PART_HALF_EXTENTS_M,
+        provenance: Provenance::designed(geometry_claim()),
+        unmeasured: Resolved::<[f64; 3]>::unknown(
+            ClaimId::new(M01_PART_GEOMETRY_UNKNOWN_CLAIM).expect("a claim id this module declares"),
+            &reason,
+        )
+        .expect("the reason is non-empty"),
+    }
+}
+
 /// The part-state chains of one world actor, in (chain, node) order.
 ///
 /// A chain qualifies when it resolves against the container hierarchy, has a
@@ -472,6 +567,24 @@ pub fn part_in_play(resolver: &DamageResolver, part: &MissionPartState) -> Optio
 }
 
 /// Spawns the live entity of one part-state chain beside its bound world actor.
+///
+/// The entity is the part's whole runtime face (M01-PLAY-PARTS-GEOMETRY): the
+/// chain and its damage identity ([`MissionPartState`]), and the **swept-box
+/// geometry** a fired round sweeps the part by
+/// ([`PartSweptBox`] + [`NodeVisualTransform`] + [`LinearVelocity`]).
+///
+/// * the **centre** is `pose` — the owning actor's session pose at bind time,
+///   the one measured placement the composition has for the part (the
+///   per-node authored transform has no decoded source; see
+///   [`part_sweep_geometry`]);
+/// * the **box** is [`DESIGNED_PART_HALF_EXTENTS_M`], recorded with the
+///   unmeasured container box it stands in for;
+/// * the **motion** is zero: M01's zeppelins declare [`DeclaredMotion::Held`]
+///   (no route, no keyframes, no velocity), so the actor's own velocity is
+///   zero and `part_sweep_candidates` reconstructs the previous centre from
+///   it exactly as it does for any part.
+///
+/// [`DeclaredMotion::Held`]: cs_content::world_actors::DeclaredMotion::Held
 #[must_use]
 pub fn spawn_part_state(
     world: &mut World,
@@ -482,11 +595,15 @@ pub fn spawn_part_state(
     node: DamageNodeKey,
     pose: [f64; 3],
 ) -> Entity {
-    let transform =
-        Transform::from_translation(Vec3::new(pose[0] as f32, pose[1] as f32, pose[2] as f32));
+    let translation = Vec3::new(pose[0] as f32, pose[1] as f32, pose[2] as f32);
+    let transform = Transform::from_translation(translation);
+    let sweep = part_sweep_geometry(&node);
     world
         .spawn((
             transform,
+            NodeVisualTransform(GlobalTransform::from_translation(translation)),
+            LinearVelocity(Vec3::ZERO),
+            PartSweptBox::new(actor, node.clone(), sweep.half_extents_m),
             MissionPartState {
                 chain,
                 node,
@@ -494,6 +611,7 @@ pub fn spawn_part_state(
                 actor,
                 generation,
             },
+            sweep,
         ))
         .id()
 }

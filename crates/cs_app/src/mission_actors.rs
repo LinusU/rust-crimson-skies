@@ -45,6 +45,26 @@
 //!   pose, route or faction is invented: the binding's pose comes from the
 //!   session's own canonical read.
 //!
+//! # The bound world actor's allegiance (M01-PLAY-PARTS-GEOMETRY, #1492)
+//!
+//! A shot the player fires is admitted by the pair `(shooter, target)`: the
+//! F27 gun step's declared `FriendlyFireRule::HostileOnly` refuses an
+//! **undeclared** pair by name, and M01's `zeppelins.zrd` records state no
+//! `team` a naive read could compare (that was #1481's finding). The loader
+//! still resolves an allegiance for each record — the record's own `team`
+//! spelling or the engine's marked-node/turret resolver (#1155, #1177) — and
+//! the world-actor program carries it as the actor's `faction`. This module
+//! binds that measured faction onto the actor ([`WorldActorRoster`]) and
+//! [`roster_mission_zeppelins`] puts the actor and the designed relation into
+//! the session's targeting store, so the gun step's own pair check reads a
+//! declared relation instead of nothing.
+//!
+//! The **reading** that turns a measured faction and the player record's own
+//! measured team into a relation is designed
+//! ([`declared_player_allegiance`], [`M01_ZEPPELIN_ALLEGIANCE_CLAIM`]): the same
+//! team split `#1436`'s role split uses. A record whose team was never read
+//! states no side, and no hostility is invented for it.
+//!
 //! Teardown: every entity spawned here carries [`ScriptedAircraftActor`] or
 //! [`MissionZeppelinActor`]; `MissionHost::restart` despawns both kinds and
 //! respawns them through the same function, and `teardown` removes them
@@ -53,24 +73,30 @@
 use std::collections::BTreeMap;
 
 use avian3d::prelude::{NoAutoMass, Rotation};
-use bevy::prelude::{Component, Entity, Quat, Resource, Transform, Vec3, World};
+use bevy::prelude::{
+    App, Component, Entity, FixedPreUpdate, Plugin, Quat, Resource, Transform, Vec3, World,
+};
 use cs_script::ir::{ActorId as WorldActorId, MemberName};
 use cs_sim::collision::{CollisionLayer, ShapeClass};
 use cs_sim::damage::{
     AttributionRule, DamageGraph, DamageNode, DamageNodeKey, DamageNodeKind, DamagePolicy,
     DamageResolver,
 };
+use cs_sim::targeting::{Allegiance, TargetClass, TargetRecord};
+use cs_sim::world_actors::runtime::WorldActorKind;
 use cs_types::content::{ContentId, ContentKind, Resolved};
 use cs_types::evidence::ClaimId;
 use cs_types::net::{ActorAllocator, ActorId, SessionId};
+use cs_types::space::WorldPosition;
 
 use crate::damage::DamageActorBinding;
 use crate::mission_ai::{MissionAiReport, MissionAircraftAi, ai_flight_record, spawn_mass_kg};
-use crate::mission_session::{MissionHost, MissionStage, parts};
+use crate::mission_session::{MISSION_FACTION_PLAYER, MissionHost, MissionStage, parts};
 use crate::mission_start::{ScriptedAircraft, SpawnDispatch, stored_heading_radians};
 use crate::mission_world_actors::object3d_orientation;
 use crate::physics::{BodyMode, BodySpec, spawn_body};
 use crate::scene::SceneGenerations;
+use crate::targeting::TargetingSession;
 use crate::weapons::SessionDamageResolver;
 use crate::world_actors::WorldActorBinding;
 
@@ -193,7 +219,101 @@ pub struct MissionZeppelinActor {
     pub position_m: [f64; 3],
     /// The canonical orientation at bind time.
     pub orientation: [f64; 4],
+    /// The targeting roster record this actor presents
+    /// (M01-PLAY-PARTS-GEOMETRY): its measured faction and kind, whether the
+    /// program flags it an objective, and the designed relation the player's
+    /// flight holds toward it. Decided once at spawn from the launched
+    /// world-actor program, re-applied to each generation's targeting store by
+    /// [`roster_mission_zeppelins`].
+    ///
+    /// `None` when the launched program declares the subject without a
+    /// registration record: a subject with no declared actor states no faction,
+    /// so no roster record and no relation are invented for it.
+    pub roster: Option<WorldActorRoster>,
 }
+
+/// One bound world actor's targeting roster record, decided at spawn from the
+/// measured world-actor program (M01-PLAY-PARTS-GEOMETRY).
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorldActorRoster {
+    /// The actor's faction, verbatim from the lowered program: the
+    /// loader-resolved `ally`/`enemy`/`neutral` the record's own `team` key or
+    /// the engine's allegiance resolver measured (#1155, #1177).
+    pub faction: ContentId,
+    /// The target class the actor's own measured
+    /// [`WorldActorKind`] maps onto.
+    pub class: TargetClass,
+    /// Whether the mission program flags the actor an objective
+    /// (`WorldActorSpec::objective`), verbatim.
+    pub objective: bool,
+    /// The designed relation of the player's flight toward this actor — the
+    /// reading [`declared_player_allegiance`] derives from the measured teams.
+    /// `None` when the actor's faction or the player's own team was never
+    /// read: a missing team states no side, and no hostility is invented.
+    pub player_allegiance: Option<Allegiance>,
+}
+
+/// The target class a measured [`WorldActorKind`] presents to targeting.
+///
+/// The mapping is designed; the input is the actor's own declared kind
+/// (`zeppelins.zrd`'s measured `zeppelin` record family lowers to
+/// [`WorldActorKind::Airship`]).
+#[must_use]
+pub const fn target_class_of(kind: WorldActorKind) -> TargetClass {
+    match kind {
+        WorldActorKind::Airship => TargetClass::CapitalShip,
+        WorldActorKind::Rail
+        | WorldActorKind::Road
+        | WorldActorKind::Water
+        | WorldActorKind::Kinematic => TargetClass::WorldObject,
+    }
+}
+
+/// The measured team a loader-resolved faction names.
+///
+/// The vocabulary is the loader's own (#1155): `neutral` 0, `ally` 1, `enemy`
+/// 2 — and the same three ints are what its `team` key writes and its
+/// allegiance resolver returns. A faction whose key is none of those three
+/// states no team, and none is guessed.
+#[must_use]
+pub fn measured_team(faction: &ContentId) -> Option<u32> {
+    match faction.key() {
+        "neutral" => Some(0),
+        "ally" => Some(1),
+        "enemy" => Some(2),
+        _ => None,
+    }
+}
+
+/// The designed relation of the player's flight toward a world actor, read
+/// from the two measured teams — `#1436`'s role split applied to the
+/// world-actor program.
+///
+/// The inputs are measured: the actor's loader-resolved faction (its team int,
+/// #1155/#1177) and the player record's own `team` (`aiv.zrd`, #1453). The
+/// **reading** is designed, exactly as `#1436`'s is — a record on the player's
+/// own team is the player's flight, any other measured team is opposed — and
+/// it is labelled [`M01_ZEPPELIN_ALLEGIANCE_CLAIM`]. A faction outside the
+/// measured vocabulary, or a player team that was never read, answers `None`:
+/// no side, and therefore no relation, is invented.
+#[must_use]
+pub fn declared_player_allegiance(
+    faction: &ContentId,
+    player_team: Option<u32>,
+) -> Option<Allegiance> {
+    let team = measured_team(faction)?;
+    let player = player_team?;
+    Some(if team == player {
+        Allegiance::Friendly
+    } else {
+        Allegiance::Hostile
+    })
+}
+
+/// The claim the designed player↔world-actor allegiance reading is filed
+/// under.
+pub const M01_ZEPPELIN_ALLEGIANCE_CLAIM: &str =
+    "m01-play-parts-geometry.designed-player-allegiance";
 
 /// The record's spawn pose in the simulation frame: measured position in
 /// metres (#436) and the measured heading conversion composed through the
@@ -308,9 +428,21 @@ struct HostView {
         cs_script::ir::ActorId,
         Option<cs_sim::world_actors::trajectory::Pose>,
     )>,
+    /// Each declared actor's targeting fields, in program order: its measured
+    /// faction, its measured kind and the objective the program flags it with.
+    ///
+    /// Read from the lowered program's own registration records (never a
+    /// guess), so a bound actor's targeting roster record carries the values
+    /// the record states.
+    actors: Vec<(cs_script::ir::ActorId, ContentId, WorldActorKind, bool)>,
+    /// The player record's own measured `team` (`aiv.zrd`), which the designed
+    /// allegiance reading compares a world actor's faction team against. The
+    /// caller supplies it, because on the composed restart path the stage is
+    /// held out of the world and reading the resource here would lose it.
+    player_team: Option<u32>,
 }
 
-fn host_view(host: &MissionHost) -> HostView {
+fn host_view(host: &MissionHost, player_team: Option<u32>) -> HostView {
     let world_actors = host.world_actors();
     HostView {
         served: host.served(),
@@ -333,6 +465,24 @@ fn host_view(host: &MissionHost) -> HostView {
                     .collect()
             })
             .unwrap_or_default(),
+        actors: world_actors
+            .map(|actors| {
+                actors
+                    .program()
+                    .actors
+                    .iter()
+                    .map(|spec| {
+                        (
+                            spec.actor,
+                            spec.faction.clone(),
+                            spec.kind,
+                            spec.objective.is_some(),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default(),
+        player_team,
     }
 }
 
@@ -345,7 +495,10 @@ fn host_view(host: &MissionHost) -> HostView {
 /// [`MissionActorSpawnReport`] for the tests and the evidence record to
 /// read.
 pub fn spawn_mission_actors(world: &mut World) -> MissionActorSpawnReport {
-    let view = world.get_resource::<MissionHost>().map(host_view);
+    let player_team = player_team_of(world.get_resource::<MissionStage>());
+    let view = world
+        .get_resource::<MissionHost>()
+        .map(|host| host_view(host, player_team));
     let Some(view) = view else {
         let mut report = MissionActorSpawnReport::default();
         report
@@ -373,7 +526,11 @@ pub fn respawn_mission_actors(
     host: &MissionHost,
     stage: &MissionStage,
 ) -> MissionActorSpawnReport {
-    spawn_mission_actors_under(world, host_view(host), &parts::plan_part_states(stage))
+    spawn_mission_actors_under(
+        world,
+        host_view(host, player_team_of(Some(stage))),
+        &parts::plan_part_states(stage),
+    )
 }
 
 /// The part-state plan of a stage, or the empty plan when the composition has
@@ -382,6 +539,22 @@ fn part_plan_of(
     stage: Option<&MissionStage>,
 ) -> BTreeMap<WorldActorId, Vec<(MemberName, DamageNodeKey)>> {
     stage.map(parts::plan_part_states).unwrap_or_default()
+}
+
+/// The player record's own measured `team`, or `None` when the stage carries
+/// no player record or its team was never read.
+///
+/// The value is what the designed allegiance reading
+/// ([`declared_player_allegiance`]) compares a world actor's faction team
+/// against; a stage without one states no player side.
+fn player_team_of(stage: Option<&MissionStage>) -> Option<u32> {
+    stage.and_then(|stage| {
+        stage
+            .aircraft
+            .iter()
+            .find(|record| record.dispatch == SpawnDispatch::Player)
+            .and_then(|record| record.team)
+    })
 }
 
 fn spawn_mission_actors_under(
@@ -398,6 +571,11 @@ fn spawn_mission_actors_under(
     report.session = Some(session);
     let zeppelins = view.zeppelins;
     let zeppelin_poses = view.poses;
+    let roster_actors = view.actors;
+    // The player's own measured team, for the designed allegiance reading
+    // (M01-PLAY-PARTS-GEOMETRY). It travels in the view so the composed
+    // restart — which holds the stage out of the world — keeps it.
+    let player_team_of_player = view.player_team;
     let generation = world
         .get_resource::<SceneGenerations>()
         .map(SceneGenerations::latest)
@@ -594,6 +772,21 @@ fn spawn_mission_actors_under(
             report.refusals.push(refusal);
             continue;
         };
+        // The targeting roster record this actor presents
+        // (M01-PLAY-PARTS-GEOMETRY): its faction and kind verbatim from the
+        // lowered program, its objective from the program's own symbol, and
+        // the designed relation the player's flight holds toward it, read from
+        // the two measured teams. A program that declares no faction for the
+        // actor binds none — no relation is invented.
+        let roster = roster_actors
+            .iter()
+            .find(|(candidate, ..)| candidate == world_actor)
+            .map(|(_, faction, kind, objective)| WorldActorRoster {
+                faction: faction.clone(),
+                class: target_class_of(*kind),
+                objective: *objective,
+                player_allegiance: declared_player_allegiance(faction, player_team_of_player),
+            });
         let (position_m, orientation) = (pose.position_m, pose.orientation.0);
         let entity = world
             .spawn((
@@ -622,6 +815,7 @@ fn spawn_mission_actors_under(
                     generation,
                     position_m,
                     orientation,
+                    roster,
                 },
             ))
             .id();
@@ -734,4 +928,144 @@ pub fn despawn_mission_actors(world: &mut World) {
         let _ = world.despawn(entity);
     }
     world.remove_resource::<parts::MissionPartReport>();
+    world.remove_resource::<MissionZeppelinAllegianceReport>();
+}
+
+/// Resource: what [`roster_mission_zeppelins`] decided on its last pass.
+///
+/// A report the acceptance tests read: which bound world actors the player's
+/// targeting store holds, under which measured faction, and under which
+/// designed relation — and every actor whose side could not be read, by name.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct MissionZeppelinAllegianceReport {
+    /// Every rostered world actor, in ascending session-actor order: the
+    /// session damage actor, its measured faction and the designed relation
+    /// the player's flight holds toward it (`None` when no side could be read).
+    pub rostered: Vec<(ActorId, ContentId, Option<Allegiance>)>,
+    /// Every bound world actor the pass could not settle, with why — verbatim.
+    pub unresolved: Vec<String>,
+}
+
+impl MissionZeppelinAllegianceReport {
+    /// The relation the player's flight holds toward `actor`, per the last
+    /// pass, or `None` when the actor is not rostered.
+    #[must_use]
+    pub fn allegiance_toward(&self, actor: ActorId) -> Option<Option<Allegiance>> {
+        self.rostered
+            .iter()
+            .find(|(candidate, ..)| *candidate == actor)
+            .map(|(_, _, allegiance)| *allegiance)
+    }
+}
+
+/// Rosters every bound world actor with the session's targeting store, under
+/// its measured faction and the designed relation
+/// (M01-PLAY-PARTS-GEOMETRY).
+///
+/// M01's zeppelins declare no `team` the player's gun could compare against
+/// (#1481's finding), so nothing rostered them and the F27 gun step's own
+/// `(shooter, target)` relation check answered `None` for every part — an
+/// **undeclared pair**, which the designed `FriendlyFireRule::HostileOnly`
+/// refuses by name. This pass closes that: each bound actor's `TargetRecord`
+/// (its measured faction, class and objective flag, at its bind pose) joins the
+/// session's roster, and the relation the pair check reads is declared from the
+/// designed reading of the two measured teams
+/// ([`declared_player_allegiance`]).
+///
+/// Idempotent: a pass over a store that already holds the actor re-declares the
+/// same relation and adds no second record, so it runs every fixed tick and a
+/// restart (which opens a fresh store and re-spawns the actors) re-rosters
+/// exactly the new generation. A world with no targeting store yet — the
+/// composition opens one at `PostStartup` — does nothing: there is no roster to
+/// write into, and the next tick has one.
+pub fn roster_mission_zeppelins(world: &mut World) {
+    let Some(targeting) = world.get_resource::<TargetingSession>() else {
+        return;
+    };
+    let generation = targeting.generation();
+
+    let mut candidates: Vec<(ActorId, WorldActorRoster, [f64; 3])> = Vec::new();
+    let mut unresolved: Vec<String> = Vec::new();
+    {
+        let mut query = world.query::<(Entity, &MissionZeppelinActor)>();
+        for (_, bound) in query.iter(world) {
+            if bound.generation != generation {
+                continue;
+            }
+            match &bound.roster {
+                Some(roster) => {
+                    candidates.push((bound.damage_actor, roster.clone(), bound.position_m));
+                }
+                None => unresolved.push(format!(
+                    "world actor {:?}: the launched program declares no registration record, so \
+                     its faction is unread and no relation is invented",
+                    bound.world_actor
+                )),
+            }
+        }
+    }
+    candidates.sort_by_key(|(actor, ..)| *actor);
+
+    let Ok(player_faction) = ContentId::from_source(ContentKind::Faction, MISSION_FACTION_PLAYER)
+    else {
+        return;
+    };
+    let mut report = MissionZeppelinAllegianceReport {
+        rostered: Vec::new(),
+        unresolved,
+    };
+    {
+        let mut targeting = world.resource_mut::<TargetingSession>();
+        let store = targeting.store_mut();
+        for (actor, roster, position_m) in candidates {
+            if let Some(allegiance) = roster.player_allegiance {
+                // The pair the gun step's relation check reads is
+                // `(shooter, target)`, so the player's side of the relation is
+                // the load-bearing one; the reverse is declared with it so the
+                // two directions cannot disagree.
+                store.set_allegiance(player_faction.clone(), roster.faction.clone(), allegiance);
+                store.set_allegiance(roster.faction.clone(), player_faction.clone(), allegiance);
+            }
+            if !store.is_registered(&actor) {
+                let Ok(position) = WorldPosition::try_new(position_m) else {
+                    report.unresolved.push(format!(
+                        "session actor {actor:?}: the bind pose is not a finite world position"
+                    ));
+                    continue;
+                };
+                let record = TargetRecord {
+                    actor,
+                    faction: roster.faction.clone(),
+                    class: roster.class,
+                    objective: roster.objective,
+                    revealed: true,
+                    phase_eligible: true,
+                    position,
+                };
+                if let Err(error) = store.register(record) {
+                    report.unresolved.push(format!(
+                        "session actor {actor:?}: the targeting store refuses the record: {error}"
+                    ));
+                    continue;
+                }
+            }
+            report
+                .rostered
+                .push((actor, roster.faction.clone(), roster.player_allegiance));
+        }
+    }
+    world.insert_resource(report);
+}
+
+/// Installs [`roster_mission_zeppelins`] on the fixed tick, so a bound world
+/// actor is in the targeting store before the same tick's weapon step reads
+/// the `(shooter, target)` relation.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct MissionZeppelinAllegiancePlugin;
+
+impl Plugin for MissionZeppelinAllegiancePlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<MissionZeppelinAllegianceReport>()
+            .add_systems(FixedPreUpdate, roster_mission_zeppelins);
+    }
 }
