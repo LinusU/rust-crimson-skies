@@ -905,9 +905,14 @@ fn accept_f18_d_a_capture_that_drew_nothing_is_refused_rather_than_written() {
         "a refused capture must leave no file that could be read as evidence"
     );
 
-    // A mesh whose every stored corner is one point has no bounds, so there is
-    // no frame to put it in. Checked before the app is built, so the refusal
-    // costs nothing and writes nothing.
+    // A mesh whose every stored corner is one point has no extent, and since
+    // F10-D.1 (#395) it also has no draw triangle: the original's measured
+    // per-face test culls an outline whose first three corners have a zero
+    // normal, so `RenderMesh::build` keeps nothing of it. The capture is
+    // therefore refused as `EmptyMesh` before the bounds are ever measured
+    // (`DegenerateBounds` is unreachable through `RenderMesh::build`). The
+    // property is unchanged: a capture that drew nothing is refused by name,
+    // before the app is built, and writes no file.
     let point = one_point_mesh();
     let png = evidence_dir().join("gpu-capture-point.png");
     let _ = std::fs::remove_file(&png);
@@ -921,25 +926,30 @@ fn accept_f18_d_a_capture_that_drew_nothing_is_refused_rather_than_written() {
     assert!(
         matches!(
             refused,
-            Err(cs_app::world::GpuCaptureError::DegenerateBounds { mesh_index: 9, .. })
+            Err(cs_app::world::GpuCaptureError::EmptyMesh {
+                mesh_index: 9,
+                groups: 0,
+                ..
+            })
         ),
-        "a mesh with no extent is refused by name, got {refused:?}"
+        "a mesh with no extent is culled to nothing and refused as empty, got {refused:?}"
     );
     assert!(!png.exists(), "a refused capture must leave no file");
 
-    // A mesh that uploads and yet draws nothing: three stored corners on the
-    // same position index. The upload adapter skips a degenerate stored step —
-    // correctly, it has no area — so the frame comes back as the background, and
-    // that is exactly what `UniformFrame` exists to report. Without this case
-    // the uniform-frame gate is unreachable from a test and would be untested
+    // A mesh that has an extent, survives the F10-D.1 cull and uploads, yet
+    // draws nothing: a triangle lying in a plane that contains the capture's
+    // view axis, so it is seen exactly edge-on and covers no pixel. (The older
+    // fixture here, a degenerate stored step `0, 0, 1`, is culled by the
+    // zero-normal rule before it can reach this gate.) Without this case the
+    // uniform-frame gate is unreachable from a test and would be untested
     // production code.
-    let degenerate = degenerate_only_mesh();
-    let png = evidence_dir().join("gpu-capture-degenerate.png");
+    let edge_on = edge_on_mesh();
+    let png = evidence_dir().join("gpu-capture-edge-on.png");
     let _ = std::fs::remove_file(&png);
     let refused = capture_world_mesh(&CaptureRequest {
         group: "fixture",
         mesh_index: 11,
-        render: &degenerate,
+        render: &edge_on,
         unknowns: &[],
         png: &png,
     });
@@ -967,8 +977,9 @@ fn accept_f18_d_a_capture_that_drew_nothing_is_refused_rather_than_written() {
 }
 
 /// A stored mesh with **one** stored position and a triangle whose three corners
-/// all name it: the mesh uploads (it holds a drawable triangle) and every
-/// rendered vertex is the same point, so it has no extent on any axis.
+/// all name it: every rendered vertex would be the same point, so it has no
+/// extent on any axis. Its first three corners have a zero normal, so the
+/// F10-D.1 cull (#395) leaves it no draw triangle.
 fn one_point_mesh() -> RenderMesh {
     RenderMesh::build(&RawMesh {
         positions: vec![[4.0, 4.0, 4.0]],
@@ -990,23 +1001,25 @@ fn one_point_mesh() -> RenderMesh {
     .expect("a three-corner outline on one position is valid stored data")
 }
 
-/// A stored mesh with **two** positions and a triangle whose corners name them
-/// as `0, 0, 1`: the stored step is degenerate (two equal position indices), so
-/// the render mesh keeps it, the upload adapter skips it, and the buffer that
-/// reaches the GPU is empty — a frame that can only come back as the background.
+/// A stored mesh whose one triangle lies in the plane through the bounds centre
+/// that contains [`cs_app::world::gpu_capture::CAPTURE_VIEW_DIRECTION`], so the capture camera
+/// sees it exactly edge-on: its normal is non-zero (the F10-D.1 cull keeps it) and
+/// the mesh has an extent on every axis, yet its projected area is zero and the
+/// frame comes back as the background.
 ///
-/// Two positions, not one, so the mesh *has* an extent: this case has to get past
-/// the bounds check to reach the uniform-frame one, or the two refusals would be
-/// indistinguishable.
-fn degenerate_only_mesh() -> RenderMesh {
+/// The vertices are `±d` (the view direction, giving a symmetric bounding box
+/// centred on the origin) and `(0.5, 0, 0)`, which is inside that box and in the
+/// plane spanned by `d` and the x axis.
+fn edge_on_mesh() -> RenderMesh {
+    let d = cs_app::world::gpu_capture::CAPTURE_VIEW_DIRECTION.map(|v| v as f32);
     RenderMesh::build(&RawMesh {
-        positions: vec![[0.0, 0.0, 0.0], [0.0, 0.0, 6.0]],
+        positions: vec![d.map(|v| -v), d, [0.5, 0.0, 0.0]],
         normals: Vec::new(),
         polygons: vec![RawPolygon {
             kind: PrimitiveKind::Polygon,
             raw_flags: 0,
             material: 0,
-            corners: [0, 0, 1]
+            corners: [0, 1, 2]
                 .into_iter()
                 .map(|position| RawCorner {
                     position,
@@ -1017,7 +1030,7 @@ fn degenerate_only_mesh() -> RenderMesh {
                 .collect(),
         }],
     })
-    .expect("a triangle with two equal stored positions is valid stored data")
+    .expect("a non-collinear triangle is valid stored data")
 }
 
 /// A synthetic mesh with a real opening in it: two legs and a lintel, as the

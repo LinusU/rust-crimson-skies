@@ -44,7 +44,9 @@
 //! * [`GpuCaptureError::EmptyMesh`] — the mesh has no drawable triangle, so a
 //!   frame would be empty however well it was framed.
 //! * [`GpuCaptureError::DegenerateBounds`] — every stored corner is the same
-//!   point, so there is no frame to put it in.
+//!   point, so there is no frame to put it in. Defence in depth: since F10-D.1
+//!   (#395) such a mesh has no draw triangle, so it is unreachable through
+//!   `RenderMesh::build` and the capture refuses it as `EmptyMesh` first.
 //! * [`GpuCaptureError::NoScreenshotCaptured`] — the renderer ran but produced
 //!   no image, which is a driver-side absence, not a blank frame.
 //! * [`GpuCaptureError::UniformFrame`] — the frame came back and every pixel is
