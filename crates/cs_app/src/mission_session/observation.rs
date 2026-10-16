@@ -79,8 +79,11 @@
 //!   are the original's `enabled == 0` skips (M01's `2` and `4`) is `0` too:
 //!   the original's counter `0x4658d0` counts registry members and a skipped
 //!   record never enters the registry
-//!   (`docs/findings/2026-10-15-m01-play-triggers-group-membership.md`). A
-//!   group no record carries gets **no row**, and
+//!   (`docs/findings/2026-10-15-m01-play-triggers-group-membership.md`). That
+//!   zero is never borrowed by a group an *enabled* record also carries: such
+//!   a group could have had a registry member, so a record of it this
+//!   composition refused to spawn leaves the count unknown, not `0`. A group
+//!   no record carries gets **no row**, and
 //!   `Condition::EnemyGroupDepletion` over it answers `false` ("an unrecorded
 //!   group is unknown, not an empty one").
 //!
@@ -95,7 +98,7 @@
 //! session is unmeasured and is named in
 //! `docs/findings/2026-10-15-m01-play-triggers-observation.md`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use avian3d::prelude::Position;
 use bevy::prelude::{Entity, Transform, With, World};
@@ -368,7 +371,17 @@ pub fn mission_world_observation(world: &mut World) {
             .map(|roster| roster.0.clone())
             .unwrap_or_default();
         let mut living: BTreeMap<i32, u32> = BTreeMap::new();
+        // Every group id an enabled (non-player) roster record carries: a
+        // group this composition *could* have spawned a member for. Its count
+        // may only come from real spawns — never from a skip — because an
+        // enabled record is one the original's registry would hold, so a
+        // record of it that this composition refused to spawn leaves the
+        // count unknown, not 0.
+        let mut roster_groups: BTreeSet<u32> = BTreeSet::new();
         for record in &roster {
+            if let Some(group) = record.group {
+                roster_groups.insert(group);
+            }
             if !spawned.contains(&record.name) {
                 // The record never spawned, so its group was never observed:
                 // an unobservable group stays unobserved, never 0.
@@ -381,10 +394,15 @@ pub fn mission_world_observation(world: &mut World) {
             }
         }
         // Records the original's spawn loop skips (`enabled == 0`) are never
-        // in its registry, so their group counts 0 (`0x4658d0`).
+        // in its registry, so their group counts 0 (`0x4658d0`) — but only
+        // when no enabled record carries that group. A group the composition
+        // could have spawned a member for stays unobserved rather than
+        // borrowed to a skip's zero: an unrecorded group is unknown, not an
+        // empty one.
         if let Some(skipped) = world.get_resource::<MissionSkippedAircraft>() {
             for record in &skipped.0 {
                 if let Some(group) = record.group
+                    && !roster_groups.contains(&group)
                     && let Ok(id) = i32::try_from(group)
                 {
                     living.entry(id).or_insert(0);

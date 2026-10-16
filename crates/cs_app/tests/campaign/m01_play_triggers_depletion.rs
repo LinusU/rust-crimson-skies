@@ -79,6 +79,16 @@ fn skipped(name: &str, group: u32) -> ScriptedAircraft {
     }
 }
 
+/// An **enabled** record the composition refuses to spawn: it carries no
+/// stored pose, so [`cs_app::mission_actors::spawn_mission_actors`] records a
+/// refusal instead of an entity. The original's registry would have held it,
+/// so its group's count is unknown here — never a skip's `0`.
+fn unspawnable(name: &str, group: u32) -> ScriptedAircraft {
+    let mut record = skipped(name, group);
+    record.enabled = Some(true);
+    record
+}
+
 /// One `DEDG [group, 0]` objective per group.
 fn depletion_program(groups: &[i32]) -> MissionProgram {
     MissionProgram {
@@ -142,6 +152,47 @@ fn accept_m01_play_triggers_depletion_skipped_records_count_zero_and_unknown_gro
     assert!(
         !completed(&app, 2),
         "the wrong (unobserved) group never satisfies a gate"
+    );
+
+    teardown(&mut app);
+}
+
+/// **A skip's zero is never borrowed by a group an enabled record also
+/// carries: a refused spawn leaves that group unknown — CI leg.**
+///
+/// Group 6 carries two records: one the original's spawn loop skips
+/// (`enabled == 0`) and one *enabled* record this composition refuses to
+/// spawn (no stored pose, so the spawn path records a refusal). The original's
+/// registry would have held the enabled record, so the group's count is not
+/// the skip's `0` — it is unknown, and the `DEDG [6, 0]` gate must never
+/// complete on it.
+#[test]
+fn accept_m01_play_triggers_depletion_a_refused_enabled_record_keeps_its_group_unknown() {
+    let scratch = Scratch::new("m01-play-depletion-mixed");
+    let mut stage = synthetic_stage(scratch.path());
+    stage.aircraft = vec![
+        skipped("rusdevastator_3", 2),
+        unspawnable("rusdevastator_6", 6),
+        skipped("bsfury_6", 6),
+    ];
+    stage.host.control = depletion_program(&[2, 6]);
+    let mut app = build_headless(&stage).expect("the synthetic stage composes");
+    arm(&mut app);
+    for _ in 0..30 {
+        app.update();
+    }
+
+    let groups = observed_groups(&app);
+    assert_eq!(groups.get(&2), Some(&0), "group 2 counts 0: {groups:?}");
+    assert!(
+        !groups.contains_key(&6),
+        "a group whose only spawned-capable record was refused stays unobserved, never the \
+         skip's 0: {groups:?}"
+    );
+    assert!(completed(&app, 0), "the group-2 gate completes on its 0");
+    assert!(
+        !completed(&app, 1),
+        "the mixed group's gate never completes on an unknown count"
     );
 
     teardown(&mut app);

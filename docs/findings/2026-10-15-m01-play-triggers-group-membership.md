@@ -47,6 +47,12 @@ decided by its other conditions (`ObjectiveAwake{53}`, lifecycle).
   `aiv.zrd` record's group once the actor spawn ran; a skipped-only group
   counts 0. A group no record carries stays unobserved, and
   `EnemyGroupDepletion` over it still answers `false`.
+* Reviewer refinement (2026-10-16, bunny-alpha-1): the skip's zero is never
+  borrowed by a group an **enabled** record also carries. Such a group could
+  have had a registry member, so a record of it this composition refused to
+  spawn leaves the count unknown rather than 0 — the mixed-group CI leg
+  `accept_m01_play_triggers_depletion_a_refused_enabled_record_keeps_its_group_unknown`
+  pins it. M01 has no mixed group, so its measured counts are unchanged.
 
 ## Unmeasured
 
