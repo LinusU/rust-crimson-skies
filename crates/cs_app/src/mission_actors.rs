@@ -460,6 +460,12 @@ fn session_damage(world: &mut World, session: SessionId) -> &mut DamageResolver 
 /// world, and `MissionHost::restart` whose host is a `&mut self` mid-call
 /// — freshly relaunched for the new generation — and is not yet a
 /// resource again.
+///
+/// The player's measured team travels here too: the composed restart entry
+/// holds the [`MissionStage`] resource out of the world for the whole
+/// rebuild, so a spawn that re-read it there would state no side for any
+/// record. The stage's own tables travel in [`StageBinding`] instead
+/// (M01-PLAY-AI-RESTART, #1509).
 struct HostView {
     /// The session the host serves.
     served: SessionId,
@@ -551,7 +557,9 @@ pub fn spawn_mission_actors(world: &mut World) -> MissionActorSpawnReport {
     };
     // The stage is a world resource on this path; the restart hands it in
     // directly (below), because the composed restart entry holds it out of the
-    // world for the whole rebuild.
+    // world for the whole rebuild. The binding carries every stage-derived
+    // table the spawn reads, including the AI airframe table that splits
+    // flying from held records (M01-PLAY-AI-RESTART, #1509).
     let binding = stage_binding(world.get_resource::<MissionStage>());
     spawn_mission_actors_under(world, view, &binding)
 }
@@ -564,7 +572,10 @@ pub fn spawn_mission_actors(world: &mut World) -> MissionActorSpawnReport {
 /// resource here would silently rebind no part-state chain after a retry and
 /// every `INACTIVE` ladder over them would stall for the rest of the mission.
 /// The same holds for the `TURRET` table: read from the argument, a restarted
-/// composition classes its turrets exactly as the first spawn did.
+/// composition classes its turrets exactly as the first spawn did. And for the
+/// AI airframe table: read from the argument, every record that flew before
+/// the restart flies after it, with the side its measured team selects
+/// (M01-PLAY-AI-RESTART, #1509).
 pub fn respawn_mission_actors(
     world: &mut World,
     host: &MissionHost,
@@ -591,6 +602,16 @@ struct StageBinding {
     /// Why no table could be read, when one could not — surfaced on the parts
     /// report instead of being folded into the empty record list above.
     turret_refusal: Option<String>,
+    /// The AI airframe table the stage imported for every name-prefix dispatch
+    /// ([`crate::mission_ai::MissionAiAirframes`]), or `None` when the
+    /// composition carried no stage at all (M01-PLAY-AI-RESTART, #1509).
+    ///
+    /// The spawn must never re-read this from the world: the composed restart
+    /// holds the [`MissionStage`] resource out of the world while it rebuilds,
+    /// and a table read from the world there would be empty — every
+    /// non-asleep scripted aircraft would spawn the kinematic held body, with
+    /// no law and no side, for the rest of the run.
+    ai_airframes: Option<crate::mission_ai::MissionAiAirframes>,
 }
 
 /// The binding of a stage, or the empty one when the composition has no stage
@@ -602,6 +623,7 @@ fn stage_binding(stage: Option<&MissionStage>) -> StageBinding {
         parts: parts::plan_part_states(stage),
         turrets: stage.turret_records.clone(),
         turret_refusal: stage.turret_refusal.clone(),
+        ai_airframes: Some(stage.ai_airframes.clone()),
     })
 }
 
@@ -637,8 +659,9 @@ fn spawn_mission_actors_under(
     let zeppelin_poses = view.poses;
     let roster_actors = view.actors;
     // The player's own measured team, for the designed allegiance reading
-    // (M01-PLAY-PARTS-GEOMETRY). It travels in the view so the composed
-    // restart — which holds the stage out of the world — keeps it.
+    // (M01-PLAY-PARTS-GEOMETRY) and the AI half's flown/held split
+    // (M01-PLAY-AI). It travels in the view so the composed restart — which
+    // holds the stage out of the world — keeps it.
     let player_team_of_player = view.player_team;
     let generation = world
         .get_resource::<SceneGenerations>()
@@ -663,22 +686,23 @@ fn spawn_mission_actors_under(
     // The AI half of the spawn (M01-PLAY-AI, #1436): the airframe table the
     // stage imported for every name-prefix dispatch, and the measured team
     // of the stage's `player` record, which is what splits the roster into
-    // the player's flight and the aircraft opposed to it.
-    let stage = world.get_resource::<MissionStage>();
-    let airframes = stage
-        .map(|stage| stage.ai_airframes.clone())
-        .unwrap_or_default();
-    let player_team = stage.and_then(|stage| {
-        stage
-            .aircraft
-            .iter()
-            .find(|record| record.dispatch == SpawnDispatch::Player)
-            .and_then(|record| record.team)
-    });
+    // the player's flight and the aircraft opposed to it. The table travels
+    // in the binding and the team in the view, both from the caller that holds
+    // the stage — the Startup path as a world resource, the restart path as
+    // its argument — never read from the world here: the composed restart
+    // holds the [`MissionStage`] resource out of the world for the whole
+    // rebuild, and a table read from the world there would be empty, holding
+    // every scripted aircraft for the rest of the run (M01-PLAY-AI-RESTART,
+    // #1509).
+    let stageless = binding.ai_airframes.is_none();
+    let airframes = binding.ai_airframes.clone().unwrap_or_default();
+    // The same measured team the allegiance reading below compares against:
+    // one reading of the view, never a second opinion.
+    let player_team = player_team_of_player;
     let mut ai_flown: Vec<String> = Vec::new();
     let mut ai_held: Vec<String> = Vec::new();
     let mut ai_refusals: Vec<String> = Vec::new();
-    if stage.is_none() {
+    if stageless {
         ai_refusals.push(
             "no MissionStage resource: the composition left no AI airframe table, so every \
              scripted aircraft spawns held"
