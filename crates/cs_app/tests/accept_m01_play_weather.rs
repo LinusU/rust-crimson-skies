@@ -370,6 +370,38 @@ fn assert_drawn_colour(mesh: &Mesh, layer: &WeatherLayerSpec) {
     }
 }
 
+/// **A fixed physics step inside the same headless stack never finds a
+/// system parameter missing.** (#1471)
+///
+/// `App::update` never runs `Plugin::finish` — only `App::run` does — so
+/// Avian's `*Diagnostics` resources, which its plugins create only in
+/// `finish`, were absent in this composition's world. The flake fired only
+/// when wall-clock jitter happened to advance the fixed clock enough to run
+/// `PhysicsSchedule` — the first `update` always advances zero (`Time<Real>`
+/// learns its `last_update` on the first call), so a second update driving a
+/// whole manual second is what forces `FixedPostUpdate`'s
+/// `run_physics_schedule` to step. On a stack that does not register them
+/// the missing `ResMut` then panics deterministically instead of
+/// intermittently.
+#[test]
+fn accept_m01_play_weather_the_headless_stack_answers_a_fixed_steps_resources() {
+    let mut app = cs_app::asset_stack::headless_app();
+    app.init_asset::<StandardMaterial>();
+    app.add_plugins(WeatherPlugin::designed());
+    app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+        std::time::Duration::from_secs(1),
+    ));
+    // The first update only establishes the real clock; the second applies
+    // the manual second and fires the fixed steps that read the resources.
+    app.update();
+    app.update();
+    assert!(
+        app.world()
+            .contains_resource::<avian3d::collider_tree::ColliderTreeDiagnostics>(),
+        "the stack registers the diagnostics resources a fixed step reads"
+    );
+}
+
 #[test]
 fn accept_m01_play_weather_the_deck_paints_its_coverage_and_leaves_the_sky_visible() {
     use cs_app::render::weather::{HAZE_OVERHEAD_FRACTION, LAYER_MESH_CELLS};
