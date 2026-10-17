@@ -53,6 +53,20 @@ writes no `content` claim, which `save_dependency` reports as
 stock. Treating "nothing announced" as "stock" would have forged a claim
 the run never made.
 
+## Remaining production gap (the caller)
+
+`with_announced_signature` is the write half, but **no shipped caller
+invokes it yet**: `FlowSetup` carries no announced signature and
+`FrontEndFlow::open_profile` — the only non-test `ProfileSession::open`
+caller in the workspace — opens the session without one, so a run still
+writes an unmarked save until the mount layer feeds the announcement.
+That is the same owner-path question `F53-FU6-SAVE-REOPEN` (#768) was
+blocked on (where a run's mount and signature live on `FlowSetup`), and
+it is outside this task's owner path
+(`crates/cs_app/src/profile.rs`). Until a caller is wired, the F53-D
+caveat "no fidelity or release claim may rest on the mark being written
+by the game" stays open, and this task makes no claim to the contrary.
+
 ## Measurements
 
 `crates/cs_app/tests/accept_f53_fu5_modded_save.rs` (task prefix
