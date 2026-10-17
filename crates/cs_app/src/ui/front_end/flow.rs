@@ -39,10 +39,16 @@
 //! [`ProfileSession`] (F48-C), [`CampaignRun`] (F43-C) and
 //! [`ConstructionScreen`] (F44-C). This module does not reimplement any of
 //! them; it only decides *when* each is called and what a refusal does to the
-//! screen. What is still unknown — which dependencies a retail mission load
-//! declares, which components a front-end construction draft maps onto which
-//! blueprint slot, which option set the flight check may offer — is recorded
-//! in `docs/findings/2026-10-07-f45-c-flow-wiring.md` rather than guessed.
+//! screen, and — since #747 — projects the attached construction screen's
+//! draft into the machine's `ConstructionDraft` so the dirty state the
+//! discard prompt reads is the real draft's (the flat id list in
+//! `AircraftBlueprint::components` order, then every staged sale). What is
+//! still unknown — which dependencies a retail mission load declares, how
+//! the original's construction page edited slots, which option set the
+//! flight check may offer — is recorded in
+//! `docs/findings/2026-10-07-f45-c-flow-wiring.md` and
+//! `docs/findings/2026-10-17-f45-c-1-construction-draft-projection.md`
+//! rather than guessed.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -53,7 +59,9 @@ use cs_assets::vfs::ContentSession;
 use cs_content::airframe_roles::{
     AirframeRoles, LaunchAssignmentError, OwnedLoadout, ResolvedLaunch,
 };
-use cs_content::construction::{ConstructionPolicy, ConstructionRules, PriceBook};
+use cs_content::construction::{
+    AircraftBlueprint, ConstructionPolicy, ConstructionRules, PriceBook,
+};
 use cs_content::save::settings::SettingCatalog;
 use cs_sim::campaign::{
     AppliedOutcome, CampaignGraph, CampaignRunId, DifficultyId,
@@ -626,6 +634,13 @@ pub enum FlowError {
     },
     /// The construction flow was asked to commit with no screen open.
     NoConstructionScreen,
+    /// A screen handed to [`FrontEndFlow::attach_construction`] is already
+    /// dirty. Its committed base can no longer be projected — the session
+    /// keeps no copy of the blueprint it was opened on — so the machine's
+    /// draft could never say what "saved" means. A screen attaches at its
+    /// committed state (freshly opened, or rebased by a commit) or not at
+    /// all.
+    ConstructionScreenDirty,
     /// The flow was given no construction rules to judge a commit by.
     NoConstructionInputs,
     /// The flight check was committed with no airframe roster to resolve the
@@ -667,6 +682,9 @@ impl fmt::Display for FlowError {
                 "the flow was asked to commit {machine} while the screen edits {screen}"
             ),
             Self::NoConstructionScreen => f.write_str("no construction screen is open"),
+            Self::ConstructionScreenDirty => {
+                f.write_str("an edited screen has no committed base to project: attach it clean")
+            }
             Self::NoConstructionInputs => f.write_str("no construction rules were supplied"),
             Self::NoRoster => f.write_str("no airframe roster was supplied"),
             Self::NoPlayerAircraft => f.write_str("the flight check committed no aircraft"),
@@ -722,6 +740,19 @@ impl From<Refusal> for FlowError {
     }
 }
 
+/// The ids a blueprint's slots hold, in [`AircraftBlueprint::components`]
+/// order — the flat list the machine's `ConstructionDraft` is projected
+/// from. The projection goes only this way: a flat id cannot name the armor
+/// zone, weapon mount or hardpoint it came from, so nothing here maps it
+/// back (#747).
+fn fitted_components(blueprint: &AircraftBlueprint) -> Vec<ContentId> {
+    blueprint
+        .components()
+        .into_iter()
+        .map(|(_, id)| id.clone())
+        .collect()
+}
+
 /// The domain side of the flows: the objects every request reaches, in the
 /// order the application owns them.
 #[derive(Debug)]
@@ -732,6 +763,11 @@ struct FlowDomain {
     run: Option<CampaignRun>,
     construction: Option<ConstructionScreen>,
     construction_id: Option<ContentId>,
+    /// The committed base the machine's draft is projected against: the
+    /// screen's fitted components, captured the last time the screen was
+    /// clean — at attach and after every commit. The session keeps no copy
+    /// of the blueprint it was opened on, so the flow remembers it.
+    construction_saved: Option<Vec<ContentId>>,
     committed: Option<Loadout>,
     launch: Option<ResolvedLaunch>,
     mission_outcome: Option<MissionOutcomeRecord>,
@@ -748,6 +784,7 @@ impl FlowDomain {
             run: None,
             construction: None,
             construction_id: None,
+            construction_saved: None,
             committed: None,
             launch: None,
             mission_outcome: None,
@@ -822,6 +859,7 @@ impl FlowDomain {
         self.run = None;
         self.construction = None;
         self.construction_id = None;
+        self.construction_saved = None;
         self.committed = None;
         self.launch = None;
         self.mission_outcome = None;
@@ -862,6 +900,10 @@ impl FlowDomain {
         screen
             .commit_saved(&ctx, &mut state, profile)
             .map_err(FlowError::Construction)?;
+        // The committed blueprint is the draft's new base (#747): the next
+        // draft the machine opens is projected against it, not against the
+        // blueprint the screen was attached under.
+        self.construction_saved = Some(fitted_components(screen.blueprint()));
         // The screen wrote the committed state to the profile; the run
         // re-reads it, so the two owners of "the live campaign" cannot
         // diverge (a construction commit and an outcome commit are the only
@@ -927,10 +969,18 @@ impl FlowDomain {
     /// Hands the flow the construction screen a `CommitBlueprint` commits
     /// through, under the blueprint id the state machine's draft carries.
     ///
+    /// The screen must arrive at its committed state — freshly
+    /// [`ConstructionScreen::open`]ed, or rebased by a commit — because the
+    /// session keeps no copy of the blueprint it was opened on and the
+    /// machine's draft projects `saved` from what the screen was attached
+    /// under. An already-edited screen has no base to project and is refused
+    /// rather than answered from a guess.
+    ///
     /// # Errors
     ///
     /// [`FlowError::NoCampaign`] when no profile is open to price the draft
-    /// against.
+    /// against, [`FlowError::ConstructionScreenDirty`] for a screen whose
+    /// edits began before it was handed over.
     fn attach_construction(
         &mut self,
         blueprint: ContentId,
@@ -939,9 +989,29 @@ impl FlowDomain {
         if self.run.is_none() {
             return Err(FlowError::NoCampaign);
         }
+        if screen.is_dirty() {
+            return Err(FlowError::ConstructionScreenDirty);
+        }
+        self.construction_saved = Some(fitted_components(screen.blueprint()));
         self.construction = Some(screen);
         self.construction_id = Some(blueprint);
         Ok(())
+    }
+
+    /// The machine-draft projection of the attached screen: `(blueprint id,
+    /// saved, components)` in [`ConstructionDraft`]'s field order. `saved` is
+    /// the committed base captured at attach or the last commit;
+    /// `components` is the current draft — the fitted ids in
+    /// [`AircraftBlueprint::components`] order followed by every staged
+    /// sale, so `saved != components` covers everything the screen's own
+    /// dirty flag does.
+    fn construction_projection(&self) -> Option<(ContentId, Vec<ContentId>, Vec<ContentId>)> {
+        let id = self.construction_id.as_ref()?;
+        let screen = self.construction.as_ref()?;
+        let saved = self.construction_saved.as_ref()?;
+        let mut components = fitted_components(screen.blueprint());
+        components.extend(screen.staged_sales().iter().cloned());
+        Some((id.clone(), saved.clone(), components))
     }
 
     fn set_mission_outcome(&mut self, record: MissionOutcomeRecord) {
@@ -1203,23 +1273,57 @@ impl FrontEndFlow {
 
     /// Opens the machine's construction draft (F45-B's domain-side input).
     ///
+    /// When a construction screen is attached and the draft's `blueprint`
+    /// names it, the draft's `saved`/`components` are immediately replaced
+    /// by the screen's own projection (#747) — the declared lists are a
+    /// view, the projection is the truth. A draft naming another blueprint
+    /// is left exactly as declared, so the commit's mismatch check still
+    /// sees two views that have come apart.
+    ///
     /// # Errors
     ///
     /// [`FlowError::Screen`] off the construction screen or while a prompt is
     /// open.
     pub fn open_construction(&mut self, draft: ConstructionDraft) -> Result<(), FlowError> {
-        self.session.open_construction(draft).map_err(Into::into)
+        self.session
+            .open_construction(draft)
+            .map_err(FlowError::from)?;
+        self.sync_construction_draft();
+        Ok(())
     }
 
-    /// Replaces the machine's edited components.
+    /// Edits the attached construction screen — the one draft the machine's
+    /// `components` is a projection of — through `edit`, then re-projects the
+    /// machine's draft from it.
+    ///
+    /// This is deliberately the screen's own typed operations
+    /// (`set_airframe`, `fit_armor`, `fit_guns`, `fit_ordnance`,
+    /// `queue_sale`, ...), not a flat `Vec<ContentId>`: a flat id cannot name
+    /// the slot it belongs to (F45-C's finding; #747), so editing through the
+    /// machine's list is not offered here — the machine-level draft API
+    /// remains on [`crate::ui::front_end::ScreenSession`] for callers that
+    /// drive the machine without a domain.
     ///
     /// # Errors
     ///
-    /// As [`Self::open_construction`], and with no draft open.
-    pub fn edit_construction(&mut self, components: Vec<ContentId>) -> Result<(), FlowError> {
-        self.session
-            .edit_construction(components)
-            .map_err(Into::into)
+    /// [`FlowError::NoConstructionScreen`] with no screen attached.
+    pub fn edit_construction<R>(
+        &mut self,
+        edit: impl FnOnce(&mut ConstructionScreen) -> R,
+    ) -> Result<R, FlowError> {
+        let screen = self
+            .domain
+            .construction
+            .as_mut()
+            .ok_or(FlowError::NoConstructionScreen)?;
+        let out = edit(screen);
+        // A commit reached through the closure leaves the screen clean —
+        // its current blueprint is the new committed base.
+        if !screen.is_dirty() {
+            self.domain.construction_saved = Some(fitted_components(screen.blueprint()));
+        }
+        self.sync_construction_draft();
+        Ok(out)
     }
 
     /// Hands the flow the construction screen `CommitBlueprint` commits
@@ -1227,13 +1331,38 @@ impl FrontEndFlow {
     ///
     /// # Errors
     ///
-    /// [`FlowError::NoCampaign`] before a profile has been confirmed.
+    /// [`FlowError::NoCampaign`] before a profile has been confirmed,
+    /// [`FlowError::ConstructionScreenDirty`] for a screen whose edits began
+    /// before it was handed over — its committed base is unprojectable.
     pub fn attach_construction(
         &mut self,
         blueprint: ContentId,
         screen: ConstructionScreen,
     ) -> Result<(), FlowError> {
-        self.domain.attach_construction(blueprint, screen)
+        self.domain.attach_construction(blueprint, screen)?;
+        self.sync_construction_draft();
+        Ok(())
+    }
+
+    /// Writes the attached screen's projection into the machine's open
+    /// draft, when the two name the same blueprint. Nothing to sync is not
+    /// an error: no screen, no draft, or a draft naming another blueprint
+    /// (which the commit's mismatch check must still catch) all leave the
+    /// machine untouched.
+    fn sync_construction_draft(&mut self) {
+        let Some((id, saved, components)) = self.domain.construction_projection() else {
+            return;
+        };
+        let matches = self
+            .session
+            .front_end()
+            .construction()
+            .is_some_and(|draft| draft.blueprint == id);
+        if matches {
+            self.session
+                .reconcile_construction(saved, components)
+                .expect("a draft is open on the construction screen");
+        }
     }
 
     /// Hands the flow the mission's own outcome record, which the results
