@@ -50,14 +50,17 @@ use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
+use cs_content::legacy_import::BlueprintRecordOutcome;
 use cs_content::save::fs::SlotError;
 use cs_content::save::library::{LibraryError, LoadedProfile, ProfileLibrary};
 use cs_content::save::settings::{CatalogError, SettingCatalog, SettingOutcome, SettingsState};
 use cs_content::save::store::CommitError;
 use cs_types::profile::{
-    CampaignState, MAX_DISPLAY_NAME_BYTES, ProfileDocument, ProfileFieldError, ProfileId,
-    ProfileKind, Revision, validate_text,
+    CampaignState, ExtraField, MAX_DISPLAY_NAME_BYTES, ProfileDocument, ProfileFieldError,
+    ProfileId, ProfileKind, Revision, validate_text,
 };
+
+use crate::ui::import::{ConfirmedImport, MigrationVerdict};
 
 /// Who is asking for a profile location.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -351,6 +354,18 @@ pub enum SessionError {
     },
     /// The revision counter is at the top of its range.
     RevisionExhausted { profile: ProfileId },
+    /// A confirmed import names a target profile id this population would not
+    /// allocate next: the id was already issued — live or retired, and an
+    /// issued id is never reissued — or the offer's allocation went stale
+    /// while the owner read the report. Persisting it anyway would write over
+    /// a profile that exists or resurrect one that was deleted, so nothing was
+    /// written.
+    ImportTargetMismatch {
+        /// The id the confirmed import named.
+        offered: ProfileId,
+        /// The id the population's high-water mark would hand out next.
+        expected_next: u64,
+    },
     /// Every attempt hit a moved expected revision.
     Conflict {
         profile: ProfileId,
@@ -384,6 +399,15 @@ impl fmt::Display for SessionError {
                     "profile {profile} cannot be saved again: revision is exhausted"
                 )
             }
+            Self::ImportTargetMismatch {
+                offered,
+                expected_next,
+            } => write!(
+                f,
+                "the import names profile {offered}, but this population would \
+                 allocate {expected_next} next: the offered id was already \
+                 issued or the offer is stale, so nothing was written"
+            ),
             Self::Conflict {
                 profile,
                 stored,
@@ -647,6 +671,87 @@ impl ProfileSession {
         // The registry makes the first profile active on its own; a later one has
         // to be pointed at explicitly, or the pointer keeps naming the pilot
         // that was active before.
+        if self.library.active() != Some(id) {
+            self.library.set_active(id)?;
+        }
+        self.install(LoadedProfile {
+            id,
+            document: Some(document),
+            source: Some(cs_content::save::store::SaveFile::Current),
+            warnings: Vec::new(),
+        });
+        Ok(id)
+    }
+
+    /// Persists one confirmed import into a newly allocated profile of this
+    /// population, through the library's atomic path.
+    ///
+    /// [`ConfirmedImport`] is a staged value: it names the profile the offer
+    /// allocated and carries everything the import keeps — the verified source
+    /// fingerprint, the migration report and the records the report says may
+    /// be carried — but it holds no writer. This is the write it was staged
+    /// for. The document is built from the confirmed value alone, then handed
+    /// to [`ProfileLibrary::create`], so the same temporary-file/fsync/rename
+    /// path a normal create uses writes it, and the registry records the
+    /// allocation under the same revision.
+    ///
+    /// The target's id must be exactly the id the population would allocate
+    /// next. Anything below the high-water mark was already issued — a live
+    /// profile or a retired one — so naming it is refused rather than merged
+    /// or overwritten, and an id ahead of the mark means the offer's
+    /// allocation went stale while the owner read the report, so it is
+    /// refused rather than silently landed somewhere else. The source the
+    /// report describes is a read here only through its verified fingerprint;
+    /// no path to it exists in this value, so nothing about it can be written.
+    ///
+    /// The retained state lands in the document's own fields rather than a
+    /// sidecar: `extra` carries the source's spelling, size and full SHA-256
+    /// plus the verdict, the layout id and the fixture-admission marker
+    /// (spec F64 non-negotiable 1), one `import.record.<index>.<slot>` field
+    /// per resolved identity of every
+    /// [`ConfirmedImport::importable_records`] index, and `blueprints`
+    /// carries the catalog id of every blueprint the stock rules judged
+    /// conforming inside that same list — nothing outside
+    /// `importable_records()` is carried.
+    ///
+    /// The new profile becomes the persisted active pointer and this session's
+    /// selection, exactly as [`Self::create`] leaves a made profile.
+    ///
+    /// # Errors
+    ///
+    /// [`SessionError::Library`]`(ForeignDocument)` when the import targets
+    /// another population's kind; [`SessionError::ImportTargetMismatch`] when
+    /// the target id is not the next allocation; [`SessionError::Field`] when
+    /// a retained value cannot fit a save's bounds; [`SessionError::Library`]
+    /// for the write itself.
+    pub fn persist_confirmed_import(
+        &mut self,
+        confirmed: &ConfirmedImport,
+    ) -> Result<ProfileId, SessionError> {
+        let target = confirmed.target();
+        if target.kind() != self.kind() {
+            return Err(SessionError::Library(LibraryError::ForeignDocument {
+                id: target.id(),
+                stored: self.kind(),
+                offered: target.kind(),
+            }));
+        }
+        // The offer allocated the target id while the owner read the report;
+        // the only honest write is into exactly that id, which is only the
+        // case when it is still the next one the mark hands out. An exhausted
+        // mark skips this check so `create` surfaces its own refusal.
+        match self.library.status().high_water.checked_add(1) {
+            Some(next) if next == target.id().get() => {}
+            Some(expected_next) => {
+                return Err(SessionError::ImportTargetMismatch {
+                    offered: target.id(),
+                    expected_next,
+                });
+            }
+            None => {}
+        }
+        let document = import_document(confirmed)?;
+        let (id, document) = self.library.create(document)?;
         if self.library.active() != Some(id) {
             self.library.set_active(id)?;
         }
@@ -1077,6 +1182,98 @@ impl ProfileSession {
             .and_then(|found| found.document.as_mut())
             .ok_or(SessionError::NoProfileSelected)
     }
+}
+
+/// The first-revision document one confirmed import becomes.
+///
+/// The retained report lands in `extra`, in this build's own vocabulary:
+/// the source's spelling, byte size and full SHA-256 hex, the verdict's
+/// stable label, the layout the document was read through and whether the
+/// report could only be produced through designed-fixture admission. Each
+/// resolved identity of an importable record lands in its own
+/// `import.record.<index>.<slot>` field as a `class:id` pair, so the record
+/// set the profile carries is exactly
+/// [`ConfirmedImport::importable_records`] — a record that was planned but
+/// stock-rejected, or never resolved at all, names no field and mints no
+/// blueprint id. The conforming blueprints inside that same set
+/// land in `blueprints` under the deterministic `blueprint.legacy.*` ids
+/// the assessment minted.
+///
+/// The document is validated before it is offered to the library, so a
+/// retained value that cannot fit a save's bounds refuses as
+/// [`SessionError::Field`] rather than failing partway through the write.
+fn import_document(confirmed: &ConfirmedImport) -> Result<ProfileDocument, SessionError> {
+    let target = confirmed.target();
+    let source = confirmed.source();
+    let report = confirmed.report();
+    let mut extra = vec![
+        ExtraField {
+            key: "import.source.spelling".to_owned(),
+            value: source.spelling().to_owned(),
+        },
+        ExtraField {
+            key: "import.source.size".to_owned(),
+            value: source.size_bytes().to_string(),
+        },
+        ExtraField {
+            key: "import.source.sha256".to_owned(),
+            value: source.sha256().to_hex(),
+        },
+        ExtraField {
+            key: "import.verdict".to_owned(),
+            value: MigrationVerdict::of(report.class()).label().to_owned(),
+        },
+        ExtraField {
+            key: "import.layout".to_owned(),
+            value: report.layout_id().to_owned(),
+        },
+        ExtraField {
+            key: "import.fixture_admitted".to_owned(),
+            value: if confirmed.fixture_admitted() {
+                "yes"
+            } else {
+                "no"
+            }
+            .to_owned(),
+        },
+    ];
+    for &index in confirmed.importable_records() {
+        let record = report
+            .records()
+            .iter()
+            .find(|record| record.record_index == index)
+            .expect("importable records are a subset of the report's records");
+        // One bounded field per resolved identity: a `class:id` pair fits a
+        // save value, where the whole list joined could overflow it, and the
+        // field count bounds the import the same way every save list is
+        // bounded.
+        for (slot, (class, id)) in record.resolved_ids.iter().enumerate() {
+            extra.push(ExtraField {
+                key: format!("import.record.{index}.{slot}"),
+                value: format!("{}:{id}", class.label()),
+            });
+        }
+    }
+    let mut blueprints = Vec::new();
+    if let Some(assessment) = confirmed.blueprints() {
+        for row in assessment.records() {
+            if !confirmed.importable_records().contains(&row.record_index()) {
+                continue;
+            }
+            if let BlueprintRecordOutcome::Conforming { blueprint, .. } = row.outcome() {
+                blueprints.push(blueprint.id().clone());
+            }
+        }
+    }
+    let document = ProfileDocument {
+        kind: target.kind(),
+        display_name: target.display_name().to_owned(),
+        blueprints,
+        extra,
+        ..ProfileDocument::synthetic(target.id(), Revision(1))
+    };
+    document.validate()?;
+    Ok(document)
 }
 
 #[cfg(test)]
