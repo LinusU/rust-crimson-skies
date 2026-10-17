@@ -3374,6 +3374,125 @@ pub fn build_aircraft_visual(
     })
 }
 
+/// The drawn parts of one named node of a world container, placed **relative
+/// to that node** (M01-WINDOW-ACTORS, #1538): what a world actor whose body is
+/// a stored node (a `zeppelins.zrd` record's `node`) needs to be seen.
+///
+/// The node is found by its authored name, which must be unique in the
+/// container; its authored subtree is cut out through [`area_graph`], the
+/// selection is the area's own ([`select_area_parts`] at `lod_distance_m`, the
+/// same LOD, damage-alternative and flat-card rules the drawn area uses), and
+/// each drawn mesh is uploaded and textured through the same path the aircraft
+/// uses. Every part's transform is the node's own composed transform inverted
+/// out, so a caller parents the parts under an entity that already carries the
+/// node's pose (the spawn position and attitude) without applying it twice.
+///
+/// # Errors
+///
+/// [`PlaytestError::AircraftNode`] when the name is absent or ambiguous or the
+/// selection draws no mesh; the scene, selection and transform refusals
+/// otherwise.
+pub fn build_world_node_visual(
+    app: &mut App,
+    sources: &WorldSources,
+    node_name: &str,
+    lod_distance_m: f64,
+    config: &PlaytestConfig,
+) -> Result<Vec<AircraftPartAsset>, PlaytestError> {
+    let container = sources.world();
+    let mut named = container
+        .nodes()
+        .nodes
+        .iter()
+        .filter(|node| node.name == node_name);
+    let (Some(found), None) = (named.next(), named.next()) else {
+        return Err(PlaytestError::AircraftNode {
+            what: "world node",
+            asked: format!("exactly one node named {node_name:?} in the world container"),
+        });
+    };
+    let adapter = playtest_adapter()?;
+    let (graph, root) = area_graph(container, found.index, &adapter)?;
+    let selection = select_area_parts(
+        &graph,
+        &root,
+        lod_distance_m,
+        config.select_area_variants,
+        config.hide_flat_colour_cards,
+        container,
+    )?;
+    let global_of = |node: &SceneNode| -> Result<bevy::prelude::GlobalTransform, PlaytestError> {
+        Ok(
+            crate::scene::NodeVisualTransform::from_canonical(node.visual_transform())
+                .map_err(|error| PlaytestError::World {
+                    reason: format!("world node {} would not convert: {error}", node.index()),
+                })?
+                .global(),
+        )
+    };
+    let root_global = graph
+        .node(&root)
+        .map(global_of)
+        .transpose()?
+        .unwrap_or_default();
+    let to_root = root_global.affine().inverse();
+    let mut meshes = WorldMeshes::new();
+    let mut binder = TextureBinder::new(sources.textures(), config.textured, config.decal_offset);
+    let mut parts = Vec::new();
+    for node in &selection.draw {
+        let Some(binding) = node.mesh() else {
+            continue;
+        };
+        let Resolved::Known(known) = &binding.mesh else {
+            continue;
+        };
+        let Some(index) = container.mesh_index_of(&known.value) else {
+            continue;
+        };
+        let Ok(render) = render_of(container, index) else {
+            continue;
+        };
+        let unknowns = stored_presentation_unknowns(&render);
+        if meshes
+            .insert_render_mesh(known.value.clone(), &render, &unknowns)
+            .is_err()
+        {
+            continue;
+        }
+        let Some(uploaded) = meshes.get(&known.value) else {
+            continue;
+        };
+        let handle: Handle<Mesh> = app
+            .world_mut()
+            .resource_mut::<Assets<Mesh>>()
+            .add(uploaded.mesh().clone());
+        let pieces = binder.parts(
+            app,
+            container,
+            uploaded,
+            NeutralColor(WORLD_MATERIAL_COLOR),
+            index,
+        );
+        let local =
+            Transform::from_matrix(bevy::math::Mat4::from(to_root * global_of(node)?.affine()));
+        parts.push(AircraftPartAsset {
+            node_slot: node.index(),
+            node_name: node.name().to_owned(),
+            mesh: handle,
+            pieces,
+            local,
+        });
+    }
+    let _textures = binder.finish();
+    if parts.is_empty() {
+        return Err(PlaytestError::AircraftNode {
+            what: "world node mesh bindings",
+            asked: format!("the selection under {node_name:?} draws no mesh"),
+        });
+    }
+    Ok(parts)
+}
+
 /// Steps 1–3 of [`spawn_playtest_scene`] and the aircraft mesh upload, without
 /// the aircraft entity, the camera or the lights: the original area spawned
 /// into `app` as world records with mesh-derived colliders, and the aircraft's
