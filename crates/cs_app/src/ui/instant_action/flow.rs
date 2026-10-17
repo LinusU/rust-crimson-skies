@@ -461,6 +461,27 @@ impl IaRecordEntry {
         }
     }
 
+    /// An entry read back from a persisted profile, field for field.
+    pub(super) const fn from_parts(
+        profile: ProfileId,
+        generation: SessionGeneration,
+        subject: ContentId,
+        seed: ScenarioSeed,
+        result: ScenarioResult,
+        ended_tick: u64,
+        attempt: u32,
+    ) -> Self {
+        Self {
+            profile,
+            generation,
+            subject,
+            seed,
+            result,
+            ended_tick,
+            attempt,
+        }
+    }
+
     /// The profile this entry belongs to.
     #[must_use]
     pub const fn profile(&self) -> &ProfileId {
@@ -605,6 +626,17 @@ impl IaRecordBook {
         self.entries.is_empty()
     }
 
+    /// The highest session generation any entry holds, or generation 0 for an
+    /// empty book. A flow resumed over this book mints generations above it.
+    #[must_use]
+    pub fn highest_generation(&self) -> SessionGeneration {
+        self.entries
+            .iter()
+            .map(|entry| entry.generation)
+            .max()
+            .unwrap_or(SessionGeneration(0))
+    }
+
     /// Records one settled session.
     ///
     /// # Errors
@@ -692,6 +724,20 @@ impl InstantActionFlow {
             generation: SessionGeneration(0),
             pending_discard: false,
         }
+    }
+
+    /// The screens for the profile `records` belongs to, over the sessions it
+    /// already holds — typically read back from the profile document.
+    ///
+    /// New sessions mint generations above the book's highest, so a visit
+    /// after a restart can never collide with a stored entry (the generation
+    /// authority is the persisted book, not the flow).
+    #[must_use]
+    pub fn resume(records: IaRecordBook, catalog: InstantActionCatalog) -> Self {
+        let mut flow = Self::new(records.profile().clone(), catalog);
+        flow.generation = records.highest_generation();
+        flow.records = records;
+        flow
     }
 
     /// The current screen.

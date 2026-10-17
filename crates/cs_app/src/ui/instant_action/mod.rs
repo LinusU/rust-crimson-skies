@@ -53,6 +53,7 @@
 
 mod flow;
 mod normalize;
+mod persist;
 
 use std::fmt;
 
@@ -72,6 +73,8 @@ pub use flow::{
     IA_TABLE, IaAction, IaActionKind, IaEdit, IaEffect, IaRecordBook, IaRecordEntry, IaRecordError,
     IaRefusal, IaRow, IaScreen, IaTransition, InstantActionFlow, find_row, rows_on,
 };
+
+pub use persist::{IaPersistError, read_records};
 
 pub use normalize::{
     ActorField, ScenarioChange, ScenarioOutcome, ScenarioResult, ScenarioSnapshot, diff_scenarios,
