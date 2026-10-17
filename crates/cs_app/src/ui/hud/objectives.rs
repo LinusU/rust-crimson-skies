@@ -54,7 +54,7 @@ pub const MESSAGE_IMAGE: &str = "strings.dll";
 /// The caption every line carries, so a reader of the screen can tell this
 /// layout apart from an original one (AGENTS.md: a designed layout is
 /// labelled designed).
-pub const OBJECTIVE_HUD_CAPTION: &str = "OBJECTIVE — DESIGNED LAYOUT";
+pub const OBJECTIVE_HUD_CAPTION: &str = "OBJECTIVE - DESIGNED LAYOUT";
 
 /// One objective identity the HUD may show: an `IDENTITY` declaration as the
 /// engine model resolved it, plus the lifecycle facts this projection reads.
@@ -148,6 +148,32 @@ impl ObjectiveHud {
         self.current.map(|row| &self.rows[row])
     }
 
+    /// The row the widget draws: [`current`](Self::current) when one is live,
+    /// otherwise the pending row — the not-yet-completed identity with the
+    /// smallest rank. Every M01 identity block loads dormant and the next one
+    /// wakes only after latch hops, so drawing `current` alone left the window
+    /// without an objective at launch and between two objectives (owner
+    /// playtest 2026-10-17, #1539). Which row the original shows then is
+    /// unmeasured, so this fallback is **designed** like the rest of the
+    /// layout. `None` once every identity is completed.
+    #[must_use]
+    pub fn displayed(&self) -> Option<&HudObjective> {
+        self.current().or_else(|| {
+            self.rows
+                .iter()
+                .filter(|row| row.role_code != 0 && !row.completed)
+                .min_by_key(|row| row.rank())
+        })
+    }
+
+    /// The text the widget draws for [`displayed`](Self::displayed), resolved
+    /// as [`current_text`](Self::current_text) resolves it.
+    #[must_use]
+    pub fn displayed_text(&self, messages: Option<&MessageCatalog>) -> Option<String> {
+        let message = self.displayed()?.message.as_deref()?;
+        Some(Self::resolve_text(message, messages))
+    }
+
     /// Whether the model declares no identity at all — the read of a mission
     /// whose record carried no `IDENTITY`, not of one whose identities are
     /// merely not live.
@@ -170,15 +196,19 @@ impl ObjectiveHud {
     #[must_use]
     pub fn current_text(&self, messages: Option<&MessageCatalog>) -> Option<String> {
         let message = self.current()?.message.as_deref()?;
+        Some(Self::resolve_text(message, messages))
+    }
+
+    fn resolve_text(message: &str, messages: Option<&MessageCatalog>) -> String {
         let Some(catalog) = messages else {
-            return Some(message.to_owned());
+            return message.to_owned();
         };
-        Some(match catalog.resolve(message, None) {
+        match catalog.resolve(message, None) {
             MessageLookup::Found { row, .. } => {
                 row.text.clone().unwrap_or_else(|| message.to_owned())
             }
             _ => message.to_owned(),
-        })
+        }
     }
 }
 
@@ -287,7 +317,7 @@ fn update_objective_line(
     let line = host.and_then(|host| match host.lifecycles() {
         ObjectiveLifecycles::Engine(engine) => {
             let hud = ObjectiveHud::from_engine(engine);
-            hud.current_text(messages.as_deref().and_then(MissionMessages::catalog))
+            hud.displayed_text(messages.as_deref().and_then(MissionMessages::catalog))
         }
         ObjectiveLifecycles::Declared { .. } => None,
     });
