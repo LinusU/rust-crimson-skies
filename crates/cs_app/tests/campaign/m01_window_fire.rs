@@ -370,6 +370,17 @@ fn accept_m01_window_fire_rockets_are_drawn_and_a_refusal_is_published() {
         1,
         "the same refusal is not published again"
     );
+    // Pressing again is a new refusal: it is shown again (refreshed), not
+    // swallowed because the same reason was recorded before.
+    release(&mut refused, KeyCode::ControlLeft);
+    refused.update();
+    press(&mut refused, KeyCode::ControlLeft);
+    refused.update();
+    assert_eq!(
+        refused.world().resource::<MissionHudNotice>().published(),
+        2,
+        "a second press of the same refused key is published again"
+    );
     teardown(&mut refused);
 }
 

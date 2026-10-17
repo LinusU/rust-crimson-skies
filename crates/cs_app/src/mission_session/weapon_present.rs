@@ -308,11 +308,10 @@ pub struct MissionNoticeLine {
 
 /// The weapon notice the mission's HUD shows (see the module docs).
 ///
-/// [`super::weapons::MissionWeaponReport::rocket_refusals`] accumulates every
-/// distinct refusal the publisher has recorded since the session opened, so a
-/// notice is published when that list **grows**, and the newest refusal is the
-/// line shown. A repeated refusal of the same kind does not refresh the line:
-/// it is one fact about the world, not a new one.
+/// [`super::weapons::MissionWeaponReport::rocket_refusals`] keeps each distinct
+/// refusal, but the player pressing the key again is a new event, so a notice
+/// is published whenever `rocket_refusal_events` **grows**, and the newest
+/// refusal is the line shown. A repeat refreshes the line with its own tick.
 #[derive(Resource, Clone, Debug, Default, PartialEq)]
 pub struct MissionHudNotice {
     /// The line on screen, `None` while nothing has been refused.
@@ -343,11 +342,8 @@ pub fn publish_rocket_notices(world: &mut World) {
         .and_then(|report| {
             let at = report.at?;
             let text = report.rocket_refusals.last().cloned()?;
-            (report.rocket_refusals.len() > published).then_some((
-                at,
-                text,
-                report.rocket_refusals.len(),
-            ))
+            let events = usize::try_from(report.rocket_refusal_events).unwrap_or(usize::MAX);
+            (events > published).then_some((at, text, events))
         });
     let Some((at, text, count)) = newest else {
         return;

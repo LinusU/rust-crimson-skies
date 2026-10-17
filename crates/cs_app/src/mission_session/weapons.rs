@@ -791,6 +791,10 @@ pub struct MissionWeaponReport {
     pub actions: Vec<Action>,
     /// The rockets that could not be launched, by name.
     pub rocket_refusals: Vec<String>,
+    /// How many rocket launches have been refused, repeats included. The HUD
+    /// notice counts from this, so a second refusal of the same kind is shown
+    /// again once the first line has expired (M01-WINDOW-FIRE, #1536).
+    pub rocket_refusal_events: u64,
     /// Why the publisher could not run at all.
     pub refused: Option<String>,
 }
@@ -935,6 +939,7 @@ pub fn publish_mission_weapon_input(world: &mut World) {
                 sequence += 1;
             }
             Err(reason) => {
+                report.rocket_refusal_events += 1;
                 if !report.rocket_refusals.contains(&reason) {
                     report.rocket_refusals.push(reason);
                 }
