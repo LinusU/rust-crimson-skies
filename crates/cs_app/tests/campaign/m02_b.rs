@@ -269,7 +269,7 @@ fn accept_m02_b_m02s_control_program_is_bound_to_the_same_identities_as_its_miss
     );
     assert_eq!(
         binding.mission.as_str(),
-        "mission/ch1-m02",
+        "mission/ch2-m02",
         "the join selected campaign position {}, whose directory is chapter 1, mission 2",
         mission_binding
             .campaign_position

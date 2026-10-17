@@ -19,9 +19,11 @@
 //!   measures that both the layout's chapter boundary and the localized long
 //!   names' region boundary fall on the chapter's *first* row, and that M07's
 //!   position is that row advanced by the mission number — so a join that
-//!   swapped chapter 2's first two missions (both `world/c2`) is caught.
+//!   swapped chapter 2's first two missions (stored in different groups) is
+//!   caught.
 //! * **Neither the world group nor the mission number is a mission identity.**
-//!   `world/c2` carries four campaign missions — including M06's, which shares
+//!   `world/c1` carries three campaign missions — including M10's, which
+//!   shares
 //!   M07's world id exactly — and the number `2` names one mission in every
 //!   chapter, so two identities a consumer might key on coincide at M07 and
 //!   neither singles it out.
@@ -121,18 +123,6 @@ fn display_text(text: &str) -> &str {
         return text;
     };
     &text[end + 2..]
-}
-
-/// The M06 binding, the mission one position before M07 in the same chapter.
-/// It is derived here rather than read from M06's committed record, so the
-/// comparison is against the installation, not against another stage's output.
-fn m06_binding() -> SourceBinding {
-    context()
-        .bind(
-            MissionLabel::new("M06").expect("M06 is a valid label"),
-            "The Red Menace",
-        )
-        .expect("M06 binds to the original data")
 }
 
 // ---------------------------------------------------------------- retail ---
@@ -722,8 +712,9 @@ fn accept_m07_a_the_position_is_the_second_mission_of_the_second_chapter() {
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m07_a_neither_the_world_group_nor_the_mission_number_identifies_the_mission() {
     // M07's world group is shared, and its mission number is a per-chapter
-    // ordinal. `world/c2` carries four campaign missions, one of which is M06's
-    // — a *different* mission with M07's exact world id — and the number `2`
+    // ordinal. Under the corrected layout (M01-ARCHIVE-DECISION) `world/c1`
+    // carries three campaign missions — M07's, M09's and M10's — so a
+    // *different* mission shares M07's exact world id, and the number `2`
     // names one mission in every chapter, so neither singles M07 out. Only the
     // campaign position selects the one mission the record binds.
     let context = context();
@@ -731,15 +722,16 @@ fn accept_m07_a_neither_the_world_group_nor_the_mission_number_identifies_the_mi
     let campaign = context.campaign();
     let position = binding.campaign_position.expect("position resolved");
     let entry = &campaign[position];
-    assert_eq!(entry.world_group, "c2", "M07 lives in the C2 world group");
+    assert_eq!(entry.world_group, "c1", "M07 lives in the C1 world group");
 
     let siblings: Vec<&CampaignMission> = campaign
         .iter()
         .filter(|other| other.world_group == entry.world_group)
         .collect();
-    assert!(
-        siblings.len() > 1,
-        "the C2 world group carries only one campaign mission: {siblings:?}"
+    assert_eq!(
+        siblings.len(),
+        3,
+        "the C1 world group should carry three campaign missions: {siblings:?}"
     );
     assert!(
         siblings
@@ -776,23 +768,28 @@ fn accept_m07_a_neither_the_world_group_nor_the_mission_number_identifies_the_mi
         entry.mission_number
     );
 
-    // M06 — the mission one position earlier, with the same world id — is a
-    // different mission. The world id alone therefore names no single mission.
-    let m06 = m06_binding();
+    // M10 — a different mission in the same world group — has the same world
+    // id. The world id alone therefore names no single mission.
+    let m10 = context
+        .bind(
+            MissionLabel::new("M10").expect("valid label"),
+            "Mercy's Errand",
+        )
+        .expect("M10 binds");
     assert_eq!(
-        m06.world_id.as_ref().map(|id| id.as_str()),
+        m10.world_id.as_ref().map(|id| id.as_str()),
         binding.world_id.as_ref().map(|id| id.as_str()),
-        "M06 and M07 are expected to share a world group, so the world id cannot tell them apart"
+        "M10 and M07 are expected to share a world group, so the world id cannot tell them apart"
     );
     assert_ne!(
-        m06.catalog_id.as_ref().map(|id| id.as_str()),
+        m10.catalog_id.as_ref().map(|id| id.as_str()),
         binding.catalog_id.as_ref().map(|id| id.as_str()),
-        "M06 and M07 resolved the same mission identity"
+        "M10 and M07 resolved the same mission identity"
     );
     assert_eq!(
-        m06.campaign_position.map(|index| index + 1),
+        m10.campaign_position.map(|index| index - 3),
         binding.campaign_position,
-        "M07 is not the campaign position immediately after M06"
+        "M07 is not three campaign positions before M10"
     );
 
     // The world id is the layout's group for this mission, and it is not M03's

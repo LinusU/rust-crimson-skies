@@ -20,11 +20,11 @@
 //!   measures that campaign position 11 lies inside the layout's chapter and
 //!   the long names' region group, and that both structures give the same
 //!   boundaries.
-//! * **The world group is the whole chapter, not the mission.** `world/c3`
-//!   carries all five missions of chapter 3, unlike chapter 2 whose fifth
-//!   mission lives in a separate `c2b` directory.
-//!   [`accept_m12_a_the_world_group_is_the_whole_chapter_and_not_the_mission`]
-//!   pins that the world row cannot identify M12.
+//! * **The world group is neither the whole chapter nor the mission.**
+//!   `world/c2` carries four of chapter 3's five missions under the corrected
+//!   layout; the fourth lives in a separate `c2b` directory.
+//!   [`accept_m12_a_the_world_group_is_not_the_whole_chapter_and_not_the_mission`]
+//!   pins that the world row identifies neither.
 //! * **The original spellings disagree, as at M03.** The short-name row and
 //!   the region-prefixed long name are different strings;
 //!   [`accept_m12_a_the_original_name_is_confirmed_against_the_local_strings`]
@@ -692,26 +692,29 @@ fn accept_m12_a_the_position_is_inside_the_third_chapter_and_its_region_group() 
 
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m12_a_the_world_group_is_the_whole_chapter_and_not_the_mission() {
-    // M12's world group is not the mission: `world/c3` carries every campaign
-    // mission of chapter 3, so the world row alone cannot identify M12 — only
-    // the campaign position does. Unlike chapter 2, whose fifth mission lives
-    // in a separate `c2b` directory, the whole of chapter 3 shares one world
-    // group; what is bound is only the mission the position selected.
+fn accept_m12_a_the_world_group_is_not_the_whole_chapter_and_not_the_mission() {
+    // Under the corrected layout (M01-ARCHIVE-DECISION) M12's world group is
+    // `world/c2`, which carries four of chapter 3's five campaign missions —
+    // the world row alone cannot identify M12, only the campaign position
+    // does — and the chapter's fourth mission lives in a separate `c2b`
+    // directory, so the world row is not the chapter either. M12's storage
+    // directory (`c2/m01`) does not even carry its declared mission number
+    // (2): what is bound is only the mission the position selected.
     let context = context();
     let binding = binding();
     let campaign = context.campaign();
     let position = binding.campaign_position.expect("position resolved");
     let entry = &campaign[position];
-    assert_eq!(entry.world_group, "c3", "M12 lives in the C3 world group");
+    assert_eq!(entry.world_group, "c2", "M12 lives in the C2 world group");
 
     let siblings: Vec<&CampaignMission> = campaign
         .iter()
         .filter(|other| other.world_group == entry.world_group)
         .collect();
-    assert!(
-        siblings.len() > 1,
-        "the C3 world group carries only one campaign mission: {siblings:?}"
+    assert_eq!(
+        siblings.len(),
+        4,
+        "the C2 world group should carry four campaign missions: {siblings:?}"
     );
     assert!(
         siblings
@@ -726,8 +729,8 @@ fn accept_m12_a_the_world_group_is_the_whole_chapter_and_not_the_mission() {
         "the world group contains only the bound mission, so it identifies it after all"
     );
 
-    // The chapter is *not* spread across several world-group directories: the
-    // world row is the chapter here, and the mission is told apart only by its
+    // The chapter is spread across two world-group directories: the world row
+    // is not the chapter either, and the mission is told apart only by its
     // position and program archive.
     let chapter: Vec<&CampaignMission> = campaign
         .iter()
@@ -740,15 +743,13 @@ fn accept_m12_a_the_world_group_is_the_whole_chapter_and_not_the_mission() {
         .collect();
     assert_eq!(
         groups,
-        BTreeSet::from(["c3"]),
-        "chapter {} is spread over several world groups: {groups:?}",
+        BTreeSet::from(["c2", "c2b"]),
+        "chapter {} does not span the c2 and c2b world groups: {groups:?}",
         entry.chapter
     );
-    assert_eq!(
-        siblings.len(),
-        chapter.len(),
-        "the world group holds missions outside chapter {}",
-        entry.chapter
+    assert!(
+        siblings.len() < chapter.len(),
+        "the world group holds the whole chapter"
     );
 
     // The world id is the layout's group for this mission, and it is not M03's

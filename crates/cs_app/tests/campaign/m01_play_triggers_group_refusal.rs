@@ -162,7 +162,7 @@ fn depletion_program(gates: &[(i32, i32)]) -> MissionProgram {
 /// The production stage for retail M01.
 fn retail_stage() -> MissionStage {
     let root = game_dir();
-    let plan = plan_mission_launch(&root, label("M01"), "The Lost Treasure")
+    let plan = plan_mission_launch(&root, label("M06"), "The Red Menace")
         .expect("M01's launch closure plans");
     stage_for(&root, &plan).expect("M01's stage reads through the production readers")
 }

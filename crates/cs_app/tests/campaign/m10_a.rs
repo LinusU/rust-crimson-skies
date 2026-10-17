@@ -21,10 +21,10 @@
 //!   measures that both structures place their boundary immediately after
 //!   campaign position 9, so a one-row-off grouping at the *end* of a group
 //!   is caught.
-//! * **Campaign order is not directory order inside the chapter.** Position 8
-//!   is the same chapter's mission 4 and lives in `C2B`; position 9 is
-//!   mission 5 back in `C2`. A join that ordered missions by directory would
-//!   invert the chapter's last two rows.
+//! * **Campaign order is not directory order inside the chapter.** Position 7
+//!   is the same chapter's mission 3 and lives in `C1B`, a directory sorting
+//!   after `C1`, while positions 8 and 9 live back in `C1`. A join that
+//!   ordered missions by directory would put all of `C1`'s missions first.
 //!   [`accept_m10_a_the_chapter_order_is_not_the_directory_order`] pins the
 //!   inversion and that only the bound mission's archive is cited.
 //! * **The original spellings disagree, as at M03 and M06.** The short-name
@@ -695,27 +695,31 @@ fn accept_m10_a_the_position_is_the_last_row_of_the_second_chapter_and_region_gr
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m10_a_the_chapter_order_is_not_the_directory_order() {
     // M10's world group is shared and the campaign order is not the directory
-    // order inside its chapter. `world/c2` carries four of chapter 2's five
+    // order inside its chapter. Under the corrected layout
+    // (M01-ARCHIVE-DECISION) `world/c1` carries three of chapter 2's five
     // campaign missions, so the world row alone cannot identify M10 — and the
-    // one chapter-2 mission it does *not* carry is the previous campaign
-    // position, which lives in `C2B`, a directory whose name sorts after
-    // `C2`. A join that read the chapter's missions in directory order would
-    // put `C2/M05` before `C2B/M04` and move position 9's identity; the
-    // binding's `(chapter, mission number)` order is what pins it.
+    // chapter's remaining missions live in *other* directories whose names do
+    // not track the campaign order: the mission two positions earlier is in
+    // `C1B`, a directory whose name sorts *after* `C1`, while the chapter's
+    // first mission is in `C1C`. A join that read the chapter's missions in
+    // directory order would put all of `C1`'s missions ahead of `C1B`'s and
+    // move position 9's identity; the binding's `(chapter, mission number)`
+    // order is what pins it.
     let context = context();
     let binding = binding();
     let campaign = context.campaign();
     let position = binding.campaign_position.expect("position resolved");
     let entry = &campaign[position];
-    assert_eq!(entry.world_group, "c2", "M10 lives in the C2 world group");
+    assert_eq!(entry.world_group, "c1", "M10 lives in the C1 world group");
 
     let siblings: Vec<&CampaignMission> = campaign
         .iter()
         .filter(|other| other.world_group == entry.world_group)
         .collect();
-    assert!(
-        siblings.len() > 1,
-        "the C2 world group carries only one campaign mission: {siblings:?}"
+    assert_eq!(
+        siblings.len(),
+        3,
+        "the C1 world group should carry three campaign missions: {siblings:?}"
     );
     assert!(
         siblings
@@ -730,22 +734,24 @@ fn accept_m10_a_the_chapter_order_is_not_the_directory_order() {
         "the world group contains only the bound mission, so it identifies it after all"
     );
 
-    // The previous campaign position is the same chapter's mission in a
-    // different directory — and that directory's name sorts *after* M10's
-    // group, so directory order and campaign order disagree here.
-    let previous = &campaign[position - 1];
+    // The campaign position two rows earlier is the same chapter's mission in
+    // a different directory — and that directory's name sorts *after* M10's
+    // group, so directory order and campaign order disagree here: `c1b/m03`
+    // (M08) precedes `c1/m04` and `c1/m05` in the campaign although `c1b`
+    // sorts after `c1`.
+    let earlier = &campaign[position - 2];
     assert_eq!(
-        previous.chapter, entry.chapter,
-        "the previous campaign position left M10's chapter: {previous:?}"
+        earlier.chapter, entry.chapter,
+        "the position two rows earlier left M10's chapter: {earlier:?}"
     );
     assert_ne!(
-        previous.world_group, entry.world_group,
-        "the previous campaign position shares M10's world group: {previous:?}"
+        earlier.world_group, entry.world_group,
+        "the position two rows earlier shares M10's world group: {earlier:?}"
     );
     assert!(
-        previous.world_group.as_str() > entry.world_group.as_str(),
-        "the previous position's directory does not sort after M10's, so directory order would \
-         not invert the two positions: {previous:?} vs {entry:?}"
+        earlier.world_group.as_str() > entry.world_group.as_str(),
+        "the earlier position's directory does not sort after M10's, so directory order would \
+         not invert the positions: {earlier:?} vs {entry:?}"
     );
 
     // The chapter is spread across more than one world-group directory.
@@ -764,9 +770,10 @@ fn accept_m10_a_the_chapter_order_is_not_the_directory_order() {
         entry.chapter
     );
 
-    // The world id is the layout's group for this mission, and it is not
-    // M06's position inside the same group: M10's mission number is one no
-    // earlier-bound `c2` mission carries.
+    // The world id is the layout's group for this mission, and it is shared:
+    // M07's position inside the same group carries the same world id, so the
+    // shared directory cannot tell M07 and M10 apart — M10's mission number
+    // is one no earlier-bound `c1` mission carries.
     let world = binding
         .world_id
         .as_ref()
@@ -776,21 +783,20 @@ fn accept_m10_a_the_chapter_order_is_not_the_directory_order() {
         world.ends_with(&entry.world_group),
         "the bound world id {world} is not the world group the layout declares"
     );
-    let m06 = context
+    let m07 = context
         .bind(
-            MissionLabel::new("M06").expect("valid label"),
-            "The Red Menace",
+            MissionLabel::new("M07").expect("valid label"),
+            "The Pilfered Prototype",
         )
-        .expect("M06 binds");
+        .expect("M07 binds");
     assert_eq!(
-        m06.world_id.as_ref().map(|id| id.as_str()),
+        m07.world_id.as_ref().map(|id| id.as_str()),
         Some(world),
-        "M10 resolved a different world group from M06's, so the shared directory is not what \
-         this stage measured"
+        "M10 and M07 do not share the C1 world group under the corrected layout"
     );
     assert_ne!(
-        m06.campaign_position, binding.campaign_position,
-        "M10 resolved M06's campaign position inside the shared world group"
+        m07.campaign_position, binding.campaign_position,
+        "M10 resolved M07's campaign position inside the shared world group"
     );
 
     // Every chapter member's archive exists, and the binding cites only the

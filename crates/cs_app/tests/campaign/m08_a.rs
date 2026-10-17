@@ -22,11 +22,11 @@
 //!   measures that campaign position 7 lies between the layout's chapter
 //!   boundaries and between the long names' region boundaries, and that both
 //!   structures give the same boundaries.
-//! * **The world group is neither the mission nor the chapter.** `world/c2`
-//!   carries four campaign missions, and chapter 2's fifth mission lives in a
-//!   *different* directory, `c2b`.
-//!   [`accept_m08_a_the_world_group_holds_several_missions_and_not_the_whole_chapter`]
-//!   pins both halves without claiming what the extra directory is.
+//! * **The world group singles the mission out, and the chapter is spread.**
+//!   `world/c1b` carries exactly one campaign mission, and chapter 2's
+//!   remaining four missions live in the `c1c` and `c1` directories.
+//!   [`accept_m08_a_the_world_group_singles_the_mission_out_and_the_chapter_is_spread`]
+//!   pins both halves without claiming what the extra directories are.
 //! * **The original spellings disagree, as at M03.** The short-name row and
 //!   the region-prefixed long name are different strings;
 //!   [`accept_m08_a_the_original_name_is_confirmed_against_the_local_strings`]
@@ -694,38 +694,32 @@ fn accept_m08_a_the_position_is_interior_to_the_second_chapter_and_its_region_gr
 
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m08_a_the_world_group_holds_several_missions_and_not_the_whole_chapter() {
-    // M08's world group is neither the mission nor the chapter. `world/c2`
-    // carries four campaign missions, so the world row alone cannot identify
-    // M08, and chapter 2's remaining mission lives in a *different* directory,
-    // `c2b`. Its role is not established, so it is neither bound to M08 nor
+fn accept_m08_a_the_world_group_singles_the_mission_out_and_the_chapter_is_spread() {
+    // Under the corrected layout (M01-ARCHIVE-DECISION) M08's world group is
+    // `world/c1b`, which carries exactly one campaign mission — the world row
+    // singles this mission out — while chapter 2's remaining four missions
+    // live in *different* directories, `c1c` and `c1`. Their role beside the
+    // group is not established, so they are neither bound to M08 nor
     // ignored; what is bound is only the mission the position selected.
     let context = context();
     let binding = binding();
     let campaign = context.campaign();
     let position = binding.campaign_position.expect("position resolved");
     let entry = &campaign[position];
-    assert_eq!(entry.world_group, "c2", "M08 lives in the C2 world group");
+    assert_eq!(entry.world_group, "c1b", "M08 lives in the C1B world group");
 
     let siblings: Vec<&CampaignMission> = campaign
         .iter()
         .filter(|other| other.world_group == entry.world_group)
         .collect();
-    assert!(
-        siblings.len() > 1,
-        "the C2 world group carries only one campaign mission: {siblings:?}"
+    assert_eq!(
+        siblings.len(),
+        1,
+        "the C1B world group carries more than one campaign mission: {siblings:?}"
     );
-    assert!(
-        siblings
-            .iter()
-            .any(|other| other.mission_number == entry.mission_number),
-        "the world group does not contain the bound mission: {siblings:?}"
-    );
-    assert!(
-        siblings
-            .iter()
-            .any(|other| other.mission_number != entry.mission_number),
-        "the world group contains only the bound mission, so it identifies it after all"
+    assert_eq!(
+        siblings[0].mission_number, entry.mission_number,
+        "the world group's only mission is the bound one"
     );
 
     // The chapter is spread across more than one world-group directory.

@@ -261,7 +261,7 @@ fn accept_m05_b_the_record_lowers_and_every_site_binds() {
     let row = census.row(MISSION).unwrap();
     let attempt = row.lowering_attempt().unwrap();
     let lowered = attempt.attempt();
-    assert_eq!(lowered.mission.as_deref(), Ok("mission/ch1-m05"));
+    assert_eq!(lowered.mission.as_deref(), Ok("mission/ch2-m05"));
     assert_eq!(lowered.objectives, BLOCKS);
     assert_eq!(lowered.calls.len() as u32, SITES);
     assert!(

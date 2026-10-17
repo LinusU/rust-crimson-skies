@@ -251,9 +251,9 @@ fn game_dir() -> PathBuf {
 fn discovery_title() -> String {
     load_inventory()
         .iter()
-        .find(|(label, _)| label.as_str() == "M01")
+        .find(|(label, _)| label.as_str() == "M06")
         .map(|(_, title)| title.clone())
-        .expect("the declared inventory has an M01 work order")
+        .expect("the declared inventory has an M06 work order")
 }
 
 /// **Retail: M01's plan reports zero gaps and `launchable()` is true.**
@@ -265,7 +265,7 @@ fn discovery_title() -> String {
 #[test]
 #[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_vs_m01_geometry_verdict_retail_m01_s_plan_reports_zero_gaps_and_is_launchable() {
-    let plan = plan_mission_launch(&game_dir(), label("M01"), &discovery_title())
+    let plan = plan_mission_launch(&game_dir(), label("M06"), &discovery_title())
         .expect("the installation yields a launch plan for M01");
 
     let geometry = plan

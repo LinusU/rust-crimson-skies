@@ -209,8 +209,8 @@ fn accept_m01_music_state_requests_resolve_to_their_tracks() {
     // M01's own program: which of the seven states it can cue.
     let plan = plan_mission_launch(
         &root,
-        MissionLabel::new("M01").expect("M01 is a valid mission label"),
-        "The Lost Treasure",
+        MissionLabel::new("M06").expect("M01 is a valid mission label"),
+        "The Red Menace",
     )
     .expect("M01's launch closure plans");
     let mission_dir = plan.mission_dir.clone();
@@ -547,8 +547,8 @@ fn accept_m01_music_state_requests_reach_the_music_director() {
     let root = game_dir();
     let plan = plan_mission_launch(
         &root,
-        MissionLabel::new("M01").expect("M01 is a valid mission label"),
-        "The Lost Treasure",
+        MissionLabel::new("M06").expect("M01 is a valid mission label"),
+        "The Red Menace",
     )
     .expect("M01's launch closure plans");
     let mission_dir = plan.mission_dir.clone();

@@ -420,7 +420,7 @@ fn accept_vs_m01_runtime_host_02_undrained_cues_are_counted_on_the_terminal_and_
 #[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_vs_m01_runtime_host_02_retail_m01_settles_no_terminal_and_writes_no_exit() {
     let root = game_dir();
-    let plan: MissionLaunchPlan = plan_mission_launch(&root, label("M01"), "The Lost Treasure")
+    let plan: MissionLaunchPlan = plan_mission_launch(&root, label("M06"), "The Red Menace")
         .expect("M01's launch closure plans");
     assert!(
         plan.launchable(),

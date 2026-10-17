@@ -59,7 +59,7 @@ fn game_dir() -> PathBuf {
 /// campaign, so the plan's own ids are spelled directly.
 fn empty_plan() -> MissionLaunchPlan {
     MissionLaunchPlan {
-        label: MissionLabel::new("M01").expect("M01 is a valid work-order label"),
+        label: MissionLabel::new("M06").expect("M01 is a valid work-order label"),
         catalog_id: ContentId::from_source(ContentKind::Mission, "ch1-m01")
             .expect("the catalog id is valid"),
         world_id: ContentId::from_source(ContentKind::World, "c1c").expect("the world id is valid"),
@@ -113,7 +113,7 @@ fn accept_vs_m01_runtime_content_an_unreadable_installation_is_refused_with_its_
 #[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_vs_m01_runtime_content_m01_prepares_every_record() {
     let root = game_dir();
-    let plan: MissionLaunchPlan = plan_mission_launch(&root, label("M01"), "The Lost Treasure")
+    let plan: MissionLaunchPlan = plan_mission_launch(&root, label("M06"), "The Red Menace")
         .expect("M01's launch closure plans");
 
     let content = prepare_mission_content(&root, &plan)

@@ -24,11 +24,12 @@
 //!   that, and
 //!   [`accept_m03_a_a_contradicted_corroboration_establishes_no_position`]
 //!   pins the refusal that guards it.
-//! * **The world group is the opposite case from M02's.** `world/c1b` holds
-//!   exactly one campaign mission, but its directory also carries
-//!   subdirectories that are not in the campaign layout.
-//!   [`accept_m03_a_the_world_group_is_its_own_but_not_its_directory`] pins
-//!   both halves without claiming what the extra directories are.
+//! * **The world group is the whole first chapter.** `world/c3` holds all
+//!   five chapter-1 campaign missions under the corrected layout, and its
+//!   directory also carries subdirectories that are not in the campaign
+//!   layout.
+//!   [`accept_m03_a_the_world_group_is_the_chapters_and_the_program_singles_the_mission_out`]
+//!   pins both halves without claiming what the extra directories are.
 //! * **The original spellings disagree.** The two localized blocks name M03
 //!   differently, and the declared inventory's spelling is a *third* string.
 //!   [`accept_m03_a_the_original_name_is_confirmed_against_the_local_strings`]
@@ -599,18 +600,19 @@ fn accept_m03_a_the_join_is_corroborated_by_the_long_name_rows() {
 
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m03_a_the_world_group_is_its_own_but_not_its_directory() {
-    // M02's world group was shared by three campaign missions. M03's is the
-    // opposite case and the record must not read as if either held for both:
-    // `ZBD/C1B` carries exactly one campaign mission, so here (and only
-    // here) the world id happens to single the mission out. The directory
-    // that holds the world archives nevertheless carries *other*
+fn accept_m03_a_the_world_group_is_the_chapters_and_the_program_singles_the_mission_out() {
+    // Under the corrected layout (M01-ARCHIVE-DECISION) M03's world group is
+    // `ZBD/C3`, the storage group that carries the whole first campaign
+    // chapter: five campaign missions share it, so here the world id cannot
+    // single the mission out — the program archive inside the group does.
+    // The directory that holds the world archives nevertheless carries
+    // *other*
     // subdirectories that are not in the campaign layout; their role is not
     // established, so they are neither bound to this mission nor ignored.
     let context = context();
     let binding = binding();
     let entry = &context.campaign()[binding.campaign_position.expect("position resolved")];
-    assert_eq!(entry.world_group, "c1b", "M03 lives in the C1B world group");
+    assert_eq!(entry.world_group, "c3", "M03 lives in the C3 world group");
 
     let members: Vec<_> = context
         .campaign()
@@ -619,12 +621,19 @@ fn accept_m03_a_the_world_group_is_its_own_but_not_its_directory() {
         .collect();
     assert_eq!(
         members.len(),
-        1,
-        "the C1B world group carries more than one campaign mission: {members:?}"
+        5,
+        "the C3 world group should carry all five chapter-1 missions: {members:?}"
     );
-    assert_eq!(members[0].mission_number, entry.mission_number);
+    let mission_numbers: Vec<u32> = members.iter().map(|member| member.mission_number).collect();
+    assert_eq!(
+        mission_numbers,
+        vec![1, 2, 3, 4, 5],
+        "the C3 world group is the whole first chapter"
+    );
 
-    // The world id is the layout's group, and it is not the world M02 binds.
+    // The world id is the layout's group, and it is not the world M06 binds —
+    // but it *is* the world the chapter's other missions bind, so the world
+    // row cannot identify the mission and the program must.
     let world = binding
         .world_id
         .as_ref()
@@ -640,10 +649,10 @@ fn accept_m03_a_the_world_group_is_its_own_but_not_its_directory() {
             "The Bomber Heist",
         )
         .expect("M02 binds");
-    assert_ne!(
+    assert_eq!(
         m02.world_id.as_ref().map(|id| id.as_str()),
         Some(world),
-        "M03 resolved M02's world group"
+        "M02 shares M03's world group under the corrected layout"
     );
     assert_ne!(
         m02.program_id, binding.program_id,
@@ -677,7 +686,7 @@ fn accept_m03_a_the_world_group_is_its_own_but_not_its_directory() {
         .collect();
     assert!(
         !extra.is_empty(),
-        "expected non-campaign subdirectories beside the mission in the C1B group"
+        "expected non-campaign subdirectories beside the mission in the C3 group"
     );
     for name in &extra {
         let sibling = group_dir.join(name);

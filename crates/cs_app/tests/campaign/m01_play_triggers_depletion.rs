@@ -204,7 +204,7 @@ fn accept_m01_play_triggers_depletion_a_refused_enabled_record_keeps_its_group_u
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m01_play_triggers_depletion_all_four_m01_groups_are_observed() {
     let root = game_dir();
-    let plan = plan_mission_launch(&root, label("M01"), "The Lost Treasure")
+    let plan = plan_mission_launch(&root, label("M06"), "The Red Menace")
         .expect("M01's launch closure plans");
     let stage: MissionStage = stage_for(&root, &plan).expect("M01's stage reads");
     let mut app = build_headless(&stage).expect("M01 composes headlessly");

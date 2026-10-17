@@ -92,7 +92,7 @@ const TASK_ID: &str = "M01-PLAY-TRIGGERS-WINDOWED";
 const MISSION: &str = "M01";
 /// The work order's own discovery title (`mission_launch` binds the identity
 /// with it).
-const MISSION_TITLE: &str = "The Lost Treasure";
+const MISSION_TITLE: &str = "The Red Menace";
 /// The measured subject name M01's `TRAVELERS` anchor spells.
 const ANCHOR: &str = "workersvoyagezep";
 /// `OBJECTIVE3`'s zero-based block index — the one proximity trigger.

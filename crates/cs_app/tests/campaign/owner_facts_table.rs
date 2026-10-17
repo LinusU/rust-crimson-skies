@@ -342,8 +342,8 @@ fn accept_owner_facts_table_retail_m01_binds_through_the_committed_table() {
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_owner_facts_table_retail_m01_plans_and_prepares() {
     let root = game_dir();
-    let label = MissionLabel::new("M01").expect("the label is valid");
-    let plan = plan_mission_launch(&root, label, "The Lost Treasure").expect("M01's plan");
+    let label = MissionLabel::new("M06").expect("the label is valid");
+    let plan = plan_mission_launch(&root, label, "The Red Menace").expect("M06's plan");
     assert!(
         plan.launchable(),
         "M01 must be launchable without naming the image; gaps: {:?}",

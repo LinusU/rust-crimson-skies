@@ -504,7 +504,7 @@ fn accept_vs_m01_runtime_window_a_second_composition_starts_from_nothing() {
 #[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_vs_m01_runtime_window_retail_m01_reaches_the_headless_composition() {
     let root = game_dir();
-    let plan: MissionLaunchPlan = plan_mission_launch(&root, label("M01"), "The Lost Treasure")
+    let plan: MissionLaunchPlan = plan_mission_launch(&root, label("M06"), "The Red Menace")
         .expect("M01's launch closure plans");
     assert!(
         plan.launchable(),

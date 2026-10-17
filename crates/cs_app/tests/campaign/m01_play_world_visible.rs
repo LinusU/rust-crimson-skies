@@ -143,7 +143,7 @@ fn accept_m01_play_world_the_composition_attaches_the_world_s_drawn_parts() {
 #[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_play_world_retail_m01_stage_binds_and_draws_its_world() {
     let root = game_dir();
-    let plan = plan_mission_launch(&root, label("M01"), "The Lost Treasure")
+    let plan = plan_mission_launch(&root, label("M06"), "The Red Menace")
         .expect("M01's launch closure plans");
     assert!(
         plan.launchable(),

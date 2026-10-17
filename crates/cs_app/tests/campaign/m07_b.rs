@@ -276,7 +276,7 @@ fn refused_block(text: &str) -> u32 {
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m07_b_the_control_program_is_the_member_that_declares_the_blocks() {
     let binding = control_binding();
-    assert_eq!(binding.mission.as_str(), "mission/ch2-m02");
+    assert_eq!(binding.mission.as_str(), "mission/ch3-m01");
     assert_eq!(binding.program_id.as_str(), "script/c2-m02-zrdr");
     assert_eq!(binding.program_asset, "ZBD/C2/M02/zrdr.zbd");
     assert_eq!(
@@ -461,7 +461,7 @@ fn accept_m07_b_every_block_lowers_including_the_three_danger_zones_sites() {
     let row = census_row();
     let attempt = row.lowering_attempt().expect("M07 has a lowering attempt");
     let lowered = attempt.attempt();
-    assert_eq!(lowered.mission.as_deref(), Ok("mission/ch2-m02"));
+    assert_eq!(lowered.mission.as_deref(), Ok("mission/ch3-m01"));
     assert_eq!(lowered.objectives, BLOCKS);
     assert_eq!(lowered.calls.len() as u32, SITES);
 

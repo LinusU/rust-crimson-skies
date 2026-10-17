@@ -200,8 +200,8 @@ struct ActorSpawnObservation {
 fn observe_actor_spawn(game_dir: &Path) -> ActorSpawnObservation {
     let plan = plan_mission_launch(
         game_dir,
-        MissionLabel::new("M01").expect("the label is valid"),
-        "The Lost Treasure",
+        MissionLabel::new("M06").expect("the label is valid"),
+        "The Red Menace",
     )
     .expect("M01's launch closure plans");
     let records = recover_retail_aircraft_records(game_dir, &plan.mission_dir)

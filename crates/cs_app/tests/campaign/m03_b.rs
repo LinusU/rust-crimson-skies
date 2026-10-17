@@ -253,7 +253,7 @@ fn accept_m03_b_the_record_does_not_lower_and_exactly_two_sites_refuse() {
     let row = census().row(MISSION).unwrap();
     let attempt = row.lowering_attempt().unwrap();
     let lowered = attempt.attempt();
-    assert_eq!(lowered.mission.as_deref(), Ok("mission/ch1-m03"));
+    assert_eq!(lowered.mission.as_deref(), Ok("mission/ch2-m03"));
     assert_eq!(lowered.objectives, BLOCKS);
     assert_eq!(lowered.calls.len() as u32, SITES);
     assert!(

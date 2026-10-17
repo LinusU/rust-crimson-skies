@@ -519,14 +519,14 @@ fn accept_f14_e_retail_campaign_layout_declares_the_24_mission_baseline() {
     );
 
     // The report is the same derivation the committed M01 binding record was
-    // built from: chapter 1 mission 1 is `ZBD/C1C/M01/zrdr.zbd` with the
-    // digest the record cites.
+    // built from: under the corrected layout (M01-ARCHIVE-DECISION) chapter 1
+    // mission 1 is `ZBD/C3/M01/zrdr.zbd` with the digest the record cites.
     let m01 = layout
         .iter()
         .find(|entry| entry.mission.chapter == 1 && entry.mission.mission_number == 1)
         .expect("chapter 1 declares M01");
-    assert_eq!(m01.mission.program_asset, "ZBD/C1C/M01/zrdr.zbd");
-    assert_eq!(m01.mission.world_group, "c1c");
+    assert_eq!(m01.mission.program_asset, "ZBD/C3/M01/zrdr.zbd");
+    assert_eq!(m01.mission.world_group, "c3");
     let record = std::fs::read_to_string(repo_path("missions/bindings/M01.json"))
         .expect("the committed M01 binding record reads");
     let digest = m01

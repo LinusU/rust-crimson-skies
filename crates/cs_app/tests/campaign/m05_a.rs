@@ -30,11 +30,12 @@
 //!   another.
 //!   [`accept_m05_a_the_verbatim_form_wins_where_both_display_forms_carry_the_title`]
 //!   measures that every such pair agrees on its campaign position first.
-//! * **The world group is shared by three campaign missions.** `world/c1` is
-//!   M02's, M04's *and* M05's, so the world identity alone does not single this
+//! * **The world group is shared by the whole first chapter.** `world/c3` is
+//!   M01's, M02's, M03's, M04's *and* M05's under the corrected layout, so the
+//!   world identity alone does not single this
 //!   mission out; the program archive inside it does.
 //!   [`accept_m05_a_the_world_group_is_shared_and_the_program_singles_the_mission_out`]
-//!   pins that without claiming which of the three is "the" c1 mission.
+//!   pins that without claiming which of the five is "the" c3 mission.
 //!
 //! The retail tests are `#[ignore = "requires CS_GAME_DIR"]`, so CI (which has
 //! no original data) skips them; they are run with `--include-ignored` by the
@@ -737,9 +738,11 @@ fn accept_m05_a_the_verbatim_form_wins_where_both_display_forms_carry_the_title(
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m05_a_the_world_group_is_shared_and_the_program_singles_the_mission_out() {
     // M02-A already pinned that a world group can hold several campaign
-    // missions. M05 shares that world group with two other missions, and this
+    // missions. Under the corrected layout (M01-ARCHIVE-DECISION) M05's world
+    // group is `world/c3`, which the whole first campaign chapter shares —
+    // M01's, M02's, M03's, M04's and M05's — and this
     // time it is the *bound* record that must not read as if the world id
-    // identified the mission: `world/c1` is M02's, M04's and M05's. What does
+    // identified the mission. What does
     // single M05 out is the program archive inside the shared group, and the
     // record's three identities are checked against each other here rather
     // than taken at their word.
@@ -747,7 +750,7 @@ fn accept_m05_a_the_world_group_is_shared_and_the_program_singles_the_mission_ou
     let binding = binding();
     let position = binding.campaign_position.expect("a position was resolved");
     let entry = &context.campaign()[position];
-    assert_eq!(entry.world_group, "c1", "M05 lives in the C1 world group");
+    assert_eq!(entry.world_group, "c3", "M05 lives in the C3 world group");
 
     let members: Vec<_> = context
         .campaign()
@@ -756,12 +759,14 @@ fn accept_m05_a_the_world_group_is_shared_and_the_program_singles_the_mission_ou
         .collect();
     assert_eq!(
         members.len(),
-        3,
-        "the C1 world group should carry three campaign missions: {members:?}"
+        5,
+        "the C3 world group should carry all five chapter-1 missions: {members:?}"
     );
-    assert_eq!(members[0].mission_number, 2);
-    assert_eq!(members[1].mission_number, 4);
-    assert_eq!(members[2].mission_number, 5);
+    assert_eq!(members[0].mission_number, 1);
+    assert_eq!(members[1].mission_number, 2);
+    assert_eq!(members[2].mission_number, 3);
+    assert_eq!(members[3].mission_number, 4);
+    assert_eq!(members[4].mission_number, 5);
 
     // The world id is the layout's group, and it is shared — so it must not
     // equal the world of the neighbouring missions' *programs* either.
