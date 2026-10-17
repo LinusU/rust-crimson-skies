@@ -759,6 +759,86 @@ fn accept_f47_d_a_table_that_cannot_be_read_is_an_error_not_an_empty_reading() {
     );
 }
 
+/// F47-C3: F14-D.8's `scrapbook_item` rows and this discovery read the member
+/// through one shared production path ([`read_scrapbook_table`]), so an
+/// authored table with a repeated key, an ambiguous key and a non-item record
+/// binds identically under both — the cross-check the retail test runs,
+/// exercised on the grouping branches the retail table never hits. If either
+/// side were fed a different grouping rule, this fails on the authored
+/// defects, not only on the defect-free retail table.
+///
+/// [`read_scrapbook_table`]: cs_content::scrapbook::read_scrapbook_table
+#[test]
+fn accept_f47_d_both_production_readers_apply_the_one_shared_grouping_rule() {
+    let lines = vec![
+        record("0_1_1", 1, "ART_A"),
+        // The same key twice with the same fields: one item, one counted repeat.
+        record("0_1_2", 2, "ART_B"),
+        record("0_1_2", 2, "ART_B"),
+        // The same key with different fields: the table says nothing that
+        // tells the two apart, so neither binds.
+        record("1_1_1", 3, "ART_C"),
+        record("1_1_1", 4, "ART_D"),
+        // A record the scrapbook schema does not cover: counted, not dropped.
+        "BTNSHAPE=B,art.png,1,2,3,0,IDS_LABEL,4,5,,,,,6,1\r\n".to_owned(),
+    ];
+    let member = table(&lines);
+    let temp = install(
+        "shared-rule",
+        &member,
+        &["ART_A.PNG", "ART_B.PNG", "ART_C.PNG"],
+    );
+    // The production baseline needs a declared campaign mission to walk.
+    temp.write("ZBD/C1C/M01/zrdr.zbd", b"mission program bytes");
+    temp.write("ZBD/C1C/M01/mis_anim.zbd", b"mission animation bytes");
+
+    let discovered = DiscoveredScrapbook::discover(&temp.0).expect("the authored table reads");
+    let baseline = retail_baseline(&temp.0).expect("the fixture installation reads");
+
+    let catalog_keys: BTreeSet<String> = baseline
+        .catalog
+        .elements()
+        .filter(|element| element.kind == ContentKind::ScrapbookItem)
+        .map(|element| element.id.key().to_owned())
+        .collect();
+    let discovered_keys: BTreeSet<String> = discovered
+        .pages
+        .iter()
+        .flat_map(|page| &page.items)
+        .filter_map(|item| item.id_key.clone())
+        .collect();
+    assert_eq!(
+        discovered_keys, catalog_keys,
+        "both readers bind the same items under the shared grouping rule"
+    );
+    assert_eq!(
+        discovered_keys.len(),
+        2,
+        "two items bind; the repeat and the ambiguous key are gaps"
+    );
+
+    let status = baseline
+        .collection_status
+        .iter()
+        .find(|status| status.kind == ContentKind::ScrapbookItem)
+        .expect("the scrapbook_item collection reports its status");
+    for code in [
+        "entry_not_a_scrapbook_item",
+        "duplicate_entry_key",
+        "ambiguous_entry_key",
+    ] {
+        assert_eq!(
+            status.gaps.get(code).copied().unwrap_or(0) as u64,
+            u64::from(discovered.gaps.get(code).copied().unwrap_or(0)),
+            "{code}: both readers report the same count"
+        );
+    }
+    assert_eq!(discovered.gaps.get("duplicate_entry_key"), Some(&1));
+    assert_eq!(discovered.gaps.get("ambiguous_entry_key"), Some(&2));
+    assert_eq!(discovered.gaps.get("entry_not_a_scrapbook_item"), Some(&1));
+    assert_eq!(status.rows, 2, "the baseline rows are the bound items");
+}
+
 /// The owner's installation, read through production discovery: the measured
 /// shape of the real table, and the audit of it against the real progression.
 #[test]
