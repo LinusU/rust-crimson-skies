@@ -54,7 +54,7 @@ the application supplies, checks it against the airframe roster (F25, already
 F45-C's) and the mission's authored wingmate roster (F33, below), and refuses
 what it cannot place. Which values the original offers per mission, and whether
 the campaign roster gates the flight check at all, stay unknown and are the
-filed follow-up below.
+filed follow-ups **#1525** (`F45-C.5`).
 
 ## The chosen consumer, and why it is this one
 
@@ -131,7 +131,7 @@ back:
 - The runtime boundary F33-B declares (`WingmateChoice::loadout`) is an
   untyped `ContentId` and its rule is deliberately kind-agnostic, so the
   commit is accepted — but the divergence is real and is recorded here,
-  not papered over: **resolving it is the filed follow-up**, and until then
+  not papered over: **resolving it is #1525 (`F45-C.5`)**, and until then
   no claim may be made that the original's ammunition *is* a wingmate's
   loadout.
 - The alternative — leaving the wingmate's loadout authored and dropping the
@@ -202,22 +202,23 @@ Commands run (all exit 0): `cargo fmt --all -- --check`, `cargo clippy
 - **The flight check's per-mission option set** — which aircraft and loadouts
   a mission offers, and whether the campaign roster's unlocks gate it. No
   readable source states it (F45-B.1: buttons only, no option rows; F45-D:
-  artwork; F27-D: the construction ammunition screen). Resolving task: filed
-  below. Affected content: every claim that the flight check offers what the
-  original offers.
+  artwork; F27-D: the construction ammunition screen). Resolving task: **#1525**
+  (`F45-C.5`). Affected content: every claim that the flight check offers what
+  the original offers.
 - **The meaning of the flight check's `ammunition` slot.** This stage commits
   it as the briefing's equipment (design, above). Whether the original's
   ammunition is a gun ammunition type, a plane loadout subject, or the whole
-  flight's equipment is unmeasured. Same resolving task; affected content:
-  the `WingmateChoice::loadout` projection and any "the original's
-  ammunition screen is this one" claim.
+  flight's equipment is unmeasured. Resolving task: **#1525** (`F45-C.5`).
+  Affected content: the `WingmateChoice::loadout` projection and any "the
+  original's ammunition screen is this one" claim.
 - **Which authored wingmate slot a multi-slot mission's flight check fills.**
   Refused here (`AmbiguousWingmateSlot`) rather than picked; the original's
-  rule is unmeasured. Same resolving task.
+  rule is unmeasured. Resolving task: **#1525** (`F45-C.5`).
 - **The flight check's option set is not gated on the campaign roster** in
   this wiring. The campaign's `available_items` is read and named, but no
   evidence says the original gates the flight check on it, so nothing is
-  filtered. Affected content: any "unlocks gate the flight check" claim.
+  filtered. Resolving task: **#1525** (`F45-C.5`). Affected content: any
+  "unlocks gate the flight check" claim.
 - **No rendering, no input device, no audio, no original run.** Everything
   here is authored fixture data; no agent has run the original executable, so
   nothing here is original-reference evidence.
