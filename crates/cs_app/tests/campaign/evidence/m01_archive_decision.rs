@@ -68,7 +68,10 @@ fn evidence_report_m01_archive_decision_writes_the_acceptance_report() {
             log_path.display()
         )
     });
-    let suite = parse_suite(&log);
+    // The task's acceptance selection spans several `accept_*` prefixes
+    // (m01_a/m06_a/m12_a/m01_b/m06_b_fu4/f50_c), so the parser keeps every
+    // acceptance test the recorded run executed rather than one stage's.
+    let suite = parse_suite_prefixed(&log, "accept_");
     assert!(
         suite.passed > 0 && !suite.assertions.is_empty(),
         "no acceptance tests were recorded in {}",
