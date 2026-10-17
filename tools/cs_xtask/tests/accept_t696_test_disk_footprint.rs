@@ -116,13 +116,25 @@ fn built_binary(deps: &Path, name: &str, source: &str, bytes: usize) {
     fs::write(deps.join(&stem), vec![0u8; bytes]).expect("the binary must be writable");
 }
 
-/// Every file cargo would link a test binary from, straight from the
+/// Every file cargo would link a test binary from: the declared `[[test]]`
+/// paths of a crate with `autotests = false`, else straight from the
 /// filesystem: `tests/<name>.rs` and `tests/<name>/main.rs`.
 fn integration_files(root: &Path) -> Vec<String> {
     let manifest = transient::read_to_string(&root.join("Cargo.toml"), transient::PATIENT)
         .expect("the workspace manifest must be readable");
     let mut found = Vec::new();
     for member in bootstrap::workspace_members(&manifest).expect("the members list") {
+        let member_manifest =
+            transient::read_to_string(&root.join(&member).join("Cargo.toml"), transient::PATIENT)
+                .expect("the member manifest must be readable");
+        if cs_xtask::test_layout::autotests_disabled(&member_manifest) {
+            found.extend(
+                cs_xtask::test_layout::declared_test_paths(&member_manifest)
+                    .into_iter()
+                    .map(|path| format!("{member}/{path}")),
+            );
+            continue;
+        }
         let tests = root.join(&member).join("tests");
         if !transient::is_dir(&tests, transient::SCAN) {
             continue;
@@ -479,6 +491,47 @@ fn accept_t696_the_plan_is_read_from_the_manifests_and_the_filesystem() {
             target.source
         );
     }
+}
+
+/// A crate that sets `autotests = false` has exactly its declared `[[test]]`
+/// targets; the module files `tests/main.rs` reaches are not binaries.
+#[test]
+fn accept_t696_a_migrated_crate_is_one_integration_target() {
+    let root = scratch("migrated");
+    fake_workspace(
+        &root,
+        &[
+            (
+                "one",
+                "[package]\nname = \"one\"\nautotests = false\n\n[[test]]\nname = \"main\"\npath = \"tests/main.rs\"\n",
+                &["main.rs", "wire.rs", "flight/mod.rs"],
+            ),
+            (
+                "many",
+                "[package]\nname = \"many\"\n",
+                &["main.rs", "wire.rs"],
+            ),
+        ],
+    );
+    let deps = root.join("deps");
+    built_binary(&deps, "main", "crates/one/tests/main.rs", 4096);
+
+    let report = footprint::measure_workspace(&root, &deps).expect("the plan");
+    let integration: Vec<(&str, Option<u64>)> = report
+        .targets
+        .iter()
+        .filter(|t| t.kind == TargetKind::Integration)
+        .map(|t| (t.source.as_str(), t.bytes))
+        .collect();
+    assert_eq!(
+        integration,
+        vec![
+            ("crates/many/tests/main.rs", None),
+            ("crates/many/tests/wire.rs", None),
+            ("crates/one/tests/main.rs", Some(4096)),
+        ],
+        "the migrated crate is one measured target, the unmigrated one keeps a target per file"
+    );
 }
 
 /// A target's bytes are the binary of its own source file, never a same-named

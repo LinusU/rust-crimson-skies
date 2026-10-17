@@ -283,9 +283,14 @@ impl std::error::Error for FootprintError {
     }
 }
 
-/// The integration test targets under `member`'s `tests` directory.
+/// The integration test targets of `member`.
 ///
-/// Both layouts cargo accepts count: `tests/<name>.rs` and
+/// A manifest that sets `autotests = false` (the one-binary-per-crate layout
+/// of task #1542) links exactly its declared `[[test]]` tables; the module
+/// files those reach through `mod` are not targets of their own. Otherwise
+/// the targets are read from the `tests` directory.
+///
+/// In that directory both layouts cargo accepts count: `tests/<name>.rs` and
 /// `tests/<name>/main.rs`. The result is sorted by source path, and a
 /// directory without `main.rs` contributes nothing because cargo builds no
 /// target for it.
@@ -293,6 +298,32 @@ pub fn integration_test_targets(
     workspace_root: &Path,
     member: &str,
 ) -> Result<Vec<TestTarget>, FootprintError> {
+    let manifest_path = workspace_root.join(member).join("Cargo.toml");
+    let manifest = transient::read_to_string(&manifest_path, transient::PATIENT).map_err(|_| {
+        FootprintError::Io {
+            path: manifest_path.display().to_string(),
+        }
+    })?;
+    if crate::test_layout::autotests_disabled(&manifest) {
+        let mut found: Vec<TestTarget> = crate::test_layout::declared_test_paths(&manifest)
+            .into_iter()
+            .map(|path| {
+                let path = path.trim_start_matches("./");
+                let stem = Path::new(path)
+                    .file_stem()
+                    .map_or_else(String::new, |s| s.to_string_lossy().into_owned());
+                target(
+                    member,
+                    &stem,
+                    format!("{member}/{path}"),
+                    TargetKind::Integration,
+                )
+            })
+            .collect();
+        found.sort_by(|a, b| a.source.cmp(&b.source));
+        return Ok(found);
+    }
+
     let tests = workspace_root.join(member).join("tests");
     if !transient::is_dir(&tests, transient::SCAN) {
         return Ok(Vec::new());
