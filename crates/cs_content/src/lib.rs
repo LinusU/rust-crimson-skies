@@ -582,6 +582,7 @@ pub mod legacy_import;
 pub mod livery;
 pub mod livery_airframes;
 pub mod loading;
+pub mod lobby;
 pub mod localization;
 pub mod mesh;
 pub mod mission_control;
