@@ -110,13 +110,32 @@
 //!
 //! No widget layout or input is wired (that is the front-end's stage);
 //! notices carry their stable code and the designed English fallback only.
+//!
+//! # The reopen verdict and the block-or-proceed policy (F53-FU6, #768)
+//!
+//! Spec: `specs/F53-mod-mounts-custom-content-and-compatibility-signatures.md`,
+//! AC04. F53-D implemented the save half (`cs_content::mods::save_dependency`)
+//! and verified it at the library boundary, but nothing in the host ran it.
+//! [`save_reopen_verdict`] is the host half: it runs the check with the
+//! signature this session announces and the content ids it provides (the same
+//! triple [`lobby_compatibility`] announces), turns the report into a decided
+//! [`SaveReopenDecision`], and [`SaveReopenVerdict::notice`] projects it into
+//! the [`ModsNotice`] a screen shows — by stable code, with the report's own
+//! `diagnostic_lines` as the fallback text. Content the save owns that this
+//! session cannot provide refuses the open; a differing signature with every
+//! blueprint provided warns and proceeds; a satisfied report opens silently.
+//! Nothing here writes back to the document, so a dependent save under a
+//! disabled mod is shown for what it is, never repaired into a stock save.
+//! The decision, its reasons and the caller that is still to be wired are in
+//! `docs/findings/2026-10-17-f53-fu6-save-reopen-policy.md`.
 
 use std::fmt;
 
 use cs_content::mission_control::measure_control_record;
 use cs_content::mods::{
     AvailableMod, ModManifest, ModModification, ModSelection, ModVersion, MountEnvironment,
-    MountError, MountRequest, MountedMods, ProgramValidator, content_signature, mount_to_text,
+    MountError, MountRequest, MountedMods, ProgramValidator, SaveDependencyReport,
+    content_signature, mount_to_text, provided_ids, save_dependency,
 };
 use cs_content::stunts::decode_zrd;
 use cs_net::compat::Compatibility;
@@ -124,6 +143,7 @@ use cs_script::ir::ValidatedProgram;
 use cs_types::asset_id::ModId;
 use cs_types::content::{ContentId, ContentKind};
 use cs_types::evidence::ContentHash;
+use cs_types::profile::ProfileDocument;
 
 use crate::control_lowering::lower_control_record;
 
@@ -369,6 +389,138 @@ pub fn lobby_compatibility(
     }
 }
 
+/// What the host does when a save is reopened under content other than the
+/// content it recorded (F53 AC04; task F53-FU6).
+///
+/// A save written under a mounted set records the signature that session
+/// announced (`cs_content::mods::mark_save_document`); reopening it may
+/// *report* the difference but never silently degrade it. The policy is a
+/// function of the report alone — the same save under the same content
+/// always decides the same way — and it is written down, with its reasons, in
+/// `docs/findings/2026-10-17-f53-fu6-save-reopen-policy.md`:
+///
+/// * content the save owns that this session cannot serve is a hard
+///   dependency: the open is refused ([`Self::Refuse`]);
+/// * a differing signature with every owned blueprint provided is a warning
+///   the open proceeds under ([`Self::OpenMarked`]);
+/// * a satisfied report opens with nothing to show ([`Self::Open`]).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SaveReopenDecision {
+    /// The save states nothing this session contradicts.
+    Open,
+    /// The save was written under different content, but every blueprint it
+    /// owns is provided: open it, showing the report as a warning.
+    OpenMarked,
+    /// The save owns content this session cannot provide: refuse the open and
+    /// show the report. The document is not repaired, substituted or
+    /// rewritten — the operator decides what to do with it.
+    Refuse,
+}
+
+impl SaveReopenDecision {
+    /// The stable code the decision is reported by, so a screen or report can
+    /// name it without parsing text.
+    #[must_use]
+    pub const fn code(self) -> &'static str {
+        match self {
+            Self::Open => "save_content_matches",
+            Self::OpenMarked => "save_content_differs",
+            Self::Refuse => "save_content_unprovided",
+        }
+    }
+
+    /// Whether the save may be opened under this decision.
+    #[must_use]
+    pub const fn proceeds(self) -> bool {
+        matches!(self, Self::Open | Self::OpenMarked)
+    }
+}
+
+/// A reopened save's content verdict: the host's decision plus the report
+/// lines a screen shows.
+///
+/// This is the read-only answer [`cs_content::mods::save_dependency`] is run
+/// for. Nothing here writes to the document, so a dependent save under a
+/// disabled mod is shown for what it is (F53 AC04).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SaveReopenVerdict {
+    decision: SaveReopenDecision,
+    lines: Vec<String>,
+}
+
+impl SaveReopenVerdict {
+    /// The verdict for one report: unprovided content refuses, a differing
+    /// signature alone warns and proceeds, a satisfied report opens. The
+    /// report's own lines are carried in every case.
+    fn from_report(report: &SaveDependencyReport) -> Self {
+        let decision = if !report.unprovided_blueprints().is_empty() {
+            SaveReopenDecision::Refuse
+        } else if report.is_satisfied() {
+            SaveReopenDecision::Open
+        } else {
+            SaveReopenDecision::OpenMarked
+        };
+        Self {
+            decision,
+            lines: report.diagnostic_lines(),
+        }
+    }
+
+    /// What the host decided about opening the save.
+    pub fn decision(&self) -> SaveReopenDecision {
+        self.decision
+    }
+
+    /// Whether the save is opened under this verdict.
+    #[must_use]
+    pub fn proceeds(&self) -> bool {
+        self.decision.proceeds()
+    }
+
+    /// The report's lines (`diagnostic_lines`), one per thing this session
+    /// does not satisfy; empty for a satisfied report.
+    pub fn lines(&self) -> &[String] {
+        &self.lines
+    }
+
+    /// The notice a screen shows, or `None` when there is nothing to show.
+    ///
+    /// The stable code is [`SaveReopenDecision::code`]; the detail is the
+    /// report's own lines, so the fallback text names exactly what
+    /// `save_dependency` found.
+    pub fn notice(&self) -> Option<ModsNotice> {
+        (!self.lines.is_empty()).then(|| ModsNotice::SaveDependency {
+            decision: self.decision,
+            lines: self.lines.clone(),
+        })
+    }
+}
+
+/// The host's reopen check (F53 AC04; task F53-FU6): the save's recorded
+/// content mark against the signature this session announces, and every
+/// blueprint it owns against the content ids this session provides.
+///
+/// `request`, `base_fingerprint` and `mounted` are the session's own content
+/// configuration — the same triple [`lobby_compatibility`] announces — so the
+/// check compares the save against what this session *is*, never against a
+/// second opinion or a fresh guess. Removing the call to `save_dependency`
+/// below leaves every reopened save [`SaveReopenDecision::Open`] and fails
+/// `accept_f53_fu6_*`.
+#[must_use]
+pub fn save_reopen_verdict(
+    document: &ProfileDocument,
+    request: &MountRequest,
+    base_fingerprint: ContentHash,
+    mounted: Option<&MountedMods>,
+) -> SaveReopenVerdict {
+    let report = save_dependency(
+        document,
+        content_signature(mounted, base_fingerprint),
+        &provided_ids(request, mounted),
+    );
+    SaveReopenVerdict::from_report(&report)
+}
+
 /// One row of the mod screen: a discovered mod and the mount's verdict on
 /// it. `load_position` and `modification` are set only when the enabled
 /// set mounted — a disabled or refused mod has no order to report.
@@ -412,6 +564,16 @@ pub enum ModsNotice {
     /// gameplay reasons (F53 non-negotiable 3) — shown so the operator
     /// knows the run is modified before they join anything.
     SessionMarked,
+    /// A reopened save's content verdict (F53 AC04): the decision this host
+    /// takes and the report's own lines. `decision.code()` is the stable
+    /// code; `lines` is `cs_content::mods::SaveDependencyReport::
+    /// diagnostic_lines()` verbatim, one line per unmet need.
+    SaveDependency {
+        /// What the host decided about opening the save.
+        decision: SaveReopenDecision,
+        /// The report's lines, one per thing the session does not satisfy.
+        lines: Vec<String>,
+    },
 }
 
 impl ModsNotice {
@@ -424,6 +586,14 @@ impl ModsNotice {
             Self::SessionMarked => {
                 "This session is modified: saves, replays and multiplayer joins are marked"
                     .to_owned()
+            }
+            Self::SaveDependency { decision, lines } => {
+                let lead = if decision.proceeds() {
+                    "This save was written under different content"
+                } else {
+                    "This save needs content this session does not provide"
+                };
+                format!("{lead} ({}): {}", decision.code(), lines.join("; "))
             }
         }
     }

@@ -783,6 +783,10 @@ pub mod ui {
     //! content (F53 AC03), and [`mods::mount_selection`] attaches the
     //! bounded validator a sandboxed mission payload has to pass before
     //! `cs_content::mods::mount_mods` will enable it (F53 non-negotiable 2).
+    //! [`mods::save_reopen_verdict`] is the AC04 reopen check: it runs
+    //! `cs_content::mods::save_dependency` against the content this session
+    //! announces and provides and decides whether a dependent save opens,
+    //! warns or is refused.
     //!
     //! [`import`] is the F64-C legacy-import dialog boundary
     //! (`specs/F64-legacy-custom-aircraft-and-optional-save-import.md`, stage
