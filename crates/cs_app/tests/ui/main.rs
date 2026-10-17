@@ -39,9 +39,18 @@
 //! reports, per screen, what the original data supports and what it refuses;
 //! its evidence report is `mod evidence_f45_b_1`, deliberately **not** named
 //! `accept_f45_b_1_*`.
+//!
+//! Follow-up stage F45-C.2 (#748, `mod flight_check_options`) gives the flight
+//! check's wingmate and ammunition slots the consumer F45-C left them: the
+//! committed selection opens the session's F33 identity roster through
+//! `cs_app::roster::open_roster`, with the authored slot's aircraft and
+//! equipment taken from the flight check and the pilot, voice and survivability
+//! left authored. Its prefix is `accept_f45_c_2_` (so `accept_f45_c_` still
+//! selects it).
 
 mod evidence;
 mod evidence_f45_b_1;
+mod flight_check_options;
 mod flow;
 mod layout;
 mod original;

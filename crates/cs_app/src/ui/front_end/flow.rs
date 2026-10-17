@@ -49,6 +49,32 @@
 //! `docs/findings/2026-10-07-f45-c-flow-wiring.md` and
 //! `docs/findings/2026-10-17-f45-c-1-construction-draft-projection.md`
 //! rather than guessed.
+//!
+//! # The wingmate and ammunition slots (F45-C.2)
+//!
+//! F45-C committed the player's, the wingmate's and the ammunition selection
+//! as one [`Request::CommitLoadout`] but only the player's airframe had a
+//! consumer ([`AirframeRoles::resolve_launch`], F25). F45-C.2 gives the other
+//! two slots one: when the application supplies the mission's authored,
+//! lowered wingmate roster ([`FlowSetup::roster`]), a committed selection
+//! opens that session's [`AlliesRoster`] through [`open_roster`] (F33-B) with
+//! a [`BriefingPlan`] built from the flight check — the `wingmate` slot
+//! supplies the authored slot's **aircraft** and the `ammunition` slot the
+//! **equipment** the briefing commits ([`WingmateChoice`]). Identity (pilot,
+//! voice, survivability) stays the mission's own, so a flight-check selection
+//! cannot re-paint or re-voice a wingmate.
+//!
+//! That projection is **project design, not a measured original fact**: which
+//! authored wingmate slot the flight check's single slot fills, and whether
+//! the original's "ammunition" is the equipment the briefing commits or a gun
+//! ammunition type, are unmeasured (see
+//! `docs/findings/2026-10-17-f45-c-2-wingmate-and-ammunition-consumer.md`).
+//! The flow refuses rather than guesses where the mapping would be invented:
+//! a mission that authors no wingmate slot, or more than one, refuses the
+//! commit ([`FlowError::NoWingmateSlot`] /
+//! [`FlowError::AmbiguousWingmateSlot`]).
+//!
+//! [`WingmateChoice`]: cs_sim::allies::WingmateChoice
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -63,6 +89,9 @@ use cs_content::construction::{
     AircraftBlueprint, ConstructionPolicy, ConstructionRules, PriceBook,
 };
 use cs_content::save::settings::SettingCatalog;
+use cs_sim::allies::{
+    AlliesRoster, BriefingError, BriefingPlan, GeometryId, IdentityError, WingmateSlot,
+};
 use cs_sim::campaign::{
     AppliedOutcome, CampaignGraph, CampaignRunId, DifficultyId,
     MissionOutcome as MissionOutcomeRecord, Outcome as MissionResult,
@@ -77,6 +106,7 @@ use crate::loading::{
     SessionIo, TransitionError,
 };
 use crate::profile::{ProfileSession, SessionError, SessionOrigin, TeardownReport};
+use crate::roster::{LoweredRoster, open_roster};
 
 use super::{
     Action, AudioScope, ConstructionDraft, Effect, FrontEnd, InputContext, Loadout, MissionOutcome,
@@ -118,6 +148,12 @@ pub struct FlowSetup {
     /// The airframe roster the flight check resolves a launch through, when
     /// the application supplied one.
     pub roles: Option<AirframeRoles>,
+    /// The mission's authored, lowered wingmate roster (F33), when the
+    /// application supplied one. A committed flight check opens that session's
+    /// [`AlliesRoster`] with the wingmate and ammunition slots applied to it
+    /// (F45-C.2); without it the two slots have no consumer and the flow does
+    /// not invent one.
+    pub roster: Option<LoweredRoster>,
     /// The construction rules a commit is judged by, when supplied.
     pub construction: Option<ConstructionInputs>,
 }
@@ -171,6 +207,7 @@ impl FlowSetup {
             difficulty,
             session_generation: 1,
             roles: None,
+            roster: None,
             construction: None,
         }
     }
@@ -209,6 +246,14 @@ impl FlowSetup {
     #[must_use]
     pub fn roles(mut self, roles: AirframeRoles) -> Self {
         self.roles = Some(roles);
+        self
+    }
+
+    /// The mission's authored wingmate roster a `CommitLoadout` opens the
+    /// session's identity roster from (F45-C.2).
+    #[must_use]
+    pub fn roster(mut self, roster: LoweredRoster) -> Self {
+        self.roster = Some(roster);
         self
     }
 
@@ -643,6 +688,31 @@ pub enum FlowError {
     NoPlayerAircraft,
     /// The flight check's aircraft could not be resolved into a launch.
     Launch(LaunchAssignmentError),
+    /// The flight check's wingmate or ammunition slot could not be committed
+    /// to the mission's authored wingmate roster (F45-C.2).
+    Briefing(BriefingError),
+    /// The flight check's wingmate slot was supplied but the mission authors
+    /// no wingmate slot to commit it to, so there is no authored pilot, voice
+    /// or survivability to carry. The flow refuses rather than inventing one.
+    NoWingmateSlot,
+    /// The mission authors more than one wingmate slot, and nothing readable
+    /// says which one the flight check's single wingmate slot fills. The flow
+    /// refuses rather than picking one.
+    AmbiguousWingmateSlot {
+        /// How many wingmate slots the mission authors.
+        authored: usize,
+    },
+    /// The flight check's wingmate slot was supplied with no ammunition — the
+    /// machine's own guard refuses this first, so it reports a wiring mistake
+    /// rather than a player's mistake.
+    NoAmmunition,
+    /// The flight check's wingmate slot is not an airframe, so it cannot be
+    /// the geometry an authored wingmate slot launches in. The machine's own
+    /// guard refuses this first; it is reported as a wiring mistake.
+    WingmateAirframe {
+        /// The namespace error.
+        error: IdentityError,
+    },
     /// The results screen applied an outcome the mission never reported.
     NoMissionOutcome,
     /// The machine's verdict and the mission's own record disagree, so
@@ -680,6 +750,19 @@ impl fmt::Display for FlowError {
             Self::NoRoster => f.write_str("no airframe roster was supplied"),
             Self::NoPlayerAircraft => f.write_str("the flight check committed no aircraft"),
             Self::Launch(error) => write!(f, "launch: {error}"),
+            Self::Briefing(error) => write!(f, "briefing: {error}"),
+            Self::NoWingmateSlot => {
+                f.write_str("the mission authors no wingmate slot to commit the wingmate to")
+            }
+            Self::AmbiguousWingmateSlot { authored } => write!(
+                f,
+                "the mission authors {authored} wingmate slots, so which one the flight check \
+                 fills is unknown"
+            ),
+            Self::NoAmmunition => f.write_str("the flight check committed no ammunition"),
+            Self::WingmateAirframe { error } => {
+                write!(f, "the committed wingmate is not a geometry: {error}")
+            }
             Self::NoMissionOutcome => f.write_str("the mission reported no outcome"),
             Self::OutcomeMismatch { expected, recorded } => {
                 write!(
@@ -701,6 +784,8 @@ impl std::error::Error for FlowError {
             Self::Campaign(error) => Some(error),
             Self::Construction(error) => Some(error),
             Self::Launch(error) => Some(error),
+            Self::Briefing(error) => Some(error),
+            Self::WingmateAirframe { error } => Some(error),
             Self::Load(error) => Some(error),
             _ => None,
         }
@@ -744,6 +829,35 @@ fn fitted_components(blueprint: &AircraftBlueprint) -> Vec<ContentId> {
         .collect()
 }
 
+impl From<BriefingError> for FlowError {
+    fn from(error: BriefingError) -> Self {
+        Self::Briefing(error)
+    }
+}
+
+/// The one wingmate slot the flight check's single wingmate selection can
+/// fill.
+///
+/// The state machine's [`Loadout`] names a wingmate airframe but no authored
+/// slot, and nothing readable says which authored slot a multi-slot mission
+/// fills it with, so a mission that authors none or several has no
+/// unambiguous mapping and is refused rather than guessed (F45-C.2).
+///
+/// # Errors
+///
+/// [`FlowError::NoWingmateSlot`] when the roster authors no slot,
+/// [`FlowError::AmbiguousWingmateSlot`] when it authors more than one.
+fn authored_slot(lowered: &LoweredRoster) -> Result<WingmateSlot, FlowError> {
+    let mut slots = lowered.wingmates.iter().map(|assignment| assignment.slot);
+    match (slots.next(), slots.next()) {
+        (Some(slot), None) => Ok(slot),
+        (None, _) => Err(FlowError::NoWingmateSlot),
+        (Some(_), Some(_)) => Err(FlowError::AmbiguousWingmateSlot {
+            authored: lowered.wingmates.len(),
+        }),
+    }
+}
+
 /// The domain side of the flows: the objects every request reaches, in the
 /// order the application owns them.
 #[derive(Debug)]
@@ -761,6 +875,7 @@ struct FlowDomain {
     construction_saved: Option<Vec<ContentId>>,
     committed: Option<Loadout>,
     launch: Option<ResolvedLaunch>,
+    roster: Option<AlliesRoster>,
     mission_outcome: Option<MissionOutcomeRecord>,
     applied: Option<AppliedOutcome>,
     teardown: Option<TeardownReport>,
@@ -778,6 +893,7 @@ impl FlowDomain {
             construction_saved: None,
             committed: None,
             launch: None,
+            roster: None,
             mission_outcome: None,
             applied: None,
             teardown: None,
@@ -857,6 +973,9 @@ impl FlowDomain {
         self.construction_saved = None;
         self.committed = None;
         self.launch = None;
+        // The session's identity roster belongs to the campaign that closed:
+        // the next profile starts from its own mission's authored roster.
+        self.roster = None;
         self.mission_outcome = None;
         // The applied outcome belonged to the campaign that just closed: the
         // next profile this process opens must not report it as its own.
@@ -918,9 +1037,65 @@ impl FlowDomain {
                 None,
             )
             .map_err(FlowError::Launch)?;
+        // The wingmate and ammunition slots reach their consumer before the
+        // machine moves: everything fallible is computed first, so a refusal
+        // leaves the committed selection, the launch and the roster untouched.
+        let roster = self.briefed_roster(loadout)?;
         self.committed = Some(loadout.clone());
         self.launch = Some(launch);
+        self.roster = roster;
         Ok(())
+    }
+
+    /// Opens the session's identity roster (F33) from the mission's authored
+    /// wingmate roster and the committed flight-check selection.
+    ///
+    /// `None` when the application supplied no mission roster: the flight
+    /// check's two slots then have no authored assignment to reach, and the
+    /// flow does not invent one.
+    ///
+    /// # Errors
+    ///
+    /// [`FlowError::NoWingmateSlot`] / [`FlowError::AmbiguousWingmateSlot`]
+    /// when the mapping onto an authored slot would have to be guessed,
+    /// [`FlowError::NoAmmunition`] when the equipment slot is empty, and
+    /// [`FlowError::Briefing`] for the roster rule's own refusal.
+    fn briefed_roster(&self, loadout: &Loadout) -> Result<Option<AlliesRoster>, FlowError> {
+        let Some(lowered) = self.setup.roster.as_ref() else {
+            return Ok(None);
+        };
+        let plan = self.briefing_plan(lowered, loadout)?;
+        let roster = open_roster(self.setup.session_generation, lowered, &plan)?;
+        Ok(Some(roster))
+    }
+
+    /// The briefing selection the committed flight check asks for.
+    ///
+    /// The flight check's single wingmate slot is applied to the one wingmate
+    /// slot the mission authors — nothing readable says which authored slot it
+    /// fills when there are several, so more than one (or none) is refused
+    /// rather than guessed. The `ammunition` slot is the equipment the
+    /// briefing commits ([`WingmateChoice::loadout`]): see this module's doc
+    /// for why that projection is design and not a measured original fact.
+    ///
+    /// [`WingmateChoice::loadout`]: cs_sim::allies::WingmateChoice::loadout
+    fn briefing_plan(
+        &self,
+        lowered: &LoweredRoster,
+        loadout: &Loadout,
+    ) -> Result<BriefingPlan, FlowError> {
+        let mut plan = BriefingPlan::new();
+        // A mission that needs no wingmate commits no wingmate: its authored
+        // assignments fly exactly what the mission authored.
+        let Some(wingmate) = loadout.wingmate.as_ref() else {
+            return Ok(plan);
+        };
+        let slot = authored_slot(lowered)?;
+        let aircraft = GeometryId::try_new(wingmate.clone())
+            .map_err(|error| FlowError::WingmateAirframe { error })?;
+        let equipment = loadout.ammunition.clone().ok_or(FlowError::NoAmmunition)?;
+        plan.select(slot, aircraft, equipment);
+        Ok(plan)
     }
 
     fn apply_outcome(&mut self, verdict: MissionOutcome) -> Result<(), FlowError> {
@@ -1465,6 +1640,14 @@ impl FlowDomainView<'_> {
     #[must_use]
     pub fn launch(&self) -> Option<&ResolvedLaunch> {
         self.0.launch.as_ref()
+    }
+
+    /// The session's identity roster, opened by the last committed flight
+    /// check when the application supplied the mission's authored wingmate
+    /// roster; `None` before a commit or when it supplied none.
+    #[must_use]
+    pub fn roster(&self) -> Option<&AlliesRoster> {
+        self.0.roster.as_ref()
     }
 
     /// What the results screen's outcome transaction wrote, if it ran.
