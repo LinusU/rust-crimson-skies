@@ -280,7 +280,7 @@ pub enum LaunchPlanError {
 /// detailed why, shown after it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LaunchPreflightError {
-    /// One short actionable line, e.g. `set CS_ENGINE_IMAGE=<path>`.
+    /// One short actionable line, e.g. `add audio to CS_CAPABILITIES`.
     pub action: String,
     /// The detailed reasoning that follows the action.
     pub reason: String,
@@ -295,41 +295,35 @@ impl fmt::Display for LaunchPreflightError {
 }
 
 impl LaunchPreflightError {
-    /// Judges the two environment variables an original mission needs from
-    /// the values given (`None` when unset), without touching the process
-    /// environment.
+    /// Judges the environment an original mission needs from the values
+    /// given (`None` when unset), without touching the process environment.
+    ///
+    /// `CS_ENGINE_IMAGE` is optional: when it is unset or empty, the committed
+    /// owner-static table (#1432) supplies the airframe and pose, and the
+    /// closure measurement refuses by name if it cannot (a mission row marked
+    /// `unknown`). A value that is set must still name an existing file.
     ///
     /// # Errors
     ///
-    /// The first precondition that fails: `CS_ENGINE_IMAGE` unset, empty or
-    /// naming a missing file, then `CS_CAPABILITIES` without `audio`.
+    /// The first precondition that fails: `CS_ENGINE_IMAGE` naming a missing
+    /// file, then `CS_CAPABILITIES` without `audio`.
     pub fn check(
         engine_image: Option<&std::ffi::OsStr>,
         capabilities: Option<&str>,
     ) -> Result<(), Self> {
-        match engine_image.filter(|value| !value.is_empty()) {
-            None => {
-                return Err(Self {
-                    action: "set CS_ENGINE_IMAGE=<path to crimson.decrypted.exe>".to_owned(),
-                    reason: "the player's airframe and start pose are read from the \
-                             owner-supplied decrypted engine image, which lives outside the \
-                             read-only retail installation and is never looked for in it \
-                             (docs/PLAYTEST.md, \"Original mission M01\")"
-                        .to_owned(),
-                    exit_code: crate::cli::EXIT_RUNTIME_FAILURE,
-                });
-            }
-            Some(path) if !std::path::Path::new(path).is_file() => {
-                return Err(Self {
-                    action: "point CS_ENGINE_IMAGE at an existing crimson.decrypted.exe".to_owned(),
-                    reason: format!(
-                        "CS_ENGINE_IMAGE names {}, which is not a readable file",
-                        std::path::Path::new(path).display()
-                    ),
-                    exit_code: crate::cli::EXIT_RUNTIME_FAILURE,
-                });
-            }
-            Some(_) => {}
+        if let Some(path) = engine_image.filter(|value| !value.is_empty())
+            && !std::path::Path::new(path).is_file()
+        {
+            return Err(Self {
+                action: "point CS_ENGINE_IMAGE at an existing crimson.decrypted.exe, or unset it"
+                    .to_owned(),
+                reason: format!(
+                    "CS_ENGINE_IMAGE names {}, which is not a readable file; leaving it unset \
+                     uses the committed owner-static table instead",
+                    std::path::Path::new(path).display()
+                ),
+                exit_code: crate::cli::EXIT_RUNTIME_FAILURE,
+            });
         }
         let declaration = crate::audio::CapabilityDeclaration::parse(capabilities.unwrap_or(""));
         if let Some(malformed) = &declaration.malformed {
@@ -1726,15 +1720,11 @@ mod tests {
         use std::ffi::OsStr;
         let exe = std::env::current_exe().expect("the test binary has a path");
 
-        let unset = LaunchPreflightError::check(None, Some("retail,gpu,audio"))
-            .expect_err("an unset image is refused");
-        assert_eq!(
-            unset.to_string().lines().next(),
-            Some("set CS_ENGINE_IMAGE=<path to crimson.decrypted.exe>")
-        );
-        let empty = LaunchPreflightError::check(Some(OsStr::new("")), Some("audio"))
-            .expect_err("an empty image is refused");
-        assert_eq!(empty.action, unset.action);
+        // The image is optional: the committed table stands in (#1534).
+        LaunchPreflightError::check(None, Some("retail,gpu,audio"))
+            .expect("an unset image passes; the committed table supplies it");
+        LaunchPreflightError::check(Some(OsStr::new("")), Some("retail,gpu,audio"))
+            .expect("an empty image counts as unset");
         let missing = LaunchPreflightError::check(
             Some(OsStr::new("/nonexistent/crimson.decrypted.exe")),
             Some("audio"),
@@ -1766,12 +1756,16 @@ mod tests {
     #[test]
     fn accept_doc_m01_launch_howto_gate_runs_before_measurement_and_help_names_it() {
         use super::{LaunchPlanError, LaunchPreflightError, MissionLaunchError};
-        let refusal = LaunchPreflightError::check(None, None).expect_err("unset");
+        let refusal = LaunchPreflightError::check(None, None).expect_err("no audio");
         let error = MissionLaunchError::Plan(LaunchPlanError::Preflight(refusal));
-        assert_eq!(error.exit_code(), crate::cli::EXIT_RUNTIME_FAILURE);
-        assert!(error.to_string().starts_with("set CS_ENGINE_IMAGE="));
+        assert_eq!(error.exit_code(), crate::audio::EXIT_MISSING_CAPABILITY);
+        assert!(
+            error
+                .to_string()
+                .starts_with("add audio to CS_CAPABILITIES")
+        );
         let audio = LaunchPreflightError::check(Some(std::ffi::OsStr::new("/")), Some("retail"));
-        // "/" is not a file, so the image is refused first.
+        // "/" is set but not a file, so the image is refused first.
         assert!(audio.expect_err("dir").action.starts_with("point"));
         assert!(crate::cli::HELP_TEXT.contains("CS_ENGINE_IMAGE"));
         assert!(crate::cli::HELP_TEXT.contains("CS_CAPABILITIES"));

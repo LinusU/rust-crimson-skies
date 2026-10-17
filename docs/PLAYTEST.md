@@ -293,33 +293,41 @@ the smoke `report.json` (`decals`). See
 ```sh
 cargo build --release --locked -p cs_app --bin cs
 CS_CAPABILITIES=retail,gpu,audio \
-CS_ENGINE_IMAGE=/path/to/crimson.decrypted.exe \
 target/release/cs --cs-path /path/to/retail --mission M01
 ```
 
 * `--cs-path` is the read-only retail installation. Never put anything in it:
   an extra file there changes the installation fingerprint.
-* `CS_ENGINE_IMAGE` names the owner-supplied decrypted executable. The player's
-  airframe and start pose are read from it, so it is needed. It lives
-  **outside** the installation and is never searched for inside it. Without it
-  the launch refuses with `set CS_ENGINE_IMAGE=<path to crimson.decrypted.exe>`.
+* `CS_ENGINE_IMAGE` is **optional**. The player's airframe and start pose come
+  from the committed owner-static table `data/owner-static/engine-facts.toml`
+  (#1432, citations and `static` provenance, never `verified_original`).
+  Setting `CS_ENGINE_IMAGE=/path/to/crimson.decrypted.exe` reads the same two
+  facts from the owner's decrypted executable instead; it lives **outside** the
+  installation and is never searched for inside it. A value that is set must
+  name an existing file. If neither source can supply the mission's airframe
+  and pose, the closure measurement refuses and names the gap.
 * `CS_CAPABILITIES` must list `audio` (and `gpu` for the window; `retail` for
   the data). The mission plays its launch sound and refuses to run mute.
   Without `audio` it refuses with `add audio to CS_CAPABILITIES` and exit
-  code 4.
-* Both variables are checked before the dependency closure is measured, so a
-  missing one is reported at once. With both set, startup takes about a minute
-  while the closure is measured and the world loads; the window opens after.
+  code 4. This is checked before the dependency closure is measured, so it is
+  reported at once. Startup then takes about a minute while the closure is
+  measured and the world loads; the window opens after.
 
 What the window shows: the original M01 world with its mission records,
 labelled `ORIGINAL MISSION M01 / ORIGINAL WORLD / PLAYER AIRFRAME MEASURED /
-PROP+LOD PICKS DESIGNED`, and the player airframe `pdevastator`. The terminal
-prints the flight law's provenance (`mission flight: record ... provenance ...
-verified_original=false`): the statically recovered fixed-wing law, still
-uncalibrated against an original run (#358).
+PROP+LOD PICKS DESIGNED`, and the player airframe `pdevastator`. M01 now
+shows:
 
-What it does not show yet: no mission dialogue and no music. The only sound is
-the launch sound and the player's engine loop. Nothing here is
+* the world and the sky, with the authored weather;
+* its actors, flying under the mission AI;
+* weapons: `Space` fires the guns, `Left Ctrl` a rocket (see "Firing" below);
+* the radio: mission dialogue and music (#1438, #1461, #1463);
+* the objective HUD;
+* the mission's triggers.
+
+The terminal prints the flight law's provenance (`mission flight: record ...
+provenance ... verified_original=false`): the statically recovered fixed-wing
+law, still uncalibrated against an original run (#358). Nothing here is
 `verified_original`.
 
 Controls are the keyboard table above (`W`/`S`, `Q`/`E`, `A`/`D`, throttle,

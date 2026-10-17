@@ -390,11 +390,16 @@ WINDOWED PLAYTEST (development, not original)
         the installation's own campaign binding and measures the mission's
         dependency closure first; a closure that is not satisfied exits
         non-zero naming every missing surface, and never falls back to
-        synthetic content. It needs two environment variables, checked before
-        the slow closure measurement: CS_ENGINE_IMAGE=<path to the owner's
-        crimson.decrypted.exe, outside <dir>> and CS_CAPABILITIES listing
-        audio (e.g. CS_CAPABILITIES=retail,gpu,audio). Startup takes about a
-        minute. See docs/PLAYTEST.md, section 'Original mission M01'
+        synthetic content. CS_CAPABILITIES must list audio (e.g.
+        CS_CAPABILITIES=retail,gpu,audio); that is checked before the slow
+        closure measurement. CS_ENGINE_IMAGE=<path to the owner's
+        crimson.decrypted.exe, outside <dir>> is optional: unset, the player's
+        airframe and start pose come from the committed owner-static table
+        data/owner-static/engine-facts.toml. Startup takes about a minute.
+        M01 shows the original world, sky and weather, its actors and AI,
+        weapons (Space fires the guns, Left Ctrl a rocket), radio dialogue and
+        music, the objective HUD and the mission triggers. See
+        docs/PLAYTEST.md, section 'Original mission M01'
 
 `--help` and `--version` read no environment variable, open no installation
 and start no asset discovery: they succeed without a GPU and without a retail
