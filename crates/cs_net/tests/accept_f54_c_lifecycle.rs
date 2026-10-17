@@ -30,11 +30,10 @@
 //! machine is `network_local` per `AGENTS.md`; `network_real` two-machine
 //! evidence is F54-D, which this stage does not claim.
 
-#[path = "support/f54_c_fuzz.rs"]
-mod fuzz;
+use crate::support::f54_c_fuzz as fuzz;
 
 use std::net::{Ipv4Addr, SocketAddr};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::MutexGuard;
 use std::time::Duration;
 
 use cs_types::Tick;
@@ -105,24 +104,15 @@ const LOOPBACK_WINDOW: ConnectWindow = ConnectWindow::new(120);
 const MAX_ROUNDS: usize =
     (LOOPBACK_WINDOW.const_seconds() as usize * 1_000 / STEP.as_millis() as usize) + 64;
 
-/// Serializes the tests in this file that open a real loopback socket.
-///
-/// Measured on an 11-core machine deliberately oversubscribed more than
-/// twofold: eleven loopback handshakes at once left 435 of 1500 unable to
-/// finish inside the connection layer's own window, while a single handshake
-/// loop at the same load settled 600 of 600 (same finding, "Concurrency"). The
-/// loss is in the machine's loopback UDP path, not in anything a test asserts,
-/// so the file runs one live loopback pair at a time instead of racing for it.
-/// Each of these tests is a few milliseconds of socket work, so serializing
-/// them costs nothing measurable and removes the machine's load from the
-/// result.
-static LOOPBACK: Mutex<()> = Mutex::new(());
-
 /// Takes the loopback socket lock. Held for as long as the sockets it guards.
+///
+/// The lock is the test binary's shared [`crate::support::loopback`]: the
+/// measured reason for running one live loopback pair at a time is on that
+/// module, and sharing it serializes this module's loopback tests against the
+/// other modules' too — what separate per-file statics could never do once the
+/// former binaries became one process.
 fn loopback() -> MutexGuard<'static, ()> {
-    LOOPBACK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    crate::support::loopback::lock()
 }
 
 /// How many exchange rounds the abusive peer gets to be cut off in.

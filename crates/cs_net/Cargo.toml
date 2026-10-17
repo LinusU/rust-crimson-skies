@@ -5,6 +5,15 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+# One integration-test binary per crate (task #1561, convention of #1542):
+# `autotests = false` leaves only the `[[test]]` target below, and every former
+# `tests/*.rs` file is a `mod` of `tests/main.rs`. `cs_xtask test-layout` fails
+# when a file under `tests/` is not reached from it.
+autotests = false
+
+[[test]]
+name = "cs_net_tests"
+path = "tests/main.rs"
 
 [dependencies]
 cs_types.workspace = true

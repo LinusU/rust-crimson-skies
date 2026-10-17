@@ -15,7 +15,7 @@
 //! `network_local` per `AGENTS.md`; `network_real` verification is F54-D.
 
 use std::net::{Ipv4Addr, SocketAddr};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::MutexGuard;
 use std::time::Duration;
 
 use cs_net::bounds::{MAX_INPUT_FRAMES_PER_PACKET, MAX_MOD_DIFF_IDS, MAX_MODS, MAX_PACKET_BYTES};
@@ -78,32 +78,18 @@ const MAX_ROUNDS: usize =
 /// pins.
 const LOOPBACK_WINDOW: ConnectWindow = ConnectWindow::new(120);
 
-/// Serializes the tests in this file that open a real loopback socket.
+/// Takes the loopback socket lock. Held for as long as the sockets it guards.
 ///
-/// Measured on an 11-core machine deliberately oversubscribed more than
-/// twofold: with many short-lived socket pairs churning at once, 380 of 1500
-/// loopback pairs lost one or two of 59 datagrams each, while a single pair at
-/// the same load settled 600 of 600 (same finding, sections 4 and 6). The loss
-/// is in the machine's loopback UDP path, not in anything a test asserts, so
-/// this file keeps at most one [`Link`] — one bound host and its client — alive
-/// at a time instead of racing for the loopback path. Each test here is a few
-/// milliseconds of socket work, so serializing costs nothing measurable and
-/// takes the machine's load out of the result. The one place that opens a
-/// further socket on purpose is
+/// The lock is the test binary's shared [`crate::support::loopback`]: the
+/// measured reason for serializing the machine's loopback UDP path is on that
+/// module, and sharing it is what keeps at most one [`Link`] — one bound host
+/// and its client — alive across every module of this one binary. Each test
+/// here is a few milliseconds of socket work, so serializing costs nothing
+/// measurable. The one place that opens a further socket on purpose is
 /// `accept_f54_b_handshake_admits_and_returns_a_grant_over_udp`, which needs a
 /// second peer id on the host it already holds.
-///
-/// `cargo test` runs this binary concurrently with
-/// `accept_f54_c_lifecycle`, so that file's own lock cannot serialize against
-/// this one; each file holds its own, and together they cover this crate's
-/// loopback acceptance tests.
-static LOOPBACK: Mutex<()> = Mutex::new(());
-
-/// Takes the loopback socket lock. Held for as long as the sockets it guards.
 fn loopback() -> MutexGuard<'static, ()> {
-    LOOPBACK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    crate::support::loopback::lock()
 }
 
 /// How many silent rounds a client is given before its verdict is read.

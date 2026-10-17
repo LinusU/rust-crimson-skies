@@ -1322,7 +1322,11 @@ fn f54x10_fleet() {
     let mut children = Vec::new();
     for index in 0..procs {
         let child = Command::new(&exe)
-            .args(["f54x10_probe", "--ignored", "--exact"])
+            .args([
+                "accept_f54_x10_loopback_loss::f54x10_probe",
+                "--ignored",
+                "--exact",
+            ])
             .env(
                 "F54X10_NONCE",
                 (nonce.wrapping_mul(1_000_003) + index as u64).to_string(),
@@ -1771,6 +1775,10 @@ fn f54x10_spinner() {
 /// and it fails if `cs_net::transport`'s handshake stops working.
 #[test]
 fn accept_f54_x10_serialized_transport_pairs_settle() {
+    // Eight serialized pairs are still a loopback workload: the same measured
+    // loss the other modules' loopback lock keeps out of their results applies
+    // here, so this test holds the shared lock for its whole run.
+    let _loopback = crate::support::loopback::lock();
     const PAIRS: usize = 8;
     let cfg = ProbeConfig {
         mode: Mode::Transport,
