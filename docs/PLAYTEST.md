@@ -365,7 +365,13 @@ The player can shoot in M01:
 
 Both are the F22 designed default bindings, delivered as one press edge each
 and published to the mission's weapon session on the earliest committed fixed
-tick of the frame (a press fires once, not once per fixed tick).
+tick of the frame (a press fires once, not once per fixed tick). **Holding
+`Space` keeps firing** for as long as it is held (#1536): the input boundary
+delivers one edge per hold, so the mission's publisher mints the repeat itself,
+one shot per the loadout's own declared gun rate (`MISSION_TICKS_BETWEEN_SHOTS`,
+designed) — the same rate the F27 step's per-mount cooldown enforces. Letting
+go stops the stream; a key held through a pause or a focus loss is released by
+the input session and stops firing too.
 
 * **Guns** go through the F27 weapon path: three designed guns (a nose cannon
   and one per wing) fire the one selected bank along their live mount poses,
@@ -377,14 +383,30 @@ tick of the frame (a press fires once, not once per fixed tick).
   the targeting store declares hostile, and the blast routes into the same
   F29 damage authority — so a rocket kill also wrecks and scores. Firing a
   rocket with no such target is refused by name (`no declared-hostile damage
-  target is live`), never aimed at a default.
+  target is live`), and the refusal is shown on the HUD for two seconds
+  (`mission_session::weapon_present`, designed layout) instead of the mission
+  silently doing nothing.
 
-**Firing is not drawn yet.** A round is a `WeaponRoundMirror` entity and a
-live rocket is an ordnance component, but neither carries a mesh, and the
-muzzle-effect/shot-sound consumer is not driven from the mission's fixed loop
-yet (F27-C-FX-SCHED, #1304). Until then a shot is invisible and silent; what
-this task proves is the session, the swept hit, the F29 damage, the wreck and
-the score, not the picture.
+**What firing draws (#1536).** A round's ECS mirror now carries a drawn child:
+a bright unlit streak spanning the segment the round actually flew since the
+last drawn frame, so a held trigger reads as a stream of tracers. A launched
+rocket's mirror carries a drawn body oriented along its own flight path. Both
+are **designed** visuals (`m01-window-fire.designed-visuals`): the original's
+sprites, sizes and colours were not recovered, and the mirror carries no
+measured orientation. The pose is not invented — every streak comes from the
+authoritative runtime position, and a mirror the schedule despawns takes its
+drawing with it.
+
+**Firing is still silent.** A shot's sound id (`m01-play-weapons.designed-shot`)
+has no declared record and no measured binding to any sound member, so the
+presentation consumer refuses it by name rather than playing a guessed clip
+(`WeaponEffectRefusal::UnknownAsset`); the consumer itself is still not driven
+from the mission's fixed loop (F27-C-FX-SCHED, #1304) and the one-shot device
+pass that would audibly play a cue is F41's follow-up. The installation does
+contain gun-named members (`30cal_gun.wav`, `40cal_gun.wav`, `chaingun.wav`)
+but nothing in the data binds one to the player's guns — naming one would be a
+guess, so the gun sound stays unbound until it is measured
+(`M01-WINDOW-FIRE-GUN-SOUND`).
 
 **The loadout is designed, not measured.** There is no production reader that
 returns M01's Devastator guns, ammunition or rocket loadout from the original
