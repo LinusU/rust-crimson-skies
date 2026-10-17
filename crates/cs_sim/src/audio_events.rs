@@ -1722,9 +1722,57 @@ pub struct MixerReport {
     /// id order. Radio lines are not emitters, so they cannot appear in
     /// [`Self::stopped`].
     pub radio_stopped: Vec<AudioEventId>,
+    /// Whether the music voice was stopped because the device was lost or
+    /// released.
+    pub music_stopped: bool,
     /// Everything the mixer could not do, in arrival order.
     pub refusals: Vec<MixerRefusal>,
 }
+
+/// Why a music request did not become the voice it asked for.
+#[derive(Clone, Debug, PartialEq)]
+pub enum MusicMixRefusal {
+    /// The director reported the cue as not audible (the output was lost), so
+    /// it stays current but is not voiced.
+    Unvoiced {
+        /// The music asset.
+        asset: ContentId,
+    },
+    /// The device refused to start the music voice — the track is not in the
+    /// sample library, or the output could not be opened.
+    Device {
+        /// The music asset.
+        asset: ContentId,
+        /// The device's own stable refusal code.
+        code: &'static str,
+    },
+    /// A music request the director refused; nothing was started.
+    Refused {
+        /// The director's own verdict.
+        outcome: MusicOutcome,
+    },
+}
+
+/// What one music mix pass did.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct MusicMixReport {
+    /// Tracks whose looping voice the device started, in arrival order.
+    pub started: Vec<ContentId>,
+    /// Tracks whose voice the device stopped because another replaced them.
+    pub stopped: Vec<ContentId>,
+    /// Requests that left the sounding track as it was
+    /// ([`MusicOutcome::Unchanged`], [`MusicOutcome::SuppressedDuplicate`]).
+    pub unchanged: usize,
+    /// Everything the mixer could not do, in arrival order.
+    pub refusals: Vec<MusicMixRefusal>,
+}
+
+/// The gain the music voice plays at.
+///
+/// **Designed, not measured.** No measurement states the original's music
+/// level, fade or crossfade rule, so a track plays at unity from its start;
+/// the transition is a hard cut from the previous track.
+pub const MUSIC_GAIN: f64 = 1.0;
 
 /// Why a radio line did not become the voice it asked for.
 ///
@@ -1847,6 +1895,8 @@ pub struct AudioMixer {
     /// [`Self::voices`] for exactly that reason — a reload's orphan sweep must
     /// not silence a line the *new* session just started.
     radio: BTreeMap<AudioEventId, DeviceVoiceId>,
+    /// The one music voice and the track it plays.
+    music: Option<(ContentId, DeviceVoiceId)>,
 }
 
 impl AudioMixer {
@@ -1860,6 +1910,7 @@ impl AudioMixer {
             session,
             voices: BTreeMap::new(),
             radio: BTreeMap::new(),
+            music: None,
         }
     }
 
@@ -2106,8 +2157,104 @@ impl AudioMixer {
                 report.radio_stopped.push(id);
             }
         }
+        if let Some((_, voice)) = self.music.take() {
+            let _ = device.stop_voice(VoiceStop {
+                voice,
+                reason: Some(EmitterStopReason::DeviceLost),
+            });
+            report.music_stopped = true;
+        }
         device.close();
         report
+    }
+
+    /// One music pass: the session's music verdicts become the one music
+    /// voice.
+    ///
+    /// [`MusicOutcome::Started`] and [`MusicOutcome::Transition`] with an
+    /// audible verdict stop the sounding track (if any) and start the new one
+    /// as a **looping** voice on [`AudioBus::Music`] at [`MUSIC_GAIN`];
+    /// [`MusicOutcome::Unchanged`] leaves the voice alone. Whether a track
+    /// loops, fades or crossfades is unmeasured: the loop and the hard cut are
+    /// designed. A closed device is opened on demand when one is given; `None`
+    /// names every request without touching an output the session declared
+    /// lost.
+    pub fn mix_music(
+        &mut self,
+        outcomes: &[MusicOutcome],
+        device: Option<&mut dyn AudioDevice>,
+    ) -> MusicMixReport {
+        let mut report = MusicMixReport::default();
+        let mut device = device;
+        if outcomes.is_empty() {
+            return report;
+        }
+        if let Some(open) = device.as_deref_mut()
+            && !open.is_open()
+        {
+            let _ = open.open();
+        }
+        for outcome in outcomes {
+            let (to, audible) = match outcome {
+                MusicOutcome::Started { to, audible }
+                | MusicOutcome::Transition { to, audible, .. } => (to, *audible),
+                MusicOutcome::Unchanged | MusicOutcome::SuppressedDuplicate { .. } => {
+                    report.unchanged += 1;
+                    continue;
+                }
+                MusicOutcome::RefusedForeignSession { .. }
+                | MusicOutcome::RefusedNotMusic { .. } => {
+                    report.refusals.push(MusicMixRefusal::Refused {
+                        outcome: outcome.clone(),
+                    });
+                    continue;
+                }
+            };
+            if !audible {
+                report
+                    .refusals
+                    .push(MusicMixRefusal::Unvoiced { asset: to.clone() });
+                continue;
+            }
+            let Some(open) = device.as_deref_mut() else {
+                report.refusals.push(MusicMixRefusal::Device {
+                    asset: to.clone(),
+                    code: DEVICE_UNAVAILABLE,
+                });
+                continue;
+            };
+            if let Some((previous, voice)) = self.music.take() {
+                let _ = open.stop_voice(VoiceStop {
+                    voice,
+                    reason: None,
+                });
+                report.stopped.push(previous);
+            }
+            let start = VoiceStart {
+                asset: to.clone(),
+                bus: AudioBus::Music,
+                gain: MUSIC_GAIN,
+                pan: 0.0,
+                pitch: 1.0,
+            };
+            match open.start_voice(start) {
+                Ok(voice) => {
+                    self.music = Some((to.clone(), voice));
+                    report.started.push(to.clone());
+                }
+                Err(error) => report.refusals.push(MusicMixRefusal::Device {
+                    asset: to.clone(),
+                    code: error.code,
+                }),
+            }
+        }
+        report
+    }
+
+    /// The track the music voice is sounding, when one is.
+    #[must_use]
+    pub fn music_playing(&self) -> Option<&ContentId> {
+        self.music.as_ref().map(|(asset, _)| asset)
     }
 
     /// One radio pass: the session's radio events become device voices.
