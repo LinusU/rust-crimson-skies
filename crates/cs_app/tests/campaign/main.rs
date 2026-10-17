@@ -331,6 +331,7 @@ mod m24_b;
 mod objaddr;
 mod owner_facts_table;
 mod record_objectives_sound;
+mod regenerate;
 mod vs_m01_geometry_verdict;
 mod vs_m01_rt_content;
 mod vs_m01_rt_evidence_audio;
