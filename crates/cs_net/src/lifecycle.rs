@@ -88,9 +88,14 @@ use crate::bounds::{
 };
 use crate::codec::encode_client_message;
 use crate::compat::{HandshakeReject, SessionGrant, SessionParameters};
+use crate::lobby::{
+    LaunchError, LoadoutValidator, Lobby, LobbyEvent, LobbyPacket, PacketError, PacketOutcome,
+    PacketReject,
+};
 use crate::message::{
     ClientMessage, ClientPayload, DisconnectReason, EventBody, FinishReason, InputBatch,
-    MessageHeader, ReliableEvent, ServerMessage, ServerPayload, SnapshotFrame, WireError,
+    LobbyRefusal, MessageHeader, ReliableEvent, ServerMessage, ServerPayload, SnapshotFrame,
+    WireError,
 };
 use crate::snapshot::{Snapshot, SnapshotError};
 use crate::transport::{
@@ -210,6 +215,8 @@ pub enum ServerFault {
     Transport(String),
     /// A record the host wanted to publish could not be encoded.
     Encode(String),
+    /// The lobby cannot be attached or bound as asked.
+    Lobby(&'static str),
 }
 
 impl fmt::Display for ServerFault {
@@ -220,6 +227,7 @@ impl fmt::Display for ServerFault {
             }
             Self::Transport(reason) => write!(f, "transport error: {reason}"),
             Self::Encode(reason) => write!(f, "cannot encode for the wire: {reason}"),
+            Self::Lobby(reason) => write!(f, "lobby: {reason}"),
         }
     }
 }
@@ -277,6 +285,23 @@ pub enum ServerNotice {
         /// The per-tick share it had already spent this round.
         cap: u32,
     },
+    /// An admitted lobby packet (F55-B) reached the host's lobby and was
+    /// accepted. The lobby's events were published to every member; a replay
+    /// is reported too (`PacketOutcome::Replayed`) and published nothing.
+    LobbyHandled {
+        /// The session peer that sent it.
+        peer: PeerId,
+        /// What the lobby did.
+        outcome: PacketOutcome,
+    },
+    /// An admitted lobby packet was refused. The lobby is unchanged and the
+    /// sender was sent a [`EventBody::LobbyRefused`] naming the class.
+    LobbyRefused {
+        /// The session peer that sent it.
+        peer: PeerId,
+        /// The lobby's own verdict.
+        reject: PacketReject,
+    },
     /// A gate refusal whose declared disposition is
     /// [`ThreatDisposition::Disconnect`]; the peer was hung up.
     CutOff {
@@ -325,6 +350,12 @@ impl fmt::Display for ServerNotice {
                 f,
                 "refused {peer}'s surplus: it is already at its rate share of {cap} packet(s) this tick"
             ),
+            Self::LobbyHandled { peer, outcome } => {
+                write!(f, "lobby accepted a packet from {peer}: {outcome:?}")
+            }
+            Self::LobbyRefused { peer, reject } => {
+                write!(f, "lobby refused a packet from {peer}: {reject}")
+            }
             Self::CutOff { peer, threat } => match peer {
                 Some(peer) => write!(f, "hung up on {peer}: {}", threat.label()),
                 None => write!(f, "hung up on a client with no peer: {}", threat.label()),
@@ -365,6 +396,17 @@ pub struct ServerSession {
     tick_share: BTreeMap<PeerId, u32>,
     /// Packets the rate ladder refused over this epoch.
     rate_refused: u32,
+    /// The lobby lobby packets are dispatched to, once attached.
+    lobby: Option<HostLobby>,
+}
+
+/// The host's lobby and the shared validator its commands are judged by, plus
+/// the map from session peers (the transport allocates those) to lobby members
+/// (the lobby allocates its own ids, so the two numberings are independent).
+struct HostLobby {
+    lobby: Lobby,
+    validator: Box<dyn LoadoutValidator + Send + Sync>,
+    members: BTreeMap<PeerId, PeerId>,
 }
 
 impl ServerSession {
@@ -393,7 +435,169 @@ impl ServerSession {
             rate_tick: Tick(0),
             tick_share: BTreeMap::new(),
             rate_refused: 0,
+            lobby: None,
         })
+    }
+
+    /// Attaches the host's lobby: from here on, lobby packets admitted by the
+    /// session gate are dispatched to [`Lobby::receive_bytes`] and the events
+    /// the lobby answers with are published to every member.
+    ///
+    /// # Errors
+    ///
+    /// [`ServerFault::Lobby`] when the lobby belongs to another session epoch
+    /// or a lobby is already attached.
+    pub fn attach_lobby(
+        &mut self,
+        lobby: Lobby,
+        validator: Box<dyn LoadoutValidator + Send + Sync>,
+    ) -> Result<(), ServerFault> {
+        if lobby.session() != self.session() {
+            return Err(ServerFault::Lobby("the lobby is for another session epoch"));
+        }
+        if self.lobby.is_some() {
+            return Err(ServerFault::Lobby("a lobby is already attached"));
+        }
+        self.lobby = Some(HostLobby {
+            lobby,
+            validator,
+            members: BTreeMap::new(),
+        });
+        Ok(())
+    }
+
+    /// The attached lobby, when there is one.
+    #[must_use]
+    pub fn lobby(&self) -> Option<&Lobby> {
+        self.lobby.as_ref().map(|host| &host.lobby)
+    }
+
+    /// The attached lobby, for the host's own transactions
+    /// ([`Lobby::admit`], the host's commands). Publish what they answer with
+    /// through [`Self::publish_lobby`].
+    pub fn lobby_mut(&mut self) -> Option<&mut Lobby> {
+        self.lobby.as_mut().map(|host| &mut host.lobby)
+    }
+
+    /// Binds session peer `peer` to lobby member `member`, so packets that
+    /// peer sends are the member's. Admission stays on the handshake path
+    /// ([`Lobby::admit`]); this only records who on the wire is who in the
+    /// lobby.
+    ///
+    /// # Errors
+    ///
+    /// [`ServerFault::Lobby`] when no lobby is attached, `peer` is not a
+    /// session member, `member` is not a lobby member, or either side is
+    /// already bound. The host's own member may be bound too: a host whose
+    /// player connects to its own session as a client.
+    pub fn bind_lobby_member(&mut self, peer: PeerId, member: PeerId) -> Result<(), ServerFault> {
+        let is_peer = self.members.contains(&peer);
+        let Some(host) = self.lobby.as_mut() else {
+            return Err(ServerFault::Lobby("no lobby is attached"));
+        };
+        if !is_peer {
+            return Err(ServerFault::Lobby("the peer is not a session member"));
+        }
+        if host.lobby.member(member).is_none() {
+            return Err(ServerFault::Lobby("the member is not in the lobby"));
+        }
+        if host.members.contains_key(&peer) || host.members.values().any(|bound| *bound == member) {
+            return Err(ServerFault::Lobby(
+                "the peer or the member is already bound",
+            ));
+        }
+        host.members.insert(peer, member);
+        Ok(())
+    }
+
+    /// Publishes lobby events to every member as reliable, idempotent events.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::announce`], plus [`ServerFault::Encode`] for an event the
+    /// lobby codec refuses.
+    pub fn publish_lobby(&mut self, events: &[LobbyEvent]) -> Result<(), ServerFault> {
+        for event in events {
+            let record = event
+                .encode()
+                .map_err(|reason| ServerFault::Encode(reason.to_string()))?;
+            self.announce(self.rate_tick, EventBody::Lobby(record))?;
+        }
+        Ok(())
+    }
+
+    /// Dispatches one admitted lobby packet to the attached lobby.
+    fn receive_lobby(&mut self, peer: PeerId, bytes: &[u8], notices: &mut Vec<ServerNotice>) {
+        let Some(host) = self.lobby.as_mut() else {
+            // No lobby is attached: the packet is absorbed, visibly.
+            notices.push(ServerNotice::LobbyRefused {
+                peer,
+                reject: PacketReject::NotAMember { peer },
+            });
+            return;
+        };
+        let result = match host.members.get(&peer) {
+            Some(member) => host
+                .lobby
+                .receive_bytes(*member, bytes, host.validator.as_ref()),
+            None => Err(PacketReject::NotAMember { peer }),
+        };
+        match result {
+            Ok(outcome) => {
+                let events = outcome.events().to_vec();
+                notices.push(ServerNotice::LobbyHandled { peer, outcome });
+                if let Err(fault) = self.publish_lobby(&events) {
+                    notices.push(ServerNotice::TransportFault {
+                        reason: fault.to_string(),
+                    });
+                }
+            }
+            Err(reject) => {
+                // The refusal goes back to the sender alone. An undecodable
+                // buffer names no packet id, so there is nothing to correlate
+                // and only the host's notice records it.
+                if let Some(packet) = LobbyPacket::decode(bytes).ok().map(|p| p.id()) {
+                    let refusal = refusal_class(&reject);
+                    let id = EventId {
+                        session: self.session(),
+                        tick: self.rate_tick,
+                        producer: HOST_EVENT_PRODUCER,
+                        sequence: self.next_event,
+                    };
+                    self.next_event = self.next_event.saturating_add(1);
+                    let sent = self.send(
+                        peer,
+                        ServerPayload::Event(ReliableEvent {
+                            id,
+                            body: EventBody::LobbyRefused { packet, refusal },
+                        }),
+                    );
+                    if let Err(reason) = sent {
+                        notices.push(ServerNotice::TransportFault {
+                            reason: reason.to_string(),
+                        });
+                    }
+                }
+                notices.push(ServerNotice::LobbyRefused { peer, reject });
+            }
+        }
+    }
+
+    /// A bound session peer is gone: its lobby member leaves too.
+    fn lobby_departed(&mut self, peer: PeerId, notices: &mut Vec<ServerNotice>) {
+        let Some(host) = self.lobby.as_mut() else {
+            return;
+        };
+        let Some(member) = host.members.remove(&peer) else {
+            return;
+        };
+        if let Some(crate::lobby::Departure::MemberLeft(applied)) = host.lobby.remove_peer(member)
+            && let Err(fault) = self.publish_lobby(&applied.events)
+        {
+            notices.push(ServerNotice::TransportFault {
+                reason: fault.to_string(),
+            });
+        }
     }
 
     /// The live session epoch.
@@ -572,7 +776,15 @@ impl ServerSession {
                 HostEvent::PeerDeparted { peer } => {
                     self.members.remove(&peer);
                     self.forget_peer(peer);
+                    self.lobby_departed(peer, &mut notices);
                     notices.push(ServerNotice::PeerLeft { peer });
+                }
+                HostEvent::PeerLobby { peer, bytes, .. } => {
+                    // A lobby packet is one packet like any other: it spends
+                    // the peer's rate budget before the lobby reads a byte.
+                    if self.charge_rate(peer, &mut notices) {
+                        self.receive_lobby(peer, &bytes, &mut notices);
+                    }
                 }
                 HostEvent::PeerPacket {
                     peer,
@@ -659,7 +871,31 @@ impl ServerSession {
     /// that stopped draining.
     fn enqueue(&mut self, input: PeerInput, notices: &mut Vec<ServerNotice>) {
         let peer = input.peer;
+        if !self.charge_rate(peer, notices) {
+            return;
+        }
 
+        // 3. The shared queue bound: the session-wide backstop.
+        if self.work.len() >= MAX_WORK_PER_PUMP {
+            self.overflowed = self.overflowed.saturating_add(1);
+            notices.push(ServerNotice::Dropped {
+                peer: Some(peer),
+                reason: DropReason::QueueOverflow {
+                    limit: MAX_WORK_PER_PUMP,
+                },
+            });
+            self.cut_off(peer, ThreatCase::ResourceExhaustion, notices);
+            return;
+        }
+        notices.push(ServerNotice::Admitted(input.clone()));
+        self.work.push_back(input);
+    }
+
+    /// Steps 1 and 2 of the rate ladder described on [`Self::enqueue`],
+    /// shared by every payload a peer can send: returns whether the packet
+    /// may proceed. A refusal has already been reported (and the peer cut off
+    /// where the declared disposition says so).
+    fn charge_rate(&mut self, peer: PeerId, notices: &mut Vec<ServerNotice>) -> bool {
         // 1. The declared window budget, charged before anything is queued,
         //    so a surplus cannot spend the queue while owing the budget.
         if let Err(violation) = self.rate.charge(peer, self.rate_tick, 1) {
@@ -683,7 +919,7 @@ impl ServerSession {
                     self.cut_off(peer, ThreatCase::ResourceExhaustion, notices);
                 }
             }
-            return;
+            return false;
         }
 
         // 2. This round's per-tick share: refuse and count, keep the peer.
@@ -692,24 +928,10 @@ impl ServerSession {
         if *used >= cap {
             self.rate_refused = self.rate_refused.saturating_add(1);
             notices.push(ServerNotice::RateLimited { peer, cap });
-            return;
+            return false;
         }
         *used += 1;
-
-        // 3. The shared queue bound: the session-wide backstop.
-        if self.work.len() >= MAX_WORK_PER_PUMP {
-            self.overflowed = self.overflowed.saturating_add(1);
-            notices.push(ServerNotice::Dropped {
-                peer: Some(peer),
-                reason: DropReason::QueueOverflow {
-                    limit: MAX_WORK_PER_PUMP,
-                },
-            });
-            self.cut_off(peer, ThreatCase::ResourceExhaustion, notices);
-            return;
-        }
-        notices.push(ServerNotice::Admitted(input.clone()));
-        self.work.push_back(input);
+        true
     }
 
     /// Drops `peer` from the session's rate state: its window charge and its
@@ -749,6 +971,7 @@ impl ServerSession {
     /// never refuse a peer that comes after it.
     fn cut_off(&mut self, peer: PeerId, threat: ThreatCase, notices: &mut Vec<ServerNotice>) {
         self.tick_share.remove(&peer);
+        self.lobby_departed(peer, notices);
         if self.members.remove(&peer) {
             notices.push(ServerNotice::CutOff {
                 peer: Some(peer),
@@ -955,6 +1178,8 @@ impl ServerSession {
         self.rate_tick = Tick(0);
         self.tick_share.clear();
         self.rate_refused = 0;
+        // The lobby is bound to the spent epoch's session and peers.
+        self.lobby = None;
         self.phase = ServerPhase::Gathering;
         Ok(hung_up)
     }
@@ -988,6 +1213,18 @@ impl ServerSession {
                 payload,
             })
             .map_err(|reason| ServerFault::Transport(reason.to_string()))
+    }
+}
+
+/// The coarse class of a lobby refusal the sender is told.
+fn refusal_class(reject: &PacketReject) -> LobbyRefusal {
+    match reject {
+        PacketReject::Malformed(_) => LobbyRefusal::Malformed,
+        PacketReject::ForeignSession { .. } => LobbyRefusal::ForeignSession,
+        PacketReject::NotAMember { .. } => LobbyRefusal::NotAMember,
+        PacketReject::Command(_) => LobbyRefusal::Command,
+        PacketReject::Launch(LaunchError::StaleRevision { .. }) => LobbyRefusal::StaleRevision,
+        PacketReject::Launch(_) => LobbyRefusal::Launch,
     }
 }
 
@@ -1132,6 +1369,9 @@ pub enum ClientFault {
     Snapshot(SnapshotError),
     /// The transport refused the send.
     Transport(String),
+    /// A lobby record could not be encoded for sending, or the host's lobby
+    /// event did not decode.
+    Lobby(PacketError),
 }
 
 impl fmt::Display for ClientFault {
@@ -1155,6 +1395,7 @@ impl fmt::Display for ClientFault {
             Self::Wire(reason) => write!(f, "refused an inbound packet: {reason}"),
             Self::Snapshot(reason) => write!(f, "refused a snapshot payload: {reason}"),
             Self::Transport(reason) => write!(f, "transport error: {reason}"),
+            Self::Lobby(reason) => write!(f, "lobby record: {reason}"),
         }
     }
 }
@@ -1183,6 +1424,21 @@ pub enum ClientNotice {
         id: EventId,
         /// What happened.
         body: EventBody,
+    },
+    /// The host published a lobby event (F55): decoded, deduplicated by its
+    /// [`EventId`], and ready for the lobby presentation to observe.
+    Lobby {
+        /// The event's deduplication id.
+        id: EventId,
+        /// What the lobby did.
+        event: LobbyEvent,
+    },
+    /// The host refused a lobby packet this client sent.
+    LobbyRefused {
+        /// The refused packet's own id.
+        packet: EventId,
+        /// The class of refusal.
+        refusal: LobbyRefusal,
     },
     /// A reliable event arrived whose id this client already applied. The
     /// reliable channel can replay after a retry; application idempotency is
@@ -1243,6 +1499,14 @@ impl fmt::Display for ClientNotice {
             }
             Self::Refused { reason } => write!(f, "refused by the host: {reason}"),
             Self::Event { id, body } => write!(f, "event {id}: {body:?}"),
+            Self::Lobby { id, event } => write!(f, "lobby event {id}: {event:?}"),
+            Self::LobbyRefused { packet, refusal } => {
+                write!(
+                    f,
+                    "the host refused lobby packet {packet}: {}",
+                    refusal.label()
+                )
+            }
             Self::Duplicate { id } => write!(f, "event {id} arrived again and was ignored"),
             Self::Snapshot { tick } => write!(f, "accepted the snapshot for tick {}", tick.0),
             Self::StaleSnapshot { tick } => {
@@ -1601,17 +1865,24 @@ impl ClientSession {
                     notices.push(ClientNotice::Duplicate { id: event.id });
                     return Ok(notices);
                 }
-                match &event.body {
+                match event.body {
+                    EventBody::Lobby(record) => {
+                        let decoded = LobbyEvent::decode(&record).map_err(ClientFault::Lobby)?;
+                        notices.push(ClientNotice::Lobby {
+                            id: event.id,
+                            event: decoded,
+                        });
+                        return Ok(notices);
+                    }
+                    EventBody::LobbyRefused { packet, refusal } => {
+                        notices.push(ClientNotice::LobbyRefused { packet, refusal });
+                        return Ok(notices);
+                    }
                     EventBody::Launched { start_tick } => {
-                        self.move_to(
-                            ClientPhase::Live {
-                                start_tick: *start_tick,
-                            },
-                            &mut notices,
-                        );
+                        self.move_to(ClientPhase::Live { start_tick }, &mut notices);
                     }
                     EventBody::Finished { reason } => {
-                        self.move_to(ClientPhase::Finished { reason: *reason }, &mut notices);
+                        self.move_to(ClientPhase::Finished { reason }, &mut notices);
                     }
                     _ => {}
                 }
@@ -1765,6 +2036,43 @@ impl ClientSession {
         notices.push(ClientNotice::Retried {
             sequence: oldest.sequence,
         });
+    }
+
+    /// Sends one lobby packet (F55-B) to the host on the reliable channel.
+    ///
+    /// The packet is encoded by [`LobbyPacket::encode`] and carried verbatim;
+    /// the host's lobby judges it. Delivery is reliable, and the application
+    /// stays idempotent by the packet's own [`EventId`]: sending the same
+    /// packet again (a retry after a refusal, a redelivery) takes a fresh
+    /// session sequence but the host's lobby applies it once.
+    ///
+    /// # Errors
+    ///
+    /// [`ClientFault::Closed`] when the session is over,
+    /// [`ClientFault::NotInSession`] before the handshake,
+    /// [`ClientFault::Lobby`] when the packet cannot be encoded,
+    /// [`ClientFault::Wire`] when the record passes the envelope cap, and
+    /// [`ClientFault::Transport`] when the send fails.
+    pub fn send_lobby(&mut self, packet: &LobbyPacket) -> Result<u32, ClientFault> {
+        if let ClientPhase::Closed(closure) = &self.phase {
+            return Err(ClientFault::Closed {
+                closure: closure.clone(),
+            });
+        }
+        let Some(grant) = self.transport.grant() else {
+            return Err(ClientFault::NotInSession);
+        };
+        let message = ClientMessage {
+            header: MessageHeader {
+                session: grant.session,
+                sequence: 0,
+            },
+            payload: ClientPayload::Lobby(packet.encode().map_err(ClientFault::Lobby)?),
+        };
+        message.validate().map_err(ClientFault::Wire)?;
+        self.transport
+            .send(message)
+            .map_err(|reason| ClientFault::Transport(reason.to_string()))
     }
 
     /// Leaves the session: tells the host on the reliable channel, then hangs

@@ -39,9 +39,17 @@ use cs_types::input::{Action, InputFrame, UiAction};
 use cs_types::net::{ActorId, EventId, PeerId, SessionId};
 
 use crate::bounds::{
-    MAX_EDGES_PER_FRAME, MAX_INPUT_BATCH_SPAN_TICKS, MAX_INPUT_FRAMES_PER_PACKET,
+    MAX_EDGES_PER_FRAME, MAX_INPUT_BATCH_SPAN_TICKS, MAX_INPUT_FRAMES_PER_PACKET, MAX_PACKET_BYTES,
     MAX_SNAPSHOT_BYTES,
 };
+
+/// Largest lobby record (an encoded `LobbyPacket` or `LobbyEvent`, F55-B) one
+/// session packet may carry. The lobby's own packet cap is
+/// [`MAX_PACKET_BYTES`]; the session envelope around it (header, tags, event
+/// id, length) needs headroom, so a lobby record is capped just under it and a
+/// larger one is refused at the envelope instead of failing the whole
+/// packet's encode.
+pub const MAX_LOBBY_RECORD_BYTES: usize = MAX_PACKET_BYTES - 128;
 
 /// How a payload must be delivered, per spec F54 non-negotiable behavior 4
 /// ("reliable delivery for lifecycle/rules and sequenced snapshots for
@@ -353,6 +361,52 @@ pub enum EventBody {
         /// The actor that is gone.
         actor: ActorId,
     },
+    /// One lobby event the host published (F55): an encoded
+    /// `cs_net::lobby::LobbyEvent`, capped at [`MAX_LOBBY_RECORD_BYTES`]. The
+    /// envelope does not interpret it.
+    Lobby(Vec<u8>),
+    /// The host refused a lobby packet. Sent to the sender only; `packet` is
+    /// the `EventId` the refused packet carried.
+    LobbyRefused {
+        /// The refused packet's id, so the sender can correct and retry.
+        packet: EventId,
+        /// Why.
+        refusal: LobbyRefusal,
+    },
+}
+
+/// Why the host refused a lobby packet, as the sender is told. The coarse
+/// class only: the lobby's own error says more on the host, and the sender
+/// needs the class to correct and retry (spec F55 AC02: "a launch packet
+/// naming an old rules revision is rejected").
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum LobbyRefusal {
+    /// The record did not decode.
+    Malformed,
+    /// The record named another session epoch.
+    ForeignSession,
+    /// The sender holds no lobby membership.
+    NotAMember,
+    /// A command was refused (authority, phase, rules, loadout...).
+    Command,
+    /// A launch named a rules revision that is no longer the live one.
+    StaleRevision,
+    /// Any other launch refusal (digest, readiness, phase, host-only...).
+    Launch,
+}
+
+impl LobbyRefusal {
+    /// The stable label used in reports.
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Malformed => "malformed",
+            Self::ForeignSession => "foreign_session",
+            Self::NotAMember => "not_a_member",
+            Self::Command => "command",
+            Self::StaleRevision => "stale_revision",
+            Self::Launch => "launch",
+        }
+    }
 }
 
 /// A reliable semantic event stamped with its deduplication id.
@@ -388,6 +442,11 @@ pub enum ClientPayload {
     Input(InputBatch),
     /// The client is leaving the session.
     Leave,
+    /// One encoded `cs_net::lobby::LobbyPacket` (F55-B), capped at
+    /// [`MAX_LOBBY_RECORD_BYTES`]. Reliable and idempotent by the `EventId`
+    /// inside the record; the envelope does not interpret it, and the host's
+    /// lobby gates it.
+    Lobby(Vec<u8>),
 }
 
 /// What the server may send inside a session.
@@ -419,7 +478,7 @@ impl ClientPayload {
             // InputAck provide the dedup/retry story, not retransmission of
             // every frame.
             Self::Input(_) => Delivery::Sequenced,
-            Self::Leave => Delivery::Reliable,
+            Self::Leave | Self::Lobby(_) => Delivery::Reliable,
         }
     }
 }
@@ -461,6 +520,17 @@ pub enum SessionMessage {
     ToClient(ServerMessage),
 }
 
+fn check_lobby_record(field: &'static str, record: &[u8]) -> Result<(), WireError> {
+    if record.len() > MAX_LOBBY_RECORD_BYTES {
+        return Err(WireError::TooLarge {
+            field,
+            max: MAX_LOBBY_RECORD_BYTES,
+            len: record.len(),
+        });
+    }
+    Ok(())
+}
+
 fn expect_session(header: &MessageHeader, session: SessionId) -> Result<(), WireError> {
     if header.session == session {
         Ok(())
@@ -482,6 +552,7 @@ impl ClientMessage {
         match &self.payload {
             ClientPayload::Input(batch) => batch.validate(),
             ClientPayload::Leave => Ok(()),
+            ClientPayload::Lobby(record) => check_lobby_record("lobby.packet", record),
         }
     }
 
@@ -519,6 +590,10 @@ impl ServerMessage {
                 }
                 Ok(())
             }
+            ServerPayload::Event(ReliableEvent {
+                body: EventBody::Lobby(record),
+                ..
+            }) => check_lobby_record("lobby.event", record),
             ServerPayload::InputAck { .. }
             | ServerPayload::Event(_)
             | ServerPayload::Disconnect { .. } => Ok(()),

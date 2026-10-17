@@ -43,7 +43,8 @@ use crate::compat::{
 };
 use crate::message::{
     ClientMessage, ClientPayload, DisconnectReason, EventBody, FinishReason, InputBatch,
-    MessageHeader, ReliableEvent, ServerMessage, ServerPayload, SnapshotFrame, WireError,
+    LobbyRefusal, MAX_LOBBY_RECORD_BYTES, MessageHeader, ReliableEvent, ServerMessage,
+    ServerPayload, SnapshotFrame, WireError,
 };
 
 /// The widest canonical `namespace/key` text a [`ContentId`] may take on the
@@ -825,6 +826,27 @@ fn event_body(r: &mut Reader<'_>) -> Result<EventBody, CodecError> {
         5 => Ok(EventBody::ActorRemoved {
             actor: actor_id(r, "event.actor")?,
         }),
+        6 => Ok(EventBody::Lobby(
+            r.bytes32("event.lobby", MAX_LOBBY_RECORD_BYTES)?.to_vec(),
+        )),
+        7 => {
+            let packet = event_id(r, "event.packet")?;
+            let refusal = match r.u8("event.refusal")? {
+                0 => LobbyRefusal::Malformed,
+                1 => LobbyRefusal::ForeignSession,
+                2 => LobbyRefusal::NotAMember,
+                3 => LobbyRefusal::Command,
+                4 => LobbyRefusal::StaleRevision,
+                5 => LobbyRefusal::Launch,
+                tag => {
+                    return Err(CodecError::UnknownTag {
+                        field: "event.refusal",
+                        tag,
+                    });
+                }
+            };
+            Ok(EventBody::LobbyRefused { packet, refusal })
+        }
         tag => Err(CodecError::UnknownTag {
             field: "event.tag",
             tag,
@@ -871,6 +893,23 @@ fn put_event_body(w: &mut Writer, body: &EventBody) {
             w.u8(5);
             put_actor_id(w, actor);
         }
+        EventBody::Lobby(record) => {
+            w.u8(6);
+            w.u32(record.len() as u32);
+            w.bytes(record);
+        }
+        EventBody::LobbyRefused { packet, refusal } => {
+            w.u8(7);
+            put_event_id(w, packet);
+            w.u8(match refusal {
+                LobbyRefusal::Malformed => 0,
+                LobbyRefusal::ForeignSession => 1,
+                LobbyRefusal::NotAMember => 2,
+                LobbyRefusal::Command => 3,
+                LobbyRefusal::StaleRevision => 4,
+                LobbyRefusal::Launch => 5,
+            });
+        }
     }
 }
 
@@ -889,6 +928,9 @@ fn client_payload(r: &mut Reader<'_>) -> Result<ClientPayload, CodecError> {
     match r.u8("client.tag")? {
         0 => Ok(ClientPayload::Input(input_batch(r)?)),
         1 => Ok(ClientPayload::Leave),
+        2 => Ok(ClientPayload::Lobby(
+            r.bytes32("client.lobby", MAX_LOBBY_RECORD_BYTES)?.to_vec(),
+        )),
         tag => Err(CodecError::UnknownTag {
             field: "client.tag",
             tag,
@@ -903,6 +945,11 @@ fn put_client_payload(w: &mut Writer, payload: &ClientPayload) {
             put_input_batch(w, batch);
         }
         ClientPayload::Leave => w.u8(1),
+        ClientPayload::Lobby(record) => {
+            w.u8(2);
+            w.u32(record.len() as u32);
+            w.bytes(record);
+        }
     }
 }
 

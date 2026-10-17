@@ -268,7 +268,7 @@ impl SessionReceiver {
         }
         let tick = match &message.payload {
             ClientPayload::Input(batch) => batch.frames.last().map(|frame| frame.frame_tick()),
-            ClientPayload::Leave => None,
+            ClientPayload::Leave | ClientPayload::Lobby(_) => None,
         };
         let Some(tick) = tick else {
             return ValidatedInbound {

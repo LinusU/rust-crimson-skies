@@ -369,6 +369,18 @@ pub enum HostEvent {
         /// The fire requests an admitted input batch authorized.
         fires: Vec<FireRequest>,
     },
+    /// A member peer's lobby packet (F55-B) passed the session gate. `bytes`
+    /// is the encoded `LobbyPacket`, uninterpreted at this layer; `sequence`
+    /// is the session sequence it was admitted under. A lobby packet the gate
+    /// refused is a [`HostEvent::PeerPacket`] with the refusal, like any other.
+    PeerLobby {
+        /// The peer that sent it.
+        peer: PeerId,
+        /// The admitted session sequence.
+        sequence: u32,
+        /// The encoded lobby packet.
+        bytes: Vec<u8>,
+    },
     /// The host's answer to a hello could not be encoded, so it was never
     /// sent. The client is recorded as rejected (it holds no peer id), but it
     /// learns nothing, and the caller must hang up on it. Swallowing this
@@ -902,6 +914,15 @@ impl HostTransport {
             input = Some(AdmittedInput {
                 sequence: *sequence,
                 batch: batch.clone(),
+            });
+        }
+        if let (Admission::Accepted { sequence }, ClientPayload::Lobby(bytes)) =
+            (&admission, &message.payload)
+        {
+            return Some(HostEvent::PeerLobby {
+                peer,
+                sequence: *sequence,
+                bytes: bytes.clone(),
             });
         }
         if matches!(message.payload, ClientPayload::Leave) && admission.accepted() {

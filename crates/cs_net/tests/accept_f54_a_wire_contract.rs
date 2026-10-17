@@ -528,6 +528,7 @@ fn accept_f54_a_client_payloads_are_requests_not_authority() {
     let payloads = [
         ClientPayload::Input(InputBatch { frames: Vec::new() }),
         ClientPayload::Leave,
+        ClientPayload::Lobby(Vec::new()),
     ];
     for payload in &payloads {
         let expected = match payload {
@@ -535,6 +536,9 @@ fn accept_f54_a_client_payloads_are_requests_not_authority() {
             ClientPayload::Input(_) => Delivery::Sequenced,
             // A farewell request: client-owned, reliable.
             ClientPayload::Leave => Delivery::Reliable,
+            // A lobby request (F55-BU1-WIRE): the host's lobby judges it, so
+            // it asserts nothing; reliable, idempotent by its EventId.
+            ClientPayload::Lobby(_) => Delivery::Reliable,
         };
         assert_eq!(payload.delivery(), expected);
         // The envelope forwards the payload's class unchanged.
