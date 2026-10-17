@@ -187,7 +187,16 @@ still needs file:line, and full DWARF is what filled the CI runner's disk"
 /// [`accept_t430_a_panic_backtrace_names_the_file_and_line`]. It is not an
 /// acceptance test itself: it returns immediately unless the parent asks for
 /// it, so it carries no `accept_t430_` prefix and nothing selects it by name.
-const PANIC_HELPER: &str = "cs_xtask_t430_panic_helper";
+const PANIC_HELPER_NAME: &str = "cs_xtask_t430_panic_helper";
+
+/// The helper's full test path in the shared test binary: `--exact` matches
+/// the whole path, which includes this file's module name.
+fn panic_helper_path() -> String {
+    let (_crate_name, module) = module_path!()
+        .split_once("::")
+        .expect("this file is a module of the shared test binary");
+    format!("{module}::{PANIC_HELPER_NAME}")
+}
 
 /// Environment variable that turns this test binary into the panicking child.
 const PANIC_HELPER_ENV: &str = "CS_XTASK_T430_PANIC_HELPER";
@@ -204,7 +213,7 @@ fn cs_xtask_t430_panic_helper() {
 
 /// The setting above is only worth its megabytes if the binary really keeps
 /// `file:line`, so this checks the artifact instead of the manifest string: it
-/// runs [`PANIC_HELPER`] in a child process with `RUST_BACKTRACE=1` and
+/// runs [`PANIC_HELPER_NAME`] in a child process with `RUST_BACKTRACE=1` and
 /// requires a backtrace *frame* to name a line of this file.
 ///
 /// Only the frames are read, never the header the panic hook prints for the
@@ -241,7 +250,7 @@ fn accept_t430_a_panic_backtrace_names_the_file_and_line() {
     let exe = std::env::current_exe().expect("this test binary must have a path to re-run");
     let child = transient::command_output(
         std::process::Command::new(&exe)
-            .args(["--exact", PANIC_HELPER, "--nocapture"])
+            .args(["--exact", &panic_helper_path(), "--nocapture"])
             .env(PANIC_HELPER_ENV, "1")
             .env("RUST_BACKTRACE", "1"),
     )

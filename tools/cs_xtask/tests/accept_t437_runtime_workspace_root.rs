@@ -176,6 +176,15 @@ fn accept_t437_the_running_root_follows_the_working_directory() {
     );
 }
 
+/// The child half's full test path in the shared test binary: `--exact`
+/// matches the whole path, which includes this file's module name.
+fn child_test_path() -> String {
+    let (_crate_name, module) = module_path!()
+        .split_once("::")
+        .expect("this file is a module of the shared test binary");
+    format!("{module}::accept_t437_the_running_root_follows_the_working_directory")
+}
+
 /// The root a re-executed copy of this binary is expected to report, set by
 /// [`accept_t437_a_binary_compiled_elsewhere_names_the_checkout_it_runs_in`].
 const RUNNING_ROOT_EXPECTED: &str = "CS_T437_EXPECTED_RUNNING_ROOT";
@@ -196,7 +205,7 @@ fn accept_t437_a_binary_compiled_elsewhere_names_the_checkout_it_runs_in() {
             .current_dir(&root)
             .args([
                 "--exact",
-                "accept_t437_the_running_root_follows_the_working_directory",
+                &child_test_path(),
                 "--nocapture",
                 "--test-threads",
                 "1",
