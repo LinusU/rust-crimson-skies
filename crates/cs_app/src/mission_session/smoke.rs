@@ -59,8 +59,8 @@ use bevy::input::keyboard::KeyCode;
 use bevy::input::{ButtonInput, InputSystems};
 use bevy::prelude::{
     App, AppExit, ChildOf, ClearColor, Commands, Entity, GlobalTransform, IntoScheduleConfigs,
-    Last, Mesh3d, MessageWriter, On, Plugin, PreUpdate, Quat, Query, Res, ResMut, Resource, Text,
-    Transform, Update, Vec2, Vec3, Visibility, With,
+    Last, Local, Mesh3d, MessageWriter, On, Plugin, PreUpdate, Quat, Query, Res, ResMut, Resource,
+    Text, Transform, Update, Vec2, Vec3, Visibility, With,
 };
 use bevy::render::render_resource::TextureFormat;
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk};
@@ -187,12 +187,32 @@ pub const MIN_WORLD_COVERAGE_PERMILLE: u32 = super::evidence::MIN_WORLD_COVERAGE
 /// fills a band of the frame; a horizon-wide sliver is not a sea a player can
 /// see.
 pub const MIN_SEA_COVERAGE_PERMILLE: u32 = 100;
+/// The least fraction of the world's pixels that may show *local detail* — a
+/// colour change of more than 8/255 against a neighbour — for the terrain to
+/// be called *textured*, in parts per thousand.
+///
+/// Measured basis (2026-10-17, this run's own terrain probe,
+/// `frame_00033_world.png`): the flat, untextured terrain the owner reported
+/// measures **1 per mille** (3 122 of 1 971 178 pixels — antialiasing and the
+/// fog band alone), while its 711 distinct colours and its whole-frame
+/// luminance spread of 120 come entirely from that smooth fog gradient. Local
+/// detail is what separates a texture from a gradient; the floor sits 20×
+/// above the flat state.
+pub const MIN_TERRAIN_DETAIL_PERMILLE: u32 = 20;
 /// The least number of distinct colours the world pixels must hold for the
 /// terrain to be called *textured*. A flat grey fill under any light yields
-/// one colour; the smallest real texture yields dozens.
+/// one colour; the smallest real texture yields dozens. Measured flat state:
+/// 711 (the fog band's gradient), so this floor alone is never the decider —
+/// [`Self::MIN_TERRAIN_DETAIL_PERMILLE`] is.
 pub const MIN_TERRAIN_DISTINCT_COLOURS: usize = 24;
-/// The least luminance spread (max − min over the world pixels) for the
-/// terrain to be called *lit*. A flat unlit fill's spread is 0.
+/// The least luminance spread **in the near field** (the closest third of the
+/// probe frame, where the fog is negligible) for the terrain to be called
+/// *lit*.
+///
+/// Measured basis (same frame): the reported unlit terrain spans **1** there
+/// (82..83) — one flat value as far as the eye can see — while the whole
+/// frame's 120 spread is the fog band, which is why the near field is what
+/// the check reads. A lit surface's facet shading starts at tens.
 pub const MIN_TERRAIN_LUMINANCE_SPREAD: u8 = 24;
 /// The least screen pixels a spawned actor must cover to count as *seen*.
 ///
@@ -305,10 +325,18 @@ pub struct TerrainMetrics {
     pub covered_permille: u32,
     /// Distinct colours among the world's pixels.
     pub distinct_colours: usize,
+    /// World pixels that differ from a neighbour by more than 8/255, in parts
+    /// per thousand: the texture's local detail, not a smooth gradient.
+    pub detail_permille: u32,
     /// The smallest luminance among the world's pixels.
     pub luminance_min: u8,
     /// The largest luminance among the world's pixels.
     pub luminance_max: u8,
+    /// The smallest luminance in the near field (the closest third of the
+    /// frame), where fog is negligible: what the *lit* check reads.
+    pub near_luminance_min: u8,
+    /// The largest luminance in the near field.
+    pub near_luminance_max: u8,
 }
 
 /// What the sea probe measured.
@@ -465,24 +493,36 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
             checks.push(Check {
                 id: "world_terrain_textured".to_owned(),
                 applies: true,
-                passed: terrain.distinct_colours >= MIN_TERRAIN_DISTINCT_COLOURS,
+                passed: terrain.detail_permille >= MIN_TERRAIN_DETAIL_PERMILLE
+                    && terrain.distinct_colours >= MIN_TERRAIN_DISTINCT_COLOURS,
                 detail: format!(
-                    "the world's pixels hold {} distinct colours (floor {}); a flat grey fill \
-                     holds one",
-                    terrain.distinct_colours, MIN_TERRAIN_DISTINCT_COLOURS
+                    "{} of the world's pixels ({} per mille, floor {}) differ from a neighbour — \
+                     the local detail a texture has and a smooth fog gradient does not; \
+                     {} distinct colours (floor {})",
+                    (u64::from(terrain.detail_permille) * terrain.world_pixels as u64 / 1000)
+                        as usize,
+                    terrain.detail_permille,
+                    MIN_TERRAIN_DETAIL_PERMILLE,
+                    terrain.distinct_colours,
+                    MIN_TERRAIN_DISTINCT_COLOURS
                 ),
             });
-            let spread = terrain.luminance_max.saturating_sub(terrain.luminance_min);
+            let spread = terrain
+                .near_luminance_max
+                .saturating_sub(terrain.near_luminance_min);
             checks.push(Check {
                 id: "world_terrain_lit".to_owned(),
                 applies: true,
                 passed: spread >= MIN_TERRAIN_LUMINANCE_SPREAD,
                 detail: format!(
-                    "the world's pixels span luminance {}..{} (spread {}, floor {})",
-                    terrain.luminance_min,
-                    terrain.luminance_max,
+                    "the near field spans luminance {}..{} (spread {}, floor {}); the whole \
+                     frame spans {}..{}, whose spread is the fog band rather than shading",
+                    terrain.near_luminance_min,
+                    terrain.near_luminance_max,
                     spread,
-                    MIN_TERRAIN_LUMINANCE_SPREAD
+                    MIN_TERRAIN_LUMINANCE_SPREAD,
+                    terrain.luminance_min,
+                    terrain.luminance_max
                 ),
             });
         }
@@ -719,10 +759,18 @@ pub struct FrameRecord {
     /// Distinct colours among the pixels off *both* encodings of the clear
     /// colour — the world's own colours, without the background.
     pub off_distinct_colours: usize,
+    /// Among those pixels, the fraction that differs from a neighbour by more
+    /// than 8/255, in parts per thousand — the texture's local detail.
+    pub off_detail_permille: u32,
     /// The smallest luminance among those pixels.
     pub off_luminance_min: u8,
     /// The largest luminance among those pixels.
     pub off_luminance_max: u8,
+    /// The smallest luminance among those pixels in the near field (the
+    /// closest third of the frame), where fog is negligible.
+    pub near_luminance_min: u8,
+    /// The largest luminance among those pixels in the near field.
+    pub near_luminance_max: u8,
     /// Yellow-ish objective-text pixels counted inside the objective UI region
     /// (`None` for frames the HUD probe did not measure).
     pub text_pixels: Option<usize>,
@@ -981,8 +1029,10 @@ fn apply_placement(
 /// frame. An actor probe then restores exactly the one entity it keeps — the
 /// player's own body for the player's segment, the residency's visual for a
 /// zeppelin's.
+#[allow(clippy::too_many_arguments)]
 fn apply_probe(
     mode: Res<ProbeState>,
+    mut last: Local<ProbeMode>,
     mut visibility: Query<&mut Visibility>,
     domes: Query<Entity, With<HorizonDome>>,
     seas: Query<Entity, With<HorizonSea>>,
@@ -993,6 +1043,10 @@ fn apply_probe(
     ui: Query<Entity, With<Node>>,
 ) {
     let mode = mode.0;
+    if *last != mode {
+        *last = mode;
+        println!("mission smoke probe: {mode:?}");
+    }
     let hidden = Visibility::Hidden;
     let shown = Visibility::Inherited;
     let anything_hidden = mode != ProbeMode::Restored;
@@ -1003,14 +1057,28 @@ fn apply_probe(
     } else {
         hidden
     };
-    let world_value = if anything_hidden { hidden } else { shown };
+    // Only an actor probe hides the world: every other probe exists to
+    // measure the world (or the sea plane) itself.
+    let world_value = if matches!(mode, ProbeMode::Actor(_)) {
+        hidden
+    } else {
+        shown
+    };
     write_all(&mut visibility, domes.iter(), hidden);
     write_all(&mut visibility, weather.iter(), hidden);
     write_all(&mut visibility, precip.iter(), hidden);
     write_all(&mut visibility, seas.iter(), sea_value);
-    write_all(&mut visibility, players.iter(), world_value);
+    write_all(
+        &mut visibility,
+        players.iter(),
+        if anything_hidden { hidden } else { shown },
+    );
     write_all(&mut visibility, visuals.iter(), world_value);
-    write_all(&mut visibility, ui.iter(), world_value);
+    write_all(
+        &mut visibility,
+        ui.iter(),
+        if anything_hidden { hidden } else { shown },
+    );
     if let ProbeMode::Actor(Some(keep)) = mode {
         write_all(&mut visibility, std::iter::once(keep), shown);
     }
@@ -1218,7 +1286,18 @@ fn smoke_census(
             on_screen: false,
             pixels: 0,
             total_pixels: 0,
-            note: None,
+            // Fail-closed by name: a member the census could not find a drawn
+            // entity for says so, rather than reporting an unexplained zero.
+            note: entry.drawn_entity.is_none().then(|| match entry.kind {
+                "aircraft" => "the record spawns a physics body with no visual, so nothing \
+                               draws this actor"
+                    .to_owned(),
+                "zeppelin" => format!(
+                    "no residency visual sat within {VISUAL_MATCH_M} m of the actor's bind-time \
+                     pose, so its drawn body could not be matched to it"
+                ),
+                _ => "no drawn entity was found for this member".to_owned(),
+            }),
         });
     }
 }
@@ -1405,11 +1484,11 @@ fn smoke_script(
             }
         }
         Phase::Approach => {
-            if at == 0 {
-                if let Some(placement) = place_for_trigger(&mut data) {
-                    pending.0 = Some(placement);
-                    data.measurements.approach.placed = true;
-                }
+            if at == 0
+                && let Some(placement) = place_for_trigger(&mut data)
+            {
+                pending.0 = Some(placement);
+                data.measurements.approach.placed = true;
             }
             if at > APPROACH_BUDGET_FRAMES
                 || (data.measurements.approach.objective_woke && at > APPROACH_MIN_FRAMES)
@@ -1673,8 +1752,11 @@ fn finish_measurements(data: &mut SmokeData, shots: &[FrameRecord]) {
             total_pixels: total,
             covered_permille: permille(world.off_clear, total),
             distinct_colours: world.off_distinct_colours,
+            detail_permille: world.off_detail_permille,
             luminance_min: world.off_luminance_min,
             luminance_max: world.off_luminance_max,
+            near_luminance_min: world.near_luminance_min,
+            near_luminance_max: world.near_luminance_max,
         });
     }
     if let (Some(visible), Some(absent)) = (find("sea_visible"), find("sea_absent")) {
@@ -1757,8 +1839,22 @@ fn measure(
     let mut off_colours = HashSet::new();
     let mut off_min = u8::MAX;
     let mut off_max = 0_u8;
+    let mut detail = 0_usize;
+    let mut near_min = u8::MAX;
+    let mut near_max = 0_u8;
     let mut text_pixels = 0_usize;
-    let width = image.width();
+    let width = image.width() as usize;
+    let height = image.height() as usize;
+    let near_from = height.saturating_mul(2) / 3;
+    let colour_of = |index: usize| -> [u8; 3] {
+        let pixel = pixels[index];
+        [pixel[order[0]], pixel[order[1]], pixel[order[2]]]
+    };
+    let is_off = |colour: [u8; 3]| {
+        clear_colours.is_some_and(|colours| {
+            !same_colour(colour, colours[0]) && !same_colour(colour, colours[1])
+        })
+    };
     for (index, pixel) in pixels.iter().enumerate() {
         let colour = [pixel[order[0]], pixel[order[1]], pixel[order[2]]];
         let luminance =
@@ -1766,22 +1862,47 @@ fn measure(
                 >> 8) as u8;
         levels.insert(luminance);
         sum += u64::from(luminance);
-        if clear_colours.is_some_and(|colours| {
-            !same_colour(colour, colours[0]) && !same_colour(colour, colours[1])
-        }) {
+        let py = index / width;
+        if is_off(colour) {
             off_colours.insert(colour);
             off_min = off_min.min(luminance);
             off_max = off_max.max(luminance);
+            if py >= near_from {
+                near_min = near_min.min(luminance);
+                near_max = near_max.max(luminance);
+            }
+            // Local detail: a world pixel that differs from a neighbour that
+            // is also world geometry. A smooth gradient (fog, sky) has none;
+            // a texture has it everywhere.
+            let right = if index % width + 1 < width {
+                index + 1
+            } else {
+                0
+            };
+            let down = (index + width).min(pixels.len().saturating_sub(1));
+            let differs = |other: usize| {
+                let neighbour = colour_of(other);
+                is_off(neighbour)
+                    && (0..3).any(|channel| colour[channel].abs_diff(neighbour[channel]) > 8)
+            };
+            if (index % width + 1 < width && differs(right)) || (py + 1 < height && differs(down)) {
+                detail += 1;
+            }
         }
         if let Some([x, y, w, h]) = region {
-            let px = (index % width as usize) as u32;
-            let py = (index / width as usize) as u32;
-            if px >= x && px < x + w && py >= y && py < y + h && is_objective_text(colour) {
+            let px = (index % width) as u32;
+            if px >= x
+                && px < x + w
+                && (py as u32) >= y
+                && (py as u32) < y + h
+                && is_objective_text(colour)
+            {
                 text_pixels += 1;
             }
         }
     }
     let counted = count_world_pixels(data, format, clear_colours);
+    let world_pixels = counted.world;
     FrameRecord {
         label,
         path,
@@ -1793,12 +1914,15 @@ fn measure(
         } else {
             sum as f32 / pixels.len() as f32
         },
-        off_clear: counted.world,
+        off_clear: world_pixels,
         near_clear: counted.clear,
         modal: counted.modal,
         off_distinct_colours: off_colours.len(),
+        off_detail_permille: permille(detail, world_pixels),
         off_luminance_min: if off_colours.is_empty() { 0 } else { off_min },
         off_luminance_max: off_max,
+        near_luminance_min: if near_min == u8::MAX { 0 } else { near_min },
+        near_luminance_max: near_max,
         text_pixels: region.map(|_| text_pixels),
     }
 }
@@ -1896,7 +2020,8 @@ fn write_artifacts(
             format!(
                 "{{\"label\":{},\"path\":{},\"width\":{},\"height\":{},\
                  \"distinct_luminance\":{},\"mean_luminance\":{},\"off_clear\":{},\
-                 \"near_clear\":{},\"off_distinct_colours\":{},\"off_luminance_spread\":{},\
+                 \"near_clear\":{},\"off_distinct_colours\":{},\"off_detail_permille\":{},\
+                 \"off_luminance_spread\":{},\"near_luminance_spread\":{},\
                  \"text_pixels\":{}}}",
                 json_string(&shot.label),
                 json_string(&shot.path.display().to_string()),
@@ -1907,8 +2032,11 @@ fn write_artifacts(
                 shot.off_clear,
                 shot.near_clear,
                 shot.off_distinct_colours,
+                shot.off_detail_permille,
                 shot.off_luminance_max
                     .saturating_sub(shot.off_luminance_min),
+                shot.near_luminance_max
+                    .saturating_sub(shot.near_luminance_min),
                 json_option_usize(shot.text_pixels),
             )
         })

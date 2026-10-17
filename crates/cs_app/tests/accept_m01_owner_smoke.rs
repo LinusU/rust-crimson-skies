@@ -17,8 +17,9 @@ use cs_app::cli::{self, CliRequest, parse};
 use cs_app::mission_session::{
     ActorMetrics, AudioMetrics, Check, GunMetrics, HudMetrics, MIN_ACTOR_PIXELS, MIN_GUN_ROUNDS,
     MIN_MISSION_SMOKE_SECONDS, MIN_OBJECTIVE_TEXT_PIXELS, MIN_SEA_COVERAGE_PERMILLE,
-    MIN_TERRAIN_DISTINCT_COLOURS, MIN_TERRAIN_LUMINANCE_SPREAD, RocketMetrics, SMOKE_KIND,
-    SMOKE_REPORT_FILE, SeaMetrics, SmokeMeasurements, TerrainMetrics, evaluate_mission_smoke,
+    MIN_TERRAIN_DETAIL_PERMILLE, MIN_TERRAIN_DISTINCT_COLOURS, MIN_TERRAIN_LUMINANCE_SPREAD,
+    RocketMetrics, SMOKE_KIND, SMOKE_REPORT_FILE, SeaMetrics, SmokeMeasurements, TerrainMetrics,
+    evaluate_mission_smoke,
 };
 use cs_app::playtest::SmokeRequest;
 
@@ -64,12 +65,15 @@ fn healthy() -> SmokeMeasurements {
         frames: 1_800,
         ticks: 21_600,
         terrain: Some(TerrainMetrics {
-            world_pixels: 2_334_389,
+            world_pixels: 1_971_178,
             total_pixels: 3_686_400,
-            covered_permille: 633,
-            distinct_colours: 512,
+            covered_permille: 535,
+            distinct_colours: 12_000,
+            detail_permille: 420,
             luminance_min: 24,
             luminance_max: 210,
+            near_luminance_min: 40,
+            near_luminance_max: 200,
         }),
         sea: Some(SeaMetrics {
             sea_pixels: 1_180_000,
@@ -178,12 +182,18 @@ fn accept_m01_owner_smoke_the_judge_fails_everything_the_owner_could_not_see() {
         frames: 780,
         ticks: 9_360,
         terrain: Some(TerrainMetrics {
-            world_pixels: 2_334_389,
+            world_pixels: 1_971_178,
             total_pixels: 3_686_400,
-            covered_permille: 633,
-            distinct_colours: 3,
-            luminance_min: 68,
-            luminance_max: 90,
+            covered_permille: 535,
+            // The measured run of 2026-10-17: 711 colours and a whole-frame
+            // spread of 120, all of it the horizon fog — but only 1 per mille
+            // of local detail and a near field of 82..83.
+            distinct_colours: 711,
+            detail_permille: 1,
+            luminance_min: 82,
+            luminance_max: 202,
+            near_luminance_min: 82,
+            near_luminance_max: 83,
         }),
         sea: Some(SeaMetrics {
             sea_pixels: 0,
@@ -293,11 +303,25 @@ fn accept_m01_owner_smoke_the_judge_fails_everything_the_owner_could_not_see() {
     let failed = failures(&barely_checks);
     assert!(failed.contains(&"world_terrain_textured"), "{failed:?}");
     let mut barely = healthy();
-    barely.terrain.as_mut().expect("a terrain").luminance_max =
-        24 + MIN_TERRAIN_LUMINANCE_SPREAD - 1;
+    barely.terrain.as_mut().expect("a terrain").detail_permille = MIN_TERRAIN_DETAIL_PERMILLE - 1;
+    assert!(
+        failures(&evaluate_mission_smoke(&barely)).contains(&"world_terrain_textured"),
+        "one per mille under the detail floor fails — a smooth fog gradient is not a texture"
+    );
+    let mut barely = healthy();
+    barely
+        .terrain
+        .as_mut()
+        .expect("a terrain")
+        .near_luminance_min = 60;
+    barely
+        .terrain
+        .as_mut()
+        .expect("a terrain")
+        .near_luminance_max = 60 + MIN_TERRAIN_LUMINANCE_SPREAD - 1;
     assert!(
         failures(&evaluate_mission_smoke(&barely)).contains(&"world_terrain_lit"),
-        "a spread one under the lit floor fails"
+        "a near field one level under the lit floor fails"
     );
     let mut barely = healthy();
     barely.sea.as_mut().expect("a sea").covered_permille = MIN_SEA_COVERAGE_PERMILLE - 1;
@@ -426,7 +450,9 @@ fn accept_m01_owner_smoke_the_cli_takes_a_mission_smoke_and_refuses_its_misuse()
         );
     }
     // The minimum is the documented one.
-    assert!(MIN_MISSION_SMOKE_SECONDS >= 45, "the script needs the room");
+    const {
+        assert!(MIN_MISSION_SMOKE_SECONDS >= 45, "the script needs the room");
+    }
     assert!(
         cli::HELP_TEXT.contains("--mission <id> --smoke-seconds <n>"),
         "--help documents the mission smoke"
