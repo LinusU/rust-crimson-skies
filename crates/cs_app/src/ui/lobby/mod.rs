@@ -18,11 +18,19 @@
 //! authoritative lobby ([`link::LobbyLink`]). No widget layout or
 //! localization lookup is wired yet: the reason carries its stable key and
 //! the designed English fallback only.
+//!
+//! F55-BU2 adds the production loadout validator
+//! ([`validator::ConstructionLoadoutValidator`]): the
+//! `cs_net::lobby::LoadoutValidator` the lobby had only test doubles for,
+//! judged over the shared `cs_content::construction` rules through an authored
+//! blueprint catalog (`cs_content::lobby`). Without one injected, the lobby
+//! refuses a loadout it cannot judge rather than accepting it unjudged.
 
 pub mod launch;
 pub mod link;
 pub mod results;
 pub mod screen;
+pub mod validator;
 
 use std::collections::BTreeSet;
 
@@ -37,6 +45,7 @@ pub use results::ResultsScreen;
 pub use screen::{
     Back, Field, FieldProblem, HostDraft, JoinDraft, LobbyScreen, LobbyUiError, Stage,
 };
+pub use validator::ConstructionLoadoutValidator;
 
 /// A line the lobby screen shows.
 #[derive(Clone, Debug, PartialEq, Eq)]
