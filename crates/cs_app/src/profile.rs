@@ -44,6 +44,13 @@
 //! * Opening a population **reads** the persisted active pointer and never
 //!   rewrites it, so launching costs no write and a read-only profile tree is
 //!   still openable.
+//! * [`ProfileSession::with_announced_signature`] declares the content
+//!   signature the run's mount produced (F53 non-negotiable 3): every revision
+//!   the session then writes records it under `fingerprint.content`, so a
+//!   save reopened later can be checked against what wrote it. The session's
+//!   [`ProfileKind`] is the other half of the marking — a mounted run opens
+//!   [`cs_content::mods::save_population`]'s `Modded` population, so its
+//!   saves land on the modded side of F48's wall.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -51,10 +58,12 @@ use std::path::{Path, PathBuf};
 use std::sync::{Mutex, OnceLock};
 
 use cs_content::legacy_import::BlueprintRecordOutcome;
+use cs_content::mods::mark_save_document;
 use cs_content::save::fs::SlotError;
 use cs_content::save::library::{LibraryError, LoadedProfile, ProfileLibrary};
 use cs_content::save::settings::{CatalogError, SettingCatalog, SettingOutcome, SettingsState};
 use cs_content::save::store::CommitError;
+use cs_types::evidence::ContentHash;
 use cs_types::profile::{
     CampaignState, ExtraField, MAX_DISPLAY_NAME_BYTES, ProfileDocument, ProfileFieldError,
     ProfileId, ProfileKind, Revision, validate_text,
@@ -502,6 +511,10 @@ pub struct ProfileSession {
     /// Diagnostics from a profile the population's active pointer named that
     /// could not be selected at all. Text, because the caller shows it.
     open_failures: Vec<String>,
+    /// The content signature this session announces — what the run's mount
+    /// produced (F53 non-negotiable 3). `None` when the session announces
+    /// nothing, which a save honestly records as *no claim*.
+    announced: Option<ContentHash>,
 }
 
 impl ProfileSession {
@@ -529,6 +542,7 @@ impl ProfileSession {
             settings: None,
             uncommitted_settings: false,
             open_failures: Vec::new(),
+            announced: None,
         };
         // The active profile is selected from what is stored, not from the
         // registry alone. A profile whose slot cannot be read — a future
@@ -566,6 +580,35 @@ impl ProfileSession {
             ProfileKind::Synthetic,
             catalog,
         )
+    }
+
+    /// Declares the content signature this session announces — what the
+    /// run's mount produced through [`cs_content::mods::content_signature`]
+    /// (`MountedMods::signature` for a mounted set, the base fingerprint for
+    /// a stock run).
+    ///
+    /// Every revision the session writes from then on records that
+    /// signature under `fingerprint.content`
+    /// ([`cs_content::mods::mark_save_document`]) — the write half of "a
+    /// modified session marks its saves" (F53 non-negotiable 3), so a save
+    /// reopened later can be checked against what wrote it instead of
+    /// silently degrading. A session that announces nothing writes no
+    /// `content` claim at all, which the reopen check reports as
+    /// [`cs_content::mods::SaveSignatureStatus::Unrecorded`] — an honest
+    /// unknown, told apart from a save that claims stock.
+    ///
+    /// Pair it with [`cs_content::mods::save_population`] as the session's
+    /// [`ProfileKind`] so the mark and the population agree: a mounted
+    /// session's saves are `Modded`, a stock session's `Production`.
+    #[must_use]
+    pub fn with_announced_signature(mut self, signature: ContentHash) -> Self {
+        self.announced = Some(signature);
+        self
+    }
+
+    /// The content signature this session announces, if it declares one.
+    pub const fn announced_signature(&self) -> Option<ContentHash> {
+        self.announced
     }
 
     /// The population this session owns.
@@ -658,7 +701,7 @@ impl ProfileSession {
         let kind = self.library.kind();
         // The library assigns the real id and revision; the document only has to
         // carry a valid non-zero placeholder until it does.
-        let draft = ProfileDocument {
+        let mut draft = ProfileDocument {
             kind,
             display_name: display_name.to_owned(),
             settings: self.settings_seed(),
@@ -667,6 +710,7 @@ impl ProfileSession {
                 Revision(1),
             )
         };
+        self.mark_announced(&mut draft);
         let (id, document) = self.library.create(draft)?;
         // The registry makes the first profile active on its own; a later one has
         // to be pointed at explicitly, or the pointer keeps naming the pilot
@@ -750,7 +794,8 @@ impl ProfileSession {
             }
             None => {}
         }
-        let document = import_document(confirmed, self.settings_seed())?;
+        let mut document = import_document(confirmed, self.settings_seed())?;
+        self.mark_announced(&mut document);
         let (id, document) = self.library.create(document)?;
         if self.library.active() != Some(id) {
             self.library.set_active(id)?;
@@ -998,6 +1043,16 @@ impl ProfileSession {
         SettingsState::open(&self.catalog, &[]).entries()
     }
 
+    /// Records this session's announced content signature in `draft` — the
+    /// `fingerprint.content` mark every committed revision carries (F53
+    /// non-negotiable 3). A session that announces nothing writes no claim,
+    /// which is the honest `Unrecorded`, not an implicit stock one.
+    fn mark_announced(&self, draft: &mut ProfileDocument) {
+        if let Some(signature) = self.announced {
+            mark_save_document(draft, signature);
+        }
+    }
+
     /// One write attempt. `Moved` carries the stored revision the retry must
     /// re-read; anything else is final.
     fn commit_once(
@@ -1026,6 +1081,7 @@ impl ProfileSession {
         if let Some(settings) = &self.settings {
             draft.settings = settings.entries();
         }
+        self.mark_announced(&mut draft);
         match self.library.save(&draft) {
             Ok(()) => {
                 let found = self.selected.as_mut().expect("a selected profile");
@@ -1101,6 +1157,7 @@ impl ProfileSession {
         if let Some(settings) = &self.settings {
             draft.settings = settings.entries();
         }
+        self.mark_announced(&mut draft);
         self.library.save(&draft)?;
         let found = self.selected.as_mut().expect("a selected profile");
         found.document = Some(draft);
