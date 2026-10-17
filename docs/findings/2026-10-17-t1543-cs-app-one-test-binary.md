@@ -11,17 +11,18 @@ test files)", following the convention of
   (`cs_app_tests`, `tests/main.rs`), and `cs_xtask` as a dev-dependency (the
   acceptance test calls the guard's library function). `Cargo.lock` gains the
   matching dependency edge.
-- `crates/cs_app/tests/main.rs` declares the 252 former top-level files and the
+- `crates/cs_app/tests/main.rs` declares the former top-level files and the
   12 former directory targets (`accessibility camera campaign environment
   flight hud physics render scrapbook text ui world`) as modules. Each former
   `tests/<dir>/main.rs` became `tests/<dir>/mod.rs`. No test body changed.
 - Inside those 12 directories the sibling files reached the old binary root
   with `use crate::common::…`; the "root" is now the directory module, so
   `crate::` became `crate::<dir>::` (module scoping, mechanical, 136 files).
-  `tests/f64_c_support`, `tests/f64_d_support`, `tests/damage`, `tests/debris`
-  and `tests/playtest_retail` are still shared through the `#[path]`
-  declarations their consumers already had; a helper included by several
-  modules is now one module per includer, so no name collides.
+  `tests/damage`, `tests/debris` and `tests/playtest_retail` are still reached
+  by their single consumer's `#[path]`; `f64_c_support`/`f64_d_support` (and
+  `world/import_retail.rs`) were `#[path]`-included by several files, which
+  clippy's `duplicate_mod` forbids, so they are declared once and the former
+  includers `use` them.
 - `tests/accept_f48_d_crash_recovery_matrix.rs`: the crash-child re-exec used
   `--exact <bare name>`; libtest's exact match is on the full path, so the
   constant is now `accept_f48_d_crash_recovery_matrix::f48_d_…`. This was the
@@ -42,15 +43,18 @@ test files)", following the convention of
 
 ## 2. Test names, before and after
 
-`cargo test -p cs_app --locked -- --list --include-ignored` after the change
-lists **2729** integration test names. The before figure is counted from the
-sources of `HEAD~` (`#[test]` plus the following `fn`): **2719** distinct
-functions, and the 10 more names after are `tests/world/import_retail.rs`
-(9 tests) and one `accept_f18_…` test that `tests/campaign/vs_m01_geometry_verdict.rs`
-includes by `#[path]`: they already ran twice (once in the `world` binary, once
-in the `campaign` binary) and are now two module-qualified names. No name from
-before is missing after. Listing the old layout itself (249 fresh binaries,
-~1 min of macOS scan each) was not done.
+`cargo test -p cs_app --locked -- --list --include-ignored` on the first
+version of the migration listed **2729** names; the sources of `HEAD~` hold
+**2719** distinct `#[test]` functions. The 10 extra were `tests/world/import_retail.rs`
+(9 tests) and one `accept_f18_…` test that
+`tests/campaign/vs_m01_geometry_verdict.rs` loaded a second time by `#[path]`
+(they ran in both the `world` and the `campaign` binary). clippy's
+`duplicate_mod` (`-D warnings`) refuses a file loaded as two modules, so the
+final layout declares `f64_c_support`/`f64_d_support` once in `main.rs` and
+`world::import_retail` as `pub(crate)`, and the includers `use` them. Each of
+those tests is therefore listed and run once in the single binary where it ran
+twice across the old ones; no name from before is missing. Listing the old
+layout itself (249 fresh binaries, ~1 min of macOS scan each) was not done.
 
 ## 3. The blocker: `__eh_frame` over 16 MiB on macOS
 
