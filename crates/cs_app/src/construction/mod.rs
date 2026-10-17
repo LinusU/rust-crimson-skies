@@ -133,6 +133,15 @@ impl ConstructionSession {
         self.sells.push(item);
     }
 
+    /// The sales staged so far, in the order they were queued. The draft's
+    /// pending edits are more than the blueprint's fitments — a queued sale is
+    /// one — and the F45-C.1 projection reads them through here so the front
+    /// end's dirty state counts them too.
+    #[must_use]
+    pub fn sells(&self) -> &[ContentId] {
+        &self.sells
+    }
+
     /// The validator's live verdict on the edited blueprint, for the preview.
     ///
     /// This is judged by exactly the policy [`Self::commit`] judges it by — the

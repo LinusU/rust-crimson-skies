@@ -416,6 +416,14 @@ impl ConstructionScreen {
         self.notice = None;
     }
 
+    /// The sales staged so far, in queue order — the pending edits a
+    /// projection of this draft must count alongside the blueprint's
+    /// fitments for its dirty state to equal [`Self::is_dirty`].
+    #[must_use]
+    pub fn staged_sales(&self) -> &[ContentId] {
+        self.session.sells()
+    }
+
     /// The draft as a portable record for the export path.
     ///
     /// Every field is a catalog id or an authored number — paint and decals
