@@ -226,8 +226,8 @@ fn destroyed(app: &mut App, actor: ActorId) -> bool {
     })
 }
 
-/// The composed stage a test drives, with a target bound and aimed.
-fn armed_stage(label: &str) -> (Scratch, App, ActorId) {
+/// **The composed stage a test drives, with a target bound and aimed.**
+pub(crate) fn armed_stage(label: &str) -> (Scratch, App, ActorId) {
     let (scratch, mut app) = composed(label);
     // The weapon session opened for the served generation and the rig hangs on
     // the player: both are the plugin's own work.
