@@ -71,12 +71,14 @@ Blocked:    omega = clamp(committed_error / dt,          +/- max_yaw_rate) = 0
 
 - **Corridor keep-out (`t761_a`).** Two slabs leave a `x in [2, 40]` opening
   at `z = -60`; a straight `-Z` run ends inside the left slab. The declared
-  route bends ~9 deg through the opening to the next mandatory marker
-  (authored radius 8 m). Across 6000 ticks the body's raw per-tick segments
-  **never intersect either slab**; it arrives at the gap marker at ~6 m and
-  completes the route with `stalled_ticks = 0`. What keeps the airframe out
-  is the plan refusing to commit a step that crosses a (clearance-grown)
-  blocker — the corridor — plus the follower tracking it.
+  route runs a ~9 deg bearing through the opening (the bend at the gap
+  marker is ~2 deg) to the next mandatory marker (authored radius 8 m).
+  Across 6000 ticks the body's raw per-tick segments **never intersect
+  either slab**; the swept arrival fires at 7.97 m from the gap marker —
+  just inside the authored radius — and the route completes with
+  `stalled_ticks = 0`. What keeps the airframe out is the plan refusing to
+  commit a step that crosses a (clearance-grown) blocker — the corridor —
+  plus the follower tracking it.
 - **Committed dodge (`t761_b`).** A 2 mm wire plate astride the leg is the
   geometry the bounded per-tick authority can still dodge: the direct step
   sweeps it, the yaw-bounded offset exits the band inside one tick. The
