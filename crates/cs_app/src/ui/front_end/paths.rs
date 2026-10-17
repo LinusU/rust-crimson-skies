@@ -313,6 +313,13 @@ fn request_name(request: RequestKind) -> &'static str {
         RequestKind::ScrapbookPage => "scrapbook_page",
         RequestKind::ScrapbookSelect => "scrapbook_select",
         RequestKind::LaunchReplay => "launch_replay",
+        RequestKind::OpenInstantAction => "open_instant_action",
+        RequestKind::StartCustomScenario => "start_custom_scenario",
+        RequestKind::LaunchInstantAction => "launch_instant_action",
+        RequestKind::InstantActionBack => "instant_action_back",
+        RequestKind::RetryInstantAction => "retry_instant_action",
+        RequestKind::FinishInstantAction => "finish_instant_action",
+        RequestKind::EndInstantAction => "end_instant_action",
     }
 }
 

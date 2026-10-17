@@ -20,6 +20,11 @@
 //!   ever bound twice and leaving the mission releases the world.
 //! * [`check_layout`] — a visible hotspot must request a user action that has a
 //!   transition on that screen.
+//! * Instant Action (F49-C2): [`Screen::IaSelect`], [`Screen::IaCustomize`],
+//!   [`Screen::IaFlight`] and [`Screen::IaResults`] are the rows of
+//!   `ui::instant_action::IA_TABLE` as front-end screens, entered from the main
+//!   menu and left for it; [`FrontEndFlow`] drives
+//!   `ui::instant_action::InstantActionFlow` behind them.
 //! * [`FrontEnd`] (in `machine`) — the machine that walks the table.
 //! * [`ScreenSession`] (in `screens`, F45-B) — the front end presented through
 //!   a validated [`ScreenDeck`] of authored artwork and hotspots: pointer
@@ -77,8 +82,8 @@ pub use capture::{
     ScreenCapture, ScreenCaptureError, capture_artwork, capture_screen,
 };
 pub use flow::{
-    ConstructionInputs, FlowDomainView, FlowError, FlowSetup, FrontEndFlow, LoadError, LoadFlow,
-    LoadPlan, LoadVerdict, ResourceLedger, ResourceProblem, ScrapbookInputs,
+    ConstructionInputs, FlowDomainView, FlowError, FlowSetup, FrontEndFlow, InstantActionInputs,
+    LoadError, LoadFlow, LoadPlan, LoadVerdict, ResourceLedger, ResourceProblem, ScrapbookInputs,
 };
 pub use import_dialog::ImportDialog;
 pub use machine::{
@@ -139,11 +144,19 @@ pub enum Screen {
     PauseSettings,
     /// Mission results.
     Results,
+    /// Instant Action: choose a preset or start a custom scenario (F49-C2).
+    IaSelect,
+    /// Instant Action: edit the custom scenario.
+    IaCustomize,
+    /// Instant Action: a scenario session is running.
+    IaFlight,
+    /// Instant Action: the session ended; retry or finish.
+    IaResults,
 }
 
 impl Screen {
     /// Every screen.
-    pub const ALL: [Self; 17] = [
+    pub const ALL: [Self; 21] = [
         Self::InstallSelect,
         Self::ContentDiagnosis,
         Self::MainMenu,
@@ -161,6 +174,10 @@ impl Screen {
         Self::Pause,
         Self::PauseSettings,
         Self::Results,
+        Self::IaSelect,
+        Self::IaCustomize,
+        Self::IaFlight,
+        Self::IaResults,
     ];
 
     /// The screen the application starts on.
@@ -203,6 +220,14 @@ pub enum Action {
     OpenSettings,
     /// Open the scrapbook.
     OpenScrapbook,
+    /// Open the Instant Action screens from the main menu.
+    OpenInstantAction,
+    /// Start a custom Instant Action scenario from the selected preset.
+    StartCustom,
+    /// Record the ended Instant Action session and return to the main menu.
+    Finish,
+    /// The Instant Action session ended with an outcome.
+    InstantActionEnded,
     /// Turn to the scrapbook's next page.
     NextPage,
     /// Turn to the scrapbook's previous page.
@@ -251,7 +276,7 @@ pub enum Action {
 
 impl Action {
     /// Every action.
-    pub const ALL: [Self; 34] = [
+    pub const ALL: [Self; 38] = [
         Self::InstallVerified,
         Self::InstallRejected,
         Self::ContentMissing,
@@ -264,6 +289,10 @@ impl Action {
         Self::ConfirmImport,
         Self::OpenSettings,
         Self::OpenScrapbook,
+        Self::OpenInstantAction,
+        Self::StartCustom,
+        Self::Finish,
+        Self::InstantActionEnded,
         Self::NextPage,
         Self::PrevPage,
         Self::SelectEntry,
@@ -304,6 +333,10 @@ impl Action {
             Self::ConfirmImport => "confirm-import",
             Self::OpenSettings => "open-settings",
             Self::OpenScrapbook => "open-scrapbook",
+            Self::OpenInstantAction => "open-instant-action",
+            Self::StartCustom => "start-custom",
+            Self::Finish => "finish",
+            Self::InstantActionEnded => "instant-action-ended",
             Self::NextPage => "next-page",
             Self::PrevPage => "prev-page",
             Self::SelectEntry => "select-entry",
@@ -345,7 +378,8 @@ impl Action {
             | Self::LoadSucceeded
             | Self::LoadFailed
             | Self::MissionSucceeded
-            | Self::MissionFailed => ActionSource::System,
+            | Self::MissionFailed
+            | Self::InstantActionEnded => ActionSource::System,
             _ => ActionSource::User,
         }
     }
@@ -369,6 +403,10 @@ pub enum Guard {
     FailedOutcome,
     /// Leaving discards the draft; a dirty draft asks for confirmation first.
     DiscardsDraft,
+    /// As [`Guard::DiscardsDraft`] for the Instant Action scenario draft,
+    /// whose leaving is itself a domain request (it ends or releases the
+    /// Instant Action session state), so the row carries one.
+    DiscardsScenarioDraft,
 }
 
 /// What a transition asks of the domain.
@@ -398,6 +436,22 @@ pub enum RequestKind {
     ScrapbookSelect,
     /// Launch the selected entry's replay.
     LaunchReplay,
+    /// Enter the Instant Action flow: it exists only when the application
+    /// supplied its catalog and profile.
+    OpenInstantAction,
+    /// Seed a custom scenario draft from the selected preset.
+    StartCustomScenario,
+    /// Lower the Instant Action selection and begin a session generation.
+    LaunchInstantAction,
+    /// Leave the current Instant Action screen one step back (discarding the
+    /// draft, abandoning the session or leaving for the menu).
+    InstantActionBack,
+    /// Retry the Instant Action scenario in a new session generation.
+    RetryInstantAction,
+    /// Record the ended session, end its generation and leave for the menu.
+    FinishInstantAction,
+    /// Settle the running session from its reported snapshot.
+    EndInstantAction,
 }
 
 /// One row of the transition table.
@@ -480,6 +534,13 @@ pub const TABLE: &[Row] = &[
         S::ProfileSelect,
         G::None,
         R::None,
+    ),
+    row(
+        S::MainMenu,
+        A::OpenInstantAction,
+        S::IaSelect,
+        G::None,
+        R::OpenInstantAction,
     ),
     row(S::MainMenu, A::OpenSettings, S::Settings, G::None, R::None),
     row(
@@ -684,6 +745,82 @@ pub const TABLE: &[Row] = &[
         R::CloseProfile,
     ),
     row(S::Results, A::Back, S::Cabin, G::None, R::None),
+    // The Instant Action screens (F49-C2) mirror `ui::instant_action::IA_TABLE`
+    // screen for screen: every row is one `IaAction` the domain applies before
+    // the machine moves, and a refusal of it leaves this table where it was.
+    // `Back` on the results screen is the one way out that is not a retry, and
+    // the Instant Action flow has a single way to leave a finished session —
+    // `Finish`, which records it — so Back asks for exactly that.
+    row(
+        S::IaSelect,
+        A::Launch,
+        S::IaFlight,
+        G::None,
+        R::LaunchInstantAction,
+    ),
+    row(
+        S::IaSelect,
+        A::StartCustom,
+        S::IaCustomize,
+        G::None,
+        R::StartCustomScenario,
+    ),
+    row(
+        S::IaSelect,
+        A::Back,
+        S::MainMenu,
+        G::DiscardsScenarioDraft,
+        R::InstantActionBack,
+    ),
+    row(
+        S::IaCustomize,
+        A::Launch,
+        S::IaFlight,
+        G::None,
+        R::LaunchInstantAction,
+    ),
+    row(
+        S::IaCustomize,
+        A::Back,
+        S::IaSelect,
+        G::DiscardsScenarioDraft,
+        R::InstantActionBack,
+    ),
+    row(
+        S::IaFlight,
+        A::InstantActionEnded,
+        S::IaResults,
+        G::None,
+        R::EndInstantAction,
+    ),
+    row(
+        S::IaFlight,
+        A::Back,
+        S::IaSelect,
+        G::None,
+        R::InstantActionBack,
+    ),
+    row(
+        S::IaResults,
+        A::Retry,
+        S::IaFlight,
+        G::None,
+        R::RetryInstantAction,
+    ),
+    row(
+        S::IaResults,
+        A::Finish,
+        S::MainMenu,
+        G::None,
+        R::FinishInstantAction,
+    ),
+    row(
+        S::IaResults,
+        A::Back,
+        S::MainMenu,
+        G::None,
+        R::FinishInstantAction,
+    ),
 ];
 
 /// The row for an action on a screen.
@@ -736,7 +873,7 @@ pub fn resources(screen: Screen) -> BTreeSet<Resource> {
     let (input, audio, world) = match screen {
         S::Briefing | S::Recon => (InputContext::Menu, AudioScope::Briefing, false),
         S::Loading => (InputContext::Menu, AudioScope::FrontEnd, true),
-        S::Flight => (InputContext::Flight, AudioScope::Flight, true),
+        S::Flight | S::IaFlight => (InputContext::Flight, AudioScope::Flight, true),
         S::Pause | S::PauseSettings => (InputContext::Menu, AudioScope::Flight, true),
         _ => (InputContext::Menu, AudioScope::FrontEnd, false),
     };
