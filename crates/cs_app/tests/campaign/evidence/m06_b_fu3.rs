@@ -290,7 +290,7 @@ fn reconciliation_record(game_dir: &Path, install_sha256: &str) -> String {
             member.objective_blocks, *blocks,
             "{mission} declares {blocks} numbered blocks"
         );
-        let sites = crate::objaddr::walk(&document);
+        let sites = crate::campaign::objaddr::walk(&document);
         let mut addresses = Vec::new();
         for site in &sites {
             for address in &site.addresses {

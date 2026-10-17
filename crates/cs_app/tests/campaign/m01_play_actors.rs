@@ -27,8 +27,8 @@ use cs_app::weapons::SessionDamageResolver;
 use cs_types::content::Provenance;
 use cs_types::evidence::ClaimId;
 
-use crate::common::label;
-use crate::vs_m01_rt_window::game_dir;
+use crate::campaign::common::label;
+use crate::campaign::vs_m01_rt_window::game_dir;
 
 /// The enabled non-player records M01 must carry into the world, sorted
 /// the way the collected name lists are.

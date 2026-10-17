@@ -19,7 +19,7 @@
 //!    `RUN_SECONDS`, and at least one attacker's rounds leave the barrel
 //!    through the gun bank's own cadence.
 //!
-//! Every bound below is a **designed** constant of `crate::mission_ai`, not
+//! Every bound below is a **designed** constant of `crate::campaign::mission_ai`, not
 //! an original measurement: the original's AI control law (`0x48c220`) is
 //! unrecovered, so this suite judges the designed law against the task's own
 //! acceptance wording ("close on the player … within N seconds", "stays
@@ -43,8 +43,8 @@ use cs_app::playtest::scene::PlaytestOriginalFlight;
 use cs_app::weapons::WeaponSession;
 use cs_content::damage::DamageNodeKey;
 
-use crate::common::label;
-use crate::vs_m01_rt_window::{Scratch, game_dir, synthetic_stage};
+use crate::campaign::common::label;
+use crate::campaign::vs_m01_rt_window::{Scratch, game_dir, synthetic_stage};
 
 /// How long the acceptance run drives the fixed loop: **N** in the task's
 /// "close on the player … within N seconds".
@@ -60,7 +60,7 @@ const MINIMUM_CLOSE_M: f32 = 1_500.0;
 
 /// **Designed**: the station distance Betty must end the run inside, measured
 /// from her measured leader `devastator_2`. The station offset itself is
-/// ~89 m (`crate::mission_ai::STATION_OFFSET_M`); the bound is looser than
+/// ~89 m (`crate::campaign::mission_ai::STATION_OFFSET_M`); the bound is looser than
 /// that so a settled station passes, and tighter than the ~270 m the two
 /// records spawn apart, so a law that does nothing fails.
 const WINGMAN_DISTANCE_M: f32 = 250.0;

@@ -64,7 +64,7 @@ use cs_script::ir::{
 };
 use cs_types::content::{ContentId, ContentKind};
 
-use crate::common::load_inventory;
+use crate::campaign::common::load_inventory;
 
 /// The census row label of the mission.
 pub(crate) const MISSION: &str = "zbd/c1/m04";

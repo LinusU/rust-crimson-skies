@@ -227,9 +227,9 @@ fn parse_m02_b_fu3_suite(log: &str) -> Suite {
 /// Carries ids, byte spans, digests, counts, directive key names and the
 /// rule's own verdict — never a byte of the document and never display text.
 fn address_record(install_sha256: &str) -> String {
-    let binding = crate::m02_b_fu3::control_binding();
-    let document = crate::m02_b_fu3::control_document();
-    let blocks = crate::m02_b_fu3::blocks_with_addresses(&document);
+    let binding = crate::campaign::m02_b_fu3::control_binding();
+    let document = crate::campaign::m02_b_fu3::control_document();
+    let blocks = crate::campaign::m02_b_fu3::blocks_with_addresses(&document);
     let count = blocks.len() as u32;
     assert_eq!(
         count,

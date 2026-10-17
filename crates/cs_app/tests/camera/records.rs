@@ -18,7 +18,7 @@ use cs_content::cinematics::{
 use cs_types::content::{ContentId, ContentKind, Origin, Provenance, Resolved};
 use cs_types::space::{Meters, Radians};
 
-use crate::common::{claim, known, known_look_limits, placement};
+use crate::camera::common::{claim, known, known_look_limits, placement};
 
 /// A designed projection policy, with the fields a caller wants to corrupt
 /// overridden.

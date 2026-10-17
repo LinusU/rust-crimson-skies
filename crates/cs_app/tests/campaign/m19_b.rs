@@ -78,7 +78,7 @@ use cs_script::ir::{AnimationState, Condition, MemberName, Value};
 use cs_types::content::{ContentId, ContentKind};
 use cs_types::install::RelativePath;
 
-use crate::common::load_inventory;
+use crate::campaign::common::load_inventory;
 
 /// The census row label of the mission (F13-B's mission-scope rule).
 const MISSION: &str = "zbd/c4/m04";

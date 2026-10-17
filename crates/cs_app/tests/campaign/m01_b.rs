@@ -46,7 +46,7 @@ use cs_content::mission_control::DirectiveDisposition;
 use cs_content::objectives_conditions::ObjectiveOutcome;
 use cs_content::objectives_engine::DormantTimers;
 
-use crate::common::{label, load_inventory, repo_path};
+use crate::campaign::common::{label, load_inventory, repo_path};
 
 /// The mission the parent stage binds: the first campaign position, whose
 /// control record lives in `zbd/c1c/m01`.

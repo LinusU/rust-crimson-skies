@@ -66,8 +66,8 @@ use cs_types::content::{ContentId, ContentKind, Resolved};
 use cs_types::evidence::ClaimStatus;
 use cs_types::input::{Action, FlightCommand};
 
-use crate::common::{cid, label};
-use crate::vs_m01_rt_window::{Scratch, synthetic_stage};
+use crate::campaign::common::{cid, label};
+use crate::campaign::vs_m01_rt_window::{Scratch, synthetic_stage};
 
 /// The synthetic world actor's node name.
 const SYNTHETIC_ACTOR: &str = "syntheticzep";

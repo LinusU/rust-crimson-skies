@@ -23,8 +23,8 @@ use cs_script::ir::{Condition, IR_VERSION, MissionProgram, Objective, SymbolId};
 use cs_types::content::Provenance;
 use cs_types::evidence::ClaimId;
 
-use crate::common::{cid, label};
-use crate::vs_m01_rt_window::{Scratch, game_dir, synthetic_stage};
+use crate::campaign::common::{cid, label};
+use crate::campaign::vs_m01_rt_window::{Scratch, game_dir, synthetic_stage};
 
 /// Every block index that completed, across all host ticks.
 #[derive(Resource, Default)]

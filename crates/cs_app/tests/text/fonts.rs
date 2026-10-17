@@ -12,7 +12,7 @@ use cs_types::asset_id::SourceSpan;
 use cs_types::content::{ContentId, ContentKind, Origin, Provenance};
 use cs_types::evidence::ContentHash;
 
-use crate::common::claim;
+use crate::text::common::claim;
 
 fn font_id(key: &str) -> ContentId {
     ContentId::from_source(ContentKind::Font, key).expect("the font id is valid")

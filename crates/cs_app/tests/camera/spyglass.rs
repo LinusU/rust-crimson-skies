@@ -52,7 +52,9 @@ use cs_types::input::{Action, FlightCommand};
 use cs_types::net::SessionId;
 use cs_types::space::{Quaternion, Radians, WorldPosition};
 
-use crate::common::{aircraft_pose, assert_close, declared_mode_with, declared_set, placement};
+use crate::camera::common::{
+    aircraft_pose, assert_close, declared_mode_with, declared_set, placement,
+};
 
 /// The frame rate the rig tests run at. Nothing in the spyglass scenario
 /// depends on it; a fixed one keeps the smoothing out of the way.

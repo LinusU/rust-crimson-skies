@@ -15,7 +15,9 @@ use cs_content::campaign_bindings::{
 };
 use cs_types::content::ContentKind;
 
-use crate::common::{claim, declared, label, load_inventory, ready_binding, ready_campaign};
+use crate::campaign::common::{
+    claim, declared, label, load_inventory, ready_binding, ready_campaign,
+};
 
 /// Every cell is classified exactly once, so the four counts always add up
 /// to the cell total a missing or unknown child could otherwise hide in.

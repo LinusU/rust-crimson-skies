@@ -13,7 +13,7 @@ use cs_app::origin::{OriginEpoch, OriginShift, SpatialAnchor, WorldOrigin};
 use cs_types::content::Resolved;
 use cs_types::space::WorldPosition;
 
-use crate::common;
+use crate::environment::common;
 
 /// Where the camera starts, in world meters. Every component is dyadic, so
 /// the f32 local cache holds the position exactly and the assertions below

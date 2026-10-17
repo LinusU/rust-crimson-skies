@@ -47,7 +47,7 @@ use cs_content::campaign_bindings::{
 };
 use cs_types::content::{ContentId, ContentKind, Provenance};
 
-use crate::common::{claim, label, load_inventory};
+use crate::campaign::common::{claim, label, load_inventory};
 
 /// The synthetic installation fingerprint the authored records below carry:
 /// sixty-four lowercase hex digits, so a record built here is not refused for

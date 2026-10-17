@@ -17,7 +17,7 @@ use cs_content::cameras::CameraModeKind;
 use cs_types::Tick;
 use cs_types::content::ContentKind;
 
-use crate::common::{actor, authored_session, camera_track, fixture_session, mission};
+use crate::camera::common::{actor, authored_session, camera_track, fixture_session, mission};
 
 /// A request over ticks 10..20 that frames the player.
 ///
@@ -158,7 +158,7 @@ fn accept_f21_c_a_second_script_is_refused_while_one_drives_and_installs_after_t
         camera_track("synthetic.intro.close"),
         Tick(11),
         Tick(19),
-        crate::common::origin_pose(),
+        crate::camera::common::origin_pose(),
     )
     .expect("valid");
     assert_eq!(
@@ -323,5 +323,8 @@ fn accept_f21_c_a_script_teardown_ends_it_visibly_and_leaves_nothing_running() {
 }
 
 fn world_pose() -> cs_app::camera::CameraPose {
-    crate::common::aircraft_pose([100.0, 20.0, -300.0], cs_types::space::Quaternion::IDENTITY)
+    crate::camera::common::aircraft_pose(
+        [100.0, 20.0, -300.0],
+        cs_types::space::Quaternion::IDENTITY,
+    )
 }

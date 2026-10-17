@@ -16,7 +16,7 @@ use cs_content::campaign_bindings::{
 };
 use cs_content::catalog::Catalog;
 
-use crate::common::{
+use crate::campaign::common::{
     claim, declared, label, load_inventory, ready_binding, ready_campaign, repo_path,
 };
 

@@ -55,7 +55,7 @@ use cs_types::asset_id::SourceSpan;
 use cs_types::content::{ContentId, ContentKind};
 use cs_types::evidence::ContentHash;
 
-use crate::coverage::{
+use crate::camera::coverage::{
     FIXTURE, Node, RETAIL_AIRFRAMES, airframe, archive_id, cockpit_claim, container, decode, line,
     observed, quote, raw_node, retail_cockpit_claim, retail_dir, retail_provenance,
     retail_roster_declarations,

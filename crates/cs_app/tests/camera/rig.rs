@@ -33,7 +33,7 @@ use cs_types::content::{ContentId, ContentKind, Origin, Provenance, Resolved};
 use cs_types::net::SessionId;
 use cs_types::space::{Quaternion, Radians, UnitVec3};
 
-use crate::common::{
+use crate::camera::common::{
     aircraft_pose, assert_close, assert_close_position, body_offset, claim, declared_mode,
     declared_mode_with, declared_set, fixture_rig, known, known_look_limits, look, lowered_set,
     placement, projection_for, world,

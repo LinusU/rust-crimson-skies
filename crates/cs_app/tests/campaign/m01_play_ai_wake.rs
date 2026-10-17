@@ -24,7 +24,7 @@
 //!
 //! Every bound that is not a measured field of the record or of the
 //! installation is a **designed** constant of the suite or of
-//! `crate::mission_ai`, never an original measurement: the original's AI
+//! `crate::campaign::mission_ai`, never an original measurement: the original's AI
 //! control law (`0x48c220`) is unrecovered, and no original executable ran.
 //! `retail` is read access to the owner's installation; nothing here is
 //! `verified_original`.
@@ -58,8 +58,8 @@ use cs_sim::flight::{OriginalAirframe, OriginalFlightModel, OriginalGlobals};
 use cs_types::content::Provenance;
 use cs_types::evidence::ClaimId;
 
-use crate::common::label;
-use crate::vs_m01_rt_window::{Scratch, game_dir, synthetic_stage};
+use crate::campaign::common::label;
+use crate::campaign::vs_m01_rt_window::{Scratch, game_dir, synthetic_stage};
 
 /// The elapsed a driven retail step covers: one second of mission clock per
 /// host step, the compression `accept_m01_b_wake.rs` documents. Nothing in
@@ -75,7 +75,7 @@ const WAKE_BLOCK: u32 = 12;
 /// **Designed**: the distance a released `bsfury_1` must travel in the fly
 /// proof. The record spawns at rest and the law's own 4.47 m/s AI floor plus
 /// its throttle move it within a few seconds; the bound is far below what the
-/// designed pursuit law reaches (`crate::mission_ai`'s own retail run closes
+/// designed pursuit law reaches (`crate::campaign::mission_ai`'s own retail run closes
 /// kilometres in 45 s).
 const FLOWN_DISTANCE_M: f32 = 20.0;
 
@@ -288,14 +288,14 @@ fn synthetic_sleeper() -> ScriptedAircraft {
 fn synthetic_wake_program() -> MissionProgram {
     MissionProgram {
         version: IR_VERSION,
-        mission: crate::common::cid(
+        mission: crate::campaign::common::cid(
             cs_types::content::ContentKind::Mission,
             "synthetic-mission-play-ai-wake",
         ),
         variables: Vec::new(),
         objectives: vec![Objective {
             id: SymbolId(0),
-            content: crate::common::cid(
+            content: crate::campaign::common::cid(
                 cs_types::content::ContentKind::Objective,
                 "synthetic-play-ai-wake",
             ),

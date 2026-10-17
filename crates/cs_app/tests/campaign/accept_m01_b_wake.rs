@@ -66,8 +66,8 @@ use cs_script::runtime::ObjectiveLifecycle;
 use cs_sim::objectives::terminal::TerminalOutcome;
 use cs_types::content::ContentKind;
 
-use crate::common::{cid, label};
-use crate::vs_m01_rt_window::{Scratch, game_dir, synthetic_stage};
+use crate::campaign::common::{cid, label};
+use crate::campaign::vs_m01_rt_window::{Scratch, game_dir, synthetic_stage};
 
 /// The fixed timestep one composed step covers — `Time<Fixed>`'s own
 /// timestep on the baseline clock, handed to `MissionHost::step` exactly

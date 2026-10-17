@@ -14,7 +14,7 @@ use cs_content::config::StringRow;
 use cs_content::localization::{ResourceDecode, TextCatalog, TextId};
 use cs_types::content::{Origin, Provenance};
 
-use crate::common::{
+use crate::text::common::{
     PANEL, buttons, chain, claim, grammar, language_map, locale, resource_row, substitutions,
 };
 

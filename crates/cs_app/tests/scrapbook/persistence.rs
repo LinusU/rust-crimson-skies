@@ -19,7 +19,7 @@ use cs_sim::records::{
 };
 use cs_types::profile::ExtraField;
 
-use crate::*;
+use crate::scrapbook::*;
 
 struct TempBase(PathBuf);
 

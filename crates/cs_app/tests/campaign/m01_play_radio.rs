@@ -63,8 +63,8 @@ use cs_sim::audio_events::{AudioAssetSpec, AudioRouter};
 use cs_types::content::ContentKind;
 use cs_types::net::SessionId;
 
-use crate::common::label;
-use crate::vs_m01_rt_window::game_dir;
+use crate::campaign::common::label;
+use crate::campaign::vs_m01_rt_window::game_dir;
 
 /// The group `OBJECTIVE1`'s measured wake spells.
 const OPENING_GROUP: &str = "snd_NW1Start";

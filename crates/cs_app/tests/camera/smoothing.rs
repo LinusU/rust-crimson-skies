@@ -25,7 +25,7 @@ use cs_types::Tick;
 use cs_types::net::SessionId;
 use cs_types::space::{Quaternion, Radians, WorldPosition};
 
-use crate::common::{aircraft_pose, assert_close, assert_close_position, world};
+use crate::camera::common::{aircraft_pose, assert_close, assert_close_position, world};
 
 /// One second of wall time, split into `frame_rate` render frames plus the
 /// remainder, exactly as `FixedTickDriver::advance_frame` splits a frame.

@@ -3,7 +3,7 @@ use cs_content::hud::{
     AltitudeDatum, AltitudeUnit, Declared, HudPolicy, HudPolicyError, SpeedReference, SpeedUnit,
 };
 
-use crate::{actor, level_sample, session};
+use crate::hud::{actor, level_sample, session};
 
 fn hud(policy: HudPolicy) -> Hud {
     let mut hud = Hud::new(policy).unwrap();

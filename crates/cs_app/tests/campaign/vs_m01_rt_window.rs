@@ -56,7 +56,7 @@ use cs_types::asset_id::{PrecedenceClass, WorldGroup};
 use cs_types::content::{ContentId, ContentKind};
 use cs_types::evidence::ContentHash;
 
-use crate::common::{cid, label};
+use crate::campaign::common::{cid, label};
 
 /// The original installation, as the environment declares it.
 pub(crate) fn game_dir() -> PathBuf {

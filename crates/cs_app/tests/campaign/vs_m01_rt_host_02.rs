@@ -67,8 +67,8 @@ use cs_script::runtime::TerminalState;
 use cs_sim::objectives::terminal::TerminalOutcome;
 use cs_types::content::{ContentKind, Known, Origin, Provenance, Resolved};
 
-use crate::common::{cid, claim, label};
-use crate::vs_m01_rt_window::{Scratch, game_dir, synthetic_stage};
+use crate::campaign::common::{cid, claim, label};
+use crate::campaign::vs_m01_rt_window::{Scratch, game_dir, synthetic_stage};
 
 /// The synthetic stage's settling control program: one objective whose
 /// condition is `true`, so the composed entry's script half completes it on

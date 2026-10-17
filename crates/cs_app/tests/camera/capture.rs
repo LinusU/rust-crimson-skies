@@ -22,7 +22,7 @@ use cs_types::Tick;
 use cs_types::content::ContentKind;
 use cs_types::space::{Meters, Quaternion, Radians};
 
-use crate::common::{
+use crate::camera::common::{
     aircraft_pose, assert_close, declared_mode, known, lowered_set, mission, world,
 };
 
@@ -77,7 +77,7 @@ fn accept_f21_c_a_capture_names_its_mission_and_refuses_one_that_is_not() {
     // content set a frame was drawn in.
     let airframe = cs_types::content::ContentId::from_source(
         ContentKind::Airframe,
-        crate::common::owner_subject()
+        crate::camera::common::owner_subject()
             .as_str()
             .rsplit('/')
             .next()

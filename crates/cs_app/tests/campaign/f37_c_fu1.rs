@@ -12,7 +12,7 @@ use cs_content::campaign::declared_synthetic_campaign;
 use cs_script::runtime::evaluator_seed;
 use cs_types::content::{ContentId, ContentKind};
 
-use crate::vs_m01_rt_window::{Scratch, synthetic_stage};
+use crate::campaign::vs_m01_rt_window::{Scratch, synthetic_stage};
 
 fn staged(scratch: &Scratch, root: u64, rewards: Vec<ContentId>) -> MissionStage {
     let mut stage = synthetic_stage(scratch.path());

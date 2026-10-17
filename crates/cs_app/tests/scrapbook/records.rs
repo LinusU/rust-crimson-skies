@@ -5,7 +5,7 @@ use cs_sim::records::{
     ScrapbookRecords,
 };
 
-use crate::*;
+use crate::scrapbook::*;
 
 fn key(subject: cs_types::content::ContentId) -> RecordKey {
     RecordKey {

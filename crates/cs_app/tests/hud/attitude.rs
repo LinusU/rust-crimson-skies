@@ -3,7 +3,7 @@ use std::f64::consts::{FRAC_PI_2, FRAC_PI_4, PI};
 use cs_app::ui::hud::attitude;
 use cs_types::space::Quaternion;
 
-use crate::{EPS, rot};
+use crate::hud::{EPS, rot};
 
 #[test]
 fn accept_f46_a_level_nose_north_reads_flat_horizon_and_zero_heading() {

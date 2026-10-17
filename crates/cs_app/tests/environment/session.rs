@@ -19,7 +19,7 @@ use cs_sim::flight::FlightEnvironment;
 use cs_types::content::{Origin, Provenance};
 use cs_types::random::SplitMix64;
 
-use crate::common;
+use crate::environment::common;
 
 const MISSION_SEED: u64 = 0x00C5_0000_0000_2024;
 

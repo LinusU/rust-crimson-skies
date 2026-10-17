@@ -15,7 +15,7 @@ use cs_content::cameras::{
 use cs_types::content::{ContentId, ContentKind, Provenance, Resolved};
 use cs_types::space::{Meters, Radians};
 
-use crate::common::{assert_close, claim, known, known_look_limits, placement};
+use crate::camera::common::{assert_close, claim, known, known_look_limits, placement};
 
 fn projection(fov: f64) -> ProjectionPolicy {
     ProjectionPolicy {

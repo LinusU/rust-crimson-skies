@@ -28,7 +28,7 @@ use cs_content::stunts::{ZrdValue, decode_zrd};
 use cs_formats::script_raw::discovery::discover_container;
 use cs_sim::damage::{DamageNodeKey, DamageNodeKind, SystemKind};
 
-use crate::common::label;
+use crate::campaign::common::label;
 
 /// The retail chains under `workersvoyagezep` the `TURRET` table declares, with
 /// the record index, weapon and `HEALTH` each resolves to.

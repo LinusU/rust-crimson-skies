@@ -13,7 +13,7 @@ use avian3d::prelude::Sleeping;
 use cs_app::physics::{BodyMode, BodySpec};
 use cs_sim::collision::{CollisionLayer, ShapeClass};
 
-use crate::common;
+use crate::physics::common;
 
 /// Small relative tolerance: one integration is separated from a missed or
 /// double-scaled one by orders of magnitude, so this still fails loudly.

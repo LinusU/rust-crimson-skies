@@ -6,6 +6,13 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 autobins = false
+# One integration-test binary (task #1543). `autotests = false` turns component
+# auto-discovery off, so cargo links and runs exactly the one `[[test]]` target
+# below instead of one Bevy-linked executable per `tests/*.rs` file, each of
+# which costs a macOS security scan on first launch. Every former test file is
+# a `mod` of `tests/main.rs`; `cs_xtask test-layout` fails when a `.rs` file
+# under `tests/` is not reached from it.
+autotests = false
 
 [dependencies]
 avian3d.workspace = true
@@ -49,6 +56,15 @@ rodio = { version = "0.22", default-features = false, features = ["playback"] }
 # unread; the version is the one Cargo.lock already resolves, and only the
 # four decoders this stage reads are enabled.
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "tga", "bmp"] }
+
+[dev-dependencies]
+# `accept_test_bin_cs_app_` asks the one-test-binary guard (`cs_xtask
+# test-layout`, task #1542) about this very crate, through its library function.
+cs_xtask = { path = "../../tools/cs_xtask" }
+
+[[test]]
+name = "cs_app_tests"
+path = "tests/main.rs"
 
 [[bin]]
 name = "cs"

@@ -36,7 +36,7 @@ use cs_content::campaign_bindings::{MissionLabel, SourceBinding, SourceContext};
 use cs_content::config::StringRow;
 use cs_types::asset_id::SourceSpan;
 
-use crate::common::load_inventory;
+use crate::campaign::common::load_inventory;
 
 /// The one work order this stage binds.
 const WORK_ORDER: &str = "M16";

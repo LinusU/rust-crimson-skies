@@ -309,7 +309,7 @@ fn render_census(
         let spawned = spawn_world(&mut app, world, &meshes)
             .unwrap_or_else(|error| panic!("{group}: the world spawns: {error}"));
         let reported = spawned.colliders().len();
-        let settle_ok = crate::world_units::settles(&mut app);
+        let settle_ok = crate::world::world_units::settles(&mut app);
         if !settle_ok {
             settle_failures.push(group.clone());
         }

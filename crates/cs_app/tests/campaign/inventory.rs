@@ -10,7 +10,7 @@ use cs_content::campaign_bindings::{
     CampaignInventory, InventoryError, InventoryLineError, MissionLabel,
 };
 
-use crate::common::{load_inventory, repo_path};
+use crate::campaign::common::{load_inventory, repo_path};
 
 /// The work orders the owner-authored `missions/README.md` lists, in file
 /// order. That file is a protected path: an agent cannot quietly edit the

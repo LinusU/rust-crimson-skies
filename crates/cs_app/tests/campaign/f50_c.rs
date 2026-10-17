@@ -44,8 +44,10 @@ use cs_content::campaign_bindings::{
     SourceBinding, SourceContext, assemble_campaign, probe_routes,
 };
 
-use crate::common::{label, load_inventory, repo_path};
-use crate::f50_b::{SYNTHETIC_INSTALL, bound, game_dir, synthetic_inventory, synthetic_source};
+use crate::campaign::common::{label, load_inventory, repo_path};
+use crate::campaign::f50_b::{
+    SYNTHETIC_INSTALL, bound, game_dir, synthetic_inventory, synthetic_source,
+};
 
 /// The human playtest route document this stage pins to the planned routes.
 const PLAYTEST_ROUTES_DOC: &str = "missions/bindings/playtest-routes.md";

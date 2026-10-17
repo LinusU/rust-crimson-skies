@@ -83,8 +83,8 @@ use cs_script::runtime::TerminalState;
 use cs_types::Tick;
 use cs_types::content::ContentKind;
 
-use crate::common::{cid, label};
-use crate::vs_m01_rt_window::{Scratch, game_dir, synthetic_stage};
+use crate::campaign::common::{cid, label};
+use crate::campaign::vs_m01_rt_window::{Scratch, game_dir, synthetic_stage};
 
 /// The composed entry's answer, or a panic naming exactly what is missing.
 fn report_of<'a>(app: &'a bevy::prelude::App, stage_name: &str) -> &'a MissionHostReport {

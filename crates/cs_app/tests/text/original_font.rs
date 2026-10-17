@@ -32,7 +32,7 @@ use cs_content::textures::folded_texture_name;
 use cs_types::asset_id::SourceSpan;
 use cs_types::evidence::ContentHash;
 
-use crate::common::{
+use crate::text::common::{
     PANEL, RETAIL_FONT_MEDIA, RETAIL_RIMAGE, buttons, grammar, language_map, locale, retail_audit,
     retail_file, retail_game_dir, substitutions,
 };

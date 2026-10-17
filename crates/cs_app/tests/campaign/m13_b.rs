@@ -71,7 +71,7 @@ use cs_script::ir::{Condition, MemberName, TravelersAnchor};
 use cs_types::content::{ContentId, ContentKind};
 use cs_types::install::RelativePath;
 
-use crate::common::load_inventory;
+use crate::campaign::common::load_inventory;
 
 /// The census row label of the mission (F13-B's mission-scope rule).
 const MISSION: &str = "zbd/c3/m03";

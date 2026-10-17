@@ -49,7 +49,7 @@ use cs_types::input::{Action, DeviceClass, DeviceId, FlightCommand, Key};
 use cs_types::net::{ActorAllocator, SessionId};
 use cs_types::space::WorldPosition;
 
-use crate::vs_m01_rt_window::{Scratch, synthetic_stage};
+use crate::campaign::vs_m01_rt_window::{Scratch, synthetic_stage};
 
 /// The damage node a test target's part and a rocket's engagement both name.
 const HULL: &str = "hull";

@@ -11,7 +11,7 @@ use cs_content::localization::{
     SubstitutionTable, SubstitutionValueError, UNRESOLVED_SUBSTITUTION, parse_markup,
 };
 
-use crate::common::{document, grammar};
+use crate::text::common::{document, grammar};
 
 /// A string the grammar admits becomes tokens, and its hard line breaks are
 /// kept.
@@ -399,7 +399,7 @@ fn accept_f51_a_a_closing_control_is_distinguishable_from_an_opening_one() {
     );
 
     // Text and substitution tokens are neither an opening nor a closing control.
-    let plain = crate::common::document("[bold]crew[/bold]");
+    let plain = crate::text::common::document("[bold]crew[/bold]");
     for token in plain.tokens() {
         match token {
             MarkupToken::Text(_) | MarkupToken::Substitution { .. } => {
@@ -449,7 +449,7 @@ fn accept_f51_a_a_malformed_substitution_id_is_named_not_called_empty() {
 
     // A valid id of the same shape is admitted, so the rule is the grammar and
     // not a blanket refusal of ids.
-    let valid = crate::common::document("Confirm with {firstname}.");
+    let valid = crate::text::common::document("Confirm with {firstname}.");
     assert!(valid.is_clean(), "{:?}", valid.issues());
     assert!(
         valid

@@ -18,7 +18,7 @@ use cs_content::scene::{
 use cs_content::world::world_scene_graph_from_gamez;
 use cs_types::content::{ContentId, ContentKind};
 
-use crate::hierarchy::{cid, radian_adapter, retail_container};
+use crate::world::hierarchy::{cid, radian_adapter, retail_container};
 
 fn adapter() -> SourceAdapter {
     radian_adapter()

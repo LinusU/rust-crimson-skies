@@ -24,7 +24,7 @@
 //!
 //! Every bound that is not a measured field of the record or of the
 //! installation is a **designed** constant of this suite or of
-//! `crate::mission_ai`, never an original measurement: the original's AI
+//! `crate::campaign::mission_ai`, never an original measurement: the original's AI
 //! control law (`0x48c220`) is unrecovered, and no original executable ran.
 //! `retail` is read access to the owner's installation; nothing here is
 //! `verified_original`.
@@ -55,8 +55,8 @@ use cs_sim::flight::{OriginalAirframe, OriginalFlightModel, OriginalGlobals};
 use cs_types::content::{ContentId, ContentKind, Provenance};
 use cs_types::evidence::ClaimId;
 
-use crate::common::label;
-use crate::vs_m01_rt_window::{Scratch, game_dir, synthetic_stage};
+use crate::campaign::common::label;
+use crate::campaign::vs_m01_rt_window::{Scratch, game_dir, synthetic_stage};
 
 /// How many committed fixed ticks each driven phase runs: enough for the
 /// weapon/targeting re-open (`ensure_mission_weapons`) and the arming pass to

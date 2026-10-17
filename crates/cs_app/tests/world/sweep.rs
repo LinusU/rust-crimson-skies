@@ -17,7 +17,7 @@ use cs_app::world::{
 };
 use cs_content::world::{SectorId, WorldCollisionRole, WorldObjectId};
 
-use crate::common;
+use crate::world::common;
 
 /// How long the probes are flown: far enough to clear the arch entirely.
 const TICKS: u64 = 15;

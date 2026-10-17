@@ -41,7 +41,7 @@ use cs_content::campaign_bindings::MissionLabel;
 use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind, Resolved};
 
-use crate::common::label;
+use crate::campaign::common::label;
 
 /// The original installation, as the environment declares it.
 fn game_dir() -> PathBuf {

@@ -34,7 +34,7 @@ use cs_types::asset_id::WorldGroup;
 use cs_types::content::Origin;
 use cs_types::profile::ExtraField;
 
-use crate::*;
+use crate::scrapbook::*;
 
 // ------------------------------------------------------------ fixtures ---
 
@@ -438,7 +438,7 @@ fn accept_f47_c_replay_launch_names_the_loading_target() {
     assert!(matches!(
         &refused,
         LaunchError::Scope(failure)
-        if failure.entry == item("odd") && failure.mission == crate::mission("-night")
+        if failure.entry == item("odd") && failure.mission == crate::scrapbook::mission("-night")
     ));
     assert!(refused.to_string().contains("-night"));
     assert_eq!(

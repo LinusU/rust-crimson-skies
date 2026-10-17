@@ -79,7 +79,7 @@ use cs_formats::script_raw::discover_container;
 use cs_types::content::{ContentId, ContentKind, Resolved};
 use cs_types::install::RelativePath;
 
-use crate::common::load_inventory;
+use crate::campaign::common::load_inventory;
 
 /// The census row label of the mission (F13-B's mission-scope rule).
 const MISSION: &str = "zbd/c4/m02";

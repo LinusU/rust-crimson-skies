@@ -43,7 +43,7 @@ use cs_content::stunts::{ZrdValue, decode_zrd, zrd_flat_fields};
 use cs_formats::script_raw::discover_container;
 use cs_types::install::RelativePath;
 
-use crate::common::{load_inventory, repo_path};
+use crate::campaign::common::{load_inventory, repo_path};
 
 /// M01's reader archive, the program span `missions/bindings/M01.json` cites:
 /// the contrast mission, whose data *does* bind a passenger-like entity.

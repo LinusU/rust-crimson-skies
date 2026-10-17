@@ -18,7 +18,7 @@ use cs_app::physics::{
 };
 use cs_sim::collision::{CollisionLayer, ShapeClass};
 
-use crate::common;
+use crate::physics::common;
 
 /// One body per declared layer, created through the production path.
 ///

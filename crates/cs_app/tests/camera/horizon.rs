@@ -52,7 +52,7 @@ use cs_types::content::{Origin, Provenance};
 use cs_types::evidence::{ClaimId, ClaimStatus, ContentHash};
 use cs_types::space::{Quaternion, Radians, UnitVec3};
 
-use crate::coverage::{
+use crate::camera::coverage::{
     FIXTURE, container, decode, line, observed, quote, retail_dir, retail_provenance,
 };
 

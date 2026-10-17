@@ -50,7 +50,7 @@ use cs_content::campaign_bindings::{
 use cs_types::content::{ContentId, ContentKind, Provenance};
 use cs_types::evidence::{ClaimId, ClaimStatus};
 
-use crate::common::{label, load_inventory, repo_path};
+use crate::campaign::common::{label, load_inventory, repo_path};
 
 /// The one work order this stage binds.
 const WORK_ORDER: &str = "M16";

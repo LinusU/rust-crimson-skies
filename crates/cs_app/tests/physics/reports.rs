@@ -15,7 +15,7 @@ use bevy::prelude::Entity;
 use cs_app::physics::{BodyLayer, BodyMode, BodySpec, ContactReports, PhysicsFixture};
 use cs_sim::collision::{CollisionLayer, CollisionLayers, ShapeClass};
 
-use crate::common;
+use crate::physics::common;
 
 /// Half the obstacle thickness: a 2 cm trigger.
 const HALF_THICKNESS_M: f32 = 0.01;

@@ -56,7 +56,7 @@ use std::sync::OnceLock;
 use cs_content::campaign_bindings::{SourceContext, TitleConfirmation, TitleForm, title_form};
 use cs_content::config::StringRow;
 
-use crate::common::load_inventory;
+use crate::campaign::common::load_inventory;
 
 /// The localized UI string image this stage reads, as the installation spells
 /// it.

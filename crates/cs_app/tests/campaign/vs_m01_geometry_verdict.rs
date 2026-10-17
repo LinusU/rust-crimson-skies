@@ -53,7 +53,7 @@ use cs_types::evidence::ContentHash;
 use self::world_import::{
     Fixture, ObjectSpec, VOLUME, mesh_slots, provenance, read, write_container,
 };
-use crate::common::{label, load_inventory};
+use crate::campaign::common::{label, load_inventory};
 
 /// The mesh slot the fixture's grid-named `fvol*` record binds — the fixture
 /// table holds `10` slots (`0..10`).

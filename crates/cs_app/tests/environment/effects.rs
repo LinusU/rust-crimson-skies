@@ -26,7 +26,7 @@ use cs_content::environment::{
 use cs_types::content::{ContentKind, Resolved};
 use cs_types::space::UnitVec3;
 
-use crate::common;
+use crate::environment::common;
 
 /// The storm fixture's clock, at the fixtures' fixed rate.
 fn storm_clock() -> EnvironmentClock {

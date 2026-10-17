@@ -28,7 +28,7 @@ use cs_app::mission_launch::{
 use cs_content::world::WORLD_AXIS_CONVENTION_MEASURED;
 use cs_types::content::{ContentId, ContentKind};
 
-use crate::common::{label, load_inventory};
+use crate::campaign::common::{label, load_inventory};
 
 /// The original installation, as the environment declares it.
 fn game_dir() -> PathBuf {
