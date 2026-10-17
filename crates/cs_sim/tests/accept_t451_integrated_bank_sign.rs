@@ -15,6 +15,15 @@
 //! makes the heading turn the other way, so the test fails when the #451 fix is
 //! removed.
 //!
+//! The state fed to the follower carries the **measured** bank of the
+//! integrated body, exactly as `cs_app::ai::navigation::nav_state` measures it
+//! from the live Avian `Rotation` and as
+//! `crates/cs_sim/tests/accept_t526_bank_hold_and_envelope.rs` measures it from
+//! its own integrated body (#526, task #762). A constant bank would leave the
+//! inner bank loop's error at the full demand and turn this probe back into the
+//! open-loop full roll it used to fly, so the probe asserts that the bank it
+//! feeds actually leaves zero.
+//!
 //! Every value is newly authored synthetic fixture data, never original game
 //! data, and nothing here reads `CS_GAME_DIR`.
 
@@ -24,8 +33,8 @@ use cs_sim::ai::navigation::{
     synthetic_maneuver_envelope,
 };
 use cs_sim::flight::{
-    BODY_FORWARD, BODY_UP, DamageState, EngineState, FlightEnvironment, FlightInput, FlightModel,
-    FlightState, LoadoutMass, synthetic_fixed_wing,
+    BODY_FORWARD, BODY_RIGHT, BODY_UP, DamageState, EngineState, FlightEnvironment, FlightInput,
+    FlightModel, FlightState, LoadoutMass, synthetic_fixed_wing,
 };
 use cs_types::Tick;
 use cs_types::space::Quaternion;
@@ -34,10 +43,15 @@ use cs_types::space::Quaternion;
 /// cadence. Newly authored probe design.
 const DT_S: f64 = 1.0 / 120.0;
 
-/// How long the probe flies before it measures the heading. Short enough that
-/// the (intentionally unstable, see the finding) open-loop bank has not yet
-/// wrapped, long enough that the turn direction is unambiguous.
+/// How long the probe flies before it measures the heading. Long enough that
+/// the bank-hold cascade has time to roll the body and turn it, short enough to
+/// stay inside one synthetic route leg.
 const PROBE_TICKS: usize = 120;
+
+/// The smallest bank magnitude, in radians, a run must report before its heading
+/// can mean anything: below this the follower was fed a level-wing state and its
+/// roll command never closed the inner bank loop.
+const MIN_MEASURED_BANK_RAD: f64 = 0.05;
 
 /// The single mandatory marker the follower aims at.
 const MARKER_M: [f64; 3] = [0.0, 0.0, -120.0];
@@ -45,13 +59,24 @@ const MARKER_M: [f64; 3] = [0.0, 0.0, -120.0];
 /// The lateral displacement of the actor from the marker's line, in meters.
 const OFFSET_M: f64 = 40.0;
 
+/// What one integrated probe run measured.
+struct ProbeResult {
+    /// The body heading about canonical `+Y` at the end of the run.
+    heading_rad: f64,
+    /// The bank fed to the follower on the first tick. The body starts level, so
+    /// a correct measurement is exactly zero.
+    initial_bank_rad: f64,
+    /// The largest bank magnitude fed to the follower during the run.
+    max_abs_bank_rad: f64,
+}
+
 /// Flies the production follower + production flight model for [`PROBE_TICKS`]
-/// ticks and returns the final body heading.
+/// ticks and returns the final body heading and the bank the follower was fed.
 ///
 /// `target_left` puts the marker to the actor's left (canonical `+X`, the actor
 /// at `+X`); `flip_roll` negates the produced roll command, which is the #451
 /// mutation (the pre-fix sign).
-fn fly(target_left: bool, flip_roll: bool) -> f64 {
+fn fly(target_left: bool, flip_roll: bool) -> ProbeResult {
     let model = FlightModel::new(synthetic_fixed_wing());
     let tuning = model.tuning();
     // `probes::ProbeRunner` reorders the per-control inertia `[roll, pitch,
@@ -85,20 +110,32 @@ fn fly(target_left: bool, flip_roll: bool) -> f64 {
     let mut velocity: [f64; 3] = [0.0, 0.0, -40.0];
     let mut angular: [f64; 3] = [0.0; 3];
     let mut engine = EngineState::direct(1.0);
+    let mut initial_bank_rad = None;
+    let mut max_abs_bank_rad: f64 = 0.0;
 
     for tick in 0..PROBE_TICKS {
         let rotation =
             Quaternion::try_new(orientation).expect("the integrated rotation stays unit");
         let forward = rotate(BODY_FORWARD, rotation);
+        let right = rotate(BODY_RIGHT, rotation);
+        let up = rotate(BODY_UP, rotation);
         let heading = heading_from_direction(forward[0], forward[2]);
         let speed = (velocity[0] * velocity[0] + velocity[2] * velocity[2]).sqrt();
+        // The same right-wing-down bank `cs_app::ai::navigation::nav_state`
+        // measures from the live Avian `Rotation`: `atan2(right.Y, up.Y)` is
+        // left-wing-down, so it is negated.
+        let bank = -(right[1]).atan2(up[1]);
         let state = NavState {
             position_m: position,
             heading_rad: heading,
-            bank_rad: 0.0,
+            bank_rad: bank,
             speed_mps: speed,
             climb_mps: velocity[1],
         };
+        // Sampled from the state the follower is actually fed, not from the
+        // measurement alone, so a constant cannot pass the probe's check.
+        initial_bank_rad.get_or_insert(state.bank_rad);
+        max_abs_bank_rad = max_abs_bank_rad.max(state.bank_rad.abs());
         let decision = navigator
             .decide(&NavigationRequest {
                 tick: Tick(tick as u64),
@@ -153,7 +190,11 @@ fn fly(target_left: bool, flip_roll: bool) -> f64 {
 
     let rotation = Quaternion::try_new(orientation).expect("the integrated rotation stays unit");
     let forward = rotate(BODY_FORWARD, rotation);
-    heading_from_direction(forward[0], forward[2])
+    ProbeResult {
+        heading_rad: heading_from_direction(forward[0], forward[2]),
+        initial_bank_rad: initial_bank_rad.expect("the probe flew at least one tick"),
+        max_abs_bank_rad,
+    }
 }
 
 /// The minimum world-Y of the body-up axis while the production `FlightModel`
@@ -224,25 +265,48 @@ fn held_roll_min_up_y(roll: f64, ticks: usize) -> f64 {
 #[test]
 fn accept_t451_a_integrated_follower_turns_toward_the_target_it_commands() {
     let toward_left = fly(true, false);
+    // The probe must actually feed the follower its measured bank: a level-wing
+    // state would leave the inner bank loop open (task #762). The body starts
+    // level, so the first sample is exactly zero and a constant cannot pass both
+    // checks.
+    assert_eq!(
+        toward_left.initial_bank_rad, 0.0,
+        "a level body must report zero bank, got {}",
+        toward_left.initial_bank_rad
+    );
     assert!(
-        toward_left > 0.0,
-        "the follower must bank toward the left target (nose-left), got heading {toward_left}"
+        toward_left.max_abs_bank_rad > MIN_MEASURED_BANK_RAD,
+        "the follower must be fed the integrated body's measured bank, got at most {} rad",
+        toward_left.max_abs_bank_rad
+    );
+    assert!(
+        toward_left.heading_rad > 0.0,
+        "the follower must bank toward the left target (nose-left), got heading {}",
+        toward_left.heading_rad
     );
     let flipped_left = fly(true, true);
     assert!(
-        flipped_left < 0.0,
-        "flipping the roll sign must bank away from the left target, got heading {flipped_left}"
+        flipped_left.heading_rad < 0.0,
+        "flipping the roll sign must bank away from the left target, got heading {}",
+        flipped_left.heading_rad
     );
 
     let toward_right = fly(false, false);
     assert!(
-        toward_right < 0.0,
-        "the follower must bank toward the right target (nose-right), got heading {toward_right}"
+        toward_right.max_abs_bank_rad > MIN_MEASURED_BANK_RAD,
+        "the follower must be fed the integrated body's measured bank, got at most {} rad",
+        toward_right.max_abs_bank_rad
+    );
+    assert!(
+        toward_right.heading_rad < 0.0,
+        "the follower must bank toward the right target (nose-right), got heading {}",
+        toward_right.heading_rad
     );
     let flipped_right = fly(false, true);
     assert!(
-        flipped_right > 0.0,
-        "flipping the roll sign must bank away from the right target, got heading {flipped_right}"
+        flipped_right.heading_rad > 0.0,
+        "flipping the roll sign must bank away from the right target, got heading {}",
+        flipped_right.heading_rad
     );
 }
 
