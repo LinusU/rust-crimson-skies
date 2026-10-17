@@ -24,3 +24,9 @@ path = "tests/main.rs"
 [dependencies]
 cs_script.workspace = true
 cs_types.workspace = true
+
+[dev-dependencies]
+# The crate's own layout acceptance test asserts this single-`[[test]]`
+# target through the guard's library function (`cs_xtask::test_layout`),
+# the same check `cs_xtask test-layout` and CI's guard test run.
+cs_xtask = { path = "../../tools/cs_xtask" }

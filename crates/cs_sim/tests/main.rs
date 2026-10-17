@@ -77,4 +77,5 @@ mod accept_t526_bank_hold_and_envelope;
 mod accept_t548_lost_target_blast;
 mod accept_t601_ordnance_identity;
 mod accept_t761_deviating_command;
+mod accept_test_bin_rest_sim;
 mod ai;

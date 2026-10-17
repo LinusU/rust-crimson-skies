@@ -2600,6 +2600,7 @@ version = "0.0.0"
 dependencies = [
  "cs_script",
  "cs_types",
+ "cs_xtask",
 ]
 
 [[package]]
