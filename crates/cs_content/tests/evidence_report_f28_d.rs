@@ -44,8 +44,7 @@
 //! `verified_original` — `retail` here is read access to original files, not
 //! evidence that the original executable ran.
 
-#[path = "f28_d_support/mod.rs"]
-mod support;
+use crate::f28_d_support as support;
 
 use std::collections::VecDeque;
 use std::fs;

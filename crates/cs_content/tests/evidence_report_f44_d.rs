@@ -24,8 +24,7 @@
 //! read over the owner's installation, not a paraphrase of the acceptance
 //! assertions.
 
-#[path = "f44_d_support/mod.rs"]
-mod support;
+use crate::f44_d_support as support;
 
 use std::collections::VecDeque;
 use std::fs;

@@ -36,8 +36,7 @@
 //! shipped observation", never "the original cannot do it", and nothing here is
 //! a `verified_original` claim.
 
-#[path = "f30_d_support/mod.rs"]
-mod support;
+use crate::f30_d_support as support;
 
 use cs_assets::install::{content_fingerprint, discover, fingerprint, sha256};
 use cs_content::config::{StringCatalog, StringLookup};

@@ -17,8 +17,7 @@
 //! not evidence of how the original behaves** — that would require running the
 //! original executable, which no agent can do. `retail` is read access.
 
-#[path = "f44_d_support/mod.rs"]
-mod support;
+use crate::f44_d_support as support;
 
 use std::collections::{BTreeMap, BTreeSet};
 

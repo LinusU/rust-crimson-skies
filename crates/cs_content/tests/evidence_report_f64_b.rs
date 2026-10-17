@@ -25,8 +25,7 @@
 //! (`import-surface.json`). That is a real production read over the owner's
 //! installation, not a paraphrase of the acceptance assertions.
 
-#[path = "f64_b_support/mod.rs"]
-mod support;
+use crate::f64_b_support as support;
 
 use std::collections::VecDeque;
 use std::fs;

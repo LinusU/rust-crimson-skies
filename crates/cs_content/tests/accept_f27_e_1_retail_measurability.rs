@@ -36,8 +36,7 @@
 //! its id, its length and its digit set, which is what "does it state a number?"
 //! is a question about; the prose the original wrote is read and only measured.
 
-#[path = "f27_e_1_support/mod.rs"]
-mod support;
+use crate::f27_e_1_support as support;
 
 use std::collections::BTreeSet;
 

@@ -27,8 +27,7 @@
 //! Without `CS_GAME_DIR` the retail test fails loudly rather than passing
 //! vacuously. No test writes into the installation.
 
-#[path = "t582_support/mod.rs"]
-mod t582_support;
+use crate::t582_support;
 
 use std::collections::BTreeSet;
 use std::fs;

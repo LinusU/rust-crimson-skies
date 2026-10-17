@@ -39,8 +39,7 @@
 //! with `--include-ignored`. They fail loudly, never vacuously, without
 //! `CS_GAME_DIR`.
 
-#[path = "f27_d_support/mod.rs"]
-mod support;
+use crate::f27_d_support as support;
 
 use cs_content::weapons::{
     AmmoAuditFinding, AmmunitionAudit, ORIGINAL_AMMO_NAME_BLOCKS, ORIGINAL_AMMUNITION_TYPES,

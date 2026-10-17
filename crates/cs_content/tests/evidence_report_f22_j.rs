@@ -24,11 +24,9 @@
 //! `ActionMap::designed_default`, the cited spans and the fingerprints — ids,
 //! codes, addresses, spans and digests only, never original display text.
 
-#[path = "f22_j_support/mod.rs"]
-mod support;
+use crate::f22_j_support as support;
 
-#[path = "f22_h_support/mod.rs"]
-mod f22_h;
+use crate::f22_h_support as f22_h;
 
 use std::collections::VecDeque;
 use std::fs;

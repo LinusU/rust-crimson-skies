@@ -17,8 +17,7 @@
 //! not evidence of how the original behaves** — that would require running the
 //! original executable, which no agent can do. `retail` is read access.
 
-#[path = "f28_d_support/mod.rs"]
-mod support;
+use crate::f28_d_support as support;
 
 use cs_content::ordnance::{
     DECLARED_FIELDS_WITHOUT_CONSUMER, ORIGINAL_NEXT_ROCKET_BLOCK, ORIGINAL_NITRO_CONTROL,

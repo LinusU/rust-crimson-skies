@@ -38,8 +38,7 @@
 //! `implemented`: this stage awards nothing above that, and never
 //! `verified_original`.
 
-#[path = "f30_d_support/mod.rs"]
-mod support;
+use crate::f30_d_support as support;
 
 use std::collections::VecDeque;
 use std::fs;

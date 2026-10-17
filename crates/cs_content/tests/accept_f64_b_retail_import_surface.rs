@@ -22,8 +22,7 @@
 //!   four-slot grid of saved planes through engine callback 2243 — the
 //!   measured reference that turned `CustomAircraft`'s import requirement on.
 
-#[path = "f64_b_support/mod.rs"]
-mod f64_b_support;
+use crate::f64_b_support;
 
 use cs_formats::legacy_profile::{LegacyArtifactClass, layout_record};
 use f64_b_support::{

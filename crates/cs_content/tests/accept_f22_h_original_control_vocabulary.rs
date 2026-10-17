@@ -24,8 +24,7 @@
 //! No original display text is reproduced or asserted: a label is identified
 //! by its id and measured code-unit length only.
 
-#[path = "f22_h_support/mod.rs"]
-mod support;
+use crate::f22_h_support as support;
 
 use cs_assets::install::{content_fingerprint, discover, fingerprint, sha256};
 use cs_content::config::{StringCatalog, StringLookup};

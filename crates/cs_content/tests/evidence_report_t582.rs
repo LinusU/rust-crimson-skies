@@ -26,8 +26,7 @@
 //! extent of every candidate. Spellings, counts, families and extents only;
 //! no original file content is written.
 
-#[path = "t582_support/mod.rs"]
-mod support;
+use crate::t582_support as support;
 
 use std::collections::VecDeque;
 use std::fs;
