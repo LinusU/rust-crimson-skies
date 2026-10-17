@@ -490,6 +490,47 @@ fn accept_test_bin_guard_allows_a_declared_number_of_targets_and_no_file_twice()
         report.findings
     );
 
+    // A listed shared helper file with no tests may be reached by both
+    // targets; one that holds a `#[test]` may not, or both would run it.
+    let shared_allowance = "\n[package.metadata.cs_test_layout]\ntest_targets = 2\nshared_test_sources = [\"tests/common.rs\"]\n";
+    let shared_files = |common: &'static str| {
+        [
+            (
+                "tests/a/main.rs",
+                "#[path = \"../common.rs\"]\nmod common;\n",
+            ),
+            (
+                "tests/b/main.rs",
+                "#[path = \"../common.rs\"]\nmod common;\n",
+            ),
+            ("tests/common.rs", common),
+        ]
+    };
+    let root = fixture(
+        "allowance-shared",
+        "crates/split",
+        &manifest(shared_allowance, &both),
+        &shared_files("pub fn helper() {}\n"),
+    );
+    let report = test_layout::check_workspace(&root).expect("the fixture must be readable");
+    assert!(report.is_clean(), "{:?}", report.lines());
+    let root = fixture(
+        "allowance-shared-with-test",
+        "crates/split",
+        &manifest(shared_allowance, &both),
+        &shared_files("#[test]\nfn runs_twice() {}\n"),
+    );
+    let report = test_layout::check_workspace(&root).expect("the fixture must be readable");
+    assert!(
+        matches!(
+            report.findings.as_slice(),
+            [LayoutFinding::SharedTestSourceHasTests { file, .. }]
+                if file == "crates/split/tests/common.rs"
+        ),
+        "a shared file holding a test must be reported, got {:?}",
+        report.findings
+    );
+
     // A file no target reaches is still stray.
     let stray = fixture(
         "allowance-stray",

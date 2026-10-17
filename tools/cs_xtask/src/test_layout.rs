@@ -104,6 +104,14 @@ pub enum LayoutFinding {
         /// Workspace-relative `[[test]]` sources that both reach it.
         mains: Vec<String>,
     },
+    /// A test source the manifest lists as shared between targets holds a
+    /// `#[test]` function, so every target that declares it would run that test.
+    SharedTestSourceHasTests {
+        /// Workspace-relative member directory.
+        member: String,
+        /// Workspace-relative path of the shared file.
+        file: String,
+    },
     /// A test source under the member's `tests/` directory is not reached from
     /// the single test binary, so cargo compiles and runs no test in it.
     StrayTestFile {
@@ -142,8 +150,16 @@ impl fmt::Display for LayoutFinding {
             } => write!(
                 f,
                 "{file} is reached from more than one `[[test]]` target of {member} ({}), so \
-                 its tests would be compiled and run twice; keep it in exactly one",
+                 its tests would be compiled and run twice; keep it in exactly one, or, for a \
+                 helper module with no tests, list it in `[package.metadata.cs_test_layout] \
+                 shared_test_sources`",
                 mains.join(", ")
+            ),
+            Self::SharedTestSourceHasTests { member, file } => write!(
+                f,
+                "{file} is listed in {member}'s `shared_test_sources`, so several targets \
+                 compile it, but it holds a `#[test]` function that each of them would run; \
+                 a shared file may hold helpers only"
             ),
             Self::MissingTestTarget { member, main } => write!(
                 f,
@@ -275,6 +291,53 @@ pub fn test_targets_allowed(manifest: &str) -> usize {
         }
     }
     1
+}
+
+/// The member-relative files a manifest declares as shared between its test
+/// targets: `shared_test_sources = ["tests/campaign/common.rs", …]` in
+/// `[package.metadata.cs_test_layout]`, as one single-line array.
+///
+/// A shared file may be reached by several targets (each compiles its own copy
+/// of the helpers) but must hold no `#[test]`, or every target would run it
+/// (see [`LayoutFinding::SharedTestSourceHasTests`]).
+pub fn shared_test_sources(manifest: &str) -> Vec<String> {
+    let mut inside = false;
+    for raw in manifest.lines() {
+        let line = strip_comment(raw).trim();
+        if line.starts_with('[') {
+            inside = line == "[package.metadata.cs_test_layout]";
+            continue;
+        }
+        if !inside {
+            continue;
+        }
+        if let Some((key, value)) = line.split_once('=')
+            && key.trim() == "shared_test_sources"
+        {
+            return value
+                .trim()
+                .trim_start_matches('[')
+                .trim_end_matches(']')
+                .split(',')
+                .map(unquote)
+                .filter(|path| !path.is_empty())
+                .map(str::to_string)
+                .collect();
+        }
+    }
+    Vec::new()
+}
+
+/// Whether a Rust source declares a `#[test]` function (comments and strings
+/// are lexed away first).
+fn declares_test_function(source: &str) -> bool {
+    let tokens = lex(source);
+    tokens.windows(3).any(|window| {
+        matches!(
+            window,
+            [Token::Punct('#'), Token::Punct('['), Token::Ident(name)] if name == "test"
+        )
+    })
 }
 
 /// The `[[test]]` source paths a manifest declares, in declaration order.
@@ -803,6 +866,10 @@ pub fn check_member(workspace_root: &Path, member: &str) -> Result<MemberLayout,
     for (_, files) in &per_target {
         reached.extend(files.iter().map(|path| normalize(path)));
     }
+    let shared: BTreeSet<PathBuf> = shared_test_sources(&manifest)
+        .iter()
+        .map(|path| normalize(&dir.join(path)))
+        .collect();
     for file in &sources {
         let key = normalize(file);
         if !reached.contains(&key) {
@@ -818,7 +885,16 @@ pub fn check_member(workspace_root: &Path, member: &str) -> Result<MemberLayout,
             .filter(|(_, files)| files.iter().any(|path| normalize(path) == key))
             .map(|(main, _)| main.clone())
             .collect();
-        if owners.len() > 1 {
+        if owners.len() > 1 && shared.contains(&key) {
+            let has_tests =
+                fs::read_to_string(file).is_ok_and(|text| declares_test_function(&text));
+            if has_tests {
+                findings.push(LayoutFinding::SharedTestSourceHasTests {
+                    member: member.to_string(),
+                    file: relative(workspace_root, file),
+                });
+            }
+        } else if owners.len() > 1 {
             findings.push(LayoutFinding::DoublyReachedTestFile {
                 member: member.to_string(),
                 file: relative(workspace_root, file),
