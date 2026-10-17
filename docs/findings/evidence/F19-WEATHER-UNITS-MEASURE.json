@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "F19-WEATHER-UNITS-MEASURE",
+ "candidate_tree": "6c6165b97a1984fa0ffaa752869145aa2bcf7c07",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-10-17T01:18:51Z",
+ "command": {"argv": ["cargo", "test", "--workspace", "--locked", "--", "accept_m01_play_weather_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/swe2-max-1", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 8, "executed": 8, "passed": 8, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_m01_play_weather_the_layers_sit_above_the_water_and_inside_the_haze", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m01_play_weather_an_authored_cloud_layer_reaches_the_drawn_deck", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m01_play_weather_a_record_with_no_layer_falls_back_to_the_labelled_design", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m01_play_weather_the_designed_weather_labels_every_value_it_draws", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m01_play_weather_the_deck_paints_its_coverage_and_leaves_the_sky_visible", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m01_play_weather_the_plugin_draws_each_layer_under_the_camera", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m01_play_weather_the_headless_stack_answers_a_fixed_steps_resources", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m01_play_weather_retail_m01_weather_is_bound_to_its_record_and_labelled", "status": "pass", "evidence": ["cargo-test.log"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "94642147ceccd2a2844b3c45d03724dd797c5eed06b251f2dfff6aae28ca4183", "kind": "log"}, {"path": "weather-units-census.json", "sha256": "ec8df80ee2beee6d1bb4b7f6b7a1ca099adba5fbdb5dac2b30e498257cec4f05", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "swe2-max-1 (Devin/SWE-2 Max, self-produced; review pending)", "method": "Acceptance suite run locally with `retail` (CS_GAME_DIR): 8 `accept_m01_play_weather_` tests passed on the recorded log. This harness derived every field from the recorded log, production discovery of $CS_GAME_DIR, and a second production run (weather-units-census.json) that re-read M01's own weather.zrd through `read_mission_weather` and recorded the bind it produces: one cloud layer at 1055 m with the record's provenance, the shared zone `FOG_COLOR` bound normalized, and the `TOP`/`THICKNESS` + fog ranges still named unbound. The units claim itself is static disassembly of the owner-supplied image — `docs/findings/2026-10-16-f19-weather-units-measure.md` names every virtual address — not a run of the original. LIMITS: the record's colour domain (normalized floats that most plausibly address the device's display/sRGB fog colour, bound verbatim into `color_linear`) is a documented residual, and how the original renderer drew `cloudlayer`/`cloud1`/`cloud2` stays unmeasured. Validated with tools/validate_evidence.py --require-pass."},
+ "claim": "implemented"
+}
