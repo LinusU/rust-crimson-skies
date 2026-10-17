@@ -31,8 +31,9 @@
 //! ## The discovered original table and its audit (stage F47-D)
 //!
 //! [`DiscoveredScrapbook::discover`] reads the installation's own
-//! `ASSETS/SCRAPBOOK.CSV` member through the production ROF mount and the
-//! production keyed-list reader, groups the records it holds into
+//! `ASSETS/SCRAPBOOK.CSV` member through [`read_scrapbook_table`] — the one
+//! shared production read of the member (F47-C3), which F14-D.8's baseline
+//! `scrapbook_item` rows bind as well — groups the records it holds into
 //! [`DiscoveredPage`]s and records, for every item, which of the
 //! installation's artwork members hold its picture. [`audit`] then compares
 //! that discovery against a declared [`ScrapbookCatalog`] and against the
@@ -87,14 +88,15 @@ use cs_assets::rof::mount_rof_into;
 use cs_assets::vfs::{INSTALL_NAMESPACE, MountBuilder, SessionBuilder};
 use cs_formats::text::resource_header::read_resource_header;
 use cs_types::asset_id::{
-    AssetKey, MountId, MountNamespace, PrecedenceClass, ResolveContext, SourceSpan,
+    AssetKey, MountId, MountNamespace, PrecedenceClass, ResolveContext, SourceSpan, SourceSpanError,
 };
 use cs_types::content::{ContentId, ContentKind, Known, Provenance, Resolved};
 use cs_types::evidence::{ClaimId, ClaimStatus};
+use cs_types::install::InstallFileRecord;
 
 use crate::catalog::Catalog;
 use crate::catalog::baseline::{SCRAPBOOK_CONTAINER, SCRAPBOOK_MEMBER, install_file_key};
-use crate::config::{ConfigDocument, RecordSchema, RecordView};
+use crate::config::{ConfigDocument, ConfigEntry, RecordSchema, RecordView};
 use crate::weapons::ORIGINAL_RESOURCE_HEADER;
 
 /// The deepest accepted `All`/`Any` nesting.
@@ -615,6 +617,257 @@ impl fmt::Display for ScrapbookSourceError {
 
 impl std::error::Error for ScrapbookSourceError {}
 
+// ---------------------------------------------------------------------------
+// The shared scrapbook-table read (F47-C3)
+// ---------------------------------------------------------------------------
+
+/// Gap code: one [`SCRAPBOOK_MEMBER`] entry the documented
+/// [`RecordSchema::Scrapbook`] does not cover — counted, never dropped.
+pub const GAP_ENTRY_NOT_ITEM: &str = "entry_not_a_scrapbook_item";
+
+/// Gap code: one entry key the table declares more than once with
+/// **identical** field text — one item declared twice, so the repeat is
+/// counted instead of becoming a second row with the same identity.
+pub const GAP_DUPLICATE_KEY: &str = "duplicate_entry_key";
+
+/// Gap code: one entry key the table declares more than once with
+/// **different** field text. The key is the only identity the table states,
+/// so neither record binds — counted, because nothing in the table says
+/// which one the engine would read.
+pub const GAP_AMBIGUOUS_KEY: &str = "ambiguous_entry_key";
+
+/// Where the shared scrapbook-table read can refuse.
+///
+/// Each caller maps the variants onto its own refusal behaviour: F14-D.8's
+/// baseline reports a collection gap with a diagnostic (or a
+/// [`BaselineError`](crate::catalog::baseline::BaselineError) for the refusals
+/// it treats as errors), and [`DiscoveredScrapbook::discover`] returns the
+/// matching [`ScrapbookSourceError`]. The variants are staged by the step
+/// that refused, and `Span` keeps the typed [`SourceSpanError`] because the
+/// baseline's error enum carries it.
+///
+/// [`BaselineError`]: crate::catalog::baseline::BaselineError
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ScrapbookTableFailure {
+    /// The inventory holds no [`SCRAPBOOK_CONTAINER`] record.
+    MissingContainer,
+    /// The mount id or namespace could not be built.
+    MountIdentity {
+        /// Why.
+        reason: String,
+    },
+    /// The archive does not mount as the observed ROF container.
+    Mount {
+        /// Why.
+        reason: String,
+    },
+    /// The member [`AssetKey`] could not be built.
+    MemberKey {
+        /// Why.
+        reason: String,
+    },
+    /// The archive holds no [`SCRAPBOOK_MEMBER`] member.
+    MissingMember,
+    /// The member's stored extent could not be read.
+    Read {
+        /// Why.
+        reason: String,
+    },
+    /// The member's extent could not be fingerprinted into a span.
+    Span {
+        /// The typed refusal, for callers whose error enum carries it.
+        source: SourceSpanError,
+    },
+    /// The decoded member does not read as the keyed-list scrapbook table.
+    Document {
+        /// Why.
+        reason: String,
+    },
+}
+
+/// One key group of the scrapbook table after the shared read: the records
+/// the member declares under one entry key, in member order.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScrapbookGroup {
+    /// The entry key the group shares, verbatim bytes — the item's identity,
+    /// never its line number or position.
+    pub raw_key: Vec<u8>,
+    /// The group's records, in member order. `entries[0]` is the record both
+    /// callers bind (`line`, fields); the vector is never empty.
+    pub entries: Vec<ConfigEntry>,
+    /// Whether any record's field text disagrees with the first's. An
+    /// ambiguous group was counted under [`GAP_AMBIGUOUS_KEY`] and no record
+    /// of it binds.
+    pub ambiguous: bool,
+}
+
+impl ScrapbookGroup {
+    /// The group's first record, the one every caller binds.
+    pub fn first(&self) -> &ConfigEntry {
+        &self.entries[0]
+    }
+}
+
+/// The member's shared read product: the parsed table plus what the shared
+/// reader could group, with the shared gap tally already counted.
+#[derive(Clone, Debug)]
+pub struct ScrapbookTable {
+    /// SHA-256 of the decoded member bytes.
+    pub member_sha256: cs_types::evidence::ContentHash,
+    /// The member's span: the container, the member key, the decoded extent
+    /// and the member digest — the provenance the item binding cites.
+    pub span: SourceSpan,
+    /// The parsed document, kept for callers that count the entries the
+    /// member declared or read records it holds.
+    pub document: ConfigDocument,
+    /// The `Mission_Spread_Item` records the documented schema covers,
+    /// grouped by their own entry key in key order.
+    pub groups: Vec<ScrapbookGroup>,
+    /// The shared gap tally: [`GAP_ENTRY_NOT_ITEM`], [`GAP_DUPLICATE_KEY`]
+    /// and [`GAP_AMBIGUOUS_KEY`], counted once here so the two readers can
+    /// never apply the rule differently.
+    pub gaps: BTreeMap<&'static str, usize>,
+    /// The archive record the member was read from, for the caller's own
+    /// row or edge.
+    pub container: InstallFileRecord,
+    /// Every member spelling the mounted archive declares, in the
+    /// container's own order — for callers that join member data against
+    /// the archive's other members.
+    pub member_spellings: Vec<String>,
+}
+
+/// Reads the original scrapbook table: [`SCRAPBOOK_MEMBER`] of
+/// [`SCRAPBOOK_CONTAINER`], found in `files` by the record's logical key,
+/// mounted through the production ROF reader, read and parsed through the
+/// production keyed-list reader ([`ConfigDocument`]), with the
+/// `Mission_Spread_Item` records grouped by their own entry key.
+///
+/// The grouping rule is the F14-D.8 measurement both callers share: records
+/// under one key that agree on field text are one item with the repeat
+/// counted under [`GAP_DUPLICATE_KEY`]; records that disagree are counted
+/// under [`GAP_AMBIGUOUS_KEY`] and neither binds, because nothing in the
+/// table says which one the engine would read. A record the documented
+/// schema does not cover is counted under [`GAP_ENTRY_NOT_ITEM`] rather
+/// than dropped.
+///
+/// This is the one production read of the member (F47-C3): F14-D.8's
+/// `scrapbook_item` rows and [`DiscoveredScrapbook::discover`] both bind
+/// this product, so a change to the find, mount, read, parse or grouping
+/// rule moves both readers together.
+///
+/// # Errors
+///
+/// [`ScrapbookTableFailure`], staged by the step that refused.
+pub fn read_scrapbook_table<'a>(
+    install_root: &Path,
+    install_hash: cs_types::evidence::ContentHash,
+    files: impl IntoIterator<Item = &'a InstallFileRecord>,
+) -> Result<ScrapbookTable, ScrapbookTableFailure> {
+    let record = files
+        .into_iter()
+        .find(|record| {
+            record.relative_spelling.logical_key() == SCRAPBOOK_CONTAINER.to_ascii_lowercase()
+        })
+        .ok_or(ScrapbookTableFailure::MissingContainer)?;
+    let path = install_root.join(record.relative_spelling.as_str());
+
+    let mut builder = SessionBuilder::new(ResolveContext::new(install_hash));
+    let mount = MountBuilder::new(
+        MountId::new("rof-scrapbook").map_err(|error| ScrapbookTableFailure::MountIdentity {
+            reason: error.to_string(),
+        })?,
+        MountNamespace::new(INSTALL_NAMESPACE).map_err(|error| {
+            ScrapbookTableFailure::MountIdentity {
+                reason: error.to_string(),
+            }
+        })?,
+        PrecedenceClass::Shared,
+        SCRAPBOOK_CONTAINER,
+    )
+    .retail();
+    let source = mount_rof_into(&mut builder, mount, &path).map_err(|error| {
+        ScrapbookTableFailure::Mount {
+            reason: error.to_string(),
+        }
+    })?;
+    let key = AssetKey::from_spelling(source.namespace().as_str(), SCRAPBOOK_MEMBER, "default")
+        .map_err(|error| ScrapbookTableFailure::MemberKey {
+            reason: error.to_string(),
+        })?;
+    let info = source
+        .member(&key)
+        .cloned()
+        .ok_or(ScrapbookTableFailure::MissingMember)?;
+    let read = source
+        .read(&key)
+        .map_err(|error| ScrapbookTableFailure::Read {
+            reason: error.to_string(),
+        })?;
+    let bytes = read.data.as_slice();
+    let member_sha256 = cs_assets::install::sha256(bytes);
+    let member_spellings: Vec<String> = source
+        .members()
+        .map(|member| member.spelling.clone())
+        .collect();
+    let span = cs_types::asset_id::SourceSpan::new(
+        install_hash,
+        SCRAPBOOK_CONTAINER,
+        Some(SCRAPBOOK_MEMBER),
+        info.offset,
+        info.declared_decoded_len,
+        Some(member_sha256),
+    )
+    .map_err(|source| ScrapbookTableFailure::Span { source })?;
+    let mut context = cs_formats::ParseContext::with_defaults(SCRAPBOOK_CONTAINER);
+    let document = ConfigDocument::read(&mut context, span.clone(), bytes).map_err(|error| {
+        ScrapbookTableFailure::Document {
+            reason: error.to_string(),
+        }
+    })?;
+
+    // The entry key is the item's identity, so a key the table declares
+    // twice names one item twice. Records that agree are one item with the
+    // repeat counted under `duplicate_entry_key`; records that disagree are
+    // counted under `ambiguous_entry_key` and neither binds, because nothing
+    // in the table says which the engine would read (the F14-D.8
+    // measurement).
+    let mut gaps: BTreeMap<&'static str, usize> = BTreeMap::new();
+    let mut grouped: BTreeMap<Vec<u8>, Vec<ConfigEntry>> = BTreeMap::new();
+    for entry in document.entries() {
+        if RecordSchema::for_entry(entry) != Some(RecordSchema::Scrapbook) {
+            *gaps.entry(GAP_ENTRY_NOT_ITEM).or_default() += 1;
+            continue;
+        }
+        grouped
+            .entry(entry.key.clone())
+            .or_default()
+            .push(entry.clone());
+    }
+    let mut groups = Vec::with_capacity(grouped.len());
+    for (raw_key, entries) in grouped {
+        let ambiguous = entries.iter().any(|entry| entry.value != entries[0].value);
+        if ambiguous {
+            *gaps.entry(GAP_AMBIGUOUS_KEY).or_default() += entries.len();
+        } else if entries.len() > 1 {
+            *gaps.entry(GAP_DUPLICATE_KEY).or_default() += entries.len() - 1;
+        }
+        groups.push(ScrapbookGroup {
+            raw_key,
+            entries,
+            ambiguous,
+        });
+    }
+    Ok(ScrapbookTable {
+        member_sha256,
+        span,
+        document,
+        groups,
+        gaps,
+        container: record.clone(),
+        member_spellings,
+    })
+}
+
 /// One discovered original scrapbook item: what the table and the container
 /// say about it, with nothing filled in.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -726,60 +979,30 @@ impl DiscoveredScrapbook {
         })?;
         let install = cs_assets::install::fingerprint(&found.manifest);
         let content = cs_assets::install::content_fingerprint(&found.manifest);
-        let record = found
-            .manifest
-            .files
-            .iter()
-            .find(|record| {
-                record
-                    .relative_spelling
-                    .as_str()
-                    .eq_ignore_ascii_case(SCRAPBOOK_CONTAINER)
-            })
-            .ok_or(ScrapbookSourceError::MissingContainer)?;
-        let path = install_root.join(record.relative_spelling.as_str());
-
-        let mut builder = SessionBuilder::new(ResolveContext::new(install));
-        let mount = MountBuilder::new(
-            MountId::new("rof-scrapbook").map_err(|error| ScrapbookSourceError::Mount {
-                reason: error.to_string(),
-            })?,
-            MountNamespace::new(INSTALL_NAMESPACE).map_err(|error| {
-                ScrapbookSourceError::Mount {
-                    reason: error.to_string(),
+        let table = read_scrapbook_table(install_root, install, found.manifest.files.iter())
+            .map_err(|failure| match failure {
+                ScrapbookTableFailure::MissingContainer => ScrapbookSourceError::MissingContainer,
+                ScrapbookTableFailure::MountIdentity { reason }
+                | ScrapbookTableFailure::Mount { reason } => ScrapbookSourceError::Mount { reason },
+                ScrapbookTableFailure::MemberKey { reason } => {
+                    ScrapbookSourceError::Document { reason }
                 }
-            })?,
-            PrecedenceClass::Shared,
-            SCRAPBOOK_CONTAINER,
-        )
-        .retail();
-        let source = mount_rof_into(&mut builder, mount, &path).map_err(|error| {
-            ScrapbookSourceError::Mount {
-                reason: error.to_string(),
-            }
-        })?;
-
-        let key = AssetKey::from_spelling(source.namespace().as_str(), SCRAPBOOK_MEMBER, "default")
-            .map_err(|error| ScrapbookSourceError::Document {
-                reason: error.to_string(),
+                ScrapbookTableFailure::MissingMember => ScrapbookSourceError::MissingMember,
+                ScrapbookTableFailure::Read { reason } => ScrapbookSourceError::Read { reason },
+                ScrapbookTableFailure::Span { source } => ScrapbookSourceError::Span {
+                    reason: source.to_string(),
+                },
+                ScrapbookTableFailure::Document { reason } => {
+                    ScrapbookSourceError::Document { reason }
+                }
             })?;
-        let info = source
-            .member(&key)
-            .cloned()
-            .ok_or(ScrapbookSourceError::MissingMember)?;
-        let read = source
-            .read(&key)
-            .map_err(|error| ScrapbookSourceError::Read {
-                reason: error.to_string(),
-            })?;
-        let bytes = read.data.as_slice();
+        let member_span = table.span.clone();
 
         // The artwork side: every member of the container, keyed by its file
         // stem, so an item's picture is found by name rather than by a path
         // this stage invented.
         let mut stems: BTreeMap<String, Vec<String>> = BTreeMap::new();
-        for member in source.members() {
-            let spelling = &member.spelling;
+        for spelling in &table.member_spellings {
             let Some((_, name)) = spelling.rsplit_once('/') else {
                 continue;
             };
@@ -794,44 +1017,14 @@ impl DiscoveredScrapbook {
             spellings.dedup();
         }
 
-        let span = cs_types::asset_id::SourceSpan::new(
-            install,
-            SCRAPBOOK_CONTAINER,
-            Some(SCRAPBOOK_MEMBER),
-            info.offset,
-            info.declared_decoded_len,
-            Some(cs_assets::install::sha256(bytes)),
-        )
-        .map_err(|error| ScrapbookSourceError::Span {
-            reason: error.to_string(),
-        })?;
-        let mut context = cs_formats::ParseContext::with_defaults(SCRAPBOOK_CONTAINER);
-        let member_span = span.clone();
-        let document = ConfigDocument::read(&mut context, span, bytes).map_err(|error| {
-            ScrapbookSourceError::Document {
-                reason: error.to_string(),
-            }
-        })?;
-
         let mut gaps: BTreeMap<String, u32> = BTreeMap::new();
         let bump = |gaps: &mut BTreeMap<String, u32>, code: &str, by: u32| {
             *gaps.entry(code.to_owned()).or_default() += by;
         };
-
-        // A key the table declares twice names one item twice: records that
-        // agree are one item with the repeat counted, records that disagree
-        // are reported with neither, because nothing in the table says which
-        // one the engine reads (the rule F14-D.8 measured for the same
-        // member).
-        let mut grouped: BTreeMap<Vec<u8>, Vec<&crate::config::ConfigEntry>> = BTreeMap::new();
-        for entry in document.entries() {
-            if RecordSchema::for_entry(entry) != Some(RecordSchema::Scrapbook) {
-                bump(&mut gaps, "entry_not_a_scrapbook_item", 1);
-                continue;
-            }
-            grouped.entry(entry.key.clone()).or_default().push(entry);
+        for (code, count) in &table.gaps {
+            bump(&mut gaps, code, *count as u32);
         }
-        if grouped.is_empty() {
+        if table.groups.is_empty() {
             // The keyed-list reader accepts a member that holds no record the
             // documented schema covers, so an unreadable table would otherwise
             // look like a table with nothing in it. It is an error instead: an
@@ -847,19 +1040,13 @@ impl DiscoveredScrapbook {
         let mut records = 0usize;
         let mut items: Vec<DiscoveredItem> = Vec::new();
         let artwork_directory = format!("{}/", ARTWORK_DIRECTORY.to_ascii_lowercase());
-        for (raw_key, group) in grouped {
-            let Some(first) = group.first().copied() else {
+        for group in &table.groups {
+            if group.ambiguous {
                 continue;
-            };
-            if group.iter().any(|entry| entry.value != first.value) {
-                bump(&mut gaps, "ambiguous_entry_key", group.len() as u32);
-                continue;
-            }
-            if group.len() > 1 {
-                bump(&mut gaps, "duplicate_entry_key", (group.len() - 1) as u32);
             }
             records += 1;
-            let Ok(key) = String::from_utf8(raw_key.clone()) else {
+            let first = group.first();
+            let Ok(key) = String::from_utf8(group.raw_key.clone()) else {
                 bump(&mut gaps, "entry_key_not_utf8", 1);
                 continue;
             };
@@ -928,7 +1115,7 @@ impl DiscoveredScrapbook {
         Ok(Self {
             install_sha256: install.to_hex(),
             content_sha256: content.to_hex(),
-            member_sha256: cs_assets::install::sha256(bytes).to_hex(),
+            member_sha256: table.member_sha256.to_hex(),
             member_span,
             records,
             pages,

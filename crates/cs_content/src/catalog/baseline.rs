@@ -310,6 +310,7 @@ use crate::scene::{
     DiscoveredAirframe, RosterDeclarations, RosterDiscoveryIssue, discover_airframe_roster,
     discover_mission_only_airframes,
 };
+use crate::scrapbook::{ScrapbookTableFailure, read_scrapbook_table};
 use crate::stunts::{
     SCENARIO_MEMBER, SCENARIO_TARGETS_MEMBER, STUNT_MISSION_TYPE, ZrdValue, decode_zrd,
     scenario_fly_through_targets, scenario_mission_type,
@@ -746,16 +747,6 @@ const GAP_STUNT_DUPLICATE_ZONE: &str = "duplicate_zone_label";
 /// scenario gives no identity that tells the two apart, and minting one (a
 /// position, an index) would guess (AGENTS.md rule 4).
 const GAP_STUNT_AMBIGUOUS_ZONE: &str = "ambiguous_zone_label";
-
-/// Gap code: one entry key [`SCRAPBOOK_MEMBER`] declares more than once with
-/// **different** field text. Neither record is a row for the same reason as
-/// [`GAP_STUNT_AMBIGUOUS_ZONE`]: the key is the only identity the table states.
-const GAP_SCRAPBOOK_AMBIGUOUS_KEY: &str = "ambiguous_entry_key";
-
-/// Gap code: one entry key [`SCRAPBOOK_MEMBER`] declares more than once with
-/// **identical** field text. It is one item declared twice, so the repeat is
-/// counted here instead of becoming a second row with the same identity.
-const GAP_SCRAPBOOK_DUPLICATE_KEY: &str = "duplicate_entry_key";
 
 /// The installation-relative spelling of the reader archive a world group's
 /// rows are read from: one `<container>/<group>/zrdr.zbd` per world group.
@@ -4804,9 +4795,11 @@ fn stunt_rows(
 /// An entry the documented [`RecordSchema`] does not cover is counted in
 /// [`CollectionStatus::gaps`] under `entry_not_a_scrapbook_item` rather than
 /// dropped, and an entry key the table declares twice is counted under
-/// [`GAP_SCRAPBOOK_DUPLICATE_KEY`] — or, when the two records disagree about
-/// their fields, under [`GAP_SCRAPBOOK_AMBIGUOUS_KEY`] with neither one a row.
-/// The duplicate is resolved here rather than at [`Catalog::insert`], whose
+/// [`crate::scrapbook::GAP_DUPLICATE_KEY`] — or, when the two records disagree
+/// about their fields, under [`crate::scrapbook::GAP_AMBIGUOUS_KEY`] with
+/// neither one a row.
+/// The duplicate is resolved in the shared scrapbook-table read
+/// ([`read_scrapbook_table`], F47-C3) rather than at [`Catalog::insert`], whose
 /// duplicate refusal would otherwise cost the installation its whole inventory
 /// over one repeated key. A scrapbook item is **not** launchable content, so this
 /// collection adds no root and cannot move the coverage denominator.
@@ -4836,122 +4829,83 @@ fn scrapbook_rows(
         diagnostic: None,
     };
 
-    let Some(record) = files.get(&SCRAPBOOK_CONTAINER.to_ascii_lowercase()) else {
-        return Ok(unpopulated(
-            status,
-            format!(
-                "the installation inventories no {SCRAPBOOK_CONTAINER}, so the scrapbook items \
-                 have no bytes to read"
-            ),
-        ));
-    };
-
-    let path = install_root.join(record.relative_spelling.as_str());
-    let mut builder = SessionBuilder::new(ResolveContext::new(install_hash));
-    let mount = MountBuilder::new(
-        MountId::new("rof-scrapbook").map_err(|error| BaselineError::Session(error.to_string()))?,
-        MountNamespace::new(INSTALL_NAMESPACE)
-            .map_err(|error| BaselineError::Session(error.to_string()))?,
-        PrecedenceClass::Shared,
-        SCRAPBOOK_CONTAINER,
-    )
-    .retail();
-    let source = match mount_rof_into(&mut builder, mount, &path) {
-        Ok(source) => source,
-        Err(error) => {
-            return Ok(unpopulated(
-                status,
-                format!(
-                    "the shared archive {SCRAPBOOK_CONTAINER} does not mount as the observed ROF \
-                     container: {error}"
+    let table = match read_scrapbook_table(install_root, install_hash, files.values().copied()) {
+        Ok(table) => table,
+        Err(failure) => {
+            return Ok(match failure {
+                ScrapbookTableFailure::MissingContainer => unpopulated(
+                    status,
+                    format!(
+                        "the installation inventories no {SCRAPBOOK_CONTAINER}, so the scrapbook \
+                         items have no bytes to read"
+                    ),
                 ),
-            ));
-        }
-    };
-    let key = AssetKey::from_spelling(source.namespace().as_str(), SCRAPBOOK_MEMBER, "default")
-        .map_err(|error| BaselineError::Identity {
-            identity: SCRAPBOOK_MEMBER.to_owned(),
-            reason: error.to_string(),
-        })?;
-    let Some(info) = source.member(&key).cloned() else {
-        return Ok(unpopulated(
-            status,
-            format!(
-                "the shared archive {SCRAPBOOK_CONTAINER} holds no {SCRAPBOOK_MEMBER} member, so \
-                 the scrapbook table has no bytes to read"
-            ),
-        ));
-    };
-    let read = match source.read(&key) {
-        Ok(read) => read,
-        Err(error) => {
-            return Ok(unpopulated(
-                status,
-                format!("the scrapbook member {SCRAPBOOK_MEMBER} does not read: {error}"),
-            ));
-        }
-    };
-    let bytes = read.data.as_slice();
-    let span = SourceSpan::new(
-        install_hash,
-        SCRAPBOOK_CONTAINER,
-        Some(SCRAPBOOK_MEMBER),
-        info.offset,
-        info.declared_decoded_len,
-        Some(cs_assets::install::sha256(bytes)),
-    )
-    .map_err(|source| BaselineError::Span {
-        path: SCRAPBOOK_MEMBER.to_owned(),
-        source,
-    })?;
-    let mut context = cs_formats::ParseContext::with_defaults(SCRAPBOOK_CONTAINER);
-    let document = match ConfigDocument::read(&mut context, span.clone(), bytes) {
-        Ok(document) => document,
-        Err(error) => {
-            return Ok(unpopulated(
-                status,
-                format!(
-                    "the member {SCRAPBOOK_MEMBER} does not read as the keyed-list scrapbook \
-                     table: {error}"
+                ScrapbookTableFailure::MountIdentity { reason } => {
+                    return Err(BaselineError::Session(reason));
+                }
+                ScrapbookTableFailure::Mount { reason } => unpopulated(
+                    status,
+                    format!(
+                        "the shared archive {SCRAPBOOK_CONTAINER} does not mount as the observed \
+                         ROF container: {reason}"
+                    ),
                 ),
-            ));
+                ScrapbookTableFailure::MemberKey { reason } => {
+                    return Err(BaselineError::Identity {
+                        identity: SCRAPBOOK_MEMBER.to_owned(),
+                        reason,
+                    });
+                }
+                ScrapbookTableFailure::MissingMember => unpopulated(
+                    status,
+                    format!(
+                        "the shared archive {SCRAPBOOK_CONTAINER} holds no {SCRAPBOOK_MEMBER} \
+                         member, so the scrapbook table has no bytes to read"
+                    ),
+                ),
+                ScrapbookTableFailure::Read { reason } => unpopulated(
+                    status,
+                    format!("the scrapbook member {SCRAPBOOK_MEMBER} does not read: {reason}"),
+                ),
+                ScrapbookTableFailure::Span { source } => {
+                    return Err(BaselineError::Span {
+                        path: SCRAPBOOK_MEMBER.to_owned(),
+                        source,
+                    });
+                }
+                ScrapbookTableFailure::Document { reason } => unpopulated(
+                    status,
+                    format!(
+                        "the member {SCRAPBOOK_MEMBER} does not read as the keyed-list scrapbook \
+                         table: {reason}"
+                    ),
+                ),
+            });
         }
     };
+    status.gaps.extend(table.gaps);
+    let span = table.span;
+    let member_sha256 = table.member_sha256;
 
-    let spelling = record.relative_spelling.as_str();
+    let spelling = table.container.relative_spelling.as_str();
     let file_id = ContentId::from_source(ContentKind::InstallFile, &install_file_key(spelling))
         .map_err(|source| BaselineError::Key {
             spelling: spelling.to_owned(),
             source,
         })?;
-    let member_sha256 = cs_assets::install::sha256(bytes);
     // The entry key is this row's identity, so a key the table declares twice
-    // names one item twice. Resolved here rather than at `Catalog::insert`,
-    // whose duplicate refusal would otherwise cost the installation its whole
-    // inventory over one repeated key: records that agree are one item with the
-    // repeat counted, and records that disagree are reported rather than keyed,
-    // because nothing in the table says which the engine would read.
-    let mut grouped: BTreeMap<Vec<u8>, Vec<&crate::config::ConfigEntry>> = BTreeMap::new();
+    // names one item twice. Resolved in the shared table read rather than at
+    // `Catalog::insert`, whose duplicate refusal would otherwise cost the
+    // installation its whole inventory over one repeated key: records that
+    // agree are one item with the repeat counted, and records that disagree
+    // are reported rather than keyed, because nothing in the table says which
+    // the engine would read.
     let mut rows = Vec::new();
-    for entry in document.entries() {
-        if RecordSchema::for_entry(entry) != Some(RecordSchema::Scrapbook) {
-            *status.gaps.entry("entry_not_a_scrapbook_item").or_default() += 1;
+    for group in &table.groups {
+        if group.ambiguous {
             continue;
         }
-        grouped.entry(entry.key.clone()).or_default().push(entry);
-    }
-    for (raw_key, group) in grouped {
-        let Some(first) = group.first().copied() else {
-            continue;
-        };
-        if group.iter().any(|entry| entry.value != first.value) {
-            *status.gaps.entry(GAP_SCRAPBOOK_AMBIGUOUS_KEY).or_default() += group.len();
-            continue;
-        }
-        if group.len() > 1 {
-            *status.gaps.entry(GAP_SCRAPBOOK_DUPLICATE_KEY).or_default() += group.len() - 1;
-        }
-        let key = install_key_bytes(&raw_key);
+        let key = install_key_bytes(&group.raw_key);
         let id = ContentId::from_source(ContentKind::ScrapbookItem, &key).map_err(|source| {
             BaselineError::Key {
                 spelling: key.clone(),
@@ -4987,7 +4941,7 @@ fn scrapbook_rows(
 
     status.rows = rows.len();
     if rows.is_empty() {
-        let entries = document.entries().count();
+        let entries = table.document.entries().count();
         return Ok(unpopulated(
             status,
             format!(
