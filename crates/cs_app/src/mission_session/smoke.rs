@@ -65,7 +65,7 @@ use bevy::prelude::{
 use bevy::render::render_resource::TextureFormat;
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk};
 use bevy::ui::{ComputedNode, Node};
-use cs_content::world::{SurfaceRole, WorldObjectId};
+use cs_content::world::SurfaceRole;
 
 use super::compose::MissionPlayerBody;
 use super::evidence::{CaptureRefusal, clear_colour_encodings, count_world_pixels, same_colour};
@@ -213,6 +213,37 @@ pub const MIN_GUN_ROUNDS: u64 = 2;
 /// How far the player is stood from a spawned actor for its probe, metres —
 /// abeam, so the probe never puts the player in the actor's path.
 const PLACEMENT_OFFSET_M: f32 = 400.0;
+
+/// How near a residency visual must sit to a world actor's bind-time pose to
+/// be taken for that actor's drawn body, metres (designed, fail-closed): the
+/// airship measures ~100 m across and its own visual is spawned at exactly
+/// the pose the world-actor session binds, while the next world object is
+/// hundreds of metres away.
+const VISUAL_MATCH_M: f32 = 200.0;
+
+/// The world actor the M01 proximity trigger watches, as Rally #1480/#1486
+/// measured it: the record's radius is 700 m and its anchor is the cargo
+/// zeppelin `workersvoyagezep`. A census member the roster makes hostile is
+/// preferred when one is found; this name is the measurement standing behind
+/// the fallback, never a guess.
+const PROXIMITY_ANCHOR_SUBJECT: &str = "workersvoyagezep";
+
+/// The census member the approach flies to: one the roster declares hostile,
+/// else the measured proximity anchor.
+fn anchor_subject_of(census: &[CensusEntry]) -> Option<String> {
+    census
+        .iter()
+        .find(|entry| entry.hostile)
+        .or_else(|| {
+            census.iter().find(|entry| {
+                entry
+                    .subject
+                    .as_deref()
+                    .is_some_and(|subject| subject.ends_with(PROXIMITY_ANCHOR_SUBJECT))
+            })
+        })
+        .and_then(|entry| entry.subject.clone())
+}
 
 // ------------------------------------------------------------- measurements --
 
@@ -965,10 +996,12 @@ fn apply_probe(
     let hidden = Visibility::Hidden;
     let shown = Visibility::Inherited;
     let anything_hidden = mode != ProbeMode::Restored;
-    let sea_value = if matches!(mode, ProbeMode::SeaAbsent) {
-        hidden
-    } else {
+    // The sea plane is drawn geometry, so every probe that isolates something
+    // else hides it — only the sea probe's own "visible" frame keeps it.
+    let sea_value = if matches!(mode, ProbeMode::Restored | ProbeMode::SeaVisible) {
         shown
+    } else {
+        hidden
     };
     let world_value = if anything_hidden { hidden } else { shown };
     write_all(&mut visibility, domes.iter(), hidden);
@@ -1052,6 +1085,7 @@ fn build_census(
     report: Option<&MissionActorSpawnReport>,
     player: Entity,
     zeppelins: &Query<(&MissionZeppelinActor, &WorldActorBinding, &Transform)>,
+    visuals: &Query<(Entity, &Transform), With<WorldVisual>>,
     residency: Option<&WorldResidency>,
 ) -> (Vec<CensusEntry>, usize) {
     let water_objects = residency.map_or(0, |residency| {
@@ -1096,12 +1130,27 @@ fn build_census(
             .map_or(
                 (false, bound.subject.key().to_owned(), None),
                 |(actor, binding, _)| {
-                    let object = WorldObjectId::new(binding.subject.key()).ok();
-                    let visual = object.and_then(|object| {
-                        residency
-                            .and_then(|residency| residency.resident().object(&object))
-                            .map(|spawned| spawned.visual)
-                    });
+                    // The residency keys its objects by node slot
+                    // (`node-<n>`), never by the scene-node name the actor's
+                    // subject carries, so the drawn visual of a world actor is
+                    // matched by **pose**: the residency's own visual at the
+                    // actor's bind-time position, within
+                    // [`VISUAL_MATCH_M`]. The rule is designed and
+                    // fail-closed — no match is no drawn entity, and the
+                    // probe then counts the pixels nothing drew.
+                    let anchor = Vec3::new(
+                        actor.position_m[0] as f32,
+                        actor.position_m[1] as f32,
+                        actor.position_m[2] as f32,
+                    );
+                    let visual = visuals
+                        .iter()
+                        .filter_map(|(entity, transform)| {
+                            let distance = transform.translation.distance(anchor);
+                            (distance <= VISUAL_MATCH_M).then_some((entity, distance))
+                        })
+                        .min_by(|left, right| left.1.total_cmp(&right.1))
+                        .map(|(entity, _)| entity);
                     (
                         actor
                             .roster
@@ -1131,6 +1180,7 @@ fn smoke_census(
     mut data: ResMut<SmokeData>,
     spawn_report: Option<Res<MissionActorSpawnReport>>,
     zeppelins: Query<(&MissionZeppelinActor, &WorldActorBinding, &Transform)>,
+    visuals: Query<(Entity, &Transform), With<WorldVisual>>,
     player: Query<Entity, With<MissionPlayerBody>>,
     residency: Option<Res<WorldResidency>>,
 ) {
@@ -1143,17 +1193,14 @@ fn smoke_census(
         spawn_report.as_deref(),
         player.single().ok().unwrap_or(Entity::PLACEHOLDER),
         &zeppelins,
+        &visuals,
         residency.as_deref(),
     );
     data.census = census;
     data.water_objects = water_objects;
     // The proximity anchor's own pose, remembered for the approach: the
     // declared-hostile cargo zeppelin the #1486 trigger measures against.
-    let anchor_subject = data
-        .census
-        .iter()
-        .find(|entry| entry.hostile)
-        .and_then(|entry| entry.subject.clone());
+    let anchor_subject = anchor_subject_of(&data.census);
     if let Some(subject) = anchor_subject {
         data.anchor_position_m = zeppelins
             .iter()
@@ -1176,25 +1223,27 @@ fn smoke_census(
     }
 }
 
-/// The live round census at the firing frame: whether every round entity a
-/// player would see of their own shot carries a mesh. Runs only on the frame
-/// [`smoke_script`] asks for it.
+/// The live round census during the gun hold: the most rounds alive at once,
+/// and whether every round entity a player would see of their own shot
+/// carried a mesh in any frame they were alive.
 fn smoke_rounds(
     mut data: ResMut<SmokeData>,
     rounds: Query<(Entity, &WeaponRoundMirror)>,
     meshes: Query<(), With<Mesh3d>>,
     child_of: Query<(Entity, &ChildOf)>,
 ) {
-    if !std::mem::take(&mut data.rounds_probe_pending) {
+    if data.phase != Phase::Guns && !std::mem::take(&mut data.rounds_probe_pending) {
         return;
     }
+    data.rounds_probe_pending = false;
     let live = rounds.iter().count() as u32;
-    data.measurements.guns.rounds_examined = live;
-    data.measurements.guns.rounds_drawn = if live == 0 {
-        None
-    } else {
-        Some(all_rounds_drawn(&rounds, &meshes, &child_of))
-    };
+    if live == 0 {
+        return;
+    }
+    let drawn = all_rounds_drawn(&rounds, &meshes, &child_of);
+    let guns = &mut data.measurements.guns;
+    guns.rounds_examined = guns.rounds_examined.max(live);
+    guns.rounds_drawn = Some(guns.rounds_drawn.unwrap_or(true) && drawn);
 }
 
 /// Samples the live world into the measurements every frame: the audio queue,
@@ -1285,7 +1334,7 @@ fn smoke_script(
     match data.phase {
         Phase::Settle if frame >= SETTLE_FRAMES => {
             data.phase = Phase::WorldProbe;
-            data.phase_start = frame;
+            data.phase_start = frame + 1;
         }
         Phase::Settle => {}
         Phase::WorldProbe => {
@@ -1296,7 +1345,7 @@ fn smoke_script(
             } else if at == WORLD_RESTORE_OFFSET {
                 probe.0 = ProbeMode::Restored;
                 data.phase = Phase::SeaProbe;
-                data.phase_start = frame;
+                data.phase_start = frame + 1;
             }
         }
         Phase::SeaProbe => {
@@ -1318,7 +1367,7 @@ fn smoke_script(
                 } else {
                     Phase::Approach
                 };
-                data.phase_start = frame;
+                data.phase_start = frame + 1;
             }
         }
         Phase::Actors => {
@@ -1326,7 +1375,7 @@ fn smoke_script(
             let step = at % ACTOR_SEGMENT_FRAMES;
             if index >= data.census.len() {
                 data.phase = Phase::Approach;
-                data.phase_start = frame;
+                data.phase_start = frame + 1;
             } else {
                 let entry = data.census.get(index).cloned();
                 let is_player = entry.as_ref().is_some_and(|entry| entry.kind == "player");
@@ -1367,7 +1416,7 @@ fn smoke_script(
             {
                 data.measurements.approach.frames = at;
                 data.phase = Phase::Hud;
-                data.phase_start = frame;
+                data.phase_start = frame + 1;
             }
         }
         Phase::Hud => {
@@ -1383,7 +1432,7 @@ fn smoke_script(
             } else if at == HUD_SHOT_OFFSET + 10 {
                 queue.0.push(KeyOp::Resume);
                 data.phase = Phase::Guns;
-                data.phase_start = frame;
+                data.phase_start = frame + 1;
                 data.effects_at_hold_start = None;
                 queue.0.push(KeyOp::Press(KeyCode::Space));
             }
@@ -1397,7 +1446,7 @@ fn smoke_script(
             } else if at == GUNS_HOLD_FRAMES {
                 queue.0.push(KeyOp::Release(KeyCode::Space));
                 data.phase = Phase::Rocket;
-                data.phase_start = frame;
+                data.phase_start = frame + 1;
                 queue.0.push(KeyOp::Press(KeyCode::ControlLeft));
             }
         }
@@ -1408,8 +1457,7 @@ fn smoke_script(
                 due.push("rocket".to_owned());
             } else if at == ROCKET_WAIT_FRAMES {
                 data.phase = Phase::Final;
-                data.phase_start = frame;
-                due.push("final".to_owned());
+                data.phase_start = frame + 1;
             }
         }
         Phase::Final | Phase::Ended => {}
@@ -1493,11 +1541,7 @@ fn place_near_actor(
 /// really flown inside its radius.
 fn place_for_trigger(data: &mut SmokeData) -> Option<Placement> {
     let anchor = data.anchor_position_m?;
-    let subject = data
-        .census
-        .iter()
-        .find(|entry| entry.hostile)
-        .and_then(|entry| entry.subject.clone())?;
+    let subject = anchor_subject_of(&data.census)?;
     let start = data.measured_start_m?;
     let from_start = Vec3::from_array(start) - anchor;
     let horizontal = Vec3::new(from_start.x, 0.0, from_start.z);
@@ -1538,13 +1582,22 @@ fn live_position(
         .or_else(|| transform.map(|transform| transform.translation))
 }
 
-/// Where a world position lands in the viewport, when the camera can say.
+/// Where a world position lands in the viewport, when the camera can say —
+/// `None` when it is behind the camera or outside the rendered viewport.
 fn project_onto_screen(
     position: Vec3,
     camera: &Query<(&Camera, &GlobalTransform), With<crate::playtest::PlaytestCameraMarker>>,
 ) -> Option<Vec2> {
     let (camera, transform) = camera.single().ok()?;
     let viewport = camera.world_to_viewport(transform, position).ok()?;
+    let size = camera.physical_viewport_size()?;
+    if viewport.x < 0.0
+        || viewport.y < 0.0
+        || viewport.x > size.x as f32
+        || viewport.y > size.y as f32
+    {
+        return None;
+    }
     Some(viewport)
 }
 
