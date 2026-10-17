@@ -83,6 +83,17 @@ use cs_types::evidence::ClaimStatus;
 /// colours.
 pub const DESIGNED_LABEL: &str = "M01-PLAY-SKY designed horizon, 2026-10-14";
 
+/// The label the sea's altitude carries once it follows the world's own water
+/// quads. The altitude is measured from the world's geometry; that the original
+/// continues the same surface to the horizon is this build's own choice.
+pub const WORLD_WATER_LABEL: &str =
+    "M01-WINDOW-FARDRAW sea follows the world's own water altitude, 2026-10-17";
+
+/// How far behind the world's own water tiles the horizon sea is pushed in the
+/// depth test, so the two coplanar surfaces do not z-fight. Designed
+/// ([`WORLD_WATER_LABEL`]).
+const SEA_DEPTH_BIAS: f32 = -4.0;
+
 /// One field of the drawn horizon, named so its origin can be asked for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HorizonField {
@@ -250,6 +261,18 @@ impl HorizonSpec {
             );
         }
         spec
+    }
+
+    /// Puts the sea at the altitude of the world's own water geometry, so the
+    /// world's water tiles and the horizon sea meet without a step. The
+    /// origin becomes [`WORLD_WATER_LABEL`]'s designed one: the number is
+    /// measured, how far the sea continues is this build's choice.
+    pub fn bind_world_water_level(&mut self, level_m: f32) {
+        self.sea_level_m = level_m;
+        self.set_origin(
+            HorizonField::SeaLevel,
+            HorizonOrigin::Designed(WORLD_WATER_LABEL),
+        );
     }
 
     fn set_origin(&mut self, field: HorizonField, origin: HorizonOrigin) {
@@ -424,8 +447,10 @@ const DESIGNED_SKY_ZENITH: [f32; 3] = [0.21, 0.42, 0.72];
 const DESIGNED_SKY_HORIZON: [f32; 3] = [0.66, 0.75, 0.84];
 /// The designed sea colour (sRGB).
 const DESIGNED_SEA_COLOUR: [f32; 3] = [0.07, 0.20, 0.36];
-/// The designed sea altitude in metres: unmeasured, the original's water
-/// level for `c1c` is not recorded anywhere in this workspace.
+/// The designed sea altitude in metres, for a scene whose world has no water
+/// geometry to take it from (the playtest, synthetic stages). A mission whose
+/// world draws water replaces it with that water's own altitude
+/// ([`HorizonSpec::bind_world_water_level`]).
 const DESIGNED_SEA_LEVEL_M: f32 = -1_000.0;
 /// The designed sea half extent in metres: past the fog's far distance, so
 /// its edge is never seen as an edge.
@@ -561,6 +586,7 @@ fn spawn_horizon(
             spec.sea_colour()[2],
         ),
         unlit: true,
+        depth_bias: SEA_DEPTH_BIAS,
         perceptual_roughness: 1.0,
         ..StandardMaterial::default()
     });

@@ -48,17 +48,20 @@ use std::sync::Arc;
 
 use bevy::asset::{AssetApp, Assets};
 use bevy::image::Image;
+use bevy::mesh::VertexAttributeValues;
 use bevy::prelude::{
-    Added, App, ChildOf, Commands, Entity, Mesh3d, MeshMaterial3d, Plugin, Query, Res, Resource,
-    StandardMaterial, Transform, Update, Visibility,
+    Added, App, ChildOf, Commands, Entity, Mesh, Mesh3d, MeshMaterial3d, Plugin, Query, Res,
+    Resource, StandardMaterial, Transform, Update, Vec3, Visibility,
 };
 use cs_content::world::WorldDefinition;
 use cs_types::content::{ContentId, Resolved};
 
 use crate::playtest_retail::{WorldSources, read_world_sources};
 use crate::playtest_textures::{NeutralColor, PlaytestPart, TextureBinder};
+use crate::render::horizon::HorizonSpec;
 use crate::world::WorldMeshes;
 use crate::world::contacts::{WorldObjectBinding, WorldVisual};
+use crate::world::spawn::canonical_matrix;
 
 use super::compose::{MissionCompositionError, MissionStage};
 
@@ -128,6 +131,37 @@ impl WorldDrawSource {
 pub struct MissionWorldParts {
     parts: BTreeMap<ContentId, Arc<Vec<PlaytestPart>>>,
     report: WorldDrawReport,
+    water: Option<WorldWaterLevel>,
+}
+
+/// The altitude of the world's own water, measured from its drawn geometry
+/// (M01-WINDOW-FARDRAW, Rally #1554).
+///
+/// M01's water is 144 flat quads bound to the `water1` texture; this is their
+/// world-space altitude, read off the vertices the world draw really binds
+/// (object placement applied), so the drawn horizon sea can sit at it instead
+/// of at a designed number.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct WorldWaterLevel {
+    /// The altitude every water vertex shares, in metres.
+    pub level_m: f32,
+    /// Water vertices measured.
+    pub vertices: usize,
+}
+
+/// The texture name the world's water quads are bound to, compared without
+/// case and ignoring the extension. `ZBD/C1C/gamez.zbd`'s texture table names
+/// it `water1` and M01's water material 155 spells `water1.tif`.
+pub const WATER_TEXTURE_NAME: &str = "water1";
+
+/// How far apart water vertices may be in altitude and still count as one flat
+/// surface, in metres.
+const WATER_FLATNESS_M: f32 = 0.01;
+
+fn is_water_image(key: &str) -> bool {
+    let name = key.rsplit(':').next().unwrap_or(key).to_ascii_lowercase();
+    name.strip_prefix(WATER_TEXTURE_NAME)
+        .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
 }
 
 impl MissionWorldParts {
@@ -149,7 +183,22 @@ impl MissionWorldParts {
                 .map(|(id, parts)| (id, Arc::new(parts)))
                 .collect(),
             report,
+            water: None,
         }
+    }
+
+    /// The world's own water altitude, when its water geometry is one flat
+    /// surface. `None` leaves the drawn sea at its designed level.
+    #[must_use]
+    pub const fn water_level(&self) -> Option<WorldWaterLevel> {
+        self.water
+    }
+
+    /// This resource with the measured water altitude recorded.
+    #[must_use]
+    pub const fn with_water_level(mut self, water: Option<WorldWaterLevel>) -> Self {
+        self.water = water;
+        self
     }
 
     /// The drawn parts of the mesh `id`, when this resource bound any.
@@ -240,7 +289,68 @@ pub fn build_world_draw(
         );
         parts.insert(known.value.clone(), bound);
     }
-    MissionWorldParts::from_parts(parts)
+    let water = measure_water_level(app, definition, &parts);
+    MissionWorldParts::from_parts(parts).with_water_level(water)
+}
+
+/// Puts the drawn horizon sea at the world's own water altitude, when `parts`
+/// measured one and the app carries a [`HorizonSpec`] (the windowed face only).
+/// Returns whether the sea was moved.
+///
+/// The spec is read when the horizon spawns at `Startup`, so this runs during
+/// composition, before the first update.
+pub fn bind_sea_to_world_water(app: &mut App, parts: &MissionWorldParts) -> bool {
+    let Some(water) = parts.water_level() else {
+        return false;
+    };
+    let Some(mut spec) = app.world_mut().get_resource_mut::<HorizonSpec>() else {
+        return false;
+    };
+    spec.bind_world_water_level(water.level_m);
+    true
+}
+
+/// Measures the altitude of every vertex of every part bound to the water
+/// texture, at its object's placement. Flat within [`WATER_FLATNESS_M`] gives
+/// the level; no water, or water that is not one flat surface, gives `None`
+/// rather than a guessed number.
+fn measure_water_level(
+    app: &App,
+    definition: &WorldDefinition,
+    parts: &BTreeMap<ContentId, Vec<PlaytestPart>>,
+) -> Option<WorldWaterLevel> {
+    let assets = app.world().get_resource::<Assets<Mesh>>()?;
+    let (mut low, mut high, mut vertices) = (f32::INFINITY, f32::NEG_INFINITY, 0_usize);
+    for object in definition.objects() {
+        let Resolved::Known(known) = object.mesh() else {
+            continue;
+        };
+        let Some(bound) = parts.get(&known.value) else {
+            continue;
+        };
+        let placement = canonical_matrix(object.transform());
+        for part in bound
+            .iter()
+            .filter(|part| part.image.as_deref().is_some_and(is_water_image))
+        {
+            let Some(VertexAttributeValues::Float32x3(positions)) = assets
+                .get(&part.mesh)
+                .and_then(|mesh| mesh.attribute(Mesh::ATTRIBUTE_POSITION))
+            else {
+                continue;
+            };
+            for position in positions {
+                let y = placement.transform_point3(Vec3::from(*position)).y;
+                low = low.min(y);
+                high = high.max(y);
+                vertices += 1;
+            }
+        }
+    }
+    (vertices > 0 && high - low <= WATER_FLATNESS_M).then_some(WorldWaterLevel {
+        level_m: low,
+        vertices,
+    })
 }
 
 /// Parents the drawn parts of every world object as it is spawned: one child per

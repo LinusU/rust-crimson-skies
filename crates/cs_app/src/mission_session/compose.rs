@@ -110,7 +110,8 @@ use super::player_visual::{
 };
 use super::radio::{MissionRadio, declared_sound_groups};
 use super::world_draw::{
-    MissionWorldDrawPlugin, MissionWorldParts, WorldDrawSource, build_world_draw,
+    MissionWorldDrawPlugin, MissionWorldParts, WorldDrawSource, bind_sea_to_world_water,
+    build_world_draw,
 };
 use crate::loading::{
     Criticality, ExpectedLoad, LoadItem, LoadRequest, LoadState, LoadTarget, LoadedItemBinding,
@@ -1014,6 +1015,9 @@ fn add_composition(
         // the drawing path.
         None => MissionWorldParts::default(),
     };
+    // The drawn sea sits at the world's own water (M01-WINDOW-FARDRAW,
+    // #1554); the spec is read at `Startup`, after this.
+    bind_sea_to_world_water(app, &world_parts);
     app.insert_resource(world_parts);
     app.add_plugins(MissionWorldDrawPlugin);
     // M01-WINDOW-FIRE (#1536): what the mission draws for its own weapons —

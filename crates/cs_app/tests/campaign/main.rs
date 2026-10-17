@@ -288,6 +288,7 @@ mod m01_play_world_visible;
 mod m01_radio_wire;
 mod m01_window_actors;
 mod m01_window_fire;
+mod m01_window_world_draw;
 mod m01_window_world_import;
 mod m01_wingman_formation_a;
 mod m02_a;
