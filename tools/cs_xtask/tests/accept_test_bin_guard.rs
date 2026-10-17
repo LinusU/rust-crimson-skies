@@ -351,7 +351,7 @@ autotests = false
     assert!(
         matches!(
             report.findings.as_slice(),
-            [LayoutFinding::TestTargetCount { member, targets: 0, sources: 1 }]
+            [LayoutFinding::TestTargetCount { member, targets: 0, sources: 1, .. }]
                 if member == "crates/plain"
         ),
         "a migrated crate with no [[test]] target must be reported, got {:?}",
@@ -421,6 +421,111 @@ path = \"tests/main.rs\"
         "the finding must name the missing target, got {:?}",
         report.lines()
     );
+}
+
+/// A crate may declare more than one `[[test]]` target only through an
+/// explicit `[package.metadata.cs_test_layout] test_targets = <n>` allowance
+/// in its own manifest (task #1543: cs_app cannot link one binary under
+/// macOS's 16 MiB `__eh_frame` limit). The guard then requires exactly that
+/// many targets, every file reached, and no file reached by two targets.
+#[test]
+fn accept_test_bin_guard_allows_a_declared_number_of_targets_and_no_file_twice() {
+    let manifest = |allowance: &str, targets: &[(&str, &str)]| {
+        let mut text = String::from(
+            "[package]\nname = \"guard-fixture\"\nversion = \"0.0.0\"\nedition = \"2024\"\nautotests = false\n",
+        );
+        text.push_str(allowance);
+        for (name, path) in targets {
+            text.push_str(&format!(
+                "\n[[test]]\nname = \"{name}\"\npath = \"{path}\"\n"
+            ));
+        }
+        text
+    };
+    let allowance = "\n[package.metadata.cs_test_layout]\ntest_targets = 2\n";
+    let both = [("a", "tests/a/main.rs"), ("b", "tests/b/main.rs")];
+
+    // Two targets, each file in exactly one of them: clean, two binaries.
+    let clean = fixture(
+        "allowance-clean",
+        "crates/split",
+        &manifest(allowance, &both),
+        &[
+            ("tests/a/main.rs", "mod one;\n"),
+            ("tests/a/one.rs", "// a\n"),
+            ("tests/b/main.rs", "mod two;\n"),
+            ("tests/b/two.rs", "// b\n"),
+        ],
+    );
+    let report = test_layout::check_workspace(&clean).expect("the fixture must be readable");
+    assert!(report.is_clean(), "{:?}", report.lines());
+    assert_eq!(report.binaries(), 2);
+    assert_eq!(report.migrated[0].mains.len(), 2);
+
+    // A file declared by both targets is compiled and run twice.
+    let twice = fixture(
+        "allowance-twice",
+        "crates/split",
+        &manifest(allowance, &both),
+        &[
+            (
+                "tests/a/main.rs",
+                "#[path = \"../shared.rs\"]\nmod shared;\n",
+            ),
+            (
+                "tests/b/main.rs",
+                "#[path = \"../shared.rs\"]\nmod shared;\n",
+            ),
+            ("tests/shared.rs", "// both\n"),
+        ],
+    );
+    let report = test_layout::check_workspace(&twice).expect("the fixture must be readable");
+    assert!(
+        matches!(
+            report.findings.as_slice(),
+            [LayoutFinding::DoublyReachedTestFile { file, mains, .. }]
+                if file == "crates/split/tests/shared.rs" && mains.len() == 2
+        ),
+        "a file reached from two targets must be reported, got {:?}",
+        report.findings
+    );
+
+    // A file no target reaches is still stray.
+    let stray = fixture(
+        "allowance-stray",
+        "crates/split",
+        &manifest(allowance, &both),
+        &[
+            ("tests/a/main.rs", "// a\n"),
+            ("tests/b/main.rs", "// b\n"),
+            ("tests/lost.rs", "// nobody\n"),
+        ],
+    );
+    let report = test_layout::check_workspace(&stray).expect("the fixture must be readable");
+    assert_eq!(stray_files(&report), ["crates/split/tests/lost.rs"]);
+
+    // The allowance is exact: fewer or more targets than allowed is reported,
+    // and without an allowance two targets stay a violation.
+    for (name, allowance, targets) in [
+        ("allowance-short", allowance, &both[..1]),
+        ("allowance-none", "", &both[..]),
+    ] {
+        let root = fixture(
+            name,
+            "crates/split",
+            &manifest(allowance, targets),
+            &[("tests/a/main.rs", "// a\n"), ("tests/b/main.rs", "// b\n")],
+        );
+        let report = test_layout::check_workspace(&root).expect("the fixture must be readable");
+        assert!(
+            matches!(
+                report.findings.as_slice(),
+                [LayoutFinding::TestTargetCount { .. }]
+            ),
+            "{name}: the target count must match the allowance, got {:?}",
+            report.findings
+        );
+    }
 }
 
 /// The module rules are rustc's: an inline module's file modules hang one

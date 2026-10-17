@@ -46,11 +46,15 @@ pub struct MigratedCrate {
     /// Workspace-relative member directory, e.g. `crates/cs_types`.
     pub member: String,
     /// Workspace-relative `[[test]]` source the modules hang off, e.g.
-    /// `crates/cs_types/tests/main.rs`.
+    /// `crates/cs_types/tests/main.rs`. With several allowed targets this is
+    /// the first one declared.
     pub main: String,
-    /// Workspace-relative `.rs` files reached from `main` through `mod`
-    /// declarations, `main` included. These are the files the one test binary
-    /// really compiles.
+    /// Every workspace-relative `[[test]]` source, in declaration order; one
+    /// entry unless the manifest allows more (see [`test_targets_allowed`]).
+    pub mains: Vec<String>,
+    /// Workspace-relative `.rs` files reached from any target through `mod`
+    /// declarations, the targets' own roots included, sorted. These are the
+    /// files the crate's test binaries really compile.
     pub reachable: Vec<String>,
 }
 
@@ -77,6 +81,9 @@ pub enum LayoutFinding {
         member: String,
         /// How many `[[test]]` targets the manifest declares.
         targets: usize,
+        /// How many the manifest is allowed: 1 unless it carries a
+        /// `[package.metadata.cs_test_layout] test_targets` allowance.
+        allowed: usize,
         /// How many `.rs` files the member's `tests/` directory holds.
         sources: usize,
     },
@@ -86,6 +93,16 @@ pub enum LayoutFinding {
         member: String,
         /// Workspace-relative path the manifest declared.
         main: String,
+    },
+    /// A test source under the member's `tests/` directory is reached from more
+    /// than one `[[test]]` target, so it would be compiled and run twice.
+    DoublyReachedTestFile {
+        /// Workspace-relative member directory.
+        member: String,
+        /// Workspace-relative path of the file.
+        file: String,
+        /// Workspace-relative `[[test]]` sources that both reach it.
+        mains: Vec<String>,
     },
     /// A test source under the member's `tests/` directory is not reached from
     /// the single test binary, so cargo compiles and runs no test in it.
@@ -105,14 +122,28 @@ impl fmt::Display for LayoutFinding {
             Self::TestTargetCount {
                 member,
                 targets,
+                allowed,
                 sources,
             } => write!(
                 f,
                 "{member} sets `autotests = false` (one test binary per crate, task #1542) \
                  and its `tests/` holds {sources} `.rs` file(s), but its manifest declares \
-                 {targets} `[[test]]` target(s); the convention is exactly one, e.g. \
-                 `[[test]] name = \"<crate>_tests\" path = \"tests/main.rs\"`, and every \
-                 test file becomes a `mod` of that one binary"
+                 {targets} `[[test]]` target(s) where {allowed} are allowed; the convention \
+                 is exactly one, e.g. `[[test]] name = \"<crate>_tests\" path = \
+                 \"tests/main.rs\"`, and every test file becomes a `mod` of that one binary. \
+                 A crate whose binary cannot stay under a platform limit may declare a \
+                 larger fixed number with `[package.metadata.cs_test_layout] test_targets = \
+                 <n>`, and then declares exactly that many"
+            ),
+            Self::DoublyReachedTestFile {
+                member,
+                file,
+                mains,
+            } => write!(
+                f,
+                "{file} is reached from more than one `[[test]]` target of {member} ({}), so \
+                 its tests would be compiled and run twice; keep it in exactly one",
+                mains.join(", ")
             ),
             Self::MissingTestTarget { member, main } => write!(
                 f,
@@ -154,9 +185,9 @@ impl LayoutReport {
     }
 
     /// Number of test binaries the migrated crates ask cargo to link: one per
-    /// migrated member.
+    /// declared `[[test]]` target.
     pub fn binaries(&self) -> usize {
-        self.migrated.len()
+        self.migrated.iter().map(|krate| krate.mains.len()).sum()
     }
 
     /// One line per finding, for a caller that prints or asserts on them.
@@ -211,6 +242,39 @@ pub fn autotests_disabled(manifest: &str) -> bool {
                 .and_then(|rest| rest.trim_start().strip_prefix('='))
                 .is_some_and(|value| value.trim() == "false")
         })
+}
+
+/// How many `[[test]]` targets a manifest is allowed: 1, unless it carries
+/// an explicit `test_targets = <n>` key in `[package.metadata.cs_test_layout]`.
+///
+/// The allowance exists because a platform limit can make one binary
+/// impossible (macOS corrupts compact-unwind past 16 MiB of `__eh_frame`,
+/// task #336); it is declared in the crate's own manifest and checked
+/// exactly: the crate must then declare precisely this many targets. A value
+/// that is not a positive integer is not an allowance and counts as 1.
+pub fn test_targets_allowed(manifest: &str) -> usize {
+    let mut inside = false;
+    for raw in manifest.lines() {
+        let line = strip_comment(raw).trim();
+        if line.starts_with('[') {
+            inside = line == "[package.metadata.cs_test_layout]";
+            continue;
+        }
+        if !inside {
+            continue;
+        }
+        if let Some((key, value)) = line.split_once('=')
+            && key.trim() == "test_targets"
+        {
+            return value
+                .trim()
+                .parse::<usize>()
+                .ok()
+                .filter(|count| *count >= 1)
+                .unwrap_or(1);
+        }
+    }
+    1
 }
 
 /// The `[[test]]` source paths a manifest declares, in declaration order.
@@ -690,12 +754,15 @@ pub fn check_member(workspace_root: &Path, member: &str) -> Result<MemberLayout,
         Vec::new()
     };
 
-    // One target is the convention; no target silently drops every source
-    // file, and more than one is not the one binary the convention promises.
-    if declared.len() != 1 && (!sources.is_empty() || declared.len() > 1) {
+    // One target is the convention unless the manifest allows more; no target
+    // silently drops every source file, and a different count than the
+    // manifest allows is not the layout the convention promises.
+    let allowed = test_targets_allowed(&manifest);
+    if declared.len() != allowed && (!sources.is_empty() || declared.len() > 1) {
         findings.push(LayoutFinding::TestTargetCount {
             member: member.to_string(),
             targets: declared.len(),
+            allowed,
             sources: sources.len(),
         });
         return Ok(MemberLayout {
@@ -704,21 +771,7 @@ pub fn check_member(workspace_root: &Path, member: &str) -> Result<MemberLayout,
             findings,
         });
     }
-    let Some(main_rel) = declared.first() else {
-        return Ok(MemberLayout {
-            member: member.to_string(),
-            migrated: None,
-            findings,
-        });
-    };
-
-    let main = dir.join(main_rel);
-    let main_report = relative(workspace_root, &main);
-    if !transient::is_file(&main, transient::SCAN) {
-        findings.push(LayoutFinding::MissingTestTarget {
-            member: member.to_string(),
-            main: main_report,
-        });
+    if declared.is_empty() {
         return Ok(MemberLayout {
             member: member.to_string(),
             migrated: None,
@@ -726,27 +779,67 @@ pub fn check_member(workspace_root: &Path, member: &str) -> Result<MemberLayout,
         });
     }
 
-    let reachable = reachable_test_sources(&main);
-    let reached: BTreeSet<PathBuf> = reachable.iter().map(|path| normalize(path)).collect();
+    let mut mains = Vec::new();
+    let mut per_target: Vec<(String, Vec<PathBuf>)> = Vec::new();
+    for main_rel in &declared {
+        let main = dir.join(main_rel);
+        let main_report = relative(workspace_root, &main);
+        if !transient::is_file(&main, transient::SCAN) {
+            findings.push(LayoutFinding::MissingTestTarget {
+                member: member.to_string(),
+                main: main_report,
+            });
+            return Ok(MemberLayout {
+                member: member.to_string(),
+                migrated: None,
+                findings,
+            });
+        }
+        per_target.push((main_report.clone(), reachable_test_sources(&main)));
+        mains.push(main_report);
+    }
+
+    let mut reached: BTreeSet<PathBuf> = BTreeSet::new();
+    for (_, files) in &per_target {
+        reached.extend(files.iter().map(|path| normalize(path)));
+    }
     for file in &sources {
-        if !reached.contains(&normalize(file)) {
+        let key = normalize(file);
+        if !reached.contains(&key) {
             findings.push(LayoutFinding::StrayTestFile {
                 member: member.to_string(),
                 file: relative(workspace_root, file),
-                main: main_report.clone(),
+                main: mains[0].clone(),
+            });
+            continue;
+        }
+        let owners: Vec<String> = per_target
+            .iter()
+            .filter(|(_, files)| files.iter().any(|path| normalize(path) == key))
+            .map(|(main, _)| main.clone())
+            .collect();
+        if owners.len() > 1 {
+            findings.push(LayoutFinding::DoublyReachedTestFile {
+                member: member.to_string(),
+                file: relative(workspace_root, file),
+                mains: owners,
             });
         }
     }
 
+    let mut reachable: Vec<String> = per_target
+        .iter()
+        .flat_map(|(_, files)| files.iter().map(|path| relative(workspace_root, path)))
+        .collect();
+    reachable.sort();
+    reachable.dedup();
     Ok(MemberLayout {
         member: member.to_string(),
         migrated: Some(MigratedCrate {
             member: member.to_string(),
-            main: main_report,
-            reachable: reachable
-                .iter()
-                .map(|path| relative(workspace_root, path))
-                .collect(),
+            main: mains[0].clone(),
+            mains,
+            reachable,
         }),
         findings,
     })

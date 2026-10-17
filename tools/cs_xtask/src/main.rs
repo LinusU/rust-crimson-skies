@@ -352,10 +352,15 @@ fn run_test_layout(args: &[String]) -> ExitCode {
                 sources
             );
             for migrated in &report.migrated {
+                let binaries = if migrated.mains.len() == 1 {
+                    "one test binary".to_string()
+                } else {
+                    format!("{} test binaries", migrated.mains.len())
+                };
                 println!(
-                    "test-layout: {} links one test binary from {} ({} source(s) reached)",
+                    "test-layout: {} links {binaries} from {} ({} source(s) reached)",
                     migrated.member,
-                    migrated.main,
+                    migrated.mains.join(", "),
                     migrated.reachable.len()
                 );
             }
