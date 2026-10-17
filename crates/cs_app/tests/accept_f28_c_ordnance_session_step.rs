@@ -668,6 +668,65 @@ fn accept_f28_c_a_replayed_launch_request_neither_duplicates_nor_consumes() {
     assert_eq!(session.runtime().len(), 1, "no second item exists");
 }
 
+/// Each accepted launch spends one unit of the declared stack; a spent stack
+/// refuses by name and launches nothing.
+#[test]
+fn accept_f28_c_stack_a_launch_spends_one_unit_and_a_spent_stack_refuses() {
+    let mut world = World::new();
+    launcher_world(&mut world, &[MOUNT]);
+    let (mut session, ordnance) = session_with_area_denial(5, 20);
+    let mut damage = damage_resolver();
+    let shooter = actor(1);
+
+    let full = session
+        .stack_remaining(&shooter, &ordnance)
+        .expect("a registered launcher has a stack");
+    assert!(full.capacity_units > 1);
+    assert_eq!(full.remaining_units, full.capacity_units);
+
+    for n in 0..full.capacity_units {
+        let tick = run_step(
+            &mut world,
+            &mut session,
+            &mut damage,
+            &[launch_order(n, 0, ordnance.clone())],
+            Tick(n),
+        );
+        assert_eq!(tick.launched.len(), 1, "launch {n} is within the stack");
+        let stock = session.stack_remaining(&shooter, &ordnance).expect("stack");
+        assert_eq!(stock.remaining_units, full.capacity_units - n - 1);
+    }
+
+    let spent = Tick(full.capacity_units);
+    let refused = run_step(
+        &mut world,
+        &mut session,
+        &mut damage,
+        &[launch_order(spent.0, 0, ordnance.clone())],
+        spent,
+    );
+    assert_eq!(
+        refused.orders_refused,
+        vec![OrdnanceOrderRefusal::StackExhausted {
+            shooter,
+            ordnance: ordnance.clone(),
+        }]
+    );
+    assert!(refused.launched.is_empty() && refused.effects.is_empty());
+    assert_eq!(
+        session
+            .stack_remaining(&shooter, &ordnance)
+            .expect("stack")
+            .remaining_units,
+        0
+    );
+
+    // A refused launch on the live-pose path spends nothing either.
+    let mut other = actor(1);
+    other.serial = 9;
+    assert!(session.stack_remaining(&other, &ordnance).is_none());
+}
+
 /// An unreadable launcher is reported by name and the launch that needed it is
 /// refused: nothing fires from the world origin.
 #[test]

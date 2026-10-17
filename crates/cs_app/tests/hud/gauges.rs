@@ -316,6 +316,11 @@ fn accept_f46_b_ordnance_rows_are_the_sessions_launchable_components() {
         )
         .expect("the fixture mount key is valid")
     );
+    let stock = ordnance
+        .stack_remaining(&actor(1, 1), &rows[0].ordnance)
+        .expect("the row's launcher has a stack");
+    assert_eq!(rows[0].capacity_units, stock.capacity_units);
+    assert_eq!(rows[0].remaining_units, stock.remaining_units);
     // Another serial of the same session has no components: no cluster.
     let mut other = Hud::new(HudPolicy::designed()).unwrap();
     other.bind(session(1), actor(1, 2)).unwrap();

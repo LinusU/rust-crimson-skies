@@ -903,6 +903,13 @@ pub enum OrdnanceOrderRefusal {
         /// The mount that had no readable pose.
         mount: DamageNodeKey,
     },
+    /// The launcher's stack is spent: every declared unit was launched.
+    StackExhausted {
+        /// The actor that was named.
+        shooter: ActorId,
+        /// The component whose stack is spent.
+        ordnance: OrdnanceId,
+    },
     /// The runtime refused the order: a foreign session, a duplicate item, a
     /// non-finite wind or velocity, or an unknown booster.
     Runtime(OrdnanceRuntimeError),
@@ -925,6 +932,9 @@ impl std::fmt::Display for OrdnanceOrderRefusal {
                 f,
                 "{shooter}'s launcher on mount {mount} has no readable live pose"
             ),
+            Self::StackExhausted { shooter, ordnance } => {
+                write!(f, "{shooter}'s {ordnance} stack is spent")
+            }
             Self::Runtime(source) => write!(f, "the runtime refused the order: {source}"),
         }
     }
@@ -1182,6 +1192,7 @@ pub struct OrdnanceSession {
     next_projectile_serial: u64,
     next_event_sequence: u32,
     launch_ids: BTreeSet<OrdnanceLaunchId>,
+    launched_units: BTreeMap<(ActorId, OrdnanceId), u64>,
     effects: Vec<OrdnanceEffect>,
     events: Vec<OrdnanceNetworkEvent>,
     resolved_through: Option<Tick>,
@@ -1226,6 +1237,7 @@ impl OrdnanceSession {
             next_projectile_serial: 0,
             next_event_sequence: 0,
             launch_ids: BTreeSet::new(),
+            launched_units: BTreeMap::new(),
             effects: Vec::new(),
             events: Vec::new(),
             resolved_through: None,
@@ -1307,6 +1319,33 @@ impl OrdnanceSession {
             .get(shooter)
             .map(|by_actor| by_actor.keys().cloned().collect())
             .unwrap_or_default()
+    }
+
+    /// The units left in one launcher's stack: its declared capacity less the
+    /// launches this session accepted.
+    ///
+    /// Designed semantics: one accepted launch spends one unit of the
+    /// declared [`StackLoad`] capacity; whether the original ever spends more
+    /// than one per launch is unmeasured. `None` for a component that is not
+    /// registered, is a booster (no stack) or belongs to a closed session.
+    #[must_use]
+    pub fn stack_remaining(&self, shooter: &ActorId, ordnance: &OrdnanceId) -> Option<StackStock> {
+        let capacity_units = self
+            .components
+            .get(shooter)?
+            .get(ordnance)?
+            .as_projectile()?
+            .stack()
+            .capacity_units();
+        let launched = self
+            .launched_units
+            .get(&(*shooter, ordnance.clone()))
+            .copied()
+            .unwrap_or(0);
+        Some(StackStock {
+            capacity_units,
+            remaining_units: capacity_units.saturating_sub(launched),
+        })
     }
 
     /// Every actor with a component registered, in ascending actor order.
@@ -1497,6 +1536,7 @@ impl OrdnanceSession {
         projectiles.sort_unstable();
         self.engagements.clear();
         self.components.clear();
+        self.launched_units.clear();
         let mirrors = despawn_ordnance_mirrors(world);
         self.runtime = OrdnanceRuntime::new(
             self.session_id,
@@ -1512,6 +1552,15 @@ impl OrdnanceSession {
 }
 
 // --------------------------------------------------------- engine consumer ---
+
+/// One launcher's stack: what it holds and what is left.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StackStock {
+    /// The declared capacity, in units.
+    pub capacity_units: u64,
+    /// The units not yet launched.
+    pub remaining_units: u64,
+}
 
 /// The engine status one recipient is under, derived from the status ledger.
 ///
@@ -1677,6 +1726,17 @@ pub fn step_ordnance_session(
                         });
                     continue;
                 };
+                if session
+                    .stack_remaining(&launch.shooter, &launch.ordnance)
+                    .is_some_and(|stock| stock.remaining_units == 0)
+                {
+                    tick.orders_refused
+                        .push(OrdnanceOrderRefusal::StackExhausted {
+                            shooter: launch.shooter,
+                            ordnance: launch.ordnance.clone(),
+                        });
+                    continue;
+                }
 
                 if let std::collections::btree_map::Entry::Vacant(entry) =
                     reads.entry(launch.shooter)
@@ -1716,6 +1776,10 @@ pub fn step_ordnance_session(
                     step.wind_velocity_m_s,
                 ) {
                     Ok(projectile) => {
+                        *session
+                            .launched_units
+                            .entry((launch.shooter, launch.ordnance.clone()))
+                            .or_insert(0) += 1;
                         session.next_projectile_serial =
                             session.next_projectile_serial.wrapping_add(1);
                         session

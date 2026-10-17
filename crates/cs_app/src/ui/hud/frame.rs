@@ -128,11 +128,9 @@ pub struct DamageZone {
 
 /// One launchable hardpoint as the ordnance gauge shows it.
 ///
-/// No authoritative shots-remaining count exists: launching a component
-/// never decrements its declared stack budget, so the row reports the
-/// component mounted on the hardpoint and nothing more. The count a
-/// `mgindicator` row would need is an authority gap, recorded in the F46-B
-/// findings — it is not invented here.
+/// `remaining_units` is the ordnance session's stack count (declared capacity
+/// less accepted launches); the presenter's mapping of a row to a measured
+/// `mgindicator` is still unmeasured.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MountedOrdnance {
     /// The registered component on the hardpoint.
@@ -141,6 +139,10 @@ pub struct MountedOrdnance {
     pub mount: DamageNodeKey,
     /// The behavior family.
     pub family: OrdnanceFamily,
+    /// The declared stack capacity, in units.
+    pub capacity_units: u64,
+    /// The units not yet launched; zero is a gauge state, the row stays.
+    pub remaining_units: u64,
 }
 
 /// The complete HUD view for one frame.
@@ -319,13 +321,18 @@ fn ordnance_rows(
         .rows()
         .iter()
         .filter(|row| row.shooter() == actor && row.is_launchable())
-        .map(|row| MountedOrdnance {
-            ordnance: row.ordnance().clone(),
-            mount: row
-                .launcher()
-                .expect("a launchable component always names a mount")
-                .clone(),
-            family: row.family(),
+        .filter_map(|row| {
+            let stock = ordnance.stack_remaining(&actor, row.ordnance())?;
+            Some(MountedOrdnance {
+                ordnance: row.ordnance().clone(),
+                mount: row
+                    .launcher()
+                    .expect("a launchable component always names a mount")
+                    .clone(),
+                family: row.family(),
+                capacity_units: stock.capacity_units,
+                remaining_units: stock.remaining_units,
+            })
         })
         .collect();
     Ok((!rows.is_empty()).then_some(rows))
