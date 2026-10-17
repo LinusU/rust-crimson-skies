@@ -498,3 +498,30 @@ with `CS_MISSION_BIN`):
 `cargo test -p cs_app --locked --test accept_m01_owner_smoke -- --include-ignored`.
 Its acceptance and the owner's ruling of 2026-10-17 are in
 `docs/findings/2026-10-17-m01-owner-smoke.md`.
+
+#### The no-teleport mode (#1572 `M01-SMOKE-NO-TELEPORT`)
+
+```sh
+target/release/cs --cs-path /path/to/retail --mission M01 \
+  --smoke-seconds 45 --smoke-no-teleport --capture-dir private/evidence/M01-SMOKE-NO-TELEPORT
+```
+
+The full script teleports the player next to every actor from about t+3 s, so
+the `mission wingmen t+Ns` distances after that say nothing about whether the
+wingmen fly with the player. `--smoke-no-teleport` (valid only with
+`--mission … --smoke-seconds`) flies the measured start for the whole run and
+**never moves the player** (`report.json` carries `"mode":"no_teleport"`,
+`"player_teleported":false` and an empty `placements`). It judges one check
+beside `smoke_shots_delivered` (one framebuffer, taken just after the last
+sample):
+
+| check | fails when |
+| --- | --- |
+| `wingmen_near_player` | fewer than all five samples were taken, the mission spawned no wingman, or any wingman is farther than 500 m from the player at t+30 s |
+
+Each wingman's distance (world transforms, the same read as the
+`mission wingmen` log line) is taken at t+1, 5, 10, 20 and 30 simulated
+seconds and written to `report.json` (`wingmen[].distances[]`). The 500 m
+threshold (`MAX_WINGMAN_DISTANCE_M`) is **designed**: the original's formation
+distance is unmeasured. The default smoke is unchanged. Its retail run is in
+`docs/findings/2026-10-18-m01-smoke-no-teleport.md`.
