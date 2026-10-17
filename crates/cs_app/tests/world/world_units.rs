@@ -80,8 +80,8 @@ use cs_types::evidence::ClaimStatus;
 /// `docs/findings/2026-10-04-m01-lc-world-import.md` and re-taken here through
 /// the production path.
 ///
-/// `values + child_list == objects` in every row, and the test asserts that
-/// relation rather than trusting any single column.
+/// `values + child_list + environment == objects` in every row, and the test
+/// asserts that relation rather than trusting any single column.
 struct Measured {
     /// The group's own directory spelling, as production discovery spells it.
     group: &'static str,
@@ -93,6 +93,11 @@ struct Measured {
     values: usize,
     /// How many records the world node's own stored child list names.
     child_list: usize,
+    /// How many records are the world's environment subtree: the descendants of
+    /// the world node's `horizon` child (task #1553). They are neither indexed
+    /// nor direct children, so `values + child_list + environment == objects`,
+    /// and every one resolves `None` (environment presentation).
+    environment: usize,
     /// How many records name the world node at all: the imported object count.
     objects: usize,
     /// How many of the grid's records bind a mesh.
@@ -117,8 +122,9 @@ struct Measured {
     matrix_disagreements: usize,
     /// How many mesh-binding records the container holds that the world does not own.
     elsewhere: usize,
-    /// How many of this container's records end up **resident**: the unindexed ones
-    /// plus the indexed ones whose cell could not be given an extent.
+    /// How many of this container's records end up **resident**: the unindexed
+    /// ones (the world node's direct children and the environment subtree) plus
+    /// the indexed ones whose cell could not be given an extent.
     resident: usize,
     /// How many unindexed records resolve to `None` — the anchors, transform
     /// groups and dummies that store no geometry of their own (task #677's
@@ -157,19 +163,20 @@ const MEASURED: [Measured; 8] = [
         grid: (12, 12),
         values: 346,
         child_list: 66,
-        objects: 412,
+        environment: 8,
+        objects: 420,
         values_with_mesh: 285,
         grid_fog: 0,
         grid_no_geometry: 13,
-        objects_with_mesh: 295,
+        objects_with_mesh: 301,
         cells_without_extent: 0,
         empty_cells: 0,
         // The one record in the whole corpus whose stored matrix disagrees with
         // its own euler triple, so the import's precedence rule is a measured
         // choice somewhere rather than always being free.
         matrix_disagreements: 1,
-        elsewhere: 3671,
-        resident: 66,
+        elsewhere: 3665,
+        resident: 74,
         anchors: 56,
         fog: 9,
         unresolved_roles: 1,
@@ -182,18 +189,19 @@ const MEASURED: [Measured; 8] = [
         grid: (12, 12),
         values: 155,
         child_list: 78,
-        objects: 233,
+        environment: 6,
+        objects: 239,
         values_with_mesh: 139,
         grid_fog: 0,
         grid_no_geometry: 8,
-        objects_with_mesh: 139,
+        objects_with_mesh: 143,
         // Five cells whose members all store an all-zero box, so they get no
         // sector and their records stay resident.
         cells_without_extent: 5,
         empty_cells: 0,
         matrix_disagreements: 0,
-        elsewhere: 3346,
-        resident: 93,
+        elsewhere: 3342,
+        resident: 99,
         anchors: 78,
         fog: 0,
         unresolved_roles: 0,
@@ -206,16 +214,17 @@ const MEASURED: [Measured; 8] = [
         grid: (12, 12),
         values: 293,
         child_list: 53,
-        objects: 346,
+        environment: 7,
+        objects: 353,
         values_with_mesh: 292,
         grid_fog: 4,
         grid_no_geometry: 1,
-        objects_with_mesh: 309,
+        objects_with_mesh: 314,
         cells_without_extent: 0,
         empty_cells: 0,
         matrix_disagreements: 0,
-        elsewhere: 3045,
-        resident: 53,
+        elsewhere: 3040,
+        resident: 60,
         anchors: 36,
         fog: 17,
         unresolved_roles: 0,
@@ -228,20 +237,21 @@ const MEASURED: [Measured; 8] = [
         grid: (12, 12),
         values: 258,
         child_list: 24,
-        objects: 282,
+        environment: 5,
+        objects: 287,
         values_with_mesh: 186,
         grid_fog: 0,
         grid_no_geometry: 23,
-        objects_with_mesh: 186,
+        objects_with_mesh: 189,
         cells_without_extent: 0,
         empty_cells: 0,
         matrix_disagreements: 0,
-        elsewhere: 2372,
-        resident: 24,
+        elsewhere: 2369,
+        resident: 29,
         anchors: 24,
         fog: 0,
         unresolved_roles: 0,
-        transformed: 30,
+        transformed: 31,
         settles: true,
     },
     Measured {
@@ -250,16 +260,17 @@ const MEASURED: [Measured; 8] = [
         grid: (12, 12),
         values: 290,
         child_list: 48,
-        objects: 338,
+        environment: 5,
+        objects: 343,
         values_with_mesh: 289,
         grid_fog: 0,
         grid_no_geometry: 1,
-        objects_with_mesh: 298,
+        objects_with_mesh: 301,
         cells_without_extent: 0,
         empty_cells: 0,
         matrix_disagreements: 0,
-        elsewhere: 2741,
-        resident: 48,
+        elsewhere: 2738,
+        resident: 53,
         anchors: 39,
         fog: 9,
         unresolved_roles: 0,
@@ -272,24 +283,25 @@ const MEASURED: [Measured; 8] = [
         grid: (16, 16),
         values: 439,
         child_list: 14,
-        objects: 453,
+        environment: 5,
+        objects: 458,
         values_with_mesh: 374,
         grid_fog: 0,
         grid_no_geometry: 18,
-        objects_with_mesh: 374,
+        objects_with_mesh: 377,
         // Three cells whose members all store an all-zero box.
         cells_without_extent: 3,
         empty_cells: 0,
         matrix_disagreements: 0,
-        elsewhere: 2494,
-        resident: 19,
+        elsewhere: 2491,
+        resident: 24,
         anchors: 14,
         fog: 0,
         unresolved_roles: 0,
         // `true` since #656: the subnormal extent of stored mesh slot 447 is
         // canonicalised at the upload boundary, so the settle finishes and all
         // 374 colliders are built.
-        transformed: 17,
+        transformed: 18,
         settles: true,
     },
     Measured {
@@ -298,16 +310,17 @@ const MEASURED: [Measured; 8] = [
         grid: (12, 12),
         values: 350,
         child_list: 51,
-        objects: 401,
+        environment: 7,
+        objects: 408,
         values_with_mesh: 303,
         grid_fog: 0,
         grid_no_geometry: 4,
-        objects_with_mesh: 316,
+        objects_with_mesh: 321,
         cells_without_extent: 0,
         empty_cells: 0,
         matrix_disagreements: 0,
-        elsewhere: 4613,
-        resident: 51,
+        elsewhere: 4608,
+        resident: 58,
         anchors: 38,
         fog: 9,
         unresolved_roles: 4,
@@ -320,19 +333,20 @@ const MEASURED: [Measured; 8] = [
         grid: (16, 16),
         values: 471,
         child_list: 105,
-        objects: 576,
+        environment: 4,
+        objects: 580,
         values_with_mesh: 367,
         grid_fog: 2,
         grid_no_geometry: 80,
-        objects_with_mesh: 452,
+        objects_with_mesh: 455,
         // Four cells whose members all store an all-zero box.
         cells_without_extent: 4,
         // Three of c5's 256 cells name no record at all, which is why its cell
         // count and its sector count differ from the other 16x16 container's.
         empty_cells: 3,
         matrix_disagreements: 0,
-        elsewhere: 5551,
-        resident: 108,
+        elsewhere: 5548,
+        resident: 112,
         anchors: 20,
         fog: 15,
         unresolved_roles: 70,
@@ -530,14 +544,20 @@ fn accept_f18_world_units_containers_every_world_group_imports_with_the_measured
         assert_eq!(
             report.objects(),
             measured.objects,
-            "{}: the records that name the world node",
+            "{}: the records the import owns",
             measured.group
         );
         assert_eq!(
-            measured.values + measured.child_list,
+            measured.values + measured.child_list + measured.environment,
             measured.objects,
-            "{}: the grid and the stored child list are disjoint and together are \
-             exactly the records that name the world node",
+            "{}: the grid, the stored child list and the environment subtree are \
+             disjoint and together are exactly the records the import owns",
+            measured.group
+        );
+        assert_eq!(
+            report.environment_records(),
+            measured.environment,
+            "{}: the descendants of the world node's `horizon` child",
             measured.group
         );
         assert_eq!(
@@ -621,9 +641,9 @@ fn accept_f18_world_units_containers_every_world_group_imports_with_the_measured
             measured.group
         );
         assert!(
-            report.objects_resident() >= measured.child_list,
+            report.objects_resident() >= measured.child_list + measured.environment,
             "{}: the unindexed records are always resident, so the resident count \
-             is at least the stored child list",
+             is at least the stored child list plus the environment subtree",
             measured.group
         );
         assert!(
@@ -988,9 +1008,13 @@ fn accept_f18_world_units_containers_every_world_group_spawns_and_reports_its_ga
         // list — a resolved record is not a gap.
         assert_eq!(
             spawned.non_colliding().len(),
-            measured.anchors + measured.fog + measured.grid_fog + measured.grid_no_geometry,
-            "{}: the records that store no geometry and the `fvol*` records are \
-             presented with no collider by their own answer",
+            measured.anchors
+                + measured.fog
+                + measured.environment
+                + measured.grid_fog
+                + measured.grid_no_geometry,
+            "{}: the records that store no geometry, the `fvol*` records and the \
+             environment subtree are presented with no collider by their own answer",
             measured.group
         );
         assert_eq!(
@@ -1697,7 +1721,7 @@ fn accept_f18_world_units_containers_every_stored_transform_places_exactly() {
     );
     assert_eq!(
         classified,
-        412 + 233 + 346 + 282 + 338 + 453 + 401 + 576,
+        420 + 239 + 353 + 287 + 343 + 458 + 408 + 580,
         "every record of every world group was classified; none was skipped"
     );
 }

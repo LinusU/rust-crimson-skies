@@ -412,9 +412,10 @@ fn accept_m01_lc_world_residual_roles_the_installation_leaves_nothing_unanswered
     );
     assert_eq!(
         spawned.non_colliding().len(),
-        58,
-        "36 anchors, 17 unindexed fog volumes, the four grid-named fog volumes and \
-         the one empty grid record: presented and never blocking, each by its own answer"
+        65,
+        "36 anchors, 17 unindexed fog volumes, the four grid-named fog volumes, \
+         the one empty grid record and the seven environment records: presented \
+         and never blocking, each by its own answer"
     );
     assert_eq!(
         spawned.presentation_gap_count(),

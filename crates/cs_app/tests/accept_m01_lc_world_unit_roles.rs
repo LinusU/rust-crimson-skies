@@ -67,7 +67,8 @@ use cs_content::coordinates::{
 use cs_content::scene::{BindingMap, MeshSlot, scene_graph_from_gamez};
 use cs_content::textures::WorldTextureLoad;
 use cs_content::world::{
-    FOG_VOLUME_RECORD_NEVER_BLOCKS, GRID_RECORD_STORES_NO_GEOMETRY, OBJECT_STORES_NO_MESH,
+    FOG_VOLUME_RECORD_NEVER_BLOCKS, GRID_RECORD_STORES_NO_GEOMETRY,
+    HORIZON_SUBTREE_RECORD_NEVER_BLOCKS, OBJECT_STORES_NO_MESH,
     UNINDEXED_RECORD_STORES_NO_GEOMETRY, UNINDEXED_ROLE_UNMEASURED, WorldCollisionRole,
 };
 use cs_formats::gamez::read_gamez_nodes;
@@ -722,6 +723,27 @@ fn accept_m01_lc_world_unit_roles_every_container_unindexed_split_is_measured() 
                         );
                         continue;
                     }
+                    if claim_id.as_str() == HORIZON_SUBTREE_RECORD_NEVER_BLOCKS {
+                        // Task #1553: the world's far-terrain/horizon
+                        // environment is one non-blocking class of its own. Its
+                        // records are descendants of the `horizon` child, so the
+                        // partition grid never names one, and they draw whether
+                        // or not they carry a mesh.
+                        let slot = object
+                            .id()
+                            .as_str()
+                            .strip_prefix("node-")
+                            .and_then(|slot| slot.parse::<u32>().ok())
+                            .expect("an environment record has a node-slot id");
+                        assert!(
+                            !indexed.contains(&slot),
+                            "{}: {} is an environment record, so the grid does not \
+                             name it",
+                            split.group,
+                            object.id().as_str()
+                        );
+                        continue;
+                    }
                     let grid_named = object
                         .id()
                         .as_str()
@@ -883,10 +905,10 @@ fn accept_m01_lc_world_unit_roles_the_c1c_spawn_reports_the_measured_split() {
     );
     assert_eq!(
         spawned.non_colliding().len(),
-        58,
-        "the 36 anchors, the 17 fog volumes, the four grid-named fog volumes and the \
-         one empty grid record are presented and deliberately never block: a resolved \
-         `None` is not a skip"
+        65,
+        "the 36 anchors, the 17 fog volumes, the four grid-named fog volumes, the \
+         one empty grid record and the seven environment records are presented and \
+         deliberately never block: a resolved `None` is not a skip"
     );
     assert_eq!(spawned.presentation_gap_count(), 0);
 }

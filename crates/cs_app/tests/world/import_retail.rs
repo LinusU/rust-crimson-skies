@@ -60,6 +60,7 @@ use cs_content::scene::MeshSlot;
 use cs_content::textures::WorldTextureLoad;
 use cs_content::world::{
     GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED, GRID_RECORD_STORES_NO_GEOMETRY,
+    HORIZON_CONTAINER_IS_THE_SKY_HIERARCHY, HORIZON_SUBTREE_RECORD_NEVER_BLOCKS,
     INDEXED_RECORD_IS_STATIC, ImportedWorld, OBJECT_ID_IS_THE_NODE_SLOT, OBJECT_STORES_NO_MESH,
     PARTITION_GRID_IS_THE_SECTOR_INDEX, UNINDEXED_RECORD_STORES_NO_GEOMETRY,
     UNINDEXED_ROLE_UNMEASURED, WORLD_BOUNDARY_UNMEASURED, WORLD_SURFACE_UNMEASURED,
@@ -903,6 +904,8 @@ fn accept_m01_lc_world_import_the_conversion_is_recorded_under_its_own_claim_ids
         OBJECT_STORES_NO_MESH,
         GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED,
         GRID_RECORD_STORES_NO_GEOMETRY,
+        HORIZON_CONTAINER_IS_THE_SKY_HIERARCHY,
+        HORIZON_SUBTREE_RECORD_NEVER_BLOCKS,
         RETAIL_WORLD_IMPORT,
     ] {
         assert!(
@@ -921,10 +924,12 @@ fn accept_m01_lc_world_import_the_conversion_is_recorded_under_its_own_claim_ids
         WORLD_BOUNDARY_UNMEASURED,
         OBJECT_ID_IS_THE_NODE_SLOT,
         OBJECT_STORES_NO_MESH,
+        HORIZON_CONTAINER_IS_THE_SKY_HIERARCHY,
+        HORIZON_SUBTREE_RECORD_NEVER_BLOCKS,
     ]
     .into_iter()
     .collect();
-    assert_eq!(distinct.len(), 10, "each gap has its own claim id");
+    assert_eq!(distinct.len(), 12, "each gap has its own claim id");
 }
 
 // ------------------------------------------------------------------ the retail half --
@@ -992,10 +997,18 @@ fn accept_m01_lc_world_import_retail_c1c_becomes_a_world_definition_with_every_g
     );
 
     // The three ownership statements agree: the grid's records plus the world
-    // node's own stored child list are exactly the records that name it.
+    // node's own stored child list are exactly the records that name it, and the
+    // environment subtree (the `horizon` child's descendants, task #1553) is
+    // imported beside them.
     assert_eq!(report.stored_child_list(), 53);
-    assert_eq!(report.objects(), 346);
-    assert_eq!(report.objects_with_mesh(), 309);
+    assert_eq!(
+        report.environment_records(),
+        7,
+        "the seven descendants of c1c's `horizon` child: `zone1`/`zone2` and their \
+         far-terrain/sky records"
+    );
+    assert_eq!(report.objects(), 353);
+    assert_eq!(report.objects_with_mesh(), 314);
     // Task #727: four of the 293 grid-named records are the original's fog
     // volumes (`fvol1`…`fvol4`, node slots 944–947), and task #771: one more
     // (`zepnull`, node slot 2105) stores no mesh and no box. Both resolve a
@@ -1012,19 +1025,26 @@ fn accept_m01_lc_world_import_retail_c1c_becomes_a_world_definition_with_every_g
         "the index partitions exactly into solids, fog volumes and empty records"
     );
     assert_eq!(report.objects_in_a_sector(), 293);
-    assert_eq!(report.objects_resident(), 53);
+    assert_eq!(
+        report.objects_resident(),
+        60,
+        "the 53 direct children plus the 7 environment records, none of which the \
+         grid names"
+    );
     assert_eq!(report.sectors(), 144);
     assert_eq!(report.sectors_without_extent(), 0);
 
-    // Task #677's measured split of the 53 unindexed records, as task #716
-    // resolves it: the 36 that bind no mesh and store no extent — the
+    // Task #677's measured split of the 53 unindexed direct children, as task
+    // #716 resolves it: the 36 that bind no mesh and store no extent — the
     // `horizon`, the `g27816` transform groups and the zeppelin anchors —
     // resolve to `None` because the store gives them nothing a collider could
     // be built from; the 17 `fvol*` records bind a mesh and an extent and are
     // fog volumes — the image's only name-keyed consumer of that prefix is its
     // fog routine — so they are presented and never block either, while their
     // meshes stay known; and nothing else in this container stores geometry
-    // without a measured prefix, so the unmeasured class is empty here.
+    // without a measured prefix, so the unmeasured class is empty here. The
+    // seven environment records are a class of their own: the `horizon` child's
+    // descendants, presented and never blocking under task #1553's rule.
     assert_eq!(
         report.objects_unindexed_none(),
         36,
@@ -1065,7 +1085,7 @@ fn accept_m01_lc_world_import_retail_c1c_becomes_a_world_definition_with_every_g
     );
     assert_eq!(
         world.unresolved_surface().len(),
-        346,
+        353,
         "no gameplay surface is measured for any record"
     );
     assert!(world.known_boundary().is_none());
@@ -1119,7 +1139,7 @@ fn accept_m01_lc_world_import_retail_c1c_becomes_a_world_definition_with_every_g
     // meshes and belong to other subsystems.
     assert_eq!(
         report.mesh_binding_records_elsewhere(),
-        3045,
+        3040,
         "the effect hierarchies, the aircraft and the rest of the container are \
          counted here rather than imported as world objects"
     );
@@ -1207,14 +1227,14 @@ fn accept_m01_lc_world_import_retail_spawn_world_runs_on_the_imported_c1c_defini
          already fog volumes (#716)"
     );
     // The 36 anchors, the 17 unindexed fog volumes, the four grid-named fog
-    // volumes and the one empty grid record are a *deliberate* `None`:
-    // presented, never blocking, and not in the skip list — a resolved record
-    // does not read as a gap.
+    // volumes, the one empty grid record and the seven environment records are
+    // a *deliberate* `None`: presented, never blocking, and not in the skip list
+    // — a resolved record does not read as a gap.
     assert_eq!(
         spawned.non_colliding().len(),
-        58,
-        "the anchors, horizon, fog volumes and the empty grid record are presented \
-         with no collider by their own answer"
+        65,
+        "the anchors, horizon, fog volumes, the empty grid record and the \
+         environment subtree are presented with no collider by their own answer"
     );
     assert_eq!(
         spawned.presentation_gap_count(),
