@@ -42,7 +42,7 @@
 //! catalog and walker, and the derived form and converter identity come
 //! from `common`.
 
-mod common;
+use crate::common;
 
 use std::collections::VecDeque;
 use std::fs;

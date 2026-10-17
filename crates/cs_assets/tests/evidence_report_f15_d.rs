@@ -42,7 +42,7 @@
 //! identity come from `common`, the same definitions the acceptance suite
 //! uses, so the two can never drift into measuring different bytes.
 
-mod common;
+use crate::common;
 
 use std::collections::VecDeque;
 use std::fs;

@@ -13,7 +13,7 @@
 //! makes the file fail to build; removing the identity or invalidation
 //! checks makes the scenarios themselves fail.
 
-mod common;
+use crate::common;
 
 use std::cell::Cell;
 use std::fs;

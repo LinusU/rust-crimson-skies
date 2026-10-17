@@ -38,7 +38,7 @@
 //! needs `$CS_GAME_DIR`; the retail tests that must stay green unchanged are
 //! `accept_t693_…` and `accept_f04_d_gos_registration_order_…`.
 
-mod common;
+use crate::common;
 
 use common::TempTree;
 use cs_assets::install::sha256;

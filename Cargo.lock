@@ -2537,6 +2537,7 @@ dependencies = [
  "cs_content",
  "cs_formats",
  "cs_types",
+ "cs_xtask",
 ]
 
 [[package]]

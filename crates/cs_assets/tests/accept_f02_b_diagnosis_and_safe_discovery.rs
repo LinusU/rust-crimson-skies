@@ -8,7 +8,7 @@
 //! The fixture trees are newly authored bytes under the system temporary
 //! directory; the original installation is never touched.
 
-mod common;
+use crate::common;
 
 use std::path::Path;
 

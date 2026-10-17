@@ -12,7 +12,7 @@
 //! that changed under the load fails the load rather than making a world
 //! interactive, and a failure names its dependency and recovery path.
 
-mod common;
+use crate::common;
 
 use std::cell::Cell;
 use std::fs;

@@ -10,7 +10,7 @@
 //! The fixture trees are newly authored bytes under the system temporary
 //! directory; the original installation is never written to.
 
-mod common;
+use crate::common;
 
 use common::TempTree;
 use cs_assets::install::{

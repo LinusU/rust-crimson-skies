@@ -43,7 +43,7 @@
 //! read-only through the same production code and fail loudly without it; CI
 //! skips them.
 
-mod common;
+use crate::common;
 
 use std::collections::VecDeque;
 use std::fs;

@@ -23,7 +23,7 @@
 //! `evidence_report_t345_writes_the_acceptance_report` is the evidence
 //! harness (`docs/contracts/CLI-EVIDENCE.md`), not an acceptance test.
 
-mod common;
+use crate::common;
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fs;

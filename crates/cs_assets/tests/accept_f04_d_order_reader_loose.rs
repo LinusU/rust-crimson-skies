@@ -42,7 +42,7 @@
 //! folds neither — because on a case-sensitive host the two are different
 //! directories. CI skips the retail tests.
 
-mod common;
+use crate::common;
 
 use std::collections::VecDeque;
 use std::fs;

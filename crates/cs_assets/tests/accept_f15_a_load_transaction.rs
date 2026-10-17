@@ -8,7 +8,7 @@
 //! `accept` or `attach` lets the stale completion in: the old world's
 //! entities appear and these tests fail.
 
-mod common;
+use crate::common;
 
 use bevy::ecs::world::World;
 

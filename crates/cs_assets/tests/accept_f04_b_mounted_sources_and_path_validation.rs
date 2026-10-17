@@ -13,7 +13,7 @@
 //! the staleness, length or digest checks returns bytes that no longer
 //! match the resolution.
 
-mod common;
+use crate::common;
 
 use std::fs;
 

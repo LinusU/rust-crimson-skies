@@ -7,7 +7,7 @@
 //! or corrupted entry, or if `CacheDirectory` allowed a root inside the
 //! installation, these tests fail.
 
-mod common;
+use crate::common;
 
 use cs_assets::cache::{
     BudgetError, BudgetExceeded, CacheBudget, CacheDirectory, CacheKey, CacheLocationError,

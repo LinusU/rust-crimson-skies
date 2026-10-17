@@ -7,7 +7,7 @@
 //! under, `verify_fresh` could never refuse a stale derivation and these
 //! tests fail.
 
-mod common;
+use crate::common;
 
 use cs_app::assets::{CanonicalAsset, CanonicalPayload, ConversionError, ConvertedAsset};
 use cs_app::loading::{Criticality, LoadItem, LoadRequest, LoadTarget, LoadTransaction};

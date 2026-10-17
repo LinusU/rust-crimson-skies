@@ -59,7 +59,7 @@
 //! unset. Nothing is written inside the installation and nothing derived
 //! from it is committed.
 
-mod common;
+use crate::common;
 
 use std::fs;
 use std::path::{Path, PathBuf};

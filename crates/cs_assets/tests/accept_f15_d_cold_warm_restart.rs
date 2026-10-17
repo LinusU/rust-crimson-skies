@@ -71,7 +71,7 @@
 //! unset. Nothing derived from the installation is written inside it and
 //! nothing is committed to Git.
 
-mod common;
+use crate::common;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -977,7 +977,8 @@ const CHILD_STORE_VAR: &str = "CS_F15_D_CHILD_STORE";
 /// cache root: the store must never see a file it did not write itself.
 const CHILD_READY_VAR: &str = "CS_F15_D_CHILD_READY";
 /// The test the parent re-runs in the child.
-const CHILD_TEST: &str = "f15_d_child_killed_mid_cache_write_is_not_an_acceptance_test";
+const CHILD_TEST: &str =
+    "accept_f15_d_cold_warm_restart::f15_d_child_killed_mid_cache_write_is_not_an_acceptance_test";
 /// Unix's signal number for `SIGKILL`, which is what
 /// [`std::process::Child::kill`] sends: no unwinding, no destructors, no
 /// flush, so what the child leaves on disk is what a kill leaves.

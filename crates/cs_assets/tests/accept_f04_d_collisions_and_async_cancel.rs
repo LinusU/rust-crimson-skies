@@ -20,7 +20,7 @@
 //! the retail block, the generation check or the per-world scope makes
 //! them fail.
 
-mod common;
+use crate::common;
 
 use std::path::PathBuf;
 use std::sync::mpsc;

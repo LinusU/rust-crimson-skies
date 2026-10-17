@@ -16,7 +16,7 @@
 //! borrowed mount instead of an owned one would not let a pending read
 //! finish after close (and would not compile).
 
-mod common;
+use crate::common;
 
 use std::collections::BTreeMap;
 use std::fs;

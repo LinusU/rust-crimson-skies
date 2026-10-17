@@ -13,7 +13,7 @@
 //! Removing the commit rename, the startup sweep, the integrity gate or the
 //! budget check makes the matching test fail.
 
-mod common;
+use crate::common;
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -284,7 +284,7 @@ fn kill_writer(fixture: &Fixture, point: &str, payload: &[u8]) -> std::process::
     let mut child = Command::new(std::env::current_exe().expect("the test binary's own path"))
         .args([
             "--exact",
-            "accept_f15_b_writer_child_killed_during_the_cache_write",
+            "accept_f15_b_atomic_cache::accept_f15_b_writer_child_killed_during_the_cache_write",
             "--nocapture",
         ])
         .env(CRASH_POINT, point)
