@@ -41,8 +41,8 @@ use cs_content::airframe_roles::declared_synthetic_roles;
 use cs_content::pilots::{DeclaredRoster, declared_synthetic_roster};
 use cs_sim::allies::{BriefingError, SurvivabilityPolicy};
 use cs_sim::campaign::{
-    CampaignGraph, CampaignNodeKey, CampaignRunId, DifficultyId, Outcome as MissionResult,
-    ProfileId as CampaignProfileId, Reward, RuntimeEdge, RuntimeNode, RuntimeNodeKind,
+    CampaignGraph, CampaignNodeKey, CampaignRunId, DifficultyId, Outcome as MissionResult, Reward,
+    RuntimeEdge, RuntimeNode, RuntimeNodeKind,
 };
 use cs_types::asset_id::{
     AssetKey, MountId, MountNamespace, PrecedenceClass, ResolveContext, WorldGroup,
@@ -212,7 +212,6 @@ impl Fixture {
         FlowSetup::new(
             self.tree.path().join("profiles"),
             graph(),
-            CampaignProfileId::new("pilot.f45c2").expect("valid campaign profile"),
             CampaignRunId::new("run.f45c2").expect("valid run id"),
             DifficultyId::new("standard").expect("valid difficulty"),
         )
