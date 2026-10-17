@@ -7079,6 +7079,7 @@ mod tests {
         };
         let catalog_id = field("catalog_id");
         let program_id = field("program_id");
+        let work_order = field("work_order");
         // The reader archive the binding cites, not the string table it also
         // cites: `ZBD/<world>/<M nn>/zrdr.zbd`.
         let program_asset = published
@@ -7093,18 +7094,16 @@ mod tests {
         let world = parts.next().expect("the world group directory").to_owned();
         let mission_dir = parts.next().expect("the mission directory");
         let mission_number: u32 = mission_dir[1..].parse().expect("M<nn>");
-        // The published world group spells its chapter: `C1C` is chapter 1.
-        let chapter: u32 = world
-            .trim_start_matches(['c', 'C'])
-            .chars()
-            .take_while(char::is_ascii_digit)
-            .collect::<String>()
-            .parse()
-            .expect("the chapter digits of the world group");
+        // Under the measured join (M01-ARCHIVE-DECISION) the storage
+        // directory digit is the world-group family, not the chapter: the
+        // campaign position comes from the work order — `M<nn>` is the
+        // (nn-1)-th slot of the 5/5/5/5/4 campaign — and the program id is
+        // the storage path the record cites.
+        let index: u32 = work_order[1..].parse::<u32>().expect("M<nn> work order") - 1;
+        let (chapter, position) = (index / 5 + 1, index % 5 + 1);
 
-        let mission =
-            ContentId::from_source(ContentKind::Mission, &mission_key(chapter, mission_number))
-                .expect("mission id");
+        let mission = ContentId::from_source(ContentKind::Mission, &mission_key(chapter, position))
+            .expect("mission id");
         let program = ContentId::from_source(
             ContentKind::Script,
             &program_key(&world.to_ascii_lowercase(), mission_number),
@@ -7113,10 +7112,10 @@ mod tests {
         assert_eq!(mission.as_str(), catalog_id, "the published mission id");
         assert_eq!(program.as_str(), program_id, "the published program id");
         assert_eq!(
-            ContentId::from_source(ContentKind::World, &world)
+            ContentId::from_source(ContentKind::World, &world.to_ascii_lowercase())
                 .expect("world id")
                 .as_str(),
-            "world/c1c",
+            field("world_id"),
             "the world group keeps its published identity"
         );
     }
