@@ -6,6 +6,11 @@
 //! `CS_GAME_DIR` access — these tests prove the schema and its validation,
 //! never the campaign (F50 owner ruling, 2026-09-28).
 
+// Several test binaries compile this file (`Cargo.toml`'s `shared_test_sources`)
+// and each uses only the fixtures its own suites need, so an item unused in one
+// binary is not dead.
+#![allow(dead_code)]
+
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 

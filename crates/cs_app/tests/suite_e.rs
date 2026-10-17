@@ -1,0 +1,18 @@
+//! `cs_app`'s `cs_app_tests_e` integration-test binary (task #1543).
+//!
+//! The `vs_m01_*` runtime-host suites of the campaign tree and the M01 world evidence
+//! that shares their report module. They are kept alone because `vs_m01_runtime` reaches
+//! so much engine code that it adds ~5 MB of `__eh_frame` to any binary it joins.
+//!
+//! See `docs/findings/2026-10-17-t1543-cs-app-test-binaries.md`.
+
+mod campaign {
+    mod common;
+    mod m01_play_world_evidence;
+    mod vs_m01_rt_content;
+    mod vs_m01_rt_evidence_capture;
+    mod vs_m01_rt_evidence_report;
+    mod vs_m01_rt_host_cadence;
+    mod vs_m01_rt_player_visual;
+    mod vs_m01_runtime;
+}

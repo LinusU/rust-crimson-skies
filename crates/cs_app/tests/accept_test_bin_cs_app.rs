@@ -2,10 +2,10 @@
 //!
 //! The crate had 249 test files, each its own Bevy-linked executable that
 //! macOS security-scans on first launch. It now sets `autotests = false` with
-//! three `[[test]]` targets (one binary exceeds the 16 MiB `__eh_frame` limit
+//! five `[[test]]` targets (one binary exceeds the 16 MiB `__eh_frame` limit
 //! of task #336; the owner allowed a small fixed number), and these tests ask
 //! the production guard (`cs_xtask::test_layout`, task #1542) about this very
-//! crate: it is migrated, it declares exactly the three targets its manifest
+//! crate: it is migrated, it declares exactly the five targets its manifest
 //! allows, and every `.rs` file under `tests/` is reached from exactly one
 //! target's `mod` tree, so none is silently left unrun or run twice. Removing
 //! the `autotests = false` line, adding a fourth `[[test]]` or leaving a file
@@ -20,7 +20,7 @@ fn workspace_root() -> std::path::PathBuf {
 }
 
 #[test]
-fn accept_test_bin_cs_app_the_crate_has_its_three_declared_test_targets() {
+fn accept_test_bin_cs_app_the_crate_has_its_declared_test_targets() {
     let layout = test_layout::check_member(&workspace_root(), "crates/cs_app")
         .expect("the guard must be able to read cs_app's manifest");
     assert!(
@@ -34,9 +34,11 @@ fn accept_test_bin_cs_app_the_crate_has_its_three_declared_test_targets() {
     assert_eq!(
         migrated.mains,
         [
-            "crates/cs_app/tests/suite_campaign.rs",
-            "crates/cs_app/tests/suite_accept.rs",
-            "crates/cs_app/tests/suite_rest.rs",
+            "crates/cs_app/tests/suite_a.rs",
+            "crates/cs_app/tests/suite_b.rs",
+            "crates/cs_app/tests/suite_c.rs",
+            "crates/cs_app/tests/suite_d.rs",
+            "crates/cs_app/tests/suite_e.rs",
         ]
     );
     // Every former test file really is reached, not merely none reported stray.

@@ -243,13 +243,20 @@
 //! the top of its file, where a reader lands anyway; the map above is kept as
 //! the overview of what this binary already links.
 
-mod accept_m01_b_wake;
+// This file is the module root of `suite_d.rs` only. The tree is spread over
+// several test binaries (task #1543: one binary's `__eh_frame` exceeds macOS's
+// 16 MiB limit, task #336), so the `mod` lines below are just the members that
+// binary links. The other binaries declare the remaining members in an inline
+// `mod campaign { mod common; … }` of their own `tests/suite_*.rs`, so that
+// `crate::campaign::…` paths resolve in each; `common.rs` (no tests) is the
+// only file several of them compile, and `Cargo.toml`'s
+// `shared_test_sources` names it. A new suite here is one file plus one `mod`
+// line in exactly one `tests/suite_*.rs`; `cs_xtask test-layout` fails if none
+// (or two) of them reach it.
 mod closure;
 mod common;
 mod coverage;
 mod evidence;
-mod f29_c_3b_score;
-mod f37_c_fu1;
 mod f39_e3;
 mod f39_e3_evidence;
 mod f50_b;
@@ -264,45 +271,10 @@ mod m01_lc_campaign_airframe_pose;
 mod m01_lc_campaign_airframe_pose_evidence;
 mod m01_lc_player_airframe_source;
 mod m01_lc_player_config;
-mod m01_play_actors;
-mod m01_play_ai;
-mod m01_play_ai_arm_order;
-mod m01_play_ai_restart;
-mod m01_play_ai_wake;
-mod m01_play_parts_geometry;
-mod m01_play_radio;
-mod m01_play_triggers_actor_bit;
-mod m01_play_triggers_anims;
-mod m01_play_triggers_anims_arm;
-mod m01_play_triggers_anims_land;
-mod m01_play_triggers_depletion;
-mod m01_play_triggers_group_refusal;
-mod m01_play_triggers_observe;
-mod m01_play_triggers_parts;
-mod m01_play_triggers_route;
 mod m01_play_triggers_turret_class;
-mod m01_play_triggers_turret_wire;
-mod m01_play_weapons;
-mod m01_play_world_evidence;
-mod m01_play_world_visible;
-mod m01_radio_wire;
 mod m01_window_actors;
-mod m01_window_fire;
-mod m01_window_world_draw;
-mod m01_window_world_import;
 mod m01_wingman_formation_a;
-mod m01_wingman_player_leader;
-mod m02_a;
-mod m02_b;
-mod m02_b_fu2;
 mod m02_b_fu3;
-mod m02_t3;
-mod m03_a;
-mod m03_b;
-mod m04_a;
-mod m04_b;
-mod m05_a;
-mod m05_b;
 mod m06_a;
 mod m06_b;
 mod m06_b_fu2;
@@ -333,17 +305,3 @@ mod m24_b;
 mod objaddr;
 mod owner_facts_table;
 mod record_objectives_sound;
-mod regenerate;
-mod vs_m01_geometry_verdict;
-mod vs_m01_rt_content;
-mod vs_m01_rt_evidence_audio;
-mod vs_m01_rt_evidence_capture;
-mod vs_m01_rt_evidence_report;
-mod vs_m01_rt_host;
-mod vs_m01_rt_host_02;
-mod vs_m01_rt_host_cadence;
-mod vs_m01_rt_host_lifecycles;
-mod vs_m01_rt_host_restart;
-mod vs_m01_rt_player_visual;
-mod vs_m01_rt_window;
-mod vs_m01_runtime;
