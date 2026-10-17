@@ -92,10 +92,15 @@
 
 use std::collections::VecDeque;
 
+use avian3d::collider_tree::ColliderTreeDiagnostics;
+use avian3d::collision::CollisionDiagnostics;
+use avian3d::diagnostics::AppDiagnosticsExt;
+use avian3d::dynamics::solver::SolverDiagnostics;
 use avian3d::prelude::{
     Collider, ColliderConstructor, ColliderConstructorHierarchy, PhysicsPlugins, Position,
     RigidBody, RigidBodyColliders, Rotation,
 };
+use avian3d::spatial_query::SpatialQueryDiagnostics;
 use bevy::app::{App, Plugin};
 use bevy::asset::{AssetPlugin, Assets, Handle};
 use bevy::ecs::world::World;
@@ -174,6 +179,22 @@ impl Plugin for AssetStackPlugin {
 /// `Assets<Mesh>` and `AssetEvent<Mesh>`, so an app that adds it without
 /// [`AssetStackPlugin`] aborts on the first `App::update`. Callers add their
 /// own plugins and resources to the returned [`App`] before driving it.
+///
+/// `App::update` never runs `Plugin::finish` — only `App::run` does — but the
+/// `PhysicsSchedule` systems [`PhysicsPlugins`] installs read diagnostics
+/// resources that Avian's plugins create *in* `finish`, through
+/// [`AppDiagnosticsExt::register_physics_diagnostics`]. An `update`-driven
+/// app therefore runs a world that is one `ResMut<ColliderTreeDiagnostics>`
+/// short whenever a fixed step fires, and `run_physics_schedule` skips the
+/// schedule entirely while the fixed clock has not advanced, so whether a
+/// given `update` hits the hole is decided by wall-clock jitter: quiet runs
+/// never step and stay green, loaded runs step and panic `Resource does not
+/// exist` — #1471's intermittent failure. Registering each one here, through
+/// Avian's own extension method, gives an `update`-driven app exactly what
+/// `finish` would have created — resource, per-step reset system and all —
+/// and a caller that *does* finalize ([`crate::playtest::headless_app`],
+/// `mission_session`'s `build_headless`) hits the method's own
+/// `is_resource_added` guard and registers nothing twice.
 pub fn headless_app() -> App {
     let mut app = App::new();
     app.add_plugins((
@@ -182,6 +203,10 @@ pub fn headless_app() -> App {
         AssetStackPlugin,
         PhysicsPlugins::default(),
     ));
+    app.register_physics_diagnostics::<ColliderTreeDiagnostics>();
+    app.register_physics_diagnostics::<CollisionDiagnostics>();
+    app.register_physics_diagnostics::<SolverDiagnostics>();
+    app.register_physics_diagnostics::<SpatialQueryDiagnostics>();
     app
 }
 
