@@ -112,7 +112,13 @@ pub(crate) fn preflight_deck() -> ScreenDeck {
                 ],
             ),
         ),
-        (Screen::Scrapbook, authored("art-scrapbook", &["back"])),
+        (
+            Screen::Scrapbook,
+            authored(
+                "art-scrapbook",
+                &["next-page", "prev-page", "select-entry", "launch", "back"],
+            ),
+        ),
         (
             Screen::Briefing,
             authored(
@@ -341,9 +347,14 @@ fn accept_f45_b_cancel_at_every_preflight_screen_leaves_state_and_currency_uncha
             reach.extend(requests(&click(&mut session, *step)));
         }
         assert_eq!(session.front_end().screen(), screen);
+        let mut expected = vec![Request::OpenProfile(ProfileIntent::New)];
+        // Opening the scrapbook is itself a transaction (F47-C1): the stored
+        // records are read for the screen's own projection.
+        if screen == Screen::Scrapbook {
+            expected.push(Request::OpenScrapbook);
+        }
         assert_eq!(
-            reach,
-            vec![Request::OpenProfile(ProfileIntent::New)],
+            reach, expected,
             "reaching {screen:?} asks for nothing beyond the profile"
         );
 

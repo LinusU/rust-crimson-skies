@@ -54,6 +54,7 @@ mod flight_check_options;
 mod flow;
 mod layout;
 mod original;
+mod scrapbook_dispatch;
 mod screens;
 mod stage_d;
 mod table;

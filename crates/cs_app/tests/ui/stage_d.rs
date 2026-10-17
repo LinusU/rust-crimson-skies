@@ -316,41 +316,33 @@ fn read_png(path: &Path) -> Vec<u8> {
 /// that no test ever *walked*.
 #[test]
 fn accept_f45_d_the_navigation_review_classifies_every_row_and_names_every_screen() {
-    // 1. No domain input: the walk stops exactly where a player who has
-    //    selected nothing stops, and says which screens are behind that
-    //    instead of pretending it walked them.
+    // 1. No domain input: the guarded rows still refuse by name rather than
+    //    being walked — the review reports the refusal code instead of
+    //    pretending it applied the row.
     let bare = review_navigation(Screen::START);
     assert!(
         bare.is_complete(),
         "even the inputless walk classifies every row: {bare}"
     );
     assert_eq!(bare.inputs.len(), 0, "no input was declared to it");
-    assert_eq!(
-        bare.not_reached.len(),
-        5,
-        "five screens sit behind the flight check: {:?}",
+    // The scrapbook's `Launch` is unguarded at machine level — whether a
+    // replay may launch is the domain's call, made through its request — so
+    // the inputless walk now reaches every screen through it, and what it
+    // cannot do is named in its refusals instead.
+    assert!(
+        bare.not_reached.is_empty(),
+        "no screen sits behind a machine guard the inputless walk cannot pass: {:?}",
         bare.not_reached
     );
-    for behind in [
-        Screen::Loading,
-        Screen::Flight,
-        Screen::Pause,
-        Screen::PauseSettings,
-        Screen::Results,
-    ] {
+    for code in ["invalid_loadout", "no_scrapbook_choice"] {
         assert!(
-            bare.not_reached.contains(&behind),
-            "{behind:?} is behind a guard the inputless walk cannot pass: {:?}",
-            bare.not_reached
+            bare.refusals()
+                .iter()
+                .any(|(_, _, refusal)| *refusal == code),
+            "the {code} refusal is recorded by name rather than skipped: {:?}",
+            bare.refusals()
         );
     }
-    assert!(
-        bare.refusals()
-            .iter()
-            .any(|(_, _, code)| *code == "invalid_loadout"),
-        "the launch is refused by name rather than skipped: {:?}",
-        bare.refusals()
-    );
 
     // 2. With the inputs a player supplies: every screen is reached and every
     //    row of the table is applied — the whole navigation path set.
@@ -368,6 +360,7 @@ fn accept_f45_d_the_navigation_review_classifies_every_row_and_names_every_scree
                 id(ContentKind::Engine, "engine.0"),
             ],
         }),
+        scrapbook_choice: Some(id(ContentKind::Stunt, "stunt.barrel")),
     };
     let review = review_navigation_with(Screen::START, &inputs);
     assert_eq!(review.start, Screen::START);
@@ -404,7 +397,11 @@ fn accept_f45_d_the_navigation_review_classifies_every_row_and_names_every_scree
         .map(|input| input.input)
         .collect();
     supplied.sort_unstable();
-    assert_eq!(supplied, ["construction_draft", "loadout"], "{supplied:?}");
+    assert_eq!(
+        supplied,
+        ["construction_draft", "loadout", "scrapbook_choice"],
+        "{supplied:?}"
+    );
 
     // The paths the contract names are walked, and their domain transactions
     // are the ones the table declares: a player's actions reach the domain
@@ -451,6 +448,13 @@ fn accept_f45_d_the_navigation_review_classifies_every_row_and_names_every_scree
         (Screen::Loading, Action::LoadSucceeded, Screen::Flight),
         (Screen::Flight, Action::MissionSucceeded, Screen::Results),
         (Screen::Results, Action::OpenScrapbook, Screen::Scrapbook),
+        // cabin -> scrapbook, page and select inside it, launch its replay
+        (Screen::Cabin, Action::OpenScrapbook, Screen::Scrapbook),
+        (Screen::Scrapbook, Action::NextPage, Screen::Scrapbook),
+        (Screen::Scrapbook, Action::PrevPage, Screen::Scrapbook),
+        (Screen::Scrapbook, Action::SelectEntry, Screen::Scrapbook),
+        (Screen::Scrapbook, Action::Launch, Screen::Loading),
+        (Screen::Scrapbook, Action::Back, Screen::Cabin),
         // construction edit -> cancel
         (Screen::Construction, Action::Cancel, Screen::Cabin),
         // mission failure -> retry

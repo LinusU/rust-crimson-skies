@@ -189,8 +189,24 @@ fn accept_f45_a_cancel_at_every_preflight_screen_requests_nothing_from_the_domai
             effects.extend(press(&mut front_end, *step));
         }
         assert_eq!(front_end.screen(), screen);
-        effects.extend(press(&mut front_end, leave));
-        assert_eq!(requests(&effects), Vec::<&Request>::new(), "{screen:?}");
+        // Reaching the scrapbook reads the stored records (F47-C1): the
+        // request belongs to the open, never to leaving.
+        let reach_requests: Vec<Request> = if screen == Screen::Scrapbook {
+            vec![Request::OpenScrapbook]
+        } else {
+            Vec::new()
+        };
+        assert_eq!(
+            requests(&effects),
+            reach_requests.iter().collect::<Vec<_>>(),
+            "reaching {screen:?}"
+        );
+        let leave_effects = press(&mut front_end, leave);
+        assert_eq!(
+            requests(&leave_effects),
+            Vec::<&Request>::new(),
+            "leaving {screen:?}"
+        );
         assert_eq!(front_end.outcome(), None);
         assert!(front_end.loadout().is_empty());
     }

@@ -210,15 +210,15 @@ fn accept_f45_b_1_the_deck_refuses_a_screen_whose_original_buttons_the_table_can
 #[test]
 fn accept_f45_b_1_a_screen_that_the_table_fully_covers_enters_the_deck() {
     let text = "\
-[@ScrapBook_TOC@]
+[@Preferences@]
 BG   =P,bg.png,0,0,0,1,0,0,0
-BACK =B,strip.png,593,561,0,0,PassengerCabin,0x1000,1
+BACK =B,strip.png,593,561,0,0,MainMenu,0x1000,1
 MORE =B,strip.png,440,505,0,0,,,
 ";
     let layout = OriginalLayout::parse(text).unwrap();
     let built = OriginalScreens::build(&layout, &extents);
-    assert_eq!(built.verdict(Screen::Scrapbook), Some(&Ok(())));
-    let assets = built.deck().assets(Screen::Scrapbook).expect("in the deck");
+    assert_eq!(built.verdict(Screen::Settings), Some(&Ok(())));
+    let assets = built.deck().assets(Screen::Settings).expect("in the deck");
     assert_eq!(
         assets.buttons().len(),
         1,
@@ -226,7 +226,41 @@ MORE =B,strip.png,440,505,0,0,,,
     );
     assert_eq!(assets.buttons()[0].action, Action::Back);
     // The unbound original button stays visible in the report.
+    let report = built.report(Screen::Settings).unwrap();
+    assert_eq!(report.unbound.len(), 1);
+    assert_eq!(report.unbound[0].reason, UnboundReason::NoScript);
+}
+
+/// F47-C1's consequence for an original deck: the scrapbook's page and
+/// entry actions live *inside* the screen, so a button could only ever bind
+/// them through a script that names the screen's own section — which the
+/// binder refuses as `SelfScript`. An original scrapbook layout therefore
+/// cannot cover them, and the deck names the first one it is missing
+/// instead of relaxing its coverage rule.
+#[test]
+fn accept_f45_b_1_the_original_scrapbook_is_deck_refused_by_the_action_it_cannot_bind() {
+    let text = "\
+[@ScrapBook_TOC@]
+BG   =P,bg.png,0,0,0,1,0,0,0
+BACK =B,strip.png,593,561,0,0,PassengerCabin,0x1000,1
+MORE =B,strip.png,440,505,0,0,,,
+";
+    let layout = OriginalLayout::parse(text).unwrap();
+    let built = OriginalScreens::build(&layout, &extents);
+    assert_eq!(
+        built.verdict(Screen::Scrapbook),
+        Some(&Err(DeckError::HiddenAction {
+            screen: Screen::Scrapbook,
+            action: Action::NextPage,
+        }))
+    );
+    // The screen's assets still build — the refusal is about coverage, so
+    // the bound Back button and the unbound original button are both
+    // reported, not dropped.
     let report = built.report(Screen::Scrapbook).unwrap();
+    let assets = report.result.as_ref().expect("the screen itself builds");
+    assert_eq!(assets.buttons().len(), 1);
+    assert_eq!(assets.buttons()[0].action, Action::Back);
     assert_eq!(report.unbound.len(), 1);
     assert_eq!(report.unbound[0].reason, UnboundReason::NoScript);
 }
@@ -352,13 +386,29 @@ fn accept_f45_b_1_retail_the_original_layout_is_read_and_each_screen_is_built_or
         "cabin, scrapbook, flight check, construction"
     );
 
-    // The one screen the state table fully covers.
-    assert_eq!(built.verdict(Screen::Scrapbook), Some(&Ok(())));
+    // No original screen enters the deck: the scrapbook's only bindable
+    // button is Back — its page and entry actions live inside the screen,
+    // so no original script can name a section that binds them (F47-C1).
+    // The deck names what is hidden rather than relaxing the rule.
+    assert!(matches!(
+        built.verdict(Screen::Scrapbook),
+        Some(Err(DeckError::HiddenAction {
+            action: Action::NextPage,
+            ..
+        }))
+    ));
     assert_eq!(
         built.deck().screens().collect::<Vec<_>>(),
-        vec![Screen::Scrapbook]
+        Vec::<Screen>::new()
     );
-    let scrapbook = built.deck().assets(Screen::Scrapbook).unwrap();
+    // The scrapbook's assets still build: its bound Back button keeps the
+    // measured rectangle.
+    let scrapbook = built
+        .report(Screen::Scrapbook)
+        .unwrap()
+        .result
+        .as_ref()
+        .unwrap();
     assert_eq!(scrapbook.buttons().len(), 1);
     assert_eq!(scrapbook.buttons()[0].action, Action::Back);
     assert_eq!(
