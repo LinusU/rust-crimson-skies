@@ -485,6 +485,25 @@ fn accept_f54_b_invalid_ids_and_tags_are_refused() {
             field: "compat.mods[]"
         })
     );
+
+    // A mod id one byte past the label cap is refused before the grammar
+    // runs — the field bound is `MAX_MOD_ID_WIRE_BYTES`, not the wider
+    // catalog-id bound.
+    let mut long_mod = vec![0u8];
+    long_mod.extend_from_slice(&1u16.to_le_bytes());
+    long_mod.extend_from_slice(&[0x52; 32]);
+    long_mod.extend_from_slice(&[0xC5; 32]);
+    long_mod.extend_from_slice(&1u16.to_le_bytes());
+    long_mod.extend_from_slice(&(cs_net::codec::MAX_MOD_ID_WIRE_BYTES as u16 + 1).to_le_bytes());
+    long_mod.extend_from_slice(&[b'a'; cs_net::codec::MAX_MOD_ID_WIRE_BYTES + 1]);
+    assert_eq!(
+        decode_client_packet(&long_mod),
+        Err(CodecError::TooLarge {
+            field: "compat.mods[]",
+            max: cs_net::codec::MAX_MOD_ID_WIRE_BYTES,
+            len: cs_net::codec::MAX_MOD_ID_WIRE_BYTES + 1,
+        })
+    );
 }
 
 #[test]
