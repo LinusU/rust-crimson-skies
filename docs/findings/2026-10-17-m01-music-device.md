@@ -67,7 +67,13 @@ sample library (finding `2026-10-16-m01-play-music-state-requests.md` §6 item 3
   table's spelled order, as the owner ruled.
 * After a device loss the director keeps the cue current and
   `device_restored` returns it, but nothing re-issues it to the mixer yet; the
-  music stays silent until a caller re-requests.
+  music stays silent until a caller re-requests. **Resolved by #1552
+  (`M01-MUSIC-RESTORE`, 2026-10-17):** `device_restored` now queues the
+  director's `Started` verdict in the session, so the one music mix pass replays
+  the current cue on the music bus; see
+  `docs/findings/2026-10-17-m01-music-restore.md`. Restarting the cue from its
+  beginning, with the same hard cut and unity gain, remains this build's
+  designed choice.
 
 ## Unknown / open
 
