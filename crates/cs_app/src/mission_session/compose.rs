@@ -101,6 +101,8 @@ use cs_types::content::{ContentId, ContentKind, Resolved};
 use cs_types::evidence::ContentHash;
 use cs_types::space::Quaternion;
 
+use super::actor_census::MissionActorAidPlugin;
+use super::actor_visual::build_actor_visuals;
 use super::landings::{MissionLandings, read_landings};
 use super::launch_sound::{LaunchSound, LaunchSoundError, measure_launch_sound};
 use super::player_visual::{
@@ -1028,7 +1030,24 @@ fn add_composition(
     if let Some(source) = &stage.player_aircraft {
         let visual = build_player_visual(app, source)?;
         app.insert_resource(visual);
+        // 2c. The scripted aircraft's drawn models (M01-WINDOW-ACTORS, #1538),
+        //     built from the same `planes.zbd` source. A prefix that cannot be
+        //     drawn is a recorded refusal, not a failed composition.
+        let actor_visuals = build_actor_visuals(
+            app,
+            source,
+            &stage.ai_airframes,
+            stage.world_draw.as_ref(),
+            &stage
+                .host
+                .world_actors
+                .as_ref()
+                .map(|actors| actors.subjects.clone())
+                .unwrap_or_default(),
+        );
+        app.insert_resource(actor_visuals);
     }
+    app.add_plugins(MissionActorAidPlugin { windowed: visuals });
 
     // 3. The player spawn recipe and the playtest seam that uses it: the
     //    Startup spawns the body, and `R` restarts it from the same

@@ -90,6 +90,8 @@
 //! a group the composition really spawned members for — and
 //! every other member chain the record spells stays unobserved, fail-closed.
 
+mod actor_census;
+mod actor_visual;
 mod compose;
 mod content;
 mod evidence;
@@ -107,6 +109,13 @@ mod weapon_present;
 mod weapons;
 mod world_draw;
 
+pub use actor_census::{
+    CensusRow, MAX_CONTACTS, MissionActorAidPlugin, contact_list_text, nearest_hostiles,
+};
+pub use actor_visual::{
+    ACTOR_MODEL_CLAIM, ActorVisualDrawn, MissionActorVisuals, attach_actor_visuals,
+    build_actor_visuals,
+};
 pub use compose::{
     MissionComposition, MissionCompositionError, MissionPlayerBody, MissionPlayerStart,
     MissionStage, StageItem, StageMount, build_headless, build_windowed,

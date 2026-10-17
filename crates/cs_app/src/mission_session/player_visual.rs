@@ -80,6 +80,12 @@ pub struct PlayerAirframeSource {
 }
 
 impl PlayerAirframeSource {
+    /// The container and texture archive the airframe visuals are built from;
+    /// the scripted aircraft's models read the same `planes.zbd`.
+    pub(super) const fn sources(&self) -> &AircraftSources {
+        &self.sources
+    }
+
     /// Reads the airframe container and the texture archive for
     /// `world_group` out of `install_root` — one production discovery pass,
     /// never a second parser and never a write inside the installation.
