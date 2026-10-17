@@ -48,6 +48,26 @@
 //! progression link stays an explicit unknown in the report. See
 //! `docs/findings/2026-10-08-f47-d-retail-scrapbook-audit.md`.
 //!
+//! ## What the `Objective` position indexes (stage F47-D.2)
+//!
+//! F47-D left the meaning of the `Objective` position unmeasured. F47-D.2
+//! measured it and binds it here: [`DiscoveredScrapbook::objective_rules`]
+//! reads every item's `Objective` position as the **numbered objective**
+//! (`OBJECTIVE<n>`) of the campaign mission its page names, and returns a
+//! `Resolved::Known<ScrapbookObjectiveRule>` per item with the member span
+//! as provenance. The measurement is the member's own rows: 165 of the 167
+//! `Snap_<page>_<n>` picture names the table references carry `Objective = n`
+//! for the page the key spells, and the campaign missions declare contiguous
+//! `OBJECTIVE1` runs that cover every referenced number. `0` (the initial
+//! page) and the negative positions name no numbered objective and stay
+//! explicit unknowns, as does a page the progression holds no mission for.
+//!
+//! The original's **replay control** and its **memento list** are native: the
+//! screen scripts call engine commands this engine has not decoded
+//! ([`TOC_REPLAY_COMMAND`], [`MEMENTO_COMMAND`]) and carry no mission identity
+//! or memento state of their own, so neither is bound to a rule. See
+//! `docs/findings/2026-10-17-f47-d2-objective-replay-and-mementos.md`.
+//!
 //! ## The declared runtime catalog (stage F47-C2)
 //!
 //! [`declare`] turns a [`DiscoveredScrapbook`] into the production
@@ -66,9 +86,11 @@ use std::path::Path;
 use cs_assets::rof::mount_rof_into;
 use cs_assets::vfs::{INSTALL_NAMESPACE, MountBuilder, SessionBuilder};
 use cs_formats::text::resource_header::read_resource_header;
-use cs_types::asset_id::{AssetKey, MountId, MountNamespace, PrecedenceClass, ResolveContext};
-use cs_types::content::{ContentId, ContentKind, Resolved};
-use cs_types::evidence::ClaimId;
+use cs_types::asset_id::{
+    AssetKey, MountId, MountNamespace, PrecedenceClass, ResolveContext, SourceSpan,
+};
+use cs_types::content::{ContentId, ContentKind, Known, Provenance, Resolved};
+use cs_types::evidence::{ClaimId, ClaimStatus};
 
 use crate::catalog::Catalog;
 use crate::catalog::baseline::{SCRAPBOOK_CONTAINER, SCRAPBOOK_MEMBER, install_file_key};
@@ -473,6 +495,45 @@ pub const ORIGINAL_REPLAY_FIELDS: usize = 0;
 /// read as a memento.
 pub const ORIGINAL_MEMENTO_RECORDS: usize = 0;
 
+/// The claim behind the measured meaning of the table's `Objective` position:
+/// the numbered objective (`OBJECTIVE<n>`) of the campaign mission the item's
+/// page names. See [`DiscoveredScrapbook::objective_rules`].
+pub const OBJECTIVE_RULE_CLAIM: &str = "f47.d.2.scrapbook_objective";
+
+/// The claim behind the measured replay-control mechanism.
+pub const REPLAY_CONTROL_CLAIM: &str = "f47.d.2.scrapbook_replay_control";
+
+/// The claim behind the measured memento-source mechanism.
+pub const MEMENTO_SOURCE_CLAIM: &str = "f47.d.2.scrapbook_memento_source";
+
+/// The engine command the original table-of-contents replay control calls
+/// (`sbtoc_b_replay` → `callback($$E$$, 2104, <selected list index>)` in
+/// `ASSETS/SCRIPTS/SCRAPBOOK_TOC.SCRIPT`), plus the three commands that fill
+/// and gate the list it indexes: the per-entry list filler, the "current
+/// mission" reader and the replay-eligibility test.
+///
+/// Measured from the script member's own bytes (F47-D.2): each is the number
+/// in the script's `callback($$E$$, <n>, …)` form, not an engine address. The
+/// **target** of a replay is decided by the native command, which this engine
+/// has not decoded, so no mission is read out of the table or the script.
+pub const TOC_REPLAY_COMMAND: u32 = 2104;
+/// The per-entry filler command of the table-of-contents list.
+pub const TOC_LIST_COMMAND: u32 = 2409;
+/// The command returning the mission the scrapbook is currently showing.
+pub const TOC_CURRENT_COMMAND: u32 = 2405;
+/// The command answering whether one list entry can be replayed.
+pub const TOC_REPLAYABLE_COMMAND: u32 = 2411;
+
+/// The engine command the original memento-selection script reads and writes
+/// its picture through (`callback($$E$$, 2150, mode, index, name)` in
+/// `ASSETS/SCRIPTS/MOMENTOSELECTION.SCRIPT`): mode `0` gets the name at an
+/// index (`100` forward, `101` backward), mode `1` selects the name.
+///
+/// Measured from the script member's own bytes (F47-D.2). The memento set,
+/// its order and its unlock state live in the native state the command reads,
+/// which this engine has not decoded, so the script carries none of them.
+pub const MEMENTO_COMMAND: u32 = 2150;
+
 /// Why the original scrapbook table could not be read.
 ///
 /// Every variant names the source that refused: a missing archive or member
@@ -621,6 +682,12 @@ pub struct DiscoveredScrapbook {
     pub content_sha256: String,
     /// SHA-256 of the decoded member bytes the records were read from.
     pub member_sha256: String,
+    /// Where those bytes live: the container, the member key, the decoded
+    /// extent and the member digest. This is the provenance every
+    /// [`DiscoveredItem::objective`] binding ([`objective_rules`]) cites.
+    ///
+    /// [`objective_rules`]: DiscoveredScrapbook::objective_rules
+    pub member_span: SourceSpan,
     /// Every record the documented schema covers, before grouping.
     pub records: usize,
     /// The pages, ordered by [`DiscoveredPage::page`].
@@ -734,6 +801,7 @@ impl DiscoveredScrapbook {
             reason: error.to_string(),
         })?;
         let mut context = cs_formats::ParseContext::with_defaults(SCRAPBOOK_CONTAINER);
+        let member_span = span.clone();
         let document = ConfigDocument::read(&mut context, span, bytes).map_err(|error| {
             ScrapbookSourceError::Document {
                 reason: error.to_string(),
@@ -856,6 +924,7 @@ impl DiscoveredScrapbook {
             install_sha256: install.to_hex(),
             content_sha256: content.to_hex(),
             member_sha256: cs_assets::install::sha256(bytes).to_hex(),
+            member_span,
             records,
             pages,
             gaps,
@@ -958,12 +1027,199 @@ impl DiscoveredScrapbook {
 
 /// The `Objective` position of the documented record (F12-I).
 const OBJECTIVE_POSITION: usize = 0;
+
 /// The `ImageName` position of the documented record (F12-I).
 const IMAGE_NAME_POSITION: usize = 2;
+
 /// The `TitleResID` position of the documented record (F12-I).
 const TITLE_RES_ID_POSITION: usize = 14;
+
 /// The `TextResID` position of the documented record (F12-I).
 const TEXT_RES_ID_POSITION: usize = 15;
+
+/// The measured `Objective` rule of one discovered item: the numbered
+/// objective (`OBJECTIVE<n>`) of the campaign mission the item's page names.
+///
+/// This is a measurement of the table's own `Objective` position, bound to the
+/// mission the page names through `progression`'s campaign rows — never a
+/// runtime-verified unlock predicate. Whether the original engine gates an
+/// item's visibility on objective completion is native behavior this engine
+/// has not decoded, so a `Known` rule here means "this is the objective the
+/// position names", not "the original unlocks this here".
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScrapbookObjectiveRule {
+    /// The campaign mission, in campaign order, the item's page names.
+    pub mission: ContentId,
+    /// The numbered objective inside that mission.
+    pub objective: u32,
+}
+
+/// One discovered item's `Objective` binding.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ObjectiveRule {
+    /// The item's identity key ([`DiscoveredItem::id_key`]), or `None` when
+    /// the entry key is not valid UTF-8.
+    pub item: Option<String>,
+    /// The measured rule, or an explicit unknown when the position names no
+    /// numbered objective of a mission the progression holds.
+    pub rule: Resolved<ScrapbookObjectiveRule>,
+}
+
+/// What the table's `Objective` position was measured to say (F47-D.2).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ObjectiveCensus {
+    /// Items examined.
+    pub items: usize,
+    /// Items whose position is a positive number: a numbered objective.
+    pub numbered: usize,
+    /// Items whose position is `0` or negative, which names no numbered
+    /// objective.
+    pub special: usize,
+    /// Items whose position is not a whole number at all.
+    pub unparsed: usize,
+    /// Numbered items bound to a campaign mission row.
+    pub bound: usize,
+    /// Pages that carry a numbered objective but no campaign mission row.
+    pub page_without_mission: Vec<u32>,
+    /// Items whose `ImageName` is a `Snap_<page>_<n>` runtime snapshot.
+    pub snapshot_items: usize,
+    /// Snapshot items whose position is exactly the number their own name
+    /// spells, for the page their key spells.
+    pub snapshot_agree: usize,
+    /// Snapshot items whose position disagrees with their name, by id key.
+    pub snapshot_disagree: Vec<String>,
+    /// Every item's binding, in the member's own order.
+    pub rules: Vec<ObjectiveRule>,
+}
+
+impl DiscoveredScrapbook {
+    /// Binds every item's `Objective` position to the numbered objective of
+    /// the campaign mission its page names (F47-D.2).
+    ///
+    /// The page is the key's first component; page `p` is the `p`-th campaign
+    /// mission of `progression` in canonical id order (`mission/ch1-m01` …
+    /// `mission/ch5-m04`), which is the installation's campaign order. A
+    /// position of `0` (the initial page), a negative position, a
+    /// non-numeric position and a page the progression holds no mission for
+    /// all stay explicit unknowns, never a guessed rule.
+    ///
+    /// Provenance is [`OBJECTIVE_RULE_CLAIM`] at
+    /// [`Provenance::class`] `observed_tool`, over the table member's own
+    /// span ([`DiscoveredScrapbook::member_span`]).
+    #[must_use]
+    pub fn objective_rules(&self, progression: &Catalog) -> ObjectiveCensus {
+        let missions: Vec<&ContentId> = progression
+            .elements()
+            .filter(|element| element.kind == ContentKind::Mission)
+            .map(|element| &element.id)
+            .collect();
+        let provenance = objective_provenance(&self.member_span);
+
+        let mut census = ObjectiveCensus::default();
+        let mut pages_without_mission: BTreeSet<u32> = BTreeSet::new();
+        for page in &self.pages {
+            for item in &page.items {
+                census.items += 1;
+                if let Some((named_page, named_objective)) = snapshot_name_components(&item.image) {
+                    census.snapshot_items += 1;
+                    if named_page == page.page && item.objective == Some(i64::from(named_objective))
+                    {
+                        census.snapshot_agree += 1;
+                    } else if let Some(id_key) = &item.id_key {
+                        census.snapshot_disagree.push(id_key.clone());
+                    }
+                }
+
+                let rule = match item.objective {
+                    None => {
+                        census.unparsed += 1;
+                        objective_unknown(
+                            "the Objective position is not a whole number, so it names no objective",
+                        )
+                    }
+                    Some(objective) if objective <= 0 => {
+                        census.special += 1;
+                        objective_unknown(
+                            "the Objective position is not a numbered objective: 0 is the \
+                             initial page and a negative value names no objective",
+                        )
+                    }
+                    Some(objective) => match u32::try_from(objective) {
+                        Err(_) => {
+                            census.unparsed += 1;
+                            objective_unknown(
+                                "the Objective position is larger than a numbered objective can be",
+                            )
+                        }
+                        Ok(objective) => {
+                            census.numbered += 1;
+                            let mission = if page.page == 0 {
+                                None
+                            } else {
+                                missions.get((page.page - 1) as usize).copied()
+                            };
+                            match mission {
+                                Some(mission) => {
+                                    census.bound += 1;
+                                    Resolved::Known(Known::new(
+                                        ScrapbookObjectiveRule {
+                                            mission: mission.clone(),
+                                            objective,
+                                        },
+                                        provenance.clone(),
+                                    ))
+                                }
+                                None => {
+                                    pages_without_mission.insert(page.page);
+                                    objective_unknown(
+                                        "the progression holds no campaign mission for this \
+                                         page, so the numbered objective belongs to none here",
+                                    )
+                                }
+                            }
+                        }
+                    },
+                };
+                census.rules.push(ObjectiveRule {
+                    item: item.id_key.clone(),
+                    rule,
+                });
+            }
+        }
+        census.page_without_mission = pages_without_mission.into_iter().collect();
+        census
+    }
+}
+
+/// The provenance of an [`ScrapbookObjectiveRule`]: an `observed_tool` claim
+/// over the table member's own span.
+fn objective_provenance(span: &SourceSpan) -> Provenance {
+    Provenance::new(
+        ClaimId::new(OBJECTIVE_RULE_CLAIM).expect("a valid claim id"),
+        ClaimStatus::ObservedTool,
+        Some(span.clone()),
+    )
+    .expect("an observed_tool claim needs no source span")
+}
+
+/// An explicit unknown `Objective` rule with `reason`.
+fn objective_unknown(reason: &str) -> Resolved<ScrapbookObjectiveRule> {
+    Resolved::unknown(
+        ClaimId::new(OBJECTIVE_RULE_CLAIM).expect("a valid claim id"),
+        reason,
+    )
+    .expect("the reason is never empty")
+}
+
+/// The `<page>_<objective>` a `Snap_<page>_<n>` runtime-snapshot picture name
+/// spells, or `None` when the name is not that shape.
+fn snapshot_name_components(image: &str) -> Option<(u32, u32)> {
+    let lowered = image.to_ascii_lowercase();
+    let rest = lowered.strip_prefix("snap_")?;
+    let (page, rest) = rest.split_once('_')?;
+    let objective = rest.split('.').next()?;
+    Some((page.parse().ok()?, objective.parse().ok()?))
+}
 
 /// The `<page>_<spread>_<slot>` components of an entry key, or `None` when
 /// the key is not that shape (a counted gap, never a guessed component).
@@ -1029,6 +1285,9 @@ pub struct AuditReport {
     pub memento_named_images: usize,
     /// Campaign mission rows of the original progression handed to the audit.
     pub progression_missions: usize,
+    /// What the table's `Objective` position says (F47-D.2): the numbered
+    /// objective of the campaign mission each item's page names.
+    pub objective: ObjectiveCensus,
 }
 
 impl AuditReport {
@@ -1047,6 +1306,7 @@ impl AuditReport {
             && self.replay_missions_missing.is_empty()
             && self.pages_without_artwork == 0
             && self.declared_mementos == ORIGINAL_MEMENTO_RECORDS
+            && self.objective.page_without_mission.is_empty()
     }
 
     /// The report as the artifact this stage writes.
@@ -1062,6 +1322,9 @@ impl AuditReport {
              \"original_unlock_fields\": {},\n \"original_replay_fields\": {},\n \
              \"original_memento_records\": {},\n \"declared_mementos\": {},\n \
              \"memento_named_images\": {},\n \"progression_missions\": {},\n \"gaps\": {},\n \
+             \"objective\": {{\"items\": {}, \"numbered\": {}, \"special\": {}, \"unparsed\": {}, \
+             \"bound\": {}, \"page_without_mission\": [{}], \"snapshot_items\": {}, \
+             \"snapshot_agree\": {}, \"snapshot_disagree\": [{}], \"backing\": {}}},\n \
              \"backing\": {{\"unlock\": {}, \"replay\": {}, \"memento\": {}}}\n}}\n",
             quote(&self.member_sha256),
             self.records,
@@ -1087,6 +1350,21 @@ impl AuditReport {
             self.memento_named_images,
             self.progression_missions,
             map_json(&self.gaps),
+            self.objective.items,
+            self.objective.numbered,
+            self.objective.special,
+            self.objective.unparsed,
+            self.objective.bound,
+            self.objective
+                .page_without_mission
+                .iter()
+                .map(u32::to_string)
+                .collect::<Vec<_>>()
+                .join(", "),
+            self.objective.snapshot_items,
+            self.objective.snapshot_agree,
+            string_array(&self.objective.snapshot_disagree),
+            quote(OBJECTIVE_BACKING),
             quote(UNLOCK_BACKING),
             quote(REPLAY_BACKING),
             quote(MEMENTO_BACKING),
@@ -1094,12 +1372,23 @@ impl AuditReport {
     }
 }
 
+/// What this stage (F47-D.2) measured about the `Objective` position: it
+/// indexes the numbered objective of the campaign mission the item's page
+/// names. The snapshot naming and the missions' own `OBJECTIVE<n>` runs are
+/// the evidence; whether the engine gates visibility on it stays native.
+pub const OBJECTIVE_BACKING: &str = "measured: Objective indexes the numbered objective (OBJECTIVE<n>) of the campaign \
+     mission the item's page names; 0 and negative values name none; whether the engine gates visibility on it is \
+     native and undecoded";
+
 /// What this stage measured about the original's unlock path: the table
 /// documents no unlock field, and the one field whose documented name could
-/// carry progression (`Objective`) has a measured value distribution and an
-/// unmeasured meaning.
-pub const UNLOCK_BACKING: &str = "unmeasured: the table documents no unlock field; the Objective field's meaning is unknown, \
-     so a Known rule is reported as not original-backed";
+/// carry progression (`Objective`) is F47-D.2's measured numbered objective,
+/// but whether the engine gates an item's visibility on it is native
+/// behaviour this engine has not decoded, so a `Known` rule is still reported
+/// as not original-backed.
+pub const UNLOCK_BACKING: &str = "unmeasured: the table documents no unlock field; the Objective position names a \
+     mission's numbered objective (F47-D.2) but whether the engine gates an item on it is undecoded, so a Known rule \
+     is reported as not original-backed";
 
 /// What this stage measured about the original's replay path: the table
 /// documents no mission field, while the original table-of-contents script
@@ -1168,6 +1457,7 @@ pub fn audit(
         declared_mementos: 0,
         memento_named_images: discovered.memento_named_images(),
         progression_missions: missions.len(),
+        objective: discovered.objective_rules(progression),
     };
 
     let mut declared_keys: BTreeSet<&str> = BTreeSet::new();
