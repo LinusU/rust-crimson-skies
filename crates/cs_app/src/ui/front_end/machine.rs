@@ -193,6 +193,20 @@ pub enum Request {
     ScrapbookSelect(ContentId),
     /// Launch the selected entry's replay.
     LaunchReplay,
+    /// Enter the Instant Action flow (F49-C2).
+    OpenInstantAction,
+    /// Seed the custom scenario draft from the selected preset.
+    StartCustomScenario,
+    /// Lower the selection and begin a session generation.
+    LaunchInstantAction,
+    /// Leave the current Instant Action screen one step back.
+    InstantActionBack,
+    /// Retry the scenario in a new session generation.
+    RetryInstantAction,
+    /// Record the ended session, end its generation and leave for the menu.
+    FinishInstantAction,
+    /// Settle the running session from the snapshot it reported.
+    EndInstantAction,
 }
 
 /// What a transition does outside the machine.
@@ -321,6 +335,7 @@ pub struct FrontEnd {
     pending_discard: Option<Action>,
     last_failure: Option<LoadFailure>,
     scrapbook_choice: Option<ContentId>,
+    ia_draft_dirty: bool,
 }
 
 impl Default for FrontEnd {
@@ -346,6 +361,7 @@ impl FrontEnd {
             pending_discard: None,
             last_failure: None,
             scrapbook_choice: None,
+            ia_draft_dirty: false,
         };
         machine.reset_focus();
         machine
@@ -523,6 +539,24 @@ impl FrontEnd {
         self.scrapbook_choice.as_ref()
     }
 
+    /// Mirrors whether the Instant Action flow holds an edited scenario draft.
+    ///
+    /// The draft itself is the flow's (`ui::instant_action::InstantActionFlow`
+    /// owns it); the machine only needs to know whether leaving the screen
+    /// discards edits, which is what makes `Back` ask first. Like the
+    /// construction projection it is set by the wiring after every change to
+    /// the flow, and it is accepted while a prompt is open because the prompt
+    /// itself is the result of the change being mirrored.
+    pub fn mirror_instant_action_draft(&mut self, dirty: bool) {
+        self.ia_draft_dirty = dirty;
+    }
+
+    /// Whether the mirrored Instant Action draft is dirty.
+    #[must_use]
+    pub fn instant_action_draft_is_dirty(&self) -> bool {
+        self.ia_draft_dirty
+    }
+
     fn expect(&self, screen: Screen) -> Result<(), Refusal> {
         if self.pending_discard.is_some() {
             return Err(Refusal::ConfirmationPending);
@@ -544,6 +578,7 @@ impl FrontEnd {
                 .as_ref()
                 .is_some_and(ConstructionDraft::is_dirty),
             Screen::FlightCheck => !self.loadout.is_empty(),
+            Screen::IaSelect | Screen::IaCustomize => self.ia_draft_dirty,
             _ => false,
         }
     }
@@ -574,7 +609,7 @@ impl FrontEnd {
                     return Err(Refusal::NotAFailure);
                 }
             }
-            Guard::DiscardsDraft => {
+            Guard::DiscardsDraft | Guard::DiscardsScenarioDraft => {
                 if self.is_draft_dirty() {
                     self.pending_discard = Some(action);
                     return Ok(Outcome {
@@ -813,6 +848,27 @@ impl FrontEnd {
             RequestKind::LaunchReplay => {
                 effects.push(Effect::Request(Request::LaunchReplay));
             }
+            RequestKind::OpenInstantAction => {
+                effects.push(Effect::Request(Request::OpenInstantAction));
+            }
+            RequestKind::StartCustomScenario => {
+                effects.push(Effect::Request(Request::StartCustomScenario));
+            }
+            RequestKind::LaunchInstantAction => {
+                effects.push(Effect::Request(Request::LaunchInstantAction));
+            }
+            RequestKind::InstantActionBack => {
+                effects.push(Effect::Request(Request::InstantActionBack));
+            }
+            RequestKind::RetryInstantAction => {
+                effects.push(Effect::Request(Request::RetryInstantAction));
+            }
+            RequestKind::FinishInstantAction => {
+                effects.push(Effect::Request(Request::FinishInstantAction));
+            }
+            RequestKind::EndInstantAction => {
+                effects.push(Effect::Request(Request::EndInstantAction));
+            }
         }
         // The import dialog's own buttons. Neither asks the domain for
         // anything — the source, the attempt and the confirmed value are the
@@ -855,6 +911,13 @@ impl FrontEnd {
             self.construction = None;
             self.loadout = Loadout::default();
             self.outcome = None;
+        }
+        // The mirrored scenario draft leaves with the screens that can hold
+        // it: a confirmed discard drops it, and the menu holds none. A launch
+        // keeps it, because an abandoned custom flight hands the draft back.
+        if matches!(to, Screen::MainMenu) || (from == Screen::IaCustomize && to == Screen::IaSelect)
+        {
+            self.ia_draft_dirty = false;
         }
         if from == Screen::FlightCheck && to == Screen::Briefing {
             self.loadout = Loadout::default();

@@ -652,6 +652,12 @@ impl ScreenSession {
         self.front_end.choose_scrapbook(id)
     }
 
+    /// Mirrors whether the Instant Action flow holds an edited scenario draft
+    /// into the machine, which is what makes `Back` on its screens ask first.
+    pub fn mirror_instant_action_draft(&mut self, dirty: bool) {
+        self.front_end.mirror_instant_action_draft(dirty);
+    }
+
     /// Declares whether the mission needs a wingmate: the mission data's say,
     /// passed straight through to the machine.
     pub fn set_wingmate_required(&mut self, required: bool) {
