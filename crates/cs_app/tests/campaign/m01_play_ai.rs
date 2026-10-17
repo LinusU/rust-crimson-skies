@@ -60,7 +60,7 @@ const MINIMUM_CLOSE_M: f32 = 1_500.0;
 
 /// **Designed**: the station distance Betty must end the run inside, measured
 /// from her measured leader `devastator_2`. The station offset itself is
-/// ~89 m (`crate::mission_ai::STATION_OFFSET_M`); the bound is looser than
+/// ~11 m (`crate::mission_ai::STATION_OFFSET_M`); the bound is looser than
 /// that so a settled station passes, and tighter than the ~270 m the two
 /// records spawn apart, so a law that does nothing fails.
 const WINGMAN_DISTANCE_M: f32 = 250.0;

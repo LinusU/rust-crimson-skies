@@ -171,19 +171,57 @@ pub const PLAYER_TARGET_NAME: &str = "player";
 /// for the direction it keeps flying toward, in metres.
 pub const HOLD_COURSE_LOOKAHEAD_M: f32 = 1_200.0;
 
-/// **Designed**: the wingman's station in its leader's body frame — right,
-/// up and **behind** (the nose is `-Z`, so `+Z` is astern): 45 m outboard,
-/// 18 m up, 75 m astern.
-pub const STATION_OFFSET_M: [f32; 3] = [45.0, 18.0, 75.0];
+/// **Measured (static)**: the follower's station in the leader's body frame,
+/// for any non-player leader (`0x61fb98`, engine-facts rows
+/// `station_offset_other_leader_{x,y,z}` = `(8, -2, -8)`; the routine
+/// `0x41e760`, `docs/findings/2026-10-17-m01-wingman-formation-control-law.md`).
+///
+/// The original's third component is "8 m behind the leader along the
+/// forward row". This crate's nose is `-Z`, so astern is `+Z` and the stored
+/// `-8` is written `+8`. **Not measured**: which side basis row 0 is on and
+/// that row 1 is up (`finding` §5); the signs `+x` right and `+y` up are the
+/// reading this crate keeps.
+pub const STATION_OFFSET_M: [f32; 3] = [8.0, -2.0, 8.0];
 
-/// **Designed**: throttle added per metre the station point lies ahead of a
-/// wingman's nose. The station error is an along-track error, so falling
-/// 100 m behind adds 0.30 throttle and closing 100 m past it removes it.
-pub const WINGMAN_THROTTLE_GAIN: f64 = 0.003;
+/// **Measured (static)**: lower clamp of the follower's throttle target
+/// (`0x61fb28`, row `follow_throttle_min`).
+pub const FOLLOW_THROTTLE_MIN: f64 = 0.4;
 
-/// **Designed**: the lowest throttle a wingman will fly, so a station error
-/// behind it can never leave the aircraft at idle and falling out of the sky.
-pub const WINGMAN_MIN_THROTTLE: f64 = 0.2;
+/// **Measured (static)**: upper clamp of the follower's throttle target and
+/// the multiplier on the airframe speed that caps the demanded speed
+/// (`0x61fb2c`, row `follow_throttle_max`).
+pub const FOLLOW_THROTTLE_MAX: f64 = 1.5;
+
+/// **Measured (static)**: demanded speed per metre the slot lies ahead along
+/// the leader's velocity (`0x61fb38`, row `follow_speed_gain_along`).
+pub const FOLLOW_GAIN_ALONG: f32 = 0.15;
+
+/// **Measured (static)**: demanded speed per metre of cross-track distance to
+/// the slot (`0x61fb3c`, row `follow_speed_gain_cross`).
+pub const FOLLOW_GAIN_CROSS: f32 = 0.025;
+
+/// **Measured (static)**: the demanded speed stays within the leader's speed
+/// plus or minus this, 60 mph in m/s (`0x603510`, row `follow_speed_band`).
+pub const FOLLOW_SPEED_BAND_M_S: f32 = 26.8224;
+
+/// **Measured (static)**: the demanded speed never falls below this, 50 mph
+/// in m/s (`0x60351c`, row `follow_speed_floor`).
+pub const FOLLOW_SPEED_FLOOR_M_S: f32 = 22.352;
+
+/// **Measured (static)**: the demanded speed when the leader's velocity is
+/// zero, 180 mph in m/s (`0x41b6af`).
+pub const FOLLOW_REST_SPEED_M_S: f32 = 80.4672;
+
+/// **Measured (static)**: throttle-target change per unit of the original's
+/// frame scalar (`0x603508`, row `follow_throttle_slew`). **Designed
+/// reading:** the frame scalar (`0x9ad744`) is unmeasured; this crate reads
+/// it as seconds, so the target moves 0.35 per second.
+pub const FOLLOW_THROTTLE_SLEW_PER_S: f64 = 0.35;
+
+/// **Measured (static)**: beyond this squared distance from the player the
+/// throttle target is set directly instead of slewed — 2000 m
+/// (`0x60350c`, row `follow_rubber_band_dist2`).
+pub const FOLLOW_RUBBER_BAND_DIST2: f32 = 4_000_000.0;
 
 /// **Designed**: the throttle a pursuer flies, full power. The original's AI
 /// throttle policy is part of the unrecovered control law (`0x48c220`).
@@ -314,6 +352,10 @@ pub struct MissionAircraftAi {
     pub cooldown: u32,
     /// Fire intents this aircraft has asked for since the spawn.
     pub shots: u64,
+    /// The follower's throttle target (the original's `vehicle+0x124`),
+    /// slewed by [`follow_throttle_target`]; a wingman flies
+    /// `min(1, target)`.
+    pub throttle_target: f64,
 }
 
 impl MissionAircraftAi {
@@ -357,6 +399,7 @@ impl MissionAircraftAi {
             decisions: 0,
             cooldown: 0,
             shots: 0,
+            throttle_target: START_THROTTLE,
         }
     }
 
@@ -481,31 +524,77 @@ pub fn pursuit_command(orientation: Quat, to_target: Vec3, throttle: f64) -> Fli
 }
 
 /// The world-space point a wingman holds: the leader's position plus the
-/// designed [`STATION_OFFSET_M`] in the leader's own body frame (so `+Z` is
+/// measured [`STATION_OFFSET_M`] in the leader's own body frame (so `+Z` is
 /// astern and the station sits behind the leader).
 #[must_use]
 pub fn station_point(leader_position: Vec3, leader_orientation: Quat, offset: [f32; 3]) -> Vec3 {
     leader_position + leader_orientation * Vec3::from(offset)
 }
 
-/// **The designed wingman throttle**: the leader's own speed as a fraction of
-/// this airframe's full-throttle speed (`fd_speed`, imported from
-/// `vehicle.zrd`), never below the session's cruise, plus the along-track
-/// station error.
+/// **The measured demanded speed** of the follower (`0x41b560`, steps 2-4 of
+/// the finding), in m/s.
 ///
-/// `range_error_m` is the station point projected on this aircraft's nose —
-/// positive when the station lies ahead. A wingman whose leader and it share
-/// an airframe (M01's do: both are the `devastator` chain) therefore settles
-/// at exactly its leader's throttle when the station error is zero.
+/// `to_slot` is the slot point minus the follower's position; the demand is
+/// the leader's speed plus [`FOLLOW_GAIN_ALONG`] per metre of the gap along
+/// the leader's velocity plus [`FOLLOW_GAIN_CROSS`] per metre across it,
+/// banded to the leader's speed plus or minus [`FOLLOW_SPEED_BAND_M_S`], then
+/// capped at [`FOLLOW_THROTTLE_MAX`] times `max_speed_m_s` and floored at
+/// [`FOLLOW_SPEED_FLOOR_M_S`].
+///
+/// **Designed reading:** the original caps by the vehicle word `+0x668`
+/// (unmeasured, finding §5); `max_speed_m_s` is this airframe's full-throttle
+/// speed. The original's altitude clamp and the vehicle definition's two
+/// speed words (`def+0x1e4/0x1e8`) are not applied.
 #[must_use]
-pub fn wingman_throttle(range_error_m: f32, leader_speed_m_s: f64, fd_speed_m_s: f64) -> f64 {
-    let matched = if fd_speed_m_s > 0.0 {
-        (leader_speed_m_s / fd_speed_m_s).clamp(0.0, 1.0)
+pub fn follow_demanded_speed(to_slot: Vec3, leader_velocity: Vec3, max_speed_m_s: f32) -> f32 {
+    let leader_speed = leader_velocity.length();
+    let wanted = if leader_speed > 0.0 {
+        let along = to_slot.dot(leader_velocity / leader_speed);
+        let cross = (to_slot.length_squared() - along * along).max(0.0).sqrt();
+        leader_speed + FOLLOW_GAIN_ALONG * along + FOLLOW_GAIN_CROSS * cross
     } else {
-        START_THROTTLE
+        FOLLOW_REST_SPEED_M_S
     };
-    let base = START_THROTTLE.max(matched);
-    (base + f64::from(range_error_m) * WINGMAN_THROTTLE_GAIN).clamp(WINGMAN_MIN_THROTTLE, 1.0)
+    let banded = wanted.clamp(
+        leader_speed - FOLLOW_SPEED_BAND_M_S,
+        leader_speed + FOLLOW_SPEED_BAND_M_S,
+    );
+    let capped = if max_speed_m_s > 0.0 {
+        banded.min(max_speed_m_s * FOLLOW_THROTTLE_MAX as f32)
+    } else {
+        banded
+    };
+    capped.max(FOLLOW_SPEED_FLOOR_M_S)
+}
+
+/// **The measured throttle target** (`0x41bb5c`..`0x41bbfd`): the next value
+/// of the follower's target throttle.
+///
+/// Farther than 2000 m from the player the target is the demanded speed over
+/// `max_speed_m_s` directly; otherwise it moves [`FOLLOW_THROTTLE_SLEW_PER_S`]
+/// times `dt_s` up when the aircraft is slower than demanded and down when it
+/// is not. Either way it stays in `[FOLLOW_THROTTLE_MIN, FOLLOW_THROTTLE_MAX]`.
+/// With no airframe speed to divide by the target is left where it is.
+#[must_use]
+pub fn follow_throttle_target(
+    target: f64,
+    demanded_speed_m_s: f32,
+    own_speed_m_s: f32,
+    max_speed_m_s: f32,
+    player_distance_squared: Option<f32>,
+    dt_s: f64,
+) -> f64 {
+    let next = if player_distance_squared.is_some_and(|d2| d2 > FOLLOW_RUBBER_BAND_DIST2) {
+        if max_speed_m_s <= 0.0 {
+            return target;
+        }
+        f64::from(demanded_speed_m_s / max_speed_m_s)
+    } else if own_speed_m_s < demanded_speed_m_s {
+        target + FOLLOW_THROTTLE_SLEW_PER_S * dt_s
+    } else {
+        target - FOLLOW_THROTTLE_SLEW_PER_S * dt_s
+    };
+    next.clamp(FOLLOW_THROTTLE_MIN, FOLLOW_THROTTLE_MAX)
 }
 
 // -------------------------------------------------- airframe preparation ---
@@ -1018,6 +1107,7 @@ fn decide_mission_aircraft_ai(
         &mut PlaytestOriginalFlight,
         &Position,
         &Rotation,
+        &LinearVelocity,
         &ScriptedAircraftActor,
     )>,
     actors: Query<(
@@ -1058,7 +1148,7 @@ fn decide_mission_aircraft_ai(
                 )
             });
 
-    for (_entity, mut ai, mut flight, position, rotation, script) in &mut aircraft {
+    for (_entity, mut ai, mut flight, position, rotation, own_velocity, script) in &mut aircraft {
         ai.cooldown = ai.cooldown.saturating_sub(1);
         let behaviour = ai.behaviour.clone();
         let here = position.0;
@@ -1097,11 +1187,19 @@ fn decide_mission_aircraft_ai(
                         let station =
                             station_point(leader_position, leader_orientation, STATION_OFFSET_M);
                         let error = station - here;
-                        let throttle = wingman_throttle(
-                            error.dot(nose),
-                            f64::from(leader_velocity.length()),
-                            flight.model.airframe.fd_speed,
+                        let max_speed = flight.model.airframe.fd_speed as f32;
+                        let demanded = follow_demanded_speed(error, leader_velocity, max_speed);
+                        ai.throttle_target = follow_throttle_target(
+                            ai.throttle_target,
+                            demanded,
+                            own_velocity.0.length(),
+                            max_speed,
+                            player
+                                .as_ref()
+                                .map(|(_, _, p, ..)| p.distance_squared(here)),
+                            1.0 / f64::from(crate::physics::BASELINE_FIXED_HZ),
                         );
+                        let throttle = ai.throttle_target.min(1.0);
                         ai.leader = Some(leader_entity);
                         (error, throttle, Some(station))
                     }
@@ -1568,32 +1666,89 @@ mod tests {
         );
     }
 
-    /// The wingman's throttle: equal to the leader's speed fraction when the
-    /// station error is zero, more when the station lies ahead, never idle.
+    /// The measured demanded speed: leader speed plus the along and cross
+    /// terms, banded to +-60 mph of the leader, floored at 50 mph.
     #[test]
-    fn accept_m01_play_ai_the_wingman_throttle_tracks_the_station_error() {
-        let fd_speed = 113.0;
-        let cruise = f64::from(crate::playtest::command::CRUISE_THROTTLE);
-        let matched = wingman_throttle(0.0, cruise * fd_speed, fd_speed);
+    fn accept_m01_wingman_formation_b_demanded_speed_follows_the_measured_law() {
+        let velocity = Vec3::new(0.0, 0.0, -100.0);
+        // 100 m ahead along the velocity: 100 + 0.15 * 100 = 115 m/s.
+        let ahead = follow_demanded_speed(Vec3::new(0.0, 0.0, -100.0), velocity, 200.0);
+        assert!((ahead - 115.0).abs() < 1.0e-3, "{ahead}");
+        // 100 m across: 100 + 0.025 * 100 = 102.5 m/s.
+        let across = follow_demanded_speed(Vec3::new(100.0, 0.0, 0.0), velocity, 200.0);
+        assert!((across - 102.5).abs() < 1.0e-3, "{across}");
+        // 700 m ahead asks for more than the band allows: leader + 26.8224.
+        let far = follow_demanded_speed(Vec3::new(0.0, 0.0, -700.0), velocity, 200.0);
         assert!(
-            (matched - cruise).abs() < 1.0e-9,
-            "a zero station error settles at the leader's own speed fraction: {matched}"
+            (far - (100.0 + FOLLOW_SPEED_BAND_M_S)).abs() < 1.0e-3,
+            "{far}"
         );
-        let behind = wingman_throttle(200.0, cruise * fd_speed, fd_speed);
+        // 700 m behind the slot falls to the band's lower edge.
+        let behind = follow_demanded_speed(Vec3::new(0.0, 0.0, 700.0), velocity, 200.0);
         assert!(
-            behind > matched,
-            "a station ahead of the wingman adds throttle: {behind}"
+            (behind - (100.0 - FOLLOW_SPEED_BAND_M_S)).abs() < 1.0e-3,
+            "{behind}"
         );
-        let ahead = wingman_throttle(-500.0, cruise * fd_speed, fd_speed);
+        // The airframe cap is 1.5 x its speed.
+        let capped = follow_demanded_speed(Vec3::new(0.0, 0.0, -700.0), velocity, 60.0);
+        assert!((capped - 90.0).abs() < 1.0e-3, "{capped}");
+        // The floor is 50 mph.
+        let slow = follow_demanded_speed(Vec3::ZERO, Vec3::new(0.0, 0.0, -1.0), 200.0);
+        assert!((slow - FOLLOW_SPEED_FLOOR_M_S).abs() < 1.0e-3, "{slow}");
+    }
+
+    /// The measured throttle target: slews 0.35 per second toward the demand
+    /// inside 2000 m of the player, jumps to it beyond, and stays in
+    /// `[0.4, 1.5]`.
+    #[test]
+    fn accept_m01_wingman_formation_b_throttle_target_slews_and_rubber_bands() {
+        let up = follow_throttle_target(0.5, 120.0, 100.0, 200.0, Some(0.0), 1.0);
+        assert!((up - 0.85).abs() < 1.0e-9, "{up}");
+        let down = follow_throttle_target(0.5, 100.0, 120.0, 200.0, Some(0.0), 1.0);
         assert!(
-            ahead >= WINGMAN_MIN_THROTTLE,
-            "a large overshoot still keeps the aircraft flying: {ahead}"
+            (down - 0.4).abs() < 1.0e-9,
+            "clamped at the minimum: {down}"
         );
-        let at_rest = wingman_throttle(0.0, 0.0, fd_speed);
+        let top = follow_throttle_target(1.4, 120.0, 100.0, 200.0, Some(0.0), 1.0);
+        assert!((top - 1.5).abs() < 1.0e-9, "clamped at the maximum: {top}");
+        let jump = follow_throttle_target(0.5, 120.0, 100.0, 200.0, Some(4_000_001.0), 0.01);
         assert!(
-            (at_rest - cruise).abs() < 1.0e-9,
-            "a leader still at rest never drags the wingman below the session cruise: {at_rest}"
+            (jump - 0.6).abs() < 1.0e-6,
+            "beyond 2000 m: demand / speed: {jump}"
         );
+        let held = follow_throttle_target(0.5, 120.0, 100.0, 0.0, Some(5.0e6), 0.01);
+        assert_eq!(held, 0.5, "no airframe speed leaves the target alone");
+    }
+
+    /// The constants this module hard-codes are the committed
+    /// `[[ai_follow]]` rows (`va` and value) of the owner-static table.
+    #[test]
+    fn accept_m01_wingman_formation_b_constants_match_the_committed_rows() {
+        let text = include_str!("../../../data/owner-static/engine-facts.toml");
+        let value_of = |name: &str| -> f64 {
+            let at = text
+                .find(&format!("name = \"{name}\""))
+                .unwrap_or_else(|| panic!("row {name} is committed"));
+            let row = &text[at..];
+            let row = &row[..row.find("\n\n").unwrap_or(row.len())];
+            let line = row
+                .lines()
+                .find(|l| l.starts_with("value = "))
+                .expect("a value");
+            line["value = ".len()..].parse().expect("a float")
+        };
+        let f = |name| value_of(name) as f32;
+        assert_eq!(f("station_offset_other_leader_x"), STATION_OFFSET_M[0]);
+        assert_eq!(f("station_offset_other_leader_y"), STATION_OFFSET_M[1]);
+        assert_eq!(f("station_offset_other_leader_z"), -STATION_OFFSET_M[2]);
+        assert_eq!(value_of("follow_throttle_min"), FOLLOW_THROTTLE_MIN);
+        assert_eq!(value_of("follow_throttle_max"), FOLLOW_THROTTLE_MAX);
+        assert_eq!(f("follow_speed_gain_along"), FOLLOW_GAIN_ALONG);
+        assert_eq!(f("follow_speed_gain_cross"), FOLLOW_GAIN_CROSS);
+        assert_eq!(f("follow_speed_band"), FOLLOW_SPEED_BAND_M_S);
+        assert_eq!(f("follow_speed_floor"), FOLLOW_SPEED_FLOOR_M_S);
+        assert_eq!(value_of("follow_throttle_slew"), FOLLOW_THROTTLE_SLEW_PER_S);
+        assert_eq!(f("follow_rubber_band_dist2"), FOLLOW_RUBBER_BAND_DIST2);
     }
 
     /// The wake consumes the measured sleep: the behaviour a woken record
