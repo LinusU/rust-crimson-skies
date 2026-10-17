@@ -71,6 +71,7 @@ mod accept_f47_e_declared_catalog;
 mod accept_f48_a_save_schema;
 mod accept_f48_b_atomic_persistence;
 mod accept_f48_d_crash_recovery_matrix;
+mod accept_f49_d_02_option_table;
 mod accept_f53_d_mod_isolation;
 mod accept_f55_cu2_scenario_menu;
 mod accept_f56_a_catalog;

@@ -50,12 +50,14 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::path::Path;
 
 use cs_types::content::{ContentId, ContentKind, Known, Origin, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
 use cs_types::random::SplitMix64;
 
 use crate::ai::{DifficultyProfile, DifficultyTier};
+use crate::catalog::baseline::{Baseline, BaselineError, retail_baseline};
 use crate::environment::EnvironmentId;
 use crate::pilots::DeclaredSurvivability;
 use crate::target_rules::{DeclaredAllegiance, DeclaredRelation};
@@ -2248,6 +2250,15 @@ pub enum ScenarioSchemaError {
         /// The offending condition.
         condition: VictoryCondition,
     },
+    /// A dimension of an assembled option table has no evidence record.
+    ///
+    /// [`ScenarioOptionTable::from_lists`] refuses a table that does not say
+    /// how one of its lists was established, so a caller can never leave a
+    /// dimension's provenance unstated.
+    MissingOptionEvidence {
+        /// The dimension with no evidence.
+        dimension: ScenarioOptionDimension,
+    },
     /// The catalog declared no preset at all.
     NoPresets,
     /// A preset's roster declares no player-side actor.
@@ -2389,6 +2400,9 @@ impl fmt::Display for ScenarioSchemaError {
                     "victory condition {condition} is outside the closed vocabulary"
                 )
             }
+            Self::MissingOptionEvidence { dimension } => {
+                write!(f, "the option dimension {dimension} has no evidence record")
+            }
             Self::NoPresets => f.write_str("the catalog declares no Instant Action preset"),
             Self::PresetWithoutPlayer { id } => {
                 write!(f, "preset {id} declares no player-side actor to seat")
@@ -2432,6 +2446,611 @@ pub fn require_known<T: Clone>(
             reason: reason.clone(),
         }),
     }
+}
+
+// -------------------------------------------------------- retail option ---
+
+/// One dimension of the custom-scenario option table (F49-D.02).
+///
+/// The ten dimensions are exactly the fields of [`ScenarioOptions`], in the
+/// order [`ScenarioOptions::try_new`] takes them, so a report of the retail
+/// assembly and the validated table speak about the same ten things.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub enum ScenarioOptionDimension {
+    /// The worlds a custom scenario may load.
+    Worlds,
+    /// The environments a custom scenario may run under.
+    Environments,
+    /// The factions the roster may spawn.
+    Factions,
+    /// The planes an actor may fly.
+    Airframes,
+    /// The ordnance an actor may carry.
+    Loadouts,
+    /// The pilots an actor may be crewed by.
+    Pilots,
+    /// The difficulty steps the player may pick.
+    DifficultyTiers,
+    /// The victory conditions the player may pick.
+    VictoryConditions,
+    /// The directed cross-faction relations a roster is judged against.
+    Relations,
+    /// The seat ceiling a custom scenario may declare.
+    MaxPlayers,
+}
+
+impl ScenarioOptionDimension {
+    /// Every dimension, in [`ScenarioOptions::try_new`]'s argument order.
+    pub const ALL: &'static [Self] = &[
+        Self::Worlds,
+        Self::Environments,
+        Self::Factions,
+        Self::Airframes,
+        Self::Loadouts,
+        Self::Pilots,
+        Self::DifficultyTiers,
+        Self::VictoryConditions,
+        Self::Relations,
+        Self::MaxPlayers,
+    ];
+
+    /// The stable name of the dimension, matching the spelling of
+    /// [`ScenarioSchemaError::EmptyOptionTable`]'s `what` for the lists it
+    /// names.
+    #[must_use]
+    pub const fn label(self) -> &'static str {
+        match self {
+            Self::Worlds => "worlds",
+            Self::Environments => "environments",
+            Self::Factions => "factions",
+            Self::Airframes => "airframes",
+            Self::Loadouts => "loadouts",
+            Self::Pilots => "pilots",
+            Self::DifficultyTiers => "difficulty tiers",
+            Self::VictoryConditions => "victory conditions",
+            Self::Relations => "relations",
+            Self::MaxPlayers => "max_players",
+        }
+    }
+
+    /// Whether [`ScenarioOptions::try_new`] refuses the table while this list
+    /// is empty.
+    ///
+    /// Every list is required except `relations`: a directed-relation table may
+    /// legitimately hold no pair (an installation that declares no
+    /// cross-faction relation cannot be refused for having none), while an
+    /// empty world, plane, loadout or pilot list is an option table that
+    /// offers nothing on that axis.
+    #[must_use]
+    pub const fn requires_entries(self) -> bool {
+        !matches!(self, Self::Relations)
+    }
+}
+
+impl fmt::Display for ScenarioOptionDimension {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(self.label())
+    }
+}
+
+/// How one option dimension's entries were established.
+///
+/// The class is what keeps a measured list from being read as a designed one
+/// and vice versa (AGENTS.md rule 4, "unknown means unknown"): the retail
+/// table says, per dimension, whether the entries came from original
+/// installation bytes, from the sheet's own design vocabulary, or from nowhere
+/// yet at all.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum OptionListEvidence {
+    /// The entries were read from the owner's installation by a named
+    /// production reader.
+    ///
+    /// The reader's name is recorded so a report can say which earlier
+    /// evidence stage's measurement the list comes from. The ids themselves
+    /// are re-derived from the installation by the acceptance test, never
+    /// trusted from this record.
+    Measured {
+        /// The production reader that produced the list.
+        reader: &'static str,
+    },
+    /// The sheet declares this vocabulary as design; no original data states
+    /// it. The rationale says which sheet text declares it.
+    Designed {
+        /// Why the entries are design rather than measurement.
+        rationale: &'static str,
+    },
+    /// No production reader locates this dimension in the installation, so the
+    /// list is empty and [`ScenarioOptionTable::validate`] refuses the table
+    /// naming it. Nothing was guessed to fill it in.
+    Unmeasured {
+        /// What is missing from the installation's measured surface.
+        reason: &'static str,
+        /// The task that must measure it before the retail table can be
+        /// complete.
+        resolving_task: &'static str,
+    },
+}
+
+impl OptionListEvidence {
+    /// The stable label of the evidence class, for reports.
+    #[must_use]
+    pub const fn label(&self) -> &'static str {
+        match self {
+            Self::Measured { .. } => "measured",
+            Self::Designed { .. } => "designed",
+            Self::Unmeasured { .. } => "unmeasured",
+        }
+    }
+
+    /// Whether the entries came from original installation bytes.
+    #[must_use]
+    pub const fn is_measured(&self) -> bool {
+        matches!(self, Self::Measured { .. })
+    }
+
+    /// Whether nothing measured this dimension.
+    #[must_use]
+    pub const fn is_unmeasured(&self) -> bool {
+        matches!(self, Self::Unmeasured { .. })
+    }
+}
+
+/// The reader that produced the `world` option list (F14-D.3).
+pub const WORLD_OPTION_READER: &str =
+    "cs_content::catalog::baseline::retail_baseline, ContentKind::World rows (F14-D.3)";
+
+/// The reader that produced the `faction` option list (F14-D.5).
+pub const FACTION_OPTION_READER: &str =
+    "cs_content::catalog::baseline::retail_baseline, ContentKind::Faction rows (F14-D.5)";
+
+/// The reader that produced the `airframe` option list (F14-D.6).
+pub const AIRFRAME_OPTION_READER: &str =
+    "cs_content::catalog::baseline::retail_baseline, ContentKind::Airframe rows (F14-D.6)";
+
+/// The reader that produced the `environment` option list (F19/F20).
+///
+/// It lives above this crate, so the caller supplies the ids it read; the
+/// measuring call is `cs_app::environment::retail::read_mission_weather`.
+pub const ENVIRONMENT_OPTION_READER: &str =
+    "cs_app::environment::retail::read_mission_weather, EnvironmentId per mission (F19/F20)";
+
+/// The reader that produced the `difficulty_tiers` option list (F32-D).
+pub const DIFFICULTY_OPTION_READER: &str =
+    "cs_content::ai::DifficultyTier::measured_step, the measured original option steps (F32-D)";
+
+/// Why the `loadouts` dimension has no measured list.
+///
+/// The F27-D ammunition/ordnance surface measures *counts* and gun groups
+/// (`cs_content::weapons::OriginalGunLoadout`, `cs_content::ordnance::
+/// OriginalOrdnanceSurface`) and the F27-E catalogue imports ammunition into
+/// `ContentKind::Ammo` identities; nothing produces the `ContentKind::Loadout`
+/// identities a custom scenario would select, and a loadout id minted from a
+/// count would be a fabricated retail-looking id.
+pub const LOADOUT_UNMEASURED_REASON: &str = "the F27-D/F27-E measurement produces ammunition types, selectable guns and ordnance \
+     counts, not the ContentKind::Loadout identities a custom scenario selects, so no loadout \
+     option list can be produced without guessing";
+
+/// Why the `pilots` dimension has no measured list.
+pub const PILOT_UNMEASURED_REASON: &str = "the F33-A pilot roster is declared design and the F33-D retail measurement has not run; \
+     cs_content::pilots measures a mission's zeppelin carrier surface, not a pilot identity \
+     list, so no ContentKind::Pilot option list can be produced without guessing";
+
+/// Why the `relations` dimension has no measured list.
+pub const RELATION_UNMEASURED_REASON: &str = "F30-A declares the directed-relation schema but no measurement binds the installation's own \
+     factions into one; a relation table over designed fixture factions would be a fabricated \
+     faction table, not a retail relation";
+
+/// The sheet text that declares the victory-condition vocabulary design.
+pub const VICTORY_CONDITION_DESIGN_RATIONALE: &str = "F49-A authors the victory vocabulary (specs/F49-instant-action-presets-and-custom-scenarios.md, \
+     stage F49-A); no measured original record states it, so it is declared design and never \
+     presented as original";
+
+/// The seat ceiling the retail table declares, and why.
+///
+/// The original's player-count limit is **unmeasured** (F49-A finding:
+/// "Whether Instant Action is single-player in the original, and whether any
+/// preset offers more than one human seat"). The bound here is the module's own
+/// [`MAX_SCENARIO_PLAYERS`], tagged design; declaring it is what lets
+/// `validate_custom` refuse an oversized request while the real limit is
+/// unknown.
+pub const RETAIL_MAX_PLAYERS_DESIGN_RATIONALE: &str = "the original's seat limit is unmeasured; this reimplementation declares the module's own \
+     MAX_SCENARIO_PLAYERS bound so an oversized request is refused rather than launched";
+
+/// The retail custom-scenario option table under assembly (F49-D.02).
+///
+/// [`ScenarioOptions`] is the *validated* table; this record is the table
+/// **before** validation, keeping each list beside the evidence class of its
+/// entries. Assembling the two apart is what makes an only-partly-measured
+/// installation honest: the table says which dimensions are missing (and lets
+/// [`ScenarioOptionTable::validate`] refuse them by name) instead of silently
+/// omitting a dimension or filling it from the fixture.
+///
+/// Build it with [`retail_scenario_options`] (which reads the installation
+/// through production readers) or [`ScenarioOptionTable::from_lists`] (a
+/// caller-supplied assembly), then hand it to [`ScenarioOptionTable::validate`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct ScenarioOptionTable {
+    worlds: Vec<WorldId>,
+    environments: Vec<EnvironmentId>,
+    factions: Vec<ContentId>,
+    airframes: Vec<ContentId>,
+    loadouts: Vec<ContentId>,
+    pilots: Vec<ContentId>,
+    difficulty_tiers: Vec<DifficultyTier>,
+    victory_conditions: Vec<VictoryCondition>,
+    relations: Vec<DeclaredRelation>,
+    max_players: u8,
+    evidence: Vec<(ScenarioOptionDimension, OptionListEvidence)>,
+}
+
+impl ScenarioOptionTable {
+    /// Assembles a table from its lists and each dimension's evidence.
+    ///
+    /// Every dimension of [`ScenarioOptionDimension::ALL`] must be named
+    /// exactly once, so a caller cannot forget to say how a list was
+    /// established.
+    ///
+    /// # Errors
+    ///
+    /// [`ScenarioSchemaError::MissingOptionEvidence`] naming the dimension
+    /// with no evidence record.
+    #[allow(clippy::too_many_arguments)]
+    pub fn from_lists(
+        worlds: Vec<WorldId>,
+        environments: Vec<EnvironmentId>,
+        factions: Vec<ContentId>,
+        airframes: Vec<ContentId>,
+        loadouts: Vec<ContentId>,
+        pilots: Vec<ContentId>,
+        difficulty_tiers: Vec<DifficultyTier>,
+        victory_conditions: Vec<VictoryCondition>,
+        relations: Vec<DeclaredRelation>,
+        max_players: u8,
+        evidence: Vec<(ScenarioOptionDimension, OptionListEvidence)>,
+    ) -> Result<Self, ScenarioSchemaError> {
+        for dimension in ScenarioOptionDimension::ALL {
+            if !evidence.iter().any(|(named, _)| named == dimension) {
+                return Err(ScenarioSchemaError::MissingOptionEvidence {
+                    dimension: *dimension,
+                });
+            }
+        }
+        Ok(Self {
+            worlds,
+            environments,
+            factions,
+            airframes,
+            loadouts,
+            pilots,
+            difficulty_tiers,
+            victory_conditions,
+            relations,
+            max_players,
+            evidence,
+        })
+    }
+
+    /// The selectable worlds, as read.
+    #[must_use]
+    pub fn worlds(&self) -> &[WorldId] {
+        &self.worlds
+    }
+
+    /// The selectable environments, as read.
+    #[must_use]
+    pub fn environments(&self) -> &[EnvironmentId] {
+        &self.environments
+    }
+
+    /// The selectable factions, as read.
+    #[must_use]
+    pub fn factions(&self) -> &[ContentId] {
+        &self.factions
+    }
+
+    /// The selectable airframes, as read.
+    #[must_use]
+    pub fn airframes(&self) -> &[ContentId] {
+        &self.airframes
+    }
+
+    /// The selectable loadouts, as read.
+    #[must_use]
+    pub fn loadouts(&self) -> &[ContentId] {
+        &self.loadouts
+    }
+
+    /// The selectable pilots, as read.
+    #[must_use]
+    pub fn pilots(&self) -> &[ContentId] {
+        &self.pilots
+    }
+
+    /// The selectable difficulty steps, as read.
+    #[must_use]
+    pub fn difficulty_tiers(&self) -> &[DifficultyTier] {
+        &self.difficulty_tiers
+    }
+
+    /// The selectable victory conditions, as read.
+    #[must_use]
+    pub fn victory_conditions(&self) -> &[VictoryCondition] {
+        &self.victory_conditions
+    }
+
+    /// The declared directed relations, as read.
+    #[must_use]
+    pub fn relations(&self) -> &[DeclaredRelation] {
+        &self.relations
+    }
+
+    /// The declared seat ceiling.
+    #[must_use]
+    pub const fn max_players(&self) -> u8 {
+        self.max_players
+    }
+
+    /// The evidence class of one dimension.
+    #[must_use]
+    pub fn evidence(&self, dimension: ScenarioOptionDimension) -> Option<&OptionListEvidence> {
+        self.evidence
+            .iter()
+            .find(|(named, _)| *named == dimension)
+            .map(|(_, evidence)| evidence)
+    }
+
+    /// Every dimension's evidence, in [`ScenarioOptionDimension::ALL`] order.
+    #[must_use]
+    pub fn evidence_records(&self) -> Vec<(ScenarioOptionDimension, &OptionListEvidence)> {
+        ScenarioOptionDimension::ALL
+            .iter()
+            .filter_map(|dimension| {
+                self.evidence(*dimension)
+                    .map(|evidence| (*dimension, evidence))
+            })
+            .collect()
+    }
+
+    /// The dimensions whose evidence class is [`OptionListEvidence::Measured`].
+    #[must_use]
+    pub fn measured_dimensions(&self) -> Vec<ScenarioOptionDimension> {
+        self.evidence_records()
+            .into_iter()
+            .filter(|(_, evidence)| evidence.is_measured())
+            .map(|(dimension, _)| dimension)
+            .collect()
+    }
+
+    /// The dimensions no production reader measured.
+    #[must_use]
+    pub fn unmeasured_dimensions(&self) -> Vec<ScenarioOptionDimension> {
+        self.evidence_records()
+            .into_iter()
+            .filter(|(_, evidence)| evidence.is_unmeasured())
+            .map(|(dimension, _)| dimension)
+            .collect()
+    }
+
+    /// The lists that are empty and that [`ScenarioOptions::try_new`] refuses
+    /// an empty value for, named by the `what` the refusal carries.
+    ///
+    /// This is the diagnosis a caller prints before validating: it names every
+    /// axis the table has nothing to offer on, rather than the first one.
+    #[must_use]
+    pub fn empty_required_lists(&self) -> Vec<&'static str> {
+        let mut empty = Vec::new();
+        if self.worlds.is_empty() {
+            empty.push("worlds");
+        }
+        if self.environments.is_empty() {
+            empty.push("environments");
+        }
+        if self.factions.is_empty() {
+            empty.push("factions");
+        }
+        if self.airframes.is_empty() {
+            empty.push("airframes");
+        }
+        if self.loadouts.is_empty() {
+            empty.push("loadouts");
+        }
+        if self.pilots.is_empty() {
+            empty.push("pilots");
+        }
+        if self.difficulty_tiers.is_empty() || self.victory_conditions.is_empty() {
+            empty.push("difficulty tiers or victory conditions");
+        }
+        empty
+    }
+
+    /// Validates the assembled lists into a [`ScenarioOptions`].
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`ScenarioOptions::try_new`] refuses: an empty required list
+    /// ([`ScenarioSchemaError::EmptyOptionTable`] naming it), an id in the
+    /// wrong namespace, a duplicate entry, a tier or condition outside the
+    /// closed vocabulary, or a seat limit out of range.
+    pub fn validate(self) -> Result<ScenarioOptions, ScenarioSchemaError> {
+        ScenarioOptions::try_new(
+            self.worlds,
+            self.environments,
+            self.factions,
+            self.airframes,
+            self.loadouts,
+            self.pilots,
+            self.difficulty_tiers,
+            self.victory_conditions,
+            self.relations,
+            self.max_players,
+        )
+    }
+}
+
+/// Assembles the retail custom-scenario option table from the installation.
+///
+/// Every list is read from the stage that measured it and tagged with the
+/// evidence class of its entries:
+///
+/// * `worlds` — the F14-D.3 world rows of [`retail_baseline`], in canonical id
+///   order;
+/// * `factions` — the F14-D.5 faction rows;
+/// * `airframes` — the F14-D.6 airframe rows, whose `airframe/<root>` keys are
+///   the scene roots `cs_app::mission_start::airframe_entry` resolves a
+///   display name onto (the acceptance test cross-checks the two);
+/// * `difficulty_tiers` — the F32-D measured steps
+///   ([`DifficultyTier::measured_step`]); the designed extension tier is left
+///   out of the retail table;
+/// * `environments` — the ids `read_mission_weather` measured, supplied by the
+///   caller because that reader lives above this crate; an empty list is
+///   recorded [`OptionListEvidence::Unmeasured`];
+/// * `victory_conditions` and `max_players` — declared design, with the
+///   rationale each constant carries;
+/// * `loadouts`, `pilots` and `relations` — **unmeasured**: no production
+///   reader in this workspace locates those families in the installation, so
+///   the lists stay empty and [`ScenarioOptionTable::validate`] refuses the
+///   table naming them. They are recorded, never filled from the fixture.
+///
+/// # Errors
+///
+/// [`BaselineError`] when the installation cannot be read.
+pub fn retail_scenario_options(
+    install_root: &Path,
+    environments: Vec<EnvironmentId>,
+) -> Result<ScenarioOptionTable, BaselineError> {
+    let baseline = retail_baseline(install_root)?;
+    Ok(retail_scenario_options_from_baseline(
+        &baseline,
+        environments,
+    ))
+}
+
+/// The same assembly over an already-read [`Baseline`].
+///
+/// Splitting the expensive installation read from the pure assembly lets a
+/// caller that needs the baseline for another reason (the acceptance test that
+/// re-derives each measured list) read the installation once. The result is
+/// identical to [`retail_scenario_options`]: every list and every evidence
+/// class comes from the baseline and the caller's environments, and nothing
+/// here reads the installation again.
+#[must_use]
+pub fn retail_scenario_options_from_baseline(
+    baseline: &Baseline,
+    environments: Vec<EnvironmentId>,
+) -> ScenarioOptionTable {
+    let worlds = option_worlds(baseline);
+    let factions = option_ids(baseline, ContentKind::Faction);
+    let airframes = option_ids(baseline, ContentKind::Airframe);
+    let difficulty_tiers: Vec<DifficultyTier> = DifficultyTier::ALL
+        .iter()
+        .copied()
+        .filter(|tier| tier.measured_step().is_some())
+        .collect();
+    let victory_conditions = VictoryCondition::ALL.to_vec();
+    let environment_evidence = if environments.is_empty() {
+        OptionListEvidence::Unmeasured {
+            reason: "no environment id was measured; the producing weather reader \
+                     (cs_app::environment::retail::read_mission_weather) yielded none",
+            resolving_task: "the F19/F20 environment stages",
+        }
+    } else {
+        OptionListEvidence::Measured {
+            reader: ENVIRONMENT_OPTION_READER,
+        }
+    };
+    ScenarioOptionTable::from_lists(
+        worlds,
+        environments,
+        factions,
+        airframes,
+        Vec::new(),
+        Vec::new(),
+        difficulty_tiers,
+        victory_conditions,
+        Vec::new(),
+        MAX_SCENARIO_PLAYERS,
+        vec![
+            (
+                ScenarioOptionDimension::Worlds,
+                OptionListEvidence::Measured {
+                    reader: WORLD_OPTION_READER,
+                },
+            ),
+            (ScenarioOptionDimension::Environments, environment_evidence),
+            (
+                ScenarioOptionDimension::Factions,
+                OptionListEvidence::Measured {
+                    reader: FACTION_OPTION_READER,
+                },
+            ),
+            (
+                ScenarioOptionDimension::Airframes,
+                OptionListEvidence::Measured {
+                    reader: AIRFRAME_OPTION_READER,
+                },
+            ),
+            (
+                ScenarioOptionDimension::Loadouts,
+                OptionListEvidence::Unmeasured {
+                    reason: LOADOUT_UNMEASURED_REASON,
+                    resolving_task: "the F27 ammunition/ordnance loadout-identity measurement",
+                },
+            ),
+            (
+                ScenarioOptionDimension::Pilots,
+                OptionListEvidence::Unmeasured {
+                    reason: PILOT_UNMEASURED_REASON,
+                    resolving_task: "F33-D (the retail pilot-identity measurement)",
+                },
+            ),
+            (
+                ScenarioOptionDimension::DifficultyTiers,
+                OptionListEvidence::Measured {
+                    reader: DIFFICULTY_OPTION_READER,
+                },
+            ),
+            (
+                ScenarioOptionDimension::VictoryConditions,
+                OptionListEvidence::Designed {
+                    rationale: VICTORY_CONDITION_DESIGN_RATIONALE,
+                },
+            ),
+            (
+                ScenarioOptionDimension::Relations,
+                OptionListEvidence::Unmeasured {
+                    reason: RELATION_UNMEASURED_REASON,
+                    resolving_task: "F30-D (the original target/vocabulary measurement)",
+                },
+            ),
+            (
+                ScenarioOptionDimension::MaxPlayers,
+                OptionListEvidence::Designed {
+                    rationale: RETAIL_MAX_PLAYERS_DESIGN_RATIONALE,
+                },
+            ),
+        ],
+    )
+    .expect("retail_scenario_options_from_baseline names every option dimension")
+}
+
+/// The world rows of the baseline as option-table worlds.
+fn option_worlds(baseline: &Baseline) -> Vec<WorldId> {
+    baseline
+        .catalog
+        .elements()
+        .filter(|element| element.kind == ContentKind::World)
+        .filter_map(|element| WorldId::new(element.id.clone()).ok())
+        .collect()
+}
+
+/// The rows of one content kind as option-table ids, in canonical id order.
+fn option_ids(baseline: &Baseline, kind: ContentKind) -> Vec<ContentId> {
+    baseline
+        .catalog
+        .elements()
+        .filter(|element| element.kind == kind)
+        .map(|element| element.id.clone())
+        .collect()
 }
 
 // ------------------------------------------------------- synthetic fixture ---
