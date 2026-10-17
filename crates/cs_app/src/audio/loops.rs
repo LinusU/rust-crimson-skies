@@ -279,8 +279,16 @@ impl AudioSession {
         self.music.device_lost();
     }
 
-    /// The device returned: rebinds every loop whose emitter is still alive and
-    /// returns the music cue to restart, if any.
+    /// The device returned: rebinds every loop whose emitter is still alive,
+    /// re-issues the current music cue to the mixer's next pass, and returns
+    /// that cue, if any.
+    ///
+    /// The re-issue is queued as the director's own verdict
+    /// ([`MusicDirector::device_restored`]) so the **one** music mix pass plays
+    /// it — including the lazy decode a started verdict asks for — rather than a
+    /// second device path here (Rally #1552). The cue's identity is unchanged: a
+    /// mission keeps the same authored cue across the loss, and whether a
+    /// restore restarts it is that method's designed choice.
     pub fn device_restored(&mut self) -> Option<MusicCue> {
         if self.device_available {
             return None;
@@ -291,7 +299,10 @@ impl AudioSession {
             self.outcomes.push(outcome);
         }
         self.radio.device_restored();
-        self.music.device_restored().cloned()
+        if let Some(replay) = self.music.device_restored() {
+            self.music_events.push(replay);
+        }
+        self.music.current().cloned()
     }
 
     fn bind(&mut self, entity: Entity, binding: &AudioEmitterBinding) {

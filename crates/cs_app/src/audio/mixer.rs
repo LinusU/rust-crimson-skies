@@ -24,6 +24,8 @@
 //!   whole audio stack at once: the session forgets its loops, the mixer stops
 //!   its voices, the device closes — and no simulation state moves, so a
 //!   mission cannot stall on a missing output (F41 non-negotiable behavior 2).
+//!   A restore re-issues the cue that was current through the loss to the
+//!   mixer's next pass, so the music returns with the output (Rally #1552).
 //!
 //! The mixer never asks the device anything. That asymmetry is the whole
 //! contract: the device may refuse every command, and the session, the radio
@@ -343,12 +345,21 @@ pub fn device_lost(world: &mut World) {
     }
 }
 
-/// The device is back: re-open it and let the session re-bind every loop it
-/// remembered, returning the music cue to restart if one was current.
+/// The device is back: re-open it, let the session re-bind every loop it
+/// remembered, and re-issue the current music cue to the mixer's next pass,
+/// returning that cue if one was current.
 ///
-/// The returned cue is the caller's to re-issue: the director keeps it current
-/// through a device loss, so a caller that cannot start music for a reason of
-/// its own can say so instead of having the audio stack guess.
+/// The music re-issue is the session's
+/// ([`AudioSession::device_restored`], Rally #1552): it queues the director's
+/// replay verdict, so the **one** music mix pass both decodes the track if it
+/// is not yet published and starts it on the music bus — the same path a
+/// mission's own state request takes. The returned cue is that same cue, for a
+/// caller that wants to name it; there is nothing left to re-issue here.
+///
+/// **Designed, not measured:** restarting the current cue after an output
+/// device returns is this build's choice; the original's behavior is
+/// unmeasured (see
+/// [`MusicDirector::device_restored`](cs_sim::audio_events::MusicDirector::device_restored)).
 ///
 /// # Errors
 ///

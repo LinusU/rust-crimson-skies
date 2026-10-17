@@ -2906,10 +2906,32 @@ impl MusicDirector {
         self.device_available = false;
     }
 
-    /// Device back: returns the current cue to restart, if any.
-    pub fn device_restored(&mut self) -> Option<&MusicCue> {
+    /// The device is back: returns the verdict that re-issues the current cue
+    /// to the mixer, if one was current, and marks the output available again.
+    ///
+    /// The cue itself is unchanged and still current ([`Self::current`]): the
+    /// mission sees the same state across the loss. The returned
+    /// [`MusicOutcome::Started`] exists because the mixer's music voice was
+    /// stopped by the loss (Rally #1552), so from the mixer's side music begins
+    /// with nothing before it and the audibly-sounding track is the same cue
+    /// restarted.
+    ///
+    /// # Designed, not measured
+    ///
+    /// Nothing states how the original reacts to an output device returning
+    /// mid-mission — restart, resume at an offset, crossfade back or stay
+    /// silent. This build restarts the current cue from its beginning on the
+    /// music bus rather than leaving the mission silent until a state request
+    /// arrives; the restart point, the hard cut and the absence of a fade are
+    /// this build's designed choice (F41 non-negotiable behavior 4 keeps the
+    /// authored cue, not a random substitute).
+    pub fn device_restored(&mut self) -> Option<MusicOutcome> {
         self.device_available = true;
-        self.current.as_ref()
+        let audible = self.device_available;
+        self.current.as_ref().map(|cue| MusicOutcome::Started {
+            to: cue.asset.clone(),
+            audible,
+        })
     }
 }
 
