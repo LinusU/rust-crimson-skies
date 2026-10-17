@@ -31,6 +31,11 @@
 //!   synthetic/private/regression separation, the per-container truncation
 //!   oracle and the known-container manifest — and audits that no private
 //!   bytes are tracked in the repo.
+//! * [`test_layout`] requires a crate that sets `autotests = false` to reach
+//!   every `.rs` file under its `tests/` directory through `mod` declarations
+//!   from its single `[[test]]` target, so a file cargo would silently stop
+//!   compiling and running is a loud failure that names it and the `main.rs`
+//!   to declare it in (task #1542).
 //! * [`transient`] retries a read or spawn that loses its file for the
 //!   moment a writer is replacing it — the `NotFound` a concurrent cargo on
 //!   the same target directory can put under a check (task #610).
@@ -40,7 +45,7 @@
 //!   `refs/heads/main` — the stale-`branch.<name>.merge` rewrite that pushed
 //!   a task branch to main on 2026-10-09 (task #1170).
 //!
-//! The `cs_xtask` binary exposes `test-select`, `verify-ci`,
+//! The `cs_xtask` binary exposes `test-select`, `test-layout`, `verify-ci`,
 //! `verify-bootstrap`, `verify-ci-budget`, `report-test-disk`,
 //! `verify-target-dir`, `verify-package`, `corpus` and `push-guard`;
 //! coverage commands arrive with later tooling tasks.
@@ -54,5 +59,6 @@ pub mod package;
 pub mod pins;
 pub mod push_guard;
 pub mod target_dir;
+pub mod test_layout;
 pub mod test_select;
 pub mod transient;

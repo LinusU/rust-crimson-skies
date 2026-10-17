@@ -51,6 +51,7 @@ use cs_xtask::footprint;
 use cs_xtask::package;
 use cs_xtask::push_guard;
 use cs_xtask::target_dir;
+use cs_xtask::test_layout;
 use cs_xtask::test_select;
 use cs_xtask::transient;
 
@@ -72,6 +73,13 @@ COMMANDS
         Run `cargo test --workspace --locked -- <prefix> --include-ignored`,
         require that it selects at least one test and that none fail, then
         re-run every discovered test alone with `--exact`.
+    test-layout [--workspace-root <dir>]
+        Check the one-integration-test-binary-per-crate convention (task
+        #1542): every member with `autotests = false` declares exactly one
+        `[[test]]` target, and every `.rs` file under its `tests/` directory
+        is reached from that target through `mod` declarations. A file cargo
+        would silently stop compiling and running is reported with its
+        `main.rs`; members that have not migrated are left alone.
     verify-ci [--workspace-root <dir>]
         Check that .github/workflows/ci.yml still runs cargo fmt, cargo
         clippy with -D warnings and the workspace test suite.
@@ -173,6 +181,7 @@ fn main() -> ExitCode {
             ExitCode::from(EXIT_OK)
         }
         "test-select" => run_test_select(&args[1..]),
+        "test-layout" => run_test_layout(&args[1..]),
         "verify-ci" => run_verify_ci(&args[1..]),
         "verify-bootstrap" => run_verify_bootstrap(&args[1..]),
         "verify-ci-budget" => run_verify_ci_budget(&args[1..]),
@@ -311,6 +320,63 @@ fn run_test_select(args: &[String]) -> ExitCode {
                 report.exact_verified
             );
             ExitCode::from(EXIT_OK)
+        }
+        Err(error) => gate_failed(&error.to_string()),
+    }
+}
+
+/// Runs the one-integration-test-binary-per-crate layout guard (task #1542):
+/// every member with `autotests = false` must reach each `.rs` file under its
+/// `tests/` directory from its single `[[test]]` target.
+fn run_test_layout(args: &[String]) -> ExitCode {
+    let options = match parse_options(args, false, false, false, false) {
+        Ok(options) => options,
+        Err(error) => return usage_error(&error),
+    };
+    if let Err(error) = require_workspace(&options.workspace_root) {
+        return gate_failed(&error);
+    }
+
+    match test_layout::check_workspace(&options.workspace_root) {
+        Ok(report) => {
+            let sources: usize = report
+                .migrated
+                .iter()
+                .map(|crate_layout| crate_layout.reachable.len())
+                .sum();
+            println!(
+                "test-layout: {} member(s) checked, {} migrated to one test binary, {} test \
+                 source(s) reached through `mod` declarations",
+                report.members,
+                report.migrated.len(),
+                sources
+            );
+            for migrated in &report.migrated {
+                println!(
+                    "test-layout: {} links one test binary from {} ({} source(s) reached)",
+                    migrated.member,
+                    migrated.main,
+                    migrated.reachable.len()
+                );
+            }
+            for member in &report.unchecked {
+                println!(
+                    "test-layout: unchecked member {member:?} is not a literal path, so the \
+                     guard cannot know which crates it holds"
+                );
+            }
+            if report.is_clean() {
+                println!("test-layout: no `.rs` file under a migrated crate's tests/ is unreached");
+                ExitCode::from(EXIT_OK)
+            } else {
+                for line in report.lines() {
+                    eprintln!("cs-xtask: {line}");
+                }
+                gate_failed(&format!(
+                    "the test layout has {} finding(s)",
+                    report.findings.len()
+                ))
+            }
         }
         Err(error) => gate_failed(&error.to_string()),
     }
