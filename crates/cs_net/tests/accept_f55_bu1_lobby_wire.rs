@@ -10,7 +10,7 @@
 
 use std::collections::BTreeSet;
 use std::net::{Ipv4Addr, SocketAddr};
-use std::sync::{Mutex, MutexGuard};
+use std::sync::MutexGuard;
 use std::time::Duration;
 
 use cs_net::codec::{
@@ -33,8 +33,6 @@ const STEP: Duration = Duration::from_millis(16);
 const WINDOW: ConnectWindow = ConnectWindow::new(120);
 const ROUNDS: usize = 4_000;
 const ATTEMPTS: usize = 24;
-
-static LOOPBACK: Mutex<()> = Mutex::new(());
 
 struct AcceptAll;
 
@@ -113,9 +111,7 @@ impl Wire {
     }
 
     fn try_joined() -> Option<Self> {
-        let guard = LOOPBACK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        let guard = crate::support::loopback::lock();
         let bind = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
         let host = ServerSession::bind(
             SYNTHETIC_SESSION,
@@ -564,9 +560,7 @@ fn accept_f55_bu1_every_lobby_event_round_trips_through_its_codec() {
 #[test]
 fn accept_f55_bu1_a_client_cannot_send_before_the_session_grants_it() {
     let bind = SocketAddr::from((Ipv4Addr::LOCALHOST, 0));
-    let _guard = LOOPBACK
-        .lock()
-        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    let _guard = crate::support::loopback::lock();
     let host = ServerSession::bind(
         SYNTHETIC_SESSION,
         synthetic_parameters(),

@@ -14,6 +14,7 @@ mod accept_f54_c_lifecycle;
 mod accept_f54_x10_loopback_loss;
 mod accept_f55_a_lobby_protocol;
 mod accept_f55_b_host_validation;
+mod accept_f55_bu1_lobby_wire;
 mod accept_f55_c_join_refusals;
 mod accept_f56_a_rules;
 mod accept_f56_b_rules;
