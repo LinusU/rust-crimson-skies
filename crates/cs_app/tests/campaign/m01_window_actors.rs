@@ -9,7 +9,7 @@ use cs_app::mission_actors::{MissionZeppelinActor, ScriptedAircraftActor};
 use cs_app::mission_launch::plan_mission_launch;
 use cs_app::mission_session::{ActorVisualDrawn, build_headless, stage_for, teardown};
 
-use crate::common::label;
+use crate::campaign::common::label;
 
 fn game_dir() -> PathBuf {
     PathBuf::from(std::env::var("CS_GAME_DIR").unwrap_or_else(|_| {
