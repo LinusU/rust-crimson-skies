@@ -145,7 +145,7 @@ fn evidence_report_m01_owner_smoke_writes_the_acceptance_report() {
         "{{\n \"schema_version\": 1,\n \"task_id\": \"M01-OWNER-SMOKE\",\n \"candidate_tree\": {},\n \
          \"engine\": {},\n \"created_at\": {},\n \"command\": {{\"argv\": {}, \"cwd\": {}, \
          \"exit_code\": {}}},\n \"source\": {{\"install_sha256\": {}, \"content_sha256\": {}}},\n \
-         \"seed\": 0,\n \"ticks\": {{\"start\": 0, \"end\": {ticks_end}}},\n \"overrides\": [{}],\n \
+         \"seed\": 0,\n \"ticks\": {{\"start\": 0, \"end\": {ticks_end}}},\n \"overrides\": {},\n \
          \"capabilities\": [\"retail\", \"gpu\", \"audio\"],\n \"tests\": {{\"discovered\": {}, \
          \"executed\": {}, \"passed\": {}, \"failed\": {}, \"ignored\": {}}},\n \"assertions\": \
          [{}],\n \"artifacts\": [{}],\n \"unknowns\": [],\n \"review\": {{\"identity\": {}, \
@@ -160,11 +160,9 @@ fn evidence_report_m01_owner_smoke_writes_the_acceptance_report() {
         jstr(&content_sha256),
         str_array(&[
             "the mission smoke's manual 1/60 s clock".to_owned(),
-            format!(
-                "the mission smoke's test placements of the production player body ({} of them, \
-                 listed in report.json)",
-                smoke.matches("\"placements\"").count()
-            ),
+            "the mission smoke's test placements of the production player body (each one listed \
+             in report.json under `placements`)"
+                .to_owned(),
         ]),
         suite.discovered,
         suite.executed,
