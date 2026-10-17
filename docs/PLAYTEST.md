@@ -438,3 +438,61 @@ damage authority and its score ledger. M01's own actors are another task's
 (M01-PLAY-ACTORS, #1435; the score admission is VS-M01-SCORE-ADMIT, #1426);
 with none bound, the guns fire, the rockets refuse by name and nothing
 resolves — the honest state, reported, not papered over.
+
+### The owner-command smoke (#1535 `M01-OWNER-SMOKE`)
+
+```sh
+cargo build --release --locked -p cs_app --bin cs
+CS_CAPABILITIES=retail,gpu,audio \
+CS_ENGINE_IMAGE=/path/to/crimson.decrypted.exe \
+target/release/cs --cs-path /path/to/retail --mission M01 \
+  --smoke-seconds 45 --capture-dir private/evidence/M01-OWNER-SMOKE
+```
+
+`--smoke-seconds` and `--capture-dir` also belong to `--mission`: the run then
+drives **the same windowed composition the owner plays** — same launch, same
+input path, same renderer, same mission host — as a scripted smoke in the
+style of the playtest one. `--smoke-seconds` must be at least 45 (the script's
+own budget) and the capture directory defaults to `private/mission-smoke`.
+Every frame is exactly 1/60 s of simulated time. **A scripted run is never
+`human_play`,** and nothing it measures is `verified_original`.
+
+What the script does, in order: it probes the **world** (hiding the horizon,
+the weather, the precipitation, the player and the UI so the frame's off-clear
+pixels are the terrain's own), probes the **sea** differentially (one frame
+with it, one without, with the session paused so nothing moves between them),
+**places the player near every spawned actor** in turn (a test placement, the
+same way `CS_MISSION_START_M` overrides a capture's start — the F24 law
+re-seeds from the body every fixed tick, so the write is the pose the next tick
+flies) and counts each actor's own pixels, **flies into the proximity trigger**
+of the declared-hostile cargo zeppelin so an objective wakes, checks the
+**objective widget** against the read model and its own UI region, **holds
+`Space` for a second** and counts the rounds the weapon session accepted and
+the meshes they carry, then **taps `Left Ctrl`** beside the hostile and looks
+for the rocket.
+
+It writes real window framebuffer PNGs (`frame_*.png`) and `report.json`, and
+exits **non-zero when any check fails**:
+
+| check | fails when |
+| --- | --- |
+| `world_terrain_drawn` | the frame holds no world pixels off the clear colour |
+| `world_terrain_textured` | under 20 per mille of the world's pixels differ from a neighbour (local detail a texture has and a fog gradient does not), or under 24 distinct colours |
+| `world_terrain_lit` | the near field — the frame's bottom third, where fog is negligible — spans under 24 luminance levels (the measured flat grey spans 1); the whole-frame spread is fog, not shading |
+| `world_sea_visible` | the world's records declare water but the sea covers under 1 per mille (skipped by name when they do not) |
+| `hud_objective_current` | no objective woke during the run |
+| `hud_objective_matches` | the drawn line differs from the read model's, or its own region holds under 64 text pixels |
+| `actors_project_and_cover` | any spawned actor is off screen or covers under 8 pixels from its placement (each member with no drawn entity at all is named in the report) |
+| `weapon_guns_fire` | the held second sent under two rounds through the mission's weapon session |
+| `weapon_rounds_drawn` | a live round entity carries no mesh — a shot the player cannot see |
+| `weapon_rocket_launches` | `Left Ctrl` beside a declared-hostile actor launched no rocket |
+| `audio_radio_queued` | no radio line ever reached the queue or the mixer |
+| `audio_engine_queued` | the engine loop was never bound and running |
+| `smoke_shots_delivered` | a requested screenshot never arrived |
+
+The floors are designed and documented next to the constants
+(`crates/cs_app/src/mission_session/smoke.rs`); the run's own measurements
+land in `report.json` beside them. The windowed test is ignored in CI:
+`cargo test -p cs_app --locked --test accept_m01_owner_smoke -- --include-ignored`.
+Its acceptance and the owner's ruling of 2026-10-17 are in
+`docs/findings/2026-10-17-m01-owner-smoke.md`.
