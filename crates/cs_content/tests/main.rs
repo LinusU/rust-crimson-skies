@@ -1,0 +1,139 @@
+//! `cs_content`'s single integration-test binary (task #1556).
+//!
+//! Every former `tests/*.rs` target is a module here, so `cargo test` links and
+//! runs one executable instead of one per file. Test prefixes still select the
+//! same tests because libtest's filter is a substring match. The `*_support`
+//! directories stay what they were: helpers that the test files that need them
+//! pull in with `#[path]`.
+//!
+//! `cs_xtask test-layout` fails when a `.rs` file under this directory is not
+//! reached through these `mod` declarations.
+
+mod accept_doclib_conflict;
+mod accept_f14_a_catalog_readiness;
+mod accept_f14_b_dependency_closure;
+mod accept_f14_b_normalization;
+mod accept_f14_d_10_image_collection;
+mod accept_f14_d_2_multiplayer_rules;
+mod accept_f14_d_3_world_collection;
+mod accept_f14_d_4_geometry_collections;
+mod accept_f14_d_5_faction_and_paint_mask;
+mod accept_f14_d_6_airframe_collection;
+mod accept_f14_d_7_sound_cues;
+mod accept_f14_d_8_engine_gun_collections;
+mod accept_f14_d_8_stunt_scrapbook_collections;
+mod accept_f14_d_9_material_collection;
+mod accept_f14_d_9_mission_only_airframes;
+mod accept_f14_d_baseline;
+mod accept_f14_d_video_chapter;
+mod accept_f14_d_video_collection;
+mod accept_f14_d_video_layout;
+mod accept_f16_a_source_adapters;
+mod accept_f16_d_unit_calibration;
+mod accept_f16_e_original_unit_calibration_landmarks;
+mod accept_f20_a_animation_clip;
+mod accept_f20_b_declared_track_fixtures;
+mod accept_f22_h_original_control_vocabulary;
+mod accept_f22_j_original_default_bindings;
+mod accept_f24_a_flight_tuning_schema;
+mod accept_f24_c_flight_profiles;
+mod accept_f25_a_forced_launch;
+mod accept_f27_a_weapon_schema;
+mod accept_f27_c_interaction_rule_deferral;
+mod accept_f27_d_ammo_audit;
+mod accept_f27_d_retail_ammo_catalogue;
+mod accept_f27_e_1_measured_binding;
+mod accept_f27_e_1_retail_measurability;
+mod accept_f27_e_original_ammunition_catalogue;
+mod accept_f28_a_ordnance_schema;
+mod accept_f28_d_ordnance_audit;
+mod accept_f28_d_retail_ordnance_catalogue;
+mod accept_f29_a_damage_schema;
+mod accept_f29_d1_airframe_damage_vocabulary;
+mod accept_f30_a_target_rules;
+mod accept_f30_b_target_actions;
+mod accept_f30_d_original_target_vocabulary;
+mod accept_f31_a_route_graph;
+mod accept_f31_c_route_resolution;
+mod accept_f35_a_capital_schema;
+mod accept_f35_b_capital_schema;
+mod accept_f36_a_interaction_schema;
+mod accept_f39_d_count_bare_directive;
+mod accept_f39_e1_dormant_reveal_declarations;
+mod accept_f40_d2_cinematic_triggers;
+mod accept_f41_a_audio_catalog;
+mod accept_f44_a_budget_bounds;
+mod accept_f44_d_retail_construction_surface;
+mod accept_f476_mode_catalog_rules;
+mod accept_f47_d2_scrapbook_objective;
+mod accept_f47_d_scrapbook_audit;
+mod accept_f47_e_declared_catalog;
+mod accept_f48_a_save_schema;
+mod accept_f48_b_atomic_persistence;
+mod accept_f48_d_crash_recovery_matrix;
+mod accept_f53_d_mod_isolation;
+mod accept_f56_a_catalog;
+mod accept_f56_b_objectives;
+mod accept_f56_c_maps;
+mod accept_f59_a_replay_schema;
+mod accept_f64_a_legacy_import_plan;
+mod accept_f64_b_blueprint_import;
+mod accept_f64_b_retail_import_surface;
+mod accept_flight_original_retail;
+mod accept_t442_shared_damage_key;
+mod accept_t548_retail_blast;
+mod accept_t574_zeppelin_carrier;
+mod accept_t582_legacy_custom_aircraft_census;
+mod accept_test_bin_rest_content;
+mod evidence_report_f10_c_02;
+mod evidence_report_f14_d;
+mod evidence_report_f14_d_10;
+mod evidence_report_f14_d_10_image;
+mod evidence_report_f14_d_2;
+mod evidence_report_f14_d_3;
+mod evidence_report_f14_d_4;
+mod evidence_report_f14_d_5;
+mod evidence_report_f14_d_6;
+mod evidence_report_f14_d_7;
+mod evidence_report_f14_d_8;
+mod evidence_report_f14_d_9;
+mod evidence_report_f14_d_9_mission_only;
+mod evidence_report_f14_d_video;
+mod evidence_report_f14_d_video_chapter;
+mod evidence_report_f14_d_video_layout;
+mod evidence_report_f22_h;
+mod evidence_report_f22_j;
+mod evidence_report_f27_d;
+mod evidence_report_f27_e;
+mod evidence_report_f27_e_1;
+mod evidence_report_f28_d;
+mod evidence_report_f29_d1;
+mod evidence_report_f30_d;
+mod evidence_report_f40_d2;
+mod evidence_report_f44_d;
+mod evidence_report_f47_c2;
+mod evidence_report_f47_d;
+mod evidence_report_f47_d2;
+mod evidence_report_f56_a;
+mod evidence_report_f56_b;
+mod evidence_report_f56_c;
+mod evidence_report_f64_b;
+mod evidence_report_flight_original;
+mod evidence_report_t548;
+mod evidence_report_t574;
+mod evidence_report_t582;
+mod evidence_report_t584;
+mod evidence_report_t593;
+mod livery_airframes;
+mod scene;
+
+// Helpers shared by the retail tests and their evidence reports.
+mod f22_h_support;
+mod f22_j_support;
+mod f27_d_support;
+mod f27_e_1_support;
+mod f28_d_support;
+mod f30_d_support;
+mod f44_d_support;
+mod f64_b_support;
+mod t582_support;
