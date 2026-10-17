@@ -261,6 +261,40 @@ fn accept_test_bin_guard_finds_every_unreached_test_source() {
     );
 }
 
+/// `#[path]` on a file module declared by a plain (non-`mod.rs`) file is
+/// relative to that file's own directory, as rustc resolves it — not to the
+/// `<dir>/<file stem>` directory its inline blocks use. `cs_app`'s
+/// `tests/accept_f29_c_damage_consumers.rs` shares `tests/damage/*.rs` this way
+/// (task #1543).
+#[test]
+fn accept_test_bin_guard_resolves_path_attributes_beside_a_plain_file() {
+    let root = fixture(
+        "path-beside-plain-file",
+        "crates/migrated",
+        MIGRATED,
+        &[
+            ("tests/main.rs", "mod consumer;\n"),
+            (
+                "tests/consumer.rs",
+                "#[path = \"shared/helper.rs\"]\nmod helper;\n",
+            ),
+            ("tests/shared/helper.rs", "// reached through #[path]\n"),
+            (
+                "tests/consumer/shared/helper.rs",
+                "// rustc never looks here\n",
+            ),
+        ],
+    );
+
+    let report = test_layout::check_workspace(&root).expect("the fixture must be readable");
+    assert_eq!(
+        stray_files(&report),
+        vec!["crates/migrated/tests/consumer/shared/helper.rs".to_string()],
+        "only the file rustc never reaches is stray, got {:?}",
+        report.findings
+    );
+}
+
 /// A member that has not migrated keeps its one-binary-per-file layout and is
 /// left alone: auto-discovered files are each their own target, not strays.
 #[test]

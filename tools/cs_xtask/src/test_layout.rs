@@ -381,7 +381,11 @@ pub fn declared_modules(source: &str, file: &Path, crate_root: bool) -> Vec<Path
                 };
                 match tokens.get(index + 2) {
                     Some(Token::Punct(';')) => {
+                        // rustc resolves `#[path]` on a file module against
+                        // the directory of the file that declares it, and only
+                        // inside an inline block against that block's directory.
                         found.push(match pending_path.take() {
+                            Some(relative) if inline.is_empty() => base.join(relative),
                             Some(relative) => scope.join(relative),
                             None => resolve_module(&scope, name),
                         });
