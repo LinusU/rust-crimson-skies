@@ -59,7 +59,7 @@ use bevy::input::keyboard::KeyCode;
 use bevy::input::{ButtonInput, InputSystems};
 use bevy::prelude::{
     App, AppExit, ChildOf, ClearColor, Commands, Entity, GlobalTransform, IntoScheduleConfigs,
-    Last, Local, Mesh3d, MessageWriter, On, Plugin, PostUpdate, PreUpdate, Quat, Query, Res,
+    Last, Mesh3d, MessageWriter, On, Plugin, PostUpdate, PreUpdate, Quat, Query, Res,
     ResMut, Resource, Text, Transform, Update, Vec2, Vec3, Visibility, With,
 };
 use bevy::render::render_resource::TextureFormat;
@@ -1032,7 +1032,6 @@ fn apply_placement(
 #[allow(clippy::too_many_arguments)]
 fn apply_probe(
     mode: Res<ProbeState>,
-    mut last: Local<ProbeMode>,
     mut visibility: Query<&mut Visibility>,
     domes: Query<Entity, With<HorizonDome>>,
     seas: Query<Entity, With<HorizonSea>>,
@@ -1045,10 +1044,6 @@ fn apply_probe(
     ui: Query<Entity, With<Node>>,
 ) {
     let mode = mode.0;
-    if *last != mode {
-        *last = mode;
-        println!("mission smoke probe: {mode:?}");
-    }
     let hidden = Visibility::Hidden;
     let shown = Visibility::Inherited;
     let anything_hidden = mode != ProbeMode::Restored;
