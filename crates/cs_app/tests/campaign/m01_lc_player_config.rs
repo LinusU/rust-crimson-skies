@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 
-use crate::common::label;
+use crate::campaign::common::label;
 use avian3d::prelude::Position;
 use bevy::prelude::With;
 use cs_app::mission_launch::plan_mission_launch;
