@@ -168,13 +168,14 @@ back:
 ## Test selection and sensitivity
 
 `cargo test --workspace --locked -- accept_f45_c_ --include-ignored`
-discovers and runs **24** tests in the `ui` target, all passing: the 11
-`accept_f45_c_*` of F45-C (unchanged), the 6 `accept_f45_c_1_*` of F45-C.1, the
-4 new `accept_f45_c_2_*` ones and the 3 `accept_f45_c_3_*` of F45-C.3. The
-F45-C.2 prefix is selected by the same filter, so the parent stage's selection
-still means what it did; the sibling stages' counts were added when this branch
-was rebased onto the commits that landed F45-C.1 and F45-C.3, and the count
-grows again as later `F45-C.N` stages land.
+discovers and runs the 4 new `accept_f45_c_2_*` tests below, all passing, plus
+every sibling `F45-C.N` stage's tests, which the same prefix also selects:
+**25** tests in the `ui` target at the reviewed commit (11 `accept_f45_c_*` of
+F45-C, 6 `accept_f45_c_1_*`, 4 F45-C.2, 3 `accept_f45_c_3_*` and 1
+`accept_f45_c_4_*`), 0 failed. The F45-C.2 prefix is selected by the same
+filter, so the parent stage's selection still means what it did; the sibling
+total grows every time a later `F45-C.N` stage lands, so only the 4
+`accept_f45_c_2_*` tests are this stage's.
 
 - `accept_f45_c_2_the_committed_wingmate_and_ammunition_reach_the_session_roster`
   — the stage's minimum scenario: the committed `wingmate` airframe is the
