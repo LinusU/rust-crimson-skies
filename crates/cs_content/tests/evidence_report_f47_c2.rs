@@ -461,10 +461,13 @@ fn read_header_members(
 /// report then names the review that actually happened.
 fn review_identity() -> String {
     let recorded = String::from(
-        "implementer: Devin SWE-2 (Rally #773 implement claim, submitted at the pushed SHA); \
-         reviewer: pending — no review has happened yet, so this report names only the \
-         implementer. `checked` is the ceiling for an agent review; `retail` here means read \
-         access to the owner's installation and never a run of the original executable",
+        "implementer: Devin SWE-2 (Rally #773 implement claim, session of 2026-10-17, submitted \
+         at e272a39); reviewer: Devin SWE-2/swe2-max-1 (Rally #773 review claim, session of \
+         2026-10-17), a different agent instance in a separate session with a fresh context — \
+         the same model family, so not independent original-reference evidence. `checked` is \
+         the ceiling for an agent review; `retail` here means read access to the owner's \
+         installation and never a run of the original executable. No agent review replaces \
+         the owner's human approval",
     );
     std::env::var("CS_EVIDENCE_REVIEW").unwrap_or(recorded)
 }
