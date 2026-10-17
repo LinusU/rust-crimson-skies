@@ -6,6 +6,21 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 
+# One integration-test binary per crate (task #1557, convention from #1542).
+# `autotests = false` turns component auto-discovery off, so cargo links and
+# runs exactly the one `[[test]]` target below: on the owner's laptop every
+# freshly linked test binary waits ~50-70 s for a macOS XProtect scan on its
+# first launch, and 65 separate test targets cost 65 of those. Every former
+# test file and the former `tests/ai/` directory target is a `mod` of
+# `tests/main.rs`; `cs_xtask test-layout` (and its acceptance test, which
+# CI's `cargo test --workspace` runs) fails when a `.rs` file under `tests/`
+# is not reached from that one target.
+autotests = false
+
+[[test]]
+name = "cs_sim_tests"
+path = "tests/main.rs"
+
 [dependencies]
 cs_script.workspace = true
 cs_types.workspace = true
