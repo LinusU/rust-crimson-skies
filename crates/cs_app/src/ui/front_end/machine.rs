@@ -142,6 +142,15 @@ pub struct LoadFailure {
     pub reason: String,
 }
 
+/// Which way a scrapbook page action turns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PageMove {
+    /// On to the next page.
+    Next,
+    /// Back to the previous page.
+    Prev,
+}
+
 /// A domain transaction a transition asks for.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Request {
@@ -157,6 +166,14 @@ pub enum Request {
     ApplyOutcome(MissionOutcome),
     /// Abandon the running mission.
     AbandonMission,
+    /// Open the paged scrapbook on the selected profile's records.
+    OpenScrapbook,
+    /// Turn the scrapbook's page one step.
+    ScrapbookPage(PageMove),
+    /// Select the declared scrapbook entry.
+    ScrapbookSelect(ContentId),
+    /// Launch the selected entry's replay.
+    LaunchReplay,
 }
 
 /// What a transition does outside the machine.
@@ -222,6 +239,8 @@ pub enum Refusal {
     ConfirmationPending,
     /// No discard prompt is open.
     NoPendingDiscard,
+    /// Selecting needs a declared scrapbook entry and none was offered.
+    NoScrapbookChoice,
     /// The call belongs to another screen.
     WrongScreen {
         /// The screen it needs.
@@ -247,6 +266,7 @@ impl fmt::Display for Refusal {
             Self::NotAFailure => write!(f, "retry needs a failed mission"),
             Self::ConfirmationPending => write!(f, "a discard prompt is open"),
             Self::NoPendingDiscard => write!(f, "no discard prompt is open"),
+            Self::NoScrapbookChoice => f.write_str("no scrapbook entry has been offered to select"),
             Self::WrongScreen { expected, actual } => {
                 write!(f, "this belongs to {expected:?}, not {actual:?}")
             }
@@ -272,6 +292,7 @@ pub struct FrontEnd {
     outcome: Option<MissionOutcome>,
     pending_discard: Option<Action>,
     last_failure: Option<LoadFailure>,
+    scrapbook_choice: Option<ContentId>,
 }
 
 impl Default for FrontEnd {
@@ -295,6 +316,7 @@ impl FrontEnd {
             outcome: None,
             pending_discard: None,
             last_failure: None,
+            scrapbook_choice: None,
         };
         machine.reset_focus();
         machine
@@ -418,6 +440,28 @@ impl FrontEnd {
         self.expect(Screen::FlightCheck)?;
         self.loadout = loadout;
         Ok(())
+    }
+
+    /// Declares the scrapbook entry the next `SelectEntry` press selects —
+    /// the presentation's own input, like the construction draft: a button
+    /// cannot carry an id, so the entry the press refers to is declared first
+    /// and the action then asks the domain for the selection.
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal::WrongScreen`] off the scrapbook,
+    /// [`Refusal::ConfirmationPending`] while a prompt is open.
+    pub fn choose_scrapbook(&mut self, id: ContentId) -> Result<(), Refusal> {
+        self.expect(Screen::Scrapbook)?;
+        self.scrapbook_choice = Some(id);
+        Ok(())
+    }
+
+    /// The scrapbook entry the next `SelectEntry` selects, when one was
+    /// declared.
+    #[must_use]
+    pub fn scrapbook_choice(&self) -> Option<&ContentId> {
+        self.scrapbook_choice.as_ref()
     }
 
     fn expect(&self, screen: Screen) -> Result<(), Refusal> {
@@ -679,6 +723,27 @@ impl FrontEnd {
                 effects.push(Effect::Request(Request::ApplyOutcome(result)));
             }
             RequestKind::AbandonMission => effects.push(Effect::Request(Request::AbandonMission)),
+            RequestKind::OpenScrapbook => {
+                effects.push(Effect::Request(Request::OpenScrapbook));
+            }
+            RequestKind::ScrapbookPage => {
+                let step = match action {
+                    Action::NextPage => PageMove::Next,
+                    Action::PrevPage => PageMove::Prev,
+                    _ => unreachable!("the table wires only the page actions to ScrapbookPage"),
+                };
+                effects.push(Effect::Request(Request::ScrapbookPage(step)));
+            }
+            RequestKind::ScrapbookSelect => {
+                let id = self
+                    .scrapbook_choice
+                    .clone()
+                    .ok_or(Refusal::NoScrapbookChoice)?;
+                effects.push(Effect::Request(Request::ScrapbookSelect(id)));
+            }
+            RequestKind::LaunchReplay => {
+                effects.push(Effect::Request(Request::LaunchReplay));
+            }
         }
         // Every fallible step is behind us: from here the machine changes.
         if ended.is_some() {
@@ -701,6 +766,11 @@ impl FrontEnd {
         }
         if from == Screen::FlightCheck && to == Screen::Briefing {
             self.loadout = Loadout::default();
+        }
+        // Leaving the scrapbook drops the declared choice with it: the next
+        // opening declares its own.
+        if from == Screen::Scrapbook && to != Screen::Scrapbook {
+            self.scrapbook_choice = None;
         }
         let wanted = resources(to);
         effects.extend(self.held.difference(&wanted).map(|r| Effect::Release(*r)));

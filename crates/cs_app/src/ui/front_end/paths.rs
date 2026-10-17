@@ -80,6 +80,7 @@ fn refusal_code(refusal: &Refusal) -> &'static str {
         Refusal::NotAFailure => "not_a_failure",
         Refusal::ConfirmationPending => "confirmation_pending",
         Refusal::NoPendingDiscard => "no_pending_discard",
+        Refusal::NoScrapbookChoice => "no_scrapbook_choice",
         Refusal::WrongScreen { .. } => "wrong_screen",
         Refusal::NoProfileIntent => "no_profile_intent",
         Refusal::NoDraft => "no_draft",
@@ -101,6 +102,9 @@ pub struct NavigationInputs {
     /// The construction screen's open draft: without one, committing is
     /// refused (`no_draft`) and Back/Cancel never asks to discard.
     pub construction: Option<super::ConstructionDraft>,
+    /// The scrapbook entry the `SelectEntry` press selects: without one the
+    /// row is refused (`no_scrapbook_choice`).
+    pub scrapbook_choice: Option<cs_types::content::ContentId>,
 }
 
 /// One declared input the walk supplied before applying a screen's rows.
@@ -281,6 +285,10 @@ fn request_name(request: RequestKind) -> &'static str {
         RequestKind::CommitLoadout => "commit_loadout",
         RequestKind::ApplyOutcome => "apply_outcome",
         RequestKind::AbandonMission => "abandon_mission",
+        RequestKind::OpenScrapbook => "open_scrapbook",
+        RequestKind::ScrapbookPage => "scrapbook_page",
+        RequestKind::ScrapbookSelect => "scrapbook_select",
+        RequestKind::LaunchReplay => "launch_replay",
     }
 }
 
@@ -371,6 +379,16 @@ pub fn review_navigation_with(start: Screen, inputs: &NavigationInputs) -> PathR
                         supplied.push(SuppliedInput {
                             screen,
                             input: "construction_draft",
+                        });
+                    }
+                }
+                Screen::Scrapbook if state.scrapbook_choice().is_none() => {
+                    if let Some(id) = &inputs.scrapbook_choice
+                        && state.choose_scrapbook(id.clone()).is_ok()
+                    {
+                        supplied.push(SuppliedInput {
+                            screen,
+                            input: "scrapbook_choice",
                         });
                     }
                 }
@@ -474,13 +492,14 @@ pub fn review_navigation_with(start: Screen, inputs: &NavigationInputs) -> PathR
 /// Everything the table's guards read, as the identity of one explored state.
 fn signature(machine: &FrontEnd) -> String {
     format!(
-        "{:?}|{:?}|loadout_empty={}|draft={}|prompt={}|failure={}",
+        "{:?}|{:?}|loadout_empty={}|draft={}|prompt={}|failure={}|choice={}",
         machine.screen(),
         machine.outcome(),
         machine.loadout().is_empty(),
         machine.construction().is_some(),
         machine.pending_discard().is_some(),
         machine.last_failure().is_some(),
+        machine.scrapbook_choice().is_some(),
     )
 }
 

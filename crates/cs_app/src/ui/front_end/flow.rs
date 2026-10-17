@@ -89,6 +89,7 @@ use cs_content::construction::{
     AircraftBlueprint, ConstructionPolicy, ConstructionRules, PriceBook,
 };
 use cs_content::save::settings::SettingCatalog;
+use cs_content::scrapbook::ScrapbookCatalog;
 use cs_sim::allies::{
     AlliesRoster, BriefingError, BriefingPlan, GeometryId, IdentityError, WingmateSlot,
 };
@@ -107,11 +108,15 @@ use crate::loading::{
 };
 use crate::profile::{ProfileSession, SessionError, SessionOrigin, TeardownReport};
 use crate::roster::{LoweredRoster, open_roster};
+use crate::text::TextSession;
+use crate::ui::scrapbook::{
+    LaunchError, PageError, PersistError, Refresh, ReplayLaunch, ScrapbookUi, SelectError, stored,
+};
 
 use super::{
     Action, AudioScope, ConstructionDraft, Effect, FrontEnd, InputContext, Loadout, MissionOutcome,
-    Outcome, Plan, ProfileIntent, Refusal, Request, Resource, Screen, ScreenDeck, ScreenSession,
-    ScreenSessionError,
+    Outcome, PageMove, Plan, ProfileIntent, Refusal, Request, Resource, Screen, ScreenDeck,
+    ScreenSession, ScreenSessionError,
 };
 
 /// Everything a profile, a campaign run and the construction screen need in
@@ -156,6 +161,9 @@ pub struct FlowSetup {
     pub roster: Option<LoweredRoster>,
     /// The construction rules a commit is judged by, when supplied.
     pub construction: Option<ConstructionInputs>,
+    /// The scrapbook's declared catalog and page size, when the application
+    /// supplies them.
+    pub scrapbook: Option<ScrapbookInputs>,
 }
 
 /// The immutable inputs a construction commit is judged by — the same three
@@ -184,6 +192,35 @@ impl ConstructionInputs {
     }
 }
 
+/// The immutable inputs the scrapbook screen is driven by: the declared
+/// [`ScrapbookCatalog`] the pages project and the caller-declared page size
+/// [`ScrapbookUi`] slices them into (F47-C1). Titles are read through the
+/// running [`TextSession`] the application hands the flow — a runtime object,
+/// not a setup constant, because a locale switch must re-resolve them.
+#[derive(Clone, Debug)]
+pub struct ScrapbookInputs {
+    /// The catalog the screen's pages and launch are judged against.
+    pub catalog: ScrapbookCatalog,
+    /// How many entries a page holds.
+    pub page_size: usize,
+}
+
+impl ScrapbookInputs {
+    /// Declares the catalog and page size. The page bound is validated here
+    /// rather than when the screen first opens: `page_size` must be nonzero,
+    /// the same rule [`ScrapbookUi::new`] applies.
+    ///
+    /// # Errors
+    ///
+    /// [`PageError::ZeroPageSize`].
+    pub fn try_new(catalog: ScrapbookCatalog, page_size: usize) -> Result<Self, PageError> {
+        if page_size == 0 {
+            return Err(PageError::ZeroPageSize);
+        }
+        Ok(Self { catalog, page_size })
+    }
+}
+
 impl FlowSetup {
     /// A setup over `base`'s population playing `graph` under `run`. The
     /// remaining fields start at their designed defaults and are overridden
@@ -209,6 +246,7 @@ impl FlowSetup {
             roles: None,
             roster: None,
             construction: None,
+            scrapbook: None,
         }
     }
 
@@ -270,6 +308,15 @@ impl FlowSetup {
             policy,
             book,
         });
+        self
+    }
+
+    /// The scrapbook catalog and page size the screen runs on (F47-C1).
+    /// Without them `OpenScrapbook` is refused rather than guessing at a
+    /// catalog.
+    #[must_use]
+    pub fn scrapbook(mut self, inputs: ScrapbookInputs) -> Self {
+        self.scrapbook = Some(inputs);
         self
     }
 }
@@ -453,6 +500,9 @@ pub enum LoadError {
     NoCacheStore,
     /// A load is already running on the loading screen.
     AlreadyRunning,
+    /// A replay launch was asked for but the declared load target names no
+    /// world group for the replay to load under (F47-C1).
+    NoWorld,
     /// The producer's bounded step failed.
     Driver(DriverError),
     /// The transaction refused the lifecycle step.
@@ -466,6 +516,9 @@ impl fmt::Display for LoadError {
             Self::NoContentSession => f.write_str("no content session to read through"),
             Self::NoCacheStore => f.write_str("the private cache is not available"),
             Self::AlreadyRunning => f.write_str("a load is already running"),
+            Self::NoWorld => {
+                f.write_str("the declared load target names no world for the replay to load under")
+            }
             Self::Driver(error) => write!(f, "the load's bounded step failed: {error}"),
             Self::Transition(error) => write!(f, "the load refused that step: {error}"),
         }
@@ -515,6 +568,11 @@ pub struct LoadFlow {
     plan: Option<LoadPlan>,
     attempt: Option<LoadingSession>,
     attempts: u32,
+    /// The declared target a replay attempt displaced, restored when the
+    /// attempt ends (F47-C1): a replay loads under the declared world but
+    /// scopes its mission to the entry's link, and the next campaign launch
+    /// must not inherit that scope.
+    saved_target: Option<LoadTarget>,
 }
 
 impl LoadFlow {
@@ -586,6 +644,52 @@ impl LoadFlow {
         Ok(())
     }
 
+    /// The declared plan's target names a world a replay can load under —
+    /// the launch's own plan-before-press check, run before the machine
+    /// leaves the scrapbook (F47-C1).
+    ///
+    /// # Errors
+    ///
+    /// [`LoadError::NoPlan`] with no declared closure, [`LoadError::NoWorld`]
+    /// when its target is not world-scoped.
+    pub fn check_replay_target(&self) -> Result<(), LoadError> {
+        let plan = self.plan.as_ref().ok_or(LoadError::NoPlan)?;
+        if plan.target.world.is_none() {
+            return Err(LoadError::NoWorld);
+        }
+        Ok(())
+    }
+
+    /// Repoints the attempt's plan at the replay's scope under the declared
+    /// world group, remembering the declared target so [`Self::teardown`]
+    /// can restore it. A world-less declared target is left alone — the
+    /// caller's [`Self::check_replay_target`] is what makes that impossible
+    /// on the accepted path.
+    fn retarget(&mut self, replay: &ReplayLaunch) {
+        let Some(plan) = self.plan.as_mut() else {
+            return;
+        };
+        let Some(world) = plan.target.world.clone() else {
+            return;
+        };
+        self.saved_target = Some(plan.target.clone());
+        plan.target = replay.load_target(world);
+    }
+
+    /// The declared closure the next attempt runs, when one was supplied —
+    /// its target is the replay's own between a replay launch and that
+    /// attempt's teardown.
+    #[must_use]
+    pub fn plan(&self) -> Option<&LoadPlan> {
+        self.plan.as_ref()
+    }
+
+    /// What the running attempt is loading, when one is in flight.
+    #[must_use]
+    pub fn target(&self) -> Option<&LoadTarget> {
+        self.attempt.as_ref().map(LoadingSession::target)
+    }
+
     fn begin(&mut self) -> Result<(), LoadError> {
         self.check_begin()?;
         let plan = self.plan.as_ref().expect("checked just above");
@@ -629,10 +733,14 @@ impl LoadFlow {
     /// Tears the attempt down the way leaving the loading screen must: a
     /// still-live load is cancelled at its next chunk boundary and the
     /// private cache comes back for the next attempt. Safe to call twice —
-    /// the second call finds nothing to cancel.
+    /// the second call finds nothing to cancel. A replay's displaced target
+    /// is restored with it, so the declared plan is the next launch's again.
     fn teardown(&mut self) {
         if let Some(attempt) = self.attempt.take() {
             self.store = Some(attempt.close());
+        }
+        if let (Some(plan), Some(target)) = (self.plan.as_mut(), self.saved_target.take()) {
+            plan.target = target;
         }
     }
 }
@@ -725,6 +833,20 @@ pub enum FlowError {
     },
     /// The loading screen's load could not run.
     Load(LoadError),
+    /// The flow was given no scrapbook catalog to open the screen with
+    /// (F47-C1).
+    NoScrapbookCatalog,
+    /// The application never handed the flow a running text session, so no
+    /// title can resolve.
+    NoTextSession,
+    /// The scrapbook's page walk refused the move.
+    ScrapbookPage(PageError),
+    /// The scrapbook refused the declared entry.
+    ScrapbookSelect(SelectError),
+    /// The selected entry's replay could not launch.
+    ScrapbookLaunch(LaunchError),
+    /// The stored scrapbook would not answer when a read needed it.
+    ScrapbookStored(PersistError),
 }
 
 impl fmt::Display for FlowError {
@@ -771,6 +893,12 @@ impl fmt::Display for FlowError {
                 )
             }
             Self::Load(error) => write!(f, "load: {error}"),
+            Self::NoScrapbookCatalog => f.write_str("no scrapbook catalog was supplied"),
+            Self::NoTextSession => f.write_str("no text session is running"),
+            Self::ScrapbookPage(error) => write!(f, "{error}"),
+            Self::ScrapbookSelect(error) => write!(f, "{error}"),
+            Self::ScrapbookLaunch(error) => write!(f, "{error}"),
+            Self::ScrapbookStored(error) => write!(f, "{error}"),
         }
     }
 }
@@ -787,6 +915,10 @@ impl std::error::Error for FlowError {
             Self::Briefing(error) => Some(error),
             Self::WingmateAirframe { error } => Some(error),
             Self::Load(error) => Some(error),
+            Self::ScrapbookPage(error) => Some(error),
+            Self::ScrapbookSelect(error) => Some(error),
+            Self::ScrapbookLaunch(error) => Some(error),
+            Self::ScrapbookStored(error) => Some(error),
             _ => None,
         }
     }
@@ -879,10 +1011,32 @@ struct FlowDomain {
     mission_outcome: Option<MissionOutcomeRecord>,
     applied: Option<AppliedOutcome>,
     teardown: Option<TeardownReport>,
+    /// The one scrapbook screen (F47-C1): presentation state only, built from
+    /// the declared page size. `None` when the application supplied no
+    /// scrapbook catalog — opening is then refused.
+    scrapbook: Option<ScrapbookUi>,
+    /// The running text session the screen's titles resolve through (F51-C).
+    /// A runtime object, not a setup constant: a locale switch replaces it,
+    /// and the open screen re-refreshes so the new locale's titles show.
+    texts: Option<TextSession>,
+    /// The reason the screen shows after a refused scrapbook step — the
+    /// refusal's visible surface, never swallowed (F47-C1). `None` after the
+    /// last successful step.
+    scrapbook_reason: Option<String>,
+    /// What the screen's last refresh reported, for the AC03 check the
+    /// application makes after a locale switch.
+    scrapbook_refresh: Option<Refresh>,
+    /// The replay the last accepted `Launch` produced, consumed by the load
+    /// the machine then begins (F47-C1).
+    replay: Option<ReplayLaunch>,
 }
 
 impl FlowDomain {
     fn new(setup: FlowSetup) -> Self {
+        let scrapbook = setup.scrapbook.as_ref().map(|inputs| {
+            ScrapbookUi::new(inputs.page_size)
+                .expect("ScrapbookInputs::try_new validated the page size")
+        });
         Self {
             setup,
             profile: None,
@@ -897,6 +1051,11 @@ impl FlowDomain {
             mission_outcome: None,
             applied: None,
             teardown: None,
+            scrapbook,
+            texts: None,
+            scrapbook_reason: None,
+            scrapbook_refresh: None,
+            replay: None,
         }
     }
 
@@ -919,7 +1078,133 @@ impl FlowDomain {
             // progress" holds for an abort too, and the world release is the
             // resource effect the machine already emitted.
             Some(Request::AbandonMission) => Ok(()),
+            Some(Request::OpenScrapbook) => self.open_scrapbook(),
+            Some(Request::ScrapbookPage(step)) => self.page_scrapbook(*step),
+            Some(Request::ScrapbookSelect(id)) => self.select_scrapbook(id),
+            Some(Request::LaunchReplay) => self.launch_replay(),
         }
+    }
+
+    /// Opens or re-opens the screen: the stored records re-project through
+    /// the declared catalog and the running locale's titles.
+    ///
+    /// A stored scrapbook the profile will not answer is not a hard stop —
+    /// the screen opens with the refusal as its visible reason, the one the
+    /// task's refusal rule asks for, and the records it could not read are
+    /// nowhere but the reason.
+    ///
+    /// # Errors
+    ///
+    /// [`FlowError::NoScrapbookCatalog`] / [`FlowError::NoTextSession`] /
+    /// [`FlowError::NoProfileOpen`] — the wiring refusals, which leave the
+    /// machine where it was.
+    fn open_scrapbook(&mut self) -> Result<(), FlowError> {
+        let inputs = self
+            .setup
+            .scrapbook
+            .as_ref()
+            .ok_or(FlowError::NoScrapbookCatalog)?;
+        let texts = self.texts.as_ref().ok_or(FlowError::NoTextSession)?;
+        let profile = self.profile.as_ref().ok_or(FlowError::NoProfileOpen)?;
+        let ui = self
+            .scrapbook
+            .as_mut()
+            .expect("the screen is built from the declared inputs");
+        match ui.refresh_stored(&inputs.catalog, profile, texts) {
+            Ok(refresh) => {
+                self.scrapbook_reason = None;
+                self.scrapbook_refresh = Some(refresh);
+            }
+            Err(error) => {
+                self.scrapbook_reason = Some(error.to_string());
+                self.scrapbook_refresh = None;
+            }
+        }
+        Ok(())
+    }
+
+    fn page_scrapbook(&mut self, step: PageMove) -> Result<(), FlowError> {
+        let ui = self
+            .scrapbook
+            .as_mut()
+            .ok_or(FlowError::NoScrapbookCatalog)?;
+        let result = match step {
+            PageMove::Next => ui.next_page(),
+            PageMove::Prev => ui.prev_page(),
+        };
+        match result {
+            Ok(()) => {
+                self.scrapbook_reason = None;
+                Ok(())
+            }
+            Err(error) => {
+                self.scrapbook_reason = Some(error.to_string());
+                Err(FlowError::ScrapbookPage(error))
+            }
+        }
+    }
+
+    fn select_scrapbook(&mut self, id: &ContentId) -> Result<(), FlowError> {
+        let ui = self
+            .scrapbook
+            .as_mut()
+            .ok_or(FlowError::NoScrapbookCatalog)?;
+        match ui.select(id) {
+            Ok(()) => {
+                self.scrapbook_reason = None;
+                Ok(())
+            }
+            Err(error) => {
+                self.scrapbook_reason = Some(error.to_string());
+                Err(FlowError::ScrapbookSelect(error))
+            }
+        }
+    }
+
+    /// Turns the selection into the replay the loading screen then runs:
+    /// the load's `Request` is issued only after this stored it, and the
+    /// attempt's teardown restores the declared target (F47-C1).
+    fn launch_replay(&mut self) -> Result<(), FlowError> {
+        let inputs = self
+            .setup
+            .scrapbook
+            .as_ref()
+            .ok_or(FlowError::NoScrapbookCatalog)?;
+        let profile = self.profile.as_ref().ok_or(FlowError::NoProfileOpen)?;
+        let records = match stored(profile) {
+            Ok(records) => records,
+            Err(error) => {
+                self.scrapbook_reason = Some(error.to_string());
+                return Err(FlowError::ScrapbookStored(error));
+            }
+        };
+        let ui = self
+            .scrapbook
+            .as_ref()
+            .expect("the screen is built from the declared inputs");
+        match ui.launch(&inputs.catalog, &records) {
+            Ok(launch) => {
+                self.scrapbook_reason = None;
+                self.replay = Some(launch);
+                Ok(())
+            }
+            Err(error) => {
+                self.scrapbook_reason = Some(error.to_string());
+                Err(FlowError::ScrapbookLaunch(error))
+            }
+        }
+    }
+
+    /// What leaving the screen does — idempotent, like the screen's own
+    /// `close`. The reason and the last refresh go with it: the next opening
+    /// writes its own.
+    fn close_scrapbook(&mut self) {
+        if let Some(ui) = self.scrapbook.as_mut() {
+            ui.close();
+        }
+        self.scrapbook_reason = None;
+        self.scrapbook_refresh = None;
+        self.replay = None;
     }
 
     fn open_profile(&mut self, intent: ProfileIntent) -> Result<(), FlowError> {
@@ -980,6 +1265,8 @@ impl FlowDomain {
         // The applied outcome belonged to the campaign that just closed: the
         // next profile this process opens must not report it as its own.
         self.applied = None;
+        // The open scrapbook goes with the profile its records came from.
+        self.close_scrapbook();
         self.teardown = Some(report);
         Ok(())
     }
@@ -1431,6 +1718,30 @@ impl FrontEndFlow {
         self.session.select_loadout(loadout).map_err(Into::into)
     }
 
+    /// Declares which stable scrapbook entry id the next `SelectEntry` press
+    /// selects — the screen's domain-side input, as the flight check's
+    /// `select_loadout` is. The id must be a saved one the projection
+    /// resolved; a hidden id is refused when the press runs.
+    ///
+    /// # Errors
+    ///
+    /// [`FlowError::Screen`] off the scrapbook screen.
+    pub fn choose_scrapbook(&mut self, id: ContentId) -> Result<(), FlowError> {
+        self.session.choose_scrapbook(id).map_err(Into::into)
+    }
+
+    /// The two steps one entry press is: declare the stable id, then run the
+    /// selection. A refusal leaves the machine on the scrapbook with the
+    /// reason the screen shows.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::choose_scrapbook`], then [`FlowError::ScrapbookSelect`].
+    pub fn select_scrapbook(&mut self, id: ContentId) -> Result<Outcome, FlowError> {
+        self.choose_scrapbook(id)?;
+        self.press(Action::SelectEntry)
+    }
+
     /// Opens the machine's construction draft (F45-B's domain-side input).
     ///
     /// When a construction screen is attached and the draft's `blueprint`
@@ -1554,6 +1865,19 @@ impl FrontEndFlow {
         self.load.set_plan(plan);
     }
 
+    /// The running text session — the one a locale switch replaces. An open
+    /// scrapbook re-refreshes through it, so the new locale's titles show
+    /// while the saved entry ids stay exactly what the profile stored
+    /// (F47-C1's locale-scenario refresh point).
+    pub fn set_text_session(&mut self, texts: TextSession) {
+        self.domain.texts = Some(texts);
+        if self.session.front_end().screen() == Screen::Scrapbook {
+            // Open already, so the catalog, texts and profile checks all
+            // pass; a refused refresh records its own reason on the screen.
+            let _ = self.domain.open_scrapbook();
+        }
+    }
+
     /// The plan for an action: what it would ask for and where it would go,
     /// with the machine untouched.
     ///
@@ -1573,6 +1897,12 @@ impl FrontEndFlow {
     fn prepare(&self, plan: &Plan) -> Result<(), FlowError> {
         if plan.to == Screen::Loading && plan.from != Screen::Loading {
             self.load.check_begin()?;
+            // A replay launch needs the declared target's world besides the
+            // usual plan/content/cache — refused while still on the
+            // scrapbook, before the domain stores the replay.
+            if matches!(plan.request, Some(Request::LaunchReplay)) {
+                self.load.check_replay_target()?;
+            }
         }
         Ok(())
     }
@@ -1590,8 +1920,18 @@ impl FrontEndFlow {
                 self.exiting = true;
             }
         }
+        // A scrapbook launch's stored replay is taken before the close that
+        // leaving the screen runs clears it — it repoints the load about to
+        // begin.
+        let replay = self.domain.replay.take();
+        if outcome.from == Screen::Scrapbook && outcome.to != Screen::Scrapbook {
+            self.domain.close_scrapbook();
+        }
         match (outcome.from, outcome.to) {
             (from, Screen::Loading) if from != Screen::Loading => {
+                if let Some(replay) = replay {
+                    self.load.retarget(&replay);
+                }
                 self.load.begin().map_err(FlowError::Load)?;
             }
             (Screen::Loading, to) if to != Screen::Loading => self.load.teardown(),
@@ -1666,5 +2006,27 @@ impl FlowDomainView<'_> {
     #[must_use]
     pub fn pending_outcome(&self) -> Option<&MissionOutcomeRecord> {
         self.0.mission_outcome.as_ref()
+    }
+
+    /// The scrapbook screen, when the application declared a catalog for it
+    /// (F47-C1): its projected pages, page index, selection and saved ids
+    /// are what the renderer reads.
+    #[must_use]
+    pub fn scrapbook(&self) -> Option<&ScrapbookUi> {
+        self.0.scrapbook.as_ref()
+    }
+
+    /// The reason the scrapbook is showing — the refusal a refused step
+    /// left on the screen (F47-C1). `None` after the last successful step.
+    #[must_use]
+    pub fn scrapbook_reason(&self) -> Option<&str> {
+        self.0.scrapbook_reason.as_deref()
+    }
+
+    /// What the scrapbook's last refresh reported, for the unresolved-id
+    /// check a locale switch runs against it.
+    #[must_use]
+    pub fn scrapbook_refresh(&self) -> Option<&Refresh> {
+        self.0.scrapbook_refresh.as_ref()
     }
 }

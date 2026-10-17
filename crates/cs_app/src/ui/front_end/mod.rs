@@ -68,11 +68,11 @@ pub use capture::{
 };
 pub use flow::{
     ConstructionInputs, FlowDomainView, FlowError, FlowSetup, FrontEndFlow, LoadError, LoadFlow,
-    LoadPlan, LoadVerdict, ResourceLedger, ResourceProblem,
+    LoadPlan, LoadVerdict, ResourceLedger, ResourceProblem, ScrapbookInputs,
 };
 pub use machine::{
     ConstructionDraft, Effect, FrontEnd, LoadFailure, Loadout, LoadoutProblem, MissionOutcome,
-    Outcome, Plan, ProfileIntent, Refusal, Request,
+    Outcome, PageMove, Plan, ProfileIntent, Refusal, Request,
 };
 pub use original::{
     ArtExtents, BUTTON_STATE_FRAMES, BoundButton, LAYOUT_MEMBER, LayoutTextError, OriginalLayout,
@@ -185,6 +185,12 @@ pub enum Action {
     OpenSettings,
     /// Open the scrapbook.
     OpenScrapbook,
+    /// Turn to the scrapbook's next page.
+    NextPage,
+    /// Turn to the scrapbook's previous page.
+    PrevPage,
+    /// Select the scrapbook entry the presentation declared.
+    SelectEntry,
     /// Open the mission briefing.
     OpenBriefing,
     /// Replay the briefing.
@@ -227,7 +233,7 @@ pub enum Action {
 
 impl Action {
     /// Every action.
-    pub const ALL: [Self; 29] = [
+    pub const ALL: [Self; 32] = [
         Self::InstallVerified,
         Self::InstallRejected,
         Self::ContentMissing,
@@ -238,6 +244,9 @@ impl Action {
         Self::ConfirmProfile,
         Self::OpenSettings,
         Self::OpenScrapbook,
+        Self::NextPage,
+        Self::PrevPage,
+        Self::SelectEntry,
         Self::OpenBriefing,
         Self::ReplayBriefing,
         Self::OpenRecon,
@@ -273,6 +282,9 @@ impl Action {
             Self::ConfirmProfile => "confirm-profile",
             Self::OpenSettings => "open-settings",
             Self::OpenScrapbook => "open-scrapbook",
+            Self::NextPage => "next-page",
+            Self::PrevPage => "prev-page",
+            Self::SelectEntry => "select-entry",
             Self::OpenBriefing => "open-briefing",
             Self::ReplayBriefing => "replay-briefing",
             Self::OpenRecon => "open-recon",
@@ -354,6 +366,14 @@ pub enum RequestKind {
     ApplyOutcome,
     /// Abandon the running mission.
     AbandonMission,
+    /// Open the paged scrapbook on the selected profile's records.
+    OpenScrapbook,
+    /// Turn the scrapbook's page in the direction the action names.
+    ScrapbookPage,
+    /// Select the scrapbook entry the presentation declared.
+    ScrapbookSelect,
+    /// Launch the selected entry's replay.
+    LaunchReplay,
 }
 
 /// One row of the transition table.
@@ -456,7 +476,13 @@ pub const TABLE: &[Row] = &[
     row(S::ProfileSelect, A::Back, S::MainMenu, G::None, R::None),
     row(S::Settings, A::Back, S::MainMenu, G::None, R::None),
     row(S::Cabin, A::OpenBriefing, S::Briefing, G::None, R::None),
-    row(S::Cabin, A::OpenScrapbook, S::Scrapbook, G::None, R::None),
+    row(
+        S::Cabin,
+        A::OpenScrapbook,
+        S::Scrapbook,
+        G::None,
+        R::OpenScrapbook,
+    ),
     row(
         S::Cabin,
         A::OpenConstruction,
@@ -465,6 +491,34 @@ pub const TABLE: &[Row] = &[
         R::None,
     ),
     row(S::Cabin, A::Back, S::MainMenu, G::None, R::CloseProfile),
+    row(
+        S::Scrapbook,
+        A::NextPage,
+        S::Scrapbook,
+        G::None,
+        R::ScrapbookPage,
+    ),
+    row(
+        S::Scrapbook,
+        A::PrevPage,
+        S::Scrapbook,
+        G::None,
+        R::ScrapbookPage,
+    ),
+    row(
+        S::Scrapbook,
+        A::SelectEntry,
+        S::Scrapbook,
+        G::None,
+        R::ScrapbookSelect,
+    ),
+    row(
+        S::Scrapbook,
+        A::Launch,
+        S::Loading,
+        G::None,
+        R::LaunchReplay,
+    ),
     row(S::Scrapbook, A::Back, S::Cabin, G::None, R::None),
     row(
         S::Briefing,
@@ -561,7 +615,13 @@ pub const TABLE: &[Row] = &[
     row(S::Pause, A::Back, S::Flight, G::None, R::None),
     row(S::PauseSettings, A::Back, S::Pause, G::None, R::None),
     row(S::Results, A::Retry, S::Loading, G::FailedOutcome, R::None),
-    row(S::Results, A::OpenScrapbook, S::Scrapbook, G::None, R::None),
+    row(
+        S::Results,
+        A::OpenScrapbook,
+        S::Scrapbook,
+        G::None,
+        R::OpenScrapbook,
+    ),
     row(S::Results, A::ReturnToCabin, S::Cabin, G::None, R::None),
     row(
         S::Results,

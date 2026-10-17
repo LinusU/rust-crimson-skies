@@ -623,6 +623,16 @@ impl ScreenSession {
         self.front_end.select_loadout(loadout)
     }
 
+    /// Declares the scrapbook entry the next `SelectEntry` press selects.
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal::WrongScreen`] off the scrapbook, or
+    /// [`Refusal::ConfirmationPending`] while a discard prompt is open.
+    pub fn choose_scrapbook(&mut self, id: ContentId) -> Result<(), Refusal> {
+        self.front_end.choose_scrapbook(id)
+    }
+
     /// Declares whether the mission needs a wingmate: the mission data's say,
     /// passed straight through to the machine.
     pub fn set_wingmate_required(&mut self, required: bool) {
