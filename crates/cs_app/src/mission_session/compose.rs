@@ -1443,6 +1443,7 @@ pub fn teardown(app: &mut App) {
 pub fn run_windowed(
     install_root: &Path,
     plan: &MissionLaunchPlan,
+    smoke: Option<&crate::playtest::SmokeRequest>,
 ) -> Result<(), MissionCompositionError> {
     // A requested capture is judged before any content is read.
     let capture = crate::mission_session::CaptureSettings::from_env()
@@ -1452,6 +1453,20 @@ pub fn run_windowed(
         settings.scenario.apply(&mut stage.start);
     }
     let mut app = build_windowed(&stage)?;
+    let smoke_handle = smoke.map(|request| {
+        // A smoke run is deterministic: every rendered frame is exactly 1/60 s
+        // of simulated time whatever the machine's frame pacing — the playtest
+        // smoke's own rule.
+        app.insert_resource(bevy::time::TimeUpdateStrategy::ManualDuration(
+            std::time::Duration::from_secs_f64(
+                crate::mission_session::MISSION_SMOKE_FRAME_HZ.recip(),
+            ),
+        ));
+        let plugin = crate::mission_session::MissionSmokePlugin::new(request.clone());
+        let handle = plugin.handle();
+        app.add_plugins(plugin);
+        handle
+    });
     // A machine that cannot play the launch sound is a named refusal before
     // the window runs, never a silent mute (docs/contracts/CLI-EVIDENCE.md).
     if let Some(error) = super::launch_sound::backend_refusal(&app) {
@@ -1501,6 +1516,28 @@ pub fn run_windowed(
         );
     }
     let exit = app.run();
+    let smoked: Result<(), MissionCompositionError> = match (&smoke_handle, smoke) {
+        (Some(handle), Some(request)) => {
+            let result = crate::mission_session::finish_mission_smoke(handle, request);
+            if let Ok(report) = &result {
+                println!(
+                    "mission smoke: {} frames, {} ticks, {} checks, failures: {}",
+                    report.frames,
+                    report.ticks,
+                    report.checks.len(),
+                    if report.failures.is_empty() {
+                        "none".to_owned()
+                    } else {
+                        report.failures.join(", ")
+                    }
+                );
+            }
+            result
+                .map(|_report| ())
+                .map_err(MissionCompositionError::Capture)
+        }
+        _ => Ok(()),
+    };
     let captured = capture_handle.as_ref().map_or(Ok(()), |handle| {
         let trace = crate::mission_session::finish_capture(handle);
         let audio = match (&playback, handle.dir()) {
@@ -1515,6 +1552,7 @@ pub fn run_windowed(
     });
     teardown(&mut app);
     captured.map_err(MissionCompositionError::Capture)?;
+    smoked?;
     match exit {
         AppExit::Success => Ok(()),
         AppExit::Error(code) => Err(MissionCompositionError::Exit(format!("exit code {code}"))),

@@ -586,7 +586,7 @@ pub fn launch_mission(request: &crate::cli::MissionRequest) -> Result<(), Missio
     if !plan.launchable() {
         return Err(MissionLaunchError::Blocked(Box::new(plan)));
     }
-    crate::mission_session::run_windowed(&request.cs_path, &plan)
+    crate::mission_session::run_windowed(&request.cs_path, &plan, request.smoke.as_ref())
         .map_err(MissionLaunchError::Composition)
 }
 

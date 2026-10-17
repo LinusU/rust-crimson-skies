@@ -279,6 +279,16 @@ pub struct PlaytestCamera {
 }
 
 impl PlaytestCamera {
+    /// Re-seats the rig at the aircraft's pose on its next resolve, the same
+    /// way a reset does. The mission smoke ([`crate::mission_session::smoke`])
+    /// calls it after it places the production player body somewhere else, so
+    /// the chase camera does not spend the probe frame swinging across the
+    /// world.
+    pub fn reseat(&mut self) {
+        self.teleport = true;
+        self.frame = None;
+    }
+
     fn new() -> Self {
         let modes = lower_camera_modes(&declared_synthetic_camera_modes())
             .expect("the synthetic camera modes lower");

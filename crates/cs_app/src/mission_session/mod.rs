@@ -104,6 +104,7 @@ pub(crate) mod parts;
 mod player_visual;
 mod radio;
 mod scenario;
+pub(crate) mod smoke;
 mod terminal;
 mod weapon_present;
 mod weapons;
@@ -175,6 +176,15 @@ pub use radio::{
 pub use scenario::{
     START_ENV, START_HEADING_ENV, Scenario, StartOverride, TriggerWatch, WATCH_BLOCK_ENV,
     WATCH_MAX_FRAMES_ENV,
+};
+pub use smoke::{
+    ActorMetrics, ApproachMetrics, AudioMetrics, Check, DEFAULT_MISSION_CAPTURE_DIR, GunMetrics,
+    HudMetrics, MIN_ACTOR_PIXELS, MIN_GUN_ROUNDS, MIN_MISSION_SMOKE_SECONDS,
+    MIN_OBJECTIVE_TEXT_PIXELS, MIN_SEA_COVERAGE_PERMILLE, MIN_TERRAIN_DISTINCT_COLOURS,
+    MIN_TERRAIN_LUMINANCE_SPREAD, MISSION_SMOKE_FRAME_HZ, MissionSmokeHandle, MissionSmokePlugin,
+    MissionSmokeReport, RocketMetrics, SMOKE_KIND, SMOKE_REPORT_FILE, SeaMetrics,
+    SmokeMeasurements, TerrainMetrics, evaluate as evaluate_mission_smoke,
+    finish as finish_mission_smoke,
 };
 pub use terminal::{MissionExit, MissionTerminal, MissionTerminalSource};
 pub use weapon_present::{

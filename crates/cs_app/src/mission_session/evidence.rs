@@ -655,7 +655,7 @@ pub(super) fn request_screenshot(commands: &mut Commands, path: PathBuf, label: 
 /// The window's clear colour in the two 8-bit encodings the probe counts
 /// against: the sRGB-encoded value an sRGB surface stores, and the linear one
 /// a plain surface stores.
-fn clear_colour_encodings(clear: &ClearColor) -> [[u8; 3]; 2] {
+pub(super) fn clear_colour_encodings(clear: &ClearColor) -> [[u8; 3]; 2] {
     fn encode(red: f32, green: f32, blue: f32) -> [u8; 3] {
         [
             (red * 255.0).round() as u8,
@@ -720,15 +720,19 @@ fn measure(
 }
 
 /// What the probe frame measured against the window's clear colour.
+///
+/// `pub(super)`: the owner-command smoke ([`super::smoke`]) counts its probes
+/// against the same declared clear colour through this same function, so the
+/// two paths cannot drift apart.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-struct WorldPixelCount {
+pub(super) struct WorldPixelCount {
     /// Pixels off the clear colour: the world's own geometry.
-    world: usize,
+    pub(super) world: usize,
     /// Pixels that are the clear colour: the background the probe left.
-    clear: usize,
+    pub(super) clear: usize,
     /// The frame's modal colour, recorded as a diagnostic only — the counts
     /// above are taken against the declared clear colour, never against it.
-    modal: [u8; 3],
+    pub(super) modal: [u8; 3],
 }
 
 /// Counts the frame's world pixels against the window's **declared clear
@@ -749,7 +753,7 @@ struct WorldPixelCount {
 /// for both encodings, so the measurement is still a measurement;
 /// [`finish`] refuses the probe for the missing declaration regardless, since
 /// a modal reference cannot prove the horizon was hidden.
-fn count_world_pixels(
+pub(super) fn count_world_pixels(
     data: &[u8],
     format: bevy::render::render_resource::TextureFormat,
     clear_colours: Option<[[u8; 3]; 2]>,
@@ -792,7 +796,7 @@ fn count_world_pixels(
 
 /// Whether two colours are the same within [`BACKGROUND_CHANNEL_TOLERANCE`] on
 /// every channel.
-fn same_colour(left: [u8; 3], right: [u8; 3]) -> bool {
+pub(super) fn same_colour(left: [u8; 3], right: [u8; 3]) -> bool {
     (0..3).all(|channel| left[channel].abs_diff(right[channel]) <= BACKGROUND_CHANNEL_TOLERANCE)
 }
 

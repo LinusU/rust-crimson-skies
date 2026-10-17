@@ -17,6 +17,7 @@
 
 use std::path::PathBuf;
 
+use crate::mission_session::{DEFAULT_MISSION_CAPTURE_DIR, MIN_MISSION_SMOKE_SECONDS};
 use crate::playtest::smoke::MIN_SMOKE_SECONDS;
 use crate::playtest::{DEFAULT_CAPTURE_DIR, PlaytestRequest, RetailRequest, SmokeRequest};
 use crate::run::SyntheticRequest;
@@ -36,6 +37,11 @@ pub struct MissionRequest {
     pub cs_path: PathBuf,
     /// The work-order label of the mission, e.g. `M01`.
     pub mission: String,
+    /// The scripted owner-command smoke (`--smoke-seconds <n>
+    /// [--capture-dir <dir>]`), when one was asked for. The run then drives
+    /// the same windowed composition and fails when a check fails (Rally
+    /// #1535 `M01-OWNER-SMOKE`).
+    pub smoke: Option<SmokeRequest>,
 }
 
 /// What the caller asked the binary to do.
@@ -220,7 +226,35 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
                     .to_string(),
             };
         };
-        return CliRequest::Mission(MissionRequest { cs_path, mission });
+        if capture_dir.is_some() && smoke_seconds.is_none() {
+            return CliRequest::Invalid {
+                reason: "--capture-dir is where --mission --smoke-seconds <n> writes its \
+ artifacts; an ordinary mission run writes none"
+                    .to_string(),
+            };
+        }
+        let smoke = match smoke_seconds {
+            Some(seconds) if seconds < MIN_MISSION_SMOKE_SECONDS => {
+                return CliRequest::Invalid {
+                    reason: format!(
+                        "--smoke-seconds must be at least {MIN_MISSION_SMOKE_SECONDS}: the \
+ scripted mission sequence needs that long to probe the world, stand near every spawned \
+ actor, reach the trigger, fire the guns and launch a rocket"
+                    ),
+                };
+            }
+            Some(seconds) => Some(SmokeRequest {
+                seconds,
+                capture_dir: capture_dir
+                    .unwrap_or_else(|| PathBuf::from(DEFAULT_MISSION_CAPTURE_DIR)),
+            }),
+            None => None,
+        };
+        return CliRequest::Mission(MissionRequest {
+            cs_path,
+            mission,
+            smoke,
+        });
     }
     if playtest {
         if synthetic || headless || ticks.is_some() || trace.is_some() || seed.is_some() {
@@ -279,7 +313,8 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
     }
     if smoke_seconds.is_some() || capture_dir.is_some() {
         return CliRequest::Invalid {
-            reason: "--smoke-seconds and --capture-dir belong to --playtest".to_string(),
+            reason: "--smoke-seconds and --capture-dir belong to --playtest or to --mission"
+                .to_string(),
         };
     }
     if seed.is_some() && !synthetic {
@@ -385,7 +420,7 @@ WINDOWED PLAYTEST (development, not original)
         saves framebuffer PNGs, a trace and report.json to <dir> (default
         private/playtest), exits, and fails if a check fails
 
-    --cs-path <dir> --mission <id>
+    --cs-path <dir> --mission <id> [--smoke-seconds <n> [--capture-dir <dir>]]
         Launch one original mission (only M01 is declared). The launch reads
         the installation's own campaign binding and measures the mission's
         dependency closure first; a closure that is not satisfied exits
@@ -400,6 +435,13 @@ WINDOWED PLAYTEST (development, not original)
         weapons (Space fires the guns, Left Ctrl a rocket), radio dialogue and
         music, the objective HUD and the mission triggers. See
         docs/PLAYTEST.md, section 'Original mission M01'
+    --mission <id> --smoke-seconds <n> [--capture-dir <dir>]
+        The same windowed launch driven as a scripted smoke (n >= 45
+        simulated seconds): it injects keys through the real input path,
+        places the player near each spawned actor, saves framebuffer PNGs and
+        report.json to <dir> (default private/mission-smoke), and fails —
+        with a non-zero exit — when the player could not see, hear or shoot
+        the mission. A scripted run is never human_play
 
 `--help` and `--version` read no environment variable, open no installation
 and start no asset discovery: they succeed without a GPU and without a retail
