@@ -64,8 +64,8 @@ use cs_types::content::{ContentId, ContentKind};
 use cs_types::net::{ActorAllocator, ActorId, SessionId};
 use cs_types::space::{Quaternion, WorldPosition};
 
-use crate::common::cid;
-use crate::vs_m01_rt_window::{Scratch, synthetic_stage};
+use crate::campaign::common::cid;
+use crate::campaign::vs_m01_rt_window::{Scratch, synthetic_stage};
 
 /// The resolver's producer stamp, as the session schedule allocates one.
 const RESOLVER_PRODUCER: u32 = 1;

@@ -15,7 +15,7 @@ use bevy::prelude::Entity;
 use cs_app::physics::{BodyMode, BodySpec, ContactReport, ContactReports, PhysicsFixture};
 use cs_sim::collision::{CollisionLayer, ContactKind, ShapeClass};
 
-use crate::common;
+use crate::physics::common;
 
 /// Half the obstacle thickness: a 2 cm wall.
 const HALF_THICKNESS_M: f32 = 0.01;

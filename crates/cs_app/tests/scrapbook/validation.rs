@@ -4,7 +4,7 @@ use cs_sim::campaign::Outcome;
 use cs_sim::records::ScrapbookRecords;
 use cs_types::content::{ContentKind, Resolved};
 
-use crate::*;
+use crate::scrapbook::*;
 
 #[test]
 fn accept_f47_a_unknown_rule_never_unlocks() {

@@ -47,8 +47,8 @@ use cs_app::playtest_textures::PlaytestPart;
 use cs_app::world::contacts::WorldVisual;
 use cs_types::content::{ContentId, Resolved};
 
-use crate::common::label;
-use crate::vs_m01_rt_window::{Scratch, game_dir, synthetic_stage};
+use crate::campaign::common::label;
+use crate::campaign::vs_m01_rt_window::{Scratch, game_dir, synthetic_stage};
 
 /// The world nodes that carry at least one material-bound drawn child: the
 /// count [`build_world_draw`]'s parts make visible.

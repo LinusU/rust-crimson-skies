@@ -19,7 +19,7 @@ use cs_types::content::{ContentId, ContentKind, Origin, Resolved};
 use cs_types::evidence::ClaimStatus;
 use cs_types::random::{SYNTHETIC_BODY_DOMAIN, SplitMix64};
 
-use crate::common;
+use crate::environment::common;
 
 /// Lighting with no authored values at all: both fields explicitly unknown.
 fn lighting_without_values() -> LightingDefinition {

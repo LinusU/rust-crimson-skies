@@ -11,7 +11,7 @@ use bevy::{
 };
 use cs_app::physics::{FixtureBodySpec, PhysicsFixture};
 
-use crate::common;
+use crate::physics::common;
 
 /// Velocity observed in `FixedPostUpdate` before `PhysicsSystems::Prepare`.
 #[derive(Resource, Default)]

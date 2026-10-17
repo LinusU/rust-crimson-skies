@@ -30,8 +30,8 @@ use cs_app::mission_session::{
 use cs_content::replay::{CapabilityClass, DeclaredCapabilities};
 use cs_types::evidence::ContentHash;
 
-use crate::common::label;
-use crate::vs_m01_rt_window::{Scratch, game_dir};
+use crate::campaign::common::label;
+use crate::campaign::vs_m01_rt_window::{Scratch, game_dir};
 
 fn launch_sound(host: PathBuf, bytes: u64, sha256: ContentHash) -> LaunchSound {
     LaunchSound {

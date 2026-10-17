@@ -79,9 +79,11 @@ use cs_sim::damage::{ActorId, DamageChannel, DamageNodeKey, HitEvent, HitEventId
 use cs_sim::objectives::terminal::TerminalOutcome;
 use cs_types::Tick;
 
-use crate::common::label;
-use crate::m01_play_triggers_anims_land::{Body, composed_node_position, place_player, pump};
-use crate::vs_m01_rt_window::game_dir;
+use crate::campaign::common::label;
+use crate::campaign::m01_play_triggers_anims_land::{
+    Body, composed_node_position, place_player, pump,
+};
+use crate::campaign::vs_m01_rt_window::game_dir;
 
 /// The mission clock one composed host step covers. The baseline composition
 /// ticks at `BASELINE_FIXED_HZ`; the win chain's own `NAP` re-wakes spell

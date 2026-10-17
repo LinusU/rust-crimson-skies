@@ -605,8 +605,10 @@ fn f48_d_session_crash_child_commits_and_dies_before_the_install() {
 }
 
 /// The child names the phase it stops at, so the intent is checkable from the
-/// child's own name rather than only from this file's comment.
-const SESSION_CRASH_CHILD: &str = "f48_d_session_crash_child_commits_and_dies_before_the_install";
+/// child's own name rather than only from this file's comment. It is qualified
+/// with this file's module in the single `cs_app_tests` binary (task #1543),
+/// because `--exact` matches the full libtest name.
+const SESSION_CRASH_CHILD: &str = "accept_f48_d_crash_recovery_matrix::f48_d_session_crash_child_commits_and_dies_before_the_install";
 
 /// A `ProfileSession` open over a population whose registry belongs to another
 /// kind is refused, so a synthetic session cannot reach a production pilot even

@@ -74,7 +74,7 @@ use cs_script::bindings::{ArgDomain, MAX_CALL_ARGS};
 use cs_script::ir::{Action, AnimationState, Condition, DirectiveOperation as IrOperation, Value};
 use cs_types::content::{ContentId, ContentKind};
 
-use crate::common::load_inventory;
+use crate::campaign::common::load_inventory;
 
 /// The census row label of the mission.
 pub(crate) const MISSION: &str = "zbd/c2/m01";

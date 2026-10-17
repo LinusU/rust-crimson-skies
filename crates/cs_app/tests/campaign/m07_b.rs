@@ -69,7 +69,7 @@ use cs_script::runtime::{MissionFacts, MissionState, ObjectiveLifecycle, Session
 use cs_types::content::{ContentId, ContentKind};
 use cs_types::install::RelativePath;
 
-use crate::common::{label, load_inventory};
+use crate::campaign::common::{label, load_inventory};
 
 /// The census row label of the mission (`ZBD/C2/M02/zrdr.zbd`, F13-B's
 /// mission-scope rule).

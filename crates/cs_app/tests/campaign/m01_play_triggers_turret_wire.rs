@@ -50,8 +50,8 @@ use cs_sim::mission::{BlockLifecycleTable, LifecycleDecl};
 use cs_sim::world_actors::runtime::{ActorMotion, WorldActorKind, WorldActorSpec};
 use cs_types::content::{ContentId, ContentKind};
 
-use crate::common::{cid, label};
-use crate::vs_m01_rt_window::{Scratch, synthetic_stage};
+use crate::campaign::common::{cid, label};
+use crate::campaign::vs_m01_rt_window::{Scratch, synthetic_stage};
 
 /// The nine chains the shared `TURRET` table declares under
 /// `workersvoyagezep` (#1491): records 31, 28 and 27.

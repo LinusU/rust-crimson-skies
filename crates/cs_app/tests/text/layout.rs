@@ -17,7 +17,7 @@ use cs_content::localization::{
     declared_synthetic_text_catalog,
 };
 
-use crate::common::{
+use crate::text::common::{
     BUTTON_ROW_TOP, PANEL, buttons, chain, control_id, document, request, substitutions, text_id,
 };
 

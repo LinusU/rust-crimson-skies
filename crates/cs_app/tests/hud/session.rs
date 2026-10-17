@@ -35,7 +35,7 @@ use cs_sim::weapons::{GunBank, GunMountKind};
 use cs_types::Tick;
 use cs_types::input::{Action, FlightCommand};
 
-use crate::{
+use crate::hud::{
     DAMAGE_PRODUCER, NOSE_MOUNT, WING_MOUNT, actor, declared_on, key, level_sample, ordnance_for,
     session, weapon_session,
 };

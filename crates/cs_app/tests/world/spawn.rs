@@ -29,7 +29,7 @@ use cs_content::world::{
 use cs_types::content::{ContentId, ContentKind, Known, Origin, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
 
-use crate::common;
+use crate::world::common;
 
 /// How long the sensor probe is flown: long enough to cross the volume and
 /// clear it entirely.

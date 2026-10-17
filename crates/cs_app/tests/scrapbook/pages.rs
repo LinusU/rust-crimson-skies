@@ -6,7 +6,7 @@ use cs_app::ui::scrapbook::{
 use cs_sim::campaign::Outcome;
 use cs_sim::records::ScrapbookRecords;
 
-use crate::*;
+use crate::scrapbook::*;
 
 fn ids(records: &ScrapbookRecords) -> Vec<String> {
     project(&catalog(), records, &|t| Some(t.to_string()))

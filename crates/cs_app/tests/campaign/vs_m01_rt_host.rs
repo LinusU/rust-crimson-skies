@@ -53,8 +53,8 @@ use cs_script::runtime::TerminalState;
 use cs_sim::mission::MissionSession;
 use cs_types::Tick;
 
-use crate::common::label;
-use crate::vs_m01_rt_window::{Scratch, game_dir, synthetic_stage};
+use crate::campaign::common::label;
+use crate::campaign::vs_m01_rt_window::{Scratch, game_dir, synthetic_stage};
 
 /// The composed entry's answer, or a panic naming exactly what is missing.
 ///

@@ -6,7 +6,7 @@
 //!
 //! The minimum scenario is AC03 — **retry a failed load after repairing its
 //! dependency without restarting the app** — driven through
-//! [`FrontEndFlow`]: the load is the real `crate::loading::LoadingSession`
+//! [`FrontEndFlow`]: the load is the real `crate::ui::loading::LoadingSession`
 //! pumped through the production `SessionIo` over a content session mounted on
 //! a fixture installation, its missing dependency fails the load, and the same
 //! process loads it again once the file is there.

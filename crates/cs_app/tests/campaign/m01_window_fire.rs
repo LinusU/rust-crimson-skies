@@ -40,8 +40,8 @@ use cs_app::ordnance::OrdnanceItemMirror;
 use cs_app::weapons::WeaponRoundMirror;
 use cs_types::input::FlightCommand;
 
-use crate::m01_play_weapons::armed_stage;
-use crate::vs_m01_rt_window::{Scratch, synthetic_stage};
+use crate::campaign::m01_play_weapons::armed_stage;
+use crate::campaign::vs_m01_rt_window::{Scratch, synthetic_stage};
 
 /// The most rendered frames a test waits for a rocket to be launched and
 /// drawn before failing.

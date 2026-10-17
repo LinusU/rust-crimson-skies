@@ -51,7 +51,7 @@ use cs_content::mission_control::{
 use cs_content::objectives::objective_block_number;
 use cs_content::stunts::{objective_record, zrd_flat_fields};
 
-use crate::m02_b::{control_binding, control_document};
+use crate::campaign::m02_b::{control_binding, control_document};
 
 /// The image's base address, and with it the file-offset rule this task's
 /// measurements are written in: `VA = file offset + 0x400000`.

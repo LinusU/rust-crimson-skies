@@ -32,7 +32,7 @@ use cs_sim::flight::{
 };
 use cs_types::space::Quaternion;
 
-use crate::common;
+use crate::environment::common;
 
 /// A cruise world velocity in meters per second: 55 m/s along the body's
 /// forward axis (`-Z` per the coordinate convention), far above the

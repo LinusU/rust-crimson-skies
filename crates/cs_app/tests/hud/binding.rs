@@ -1,7 +1,7 @@
 use cs_app::ui::hud::{Hud, HudError};
 use cs_content::hud::HudPolicy;
 
-use crate::{actor, level_sample, session};
+use crate::hud::{actor, level_sample, session};
 
 #[test]
 fn accept_f46_a_swap_rebinds_and_refuses_the_old_aircrafts_samples() {

@@ -33,7 +33,7 @@ use cs_sim::targeting::{Allegiance, TargetClass};
 use cs_types::Tick;
 use cs_types::space::{Meters, Quaternion, Radians};
 
-use crate::common::{
+use crate::camera::common::{
     actor, aircraft_pose, assert_close, assert_close_position, authored_session, camera_track,
     declared_set, fov_deg_f64, known, known_look_limits, mission, origin_pose, placement,
     spyglass_authored_session, world,

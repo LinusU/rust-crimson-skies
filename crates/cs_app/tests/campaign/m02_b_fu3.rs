@@ -43,7 +43,7 @@ use cs_sim::objectives::address::{
 };
 use cs_types::install::RelativePath;
 
-use crate::common::{label, load_inventory};
+use crate::campaign::common::{label, load_inventory};
 
 /// Every directive key that spells a cross-objective address — the same list
 /// the original's parser feeds through `dec` into a `−1`-terminated index

@@ -67,8 +67,8 @@ use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind, Resolved};
 use cs_types::evidence::ClaimId;
 
-use crate::common::{cid, label};
-use crate::vs_m01_rt_window::{Scratch, synthetic_stage};
+use crate::campaign::common::{cid, label};
+use crate::campaign::vs_m01_rt_window::{Scratch, synthetic_stage};
 
 /// `OBJECTIVE6`: the 18 `workersvoyagezep` engine chains, threshold 1.
 const ENGINE_LADDER_BLOCK: u32 = 5;

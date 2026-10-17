@@ -17,7 +17,7 @@ use cs_content::cameras::{
 };
 use cs_types::space::{Meters, Quaternion, Radians, UnitVec3, WorldPosition};
 
-use crate::common::{assert_close, known, origin_pose};
+use crate::camera::common::{assert_close, known, origin_pose};
 
 const ASPECTS: [AspectRatio; 3] = [
     AspectRatio::FOUR_THREE,

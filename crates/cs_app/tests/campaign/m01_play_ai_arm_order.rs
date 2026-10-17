@@ -47,8 +47,8 @@ use cs_sim::flight::{OriginalAirframe, OriginalFlightModel, OriginalGlobals};
 use cs_types::content::Provenance;
 use cs_types::evidence::ClaimId;
 
-use crate::common::label;
-use crate::vs_m01_rt_window::{Scratch, game_dir, synthetic_stage};
+use crate::campaign::common::label;
+use crate::campaign::vs_m01_rt_window::{Scratch, game_dir, synthetic_stage};
 
 /// Two fixed ticks after the restart: the first proves the pass armed into
 /// the fresh session, the second proves the binding stuck.

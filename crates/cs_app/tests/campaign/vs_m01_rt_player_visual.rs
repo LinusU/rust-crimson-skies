@@ -13,7 +13,7 @@ use cs_app::mission_session::{
 use cs_app::playtest::PlaytestRequests;
 use cs_app::playtest_retail::AircraftPart;
 
-use crate::common::label;
+use crate::campaign::common::label;
 
 fn game_dir() -> PathBuf {
     PathBuf::from(std::env::var("CS_GAME_DIR").unwrap_or_else(|_| {

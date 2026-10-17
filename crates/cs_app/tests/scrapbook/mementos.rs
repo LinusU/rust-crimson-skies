@@ -2,7 +2,7 @@ use cs_app::ui::scrapbook::{ScrapbookActionError, choose_memento, record_mission
 use cs_sim::campaign::Outcome;
 use cs_sim::records::{MementoError, ScrapbookRecords};
 
-use crate::*;
+use crate::scrapbook::*;
 
 #[test]
 fn accept_f47_a_memento_needs_an_unlocked_memento() {

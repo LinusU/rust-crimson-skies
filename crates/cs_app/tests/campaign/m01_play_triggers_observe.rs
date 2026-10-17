@@ -52,8 +52,8 @@ use cs_content::objectives_engine::{EngineState, NapDeclaration};
 use cs_script::ir::MemberName;
 use cs_script::runtime::ObjectiveLifecycle;
 
-use crate::common::{cid, label};
-use crate::vs_m01_rt_window::{Scratch, game_dir, synthetic_stage};
+use crate::campaign::common::{cid, label};
+use crate::campaign::vs_m01_rt_window::{Scratch, game_dir, synthetic_stage};
 
 /// `OBJECTIVE3`'s zero-based block index — the one `TRAVELERS` site.
 const PROXIMITY_BLOCK: u32 = 2;

@@ -58,7 +58,7 @@ use cs_content::stunts::{ZrdValue, decode_zrd, zrd_flat_fields};
 use cs_formats::script_raw::discover_container;
 use cs_types::install::RelativePath;
 
-use crate::common::{load_inventory, repo_path};
+use crate::campaign::common::{load_inventory, repo_path};
 
 /// The reader archive of the contrast mission — bound to M06 under the
 /// corrected layout — whose data *does* bind a passenger-like entity.

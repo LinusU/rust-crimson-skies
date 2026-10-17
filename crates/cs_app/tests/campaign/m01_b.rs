@@ -55,7 +55,7 @@ use cs_content::mission_control::DirectiveDisposition;
 use cs_content::objectives_conditions::ObjectiveOutcome;
 use cs_content::objectives_engine::DormantTimers;
 
-use crate::common::{label, load_inventory, repo_path};
+use crate::campaign::common::{label, load_inventory, repo_path};
 
 /// The reader archive every M01-B-* task measured — under the corrected
 /// campaign layout this is M06's archive, not M01's (see the module header).

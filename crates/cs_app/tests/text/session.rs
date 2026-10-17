@@ -31,7 +31,7 @@ use cs_types::profile::{
     ProfileDocument, ProfileId, RecordEntry, Revision, SettingApply, SettingEntry,
 };
 
-use crate::common::{
+use crate::text::common::{
     PANEL, buttons, chain, claim, control_id, grammar, language_map, locale, resource_row,
     substitutions,
 };

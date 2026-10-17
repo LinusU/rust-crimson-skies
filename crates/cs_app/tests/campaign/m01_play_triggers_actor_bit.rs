@@ -61,8 +61,8 @@ use cs_sim::world_actors::runtime::{ActorMotion, WorldActorKind, WorldActorSpec}
 use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind};
 
-use crate::common::{cid, label};
-use crate::vs_m01_rt_window::{Scratch, synthetic_stage};
+use crate::campaign::common::{cid, label};
+use crate::campaign::vs_m01_rt_window::{Scratch, synthetic_stage};
 
 /// `OBJECTIVE54`: threshold 1 over the one-element chain `["piratezep"]`.
 /// Starts Dormant: woken by block 1 (`OBJECTIVE2`), measured.

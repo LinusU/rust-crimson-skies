@@ -59,7 +59,7 @@ use cs_assets::install::{content_fingerprint, discover, fingerprint};
 use cs_app::text::original_font::{ORIGINAL_BITMAP_FONT_NAMES, gfont3d_coverage};
 use cs_app::text::{GlyphEvidence, measure_rimage_bitmap_fonts};
 
-use crate::common::{RETAIL_FONT_MEDIA, RETAIL_RIMAGE, retail_audit};
+use crate::text::common::{RETAIL_FONT_MEDIA, RETAIL_RIMAGE, retail_audit};
 
 /// The acceptance tests whose `retail` capability this report declares: both
 /// read `$CS_GAME_DIR`, one through the production texture reader and one

@@ -55,8 +55,8 @@ use cs_content::stunts::ZrdValue;
 use cs_script::runtime::ObjectiveLifecycle;
 use cs_sim::mission::BlockLifecycleTable;
 
-use crate::common::label;
-use crate::vs_m01_rt_window::game_dir;
+use crate::campaign::common::label;
+use crate::campaign::vs_m01_rt_window::game_dir;
 
 /// The measured directive keys this reader declares from.
 const BEGIN_DORMANT: &str = "BEGIN_DORMANT";

@@ -38,7 +38,7 @@ use cs_app::mission_session::{
 };
 use cs_assets::install::{content_fingerprint, discover, fingerprint, sha256};
 
-use crate::vs_m01_rt_evidence_report::{
+use crate::campaign::vs_m01_rt_evidence_report::{
     git, iso_utc_now, jstr, locked_version, rustc_version, workspace_path,
 };
 

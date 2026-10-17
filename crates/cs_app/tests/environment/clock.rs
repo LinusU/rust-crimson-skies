@@ -16,7 +16,7 @@ use cs_sim::time::{TimeDomain, TimeError};
 use cs_sim::visibility::TimelineError;
 use cs_types::content::Resolved;
 
-use crate::common;
+use crate::environment::common;
 
 /// One observation of the clock: the committed tick, the events installed
 /// so far, and the two state values the assertions read.

@@ -60,12 +60,12 @@ use cs_script::runtime::ObjectiveLifecycle;
 use cs_sim::mission::{BlockLifecycleTable, LifecycleDecl};
 use cs_types::content::ContentKind;
 
-use crate::common::cid;
-use crate::m01_play_triggers_anims_land::{
+use crate::campaign::common::cid;
+use crate::campaign::m01_play_triggers_anims_land::{
     Body, SYNTHETIC_ARM, SYNTHETIC_CALLED, SYNTHETIC_LAND, armed_has, composed_node_position,
     last_tick, observed_state, pump, pump_until_armed, retail_land_stage, synthetic_land_stage,
 };
-use crate::vs_m01_rt_window::Scratch;
+use crate::campaign::vs_m01_rt_window::Scratch;
 
 /// The synthetic landing node the arm record's statement carries.
 const SYNTHETIC_NODE: &str = "synthetic_landing_node";

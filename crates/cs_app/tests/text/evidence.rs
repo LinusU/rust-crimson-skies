@@ -59,7 +59,9 @@ use cs_assets::install::{content_fingerprint, discover, fingerprint};
 
 use cs_app::text::original_font::ORIGINAL_BITMAP_FONT_NAMES;
 
-use crate::common::{RETAIL_FONT_MEDIA, RETAIL_RIMAGE, retail_audit, retail_declared_locales};
+use crate::text::common::{
+    RETAIL_FONT_MEDIA, RETAIL_RIMAGE, retail_audit, retail_declared_locales,
+};
 
 /// The acceptance tests whose capabilities this report declares.
 ///

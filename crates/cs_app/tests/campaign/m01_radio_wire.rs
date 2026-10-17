@@ -49,8 +49,8 @@ use cs_app::mission_session::{
 use cs_sim::audio_events::{AudioBus, AudioDevice, RADIO_GAIN, VoiceStart};
 use cs_types::content::{ContentId, ContentKind};
 
-use crate::common::label;
-use crate::vs_m01_rt_window::{Scratch, game_dir, synthetic_stage};
+use crate::campaign::common::label;
+use crate::campaign::vs_m01_rt_window::{Scratch, game_dir, synthetic_stage};
 
 /// The container both scenarios read their voice members from: `soundsh`
 /// holds the same M01 members as `soundsl`, and which the original opens is

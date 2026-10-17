@@ -33,7 +33,7 @@ use cs_types::asset_id::SourceSpan;
 use cs_types::content::{Origin, Provenance};
 use cs_types::evidence::ContentHash;
 
-use crate::common::{
+use crate::text::common::{
     PANEL, RETAIL_FONT_MEDIA, RETAIL_RIMAGE, RETAIL_STRING_IMAGES, buttons, claim, grammar,
     language_map, locale, resource_row, retail_audit, retail_game_dir, substitutions,
 };

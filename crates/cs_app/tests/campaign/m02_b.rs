@@ -67,7 +67,7 @@ use cs_script::ir::Value;
 use cs_types::content::{ContentId, ContentKind};
 use cs_types::install::RelativePath;
 
-use crate::common::{label, load_inventory};
+use crate::campaign::common::{label, load_inventory};
 
 /// The original installation, as the environment declares it.
 fn game_dir() -> PathBuf {

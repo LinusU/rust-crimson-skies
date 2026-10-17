@@ -21,7 +21,7 @@ use cs_app::environment::{
 use cs_content::environment::{COSMETIC_WEATHER_DOMAIN, CosmeticWeatherSeed, PrecipitationKind};
 use cs_types::random::SYNTHETIC_BODY_DOMAIN;
 
-use crate::common;
+use crate::environment::common;
 
 /// A rain state, holding the wind still at the clear-sky fixture's value so a
 /// test can change one thing at a time.

@@ -19,7 +19,7 @@ use cs_types::Tick;
 use cs_types::input::{Action, FlightCommand};
 use cs_types::space::WorldPosition;
 
-use crate::{actor, level_sample, session};
+use crate::hud::{actor, level_sample, session};
 
 /// The generation the roster, the published views and the HUD all share.
 const TARGET_SESSION: u64 = 7;

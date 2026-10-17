@@ -12,7 +12,7 @@ use cs_content::campaign_bindings::{
 };
 use cs_types::content::{ContentKind, Resolved};
 
-use crate::common::{cid, claim, designed, label, load_inventory, ready_binding};
+use crate::campaign::common::{cid, claim, designed, label, load_inventory, ready_binding};
 
 /// A declared mission is a discovery label with no retail identity, and its
 /// placeholder can be bound exactly once: the second binding is a duplicate

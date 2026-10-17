@@ -89,7 +89,7 @@ use cs_script::ir::Value;
 use cs_types::content::{ContentId, ContentKind};
 use cs_types::install::RelativePath;
 
-use crate::common::{label, load_inventory};
+use crate::campaign::common::{label, load_inventory};
 
 /// The census row label of the mission: the mission-scoped reader archive
 /// F13-B's rule derives from the installation.

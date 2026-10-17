@@ -10,7 +10,7 @@
 use cs_content::localization::{LanguageMap, LanguageMapError, LocaleId, ResourceDecode, TextId};
 use cs_types::content::{Origin, Provenance};
 
-use crate::common::{claim, language_map, resource_row};
+use crate::text::common::{claim, language_map, resource_row};
 
 /// The decode maps a declared language id to its locale, keeps the row's text
 /// verbatim under the stable resource id, and refuses to invent the rest.

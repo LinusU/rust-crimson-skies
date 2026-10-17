@@ -72,8 +72,8 @@ use cs_types::asset_id::SourceSpan;
 use cs_types::content::{ContentKind, Provenance};
 use cs_types::evidence::{ClaimId, ClaimStatus, ContentHash};
 
-use crate::common::{cid, label};
-use crate::vs_m01_rt_window::{Scratch, game_dir, synthetic_stage};
+use crate::campaign::common::{cid, label};
+use crate::campaign::vs_m01_rt_window::{Scratch, game_dir, synthetic_stage};
 
 // ---------------------------------------------------------------------------
 // The synthetic stage: five records, five declarations, one wake, and an

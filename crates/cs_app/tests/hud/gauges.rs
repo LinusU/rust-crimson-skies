@@ -9,7 +9,7 @@ use cs_content::weapons::DeclaredGunMountKind;
 use cs_sim::damage::{DamageNodeKind, PartState};
 use cs_sim::weapons::{GunBank, GunRate, SYNTHETIC_TICKS_BETWEEN_SHOTS};
 
-use crate::{
+use crate::hud::{
     NOSE_MOUNT, WING_MOUNT, actor, damage_for, key, level_sample, ordnance_for, session,
     weapon_session,
 };

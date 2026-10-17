@@ -85,8 +85,8 @@ use cs_types::content::{ContentKind, Provenance};
 use cs_types::evidence::{ClaimId, ClaimStatus, ContentHash};
 use cs_types::net::SessionId;
 
-use crate::common::{cid, label};
-use crate::vs_m01_rt_window::{Scratch, game_dir, synthetic_stage};
+use crate::campaign::common::{cid, label};
+use crate::campaign::vs_m01_rt_window::{Scratch, game_dir, synthetic_stage};
 
 /// The animation name the synthetic stage's `WAKE_ANIM` site wakes.
 const SYNTHETIC_WAKE: &str = "synthetic_wake_anim";

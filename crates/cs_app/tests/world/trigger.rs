@@ -58,7 +58,7 @@ use cs_app::world::{
 use cs_app::world::{WorldColliderInstance, WorldContact, WorldObjectBinding};
 use cs_content::world::{WorldCollisionRole, WorldObjectId};
 
-use crate::common;
+use crate::world::common;
 
 /// The speed at which one tick outruns the geometry these tests are about, in
 /// m/s: 3.33 m per tick at the workspace's 120 Hz fixed rate.

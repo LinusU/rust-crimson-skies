@@ -8,7 +8,7 @@ use cs_content::localization::{
 };
 use cs_types::content::{ContentId, ContentKind};
 
-use crate::common::{chain, locale, text_id};
+use crate::text::common::{chain, locale, text_id};
 
 /// The fallback chain is walked in the caller's order and the resolution
 /// reports which locale answered and how far down the chain it was, so a
@@ -279,14 +279,14 @@ fn accept_f51_a_a_duplicate_translation_row_is_refused() {
     let mut catalog = TextCatalog::new();
     let id = text_id("hud.untranslated");
     catalog
-        .insert(crate::common::row(
+        .insert(crate::text::common::row(
             "hud.untranslated",
             "en-us",
             "Target lost",
         ))
         .expect("the first row inserts");
     let error = catalog
-        .insert(crate::common::row(
+        .insert(crate::text::common::row(
             "hud.untranslated",
             "en-us",
             "Target destroyed",

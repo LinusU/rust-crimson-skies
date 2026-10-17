@@ -2,7 +2,7 @@
 
 use cs_app::physics::{ForceRequest, ForceRequestError};
 
-use crate::common;
+use crate::physics::common;
 
 /// Small relative tolerance: one integration is separated from two by a factor
 /// of two, so this still fails loudly on a double-apply.
