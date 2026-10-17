@@ -27,7 +27,7 @@ Do not load the whole repository into context. For a task `F05-B` read, in this 
 4. **Unknown means unknown.** Unknown formats, units, opcodes and game rules are recorded as unknown with evidence and the affected content. Do not guess a layout, ignore an opcode, fabricate a tuning table or replace an original mission with a generic fight.
 5. **Missing data or capabilities block; they never pass.** If the task needs a capability you do not have, call `block_task` and say exactly what is needed. Synthetic tests do not prove retail compatibility. A parsed asset needs a working runtime consumer.
 6. **Tests are real.** Every task has a test prefix, e.g. `accept_f05_b_`. At least one test with that prefix must exist, call production code, run and pass, and must fail when the implementation is removed. Never weaken, skip or delete tests or lints to get green. Zero matching tests is a failure.
-   - **Python-only maintenance.** A task that the owner explicitly authorizes to change only Python tools or documentation uses the nonempty Python test selection its description names, e.g. `python3 -m unittest discover -s tools/tests -p '<file>' -v`. The selection must exercise the production tool or documents and fail when the change is removed. Do not add a Rust test that merely wraps it to satisfy a prefix. The full Rust checks below and green CI are still required before merge.
+   - **Python-only maintenance.** A task that the owner explicitly authorizes to change only Python tools or documentation uses the nonempty Python test selection its description names, e.g. `python3 -m unittest discover -s tools/tests -p '<file>' -v`. The selection must exercise the production tool or documents and fail when the change is removed. Do not add a Rust test that merely wraps it to satisfy a prefix. The Rust checks below and green CI are still required before merge.
 7. **Canonical contracts.** One physics pose owner, integer simulation ticks, stable content/actor ids and session generations. No Bevy/renderer dependency in `cs_types`, `cs_formats`, `cs_assets`, `cs_content`, `cs_script` or `cs_net`. No game state hidden in UI code.
 8. **Never self-award `verified_original` or `release_approved`.** A merged task is **checked**, not "recreated".
 9. **Git hygiene.** Only work on the Rally task branch. Never push to `main`, never force-push another branch, never rewrite someone else's history. Small commits with imperative messages that describe one change.
@@ -56,11 +56,17 @@ Capabilities are granted only by the owner. Loopback or several processes on one
 ```sh
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings
-cargo test --workspace --locked
-cargo test --workspace --locked -- <task-test-prefix> --include-ignored   # must run >= 1 test, all passing
+cargo test --locked -p <crate> [-p <crate> ...]   # the crates you changed, see below
+cargo test --locked -p <crate> -- <task-test-prefix> --include-ignored   # must run >= 1 test, all passing
 ```
 
-CI runs the first three on every push. CI has no original data: tests that need it are marked `#[ignore = "requires CS_GAME_DIR"]` and must fail loudly (not pass) when run without `CS_GAME_DIR`. You run them locally with `--include-ignored`; so does the reviewer.
+**Do not run `cargo test --workspace` locally; CI runs the full suite.** On the owner's machines every freshly linked test binary waits about a minute for a macOS security scan on its first launch, and the workspace has hundreds of them, so a local full run takes hours while the tests themselves take minutes. Test locally what your change can break instead:
+
+- every crate you changed, with `-p`;
+- when you changed a crate's public API or behaviour that other crates use, also the crates that use it (find them with `grep` over `crates/*/Cargo.toml` and the call sites);
+- the task-prefix run with `--include-ignored`, scoped with `-p` to the crate that holds the task's tests.
+
+CI runs fmt, clippy and `cargo test --workspace --locked` on every push, and its result on your exact pushed commit is the run of record for the full suite. Before handing over, wait for CI on that commit; if it fails, fix it like a local failure. CI has no original data: tests that need it are marked `#[ignore = "requires CS_GAME_DIR"]` and must fail loudly (not pass) when run without `CS_GAME_DIR`. You run the ones your change can reach locally with `--include-ignored`; so does the reviewer.
 
 `could not execute process … (never executed)` is not a test failure. With `No such file or directory (os error 2)` under it, cargo could not `exec` a test harness it had already accepted as fresh, so no test in that unit ran, the run says nothing at all about the code under test, and `cargo test` stops there and never reports the rest of the suite. Rerun the **identical** command once. If that rerun is green, the rerun is the run of record, the first run is still a failed run, and both are reported in that order: the failed run is never reported as green.
 
