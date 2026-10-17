@@ -62,9 +62,12 @@ whole number in every record.
 records name a runtime snapshot, `Snap_<a>_<b>`. For **165** of those 167 the
 position is exactly `<b>` and the key's page is `<a>`. The two that disagree are
 `22_1_6` (`Snap_22_18`, position `1`) and `22_1_7` (`Snap_22_19`, position `1`) —
-both on page 22, the page that also carries a commented-out block of
-`Snap_18_*` placeholders, so they read as leftover template rows rather than a
-different rule. The engine itself names snapshots this way: the decrypted image
+both placeholder-shaped rows on page 22 (they sit on `22_1_4`/`22_1_5`'s own
+coordinates, next to the generic slots), while the table's only commented-out
+record block is page 18's spread 2, a run of `Snap_18_*` placeholders
+(`18_2_13` is a commented `Snap_18_19`); the two read as leftover template rows
+rather than a different rule, and are listed by id rather than merged. The
+engine itself names snapshots this way: the decrypted image
 (`crimson.decrypted.exe`, SHA-256
 `43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75`) carries the
 format string `%1!s!\Snap_%2!d!_` at image offset `0x21f0a4` (and `Snap_` at
@@ -129,8 +132,8 @@ measured command numbers; `REPLAY_CONTROL_CLAIM` is their claim id.
 sets its picture through native command **2150** alone:
 
 * `callback($$E$$, 2150, 0, <index>, <name>)` returns the picture **name** at
-  an index — index `0` for the entry the cabin shows, `100` for the next,
-  `101` for the previous;
+  an index — `-1` at creation and the screen's own variable (initial `0`) as it
+  opens, `100` for the next and `101` for the previous;
 * `callback($$E$$, 2150, 1, <name>)` selects the memento the name identifies;
 * the script then builds the artwork path `assets\graphics\scrapbook\<name>` and
   special-cases one name (`ms_p_initialpinup1.jpg`), which is not offered as a
@@ -262,6 +265,60 @@ the mapping or the census fails there too.
 * **No original executable ran.** `retail` is file access; the engine's
   snapshot naming is read from the image as strings and offsets only. Nothing
   here is `verified_original`, and the `ObservedTool` class says so.
+
+## Review (bunny-alpha-2, Rally #774 review claim of 2026-10-17)
+
+Implementer and reviewer are the **same agent name** (`bunny-alpha-2`), so this
+is **not an independent review**, and no agent review replaces the owner's human
+approval. The reviewer's context *was* fresh — a new session that started from
+the Rally task, this document and the production code, with no memory of the
+implementation session — which is why it re-derived the measurements instead of
+recognising them. The same fact is recorded in
+`docs/findings/evidence/F47-D.2.json`'s `review.identity`.
+
+What the reviewer did, independently of the implementer's run:
+
+* **Re-read the decoded members through the production ROF decoder**
+  (`cs-inspect rof --container GOSDATA/ASSETS/crimson.rof --member …`). The
+  decoded digests it produced are the ones this document cites:
+  `SCRAPBOOK.CSV` `28b5144c…`, `SCRAPBOOK_TOC.SCRIPT` `f26f48e2…`,
+  `MOMENTOSELECTION.SCRIPT` `39fca3e7…`.
+* **Re-derived the Objective census** from that decoded member with a throwaway
+  Python reader that shares nothing with `cs_content`: 461 records, 447 numbered
+  and 14 special (`0` ×10, `-11` ×3, `-12` ×1), 26 distinct positions in
+  `-12 ..= 31`, 25 pages `0 ..= 24`, 167 snapshot rows with 165 agreeing and the
+  two disagreements `22_1_6`/`22_1_7`, and the section comments beginning pages
+  1, 6, 11, 16 and 21. **Every count in the tables above is confirmed.**
+* **Re-read both screen scripts' own bytes** for the mechanisms: the
+  `sbtoc_b_replay` handler calls `callback($$E$$, 2104, (UT))` and then
+  `script_end`; the list control is filled through its `TJ` property `2409`; the
+  current index is read/written through `2405` and the replay gate is `2411`;
+  the memento screen's only picture source is `2150` (mode `0` at `-1` and its
+  own variable, mode `1` to select). The two sentences the reviewer corrected
+  are the page-22/page-18 attribution and the memento index wording.
+* **Re-read the engine image facts** (digest `43540fc9…`): `%1!s!\Snap_%2!d!_`
+  at `0x21f0a4`, `Snap_` at `0x21f068`, and the `%1!d!_%2!d!_%3!d!` key format
+  at `0x21ef18`.
+* **Re-read the mission objective runs** by identifier only: `ZBD/C1C/M01`'s
+  reader archive spells contiguous `OBJECTIVE1` … `OBJECTIVE58` and
+  `ZBD/C5/M02`'s `OBJECTIVE1` … `OBJECTIVE65`.
+* **Repeated two mutation probes** of the binding (the page→mission index off by
+  one, and the `Resolved::Known` arm replaced by an unknown); each failed the
+  synthetic acceptance test, and both were reverted.
+* **Corrected three stale statements** rather than merging them: the
+  page-22/page-18 attribution and the memento index wording above, and the
+  `DiscoveredItem::objective` / `ORIGINAL_UNLOCK_FIELDS` doc comments that still
+  called the position's meaning unmeasured.
+* **Ran** `cargo fmt --all -- --check`, `cargo clippy --workspace --all-targets
+  --all-features --locked -- -D warnings`, `cargo test --locked -p cs_content`,
+  `cargo test --locked -p cs_app --test scrapbook`, and the selected
+  `accept_f47_d2_` suite with `--include-ignored` (3 tests, all passing), then
+  regenerated the F47-D.2 acceptance report with the reviewer identity.
+
+The stage's judgment calls are unchanged by the review: the binding measures
+*what the position names* (`ObservedTool`, not `verified_original`), and the
+gating, the replay target and the memento set/order/unlock stay explicit
+unknowns.
 
 ## Sources used
 

@@ -478,8 +478,9 @@ const CAPTURE_FORMATS: [&str; 5] = [".png", ".jpg", ".jpeg", ".bmp", ".tga"];
 /// `Objective`, `ResourceID`, `ImageName`, `ImageType`, the coordinates,
 /// `Alpha`, `Width`, `Height`, `DrawOrder`, the rectangle, `Zoom`, `ZoomX`,
 /// `ZoomY`, `TitleResID`, `TextResID`. The documented name `Objective` is the
-/// only one that could carry progression, and what it *means* is unmeasured:
-/// the audit records its value distribution and refuses to read it as a rule.
+/// only one that could carry progression; what it *names* was measured by
+/// F47-D.2 ([`DiscoveredScrapbook::objective_rules`]), but no documented field
+/// states an unlock rule, so the audit still refuses to read one as a rule.
 pub const ORIGINAL_UNLOCK_FIELDS: usize = 0;
 
 /// How many fields of the table's one documented record kind name a mission
@@ -631,9 +632,13 @@ pub struct DiscoveredItem {
     pub spread: u32,
     /// The entry key's third component, the item's slot in the spread.
     pub slot: u32,
-    /// The `Objective` field, **whose meaning is unmeasured**: the number is
-    /// converted because the position's kind is measured (F12-I), and no rule
-    /// is read out of it here.
+    /// The `Objective` field: the number is converted because the position's
+    /// kind is measured (F12-I). What the position *names* is measured
+    /// separately by [`DiscoveredScrapbook::objective_rules`] (F47-D.2): the
+    /// numbered objective of the campaign mission the item's page names. No
+    /// rule is read out of the raw number here.
+    ///
+    /// [`DiscoveredScrapbook::objective_rules`]: DiscoveredScrapbook::objective_rules
     pub objective: Option<i64>,
     /// The `ImageName` field.
     pub image: String,
@@ -1199,7 +1204,7 @@ fn objective_provenance(span: &SourceSpan) -> Provenance {
         ClaimStatus::ObservedTool,
         Some(span.clone()),
     )
-    .expect("an observed_tool claim needs no source span")
+    .expect("an observed_tool provenance is never refused")
 }
 
 /// An explicit unknown `Objective` rule with `reason`.

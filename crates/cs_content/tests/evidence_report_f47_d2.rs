@@ -485,9 +485,13 @@ fn read_members(root: &Path, install: ContentHash) -> (Vec<u8>, Vec<String>, Vec
 fn review_identity() -> String {
     let recorded = String::from(
         "Implementer: bunny-alpha-2/bunny-alpha-2 (opencode/deepseek-v4.1-flash, Rally #774 \
-         implement claim of 2026-10-17). Reviewer: recorded by the reviewer in the complete_review \
-         notes; this report was written by the implementer, so it is not independent evidence, and \
-         no agent review replaces the owner's human approval.",
+         implement claim of 2026-10-17). Reviewer: bunny-alpha-2/bunny-alpha-2 (the same agent \
+         name and model, a fresh review session, Rally #774 review claim of 2026-10-17), so this \
+         is not an independent review and no agent review replaces the owner's human approval. \
+         The reviewer re-derived the Objective census from the installation, re-read both screen \
+         scripts and the engine image facts, repeated two mutation probes and corrected the stale \
+         statements it found; the reviewer's checks are recorded in \
+         docs/findings/2026-10-17-f47-d2-objective-replay-and-mementos.md.",
     );
     std::env::var("CS_EVIDENCE_REVIEW").unwrap_or(recorded)
 }
@@ -512,7 +516,12 @@ fn review_method() -> String {
          the recorded log. Implementer mutation probes on this branch: an off-by-one page->mission \
          index fails the synthetic binding test on three bound rules; forcing the snapshot \
          agreement true fails it on the agreeing count; dropping the snapshot census fails it on \
-         the snapshot count.",
+         the snapshot count. Reviewer (bunny-alpha-2, a fresh session but the same agent name as \
+         the implementer, so not independent): re-exported the decoded members through the \
+         production ROF decoder, re-derived the whole census with a throwaway Python reader that \
+         shares nothing with cs_content, re-read both screen scripts and the engine image offsets, \
+         re-read the two missions' OBJECTIVE runs by identifier, repeated two mutation probes of \
+         the binding and corrected the stale statements it found.",
     );
     recorded
         + &UNKNOWN_LIMITATIONS
