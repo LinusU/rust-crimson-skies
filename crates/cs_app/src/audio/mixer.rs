@@ -35,7 +35,7 @@ use bevy::ecs::world::World;
 use bevy::prelude::{GlobalTransform, Query};
 use cs_sim::audio_events::{
     AudioDevice, AudioMixer, DeviceError, EmitterMix, Listener, MixerReport, MusicCue,
-    RadioMixReport, RecordingAudioDevice, SpatialPolicy,
+    MusicMixReport, RadioMixReport, RecordingAudioDevice, SpatialPolicy,
 };
 use cs_types::net::SessionId;
 
@@ -153,6 +153,10 @@ pub struct AudioMixReport {
     /// a report that folded them into the emitter lists could not say which
     /// dialogue line was silent.
     pub radio: RadioMixReport,
+    /// The last music pass the mixer ran: the track voices the session's
+    /// music verdicts started and stopped, and every request it could not
+    /// voice, by name.
+    pub music: MusicMixReport,
     /// How many passes have run since this world was built.
     pub passes: u64,
     /// How many emitter bindings carried no pose in the last pass, and so kept
@@ -214,6 +218,8 @@ pub fn mix_session(
         // where one happened.
         let lines = session.drain_radio();
         report.radio = mixing.mixer_mut().mix_radio(&lines, None);
+        let music = session.drain_music();
+        report.music = mixing.mixer_mut().mix_music(&music, None);
         return;
     }
     let mut placed = Vec::with_capacity(emitters.iter().len());
@@ -250,6 +256,10 @@ pub fn mix_session(
     report.radio = mixing
         .mixer_mut()
         .mix_radio(&lines, Some(output.device_mut()));
+    let music = session.drain_music();
+    report.music = mixing
+        .mixer_mut()
+        .mix_music(&music, Some(output.device_mut()));
     report.passes += 1;
     report.unplaced = unplaced;
 }

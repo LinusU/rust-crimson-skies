@@ -106,6 +106,8 @@ pub struct AudioSession {
     pub music: MusicDirector,
     /// Every radio event since the last [`Self::drain_radio`], in order.
     pub radio_events: Vec<RadioEvent>,
+    /// Every music verdict since the last [`Self::drain_music`], in order.
+    music_events: Vec<MusicOutcome>,
     /// Every loop outcome since the last [`Self::drain`], in order.
     pub outcomes: Vec<LoopOutcome>,
     /// Every refused binding since the last [`Self::drain`].
@@ -129,6 +131,7 @@ impl AudioSession {
             radio: RadioQueue::new(session),
             music: MusicDirector::new(session),
             radio_events: Vec::new(),
+            music_events: Vec::new(),
             tick: Tick(0),
             specs: specs.into_iter().map(|s| (s.asset().clone(), s)).collect(),
             bound: BTreeMap::new(),
@@ -186,6 +189,11 @@ impl AudioSession {
         std::mem::take(&mut self.radio_events)
     }
 
+    /// Takes the accumulated music verdicts, for the mixer's music pass.
+    pub fn drain_music(&mut self) -> Vec<MusicOutcome> {
+        std::mem::take(&mut self.music_events)
+    }
+
     /// Offers a radio line at the session's current tick.
     pub fn enqueue_radio(&mut self, line: RadioLine) {
         let events = self.radio.enqueue(line, self.tick);
@@ -230,8 +238,13 @@ impl AudioSession {
     }
 
     /// Requests an authored music cue.
+    ///
+    /// The director's verdict is returned and also kept for the mixer
+    /// ([`Self::drain_music`]), which plays it on the music bus.
     pub fn request_music(&mut self, cue: MusicCue) -> MusicOutcome {
-        self.music.request(cue)
+        let outcome = self.music.request(cue);
+        self.music_events.push(outcome.clone());
+        outcome
     }
 
     /// Whether an output device is currently available.
