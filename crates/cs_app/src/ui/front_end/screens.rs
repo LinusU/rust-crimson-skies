@@ -41,6 +41,7 @@ use std::fmt;
 use cs_content::ui_layout::{AspectFit, Rect, ScreenLayout};
 use cs_types::content::{ContentId, ContentKind};
 
+use super::import_dialog::ImportDialog;
 use super::{
     Action, ActionSource, ConstructionDraft, FrontEnd, LayoutProblem, Loadout, Outcome, Refusal,
     Screen, find, rows_on,
@@ -587,6 +588,24 @@ impl ScreenSession {
     /// [`Refusal::ConfirmationPending`] while a discard prompt is open.
     pub fn open_construction(&mut self, draft: ConstructionDraft) -> Result<(), Refusal> {
         self.front_end.open_construction(draft)
+    }
+
+    /// Hands the import dialog screen the source it offers (F64-C's report,
+    /// drawn by this front end): the screen's own domain-side input, kept out
+    /// of the presentation so no caller can reach around the machine.
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal::WrongScreen`] off [`Screen::ImportDialog`], or
+    /// [`Refusal::ConfirmationPending`] while a discard prompt is open.
+    pub fn open_import_dialog(&mut self, dialog: ImportDialog) -> Result<(), Refusal> {
+        self.front_end.open_import_dialog(dialog)
+    }
+
+    /// The open import dialog, when one is on screen.
+    #[must_use]
+    pub fn import_dialog(&self) -> Option<&ImportDialog> {
+        self.front_end.import_dialog()
     }
 
     /// Replaces the edited components of the open construction draft.

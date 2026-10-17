@@ -113,6 +113,7 @@ use crate::ui::scrapbook::{
     LaunchError, PageError, PersistError, Refresh, ReplayLaunch, ScrapbookUi, SelectError, stored,
 };
 
+use super::import_dialog::ImportDialog;
 use super::{
     Action, AudioScope, ConstructionDraft, Effect, FrontEnd, InputContext, Loadout, MissionOutcome,
     Outcome, PageMove, Plan, ProfileIntent, Refusal, Request, Resource, Screen, ScreenDeck,
@@ -847,6 +848,16 @@ pub enum FlowError {
     ScrapbookLaunch(LaunchError),
     /// The stored scrapbook would not answer when a read needed it.
     ScrapbookStored(PersistError),
+    /// The import dialog's confirmed import cannot be persisted.
+    ///
+    /// The confirmed value — the new profile, the retained source fingerprint,
+    /// the migration report and the record indices to carry — exists
+    /// ([`crate::ui::import::ConfirmedImport`]) and the dialog holds it, but
+    /// nothing writes it into a new profile yet: that transaction belongs to
+    /// the profile store (F64-C's follow-up, Rally #756), which this flow does
+    /// not own. Asking for it is refused by name, so a screen never reports an
+    /// import that nothing carried.
+    ImportNotPersistable,
 }
 
 impl fmt::Display for FlowError {
@@ -899,6 +910,9 @@ impl fmt::Display for FlowError {
             Self::ScrapbookSelect(error) => write!(f, "{error}"),
             Self::ScrapbookLaunch(error) => write!(f, "{error}"),
             Self::ScrapbookStored(error) => write!(f, "{error}"),
+            Self::ImportNotPersistable => f.write_str(
+                "nothing persists a confirmed import into a new profile yet (Rally #756)",
+            ),
         }
     }
 }
@@ -1071,6 +1085,12 @@ impl FlowDomain {
             Some(Request::OpenProfile(intent)) => self.open_profile(*intent),
             Some(Request::CloseProfile) => self.close_profile(),
             Some(Request::CommitBlueprint(draft)) => self.commit_blueprint(draft),
+            // The confirmed import is the dialog's value
+            // ([`crate::ui::front_end::ImportDialog::confirmed`]); writing it
+            // into a new profile is the profile store's transaction (#756) and
+            // does not exist yet, so it is refused rather than reported as
+            // carried.
+            Some(Request::ConfirmImport) => Err(FlowError::ImportNotPersistable),
             Some(Request::CommitLoadout(loadout)) => self.commit_loadout(loadout),
             Some(Request::ApplyOutcome(verdict)) => self.apply_outcome(*verdict),
             // Abandoning a mission is the campaign's *not* happening: the
@@ -1740,6 +1760,34 @@ impl FrontEndFlow {
     pub fn select_scrapbook(&mut self, id: ContentId) -> Result<Outcome, FlowError> {
         self.choose_scrapbook(id)?;
         self.press(Action::SelectEntry)
+    }
+
+    /// Hands the import dialog screen the source it offers (F64-C's report,
+    /// drawn by this front end).
+    ///
+    /// Opening, retrying and cancelling the attempt are the table's own
+    /// actions ([`Action::OpenImportDialog`], [`Action::Retry`],
+    /// [`Action::Cancel`]) and run through [`Self::press`] like every other
+    /// transition. Confirming one is the single import transaction this flow
+    /// cannot run yet: the profile store that writes a confirmed import is
+    /// Rally #756, so [`Self::press`] with [`Action::ConfirmImport`] comes
+    /// back [`FlowError::ImportNotPersistable`] rather than reporting an
+    /// import nothing carried.
+    ///
+    /// # Errors
+    ///
+    /// [`FlowError::Screen`] off [`Screen::ImportDialog`] or while a discard
+    /// prompt is open.
+    pub fn open_import_dialog(&mut self, dialog: ImportDialog) -> Result<(), FlowError> {
+        self.session
+            .open_import_dialog(dialog)
+            .map_err(FlowError::from)
+    }
+
+    /// The open import dialog, when one is on screen.
+    #[must_use]
+    pub fn import_dialog(&self) -> Option<&ImportDialog> {
+        self.session.import_dialog()
     }
 
     /// Opens the machine's construction draft (F45-B's domain-side input).

@@ -797,6 +797,11 @@ pub mod ui {
     //! [`import::ReportLine`] per record, unresolved row and breach) retains
     //! the verified source fingerprint, and the module holds no writer, so it
     //! cannot touch the source or any save (F64 non-negotiable 1).
+    //! [`front_end::ImportDialog`] is the front-end screen that draws those
+    //! report lines on [`front_end::Screen::ImportDialog`] and offers
+    //! [`front_end::Action::ConfirmImport`]/[`front_end::Action::Retry`]/
+    //! [`front_end::Action::Cancel`] through the state table, so the migration
+    //! report reaches a player without the screen re-deriving a single line.
 
     pub mod front_end;
     pub mod hud;

@@ -25,6 +25,12 @@
 //!   a validated [`ScreenDeck`] of authored artwork and hotspots: pointer
 //!   hit-testing through the image's own aspect-fit transform and focus in the
 //!   authored order, with every action still applied by the table above.
+//! * [`ImportDialog`] (in `import_dialog`) — the [`Screen::ImportDialog`]
+//!   state: the legacy-import dialog that draws
+//!   [`crate::ui::import::MigrationView`]'s report lines (F64-C) unchanged,
+//!   offers [`Action::ConfirmImport`]/[`Action::Retry`]/[`Action::Cancel`]
+//!   through the table above, and holds the
+//!   [`crate::ui::import::ConfirmedImport`] a persistence layer will carry.
 //! * [`review_navigation`] (in `paths`, F45-D) — the navigation review: every
 //!   row of the table applied on the real machine, with every screen either
 //!   reached or named as not reached and every refusal carried by its code.
@@ -36,9 +42,12 @@
 //!   decode that feeds a capture. `retail` here is read access to the owner's
 //!   files, never a run of the original executable.
 //!
-//! The table, the machine, the authored presentation and the navigation walk
-//! are **designed**; no original screen list, hotspot coordinate or flow was
-//! read. [`FrontEndScreens`] (F45-D, `retail`) reads original **artwork** only
+//! The table, the machine, the authored presentation, the navigation walk and
+//! the import dialog are **designed**; no original screen list, hotspot
+//! coordinate or flow was read. The dialog's rows are F64-C's own report
+//! lines, drawn verbatim: a fixture report is labelled as one by the
+//! producer, never by this layer. [`FrontEndScreens`] (F45-D, `retail`) reads
+//! original **artwork** only
 //! — which original image belongs to which screen, and where the original puts
 //! a button, stays unread: no original front-end layout is decoded anywhere in
 //! this repository, so F45-B validates and presents whatever a loader supplies
@@ -52,6 +61,7 @@
 
 mod capture;
 mod flow;
+mod import_dialog;
 mod machine;
 mod original;
 mod paths;
@@ -70,6 +80,7 @@ pub use flow::{
     ConstructionInputs, FlowDomainView, FlowError, FlowSetup, FrontEndFlow, LoadError, LoadFlow,
     LoadPlan, LoadVerdict, ResourceLedger, ResourceProblem, ScrapbookInputs,
 };
+pub use import_dialog::ImportDialog;
 pub use machine::{
     ConstructionDraft, Effect, FrontEnd, LoadFailure, Loadout, LoadoutProblem, MissionOutcome,
     Outcome, PageMove, Plan, ProfileIntent, Refusal, Request,
@@ -102,6 +113,8 @@ pub enum Screen {
     MainMenu,
     /// Create or choose the profile.
     ProfileSelect,
+    /// The legacy-import dialog (F64-C's report; see [`import_dialog`]).
+    ImportDialog,
     /// Settings opened from the menu.
     Settings,
     /// The campaign cabin hub.
@@ -130,11 +143,12 @@ pub enum Screen {
 
 impl Screen {
     /// Every screen.
-    pub const ALL: [Self; 16] = [
+    pub const ALL: [Self; 17] = [
         Self::InstallSelect,
         Self::ContentDiagnosis,
         Self::MainMenu,
         Self::ProfileSelect,
+        Self::ImportDialog,
         Self::Settings,
         Self::Cabin,
         Self::Scrapbook,
@@ -181,6 +195,10 @@ pub enum Action {
     ContinueProfile,
     /// Accept the profile choice.
     ConfirmProfile,
+    /// Offer a legacy source to the import dialog.
+    OpenImportDialog,
+    /// Accept the import dialog's report: persist the confirmed import.
+    ConfirmImport,
     /// Open settings.
     OpenSettings,
     /// Open the scrapbook.
@@ -233,7 +251,7 @@ pub enum Action {
 
 impl Action {
     /// Every action.
-    pub const ALL: [Self; 32] = [
+    pub const ALL: [Self; 34] = [
         Self::InstallVerified,
         Self::InstallRejected,
         Self::ContentMissing,
@@ -242,6 +260,8 @@ impl Action {
         Self::NewProfile,
         Self::ContinueProfile,
         Self::ConfirmProfile,
+        Self::OpenImportDialog,
+        Self::ConfirmImport,
         Self::OpenSettings,
         Self::OpenScrapbook,
         Self::NextPage,
@@ -280,6 +300,8 @@ impl Action {
             Self::NewProfile => "new-profile",
             Self::ContinueProfile => "continue-profile",
             Self::ConfirmProfile => "confirm-profile",
+            Self::OpenImportDialog => "open-import-dialog",
+            Self::ConfirmImport => "confirm-import",
             Self::OpenSettings => "open-settings",
             Self::OpenScrapbook => "open-scrapbook",
             Self::NextPage => "next-page",
@@ -360,6 +382,8 @@ pub enum RequestKind {
     CloseProfile,
     /// Commit the construction draft.
     CommitBlueprint,
+    /// Persist the import dialog's confirmed import.
+    ConfirmImport,
     /// Select the flight-check aircraft and ammunition together.
     CommitLoadout,
     /// Apply the mission outcome to the campaign.
@@ -473,7 +497,36 @@ pub const TABLE: &[Row] = &[
         G::None,
         R::OpenProfile,
     ),
+    row(
+        S::ProfileSelect,
+        A::OpenImportDialog,
+        S::ImportDialog,
+        G::None,
+        R::None,
+    ),
     row(S::ProfileSelect, A::Back, S::MainMenu, G::None, R::None),
+    // The legacy-import dialog (F64-C). Confirm asks the domain for the one
+    // transaction this screen has — persisting the confirmed import — and only
+    // when the report says it may (`MigrationView::confirmable`); the report
+    // and the confirmed value stay in the dialog, so the screen never moves
+    // off it on an action the domain cannot take yet. Retry re-runs the whole
+    // pipeline over the same source; Cancel is the teardown, and the one way
+    // out of the dialog.
+    row(
+        S::ImportDialog,
+        A::ConfirmImport,
+        S::ImportDialog,
+        G::None,
+        R::ConfirmImport,
+    ),
+    row(S::ImportDialog, A::Retry, S::ImportDialog, G::None, R::None),
+    row(
+        S::ImportDialog,
+        A::Cancel,
+        S::ProfileSelect,
+        G::None,
+        R::None,
+    ),
     row(S::Settings, A::Back, S::MainMenu, G::None, R::None),
     row(S::Cabin, A::OpenBriefing, S::Briefing, G::None, R::None),
     row(

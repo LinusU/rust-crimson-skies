@@ -11,6 +11,9 @@ use std::fmt;
 
 use cs_types::content::{ContentId, ContentKind};
 
+use crate::ui::import::ConfirmError;
+
+use super::import_dialog::ImportDialog;
 use super::{Action, ActionSource, Guard, RequestKind, Resource, Screen, find, resources, rows_on};
 
 /// Whether the profile is new or existing.
@@ -160,6 +163,22 @@ pub enum Request {
     CloseProfile,
     /// Commit the construction draft.
     CommitBlueprint(ConstructionDraft),
+    /// Persist the import dialog's confirmed import.
+    ///
+    /// The transaction's **value** — the
+    /// [`ConfirmedImport`](crate::ui::import::ConfirmedImport) with the new
+    /// profile, the retained source fingerprint, the migration report and the
+    /// record indices to carry — stays in the dialog
+    /// ([`ImportDialog::confirmed`]) and is read from there, exactly as
+    /// `CommitBlueprint` takes the draft the machine holds: a migration report
+    /// is measured data whose equality the producer defines (it is
+    /// [`PartialEq`](std::cmp::PartialEq) but not [`Eq`](std::cmp::Eq)), and
+    /// the request vocabulary is `Eq`, so the value is not duplicated into it.
+    /// Asking for
+    /// this transaction means "persist what the open dialog confirmed"; with
+    /// no dialog open it is refused
+    /// ([`Refusal::NoImportAttempt`]).
+    ConfirmImport,
     /// Select the aircraft and ammunition together.
     CommitLoadout(Loadout),
     /// Apply the mission outcome to the campaign.
@@ -252,6 +271,12 @@ pub enum Refusal {
     NoProfileIntent,
     /// Committing needs a construction draft and none is open.
     NoDraft,
+    /// The import dialog has no attempt to retry or confirm, because no
+    /// source was offered on it.
+    NoImportAttempt,
+    /// The import dialog's explicit owner action was refused; the reason is
+    /// the producer's own.
+    Import(ConfirmError),
     /// Nothing is focused.
     NothingFocused,
 }
@@ -272,6 +297,8 @@ impl fmt::Display for Refusal {
             }
             Self::NoProfileIntent => write!(f, "the profile screen needs a new/existing choice"),
             Self::NoDraft => write!(f, "there is no construction draft to commit"),
+            Self::NoImportAttempt => f.write_str("no legacy source was offered on the dialog"),
+            Self::Import(error) => write!(f, "{error}"),
             Self::NothingFocused => write!(f, "no button is focused"),
         }
     }
@@ -287,6 +314,7 @@ pub struct FrontEnd {
     held: BTreeSet<Resource>,
     intent: Option<ProfileIntent>,
     construction: Option<ConstructionDraft>,
+    import: Option<ImportDialog>,
     loadout: Loadout,
     wingmate_required: bool,
     outcome: Option<MissionOutcome>,
@@ -311,6 +339,7 @@ impl FrontEnd {
             held: resources(Screen::START),
             intent: None,
             construction: None,
+            import: None,
             loadout: Loadout::default(),
             wingmate_required: false,
             outcome: None,
@@ -365,6 +394,17 @@ impl FrontEnd {
     #[must_use]
     pub fn construction(&self) -> Option<&ConstructionDraft> {
         self.construction.as_ref()
+    }
+
+    /// The open legacy-import dialog: the offered source, its migration report
+    /// and the confirmed import once the owner has taken the explicit action.
+    ///
+    /// The dialog is a [`Screen::ImportDialog`] input, not a transition
+    /// payload — the source's bytes and the context it is read through are the
+    /// application's, and the machine only carries the screen that draws them.
+    #[must_use]
+    pub fn import_dialog(&self) -> Option<&ImportDialog> {
+        self.import.as_ref()
     }
 
     /// The last mission outcome, until the cabin or menu is reached.
@@ -427,6 +467,25 @@ impl FrontEnd {
         let draft = self.construction.as_mut().ok_or(Refusal::NoDraft)?;
         draft.saved = saved;
         draft.components = components;
+        Ok(())
+    }
+
+    /// Hands the import dialog screen the source it offers.
+    ///
+    /// The dialog has already run its first attempt (it is built by
+    /// [`ImportDialog::open`] from the context and the offer), because
+    /// entering the screen must already show the player what the source would
+    /// do rather than an empty page. Offering another source replaces whatever
+    /// the previous dialog held, which drops that attempt and its report
+    /// whole.
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal::WrongScreen`] off [`Screen::ImportDialog`],
+    /// [`Refusal::ConfirmationPending`] while a discard prompt is open.
+    pub fn open_import_dialog(&mut self, dialog: ImportDialog) -> Result<(), Refusal> {
+        self.expect(Screen::ImportDialog)?;
+        self.import = Some(dialog);
         Ok(())
     }
 
@@ -708,6 +767,16 @@ impl FrontEnd {
                 let draft = self.construction.clone().ok_or(Refusal::NoDraft)?;
                 effects.push(Effect::Request(Request::CommitBlueprint(draft)));
             }
+            RequestKind::ConfirmImport => {
+                // The dialog validates first and refuses the producer's own
+                // reason; only then is the transaction asked for. The
+                // confirmed value stays in the dialog for whoever runs the
+                // transaction to read, so the screen never hands the domain a
+                // report it re-derived.
+                let dialog = self.import.as_mut().ok_or(Refusal::NoImportAttempt)?;
+                dialog.confirm().map_err(Refusal::Import)?;
+                effects.push(Effect::Request(Request::ConfirmImport));
+            }
             RequestKind::CommitLoadout => {
                 effects.push(Effect::Request(Request::CommitLoadout(
                     self.loadout.clone(),
@@ -743,6 +812,29 @@ impl FrontEnd {
             }
             RequestKind::LaunchReplay => {
                 effects.push(Effect::Request(Request::LaunchReplay));
+            }
+        }
+        // The import dialog's own buttons. Neither asks the domain for
+        // anything — the source, the attempt and the confirmed value are the
+        // dialog's — so neither is a request kind, and both need a dialog: a
+        // screen no source was offered on has nothing to retry. Retry re-runs
+        // the whole pipeline over the same source; Cancel is the teardown the
+        // contract's "retry restores the authored initial state" is about, and
+        // the one way out of the screen.
+        if from == Screen::ImportDialog {
+            match action {
+                Action::Retry => {
+                    self.import
+                        .as_mut()
+                        .ok_or(Refusal::NoImportAttempt)?
+                        .retry();
+                }
+                Action::Cancel => {
+                    if let Some(mut dialog) = self.import.take() {
+                        dialog.cancel();
+                    }
+                }
+                _ => {}
             }
         }
         // Every fallible step is behind us: from here the machine changes.

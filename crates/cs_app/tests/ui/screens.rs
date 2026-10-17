@@ -97,7 +97,14 @@ pub(crate) fn preflight_deck() -> ScreenDeck {
         ),
         (
             Screen::ProfileSelect,
-            authored("art-profile-select", &["confirm-profile", "back"]),
+            authored(
+                "art-profile-select",
+                &["confirm-profile", "open-import-dialog", "back"],
+            ),
+        ),
+        (
+            Screen::ImportDialog,
+            authored("art-import-dialog", &["confirm-import", "retry", "cancel"]),
         ),
         (Screen::Settings, authored("art-settings", &["back"])),
         (
@@ -300,6 +307,31 @@ fn accept_f45_b_cancel_at_every_preflight_screen_leaves_state_and_currency_uncha
         cancelled.extend(requests(&leave));
         cancelled_at.push(screen);
     }
+
+    // The legacy-import dialog (F64-C's report, drawn by this front end):
+    // reached from the profile screen, and left by Cancel, which tears the
+    // attempt down and asks the domain for nothing.
+    let mut session = ScreenSession::new(deck.clone());
+    press(&mut session, Action::InstallVerified);
+    assert_eq!(requests(&click(&mut session, Action::NewProfile)), vec![]);
+    assert_eq!(session.front_end().screen(), Screen::ProfileSelect);
+    let enter = click(&mut session, Action::OpenImportDialog);
+    assert_eq!(session.front_end().screen(), Screen::ImportDialog);
+    assert!(
+        requests(&enter).is_empty(),
+        "opening the import dialog asks the domain for nothing"
+    );
+    assert!(
+        session.front_end().import_dialog().is_none(),
+        "no source was offered, so the dialog holds no attempt"
+    );
+    let leave = click(&mut session, Action::Cancel);
+    assert_eq!(session.front_end().screen(), Screen::ProfileSelect);
+    assert!(
+        requests(&leave).is_empty(),
+        "cancel on ImportDialog asked the domain for something"
+    );
+    cancelled_at.push(Screen::ImportDialog);
 
     // The cabin and its screens. Opening the profile is the one transaction
     // this walk performs; every cancel after it must ask for nothing.

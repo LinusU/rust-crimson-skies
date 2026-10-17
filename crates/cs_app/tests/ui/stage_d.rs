@@ -28,14 +28,42 @@ use std::path::{Path, PathBuf};
 use std::sync::OnceLock;
 
 use cs_app::ui::front_end::{
-    Action, Artwork, ConstructionDraft, FrontEndScreens, Loadout, MINIMUM_SCREEN_EXTENT,
-    NavigationInputs, Screen, ScreenSession, capture_artwork, capture_screen, review_navigation,
-    review_navigation_with,
+    Action, Artwork, ConstructionDraft, FrontEndScreens, ImportDialog, Loadout,
+    MINIMUM_SCREEN_EXTENT, NavigationInputs, Screen, ScreenSession, capture_artwork,
+    capture_screen, review_navigation, review_navigation_with,
 };
+use cs_formats::legacy_profile::LegacyArtifactClass;
 use cs_types::content::ContentKind;
 
 use super::id;
+use super::import_fixture as fixture;
 use super::screens::preflight_deck;
+
+/// The declared input the import-dialog screen is supplied with: F64-C's
+/// designed fixture source, read through the production pipeline, so the walk
+/// reaches the dialog's `ConfirmImport` and `Retry` rows with a real report on
+/// screen instead of an empty one.
+fn import_dialog_input() -> ImportDialog {
+    let bytes = fixture::blueprint_document(&[fixture::full_record()]);
+    let (layout, map) = fixture::blueprint_layout_and_map();
+    let ids = fixture::id_map();
+    let catalog = fixture::catalog(fixture::CatalogRows::Base);
+    let (rules, policy, book) = fixture::stock();
+    let context = fixture::context(&ids, &catalog, &rules, &policy, &book, true);
+    let source = fixture::proposal(&bytes, LegacyArtifactClass::CustomAircraft)
+        .expect("the fixture source is within the import cap");
+    let target = fixture::target();
+    let offer = fixture::offer(&source, &bytes, Some(&layout), Some(&map), &target);
+    let dialog = ImportDialog::open(&context, &offer);
+    // The fixture must really describe something, or the walk would be
+    // exercising an empty dialog.
+    assert!(
+        dialog.lines().iter().any(|line| line.code() == "verdict"),
+        "the fixture source must produce a report: {:?}",
+        dialog.lines()
+    );
+    dialog
+}
 
 /// The logical size every fixture screen in `screens.rs` is authored at.
 const IMAGE: (u32, u32) = (640, 480);
@@ -361,6 +389,7 @@ fn accept_f45_d_the_navigation_review_classifies_every_row_and_names_every_scree
             ],
         }),
         scrapbook_choice: Some(id(ContentKind::Stunt, "stunt.barrel")),
+        import: Some(import_dialog_input()),
     };
     let review = review_navigation_with(Screen::START, &inputs);
     assert_eq!(review.start, Screen::START);
@@ -399,7 +428,12 @@ fn accept_f45_d_the_navigation_review_classifies_every_row_and_names_every_scree
     supplied.sort_unstable();
     assert_eq!(
         supplied,
-        ["construction_draft", "loadout", "scrapbook_choice"],
+        [
+            "construction_draft",
+            "import",
+            "loadout",
+            "scrapbook_choice"
+        ],
         "{supplied:?}"
     );
 
@@ -413,6 +447,7 @@ fn accept_f45_d_the_navigation_review_classifies_every_row_and_names_every_scree
         cs_app::ui::front_end::RequestKind::OpenProfile,
         cs_app::ui::front_end::RequestKind::CloseProfile,
         cs_app::ui::front_end::RequestKind::CommitBlueprint,
+        cs_app::ui::front_end::RequestKind::ConfirmImport,
         cs_app::ui::front_end::RequestKind::CommitLoadout,
         cs_app::ui::front_end::RequestKind::ApplyOutcome,
         cs_app::ui::front_end::RequestKind::AbandonMission,

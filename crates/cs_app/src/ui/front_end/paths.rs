@@ -35,6 +35,8 @@
 use std::collections::{BTreeSet, VecDeque};
 use std::fmt;
 
+use crate::ui::import::ConfirmError;
+
 use super::{Action, Effect, FrontEnd, Refusal, RequestKind, Screen, rows_on};
 
 /// How one applied row ended.
@@ -84,6 +86,18 @@ fn refusal_code(refusal: &Refusal) -> &'static str {
         Refusal::WrongScreen { .. } => "wrong_screen",
         Refusal::NoProfileIntent => "no_profile_intent",
         Refusal::NoDraft => "no_draft",
+        Refusal::NoImportAttempt => "no_import_attempt",
+        // The dialog's explicit owner action carries the producer's own
+        // reason, so the review records that reason's own code rather than a
+        // second vocabulary for it: `Refused { code }` keeps the refusal the
+        // attempt hit, and `Unsupported` keeps the producer's
+        // `UnresolvedReason` (`id_not_mapped`, `no_resolvable_identity`, ...).
+        Refusal::Import(error) => match error {
+            ConfirmError::NothingToConfirm => "nothing_to_confirm",
+            ConfirmError::Refused { code } => code,
+            ConfirmError::Unsupported { reason } => reason.code(),
+            ConfirmError::NoConformingRecord => "no_conforming_record",
+        },
         Refusal::NothingFocused => "nothing_focused",
     }
 }
@@ -91,9 +105,13 @@ fn refusal_code(refusal: &Refusal) -> &'static str {
 /// The domain inputs a player supplies on screens whose rows are guarded on
 /// them. None of these is a table row: they are what the *presentation* hands
 /// the machine (F45-B's `ScreenSession::select_loadout` /
-/// `open_construction`), and a walk without them stops at the first guarded
-/// screen.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// `open_construction`, F64-C's `ScreenSession::open_import_dialog`), and a
+/// walk without them stops at the first guarded screen.
+///
+/// [`PartialEq`] and [`Eq`] are deliberately absent: the import dialog holds a
+/// migration report, which is measured data whose equality the producer
+/// defines — equality without it would compare two screenshots.
+#[derive(Clone, Debug, Default)]
 pub struct NavigationInputs {
     /// The flight check's loadout: without one, `Launch` is refused
     /// (`invalid_loadout`) and the whole loading/flight/results half of the
@@ -105,6 +123,11 @@ pub struct NavigationInputs {
     /// The scrapbook entry the `SelectEntry` press selects: without one the
     /// row is refused (`no_scrapbook_choice`).
     pub scrapbook_choice: Option<cs_types::content::ContentId>,
+    /// The legacy-import dialog's offered source (F64-C's report, drawn by
+    /// [`super::ImportDialog`]): without one the dialog has no attempt, so
+    /// `ConfirmImport` and `Retry` are refused (`no_import_attempt`) rather
+    /// than describing a source nobody offered.
+    pub import: Option<super::ImportDialog>,
 }
 
 /// One declared input the walk supplied before applying a screen's rows.
@@ -112,7 +135,7 @@ pub struct NavigationInputs {
 pub struct SuppliedInput {
     /// The screen it was supplied on.
     pub screen: Screen,
-    /// Which input, in words (`loadout`, `construction_draft`).
+    /// Which input, in words (`loadout`, `construction_draft`, `import`).
     pub input: &'static str,
 }
 
@@ -282,6 +305,7 @@ fn request_name(request: RequestKind) -> &'static str {
         RequestKind::OpenProfile => "open_profile",
         RequestKind::CloseProfile => "close_profile",
         RequestKind::CommitBlueprint => "commit_blueprint",
+        RequestKind::ConfirmImport => "confirm_import",
         RequestKind::CommitLoadout => "commit_loadout",
         RequestKind::ApplyOutcome => "apply_outcome",
         RequestKind::AbandonMission => "abandon_mission",
@@ -356,8 +380,9 @@ pub fn review_navigation_with(start: Screen, inputs: &NavigationInputs) -> PathR
 
         // The declared inputs a player supplies on this screen, before any row
         // of it is applied: the flight check's loadout and the construction
-        // screen's open draft are presentation-level inputs (F45-B), never
-        // table rows, and the review records every one it used.
+        // screen's open draft are presentation-level inputs (F45-B), the
+        // legacy-import dialog's offered source is F64-C's, and none of them is
+        // a table row. The review records every one it used.
         if !seen_screens.contains(&screen) {
             seen_screens.insert(screen);
             reached.push(screen);
@@ -389,6 +414,16 @@ pub fn review_navigation_with(start: Screen, inputs: &NavigationInputs) -> PathR
                         supplied.push(SuppliedInput {
                             screen,
                             input: "scrapbook_choice",
+                        });
+                    }
+                }
+                Screen::ImportDialog if state.import_dialog().is_none() => {
+                    if let Some(dialog) = &inputs.import
+                        && state.open_import_dialog(dialog.clone()).is_ok()
+                    {
+                        supplied.push(SuppliedInput {
+                            screen,
+                            input: "import",
                         });
                     }
                 }
@@ -492,11 +527,12 @@ pub fn review_navigation_with(start: Screen, inputs: &NavigationInputs) -> PathR
 /// Everything the table's guards read, as the identity of one explored state.
 fn signature(machine: &FrontEnd) -> String {
     format!(
-        "{:?}|{:?}|loadout_empty={}|draft={}|prompt={}|failure={}|choice={}",
+        "{:?}|{:?}|loadout_empty={}|draft={}|import={}|prompt={}|failure={}|choice={}",
         machine.screen(),
         machine.outcome(),
         machine.loadout().is_empty(),
         machine.construction().is_some(),
+        machine.import_dialog().is_some(),
         machine.pending_discard().is_some(),
         machine.last_failure().is_some(),
         machine.scrapbook_choice().is_some(),

@@ -52,6 +52,11 @@ mod evidence;
 mod evidence_f45_b_1;
 mod flight_check_options;
 mod flow;
+/// The import dialog's fixture, read through F64-C's own designed fixture
+/// construction (`tests/f64_c_support/`), so the navigation walk and the
+/// F64-C acceptance suite describe one source rather than two.
+#[path = "../f64_c_support/mod.rs"]
+mod import_fixture;
 mod layout;
 mod original;
 mod scrapbook_dispatch;
