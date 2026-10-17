@@ -90,11 +90,11 @@ aarch64, default `test` profile):
 
 | binary | contents | `__eh_frame` |
 | --- | --- | --- |
-| `cs_app_tests_a` | 180 top-level files (accept_f2*-f5*, accept_t*, accept_m01_*, evidence_report_m01_*/…) and 40 campaign modules | 14,973,680 B (14.28 MiB) |
-| `cs_app_tests_b` | `accept_f2[0-4]*`, `playtest_*`, `render/` | 14,846,096 B (14.16 MiB) |
-| `cs_app_tests_c` | `world/`, F64 group, `ui/`, `camera/`, `text/`, `accessibility/`, `scrapbook/`, `accept_f0*/f1*` | 15,229,808 B (14.52 MiB) |
-| `cs_app_tests_d` | `evidence_report_f*`, `accept_f3*`, `physics/`, `hud/`, and the remaining campaign modules | 13,096,968 B (12.49 MiB) |
-| `cs_app_tests_e` | the `vs_m01_*` runtime-host suites, `m01_play_world_evidence` | 15,373,388 B (14.66 MiB) |
+| `cs_app_tests_a` | `accept_f25`-`f29`, `f40`-`f44`, `f47`-`f49`, `f53`-`f59`, all 44 `accept_m01_*`, `accept_t*`, the other 46 `evidence_report_*` (m01, t463-t542, retail), `environment/`, `flight/`, and 40 campaign modules (the M01 play/window families, `m02`-`m05`, …) | 14,973,680 B (14.28 MiB) |
+| `cs_app_tests_b` | `accept_f20`, `f22`, `f24`, 5 `playtest_*` files, `render/` | 14,846,096 B (14.16 MiB) |
+| `cs_app_tests_c` | `accept_f00`, `f16`, `f17`, `f60`, `f64`, `evidence_report_f64_*`, `world/` (+ `vs_m01_geometry_verdict`), `ui/`, `camera/`, `text/`, `accessibility/`, `scrapbook/`, the F64 supports | 15,229,808 B (14.52 MiB) |
+| `cs_app_tests_d` | `accept_f30`-`f36`, `f39`, 13 `evidence_report_*` (f18-f21, f33, f39, flight), `physics/`, `hud/`, and the campaign module root (`m06`-`m24`, `f50`, `evidence/`, …) | 13,096,968 B (12.49 MiB) |
+| `cs_app_tests_e` | the `vs_m01_*` runtime-host suites incl. `vs_m01_runtime`, `m01_play_world_evidence` | 15,373,388 B (14.66 MiB) |
 
 All five are under the 16 MiB limit by 1.4-3.5 MiB. The owner's aim of about
 12 MiB each is not reachable: the lightest non-trivial binary is already ~5.5
