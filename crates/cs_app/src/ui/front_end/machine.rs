@@ -107,6 +107,16 @@ impl Loadout {
 }
 
 /// The construction screen's working copy.
+///
+/// When the F45-C flow attaches a `ConstructionScreen`, this draft is its
+/// **projection** (#747): `saved` and `components` are the flat id list the
+/// screen's own `AircraftBlueprint::components` order produces — every
+/// fitted component, then every staged sale — `saved` at the committed base,
+/// `components` at the current draft. The two then disagree exactly when the
+/// screen's draft or its staged sales differ from the commit, which is the
+/// `dirty` the discard prompt reads. A caller that declares a draft while no
+/// screen is attached still sets the fields itself, as the machine-level
+/// input F45-B made them.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConstructionDraft {
     /// The blueprint being edited.
@@ -373,6 +383,27 @@ impl FrontEnd {
     pub fn edit_construction(&mut self, components: Vec<ContentId>) -> Result<(), Refusal> {
         self.expect(Screen::Construction)?;
         let draft = self.construction.as_mut().ok_or(Refusal::NoDraft)?;
+        draft.components = components;
+        Ok(())
+    }
+
+    /// Re-points the open draft's committed baseline and edited components at
+    /// the projection the F45-C flow computes from the attached construction
+    /// screen: `saved` is the committed base, `components` the current draft.
+    /// The draft's `blueprint` is the machine's own declaration and is left
+    /// untouched — it is what the domain's mismatch check compares.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::open_construction`], and [`Refusal::NoDraft`] with no draft.
+    pub fn reconcile_construction(
+        &mut self,
+        saved: Vec<ContentId>,
+        components: Vec<ContentId>,
+    ) -> Result<(), Refusal> {
+        self.expect(Screen::Construction)?;
+        let draft = self.construction.as_mut().ok_or(Refusal::NoDraft)?;
+        draft.saved = saved;
         draft.components = components;
         Ok(())
     }

@@ -598,6 +598,21 @@ impl ScreenSession {
         self.front_end.edit_construction(components)
     }
 
+    /// Re-points the open draft at the projection the F45-C.1 wiring computes
+    /// from the attached construction screen: `saved` the committed base,
+    /// `components` the current draft.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::open_construction`], and [`Refusal::NoDraft`] with none open.
+    pub fn reconcile_construction(
+        &mut self,
+        saved: Vec<ContentId>,
+        components: Vec<ContentId>,
+    ) -> Result<(), Refusal> {
+        self.front_end.reconcile_construction(saved, components)
+    }
+
     /// Replaces the flight-check selection.
     ///
     /// # Errors
