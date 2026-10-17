@@ -26,4 +26,5 @@ mod accept_t440_live_foreign_target_dir;
 mod accept_t610_transient_target_dir;
 mod accept_t696_test_disk_footprint;
 mod accept_test_bin_guard;
+mod accept_test_bin_rest_workspace;
 mod accept_test_bin_rest_xtask;
