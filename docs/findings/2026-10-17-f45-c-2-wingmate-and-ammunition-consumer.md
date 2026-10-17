@@ -8,7 +8,10 @@ ammunition slots a consumer" (follow-up of #194 / F45-C, recorded in
 `docs/contracts/STATE-TRANSACTIONS.md`. Required capabilities: ordinary
 build/test only — no original file is read, no evidence report is claimed, and
 nothing here is `verified_original`. Implemented by `bunny-alpha-2` (agent
-`bunny-alpha-2`, session of 2026-10-17); no independent review yet.
+`bunny-alpha-2`, session of 2026-10-17); reviewed on 2026-10-17 by the same
+agent name in a fresh session (Rally claim `clm_59xcj008ikp4hq2e`) — a fresh
+context but **not** an independent implementer/reviewer pair, so this review is
+not independent review evidence (`AGENTS.md`, "Reviewing").
 
 ## One observable failure (listed before editing)
 
@@ -165,10 +168,12 @@ back:
 ## Test selection and sensitivity
 
 `cargo test --workspace --locked -- accept_f45_c_ --include-ignored`
-discovers and runs **15** tests in the `ui` target, all passing: the 11
-`accept_f45_c_*` of F45-C (unchanged) and the 4 new `accept_f45_c_2_*` ones
-(the F45-C.2 prefix is selected by the same filter, so the parent stage's
-selection still means what it did).
+discovers and runs **21** tests in the `ui` target, all passing: the 11
+`accept_f45_c_*` of F45-C (unchanged), the 6 `accept_f45_c_1_*` of the
+already-landed F45-C.1 stage, and the 4 new `accept_f45_c_2_*` ones. The
+F45-C.2 prefix is selected by the same filter, so the parent stage's selection
+still means what it did; the F45-C.1 count was added when this branch was
+rebased onto the commit that landed F45-C.1.
 
 - `accept_f45_c_2_the_committed_wingmate_and_ammunition_reach_the_session_roster`
   — the stage's minimum scenario: the committed `wingmate` airframe is the
