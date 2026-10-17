@@ -88,6 +88,7 @@ use cs_content::airframe_roles::{
 use cs_content::construction::{
     AircraftBlueprint, ConstructionPolicy, ConstructionRules, PriceBook,
 };
+use cs_content::instant_action::InstantActionCatalog;
 use cs_content::save::settings::SettingCatalog;
 use cs_content::scrapbook::ScrapbookCatalog;
 use cs_sim::allies::{
@@ -95,7 +96,8 @@ use cs_sim::allies::{
 };
 use cs_sim::campaign::{
     AppliedOutcome, CampaignGraph, CampaignRunId, DifficultyId,
-    MissionOutcome as MissionOutcomeRecord, Outcome as MissionResult,
+    MissionOutcome as MissionOutcomeRecord, Outcome as MissionResult, ProfileId as IaProfileId,
+    SessionGeneration as IaGeneration,
 };
 use cs_types::content::ContentId;
 use cs_types::profile::{ProfileId, ProfileKind};
@@ -109,6 +111,9 @@ use crate::loading::{
 use crate::profile::{ProfileSession, SessionError, SessionOrigin, TeardownReport};
 use crate::roster::{LoweredRoster, open_roster};
 use crate::text::TextSession;
+use crate::ui::instant_action::{
+    IaAction, IaEdit, IaEffect, IaRefusal, IaScreen, InstantActionFlow, ScenarioSnapshot,
+};
 use crate::ui::scrapbook::{
     LaunchError, PageError, PersistError, Refresh, ReplayLaunch, ScrapbookUi, SelectError, stored,
 };
@@ -165,6 +170,25 @@ pub struct FlowSetup {
     /// The scrapbook's declared catalog and page size, when the application
     /// supplies them.
     pub scrapbook: Option<ScrapbookInputs>,
+    /// The Instant Action catalog and profile scope (F49-C2), when the
+    /// application supplied them. Without it `OpenInstantAction` is refused
+    /// rather than opening screens with nothing to select.
+    pub instant_action: Option<InstantActionInputs>,
+}
+
+/// The inputs the Instant Action screens run on (F49-C2): what
+/// [`InstantActionFlow::new`] takes, plus the identity a custom scenario runs
+/// under. A button cannot carry an id, so the subject is declared here, once,
+/// exactly as the flow's own documentation asks the caller to.
+#[derive(Clone, Debug)]
+pub struct InstantActionInputs {
+    /// The profile scope an ended session is recorded under. The main menu
+    /// holds no open profile, so the application names the scope.
+    pub profile: IaProfileId,
+    /// The authored presets and dimensions on offer.
+    pub catalog: InstantActionCatalog,
+    /// The `ia_scenario` id a custom scenario runs under.
+    pub custom_subject: ContentId,
 }
 
 /// The immutable inputs a construction commit is judged by — the same three
@@ -248,6 +272,7 @@ impl FlowSetup {
             roster: None,
             construction: None,
             scrapbook: None,
+            instant_action: None,
         }
     }
 
@@ -312,6 +337,14 @@ impl FlowSetup {
         self
     }
 
+    /// The Instant Action catalog, profile scope and custom-scenario subject
+    /// the Instant Action screens run on (F49-C2).
+    #[must_use]
+    pub fn instant_action(mut self, inputs: InstantActionInputs) -> Self {
+        self.instant_action = Some(inputs);
+        self
+    }
+
     /// The scrapbook catalog and page size the screen runs on (F47-C1).
     /// Without them `OpenScrapbook` is refused rather than guessing at a
     /// catalog.
@@ -339,6 +372,22 @@ pub enum ResourceProblem {
         /// The context the stream wanted to bind.
         offered: InputContext,
     },
+    /// An Instant Action session generation was begun while another one was
+    /// still live: the previous generation's `EndSession` must come first.
+    SessionHeldTwice {
+        /// The generation still live.
+        held: IaGeneration,
+        /// The generation the stream wanted to begin.
+        offered: IaGeneration,
+    },
+    /// An Instant Action session generation was begun that an earlier session
+    /// already used. Generations are never reused.
+    SessionGenerationReused(IaGeneration),
+    /// A session generation was ended while it was not the live one.
+    SessionEndedUnknown(IaGeneration),
+    /// The front end left the Instant Action screens with a session
+    /// generation still live: the old world would keep simulating.
+    SessionLeftBehind(IaGeneration),
 }
 
 impl fmt::Display for ResourceProblem {
@@ -349,6 +398,19 @@ impl fmt::Display for ResourceProblem {
             Self::InputBoundTwice { held, offered } => {
                 write!(f, "{offered:?} bound while {held:?} is still bound")
             }
+            Self::SessionHeldTwice { held, offered } => {
+                write!(f, "session {offered:?} began while {held:?} is still live")
+            }
+            Self::SessionGenerationReused(generation) => {
+                write!(f, "session {generation:?} was already used once")
+            }
+            Self::SessionEndedUnknown(generation) => {
+                write!(f, "session {generation:?} ended while it was not live")
+            }
+            Self::SessionLeftBehind(generation) => write!(
+                f,
+                "the Instant Action screens were left with session {generation:?} still live"
+            ),
         }
     }
 }
@@ -364,6 +426,11 @@ pub struct ResourceLedger {
     input: Option<InputContext>,
     audio: Option<AudioScope>,
     world: bool,
+    /// The live Instant Action session generation (F49-C2).
+    session: Option<IaGeneration>,
+    /// Every generation ever begun, so a reused one is caught even after its
+    /// session ended.
+    begun: BTreeSet<IaGeneration>,
 }
 
 impl ResourceLedger {
@@ -394,6 +461,54 @@ impl ResourceLedger {
             self.apply(effect)?;
         }
         Ok(())
+    }
+
+    /// Takes one Instant Action effect (F49-C2). `BeginSession` acquires a
+    /// session generation and `EndSession` releases it; the discard, draft and
+    /// leave effects hold nothing.
+    ///
+    /// # Errors
+    ///
+    /// [`ResourceProblem::SessionHeldTwice`] / [`ResourceProblem::SessionGenerationReused`]
+    /// for a begin that would hold a generation twice, and
+    /// [`ResourceProblem::SessionEndedUnknown`] for an end of a generation that
+    /// is not live (including a second end of the same one).
+    pub fn apply_ia(&mut self, effect: &IaEffect) -> Result<(), ResourceProblem> {
+        match effect {
+            IaEffect::BeginSession { generation, .. } => {
+                if let Some(held) = self.session {
+                    return Err(ResourceProblem::SessionHeldTwice {
+                        held,
+                        offered: *generation,
+                    });
+                }
+                if !self.begun.insert(*generation) {
+                    return Err(ResourceProblem::SessionGenerationReused(*generation));
+                }
+                self.session = Some(*generation);
+                Ok(())
+            }
+            IaEffect::EndSession { generation } => {
+                if self.session != Some(*generation) {
+                    return Err(ResourceProblem::SessionEndedUnknown(*generation));
+                }
+                self.session = None;
+                Ok(())
+            }
+            IaEffect::AskDiscard | IaEffect::DiscardDraft | IaEffect::LeaveToMenu => Ok(()),
+        }
+    }
+
+    /// The live Instant Action session generation, if any.
+    #[must_use]
+    pub fn session(&self) -> Option<IaGeneration> {
+        self.session
+    }
+
+    /// How many session generations the ledger has seen begin.
+    #[must_use]
+    pub fn sessions_begun(&self) -> usize {
+        self.begun.len()
     }
 
     /// The bound input context, if any.
@@ -858,6 +973,24 @@ pub enum FlowError {
     /// not own. Asking for it is refused by name, so a screen never reports an
     /// import that nothing carried.
     ImportNotPersistable,
+    /// The Instant Action flow refused the step (F49-C2); the screen, focus
+    /// and ledger are where they were.
+    InstantAction(IaRefusal),
+    /// The application supplied no Instant Action catalog, so the screens have
+    /// nothing to open on.
+    NoInstantAction,
+    /// The Instant Action session was settled with no report waiting: the
+    /// system result carries the session generation and its snapshot, which
+    /// only [`FrontEndFlow::report_instant_action`] can supply.
+    NoInstantActionReport,
+    /// The front end and the Instant Action flow are on screens that do not
+    /// correspond. This is a wiring fault, not a player's mistake.
+    InstantActionOutOfStep {
+        /// The front-end screen.
+        screen: Screen,
+        /// The Instant Action screen.
+        flow: IaScreen,
+    },
 }
 
 impl fmt::Display for FlowError {
@@ -913,6 +1046,17 @@ impl fmt::Display for FlowError {
             Self::ImportNotPersistable => f.write_str(
                 "nothing persists a confirmed import into a new profile yet (Rally #756)",
             ),
+            Self::InstantAction(error) => write!(f, "instant action: {error}"),
+            Self::NoInstantAction => f.write_str("no Instant Action catalog was supplied"),
+            Self::NoInstantActionReport => {
+                f.write_str("no Instant Action session report is waiting")
+            }
+            Self::InstantActionOutOfStep { screen, flow } => {
+                write!(
+                    f,
+                    "the front end is on {screen:?} but Instant Action on {flow:?}"
+                )
+            }
         }
     }
 }
@@ -933,6 +1077,7 @@ impl std::error::Error for FlowError {
             Self::ScrapbookSelect(error) => Some(error),
             Self::ScrapbookLaunch(error) => Some(error),
             Self::ScrapbookStored(error) => Some(error),
+            Self::InstantAction(error) => Some(error),
             _ => None,
         }
     }
@@ -947,6 +1092,12 @@ impl From<ScreenSessionError> for FlowError {
 impl From<ResourceProblem> for FlowError {
     fn from(error: ResourceProblem) -> Self {
         Self::Resource(error)
+    }
+}
+
+impl From<IaRefusal> for FlowError {
+    fn from(error: IaRefusal) -> Self {
+        Self::InstantAction(error)
     }
 }
 
@@ -1043,6 +1194,17 @@ struct FlowDomain {
     /// The replay the last accepted `Launch` produced, consumed by the load
     /// the machine then begins (F47-C1).
     replay: Option<ReplayLaunch>,
+    /// The Instant Action screens' flow (F49-C2), built from the declared
+    /// inputs. It lives as long as the front end: its session generations
+    /// count up across visits and its record book keeps every settled
+    /// session, and it is back on `Select` whenever the front end is on the
+    /// main menu.
+    instant_action: Option<InstantActionFlow>,
+    /// The session report the next `EndInstantAction` settles with.
+    ia_report: Option<(IaGeneration, ScenarioSnapshot)>,
+    /// The Instant Action effects the last accepted request produced, taken by
+    /// the ledger once the machine has moved.
+    ia_effects: Vec<IaEffect>,
 }
 
 impl FlowDomain {
@@ -1051,6 +1213,10 @@ impl FlowDomain {
             ScrapbookUi::new(inputs.page_size)
                 .expect("ScrapbookInputs::try_new validated the page size")
         });
+        let instant_action = setup
+            .instant_action
+            .as_ref()
+            .map(|inputs| InstantActionFlow::new(inputs.profile.clone(), inputs.catalog.clone()));
         Self {
             setup,
             profile: None,
@@ -1070,6 +1236,9 @@ impl FlowDomain {
             scrapbook_reason: None,
             scrapbook_refresh: None,
             replay: None,
+            instant_action,
+            ia_report: None,
+            ia_effects: Vec::new(),
         }
     }
 
@@ -1102,7 +1271,81 @@ impl FlowDomain {
             Some(Request::ScrapbookPage(step)) => self.page_scrapbook(*step),
             Some(Request::ScrapbookSelect(id)) => self.select_scrapbook(id),
             Some(Request::LaunchReplay) => self.launch_replay(),
+            Some(Request::OpenInstantAction) => self.open_instant_action(),
+            Some(Request::StartCustomScenario) => self.start_custom_scenario(),
+            Some(Request::LaunchInstantAction) => self.step_instant_action(IaAction::Launch),
+            Some(Request::InstantActionBack) => self.instant_action_back(),
+            Some(Request::RetryInstantAction) => self.step_instant_action(IaAction::Retry),
+            Some(Request::FinishInstantAction) => self.step_instant_action(IaAction::Finish),
+            Some(Request::EndInstantAction) => self.end_instant_action(),
         }
+    }
+
+    fn instant_action_mut(&mut self) -> Result<&mut InstantActionFlow, FlowError> {
+        self.instant_action
+            .as_mut()
+            .ok_or(FlowError::NoInstantAction)
+    }
+
+    /// Entering the screens needs the flow to exist and to be resting on its
+    /// own selection screen — which it always is while the menu is current.
+    fn open_instant_action(&mut self) -> Result<(), FlowError> {
+        let flow = self.instant_action_mut()?;
+        match flow.screen() {
+            IaScreen::Select => Ok(()),
+            flow => Err(FlowError::InstantActionOutOfStep {
+                screen: Screen::MainMenu,
+                flow,
+            }),
+        }
+    }
+
+    fn start_custom_scenario(&mut self) -> Result<(), FlowError> {
+        let subject = self
+            .setup
+            .instant_action
+            .as_ref()
+            .ok_or(FlowError::NoInstantAction)?
+            .custom_subject
+            .clone();
+        self.step_instant_action(IaAction::StartCustom { subject })
+    }
+
+    /// One Instant Action transition, its effects kept for the ledger. A
+    /// refusal leaves the flow exactly as it was (the flow's own contract) and
+    /// keeps nothing.
+    fn step_instant_action(&mut self, action: IaAction) -> Result<(), FlowError> {
+        let transition = self.instant_action_mut()?.apply(action)?;
+        self.ia_effects.extend(transition.effects);
+        Ok(())
+    }
+
+    /// `Back` on any of the three screens that have one. The front-end machine
+    /// owns the discard prompt: it only asks for this once the player has
+    /// confirmed (or there was nothing to confirm), so the flow's own prompt
+    /// is answered on the player's behalf and its effects are kept.
+    fn instant_action_back(&mut self) -> Result<(), FlowError> {
+        let flow = self.instant_action_mut()?;
+        let mut effects = Vec::new();
+        let transition = flow.apply(IaAction::Back)?;
+        let asked = transition.effects.contains(&IaEffect::AskDiscard);
+        if !asked {
+            effects.extend(transition.effects);
+        } else {
+            effects.extend(flow.apply(IaAction::ConfirmDiscard)?.effects);
+        }
+        self.ia_effects.extend(effects);
+        Ok(())
+    }
+
+    fn end_instant_action(&mut self) -> Result<(), FlowError> {
+        let (generation, snapshot) = self
+            .ia_report
+            .take()
+            .ok_or(FlowError::NoInstantActionReport)?;
+        let transition = self.instant_action_mut()?.report(generation, snapshot)?;
+        self.ia_effects.extend(transition.effects);
+        Ok(())
     }
 
     /// Opens or re-opens the screen: the stored records re-project through
@@ -1897,6 +2140,86 @@ impl FrontEndFlow {
         self.session.set_wingmate_required(required);
     }
 
+    /// Selects an Instant Action preset on [`Screen::IaSelect`] — the screen's
+    /// own domain-side input, as the flight check's `select_loadout` is. The
+    /// id is a content id, never a row number.
+    ///
+    /// # Errors
+    ///
+    /// [`FlowError::Screen`] off the selection screen or while a discard
+    /// prompt is open, [`FlowError::NoInstantAction`] with no catalog supplied.
+    pub fn select_instant_action_preset(&mut self, preset: &ContentId) -> Result<(), FlowError> {
+        self.expect_ia_screen(Screen::IaSelect)?;
+        self.domain.instant_action_mut()?.select_preset(preset)?;
+        self.mirror_instant_action_draft();
+        Ok(())
+    }
+
+    /// Applies one customization edit on [`Screen::IaCustomize`] and mirrors
+    /// whether the draft is now dirty into the machine, which is what makes
+    /// `Back` ask before discarding it.
+    ///
+    /// # Errors
+    ///
+    /// [`FlowError::Screen`] off the customize screen or while a discard
+    /// prompt is open, [`FlowError::InstantAction`] when the flow refuses the
+    /// edit (the draft is unchanged then).
+    pub fn edit_instant_action(&mut self, edit: IaEdit) -> Result<(), FlowError> {
+        self.expect_ia_screen(Screen::IaCustomize)?;
+        self.domain.instant_action_mut()?.edit(edit)?;
+        self.mirror_instant_action_draft();
+        Ok(())
+    }
+
+    /// Reports the running Instant Action session's state: the one system
+    /// result the flight screen takes. The flow settles it first — a stale
+    /// generation or a scenario that has not ended is refused by name — and
+    /// only then does the machine move to the results.
+    ///
+    /// # Errors
+    ///
+    /// [`FlowError::Screen`] off [`Screen::IaFlight`], otherwise the flow's
+    /// own [`FlowError::InstantAction`] refusal, with the machine unmoved.
+    pub fn report_instant_action(
+        &mut self,
+        generation: IaGeneration,
+        snapshot: ScenarioSnapshot,
+    ) -> Result<Outcome, FlowError> {
+        self.expect_ia_screen(Screen::IaFlight)?;
+        self.domain.ia_report = Some((generation, snapshot));
+        let result = self.press(Action::InstantActionEnded);
+        // Whatever happened, the report was for this one press.
+        self.domain.ia_report = None;
+        result
+    }
+
+    /// The current screen must be `screen` and no discard prompt may be open.
+    fn expect_ia_screen(&self, screen: Screen) -> Result<(), FlowError> {
+        let front_end = self.session.front_end();
+        if front_end.pending_discard().is_some() {
+            return Err(Refusal::ConfirmationPending.into());
+        }
+        if front_end.screen() != screen {
+            return Err(Refusal::WrongScreen {
+                expected: screen,
+                actual: front_end.screen(),
+            }
+            .into());
+        }
+        Ok(())
+    }
+
+    /// Tells the machine whether the Instant Action flow holds an edited
+    /// draft. The flow owns the draft; the machine only needs the answer.
+    fn mirror_instant_action_draft(&mut self) {
+        let dirty = self
+            .domain
+            .instant_action
+            .as_ref()
+            .is_some_and(InstantActionFlow::draft_is_dirty);
+        self.session.mirror_instant_action_draft(dirty);
+    }
+
     /// The content session the loading screen's reads resolve through.
     pub fn set_content_session(&mut self, content: ContentSession) {
         self.load.set_content_session(content);
@@ -1968,6 +2291,13 @@ impl FrontEndFlow {
                 self.exiting = true;
             }
         }
+        // The Instant Action flow's own session effects reach the ledger the
+        // same way the machine's do (F49-C2).
+        for effect in std::mem::take(&mut self.domain.ia_effects) {
+            self.ledger.apply_ia(&effect)?;
+        }
+        self.check_instant_action_in_step(outcome.to)?;
+        self.mirror_instant_action_draft();
         // A scrapbook launch's stored replay is taken before the close that
         // leaving the screen runs clears it — it repoints the load about to
         // begin.
@@ -1984,6 +2314,37 @@ impl FrontEndFlow {
             }
             (Screen::Loading, to) if to != Screen::Loading => self.load.teardown(),
             _ => {}
+        }
+        Ok(())
+    }
+}
+
+impl FrontEndFlow {
+    /// After a transition the front end and the Instant Action flow must be on
+    /// corresponding screens, and leaving the Instant Action screens must have
+    /// released the session generation.
+    fn check_instant_action_in_step(&self, screen: Screen) -> Result<(), FlowError> {
+        let expected = match screen {
+            Screen::IaSelect | Screen::MainMenu => Some(IaScreen::Select),
+            Screen::IaCustomize => Some(IaScreen::Customize),
+            Screen::IaFlight => Some(IaScreen::Flight),
+            Screen::IaResults => Some(IaScreen::Results),
+            _ => None,
+        };
+        if let (Some(expected), Some(flow)) = (expected, self.domain.instant_action.as_ref())
+            && flow.screen() != expected
+        {
+            return Err(FlowError::InstantActionOutOfStep {
+                screen,
+                flow: flow.screen(),
+            });
+        }
+        let on_ia = matches!(
+            screen,
+            Screen::IaSelect | Screen::IaCustomize | Screen::IaFlight | Screen::IaResults
+        );
+        if !on_ia && let Some(generation) = self.ledger.session() {
+            return Err(ResourceProblem::SessionLeftBehind(generation).into());
         }
         Ok(())
     }
@@ -2054,6 +2415,14 @@ impl FlowDomainView<'_> {
     #[must_use]
     pub fn pending_outcome(&self) -> Option<&MissionOutcomeRecord> {
         self.0.mission_outcome.as_ref()
+    }
+
+    /// The Instant Action flow behind the IA screens, when the application
+    /// supplied a catalog (F49-C2): its selection, draft, live session,
+    /// outcome and record book are what a renderer reads.
+    #[must_use]
+    pub fn instant_action(&self) -> Option<&InstantActionFlow> {
+        self.0.instant_action.as_ref()
     }
 
     /// The scrapbook screen, when the application declared a catalog for it
