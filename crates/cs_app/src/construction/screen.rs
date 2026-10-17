@@ -18,8 +18,8 @@
 //!   a weaker rule than a hand-built loadout.
 //! * [`ConstructionScreen::commit`] applies the staged transaction to a
 //!   [`CampaignState`]; [`ConstructionScreen::commit_saved`] additionally
-//!   persists it through the [`ProfileSession`] as one revision, the way a
-//!   real campaign screen leaves its purchases durable.
+//!   persists it through the [`CampaignRun`]'s own revision-checked save, the
+//!   way a real campaign screen leaves its purchases durable.
 //! * [`ConstructionScreen::cancel`] tears the screen down with nothing staged;
 //!   every refused commit or save leaves the draft intact for a retry.
 
@@ -33,8 +33,8 @@ use cs_sim::campaign::CampaignState;
 use cs_sim::economy::{BuyLine, CommitReceipt, ConstructionDraft};
 use cs_types::content::ContentId;
 
-use crate::campaign::{CampaignSaveError, read_snapshot, write_snapshot};
-use crate::profile::{ChangeRefusal, ChangeRefusalReason, ProfileSession, SessionError};
+use crate::campaign::{CampaignRun, CampaignSaveError};
+use crate::profile::ProfileSession;
 
 use super::{ConstructionContext, ConstructionError, ConstructionSession};
 
@@ -225,6 +225,12 @@ impl fmt::Display for ScreenSaveError {
 }
 
 impl std::error::Error for ScreenSaveError {}
+
+impl From<CampaignSaveError> for ScreenSaveError {
+    fn from(error: CampaignSaveError) -> Self {
+        Self::Save(error)
+    }
+}
 
 /// The construction / paint / loadout screen: the draft session plus the
 /// screen state a front end needs.
@@ -498,44 +504,42 @@ impl ConstructionScreen {
         }
     }
 
-    /// Commits the staged transaction to `state` *and* writes it to `session`'s
-    /// profile — the save a real campaign screen owes.
+    /// Commits the staged transaction through `run` and writes it to
+    /// `session`'s profile — the save a real campaign screen owes.
     ///
-    /// The commit is computed on a copy of the state and that copy becomes the
-    /// live state only after the save returned, so the disk and memory hold the
-    /// same revision or the same old revision — never a mixture. The save is
-    /// one [`ProfileSession::commit_with`] that refuses when the stored
-    /// campaign moved from `state`'s base revision: a concurrent writer's
-    /// progression is never overwritten by a stale screen.
+    /// The run is the one owner of the write (F45-C.4): the session's commit
+    /// computes on a copy of the run's live state inside
+    /// [`CampaignRun::transact_with`], which saves it as one revision under the
+    /// same base-revision check every campaign write passes and which the run
+    /// adopts only after the save returned. A concurrent writer's progression
+    /// is therefore never overwritten by a stale screen, and the caller never
+    /// re-opens the run to see its own commit.
     ///
     /// # Errors
     ///
     /// [`ScreenSaveError`]; kept as the screen's [`Self::notice`]. On
     /// `ScreenSaveError::Save` the commit succeeded in memory but was not
-    /// written, and the live state is reverted so a retry is safe.
+    /// written, and the run's live state is unchanged so a retry is safe.
     pub fn commit_saved(
         &mut self,
         ctx: &ConstructionContext<'_>,
-        state: &mut CampaignState,
+        run: &mut CampaignRun,
         session: &mut ProfileSession,
     ) -> Result<CommitReceipt, ScreenSaveError> {
-        let base = state.revision();
-        let mut next = state.clone();
-        let receipt = match self.session.clone().commit(ctx, &mut next) {
-            Ok(receipt) => receipt,
+        let staging = self.session.clone();
+        match run.transact_with(session, |state, _graph| {
+            staging.commit(ctx, state).map_err(ScreenSaveError::Refused)
+        }) {
+            Ok(receipt) => {
+                self.rebase(run.state());
+                self.committed = Some(receipt.clone());
+                Ok(receipt)
+            }
             Err(error) => {
                 self.notice = Some(error.to_string());
-                return Err(ScreenSaveError::Refused(error));
+                Err(error)
             }
-        };
-        if let Err(error) = save_committed(session, &next, base) {
-            self.notice = Some(error.to_string());
-            return Err(ScreenSaveError::Save(error));
         }
-        *state = next;
-        self.rebase(state);
-        self.committed = Some(receipt.clone());
-        Ok(receipt)
     }
 
     /// Tears the screen down, discarding the draft. Nothing was ever staged
@@ -564,60 +568,5 @@ impl ConstructionScreen {
         );
         self.dirty = false;
         self.notice = None;
-    }
-}
-
-/// Writes `next`'s snapshot into the selected profile, refusing when the
-/// stored campaign is not still at `base`.
-///
-/// This is [`CampaignRun`](crate::campaign::CampaignRun)'s persist transaction
-/// restated for a caller that holds the bare [`CampaignState`]: the stored
-/// revision is re-read inside the `commit_with` change so a conflict retry
-/// sees a concurrent writer's progression and refuses rather than overwriting
-/// it. `campaign.rs` is outside F44-C's owner paths; when a task owns it, a
-/// `CampaignRun` method can wrap this same transaction.
-fn save_committed(
-    session: &mut ProfileSession,
-    next: &CampaignState,
-    base: u64,
-) -> Result<(), CampaignSaveError> {
-    let snapshot = next.snapshot();
-    let mut failure: Option<CampaignSaveError> = None;
-    let committed = session.commit_with(|document| {
-        let refuse = |reason: &str| ChangeRefusal {
-            subject: "campaign".to_owned(),
-            reason: ChangeRefusalReason::Malformed(reason.to_owned()),
-        };
-        // A conflict retry re-reads the store: if another writer moved the
-        // campaign, applying this commit over it would overwrite progression
-        // this screen never saw.
-        match read_snapshot(document) {
-            Ok(stored) => {
-                let stored = stored.map(|held| held.revision);
-                if stored != Some(base) {
-                    failure = Some(CampaignSaveError::Stale {
-                        expected: base,
-                        stored: stored.unwrap_or(0),
-                    });
-                    return Err(refuse("the stored campaign moved"));
-                }
-            }
-            Err(error) => {
-                failure = Some(error);
-                return Err(refuse("the stored campaign is damaged"));
-            }
-        }
-        if let Err(error) = write_snapshot(document, &snapshot) {
-            failure = Some(error);
-            return Err(refuse("the campaign cannot be represented"));
-        }
-        Ok(())
-    });
-    match committed {
-        Ok(_) => Ok(()),
-        Err(SessionError::Refused(_)) if failure.is_some() => {
-            Err(failure.expect("checked just above"))
-        }
-        Err(error) => Err(CampaignSaveError::Session(error)),
     }
 }

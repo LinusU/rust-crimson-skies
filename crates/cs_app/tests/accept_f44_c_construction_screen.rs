@@ -19,7 +19,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use cs_app::campaign::{CampaignSaveError, lower_campaign, read_snapshot, write_snapshot};
+use cs_app::campaign::{
+    CampaignRun, CampaignSaveError, lower_campaign, read_snapshot, write_snapshot,
+};
 use cs_app::construction::{
     ConstructionContext, ConstructionError, ConstructionScreen, ImportRejection, ScreenSaveError,
     banned_components,
@@ -146,6 +148,21 @@ fn funded(graph: &CampaignGraph) -> CampaignState {
     };
     state.apply_outcome(graph, &outcome).expect("m01 is won");
     state
+}
+
+/// The run the flow holds over the seeded profile — the campaign's owner the
+/// screen now commits through (#750). Opened on the same session the way the
+/// production flow opens it, so its base revision is whatever the save held
+/// at open.
+fn campaign_run(session: &mut ProfileSession, graph: &CampaignGraph) -> CampaignRun {
+    CampaignRun::open(
+        session,
+        graph.clone(),
+        &profile(),
+        &CampaignRunId::new("run.one").expect("valid run id"),
+        &DifficultyId::new("standard").expect("valid difficulty"),
+    )
+    .expect("the seeded campaign resumes")
 }
 
 struct Fixture {
@@ -392,9 +409,11 @@ fn accept_f44_c_the_screen_previews_then_commits_and_saves_one_revision() {
     assert_eq!(pending.credit, 0);
     assert!(pending.sells.is_empty());
 
+    let mut run = campaign_run(&mut session, &fx.graph);
     let receipt = screen
-        .commit_saved(&fx.ctx(), &mut state, &mut session)
+        .commit_saved(&fx.ctx(), &mut run, &mut session)
         .expect("the boundary blueprint commits and saves");
+    state = run.state().clone();
     assert_eq!(receipt.charged, DISTINCT_PRICE);
     assert_eq!(receipt.revision, base_revision + 1, "one revision once");
     assert_eq!(state.currency(), GRANT - DISTINCT_PRICE);
@@ -424,7 +443,7 @@ fn accept_f44_c_the_screen_previews_then_commits_and_saves_one_revision() {
 fn accept_f44_c_a_refused_commit_leaves_the_draft_open_and_the_save_untouched() {
     let fx = Fixture::new();
     let base = TempBase::new("refused");
-    let mut state = funded(&fx.graph);
+    let state = funded(&fx.graph);
     let mut session = sandbox_with_campaign(base.path(), &state);
     let before = state.snapshot();
     let stored_before = session.document().expect("doc").revision;
@@ -444,8 +463,9 @@ fn accept_f44_c_a_refused_commit_leaves_the_draft_open_and_the_save_untouched() 
     assert!(view.pending.is_none(), "an invalid draft stages nothing");
 
     // The commit is refused; the state, the save and the draft are all left.
+    let mut run = campaign_run(&mut session, &fx.graph);
     let error = screen
-        .commit_saved(&fx.ctx(), &mut state, &mut session)
+        .commit_saved(&fx.ctx(), &mut run, &mut session)
         .expect_err("one unit over must not commit");
     assert!(
         matches!(
@@ -470,7 +490,7 @@ fn accept_f44_c_a_refused_commit_leaves_the_draft_open_and_the_save_untouched() 
         "a new edit clears the old refusal"
     );
     let receipt = screen
-        .commit_saved(&fx.ctx(), &mut state, &mut session)
+        .commit_saved(&fx.ctx(), &mut run, &mut session)
         .expect("the fixed draft commits");
     assert_eq!(receipt.charged, DISTINCT_PRICE);
     assert_eq!(stored_campaign(&session).currency, GRANT - DISTINCT_PRICE);
@@ -506,9 +526,12 @@ fn accept_f44_c_cancelling_the_screen_leaves_the_profile_and_the_save_unchanged(
 fn accept_f44_c_a_moved_or_damaged_save_is_refused_not_overwritten() {
     let fx = Fixture::new();
     let base = TempBase::new("moved");
-    let mut state = funded(&fx.graph);
+    let state = funded(&fx.graph);
     let mut session = sandbox_with_campaign(base.path(), &state);
     let before = state.snapshot();
+    // The run opens with the profile, the way the flow holds it — the rival
+    // below moves the save after this run's base was already fixed.
+    let mut run = campaign_run(&mut session, &fx.graph);
 
     // A concurrent writer commits a campaign revision this screen has not seen.
     let mut rival = before.clone();
@@ -523,7 +546,7 @@ fn accept_f44_c_a_moved_or_damaged_save_is_refused_not_overwritten() {
 
     let mut screen = ConstructionScreen::open(&state, declared_synthetic_blueprint(), vec![]);
     let error = screen
-        .commit_saved(&fx.ctx(), &mut state, &mut session)
+        .commit_saved(&fx.ctx(), &mut run, &mut session)
         .expect_err("a moved save is refused");
     assert!(
         matches!(
@@ -553,7 +576,7 @@ fn accept_f44_c_a_moved_or_damaged_save_is_refused_not_overwritten() {
         })
         .expect("committed");
     let error = screen
-        .commit_saved(&fx.ctx(), &mut state, &mut session)
+        .commit_saved(&fx.ctx(), &mut run, &mut session)
         .expect_err("a damaged save is refused");
     assert!(
         matches!(error, ScreenSaveError::Save(CampaignSaveError::Corrupt(_))),
@@ -600,10 +623,12 @@ fn accept_f44_c_a_queued_sale_previews_its_refund_and_commits_once() {
 
     // Buy the whole boundary blueprint first, so the profile owns every
     // component it names and has paid a recorded price for each.
+    let mut run = campaign_run(&mut session, &fx.graph);
     let mut buyer = ConstructionScreen::open(&state, declared_synthetic_blueprint(), vec![]);
     buyer
-        .commit_saved(&fx.ctx(), &mut state, &mut session)
+        .commit_saved(&fx.ctx(), &mut run, &mut session)
         .expect("the boundary blueprint buys");
+    state = run.state().clone();
     assert_eq!(state.unlocks().count(), 6);
     let after_buy = state.snapshot();
 
@@ -656,8 +681,9 @@ fn accept_f44_c_a_queued_sale_previews_its_refund_and_commits_once() {
 
     // The one staged sale commits once, in memory and on the save.
     let receipt = screen
-        .commit_saved(&fx.ctx(), &mut state, &mut session)
+        .commit_saved(&fx.ctx(), &mut run, &mut session)
         .expect("the sale commits");
+    state = run.state().clone();
     assert_eq!(receipt.charged, 0);
     assert_eq!(receipt.refunded, paid);
     assert_eq!(state.unlocks().count(), 5, "the radio was sold");

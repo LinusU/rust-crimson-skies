@@ -876,7 +876,7 @@ impl FlowDomain {
                 screen: held.clone(),
             });
         }
-        let run = self.run.as_ref().ok_or(FlowError::NoCampaign)?;
+        let run = self.run.as_mut().ok_or(FlowError::NoCampaign)?;
         let profile = self
             .profile
             .as_mut()
@@ -890,33 +890,19 @@ impl FlowDomain {
             .construction
             .as_ref()
             .ok_or(FlowError::NoConstructionInputs)?;
-        let ctx = inputs.context(run.graph());
-        let mut state = run.state().clone();
+        // `ctx` borrows the flow's graph — the one `run` was opened from — so
+        // `run` itself is free for the commit's mutable borrow.
+        let ctx = inputs.context(&self.setup.graph);
+        // The run commits the screen's transaction and adopts the saved
+        // state itself (#750): there is no re-open here to keep live and
+        // stored in step — the run never stepped away.
         screen
-            .commit_saved(&ctx, &mut state, profile)
+            .commit_saved(&ctx, run, profile)
             .map_err(FlowError::Construction)?;
         // The committed blueprint is the draft's new base (#747): the next
         // draft the machine opens is projected against it, not against the
         // blueprint the screen was attached under.
         self.construction_saved = Some(fitted_components(screen.blueprint()));
-        // The screen wrote the committed state to the profile; the run
-        // re-reads it, so the two owners of "the live campaign" cannot
-        // diverge (a construction commit and an outcome commit are the only
-        // writes, and both end up in the one saved revision).
-        let slot = self
-            .profile_id
-            .ok_or(FlowError::Profile(SessionError::NoProfileSelected))?;
-        let campaign_profile = campaign_profile_id(profile.kind(), slot);
-        self.run = Some(
-            CampaignRun::open(
-                profile,
-                self.setup.graph.clone(),
-                &campaign_profile,
-                &self.setup.run,
-                &self.setup.difficulty,
-            )
-            .map_err(FlowError::Campaign)?,
-        );
         Ok(())
     }
 

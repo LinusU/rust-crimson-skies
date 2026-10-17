@@ -682,13 +682,41 @@ impl CampaignRun {
         session: &mut ProfileSession,
         transition: impl FnOnce(&mut CampaignState, &CampaignGraph) -> Result<T, CampaignError>,
     ) -> Result<T, CampaignSaveError> {
+        self.transact_with(session, |state, graph| {
+            transition(state, graph).map_err(CampaignSaveError::from)
+        })
+    }
+
+    /// Runs a caller-supplied transition through the same revision-checked
+    /// persist the campaign's own transitions use: the transition computes on
+    /// a copy of the live state, the copy is written as one revision only when
+    /// the transition moved it, and the run adopts it only after the save
+    /// returned — so the live state and the stored one are always the same
+    /// revision or the same old revision, never a mixture.
+    ///
+    /// This is the shared persist a domain screen's own commit rides on
+    /// (F45-C.4): the screen keeps its staging and its error type, and the
+    /// run stays the one owner of the base-revision check.
+    ///
+    /// # Errors
+    ///
+    /// `E`: the transition's own refusal, or the [`CampaignSaveError`] the
+    /// persist failed with, converted into `E`.
+    pub fn transact_with<T, E>(
+        &mut self,
+        session: &mut ProfileSession,
+        transition: impl FnOnce(&mut CampaignState, &CampaignGraph) -> Result<T, E>,
+    ) -> Result<T, E>
+    where
+        E: From<CampaignSaveError>,
+    {
         let mut next = self.state.clone();
         let value = transition(&mut next, &self.graph)?;
         if next.revision() == self.state.revision() {
             return Ok(value);
         }
         let base = self.state.revision();
-        self.persist(session, next, Some(base))?;
+        self.persist(session, next, Some(base)).map_err(E::from)?;
         Ok(value)
     }
 
