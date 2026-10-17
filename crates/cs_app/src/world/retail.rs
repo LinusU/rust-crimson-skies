@@ -496,7 +496,9 @@ impl RetailWorldContainer {
     /// polygons**. Measured over the installation's eight world containers
     /// (task #639): `ZBD/C5/gamez.zbd` names 16 of its mesh slots and **every one
     /// of those slots stores no geometry at all** (an empty polygon list and an
-    /// empty position list), and every other world container names none.
+    /// empty position list). `ZBD/C1C/gamez.zbd` names one once the `horizon`
+    /// subtree is imported (task #1553): the `stars` record's slot 154. No other
+    /// world container names one.
     ///
     /// So they are **not registered**, and the spawn reports the object rather
     /// than handing it a substitute shape. Refusing the whole container over one

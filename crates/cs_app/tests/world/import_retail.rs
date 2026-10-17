@@ -1309,12 +1309,29 @@ fn accept_f18_mesh_catalog_world_references_are_catalog_elements() {
         .container
         .uploaded_meshes(world)
         .expect("the catalog's uploads fill the world's meshes");
+    // One engine mesh per catalog element the world names, except the documented
+    // gap (`uploaded_meshes`): a stored mesh that decodes
+    // to no polygon is not registered. c1c names exactly one since the horizon
+    // subtree is imported (task #1553): the `stars` record's mesh slot 154 (no
+    // positions, measured in `docs/findings/2026-10-17-m01-window-farimport.md`).
+    let gaps: Vec<u32> = referenced
+        .iter()
+        .filter(|id| !meshes.contains(id))
+        .map(|id| {
+            retail
+                .container
+                .mesh_slot(id)
+                .expect("a referenced mesh is a slot of the container")
+        })
+        .collect();
     assert_eq!(
-        meshes.len(),
-        referenced.len(),
-        "one engine mesh per catalog element the world names"
+        gaps,
+        [154],
+        "the only referenced mesh with no geometry is the horizon's `stars` slot"
     );
-    for id in &referenced {
-        assert!(meshes.contains(id), "{id} is uploaded under its catalog id");
-    }
+    assert_eq!(
+        meshes.len() + gaps.len(),
+        referenced.len(),
+        "one engine mesh per catalog element the world names, bar the empty slot"
+    );
 }
