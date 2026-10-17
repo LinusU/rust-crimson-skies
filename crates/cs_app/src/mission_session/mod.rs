@@ -168,10 +168,10 @@ pub use player_visual::{
     spawn_player_visual,
 };
 pub use radio::{
-    MissionRadio, PreparedLine, RADIO_SOUND_CONTAINER, RadioError, RadioLineOutcome, RadioRefusal,
-    ResolvedGroup, SOUND_GROUPS_ARCHIVE, SOUND_GROUPS_MEMBER, VoicePublicationWatch,
-    declared_sound_groups, dialogue_content_id, install_radio_voice_publication, offer_cues,
-    publish_prepared_voices,
+    MissionRadio, MusicTrackSource, PreparedLine, RADIO_SOUND_CONTAINER, RadioError,
+    RadioLineOutcome, RadioRefusal, ResolvedGroup, SOUND_GROUPS_ARCHIVE, SOUND_GROUPS_MEMBER,
+    VoicePublicationWatch, declared_sound_groups, dialogue_content_id,
+    install_radio_voice_publication, offer_cues, publish_prepared_voices,
 };
 pub use scenario::{
     START_ENV, START_HEADING_ENV, Scenario, StartOverride, TriggerWatch, WATCH_BLOCK_ENV,

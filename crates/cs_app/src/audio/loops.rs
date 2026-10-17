@@ -189,6 +189,13 @@ impl AudioSession {
         std::mem::take(&mut self.radio_events)
     }
 
+    /// The music verdicts not yet taken, for a step that must see them before
+    /// the mixer's music pass drains them.
+    #[must_use]
+    pub fn pending_music(&self) -> &[MusicOutcome] {
+        &self.music_events
+    }
+
     /// Takes the accumulated music verdicts, for the mixer's music pass.
     pub fn drain_music(&mut self) -> Vec<MusicOutcome> {
         std::mem::take(&mut self.music_events)

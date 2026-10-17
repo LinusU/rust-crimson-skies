@@ -92,12 +92,13 @@ pub use lower::{
 };
 pub use mixer::{
     AudioMixReport, AudioMixing, AudioOutput, AudioSpatial, device_lost, device_restored,
-    mix_session,
+    mix_session, publish_requested_music,
 };
 pub use music::{
-    DecodedMusicMember, FALLBACK_MUSIC_CONTAINER, IMAGE_MUSIC_STATES, MUSIC_DRAW_DOMAIN, MusicArm,
-    MusicMemberError, MusicPick, MusicSelector, MusicStateRule, MusicStateSpec,
-    PREFERRED_MUSIC_CONTAINER, music_member_id, music_state_spec, publish_music_members,
+    DecodedMusicMember, FALLBACK_MUSIC_CONTAINER, IMAGE_MUSIC_STATES, LazyMusicTracks,
+    MUSIC_DRAW_DOMAIN, MusicArm, MusicMemberError, MusicPick, MusicSelector, MusicStateRule,
+    MusicStateSpec, MusicTrackLoader, PREFERRED_MUSIC_CONTAINER, ensure_music_published,
+    music_member_id, music_state_spec, publish_music_members,
 };
 pub use plugin::AudioPlugin;
 pub use samples::{AudioSampleSource, CODE_SAMPLE_ABSENT, ContentSampleSource, SampleSource};

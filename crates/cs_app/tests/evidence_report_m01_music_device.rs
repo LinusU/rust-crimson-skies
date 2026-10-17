@@ -132,7 +132,16 @@ fn observe(game_dir: &Path) -> Playback {
         .expect("M01's sound groups read from sounds.zrd");
 
     let library = Arc::new(InMemorySamples::new());
-    let published = publish_music_members(library.as_ref(), radio.music_voices());
+    let decoded: Vec<_> = radio
+        .music_tracks()
+        .iter()
+        .map(|track| {
+            radio
+                .decode_music(&track.id)
+                .unwrap_or_else(|error| panic!("{} decodes: {error}", track.member))
+        })
+        .collect();
+    let published = publish_music_members(library.as_ref(), &decoded);
     assert!(published > 0, "M01's music tracks decode and publish");
     let probe = Arc::new(SampleProbe::new());
     let mut device =

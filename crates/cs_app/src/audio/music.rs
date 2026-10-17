@@ -559,3 +559,74 @@ pub fn publish_music_members(
     }
     members.len()
 }
+
+/// Where a music track's samples come from when a request first selects it
+/// (Rally #1551, `M01-MUSIC-LAZY-DECODE`).
+///
+/// A track's id is minted from its name ([`music_member_id`]), so the prepare
+/// step knows every selectable id without decoding any of them. The decode
+/// waits for [`ensure_music_published`], which asks this loader for exactly the
+/// track a verdict starts.
+pub trait MusicTrackLoader: fmt::Debug + Send + Sync {
+    /// Decodes the track `id` names.
+    ///
+    /// # Errors
+    ///
+    /// The reason when `id` names no track this loader holds, or the track
+    /// will not decode.
+    fn load(&self, id: &ContentId) -> Result<DecodedMusicMember, String>;
+}
+
+/// Resource: the loader the mixer decodes a requested music track through.
+#[derive(bevy::ecs::resource::Resource, Clone, Debug)]
+pub struct LazyMusicTracks(std::sync::Arc<dyn MusicTrackLoader>);
+
+impl LazyMusicTracks {
+    /// Wraps `loader`.
+    #[must_use]
+    pub fn new(loader: std::sync::Arc<dyn MusicTrackLoader>) -> Self {
+        Self(loader)
+    }
+
+    /// The loader.
+    #[must_use]
+    pub fn loader(&self) -> &dyn MusicTrackLoader {
+        self.0.as_ref()
+    }
+}
+
+/// Publishes into `library` every track the verdicts start audibly that the
+/// library does not yet hold, decoding it through `tracks` at this moment.
+///
+/// Returns the tracks that would not load, with the loader's reason: the
+/// device then refuses them `sample_unavailable` by name, and this list says
+/// why. A track already in the library is not decoded again.
+pub fn ensure_music_published(
+    library: &dyn crate::audio::SampleLibrary,
+    tracks: &LazyMusicTracks,
+    outcomes: &[cs_sim::audio_events::MusicOutcome],
+) -> Vec<(ContentId, String)> {
+    use cs_sim::audio_events::MusicOutcome;
+    let mut failed = Vec::new();
+    for outcome in outcomes {
+        let (MusicOutcome::Started {
+            to, audible: true, ..
+        }
+        | MusicOutcome::Transition {
+            to, audible: true, ..
+        }) = outcome
+        else {
+            continue;
+        };
+        if library.pcm(to).is_some() || failed.iter().any(|(id, _)| id == to) {
+            continue;
+        }
+        match tracks.loader().load(to) {
+            Ok(member) => {
+                publish_music_members(library, std::slice::from_ref(&member));
+            }
+            Err(reason) => failed.push((to.clone(), reason)),
+        }
+    }
+    failed
+}

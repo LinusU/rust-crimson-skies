@@ -74,7 +74,7 @@
 //! test stays the owner's gate.
 
 use std::collections::{BTreeMap, BTreeSet, VecDeque};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use bevy::app::App;
 use bevy::ecs::schedule::IntoScheduleConfigs;
@@ -450,11 +450,13 @@ pub struct MissionRadio {
     /// order: exactly what [`publish_prepared_voices`] hands to the device's
     /// [`DeviceSampleLibrary`] under the id the member's line names.
     voices: Vec<DecodedVoiceMember>,
-    /// The PCM the prepare step decoded for each track a prepared music
-    /// group's table can select, under the id its cue names: what
-    /// [`publish_prepared_voices`] hands the device beside the voices, so a
-    /// music state request is audible (Rally #1547).
-    music_voices: Vec<DecodedMusicMember>,
+    /// Every track a prepared music group's table can select, by the id its
+    /// cue names and the archive it lives in. Nothing is decoded here: the
+    /// mixer decodes a track the first time a music state request starts it
+    /// ([`MissionRadio::music_loader`], Rally #1551).
+    music_tracks: Vec<MusicTrackSource>,
+    /// The installation the tracks are decoded from on demand.
+    install_root: PathBuf,
     /// What refused to prepare, keyed by the group or member name it
     /// refused: an expansion that would not resolve, a member the container
     /// does not hold, a member that would not decode. A cue naming one of
@@ -553,8 +555,56 @@ impl MissionRadio {
     /// The decoded music tracks, in container then member order: exactly the
     /// tracks [`publish_prepared_voices`] publishes under their music ids.
     #[must_use]
-    pub fn music_voices(&self) -> &[DecodedMusicMember] {
-        &self.music_voices
+    pub fn music_tracks(&self) -> &[MusicTrackSource] {
+        &self.music_tracks
+    }
+
+    /// Decodes the music track `id` names from the container the prepare step
+    /// found it in, at this moment.
+    ///
+    /// # Errors
+    ///
+    /// [`RadioRefusal`] when `id` names no selectable track, or the track
+    /// will not decode.
+    pub fn decode_music(&self, id: &ContentId) -> Result<DecodedMusicMember, RadioRefusal> {
+        let source = self
+            .music_tracks
+            .iter()
+            .find(|track| &track.id == id)
+            .ok_or_else(|| RadioRefusal::MusicMemberAbsent {
+                member: id.to_string(),
+            })?;
+        let member = source.member.clone();
+        let mut failures = BTreeMap::new();
+        let wanted = BTreeSet::from([member.clone()]);
+        let mut decoded = decode_members(
+            &self.install_root,
+            &source.container,
+            &wanted,
+            &mut failures,
+        )
+        .map_err(|error| RadioRefusal::Undecodable {
+            member: member.clone(),
+            reason: error.to_string(),
+        })?;
+        let Some(DecodedMember { pcm, .. }) = decoded.remove(&member) else {
+            return Err(failures
+                .remove(&member)
+                .unwrap_or(RadioRefusal::MusicMemberAbsent { member }));
+        };
+        DecodedMusicMember::new(&source.container, &member, pcm).map_err(|error| {
+            RadioRefusal::MusicIdentity {
+                member,
+                reason: error.to_string(),
+            }
+        })
+    }
+
+    /// The loader the mixer decodes requested tracks through: a copy of this
+    /// radio's track table and installation path.
+    #[must_use]
+    pub fn music_loader(&self) -> crate::audio::LazyMusicTracks {
+        crate::audio::LazyMusicTracks::new(std::sync::Arc::new(self.clone()))
     }
 
     /// What refused to prepare, keyed by the group or member it refused.
@@ -615,7 +665,7 @@ impl MissionRadio {
         // selects it is refused by name rather than minted under a guessed
         // container (the owner ruling's container rule, #1463).
         let mut music_containers = BTreeMap::new();
-        let mut music_voices = Vec::new();
+        let mut music_tracks_out = Vec::new();
         let music_tracks: BTreeSet<String> = resolved
             .iter()
             .filter(|(_, expansion)| expansion.music)
@@ -643,33 +693,23 @@ impl MissionRadio {
             }
         }
 
-        // Each selectable track is decoded once from the container the
-        // labelled choice named, so the device holds it under its music id.
-        // A track that will not decode is recorded in `failures` by name and
-        // stays unpublished: its cue is served to the director, and the
-        // device then refuses it `sample_unavailable` rather than playing
-        // anything else.
-        let mut by_container: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
+        // Each selectable track gets its music id here, from its spelling; its
+        // samples are decoded when a request first starts it (Rally #1551).
         for (track, archive) in &music_containers {
-            by_container
-                .entry(archive.as_str())
-                .or_default()
-                .insert(track.clone());
-        }
-        for (archive, tracks) in by_container {
-            let decoded = decode_members(install_root, archive, &tracks, &mut failures)?;
-            for (track, DecodedMember { pcm, .. }) in decoded {
-                match DecodedMusicMember::new(archive, &track, pcm) {
-                    Ok(voice) => music_voices.push(voice),
-                    Err(error) => {
-                        failures.insert(
-                            track.clone(),
-                            RadioRefusal::MusicIdentity {
-                                member: track,
-                                reason: error.to_string(),
-                            },
-                        );
-                    }
+            match crate::audio::music_member_id(archive, track) {
+                Ok(id) => music_tracks_out.push(MusicTrackSource {
+                    id,
+                    container: archive.clone(),
+                    member: track.clone(),
+                }),
+                Err(error) => {
+                    failures.insert(
+                        track.clone(),
+                        RadioRefusal::MusicIdentity {
+                            member: track.clone(),
+                            reason: error.to_string(),
+                        },
+                    );
                 }
             }
         }
@@ -738,7 +778,8 @@ impl MissionRadio {
             groups: resolved,
             lines,
             voices,
-            music_voices,
+            music_tracks: music_tracks_out,
+            install_root: install_root.to_path_buf(),
             failures,
             container,
             music_containers,
@@ -800,7 +841,8 @@ impl MissionRadio {
             groups: BTreeMap::new(),
             lines,
             voices,
-            music_voices: Vec::new(),
+            music_tracks: Vec::new(),
+            install_root: PathBuf::new(),
             failures: BTreeMap::new(),
             container: container.to_owned(),
             music_containers: BTreeMap::new(),
@@ -1077,21 +1119,25 @@ pub fn publish_prepared_voices(world: &mut World) {
     let Some(library) = world.get_resource::<DeviceSampleLibrary>().cloned() else {
         return;
     };
-    let Some((members, tracks)) = world.get_resource::<MissionHost>().map(|host| {
+    let Some((members, lazy_music)) = world.get_resource::<MissionHost>().map(|host| {
         (
             host.radio().voices().to_vec(),
-            host.radio().music_voices().to_vec(),
+            (!host.radio().music_tracks().is_empty()).then(|| host.radio().music_loader()),
         )
     }) else {
         return;
     };
-    if members.is_empty() && tracks.is_empty() {
+    if members.is_empty() && lazy_music.is_none() {
         return;
     }
     let mut watch = world.get_resource_or_insert_with(VoicePublicationWatch::default);
     watch.load = Some(installed);
     let _published = publish_voice_members(library.library().as_ref(), &members);
-    let _tracks = crate::audio::publish_music_members(library.library().as_ref(), &tracks);
+    // The music tracks are not published here: the mixer decodes the one a
+    // request starts, through this loader (Rally #1551).
+    if let Some(lazy_music) = lazy_music {
+        world.insert_resource(lazy_music);
+    }
 }
 
 /// Installs [`publish_prepared_voices`] in the composition's `PreUpdate`,
@@ -1105,6 +1151,23 @@ pub fn install_radio_voice_publication(app: &mut App) {
         PreUpdate,
         publish_prepared_voices.after(insert_audio_session),
     );
+}
+
+/// One selectable music track, known by name and not yet decoded.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MusicTrackSource {
+    /// The music id a cue names ([`crate::audio::music_member_id`]).
+    pub id: ContentId,
+    /// The install-relative archive the track lives in.
+    pub container: String,
+    /// The track's own member name.
+    pub member: String,
+}
+
+impl crate::audio::MusicTrackLoader for MissionRadio {
+    fn load(&self, id: &ContentId) -> Result<DecodedMusicMember, String> {
+        self.decode_music(id).map_err(|refusal| refusal.to_string())
+    }
 }
 
 /// The group → child table of `sounds.zrd`.

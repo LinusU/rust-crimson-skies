@@ -172,7 +172,16 @@ fn accept_m01_music_device_plays_m01s_requested_track() {
 
     // Every track the five declared states can select is decoded, non-silent,
     // and published under the id its cue names.
-    let tracks = radio.music_voices();
+    let decoded: Vec<DecodedMusicMember> = radio
+        .music_tracks()
+        .iter()
+        .map(|source| {
+            radio
+                .decode_music(&source.id)
+                .unwrap_or_else(|error| panic!("{} decodes: {error}", source.member))
+        })
+        .collect();
+    let tracks = decoded.as_slice();
     assert_eq!(
         radio.failures().count(),
         0,

@@ -76,7 +76,9 @@ use super::device::{
 use super::engine::{EngineVoices, smooth_engine_voices};
 use super::handoff::{AudioHandoffLog, DeclaredAudioCatalog, insert_audio_session};
 use super::loops::{advance_radio, sync_audio_tick, sync_emitter_loops};
-use super::mixer::{AudioMixReport, AudioOutput, AudioSpatial, mix_session};
+use super::mixer::{
+    AudioMixReport, AudioOutput, AudioSpatial, mix_session, publish_requested_music,
+};
 use super::spawn::{AudioBindLog, bind_spawned_emitters};
 
 /// Registers the F41 audio systems, the declared catalog the handoff lowers
@@ -240,6 +242,7 @@ impl Plugin for AudioPlugin {
                 bind_spawned_emitters,
                 sync_emitter_loops,
                 advance_radio,
+                publish_requested_music,
                 mix_session,
             )
                 .chain(),

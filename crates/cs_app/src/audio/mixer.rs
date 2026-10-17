@@ -37,11 +37,14 @@ use cs_sim::audio_events::{
     AudioDevice, AudioMixer, DeviceError, EmitterMix, Listener, MixerReport, MusicCue,
     MusicMixReport, RadioMixReport, RecordingAudioDevice, SpatialPolicy,
 };
+use cs_types::content::ContentId;
 use cs_types::net::SessionId;
 
 use super::AudioEmitterBinding;
+use super::device::DeviceSampleLibrary;
 use super::engine::EngineVoices;
 use super::loops::AudioSession;
+use super::music::{LazyMusicTracks, ensure_music_published};
 
 /// Resource: the one device this world mixes to.
 ///
@@ -157,6 +160,10 @@ pub struct AudioMixReport {
     /// music verdicts started and stopped, and every request it could not
     /// voice, by name.
     pub music: MusicMixReport,
+    /// The music tracks a verdict selected that would not load, with the
+    /// loader's reason (Rally #1551): the device refuses each of them
+    /// `sample_unavailable`, and this says why.
+    pub music_unloaded: Vec<(ContentId, String)>,
     /// How many passes have run since this world was built.
     pub passes: u64,
     /// How many emitter bindings carried no pose in the last pass, and so kept
@@ -262,6 +269,31 @@ pub fn mix_session(
         .mix_music(&music, Some(output.device_mut()));
     report.passes += 1;
     report.unplaced = unplaced;
+}
+
+/// Decodes the music track a pending verdict starts, the first time it is
+/// selected, and hands it to the device's library (Rally #1551).
+///
+/// Runs between the radio pass and [`mix_session`], which drains the verdicts
+/// this reads. A world with no session, library or lazy loader does nothing.
+/// A track that will not load is named in
+/// [`AudioMixReport::music_unloaded`]; the device then refuses it
+/// `sample_unavailable`.
+pub fn publish_requested_music(
+    session: Option<Res<AudioSession>>,
+    library: Option<Res<DeviceSampleLibrary>>,
+    lazy_music: Option<Res<LazyMusicTracks>>,
+    mut report: ResMut<AudioMixReport>,
+) {
+    let (Some(session), Some(library), Some(lazy_music)) = (session, library, lazy_music) else {
+        return;
+    };
+    let pending = session.pending_music();
+    if pending.is_empty() {
+        return;
+    }
+    report.music_unloaded =
+        ensure_music_published(library.library().as_ref(), &lazy_music, pending);
 }
 
 /// The output device is lost: the session stops and **remembers** every loop,
