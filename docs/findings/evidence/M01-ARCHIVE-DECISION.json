@@ -1,9 +1,9 @@
 {
  "schema_version": 1,
  "task_id": "M01-ARCHIVE-DECISION",
- "candidate_tree": "9855cba6d6f2735773cfae7076a59d69ef082350",
+ "candidate_tree": "c32a5fb6b9d8121f2aacfa6a366db29d860a56ae",
  "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
- "created_at": "2026-10-17T21:28:48Z",
+ "created_at": "2026-10-17T22:08:28Z",
  "command": {"argv": ["cargo", "test", "-p", "cs_app", "--test", "campaign", "--locked", "--", "accept_m01_a_", "accept_m06_a_", "accept_m12_a_", "accept_m01_b_m", "accept_m01_b_a_", "accept_m06_b_fu4_", "accept_f50_c_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/swe2-max-1", "exit_code": 0},
  "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
  "seed": 0,
