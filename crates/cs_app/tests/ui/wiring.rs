@@ -45,9 +45,9 @@ use cs_content::campaign::{
     NodeKind, RewardSpec, RosterEntry,
 };
 use cs_content::construction::{
-    ArmorFitment, SYNTHETIC_HEAVY_PLATE_KEY, declared_synthetic_blueprint,
-    declared_synthetic_price_book, synthetic_armor_fitments, synthetic_boundary_rules,
-    synthetic_policy,
+    AircraftBlueprint, ArmorFitment, SYNTHETIC_HEAVY_PLATE_KEY, SYNTHETIC_OTHER_AIRFRAME_KEY,
+    declared_synthetic_blueprint, declared_synthetic_price_book, synthetic_armor_fitments,
+    synthetic_boundary_rules, synthetic_policy,
 };
 use cs_content::save::settings::SettingCatalog;
 use cs_sim::campaign::{
@@ -728,6 +728,317 @@ fn accept_f45_c_a_commit_for_another_blueprint_is_refused_before_the_screen_move
         "the mismatch is named: {refused}"
     );
     assert_eq!(flow.front_end().screen(), Screen::Construction);
+    assert_eq!(revision(&flow), before);
+}
+
+// --- F45-C.1: the machine's draft is the attached screen's projection ------
+
+/// The flat id list a blueprint carries, in `AircraftBlueprint::components`
+/// order — the canonical projection the machine's draft is filled from.
+fn fitted(blueprint: &AircraftBlueprint) -> Vec<ContentId> {
+    blueprint
+        .components()
+        .into_iter()
+        .map(|(_, component)| component.clone())
+        .collect()
+}
+
+/// Attaches `blueprint` under `blueprint_id`, moves the machine onto the
+/// construction screen and opens its draft.
+fn open_projected_draft(flow: &mut FrontEndFlow, blueprint: AircraftBlueprint, name: &str) {
+    let screen = ConstructionScreen::open(
+        flow.domain().campaign().expect("a campaign").state(),
+        blueprint,
+        Vec::new(),
+    );
+    let blueprint_id = id(ContentKind::Blueprint, name);
+    flow.attach_construction(blueprint_id.clone(), screen)
+        .expect("a clean screen attaches");
+    flow.press(Action::OpenConstruction)
+        .expect("the construction screen opens");
+    flow.open_construction(ConstructionDraft {
+        blueprint: blueprint_id,
+        saved: Vec::new(),
+        components: Vec::new(),
+    })
+    .expect("the draft is open");
+}
+
+/// The declared `saved`/`components` are F45-B's machine-level input; with a
+/// screen attached they are a view the flow fills from the screen itself.
+/// Whatever they claim, an opened draft against the attached screen's
+/// blueprint id comes out projected: `saved` is the committed fit and
+/// `components` the current one, so a freshly opened screen is clean.
+#[test]
+fn accept_f45_c_1_the_open_draft_is_projected_from_the_attached_screen() {
+    let fx = Fixture::new("projection", Some(GRANT));
+    let mut flow = fx.flow();
+    walk_to_cabin(&mut flow);
+
+    let committed = fitted(&declared_synthetic_blueprint());
+    assert_eq!(committed.len(), 13, "the fixture blueprint's full fit");
+    let screen = ConstructionScreen::open(
+        flow.domain().campaign().expect("a campaign").state(),
+        declared_synthetic_blueprint(),
+        Vec::new(),
+    );
+    let blueprint_id = id(ContentKind::Blueprint, "projected");
+    flow.attach_construction(blueprint_id.clone(), screen)
+        .expect("a clean screen attaches");
+    flow.press(Action::OpenConstruction)
+        .expect("the construction screen opens");
+
+    // Claims that do not match the screen at all: the projection replaces
+    // them rather than trusting a second view.
+    flow.open_construction(ConstructionDraft {
+        blueprint: blueprint_id,
+        saved: vec![id(ContentKind::Armor, "declared.nonsense")],
+        components: Vec::new(),
+    })
+    .expect("the draft is open");
+
+    let draft = flow.front_end().construction().expect("the draft is open");
+    assert_eq!(
+        draft.saved, committed,
+        "the base is the screen's committed fit"
+    );
+    assert_eq!(draft.components, committed);
+    assert!(!draft.is_dirty(), "a fresh screen projects a clean draft");
+
+    // A clean draft leaves without asking.
+    let outcome = flow.press(Action::Cancel).expect("the screen closes");
+    assert!(
+        !outcome.effects.contains(&Effect::AskDiscard),
+        "nothing asked to discard: {:?}",
+        outcome.effects
+    );
+    assert_eq!(flow.front_end().screen(), Screen::Cabin);
+}
+
+/// Editing goes through the attached screen's own operations — there is no
+/// flat-list edit, because a flat id cannot name the slot it belongs to —
+/// and the machine's draft follows it: `components` is re-projected, `saved`
+/// stays at the committed base, and the dirty state the discard prompt reads
+/// is the real draft's.
+#[test]
+fn accept_f45_c_1_a_screen_edit_marks_the_machine_draft_dirty() {
+    let fx = Fixture::new("edit", Some(GRANT));
+    let mut flow = fx.flow();
+    walk_to_cabin(&mut flow);
+    let committed = fitted(&declared_synthetic_blueprint());
+    open_projected_draft(&mut flow, declared_synthetic_blueprint(), "edited");
+
+    let swapped = id(ContentKind::Airframe, SYNTHETIC_OTHER_AIRFRAME_KEY);
+    flow.edit_construction(|screen| {
+        screen
+            .set_airframe(swapped.clone())
+            .expect("an airframe id fits the slot")
+    })
+    .expect("the screen is attached");
+
+    // The edit reached the domain screen, not a machine-side copy.
+    assert!(
+        flow.domain()
+            .construction()
+            .expect("the screen is attached")
+            .is_dirty(),
+        "the real screen's own flag moved"
+    );
+    let mut expected = committed.clone();
+    expected[0] = swapped;
+    let draft = flow.front_end().construction().expect("the draft is open");
+    assert_eq!(
+        draft.components, expected,
+        "the airframe slot leads the projection"
+    );
+    assert_eq!(draft.saved, committed, "the committed base did not move");
+    assert!(draft.is_dirty());
+
+    // The discard prompt reads that real dirty state.
+    let outcome = flow.press(Action::Cancel).expect("leaving asks");
+    assert!(
+        outcome.effects.contains(&Effect::AskDiscard),
+        "the discard prompt fired: {:?}",
+        outcome.effects
+    );
+    assert_eq!(flow.front_end().screen(), Screen::Construction);
+    flow.confirm_discard().expect("the discard confirms");
+    assert_eq!(flow.front_end().screen(), Screen::Cabin);
+}
+
+/// A staged sale is pending draft state the blueprint alone cannot show:
+/// `components` carries it after the fitments, so `saved != components`
+/// catches a sale exactly like a fitment swap.
+#[test]
+fn accept_f45_c_1_a_staged_sale_is_part_of_the_draft_projection() {
+    let fx = Fixture::new("sale", Some(GRANT));
+    let mut flow = fx.flow();
+    walk_to_cabin(&mut flow);
+    let committed = fitted(&declared_synthetic_blueprint());
+    open_projected_draft(&mut flow, declared_synthetic_blueprint(), "seller");
+
+    let sold = id(ContentKind::Armor, SYNTHETIC_HEAVY_PLATE_KEY);
+    flow.edit_construction(|screen| screen.queue_sale(sold.clone()))
+        .expect("the screen is attached");
+    assert_eq!(
+        flow.domain()
+            .construction()
+            .expect("the screen is attached")
+            .staged_sales(),
+        std::slice::from_ref(&sold),
+        "the sale was queued on the real screen"
+    );
+
+    let mut expected = committed.clone();
+    expected.push(sold);
+    let draft = flow.front_end().construction().expect("the draft is open");
+    assert_eq!(
+        draft.components, expected,
+        "the staged sale follows the fitments"
+    );
+    assert_eq!(draft.saved, committed);
+    assert!(draft.is_dirty(), "a queued sale is unsaved work");
+}
+
+/// A commit re-bases the projection: the committed blueprint becomes the
+/// draft's `saved`, so the next opening of the same screen projects clean
+/// and a cancel leaves without asking — the machine's dirty state tracks
+/// what the screen really committed, not the attach-time base.
+#[test]
+fn accept_f45_c_1_a_commit_rebases_the_projection() {
+    let fx = Fixture::new("rebase", Some(GRANT));
+    let mut flow = fx.flow();
+    walk_to_cabin(&mut flow);
+    let committed = fitted(&declared_synthetic_blueprint());
+    open_projected_draft(&mut flow, declared_synthetic_blueprint(), "rebased");
+
+    // Drop the four missiles through the screen: the draft is dirty, then
+    // the commit buys the remaining fit and re-bases.
+    flow.edit_construction(|screen| screen.fit_ordnance(Vec::new()).expect("an empty rack fits"))
+        .expect("the screen is attached");
+    let draft = flow.front_end().construction().expect("the draft is open");
+    assert_eq!(
+        draft.components.len(),
+        9,
+        "the four missiles left the draft"
+    );
+    assert_eq!(
+        draft.components.len() + 4,
+        committed.len(),
+        "what left is exactly the ordnance"
+    );
+
+    flow.press(Action::CommitConstruction)
+        .expect("the edited blueprint commits");
+    assert_eq!(flow.front_end().screen(), Screen::Cabin);
+    assert!(
+        !flow
+            .domain()
+            .construction()
+            .expect("the screen stays attached")
+            .is_dirty(),
+        "the commit rebased the screen too"
+    );
+
+    // Reopening projects against the committed fit, not the attach-time one.
+    flow.press(Action::OpenConstruction)
+        .expect("the construction screen reopens");
+    flow.open_construction(ConstructionDraft {
+        blueprint: id(ContentKind::Blueprint, "rebased"),
+        saved: Vec::new(),
+        components: Vec::new(),
+    })
+    .expect("the draft is open");
+    let draft = flow.front_end().construction().expect("the draft is open");
+    assert_eq!(
+        draft.saved, draft.components,
+        "saved and current agree again"
+    );
+    assert_eq!(draft.components.len(), 9, "the committed fit is the base");
+    assert!(!draft.is_dirty(), "a just-committed screen is clean");
+    let outcome = flow.press(Action::Cancel).expect("the screen closes");
+    assert!(!outcome.effects.contains(&Effect::AskDiscard));
+    assert_eq!(flow.front_end().screen(), Screen::Cabin);
+}
+
+/// A screen that was edited before the flow ever saw it has no committed
+/// base to project `saved` from — the session keeps no copy of the blueprint
+/// it was opened on. The flow refuses the attach rather than inventing one:
+/// nothing is stored and nothing moves.
+#[test]
+fn accept_f45_c_1_a_screen_edited_before_attach_cannot_be_projected() {
+    let fx = Fixture::new("dirty-attach", Some(GRANT));
+    let mut flow = fx.flow();
+    walk_to_cabin(&mut flow);
+
+    let mut screen = ConstructionScreen::open(
+        flow.domain().campaign().expect("a campaign").state(),
+        declared_synthetic_blueprint(),
+        Vec::new(),
+    );
+    screen.queue_sale(id(ContentKind::Armor, SYNTHETIC_HEAVY_PLATE_KEY));
+    assert!(screen.is_dirty(), "the screen was edited before the attach");
+
+    let before = revision(&flow);
+    let refused = flow
+        .attach_construction(id(ContentKind::Blueprint, "too-late"), screen)
+        .expect_err("an edited screen has no base to project");
+    assert!(
+        matches!(refused, FlowError::ConstructionScreenDirty),
+        "the refusal is named: {refused}"
+    );
+    assert!(
+        flow.domain().construction().is_none(),
+        "the refused screen was not kept"
+    );
+    assert_eq!(revision(&flow), before, "nothing committed");
+    assert_eq!(flow.front_end().screen(), Screen::Cabin);
+}
+
+/// A draft that names a blueprint other than the attached screen's is a
+/// second view the projection must not "repair": its declared lists pass
+/// through untouched so the commit's own mismatch check still sees the two
+/// have come apart.
+#[test]
+fn accept_f45_c_1_a_draft_naming_another_blueprint_is_not_reprojected() {
+    let fx = Fixture::new("foreign-draft", Some(GRANT));
+    let mut flow = fx.flow();
+    walk_to_cabin(&mut flow);
+
+    let screen = ConstructionScreen::open(
+        flow.domain().campaign().expect("a campaign").state(),
+        declared_synthetic_blueprint(),
+        Vec::new(),
+    );
+    flow.attach_construction(id(ContentKind::Blueprint, "the-open-one"), screen)
+        .expect("a clean screen attaches");
+    flow.press(Action::OpenConstruction)
+        .expect("the construction screen opens");
+
+    let declared_saved = vec![id(ContentKind::Armor, "declared.saved")];
+    let declared_components = vec![id(ContentKind::Weapon, "declared.part")];
+    flow.open_construction(ConstructionDraft {
+        blueprint: id(ContentKind::Blueprint, "another-one"),
+        saved: declared_saved.clone(),
+        components: declared_components.clone(),
+    })
+    .expect("the draft is open");
+
+    let draft = flow.front_end().construction().expect("the draft is open");
+    assert_eq!(
+        draft.saved, declared_saved,
+        "a foreign draft keeps its declared base"
+    );
+    assert_eq!(draft.components, declared_components);
+
+    let before = revision(&flow);
+    let refused = flow
+        .press(Action::CommitConstruction)
+        .expect_err("the drafts have come apart");
+    assert!(
+        matches!(refused, FlowError::ConstructionMismatch { .. }),
+        "the mismatch is still caught: {refused}"
+    );
     assert_eq!(revision(&flow), before);
 }
 
