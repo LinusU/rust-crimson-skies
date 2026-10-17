@@ -59,8 +59,8 @@ use bevy::input::keyboard::KeyCode;
 use bevy::input::{ButtonInput, InputSystems};
 use bevy::prelude::{
     App, AppExit, ChildOf, ClearColor, Commands, Entity, GlobalTransform, IntoScheduleConfigs,
-    Last, Local, Mesh3d, MessageWriter, On, Plugin, PreUpdate, Quat, Query, Res, ResMut, Resource,
-    Text, Transform, Update, Vec2, Vec3, Visibility, With,
+    Last, Local, Mesh3d, MessageWriter, On, Plugin, PostUpdate, PreUpdate, Quat, Query, Res,
+    ResMut, Resource, Text, Transform, Update, Vec2, Vec3, Visibility, With,
 };
 use bevy::render::render_resource::TextureFormat;
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk};
@@ -77,7 +77,7 @@ use crate::audio::mixer::AudioMixReport;
 use crate::audio::spawn::{AudioBindLog, AudioEmitterRole};
 use crate::input::platform::PlatformInput;
 use crate::input::session::PauseReason;
-use crate::mission_actors::{MissionActorSpawnReport, MissionZeppelinActor};
+use crate::mission_actors::{MissionActorSpawnReport, MissionZeppelinActor, ScriptedAircraftActor};
 use crate::ordnance::OrdnanceItemMirror;
 use crate::physics::PhysicsTickLedger;
 use crate::playtest::scene::PlaytestAircraft;
@@ -234,13 +234,6 @@ pub const MIN_GUN_ROUNDS: u64 = 2;
 /// abeam, so the probe never puts the player in the actor's path.
 const PLACEMENT_OFFSET_M: f32 = 400.0;
 
-/// How near a residency visual must sit to a world actor's bind-time pose to
-/// be taken for that actor's drawn body, metres (designed, fail-closed): the
-/// airship measures ~100 m across and its own visual is spawned at exactly
-/// the pose the world-actor session binds, while the next world object is
-/// hundreds of metres away.
-const VISUAL_MATCH_M: f32 = 200.0;
-
 /// The world actor the M01 proximity trigger watches, as Rally #1480/#1486
 /// measured it: the record's radius is 700 m and its anchor is the cargo
 /// zeppelin `workersvoyagezep`. A census member the roster makes hostile is
@@ -276,10 +269,12 @@ pub struct CensusEntry {
     pub name: String,
     /// The entity whose pose is read for placement and projection.
     pub pose_entity: Entity,
-    /// The entity that draws it, when anything does: the residency's visual
-    /// for a zeppelin's subject, the player's own body for the player, and
-    /// `None` for a scripted aircraft (whose record spawns a physics body
-    /// with no visual today).
+    /// The entity that draws it, when anything does: each actor's own body or
+    /// binding entity, whose drawn parts are children of it (the player's
+    /// airframe, a scripted aircraft's `planes.zbd` model and a zeppelin's
+    /// world-node visual all hang off their entity, #1538). `None` is the
+    /// fail-closed state — a member no drawn entity could be found for, whose
+    /// probe then counts the pixels nothing drew.
     pub drawn_entity: Option<Entity>,
     /// Whether the record started asleep (`deactivated`).
     pub asleep: bool,
@@ -947,6 +942,11 @@ impl Plugin for MissionSmokePlugin {
                 .after(bevy::input::keyboard::keyboard_input_system),
         )
         .add_systems(Update, (apply_placement, apply_probe, keep_focus))
+        // The probe runs again in `PostUpdate`: a system in `Update` may have
+        // respawned an actor label (the #1538 contact list redraws its rows)
+        // *after* the first pass, and nothing after `PostUpdate` writes
+        // visibility, so this is the state the frame's render sees.
+        .add_systems(PostUpdate, apply_probe)
         .add_systems(
             Last,
             (smoke_census, smoke_sample, smoke_script, smoke_rounds).chain(),
@@ -1039,6 +1039,8 @@ fn apply_probe(
     weather: Query<Entity, With<WeatherLayer>>,
     precip: Query<Entity, With<PrecipitationLayer>>,
     players: Query<Entity, With<PlaytestAircraft>>,
+    aircraft: Query<Entity, With<ScriptedAircraftActor>>,
+    zeppelins: Query<Entity, With<MissionZeppelinActor>>,
     visuals: Query<Entity, With<WorldVisual>>,
     ui: Query<Entity, With<Node>>,
 ) {
@@ -1064,21 +1066,21 @@ fn apply_probe(
     } else {
         shown
     };
+    // An actor's drawn model hangs off its own body (#1538: the aircraft's
+    // `planes.zbd` parts are children of the body, each zeppelin's world-node
+    // visual a child of its binding entity), so every probe that measures
+    // something else hides every actor body and lets each part inherit it.
+    // The probe's own target is restored last, below.
+    let body_value = if anything_hidden { hidden } else { shown };
     write_all(&mut visibility, domes.iter(), hidden);
     write_all(&mut visibility, weather.iter(), hidden);
     write_all(&mut visibility, precip.iter(), hidden);
     write_all(&mut visibility, seas.iter(), sea_value);
-    write_all(
-        &mut visibility,
-        players.iter(),
-        if anything_hidden { hidden } else { shown },
-    );
+    write_all(&mut visibility, players.iter(), body_value);
+    write_all(&mut visibility, aircraft.iter(), body_value);
+    write_all(&mut visibility, zeppelins.iter(), body_value);
     write_all(&mut visibility, visuals.iter(), world_value);
-    write_all(
-        &mut visibility,
-        ui.iter(),
-        if anything_hidden { hidden } else { shown },
-    );
+    write_all(&mut visibility, ui.iter(), body_value);
     if let ProbeMode::Actor(Some(keep)) = mode {
         write_all(&mut visibility, std::iter::once(keep), shown);
     }
@@ -1153,7 +1155,6 @@ fn build_census(
     report: Option<&MissionActorSpawnReport>,
     player: Entity,
     zeppelins: &Query<(&MissionZeppelinActor, &WorldActorBinding, &Transform)>,
-    visuals: &Query<(Entity, &Transform), With<WorldVisual>>,
     residency: Option<&WorldResidency>,
 ) -> (Vec<CensusEntry>, usize) {
     let water_objects = residency.map_or(0, |residency| {
@@ -1182,58 +1183,34 @@ fn build_census(
             kind: "aircraft",
             name: spawned.record.clone(),
             pose_entity: spawned.entity,
-            // Nothing in the composition draws a scripted aircraft's record
-            // today: it is a physics body with no visual, so its probe counts
-            // the pixels nothing draws.
-            drawn_entity: None,
+            // #1538 draws each scripted aircraft's `planes.zbd` model as
+            // children of this body, so the body is what the probe keeps and
+            // what hiding takes off the screen.
+            drawn_entity: Some(spawned.entity),
             asleep: spawned.asleep,
             subject: None,
             hostile: false,
         });
     }
     for bound in &report.zeppelins {
-        let (hostile, subject, visual) = zeppelins
+        let hostile = zeppelins
             .iter()
             .find(|(_, binding, _)| binding.subject == bound.subject)
-            .map_or(
-                (false, bound.subject.key().to_owned(), None),
-                |(actor, binding, _)| {
-                    // The residency keys its objects by node slot
-                    // (`node-<n>`), never by the scene-node name the actor's
-                    // subject carries, so the drawn visual of a world actor is
-                    // matched by **pose**: the residency's own visual at the
-                    // actor's bind-time position, within
-                    // [`VISUAL_MATCH_M`]. The rule is designed and
-                    // fail-closed — no match is no drawn entity, and the
-                    // probe then counts the pixels nothing drew.
-                    let anchor = Vec3::new(
-                        actor.position_m[0] as f32,
-                        actor.position_m[1] as f32,
-                        actor.position_m[2] as f32,
-                    );
-                    let visual = visuals
-                        .iter()
-                        .filter_map(|(entity, transform)| {
-                            let distance = transform.translation.distance(anchor);
-                            (distance <= VISUAL_MATCH_M).then_some((entity, distance))
-                        })
-                        .min_by(|left, right| left.1.total_cmp(&right.1))
-                        .map(|(entity, _)| entity);
-                    (
-                        actor
-                            .roster
-                            .as_ref()
-                            .is_some_and(|roster| roster.faction.key() == "enemy"),
-                        binding.subject.key().to_owned(),
-                        visual,
-                    )
-                },
-            );
+            .is_some_and(|(actor, _, _)| {
+                actor
+                    .roster
+                    .as_ref()
+                    .is_some_and(|roster| roster.faction.key() == "enemy")
+            });
+        let subject = bound.subject.key().to_owned();
         census.push(CensusEntry {
             kind: "zeppelin",
             name: subject.clone(),
             pose_entity: bound.entity,
-            drawn_entity: visual,
+            // #1538 parents each zeppelin's drawn world-node visual under this
+            // binding entity, so the binding is the probe's keep/hide handle
+            // for the airship's whole subtree.
+            drawn_entity: Some(bound.entity),
             asleep: false,
             subject: Some(subject),
             hostile,
@@ -1248,7 +1225,6 @@ fn smoke_census(
     mut data: ResMut<SmokeData>,
     spawn_report: Option<Res<MissionActorSpawnReport>>,
     zeppelins: Query<(&MissionZeppelinActor, &WorldActorBinding, &Transform)>,
-    visuals: Query<(Entity, &Transform), With<WorldVisual>>,
     player: Query<Entity, With<MissionPlayerBody>>,
     residency: Option<Res<WorldResidency>>,
 ) {
@@ -1261,7 +1237,6 @@ fn smoke_census(
         spawn_report.as_deref(),
         player.single().ok().unwrap_or(Entity::PLACEHOLDER),
         &zeppelins,
-        &visuals,
         residency.as_deref(),
     );
     data.census = census;
@@ -1286,18 +1261,12 @@ fn smoke_census(
             on_screen: false,
             pixels: 0,
             total_pixels: 0,
-            // Fail-closed by name: a member the census could not find a drawn
-            // entity for says so, rather than reporting an unexplained zero.
-            note: entry.drawn_entity.is_none().then(|| match entry.kind {
-                "aircraft" => "the record spawns a physics body with no visual, so nothing \
-                               draws this actor"
-                    .to_owned(),
-                "zeppelin" => format!(
-                    "no residency visual sat within {VISUAL_MATCH_M} m of the actor's bind-time \
-                     pose, so its drawn body could not be matched to it"
-                ),
-                _ => "no drawn entity was found for this member".to_owned(),
-            }),
+            // Fail-closed by name: a member the census found no drawn entity
+            // for says so, rather than reporting an unexplained zero.
+            note: entry
+                .drawn_entity
+                .is_none()
+                .then(|| "no drawn entity was found for this member".to_owned()),
         });
     }
 }

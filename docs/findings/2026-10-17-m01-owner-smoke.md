@@ -49,19 +49,19 @@ sequence, the probes and every floor are documented there and in
 
 `private/evidence/M01-OWNER-SMOKE/` (ignored by Git) holds this run's 19
 framebuffer PNGs and `report.json`, produced on this machine (Apple M3 Pro,
-Metal) on 2026-10-17 at the commit this finding was written with. The PNGs
-this finding names:
+Metal) on 2026-10-17 by the acceptance test itself (the release binary,
+the same windowed launch the owner plays). The PNGs this finding names:
 
 | PNG | what it is |
 | --- | --- |
-| `frame_00033_world.png` | the terrain probe: horizon, weather, precipitation, player and UI hidden |
+| `frame_00033_world.png` | the terrain probe: horizon, weather, precipitation, player, every actor and the UI hidden |
 | `frame_00040_sea_visible.png` / `frame_00044_sea_absent.png` | the differential sea probe (session paused between them) |
 | `frame_00063_actor_0.png` … `frame_00351_actor_12.png` | one probe per spawned actor, player placed 400 m abeam it |
 | `frame_01464_hud.png` | the objective widget's frame, after the approach |
 | `frame_01525_guns.png` | one second into the `Space` hold |
 | `frame_01616_rocket.png` | after `Left Ctrl` beside the hostile zeppelin |
 
-The console of the run (13 checks, 5 failed):
+The console of the run (13 checks, **3 failed**):
 
 | check | verdict | measured |
 | --- | --- | --- |
@@ -71,9 +71,9 @@ The console of the run (13 checks, 5 failed):
 | `world_sea_visible` | skip | c1c's object records declare no known `Water` surface — recorded by name, never counted as a pass |
 | `hud_objective_current` | **FAIL** | after 1 081 frames flying the measured #1486 approach into the proximity trigger, the lifecycle model still marks no current objective |
 | `hud_objective_matches` | pass | nothing current, nothing drawn — the widget agrees with the model |
-| `actors_project_and_cover` | **FAIL** | **12 of 13** spawned actors drew 0 pixels from their placements; only the player (176 579 px) drew |
-| `weapon_guns_fire` | **pass** | 3 rounds accepted through the mission's weapon session in the held second (3 live at once) |
-| `weapon_rounds_drawn` | **FAIL** | all 3 live round entities carry no mesh — a shot the player cannot see (F27-C-FX-SCHED #1304) |
+| `actors_project_and_cover` | **pass** | all 13 drew: player 176 579 px, the nine `aiv.zrd` aircraft 287–512 px each from their 400 m placements, the three zeppelins 616 k–1 045 k px |
+| `weapon_guns_fire` | **pass** | 90 rounds through the mission's weapon session in the held second (66 live at once) |
+| `weapon_rounds_drawn` | **pass** | all 66 live round entities carry a mesh |
 | `weapon_rocket_launches` | **pass** | a live rocket after `Left Ctrl` beside `workersvoyagezep` |
 | `audio_radio_queued` | **pass** | 1 radio line reached the mixer |
 | `audio_engine_queued` | **pass** | 9 engine bindings, 9 loops running |
@@ -85,11 +85,16 @@ detail and 15 374 colours, against the terrain's **1 per mille** — 200× apart
 with the floor of 20 in between. That is what makes "untextured" a failure
 here rather than a colour count the horizon fog can pass.
 
-This is the defect list the owner reported on 2026-10-17, now measured on the
-same windowed launch: the terrain draws (534 per mille coverage) but is flat
-and unlit, the actors and their shots are invisible, and the objective flow
-never wakes from the trigger approach. The radio and the engine — the two
-things the owner *did* hear — pass.
+**What this run says about the owner's report.** Three of the owner's five
+defects were closed between their playtest of `9b75d132` and this run — the
+other aircraft and zeppelins are now drawn (`M01-WINDOW-ACTORS` #1538: the
+aircraft's `planes.zbd` models and each zeppelin's world-node visual) and
+shots now draw (`M01-WINDOW-FIRE`): both checks pass with the pixels above.
+Two remain and are red: the terrain is still flat and unlit (1 per mille
+detail, near-field spread 1 — visible in `frame_00033_world.png`), and the
+objective flow still wakes nothing from the measured trigger approach, so no
+objective line is ever current for the widget to draw. The radio and the
+engine — the two things the owner *did* hear — pass.
 
 ## What changed
 
@@ -117,23 +122,21 @@ things the owner *did* hear — pass.
 
 ## Limits (each names the affected content and the task that resolves it)
 
-* **The zeppelin visuals are matched to their actors by pose**, a designed
-  rule (`VISUAL_MATCH_M`): the residency keys world objects by node slot
-  (`node-<n>`, `OBJECT_ID_IS_THE_NODE_SLOT`), never by the scene-node name the
-  world-actor binding carries, so the smoke takes the residency visual whose
-  authored pose sits within 200 m of the actor's bind-time pose. In this run
-  **no visual matched any of the three zeppelins**, so their probe frames were
-  taken with everything hidden and each row records, by name, "no residency
-  visual sat within 200 m of the actor's bind-time pose". Their rows are
-  therefore evidence that *the smoke could not find their drawn bodies*, not a
-  measurement of the airships themselves; whether the airships draw at all is
-  the same open question for `actors_project_and_cover`. A production
-  subject → residency-visual binding would resolve both (candidate follow-up,
-  F18/F34 territory).
+* **The actor probes depend on #1538's parenting**: each spawned actor's
+  drawn model hangs off its own entity (the aircraft's `planes.zbd` parts, the
+  zeppelin's world-node visual), and the probe keeps exactly that entity while
+  hiding every other actor body. If that parenting ever moves elsewhere, the
+  probe's keep/hide handle must follow (`CensusEntry::drawn_entity`); a member
+  with no drawn entity is recorded by name and counted as zero, never assumed
+  visible.
 * **No sea measurement exists for c1c**: its records declare no water surface,
   so `world_sea_visible` is skipped by name. The drawn sea plane is `#1434`'s
   designed one and its appearance is unmeasured (F19-C / #636 own the
   binding).
+* **The objective wake is measured, not explained**: `hud_objective_current`
+  failing after the #1486 approach is a fact about this run; which record
+  refuses to wake from that placement is the objective work's to find
+  (M01-HUD-OBJECTIVE #1462 and the trigger flow it reads).
 * **The smoke never ran an original executable** and is never `human_play`;
   nothing here is `verified_original`, and every number above is this
   machine's own frames at the commit this finding was committed with.
@@ -141,10 +144,11 @@ things the owner *did* hear — pass.
   *textured*, 24 near-field luminance levels for *lit*, 8 actor pixels, 64
   objective-text pixels, 100 per mille sea — are **designed** and documented
   beside their constants with the measured basis: this run's own flat,
-  untextured, unlit terrain measures **1 per mille** detail and **1** near-field
-  spread, while the player's textured airframe in the same run measures **233
-  per mille**. They separate the state the owner reported from a drawn one;
-  they are not measurements of the original renderer (F17/F18 own that).
+  untextured, unlit terrain measures **1 per mille** detail and **1**
+  near-field spread, while the player's textured airframe in the same run
+  measures **233 per mille**. They separate the state the owner reported from
+  a drawn one; they are not measurements of the original renderer (F17/F18 own
+  that).
 
 ## Reproduce
 
