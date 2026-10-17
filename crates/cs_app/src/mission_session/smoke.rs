@@ -59,8 +59,8 @@ use bevy::input::keyboard::KeyCode;
 use bevy::input::{ButtonInput, InputSystems};
 use bevy::prelude::{
     App, AppExit, ChildOf, ClearColor, Commands, Entity, GlobalTransform, IntoScheduleConfigs,
-    Last, Mesh3d, MessageWriter, On, Plugin, PostUpdate, PreUpdate, Quat, Query, Res,
-    ResMut, Resource, Text, Transform, Update, Vec2, Vec3, Visibility, With,
+    Last, Mesh3d, MessageWriter, On, Plugin, PostUpdate, PreUpdate, Quat, Query, Res, ResMut,
+    Resource, Text, Transform, Update, Vec2, Vec3, Visibility, With,
 };
 use bevy::render::render_resource::TextureFormat;
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk};
