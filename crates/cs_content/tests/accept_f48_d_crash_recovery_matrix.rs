@@ -330,7 +330,7 @@ fn kill_at(request: &CrashRequest) -> Death {
     command
         .args([
             "--exact",
-            CRASH_CHILD,
+            crash_child_name().as_str(),
             "--ignored",
             "--nocapture",
             "--test-threads=1",
@@ -380,6 +380,20 @@ struct Death {
 
 /// The name of the test that runs in the killed child.
 const CRASH_CHILD: &str = "f48_d_crash_child_commits_and_dies_at_a_named_phase";
+
+/// The child's full libtest name. This file is a module of the crate's one
+/// test binary (`tests/main.rs`), so `--exact` needs the module path in front
+/// of the function name; `module_path!()` starts with the test crate's name,
+/// which libtest does not include.
+fn crash_child_name() -> String {
+    let module = module_path!();
+    let module = module.split_once("::").map_or("", |(_, rest)| rest);
+    if module.is_empty() {
+        CRASH_CHILD.to_string()
+    } else {
+        format!("{module}::{CRASH_CHILD}")
+    }
+}
 
 /// Runs one matrix row: build the pre-state, kill a real process at the phase,
 /// reopen the slot and record what survived.
