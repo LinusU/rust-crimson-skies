@@ -487,3 +487,75 @@ const WEIGHT_EPSILON: f32 = 0.001;
 
 /// The post-draw renormalization target `100.0` (`0x6032e4`).
 const WEIGHT_SUM_TARGET: f32 = 100.0;
+
+/// One music track a prepare step decoded, ready for the device: the
+/// [`ContentKind::Music`] id a [`MusicCue`](cs_sim::audio_events::MusicCue)
+/// names and the samples to publish under it.
+///
+/// The id is computed once, at construction, from the member's own spelling
+/// ([`music_member_id`]), so no publish can pair one track's samples with
+/// another track's id.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DecodedMusicMember {
+    id: ContentId,
+    container: String,
+    member: String,
+    pcm: crate::audio::PcmAudio,
+}
+
+impl DecodedMusicMember {
+    /// Pairs one decoded track with its identity.
+    ///
+    /// # Errors
+    ///
+    /// [`MusicMemberError::Identity`] when the track's spelling derives no id.
+    pub fn new(
+        container: &str,
+        member: &str,
+        pcm: crate::audio::PcmAudio,
+    ) -> Result<Self, MusicMemberError> {
+        Ok(Self {
+            id: music_member_id(container, member)?,
+            container: container.to_owned(),
+            member: member.to_owned(),
+            pcm,
+        })
+    }
+
+    /// The music id a cue names for this track.
+    #[must_use]
+    pub const fn id(&self) -> &ContentId {
+        &self.id
+    }
+
+    /// The install-relative container the track was read from.
+    #[must_use]
+    pub fn container(&self) -> &str {
+        &self.container
+    }
+
+    /// The track's own member name.
+    #[must_use]
+    pub fn member(&self) -> &str {
+        &self.member
+    }
+
+    /// The track's decoded samples.
+    #[must_use]
+    pub const fn pcm(&self) -> &crate::audio::PcmAudio {
+        &self.pcm
+    }
+}
+
+/// Publishes each decoded music track into `library` under the music id a cue
+/// names, through [`SampleLibrary::insert_sample`](crate::audio::SampleLibrary::insert_sample).
+/// Returns how many were published.
+pub fn publish_music_members(
+    library: &dyn crate::audio::SampleLibrary,
+    members: &[DecodedMusicMember],
+) -> usize {
+    for member in members {
+        library.insert_sample(member.id.clone(), member.pcm.clone());
+    }
+    members.len()
+}

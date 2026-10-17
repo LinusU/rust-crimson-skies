@@ -95,9 +95,9 @@ pub use mixer::{
     mix_session,
 };
 pub use music::{
-    FALLBACK_MUSIC_CONTAINER, IMAGE_MUSIC_STATES, MUSIC_DRAW_DOMAIN, MusicArm, MusicMemberError,
-    MusicPick, MusicSelector, MusicStateRule, MusicStateSpec, PREFERRED_MUSIC_CONTAINER,
-    music_member_id, music_state_spec,
+    DecodedMusicMember, FALLBACK_MUSIC_CONTAINER, IMAGE_MUSIC_STATES, MUSIC_DRAW_DOMAIN, MusicArm,
+    MusicMemberError, MusicPick, MusicSelector, MusicStateRule, MusicStateSpec,
+    PREFERRED_MUSIC_CONTAINER, music_member_id, music_state_spec, publish_music_members,
 };
 pub use plugin::AudioPlugin;
 pub use samples::{AudioSampleSource, CODE_SAMPLE_ABSENT, ContentSampleSource, SampleSource};
