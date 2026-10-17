@@ -26,7 +26,7 @@
 //! (`tests/common/nested.rs`): newly authored bytes, nothing derived from the
 //! original installation and no `CS_GAME_DIR` access.
 
-mod common;
+use crate::common;
 
 use common::nested::{EMIT_SEEDS, emit_case};
 use cs_formats::{ParseContext, ParseError, ParseErrorKind, PeError, Reader, read_pe_layout};

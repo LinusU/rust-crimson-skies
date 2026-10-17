@@ -5,6 +5,13 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
+# One integration-test binary per crate (task #1560, convention from #1542).
+# `autotests = false` turns component auto-discovery off, so cargo links and
+# runs exactly the one `[[test]]` target below instead of one per
+# `tests/*.rs` file (macOS scans each fresh binary for ~50-70 s on first
+# launch). Every former test file is a `mod` of `tests/main.rs`;
+# `cs_xtask test-layout` fails when a `.rs` file under `tests/` is not reached.
+autotests = false
 
 [dependencies]
 cs_types.workspace = true
@@ -22,3 +29,7 @@ cs_assets.workspace = true
 # The corpus contract lives in the task tool so the CLI (`cs_xtask corpus`)
 # and these tests share one manifest.
 cs_xtask = { path = "../../tools/cs_xtask" }
+
+[[test]]
+name = "cs_formats_tests"
+path = "tests/main.rs"

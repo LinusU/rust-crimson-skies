@@ -5,7 +5,7 @@
 //! retry the same bytes honestly. A successful attempt must keep its charges,
 //! and neither a hostile attempt nor a ceiling refusal may widen a limit.
 
-mod common;
+use crate::common;
 
 use common::{CONTAINER, EXPECTED_COUNT, parse_record, record_bytes};
 use cs_formats::{ParseContext, ParseError, ParseErrorKind};

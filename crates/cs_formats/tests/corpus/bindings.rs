@@ -27,8 +27,8 @@ use cs_formats::{
 use cs_types::evidence::SourceSpan;
 use cs_types::install::RelativePath;
 
-use crate::fixtures;
-use crate::spans::CorpusFixture;
+use super::fixtures;
+use super::spans::CorpusFixture;
 
 /// What probing one input produced.
 #[derive(Debug)]

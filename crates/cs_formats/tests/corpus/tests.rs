@@ -12,8 +12,8 @@ use cs_xtask::corpus::{
     self, CorpusClass, CorpusSource, ExpectedOutcome, PrivateAvailability, TruncationOracle,
 };
 
-use crate::bindings::{Binding, ProbeOutcome, registry};
-use crate::spans::CorpusFixture;
+use super::bindings::{Binding, ProbeOutcome, registry};
+use super::spans::CorpusFixture;
 
 fn binding_for(container: &str) -> &'static Binding {
     registry()

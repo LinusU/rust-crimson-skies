@@ -10,7 +10,7 @@
 use cs_formats::zbd::{INTERP_SIGNATURE, INTERP_VERSION};
 use cs_xtask::corpus::BoundaryKind;
 
-use crate::spans::{CorpusFixture, frame, hard, slack};
+use super::spans::{CorpusFixture, frame, hard, slack};
 
 const HEADER: BoundaryKind = BoundaryKind::FixedHeader;
 const TABLE: BoundaryKind = BoundaryKind::VariableTable;

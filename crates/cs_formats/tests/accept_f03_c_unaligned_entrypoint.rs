@@ -7,7 +7,7 @@
 //! aligned one, and every truncation of it must come back as a scoped
 //! [`cs_formats::ParseError`] — never a panic and never an unscoped field.
 
-mod common;
+use crate::common;
 
 use common::{
     CONTAINER, EXPECTED_COUNT, EXPECTED_LABEL, EXPECTED_MAGIC, EXPECTED_SCALE, parse_record,

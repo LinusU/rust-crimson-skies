@@ -7,7 +7,7 @@
 //! terminator checks) makes them fail, and a panic at any boundary aborts the
 //! test rather than passing it.
 
-mod common;
+use crate::common;
 
 use common::{
     CONTAINER, COUNT_OFFSET, EXPECTED_COUNT, EXPECTED_FLAGS, EXPECTED_LABEL, EXPECTED_MAGIC,

@@ -7,7 +7,7 @@
 //! raised inside the same attempt must carry the very same provenance as
 //! reader refusals.
 
-mod common;
+use crate::common;
 
 use common::{CONTAINER, COUNT_OFFSET, record_bytes};
 use cs_formats::{ParseContext, ParseError, ParseErrorKind, Reader};

@@ -23,7 +23,7 @@
 //! Raw random bytes are newly authored synthetic data: no `CS_GAME_DIR` read,
 //! nothing derived from the original installation.
 
-mod common;
+use crate::common;
 
 use std::cell::Cell;
 use std::collections::BTreeMap;

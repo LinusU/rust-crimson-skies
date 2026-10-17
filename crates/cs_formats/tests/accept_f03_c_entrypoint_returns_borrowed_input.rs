@@ -7,7 +7,7 @@
 //! allocation budget that `specs/F03-bounded-binary-parsing-primitives.md`
 //! non-negotiable #2 exists to bound.
 
-mod common;
+use crate::common;
 
 use common::{CONTAINER, EXPECTED_LABEL, EXPECTED_MAGIC, LABEL_LEN, record_bytes};
 use cs_formats::ParseContext;

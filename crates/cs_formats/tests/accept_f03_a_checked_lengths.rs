@@ -6,7 +6,7 @@
 //! is structural: `checked_byte_len`/`checked_extent` are pure arithmetic and
 //! `read_bytes` only hands out a borrow of the input, whatever the length.
 
-mod common;
+use crate::common;
 
 use common::CONTAINER;
 use cs_formats::{ParseErrorKind, Reader};

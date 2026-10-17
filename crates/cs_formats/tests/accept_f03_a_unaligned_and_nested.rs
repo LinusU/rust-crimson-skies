@@ -5,7 +5,7 @@
 //! input whose bytes sit at odd addresses must parse identically to an aligned
 //! one, and a failure inside a nested range must keep its absolute offset.
 
-mod common;
+use crate::common;
 
 use common::{CONTAINER, EXPECTED_LABEL, EXPECTED_MAGIC, parse_record, record_bytes, record_len};
 use cs_formats::{ParseErrorKind, Reader};
