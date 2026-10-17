@@ -5198,12 +5198,15 @@ pub const WORLD_SURFACE_UNMEASURED: &str = "f18-world.surface-unmeasured";
 ///
 /// The claim is kept for the records that still need it — an unindexed record
 /// that **does** store collision geometry (a mesh, an extent or both) could be
-/// a wall, a sensor or a decoration and the container does not say which. Two
+/// a wall, a sensor or a decoration and the container does not say which. Three
 /// classes leave it: an unindexed record that stores *neither* field resolves
-/// to `None` under [`UNINDEXED_RECORD_STORES_NO_GEOMETRY`], and a record whose
+/// to `None` under [`UNINDEXED_RECORD_STORES_NO_GEOMETRY`], a record whose
 /// name carries the measured `fvol` prefix resolves to `None` under
 /// [`FOG_VOLUME_RECORD_NEVER_BLOCKS`], because the image's only name-keyed
-/// consumer of that prefix is its fog system (task #716).
+/// consumer of that prefix is its fog system (task #716), and a record inside
+/// the world node's `horizon` environment subtree resolves to `None` under
+/// [`HORIZON_SUBTREE_RECORD_NEVER_BLOCKS`] — the far terrain and sky, which
+/// nothing measured reports a contact for.
 pub const UNINDEXED_ROLE_UNMEASURED: &str = "f18-world.unindexed-collision-role-unmeasured";
 
 /// An unindexed record that binds no mesh and stores no extent carries no
@@ -5226,6 +5229,65 @@ pub const UNINDEXED_ROLE_UNMEASURED: &str = "f18-world.unindexed-collision-role-
 /// surfaces measure those), and does not change what *this* record bounds.
 pub const UNINDEXED_RECORD_STORES_NO_GEOMETRY: &str =
     "f18-world.unindexed-record-stores-no-geometry";
+
+/// The world node's child named `horizon` is the original's sky and far-terrain
+/// container.
+///
+/// **Measured fact plus a designed scope rule.** Measured over all eight world
+/// containers of the original installation: the world node owns exactly one
+/// direct child whose stored name is `horizon`, it is a positioned `object3d`
+/// record with no mesh and no stored `unk140` extent of its own, and its own
+/// children are the `zone*` / `g*` records that carry the far terrain and the
+/// sky. That the `horizon` node is the container the original binds to a camera
+/// by name is measured separately (task #541,
+/// `docs/findings/2026-10-11-t541-horizon-commands-anchor-scenery-to-camera.md`):
+/// `CameraSetHorizon horizon` resolves the *scene node* named `horizon` through
+/// the node registry and re-anchors it to the viewer each render pass, so the
+/// sky and the horizon ring never approach the camera.
+///
+/// What this conversion derives from that measurement is the **scope** of the
+/// environment set: exactly this child's descendants under the parent-slot rule
+/// are imported as the world's far-terrain/horizon environment. It is a claim
+/// about *this* import, not a measurement of how the 2000 engine loaded the
+/// world: the engine instantiates the whole stored hierarchy, and the world's
+/// other children (ziggurat-style model instances, vehicle and zeppelin
+/// anchors, vegetation) parent their own part hierarchies, which this flat
+/// `WorldDefinition` cannot represent (it has one world-space transform per
+/// object and no parent link). Importing those parts standalone would place
+/// every one of them at its parent-relative stored transform, and the closure
+/// also reaches `lod` records, which
+/// [`import_world_container`] refuses
+/// ([`WorldImportError::WorldOwnedNotAnObject`]). The horizon subtree is the
+/// environment half: measured 4 to 8 records per container, every one an
+/// `object3d`, none a `lod`. See
+/// `docs/findings/2026-10-17-m01-window-farimport.md` for the full closure
+/// measurement and why the general rule was rejected.
+pub const HORIZON_CONTAINER_IS_THE_SKY_HIERARCHY: &str =
+    "f18-world.horizon-container-is-the-sky-hierarchy";
+
+/// A record inside the world node's `horizon` child's subtree is environment
+/// presentation and never blocks.
+///
+/// **Designed rule over a measured subtree.** The descendants of the `horizon`
+/// child are the original's far terrain and sky (`zone1`/`g1164` far terrain,
+/// `zone2`'s `g1155` far terrain, `moon`, `stars`, `h_zone2scroll`): records the
+/// container does not name in its partition grid and whose names carry no
+/// measured `fvol` prefix, so the role rules above would leave them
+/// [`WorldCollisionRole::Unknown`] ([`UNINDEXED_ROLE_UNMEASURED`]). The subtree
+/// is the environment ring that hangs on the camera; nothing measured reports a
+/// contact for it. This conversion therefore resolves every one of its records
+/// to [`WorldCollisionRole::None`] — presented, never blocking — with its shape
+/// an explicit unknown under this same claim, so "the container stated no
+/// collision role and the record is environment presentation" stays readable.
+///
+/// The set is defined by [`HORIZON_CONTAINER_IS_THE_SKY_HIERARCHY`], and it
+/// covers the far terrain **and** the sky-zone records because they are one
+/// subtree: `zone1`, `zone2` and their `g*`/`moon`/`stars`/`h_zone2scroll`
+/// children are all reached from the single `horizon` child. Evidence class:
+/// `observed_tool` over the store's bytes through the production readers, never
+/// `verified_original`; no original run measured a contact for one of them.
+pub const HORIZON_SUBTREE_RECORD_NEVER_BLOCKS: &str =
+    "f18-world.horizon-subtree-record-never-blocks";
 
 /// The identity of an imported world object is its container's own node slot.
 ///
@@ -5742,6 +5804,7 @@ pub struct WorldImportReport {
     objects_unindexed_none: usize,
     objects_unindexed_fog: usize,
     objects_unindexed_unresolved: usize,
+    objects_environment: usize,
     objects_unresolved_collision: usize,
     sectors: usize,
     sectors_without_extent: usize,
@@ -5946,6 +6009,26 @@ impl WorldImportReport {
         self.objects_unindexed_unresolved
     }
 
+    /// How many imported objects are the world node's environment subtree: the
+    /// descendants of its `horizon` child
+    /// ([`HORIZON_CONTAINER_IS_THE_SKY_HIERARCHY`]).
+    ///
+    /// These are the far terrain and the sky the original hangs under its
+    /// `horizon` container — the `zone*` groups and the `g*`/`moon`/`stars`
+    /// records under them. They are neither named by the partition grid nor the
+    /// world node's own direct children, so before this count existed the
+    /// import dropped them entirely; now they are imported as environment
+    /// presentation, every one resolving [`WorldCollisionRole::None`] under
+    /// [`HORIZON_SUBTREE_RECORD_NEVER_BLOCKS`]. The object count is therefore
+    /// `partition_records + stored_child_list + environment_records`, and the
+    /// unindexed classes are `objects_unindexed_none + objects_unindexed_fog +
+    /// objects_unindexed_unresolved` (the world node's direct children) plus
+    /// this set (the horizon child's descendants).
+    #[must_use]
+    pub const fn environment_records(&self) -> usize {
+        self.objects_environment
+    }
+
     /// How many sectors the definition declares.
     ///
     /// Equal to the cell count minus [`Self::sectors_without_extent`]: a cell
@@ -5962,12 +6045,15 @@ impl WorldImportReport {
         self.sectors_without_extent
     }
 
-    /// How many mesh-binding records the container holds that the world node
-    /// does not own.
+    /// How many mesh-binding records the container holds that the import does
+    /// not own.
     ///
-    /// These are the effect hierarchies, the aircraft and the rest of the
-    /// container's content: they bind meshes and have nothing to do with this
-    /// world, so they are counted here rather than imported as world objects.
+    /// These are the effect hierarchies, the aircraft, the model instances'
+    /// part hierarchies and the rest of the container's content: they bind
+    /// meshes and are neither a direct child of the world node, a record of its
+    /// partition grid, nor part of the `horizon` environment subtree
+    /// ([`Self::environment_records`]), so they are counted here rather than
+    /// imported as world objects.
     #[must_use]
     pub const fn mesh_binding_records_elsewhere(&self) -> usize {
         self.mesh_binding_records_elsewhere
@@ -6116,6 +6202,68 @@ fn is_fog_volume(name: &str) -> bool {
     name.starts_with("fvol")
 }
 
+/// Whether a record's stored display name is the original's `horizon` container.
+///
+/// **The engine's own name key, mirrored.** Task #541 measured the image's two
+/// horizon commands resolving a **scene node by name** through the node registry
+/// (`CameraSetHorizon horizon`), and the production camera path
+/// (`cs_app::camera::horizon`) finds the same record by this comparison. The
+/// stored name is compared case-insensitively, exactly as the camera census
+/// does, so the import and the camera bind the same record.
+fn is_horizon_container(name: &str) -> bool {
+    name.eq_ignore_ascii_case("horizon")
+}
+
+/// The world node's `horizon` child, if it stores one.
+///
+/// Measured over all eight world containers: exactly one direct child of the
+/// world node is named `horizon` (see
+/// [`HORIZON_CONTAINER_IS_THE_SKY_HIERARCHY`]). A container with no such child
+/// yields `None`, which this conversion treats as an empty environment set
+/// rather than an error — a world with no stored horizon has no environment
+/// subtree to import.
+fn horizon_child(records: &GameZNodes, world_slot: u32) -> Option<u32> {
+    records
+        .nodes
+        .iter()
+        .find(|node| node.parent == Some(world_slot) && is_horizon_container(&node.name))
+        .map(|node| node.index)
+}
+
+/// The descendants of the world node's `horizon` child, under the adopted
+/// parent-slot rule — the world's far-terrain/horizon environment.
+///
+/// The set is every record reachable from the `horizon` child through the
+/// parent slots ([`HIERARCHY_PARENT_SLOT_AUTHORITATIVE`]), **excluding** the
+/// `horizon` record itself, which is already one of the world node's direct
+/// children. Nothing is invented: a record is in the set because it names, or
+/// transitively names, the `horizon` child as its parent. Measured 4 to 8
+/// records per container; every one is an `object3d` and none is a `lod`. See
+/// [`HORIZON_CONTAINER_IS_THE_SKY_HIERARCHY`] for why this subtree — and not
+/// the world node's whole descendant closure — is the set the import owns.
+fn environment_subtree(records: &GameZNodes, world_slot: u32) -> BTreeSet<u32> {
+    let Some(horizon) = horizon_child(records, world_slot) else {
+        return BTreeSet::new();
+    };
+    // Children under the adopted rule: the records that name their parent.
+    let mut derived: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+    for node in &records.nodes {
+        if let Some(parent) = node.parent {
+            derived.entry(parent).or_default().push(node.index);
+        }
+    }
+    let mut reached: BTreeSet<u32> = BTreeSet::new();
+    let mut stack: Vec<u32> = derived.get(&horizon).cloned().unwrap_or_default();
+    while let Some(index) = stack.pop() {
+        if reached.insert(index)
+            && let Some(children) = derived.get(&index)
+        {
+            stack.extend(children.iter().copied());
+        }
+    }
+    reached
+}
+
 /// The record's stored world-space bounding box (`unk140`), in stored units.
 ///
 /// The box is `None` when the record stores an all-zero one, which is the
@@ -6180,8 +6328,11 @@ fn canonical_bounds(
 /// [`WorldPartitionGrid::read`]; every record that record owns — measured to be
 /// exactly the grid's slots plus the world node's own stored child list, and
 /// exactly the records that name the world node as their parent, with the three
-/// statements cross-checked against each other rather than one assumed; each
-/// owned record's stored mesh index, transform and world-space bounding box.
+/// statements cross-checked against each other rather than one assumed; the
+/// world node's `horizon` child and its descendants, under the same parent-slot
+/// rule ([`HORIZON_CONTAINER_IS_THE_SKY_HIERARCHY`]), which are the far terrain
+/// and the sky the original anchors to its camera; each imported record's
+/// stored mesh index, transform and world-space bounding box.
 ///
 /// **What this refuses to guess.** Everything the container does not state:
 ///
@@ -6189,9 +6340,12 @@ fn canonical_bounds(
 /// * every object's gameplay surface ([`WORLD_SURFACE_UNMEASURED`]);
 /// * the collision role of an unindexed record that stores collision
 ///   geometry — a mesh, an extent or both — but no class saying what the
-///   engine did with it ([`UNINDEXED_ROLE_UNMEASURED`]), and with one
-///   measured exception: a record whose name carries the `fvol` prefix is a
-///   fog volume and resolves to `None` ([`FOG_VOLUME_RECORD_NEVER_BLOCKS`]);
+///   engine did with it ([`UNINDEXED_ROLE_UNMEASURED`]), with two measured
+///   exceptions: a record whose name carries the `fvol` prefix is a
+///   fog volume and resolves to `None` ([`FOG_VOLUME_RECORD_NEVER_BLOCKS`]),
+///   and a record inside the world's `horizon` subtree is environment
+///   presentation and resolves to `None`
+///   ([`HORIZON_SUBTREE_RECORD_NEVER_BLOCKS`]);
 /// * the length unit, which the caller's [`SourceAdapter`] supplies and the
 ///   report names ([`WORLD_UNIT_UNMEASURED`], or a measured claim id when the
 ///   adapter's source has one).
@@ -6215,7 +6369,9 @@ fn canonical_bounds(
 /// anchors, transform groups and dummies. An unindexed object whose stored
 /// name carries the `fvol` prefix resolves to `None` under
 /// [`FOG_VOLUME_RECORD_NEVER_BLOCKS`], because the image's only name-keyed
-/// consumer of that prefix is its fog system. Its id is its node slot
+/// consumer of that prefix is its fog system. A record in the `horizon`
+/// environment subtree resolves to `None` under
+/// [`HORIZON_SUBTREE_RECORD_NEVER_BLOCKS`]. Its id is its node slot
 /// ([`OBJECT_ID_IS_THE_NODE_SLOT`]). Every object whose role this function
 /// leaves open is counted by [`WorldImportReport::objects_unresolved_collision`].
 ///
@@ -6273,6 +6429,18 @@ pub fn import_world_container(
         });
     }
 
+    // The world's environment layer: the descendants of the world node's
+    // `horizon` child. The world node's own direct children (`union`) are the
+    // spatially indexed geometry and the ambient content; this subtree is the
+    // far terrain and the sky, which hang one or more levels below it and were
+    // dropped by a direct-children-only import. The ownership cross-check above
+    // is unchanged — the grid, the stored child list and the parent slots still
+    // agree on the direct children — and this set is disjoint from `union`
+    // because a record has one parent slot. See
+    // [`HORIZON_CONTAINER_IS_THE_SKY_HIERARCHY`].
+    let environment: BTreeSet<u32> = environment_subtree(records, world_slot);
+    let imported: BTreeSet<u32> = union.union(&environment).copied().collect();
+
     // Sectors: one per cell that can be given an extent, which is the union of
     // the stored boxes its members state. A cell whose members all store a zero
     // box gets no sector, and its records stay resident.
@@ -6316,7 +6484,7 @@ pub fn import_world_container(
     }
 
     // Objects: every record the world node owns, in stored order.
-    let mut objects: Vec<WorldObjectInstance> = Vec::with_capacity(union.len());
+    let mut objects: Vec<WorldObjectInstance> = Vec::with_capacity(imported.len());
     let mut objects_with_mesh = 0usize;
     let mut objects_in_a_sector = 0usize;
     let mut objects_resident = 0usize;
@@ -6332,7 +6500,7 @@ pub fn import_world_container(
     for record in records
         .nodes
         .iter()
-        .filter(|node| union.contains(&node.index))
+        .filter(|node| imported.contains(&node.index))
     {
         let StoredNodeKind::Object3d(object) = record.kind else {
             return Err(WorldImportError::WorldOwnedNotAnObject {
@@ -6453,6 +6621,28 @@ pub fn import_world_container(
                     provenance.clone(),
                 )),
             )
+        } else if environment.contains(&record.index) {
+            // The world's environment layer: the descendants of the world
+            // node's `horizon` child, measured to be the far terrain and the
+            // sky (task #1553). They are neither indexed nor `fvol*`, so the
+            // rules above would leave every one of them an explicit unknown;
+            // the subtree is the ring the original anchors to the camera
+            // (#541) and nothing measured reports a contact for it, so the
+            // whole set resolves `None` under one claim — the far terrain and
+            // the sky zones are one subtree, so one rule covers them.
+            (
+                Resolved::Known(Known::new(WorldCollisionRole::None, provenance.clone())),
+                Resolved::Unknown {
+                    claim_id: claim(HORIZON_SUBTREE_RECORD_NEVER_BLOCKS),
+                    reason: format!(
+                        "node slot {} is a descendant of the world's `horizon` container, so it \
+                         is part of the far-terrain/horizon environment the original anchors to \
+                         the camera; the container states no collision role for it and nothing \
+                         measured reports a contact for it",
+                        record.index
+                    ),
+                },
+            )
         } else if is_fog_volume(&record.name) {
             // Measured (task #716): the image's only name-keyed consumer of the
             // `fvol` prefix is the fog system, so this record is presented and
@@ -6564,7 +6754,7 @@ pub fn import_world_container(
     let mesh_binding_records_elsewhere = records
         .nodes
         .iter()
-        .filter(|node| !union.contains(&node.index) && node.mesh_index() >= 0)
+        .filter(|node| !imported.contains(&node.index) && node.mesh_index() >= 0)
         .count();
     let report = WorldImportReport {
         world_node: world_slot,
@@ -6583,6 +6773,7 @@ pub fn import_world_container(
         objects_unindexed_none,
         objects_unindexed_fog,
         objects_unindexed_unresolved,
+        objects_environment: environment.len(),
         objects_unresolved_collision,
         sectors: definition.sectors().len(),
         sectors_without_extent,
