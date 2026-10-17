@@ -5,12 +5,12 @@
  "verified": false,
  "install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978",
  "catalog_id": "mission/ch1-m05",
- "world_id": "world/c1",
- "program_id": "script/c1-m05-zrdr",
+ "world_id": "world/c3",
+ "program_id": "script/c3-m05-zrdr",
  "closure_sha256": null,
  "source_spans": [
     {"asset_id": "GOSDATA/ASSETS/BINARIES/langui.dll", "offset": 87094, "length": 82, "sha256": "357e6bb05f1d2872a00e0976fdde44561cd5bb6a56d9f555d85d0ff1481faf49"},
-    {"asset_id": "ZBD/C1/M05/zrdr.zbd", "offset": 0, "length": 115570, "sha256": "0ae0341cba2548a3d1cb9f10ec06cfae3ecf4c81513bd320d882f6a57f8c34fe"}
+    {"asset_id": "ZBD/C3/M05/zrdr.zbd", "offset": 0, "length": 69252, "sha256": "78e7ad3f65747fd8f7f8db77b9b9db4a5d84429203b1d5a6bd2b857210585d17"}
   ],
  "required_actor_ids": [],
  "objective_ids": [],

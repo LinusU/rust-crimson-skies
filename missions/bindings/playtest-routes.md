@@ -56,19 +56,19 @@ recorded in the task's evidence report
 
 | Work order | Position | Mission | World | Program | State |
 | --- | --- | --- | --- | --- | --- |
-| M01 | 0 | `mission/ch1-m01` | `world/c1c` | `script/c1c-m01-zrdr` | ready |
-| M02 | 1 | `mission/ch1-m02` | `world/c1` | `script/c1-m02-zrdr` | ready |
-| M03 | 2 | `mission/ch1-m03` | `world/c1b` | `script/c1b-m03-zrdr` | ready |
-| M04 | 3 | `mission/ch1-m04` | `world/c1` | `script/c1-m04-zrdr` | ready |
-| M05 | 4 | `mission/ch1-m05` | `world/c1` | `script/c1-m05-zrdr` | ready |
-| M06 | 5 | `mission/ch2-m01` | `world/c2` | `script/c2-m01-zrdr` | ready |
-| M07 | 6 | `mission/ch2-m02` | `world/c2` | `script/c2-m02-zrdr` | ready |
-| M08 | 7 | `mission/ch2-m03` | `world/c2` | `script/c2-m03-zrdr` | ready |
+| M01 | 0 | `mission/ch1-m01` | `world/c3` | `script/c3-m01-zrdr` | ready |
+| M02 | 1 | `mission/ch1-m02` | `world/c3` | `script/c3-m02-zrdr` | ready |
+| M03 | 2 | `mission/ch1-m03` | `world/c3` | `script/c3-m03-zrdr` | ready |
+| M04 | 3 | `mission/ch1-m04` | `world/c3` | `script/c3-m04-zrdr` | ready |
+| M05 | 4 | `mission/ch1-m05` | `world/c3` | `script/c3-m05-zrdr` | ready |
+| M06 | 5 | `mission/ch2-m01` | `world/c1c` | `script/c1c-m01-zrdr` | ready |
+| M07 | 6 | `mission/ch2-m02` | `world/c1` | `script/c1-m02-zrdr` | ready |
+| M08 | 7 | `mission/ch2-m03` | `world/c1b` | `script/c1b-m03-zrdr` | ready |
 | M09 | — | — | — | — | refused |
-| M10 | 9 | `mission/ch2-m05` | `world/c2` | `script/c2-m05-zrdr` | ready |
+| M10 | 9 | `mission/ch2-m05` | `world/c1` | `script/c1-m05-zrdr` | ready |
 | M11 | — | — | — | — | refused |
-| M12 | 11 | `mission/ch3-m02` | `world/c3` | `script/c3-m02-zrdr` | ready |
-| M13 | 12 | `mission/ch3-m03` | `world/c3` | `script/c3-m03-zrdr` | ready |
+| M12 | 11 | `mission/ch3-m02` | `world/c2` | `script/c2-m01-zrdr` | ready |
+| M13 | 12 | `mission/ch3-m03` | `world/c2` | `script/c2-m03-zrdr` | ready |
 | M14 | — | — | — | — | refused |
 | M15 | — | — | — | — | refused |
 | M16 | 15 | `mission/ch4-m01` | `world/c4` | `script/c4-m01-zrdr` | ready |
