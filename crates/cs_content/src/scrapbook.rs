@@ -47,6 +47,17 @@
 //! as not original-backed rather than assumed to be, and the original's own
 //! progression link stays an explicit unknown in the report. See
 //! `docs/findings/2026-10-08-f47-d-retail-scrapbook-audit.md`.
+//!
+//! ## The declared runtime catalog (stage F47-C2)
+//!
+//! [`declare`] turns a [`DiscoveredScrapbook`] into the production
+//! [`ScrapbookCatalog`] the runtime projects — one [`ScrapbookEntry`] per
+//! [`DiscoveredItem`], keyed so the entry, the discovery and F14-D.8's
+//! baseline rows name the same item — declaring only what the table states:
+//! an explicit unknown unlock for every record, no mementos, no replay
+//! links, no placeholder artwork. [`resource_names`] is the production read
+//! of the `TitleResID` name→id join through the archive's own resource
+//! headers. See `docs/findings/2026-10-17-f47-c2-declared-scrapbook-catalog.md`.
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
@@ -1297,9 +1308,10 @@ pub struct DeclaredScrapbook {
     /// One [`ScrapbookEntry`] per [`DiscoveredItem`], in the table's own
     /// order.
     pub catalog: ScrapbookCatalog,
-    /// The entries whose `TitleResID` name [`ORIGINAL_RESOURCE_HEADER`]
-    /// does not define (or defines ambiguously): their `title` id keeps
-    /// the unresolved name in its key instead of a string-table number.
+    /// The entries whose `TitleResID` name none of
+    /// [`RESOURCE_HEADER_MEMBERS`] defines (or defines ambiguously): their
+    /// `title` id keeps the unresolved name in its key instead of a
+    /// string-table number.
     pub unresolved_titles: Vec<ContentId>,
 }
 

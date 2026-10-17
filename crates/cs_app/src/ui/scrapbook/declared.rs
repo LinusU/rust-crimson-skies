@@ -3,8 +3,9 @@
 //!
 //! [`declared_inputs`] is the production join the F47-C1 screen was missing:
 //! [`DiscoveredScrapbook::discover`] reads `ASSETS/SCRAPBOOK.CSV` out of the
-//! installed archive, [`resource_names`] reads the same archive's
-//! `ASSETS/SCRIPTS/RESOURCE.H`, and [`declare`] turns the discovered records
+//! installed archive, [`resource_names`] reads the same archive's resource
+//! headers (`ASSETS/SCRIPTS/RESOURCE.H` and `ASSETS/SCRIPTS/RESRC1.H`), and
+//! [`declare`] turns the discovered records
 //! into the [`ScrapbookCatalog`](cs_content::scrapbook::ScrapbookCatalog) the
 //! pages project — every refusal on the way is an error, never an empty
 //! scrapbook.
