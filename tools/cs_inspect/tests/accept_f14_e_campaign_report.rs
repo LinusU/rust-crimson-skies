@@ -12,15 +12,13 @@
 //! the digest of the archive it names — cross-checked against the committed
 //! M01 binding record.
 
-mod common;
-
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use cs_assets::install::sha256;
 use cs_content::campaign_bindings::campaign_layout;
 
-use common::TempTree;
+use crate::common::TempTree;
 
 const MISSION_A: &[u8] = b"authored campaign fixture program archive A";
 const MISSION_B: &[u8] = b"authored campaign fixture program archive B, different bytes";

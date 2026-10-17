@@ -10,12 +10,10 @@
 //! loudly when CS_GAME_DIR is missing; it never writes inside the
 //! installation.
 
-mod common;
-
 use std::path::PathBuf;
 use std::process::Command;
 
-use common::TempTree;
+use crate::common::TempTree;
 use cs_assets::install::{FileRoleKind, discover, fingerprint};
 use cs_inspect::install::{audit_report_json, full_content_readiness, install_audit};
 

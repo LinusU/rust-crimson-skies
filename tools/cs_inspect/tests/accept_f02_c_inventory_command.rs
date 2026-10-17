@@ -8,11 +8,9 @@
 //! authored fixture trees; they prove nothing about retail installations
 //! and never touch `$CS_GAME_DIR`.
 
-mod common;
-
 use std::process::Command;
 
-use common::TempTree;
+use crate::common::TempTree;
 
 const ARCHIVE_PAYLOAD: &[u8] = b"authored fixture archive payload";
 

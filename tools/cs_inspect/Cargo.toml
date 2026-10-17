@@ -6,6 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 autobins = false
+autotests = false
 
 [dependencies]
 cs_assets.workspace = true
@@ -21,3 +22,7 @@ miniz_oxide = "0.9"
 [[bin]]
 name = "cs-inspect"
 path = "src/main.rs"
+
+[[test]]
+name = "cs_inspect_tests"
+path = "tests/main.rs"

@@ -14,12 +14,10 @@
 //! the original route encoding is unmeasured and the tests never assert a
 //! decoded route.
 
-mod common;
-
 use std::path::PathBuf;
 use std::process::Command;
 
-use common::TempTree;
+use crate::common::TempTree;
 
 /// Builds a reader-family archive (F06/indexed by a version-one trailer) whose
 /// members are `(name, body)` in declaration order: member data, then one

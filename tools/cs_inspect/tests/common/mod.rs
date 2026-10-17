@@ -4,7 +4,7 @@
 //! system temporary directory: it proves nothing about retail
 //! installations, it never touches `$CS_GAME_DIR`, and it is removed again
 //! when the test finishes (including on panic).
-#![allow(dead_code)] // each test binary compiles this module and uses a subset
+#![allow(dead_code)] // a subset of these helpers is used by each test module
 
 use std::fs;
 use std::path::{Path, PathBuf};
