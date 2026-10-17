@@ -7,7 +7,7 @@ presented through `specs/F45-main-menu-pandora-cabin-briefing-and-flight-check.m
 `### F45-A`/`### F45-B`/`### F45-D`). Shared contracts:
 `docs/contracts/UI-NETWORK.md`, `docs/contracts/STATE-TRANSACTIONS.md`.
 
-Task test prefix: **`accept_f64_c_import_dialog_`** (7 tests, all unignored;
+Task test prefix: **`accept_f64_c_import_dialog_`** (9 tests, all unignored;
 it also matches F64-C's own `accept_f64_c_` selection).
 
 Owner paths used: `crates/cs_app/src/ui/front_end/` (the new
