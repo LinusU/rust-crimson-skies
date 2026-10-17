@@ -3724,16 +3724,34 @@ fn scan_campaign(install_root: &Path) -> Result<Vec<CampaignMission>, SourceBind
             }
             let program_asset = format!("{zbd_name}/{group}/{name}/zrdr.zbd");
             let program = mission_path.join("zrdr.zbd");
-            if !program.is_file() {
-                return Err(SourceBindingError::Inconsistent {
-                    reason: format!(
-                        "mission directory {program_asset} is absent, so no program archive \
-                         declares this mission's campaign identity"
-                    ),
-                });
-            }
-            let bytes = read_file(&program)?;
-            let (chapter, number) = mission_code(&program_asset, &bytes)?;
+            // The directory-declared position, used only when the archive
+            // carries nothing to measure: absent bytes, or bytes that do not
+            // read as a reader archive at all (synthetic stub installs).
+            // A real reader archive must declare its own identity — the
+            // census below refuses one that does not.
+            let declared = || -> Result<(u32, u32), SourceBindingError> {
+                let chapter =
+                    chapter_number(&group).ok_or_else(|| SourceBindingError::Inconsistent {
+                        reason: format!(
+                            "world group {group} of {program_asset} spells no chapter digits, \
+                             and the program archive declares no campaign identity of its own"
+                        ),
+                    })?;
+                Ok((
+                    chapter,
+                    mission_number(&name).expect("the directory filter applied"),
+                ))
+            };
+            let present = program.is_file();
+            let (chapter, number) = if !present {
+                declared()?
+            } else {
+                let bytes = read_file(&program)?;
+                match mission_code(&program_asset, &bytes)? {
+                    Some(code) => code,
+                    None => declared()?,
+                }
+            };
             if !seen.insert((chapter, number)) {
                 return Err(SourceBindingError::Inconsistent {
                     reason: format!(
@@ -3747,7 +3765,7 @@ fn scan_campaign(install_root: &Path) -> Result<Vec<CampaignMission>, SourceBind
                 mission_number: number,
                 world_group: group.to_ascii_lowercase(),
                 program_asset,
-                program_present: true,
+                program_present: present,
             });
         }
     }
@@ -3766,24 +3784,32 @@ fn scan_campaign(install_root: &Path) -> Result<Vec<CampaignMission>, SourceBind
 /// naming convention the payloads carry as plain bytes, measured on the
 /// retail installation, not a documented record layout.
 ///
+/// Returns `Ok(None)` when the archive carries nothing to measure — bytes
+/// that do not read as a reader archive at all, or a readable archive whose
+/// members name no sound-group code — which is the caller's signal to fall
+/// back to the directory-declared position.
+///
 /// # Errors
 ///
-/// [`SourceBindingError::Inconsistent`] when the archive cannot be read as a
-/// reader archive, when any declared member fails its bounds check (the
-/// census must cover the whole declared payload), when no member names a
-/// sound-group code, or when the plurality is a tie.
-fn mission_code(asset: &str, bytes: &[u8]) -> Result<(u32, u32), SourceBindingError> {
+/// [`SourceBindingError::Inconsistent`] when the archive reads as a reader
+/// archive but cannot be censused: a declared member failing its bounds
+/// check (the census must cover the whole declared payload), or the
+/// plurality being a tie.
+fn mission_code(asset: &str, bytes: &[u8]) -> Result<Option<(u32, u32)>, SourceBindingError> {
     let inconsistent = |reason: String| SourceBindingError::Inconsistent { reason };
     let spelling = RelativePath::new(&asset.to_ascii_lowercase())
         .map_err(|error| inconsistent(format!("{asset} is not a relative path: {error}")))?;
     let mut context = ParseContext::with_defaults(asset);
-    let decision = dispatch(ZbdProbe::new(asset, &spelling, bytes))
-        .map_err(|error| inconsistent(format!("{asset} is not a known container: {error}")))?;
-    let index = read_version_one_index(&mut context, decision, bytes)
-        .map_err(|error| inconsistent(format!("{asset} has no readable member index: {error}")))?;
+    let Ok(decision) = dispatch(ZbdProbe::new(asset, &spelling, bytes)) else {
+        return Ok(None);
+    };
+    let Ok(index) = read_version_one_index(&mut context, decision, bytes) else {
+        return Ok(None);
+    };
     let table = index.member_table();
-    let archive = read_reader_archive(&mut context, &table, index.data())
-        .map_err(|error| inconsistent(format!("{asset} is not a reader archive: {error}")))?;
+    let Ok(archive) = read_reader_archive(&mut context, &table, index.data()) else {
+        return Ok(None);
+    };
     if archive.failures() > 0 {
         return Err(inconsistent(format!(
             "{asset} declares {} member(s) that fail their bounds check, so the campaign-identity \
@@ -3798,10 +3824,10 @@ fn mission_code(asset: &str, bytes: &[u8]) -> Result<(u32, u32), SourceBindingEr
         }
     }
     if counts.is_empty() {
-        return Err(inconsistent(format!(
-            "{asset} names no `snd_c<chapter>-<region>-m<mission>` sound group in any member, so \
-             the archive declares no campaign identity"
-        )));
+        // The archive reads but declares no campaign identity of its own —
+        // the same "nothing measured" case as unreadable bytes, so the
+        // caller falls back to the directory-declared position.
+        return Ok(None);
     }
     let top = *counts.values().max().expect("the census is nonempty");
     let winners: Vec<(u32, u32)> = counts
@@ -3810,7 +3836,7 @@ fn mission_code(asset: &str, bytes: &[u8]) -> Result<(u32, u32), SourceBindingEr
         .map(|(key, _)| *key)
         .collect();
     match winners.as_slice() {
-        [only] => Ok(*only),
+        [only] => Ok(Some(*only)),
         _ => Err(inconsistent(format!(
             "{asset} names more than one sound-group code {top} times ({winners:?}), so its \
              campaign identity is ambiguous"
