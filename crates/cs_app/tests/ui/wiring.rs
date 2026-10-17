@@ -1338,6 +1338,88 @@ fn accept_f45_c_3_a_deleted_profiles_identity_is_never_recycled() {
     session.finish().expect("the session ends");
 }
 
+// --- the run owns every campaign write (F45-C.4) ---------------------------
+
+/// A construction commit and a results-screen outcome commit in one profile
+/// session both persist through the run's own revision-checked save: the
+/// second commits on top of the first with no re-open between them — its
+/// base-revision check can only pass because the run already holds the
+/// construction commit — and a profile reopened from disk carries both.
+#[test]
+fn accept_f45_c_4_a_construction_commit_and_an_outcome_commit_share_the_runs_revision_line() {
+    let fx = Fixture::new("construction-then-outcome", Some(GRANT));
+    let mut flow = fx.flow();
+    walk_to_cabin(&mut flow);
+
+    // The construction commit.
+    let blueprint_id = id(ContentKind::Blueprint, "custom");
+    let screen = ConstructionScreen::open(
+        flow.domain().campaign().expect("a campaign").state(),
+        declared_synthetic_blueprint(),
+        Vec::new(),
+    );
+    flow.attach_construction(blueprint_id.clone(), screen)
+        .expect("the screen is attached");
+    flow.press(Action::OpenConstruction)
+        .expect("the construction screen opens");
+    flow.open_construction(ConstructionDraft {
+        blueprint: blueprint_id,
+        saved: Vec::new(),
+        components: Vec::new(),
+    })
+    .expect("the draft is open");
+    let before_construction = revision(&flow);
+    flow.press(Action::CommitConstruction)
+        .expect("the blueprint commits");
+    let spent = currency(&flow);
+    assert!(spent < GRANT, "the components were paid for: {spent}");
+    let after_construction = revision(&flow);
+    assert!(
+        after_construction > before_construction,
+        "the construction commit persisted one revision"
+    );
+
+    // The outcome commit, in the same profile session and on the same run.
+    flow.press(Action::OpenBriefing)
+        .expect("the briefing opens");
+    flow.press(Action::ContinueToFlightCheck)
+        .expect("the flight check opens");
+    flow.select_loadout(loadout(pilotable()))
+        .expect("the selection is taken");
+    flow.press(Action::Launch).expect("the mission launches");
+    assert_eq!(
+        flow.drive_load().expect("the load runs"),
+        LoadVerdict::Ready
+    );
+    // `m01`'s victory grant was consumed by the fixture's seed, so this
+    // second victory is a same-kind replay: it repays nothing, but it still
+    // commits — the applied set grows and the revision line advances — which
+    // is exactly the write a stale-base run could not have made.
+    flow.set_mission_outcome(mission_record(fx.profile, MissionResult::Succeeded, 2));
+    flow.press(Action::MissionSucceeded)
+        .expect("the outcome applies over the construction commit");
+    assert_eq!(flow.front_end().screen(), Screen::Results);
+    assert_eq!(currency(&flow), spent, "a replayed victory repays no grant");
+    let after_outcome = revision(&flow);
+    assert!(
+        after_outcome > after_construction,
+        "the outcome commit persisted the next revision on the same base"
+    );
+
+    // Reopen the profile in the same process: the stored revision is the
+    // outcome's own — both writes reached disk in one revision line, and a
+    // run that had lost the construction commit could not have produced it.
+    flow.press(Action::ReturnToCabin)
+        .expect("back to the cabin");
+    flow.press(Action::Back).expect("the cabin is left");
+    flow.press(Action::ContinueProfile)
+        .expect("the profile continues");
+    flow.press(Action::ConfirmProfile)
+        .expect("the profile opens again");
+    assert_eq!(currency(&flow), spent, "the construction spend is on disk");
+    assert_eq!(revision(&flow), after_outcome);
+}
+
 // --- refusals the table itself reports ------------------------------------
 
 /// A flow reports the machine's own refusals unchanged: an action the screen
