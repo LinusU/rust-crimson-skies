@@ -263,6 +263,8 @@ mod evidence_report_t541;
 mod evidence_report_t542;
 mod f21_d_evidence_doc_step1_env;
 mod f45_d_evidence_doc_step1_env;
+mod f64_c_support;
+mod f64_d_support;
 mod flight;
 mod hud;
 mod physics;

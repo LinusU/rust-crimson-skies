@@ -36,8 +36,7 @@ use cs_formats::legacy_profile::{LegacyArtifactClass, LegacyIdClass};
 use cs_types::content::{ContentId, ContentKind};
 use cs_types::profile::{ProfileDocument, ProfileId, ProfileKind, Revision};
 
-#[path = "f64_c_support/mod.rs"]
-mod support;
+use crate::f64_c_support as support;
 
 use support::{
     CatalogRows, TempBase, blueprint_document, blueprint_layout_and_map, catalog, cid, context,

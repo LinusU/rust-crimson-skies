@@ -27,8 +27,7 @@
 //! over the owner's installation, not a paraphrase of the acceptance
 //! assertions.
 
-#[path = "f64_c_support/mod.rs"]
-mod support;
+use crate::f64_c_support as support;
 
 use std::collections::{BTreeMap, VecDeque};
 use std::fs;

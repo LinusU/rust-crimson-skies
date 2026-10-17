@@ -68,8 +68,7 @@ mod flow;
 /// The import dialog's fixture, read through F64-C's own designed fixture
 /// construction (`tests/f64_c_support/`), so the navigation walk and the
 /// F64-C acceptance suite describe one source rather than two.
-#[path = "../f64_c_support/mod.rs"]
-mod import_fixture;
+use crate::f64_c_support as import_fixture;
 mod instant_action;
 mod layout;
 mod lobby;

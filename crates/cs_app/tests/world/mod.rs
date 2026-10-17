@@ -154,7 +154,7 @@ mod fvol_roles;
 mod grid_collision_origin;
 mod hierarchy;
 mod import;
-mod import_retail;
+pub(crate) mod import_retail;
 mod overlays;
 mod records;
 mod residency;
