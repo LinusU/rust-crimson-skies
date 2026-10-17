@@ -750,7 +750,7 @@ impl ProfileSession {
             }
             None => {}
         }
-        let document = import_document(confirmed)?;
+        let document = import_document(confirmed, self.settings_seed())?;
         let (id, document) = self.library.create(document)?;
         if self.library.active() != Some(id) {
             self.library.set_active(id)?;
@@ -1197,12 +1197,17 @@ impl ProfileSession {
 /// stock-rejected, or never resolved at all, names no field and mints no
 /// blueprint id. The conforming blueprints inside that same set
 /// land in `blueprints` under the deterministic `blueprint.legacy.*` ids
-/// the assessment minted.
+/// the assessment minted. `settings` is the session's catalog seed, so an
+/// imported profile's first revision records its resolved defaults exactly
+/// like a profile [`ProfileSession::create`] made.
 ///
 /// The document is validated before it is offered to the library, so a
 /// retained value that cannot fit a save's bounds refuses as
 /// [`SessionError::Field`] rather than failing partway through the write.
-fn import_document(confirmed: &ConfirmedImport) -> Result<ProfileDocument, SessionError> {
+fn import_document(
+    confirmed: &ConfirmedImport,
+    settings: Vec<cs_types::profile::SettingEntry>,
+) -> Result<ProfileDocument, SessionError> {
     let target = confirmed.target();
     let source = confirmed.source();
     let report = confirmed.report();
@@ -1269,6 +1274,7 @@ fn import_document(confirmed: &ConfirmedImport) -> Result<ProfileDocument, Sessi
         kind: target.kind(),
         display_name: target.display_name().to_owned(),
         blueprints,
+        settings,
         extra,
         ..ProfileDocument::synthetic(target.id(), Revision(1))
     };

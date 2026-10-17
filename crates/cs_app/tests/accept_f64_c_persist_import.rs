@@ -39,7 +39,7 @@ mod support;
 
 use support::{
     CatalogRows, TempBase, blueprint_document, blueprint_layout_and_map, catalog, context,
-    full_record, id_map, offer, proposal, stock,
+    full_record, id_map, offer, profile_document, proposal, stock,
 };
 
 /// The settings catalog: the real F64-D switch rule, so an imported profile's
@@ -226,6 +226,15 @@ fn accept_f64_c_persist_a_confirmed_import_lands_in_a_new_profile() {
         );
         assert_eq!(extra(document, "import.verdict"), Some("full import"));
         assert_eq!(extra(document, "import.fixture_admitted"), Some("yes"));
+        // A made profile's first revision records its resolved defaults,
+        // exactly like one `create` wrote.
+        assert!(
+            document
+                .settings
+                .iter()
+                .any(|entry| entry.key == cs_formats::legacy_profile::LEGACY_SAVE_IMPORT_SWITCH),
+            "the catalog seed is materialized in the first revision"
+        );
         // Exactly the importable set is carried: one record field per index,
         // naming the resolved identities, and the conforming blueprint ids.
         assert_eq!(confirmed.importable_records(), &[0]);
@@ -262,6 +271,72 @@ fn accept_f64_c_persist_a_confirmed_import_lands_in_a_new_profile() {
         reopened.selected(),
         Some(landed),
         "the imported profile is the persisted active pointer"
+    );
+}
+
+/// A save-type import has no blueprint report at all: the carried records
+/// still land as resolved-identity fields and `blueprints` stays empty —
+/// nothing fabricates an aircraft the source did not describe.
+#[test]
+fn accept_f64_c_persist_a_save_import_carries_records_without_blueprints() {
+    let base = TempBase::new("persist-save");
+    let mut session = sandbox(base.path());
+
+    let bytes = profile_document(&[(7, 1, "phoenix"), (7, 2, "kestrel")]);
+    let source = proposal(&bytes, LegacyArtifactClass::CampaignSave)
+        .expect("the fixture source is within the cap");
+    let layout = cs_formats::legacy_profile::synthetic_layout();
+    let ids = id_map();
+    let catalog = catalog(CatalogRows::Base);
+    let (rules, policy, book) = stock();
+    let context = context(&ids, &catalog, &rules, &policy, &book, true);
+    let target = synthetic_target(1, "Imported campaign");
+
+    let mut flow = ImportFlow::new();
+    flow.offer(
+        &context,
+        // No field map: a campaign save is judged for records alone.
+        &offer(&source, &bytes, Some(&layout), None, &target),
+    );
+    let confirmed = flow
+        .confirm()
+        .expect("resolved save records confirm")
+        .clone();
+    assert!(confirmed.blueprints().is_none());
+    assert_eq!(confirmed.importable_records(), &[0, 1]);
+
+    let landed = session
+        .persist_confirmed_import(&confirmed)
+        .expect("the save import persists");
+    let loaded = session
+        .library()
+        .load(landed)
+        .expect("the imported slot loads");
+    let document = loaded.document.as_ref().expect("the stored revision");
+
+    assert_eq!(extra(document, "import.verdict"), Some("full import"));
+    assert_eq!(
+        record_indices(document),
+        vec!["0".to_owned(), "1".to_owned()],
+        "both resolved records are carried"
+    );
+    assert_eq!(
+        extra(document, "import.record.0.0"),
+        Some(
+            format!(
+                "airframe:{}",
+                cs_types::content::ContentId::from_source(
+                    cs_types::content::ContentKind::Airframe,
+                    cs_content::construction::SYNTHETIC_AIRFRAME_KEY,
+                )
+                .expect("the fixture id is valid")
+            )
+            .as_str()
+        )
+    );
+    assert!(
+        document.blueprints.is_empty(),
+        "a save import mints no blueprint"
     );
 }
 

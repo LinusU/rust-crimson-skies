@@ -69,6 +69,11 @@ way it bounds every other save list. The record set a stored profile carries
 is exactly `importable_records()`: a record that was unresolved or
 stock-rejected names no field.
 
+`document.settings` is the session's catalog seed — the same
+`SettingsState` entries `ProfileSession::create` writes into a made profile —
+so an imported profile's first revision records its resolved defaults rather
+than opening with an empty list.
+
 `document.blueprints` carries the catalog `ContentId` of each conforming
 blueprint inside that same set — the deterministic `blueprint.legacy.<layout>.
 <index>` ids the assessment minted. The blueprint's composition is not
