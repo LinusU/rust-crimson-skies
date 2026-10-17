@@ -1,0 +1,94 @@
+//! `cs_app`'s `cs_app_tests_rest` integration-test binary (task #1543).
+//!
+//! One of three binaries: the `evidence_report_*` files, the `accept_t*` regressions, and the remaining directory suites. The crate keeps three rather than one
+//! because a single test binary's `__eh_frame` passes macOS's 16 MiB limit
+//! (task #336); `[package.metadata.cs_test_layout]` in `Cargo.toml` declares the
+//! count and `cs_xtask test-layout` requires each `.rs` file here to be reached
+//! from exactly one target. See `docs/findings/2026-10-17-t1543-cs-app-test-binaries.md`.
+
+mod accept_t1424_collision_topology;
+mod accept_t333_mesh_colliders;
+mod accept_t334_fixed_tick_integrations;
+mod accept_t335_seed;
+mod accept_t336_eh_frame_unwind_table;
+mod accept_t415_spawn_tick_trigger_crossing;
+mod accept_t420_mesh_ccd;
+mod accept_t424_collider_on_body;
+mod accept_t446_ai_navigation_wiring;
+mod accept_t457_loop_route_ecs_binding;
+mod accept_t526_lateral_rejoin;
+mod accept_t533_flythrough_label_rule;
+mod accept_t575_script_actor_binding;
+mod accept_t718_mission_animations;
+mod accept_t761_deviating_command;
+mod accept_test_bin_cs_app;
+mod accessibility;
+mod camera;
+mod environment;
+mod evidence_report_f18_grid_collision_origin;
+mod evidence_report_f19_weather_units_measure;
+mod evidence_report_f20_d;
+mod evidence_report_f21_d;
+mod evidence_report_f33_d;
+mod evidence_report_f39_d;
+mod evidence_report_f39_e1;
+mod evidence_report_f39_e2;
+mod evidence_report_f39_e4;
+mod evidence_report_f39_e6;
+mod evidence_report_f39_e7;
+mod evidence_report_flight_original_levelop;
+mod evidence_report_flight_original_playtest;
+mod evidence_report_m01_b_obj;
+mod evidence_report_m01_b_obj_2;
+mod evidence_report_m01_b_obj_4;
+mod evidence_report_m01_b_wake;
+mod evidence_report_m01_hud_objective;
+mod evidence_report_m01_lc;
+mod evidence_report_m01_lc_actor_anim_consumers;
+mod evidence_report_m01_lc_audio_device;
+mod evidence_report_m01_lc_directive_a;
+mod evidence_report_m01_lc_directive_b;
+mod evidence_report_m01_lc_directive_c;
+mod evidence_report_m01_lc_directive_d;
+mod evidence_report_m01_lc_directive_e;
+mod evidence_report_m01_lc_directive_lowering;
+mod evidence_report_m01_lc_directive_meaning;
+mod evidence_report_m01_lc_directives;
+mod evidence_report_m01_lc_fvol_roles;
+mod evidence_report_m01_lc_player_airframe_source;
+mod evidence_report_m01_lc_scenarios;
+mod evidence_report_m01_lc_world_residual_roles;
+mod evidence_report_m01_lc_world_unit_roles;
+mod evidence_report_m01_music_device;
+mod evidence_report_m01_owner_smoke;
+mod evidence_report_m01_play_actors;
+mod evidence_report_m01_play_ai;
+mod evidence_report_m01_play_ai_arm_order;
+mod evidence_report_m01_play_ai_restart;
+mod evidence_report_m01_play_ai_wake;
+mod evidence_report_m01_play_music;
+mod evidence_report_m01_play_sky;
+mod evidence_report_m01_play_triggers;
+mod evidence_report_m01_play_triggers_actor_bit;
+mod evidence_report_m01_play_triggers_depletion;
+mod evidence_report_m01_play_triggers_observe;
+mod evidence_report_m01_play_triggers_parts;
+mod evidence_report_m01_play_triggers_windowed;
+mod evidence_report_m01_play_weather;
+mod evidence_report_m01_radio_sample;
+mod evidence_report_retail_smoke_script;
+mod evidence_report_t463;
+mod evidence_report_t464;
+mod evidence_report_t465;
+mod evidence_report_t533;
+mod evidence_report_t540;
+mod evidence_report_t541;
+mod evidence_report_t542;
+mod f21_d_evidence_doc_step1_env;
+mod f45_d_evidence_doc_step1_env;
+mod flight;
+mod hud;
+mod physics;
+mod render;
+mod scrapbook;
+mod text;

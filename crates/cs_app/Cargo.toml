@@ -6,12 +6,14 @@ rust-version.workspace = true
 license.workspace = true
 publish.workspace = true
 autobins = false
-# One integration-test binary (task #1543). `autotests = false` turns component
-# auto-discovery off, so cargo links and runs exactly the one `[[test]]` target
-# below instead of one Bevy-linked executable per `tests/*.rs` file, each of
-# which costs a macOS security scan on first launch. Every former test file is
-# a `mod` of `tests/main.rs`; `cs_xtask test-layout` fails when a `.rs` file
-# under `tests/` is not reached from it.
+# Three integration-test binaries (tasks #1543, owner ruling 2026-10-17).
+# `autotests = false` turns component auto-discovery off, so cargo links and
+# runs exactly the `[[test]]` targets below instead of one Bevy-linked
+# executable per `tests/*.rs` file, each of which costs a macOS security scan
+# on first launch. One binary would carry >16 MiB of `__eh_frame`, which macOS
+# cannot unwind through (task #336), hence three; the allowance below is
+# checked by `cs_xtask test-layout`, which also requires every `.rs` file under
+# `tests/` to be reached from exactly one target's `mod` tree.
 autotests = false
 
 [dependencies]
@@ -62,9 +64,20 @@ image = { version = "0.25.10", default-features = false, features = ["png", "jpe
 # test-layout`, task #1542) about this very crate, through its library function.
 cs_xtask = { path = "../../tools/cs_xtask" }
 
+[package.metadata.cs_test_layout]
+test_targets = 3
+
 [[test]]
-name = "cs_app_tests"
-path = "tests/main.rs"
+name = "cs_app_tests_campaign"
+path = "tests/suite_campaign.rs"
+
+[[test]]
+name = "cs_app_tests_accept"
+path = "tests/suite_accept.rs"
+
+[[test]]
+name = "cs_app_tests_rest"
+path = "tests/suite_rest.rs"
 
 [[bin]]
 name = "cs"

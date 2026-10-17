@@ -1,16 +1,10 @@
-//! `cs_app`'s single integration-test binary (task #1543).
+//! `cs_app`'s `cs_app_tests_accept` integration-test binary (task #1543).
 //!
-//! Every former `tests/*.rs` target and every former `tests/<name>/main.rs`
-//! directory target is a module here, so `cargo test` links and runs one
-//! executable instead of ~260 Bevy-linked ones. Test prefixes still select the
-//! same tests: libtest's filter is a substring match, so `accept_f46_`
-//! matches `hud::accept_f46_…` just as it matched the bare name before.
-//!
-//! `cs_xtask test-layout` fails when a `.rs` file under this directory is not
-//! reached through these `mod` declarations, because `autotests = false` means
-//! cargo would silently compile and run no test in it. Support directories
-//! (`f64_c_support`, `f64_d_support`, `damage/`, `debris/`, `playtest_retail/`)
-//! stay reached by the `#[path]` declarations of the modules that share them.
+//! One of three binaries: the `accept_f*` and `accept_m01_*` files, `ui/` and the F64
+//! support modules they share. The crate keeps three rather than one because a single test binary's `__eh_frame` passes macOS's 16 MiB limit
+//! (task #336); `[package.metadata.cs_test_layout]` in `Cargo.toml` declares the
+//! count and `cs_xtask test-layout` requires each `.rs` file here to be reached
+//! from exactly one target. See `docs/findings/2026-10-17-t1543-cs-app-test-binaries.md`.
 
 mod accept_doclib_conflict;
 mod accept_engine_image_outside_install;
@@ -121,12 +115,14 @@ mod accept_f48_c_profile_ownership;
 mod accept_f48_d_crash_recovery_matrix;
 mod accept_f49_a_preset_spawn;
 mod accept_f49_b_scenario_normalization;
+mod accept_f49_c1_ia_record_persistence;
 mod accept_f49_c_ia_flow;
 mod accept_f53_d_dependent_save;
 mod accept_f53_fu3_mod_wire_vocabulary;
 mod accept_f53_fu5_modded_save;
 mod accept_f54_c_drive;
 mod accept_f55_a_lobby_ui;
+mod accept_f55_bu1_lobby_view_feed;
 mod accept_f55_c_lobby_ui;
 mod accept_f57_a_latency_loss_and_reordering;
 mod accept_f57_c_01_schedule;
@@ -186,101 +182,8 @@ mod accept_m01_play_weather;
 mod accept_m01_radio_device;
 mod accept_m01_radio_sample;
 mod accept_m01_window_hud_pending_objective;
-mod accept_t1424_collision_topology;
-mod accept_t333_mesh_colliders;
-mod accept_t334_fixed_tick_integrations;
-mod accept_t335_seed;
-mod accept_t336_eh_frame_unwind_table;
-mod accept_t415_spawn_tick_trigger_crossing;
-mod accept_t420_mesh_ccd;
-mod accept_t424_collider_on_body;
-mod accept_t446_ai_navigation_wiring;
-mod accept_t457_loop_route_ecs_binding;
-mod accept_t526_lateral_rejoin;
-mod accept_t533_flythrough_label_rule;
-mod accept_t575_script_actor_binding;
-mod accept_t718_mission_animations;
-mod accept_t761_deviating_command;
-mod accept_test_bin_cs_app;
-mod accessibility;
-mod camera;
-mod campaign;
-mod environment;
-mod evidence_report_f18_grid_collision_origin;
-mod evidence_report_f19_weather_units_measure;
-mod evidence_report_f20_d;
-mod evidence_report_f21_d;
-mod evidence_report_f33_d;
-mod evidence_report_f39_d;
-mod evidence_report_f39_e1;
-mod evidence_report_f39_e2;
-mod evidence_report_f39_e4;
-mod evidence_report_f39_e6;
-mod evidence_report_f39_e7;
 mod evidence_report_f64_c;
 mod evidence_report_f64_d;
-mod evidence_report_flight_original_levelop;
-mod evidence_report_flight_original_playtest;
-mod evidence_report_m01_b_obj;
-mod evidence_report_m01_b_obj_2;
-mod evidence_report_m01_b_obj_4;
-mod evidence_report_m01_b_wake;
-mod evidence_report_m01_hud_objective;
-mod evidence_report_m01_lc;
-mod evidence_report_m01_lc_actor_anim_consumers;
-mod evidence_report_m01_lc_audio_device;
-mod evidence_report_m01_lc_directive_a;
-mod evidence_report_m01_lc_directive_b;
-mod evidence_report_m01_lc_directive_c;
-mod evidence_report_m01_lc_directive_d;
-mod evidence_report_m01_lc_directive_e;
-mod evidence_report_m01_lc_directive_lowering;
-mod evidence_report_m01_lc_directive_meaning;
-mod evidence_report_m01_lc_directives;
-mod evidence_report_m01_lc_fvol_roles;
-mod evidence_report_m01_lc_player_airframe_source;
-mod evidence_report_m01_lc_scenarios;
-mod evidence_report_m01_lc_world_residual_roles;
-mod evidence_report_m01_lc_world_unit_roles;
-mod evidence_report_m01_music_device;
-mod evidence_report_m01_owner_smoke;
-mod evidence_report_m01_play_actors;
-mod evidence_report_m01_play_ai;
-mod evidence_report_m01_play_ai_arm_order;
-mod evidence_report_m01_play_ai_restart;
-mod evidence_report_m01_play_ai_wake;
-mod evidence_report_m01_play_music;
-mod evidence_report_m01_play_sky;
-mod evidence_report_m01_play_triggers;
-mod evidence_report_m01_play_triggers_actor_bit;
-mod evidence_report_m01_play_triggers_depletion;
-mod evidence_report_m01_play_triggers_observe;
-mod evidence_report_m01_play_triggers_parts;
-mod evidence_report_m01_play_triggers_windowed;
-mod evidence_report_m01_play_weather;
-mod evidence_report_m01_radio_sample;
-mod evidence_report_retail_smoke_script;
-mod evidence_report_t463;
-mod evidence_report_t464;
-mod evidence_report_t465;
-mod evidence_report_t533;
-mod evidence_report_t540;
-mod evidence_report_t541;
-mod evidence_report_t542;
-mod f21_d_evidence_doc_step1_env;
-mod f45_d_evidence_doc_step1_env;
 mod f64_c_support;
 mod f64_d_support;
-mod flight;
-mod hud;
-mod physics;
-mod playtest_b0004;
-mod playtest_fly;
-mod playtest_full_aircraft;
-mod playtest_retail;
-mod playtest_retail_launch;
-mod render;
-mod scrapbook;
-mod text;
 mod ui;
-mod world;
