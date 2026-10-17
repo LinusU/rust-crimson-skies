@@ -21,8 +21,8 @@ discovered without each caller building manifests by hand?
 **No — wontfix.** The boundary stays: `AvailableMod` is manifest-plus-root,
 discovery is the caller's concern.
 
-Recorded by the implementing agent without an in-session owner ruling; the
-owner was asked and declined to decide in-session. This closes nothing the
+The owner ruled arm (b) — wontfix — in the owner note on #755 of
+2026-10-17 04:14Z, for the reasons given below. This closes nothing the
 owner cannot reopen at zero cost — the API is unchanged either way, and
 reversing the decision later only *adds* a reader where none existed.
 
