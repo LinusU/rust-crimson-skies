@@ -903,6 +903,12 @@ fn add_composition(
         // on screen; the text is the installation's own.
         app.insert_resource(stage.messages.clone());
         app.add_plugins(crate::ui::hud::ObjectiveHudPlugin);
+        // The weapon refusal line (M01-WINDOW-FIRE, #1536): a rocket the
+        // publisher refused by name is shown on screen for its lifetime
+        // instead of the mission silently doing nothing. Windowed only, like
+        // every other widget; the notice itself is published by the
+        // presentation plugin, which every composition runs.
+        app.add_plugins(crate::mission_session::MissionNoticeHudPlugin);
     }
 
     // 1. The announced load: a fresh content session over the stage's
@@ -1008,6 +1014,12 @@ fn add_composition(
     };
     app.insert_resource(world_parts);
     app.add_plugins(MissionWorldDrawPlugin);
+    // M01-WINDOW-FIRE (#1536): what the mission draws for its own weapons —
+    // a tracer streak per live round, a body per live rocket and the HUD
+    // notice a weapon refusal publishes. Beside the world draw, not behind
+    // the visuals gate: the headless composition presents its weapons the
+    // same way, which is what its acceptance tests read.
+    app.add_plugins(crate::mission_session::MissionWeaponPresentationPlugin);
 
     // 2b. The player airframe's drawn visual, when the stage carries its
     //     source: the measured intact selection built through the same

@@ -273,8 +273,12 @@ fn scale(value: f32, full: f32) -> f32 {
 }
 
 /// The per-frame system. See the module docs.
+///
+/// `pub(crate)` only so the mission's cockpit collector can state its own
+/// ordering against this pump ([`crate::mission_session`]'s
+/// `collect_mission_cockpit_actions`); nothing outside this crate calls it.
 #[allow(clippy::too_many_arguments, clippy::needless_pass_by_value)]
-fn pump_platform_input(
+pub(crate) fn pump_platform_input(
     mut platform: ResMut<PlatformInput>,
     time: Res<Time<Real>>,
     keys: Option<Res<ButtonInput<KeyCode>>>,

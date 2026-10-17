@@ -905,10 +905,25 @@ pub fn publish_mission_weapon_input(world: &mut World) {
         return;
     };
     let wind = mission_wind(world);
-    let actions: Vec<Action> = world
+    let mut actions: Vec<Action> = world
         .get_resource_mut::<MissionCockpitActions>()
         .map(|mut pending| std::mem::take(&mut pending.actions))
         .unwrap_or_default();
+    // M01-WINDOW-FIRE (#1536): holding the guns key keeps firing for as long
+    // as it is held, at the rate the loadout's guns declare. The input
+    // boundary delivers one press edge per hold (F22's rule), so the repeat is
+    // minted here: one edge per [`MISSION_TICKS_BETWEEN_SHOTS`], the very
+    // rate the gun records declare and the F27 step's own per-mount cooldown
+    // enforces. A press edge always fires at once; the cadence only decides
+    // the repeats, so a player who taps faster than the gun fires gets the
+    // F27's own named cooldown refusal rather than a hidden queue.
+    let pressed = actions.iter().copied().any(is_fire_guns);
+    if !pressed && guns_key_held(world) && gun_hold_due(world, at) {
+        actions.push(Action::Flight(FlightCommand::FirePrimary));
+    }
+    if actions.iter().copied().any(is_fire_guns) {
+        world.insert_resource(MissionGunHold { last: Some(at) });
+    }
 
     // The fire-rockets edges mint launch orders for the ordnance driver.
     let mut orders = MissionOrdnanceOrders::default();
@@ -1001,6 +1016,57 @@ pub fn collect_mission_cockpit_actions(world: &mut World) {
         .unwrap_or_default();
     pending.actions.extend(delivered);
     world.insert_resource(pending);
+}
+
+/// The mission's hold-to-fire bookkeeping for the guns (M01-WINDOW-FIRE,
+/// #1536).
+///
+/// The original fires the guns repeatedly while the trigger is held; the F22
+/// input boundary delivers one press edge per hold, so the publisher mints the
+/// repeats and this is the bookkeeping that spaces them.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq)]
+pub struct MissionGunHold {
+    /// The tick the guns last fired on, `None` before the first shot.
+    pub last: Option<Tick>,
+}
+
+/// Whether the guns key is currently held down.
+///
+/// The hold is the input session's own state ([`HeldEdge`]s, F22-B's
+/// level-triggered device report), so a key held through a pause, a focus loss
+/// or a control handover is *not* reported as held: the session released it
+/// there, exactly as it released the press.
+///
+/// [`HeldEdge`]: cs_app::input::HeldEdge
+#[must_use]
+pub fn guns_key_held(world: &World) -> bool {
+    world
+        .get_resource::<PlatformInput>()
+        .is_some_and(|platform| {
+            platform
+                .session()
+                .collector()
+                .devices()
+                .held_edges()
+                .iter()
+                .any(|held| is_fire_guns(held.action()))
+        })
+}
+
+/// Whether a hold-to-fire repeat is due at `at`.
+///
+/// The cadence is [`MISSION_TICKS_BETWEEN_SHOTS`] — the rate the loadout's
+/// own gun records declare ([`designed_gun`]), which is also the rate the F27
+/// step's per-mount cooldown enforces — so a repeat is minted exactly when the
+/// last fired tick has aged out. A press edge does not consult this: a press
+/// fires at once and is refused by name if the gun is still cooling down.
+#[must_use]
+pub fn gun_hold_due(world: &World, at: Tick) -> bool {
+    world.get_resource::<MissionGunHold>().is_none_or(|hold| {
+        hold.last.is_none_or(|last| {
+            at.0.saturating_sub(last.0) >= u64::from(MISSION_TICKS_BETWEEN_SHOTS)
+        })
+    })
 }
 
 /// The pending rocket launches one tick's cockpit minted.
@@ -1396,8 +1462,17 @@ impl Plugin for MissionWeaponsPlugin {
         app.init_resource::<MissionWeaponReport>()
             .init_resource::<MissionOrdnanceOrders>()
             .init_resource::<MissionCockpitActions>()
+            .init_resource::<MissionGunHold>()
             .add_systems(PostStartup, open_composed_mission_weapons)
-            .add_systems(PreUpdate, collect_mission_cockpit_actions)
+            .add_systems(
+                PreUpdate,
+                // The collector must read the report the pump of *this* frame
+                // wrote. Both live in `PreUpdate` and neither state survives
+                // without the other being read, so the order is stated rather
+                // than left to the executor's tie-break (M01-WINDOW-FIRE,
+                // #1536).
+                collect_mission_cockpit_actions.after(crate::input::platform::pump_platform_input),
+            )
             .add_systems(
                 FixedPostUpdate,
                 publish_mission_weapon_input
