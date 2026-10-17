@@ -1721,6 +1721,160 @@ impl LobbyPacket {
     }
 }
 
+impl LobbyEvent {
+    /// Encodes the event as the bounded byte record [`LobbyEvent::decode`]
+    /// reads back: the host-to-member half of the lobby envelope, carried on
+    /// the session wire as a reliable event body.
+    ///
+    /// # Errors
+    ///
+    /// [`PacketError::TooLarge`] when a text field exceeds its wire cap.
+    pub fn encode(&self) -> Result<Vec<u8>, PacketError> {
+        let mut w = PacketWriter::new();
+        match self {
+            Self::RulesChanged { revision, digest } => {
+                w.u8(0);
+                w.u32(revision.get());
+                w.u64(digest.get());
+            }
+            Self::ReadyRevoked(revocation) => {
+                w.u8(1);
+                w.u16(revocation.peer.get());
+                match &revocation.reason {
+                    RevokeReason::ComponentBanned { component } => {
+                        w.u8(0);
+                        put_content_id(&mut w, "ready_revoked.component", component)?;
+                    }
+                    RevokeReason::ScenarioChanged => w.u8(1),
+                    RevokeReason::TeamsChanged => w.u8(2),
+                    RevokeReason::SelfEdited => w.u8(3),
+                }
+            }
+            Self::MemberJoined { peer } => {
+                w.u8(2);
+                w.u16(peer.get());
+            }
+            Self::MemberLeft { peer } => {
+                w.u8(3);
+                w.u16(peer.get());
+            }
+            Self::MemberReady { peer } => {
+                w.u8(4);
+                w.u16(peer.get());
+            }
+            Self::Chat { from, text } => {
+                w.u8(5);
+                w.u16(from.get());
+                w.text("lobby_event.chat", text.as_str(), MAX_CHAT_WIRE_BYTES)?;
+            }
+            Self::LaunchCancelled => w.u8(6),
+            Self::PhaseChanged(phase) => {
+                w.u8(7);
+                w.u8(match phase {
+                    Phase::Gathering => 0,
+                    Phase::Launching => 1,
+                    Phase::InMatch => 2,
+                    Phase::HostPaused => 3,
+                    Phase::Closed => 4,
+                });
+            }
+        }
+        w.finish()
+    }
+
+    /// Decodes the bounded byte record [`LobbyEvent::encode`] writes. Every
+    /// bound is checked on the way in, as for [`LobbyPacket::decode`]: the
+    /// text is re-validated by the constructor that owns it, unknown tags,
+    /// zero ids, truncation and trailing bytes are refused.
+    ///
+    /// # Errors
+    ///
+    /// A [`PacketError`].
+    pub fn decode(bytes: &[u8]) -> Result<Self, PacketError> {
+        if bytes.len() > MAX_PACKET_BYTES {
+            return Err(PacketError::TooLarge {
+                field: "lobby_event",
+                max: MAX_PACKET_BYTES,
+                len: bytes.len(),
+            });
+        }
+        let mut r = PacketReader::new(bytes);
+        let event = match r.u8("lobby_event.tag")? {
+            0 => {
+                let revision =
+                    Revision::new(r.u32("lobby_event.revision")?).ok_or(PacketError::ZeroId {
+                        field: "lobby_event.revision",
+                    })?;
+                Self::RulesChanged {
+                    revision,
+                    digest: RulesDigest(r.u64("lobby_event.digest")?),
+                }
+            }
+            1 => {
+                let peer = event_peer(&mut r, "lobby_event.peer")?;
+                let reason = match r.u8("ready_revoked.reason")? {
+                    0 => RevokeReason::ComponentBanned {
+                        component: content_id(&mut r, "ready_revoked.component")?,
+                    },
+                    1 => RevokeReason::ScenarioChanged,
+                    2 => RevokeReason::TeamsChanged,
+                    3 => RevokeReason::SelfEdited,
+                    tag => {
+                        return Err(PacketError::UnknownTag {
+                            field: "ready_revoked.reason",
+                            tag,
+                        });
+                    }
+                };
+                Self::ReadyRevoked(ReadyRevocation { peer, reason })
+            }
+            2 => Self::MemberJoined {
+                peer: event_peer(&mut r, "lobby_event.peer")?,
+            },
+            3 => Self::MemberLeft {
+                peer: event_peer(&mut r, "lobby_event.peer")?,
+            },
+            4 => Self::MemberReady {
+                peer: event_peer(&mut r, "lobby_event.peer")?,
+            },
+            5 => {
+                let from = event_peer(&mut r, "lobby_event.from")?;
+                let text = r.text("lobby_event.chat", MAX_CHAT_WIRE_BYTES)?;
+                let text = ChatText::new(&text).map_err(|_| PacketError::BadText {
+                    field: "lobby_event.chat",
+                })?;
+                Self::Chat { from, text }
+            }
+            6 => Self::LaunchCancelled,
+            7 => Self::PhaseChanged(match r.u8("lobby_event.phase")? {
+                0 => Phase::Gathering,
+                1 => Phase::Launching,
+                2 => Phase::InMatch,
+                3 => Phase::HostPaused,
+                4 => Phase::Closed,
+                tag => {
+                    return Err(PacketError::UnknownTag {
+                        field: "lobby_event.phase",
+                        tag,
+                    });
+                }
+            }),
+            tag => {
+                return Err(PacketError::UnknownTag {
+                    field: "lobby_event.tag",
+                    tag,
+                });
+            }
+        };
+        r.done()?;
+        Ok(event)
+    }
+}
+
+fn event_peer(r: &mut PacketReader<'_>, field: &'static str) -> Result<PeerId, PacketError> {
+    PeerId::new(r.u16(field)?).ok_or(PacketError::ZeroId { field })
+}
+
 /// Why a buffer could not be decoded, or a record could not be encoded.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PacketError {
