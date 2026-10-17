@@ -289,7 +289,7 @@ impl PlaytestCamera {
         self.frame = None;
     }
 
-    fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let modes = lower_camera_modes(&declared_synthetic_camera_modes())
             .expect("the synthetic camera modes lower");
         let mut rig = CameraRig::new(modes).expect("the synthetic mode set builds a rig");

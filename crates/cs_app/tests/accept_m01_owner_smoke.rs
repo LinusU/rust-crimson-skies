@@ -117,6 +117,7 @@ fn healthy() -> SmokeMeasurements {
             objective_woke: true,
         },
         missing_shots: vec![],
+        ..SmokeMeasurements::default()
     }
 }
 
@@ -251,6 +252,7 @@ fn accept_m01_owner_smoke_the_judge_fails_everything_the_owner_could_not_see() {
             objective_woke: false,
         },
         missing_shots: vec![],
+        ..SmokeMeasurements::default()
     };
     let checks = evaluate_mission_smoke(&owner);
     let failed = failures(&checks);

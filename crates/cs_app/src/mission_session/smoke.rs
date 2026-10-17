@@ -230,6 +230,21 @@ pub const MIN_OBJECTIVE_TEXT_PIXELS: usize = 64;
 /// session: more than one accepted shot in the held second.
 pub const MIN_GUN_ROUNDS: u64 = 2;
 
+/// The simulated seconds, counted from the first rendered frame, at which the
+/// no-teleport mode reads each wingman's distance from the player.
+pub const WINGMAN_SAMPLE_SECONDS: [u32; 5] = [1, 5, 10, 20, 30];
+
+/// **Designed** (the original's formation distance is unmeasured): a wingman
+/// flying with the player is within this many metres of the body at the last
+/// sample, t+30 s. A threshold, not a recovered game rule; the report carries
+/// every measured distance so the value can be re-judged.
+pub const MAX_WINGMAN_DISTANCE_M: f64 = 500.0;
+
+/// The frame the no-teleport mode takes its one framebuffer: right after the
+/// last wingman sample.
+const NO_TELEPORT_SHOT_FRAME: u32 =
+    WINGMAN_SAMPLE_SECONDS[WINGMAN_SAMPLE_SECONDS.len() - 1] * 60 + 1;
+
 /// How far the player is stood from a spawned actor for its probe, metres —
 /// abeam, so the probe never puts the player in the actor's path.
 const PLACEMENT_OFFSET_M: f32 = 400.0;
@@ -417,6 +432,28 @@ pub struct ApproachMetrics {
     pub objective_woke: bool,
 }
 
+/// How the smoke flies the player.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MissionSmokeMode {
+    /// The full script: it places the player near every actor and at the
+    /// trigger (a test placement) and judges the whole M01 checklist.
+    #[default]
+    Scripted,
+    /// `--smoke-no-teleport`: the player flies the measured start for the
+    /// whole run and is never moved; the one judged check is
+    /// `wingmen_near_player`.
+    NoTeleport,
+}
+
+/// Every wingman's distance from the player at one sample time.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct WingmanSample {
+    /// Whole simulated seconds since the first rendered frame.
+    pub second: u32,
+    /// `(record name, metres from the player)`, in census order.
+    pub distances_m: Vec<(String, f64)>,
+}
+
 /// Everything the run measured, as [`evaluate`] consumes it.
 #[derive(Clone, Debug, Default)]
 pub struct SmokeMeasurements {
@@ -444,6 +481,11 @@ pub struct SmokeMeasurements {
     pub approach: ApproachMetrics,
     /// Names of shots the run requested but the renderer never delivered.
     pub missing_shots: Vec<String>,
+    /// The run never moved the player ([`MissionSmokeMode::NoTeleport`]).
+    pub no_teleport: bool,
+    /// The wingman distances, one sample per [`WINGMAN_SAMPLE_SECONDS`] entry
+    /// reached (no-teleport mode only).
+    pub wingmen: Vec<WingmanSample>,
 }
 
 /// One pass/fail verdict with its evidence.
@@ -468,6 +510,9 @@ pub struct Check {
 /// water is the only such case today.
 #[must_use]
 pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
+    if m.no_teleport {
+        return evaluate_no_teleport(m);
+    }
     let mut checks = Vec::new();
 
     // --- world -------------------------------------------------------------
@@ -728,6 +773,74 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
     checks
 }
 
+/// The no-teleport checks: the wingmen's distance from a player nothing moved,
+/// and the picture arriving.
+fn evaluate_no_teleport(m: &SmokeMeasurements) -> Vec<Check> {
+    let rows = m
+        .wingmen
+        .iter()
+        .map(|sample| {
+            let distances = sample
+                .distances_m
+                .iter()
+                .map(|(name, metres)| format!("{name} {metres:.0} m"))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("t+{}s: {}", sample.second, distances)
+        })
+        .collect::<Vec<_>>()
+        .join("; ");
+    let complete = m.wingmen.len() == WINGMAN_SAMPLE_SECONDS.len();
+    let last = m.wingmen.last();
+    let far: Vec<String> = last
+        .into_iter()
+        .flat_map(|sample| sample.distances_m.iter())
+        .filter(|(_, metres)| !metres.is_finite() || *metres > MAX_WINGMAN_DISTANCE_M)
+        .map(|(name, metres)| format!("{name} {metres:.0} m"))
+        .collect();
+    let any_wingman = last.is_some_and(|sample| !sample.distances_m.is_empty());
+    let passed = complete && any_wingman && far.is_empty();
+    let verdict = if !complete {
+        format!(
+            "only {} of {} samples were taken",
+            m.wingmen.len(),
+            WINGMAN_SAMPLE_SECONDS.len()
+        )
+    } else if !any_wingman {
+        "the mission spawned no wingman, so nothing was measured".to_owned()
+    } else if far.is_empty() {
+        format!("every wingman is within {MAX_WINGMAN_DISTANCE_M:.0} m at t+30s")
+    } else {
+        format!(
+            "at t+30s these wingmen are beyond {MAX_WINGMAN_DISTANCE_M:.0} m: {}",
+            far.join(", ")
+        )
+    };
+    let mut checks = vec![Check {
+        id: "wingmen_near_player".to_owned(),
+        applies: true,
+        passed,
+        detail: format!(
+            "{verdict}. The player was never moved. The {MAX_WINGMAN_DISTANCE_M:.0} m threshold \
+             is designed (the original's distance is unmeasured). Distances: {rows}"
+        ),
+    }];
+    checks.push(Check {
+        id: "smoke_shots_delivered".to_owned(),
+        applies: true,
+        passed: m.missing_shots.is_empty(),
+        detail: if m.missing_shots.is_empty() {
+            "every requested framebuffer screenshot arrived".to_owned()
+        } else {
+            format!(
+                "the renderer never delivered: {}",
+                m.missing_shots.join(", ")
+            )
+        },
+    });
+    checks
+}
+
 // ------------------------------------------------------------------ records --
 
 /// One delivered screenshot and what it measured.
@@ -814,6 +927,7 @@ impl MissionSmokeHandle {
 /// `--smoke-seconds` was given.
 pub struct MissionSmokePlugin {
     request: crate::playtest::SmokeRequest,
+    mode: MissionSmokeMode,
     handle: MissionSmokeHandle,
 }
 
@@ -823,8 +937,16 @@ impl MissionSmokePlugin {
     pub fn new(request: crate::playtest::SmokeRequest) -> Self {
         Self {
             request,
+            mode: MissionSmokeMode::Scripted,
             handle: MissionSmokeHandle::default(),
         }
+    }
+
+    /// The same run in `mode`.
+    #[must_use]
+    pub fn with_mode(mut self, mode: MissionSmokeMode) -> Self {
+        self.mode = mode;
+        self
     }
 
     /// The slot the finished report lands in.
@@ -884,6 +1006,7 @@ struct PendingPlacement(Option<Placement>);
 #[derive(Resource, Clone)]
 struct SmokeConfig {
     request: crate::playtest::SmokeRequest,
+    mode: MissionSmokeMode,
     handle: MissionSmokeHandle,
 }
 
@@ -926,6 +1049,7 @@ impl Plugin for MissionSmokePlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(SmokeConfig {
             request: self.request.clone(),
+            mode: self.mode,
             handle: self.handle.clone(),
         })
         .init_resource::<SmokeShots>()
@@ -946,12 +1070,24 @@ impl Plugin for MissionSmokePlugin {
         // respawned an actor label (the #1538 contact list redraws its rows)
         // *after* the first pass, and nothing after `PostUpdate` writes
         // visibility, so this is the state the frame's render sees.
-        .add_systems(PostUpdate, apply_probe)
-        .add_systems(
-            Last,
-            (smoke_census, smoke_sample, smoke_script, smoke_rounds).chain(),
-        );
+        .add_systems(PostUpdate, apply_probe);
+        add_script_systems(app);
     }
+}
+
+/// The script's per-frame systems, in the order they must run.
+fn add_script_systems(app: &mut App) {
+    app.add_systems(
+        Last,
+        (
+            smoke_census,
+            smoke_sample,
+            smoke_wingmen,
+            smoke_script,
+            smoke_rounds,
+        )
+            .chain(),
+    );
 }
 
 /// An unfocused window would pause the run through the real focus policy; a
@@ -1293,6 +1429,7 @@ fn smoke_rounds(
 /// the weapon session's rounds and the ordnance session's rockets.
 #[allow(clippy::too_many_arguments)]
 fn smoke_sample(
+    config: Res<SmokeConfig>,
     mut data: ResMut<SmokeData>,
     state: Res<PlaytestState>,
     ledger: Res<PhysicsTickLedger>,
@@ -1315,6 +1452,7 @@ fn smoke_sample(
             crate::playtest::retail::RETAIL_START_SPEED_M_S as f32
         };
         data.measurements.mission = "M01".to_owned();
+        data.measurements.no_teleport = config.mode == MissionSmokeMode::NoTeleport;
     }
     data.measurements.ticks = ledger.ticks;
     sample_audio(
@@ -1348,6 +1486,45 @@ fn smoke_sample(
     }
 }
 
+/// The wingmen's distance from the player at each [`WINGMAN_SAMPLE_SECONDS`]
+/// frame, read from the world transforms the mission's own census prints
+/// (no-teleport mode only).
+fn smoke_wingmen(
+    config: Res<SmokeConfig>,
+    mut data: ResMut<SmokeData>,
+    player: Query<&GlobalTransform, With<MissionPlayerBody>>,
+    aircraft: Query<(&ScriptedAircraftActor, &GlobalTransform)>,
+) {
+    if config.mode != MissionSmokeMode::NoTeleport {
+        return;
+    }
+    let frame = data.frame;
+    let Some(second) = WINGMAN_SAMPLE_SECONDS
+        .iter()
+        .copied()
+        .find(|second| frame == second * 60)
+    else {
+        return;
+    };
+    let Ok(player) = player.single() else { return };
+    let player = player.translation();
+    let mut distances_m: Vec<(String, f64)> = aircraft
+        .iter()
+        .filter(|(actor, _)| actor.vehicle_record == "wingman")
+        .map(|(actor, transform)| {
+            (
+                actor.record.name.clone(),
+                f64::from(transform.translation().distance(player)),
+            )
+        })
+        .collect();
+    distances_m.sort_by(|a, b| a.0.cmp(&b.0));
+    data.measurements.wingmen.push(WingmanSample {
+        second,
+        distances_m,
+    });
+}
+
 #[allow(clippy::too_many_arguments)]
 fn smoke_script(
     config: Res<SmokeConfig>,
@@ -1375,6 +1552,19 @@ fn smoke_script(
     let mut due: Vec<String> = Vec::new();
     let at = frame.saturating_sub(data.phase_start);
     match data.phase {
+        // The no-teleport script has no phases to walk: the player flies the
+        // measured start, `PendingPlacement` is never filled, and one frame
+        // is taken after the last wingman sample.
+        _ if config.mode == MissionSmokeMode::NoTeleport => {
+            if data.phase != Phase::Final
+                && data.phase != Phase::Ended
+                && frame >= NO_TELEPORT_SHOT_FRAME
+            {
+                due.push("flight".to_owned());
+                data.phase = Phase::Final;
+                data.phase_start = frame + 1;
+            }
+        }
         Phase::Settle if frame >= SETTLE_FRAMES => {
             data.phase = Phase::WorldProbe;
             data.phase_start = frame + 1;
@@ -2030,6 +2220,30 @@ fn write_artifacts(
         })
         .collect::<Vec<_>>()
         .join(",");
+    let wingmen = report
+        .measurements
+        .wingmen
+        .iter()
+        .map(|sample| {
+            let distances = sample
+                .distances_m
+                .iter()
+                .map(|(name, metres)| {
+                    format!(
+                        "{{\"name\":{},\"distance_m\":{}}}",
+                        json_string(name),
+                        json_option_f64(metres.is_finite().then_some(*metres))
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(",");
+            format!(
+                "{{\"second\":{},\"distances\":[{distances}]}}",
+                sample.second
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
     let placements = report
         .placements
         .iter()
@@ -2056,6 +2270,8 @@ fn write_artifacts(
         .map_or_else(|| "null".to_owned(), json_string);
     let body = format!(
         "{{\"kind\":{kind},\"mission\":{mission},\"human_play\":false,\
+         \"mode\":{mode},\"player_teleported\":{teleported},\
+         \"wingman_threshold_m\":{threshold},\"wingmen\":[{wingmen}],\
          \"verified_original\":false,\"frames\":{frames},\"ticks\":{ticks},\
          \"hud\":{{\"model_line\":{model_line},\"drawn_line\":{drawn_line},\
          \"drawn_visible\":{visible},\"region_text_pixels\":{region}}},\
@@ -2071,6 +2287,14 @@ fn write_artifacts(
          \"checks\":[{checks}],\"failures\":[{failures}],\"passed\":{passed}}}\n",
         kind = json_string(SMOKE_KIND),
         mission = json_string(&report.mission),
+        mode = json_string(if report.measurements.no_teleport {
+            "no_teleport"
+        } else {
+            "scripted"
+        }),
+        teleported = !report.placements.is_empty(),
+        threshold = MAX_WINGMAN_DISTANCE_M,
+        wingmen = wingmen,
         frames = report.frames,
         ticks = report.ticks,
         model_line = model_line,
@@ -2162,5 +2386,88 @@ pub fn finish(
             report.checks.iter().filter(|check| check.applies).count(),
             report.failures.join(", ")
         )))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::playtest::SmokeRequest;
+
+    /// **`accept_m01_smoke_no_teleport_` the mode never moves the player.**
+    ///
+    /// The production script systems and placement writer run for the whole
+    /// no-teleport script over a stand-in player body; the body's pose after
+    /// the run is the pose it started with, the report names no placement,
+    /// and a wingman sample exists for every fixed time.
+    #[test]
+    fn accept_m01_smoke_no_teleport_never_moves_the_player() {
+        let dir = std::env::temp_dir().join("accept_m01_smoke_no_teleport_never_moves");
+        let request = SmokeRequest {
+            seconds: 45,
+            capture_dir: dir.clone(),
+        };
+        let plugin = MissionSmokePlugin::new(request).with_mode(MissionSmokeMode::NoTeleport);
+        let handle = plugin.handle();
+        let mut app = App::new();
+        app.add_message::<AppExit>()
+            .insert_resource(SmokeConfig {
+                request: plugin.request.clone(),
+                mode: plugin.mode,
+                handle: plugin.handle.clone(),
+            })
+            .init_resource::<SmokeShots>()
+            .init_resource::<SmokeData>()
+            .init_resource::<ProbeState>()
+            .init_resource::<KeyQueue>()
+            .init_resource::<PendingPlacement>()
+            .init_resource::<PlaytestState>()
+            .insert_resource(PlaytestCamera::new())
+            .init_resource::<PhysicsTickLedger>()
+            .add_systems(Update, apply_placement);
+        add_script_systems(&mut app);
+        let start = Vec3::new(120.0, 900.0, -4_000.0);
+        let body = app
+            .world_mut()
+            .spawn((
+                MissionPlayerBody,
+                Position(start),
+                Rotation::default(),
+                LinearVelocity::default(),
+                AngularVelocity::default(),
+                GlobalTransform::from_translation(start),
+            ))
+            .id();
+        for _ in 0..(NO_TELEPORT_SHOT_FRAME + SHOT_GRACE_FRAMES + 10) {
+            app.update();
+            if handle.0.lock().is_ok_and(|slot| slot.is_some()) {
+                break;
+            }
+        }
+        let report = handle
+            .take()
+            .expect("the run finished")
+            .expect("the report was written");
+        assert!(report.placements.is_empty(), "{:?}", report.placements);
+        assert_eq!(
+            app.world().get::<Position>(body).map(|position| position.0),
+            Some(start),
+            "nothing wrote the player body's pose"
+        );
+        assert!(app.world().resource::<PendingPlacement>().0.is_none());
+        let seconds: Vec<u32> = report
+            .measurements
+            .wingmen
+            .iter()
+            .map(|s| s.second)
+            .collect();
+        assert_eq!(seconds, WINGMAN_SAMPLE_SECONDS);
+        assert!(report.measurements.no_teleport);
+        // No wingman spawned in this stand-in world: the check says so.
+        assert!(report.failures.contains(&"wingmen_near_player".to_owned()));
+        let json = std::fs::read_to_string(dir.join(SMOKE_REPORT_FILE)).expect("report.json");
+        assert!(json.contains("\"mode\":\"no_teleport\""), "{json}");
+        assert!(json.contains("\"player_teleported\":false"), "{json}");
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

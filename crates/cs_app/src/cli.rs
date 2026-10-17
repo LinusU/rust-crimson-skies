@@ -42,6 +42,10 @@ pub struct MissionRequest {
     /// the same windowed composition and fails when a check fails (Rally
     /// #1535 `M01-OWNER-SMOKE`).
     pub smoke: Option<SmokeRequest>,
+    /// `--smoke-no-teleport`: the smoke flies the measured start for the whole
+    /// run, never moves the player and judges only whether the wingmen fly
+    /// near it (Rally #1572 `M01-SMOKE-NO-TELEPORT`).
+    pub smoke_no_teleport: bool,
 }
 
 /// What the caller asked the binary to do.
@@ -115,6 +119,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
     let mut world: Option<String> = None;
     let mut aircraft: Option<String> = None;
     let mut mission: Option<String> = None;
+    let mut smoke_no_teleport = false;
     let mut unknown = false;
 
     let mut index = 0;
@@ -125,6 +130,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
             "--synthetic" => synthetic = true,
             "--headless" => headless = true,
             "--playtest" => playtest = true,
+            "--smoke-no-teleport" => smoke_no_teleport = true,
             "--smoke-seconds" => {
                 let Some(value) = args.get(index + 1).cloned() else {
                     return CliRequest::Unsupported { args };
@@ -211,6 +217,13 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
     if unknown {
         return CliRequest::Unsupported { args };
     }
+    if smoke_no_teleport && (mission.is_none() || smoke_seconds.is_none()) {
+        return CliRequest::Invalid {
+            reason: "--smoke-no-teleport is a mode of --cs-path <dir> --mission <id> \
+ --smoke-seconds <n>"
+                .to_string(),
+        };
+    }
     if let Some(mission) = mission {
         if playtest || synthetic || headless || world.is_some() || aircraft.is_some() {
             return CliRequest::Invalid {
@@ -254,6 +267,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
             cs_path,
             mission,
             smoke,
+            smoke_no_teleport,
         });
     }
     if playtest {
@@ -435,13 +449,16 @@ WINDOWED PLAYTEST (development, not original)
         weapons (Space fires the guns, Left Ctrl a rocket), radio dialogue and
         music, the objective HUD and the mission triggers. See
         docs/PLAYTEST.md, section 'Original mission M01'
-    --mission <id> --smoke-seconds <n> [--capture-dir <dir>]
+    --mission <id> --smoke-seconds <n> [--smoke-no-teleport] [--capture-dir <dir>]
         The same windowed launch driven as a scripted smoke (n >= 45
         simulated seconds): it injects keys through the real input path,
         places the player near each spawned actor, saves framebuffer PNGs and
         report.json to <dir> (default private/mission-smoke), and fails —
         with a non-zero exit — when the player could not see, hear or shoot
-        the mission. A scripted run is never human_play
+        the mission. A scripted run is never human_play.
+        --smoke-no-teleport flies the measured start for the whole run,
+        never moves the player and judges only wingmen_near_player: each
+        wingman's distance from the player at t+1, 5, 10, 20 and 30 s
 
 `--help` and `--version` read no environment variable, open no installation
 and start no asset discovery: they succeed without a GPU and without a retail

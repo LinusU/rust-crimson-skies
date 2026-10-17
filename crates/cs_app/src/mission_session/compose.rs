@@ -1448,6 +1448,7 @@ pub fn run_windowed(
     install_root: &Path,
     plan: &MissionLaunchPlan,
     smoke: Option<&crate::playtest::SmokeRequest>,
+    smoke_mode: crate::mission_session::MissionSmokeMode,
 ) -> Result<(), MissionCompositionError> {
     // A requested capture is judged before any content is read.
     let capture = crate::mission_session::CaptureSettings::from_env()
@@ -1466,7 +1467,8 @@ pub fn run_windowed(
                 crate::mission_session::MISSION_SMOKE_FRAME_HZ.recip(),
             ),
         ));
-        let plugin = crate::mission_session::MissionSmokePlugin::new(request.clone());
+        let plugin =
+            crate::mission_session::MissionSmokePlugin::new(request.clone()).with_mode(smoke_mode);
         let handle = plugin.handle();
         app.add_plugins(plugin);
         handle

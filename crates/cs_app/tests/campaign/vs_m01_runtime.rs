@@ -380,6 +380,7 @@ fn accept_vs_m01_runtime_the_mission_request_parses_and_refuses_a_synthetic_mix(
             cs_path: PathBuf::from("/install"),
             mission: "M01".to_owned(),
             smoke: None,
+            smoke_no_teleport: false,
         })
     );
     for bad in [
@@ -406,6 +407,7 @@ fn accept_vs_m01_runtime_launch_refuses_an_undeclared_mission_and_an_empty_insta
         cs_path: dir.clone(),
         mission: "M99".to_owned(),
         smoke: None,
+        smoke_no_teleport: false,
     })
     .expect_err("M99 declares no identity");
     assert!(matches!(
@@ -416,6 +418,7 @@ fn accept_vs_m01_runtime_launch_refuses_an_undeclared_mission_and_an_empty_insta
         cs_path: dir,
         mission: "M01".to_owned(),
         smoke: None,
+        smoke_no_teleport: false,
     })
     .expect_err("an empty installation cannot launch");
     assert!(matches!(empty, MissionLaunchError::Plan(_)), "{empty}");
