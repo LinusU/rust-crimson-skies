@@ -164,3 +164,10 @@ overrides which one; it prefers `target/release/cs`, because debug Bevy steps a
 2 700-frame script far too slowly) and asserts the harness contract: every
 check id judged, the PNGs delivered, and a non-zero exit exactly when a check
 failed.
+
+The task's evidence report is `docs/findings/evidence/M01-OWNER-SMOKE.json`,
+written by `crates/cs_app/tests/evidence_report_m01_owner_smoke.rs` from the
+recorded acceptance log, `report.json` and the hashes of all 21 artifacts, and
+validated with `tools/validate_evidence.py --require-pass`. Its `review.method`
+names the three checks the run currently fails, so the machine-readable record
+carries them too.
