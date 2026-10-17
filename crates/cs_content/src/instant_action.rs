@@ -2836,6 +2836,628 @@ pub fn synthetic_custom_request() -> CustomScenarioRequest {
         .expect("the synthetic custom request fixture is valid")
 }
 
+// ------------------------------------------- the retail IA denominator ----
+//
+// F49-D.01: what the installation's own `ia.zrd` descriptors say Instant
+// Action offers. Nothing below is designed vocabulary; every field is read
+// from a decoded descriptor, and every refusal names the container and member
+// so a short list is never mistaken for a short installation.
+
+/// The world-group sub-directory leaf prefix of an Instant Action scenario
+/// (`IA1`), compared lowercase.
+const IA_DIRECTORY_PREFIX: &str = "ia";
+
+/// The reader archive every scenario directory keeps its members in.
+const IA_ARCHIVE_NAME: &str = "zrdr.zbd";
+
+/// The root key listing, per offered mission type, that type's spawn points.
+pub const IA_SPAWN_POINTS_KEY: &str = "spawn_points";
+
+/// The root key listing the mission types a directory does not offer.
+pub const IA_DISALLOW_KEY: &str = "disallow_missions";
+
+/// The mission-type vocabulary observed in the owner's installation on
+/// 2026-10-08: every `spawn_points` key and every `disallow_missions` value of
+/// the eight descriptors. A name outside it is refused, not ignored: it would
+/// be a mode nobody has measured.
+pub const IA_MISSION_TYPE_VOCABULARY: [&str; 5] = [
+    "dogfight_ace",
+    "dogfight_squadron",
+    "zeppelin_run",
+    "stunt_flying",
+    "ground_target",
+];
+
+/// The claim the retail reader's measurements are recorded under.
+pub const IA_DENOMINATOR_CLAIM: &str = "f49.d.01.ia-denominator";
+
+/// One mission type a directory offers, with how many spawn points its list
+/// holds. The spawn points' contents are not interpreted here.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IaOfferedType {
+    mission_type: String,
+    spawn_points: usize,
+}
+
+impl IaOfferedType {
+    /// The mission type's name as the data spells it.
+    #[must_use]
+    pub fn mission_type(&self) -> &str {
+        &self.mission_type
+    }
+
+    /// How many spawn-point records follow the name.
+    #[must_use]
+    pub const fn spawn_points(&self) -> usize {
+        self.spawn_points
+    }
+}
+
+/// The player's aircraft a descriptor names, or why it names none.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IaPlayerPlane {
+    /// The descriptor's `player_plane`.
+    Declared(String),
+    /// The descriptor declares no `player_plane`. No plane is substituted.
+    Unknown {
+        /// Why the plane is unknown.
+        reason: &'static str,
+    },
+}
+
+/// What one `ZBD/<group>/IA<n>/zrdr.zbd` `ia.zrd` declares.
+#[derive(Clone, Debug, PartialEq)]
+pub struct IaDirectory {
+    world_group: String,
+    leaf: String,
+    container: String,
+    container_sha256: String,
+    member_offset: u64,
+    member_length: u64,
+    offered: Vec<IaOfferedType>,
+    disallowed: Vec<String>,
+    default_mission_type: Option<String>,
+    aircraft: crate::stunts::ScenarioNonPlayerAircraft,
+    zone_bindings: Vec<(String, String)>,
+}
+
+impl IaDirectory {
+    /// The lowercase world group (`c1b`).
+    #[must_use]
+    pub fn world_group(&self) -> &str {
+        &self.world_group
+    }
+
+    /// The lowercase directory leaf (`ia1`).
+    #[must_use]
+    pub fn leaf(&self) -> &str {
+        &self.leaf
+    }
+
+    /// The container's logical key.
+    #[must_use]
+    pub fn container(&self) -> &str {
+        &self.container
+    }
+
+    /// SHA-256 of the whole container file, from production discovery.
+    #[must_use]
+    pub fn container_sha256(&self) -> &str {
+        &self.container_sha256
+    }
+
+    /// Absolute container offset and length of the `ia.zrd` member.
+    #[must_use]
+    pub const fn member_span(&self) -> (u64, u64) {
+        (self.member_offset, self.member_length)
+    }
+
+    /// The mission types the directory offers (its `spawn_points` keys), in
+    /// the data's order.
+    #[must_use]
+    pub fn offered(&self) -> &[IaOfferedType] {
+        &self.offered
+    }
+
+    /// The mission types the directory disallows, in the data's order.
+    #[must_use]
+    pub fn disallowed(&self) -> &[String] {
+        &self.disallowed
+    }
+
+    /// The descriptor's default `mission_type`, when it declares one.
+    #[must_use]
+    pub fn default_mission_type(&self) -> Option<&str> {
+        self.default_mission_type.as_deref()
+    }
+
+    /// The declared player/wingman/enemy/ace roster.
+    #[must_use]
+    pub const fn aircraft(&self) -> &crate::stunts::ScenarioNonPlayerAircraft {
+        &self.aircraft
+    }
+
+    /// The `dzones` bindings as `(world node, scenario label)`.
+    #[must_use]
+    pub fn zone_bindings(&self) -> &[(String, String)] {
+        &self.zone_bindings
+    }
+
+    /// The player's plane, or the reason it is unknown.
+    #[must_use]
+    pub fn player_plane(&self) -> IaPlayerPlane {
+        match self.aircraft.player_plane() {
+            Some(plane) => IaPlayerPlane::Declared(plane.to_owned()),
+            None => IaPlayerPlane::Unknown {
+                reason: "the descriptor declares no player_plane",
+            },
+        }
+    }
+
+    /// The `ia_scenario` id of this directory: `<group>-<leaf>`.
+    ///
+    /// # Errors
+    ///
+    /// [`IaSurveyError::Id`] when the key is not a valid content id.
+    pub fn scenario_id(&self) -> Result<ContentId, IaSurveyError> {
+        ia_id(
+            ContentKind::IaScenario,
+            &format!("{}-{}", self.world_group, self.leaf),
+            &self.container,
+        )
+    }
+
+    /// One `(ia_preset, ia_scenario)` pair per offered mission type:
+    /// `<group>-<leaf>-<mission type>`.
+    ///
+    /// The scheme says "one selectable slot per directory and offered mission
+    /// type". That the original's menu is exactly this product is **not**
+    /// measured; it is the denominator the data itself supports.
+    ///
+    /// # Errors
+    ///
+    /// [`IaSurveyError::Id`] when a key is not a valid content id.
+    pub fn preset_ids(&self) -> Result<Vec<(ContentId, ContentId)>, IaSurveyError> {
+        let scenario = self.scenario_id()?;
+        self.offered
+            .iter()
+            .map(|offered| {
+                let preset = ia_id(
+                    ContentKind::IaPreset,
+                    &format!(
+                        "{}-{}-{}",
+                        self.world_group, self.leaf, offered.mission_type
+                    ),
+                    &self.container,
+                )?;
+                Ok((preset, scenario.clone()))
+            })
+            .collect()
+    }
+}
+
+/// Every Instant Action directory of one installation.
+#[derive(Clone, Debug, PartialEq)]
+pub struct IaDenominator {
+    install_sha256: String,
+    directories: Vec<IaDirectory>,
+}
+
+impl IaDenominator {
+    /// Assembles a denominator, refusing duplicate preset or scenario ids.
+    ///
+    /// # Errors
+    ///
+    /// [`IaSurveyError::DuplicateId`] naming the second container that
+    /// produces an id, and [`IaSurveyError::Id`] for an invalid id key.
+    pub fn try_new(
+        install_sha256: impl Into<String>,
+        directories: Vec<IaDirectory>,
+    ) -> Result<Self, IaSurveyError> {
+        let mut seen = std::collections::BTreeSet::new();
+        for directory in &directories {
+            let mut ids = vec![directory.scenario_id()?];
+            ids.extend(
+                directory
+                    .preset_ids()?
+                    .into_iter()
+                    .map(|(preset, _)| preset),
+            );
+            for id in ids {
+                if !seen.insert(id.to_string()) {
+                    return Err(IaSurveyError::DuplicateId {
+                        id: id.to_string(),
+                        container: directory.container.clone(),
+                    });
+                }
+            }
+        }
+        Ok(Self {
+            install_sha256: install_sha256.into(),
+            directories,
+        })
+    }
+
+    /// The installation fingerprint the measurement is bound to.
+    #[must_use]
+    pub fn install_sha256(&self) -> &str {
+        &self.install_sha256
+    }
+
+    /// The directories, ordered by container key.
+    #[must_use]
+    pub fn directories(&self) -> &[IaDirectory] {
+        &self.directories
+    }
+
+    /// The observed mission-type vocabulary: the union of every directory's
+    /// offered and disallowed types.
+    #[must_use]
+    pub fn observed_vocabulary(&self) -> std::collections::BTreeSet<String> {
+        self.directories
+            .iter()
+            .flat_map(|directory| {
+                directory
+                    .offered
+                    .iter()
+                    .map(|offered| offered.mission_type.clone())
+                    .chain(directory.disallowed.iter().cloned())
+            })
+            .collect()
+    }
+
+    /// Whether, for `directory`, the observed vocabulary minus its disallowed
+    /// types is exactly its offered types.
+    #[must_use]
+    pub fn offered_is_vocabulary_minus_disallowed(&self, directory: &IaDirectory) -> bool {
+        let expected: std::collections::BTreeSet<&str> = self
+            .directories
+            .iter()
+            .flat_map(|other| {
+                other
+                    .offered
+                    .iter()
+                    .map(|offered| offered.mission_type.as_str())
+                    .chain(other.disallowed.iter().map(String::as_str))
+            })
+            .filter(|name| !directory.disallowed.iter().any(|d| d == name))
+            .collect();
+        let offered: std::collections::BTreeSet<&str> = directory
+            .offered
+            .iter()
+            .map(|offered| offered.mission_type.as_str())
+            .collect();
+        expected == offered
+    }
+
+    /// Every `(ia_preset, ia_scenario)` pair of the installation.
+    ///
+    /// # Errors
+    ///
+    /// [`IaSurveyError::Id`] when a key is not a valid content id.
+    pub fn preset_ids(&self) -> Result<Vec<(ContentId, ContentId)>, IaSurveyError> {
+        let mut all = Vec::new();
+        for directory in &self.directories {
+            all.extend(directory.preset_ids()?);
+        }
+        Ok(all)
+    }
+}
+
+/// Why the Instant Action denominator could not be measured.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IaSurveyError {
+    /// Production discovery of the installation failed.
+    Discovery(String),
+    /// The installation inventories no `ZBD/<group>/IA<n>/zrdr.zbd`.
+    NoDirectories,
+    /// A container could not be read.
+    Read {
+        /// The container's logical key.
+        container: String,
+        /// Why.
+        reason: String,
+    },
+    /// The container holds no `ia.zrd`.
+    MissingMember {
+        /// The container's logical key.
+        container: String,
+    },
+    /// `ia.zrd` did not decode.
+    Decode {
+        /// The container's logical key.
+        container: String,
+        /// The decoder's stable code.
+        code: &'static str,
+        /// Byte offset the decoder stopped at.
+        offset: u64,
+    },
+    /// The descriptor has no `spawn_points` key.
+    MissingSpawnPoints {
+        /// The container's logical key.
+        container: String,
+    },
+    /// `spawn_points` or `disallow_missions` is not the measured shape.
+    Malformed {
+        /// The container's logical key.
+        container: String,
+        /// The root key.
+        key: &'static str,
+        /// What was wrong.
+        reason: &'static str,
+    },
+    /// A mission type outside [`IA_MISSION_TYPE_VOCABULARY`].
+    UnknownMissionType {
+        /// The container's logical key.
+        container: String,
+        /// The root key it appeared under.
+        key: &'static str,
+        /// The unmeasured name.
+        mission_type: String,
+    },
+    /// Two directories produce the same content id.
+    DuplicateId {
+        /// The id.
+        id: String,
+        /// The container that produced it second.
+        container: String,
+    },
+    /// A generated key is not a valid content id.
+    Id {
+        /// The container.
+        container: String,
+        /// The id error.
+        reason: String,
+    },
+}
+
+impl fmt::Display for IaSurveyError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Discovery(reason) => write!(f, "installation discovery failed: {reason}"),
+            Self::NoDirectories => {
+                write!(
+                    f,
+                    "the installation inventories no ZBD/<group>/IA<n>/zrdr.zbd"
+                )
+            }
+            Self::Read { container, reason } => write!(f, "{container} cannot be read: {reason}"),
+            Self::MissingMember { container } => write!(f, "{container} holds no ia.zrd"),
+            Self::Decode {
+                container,
+                code,
+                offset,
+            } => write!(
+                f,
+                "{container} member ia.zrd does not decode: {code} at byte {offset}"
+            ),
+            Self::MissingSpawnPoints { container } => write!(
+                f,
+                "{container} member ia.zrd has no {IA_SPAWN_POINTS_KEY}; it is not treated as offering no presets"
+            ),
+            Self::Malformed {
+                container,
+                key,
+                reason,
+            } => write!(f, "{container} member ia.zrd {key} is malformed: {reason}"),
+            Self::UnknownMissionType {
+                container,
+                key,
+                mission_type,
+            } => write!(
+                f,
+                "{container} member ia.zrd {key} names a mission type outside the measured vocabulary: {mission_type}"
+            ),
+            Self::DuplicateId { id, container } => {
+                write!(f, "{container} produces the duplicate id {id}")
+            }
+            Self::Id { container, reason } => {
+                write!(f, "{container} produces an invalid id: {reason}")
+            }
+        }
+    }
+}
+
+impl std::error::Error for IaSurveyError {}
+
+fn ia_id(kind: ContentKind, key: &str, container: &str) -> Result<ContentId, IaSurveyError> {
+    ContentId::from_source(kind, key).map_err(|error| IaSurveyError::Id {
+        container: container.to_owned(),
+        reason: error.to_string(),
+    })
+}
+
+fn ia_checked_type(
+    container: &str,
+    key: &'static str,
+    value: &str,
+) -> Result<String, IaSurveyError> {
+    if IA_MISSION_TYPE_VOCABULARY.contains(&value) {
+        Ok(value.to_owned())
+    } else {
+        Err(IaSurveyError::UnknownMissionType {
+            container: container.to_owned(),
+            key,
+            mission_type: value.to_owned(),
+        })
+    }
+}
+
+/// Reads one decoded `ia.zrd` into an [`IaDirectory`].
+///
+/// `container`, `container_sha256`, `member_offset` and `member_length` are the
+/// member's provenance from production discovery; `world_group` and `leaf` are
+/// the lowercase directory names.
+///
+/// # Errors
+///
+/// [`IaSurveyError`] for a descriptor without `spawn_points`, one whose
+/// `spawn_points` / `disallow_missions` are not the measured shapes, and one
+/// that names a mission type outside [`IA_MISSION_TYPE_VOCABULARY`].
+#[allow(clippy::too_many_arguments)]
+pub fn read_ia_descriptor(
+    root: &crate::stunts::ZrdValue,
+    container: &str,
+    container_sha256: &str,
+    member_offset: u64,
+    member_length: u64,
+    world_group: &str,
+    leaf: &str,
+) -> Result<IaDirectory, IaSurveyError> {
+    use crate::stunts::{ZrdValue, scenario_mission_type, scenario_zone_bindings, zrd_flat_fields};
+
+    let malformed = |key: &'static str, reason: &'static str| IaSurveyError::Malformed {
+        container: container.to_owned(),
+        key,
+        reason,
+    };
+    let fields = zrd_flat_fields(root);
+    let field = |key: &str| {
+        fields
+            .iter()
+            .find(|(name, _)| *name == key)
+            .map(|(_, v)| *v)
+    };
+
+    let spawn = field(IA_SPAWN_POINTS_KEY).ok_or_else(|| IaSurveyError::MissingSpawnPoints {
+        container: container.to_owned(),
+    })?;
+    let entries = spawn
+        .as_list()
+        .ok_or_else(|| malformed(IA_SPAWN_POINTS_KEY, "not a list"))?;
+    if entries.len() % 2 != 0 {
+        return Err(malformed(IA_SPAWN_POINTS_KEY, "odd number of children"));
+    }
+    let mut offered: Vec<IaOfferedType> = Vec::new();
+    for pair in entries.chunks(2) {
+        let name = pair[0]
+            .as_text()
+            .ok_or_else(|| malformed(IA_SPAWN_POINTS_KEY, "a mission type is not text"))?;
+        let points = pair[1]
+            .as_list()
+            .ok_or_else(|| malformed(IA_SPAWN_POINTS_KEY, "a spawn-point list is not a list"))?;
+        let mission_type = ia_checked_type(container, IA_SPAWN_POINTS_KEY, name)?;
+        if offered.iter().any(|seen| seen.mission_type == mission_type) {
+            return Err(malformed(IA_SPAWN_POINTS_KEY, "a mission type repeats"));
+        }
+        offered.push(IaOfferedType {
+            mission_type,
+            spawn_points: points.len(),
+        });
+    }
+
+    let mut disallowed = Vec::new();
+    if let Some(value) = field(IA_DISALLOW_KEY) {
+        let list = value
+            .as_list()
+            .ok_or_else(|| malformed(IA_DISALLOW_KEY, "not a list"))?;
+        for entry in list {
+            let ZrdValue::Text(name) = entry else {
+                return Err(malformed(IA_DISALLOW_KEY, "an entry is not text"));
+            };
+            disallowed.push(ia_checked_type(container, IA_DISALLOW_KEY, name)?);
+        }
+    }
+
+    Ok(IaDirectory {
+        world_group: world_group.to_owned(),
+        leaf: leaf.to_owned(),
+        container: container.to_owned(),
+        container_sha256: container_sha256.to_owned(),
+        member_offset,
+        member_length,
+        offered,
+        disallowed,
+        default_mission_type: scenario_mission_type(root).map(str::to_owned),
+        aircraft: crate::stunts::scenario_non_player_aircraft(root),
+        zone_bindings: scenario_zone_bindings(root)
+            .into_iter()
+            .map(|(node, label)| (node.to_owned(), label.to_owned()))
+            .collect(),
+    })
+}
+
+/// Measures every Instant Action directory of an installation through the
+/// production discovery, reader-archive discovery and `.zrd` decoder.
+///
+/// # Errors
+///
+/// [`IaSurveyError`] naming the container (and member) that could not be
+/// measured. A failed read is a refusal, never a shorter list.
+pub fn survey_retail_instant_action(
+    install_root: &std::path::Path,
+) -> Result<IaDenominator, IaSurveyError> {
+    use crate::stunts::{SCENARIO_MEMBER, decode_zrd};
+    use cs_formats::script_raw::discover_container;
+
+    let found = cs_assets::install::discover(install_root)
+        .map_err(|error| IaSurveyError::Discovery(format!("{error:?}")))?;
+    let install_sha256 = cs_assets::install::fingerprint(&found.manifest).to_hex();
+
+    let mut records: Vec<_> = found
+        .manifest
+        .files
+        .iter()
+        .filter_map(|record| {
+            let key = record.relative_spelling.logical_key();
+            let segments: Vec<&str> = key.split('/').collect();
+            let [.., group, leaf, archive] = segments.as_slice() else {
+                return None;
+            };
+            let digits = leaf.strip_prefix(IA_DIRECTORY_PREFIX)?;
+            (*archive == IA_ARCHIVE_NAME
+                && !digits.is_empty()
+                && digits.bytes().all(|byte| byte.is_ascii_digit()))
+            .then(|| (key.clone(), (*group).to_owned(), (*leaf).to_owned(), record))
+        })
+        .collect();
+    records.sort_by(|a, b| a.0.cmp(&b.0));
+    if records.is_empty() {
+        return Err(IaSurveyError::NoDirectories);
+    }
+
+    let mut directories = Vec::new();
+    for (container, group, leaf, record) in records {
+        let read_error = |reason: String| IaSurveyError::Read {
+            container: container.clone(),
+            reason,
+        };
+        let bytes = std::fs::read(
+            found
+                .manifest
+                .host_root
+                .join(record.relative_spelling.as_str()),
+        )
+        .map_err(|error| read_error(error.to_string()))?;
+        let path = cs_types::install::RelativePath::new(record.relative_spelling.as_str())
+            .map_err(|error| read_error(error.to_string()))?;
+        let discovery = discover_container(&container, &path, &bytes);
+        let member = discovery
+            .programs()
+            .iter()
+            .find(|program| program.locator().member() == Some(SCENARIO_MEMBER))
+            .ok_or_else(|| IaSurveyError::MissingMember {
+                container: container.clone(),
+            })?;
+        let root = decode_zrd(member.bytes()).map_err(|error| IaSurveyError::Decode {
+            container: container.clone(),
+            code: error.code(),
+            offset: error.offset(),
+        })?;
+        let span = member.locator().span();
+        directories.push(read_ia_descriptor(
+            &root,
+            &container,
+            &record.sha256.to_hex(),
+            span.offset,
+            span.len,
+            &group,
+            &leaf,
+        )?);
+    }
+    IaDenominator::try_new(install_sha256, directories)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
