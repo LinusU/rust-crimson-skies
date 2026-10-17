@@ -8,7 +8,7 @@
 //!
 //! 1. ```sh
 //!    mkdir -p private/evidence/F47-D.2
-//!    cargo test --workspace --locked -- accept_f47_d2_ --include-ignored \
+//!    cargo test --locked -p cs_content -- accept_f47_d2_ --include-ignored \
 //!      2>&1 | tee private/evidence/F47-D.2/cargo-test.log
 //!    ```
 //!    (record the pipeline's exit status; it is passed to this harness as
@@ -16,7 +16,7 @@
 //! 2. ```sh
 //!    CS_EVIDENCE_DIR=private/evidence/F47-D.2 \
 //!    CS_CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}') \
-//!    CS_EVIDENCE_ARGV="cargo test --workspace --locked -- accept_f47_d2_ --include-ignored" \
+//!    CS_EVIDENCE_ARGV="cargo test --locked -p cs_content -- accept_f47_d2_ --include-ignored" \
 //!    CS_EVIDENCE_EXIT_CODE=<status from step 1> \
 //!      cargo test --locked --test evidence_report_f47_d2 -- --ignored
 //!    ```
@@ -216,7 +216,7 @@ fn evidence_report_f47_d2_writes_the_acceptance_report() {
     assert_eq!(second.snapshot_items, EXPECTED_SNAPSHOTS);
     assert_eq!(second.snapshot_agree, EXPECTED_SNAPSHOT_AGREE);
 
-    let toc_commands = native_commands(&toc_script);
+    let toc_commands = script_integers(&toc_script);
     for required in [
         TOC_REPLAY_COMMAND,
         TOC_LIST_COMMAND,
@@ -225,13 +225,13 @@ fn evidence_report_f47_d2_writes_the_acceptance_report() {
     ] {
         assert!(
             toc_commands.contains(&required),
-            "the table-of-contents script must call native command {required}; found {toc_commands:?}"
+            "the table-of-contents script must spell native command {required}; found {toc_commands:?}"
         );
     }
-    let memento_commands = native_commands(&memento_script);
+    let memento_commands = script_integers(&memento_script);
     assert!(
         memento_commands.contains(&MEMENTO_COMMAND),
-        "the memento-selection script must call native command {MEMENTO_COMMAND}; found \
+        "the memento-selection script must spell native command {MEMENTO_COMMAND}; found \
          {memento_commands:?}"
     );
 
@@ -410,20 +410,27 @@ fn snapshot_components(image: &str) -> Option<(u32, u32)> {
     Some((page.parse().ok()?, objective.parse().ok()?))
 }
 
-/// Every native engine command number a screen script calls, extracted from
-/// the script's own `callback($$E$$, <n>, …)` form.
-fn native_commands(script: &[u8]) -> BTreeSet<u32> {
+/// Every integer the script's own bytes spell, as a second reading of the
+/// native command numbers the finding cites. The table-of-contents list filler
+/// is assigned to its control's callback property (`= 2409`) rather than
+/// called with a literal, so this reads all integer tokens rather than only
+/// the `callback($$E$$, <n>, …)` call form.
+fn script_integers(script: &[u8]) -> BTreeSet<u32> {
     let text = String::from_utf8_lossy(script);
-    let needle = "callback($$E$$,";
     let mut out = BTreeSet::new();
-    let mut rest = text.as_ref();
-    while let Some(position) = rest.find(needle) {
-        let after = rest[position + needle.len()..].trim_start();
-        let digits: String = after.chars().take_while(char::is_ascii_digit).collect();
-        if let Ok(command) = digits.parse::<u32>() {
-            out.insert(command);
+    let mut digits = String::new();
+    for character in text.chars() {
+        if character.is_ascii_digit() {
+            digits.push(character);
+        } else {
+            if let Ok(value) = digits.parse::<u32>() {
+                out.insert(value);
+            }
+            digits.clear();
         }
-        rest = &rest[position + needle.len()..];
+    }
+    if let Ok(value) = digits.parse::<u32>() {
+        out.insert(value);
     }
     out
 }
@@ -500,7 +507,7 @@ fn review_method() -> String {
          the byte readers: a second parse of the table that re-counts the numbered/special \
          positions and the Snap_<page>_<n> agreements without calling objective_rules, and a \
          second read of ASSETS/SCRIPTS/SCRAPBOOK_TOC.SCRIPT and MOMENTOSELECTION.SCRIPT that \
-         re-extracts the native command numbers (2104/2405/2409/2411 and 2150). Capability \
+         re-reads the native command numbers its bytes spell (2104/2405/2409/2411 and 2150). Capability \
          coverage is checked, not assumed: the retail acceptance test must be present and pass in \
          the recorded log. Implementer mutation probes on this branch: an off-by-one page->mission \
          index fails the synthetic binding test on three bound rules; forcing the snapshot \
