@@ -27,18 +27,20 @@ use std::fs;
 
 use cs_app::profile::{ProfileSession, SessionError};
 use cs_app::ui::import::ImportFlow;
-use cs_content::legacy_import::{BlueprintRecordOutcome, TargetProfile, legacy_save_import_rule};
+use cs_content::legacy_import::{
+    BlueprintRecordOutcome, LegacyIdBinding, TargetProfile, legacy_save_import_rule,
+};
 use cs_content::save::library::{LibraryError, slot_name};
 use cs_content::save::settings::SettingCatalog;
-use cs_formats::legacy_profile::LegacyArtifactClass;
-use cs_types::content::ContentId;
+use cs_formats::legacy_profile::{LegacyArtifactClass, LegacyIdClass};
+use cs_types::content::{ContentId, ContentKind};
 use cs_types::profile::{ProfileDocument, ProfileId, ProfileKind, Revision};
 
 #[path = "f64_c_support/mod.rs"]
 mod support;
 
 use support::{
-    CatalogRows, TempBase, blueprint_document, blueprint_layout_and_map, catalog, context,
+    CatalogRows, TempBase, blueprint_document, blueprint_layout_and_map, catalog, cid, context,
     full_record, id_map, offer, profile_document, proposal, stock,
 };
 
@@ -385,10 +387,137 @@ fn accept_f64_c_persist_carries_only_the_importable_records() {
     assert_eq!(document.blueprints.len(), 1);
 }
 
+/// A record the plan resolved but the stock rules do not accept is not
+/// carried: `importable_records()` is planned **and** stock-conforming, so a
+/// non-conforming record names no field and mints no blueprint even though the
+/// migration report lists it as a resolved record.
+///
+/// This is the case the `importable_records()` filter exists for: the plan's
+/// `records()` alone would carry it. The fixture's second airframe is parsed
+/// and ready, so every id slot of the second record resolves, but the fixture
+/// rules and price book describe the first airframe only, so the assembled
+/// blueprint is refused by the stock stage while the first record conforms.
+#[test]
+fn accept_f64_c_persist_drops_a_record_the_stock_rules_refuse() {
+    let base = TempBase::new("persist-nonconforming");
+    let mut session = sandbox(base.path());
+
+    // Bind a second airframe the catalog holds but the fixture rules do not
+    // describe; the plan resolves it, the blueprint stage cannot judge it.
+    let mut ids = id_map();
+    ids.insert(
+        LegacyIdBinding::new(
+            LegacyIdClass::Airframe,
+            9,
+            cid(ContentKind::Airframe, "fixture.synthetic_alpha"),
+        )
+        .expect("the binding is in its namespace"),
+    )
+    .expect("the binding inserts");
+
+    let mut nonconforming = full_record();
+    nonconforming.name = "unsold";
+    nonconforming.airframe = 9;
+
+    let bytes = blueprint_document(&[full_record(), nonconforming]);
+    let source = proposal(&bytes, LegacyArtifactClass::CustomAircraft)
+        .expect("the fixture source is within the cap");
+    let (layout, map) = blueprint_layout_and_map();
+    let catalog = catalog(CatalogRows::Shifted);
+    let (rules, policy, book) = stock();
+    let context = context(&ids, &catalog, &rules, &policy, &book, true);
+    let target = synthetic_target(1, "Imported pilot");
+    let mut flow = ImportFlow::new();
+    flow.offer(
+        &context,
+        &offer(&source, &bytes, Some(&layout), Some(&map), &target),
+    );
+    let confirmed = flow
+        .confirm()
+        .expect("the conforming record confirms")
+        .clone();
+
+    // Both records resolved, so the plan and the report list both; only the
+    // first is both planned and stock-conforming.
+    assert_eq!(
+        confirmed.report().records().len(),
+        2,
+        "the plan resolved both records, so the report lists both"
+    );
+    assert_eq!(confirmed.importable_records(), &[0]);
+    let assessment = confirmed
+        .blueprints()
+        .expect("the offer declared a field map");
+    assert!(
+        !matches!(
+            assessment.records()[1].outcome(),
+            BlueprintRecordOutcome::Conforming { .. }
+        ),
+        "the second record is not stock-conforming"
+    );
+
+    let landed = session
+        .persist_confirmed_import(&confirmed)
+        .expect("the conforming record persists");
+    let loaded = session
+        .library()
+        .load(landed)
+        .expect("the imported slot loads");
+    let document = loaded.document.as_ref().expect("the stored revision");
+
+    assert_eq!(
+        record_indices(document),
+        vec!["0".to_owned()],
+        "the non-conforming record names no field"
+    );
+    assert!(
+        extra(document, "import.record.1.0").is_none(),
+        "a resolved but non-conforming record is not carried"
+    );
+    assert_eq!(
+        document.blueprints,
+        expected_blueprints(&confirmed),
+        "only the conforming record's blueprint is owned"
+    );
+    assert_eq!(document.blueprints.len(), 1);
+}
+
+/// A deleted profile's id is retired, never reissued: an offer naming it is
+/// refused rather than resurrecting a slot the player deleted.
+#[test]
+fn accept_f64_c_persist_refuses_a_retired_profile_id() {
+    let base = TempBase::new("persist-retired");
+    let mut session = sandbox(base.path());
+    let deleted = session.create("Deleted pilot").expect("create");
+    session.delete(deleted).expect("delete");
+    assert_eq!(session.library().live(), &[]);
+
+    let target = synthetic_target(deleted.get(), "Resurrected pilot");
+    let (confirmed, _) = confirmed_fixture(&[full_record()], &target);
+    let error = session
+        .persist_confirmed_import(&confirmed)
+        .expect_err("a retired id is not a new profile");
+    assert!(
+        matches!(
+            &error,
+            SessionError::ImportTargetMismatch {
+                offered,
+                expected_next: 2,
+            } if *offered == target.id()
+        ),
+        "the refusal names the retired id and the real next allocation: {error:?}"
+    );
+    assert_eq!(
+        session.library().live(),
+        &[],
+        "nothing was resurrected or written"
+    );
+}
+
 /// Naming a profile id the population would not allocate next — an issued id,
-/// or one the high-water mark has not reached — is refused, never merged or
-/// overwritten; a target of another population's kind is refused by the
-/// population rule.
+/// one the high-water mark has not reached, or a retired id — is refused,
+/// never merged or overwritten; a target of another population's kind is
+/// refused by the population rule.
 #[test]
 fn accept_f64_c_persist_refuses_to_write_over_an_existing_profile() {
     let base = TempBase::new("persist-refuse");

@@ -97,6 +97,18 @@ used) and a future task can rebuild `AircraftBlueprint`s from them.
   SHA-256 the spec requires verbatim, and an import source is not the
   "compatibility fingerprint the save was written against" that field
   describes.
+- **A very large import is refused, not truncated.** One field per resolved
+  identity costs at most eight `extra` fields per record, and a save's
+  `extra` list holds at most 512 entries, so an import of more than 63
+  records at the 8-slot fixture layout refuses as
+  `SessionError::Field(TooManyEntries { field: "extra" })` after building the
+  document and before any allocation or write. The reader's own limit is
+  4,096 records, so an import that is legal to read can be too large to
+  persist; nothing is silently dropped, but a file that large gets a
+  refusal the screen must explain. Resolving task: #1530 (F64-C-FU1),
+  dependent on this one; until it lands, an import over that bound is
+  unsupported and no release or fidelity claim may call large imports
+  covered.
 
 ## Tests
 
@@ -107,14 +119,27 @@ production `ImportFlow` offer → confirm chain):
 - `..._a_confirmed_import_lands_in_a_new_profile`: source bytes+mtime
   untouched, an existing profile's slot tree byte-identical, the retained
   report round-trips through close/reopen, exactly the importable set carried.
+- `..._a_save_import_carries_records_without_blueprints`: a campaign-save
+  import (no field map) carries its resolved-identity fields and leaves
+  `blueprints` empty rather than minting an aircraft the source never
+  described.
 - `..._carries_only_the_importable_records`: a partial import stores only
   index 0; the unresolved record names no field and mints no blueprint id.
+- `..._drops_a_record_the_stock_rules_refuse`: the plan resolves both
+  records, the second record's blueprint is non-conforming, and only index 0
+  is carried — the case the `importable_records()` filter (planned **and**
+  stock-conforming) exists for, which the plan's `records()` alone would
+  wrongly carry.
 - `..._refuses_to_write_over_an_existing_profile`: an issued id and an
   ahead-of-mark id both `ImportTargetMismatch`; a foreign-kind target
   `ForeignDocument`; nothing written.
+- `..._refuses_a_retired_profile_id`: a deleted profile's id stays retired,
+  so an offer naming it is refused rather than resurrected.
 - `..._recovers_the_previous_profile_after_a_mid_write_crash`: a torn temp
   file leaves revision 1 installed and is reported, not adopted.
 
-Both mutations were verified: without the next-allocation check the refusal
-test fails; with the carry dropped the round-trip and importable-set tests
-fail.
+Mutations were verified by removing the behavior and running the suite:
+without the next-allocation check the issue-refusal test fails; carrying
+every planned report record instead of `importable_records()` fails the
+stock-refusal test; and dropping the retained fields fails the round-trip and
+importable-set tests.
