@@ -79,7 +79,7 @@ fn key(name: &str) -> DamageNodeKey {
 
 fn retail_stage() -> MissionStage {
     let root = game_dir();
-    let plan = plan_mission_launch(&root, label("M01"), "The Lost Treasure")
+    let plan = plan_mission_launch(&root, label("M06"), "The Red Menace")
         .expect("M01's launch closure plans");
     stage_for(&root, &plan).expect("M01's stage reads through the production readers")
 }

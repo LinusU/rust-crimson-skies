@@ -188,9 +188,9 @@ fn pump_to_opening(app: &mut App) -> (u64, Vec<RadioLineOutcome>) {
 /// wake, and read the opening conversation's members out of the device library
 /// the publish step filled.
 fn observe(game_dir: &Path) -> Census {
-    let label = MissionLabel::new("M01").expect("M01 is a valid mission label");
-    let plan = plan_mission_launch(game_dir, label, "The Lost Treasure")
-        .expect("M01's launch closure plans");
+    let label = MissionLabel::new("M06").expect("M01 is a valid mission label");
+    let plan =
+        plan_mission_launch(game_dir, label, "The Red Menace").expect("M01's launch closure plans");
     assert!(
         plan.launchable(),
         "every launch surface must be satisfied before the composition runs: {}",

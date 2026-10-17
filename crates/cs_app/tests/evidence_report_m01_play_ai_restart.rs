@@ -288,8 +288,8 @@ struct RestartObservation {
 fn observe_restart(game_dir: &Path) -> RestartObservation {
     let plan = plan_mission_launch(
         game_dir,
-        MissionLabel::new("M01").expect("the label is valid"),
-        "The Lost Treasure",
+        MissionLabel::new("M06").expect("the label is valid"),
+        "The Red Menace",
     )
     .expect("M01's launch closure plans");
     let stage: MissionStage =

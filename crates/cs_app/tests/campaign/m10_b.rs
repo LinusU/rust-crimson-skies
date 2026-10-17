@@ -238,7 +238,7 @@ fn accept_m10_b_the_record_does_not_lower_and_exactly_two_conditions_refuse() {
     let row = census().row(MISSION).unwrap();
     let attempt = row.lowering_attempt().unwrap();
     let lowered = attempt.attempt();
-    assert_eq!(lowered.mission.as_deref(), Ok("mission/ch2-m05"));
+    assert_eq!(lowered.mission.as_deref(), Ok("mission/ch3-m05"));
     assert_eq!(lowered.objectives, BLOCKS);
     assert_eq!(lowered.calls.len() as u32, SITES);
     assert!(
@@ -281,7 +281,7 @@ fn accept_m10_b_the_record_does_not_lower_and_exactly_two_conditions_refuse() {
         .expect("the program assembled and was validated");
     assert!(
         validation.iter().any(|problem| problem
-            .contains("mission/ch2-m05 objective#21 [condition]: unsupported instruction")),
+            .contains("mission/ch3-m05 objective#21 [condition]: unsupported instruction")),
         "{validation:?}"
     );
     assert!(

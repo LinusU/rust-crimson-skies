@@ -58,7 +58,7 @@ fn only_player(world: &mut bevy::prelude::World) -> Entity {
 #[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_vs_m01_runtime_player_visual_retail_m01_draws_the_measured_airframe() {
     let root = game_dir();
-    let plan = plan_mission_launch(&root, label("M01"), "The Lost Treasure")
+    let plan = plan_mission_launch(&root, label("M06"), "The Red Menace")
         .expect("M01's launch closure plans");
     assert!(plan.launchable(), "M01's launch surfaces are satisfied");
     let stage = stage_for(&root, &plan).expect("M01's stage reads through the production readers");
@@ -146,7 +146,7 @@ fn accept_vs_m01_runtime_player_visual_retail_m01_draws_the_measured_airframe() 
 #[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_vs_m01_runtime_player_visual_restart_and_teardown_leave_one() {
     let root = game_dir();
-    let plan = plan_mission_launch(&root, label("M01"), "The Lost Treasure")
+    let plan = plan_mission_launch(&root, label("M06"), "The Red Menace")
         .expect("M01's launch closure plans");
     assert!(plan.launchable(), "M01's launch surfaces are satisfied");
     let stage = stage_for(&root, &plan).expect("M01's stage reads through the production readers");

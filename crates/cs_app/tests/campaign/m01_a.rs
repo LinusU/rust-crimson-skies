@@ -479,16 +479,22 @@ fn accept_m01_a_the_retail_title_block_binds_every_campaign_position() {
             format!("world/{}", entry.world_group),
             "campaign position {position} did not select its own world group"
         );
+        // The program id names the storage path of the reader archive, not
+        // the declared mission number: `zbd/c2/m01` declares campaign mission
+        // 2 yet names `script/c2-m01-zrdr`.
+        let expected_program = entry
+            .program_asset
+            .strip_prefix("ZBD/")
+            .and_then(|rest| rest.strip_suffix("/zrdr.zbd"))
+            .map(|key| format!("script/{}-zrdr", key.to_lowercase().replace('/', "-")))
+            .expect("the program asset is a ZBD reader archive path");
         assert_eq!(
             bound
                 .program_id
                 .as_ref()
                 .expect("a program id resolved")
                 .as_str(),
-            format!(
-                "script/{}-m{:02}-zrdr",
-                entry.world_group, entry.mission_number
-            ),
+            expected_program,
             "campaign position {position} did not select its own program"
         );
 

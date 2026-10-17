@@ -308,7 +308,7 @@ fn accept_m08_b_m08s_control_program_is_bound_to_the_same_identities_as_its_miss
     );
     assert_eq!(
         binding.mission.as_str(),
-        "mission/ch2-m03",
+        "mission/ch3-m03",
         "M08 is the third mission of chapter 2, as M08-A bound it"
     );
     assert_eq!(

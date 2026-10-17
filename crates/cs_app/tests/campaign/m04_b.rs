@@ -358,7 +358,7 @@ fn accept_m04_b_the_control_program_is_the_member_that_declares_the_blocks() {
     // The production binding and the census must not disagree about the
     // mission, the program, the member or the record.
     let bound = control_binding();
-    assert_eq!(bound.mission.as_str(), "mission/ch1-m04");
+    assert_eq!(bound.mission.as_str(), "mission/ch2-m04");
     assert_eq!(bound.program_id.as_str(), "script/c1-m04-zrdr");
     assert_eq!(bound.program_asset, CONTAINER);
     assert_eq!(bound.program_sha256, row.container_sha256);
@@ -885,7 +885,7 @@ fn accept_m04_b_fu1_the_multi_pair_anim_state_sites_lower_and_m04s_record_comple
 
     let attempt = row.lowering_attempt().unwrap();
     let lowered = attempt.attempt();
-    assert_eq!(lowered.mission.as_deref(), Ok("mission/ch1-m04"));
+    assert_eq!(lowered.mission.as_deref(), Ok("mission/ch2-m04"));
     assert_eq!(lowered.objectives, BLOCKS);
     assert_eq!(lowered.calls.len() as u32, SITES);
     let refused: Vec<(usize, &str)> = lowered

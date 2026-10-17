@@ -200,7 +200,7 @@ fn assert_active_line(audio: &AudioSession) -> usize {
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m01_play_radio_the_opening_conversation_is_queued_at_mission_start() {
     let root = game_dir();
-    let plan: MissionLaunchPlan = plan_mission_launch(&root, label("M01"), "The Lost Treasure")
+    let plan: MissionLaunchPlan = plan_mission_launch(&root, label("M06"), "The Red Menace")
         .expect("M01's launch closure plans");
     let mission_dir = plan.mission_dir.clone();
     drop(plan);
@@ -292,7 +292,7 @@ fn accept_m01_play_radio_the_opening_conversation_is_queued_at_mission_start() {
 #[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_play_radio_the_composition_queues_the_opening_conversation() {
     let root = game_dir();
-    let plan: MissionLaunchPlan = plan_mission_launch(&root, label("M01"), "The Lost Treasure")
+    let plan: MissionLaunchPlan = plan_mission_launch(&root, label("M06"), "The Red Menace")
         .expect("M01's launch closure plans");
     assert!(
         plan.launchable(),

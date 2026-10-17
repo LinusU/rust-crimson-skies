@@ -154,7 +154,7 @@ fn accept_vs_m01_runtime_evidence_audio_the_launch_plays_the_engine_loop_through
         CapabilityDeclaration::from_environment().contains(CapabilityClass::Audio),
         "this scenario needs the audio capability in $CS_CAPABILITIES"
     );
-    let plan = plan_mission_launch(&root, label("M01"), "The Lost Treasure")
+    let plan = plan_mission_launch(&root, label("M06"), "The Red Menace")
         .expect("M01's launch closure plans");
     let stage = stage_for(&root, &plan).expect("M01's stage reads");
     drop(plan);

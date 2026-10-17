@@ -604,9 +604,10 @@ fn accept_m04_a_the_join_is_corroborated_by_the_long_name_rows() {
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m04_a_neither_the_world_group_nor_the_mission_number_identifies_the_mission() {
     // Two identities a consumer might wrongly key on coincide at M04.
-    // `world/c1` holds three campaign missions — M04 is not alone in its
-    // world group — and the number `4` names a mission directory in *every*
-    // chapter (`ch1-m04` … `ch5-m04`), so the mission number alone is not the
+    // `world/c3` holds all five chapter-1 campaign missions under the
+    // corrected layout (M01-ARCHIVE-DECISION) — M04 is not alone in its
+    // world group — and the number `4` names a mission in the first four
+    // chapters (`ch1-m04` … `ch4-m04`), so the mission number alone is not the
     // campaign identity either. Only the campaign position singles out the
     // one mission the record binds; the test pins both axes and that the
     // record binds exactly the `ch1` mission its position selects, never a

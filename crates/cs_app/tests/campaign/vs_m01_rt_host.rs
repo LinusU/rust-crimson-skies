@@ -322,7 +322,7 @@ fn accept_vs_m01_runtime_host_01_a_scope_without_a_world_actor_program_is_named(
 #[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_vs_m01_runtime_host_01_retail_m01_runs_its_real_program_through_the_composed_entry() {
     let root = game_dir();
-    let plan: MissionLaunchPlan = plan_mission_launch(&root, label("M01"), "The Lost Treasure")
+    let plan: MissionLaunchPlan = plan_mission_launch(&root, label("M06"), "The Red Menace")
         .expect("M01's launch closure plans");
     assert!(
         plan.launchable(),

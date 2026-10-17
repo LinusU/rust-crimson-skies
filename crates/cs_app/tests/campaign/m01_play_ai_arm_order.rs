@@ -287,7 +287,7 @@ fn accept_m01_play_ai_arm_order_composed_restart_arms_into_the_fresh_session() {
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m01_play_ai_arm_order_retail_restart_binds_every_flown_record_fresh() {
     let root = game_dir();
-    let plan = plan_mission_launch(&root, label("M01"), "The Lost Treasure")
+    let plan = plan_mission_launch(&root, label("M06"), "The Red Menace")
         .expect("M01's launch closure plans");
     let stage = stage_for(&root, &plan).expect("M01's stage reads through the production readers");
     let mut app = build_headless(&stage).expect("M01's stage composes headlessly");

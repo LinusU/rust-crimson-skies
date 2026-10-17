@@ -22,8 +22,9 @@
 //!   that, and
 //!   [`accept_m02_a_a_contradicted_corroboration_establishes_no_position`]
 //!   pins the refusal that guards it.
-//! * **The mission is not alone in its world group.** `world/c1` also holds
-//!   two other retail missions, so the world row is not a mission identity.
+//! * **The mission is not alone in its world group.** `world/c3` also holds
+//!   four other retail missions under the corrected layout, so the world row
+//!   is not a mission identity.
 //!   [`accept_m02_a_the_world_group_holds_several_missions`] pins that.
 //! * **The original spellings disagree.** The two localized blocks name M02
 //!   differently, and the declared inventory's spelling is a *third* string.
@@ -593,8 +594,9 @@ fn accept_m02_a_the_join_is_corroborated_by_the_long_name_rows() {
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m02_a_the_world_group_holds_several_missions() {
-    // M02 is the first work order whose world group is shared: `ZBD/C1`
-    // stores three retail missions, so `world/c1` on its own cannot identify
+    // M02 is the first work order whose world group is shared: `ZBD/C3`
+    // stores all five chapter-1 retail missions under the corrected layout
+    // (M01-ARCHIVE-DECISION), so `world/c3` on its own cannot identify
     // this mission. A consumer that keyed mission content by the world row
     // would conflate them, and nothing in the record says so unless this is
     // pinned. The mission id and the program id must be what distinguishes

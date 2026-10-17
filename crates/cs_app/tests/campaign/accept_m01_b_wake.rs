@@ -1,6 +1,12 @@
 //! Acceptance suite M01-B-WAKE (#1357): the world facts that wake M01's
 //! dormant `Finish` blocks.
 //!
+//! **Layout correction (M01-ARCHIVE-DECISION):** the archive this suite
+//! measured, `zbd/c1c/m01`, is bound to work order **M06** under the
+//! corrected content-derived campaign layout, so the launch below resolves
+//! it through `label("M06")`; every constant names bytes of that unchanged
+//! archive and the M01-B-WAKE names stay as provenance.
+//!
 //! M01's two terminal blocks are `OBJECTIVE24` (`INSTANTWIN`, zero-based
 //! index 23) and `OBJECTIVE40` (`INSTANTLOSS`, index 39). Both start dormant
 //! behind `BEGIN_DORMANT -1`, which the measured timer model never wakes on
@@ -197,7 +203,7 @@ fn drive_until_terminal(
 /// recovered engine lifecycle model beside the declared table.
 fn retail_stage() -> MissionStage {
     let root = game_dir();
-    let plan = plan_mission_launch(&root, label("M01"), "The Lost Treasure")
+    let plan = plan_mission_launch(&root, label("M06"), "The Red Menace")
         .expect("M01's launch closure plans");
     stage_for(&root, &plan).expect("M01's stage reads through the production readers")
 }

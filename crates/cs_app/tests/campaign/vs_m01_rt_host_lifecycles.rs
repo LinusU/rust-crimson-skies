@@ -486,7 +486,7 @@ fn accept_vs_m01_rt_host_block_lifecycles_retail_m01_declares_its_58_measured_bl
 fn accept_vs_m01_rt_host_block_lifecycles_retail_m01_stage_carries_the_declared_table_to_the_host()
 {
     let root = game_dir();
-    let plan: MissionLaunchPlan = plan_mission_launch(&root, label("M01"), "The Lost Treasure")
+    let plan: MissionLaunchPlan = plan_mission_launch(&root, label("M06"), "The Red Menace")
         .expect("M01's launch closure plans");
     let stage = stage_for(&root, &plan).expect("M01's stage reads through the production readers");
     drop(plan);

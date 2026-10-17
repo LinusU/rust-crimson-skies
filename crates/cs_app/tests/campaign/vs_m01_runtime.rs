@@ -41,14 +41,16 @@ fn game_dir() -> PathBuf {
     }))
 }
 
-/// The declared discovery title of `M01`, read from the committed inventory
+/// The declared discovery title of `M06` — the work order the corrected
+/// campaign layout binds this suite's archive (`zbd/c1c/m01`) to — read from
+/// the committed inventory
 /// rather than repeated here.
 fn discovery_title() -> String {
     load_inventory()
         .iter()
-        .find(|(label, _)| label.as_str() == "M01")
+        .find(|(label, _)| label.as_str() == "M06")
         .map(|(_, title)| title.clone())
-        .expect("the declared inventory has an M01 work order")
+        .expect("the declared inventory has an M06 work order")
 }
 
 fn cid(kind: ContentKind, key: &str) -> ContentId {
@@ -63,7 +65,7 @@ fn cid(kind: ContentKind, key: &str) -> ContentId {
 fn accept_vs_m01_runtime_an_undiscoverable_installation_refuses_the_plan() {
     let dir = std::env::temp_dir().join("vs_m01_runtime_empty_install");
     std::fs::create_dir_all(&dir).expect("the probe directory is created");
-    let error = plan_mission_launch(&dir, label("M01"), "The Lost Treasure")
+    let error = plan_mission_launch(&dir, label("M06"), "The Red Menace")
         .expect_err("an empty installation cannot yield a launch plan");
     assert!(
         matches!(error, LaunchPlanError::Binding(_)),
@@ -82,8 +84,8 @@ fn accept_vs_m01_runtime_an_undiscoverable_installation_refuses_the_plan() {
 #[test]
 fn accept_vs_m01_runtime_the_launch_gate_names_each_blocking_surface() {
     let plan = MissionLaunchPlan {
-        label: label("M01"),
-        catalog_id: cid(ContentKind::Mission, "ch1-m01"),
+        label: label("M06"),
+        catalog_id: cid(ContentKind::Mission, "ch2-m01"),
         world_id: cid(ContentKind::World, "c1c"),
         program_id: cid(ContentKind::Script, "c1c-m01-zrdr"),
         install_sha256: "a".repeat(64),
@@ -131,11 +133,13 @@ fn accept_vs_m01_runtime_the_launch_gate_names_each_blocking_surface() {
     );
 }
 
-/// **Retail: M01's real launch closure is satisfied end to end.**
+/// **Retail: the launch closure of the archive this suite measures is
+/// satisfied end to end.**
 ///
 /// [`plan_mission_launch`] reads the installation through the same campaign
-/// binding the M01-A stage asserted — `mission/ch1-m01`, `world/c1c`,
-/// `script/c1c-m01-zrdr` — and walks the surfaces the launch description
+/// binding the M01-A stage asserted — now `mission/ch2-m01`, `world/c1c`,
+/// `script/c1c-m01-zrdr` under the corrected layout (M01-ARCHIVE-DECISION
+/// re-bound `zbd/c1c/m01` from M01 to M06) — and walks the surfaces the launch description
 /// names. The assertions are the measured answers:
 ///
 /// * the mission reader archive `zbd/c1c/m01/zrdr.zbd` lists its members and
@@ -159,11 +163,11 @@ fn accept_vs_m01_runtime_the_launch_gate_names_each_blocking_surface() {
 #[test]
 #[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_vs_m01_runtime_retail_m01_s_launch_closure_is_satisfied_end_to_end() {
-    let plan = plan_mission_launch(&game_dir(), label("M01"), &discovery_title())
-        .expect("the installation yields a launch plan for M01");
+    let plan = plan_mission_launch(&game_dir(), label("M06"), &discovery_title())
+        .expect("the installation yields a launch plan for the measured archive");
 
     // Identity: the binding-derived ids, not the discovery title.
-    assert_eq!(plan.catalog_id, cid(ContentKind::Mission, "ch1-m01"));
+    assert_eq!(plan.catalog_id, cid(ContentKind::Mission, "ch2-m01"));
     assert_eq!(plan.world_id, cid(ContentKind::World, "c1c"));
     assert_eq!(plan.program_id, cid(ContentKind::Script, "c1c-m01-zrdr"));
     assert_eq!(plan.mission_dir, "zbd/c1c/m01");
@@ -431,8 +435,8 @@ fn accept_vs_m01_runtime_launch_refuses_an_undeclared_mission_and_an_empty_insta
 #[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_vs_m01_runtime_retail_launch_reaches_the_composition_seam() {
     use cs_app::mission_launch::plan_mission_launch;
-    let plan = plan_mission_launch(&game_dir(), label("M01"), &discovery_title())
-        .expect("the installation yields a launch plan for M01");
+    let plan = plan_mission_launch(&game_dir(), label("M06"), &discovery_title())
+        .expect("the installation yields a launch plan for the measured archive");
     assert!(
         plan.launchable(),
         "the retail plan reaches the composition; a gap would be a Blocked \

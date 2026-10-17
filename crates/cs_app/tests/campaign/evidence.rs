@@ -132,6 +132,7 @@ mod f50_b;
 mod f50_c;
 mod f50_e4;
 mod m01_a;
+mod m01_archive_decision;
 mod m01_b;
 mod m01_play_parts_geometry;
 mod m01_play_triggers_anims;

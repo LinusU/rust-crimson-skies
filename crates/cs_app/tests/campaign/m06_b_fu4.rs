@@ -2,28 +2,43 @@
 //! passenger-identity verdict inside the binding record's own unknowns
 //! (`missions/M06.md`, work order `M06-B`, follow-up of M06-B-FU2 #818).
 //!
-//! M06-B-FU2 measured — over M06's archive, the library's crew animations, the
+//! **Layout correction (M01-ARCHIVE-DECISION):** the archive this suite
+//! measured, `zbd/c2/m01`, declares itself `snd_c3-HW-m2` — Hollywood M2 —
+//! and the corrected content-derived campaign layout binds it to work order
+//! **M12**, so the passenger-identity limitation now rides on
+//! `missions/bindings/M12.json`. The contrast mission — the one whose archive
+//! fires the crew animation `call_add_jack` on `apassengers` — is `zbd/c1c/m01`,
+//! which the same correction binds to **M06**, the work order this suite was
+//! named for. The measurements, the entry text's M06-B-FU2 citation and this
+//! file's name stay as provenance.
+//!
+//! M06-B-FU2 measured — over the archive then bound to M06 (`zbd/c2/m01`),
+//! the library's crew animations, the
 //! chapter world's nodes, the census and the owner's decrypted image — that
-//! the shipped data binds **no** passenger or extraction entity to M06: the
-//! archive's only passenger-named string is the shared `location.zrd` teleport
+//! the shipped data binds **no** passenger or extraction entity to that
+//! archive: its only passenger-named string is the shared `location.zrd`
+//! teleport
 //! entry `Passenger_hangar`, and no directive, target, actor, startup
 //! animation, world node or message id names one. It could not write that
-//! verdict into `missions/bindings/M06.json` for two measured reasons: the
+//! verdict into a committed record for two measured reasons: the
 //! committed record is byte-compared with what production derives
-//! (`accept_m06_a_the_committed_record_is_what_the_installation_derives`), and
+//! (`accept_mNN_a_the_committed_record_is_what_the_installation_derives`), and
 //! the record's `unknowns` came from one **global** table every mission's
-//! binding shares, where an M06-specific line would falsely assert the
+//! binding shares, where a mission-specific line would falsely assert the
 //! limitation for every other mission.
 //!
 //! This stage closes that: `cs_content::campaign_bindings` gains a
 //! **mission-scoped** unknown table keyed by work order
-//! (`mission_scoped_unknowns`), M06's passenger-identity verdict is recorded
+//! (`mission_scoped_unknowns`), the passenger-identity verdict is recorded
 //! there in the same voice as its siblings — naming the limitation, the reason
-//! and the resolving task (an original reference run under M06-C, or the
-//! owner's ruling) — and `missions/bindings/M06.json` is regenerated through
+//! and the resolving task (an original reference run under the bound mission's
+//! ordinary-play stage, or the
+//! owner's ruling) — and the committed record is regenerated through
 //! production code, so the equality test stays green. The tests below pin both
-//! directions: M06's derived record names the limitation, and a mission whose
-//! data *does* bind a passenger-like entity — M01, whose startup fires
+//! directions: the measured archive's record names the limitation, and the
+//! mission whose
+//! data *does* bind a passenger-like entity — the contrast archive's startup
+//! fires
 //! `call_add_jack`, the library crew animation that drives the world node
 //! `apassengers` — does not.
 //!
@@ -45,19 +60,21 @@ use cs_types::install::RelativePath;
 
 use crate::common::{load_inventory, repo_path};
 
-/// M01's reader archive, the program span `missions/bindings/M01.json` cites:
-/// the contrast mission, whose data *does* bind a passenger-like entity.
-const M01_CONTAINER: &str = "ZBD/C1C/M01/zrdr.zbd";
-/// M06's reader archive, the program span `missions/bindings/M06.json` cites.
-const M06_CONTAINER: &str = "ZBD/C2/M01/zrdr.zbd";
+/// The reader archive of the contrast mission — bound to M06 under the
+/// corrected layout — whose data *does* bind a passenger-like entity.
+const CONTRAST_CONTAINER: &str = "ZBD/C1C/M01/zrdr.zbd";
+/// The reader archive the passenger verdict was measured on — bound to M12
+/// under the corrected layout, the span `missions/bindings/M12.json` cites.
+const MEASURED_CONTAINER: &str = "ZBD/C2/M01/zrdr.zbd";
 /// The installation-wide library archive that declares the crew animations.
 const COMMON_CONTAINER: &str = "ZBD/zrdr.zbd";
 /// The library member that declares the crew animations.
 const PASSENGERS_MEMBER: &str = "passengers.zrd";
 /// The object node the seventeen crew animations drive.
 const CREW_NODE: &str = "apassengers";
-/// The crew animation M01's startup fires, and M06 fires none of the seventeen.
-const M01_FIRED_CREW_ANIMATION: &str = "call_add_jack";
+/// The crew animation the contrast mission's startup fires, and the measured
+/// archive fires none of the seventeen.
+const CONTRAST_FIRED_CREW_ANIMATION: &str = "call_add_jack";
 
 /// The original installation, as the environment declares it.
 fn game_dir() -> PathBuf {
@@ -169,25 +186,28 @@ fn crew_definitions(document: &ZrdValue) -> Vec<ZrdValue> {
 
 // ---------------------------------------------------------------- retail ---
 
-/// **M06's derived record names the passenger-identity limitation, and M01's —
-/// the mission whose data does bind a passenger-like entity — does not.**
+/// **The derived record of the mission the archive binds to names the
+/// passenger-identity limitation, and the contrast mission's — whose data does
+/// bind a passenger-like entity — does not.**
 ///
 /// The limitation reaches the record through the mission-scoped table
 /// `cs_content::campaign_bindings` consults for the work order it binds, so
 /// this test pins both directions through production code: `SourceContext::bind`
-/// gives M06 the measured entry (in the same voice as the shared checklist,
-/// naming the limitation, the reason and the resolving task), and gives M01 —
-/// whose startup fires `call_add_jack`, the library crew animation that drives
+/// gives M12 — the work order the corrected layout binds `zbd/c2/m01` to — the
+/// measured entry (in the same voice as the shared checklist,
+/// naming the limitation, the reason and the resolving task), and gives M06 —
+/// whose `zbd/c1c/m01` startup fires `call_add_jack`, the library crew
+/// animation that drives
 /// the world node `apassengers` — none of it. The committed record is the
 /// derivation, and no other committed mission record names the limitation.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m06_b_fu4_m06s_record_names_the_passenger_identity_limitation_and_m01s_does_not() {
-    // --- M06's derived record carries the limitation ----------------------
-    let m06 = binding_of("M06");
-    m06.validate()
-        .expect("the derived M06 record is internally consistent");
-    let passenger: Vec<&String> = m06
+fn accept_m06_b_fu4_m12s_record_names_the_passenger_identity_limitation_and_m06s_does_not() {
+    // --- M12's derived record carries the limitation ----------------------
+    let m12 = binding_of("M12");
+    m12.validate()
+        .expect("the derived M12 record is internally consistent");
+    let passenger: Vec<&String> = m12
         .unknowns
         .iter()
         .filter(|entry| entry.contains("passenger identity"))
@@ -195,8 +215,8 @@ fn accept_m06_b_fu4_m06s_record_names_the_passenger_identity_limitation_and_m01s
     assert_eq!(
         passenger.len(),
         1,
-        "M06's derived record names the passenger-identity limitation exactly once: {:?}",
-        m06.unknowns
+        "M12's derived record names the passenger-identity limitation exactly once: {:?}",
+        m12.unknowns
     );
     for needle in [
         "passenger identity",
@@ -204,7 +224,7 @@ fn accept_m06_b_fu4_m06s_record_names_the_passenger_identity_limitation_and_m01s
         "Passenger_hangar",
         "location.zrd",
         "M06-B-FU2",
-        "M06-C",
+        "M12-C",
         "owner's ruling",
     ] {
         assert!(
@@ -214,56 +234,59 @@ fn accept_m06_b_fu4_m06s_record_names_the_passenger_identity_limitation_and_m01s
         );
     }
     assert!(
-        !m06.is_verified(),
+        !m12.is_verified(),
         "a record carrying a mission-scoped limitation must not read as verified"
     );
     // The record whose `unknowns` changed is the record of the mission whose
-    // archive it cites — the limitation rides on M06's own record, not on the
+    // archive it cites — the limitation rides on M12's own record, not on the
     // campaign's shared checklist.
     assert!(
-        m06.source_spans
+        m12.source_spans
             .iter()
-            .any(|span| span.asset_id == M06_CONTAINER),
-        "the derived record is M06's own: it cites the mission's reader archive"
+            .any(|span| span.asset_id == MEASURED_CONTAINER),
+        "the derived record is M12's own: it cites the mission's reader archive"
     );
     // The entry reaches the emitted record the schema describes.
     assert!(
-        m06.to_json().contains("passenger identity"),
+        m12.to_json().contains("passenger identity"),
         "the emitted JSON carries the mission-scoped limitation"
     );
 
-    // --- the committed record is the derivation, and only M06's -----------
-    let committed = std::fs::read_to_string(repo_path("missions/bindings/M06.json"))
-        .expect("missions/bindings/M06.json exists");
+    // --- the committed record is the derivation, and only M12's -----------
+    let committed = std::fs::read_to_string(repo_path("missions/bindings/M12.json"))
+        .expect("missions/bindings/M12.json exists");
     assert!(
         committed.contains(passenger[0].as_str()),
-        "the committed M06 record does not carry the derived passenger-identity limitation; it \
+        "the committed M12 record does not carry the derived passenger-identity limitation; it \
          was not regenerated through production code"
     );
-    for other in ["M01", "M02", "M03", "M07"] {
+    for other in ["M01", "M02", "M03", "M06", "M07"] {
         let record = std::fs::read_to_string(repo_path(&format!("missions/bindings/{other}.json")))
             .unwrap_or_else(|error| panic!("missions/bindings/{other}.json reads: {error}"));
         assert!(
             !record.to_lowercase().contains("passenger"),
             "the passenger-identity limitation leaked into {other}'s committed record: it was \
-             measured for M06 only"
+             measured on `zbd/c2/m01` only"
         );
     }
 
-    // --- the contrast: M01's data does bind a passenger-like entity -------
+    // --- the contrast: M06's data does bind a passenger-like entity -------
     // Re-measured here through production decoding, not taken from a constant:
-    // exactly one member of M01's own archive is a startup event table firing
+    // exactly one member of the contrast mission's own archive (`zbd/c1c/m01`,
+    // bound to M06 under the corrected layout) is a startup event table firing
     // the crew animation, and the library member declares it driving the crew
     // node, `ON_CALL` — which is how a mission puts its gang aboard.
-    let m01_members = members_of(M01_CONTAINER);
+    let m01_members = members_of(CONTRAST_CONTAINER);
     let mut firing: Vec<String> = Vec::new();
     for (member, bytes) in &m01_members {
         let document = decode_zrd(bytes)
-            .unwrap_or_else(|error| panic!("{M01_CONTAINER}:{member} decodes: {error}"));
+            .unwrap_or_else(|error| panic!("{CONTRAST_CONTAINER}:{member} decodes: {error}"));
         let mut texts = Vec::new();
         walk_texts(&document, &mut texts);
         if texts.iter().any(|text| text == "NEW_GAME_START")
-            && texts.iter().any(|text| text == M01_FIRED_CREW_ANIMATION)
+            && texts
+                .iter()
+                .any(|text| text == CONTRAST_FIRED_CREW_ANIMATION)
         {
             firing.push(member.clone());
         }
@@ -271,7 +294,7 @@ fn accept_m06_b_fu4_m06s_record_names_the_passenger_identity_limitation_and_m01s
     assert_eq!(
         firing,
         vec!["startanims.zrd".to_owned()],
-        "M01's startup event table fires the crew animation"
+        "the contrast mission's startup event table fires the crew animation"
     );
 
     let library = members_of(COMMON_CONTAINER)
@@ -311,24 +334,27 @@ fn accept_m06_b_fu4_m06s_record_names_the_passenger_identity_limitation_and_m01s
         .collect();
     assert!(
         declarations.iter().any(|(name, animation, activation)| {
-            name == CREW_NODE && animation == M01_FIRED_CREW_ANIMATION && activation == "ON_CALL"
+            name == CREW_NODE
+                && animation == CONTRAST_FIRED_CREW_ANIMATION
+                && activation == "ON_CALL"
         }),
-        "the library declares {M01_FIRED_CREW_ANIMATION} driving the crew node, waiting to be \
+        "the library declares {CONTRAST_FIRED_CREW_ANIMATION} driving the crew node, waiting to be \
          called: {declarations:?}"
     );
 
-    // M01's derived record therefore carries no passenger limitation: its
-    // data settles the question the limitation records for M06.
-    let m01 = binding_of("M01");
-    m01.validate()
-        .expect("the derived M01 record is internally consistent");
+    // M06's derived record therefore carries no passenger limitation: its
+    // data settles the question the limitation records for the measured
+    // archive's mission.
+    let m06 = binding_of("M06");
+    m06.validate()
+        .expect("the derived M06 record is internally consistent");
     assert!(
-        !m01.unknowns
+        !m06.unknowns
             .iter()
             .any(|entry| entry.to_lowercase().contains("passenger")),
-        "M01's data binds a passenger-like entity, so its record must not carry M06's \
-         limitation: {:?}",
-        m01.unknowns
+        "M06's data binds a passenger-like entity, so its record must not carry the \
+         `zbd/c2/m01` limitation: {:?}",
+        m06.unknowns
     );
 }
 
@@ -370,9 +396,9 @@ fn regenerate_m06_b_fu4_writes_the_committed_record_through_production() {
 ///
 /// The retail member above pins the mechanism's effect on the two missions
 /// whose data decides the question; this member pins the mechanism itself over
-/// the whole declared inventory, in CI, without original data: M06's entry is
+/// the whole declared inventory, in CI, without original data: M12's entry is
 /// present and stays in the siblings' voice, and every other declared work
-/// order — including M01, whose data binds a crew animation — receives none.
+/// order — including M06, whose data binds a crew animation — receives none.
 /// If the entry were moved into the shared checklist every mission carries,
 /// this fails; if the mechanism vanished, the production function it exercises
 /// would be gone with it.
@@ -381,15 +407,15 @@ fn accept_m06_b_fu4_a_mission_scoped_unknown_reaches_only_the_work_order_it_was_
     let label = |work_order: &str| {
         MissionLabel::new(work_order).unwrap_or_else(|error| panic!("{work_order}: {error}"))
     };
-    let entries = mission_scoped_unknowns(&label("M06"));
+    let entries = mission_scoped_unknowns(&label("M12"));
     assert!(
         !entries.is_empty(),
-        "M06 carries a mission-scoped limitation"
+        "M12 carries a mission-scoped limitation"
     );
-    for needle in ["passenger identity", "M06-C", "owner's ruling"] {
+    for needle in ["passenger identity", "M12-C", "owner's ruling"] {
         assert!(
             entries.iter().any(|entry| entry.contains(needle)),
-            "M06's mission-scoped entry stays in the siblings' voice — it names {needle:?}: \
+            "M12's mission-scoped entry stays in the siblings' voice — it names {needle:?}: \
              {entries:?}"
         );
     }
@@ -397,12 +423,12 @@ fn accept_m06_b_fu4_a_mission_scoped_unknown_reaches_only_the_work_order_it_was_
     let mut others = Vec::new();
     let inventory = load_inventory();
     for (work_order, _) in inventory.iter() {
-        if work_order.as_str() == "M06" {
+        if work_order.as_str() == "M12" {
             continue;
         }
         assert!(
             mission_scoped_unknowns(work_order).is_empty(),
-            "the limitation measured for M06 reached {}'s record",
+            "the limitation measured on `zbd/c2/m01` reached {}'s record",
             work_order.as_str()
         );
         others.push(work_order.as_str());
@@ -413,7 +439,7 @@ fn accept_m06_b_fu4_a_mission_scoped_unknown_reaches_only_the_work_order_it_was_
         "the declared inventory carries the other 23 work orders"
     );
     assert!(
-        others.contains(&"M01"),
+        others.contains(&"M06"),
         "the contrast mission is part of the declared inventory"
     );
 }

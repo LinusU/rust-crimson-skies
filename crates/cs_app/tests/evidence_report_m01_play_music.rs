@@ -163,8 +163,8 @@ impl Census {
 fn observe(game_dir: &Path) -> Census {
     let plan = plan_mission_launch(
         game_dir,
-        MissionLabel::new("M01").expect("M01 is a valid mission label"),
-        "The Lost Treasure",
+        MissionLabel::new("M06").expect("M01 is a valid mission label"),
+        "The Red Menace",
     )
     .expect("M01's launch closure plans");
     let mission_dir = plan.mission_dir.clone();

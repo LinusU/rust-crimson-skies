@@ -744,7 +744,7 @@ fn accept_m01_play_triggers_anims_arm_a_woken_record_is_running_before_executed(
 /// M01's launch plan and stage, read once per retail member.
 fn m01_stage() -> (MissionStage, std::path::PathBuf) {
     let root = game_dir();
-    let plan = plan_mission_launch(&root, label("M01"), "The Lost Treasure")
+    let plan = plan_mission_launch(&root, label("M06"), "The Red Menace")
         .expect("M01's launch closure plans");
     assert!(
         plan.launchable(),

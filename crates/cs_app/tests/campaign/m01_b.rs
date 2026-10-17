@@ -2,6 +2,15 @@
 //! mission-specific compatibility gaps (`missions/M01.md`, work order
 //! `M01-B`).
 //!
+//! **Layout correction (M01-ARCHIVE-DECISION):** the archive this suite
+//! measured, `zbd/c1c/m01`, declares itself `snd_c2-NW-m1` — Northwest M1 —
+//! and the corrected content-derived campaign layout binds it to work order
+//! **M06**, not M01 (the true M01, `zbd/c3/m01`, declares `snd_c1-HA-m1`).
+//! The mission-scoped results therefore ride on `missions/bindings/M06.json`
+//! now; every measurement below still runs against the same archive, which is
+//! unchanged, and the file keeps its `m01_b` name and M01-B-* task citations
+//! as provenance for the work orders that produced them.
+//!
 //! The implementation half of this stage landed in its bounded subtasks:
 //! M01-B-OBJ-1/2/3/4 measured and recovered M01's objective field families
 //! (`ObjectiveRecovery`), M01-B-OPC classified M01's control member as a
@@ -48,9 +57,9 @@ use cs_content::objectives_engine::DormantTimers;
 
 use crate::common::{label, load_inventory, repo_path};
 
-/// The mission the parent stage binds: the first campaign position, whose
-/// control record lives in `zbd/c1c/m01`.
-const M01_MISSION: &str = "zbd/c1c/m01";
+/// The reader archive every M01-B-* task measured — under the corrected
+/// campaign layout this is M06's archive, not M01's (see the module header).
+const MEASURED_MISSION: &str = "zbd/c1c/m01";
 
 /// The checklist prefix each settled shared entry is replaced under, so a
 /// reader looking for the question still finds it.
@@ -114,8 +123,8 @@ fn entry<'a>(binding: &'a SourceBinding, prefix: &str) -> &'a String {
 
 // ---------------------------------------------------------------- retail ---
 
-/// **M01's binding record carries its measured compatibility results, and its
-/// siblings keep the shared checklist.**
+/// **The binding record of the mission these results were measured on carries
+/// them, and its siblings keep the shared checklist.**
 ///
 /// Every number and identity the three replacement entries claim is
 /// re-measured here through production code before it is pinned:
@@ -123,16 +132,17 @@ fn entry<'a>(binding: &'a SourceBinding, prefix: &str) -> &'a String {
 /// fields, recovered/unrecovered families, the two terminal outcomes and the
 /// `-1` sentinel both load behind), and `survey_mission_control_programs`
 /// for the directive-program census (blocks, sites, key vocabulary and each
-/// key's disposition). The derived record — and the committed
-/// `missions/bindings/M01.json`, which is regenerated through production
-/// code — must carry those measured statements verbatim, while M02's derived
+/// key's disposition). The measured archive is `zbd/c1c/m01` — bound to M06
+/// under the corrected layout — so the derived record — and the committed
+/// `missions/bindings/M06.json`, which is regenerated through production
+/// code — must carry those measured statements verbatim, while M01's derived
 /// and committed records keep the untouched shared entries.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m01_b_m01s_record_binds_the_measured_results_and_m02s_does_not() {
+fn accept_m01_b_m06s_record_binds_the_measured_results_and_m01s_does_not() {
     // --- census 1: the objective graph, through recover_retail_objectives --
-    let recovery = recover_retail_objectives(&game_dir(), M01_MISSION)
-        .expect("M01's objective record reads through the production census");
+    let recovery = recover_retail_objectives(&game_dir(), MEASURED_MISSION)
+        .expect("the measured archive's objective record reads through the production census");
     let blocks = recovery.blocks().len();
     let fields = recovery.fields_read();
     let recovered = recovery.fields_recovered();
@@ -153,13 +163,17 @@ fn accept_m01_b_m01s_record_binds_the_measured_results_and_m02s_does_not() {
     );
     assert!(
         !unrecovered_by_family.contains_key(&RecordFieldFamily::Unmeasured),
-        "every family M01 spells is measured (M01-B-OBJ)"
+        "every family the archive spells is measured (M01-B-OBJ)"
     );
 
     // The record's only outcomes are the two terminal blocks, and both load
     // dormant behind the -1 sentinel (M01-B-WAKE).
     let outcomes = recovery.outcomes();
-    assert_eq!(outcomes.len(), 2, "M01 carries exactly two outcome blocks");
+    assert_eq!(
+        outcomes.len(),
+        2,
+        "the archive carries exactly two outcome blocks"
+    );
     let (win_block, loss_block) = {
         let mut terminals = outcomes.iter().map(|(block, outcome)| (*block, *outcome));
         let first = terminals.next().expect("at least one outcome");
@@ -200,9 +214,9 @@ fn accept_m01_b_m01s_record_binds_the_measured_results_and_m02s_does_not() {
     let census = survey_mission_control_programs(&game_dir())
         .expect("the control census measures the installation");
     let row = census
-        .row(M01_MISSION)
-        .expect("the census measured M01's control program");
-    let record = row.record().expect("M01 carries a control record");
+        .row(MEASURED_MISSION)
+        .expect("the census measured the archive's control program");
+    let record = row.record().expect("the archive carries a control record");
     let mut measured = 0usize;
     let mut terminal = 0usize;
     let mut unknown = 0usize;
@@ -225,20 +239,20 @@ fn accept_m01_b_m01s_record_binds_the_measured_results_and_m02s_does_not() {
     );
 
     // --- the derived record carries the three measured statements ----------
-    let m01 = binding_of("M01");
-    m01.validate()
-        .expect("the derived M01 record is internally consistent");
+    let m06 = binding_of("M06");
+    m06.validate()
+        .expect("the derived M06 record is internally consistent");
     assert!(
-        !m01.is_verified(),
+        !m06.is_verified(),
         "the measured residuals keep the record unverified"
     );
 
-    let objective_graph = entry(&m01, "objective graph: ");
+    let objective_graph = entry(&m06, "objective graph: ");
     for needle in [
         "measured for this mission",
         "M01-B-OBJ",
         "M01-B-WAKE",
-        "M01-C",
+        "M06-C",
         "ObjectiveRecovery::program() still refuses",
         "declared-schema gap",
     ] {
@@ -262,7 +276,7 @@ fn accept_m01_b_m01s_record_binds_the_measured_results_and_m02s_does_not() {
         );
     }
 
-    let coverage = entry(&m01, "script/native coverage: ");
+    let coverage = entry(&m06, "script/native coverage: ");
     for needle in [
         "M01-B-OPC",
         "text directive program",
@@ -290,11 +304,11 @@ fn accept_m01_b_m01s_record_binds_the_measured_results_and_m02s_does_not() {
         );
     }
 
-    let precedence = entry(&m01, "exact failure/success precedence: ");
+    let precedence = entry(&m06, "exact failure/success precedence: ");
     for needle in [
         "measured for this mission".to_owned(),
         "M01-B-WAKE".to_owned(),
-        "M01-C".to_owned(),
+        "M06-C".to_owned(),
         format!("OBJECTIVE{win_block}'s INSTANTWIN"),
         format!("OBJECTIVE{loss_block}'s INSTANTLOSS"),
         "Action::Finish".to_owned(),
@@ -307,30 +321,32 @@ fn accept_m01_b_m01s_record_binds_the_measured_results_and_m02s_does_not() {
     }
 
     // --- the committed record is the derivation ----------------------------
-    let committed = std::fs::read_to_string(repo_path("missions/bindings/M01.json"))
-        .expect("missions/bindings/M01.json exists");
+    let committed = std::fs::read_to_string(repo_path("missions/bindings/M06.json"))
+        .expect("missions/bindings/M06.json exists");
     assert_eq!(
         committed,
-        m01.to_json(),
-        "the committed M01 record is not what production code derives (regenerate it with \
-         CS_REGENERATE_M01_BINDING=1)"
+        m06.to_json(),
+        "the committed M06 record is not what production code derives (regenerate it with \
+         CS_REGENERATE_BINDING=M06)"
     );
 
-    // --- M02 keeps the shared checklist, derived and committed -------------
-    let m02 = binding_of("M02");
-    m02.validate()
-        .expect("the derived M02 record is internally consistent");
+    // --- M01 keeps the shared checklist, derived and committed -------------
+    // M01's archive is `zbd/c3/m01` under the corrected layout — none of the
+    // M01-B-* measurements ran against it, so its record must not carry them.
+    let m01 = binding_of("M01");
+    m01.validate()
+        .expect("the derived M01 record is internally consistent");
     for shared in [
         "objective graph: not bound from original data at this stage",
         "script/native coverage: the mission opcode table is unmeasured",
         "exact failure/success precedence: not measured",
     ] {
         assert!(
-            m02.unknowns
+            m01.unknowns
                 .iter()
                 .any(|candidate| candidate.starts_with(shared)),
-            "M02's derived record keeps the shared entry {shared:?}: {:?}",
-            m02.unknowns
+            "M01's derived record keeps the shared entry {shared:?}: {:?}",
+            m01.unknowns
         );
     }
     for settled in [
@@ -340,29 +356,29 @@ fn accept_m01_b_m01s_record_binds_the_measured_results_and_m02s_does_not() {
         "measured for this mission",
     ] {
         assert!(
-            !m02.unknowns
+            !m01.unknowns
                 .iter()
                 .any(|candidate| candidate.contains(settled)),
-            "M01's measured results leaked into M02's record at {settled:?}: {:?}",
-            m02.unknowns
+            "the measured results leaked into M01's record at {settled:?}: {:?}",
+            m01.unknowns
         );
     }
-    let committed_m02 = std::fs::read_to_string(repo_path("missions/bindings/M02.json"))
-        .expect("missions/bindings/M02.json exists");
+    let committed_m01 = std::fs::read_to_string(repo_path("missions/bindings/M01.json"))
+        .expect("missions/bindings/M01.json exists");
     for settled in ["M01-B-OBJ", "M01-B-OPC", "M01-B-WAKE"] {
         assert!(
-            !committed_m02.contains(settled),
-            "M01's measured results leaked into the committed M02 record at {settled:?}"
+            !committed_m01.contains(settled),
+            "the measured results leaked into the committed M01 record at {settled:?}"
         );
     }
     // No committed sibling record carries the settled verdicts.
-    for other in ["M03", "M07", "M24"] {
+    for other in ["M02", "M03", "M07", "M24"] {
         let record = std::fs::read_to_string(repo_path(&format!("missions/bindings/{other}.json")))
             .unwrap_or_else(|error| panic!("missions/bindings/{other}.json reads: {error}"));
         for settled in ["M01-B-OBJ", "M01-B-OPC", "M01-B-WAKE"] {
             assert!(
                 !record.contains(settled),
-                "M01's measured results leaked into {other}'s committed record at {settled:?}"
+                "the measured results leaked into {other}'s committed record at {settled:?}"
             );
         }
     }
@@ -408,12 +424,13 @@ fn regenerate_m01_b_writes_the_committed_record_through_production() {
 ///
 /// The retail member above pins the mechanism's effect on the two missions
 /// whose data decides the question; this member pins the mechanism itself
-/// over the whole declared inventory, in CI, without original data: M01's
+/// over the whole declared inventory, in CI, without original data: M06's
 /// three shared questions are replaced by measured statements that keep the
-/// checklist prefix and cite their measurements, every other declared work
-/// order keeps the shared text, and the append-side mechanism
-/// (`mission_scoped_unknowns`) is untouched. If a replacement were moved
-/// into the shared checklist every mission carries, this fails; if the
+/// checklist prefix and cite their measurements — the overrides keyed to the
+/// work order the corrected layout binds the measured archive to — every
+/// other declared work order keeps the shared text, and the append-side
+/// mechanism (`mission_scoped_unknowns`) is untouched. If a replacement were
+/// moved into the shared checklist every mission carries, this fails; if the
 /// mechanism vanished, the production functions it exercises would be gone
 /// with it.
 #[test]
@@ -424,11 +441,12 @@ fn accept_m01_b_a_settled_checklist_entry_reaches_only_the_work_order_it_was_set
         "every record starts from the shared checklist"
     );
 
-    let rows = mission_scoped_checklist_overrides(&label("M01"));
+    let rows = mission_scoped_checklist_overrides(&label("M06"));
     assert_eq!(
         rows.len(),
         SETTLED_QUESTIONS.len(),
-        "M01 settled exactly the three questions its measurements answer: {rows:?}"
+        "the measured archive's work order settled exactly the three questions its \
+         measurements answer: {rows:?}"
     );
     let prefixes: Vec<&str> = rows
         .iter()
@@ -458,15 +476,15 @@ fn accept_m01_b_a_settled_checklist_entry_reaches_only_the_work_order_it_was_set
         );
     }
 
-    // Over the whole declared inventory, only M01's record is touched.
+    // Over the whole declared inventory, only M06's record is touched.
     let mut others = 0usize;
     for (work_order, _) in load_inventory().iter() {
-        if work_order.as_str() == "M01" {
+        if work_order.as_str() == "M06" {
             continue;
         }
         assert!(
             mission_scoped_checklist_overrides(work_order).is_empty(),
-            "the measurements settled for M01 reached {}'s record",
+            "the measurements settled on the `zbd/c1c/m01` archive reached {}'s record",
             work_order.as_str()
         );
         others += 1;
@@ -476,17 +494,20 @@ fn accept_m01_b_a_settled_checklist_entry_reaches_only_the_work_order_it_was_set
         "the declared inventory carries the other 23 work orders"
     );
 
-    // The append-side mechanism is untouched: M06 still carries its
-    // passenger-identity limitation, and M01's record gained no appended
-    // limitation (its results replace shared entries instead).
+    // The append-side mechanism is untouched: M12 still carries its
+    // passenger-identity limitation (measured on `zbd/c2/m01`, the archive the
+    // corrected layout binds to M12), and M01's record gained no appended
+    // limitation and no overrides — its archive was never measured.
     assert!(
-        mission_scoped_unknowns(&label("M06"))
+        mission_scoped_unknowns(&label("M12"))
             .iter()
             .any(|entry| entry.contains("passenger identity")),
-        "M06's mission-scoped limitation is untouched by the override mechanism"
+        "M12's mission-scoped limitation is untouched by the override mechanism"
     );
     assert!(
-        mission_scoped_unknowns(&label("M01")).is_empty(),
-        "M01's results replace shared entries; they are not appended limitations"
+        mission_scoped_unknowns(&label("M01")).is_empty()
+            && mission_scoped_checklist_overrides(&label("M01")).is_empty(),
+        "M01's record carries neither overrides nor appended limitations — its archive was \
+         never measured"
     );
 }

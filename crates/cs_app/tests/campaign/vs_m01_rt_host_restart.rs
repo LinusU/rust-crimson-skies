@@ -637,7 +637,7 @@ fn accept_vs_m01_runtime_host_03_a_restart_that_reuses_the_live_generation_fails
 #[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_vs_m01_runtime_host_03_retail_m01_restart_rebuilds_its_authored_initial_state() {
     let root = game_dir();
-    let plan: MissionLaunchPlan = plan_mission_launch(&root, label("M01"), "The Lost Treasure")
+    let plan: MissionLaunchPlan = plan_mission_launch(&root, label("M06"), "The Red Menace")
         .expect("M01's launch closure plans");
     assert!(
         plan.launchable(),

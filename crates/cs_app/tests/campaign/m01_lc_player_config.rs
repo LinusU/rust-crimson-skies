@@ -215,7 +215,7 @@ fn accept_m01_window_world_start_pose_is_the_aiv_zrd_player_record() {
     assert_eq!(stored.value.heading, 170.0);
 
     // The composition's stage, spawn recipe and live body carry that pose.
-    let plan = plan_mission_launch(&root, label("M01"), "The Lost Treasure")
+    let plan = plan_mission_launch(&root, label("M06"), "The Red Menace")
         .expect("M01's launch closure plans");
     let stage = stage_for(&root, &plan).expect("M01's stage reads");
     assert_eq!(stage.start.position, expected_position);

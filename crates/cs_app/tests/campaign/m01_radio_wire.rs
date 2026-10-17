@@ -233,7 +233,7 @@ fn accept_m01_radio_wire_a_the_composition_publishes_a_prepared_member_into_the_
 #[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_radio_wire_b_the_composed_m01_run_delivers_its_opening_members() {
     let root = game_dir();
-    let plan = plan_mission_launch(&root, label("M01"), "The Lost Treasure")
+    let plan = plan_mission_launch(&root, label("M06"), "The Red Menace")
         .expect("M01's launch closure plans");
     assert!(
         plan.launchable(),

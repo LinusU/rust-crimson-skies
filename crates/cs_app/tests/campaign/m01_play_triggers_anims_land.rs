@@ -1017,7 +1017,7 @@ fn accept_m01_play_triggers_anims_land_a_composed_landing_starts_the_row_and_its
 /// landing chain) runs while nothing else can complete and settle the run.
 pub(crate) fn retail_land_stage(awake: &[u32]) -> MissionStage {
     let root = game_dir();
-    let plan = plan_mission_launch(&root, label("M01"), "The Lost Treasure")
+    let plan = plan_mission_launch(&root, label("M06"), "The Red Menace")
         .expect("M01's launch closure plans");
     let mut stage =
         stage_for(&root, &plan).expect("M01's stage reads through the production readers");

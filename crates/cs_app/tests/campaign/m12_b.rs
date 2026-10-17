@@ -10,7 +10,9 @@
 //!
 //! # What this stage adds, and what it deliberately does not
 //!
-//! M12-A bound *which* retail mission the work order names (`mission/ch3-m02`,
+//! M12-A bound *which* retail mission the work order names (`mission/ch3-m02`
+//! — this suite measures `zbd/c3/m02`, which the corrected layout
+//! (M01-ARCHIVE-DECISION) binds to M02 as `mission/ch1-m02`;
 //! `script/c3-m02-zrdr`, the reader archive `ZBD/C3/M02/zrdr.zbd`) and left
 //! every objective, actor and directive unbound. This stage binds the archive
 //! through the production systems M02-B built
@@ -307,7 +309,7 @@ fn accept_m12_b_m12s_control_program_is_bound_to_the_same_identities_as_its_miss
     );
     assert_eq!(
         binding.mission.as_str(),
-        "mission/ch3-m02",
+        "mission/ch1-m02",
         "M12 is the second mission of chapter 3, as M12-A bound it"
     );
     assert_eq!(
@@ -884,7 +886,7 @@ fn accept_m12_b_m12s_record_does_not_lower_and_exactly_one_condition_refuses() {
 
     assert_eq!(
         attempt.mission.as_deref(),
-        Ok("mission/ch3-m02"),
+        Ok("mission/ch1-m02"),
         "the lowering resolved M12's mission id"
     );
     assert_eq!(
@@ -949,7 +951,7 @@ fn accept_m12_b_m12s_record_does_not_lower_and_exactly_one_condition_refuses() {
         .expect("the program assembled and was validated");
     assert!(
         validation.iter().any(|problem| problem
-            .contains("mission/ch3-m02 objective#35 [condition]: unsupported instruction")),
+            .contains("mission/ch1-m02 objective#35 [condition]: unsupported instruction")),
         "{validation:?}"
     );
 
