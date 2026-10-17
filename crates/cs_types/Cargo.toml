@@ -8,3 +8,17 @@ publish.workspace = true
 
 # Intentionally dependency-free: ids, units and cross-boundary records must
 # not drag in Bevy, Avian or any renderer (docs/01-ARCHITECTURE.md).
+#
+# One integration-test binary per crate (task #1542). `autotests = false` turns
+# component auto-discovery off, so cargo links and runs exactly the one
+# `[[test]]` target below: on the owner's laptop every freshly linked test
+# binary waits ~50-70 s for a macOS XProtect scan on its first launch, and six
+# separate `tests/accept_*.rs` binaries cost six of those. Every former test
+# file is a `mod` of `tests/main.rs`; `cs_xtask test-layout` (and its
+# acceptance test, which CI's `cargo test --workspace` runs) fails when a `.rs`
+# file under `tests/` is not reached from that one target.
+autotests = false
+
+[[test]]
+name = "cs_types_tests"
+path = "tests/main.rs"
