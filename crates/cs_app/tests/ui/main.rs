@@ -40,6 +40,12 @@
 //! its evidence report is `mod evidence_f45_b_1`, deliberately **not** named
 //! `accept_f45_b_1_*`.
 //!
+//! Follow-up stage F49-C2 (#776, `mod instant_action`) wires the Instant Action
+//! screens into the table and `FrontEndFlow`: four front-end screens mirroring
+//! `IA_TABLE`, entered from the main menu and left for it, with the flow's
+//! `BeginSession`/`EndSession` effects consumed by the resource ledger. Its
+//! prefix is `accept_f49_c_2_`.
+//!
 //! Follow-up stage F45-C.2 (#748, `mod flight_check_options`) gives the flight
 //! check's wingmate and ammunition slots the consumer F45-C left them: the
 //! committed selection opens the session's F33 identity roster through
@@ -57,6 +63,7 @@ mod flow;
 /// F64-C acceptance suite describe one source rather than two.
 #[path = "../f64_c_support/mod.rs"]
 mod import_fixture;
+mod instant_action;
 mod layout;
 mod original;
 mod scrapbook_dispatch;
