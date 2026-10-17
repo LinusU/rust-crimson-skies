@@ -66,12 +66,11 @@ use cs_content::save::settings::SettingCatalog;
 use cs_sim::campaign::{
     AppliedOutcome, CampaignGraph, CampaignRunId, DifficultyId,
     MissionOutcome as MissionOutcomeRecord, Outcome as MissionResult,
-    ProfileId as CampaignProfileId,
 };
 use cs_types::content::ContentId;
 use cs_types::profile::{ProfileId, ProfileKind};
 
-use crate::campaign::{CampaignRun, CampaignSaveError};
+use crate::campaign::{CampaignRun, CampaignSaveError, campaign_profile_id};
 use crate::construction::{ConstructionContext, ConstructionScreen, ScreenSaveError};
 use crate::loading::{
     DriverError, LoadItem, LoadRequest, LoadState, LoadTarget, LoadingScreen, LoadingSession,
@@ -108,12 +107,6 @@ pub struct FlowSetup {
     pub existing: Option<ProfileId>,
     /// The campaign graph a run plays.
     pub graph: CampaignGraph,
-    /// The identity the campaign records the run under. The profile tree's
-    /// own id is a slot number and the campaign's is a stable string
-    /// (`STATE-TRANSACTIONS`' "stable persisted identity"), and nothing in
-    /// this repository derives one from the other: the application supplies
-    /// both here so a reopen reads the same run it wrote.
-    pub campaign_profile: CampaignProfileId,
     /// The run id a campaign starts or resumes under.
     pub run: CampaignRunId,
     /// The difficulty a new run records.
@@ -156,14 +149,13 @@ impl ConstructionInputs {
 }
 
 impl FlowSetup {
-    /// A setup over `base`'s population playing `graph` under `campaign_profile`/
-    /// `run`. The remaining fields start at their designed defaults and are
-    /// overridden with the setters before the flow is built.
+    /// A setup over `base`'s population playing `graph` under `run`. The
+    /// remaining fields start at their designed defaults and are overridden
+    /// with the setters before the flow is built.
     #[must_use]
     pub fn new(
         base: PathBuf,
         graph: CampaignGraph,
-        campaign_profile: CampaignProfileId,
         run: CampaignRunId,
         difficulty: DifficultyId,
     ) -> Self {
@@ -175,7 +167,6 @@ impl FlowSetup {
             new_profile: "Pilot".to_owned(),
             existing: None,
             graph,
-            campaign_profile,
             run,
             difficulty,
             session_generation: 1,
@@ -838,10 +829,14 @@ impl FlowDomain {
         let id = session
             .selected()
             .ok_or(FlowError::Profile(SessionError::NoProfileSelected))?;
+        // The campaign's profile identity is the selected slot's own,
+        // derived (#749): a reopen of this profile derives the same string,
+        // so `open` reads the run the last session wrote.
+        let campaign_profile = campaign_profile_id(session.kind(), id);
         let run = CampaignRun::open(
             &mut session,
             setup.graph.clone(),
-            &setup.campaign_profile,
+            &campaign_profile,
             &setup.run,
             &setup.difficulty,
         )
@@ -908,11 +903,15 @@ impl FlowDomain {
         // re-reads it, so the two owners of "the live campaign" cannot
         // diverge (a construction commit and an outcome commit are the only
         // writes, and both end up in the one saved revision).
+        let slot = self
+            .profile_id
+            .ok_or(FlowError::Profile(SessionError::NoProfileSelected))?;
+        let campaign_profile = campaign_profile_id(profile.kind(), slot);
         self.run = Some(
             CampaignRun::open(
                 profile,
                 self.setup.graph.clone(),
-                &self.setup.campaign_profile,
+                &campaign_profile,
                 &self.setup.run,
                 &self.setup.difficulty,
             )

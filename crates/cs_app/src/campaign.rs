@@ -31,7 +31,7 @@ use cs_sim::campaign::{
 };
 use cs_types::Tick;
 use cs_types::content::{ContentId, Resolved};
-use cs_types::profile::{ExtraField, ProfileDocument};
+use cs_types::profile::{ExtraField, ProfileDocument, ProfileId, ProfileKind};
 
 use crate::profile::{ChangeRefusal, ChangeRefusalReason, ProfileSession, SessionError};
 
@@ -539,6 +539,32 @@ pub fn read_snapshot(
         }
     }
     Ok(Some(snapshot))
+}
+
+/// The campaign's profile identity for one profile slot — the
+/// `STATE-TRANSACTIONS` "stable persisted identity" a snapshot records.
+///
+/// The mapping is `"{population}.{slot}"` (e.g. `production.3`), derived
+/// from the slot's own identity and nothing else. It satisfies the
+/// contract's persistence rules because its inputs do:
+///
+/// - **Stable across renames**: the display name never enters it — a
+///   renamed pilot keeps its campaign.
+/// - **Stable across reopens**: `ProfileId` is persisted, so closing and
+///   reopening the slot derives the same string.
+/// - **Collision-free**: populations own separate high-water marks, so the
+///   population label prefixes the slot number — `synthetic.1` can never be
+///   confused with `production.1`.
+/// - **Never recycled after deletion**: the library's high-water mark does
+///   not move on delete, so a slot number is never issued twice.
+///
+/// `CampaignProfileId::new` cannot refuse the derived text (population
+/// labels and digits are all inside `[A-Za-z0-9_.:-]`, and the length stays
+/// under the identity bound), so the function is infallible.
+#[must_use]
+pub fn campaign_profile_id(kind: ProfileKind, slot: ProfileId) -> CampaignProfileId {
+    CampaignProfileId::new(&format!("{}.{}", kind.label(), slot.get()))
+        .expect("a population label and a slot number are valid identity text")
 }
 
 /// One campaign run over a profile session: the graph it plays, the live

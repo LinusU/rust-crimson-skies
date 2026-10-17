@@ -28,7 +28,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use cs_app::campaign::{lower_campaign, write_snapshot};
+use cs_app::campaign::{campaign_profile_id, lower_campaign, write_snapshot};
 use cs_app::construction::ConstructionScreen;
 use cs_app::loading::{Criticality, LoadItem, LoadTarget};
 use cs_app::profile::ProfileSession;
@@ -61,7 +61,7 @@ use cs_types::asset_id::{
 };
 use cs_types::content::{ContentId, ContentKind, Known, Provenance, Resolved};
 use cs_types::evidence::{ClaimId, ContentHash};
-use cs_types::profile::ProfileId as ProfileSlot;
+use cs_types::profile::{ProfileId as ProfileSlot, ProfileKind};
 
 use super::screens::{SURFACE, button_point, preflight_deck};
 
@@ -167,8 +167,11 @@ fn granted_graph(grant: u64) -> CampaignGraph {
     lower_campaign(&definition).expect("the fixture campaign lowers")
 }
 
-fn campaign_profile() -> CampaignProfileId {
-    CampaignProfileId::new("pilot.f45c").expect("valid campaign profile")
+/// The campaign identity the flow derives for this fixture's sandbox slot —
+/// the production function, so the tests can never drift from what `open`
+/// computes (#749).
+fn campaign_profile(slot: ProfileSlot) -> CampaignProfileId {
+    campaign_profile_id(ProfileKind::Synthetic, slot)
 }
 
 fn run_id() -> CampaignRunId {
@@ -181,10 +184,10 @@ fn difficulty() -> DifficultyId {
 
 /// The outcome record a finished `m01` produces. `sequence` distinguishes two
 /// records of the same node so a replay is not deduplicated by accident.
-fn mission_record(outcome: MissionResult, sequence: u32) -> MissionOutcome {
+fn mission_record(slot: ProfileSlot, outcome: MissionResult, sequence: u32) -> MissionOutcome {
     MissionOutcome {
         id: OutcomeId {
-            profile: campaign_profile(),
+            profile: campaign_profile(slot),
             run: run_id(),
             session: SessionGeneration(1),
             terminal_event: EventKey {
@@ -210,9 +213,9 @@ fn seeded_profile(base: &Path, graph: &CampaignGraph, grant: Option<u64>) -> Pro
     let mut session = ProfileSession::open_sandbox(base, &catalog).expect("the sandbox opens");
     let id = session.create("Pilot").expect("the pilot is created");
     if let Some(grant) = grant {
-        let mut state = CampaignState::begin(campaign_profile(), run_id(), difficulty(), graph);
+        let mut state = CampaignState::begin(campaign_profile(id), run_id(), difficulty(), graph);
         state
-            .apply_outcome(graph, &mission_record(MissionResult::Succeeded, 0))
+            .apply_outcome(graph, &mission_record(id, MissionResult::Succeeded, 0))
             .expect("the first victory commits");
         assert_eq!(state.currency(), grant, "the fixture won its first mission");
         session
@@ -312,7 +315,6 @@ impl Fixture {
         FlowSetup::new(
             self.tree.path().join("profiles"),
             self.graph.clone(),
-            campaign_profile(),
             run_id(),
             difficulty(),
         )
@@ -1170,7 +1172,7 @@ fn accept_f45_c_the_return_flow_saves_the_outcome_and_reopens_the_profile_withou
 
     // The screen says success, the mission's own record says failure: neither
     // is applied and the machine stays where it was.
-    flow.set_mission_outcome(mission_record(MissionResult::Failed, 1));
+    flow.set_mission_outcome(mission_record(fx.profile, MissionResult::Failed, 1));
     let refused = flow
         .press(Action::MissionSucceeded)
         .expect_err("the two verdicts disagree");
@@ -1186,7 +1188,7 @@ fn accept_f45_c_the_return_flow_saves_the_outcome_and_reopens_the_profile_withou
     );
 
     // The record the mission really produced applies and saves.
-    flow.set_mission_outcome(mission_record(MissionResult::Succeeded, 2));
+    flow.set_mission_outcome(mission_record(fx.profile, MissionResult::Succeeded, 2));
     flow.press(Action::MissionSucceeded)
         .expect("the outcome applies");
     assert_eq!(flow.front_end().screen(), Screen::Results);
@@ -1229,6 +1231,111 @@ fn accept_f45_c_the_return_flow_saves_the_outcome_and_reopens_the_profile_withou
     flow.press(Action::Quit).expect("the application leaves");
     assert!(flow.exiting());
     assert_eq!(&flow.ledger().resources(), flow.front_end().held());
+}
+
+// --- the campaign's profile identity is the slot's own (F45-C.3) ----------
+
+/// The boundary mapping itself: it is a pure function of the slot's own
+/// identity — the same slot derives the same string every time, a different
+/// slot a different one, and the population label keeps `synthetic.1` apart
+/// from `production.1`.
+#[test]
+fn accept_f45_c_3_the_campaign_identity_is_derived_from_the_slot() {
+    let slot = ProfileSlot::new(1).expect("nonzero");
+    let identity = campaign_profile_id(ProfileKind::Synthetic, slot);
+    assert_eq!(
+        identity,
+        campaign_profile_id(ProfileKind::Synthetic, slot),
+        "the mapping is a pure function of the slot"
+    );
+    assert_eq!(
+        identity.as_str(),
+        "synthetic.1",
+        "the documented `{{population}}.{{slot}}` shape"
+    );
+    assert_ne!(
+        identity,
+        campaign_profile_id(
+            ProfileKind::Synthetic,
+            ProfileSlot::new(2).expect("nonzero")
+        ),
+        "another slot derives another identity"
+    );
+    assert_ne!(
+        identity,
+        campaign_profile_id(ProfileKind::Production, slot),
+        "another population derives another identity"
+    );
+}
+
+/// The flow records the *selected slot's* identity — not a string the
+/// caller invented — and a close/reopen in the same process derives the
+/// same one, so `CampaignRun::open` resumes the run it wrote rather than
+/// reporting `WrongRun`.
+#[test]
+fn accept_f45_c_3_the_flows_campaign_identity_is_stable_across_a_reopen() {
+    let fx = Fixture::new("identity", None);
+    let mut flow = fx.flow();
+    walk_to_cabin(&mut flow);
+    let first = flow
+        .domain()
+        .campaign()
+        .expect("a campaign is open")
+        .state()
+        .snapshot()
+        .profile;
+    assert_eq!(
+        fx.profile,
+        ProfileSlot::new(1).expect("nonzero"),
+        "the fresh sandbox seeded slot 1"
+    );
+    assert_eq!(
+        first.as_str(),
+        "synthetic.1",
+        "the run records the selected slot's own identity — `synthetic.1` — \
+         not a string the caller invented"
+    );
+
+    // Leave the cabin (the profile closes) and continue the same profile:
+    // the reopened run must name the same campaign identity.
+    flow.press(Action::Back).expect("the cabin is left");
+    flow.press(Action::ContinueProfile)
+        .expect("the profile continues");
+    flow.press(Action::ConfirmProfile)
+        .expect("the profile opens again");
+    assert_eq!(flow.front_end().screen(), Screen::Cabin);
+    assert_eq!(
+        flow.domain()
+            .campaign()
+            .expect("a campaign is open")
+            .state()
+            .snapshot()
+            .profile,
+        first,
+        "the reopen derived the same identity, so the saved run matched"
+    );
+}
+
+/// A deleted slot's identity can never be issued again: the population's
+/// high-water mark does not move on delete, so the next created profile
+/// derives a different campaign identity and can never inherit the deleted
+/// one's campaign (contract, "Persistence").
+#[test]
+fn accept_f45_c_3_a_deleted_profiles_identity_is_never_recycled() {
+    let tree = TempTree::new("identity-recycle");
+    let catalog = SettingCatalog::empty();
+    let mut session = ProfileSession::open_sandbox(&tree.path().join("profiles"), &catalog)
+        .expect("the sandbox opens");
+    let first = session.create("Pilot").expect("the pilot is created");
+    session.delete(first).expect("the profile deletes");
+    let next = session.create("Pilot").expect("a new pilot is created");
+    assert_ne!(first, next, "the slot number is never reissued");
+    assert_ne!(
+        campaign_profile_id(ProfileKind::Synthetic, first),
+        campaign_profile_id(ProfileKind::Synthetic, next),
+        "the deleted slot's campaign identity is never recycled"
+    );
+    session.finish().expect("the session ends");
 }
 
 // --- refusals the table itself reports ------------------------------------
