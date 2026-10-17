@@ -462,3 +462,255 @@ claim = "OWNER-STATIC-2026-10-14"
 provenance = "designed"
 value = 55.0
 reason = "the original's player spawn speed was never recovered (#796 records it as an open unknown, unresolved until an original run, #358), so the spawn velocity the launch gives the player is a declared development value — below the imported fd_speed cruise so a free flight begins with a run-up; it says nothing about the original"
+
+# The wingman / follower AI constants (#1563 M01-WINGMAN-FORMATION-A, finding
+# docs/findings/2026-10-17-m01-wingman-formation-control-law.md): the mode-4
+# follow routine 0x41e760, its control writer 0x41b560 and their constants.
+# `kind` is how the value is stored at `va` (f32: little-endian IEEE single;
+# u32: little-endian dword). Every value is read back from the image by
+# accept_m01_wingman_formation_a_rows_match_the_image. `static` means static
+# reading only; the `meaning` text says which use is measured and which is
+# inferred.
+
+[[ai_follow]]
+name = "station_offset_player_leader_x"
+claim = "OWNER-STATIC-2026-10-17"
+provenance = "static"
+va = 0x61fb88
+kind = "f32"
+value = 6.0
+meaning = "local offset of the formation slot, x, when the leader is the player (basis row 0 of the leader); the table at 0x41e792 selects this vector for a player leader"
+
+[[ai_follow]]
+name = "station_offset_player_leader_y"
+claim = "OWNER-STATIC-2026-10-17"
+provenance = "static"
+va = 0x61fb8c
+kind = "f32"
+value = 0.0
+meaning = "as above, y (basis row 1)"
+
+[[ai_follow]]
+name = "station_offset_player_leader_z"
+claim = "OWNER-STATIC-2026-10-17"
+provenance = "static"
+va = 0x61fb90
+kind = "f32"
+value = 18.0
+meaning = "as above, z (basis row 2, the leader forward axis: row 2 y-component is the climb term the speed code reads)"
+
+[[ai_follow]]
+name = "station_offset_other_leader_x"
+claim = "OWNER-STATIC-2026-10-17"
+provenance = "static"
+va = 0x61fb98
+kind = "f32"
+value = 8.0
+meaning = "local offset of the formation slot, x, for any non-player leader (a wingman following a devastator); selected at 0x41e7a6"
+
+[[ai_follow]]
+name = "station_offset_other_leader_y"
+claim = "OWNER-STATIC-2026-10-17"
+provenance = "static"
+va = 0x61fb9c
+kind = "f32"
+value = -2.0
+meaning = "as above, y"
+
+[[ai_follow]]
+name = "station_offset_other_leader_z"
+claim = "OWNER-STATIC-2026-10-17"
+provenance = "static"
+va = 0x61fba0
+kind = "f32"
+value = -8.0
+meaning = "as above, z; negative is behind the leader along basis row 2"
+
+[[ai_follow]]
+name = "follow_throttle_min"
+claim = "OWNER-STATIC-2026-10-17"
+provenance = "static"
+va = 0x61fb28
+kind = "f32"
+value = 0.4
+meaning = "params[0] of the 0x61fb28 block handed to the control writer 0x41b560 at 0x41eed3; the lower clamp of the throttle target vehicle+0x124 (0x41bbf5)"
+
+[[ai_follow]]
+name = "follow_throttle_max"
+claim = "OWNER-STATIC-2026-10-17"
+provenance = "static"
+va = 0x61fb2c
+kind = "f32"
+value = 1.5
+meaning = "params[1]; the upper clamp of the throttle target (0x41bbdb) and the multiplier on vehicle+0x668 that caps the demanded speed (0x41b899)"
+
+[[ai_follow]]
+name = "follow_params_2"
+claim = "OWNER-STATIC-2026-10-17"
+provenance = "static"
+va = 0x61fb30
+kind = "f32"
+value = 0.06
+meaning = "params[2]; read as a stick threshold at 0x41bcc9/0x41bd45 (use partly decoded, not named)"
+
+[[ai_follow]]
+name = "follow_params_3"
+claim = "OWNER-STATIC-2026-10-17"
+provenance = "static"
+va = 0x61fb34
+kind = "f32"
+value = 0.06
+meaning = "params[3]; read as a stick threshold at 0x41bd77 (use partly decoded, not named)"
+
+[[ai_follow]]
+name = "follow_speed_gain_along"
+claim = "OWNER-STATIC-2026-10-17"
+provenance = "static"
+va = 0x61fb38
+kind = "f32"
+value = 0.15
+meaning = "params[4]; metres/second of demanded speed per metre the slot is ahead along the leader velocity (0x41b736)"
+
+[[ai_follow]]
+name = "follow_speed_gain_cross"
+claim = "OWNER-STATIC-2026-10-17"
+provenance = "static"
+va = 0x61fb3c
+kind = "f32"
+value = 0.025
+meaning = "params[5]; metres/second per metre of cross-track distance to the slot (0x41b73b)"
+
+[[ai_follow]]
+name = "follow_params_6"
+claim = "OWNER-STATIC-2026-10-17"
+provenance = "static"
+va = 0x61fb40
+kind = "f32"
+value = 0.35
+meaning = "params[6]; compared with the aim magnitude at 0x41bd01 (use partly decoded, not named)"
+
+[[ai_follow]]
+name = "follow_speed_band"
+claim = "OWNER-STATIC-2026-10-17"
+provenance = "static"
+va = 0x603510
+kind = "f32"
+value = 26.8224
+meaning = "demanded speed is clamped to leader speed +/- this (26.8224 m/s = 60 mph) at 0x41b85e/0x41b87a"
+
+[[ai_follow]]
+name = "follow_speed_floor"
+claim = "OWNER-STATIC-2026-10-17"
+provenance = "static"
+va = 0x60351c
+kind = "f32"
+value = 22.352
+meaning = "demanded speed below this is replaced by the same value at 0x41b8b2 (22.352 m/s = 50 mph)"
+
+[[ai_follow]]
+name = "follow_throttle_slew"
+claim = "OWNER-STATIC-2026-10-17"
+provenance = "static"
+va = 0x603508
+kind = "f32"
+value = 0.35
+meaning = "throttle-target change per unit of the frame scalar at 0x9ad744 while the vehicle is within follow_rubber_band_dist2 of the player (0x41bba5)"
+
+[[ai_follow]]
+name = "follow_rubber_band_dist2"
+claim = "OWNER-STATIC-2026-10-17"
+provenance = "static"
+va = 0x60350c
+kind = "f32"
+value = 4000000.0
+meaning = "squared distance to the player (4,000,000 = 2000 m) beyond which the throttle target is set directly to demanded speed / vehicle+0x668 instead of slewing (0x41bb7e)"
+
+[[ai_follow]]
+name = "follow_engage_dist2"
+claim = "OWNER-STATIC-2026-10-17"
+provenance = "static"
+va = 0x6035e0
+kind = "f32"
+value = 490000.0
+meaning = "state 0 (player leader only) goes to state 1 when closer than this squared distance (490,000 = 700 m) at 0x41e855"
+
+[[ai_follow]]
+name = "follow_engage_speed"
+claim = "OWNER-STATIC-2026-10-17"
+provenance = "static"
+va = 0x603594
+kind = "f32"
+value = 20.576
+meaning = "state 0 also needs the vehicle speed vehicle+0x934 above this (20.576 m/s); the same constant is the low knot of the route speed map at 0x41eadf"
+
+[[ai_follow]]
+name = "follow_vertical_weight"
+claim = "OWNER-STATIC-2026-10-17"
+provenance = "static"
+va = 0x6035d0
+kind = "f32"
+value = 3.0
+meaning = "the vertical separation is multiplied by this before it is squared in the route-near test (0x41e9ac)"
+
+[[ai_follow]]
+name = "follow_near_push_dist2"
+claim = "OWNER-STATIC-2026-10-17"
+provenance = "static"
+va = 0x6035c0
+kind = "f32"
+value = 6400.0
+meaning = "when the vehicle is nearer than this squared distance (6400 = 80 m) to the leader, the goal is pushed by a vector rescaled to follow_near_push_radius (0x41ee45)"
+
+[[ai_follow]]
+name = "follow_near_push_radius"
+claim = "OWNER-STATIC-2026-10-17"
+provenance = "static"
+va = 0x6035bc
+kind = "f32"
+value = 80.0
+meaning = "numerator of the 80 / sqrt(d2) rescale at 0x41ee68"
+
+[[ai_follow]]
+name = "follow_route_near_dist2_player"
+claim = "OWNER-STATIC-2026-10-17"
+provenance = "static"
+va = 0x41e9a8
+kind = "f32"
+value = 1440000.0
+meaning = "imm32 in `mov [ebp-0x10], imm` at 0x41e9a5: squared route-near limit (1,440,000 = 1200 m) when the leader is the player"
+
+[[ai_follow]]
+name = "follow_route_near_dist2_other"
+claim = "OWNER-STATIC-2026-10-17"
+provenance = "static"
+va = 0x41e9ba
+kind = "f32"
+value = 640000.0
+meaning = "imm32 at 0x41e9b7: squared route-near limit (640,000 = 800 m) when the leader is not the player"
+
+[[ai_follow]]
+name = "follow_default_speed"
+claim = "OWNER-STATIC-2026-10-17"
+provenance = "static"
+va = 0x41b6b2
+kind = "f32"
+value = 80.4672
+meaning = "imm32 at 0x41b6af: the demanded speed (80.4672 m/s = 180 mph) when the leader velocity is zero"
+
+[[ai_follow]]
+name = "follow_floor_speed_imm"
+claim = "OWNER-STATIC-2026-10-17"
+provenance = "static"
+va = 0x41b75a
+kind = "f32"
+value = 22.352
+meaning = "imm32 at 0x41b757 (same 22.352 m/s as follow_speed_floor) on the direct-set branch"
+
+[[ai_follow]]
+name = "wingman_mode_value"
+claim = "OWNER-STATIC-2026-10-17"
+provenance = "static"
+va = 0x47b062
+kind = "u32"
+value = 4
+meaning = "imm32 of `mov [edi+0xa4], imm` at 0x47b05c: the mode word a vehicle.zrd record with `mode: wingman` gets; copied to vehicle+0x67c by 0x475abf"
