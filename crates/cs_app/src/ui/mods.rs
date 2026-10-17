@@ -351,12 +351,11 @@ pub fn mount_environment(base_fingerprint: ContentHash) -> MountEnvironment<'sta
 /// stock session announces exactly the bytes it runs and a mounted session
 /// announces the domain-separated signature of its plan and payload bytes.
 ///
-/// The wire's `mods` field names enabled mods as *catalog content ids* —
-/// and no [`cs_types::content::ContentKind`] names a mod yet, so this stage
-/// leaves it empty rather than mislabel a mod as another kind. Nothing is
-/// lost: the signature already carries the enabled set and its bytes, so the
-/// gate is complete; the list is display information pending the
-/// vocabulary (filed as a follow-up).
+/// The wire's `mods` field names the enabled mods by [`ModId`] — the
+/// manifest's own identity vocabulary (F53-FU3) — in the plan's load order.
+/// The list stays informational: the signature above already carries the
+/// enabled set and its bytes, so it remains the launch gate; the list only
+/// lets a refusal name the differing mods.
 #[must_use]
 pub fn lobby_compatibility(
     rules_sha256: ContentHash,
@@ -366,7 +365,7 @@ pub fn lobby_compatibility(
     Compatibility {
         rules_sha256,
         content_sha256: content_signature(mounted, base_fingerprint),
-        mods: Vec::new(),
+        mods: mounted.map_or_else(Vec::new, |m| m.plan().order().to_vec()),
     }
 }
 
