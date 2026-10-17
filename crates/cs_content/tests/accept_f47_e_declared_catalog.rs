@@ -28,7 +28,9 @@ use cs_content::scrapbook::{
     DeclareError, DiscoveredItem, DiscoveredPage, DiscoveredScrapbook, EntryKind, EntryVisibility,
     UnlockFact, audit, declare, resource_names,
 };
+use cs_types::asset_id::SourceSpan;
 use cs_types::content::ContentKind;
+use cs_types::evidence::ContentHash;
 
 // ------------------------------------------------------------- fixtures ---
 
@@ -63,6 +65,15 @@ fn discovered(items: Vec<DiscoveredItem>) -> DiscoveredScrapbook {
         install_sha256: "install".to_owned(),
         content_sha256: "content".to_owned(),
         member_sha256: "member".to_owned(),
+        member_span: SourceSpan::new(
+            ContentHash::from_bytes([0x11; 32]),
+            "GOSDATA/ASSETS/crimson.rof",
+            Some("ASSETS/SCRAPBOOK.CSV"),
+            0,
+            records as u64,
+            None,
+        )
+        .expect("a valid synthetic span"),
         records,
         pages: by_page
             .into_iter()
