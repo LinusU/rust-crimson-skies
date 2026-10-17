@@ -2049,7 +2049,7 @@ fn write_artifacts(
         .map(|actor| {
             format!(
                 "{{\"kind\":{},\"name\":{},\"asleep\":{},\"placed\":{},\"placement_m\":{},\
-                 \"on_screen\":{},\"pixels\":{},\"total_pixels\":{}}}",
+                 \"on_screen\":{},\"pixels\":{},\"total_pixels\":{},\"note\":{}}}",
                 json_string(&actor.kind),
                 json_string(&actor.name),
                 actor.asleep,
@@ -2058,6 +2058,10 @@ fn write_artifacts(
                 actor.on_screen,
                 actor.pixels,
                 actor.total_pixels,
+                actor
+                    .note
+                    .as_deref()
+                    .map_or_else(|| "null".to_owned(), json_string),
             )
         })
         .collect::<Vec<_>>()

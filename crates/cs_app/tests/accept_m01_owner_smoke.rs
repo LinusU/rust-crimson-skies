@@ -459,6 +459,21 @@ fn accept_m01_owner_smoke_the_cli_takes_a_mission_smoke_and_refuses_its_misuse()
     );
 }
 
+/// The windowed binary the ignored run drives: `CS_MISSION_BIN` when the
+/// operator names one, else the release build (the documented way to run this
+/// task's windowed evidence — debug Bevy steps far too slowly for a
+/// 2 700-frame script), else the test harness's own binary.
+fn mission_bin() -> PathBuf {
+    if let Ok(bin) = std::env::var("CS_MISSION_BIN") {
+        return PathBuf::from(bin);
+    }
+    let release = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../target/release/cs");
+    if release.is_file() {
+        return release;
+    }
+    PathBuf::from(env!("CARGO_BIN_EXE_cs"))
+}
+
 /// **The windowed run, on the owner's own command.**
 ///
 /// This is the half that needs the installation, the GPU and the audio device:
@@ -492,7 +507,7 @@ fn accept_m01_owner_smoke_the_windowed_launch_runs_the_scripted_smoke() {
     );
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("the capture directory is created");
-    let output = std::process::Command::new(env!("CARGO_BIN_EXE_cs"))
+    let output = std::process::Command::new(mission_bin())
         .args(["--cs-path", &game_dir, "--mission", "M01"])
         .args(["--smoke-seconds", "45", "--capture-dir"])
         .arg(&dir)
@@ -536,11 +551,13 @@ fn accept_m01_owner_smoke_the_windowed_launch_runs_the_scripted_smoke() {
             "the report judges {id}: {report}"
         );
     }
-    let passed = report.contains("\"passed\":true");
+    let passed = report
+        .rfind("\"passed\":")
+        .is_some_and(|index| report[index..].starts_with("\"passed\":true"));
     let failures_empty = report.contains("\"failures\":[]");
     assert_eq!(
         passed, failures_empty,
-        "`passed` is exactly \"no failures\": {report}"
+        "`passed` is the report's own last field and is exactly \"no failures\": {report}"
     );
     let pngs: Vec<_> = std::fs::read_dir(&dir)
         .expect("the capture directory lists")
