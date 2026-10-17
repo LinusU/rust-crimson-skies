@@ -26,13 +26,16 @@ pub const MAX_MODS: usize = 64;
 /// A [`crate::compat::HandshakeReject::ModSetMismatch`] is a *bounded*
 /// representation of the difference: each of its two id lists holds at most
 /// this many ids, and the matching omitted-count field says how many more
-/// differed. That cap is what keeps the refusal encodable inside
-/// [`MAX_PACKET_BYTES`]: at the worst case of [`MAX_MODS`] maximum-length
-/// catalog ids on both sides with no overlap, an untruncated diff cannot be
-/// encoded at all and the client sees neither a grant nor a reason (F54-B/C
-/// finding, task F54-C-followup-mods-diff-cap). The client can therefore
-/// always be told *that* its mod set differs, even when it cannot be shown
-/// every differing id.
+/// differed. The bound was introduced when the mod list carried catalog
+/// ids: at the worst case of [`MAX_MODS`] maximum-length catalog ids on
+/// both sides with no overlap, an untruncated diff could not be encoded
+/// inside [`MAX_PACKET_BYTES`] at all and the client saw neither a grant
+/// nor a reason (F54-B/C finding, task F54-C-followup-mods-diff-cap). Since
+/// F53-FU3 the list carries `ModId`s — at most
+/// [`crate::codec::MAX_MOD_ID_WIRE_BYTES`] each — so the same worst case
+/// fits regardless; the cap now bounds what a refusal narrates rather than
+/// what it can encode, and it stays so a refusal never has to recite every
+/// differing id.
 pub const MAX_MOD_DIFF_IDS: usize = 8;
 
 /// Most tick-stamped [`cs_types::input::InputFrame`]s one input packet may

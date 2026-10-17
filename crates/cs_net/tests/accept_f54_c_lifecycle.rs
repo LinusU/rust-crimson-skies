@@ -38,7 +38,7 @@ use std::sync::{Mutex, MutexGuard};
 use std::time::Duration;
 
 use cs_types::Tick;
-use cs_types::content::{ContentId, ContentKind};
+use cs_types::asset_id::ModId;
 use cs_types::evidence::ContentHash;
 use cs_types::input::{AxisValueError, FlightCommand};
 use cs_types::net::{ActorId, PeerId, SessionAllocator, SessionId};
@@ -2773,7 +2773,7 @@ fn accept_f54_c_a_worst_case_mod_mismatch_reaches_the_client_as_a_truncated_reas
     let _loopback = loopback();
 
     // Two disjoint sets of maximum-length mod ids. Untruncated the named
-    // rejection needs 128 catalog ids on the wire and cannot be encoded
+    // rejection needs 128 mod ids on the wire and cannot be encoded
     // inside `MAX_PACKET_BYTES`, so the client saw neither a grant nor a
     // reason (F54-B/C finding). The bounded diff (F54-C follow-up) truncates
     // each direction to `MAX_MOD_DIFF_IDS` and counts the rest, so this same
@@ -3103,15 +3103,16 @@ fn accept_f54_c_leaving_after_the_layer_gave_up_reports_the_hang_up() {
     );
 }
 
-/// A catalog id whose wire form is as long as the id grammar allows, so that
-/// [`MAX_MODS`] of them are individually sendable while two lists of them are
-/// not.
-fn long_mod(index: usize) -> ContentId {
-    ContentId::from_source(
-        ContentKind::Blueprint,
-        &format!("m{index:04}{}", "x".repeat(120)),
-    )
-    .expect("the key satisfies the id grammar")
+/// A mod id whose wire form is as long as the mod-id grammar allows, so
+/// that [`MAX_MODS`] of them are individually sendable while two lists of
+/// them are not.
+fn long_mod(index: usize) -> ModId {
+    let head = format!("m{index:04}");
+    let label = format!(
+        "{head}{}",
+        "x".repeat(cs_types::asset_id::MAX_LABEL_LEN - head.len())
+    );
+    ModId::new(&label).expect("the maximum-length label satisfies the mod-id grammar")
 }
 
 // ----------------------------------------------------------------- fuzzing --

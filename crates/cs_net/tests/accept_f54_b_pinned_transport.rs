@@ -471,7 +471,7 @@ fn accept_f54_b_invalid_ids_and_tags_are_refused() {
         })
     );
 
-    // Text that is not a catalog id is refused.
+    // Text that is not a mod id is refused.
     let mut bad_mod = vec![0u8];
     bad_mod.extend_from_slice(&1u16.to_le_bytes());
     bad_mod.extend_from_slice(&[0x52; 32]);
@@ -676,21 +676,18 @@ fn accept_f54_b_handshake_admits_and_returns_a_grant_over_udp() {
     );
 }
 
-/// `count` distinct catalog ids at the id grammar's maximum key length: the
-/// widest mod ids the wire can carry, the F54-B worst case for a reply.
-fn maximum_length_mod_ids(prefix: &str, count: usize) -> Vec<cs_types::content::ContentId> {
+/// `count` distinct mod ids at the mod-id grammar's maximum label length:
+/// the widest mod ids the wire can carry, the F54-B worst case for a reply.
+fn maximum_length_mod_ids(prefix: &str, count: usize) -> Vec<cs_types::asset_id::ModId> {
     (0..count)
         .map(|i| {
             let head = format!("{prefix}{i:04}");
-            let key = format!(
+            let label = format!(
                 "{head}{}",
-                "a".repeat(cs_types::content::MAX_CONTENT_KEY_LEN - head.len())
+                "a".repeat(cs_types::asset_id::MAX_LABEL_LEN - head.len())
             );
-            cs_types::content::ContentId::from_source(
-                cs_types::content::ContentKind::MultiplayerScenario,
-                &key,
-            )
-            .expect("the maximum-length key satisfies the id grammar")
+            cs_types::asset_id::ModId::new(&label)
+                .expect("the maximum-length label satisfies the mod-id grammar")
         })
         .collect()
 }

@@ -27,6 +27,7 @@
 use std::fmt;
 
 use cs_types::Tick;
+use cs_types::asset_id::{MAX_LABEL_LEN, ModId};
 use cs_types::content::ContentId;
 use cs_types::evidence::ContentHash;
 use cs_types::input::{Action, AxisValue, FlightCommand, InputFrame, UiAction};
@@ -49,6 +50,10 @@ use crate::message::{
 /// wire: the key cap plus the longest namespace label and the separator.
 /// Anything longer is refused before the grammar runs.
 pub const MAX_CONTENT_ID_WIRE_BYTES: usize = 256;
+
+/// The widest label text a [`ModId`] may take on the wire — the id grammar's
+/// own label cap. Anything longer is refused before the grammar runs.
+pub const MAX_MOD_ID_WIRE_BYTES: usize = MAX_LABEL_LEN;
 
 /// The packet kind a client sends on the wire.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -363,6 +368,11 @@ fn content_id(r: &mut Reader<'_>, field: &'static str) -> Result<ContentId, Code
     ContentId::parse(&text).map_err(|_| CodecError::BadText { field })
 }
 
+fn mod_id(r: &mut Reader<'_>, field: &'static str) -> Result<ModId, CodecError> {
+    let text = r.text(field, MAX_MOD_ID_WIRE_BYTES)?;
+    ModId::new(&text).map_err(|_| CodecError::BadText { field })
+}
+
 fn tick(r: &mut Reader<'_>, field: &'static str) -> Result<Tick, CodecError> {
     Ok(Tick(r.u64(field)?))
 }
@@ -375,6 +385,10 @@ fn protocol_version(
 }
 
 fn put_content_id(w: &mut Writer, id: &ContentId) {
+    w.counted_bytes(id.as_str().as_bytes());
+}
+
+fn put_mod_id(w: &mut Writer, id: &ModId) {
     w.counted_bytes(id.as_str().as_bytes());
 }
 
@@ -395,7 +409,7 @@ fn compatibility(r: &mut Reader<'_>) -> Result<Compatibility, CodecError> {
     let mod_count = r.count("compat.mods", MAX_MODS)?;
     let mut mods = Vec::with_capacity(mod_count);
     for _ in 0..mod_count {
-        mods.push(content_id(r, "compat.mods[]")?);
+        mods.push(mod_id(r, "compat.mods[]")?);
     }
     Ok(Compatibility {
         rules_sha256,
@@ -409,7 +423,7 @@ fn put_compatibility(w: &mut Writer, compat: &Compatibility) {
     put_hash(w, &compat.content_sha256);
     put_count(w, compat.mods.len());
     for id in &compat.mods {
-        put_content_id(w, id);
+        put_mod_id(w, id);
     }
 }
 
@@ -433,7 +447,7 @@ fn compat_error(r: &mut Reader<'_>) -> Result<CompatError, CodecError> {
             len: r.u32("compat_error.len")? as usize,
         }),
         1 => Ok(CompatError::DuplicateMod {
-            id: content_id(r, "compat_error.id")?,
+            id: mod_id(r, "compat_error.id")?,
         }),
         tag => Err(CodecError::UnknownTag {
             field: "compat_error.tag",
@@ -450,20 +464,20 @@ fn put_compat_error(w: &mut Writer, error: &CompatError) {
         }
         CompatError::DuplicateMod { id } => {
             w.u8(1);
-            put_content_id(w, id);
+            put_mod_id(w, id);
         }
     }
 }
 
-fn content_id_list(
+fn mod_id_list(
     r: &mut Reader<'_>,
     field: &'static str,
     max: usize,
-) -> Result<Vec<ContentId>, CodecError> {
+) -> Result<Vec<ModId>, CodecError> {
     let count = r.count(field, max)?;
     let mut ids = Vec::with_capacity(count);
     for _ in 0..count {
-        ids.push(content_id(r, field)?);
+        ids.push(mod_id(r, field)?);
     }
     Ok(ids)
 }
@@ -473,7 +487,7 @@ fn mod_diff(
     field: &'static str,
     omitted_field: &'static str,
 ) -> Result<ModDiff, CodecError> {
-    let ids = content_id_list(r, field, MAX_MOD_DIFF_IDS)?;
+    let ids = mod_id_list(r, field, MAX_MOD_DIFF_IDS)?;
     let omitted = r.u32(omitted_field)?;
     Ok(ModDiff::from_parts(ids, omitted))
 }
@@ -481,7 +495,7 @@ fn mod_diff(
 fn put_mod_diff(w: &mut Writer, diff: &ModDiff) {
     put_count(w, diff.ids().len());
     for id in diff.ids() {
-        put_content_id(w, id);
+        put_mod_id(w, id);
     }
     w.u32(diff.omitted());
 }

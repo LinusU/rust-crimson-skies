@@ -17,7 +17,7 @@
 
 use std::fmt;
 
-use cs_types::content::ContentId;
+use cs_types::asset_id::ModId;
 use cs_types::evidence::ContentHash;
 use cs_types::net::{PeerId, SessionId};
 
@@ -69,9 +69,12 @@ pub struct Compatibility {
     pub rules_sha256: ContentHash,
     /// The installation/canonical-content signature.
     pub content_sha256: ContentHash,
-    /// The enabled mods, each a catalog id. Order-insensitive; duplicates
-    /// and lists past [`MAX_MODS`] are invalid.
-    pub mods: Vec<ContentId>,
+    /// The enabled mods, each a [`ModId`] — the mod-manifest identity
+    /// vocabulary (F53-FU3): a mod is not catalog content, so it is named
+    /// by its own id, not by a [`cs_types::content::ContentId`].
+    /// Order-insensitive; duplicates and lists past [`MAX_MODS`] are
+    /// invalid.
+    pub mods: Vec<ModId>,
 }
 
 /// Why a [`Compatibility`] record was refused before comparison.
@@ -82,10 +85,10 @@ pub enum CompatError {
         /// Its length.
         len: usize,
     },
-    /// The mod list named the same content id twice.
+    /// The mod list named the same mod id twice.
     DuplicateMod {
         /// The repeated id.
-        id: ContentId,
+        id: ModId,
     },
 }
 
@@ -124,7 +127,7 @@ impl Compatibility {
     }
 
     /// The mods `other` enables that this signature does not.
-    fn missing_mods(&self, other: &Self) -> Vec<ContentId> {
+    fn missing_mods(&self, other: &Self) -> Vec<ModId> {
         other
             .mods
             .iter()
@@ -159,7 +162,7 @@ pub struct SessionParameters {
 }
 
 /// One direction of a mod-set difference, as it travels on the wire: the
-/// first [`MAX_MOD_DIFF_IDS`] differing ids in catalog-id order plus how many
+/// first [`MAX_MOD_DIFF_IDS`] differing ids in mod-id order plus how many
 /// more differed and were omitted.
 ///
 /// The truncation happens exactly once, in [`ModDiff::from_diff`], which the
@@ -170,8 +173,8 @@ pub struct SessionParameters {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ModDiff {
     /// The named ids: the first [`MAX_MOD_DIFF_IDS`] differing ids in
-    /// catalog-id order. At most [`MAX_MOD_DIFF_IDS`] entries.
-    ids: Vec<ContentId>,
+    /// mod-id order. At most [`MAX_MOD_DIFF_IDS`] entries.
+    ids: Vec<ModId>,
     /// How many further differing ids were omitted by the truncation.
     omitted: u32,
 }
@@ -179,11 +182,11 @@ pub struct ModDiff {
 impl ModDiff {
     /// Bounds one direction of a mod-set difference.
     ///
-    /// Sorts the ids into catalog-id order — so the named head is the same
+    /// Sorts the ids into mod-id order — so the named head is the same
     /// whichever side produced the diff and however its mod list was ordered
     /// — keeps the first [`MAX_MOD_DIFF_IDS`] and counts the rest as omitted.
     #[must_use]
-    pub fn from_diff(mut ids: Vec<ContentId>) -> Self {
+    pub fn from_diff(mut ids: Vec<ModId>) -> Self {
         ids.sort();
         let omitted = ids.len().saturating_sub(MAX_MOD_DIFF_IDS);
         ids.truncate(MAX_MOD_DIFF_IDS);
@@ -200,7 +203,7 @@ impl ModDiff {
     /// so the parts arrive inside the bound; the clamp here keeps that
     /// invariant true for *every* construction of the type, and any surplus
     /// is folded into `omitted` rather than silently dropped.
-    pub(crate) fn from_parts(mut ids: Vec<ContentId>, omitted: u32) -> Self {
+    pub(crate) fn from_parts(mut ids: Vec<ModId>, omitted: u32) -> Self {
         let surplus = ids.len().saturating_sub(MAX_MOD_DIFF_IDS);
         ids.truncate(MAX_MOD_DIFF_IDS);
         Self {
@@ -209,9 +212,9 @@ impl ModDiff {
         }
     }
 
-    /// The named ids, in catalog-id order. At most [`MAX_MOD_DIFF_IDS`].
+    /// The named ids, in mod-id order. At most [`MAX_MOD_DIFF_IDS`].
     #[must_use]
-    pub fn ids(&self) -> &[ContentId] {
+    pub fn ids(&self) -> &[ModId] {
         &self.ids
     }
 
@@ -293,20 +296,19 @@ pub enum HandshakeReject {
     /// The enabled-mod sets differ.
     ///
     /// The diff is **bounded**: each direction names at most
-    /// [`MAX_MOD_DIFF_IDS`] differing ids (the first ones in catalog-id
+    /// [`MAX_MOD_DIFF_IDS`] differing ids (the first ones in mod-id
     /// order, so the kept head is deterministic whatever order the two sides
     /// listed their mods in) and its `*_omitted` count says how many more
-    /// differed. Without the bound a worst case — [`MAX_MODS`] maximum-length
-    /// catalog ids on each side with no overlap — cannot be encoded inside
-    /// [`crate::bounds::MAX_PACKET_BYTES`] at all, and the client would see
-    /// neither a grant nor a reason. The client can therefore always be told
-    /// *that* its mod set differs, even when it cannot be shown every id.
+    /// differed, so the client is always told *that* its mod set differs
+    /// without the refusal having to recite every id. See
+    /// [`crate::bounds::MAX_MOD_DIFF_IDS`] for how the bound's motivation
+    /// changed when the list moved to mod ids.
     ModSetMismatch {
         /// The first [`MAX_MOD_DIFF_IDS`] mods the session requires that the
-        /// client does not enable, in catalog-id order.
+        /// client does not enable, in mod-id order.
         missing: ModDiff,
         /// The first [`MAX_MOD_DIFF_IDS`] mods the client enables that the
-        /// session does not run, in catalog-id order.
+        /// session does not run, in mod-id order.
         unexpected: ModDiff,
     },
     /// The session already holds [`MAX_SESSION_PEERS`] peers, so no peer id is

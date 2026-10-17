@@ -8,6 +8,7 @@
 //! `SYNTHETIC` — and can never stand in for retail session data.
 
 use cs_types::Tick;
+use cs_types::asset_id::ModId;
 use cs_types::content::{ContentId, ContentKind};
 use cs_types::evidence::ContentHash;
 use cs_types::input::{AxisValue, FlightCommand, InputFrame};
@@ -100,4 +101,9 @@ pub fn synthetic_peer_joined(peer: PeerId, tick: Tick, sequence: u32) -> Reliabl
 pub fn synthetic_blueprint_id() -> ContentId {
     ContentId::from_source(ContentKind::Blueprint, "synthetic_zephyr")
         .expect("the synthetic key satisfies the id grammar")
+}
+
+/// A mod id usable as an enabled-mod-list entry in synthetic fixtures.
+pub fn synthetic_mod_id() -> ModId {
+    ModId::new("synthetic-zephyr-mod").expect("the label satisfies the mod-id grammar")
 }

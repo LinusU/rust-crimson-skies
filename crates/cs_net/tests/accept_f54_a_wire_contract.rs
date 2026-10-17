@@ -17,8 +17,8 @@ use cs_net::compat::{
     PeerAllocator, ProtocolVersion, admit_hello, evaluate_hello,
 };
 use cs_net::fixture::{
-    SYNTHETIC_CONTENT_SHA256, SYNTHETIC_PEER, SYNTHETIC_SESSION, synthetic_blueprint_id,
-    synthetic_hello, synthetic_input_message, synthetic_parameters, synthetic_peer_joined,
+    SYNTHETIC_CONTENT_SHA256, SYNTHETIC_PEER, SYNTHETIC_SESSION, synthetic_hello,
+    synthetic_input_message, synthetic_mod_id, synthetic_parameters, synthetic_peer_joined,
 };
 use cs_net::message::{
     ClientMessage, ClientPayload, Delivery, DisconnectReason, EventBody, FinishReason, InputBatch,
@@ -26,7 +26,8 @@ use cs_net::message::{
     SnapshotFrame, WireError,
 };
 use cs_types::Tick;
-use cs_types::content::{ContentId, ContentKind, MAX_CONTENT_KEY_LEN};
+use cs_types::asset_id::{MAX_LABEL_LEN, ModId};
+use cs_types::content::{ContentId, ContentKind};
 use cs_types::evidence::ContentHash;
 use cs_types::input::{Action, AxisValue, FlightCommand, InputFrame, UiAction};
 use cs_types::net::{ActorAllocator, ActorId, EventId, PeerId, SessionId};
@@ -37,12 +38,12 @@ fn hello_with_protocol(version: u16) -> ClientHello {
     hello
 }
 
-/// `count` distinct catalog ids, usable as an enabled-mod set.
-fn distinct_mod_ids(count: usize) -> Vec<ContentId> {
+/// `count` distinct mod ids, usable as an enabled-mod set.
+fn distinct_mod_ids(count: usize) -> Vec<ModId> {
     (0..count)
         .map(|i| {
-            ContentId::from_source(ContentKind::Blueprint, &format!("synthetic_mod_{i:04}"))
-                .expect("the synthetic key satisfies the id grammar")
+            ModId::new(&format!("synthetic-mod-{i:04}"))
+                .expect("the synthetic label satisfies the mod-id grammar")
         })
         .collect()
 }
@@ -112,7 +113,7 @@ fn accept_f54_a_rules_and_mod_mismatches_are_distinct_rejections() {
     ));
 
     let mut modded = synthetic_hello();
-    modded.compatibility.mods = vec![synthetic_blueprint_id()];
+    modded.compatibility.mods = vec![synthetic_mod_id()];
     let Err(HandshakeReject::ModSetMismatch {
         missing,
         unexpected,
@@ -121,12 +122,12 @@ fn accept_f54_a_rules_and_mod_mismatches_are_distinct_rejections() {
         panic!("an extra enabled mod must be rejected");
     };
     assert!(missing.is_empty());
-    assert_eq!(unexpected.ids(), [synthetic_blueprint_id()]);
+    assert_eq!(unexpected.ids(), [synthetic_mod_id()]);
     assert_eq!(unexpected.omitted(), 0, "one id needs no truncation");
 
     // The mirror image: the session requires a mod the client lacks.
     let mut required = synthetic_parameters();
-    required.compatibility.mods = vec![synthetic_blueprint_id()];
+    required.compatibility.mods = vec![synthetic_mod_id()];
     let Err(HandshakeReject::ModSetMismatch {
         missing,
         unexpected,
@@ -134,7 +135,7 @@ fn accept_f54_a_rules_and_mod_mismatches_are_distinct_rejections() {
     else {
         panic!("a missing required mod must be rejected");
     };
-    assert_eq!(missing.ids(), [synthetic_blueprint_id()]);
+    assert_eq!(missing.ids(), [synthetic_mod_id()]);
     assert_eq!(missing.omitted(), 0, "one id needs no truncation");
     assert!(unexpected.is_empty());
 }
@@ -143,7 +144,7 @@ fn accept_f54_a_rules_and_mod_mismatches_are_distinct_rejections() {
 fn accept_f54_a_malformed_hello_is_rejected() {
     let params = synthetic_parameters();
     let mut hello = synthetic_hello();
-    let id = synthetic_blueprint_id();
+    let id = synthetic_mod_id();
     hello.compatibility.mods = vec![id.clone(), id];
 
     let Err(reject) = evaluate_hello(&params, &hello) else {
@@ -152,7 +153,7 @@ fn accept_f54_a_malformed_hello_is_rejected() {
     assert_eq!(
         reject,
         HandshakeReject::MalformedSignature(CompatError::DuplicateMod {
-            id: synthetic_blueprint_id(),
+            id: synthetic_mod_id(),
         })
     );
     // The reason names the defect without blaming the client for a defect that
@@ -197,24 +198,22 @@ fn accept_f54_a_mod_set_comparison_ignores_order() {
     assert_eq!(evaluate_hello(&params, &hello), Ok(()));
 }
 
-/// `count` distinct catalog ids at the id grammar's maximum key length, so
+/// `count` distinct mod ids at the mod-id grammar's maximum label length, so
 /// each one takes the widest form the wire can carry
-/// ([`MAX_CONTENT_ID_WIRE_BYTES`]'s real bound is the key cap plus the
-/// namespace label and separator).
-fn maximum_length_mod_ids(prefix: &str, count: usize) -> Vec<ContentId> {
+/// ([`cs_net::codec::MAX_MOD_ID_WIRE_BYTES`] is the label cap).
+fn maximum_length_mod_ids(prefix: &str, count: usize) -> Vec<ModId> {
     (0..count)
         .map(|i| {
             let head = format!("{prefix}{i:04}");
-            let key = format!("{head}{}", "a".repeat(MAX_CONTENT_KEY_LEN - head.len()));
-            debug_assert_eq!(key.len(), MAX_CONTENT_KEY_LEN, "the key is at its cap");
-            ContentId::from_source(ContentKind::MultiplayerScenario, &key)
-                .expect("the maximum-length key satisfies the id grammar")
+            let label = format!("{head}{}", "a".repeat(MAX_LABEL_LEN - head.len()));
+            debug_assert_eq!(label.len(), MAX_LABEL_LEN, "the label is at its cap");
+            ModId::new(&label).expect("the maximum-length label satisfies the mod-id grammar")
         })
         .collect()
 }
 
-/// The widest single mod id as it travels: its `namespace/key` text plus the
-/// `u16` length prefix [`crate::codec`] writes in front of it.
+/// The widest single mod id as it travels: its label text plus the
+/// `u16` length prefix [`cs_net::codec`] writes in front of it.
 fn widest_mod_wire_bytes() -> usize {
     let id = maximum_length_mod_ids("probe", 1).pop().expect("one id");
     2 + id.as_str().len()
@@ -222,11 +221,13 @@ fn widest_mod_wire_bytes() -> usize {
 
 #[test]
 fn accept_f54_a_an_oversized_mod_diff_is_truncated_and_still_encodable() {
-    // The F54-B worst case: MAX_MODS maximum-length mods on both sides with
-    // no overlap. Untruncated the reply cannot be encoded inside
-    // MAX_PACKET_BYTES, and the client would see neither a grant nor a
-    // reason; truncated it must still say that the sets differ and how much
-    // was omitted.
+    // The worst case the grammar can produce: MAX_MODS maximum-length mods
+    // on both sides with no overlap. Truncated the reply must still say that
+    // the sets differ and how much was omitted. (Under the F53-FU3 mod-id
+    // vocabulary the untruncated diff now fits a packet anyway — a mod label
+    // is far narrower than the catalog ids the cap was first sized for — so
+    // the bound now limits what a refusal narrates rather than what it can
+    // encode; the semantics are unchanged.)
     let session_mods = maximum_length_mod_ids("session", MAX_MODS);
     let client_mods = maximum_length_mod_ids("client", MAX_MODS);
 
@@ -246,15 +247,15 @@ fn accept_f54_a_an_oversized_mod_diff_is_truncated_and_still_encodable() {
         panic!("the rejection must name the mod-set mismatch: {reject:?}");
     };
 
-    // The untruncated diff would not fit; that is the failure this cap
-    // exists to prevent.
+    // Pin the new wire arithmetic: 128 widest mod ids now fit the packet
+    // cap, where the same count of widest catalog ids could not.
     let untruncated_bytes = 2 * MAX_MODS * widest_mod_wire_bytes();
     assert!(
-        untruncated_bytes > MAX_PACKET_BYTES,
-        "the worst-case diff must genuinely overflow the cap: {untruncated_bytes}"
+        untruncated_bytes <= MAX_PACKET_BYTES,
+        "the worst-case mod-id diff now fits the cap: {untruncated_bytes}"
     );
 
-    // Each direction names the first MAX_MOD_DIFF_IDS ids in catalog-id
+    // Each direction names the first MAX_MOD_DIFF_IDS ids in mod-id
     // order and counts the rest — nothing is silently dropped.
     let mut sorted_session = session_mods.clone();
     sorted_session.sort();
