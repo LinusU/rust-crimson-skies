@@ -11,8 +11,7 @@ Synthetic only — no retail or original-behavior claim.
 caller builds by hand plus the directory the mod ships under. There is
 deliberately no manifest *file* reader: the F53 sheet never specifies an
 on-disk manifest format, and inventing one would be unmeasured vocabulary
-(F53 "Research boundary" — no original-game mod format was ever measured,
-because the original game shipped no discoverable mod surface).
+(F53 "Research boundary" — no original-game mod format was ever measured).
 
 Should the project design one anyway, so real mod directories can be
 discovered without each caller building manifests by hand?
@@ -64,7 +63,7 @@ production path — not guessed earlier.
 ## What is not claimed
 
 - This records that no format was *chosen*, not that the original game had
-  none — the original shipped no measured mod surface, so there is nothing
-  to measure.
+  none — the original's own mod surface, if any, is unmeasured and
+  unclaimed.
 - Callers keep building manifests by hand; nothing in F53-D or the mods
   screen is blocked by the absence of a reader.
