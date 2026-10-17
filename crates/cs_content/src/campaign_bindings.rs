@@ -54,7 +54,7 @@
 //! The records above are schema: [`SourceContext`] and [`SourceBinding`]
 //! are the first stage that reads original data. `SourceContext::read`
 //! fingerprints `$CS_GAME_DIR`, walks its `ZBD/<chapter><variant>/<mission>`
-//! campaign layout and loads the localized UI string table;
+//! directories and loads the localized UI string table;
 //! `SourceContext::bind` then confirms one work order's discovery title
 //! against the local strings and resolves the five [`CriticalDependency`]
 //! anchors of the mission sheets' data-binding checklist. The result is the
@@ -72,7 +72,12 @@
 //!
 //! The join from a work-order title to a retail mission directory is an
 //! inference, not a direct observation: it rests on the localized title
-//! block's position matching the campaign the directory layout declares. It
+//! block's position matching the campaign the mission archives themselves
+//! declare — every `zrdr.zbd` names its mission's campaign chapter and
+//! number in its `snd_c<chapter>-<region>-m<mission>` sound-group cue
+//! spellings, and the directory digits are storage coordinates, not the
+//! chapter (the retail installation keeps chapter 1 under `ZBD/C3` and
+//! chapter 2 under `ZBD/C1*`). It
 //! is recorded with [`ClaimStatus::Inferred`] provenance, never as
 //! `verified_original` (AGENTS.md rule 8).
 //!
@@ -80,7 +85,7 @@
 //! `campaign.len()` unrelated strings would form one. [`SourceContext`]
 //! therefore checks the join against the second structure the installation
 //! offers: the region-prefixed long mission names, whose row *grouping* must
-//! fall into the layout's per-chapter sizes ([`SourceContext::chapter_sizes`],
+//! fall into the campaign's per-chapter sizes ([`SourceContext::chapter_sizes`],
 //! [`SourceContext::join_agreement`], [`classify_join`]). Only the grouping is
 //! used, never the name a group carries, because nothing establishes what a
 //! region name means. An installation that offers no such block is reported
@@ -132,8 +137,9 @@
 //! never guessed onto the others: [`mission_scoped_unknowns`] keys
 //! `MISSION_SCOPED_UNKNOWNS` by work order, so such a limitation reaches only
 //! the record of the mission whose data was measured, in the same voice as the
-//! shared entries — M06-B-FU4 recorded M06's passenger identity this way,
-//! measured for M06 alone by M06-B-FU2.
+//! shared entries — M12's passenger identity sits there this way, measured on
+//! the `zbd/c2/m01` archive by M06-B-FU2 before M01-ARCHIVE-DECISION's
+//! corrected layout bound that archive to M12.
 //!
 //! The other direction is the same rule applied to a *settled* entry: when a
 //! later stage measures one of the shared checklist questions for one
@@ -142,9 +148,11 @@
 //! `MISSION_SCOPED_CHECKLIST_OVERRIDES` by work order and
 //! [`SourceContext::bind`] replaces the named shared entry with the measured
 //! statement — residuals included — on that one record, while every sibling
-//! keeps the shared text untouched. M01-B recorded M01's measured objective
-//! graph, directive-program coverage and terminal precedence this way,
-//! measured by M01-B-OBJ, M01-B-OPC and M01-B-WAKE; each replacement still
+//! keeps the shared text untouched. M06's record carries the measured
+//! objective graph, directive-program coverage and terminal precedence this
+//! way — measured on the `zbd/c1c/m01` archive by M01-B-OBJ, M01-B-OPC and
+//! M01-B-WAKE before M01-ARCHIVE-DECISION's corrected layout bound that
+//! archive to M06; each replacement still
 //! keeps `verified` false and names what the measurement did not settle.
 //!
 //! ## The whole campaign (F50-B)
@@ -200,6 +208,7 @@ use std::path::{Path, PathBuf};
 
 use cs_formats::ParseContext;
 use cs_formats::script_raw::discover_container;
+use cs_formats::zbd::{ZbdProbe, dispatch, read_reader_archive, read_version_one_index};
 use cs_types::asset_id::SourceSpan;
 use cs_types::content::{ContentId, ContentKind, Known, Provenance, Resolved, ResolvedError};
 use cs_types::evidence::{ClaimId, ClaimIdError, ClaimStatus, ContentHash};
@@ -2079,12 +2088,18 @@ pub struct SourceSpanRecord {
     pub sha256: String,
 }
 
-/// One campaign mission as the installation's directory layout declares it.
+/// One campaign mission as the installation's mission archives declare it.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CampaignMission {
-    /// The chapter the mission belongs to (`ZBD/C1*` → 1).
+    /// The campaign chapter the mission's own data declares — the `c` digit
+    /// of its sound-group cue names (`snd_c3-hw-m2_*` → 3), measured by
+    /// [`scan_campaign`]. It is *not* the digit of the `ZBD/C*` directory
+    /// the archive is stored in: the installation is observed to keep the
+    /// first campaign chapter in `C3` and the second in `C1`/`C1B`/`C1C`.
     pub chapter: u32,
-    /// The mission's number inside its chapter (`ZBD/*/M01` → 1).
+    /// The mission's number inside its declared chapter, measured the same
+    /// way (`snd_c3-hw-m2_*` → 2). It is *not* the digit of the `M*` storage
+    /// directory either: `ZBD/C2/M01` is observed to declare `c3-hw-m2`.
     pub mission_number: u32,
     /// The world group directory, lowercased for identity.
     pub world_group: String,
@@ -2127,12 +2142,12 @@ pub struct CampaignLayoutEntry {
 ///
 /// [`SourceBindingError::NoCampaign`] when the installation declares no
 /// `ZBD/<chapter>/<mission>` directory, [`SourceBindingError::Io`] when
-/// the layout cannot be walked or a present program archive cannot be read,
+/// the layout cannot be walked or a program archive cannot be read,
 /// and [`SourceBindingError::Inconsistent`] when the layout itself is
-/// ambiguous — a chapter that stores one mission number in two world groups
-/// is refused rather than resolved to one of them. A mission directory whose
-/// `zrdr.zbd` is absent is reported with
-/// [`CampaignLayoutEntry::program_sha256`] `None`, never omitted.
+/// ambiguous — a mission directory whose `zrdr.zbd` is absent, an archive
+/// that declares no single campaign identity, or two archives that declare
+/// the same `(chapter, mission)` slot are all refused rather than resolved
+/// to one of them.
 pub fn campaign_layout(
     install_root: &Path,
 ) -> Result<Vec<CampaignLayoutEntry>, SourceBindingError> {
@@ -2192,16 +2207,18 @@ const SOURCE_BINDING_UNKNOWNS: &[&str] = &[
 /// entries by [`SourceContext::bind`] for the named work order alone —
 /// measured, in the same voice, naming the limitation, its reason and the
 /// task or ruling that would settle it — and the follow-up that settles it
-/// removes the entry (M06-B-FU4 added M06's passenger identity, measured for
-/// M06 only by M06-B-FU2).
+/// removes the entry (M12's passenger identity sits here, measured on
+/// `zbd/c2/m01` by M06-B-FU2 under the pre-correction layout).
 const MISSION_SCOPED_UNKNOWNS: &[(&str, &[&str])] = &[(
-    "M06",
+    "M12",
     &[
         "passenger identity: the shipped data binds no passenger or extraction entity to this \
       mission — the archive's only passenger-named string is the shared `location.zrd` teleport \
       entry `Passenger_hangar`, and no directive, target, actor, startup animation, world node or \
-      message id names one (measured by M06-B-FU2); needs an original reference run under M06-C \
-      or the owner's ruling",
+      message id names one (measured on `zbd/c2/m01` by M06-B-FU2, which bound this archive under \
+      the pre-correction campaign layout; task M01-ARCHIVE-DECISION corrected the layout and the \
+      entry follows the archive it was measured on); needs an original reference run under \
+      M12-C or the owner's ruling",
     ],
 )];
 
@@ -2240,23 +2257,24 @@ pub fn mission_scoped_unknowns(label: &MissionLabel) -> &'static [&'static str] 
 /// and the entry is settled by removing or re-measuring it here, the same
 /// way [`MISSION_SCOPED_UNKNOWNS`] entries are settled.
 const MISSION_SCOPED_CHECKLIST_OVERRIDES: &[(&str, &[(&str, &str)])] = &[(
-    "M01",
+    "M06",
     &[
         (
             "objective graph: not bound from original data at this stage",
-            "objective graph: measured for this mission — M01's control record declares 58 \
-             OBJECTIVE blocks and 358 fields, 308 of them recovered into the engine lifecycle \
-             model and 50 unrecovered and named (45 block-level control directives and 5 \
-             record-level directive fields, world-side operations the control lowering owns per \
-             the owner's 2026-10-10 ruling on #1219) (M01-B-OBJ); both terminal blocks — \
+            "objective graph: measured for this mission — the `zbd/c1c/m01` control record \
+             declares 58 OBJECTIVE blocks and 358 fields, 308 of them recovered into the engine \
+             lifecycle model and 50 unrecovered and named (45 block-level control directives \
+             and 5 record-level directive fields, world-side operations the control lowering \
+             owns per the owner's 2026-10-10 ruling on #1219) (M01-B-OBJ, which measured this \
+             archive while the pre-correction layout bound it to M01); both terminal blocks — \
              OBJECTIVE24 spelling INSTANTWIN and OBJECTIVE40 spelling INSTANTLOSS — load \
              dormant behind the -1 sentinel and wake only through the record's own effect graph \
              and observed world facts, and driven runs reach each terminal through the \
              production host (M01-B-WAKE). Residual: the in-play-bit writers, DEDG's \
              member-field rewrites, TRAVELERS' producers and the TICK_DEPENDS_ON_OBJ roots stay \
              untraced off the terminal paths, ObjectiveRecovery::program() still refuses this \
-             record by the declared-schema gap, and no original ordinary-play run exists — M01-C \
-             stays the settling stage",
+             record by the declared-schema gap, and no original ordinary-play run exists — \
+             M06-C stays the settling stage",
         ),
         (
             "script/native coverage: the mission opcode table is unmeasured, so F13-C probes \
@@ -2265,11 +2283,12 @@ const MISSION_SCOPED_CHECKLIST_OVERRIDES: &[(&str, &[(&str, &str)])] = &[(
              empty-signature-table premise does not describe this archive's control program — \
              the control member is a text directive program, classified through the F13-C \
              directive probe as 58 blocks, 353 directive sites and 43 distinct keys, of which \
-             41 are measured, 2 are terminal outcomes and 0 are unknown, so M01's control \
-             program is fully accounted (M01-B-OPC). Residual: the other reader members \
+             41 are measured, 2 are terminal outcomes and 0 are unknown, so this archive's \
+             control program is fully accounted (M01-B-OPC, measured on `zbd/c1c/m01` under the \
+             pre-correction layout). Residual: the other reader members \
              (aiv.zrd, targets.zrd and the rest) are still binary-probed with unestablished \
-             role, M01's INTERP loading body was not examined, and no numeric binary signature \
-             claim was written",
+             role, the archive's INTERP loading body was not examined, and no numeric binary \
+             signature claim was written",
         ),
         (
             "exact failure/success precedence: not measured",
@@ -2278,9 +2297,9 @@ const MISSION_SCOPED_CHECKLIST_OVERRIDES: &[(&str, &[(&str, &str)])] = &[(
              through its own measured wake chain under the host's measured per-tick order \
              (world observation, lifecycle timer pass, completion pass, completion effects), \
              and a driven run settles each terminal from the program's own Action::Finish, \
-             never a shortcut (M01-B-WAKE). Residual: no run reports both terminals' world \
-             facts, no original executable was run, and ordinary-play precedence stays with \
-             M01-C",
+             never a shortcut (M01-B-WAKE, driven on `zbd/c1c/m01`). Residual: no run reports \
+             both terminals' world facts, no original executable was run, and ordinary-play \
+             precedence stays with M06-C",
         ),
     ],
 )];
@@ -2429,7 +2448,9 @@ pub struct SourceContext {
     string_asset_sha256: String,
     /// Every localizable string of that asset.
     strings: StringCatalog,
-    /// The campaign, ordered by `(chapter, mission number)`.
+    /// The campaign, ordered by the `(chapter, mission)` each mission
+    /// archive's own data declares — never by directory digits, which are
+    /// storage coordinates only.
     campaign: Vec<CampaignMission>,
 }
 
@@ -2500,7 +2521,8 @@ impl SourceContext {
         &self.install_sha256
     }
 
-    /// The campaign, ordered by `(chapter, mission number)`.
+    /// The campaign, ordered by the `(chapter, mission)` each mission
+    /// archive's own data declares.
     pub fn campaign(&self) -> &[CampaignMission] {
         &self.campaign
     }
@@ -2595,8 +2617,8 @@ impl SourceContext {
 
         // --- campaign position: the localized titles form contiguous id
         // blocks, a block must be exactly as long as the campaign the
-        // directory layout declares, and the localized table must not
-        // contradict that layout. Anything else is not a position.
+        // mission archives declare, and the localized table must not
+        // contradict that campaign. Anything else is not a position.
         let agreement = self.join_agreement();
         let resolved = campaign_position_for(title_row.map(|row| row.id), &agreement);
         let position = resolved.as_ref().ok().copied();
@@ -2836,14 +2858,15 @@ impl SourceContext {
         })
     }
 
-    /// How many missions each chapter of the directory layout holds, in
-    /// chapter order.
+    /// How many missions each measured campaign chapter holds, in chapter
+    /// order.
     ///
-    /// The campaign is ordered by `(chapter, mission number)`, so this is the
-    /// run-length of its chapter numbers. It is one of the two shapes the
+    /// The campaign is ordered by the `(chapter, mission)` each archive's
+    /// sound-group codes declare, so this is the run-length of its chapter
+    /// codes. It is one of the two shapes the
     /// title→campaign join is checked against: the localized table groups its
     /// long mission names by region, and a block whose region groups fall into
-    /// these sizes describes the same campaign the layout declares.
+    /// these sizes describes the same campaign the archives declare.
     pub fn chapter_sizes(&self) -> Vec<usize> {
         let mut sizes: Vec<usize> = Vec::new();
         let mut previous: Option<u32> = None;
@@ -2859,7 +2882,7 @@ impl SourceContext {
     }
 
     /// Every maximal run of consecutive localized rows whose length equals
-    /// the campaign the directory layout declares, ascending by first row.
+    /// the campaign the mission archives declare, ascending by first row.
     ///
     /// A run is measured over the rows whose display text is not empty, so a
     /// row that decodes to nothing ends it. More than one run can be exactly
@@ -2940,8 +2963,8 @@ impl SourceContext {
         }
     }
 
-    /// What the localized table says about the campaign order the directory
-    /// layout declares, and whether the two agree.
+    /// What the localized table says about the campaign order the mission
+    /// archives declare, and whether the two agree.
     ///
     /// The join from a work order to a retail mission directory is an
     /// inference, and one campaign-length row run is not evidence for it: a
@@ -2949,9 +2972,10 @@ impl SourceContext {
     /// The installation offers a second structure to check it against — the
     /// region-prefixed long names — and its *grouping* is checkable without
     /// claiming what any region name means: a long-name block whose rows fall
-    /// into groups of the layout's per-chapter sizes describes a campaign laid
-    /// out the way this one is. When such a block disagrees, the join is not
-    /// established and no mission identity is derived from a title at all.
+    /// into groups of the campaign's per-chapter sizes describes a campaign
+    /// laid out the way this one is. When such a block disagrees, the join is
+    /// not established and no mission identity is derived from a title at
+    /// all.
     ///
     /// A second check is available whenever the installation carries more than
     /// one campaign-length row block: the blocks must name the same missions in
@@ -3123,14 +3147,14 @@ pub const NO_CONFIRMED_ROW_REFUSAL: &str =
 /// Why a confirmed localized row selects no campaign position when the
 /// localized table contradicts the campaign layout the join would follow.
 pub const CONTRADICTED_JOIN_REFUSAL: &str = "the localized mission-name rows do not fall into the \
-     campaign directory layout — either their region groups do not match its chapter sizes, or two \
-     campaign-length row blocks do not name the same missions in the same order — so the localized \
-     table contradicts the layout and no position was derived from the title";
+     campaign the mission archives declare — either their region groups do not match its chapter \
+     sizes, or two campaign-length row blocks do not name the same missions in the same order — \
+     so the localized table contradicts the campaign and no position was derived from the title";
 
 /// Why a confirmed localized row selects no campaign position when its row
 /// block is not as long as the campaign.
-pub const SHORT_ROW_BLOCK_REFUSAL: &str = "the localized row does not sit in a row block as long as the campaign the directory layout \
-     declares, so no campaign position was derived from the title";
+pub const SHORT_ROW_BLOCK_REFUSAL: &str = "the localized row does not sit in a row block as long as the campaign the mission archives \
+     declare, so no campaign position was derived from the title";
 
 /// Turns a confirmed localized title row into a campaign position.
 ///
@@ -3138,8 +3162,9 @@ pub const SHORT_ROW_BLOCK_REFUSAL: &str = "the localized row does not sit in a r
 /// [`None`] when no single row does. `agreement` is the localized table's
 /// account of the campaign. `Ok(index)` means the row sits in a row block
 /// exactly as long as the campaign *and* the localized table does not
-/// contradict the layout; the `Err` reason names which of the two failed, so
-/// a binding records what is missing instead of an empty identity.
+/// contradict the campaign the archives declare; the `Err` reason names
+/// which of the two failed, so a binding records what is missing instead of
+/// an empty identity.
 ///
 /// The whole rule is a pure function so it can be exercised on every arm —
 /// including the contradiction no retail installation produces — without an
@@ -3373,11 +3398,11 @@ pub enum JoinCorroboration {
     Disagreed,
 }
 
-/// The localized table's account of the campaign, and the layout's.
+/// The localized table's account of the campaign, and the archives'.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct JoinAgreement {
-    /// How many missions each chapter of the directory layout holds, in
-    /// chapter order.
+    /// How many missions each measured campaign chapter holds, in chapter
+    /// order.
     pub layout_chapters: Vec<usize>,
     /// Every campaign-length title block, ascending by first row.
     pub blocks: Vec<TitleBlock>,
@@ -3534,9 +3559,17 @@ fn mission_key(entry: &CampaignMission) -> String {
 }
 
 /// One campaign mission's program id key: the reader archive of the world
-/// group the mission is stored in.
+/// group the mission is stored in. The key names the *storage* path, not the
+/// declared campaign identity — `ZBD/C2/M01` declares campaign mission 2
+/// (`snd_c3-hw-m2`) yet names `script/c2-m01-zrdr`, because the program id is
+/// an asset identity and the asset lives at the storage coordinate.
 fn program_key(entry: &CampaignMission) -> String {
-    format!("{}-m{:02}-zrdr", entry.world_group, entry.mission_number)
+    entry
+        .program_asset
+        .strip_prefix("ZBD/")
+        .and_then(|rest| rest.strip_suffix("/zrdr.zbd"))
+        .map(|key| format!("{}-zrdr", key.to_lowercase().replace('/', "-")))
+        .unwrap_or_else(|| format!("{}-m{:02}-zrdr", entry.world_group, entry.mission_number))
 }
 
 /// Drops a leading presentation tag such as `[AB14I]` from a localized
@@ -3617,14 +3650,31 @@ fn map_provenance(error: cs_types::content::ProvenanceError) -> SourceBindingErr
     }
 }
 
-/// Walks `ZBD/<chapter><variant>/<mission>` and returns the campaign in
-/// `(chapter, mission number)` order.
+/// Walks `ZBD/<chapter><variant>/<mission>` and returns the campaign in the
+/// order the mission archives themselves declare.
 ///
-/// A chapter is a `ZBD/C<digits><letters>` directory and a mission is an
-/// `M<digits>` directory inside one of them. Mission numbers must be unique
-/// inside a chapter: two groups of one chapter holding the same mission
-/// number would make the mission's world ambiguous, so the whole layout is
-/// refused instead of picking one.
+/// A chapter *group* is a `ZBD/C<digits><letters>` directory and a mission
+/// directory is an `M<digits>` inside one of them. The directory digits are
+/// storage coordinates, not the campaign chapter: the retail installation
+/// keeps the first campaign chapter (Hawaii) under `ZBD/C3` and the second
+/// (Northwest) split across `ZBD/C1`, `ZBD/C1B` and `ZBD/C1C`, so the
+/// directory name cannot order the campaign (`docs/findings/` task
+/// M01-ARCHIVE-DECISION).
+///
+/// What orders the campaign is the mission's own program data. Every
+/// campaign `zrdr.zbd` names its dialogue and effect cues
+/// `snd_c<chapter>-<region>-m<mission>_<speaker>_<line>` — a spelling the
+/// mission's directives carry, so it survives being stored under a
+/// differently numbered directory. The strict majority of those spellings
+/// across an archive's members is that mission's `(chapter, mission)`
+/// identity, and the scan sorts by it.
+///
+/// A mission directory with no `zrdr.zbd`, an archive whose declared
+/// members cannot all be read, one whose members name no sound-group code,
+/// or one whose codes split evenly cannot be placed in the campaign: the
+/// whole layout is refused instead of guessed. Two archives declaring the
+/// same `(chapter, mission)` slot are ambiguous in the same way the old
+/// duplicate-number rule was, and are refused too.
 fn scan_campaign(install_root: &Path) -> Result<Vec<CampaignMission>, SourceBindingError> {
     let zbd = find_container_dir(install_root, "ZBD")?;
     let zbd_name = zbd
@@ -3635,7 +3685,7 @@ fn scan_campaign(install_root: &Path) -> Result<Vec<CampaignMission>, SourceBind
         path: zbd.display().to_string(),
         source,
     })?;
-    let mut chapters: Vec<(u32, String, PathBuf)> = Vec::new();
+    let mut groups: Vec<(String, PathBuf)> = Vec::new();
     for entry in entries {
         let entry = entry.map_err(|source| SourceBindingError::Io {
             path: zbd.display().to_string(),
@@ -3646,20 +3696,20 @@ fn scan_campaign(install_root: &Path) -> Result<Vec<CampaignMission>, SourceBind
             continue;
         }
         let name = entry.file_name().to_string_lossy().into_owned();
-        let Some(chapter) = chapter_number(&name) else {
+        if chapter_number(&name).is_none() {
             continue;
-        };
-        chapters.push((chapter, name, path));
+        }
+        groups.push((name, path));
     }
 
     let mut campaign: Vec<CampaignMission> = Vec::new();
     let mut seen = BTreeSet::new();
-    for (chapter, group, path) in chapters {
-        let groups = fs::read_dir(&path).map_err(|source| SourceBindingError::Io {
+    for (group, path) in groups {
+        let missions = fs::read_dir(&path).map_err(|source| SourceBindingError::Io {
             path: path.display().to_string(),
             source,
         })?;
-        for entry in groups {
+        for entry in missions {
             let entry = entry.map_err(|source| SourceBindingError::Io {
                 path: path.display().to_string(),
                 source,
@@ -3669,29 +3719,173 @@ fn scan_campaign(install_root: &Path) -> Result<Vec<CampaignMission>, SourceBind
                 continue;
             }
             let name = entry.file_name().to_string_lossy().into_owned();
-            let Some(mission_number) = mission_number(&name) else {
+            if mission_number(&name).is_none() {
                 continue;
-            };
-            if !seen.insert((chapter, mission_number)) {
+            }
+            let program_asset = format!("{zbd_name}/{group}/{name}/zrdr.zbd");
+            let program = mission_path.join("zrdr.zbd");
+            if !program.is_file() {
                 return Err(SourceBindingError::Inconsistent {
                     reason: format!(
-                        "chapter {chapter} stores mission {mission_number} in more than one world \
+                        "mission directory {program_asset} is absent, so no program archive \
+                         declares this mission's campaign identity"
+                    ),
+                });
+            }
+            let bytes = read_file(&program)?;
+            let (chapter, number) = mission_code(&program_asset, &bytes)?;
+            if !seen.insert((chapter, number)) {
+                return Err(SourceBindingError::Inconsistent {
+                    reason: format!(
+                        "chapter {chapter} stores mission {number} in more than one world \
                          group, so the mission's world is ambiguous"
                     ),
                 });
             }
-            let program = mission_path.join("zrdr.zbd");
             campaign.push(CampaignMission {
                 chapter,
-                mission_number,
+                mission_number: number,
                 world_group: group.to_ascii_lowercase(),
-                program_asset: format!("{zbd_name}/{group}/{name}/zrdr.zbd"),
-                program_present: program.is_file(),
+                program_asset,
+                program_present: true,
             });
         }
     }
     campaign.sort_by_key(|entry| (entry.chapter, entry.mission_number));
     Ok(campaign)
+}
+
+/// The `(chapter, mission)` identity one `zrdr.zbd` declares through its
+/// members' sound-group cue names.
+///
+/// `asset` is the archive's installation path, used for the relative-path
+/// probe and for naming the refusal; `bytes` is the whole archive. Every
+/// readable member's payload is scanned for the
+/// `snd_c<chapter>-<region>-m<mission>` spelling, and the identity with the
+/// strict majority wins. The scan never decodes: the cue spelling is a
+/// naming convention the payloads carry as plain bytes, measured on the
+/// retail installation, not a documented record layout.
+///
+/// # Errors
+///
+/// [`SourceBindingError::Inconsistent`] when the archive cannot be read as a
+/// reader archive, when any declared member fails its bounds check (the
+/// census must cover the whole declared payload), when no member names a
+/// sound-group code, or when the plurality is a tie.
+fn mission_code(asset: &str, bytes: &[u8]) -> Result<(u32, u32), SourceBindingError> {
+    let inconsistent = |reason: String| SourceBindingError::Inconsistent { reason };
+    let spelling = RelativePath::new(&asset.to_ascii_lowercase())
+        .map_err(|error| inconsistent(format!("{asset} is not a relative path: {error}")))?;
+    let mut context = ParseContext::with_defaults(asset);
+    let decision = dispatch(ZbdProbe::new(asset, &spelling, bytes))
+        .map_err(|error| inconsistent(format!("{asset} is not a known container: {error}")))?;
+    let index = read_version_one_index(&mut context, decision, bytes)
+        .map_err(|error| inconsistent(format!("{asset} has no readable member index: {error}")))?;
+    let table = index.member_table();
+    let archive = read_reader_archive(&mut context, &table, index.data())
+        .map_err(|error| inconsistent(format!("{asset} is not a reader archive: {error}")))?;
+    if archive.failures() > 0 {
+        return Err(inconsistent(format!(
+            "{asset} declares {} member(s) that fail their bounds check, so the campaign-identity \
+             census cannot cover the archive",
+            archive.failures()
+        )));
+    }
+    let mut counts: BTreeMap<(u32, u32), usize> = BTreeMap::new();
+    for entry in archive.entries() {
+        for (key, count) in sound_group_codes(entry.content()) {
+            *counts.entry(key).or_default() += count;
+        }
+    }
+    if counts.is_empty() {
+        return Err(inconsistent(format!(
+            "{asset} names no `snd_c<chapter>-<region>-m<mission>` sound group in any member, so \
+             the archive declares no campaign identity"
+        )));
+    }
+    let top = *counts.values().max().expect("the census is nonempty");
+    let winners: Vec<(u32, u32)> = counts
+        .iter()
+        .filter(|(_, count)| **count == top)
+        .map(|(key, _)| *key)
+        .collect();
+    match winners.as_slice() {
+        [only] => Ok(*only),
+        _ => Err(inconsistent(format!(
+            "{asset} names more than one sound-group code {top} times ({winners:?}), so its \
+             campaign identity is ambiguous"
+        ))),
+    }
+}
+
+/// The `snd_c<chapter>-<region>-m<mission>` spellings inside `bytes`, counted
+/// per `(chapter, mission)`.
+///
+/// One cue name looks like `snd_c1-HA-m1_Zachary_26`: `snd_c`, the chapter
+/// digits, a `-`, the region letters, `-m` (either case observed), the
+/// mission digits. The region is dropped on purpose — it decorates the
+/// identity the pair already carries — and a name whose digits run into the
+/// next word still counts, since the cue spelling is only ever a prefix of
+/// the `<speaker>_<line>` tail.
+fn sound_group_codes(bytes: &[u8]) -> BTreeMap<(u32, u32), usize> {
+    const PREFIX: &[u8] = b"snd_c";
+    let mut counts: BTreeMap<(u32, u32), usize> = BTreeMap::new();
+    let mut at = 0;
+    while at + PREFIX.len() <= bytes.len() {
+        match (
+            bytes[at..].starts_with(PREFIX),
+            sound_group_code_at(bytes, at + PREFIX.len()),
+        ) {
+            (true, Some((key, end))) => {
+                *counts.entry(key).or_default() += 1;
+                at = end;
+            }
+            _ => at += 1,
+        }
+    }
+    counts
+}
+
+/// The `(chapter, mission)` a `snd_c<chapter>-<region>-m<mission>` spelling
+/// declares when `start` sits just past `snd_c`, and the offset just past
+/// its mission digits.
+fn sound_group_code_at(bytes: &[u8], start: usize) -> Option<((u32, u32), usize)> {
+    let (chapter, mut cursor) = ascii_digits(bytes, start)?;
+    if bytes.get(cursor) != Some(&b'-') {
+        return None;
+    }
+    cursor += 1;
+    let region = cursor;
+    while bytes.get(cursor).is_some_and(u8::is_ascii_alphabetic) {
+        cursor += 1;
+    }
+    if cursor == region || bytes.get(cursor) != Some(&b'-') {
+        return None;
+    }
+    cursor += 1;
+    if !bytes
+        .get(cursor)
+        .is_some_and(|next| next.eq_ignore_ascii_case(&b'm'))
+    {
+        return None;
+    }
+    cursor += 1;
+    let (mission, cursor) = ascii_digits(bytes, cursor)?;
+    Some(((chapter, mission), cursor))
+}
+
+/// The `u32` the ASCII digit run at `start` spells and the offset just past
+/// it, or [`None`] when no digit sits there or the run overflows.
+fn ascii_digits(bytes: &[u8], start: usize) -> Option<(u32, usize)> {
+    let mut cursor = start;
+    let mut value = 0u32;
+    while let Some(digit) = bytes.get(cursor).filter(|b| b.is_ascii_digit()) {
+        value = value
+            .checked_mul(10)?
+            .checked_add(u32::from(*digit - b'0'))?;
+        cursor += 1;
+    }
+    (cursor > start).then_some((value, cursor))
 }
 
 /// The installation directory holding one container family, matched without
@@ -3722,7 +3916,11 @@ fn find_container_dir(install_root: &Path, wanted: &str) -> Result<PathBuf, Sour
     })
 }
 
-/// The chapter a `ZBD/C<digits><letters>` directory name declares.
+/// The storage-group digit a `ZBD/C<digits><letters>` directory name carries.
+///
+/// This is only the directory's shape check: the digit it returns is a
+/// storage coordinate, never the campaign chapter (the archive's own
+/// sound-group codes declare that).
 fn chapter_number(name: &str) -> Option<u32> {
     let rest = name.strip_prefix(['c', 'C'])?;
     let digits: String = rest.chars().take_while(char::is_ascii_digit).collect();
@@ -3736,7 +3934,11 @@ fn chapter_number(name: &str) -> Option<u32> {
     digits.parse().ok()
 }
 
-/// The mission number an `M<digits>` directory name declares.
+/// The storage-directory digit an `M<digits>` directory name carries.
+///
+/// This is only the directory's shape check: the digit it returns is a
+/// storage coordinate, never the campaign mission number (the archive's own
+/// sound-group codes declare that).
 fn mission_number(name: &str) -> Option<u32> {
     let rest = name.strip_prefix(['m', 'M'])?;
     if rest.is_empty() || !rest.chars().all(|ch| ch.is_ascii_digit()) {
