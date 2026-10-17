@@ -22,10 +22,8 @@
 //!   custom-aircraft class with the switch off (the switch never applies to
 //!   it). Nothing ships that could be mistaken for an old save.
 
-#[path = "f64_c_support/mod.rs"]
-mod f64_c;
-#[path = "f64_d_support/mod.rs"]
-mod f64_d;
+use crate::f64_c_support as f64_c;
+use crate::f64_d_support as f64_d;
 
 use cs_app::ui::import::ImportFlow;
 use cs_content::legacy_import::LayoutAdmission;

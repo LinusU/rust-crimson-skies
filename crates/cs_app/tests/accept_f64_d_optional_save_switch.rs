@@ -30,10 +30,8 @@
 //! designed layout admission; nothing in this file reads `$CS_GAME_DIR` (the
 //! retail test does, in its own file).
 
-#[path = "f64_c_support/mod.rs"]
-mod f64_c;
-#[path = "f64_d_support/mod.rs"]
-mod f64_d;
+use crate::f64_c_support as f64_c;
+use crate::f64_d_support as f64_d;
 
 use cs_app::profile::ProfileSession;
 use cs_app::ui::import::{FlowRefusal, ImportFlow, MigrationVerdict};

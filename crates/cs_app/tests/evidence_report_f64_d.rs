@@ -31,10 +31,8 @@
 //! a real run over the owner's installation, not a paraphrase of the
 //! acceptance assertions.
 
-#[path = "f64_c_support/mod.rs"]
-mod f64_c;
-#[path = "f64_d_support/mod.rs"]
-mod f64_d;
+use crate::f64_c_support as f64_c;
+use crate::f64_d_support as f64_d;
 
 use std::collections::VecDeque;
 use std::fs;

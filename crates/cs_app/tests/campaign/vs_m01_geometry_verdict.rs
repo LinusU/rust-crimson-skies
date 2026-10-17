@@ -33,8 +33,7 @@
 //! Nothing here is `verified_original`: the fixture is authored bytes, and the
 //! retail half reads the installation through production code.
 
-#[path = "../world/import_retail.rs"]
-mod world_import;
+use crate::world::import_retail as world_import;
 
 use std::path::PathBuf;
 

@@ -33,8 +33,7 @@
 //! (`tests/f64_c_support/`), so the two suites describe one source rather than
 //! two.
 
-#[path = "f64_c_support/mod.rs"]
-mod support;
+use crate::f64_c_support as support;
 
 use std::fs;
 

@@ -28,8 +28,7 @@
 //! `--include-ignored`) and measures what this installation can actually
 //! offer the import path today.
 
-#[path = "f64_c_support/mod.rs"]
-mod support;
+use crate::f64_c_support as support;
 
 use std::fs;
 
