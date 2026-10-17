@@ -235,6 +235,193 @@ fn accept_m01_window_world_diag_dump_terrain_meshes() {
     panic!("diagnostic dump only — read the stderr table");
 }
 
+/// A census of the whole container, independent of the world definition:
+/// node kinds, name prefixes, which nodes name a mesh, and the biggest meshes
+/// in the array — the question "does `gamez.zbd` hold island/terrain
+/// geometry at all, and who names it".
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_m01_window_world_diag_mesh_census() {
+    use std::collections::BTreeMap;
+
+    let root = game_dir();
+    let bytes = std::fs::read(root.join("ZBD/C1C/gamez.zbd")).expect("gamez.zbd reads");
+    let mut context = cs_formats::io::ParseContext::with_defaults("c1c/gamez.zbd");
+    let meshes = cs_formats::gamez::read_gamez_meshes(&mut context, "c1c/gamez.zbd", &bytes)
+        .expect("mesh section reads");
+    let nodes =
+        cs_formats::gamez::read_gamez_nodes(&mut context, &bytes).expect("node section reads");
+
+    let mut kinds: BTreeMap<String, usize> = BTreeMap::new();
+    let mut prefixes: BTreeMap<String, usize> = BTreeMap::new();
+    let mut world_lines = Vec::new();
+    let mut slot_users: BTreeMap<i32, Vec<String>> = BTreeMap::new();
+    let mut referenced = 0usize;
+    for node in &nodes.nodes {
+        *kinds.entry(format!("{}", node.kind.label())).or_insert(0) += 1;
+        let prefix: String = node
+            .name
+            .chars()
+            .take_while(|c| c.is_ascii_alphabetic())
+            .collect();
+        *prefixes.entry(prefix).or_insert(0) += 1;
+        let mesh = node.mesh_index();
+        if mesh >= 0 {
+            referenced += 1;
+            slot_users
+                .entry(mesh)
+                .or_default()
+                .push(format!("{}#{}", node.name, node.index));
+        }
+        if node.kind.label() == "world" {
+            world_lines.push(format!(
+                "world node {} name={} children={} {:?}",
+                node.index,
+                node.name,
+                node.children.len(),
+                node.kind
+            ));
+        }
+    }
+    eprintln!("c1c gamez: {} nodes, {} name a mesh", nodes.nodes.len(), referenced);
+    eprintln!("kinds: {kinds:?}");
+    eprintln!(
+        "name prefixes (top 30): {:?}",
+        {
+            let mut v: Vec<_> = prefixes.into_iter().collect();
+            v.sort_by(|a, b| b.1.cmp(&a.1));
+            v.into_iter().take(30).collect::<Vec<_>>()
+        }
+    );
+    for line in &world_lines {
+        eprintln!("{line}");
+    }
+
+    // Every mesh slot, by polygon count, with the node names that reference it.
+    let mut by_polys: Vec<(usize, u32, usize, String)> = Vec::new();
+    for (slot, entry) in meshes.meshes.iter().enumerate() {
+        let Some(entry) = entry else {
+            continue;
+        };
+        let polys = entry.mesh.polygons.len();
+        let corners: usize = entry.mesh.polygons.iter().map(|p| p.corners.len()).sum();
+        let users = slot_users
+            .get(&(slot as i32))
+            .map(|u| {
+                let mut u = u.clone();
+                u.sort();
+                u.into_iter().take(4).collect::<Vec<_>>().join(",")
+            })
+            .unwrap_or_default();
+        by_polys.push((polys, slot as u32, corners, users));
+    }
+    by_polys.sort_by(|a, b| b.0.cmp(&a.0));
+    eprintln!("--- 30 biggest meshes by polygon count ---");
+    for (polys, slot, corners, users) in by_polys.iter().take(30) {
+        eprintln!("mesh {slot}: polys={polys} corners={corners} users=[{users}]");
+    }
+
+    /// Vertex box of one mesh slot, and the material groups it stores.
+    fn mesh_box(meshes: &cs_formats::gamez::GameZMeshes, slot: u32) -> Option<([f32; 3], [f32; 3], Vec<u32>)> {
+        let entry = meshes.meshes.get(slot as usize).and_then(Option::as_ref)?;
+        let mut min = [f32::INFINITY; 3];
+        let mut max = [f32::NEG_INFINITY; 3];
+        for polygon in &entry.mesh.polygons {
+            for corner in &polygon.corners {
+                if let Some(position) = entry.mesh.positions.get(corner.position as usize) {
+                    for axis in 0..3 {
+                        min[axis] = min[axis].min(position[axis]);
+                        max[axis] = max[axis].max(position[axis]);
+                    }
+                }
+            }
+        }
+        let materials = entry
+            .material_groups
+            .iter()
+            .flatten()
+            .map(|g| g.material)
+            .collect();
+        Some((min, max, materials))
+    }
+
+    // Every node whose mesh has real vertical relief: the terrain, if the
+    // container holds any, is one of these.
+    let mut relief: Vec<(f32, u32, String)> = Vec::new();
+    for node in &nodes.nodes {
+        let index = node.mesh_index();
+        if index < 0 {
+            continue;
+        }
+        if let Some((min, max, materials)) = mesh_box(&meshes, index as u32) {
+            relief.push((
+                max[1] - min[1],
+                index as u32,
+                format!(
+                    "{}#{} x[{:.0},{:.0}] y[{:.0},{:.0}] z[{:.0},{:.0}] mats={:?}",
+                    node.name, node.index, min[0], max[0], min[1], max[1], min[2], max[2], materials
+                ),
+            ));
+        }
+    }
+    relief.sort_by(|a, b| b.0.total_cmp(&a.0));
+    eprintln!("--- 25 nodes whose mesh has the tallest y extent ---");
+    for (extent, slot, detail) in relief.iter().take(25) {
+        eprintln!("dy={extent:8.0} mesh {slot}: {detail}");
+    }
+
+    // The world node's own child list: what the import reads as the world's
+    // non-spatial content (horizon, terrain, fog volumes, vegetation).
+    eprintln!("--- world node 0 child list ({} entries) ---", nodes.nodes[0].children.len());
+    for child in &nodes.nodes[0].children {
+        if let Some(node) = nodes.get(*child) {
+            eprintln!(
+                "  child {} {} mesh={} children={}",
+                node.index,
+                node.name,
+                node.mesh_index(),
+                node.children.len()
+            );
+        }
+    }
+
+    // The materials the far-terrain/horizon meshes bind.
+    let materials = cs_formats::gamez::read_gamez_materials(&mut context, "c1c/gamez.zbd", &bytes)
+        .expect("material section reads");
+    for index in 148u32..=158 {
+        if let Some(material) = materials.material(index) {
+            let texture = materials
+                .texture_of(material)
+                .map(|t| t.name.as_str())
+                .unwrap_or("<none>");
+            eprintln!(
+                "material {index}: kind={:?} texture_index={} texture={texture}",
+                material.kind(),
+                material.record.texture_index
+            );
+        }
+    }
+
+    // Who owns the huge terrain-shaped records, and who owns a water tile.
+    eprintln!("--- parentage of the tall records and one water tile ---");
+    for slot in [642u32, 791, 792, 793, 794, 796, 952] {
+        if let Some(node) = nodes.get(slot) {
+            let parent = node.parent.and_then(|p| nodes.get(p)).map_or_else(
+                || "ROOT".to_owned(),
+                |p| format!("{}#{} ({})", p.name, p.index, p.kind.label()),
+            );
+            eprintln!(
+                "  node {} {} mesh={} parent={}",
+                node.index,
+                node.name,
+                node.mesh_index(),
+                parent
+            );
+        }
+    }
+    panic!("diagnostic dump only — read the stderr census");
+}
+
 /// Reads `ZBD/C1C/rtexture10.zbd` (the tier the mission's texture archive
 /// picks) straight off disk — no install discovery — and prints every stored
 /// texture's name, extent and mean decoded colour, so the "is the terrain
