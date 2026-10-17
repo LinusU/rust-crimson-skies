@@ -99,7 +99,11 @@ pub const CLIMB_APPROACH_S: f64 = 2.0;
 /// behavior 2. The value is designed: with the bank-hold time constant the
 /// inner loop settles to, it puts the linearised heading loop near critical
 /// damping, so a displaced actor converges onto its marker instead of
-/// oscillating across the route.
+/// oscillating across the route. The gain applies to the **route's** heading
+/// error while the follower flies on it; a committed deviation instead is
+/// flown at the step's own declared rate (task #761), because the bounded
+/// per-tick yaw change a dodge commits is a rate bound, not an error a
+/// proportional loop can close against.
 pub const HEADING_LOOP_GAIN_PER_S: f64 = 1.0;
 
 /// The climb-rate error, in meters per second, that commands full pitch
@@ -1341,7 +1345,22 @@ impl Navigator {
             progress = progress.advanced(route);
         }
 
-        let command = self.command_for(state, heading_error_rad, &step);
+        // The command follows the step the follower actually committed: while
+        // `Deviating` that is the bounded offset heading that clears the
+        // blocker, not the straight line to the target, and while `Blocked` the
+        // stationary step carries the aircraft's own heading, so a held
+        // aircraft is asked to roll level, not to hold whatever bank it had
+        // (task #761 — before it, the command read the target's heading error
+        // either way and a deviating plan never reached the body).
+        let committed_error_rad = wrap_pi(step.heading_rad - state.heading_rad);
+        let command = self.command_for(
+            state,
+            heading_error_rad,
+            committed_error_rad,
+            &step,
+            request.dt_s,
+            avoidance,
+        );
         Ok(NavigationDecision {
             tick: request.tick,
             generation: request.generation,
@@ -1415,15 +1434,38 @@ impl Navigator {
 
     /// The bounded flight command for one committed step.
     ///
-    /// The command is a **cascade** (task #526). An outer heading loop turns
-    /// the heading error into the turn rate a coordinated turn needs at the
+    /// The command is a **cascade** (task #526). An outer heading loop turns a
+    /// heading demand into the turn rate a coordinated turn needs at the
     /// measured speed, and so into the bank that produces it:
     ///
     /// ```text
-    /// omega = clamp(GAIN * heading_error, +/- max_yaw_rate)
+    /// omega = clamp(demand, +/- max_yaw_rate)
     /// bank  = clamp(atan(omega * V / g), +/- max_bank)   // nose-left positive
     /// phi   = -bank                                      // right-wing-down
     /// ```
+    ///
+    /// The demand itself is the step the follower actually committed (task
+    /// #761 — before it, the cascade always read the *target's* heading error,
+    /// so a deviating plan never reached the body):
+    ///
+    /// * on a route step the demand is the #526 proportional law,
+    ///   `GAIN * heading_error_rad`: the committed step flies toward the
+    ///   target, and closing the whole route error at the loop's designed
+    ///   damping is what a displaced actor rejoins with;
+    /// * on a committed **deviation** the demand is the step's own declared
+    ///   rate, `committed_error / dt`: the bounded per-tick yaw change a dodge
+    ///   commits is a *rate bound*, not an error a proportional loop can close
+    ///   against — measured as an error it is 120 times too weak to move the
+    ///   body, and spread as one it saturates the bank into a divergent spiral
+    ///   (measured: the t526 rejoin scenario under `committed / dt` for every
+    ///   step never reaches its marker; the banked turn never rolls out).
+    ///   Flown at its own rate only while the deviation lasts, the dodge
+    ///   reaches the body without winding up the outer loop;
+    /// * on a **blocked** hold the committed change is exactly zero — the
+    ///   stationary step carries the aircraft's own heading — so the demand is
+    ///   zero and the inner loop rolls the aircraft to wings-level rather
+    ///   than holding whatever bank it happened to keep (the behaviour this
+    ///   task pins).
     ///
     /// An inner bank loop then closes the **measured** bank
     /// ([`NavState::bank_rad`]) against `phi` with a proportional roll-rate
@@ -1454,7 +1496,8 @@ impl Navigator {
     /// The pitch channel is the same cascade one level down: the outer
     /// vertical loop has already committed the climb/dive rate in
     /// [`RouteStep::climb_mps`], and the inner loop closes the **measured**
-    /// vertical speed against it,
+    /// vertical speed against it — `0` for a hold, so a blocked aircraft's
+    /// sink or climb is damped out rather than kept:
     ///
     /// ```text
     /// pitch = clamp((step.climb - state.climb) / CLIMB_LOOP_FULL_SCALE_MPS, +/- 1)
@@ -1466,31 +1509,30 @@ impl Navigator {
         &self,
         state: NavState,
         heading_error_rad: f64,
+        committed_error_rad: f64,
         step: &RouteStep,
+        dt_s: f64,
+        avoidance: AvoidanceState,
     ) -> FlightInput {
         let max_bank = self.envelope.max_bank_rad;
-        // A stationary step (blocked or held) asks for no turn and no climb,
-        // and what it must hold is exactly what it already has: both inner
-        // loops see zero error, so the roll and pitch commands are zero and
-        // the command stays neutral.
-        let stationary = step_dt(step) <= 0.0;
-        let desired_bank = if stationary {
-            state.bank_rad
-        } else {
-            let turn_rate = (HEADING_LOOP_GAIN_PER_S * heading_error_rad).clamp(
+        let turn_rate = if matches!(
+            avoidance,
+            AvoidanceState::Deviating | AvoidanceState::Blocked
+        ) {
+            (committed_error_rad / dt_s).clamp(
                 -self.envelope.max_yaw_rate_radps,
                 self.envelope.max_yaw_rate_radps,
-            );
-            coordinated_bank_rad(&self.envelope, turn_rate, state.speed_mps)
-        };
-        let roll = ((desired_bank - state.bank_rad) / (0.5 * max_bank)).clamp(-1.0, 1.0);
-        let desired_climb = if stationary {
-            state.climb_mps
+            )
         } else {
-            step.climb_mps
+            (HEADING_LOOP_GAIN_PER_S * heading_error_rad).clamp(
+                -self.envelope.max_yaw_rate_radps,
+                self.envelope.max_yaw_rate_radps,
+            )
         };
+        let desired_bank = coordinated_bank_rad(&self.envelope, turn_rate, state.speed_mps);
+        let roll = ((desired_bank - state.bank_rad) / (0.5 * max_bank)).clamp(-1.0, 1.0);
         let pitch =
-            ((desired_climb - state.climb_mps) / CLIMB_LOOP_FULL_SCALE_MPS).clamp(-1.0, 1.0);
+            ((step.climb_mps - state.climb_mps) / CLIMB_LOOP_FULL_SCALE_MPS).clamp(-1.0, 1.0);
         let throttle = (step.speed_mps / self.envelope.max_speed_mps).clamp(0.0, 1.0);
         FlightInput::try_new(pitch, roll, 0.0, throttle, false)
             .expect("every bounded command lies inside the declared input ranges")
