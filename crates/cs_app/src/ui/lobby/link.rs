@@ -14,14 +14,17 @@
 //! **What this link is, and what it is not.** The link holds a real
 //! [`Lobby`], so it is the production path a *host* runs: the host's own
 //! screen drives the authoritative record through it, and a joining player's
-//! [`JoinRequest`] is admitted by that same [`Lobby::admit`]. Carrying those
-//! requests to a lobby in **another process** needs the F54 session wire;
-//! `cs_net::message`/`lifecycle` are outside this task's owner paths and the
-//! lobby envelope is still not carried (follow-up #763, `F55-BU1-WIRE`). So
-//! today the endpoint behind a join form is a lobby in this process, and no
-//! claim of remote joining is made for F55-C. Resolving the join form's
-//! direct address into an endpoint — and LAN discovery — is likewise not
-//! implemented here.
+//! [`JoinRequest`] is admitted by that same [`Lobby::admit`]. Lobby *packets*
+//! from a client in **another process** now cross the F54 session wire
+//! (F55-BU1-WIRE: `ClientSession::send_lobby` → `ServerSession`, which
+//! dispatches to [`Lobby::receive_bytes`]), and the host's events come back
+//! to [`super::LobbyView::observe_session`]. What this link still does not do
+//! is the *join*: admission stays a [`Lobby::admit`] call on the host, and
+//! binding the new member to its session peer
+//! (`ServerSession::bind_lobby_member`) is the application's step, so no
+//! claim of remote joining from the join form is made. Resolving the join
+//! form's direct address into an endpoint — and LAN discovery — is likewise
+//! not implemented here.
 
 use std::fmt;
 

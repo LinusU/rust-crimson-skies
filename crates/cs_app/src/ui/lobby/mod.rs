@@ -24,7 +24,9 @@ pub mod screen;
 
 use std::collections::BTreeSet;
 
+use cs_net::lifecycle::ClientNotice;
 use cs_net::lobby::{ChatText, LobbyEvent, Revision, RevokeReason};
+use cs_net::message::LobbyRefusal;
 use cs_types::net::PeerId;
 
 pub use link::{HostSettings, LobbyLink};
@@ -66,6 +68,12 @@ pub enum Notice {
     },
     /// A pending launch was cancelled.
     LaunchCancelled,
+    /// The host refused a packet this client sent (F55-BU1-WIRE); the lobby
+    /// is unchanged and the player may correct and retry.
+    PacketRefused {
+        /// The class of refusal the host reported.
+        refusal: LobbyRefusal,
+    },
 }
 
 impl Notice {
@@ -90,6 +98,12 @@ impl Notice {
             Self::MemberJoined { peer } => format!("{peer} joined"),
             Self::MemberLeft { peer } => format!("{peer} left"),
             Self::LaunchCancelled => "Launch cancelled".to_owned(),
+            Self::PacketRefused { refusal } => match refusal {
+                LobbyRefusal::StaleRevision => {
+                    "The host refused that: the rules changed meanwhile".to_owned()
+                }
+                other => format!("The host refused that ({})", other.label()),
+            },
         }
     }
 }
@@ -150,6 +164,27 @@ impl LobbyView {
             LobbyEvent::LaunchCancelled => Notice::LaunchCancelled,
             _ => return,
         };
+        self.push(notice);
+    }
+
+    /// Projects what a session client pump observed: every lobby event the
+    /// host published reaches [`Self::observe`], and a refusal of this
+    /// client's own packet becomes a [`Notice::PacketRefused`]. Notices that
+    /// are not about the lobby are ignored. The session already deduplicated
+    /// the events by their `EventId`, so each is observed once.
+    pub fn observe_session(&mut self, notices: &[ClientNotice]) {
+        for notice in notices {
+            match notice {
+                ClientNotice::Lobby { event, .. } => self.observe(event),
+                ClientNotice::LobbyRefused { refusal, .. } => {
+                    self.push(Notice::PacketRefused { refusal: *refusal });
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn push(&mut self, notice: Notice) {
         if self.notices.len() == MAX_NOTICES {
             self.notices.remove(0);
         }
