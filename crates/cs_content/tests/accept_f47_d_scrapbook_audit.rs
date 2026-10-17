@@ -36,7 +36,7 @@ use cs_content::catalog::Catalog;
 use cs_content::catalog::baseline::{install_file_key, retail_baseline};
 use cs_content::scrapbook::{
     DiscoveredScrapbook, EntryKind, EntryVisibility, ReplayLink, ScrapbookCatalog, ScrapbookEntry,
-    ScrapbookSourceError, Unlock, UnlockFact, UnlockFactKind, audit,
+    ScrapbookSourceError, Unlock, UnlockFact, UnlockFactKind, audit, declare, resource_names,
 };
 use cs_formats::{DIRECTORY_HEADER_BYTES, FLAG_DIRECTORY, RECORD_BYTES};
 use cs_types::content::{
@@ -881,22 +881,36 @@ fn accept_f47_d_retail_the_installation_scrapbook_is_discovered_and_audited() {
         "F14-D.8's catalog rows and this discovery name the same 461 items"
     );
 
-    let declared = ScrapbookCatalog::new(Vec::new()).expect("an empty declaration");
+    // F47-C2's declared catalog: the same records through the production
+    // declaration path, so the audit's declared/undeclared numbers name the
+    // runtime catalog rather than an empty one.
+    let names = resource_names(&game_dir).expect("the installation's resource headers read");
+    let declared = declare(&discovered, &|name| names.get(name).copied())
+        .expect("the production declaration builds")
+        .catalog;
     let report = audit(&discovered, &declared, &baseline.catalog);
     assert_eq!(report.progression_missions, 24, "the campaign's missions");
-    assert_eq!(report.declared, 0, "the runtime declares no entry yet");
     assert_eq!(
-        report.undeclared_items, 461,
-        "every original item is undeclared: the gap is reported, never hidden"
+        report.declared, 461,
+        "the runtime declares one entry per discovered item"
+    );
+    assert_eq!(report.declared_matched, 461);
+    assert_eq!(
+        report.undeclared_items, 0,
+        "no original item is undeclared any more"
     );
     assert_eq!(report.unlock_known, 0);
+    assert_eq!(
+        report.unlock_unknown, 461,
+        "every unlock stays an explicit unknown: no rule is invented"
+    );
     assert_eq!(report.replay_links, 0);
     assert_eq!(report.declared_mementos, 0);
     assert_eq!(report.pages, 25);
     assert_eq!(report.items_without_artwork, 167);
     assert!(
         !report.is_complete(),
-        "the audit must report the declared catalog as incomplete, not pass"
+        "the audit stays incomplete: the unlock rules are unmeasured, not missing"
     );
     let json = report.json();
     assert_parses_as_json(&json);
@@ -904,7 +918,8 @@ fn accept_f47_d_retail_the_installation_scrapbook_is_discovered_and_audited() {
         "\"records\": 461",
         "\"pages\": 25",
         "\"progression_missions\": 24",
-        "\"undeclared_items\": 461",
+        "\"declared\": 461",
+        "\"undeclared_items\": 0",
         "\"original_unlock_fields\": 0",
         "\"original_replay_fields\": 0",
         "\"original_memento_records\": 0",

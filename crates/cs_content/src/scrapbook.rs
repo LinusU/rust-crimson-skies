@@ -54,12 +54,15 @@ use std::path::Path;
 
 use cs_assets::rof::mount_rof_into;
 use cs_assets::vfs::{INSTALL_NAMESPACE, MountBuilder, SessionBuilder};
+use cs_formats::text::resource_header::read_resource_header;
 use cs_types::asset_id::{AssetKey, MountId, MountNamespace, PrecedenceClass, ResolveContext};
 use cs_types::content::{ContentId, ContentKind, Resolved};
+use cs_types::evidence::ClaimId;
 
 use crate::catalog::Catalog;
 use crate::catalog::baseline::{SCRAPBOOK_CONTAINER, SCRAPBOOK_MEMBER, install_file_key};
 use crate::config::{ConfigDocument, RecordSchema, RecordView};
+use crate::weapons::ORIGINAL_RESOURCE_HEADER;
 
 /// The deepest accepted `All`/`Any` nesting.
 pub const MAX_UNLOCK_DEPTH: usize = 8;
@@ -870,6 +873,12 @@ impl DiscoveredScrapbook {
             .count()
     }
 
+    /// Every item in the table's own order: pages in page order, items in
+    /// member-line order inside their page.
+    pub fn items(&self) -> impl Iterator<Item = &DiscoveredItem> {
+        self.pages.iter().flat_map(|page| &page.items)
+    }
+
     /// The pages the container holds no picture for.
     #[must_use]
     pub fn pages_without_artwork(&self) -> Vec<u32> {
@@ -1218,6 +1227,296 @@ fn collect_facts<'a>(unlock: &'a Unlock, out: &mut Vec<&'a UnlockFact>) {
             }
         }
     }
+}
+
+// --------------------------------------- declared runtime catalog ----
+
+/// The claim every unknown [`Unlock`] [`declare`] writes carries: the
+/// `Objective` column is parsed but its meaning is unmeasured, so no rule
+/// is declared in its place.
+const CLAIM_DECLARED_UNLOCK: &str = "f47.c2.declared_scrapbook.unlock_unmeasured";
+
+/// Why [`declare`] could not build a catalog.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum DeclareError {
+    /// A resource-header member could not be read out of
+    /// [`SCRAPBOOK_CONTAINER`]: the reason names the member, so a missing
+    /// resource header is never mistaken for a missing scrapbook table.
+    ResourceHeader {
+        /// Why — the failing step and the member it failed on.
+        reason: String,
+    },
+    /// A discovered item has no field the schema can carry:
+    /// [`DiscoveredItem::id_key`] is `None` (the record's key is not UTF-8),
+    /// so no `scrapbook_item` id names it.
+    UncoveredItem {
+        /// The record's raw key.
+        key: String,
+    },
+    /// A field does not form the [`ContentId`] its role needs.
+    Identity {
+        /// The item the field belongs to.
+        item: String,
+        /// The role (`entry id`, `title` or `image`).
+        role: &'static str,
+        /// Why.
+        reason: String,
+    },
+    /// The assembled entries failed [`ScrapbookCatalog`] validation — a
+    /// duplicate entry id, say — which [`audit`] would then misread as a
+    /// declaration gap, so the build refuses instead.
+    Catalog(ScrapbookError),
+}
+
+impl fmt::Display for DeclareError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::ResourceHeader { reason } => {
+                write!(f, "a scrapbook resource header cannot be read: {reason}")
+            }
+            Self::UncoveredItem { key } => write!(
+                f,
+                "scrapbook item {key:?} has no UTF-8 id key, so no declared entry can name it"
+            ),
+            Self::Identity { item, role, reason } => write!(
+                f,
+                "scrapbook item {item:?}: the {role} is not a content id: {reason}"
+            ),
+            Self::Catalog(error) => write!(f, "the declared scrapbook catalog is invalid: {error}"),
+        }
+    }
+}
+
+impl std::error::Error for DeclareError {}
+
+/// What [`declare`] built: the runtime catalog plus what the build could
+/// not resolve, so the unresolved state stays inspectable rather than
+/// disappearing into an id.
+#[derive(Clone, Debug)]
+pub struct DeclaredScrapbook {
+    /// One [`ScrapbookEntry`] per [`DiscoveredItem`], in the table's own
+    /// order.
+    pub catalog: ScrapbookCatalog,
+    /// The entries whose `TitleResID` name [`ORIGINAL_RESOURCE_HEADER`]
+    /// does not define (or defines ambiguously): their `title` id keeps
+    /// the unresolved name in its key instead of a string-table number.
+    pub unresolved_titles: Vec<ContentId>,
+}
+
+/// The second resource header the archive holds: the member the
+/// `IDS_SB_*`/`IDS_NT_*` scrapbook names are actually defined in
+/// ([`ORIGINAL_RESOURCE_HEADER`] carries only 24 of them, `RESRC1.H` the
+/// other 172 — measured by enumerating the container's `*.H` members).
+const RESOURCE_HEADER_MEMBER_RESRC1: &str = "ASSETS/SCRIPTS/RESRC1.H";
+
+/// The resource-header members `TitleResID`/`TextResID` names resolve
+/// through: both headers the measured archive holds.
+const RESOURCE_HEADER_MEMBERS: &[&str] = &[ORIGINAL_RESOURCE_HEADER, RESOURCE_HEADER_MEMBER_RESRC1];
+
+/// Reads `member`'s decoded bytes out of
+/// [`SCRAPBOOK_CONTAINER`] — the same inventory and ROF mount
+/// [`DiscoveredScrapbook::discover`] performs — so a missing or unreadable
+/// header is an error, never an empty name table.
+fn resource_header_bytes(install_root: &Path, member: &str) -> Result<Vec<u8>, DeclareError> {
+    let fail = |reason: String| DeclareError::ResourceHeader { reason };
+    let found = cs_assets::install::discover(install_root)
+        .map_err(|error| fail(format!("the installation cannot be inventoried: {error}")))?;
+    let install = cs_assets::install::fingerprint(&found.manifest);
+    let record = found
+        .manifest
+        .files
+        .iter()
+        .find(|record| {
+            record
+                .relative_spelling
+                .as_str()
+                .eq_ignore_ascii_case(SCRAPBOOK_CONTAINER)
+        })
+        .ok_or_else(|| {
+            fail(format!(
+                "the installation inventories no {SCRAPBOOK_CONTAINER}, so \
+                 {member} has no bytes to read"
+            ))
+        })?;
+    let path = install_root.join(record.relative_spelling.as_str());
+    let mut builder = SessionBuilder::new(ResolveContext::new(install));
+    let mount = MountBuilder::new(
+        MountId::new("rof-scrapbook").map_err(|error| fail(error.to_string()))?,
+        MountNamespace::new(INSTALL_NAMESPACE).map_err(|error| fail(error.to_string()))?,
+        PrecedenceClass::Shared,
+        SCRAPBOOK_CONTAINER,
+    )
+    .retail();
+    let source = mount_rof_into(&mut builder, mount, &path).map_err(|error| {
+        fail(format!(
+            "{SCRAPBOOK_CONTAINER} does not mount as an ROF container: {error}"
+        ))
+    })?;
+    let key = AssetKey::from_spelling(source.namespace().as_str(), member, "default")
+        .map_err(|error| fail(error.to_string()))?;
+    source.member(&key).cloned().ok_or_else(|| {
+        fail(format!(
+            "{SCRAPBOOK_CONTAINER} holds no {member} member, so the \
+             scrapbook's resource names cannot be resolved"
+        ))
+    })?;
+    source
+        .read(&key)
+        .map(|read| read.data.as_slice().to_vec())
+        .map_err(|error| fail(format!("the member {member} does not decode: {error}")))
+}
+
+/// The resource names the archive's headers define, each mapped to the id
+/// its single `#define` names — the join the `TitleResID` field of a
+/// discovered record needs before its name can become a
+/// `string_resource/<n>` id.
+///
+/// The scrapbook names live mostly in `ASSETS/SCRIPTS/RESRC1.H`; the
+/// measured archive holds exactly the two `*.H` members
+/// [`RESOURCE_HEADER_MEMBERS`] reads. A name defined more than once across
+/// them, or whose one define names no id, is absent rather than guessed:
+/// [`ResourceHeader::resource_id`]'s own "missing or ambiguous → `None`"
+/// rule, generalized across the headers.
+///
+/// # Errors
+///
+/// [`DeclareError::ResourceHeader`]: the archive cannot be mounted or a
+/// member cannot be read or decoded — a missing header is an error, never
+/// an empty name table.
+pub fn resource_names(install_root: &Path) -> Result<BTreeMap<Vec<u8>, u32>, DeclareError> {
+    let mut counts: BTreeMap<Vec<u8>, usize> = BTreeMap::new();
+    let mut names = BTreeMap::new();
+    for member in RESOURCE_HEADER_MEMBERS {
+        let bytes = resource_header_bytes(install_root, member)?;
+        let mut context = cs_formats::ParseContext::with_defaults(*member);
+        let header = read_resource_header(&mut context, &bytes).map_err(|error| {
+            DeclareError::ResourceHeader {
+                reason: format!("{member}: {error}"),
+            }
+        })?;
+        for define in header.defines() {
+            *counts.entry(define.name.to_vec()).or_default() += 1;
+            if let Some(id) = define.resource_id() {
+                names.insert(define.name.to_vec(), id);
+            }
+        }
+    }
+    names.retain(|name, _| counts.get(name.as_slice()) == Some(&1));
+    Ok(names)
+}
+
+/// Declares the runtime [`ScrapbookCatalog`] the discovered original table
+/// states: one [`ScrapbookEntry`] per [`DiscoveredItem`], keyed by
+/// `scrapbook_item/<install_file_key(entry_key)>` so it joins F14-D.8's
+/// baseline rows and this stage's discovery.
+///
+/// `resource_id` resolves a `TitleResID` name to its string-table number —
+/// the production call is [`resource_names`] over the original
+/// installation's own headers; a caller without headers passes a resolver
+/// that answers `None` and every named title lands in
+/// [`DeclaredScrapbook::unresolved_titles`].
+///
+/// Only what the bytes state is declared:
+///
+/// * `title` — a decimal `TitleResID` (the table's `"0"` spelling, and an
+///   empty field as the same null resource id) becomes
+///   `string_resource/<n>`; an `IDS_*` name `resource_id` answers becomes
+///   `string_resource/<n>`; a name it does not answer keeps the name
+///   itself escaped in the key — the dead reference is the name the table
+///   stated, and it is reported in [`DeclaredScrapbook::unresolved_titles`].
+/// * `image` — the item's preferred capture member ([`DiscoveredItem::capture`]),
+///   or `None` when the installation holds no decodable picture: the state
+///   the archive carries, never a placeholder.
+/// * `unlock` — [`Resolved::Unknown`] under [`CLAIM_DECLARED_UNLOCK`]:
+///   `Objective` is parsed but its meaning is unmeasured, so no rule is
+///   invented, and an unknown rule never unlocks.
+/// * `kind` — [`EntryKind::Page`] for every record: the `Objective`
+///   discriminator's meaning is unmeasured, so no record is read as a
+///   stunt photo, kill trophy or memento. The table holds no memento
+///   records ([`ORIGINAL_MEMENTO_RECORDS`]), so none are declared.
+/// * `visibility` — [`EntryVisibility::Shown`]: whether the original hides
+///   locked entries is unmeasured; the visible-but-never-unlocked state is
+///   what the table proves.
+/// * `replay` — `None`: the table carries no measured replay-mission
+///   field ([`ORIGINAL_REPLAY_FIELDS`]).
+/// * `text` — the `TextResID` field has no slot in [`ScrapbookEntry`]'s
+///   schema and is not carried; `docs/findings/` records that limitation.
+///
+/// # Errors
+///
+/// [`DeclareError`]: an item's key has no id the schema covers
+/// ([`DiscoveredItem::id_key`] is `None`), a field does not form the id
+/// its role needs, or the assembled entries fail [`ScrapbookCatalog`]
+/// validation.
+pub fn declare(
+    discovered: &DiscoveredScrapbook,
+    resource_id: &impl Fn(&[u8]) -> Option<u32>,
+) -> Result<DeclaredScrapbook, DeclareError> {
+    let unlock_claim =
+        ClaimId::new(CLAIM_DECLARED_UNLOCK).expect("the claim constant is a valid claim id");
+    let unlock_reason = "the table's Objective column is parsed but its meaning is unmeasured, \
+                         so no unlock rule is declared";
+
+    let mut entries = Vec::new();
+    let mut unresolved_titles = Vec::new();
+    for item in discovered.items() {
+        let identity =
+            |role: &'static str, error: cs_types::content::ContentIdError| DeclareError::Identity {
+                item: item.key.clone(),
+                role,
+                reason: error.to_string(),
+            };
+        let id_key = item
+            .id_key
+            .as_deref()
+            .ok_or_else(|| DeclareError::UncoveredItem {
+                key: item.key.clone(),
+            })?;
+        let id = ContentId::from_source(ContentKind::ScrapbookItem, id_key)
+            .map_err(|error| identity("entry id", error))?;
+
+        let field = item.title.as_str();
+        let (title_key, resolved) = if field.is_empty() {
+            ("0".to_owned(), true)
+        } else if let Ok(number) = field.parse::<u32>() {
+            (number.to_string(), true)
+        } else if let Some(number) = resource_id(field.as_bytes()) {
+            (number.to_string(), true)
+        } else {
+            (install_file_key(field), false)
+        };
+        let title = ContentId::from_source(ContentKind::StringResource, &title_key)
+            .map_err(|error| identity("title", error))?;
+        if !resolved {
+            unresolved_titles.push(id.clone());
+        }
+
+        let image = item
+            .capture
+            .as_ref()
+            .map(|member| ContentId::from_source(ContentKind::Image, &install_file_key(member)))
+            .transpose()
+            .map_err(|error| identity("image", error))?;
+
+        let unlock = Resolved::unknown(unlock_claim.clone(), unlock_reason)
+            .expect("the reason is a non-empty constant");
+
+        entries.push(ScrapbookEntry {
+            id,
+            kind: EntryKind::Page,
+            title,
+            image,
+            unlock,
+            visibility: EntryVisibility::Shown,
+            replay: None,
+        });
+    }
+
+    let catalog = ScrapbookCatalog::new(entries).map_err(DeclareError::Catalog)?;
+    Ok(DeclaredScrapbook {
+        catalog,
+        unresolved_titles,
+    })
 }
 
 /// A JSON string literal: quoted and escaped, so no identifier can break out

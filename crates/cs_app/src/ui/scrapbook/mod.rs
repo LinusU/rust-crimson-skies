@@ -40,9 +40,16 @@
 //! ([`project`], [`resolve_saved`], [`replay_request`]) and reads the
 //! persisted records through [`stored`], so the producer and the consumer of
 //! this feature are the same production path the rest of the game uses.
+//!
+//! Stage `### F47-C2` adds [`declared_inputs`]: the production build of the
+//! [`ScrapbookInputs`](crate::ui::front_end::ScrapbookInputs) a front end
+//! carries — the installed original table discovered, its resource names read
+//! and the records declared into the catalog the screen projects.
 
+mod declared;
 mod paged;
 
+pub use declared::{DeclaredScrapbookError, declared_inputs};
 pub use paged::{
     LaunchError, PageError, Refresh, ReplayLaunch, ScopeFailure, ScrapbookUi, SelectError,
 };
