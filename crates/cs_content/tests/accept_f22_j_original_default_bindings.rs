@@ -24,11 +24,9 @@
 //! ignored retail tests need `CS_GAME_DIR` and `CS_ENGINE_IMAGE` and fail
 //! loudly (not silently) without them.
 
-#[path = "f22_j_support/mod.rs"]
-mod support;
+use crate::f22_j_support as support;
 
-#[path = "f22_h_support/mod.rs"]
-mod f22_h;
+use crate::f22_h_support as f22_h;
 
 use cs_assets::install::{content_fingerprint, discover, fingerprint, sha256};
 use cs_content::config::{StringCatalog, StringLookup};
