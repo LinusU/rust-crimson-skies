@@ -433,6 +433,7 @@ fn accept_f45_a_focus_resets_on_entry_wraps_and_activates_a_working_button() {
         vec![
             Action::NewProfile,
             Action::ContinueProfile,
+            Action::OpenInstantAction,
             Action::OpenSettings,
             Action::Quit
         ]
@@ -442,6 +443,7 @@ fn accept_f45_a_focus_resets_on_entry_wraps_and_activates_a_working_button() {
     assert_eq!(front_end.focus(), Some(Action::Quit), "wraps backward");
     front_end.move_focus(true);
     assert_eq!(front_end.focus(), Some(Action::NewProfile), "wraps forward");
+    front_end.move_focus(true);
     front_end.move_focus(true);
     front_end.move_focus(true);
     assert_eq!(front_end.focus(), Some(Action::OpenSettings));

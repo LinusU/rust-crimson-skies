@@ -62,7 +62,7 @@ fn hotspot(key: &str, action: &str, rect: Rect) -> Hotspot {
 
 /// The authored art of one screen: `key` names the artwork, `actions` are the
 /// button keys in the order focus visits them, stacked down the image.
-fn authored(key: &str, actions: &[&str]) -> ScreenAssets {
+pub(crate) fn authored(key: &str, actions: &[&str]) -> ScreenAssets {
     let hotspots = actions
         .iter()
         .enumerate()
@@ -92,7 +92,13 @@ pub(crate) fn preflight_deck() -> ScreenDeck {
             Screen::MainMenu,
             authored(
                 "art-main-menu",
-                &["new-profile", "continue-profile", "open-settings", "quit"],
+                &[
+                    "new-profile",
+                    "continue-profile",
+                    "open-instant-action",
+                    "open-settings",
+                    "quit",
+                ],
             ),
         ),
         (
@@ -153,6 +159,42 @@ pub(crate) fn preflight_deck() -> ScreenDeck {
         (Screen::Loading, authored("art-loading", &["cancel"])),
     ])
     .expect("the preflight deck validates against the state table")
+}
+
+/// A deck carrying the main menu and the four Instant Action screens (F49-C2)
+/// — authored fixture art, like every deck in this file — so the screens are
+/// reached and left by clicking authored buttons.
+pub(crate) fn instant_action_deck() -> ScreenDeck {
+    ScreenDeck::new(vec![
+        (Screen::InstallSelect, authored("art-install", &["quit"])),
+        (
+            Screen::MainMenu,
+            authored(
+                "art-main-menu",
+                &[
+                    "new-profile",
+                    "continue-profile",
+                    "open-instant-action",
+                    "open-settings",
+                    "quit",
+                ],
+            ),
+        ),
+        (
+            Screen::IaSelect,
+            authored("art-ia-select", &["launch", "start-custom", "back"]),
+        ),
+        (
+            Screen::IaCustomize,
+            authored("art-ia-customize", &["launch", "back"]),
+        ),
+        (Screen::IaFlight, authored("art-ia-flight", &["back"])),
+        (
+            Screen::IaResults,
+            authored("art-ia-results", &["retry", "finish", "back"]),
+        ),
+    ])
+    .expect("the Instant Action deck validates against the state table")
 }
 
 fn press(session: &mut ScreenSession, action: Action) -> Vec<Effect> {
@@ -272,7 +314,14 @@ fn accept_f45_b_cancel_at_every_preflight_screen_leaves_state_and_currency_uncha
         .filter(|screen| {
             !matches!(
                 screen,
-                Screen::Flight | Screen::Pause | Screen::PauseSettings | Screen::Results
+                Screen::Flight
+                    | Screen::Pause
+                    | Screen::PauseSettings
+                    | Screen::Results
+                    | Screen::IaSelect
+                    | Screen::IaCustomize
+                    | Screen::IaFlight
+                    | Screen::IaResults
             )
         })
         .collect();
@@ -806,7 +855,13 @@ fn accept_f45_b_a_screen_without_authored_assets_is_reported_never_placeholdered
         Screen::MainMenu,
         authored(
             "art-main-menu",
-            &["new-profile", "continue-profile", "open-settings", "quit"],
+            &[
+                "new-profile",
+                "continue-profile",
+                "open-instant-action",
+                "open-settings",
+                "quit",
+            ],
         ),
     )])
     .expect("a valid partial deck");
