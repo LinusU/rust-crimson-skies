@@ -492,7 +492,9 @@ exits **non-zero when any check fails**:
 
 The floors are designed and documented next to the constants
 (`crates/cs_app/src/mission_session/smoke.rs`); the run's own measurements
-land in `report.json` beside them. The windowed test is ignored in CI:
+land in `report.json` beside them. The windowed test is ignored in CI — build
+the release binary first (the test prefers `target/release/cs`, or names one
+with `CS_MISSION_BIN`):
 `cargo test -p cs_app --locked --test accept_m01_owner_smoke -- --include-ignored`.
 Its acceptance and the owner's ruling of 2026-10-17 are in
 `docs/findings/2026-10-17-m01-owner-smoke.md`.

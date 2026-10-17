@@ -135,8 +135,8 @@ things the owner *did* hear — pass.
   designed one and its appearance is unmeasured (F19-C / #636 own the
   binding).
 * **The smoke never ran an original executable** and is never `human_play`;
-  nothing here is `verified_original` or `checked` beyond this machine's own
-  frames at commit `6437e694`.
+  nothing here is `verified_original`, and every number above is this
+  machine's own frames at the commit this finding was committed with.
 * The floors — 20 per mille local detail and 24 distinct colours for
   *textured*, 24 near-field luminance levels for *lit*, 8 actor pixels, 64
   objective-text pixels, 100 per mille sea — are **designed** and documented
@@ -149,11 +149,14 @@ things the owner *did* hear — pass.
 ## Reproduce
 
 ```sh
+cargo build --release --locked -p cs_app --bin cs         # the windowed half runs it
 cargo test -p cs_app --locked --test accept_m01_owner_smoke   # CI-safe half
 CS_M01_OWNER_SMOKE_OUT=private/evidence/M01-OWNER-SMOKE \
 cargo test -p cs_app --locked --test accept_m01_owner_smoke -- --include-ignored
 ```
 
-The ignored test runs the windowed binary exactly as the owner does and
-asserts the harness contract: every check id judged, the PNGs delivered, and a
-non-zero exit exactly when a check failed.
+The ignored test runs the windowed binary exactly as the owner does (`CS_MISSION_BIN`
+overrides which one; it prefers `target/release/cs`, because debug Bevy steps a
+2 700-frame script far too slowly) and asserts the harness contract: every
+check id judged, the PNGs delivered, and a non-zero exit exactly when a check
+failed.
