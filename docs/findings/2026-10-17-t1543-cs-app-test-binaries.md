@@ -121,4 +121,42 @@ unchanged.
   single-binary attempt took 35-55 min cold on a busy host and was never
   linkable under the limit.
 - `cargo test --locked -p cs_xtask -- accept_test_bin`: 11 passed.
-- Ignored set: see section 5.
+
+## 5. The ignored (retail) set, `--include-ignored`, `CS_GAME_DIR` + `CS_ENGINE_IMAGE` set, `CS_EVIDENCE_DIR` unset
+
+Each binary run as `cargo test --locked -p cs_app --test cs_app_tests_<x> --
+--include-ignored` (the first one as part of `cargo test -p cs_app`, then cut
+over to per-binary runs to save wall time on a host at load average ~26). All
+exit codes are 101 (a failing test), and every failure is accounted for:
+
+| binary | passed | failed | wall (loaded host) | the failures |
+| --- | --- | --- | --- | --- |
+| a | 1067 | 47 | 11,542 s | 46 `evidence_report_*` (`CS_EVIDENCE_DIR is not set`) + 1 audio-loop assertion (below) |
+| b | 307 | 7 | 1,950 s | 7 `evidence_report_*` (`CS_EVIDENCE_DIR is not set`) |
+| c | 556 | 10 | 1,889 s | 9 `evidence_report_*` + `world::audit::accept_f18_d_a_gpu_capture_proves_the_stored_geometry_was_drawn` (needs the `private/evidence/F18-D/` directory the evidence sequence creates: `No such file or directory`) |
+| d | 653 | 77 | 2,723 s | 75 `evidence_report_*` + `regenerate_m01_b_…` and `regenerate_m06_b_fu4_…` (they assert `CS_REGENERATE_*=1` is set) |
+| e | 19 | 2 | 2,085 s | 2 `evidence_report_*` |
+
+That is 2602 passed and 143 failed of 2745, none of them a layout effect: 138
+need `CS_EVIDENCE_DIR`, 2 need `CS_REGENERATE_*`, 1 needs the evidence
+directory, 1 is the audio assertion, and the t336 `__eh_frame` gate, which
+failed in the single-binary attempt, **passes** in all five. The windowed
+mission capture (`accept_m01_play_world_windowed_mission_capture_draws_world_pixels`),
+unattributed in the first attempt, passes here (this Mac has a window and a GPU).
+
+**Audio assertion.** `campaign::vs_m01_rt_evidence_audio::accept_vs_m01_runtime_evidence_audio_the_launch_plays_the_engine_loop_through_the_device`
+fails with `exactly the engine loop is bound` (`left: 9, right: 1`) both inside
+binary a and **alone** (`0 passed; 1 failed`), so shared process state is not the
+cause and the split does not change it. Its body is untouched; the likely cause
+(not verified in the old layout) is the M01 music work that landed after the
+test (`3e21ec9f`, `186bef9f`, `86b91f88`, `ef91823e`) binding more loops in the
+same composition. Filed as Rally #1579.
+
+**Process-global state.** The tests that relied on their own process (env vars,
+current directory, one Bevy `App`, GPU/audio singletons, the f48_d re-exec)
+all passed in one process per binary; no `serial` lock was needed beyond the
+f48_d re-exec fix in section 1. The 8-thread parallel run of the retail tests is
+the slow part: each fingerprints the whole installation (SHA-256, unoptimised
+`cs_assets`), which dominated the 3 h wall time of binary a on a loaded host.
+
+Not measured: the old 249-binary layout's compile and test time (see section 2).
