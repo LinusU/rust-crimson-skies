@@ -519,3 +519,180 @@ fn accept_f45_b_1_retail_the_original_layout_is_read_and_each_screen_is_built_or
         std::fs::write(dir.join("original-layout.json"), json).expect("the artifact is written");
     }
 }
+
+// ---- F45-B.2 (#1456): the handlers of buttons that start no screen script ----
+
+use cs_app::ui::front_end::ScreenHandlers;
+
+/// An invented script in the original's *shape*: buttons created by
+/// `object X = @ctl@BE` / `X.YC = "id"`, arms in `gui_mailbox`.
+const MENU_SCRIPT: &str = "\
+main
+{
+gui_create
+{
+object GC = @ctl@AL
+GC.YC = \"movie\"
+object QW = @ctl@BE
+QW.YC = \"m_b_go\"
+object TW = @ctl@BE
+TW.YC = \"m_b_pref\"
+object VW = @ctl@BE
+VW.YC = \"m_b_quit\"
+object XW = @ctl@BE
+XW.YC = \"m_b_odd\"
+}
+gui_mailbox
+{
+if (10003 == getmessage())
+{
+switch (sender)
+{
+case QW:
+case TW:
+deactivate(this)
+break
+case XW:
+mail (11003, this)
+callback($$A$$, 6)
+break
+case VW
+terminate
+}
+}
+}
+}
+";
+
+const MENU_LAYOUT: &str = "\
+[@MainMenu@]
+BG   =P,bg.png,0,0,0,1,0,0,0
+M_B_GO =B,strip.png,10,10,0,0,,0x1000,1
+M_B_PREF =B,strip.png,10,110,0,0,Preferences,0x1000,1
+M_B_QUIT =B,strip.png,10,210,0,0,,0x1000,1
+M_B_ODD =B,strip.png,10,310,0,0,,0x1000,1
+M_B_GONE =B,strip.png,10,410,0,0,,0x1000,1
+";
+
+#[test]
+fn accept_f45_b_2_the_handler_reader_places_arms_by_control_and_shares_stacked_labels() {
+    let handlers = ScreenHandlers::parse(MENU_SCRIPT);
+    assert_eq!(
+        handlers.buttons(),
+        ["m_b_go", "m_b_pref", "m_b_quit", "m_b_odd"]
+    );
+    assert_eq!(handlers.handler("M_B_QUIT").unwrap(), ["terminate"]);
+    // Stacked `case` labels share the arm that follows them.
+    assert_eq!(handlers.handler("m_b_go").unwrap(), ["deactivate(this)"]);
+    assert_eq!(handlers.handler("m_b_pref"), handlers.handler("m_b_go"));
+    assert_eq!(
+        handlers.handler("m_b_odd").unwrap(),
+        ["mail (11003, this)", "callback($$A$$, 6)"]
+    );
+    assert!(handlers.handler("m_b_missing").is_none());
+}
+
+#[test]
+fn accept_f45_b_2_only_a_bare_terminate_binds_and_everything_else_is_kept_verbatim() {
+    let layout = OriginalLayout::parse(MENU_LAYOUT).unwrap();
+    let scripts = |section: &str| (section == "MainMenu").then(|| MENU_SCRIPT.to_owned());
+    let built = OriginalScreens::build_with_scripts(&layout, &extents, &scripts);
+    let report = built.report(Screen::MainMenu).unwrap();
+
+    let quit = report
+        .bound
+        .iter()
+        .find(|b| b.script == "terminate")
+        .unwrap();
+    assert_eq!(quit.action, Action::Quit);
+    assert_eq!(
+        quit.rect,
+        Rect {
+            x: 10,
+            y: 210,
+            width: 200,
+            height: 20
+        }
+    );
+    // The script-started button still binds through its section.
+    assert!(
+        report
+            .bound
+            .iter()
+            .any(|b| b.action == Action::OpenSettings)
+    );
+
+    let reason = |id: &str| &report.unbound.iter().find(|u| u.id == id).unwrap().reason;
+    assert_eq!(
+        reason("M_B_GO"),
+        &UnboundReason::HandlerNotATransition {
+            statements: vec!["deactivate(this)".to_owned()]
+        },
+        "a handler that states no destination is not guessed into one"
+    );
+    assert_eq!(
+        reason("M_B_ODD"),
+        &UnboundReason::HandlerNotATransition {
+            statements: vec![
+                "mail (11003, this)".to_owned(),
+                "callback($$A$$, 6)".to_owned()
+            ]
+        }
+    );
+    assert_eq!(reason("M_B_GONE"), &UnboundReason::NoHandler);
+
+    // Without the script nothing changes from F45-B.1.
+    let plain = OriginalScreens::build(&layout, &extents);
+    let plain = plain.report(Screen::MainMenu).unwrap();
+    assert!(plain.bound.iter().all(|b| b.script != "terminate"));
+    assert!(
+        plain
+            .unbound
+            .iter()
+            .any(|u| u.reason == UnboundReason::NoScript)
+    );
+}
+
+/// **The retail half.** What the installation's own screen scripts state for
+/// the buttons that start no screen script.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_f45_b_2_retail_the_main_menu_quit_button_is_bound_by_its_terminate_handler() {
+    let screens = retail_screens();
+    let built = screens.original_screens().expect("the screens are read");
+
+    let menu = built.report(Screen::MainMenu).unwrap();
+    let quit = menu
+        .bound
+        .iter()
+        .find(|b| b.script == "terminate")
+        .expect("MM_B_QUIT binds through `case VW: terminate`");
+    assert_eq!(quit.action, Action::Quit);
+    assert_eq!(menu.bound.len(), 2, "quit and preferences");
+    let handlers = menu.handlers.as_ref().expect("MAINMENU.SCRIPT was read");
+    assert_eq!(handlers.handler("mm_b_quit").unwrap(), ["terminate"]);
+    // Campaign shares a `deactivate(this)` arm and starts its screen elsewhere.
+    assert_eq!(
+        handlers.handler("mm_b_campaign").unwrap(),
+        ["deactivate(this)"]
+    );
+
+    // Flight check: fly mission / return to briefing end the screen and call
+    // natives whose meaning is unknown, so they stay unbound with the text.
+    let check = built.report(Screen::FlightCheck).unwrap();
+    for id in ["FC_B_FLYMISSION", "FC_B_RETURNBRIEF"] {
+        let button = check.unbound.iter().find(|u| u.id == id).unwrap();
+        assert!(
+            matches!(&button.reason, UnboundReason::HandlerNotATransition { statements }
+                if statements.iter().any(|s| s.starts_with("script_end"))),
+            "{id}: {:?}",
+            button.reason
+        );
+    }
+    // No button of any screen binds an action the scripts do not state.
+    for report in built.reports() {
+        for bound in report.bound.iter().filter(|b| b.script == "terminate") {
+            assert_eq!(bound.action, Action::Quit, "{:?}", report.screen);
+        }
+    }
+}

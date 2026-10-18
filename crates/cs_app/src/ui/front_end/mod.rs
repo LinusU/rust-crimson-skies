@@ -102,7 +102,8 @@ pub use machine::{
 };
 pub use original::{
     ArtExtents, BUTTON_STATE_FRAMES, BoundButton, LAYOUT_MEMBER, LayoutTextError, OriginalLayout,
-    OriginalScreens, SCREEN_SECTIONS, ScreenRefusal, ScreenReport, UnboundButton, UnboundReason,
+    OriginalScreens, SCREEN_SECTIONS, ScreenHandlers, ScreenRefusal, ScreenReport, ScreenScripts,
+    UnboundButton, UnboundReason, script_member,
 };
 pub use paths::{
     NavigationInputs, PathReview, PathStep, StepOutcome, SuppliedInput, review_navigation,

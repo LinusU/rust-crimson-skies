@@ -274,6 +274,18 @@ impl OriginalLayout {
     /// [`ScreenReport::unbound`].
     #[must_use]
     pub fn screen(&self, screen: Screen, extents: &dyn ArtExtents) -> ScreenReport {
+        self.screen_with_scripts(screen, extents, &NoScripts)
+    }
+
+    /// As [`Self::screen`], also reading the handlers of the buttons that
+    /// start no screen script from the screen's own script (task #1456).
+    #[must_use]
+    pub fn screen_with_scripts(
+        &self,
+        screen: Screen,
+        extents: &dyn ArtExtents,
+        scripts: &dyn ScreenScripts,
+    ) -> ScreenReport {
         let Some(&(section_name, _)) = SCREEN_SECTIONS.iter().find(|(_, s)| *s == screen) else {
             return ScreenReport::empty(screen, "", ScreenRefusal::ScreenNotPaired);
         };
@@ -281,6 +293,10 @@ impl OriginalLayout {
             return ScreenReport::empty(screen, section_name, ScreenRefusal::SectionMissing);
         };
         let mut report = ScreenReport::empty(screen, &section.name, ScreenRefusal::NoFullPane);
+        let handlers = scripts
+            .script(&section.name)
+            .map(|text| ScreenHandlers::parse(&text));
+        report.handlers = handlers;
 
         // The screen's art: the one single-frame pane placed at the origin.
         let mut candidates = Vec::new();
@@ -344,6 +360,146 @@ impl OriginalLayout {
             Ok(layout) => ScreenAssets::new(art_id, &layout).map_err(ScreenRefusal::Assets),
         };
         report
+    }
+}
+
+/// The text of a screen's own script, by the section name.
+pub trait ScreenScripts {
+    /// The decoded script text of the section (e.g. `MainMenu` →
+    /// `ASSETS/SCRIPTS/MAINMENU.SCRIPT`), or `None` when it cannot be read.
+    fn script(&self, section: &str) -> Option<String>;
+}
+
+impl<F: Fn(&str) -> Option<String>> ScreenScripts for F {
+    fn script(&self, section: &str) -> Option<String> {
+        self(section)
+    }
+}
+
+/// No scripts are available.
+struct NoScripts;
+
+impl ScreenScripts for NoScripts {
+    fn script(&self, _section: &str) -> Option<String> {
+        None
+    }
+}
+
+/// The member a section's script is stored under.
+#[must_use]
+pub fn script_member(section: &str) -> String {
+    format!("ASSETS/SCRIPTS/{}.SCRIPT", section.to_ascii_uppercase())
+}
+
+/// The button handlers of one screen script: for each button control the
+/// script creates, the statements of its `case` arm in `gui_mailbox`.
+///
+/// This is a line reader, not a script interpreter. An arm ends at the first
+/// `break`, next `case` or closing brace; a run of `case` labels shares the
+/// arm that follows. Anything it cannot place yields no handler.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ScreenHandlers {
+    /// Lower-cased button id → the statements of its arm.
+    handlers: BTreeMap<String, Vec<String>>,
+    /// Lower-cased ids of the buttons the script creates.
+    created: Vec<String>,
+}
+
+impl ScreenHandlers {
+    /// Reads the handlers out of a script's text.
+    #[must_use]
+    pub fn parse(text: &str) -> Self {
+        // handle -> button id, from `object X = @ctl@BE` + `X.YC = "id"`.
+        let mut buttons: BTreeMap<String, String> = BTreeMap::new();
+        let mut pending: Vec<String> = Vec::new();
+        let mut in_mailbox = false;
+        let mut result = Self::default();
+        let mut labels: Vec<String> = Vec::new();
+        let mut arm: Vec<String> = Vec::new();
+        let mut open = false;
+
+        let close = |result: &mut Self,
+                     labels: &mut Vec<String>,
+                     arm: &mut Vec<String>,
+                     open: &mut bool,
+                     buttons: &BTreeMap<String, String>| {
+            if *open {
+                for label in labels.iter() {
+                    if let Some(id) = buttons.get(label) {
+                        result
+                            .handlers
+                            .entry(id.clone())
+                            .or_insert_with(|| arm.clone());
+                    }
+                }
+            }
+            labels.clear();
+            arm.clear();
+            *open = false;
+        };
+
+        for raw in text.lines() {
+            let line = raw.trim();
+            if line.is_empty() {
+                continue;
+            }
+            if !in_mailbox {
+                if line == "gui_mailbox" {
+                    in_mailbox = true;
+                } else if let Some(rest) = line.strip_prefix("object ")
+                    && let Some((handle, kind)) = rest.split_once('=')
+                    && kind.trim() == "@ctl@BE"
+                {
+                    pending.push(handle.trim().to_owned());
+                } else if let Some((handle, value)) = line.split_once(".YC")
+                    && pending.iter().any(|p| p == handle.trim())
+                    && let Some(id) = value.trim().strip_prefix('=').map(str::trim)
+                {
+                    let id = id.trim_matches('"').to_ascii_lowercase();
+                    buttons.insert(handle.trim().to_owned(), id.clone());
+                    result.created.push(id);
+                }
+                continue;
+            }
+            if let Some(rest) = line.strip_prefix("case ") {
+                let (label, tail) = match rest.split_once(':') {
+                    Some((label, tail)) => (label.trim(), tail.trim()),
+                    None => (rest.trim(), ""),
+                };
+                if open && !arm.is_empty() {
+                    close(&mut result, &mut labels, &mut arm, &mut open, &buttons);
+                }
+                labels.push(label.to_owned());
+                open = true;
+                if !tail.is_empty() {
+                    arm.push(tail.to_owned());
+                }
+                continue;
+            }
+            if line == "break" || line == "}" {
+                close(&mut result, &mut labels, &mut arm, &mut open, &buttons);
+                continue;
+            }
+            if open {
+                arm.push(line.to_owned());
+            }
+        }
+        result
+    }
+
+    /// The statements of the arm of the button with this layout row id
+    /// (ASCII case-insensitive).
+    #[must_use]
+    pub fn handler(&self, button: &str) -> Option<&[String]> {
+        self.handlers
+            .get(&button.to_ascii_lowercase())
+            .map(Vec::as_slice)
+    }
+
+    /// The ids of the buttons the script creates, in creation order.
+    #[must_use]
+    pub fn buttons(&self) -> &[String] {
+        &self.created
     }
 }
 
@@ -459,9 +615,18 @@ pub enum UnboundReason {
         /// The art's height.
         height: u32,
     },
-    /// The button starts no screen script (its handler lives in the screen's
-    /// compiled script, which is not read here).
+    /// The button starts no screen script and the screen's own script was not
+    /// read (see [`OriginalLayout::screen_with_scripts`]).
     NoScript,
+    /// The screen script was read and has no handler for this button.
+    NoHandler,
+    /// The button's handler in the screen script states something other than
+    /// a bindable transition. The statements are kept as written; what their
+    /// natives do is unknown.
+    HandlerNotATransition {
+        /// The handler's statements, trimmed, in order.
+        statements: Vec<String>,
+    },
     /// The script it starts is not a paired section.
     ScriptNotPaired {
         /// The script name.
@@ -506,6 +671,8 @@ pub struct ScreenReport {
     pub bound: Vec<BoundButton>,
     /// Buttons that did not, in declaration order.
     pub unbound: Vec<UnboundButton>,
+    /// The handlers read from the screen's own script, when it was supplied.
+    pub handlers: Option<ScreenHandlers>,
 }
 
 impl ScreenReport {
@@ -517,6 +684,7 @@ impl ScreenReport {
             result: Err(refusal),
             bound: Vec::new(),
             unbound: Vec::new(),
+            handlers: None,
         }
     }
 
@@ -526,8 +694,9 @@ impl ScreenReport {
         image: Option<(u32, u32)>,
         extents: &dyn ArtExtents,
     ) {
+        let handlers = self.handlers.take();
         for button in &section.buttons {
-            match bind_button(self.screen, button, image, extents) {
+            match bind_button(self.screen, button, image, extents, handlers.as_ref()) {
                 Ok(bound) => self.bound.push(bound),
                 Err(reason) => self.unbound.push(UnboundButton {
                     id: button.id.clone(),
@@ -535,6 +704,7 @@ impl ScreenReport {
                 }),
             }
         }
+        self.handlers = handlers;
     }
 }
 
@@ -543,6 +713,7 @@ fn bind_button(
     button: &Row,
     image: Option<(u32, u32)>,
     extents: &dyn ArtExtents,
+    handlers: Option<&ScreenHandlers>,
 ) -> Result<BoundButton, UnboundReason> {
     // Fields after the kind letter: art, X, Y, Z, ResID, ScriptToExe, …
     if let Some(name) = button.unresolved.first() {
@@ -574,7 +745,35 @@ fn bind_button(
     }
     let script = button.field(5);
     if script.is_empty() {
-        return Err(UnboundReason::NoScript);
+        let Some(handlers) = handlers else {
+            return Err(UnboundReason::NoScript);
+        };
+        let Some(statements) = handlers.handler(&button.id) else {
+            return Err(UnboundReason::NoHandler);
+        };
+        if statements != ["terminate"] {
+            return Err(UnboundReason::HandlerNotATransition {
+                statements: statements.to_vec(),
+            });
+        }
+        let quits: Vec<Action> = rows_on(screen)
+            .filter(|row| row.action == Action::Quit && row.action.source() == ActionSource::User)
+            .map(|row| row.action)
+            .collect();
+        let [action] = quits.as_slice() else {
+            return Err(UnboundReason::NoUniqueTransition {
+                to: screen,
+                rows: quits.len(),
+            });
+        };
+        let id = ContentId::from_source(ContentKind::UiResource, &button.id.to_ascii_lowercase())
+            .map_err(|_| UnboundReason::PositionUnread)?;
+        return Ok(BoundButton {
+            id,
+            action: *action,
+            rect,
+            script: "terminate".to_owned(),
+        });
     }
     let Some(&(_, to)) = SCREEN_SECTIONS
         .iter()
@@ -627,11 +826,22 @@ impl OriginalScreens {
     /// to make it fit.
     #[must_use]
     pub fn build(layout: &OriginalLayout, extents: &dyn ArtExtents) -> Self {
+        Self::build_with_scripts(layout, extents, &NoScripts)
+    }
+
+    /// As [`Self::build`], also reading the handlers of the buttons that
+    /// start no screen script from the screens' own scripts.
+    #[must_use]
+    pub fn build_with_scripts(
+        layout: &OriginalLayout,
+        extents: &dyn ArtExtents,
+        scripts: &dyn ScreenScripts,
+    ) -> Self {
         let mut reports = Vec::new();
         let mut verdicts = BTreeMap::new();
         let mut accepted = Vec::new();
         for &(_, screen) in SCREEN_SECTIONS {
-            let report = layout.screen(screen, extents);
+            let report = layout.screen_with_scripts(screen, extents, scripts);
             if let Ok(assets) = &report.result {
                 match ScreenDeck::new(vec![(screen, assets.clone())]) {
                     Ok(_) => {

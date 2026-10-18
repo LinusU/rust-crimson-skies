@@ -53,7 +53,7 @@ use cs_formats::texture::DecodedImage;
 use cs_types::asset_id::{AssetKey, MountId, MountNamespace, PrecedenceClass, ResolveContext};
 
 use super::capture::Artwork;
-use super::original::{LAYOUT_MEMBER, OriginalLayout, OriginalScreens};
+use super::original::{LAYOUT_MEMBER, OriginalLayout, OriginalScreens, script_member};
 use crate::render::rgb565::{
     CoverageSource, ExpansionPolicy, coverage_byte, expand_texel, stores_texel_words,
 };
@@ -675,9 +675,31 @@ impl FrontEndScreens {
     /// The errors of [`Self::original_layout`].
     pub fn original_screens(&self) -> Result<OriginalScreens, RetailError> {
         let layout = self.original_layout()?;
-        Ok(OriginalScreens::build(&layout, &|art: &str| {
-            self.art_extent(art)
-        }))
+        Ok(OriginalScreens::build_with_scripts(
+            &layout,
+            &|art: &str| self.art_extent(art),
+            &|section: &str| self.script_text(&script_member(section)),
+        ))
+    }
+
+    /// The decoded text of one `ASSETS/SCRIPTS/*.SCRIPT` member of the
+    /// screen container, or `None` when it is absent or will not read.
+    #[must_use]
+    pub fn script_text(&self, member: &str) -> Option<String> {
+        let spelling = self
+            .rof
+            .members()
+            .find(|candidate| candidate.spelling.eq_ignore_ascii_case(member))?
+            .spelling
+            .clone();
+        let key = AssetKey::from_spelling(
+            self.rof.namespace().as_str(),
+            &spelling,
+            TEXTURE_ARCHIVE_VARIANT,
+        )
+        .ok()?;
+        let read = self.rof.read(&key).ok()?;
+        Some(read.data.iter().map(|&byte| char::from(byte)).collect())
     }
 
     /// The recorded texture id of a UI-archive image, for a test that needs
