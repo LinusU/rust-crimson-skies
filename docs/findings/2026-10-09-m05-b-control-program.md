@@ -11,6 +11,33 @@ diff), so the review is independent of the implementation. An agent review is
 not independent original-reference evidence and no agent review replaces the
 owner's human approval.
 
+## 2026-10-18 re-pin on the corrected campaign layout (#1619)
+
+Every retail fact in the tables below was measured on `ZBD/C1/M05/zrdr.zbd`.
+The corrected campaign layout
+(`docs/findings/2026-10-17-m01-archive-decision.md`) binds that archive to work
+order **M10** (`mission/ch2-m05`, `script/c1-m05-zrdr`), while M05's own binding
+(`missions/bindings/M05.json`) names `mission/ch1-m05` / `script/c3-m05-zrdr` /
+`ZBD/C3/M05/zrdr.zbd` (69 252 bytes). So the numbers below are **historical for
+M05** and describe M10's archive. The suite stayed green because it asserted the
+pinned archive's own declared identity (`mission/ch2-m05`). The acceptance tests
+now pin M05's own record, re-derived through the same production code, and
+assert the production binding (`SourceContext::control_program`): mission,
+program id, program asset, member digests.
+
+| Fact | Old pin (`ZBD/C1/M05`, now M10's) | Re-pinned (`ZBD/C3/M05`) |
+| --- | --- | --- |
+| Mission id | `mission/ch2-m05` | `mission/ch1-m05` |
+| Archive members | 14 | 15 |
+| Record | 58 blocks, 208 sites, 22 keys | 68 blocks, 200 sites, 20 keys, 0 refusals |
+| Dispositions | 2 terminal, 20 measured | 2 terminal, 18 measured |
+| Win / loss | `INSTANTWIN` block 42 / `INSTANTLOSS` block 4 | `INSTANTWIN` block 19 (woken only by block 43) / `INSTANTLOSS` block 25 (armed by naps from blocks 22 and 42); both `BEGIN_DORMANT -1` |
+| Addresses | 92 wake/kill/nap/gate | 97, all within 1..=68 |
+| Lowering | 208/208 sites, 58/58 conditions | 200/200 sites, 68/68 conditions |
+
+Nothing here is `verified_original`. The sections below are the measurement as
+M05-B originally made it, kept as history.
+
 ## What changed
 
 No production code. The census (`cs_app::mission_control`), the directive
