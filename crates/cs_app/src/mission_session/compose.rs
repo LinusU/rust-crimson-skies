@@ -302,6 +302,10 @@ pub struct MissionStage {
     /// objective program, the cue table, the chain resolver and every absence
     /// the stage already knows about (VS-M01-RT-MISSION-HOST, #1217).
     pub host: MissionHostSeed,
+    /// The mission's decoded `weather.zrd`, whose zone fog the drawn horizon
+    /// binds (PARITY-M01-ATMO-B, #1649). The synthetic acceptance stages carry
+    /// `None` and draw the labelled designed horizon.
+    pub weather: Option<crate::environment::RetailWeather>,
 }
 
 /// Why a mission composition could not be built or could not run.
@@ -661,6 +665,7 @@ pub fn stage_for(
         turret_carrier: turrets.carrier,
         turret_refusal: turrets.refusal,
         host,
+        weather: Some(content.weather.clone()),
     })
 }
 
@@ -903,9 +908,16 @@ fn add_composition(
         // every value that record leaves unknown stays labelled designed.
         // Added after the visuals so its clear colour and ambient replace
         // theirs.
-        app.add_plugins(crate::render::HorizonPlugin::from_environment(
-            stage.host.environment.definition(),
-        ));
+        // The zone fog the record authors (`FOG_COLOR`, `FOG_RANGES`) is
+        // bound on top (PARITY-M01-ATMO-B, #1649).
+        let mut horizon =
+            crate::render::HorizonPlugin::from_environment(stage.host.environment.definition());
+        if let Some(weather) = &stage.weather {
+            horizon = horizon
+                .with_weather(weather)
+                .map_err(|error| MissionCompositionError::WorldVisual(error.to_string()))?;
+        }
+        app.add_plugins(horizon);
         // Under the horizon, the mission's own weather record decides the
         // cloud deck and the haze (#1440 `M01-PLAY-WEATHER`): a record that
         // authors cloud layers has them drawn; every value nobody measured —

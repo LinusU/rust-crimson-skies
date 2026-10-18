@@ -314,6 +314,8 @@ pub(crate) fn synthetic_stage(scratch: &Path) -> MissionStage {
         turret_carrier: None,
         turret_refusal: None,
         host: synthetic_host_seed(),
+        // No installation, no `weather.zrd`: the horizon stays designed.
+        weather: None,
     }
 }
 

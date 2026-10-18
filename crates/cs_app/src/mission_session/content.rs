@@ -21,7 +21,7 @@ use cs_types::evidence::ClaimId;
 use cs_types::install::InstallFileRecord;
 
 use crate::animation::mission::{MissionAnimationBinding, bind_mission_animation};
-use crate::environment::{EnvironmentSession, RunSeeds, read_mission_weather};
+use crate::environment::{EnvironmentSession, RetailWeather, RunSeeds, read_mission_weather};
 use crate::mission_launch::MissionLaunchPlan;
 use crate::mission_start::{MissionStartConfiguration, recover_retail_start_configuration};
 use crate::mission_world_actors::{
@@ -151,6 +151,9 @@ pub struct MissionContent {
     pub flight: MissionFlight,
     /// The bound weather running on this session's timeline and seeds.
     pub environment: EnvironmentSession,
+    /// The mission's decoded `weather.zrd`, in the file's own units: the zone
+    /// fog the drawn horizon binds (PARITY-M01-ATMO-B, #1649).
+    pub weather: RetailWeather,
     /// The scope's world actors, with the session the composition spawns from.
     pub world_actors: MissionWorldActors,
     /// Every scripted-aircraft record of the mission's `aiv.zrd` — player,
@@ -395,7 +398,7 @@ impl MissionContent {
             prepare_world(install_root, plan)?;
         let start = prepare_start(install_root, plan)?;
         let flight = prepare_flight(install_root, &start)?;
-        let environment = prepare_environment(plan, &found)?;
+        let (environment, weather) = prepare_environment(plan, &found)?;
         let world_actors = prepare_world_actors(install_root, &found, plan)?;
         let aircraft =
             crate::mission_start::recover_retail_aircraft_records(install_root, &plan.mission_dir)
@@ -421,6 +424,7 @@ impl MissionContent {
             start,
             flight,
             environment,
+            weather,
             world_actors,
             aircraft,
             animation,
@@ -653,7 +657,7 @@ fn prepare_flight(
 fn prepare_environment(
     plan: &MissionLaunchPlan,
     found: &Discovery,
-) -> Result<EnvironmentSession, MissionSessionError> {
+) -> Result<(EnvironmentSession, RetailWeather), MissionSessionError> {
     let weather = read_mission_weather(found, &plan.mission_dir).map_err(|error| {
         MissionSessionError::Weather {
             mission: plan.mission_dir.clone(),
@@ -661,12 +665,13 @@ fn prepare_environment(
         }
     })?;
     let seeds = root_seed_from(&plan.install_sha256);
-    weather
+    let session = weather
         .session(MissionContent::tick_rate(), RunSeeds::from_root(seeds))
         .map_err(|error| MissionSessionError::Environment {
             mission: plan.mission_dir.clone(),
             reason: error.to_string(),
-        })
+        })?;
+    Ok((session, weather))
 }
 
 /// World actors: the binding the composition spawns from, kept whole.

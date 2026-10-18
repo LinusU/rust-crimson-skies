@@ -23,6 +23,14 @@
 //!   horizon is designed today. `docs/findings/
 //!   2026-10-14-m01-play-sky-horizon.md` lists both halves field by field.
 //!
+//! A composed mission with a `weather.zrd` additionally binds the flight
+//! zone's fog colour, fog near/far (times the viewing tier's fog scale) and
+//! ambient colour through [`HorizonSpec::bind_weather`] (PARITY-M01-ATMO-B,
+//! #1649; `docs/findings/2026-10-18-parity-m01-atmo-a-weather-units-and-sky-
+//! consumers.md`). The sky zenith, sea colour, dome and ambient brightness stay
+//! designed; the sentence above about "every drawn value" describes the
+//! record-less state.
+//!
 //! The original data does hold sky and sea material — `ZBD/C1C/gamez.zbd`'s
 //! own texture table carries `Sky1`, `cloud1`, `cloud2`, `water1`,
 //! `cloudlayer` and `moon1`, and its node array carries a `horizon` node —
@@ -74,7 +82,9 @@ use bevy::prelude::{
 };
 use cs_content::environment::EnvironmentDefinition;
 use cs_types::content::{Provenance, Resolved};
-use cs_types::evidence::ClaimStatus;
+use cs_types::evidence::{ClaimId, ClaimStatus};
+
+use crate::environment::RetailWeather;
 
 /// The label every designed horizon value carries.
 ///
@@ -352,6 +362,81 @@ impl HorizonSpec {
         ]
     }
 
+    /// Binds the fog the mission's own `weather.zrd` authors for the zone the
+    /// viewer flies in (PARITY-M01-ATMO-B, #1649).
+    ///
+    /// The zone is [`FLIGHT_ZONE`] (`ZONE1`, the one below the cloud band's
+    /// midpoint: all of M01's flight) and the viewing tier is the document's
+    /// first (`HIGH`, scales 1.0 for M01; which tier the original selects at
+    /// run time is unmeasured, so that choice is designed). From the zone:
+    ///
+    /// * `FOG_COLOR` is a normalized colour (`0x4bc350`) and is drawn as a
+    ///   display value, as the era's fixed-function fog took it; whether the
+    ///   original packs it as display or linear colour is unmeasured
+    ///   (`docs/findings/2026-10-18-parity-m01-atmo-a-weather-units-and-sky-
+    ///   consumers.md` §6c). The dome's horizon band follows it.
+    /// * `FOG_RANGES` near and far are world metres, each times the tier's
+    ///   `fog_scale` (zone apply `0x472ea0`).
+    /// * `SUNLIGHT_COLOR_AMBIENT` tints the ambient light. The ambient
+    ///   *brightness* is not bound: the engine's `SUNLIGHT_AMBIENT` scale has
+    ///   no measured relation to this renderer's.
+    ///
+    /// `FOG_ALTITUDE` is not applied (its renderer use is unmeasured, and its
+    /// band lies above every M01 flight altitude); the sky gradient's zenith
+    /// stays designed because M01's sky is authored geometry, not a colour.
+    ///
+    /// # Errors
+    ///
+    /// [`HorizonWeatherError`] when the document has no flight zone or no
+    /// viewing tier, or its provenance cannot be recorded.
+    pub fn bind_weather(&mut self, weather: &RetailWeather) -> Result<(), HorizonWeatherError> {
+        let zone = weather
+            .document
+            .zones
+            .iter()
+            .find(|zone| zone.name == FLIGHT_ZONE)
+            .ok_or(HorizonWeatherError::MissingZone)?;
+        let tier = weather
+            .document
+            .viewing_range
+            .first()
+            .ok_or(HorizonWeatherError::MissingTier)?;
+        let provenance = |suffix: &str| -> Result<Provenance, HorizonWeatherError> {
+            let slug = weather.mission_key.replace('/', ".");
+            let claim = ClaimId::new(&format!("parity.m01.atmo-b.{slug}.{suffix}"))
+                .map_err(|error| HorizonWeatherError::Claim(error.to_string()))?;
+            Provenance::new(claim, ClaimStatus::ObservedTool, Some(weather.span.clone()))
+                .map_err(|error| HorizonWeatherError::Claim(error.to_string()))
+        };
+        let fog_scale = tier.fog_scale.as_f64() as f32;
+        self.fog_colour = zone_colour(zone.fog_color);
+        self.fog_start_m = zone.fog_ranges[0].as_f64() as f32 * fog_scale;
+        self.fog_end_m = zone.fog_ranges[1].as_f64() as f32 * fog_scale;
+        self.sky_horizon = self.fog_colour;
+        self.ambient_colour = zone_colour(zone.sunlight_color_ambient);
+        self.set_origin(
+            HorizonField::FogColour,
+            HorizonOrigin::Bound(provenance("fog-color")?),
+        );
+        self.set_origin(
+            HorizonField::FogStart,
+            HorizonOrigin::Bound(provenance("fog-near")?),
+        );
+        self.set_origin(
+            HorizonField::FogEnd,
+            HorizonOrigin::Bound(provenance("fog-far")?),
+        );
+        self.set_origin(
+            HorizonField::AmbientColour,
+            HorizonOrigin::Bound(provenance("ambient-color")?),
+        );
+        self.set_origin(
+            HorizonField::SkyHorizon,
+            HorizonOrigin::Designed("the dome's horizon band follows the fog colour"),
+        );
+        Ok(())
+    }
+
     fn set_origin(&mut self, field: HorizonField, origin: HorizonOrigin) {
         if let Some(slot) = self.origins.iter_mut().find(|(known, _)| *known == field) {
             slot.1 = origin;
@@ -561,6 +646,42 @@ const DESIGNED_AMBIENT_COLOUR: [f32; 3] = [0.72, 0.79, 0.87];
 /// stage changes only the ambient *colour*.
 const DESIGNED_AMBIENT_BRIGHTNESS: f32 = 400.0;
 
+/// The zone whose fog the viewer sees while it flies below the cloud band's
+/// midpoint (the engine's zone selector `0x473580`, atmo-A §3).
+const FLIGHT_ZONE: &str = "ZONE1";
+
+/// Why [`HorizonSpec::bind_weather`] could not bind a record.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HorizonWeatherError {
+    /// The document has no [`FLIGHT_ZONE`].
+    MissingZone,
+    /// The document has no `VIEWING_RANGE` tier.
+    MissingTier,
+    /// A provenance claim could not be spelled.
+    Claim(String),
+}
+
+impl std::fmt::Display for HorizonWeatherError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingZone => write!(f, "weather.zrd has no {FLIGHT_ZONE} to bind the fog from"),
+            Self::MissingTier => write!(f, "weather.zrd has no VIEWING_RANGE tier"),
+            Self::Claim(text) => write!(f, "the fog provenance is not recordable: {text}"),
+        }
+    }
+}
+
+impl std::error::Error for HorizonWeatherError {}
+
+/// A zone colour triple as the engine reader normalizes it (`0x4bc350`: a
+/// channel above 1.0 is scaled by 1/255), as display values.
+fn zone_colour(triple: [cs_content::weather::WeatherScalar; 3]) -> [f32; 3] {
+    triple.map(|channel| {
+        let raw = channel.as_f64() as f32;
+        if raw > 1.0 { raw / 255.0 } else { raw }
+    })
+}
+
 fn lerp(from: f32, to: f32, t: f32) -> f32 {
     from + (to - from) * t
 }
@@ -617,6 +738,17 @@ impl HorizonPlugin {
     #[must_use]
     pub fn designed() -> Self {
         Self::new(HorizonSpec::designed())
+    }
+
+    /// Binds the mission's `weather.zrd` zone fog into the spec this plugin
+    /// draws (see [`HorizonSpec::bind_weather`]).
+    ///
+    /// # Errors
+    ///
+    /// [`HorizonWeatherError`] from the bind.
+    pub fn with_weather(mut self, weather: &RetailWeather) -> Result<Self, HorizonWeatherError> {
+        self.spec.bind_weather(weather)?;
+        Ok(self)
     }
 
     /// The spec this plugin draws.

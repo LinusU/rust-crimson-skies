@@ -60,6 +60,7 @@ mod golden_scene;
 mod matrix;
 mod matrix_wide;
 mod paint;
+mod parity_m01_atmo_b;
 mod profiles;
 mod release_assets;
 mod released_image;
