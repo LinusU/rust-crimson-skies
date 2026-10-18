@@ -11,7 +11,7 @@ const RETAIL_TESTS_M12_B: &[&str] = &[
     "accept_m12_b_m12s_control_program_is_bound_to_the_same_identities_as_its_mission_binding",
     "accept_m12_b_the_measured_vocabulary_partitions_and_refuses_no_m12_key",
     "accept_m12_b_the_block_graph_is_closed_under_the_records_own_numbering",
-    "accept_m12_b_fu1_m12s_record_lowers_with_its_counting_site",
+    "accept_m12_b_fu1_m12s_record_lowers_completely",
     "accept_m12_b_the_three_sheet_priorities_locate_in_the_measured_record",
     "accept_m12_b_fu1_m12_lowers_completely_and_the_campaign_stays_unready",
 ];
@@ -148,7 +148,7 @@ fn evidence_report_m12_b_writes_the_acceptance_report() {
     let census = cs_app::mission_control::survey_mission_control_programs(&game_dir)
         .expect("the census measures the installation");
     let row = census
-        .row("zbd/c3/m02")
+        .row("zbd/c2/m01")
         .expect("M12's reader archive is measured by the census");
     let lowered = row
         .lowering_attempt()
@@ -312,8 +312,8 @@ fn evidence_report_m12_b_writes_the_acceptance_report() {
              binding `SourceContext::control_program` derives from it (mission and program \
              identities equal to the M12-A binding, the control member chosen by the measured \
              rule over the archive's whole member set, the directive accounting of the member it \
-             spells). NOT CLAIMED: playability — the control record lowers completely (OBJECTIVE36's \
-             counting TRAVELERS lowers since M10-B-FU1, #812) but the campaign gate stays closed; \
+             spells). NOT CLAIMED: playability — the control record (ZBD/C2/M01) lowers completely \
+             but the campaign gate stays closed; \
              the wrong-actor, wrong-session and repeated-event halves of the sheet's three \
              priorities are runtime observations and stay unmeasured (M12-C); no mission was \
              played, no original executable was run and nothing is verified_original. Claim is \
