@@ -235,7 +235,8 @@ fn accept_f10_f_1_a_stored_two_sided_polygon_reaches_the_culling_class() {
         RenderMesh::build(&stored_mesh(vec![stored_outline(0, 0)])).expect("the outline decodes");
     let upload = upload_group(&one_sided, 0, &[]).expect("group 0 uploads");
     assert_eq!(upload.two_sided(), Some(false));
-    let state = render_state_for_mesh(&material, false, upload.two_sided()).expect("one-sided state");
+    let state =
+        render_state_for_mesh(&material, false, upload.two_sided()).expect("one-sided state");
     assert_eq!(
         state.cull_face(),
         CullingClass::OneSided.cull_face(),
@@ -277,11 +278,15 @@ fn accept_f10_f_1_a_mixed_group_is_refused_not_rounded() {
 fn accept_f10_f_2_billboard_mesh_surfaces_are_not_culled() {
     let material = authored(MaterialClass::Opaque, Some(false));
     assert_eq!(
-        render_state_for_mesh(&material, true, None).unwrap().cull_face(),
+        render_state_for_mesh(&material, true, None)
+            .unwrap()
+            .cull_face(),
         None
     );
     assert_eq!(
-        render_state_for_mesh(&material, false, None).unwrap().cull_face(),
+        render_state_for_mesh(&material, false, None)
+            .unwrap()
+            .cull_face(),
         Some(Face::Back)
     );
     assert_eq!(
