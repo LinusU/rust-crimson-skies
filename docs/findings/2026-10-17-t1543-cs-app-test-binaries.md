@@ -159,4 +159,18 @@ f48_d re-exec fix in section 1. The 8-thread parallel run of the retail tests is
 the slow part: each fingerprints the whole installation (SHA-256, unoptimised
 `cs_assets`), which dominated the 3 h wall time of binary a on a loaded host.
 
+**Tests main added while this branch was being rebased** were not in those
+runs; their retail members were run on their own (`--include-ignored`, each
+filtered to the new modules) on the final tree's predecessor and are not layout
+effects either way, but are not green here:
+`accept_m01_window_world_imports_the_horizon_subtree_and_stays_launchable`
+(`world_geometry is still satisfied: unknown: …`),
+`accept_m01_window_world_retail_sea_level_and_far_terrain` (`M01's water quads
+are one flat surface`), `regenerate_binding_writes_the_committed_record_through_production`
+(needs `CS_REGENERATE_BINDING=<label>`), and
+`accept_m01_smoke_no_teleport_the_windowed_launch_reports_wingman_distances`,
+which runs `target/release/cs` when that exists and this worktree's one is a
+stale release build that rejects `--smoke-no-teleport`. Their owners should rerun
+them on a clean target directory.
+
 Not measured: the old 249-binary layout's compile and test time (see section 2).
