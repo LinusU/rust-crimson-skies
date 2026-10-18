@@ -426,6 +426,19 @@ fn accept_m06_b_fu4_a_mission_scoped_unknown_reaches_only_the_work_order_it_was_
         if work_order.as_str() == "M12" {
             continue;
         }
+        if work_order.as_str() == "M13" {
+            // M13 carries its own limitation (M13-B-FU2, the ambiguous startup
+            // animation); the passenger one measured on `zbd/c2/m01` must not
+            // have reached it.
+            assert!(
+                mission_scoped_unknowns(work_order)
+                    .iter()
+                    .all(|entry| !entry.contains("passenger identity")),
+                "the limitation measured on `zbd/c2/m01` reached M13's record"
+            );
+            others.push(work_order.as_str());
+            continue;
+        }
         assert!(
             mission_scoped_unknowns(work_order).is_empty(),
             "the limitation measured on `zbd/c2/m01` reached {}'s record",
