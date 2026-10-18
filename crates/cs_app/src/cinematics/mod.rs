@@ -36,6 +36,7 @@
 pub mod camera_anim;
 pub mod device;
 pub mod frame_capture;
+pub mod launch_end_pose;
 pub mod mpeg;
 pub mod playback;
 pub mod session;
