@@ -146,7 +146,7 @@ fn evidence_report_m08_b_writes_the_acceptance_report() {
     let census = cs_app::mission_control::survey_mission_control_programs(&game_dir)
         .expect("the census measures the installation");
     let row = census
-        .row("zbd/c2/m03")
+        .row("zbd/c1b/m03")
         .expect("M08's reader archive is measured by the census");
     let lowered = row
         .lowering_attempt()
@@ -310,11 +310,10 @@ fn evidence_report_m08_b_writes_the_acceptance_report() {
              binding `SourceContext::control_program` derives from it (mission and program \
              identities equal to the M08-A binding, the control member chosen by the measured \
              rule over the archive's whole member set, the directive accounting of the member it \
-             spells). NOT CLAIMED: M08's control record does not lower completely — every one of \
-             its 209 host calls binds (the list-argument lowering #800 landed while this stage \
-             was in flight), but eight DANGER_ZONES_COMPLETED completion conditions are refused \
-             because this build lowers no predicate for them (#813) — so M08 stays Unsupported \
-             and the campaign gate stays closed; \
+             spells). M08 binds to ZBD/C1B/M03 on the corrected \
+             layout; its record (55 blocks, 313 sites) lowers completely, with the two \
+             WAKEUP_OBJECTIVE_WHEN_I_COMPLETE sites dropped as the original ignores that spelling \
+             (#803), but the campaign gate stays closed on other rows; \
              the wrong-actor, wrong-session and repeated-event halves of the sheet's three \
              priorities are runtime observations and stay unmeasured (M08-C); no mission was \
              played, no original executable was run and nothing is verified_original. Claim is \

@@ -17,6 +17,38 @@ original-run evidence, and no agent review replaces the owner's human
 approval. The evidence report's `review.identity` is read at run time from
 `CS_EVIDENCE_REVIEWER`, so each agent writes its own.
 
+## 2026-10-18 re-pin on the corrected campaign layout (#1598)
+
+Every retail fact in the tables below was measured on `ZBD/C2/M03/zrdr.zbd`.
+The corrected campaign layout (commit `6df5715b0`,
+`docs/findings/2026-10-17-m01-archive-decision.md`) re-derived *The Petrol
+Plot* to `ZBD/C1B/M03` / `mission/ch2-m03` / `script/c1b-m03-zrdr`
+(`missions/bindings/M08.json`, campaign position 7). So the numbers below are
+**historical for M08** and describe a different mission's archive. The
+acceptance tests now pin M08's own record, re-derived through the same
+production code (`SourceContext::control_program`, `discover_container`,
+`decode_zrd`, `measure_control_record`, the census, `lower_control_record`):
+
+| Fact | Old pin (`ZBD/C2/M03`) | Re-pinned (`ZBD/C1B/M03`, 132 607 bytes, SHA-256 `5a3051e0…4f76ddc`) |
+| --- | --- | --- |
+| Mission / program id | `mission/ch3-m03` (as the old test spelled it) / `script/c2-m03-zrdr` | `mission/ch2-m03` / `script/c1b-m03-zrdr` |
+| Archive members | 13 | 22 |
+| Control member | `objectives.zrd` | `objectives.zrd`, 21 318 bytes (only member with numbered blocks; a longer member and an earlier first member exist) |
+| Record | 57 blocks, 209 sites, 22 keys | 55 blocks, 313 sites, 40 keys, 0 refusals |
+| Unmeasured key | none | `WAKEUP_OBJECTIVE_WHEN_I_COMPLETE` ×2, ignored by the original (M03-B-FU1, #803) |
+| Success / failure latch | `OBJECTIVE8` / `OBJECTIVE49` | `OBJECTIVE33` (named by `OBJECTIVE32`'s nap alone) / `OBJECTIVE7` (named by the naps of 6, 22, 23); neither has a wake edge |
+| Cross-objective addresses | 151, range 2…57 | 79, range 2…55 (the maximum is the last block) |
+| Kill sites | 19, up to ten indices (over `MAX_CALL_ARGS`) | 15, up to five indices (within the bound; the over-wide case stays pinned by the synthetic kill-shape test) |
+| Condition surface | eight `DANGER_ZONES_COMPLETED` conditions | none; all 55 conditions lower; the synthetic danger-zones test keeps that arm |
+| Lowering | complete | complete: 311 of 313 sites bind, 2 ignored sites dropped; census row `zbd/c1b/m03` is a complete row |
+| Sheet priorities | `SET_AI_TEAM`/`SET_AI_NET` in `OBJECTIVE3`, `TRAVELERS`, a danger-zone chain | no `SET_AI_TEAM`, no `TRAVELERS`, no danger zones; `SET_AI_NET` (10 pairs, `OBJECTIVE10`), 4 `DEDG`, 4 `WAKEUP_GENERATOR`, six timed `BEGIN_DORMANT` blocks (2, 180, 181, 215, 230, 260 s), the 36/37/47 mutually-killing trio, stoppoints and the `pzhookpoint` target |
+
+The wrong-actor, wrong-session and repeated-event halves of the sheet's
+priorities stay unmeasured runtime observations. Nothing here is
+`verified_original`. Note: this is the same archive `m03_b.rs` pins under
+`zbd/c1b/m03` for work order M03, whose binding (`script/c3-m03-zrdr`) names a
+different archive; that drift is filed separately.
+
 The stage's minimum acceptance scenario is *"All discovered mission-specific
 behavior uses production engine systems and regression tests."* It holds for
 everything this note measures: M08's discovered mission-specific behavior is

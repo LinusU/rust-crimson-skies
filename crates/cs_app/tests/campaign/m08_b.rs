@@ -15,7 +15,7 @@
 //! regression priorities (logistics state, alternative objective paths,
 //! protected transfer) "remain for M08-B once the mission program is
 //! decoded". M08's program is the reader archive
-//! `ZBD/C2/M03/zrdr.zbd`, and this stage binds it through the production
+//! `ZBD/C1B/M03/zrdr.zbd`, and this stage binds it through the production
 //! systems M02-B built (`SourceContext::control_program`) and measures it a
 //! second time through `cs_app::mission_control`, so three independent
 //! derivations — the mission binding, the control binding and the retail
@@ -24,22 +24,18 @@
 //! The stage's minimum acceptance scenario is *"All discovered
 //! mission-specific behavior uses production engine systems and regression
 //! tests."* M08's discovered mission-specific behavior is its control
-//! record: 57 numbered blocks, 209 directive sites, 22 distinct keys, the
-//! block graph those spell, and the two lowering gaps measured below.
+//! record: 55 numbered blocks, 313 directive sites, 40 distinct keys, the
+//! block graph those spell, and the one spelling the original ignores.
 //!
-//! * **The lowering is pinned on both sides of the gap it was written
-//!   against.** When this stage measured M08, its 19
-//!   `KILL_OBJECTIVE_WHEN_I_COMPLETE` sites refused against the host-call
-//!   registry's per-signature bound and eight `DANGER_ZONES_COMPLETED`
-//!   completion conditions were refused because this build lowers no
-//!   condition for the danger-zones flag evaluator. #800 landed on `main`
-//!   while this branch was in flight and closed the first half — the
-//!   adapter now carries an objective-index list as one list argument — and
-//!   M07-B-FU1 (#813) closed the second by measuring who writes those flag
-//!   bytes in the engine image, so the tests pin that every one of M08's 209
-//!   sites binds *and* that every completion condition lowers: the record
-//!   lowers completely, the census row is complete, and the campaign gate
-//!   stays closed on the rows whose gaps remain.
+//! * **The lowering is pinned as it stands.** The record spells
+//!   `WAKEUP_OBJECTIVE_WHEN_I_COMPLETE` twice, a spelling the original's
+//!   directive table does not hold (M03-B-FU1 / #803), so those two sites are
+//!   dropped and the other 311 bind — including the 15 `KILL_…` sites, whose
+//!   index lists the adapter carries as one list argument (#800) — and all 55
+//!   completion conditions lower: the record lowers completely, the census row
+//!   is complete, and the campaign gate stays closed on the rows whose gaps
+//!   remain. The synthetic danger-zones test keeps the predicate arm
+//!   (M07-B-FU1, #813) that this record does not reach.
 //! * **The three sheet priorities are located in the measured record** as
 //!   directives, operands and block edges the record spells — never as a
 //!   timing, count or coordinate it does not. Their predicates (the wrong
@@ -66,8 +62,8 @@ use cs_assets::install::sha256;
 use cs_content::campaign_bindings::{MissionLabel, SourceContext};
 use cs_content::mission_control::{
     AnimList, CallOutcome, ConditionOutcome, ControlRecordField, DecodedMember,
-    DirectiveDisposition, TerminalOutcome, measure_control_record, objective_blocks_of,
-    terminal_outcome_of,
+    DirectiveDisposition, TerminalOutcome, UnmeasuredReason, measure_control_record,
+    objective_blocks_of, terminal_outcome_of,
 };
 use cs_content::objectives::objective_block_number;
 use cs_content::stunts::{ZrdValue, decode_zrd, objective_record, zrd_flat_fields};
@@ -81,17 +77,17 @@ use crate::campaign::common::{label, load_inventory};
 
 /// The census row label of the mission: the mission-scoped reader archive
 /// F13-B's rule derives from the installation.
-const MISSION: &str = "zbd/c2/m03";
+const MISSION: &str = "zbd/c1b/m03";
 
 /// The numbered blocks of the control member.
-const BLOCKS: u32 = 57;
+const BLOCKS: u32 = 55;
 /// The directive sites of the control member.
-const SITES: u32 = 209;
+const SITES: u32 = 313;
 /// The distinct directive keys of the control member.
-const KEYS: usize = 22;
+const KEYS: usize = 40;
 /// The sites of the kill key, every one of which binds now that the adapter
 /// carries an objective-index list as one list argument (#800).
-const KILL_SITES: u32 = 19;
+const KILL_SITES: u32 = 15;
 
 /// The original installation, as the environment declares it.
 fn game_dir() -> PathBuf {
@@ -308,7 +304,7 @@ fn accept_m08_b_m08s_control_program_is_bound_to_the_same_identities_as_its_miss
     );
     assert_eq!(
         binding.mission.as_str(),
-        "mission/ch3-m03",
+        "mission/ch2-m03",
         "M08 is the third mission of chapter 2, as M08-A bound it"
     );
     assert_eq!(
@@ -326,8 +322,8 @@ fn accept_m08_b_m08s_control_program_is_bound_to_the_same_identities_as_its_miss
     );
     assert_eq!(
         binding.program_id.as_str(),
-        "script/c2-m03-zrdr",
-        "the program identity is the world group's reader archive for chapter 2, mission 3"
+        "script/c1b-m03-zrdr",
+        "the program identity is the world group's reader archive for world c1b, mission 3"
     );
 
     // The archive is the one the campaign layout declares at that position,
@@ -387,8 +383,8 @@ fn accept_m08_b_m08s_control_program_is_bound_to_the_same_identities_as_its_miss
     );
     assert_eq!(
         binding.members.len(),
-        13,
-        "M08's archive offers thirteen members, as M02's did twenty"
+        22,
+        "M08's archive offers twenty-two members"
     );
     let row = binding.control_row().expect("the chosen member has a row");
     let end = (row.offset + row.len) as usize;
@@ -472,10 +468,11 @@ fn accept_m08_b_m08s_control_program_is_bound_to_the_same_identities_as_its_miss
 
 /// **M08's directive vocabulary partitions exactly and refuses no key.**
 /// This is what makes the gap pinned below a *lowering* gap and not an
-/// unknown directive: every key M08 spells carries a measured disposition
-/// or is one of the two terminal outcome spellings, no block is unreadable,
-/// and — unlike M02 — no record-level key falls outside the measured record
-/// vocabulary.
+/// unknown directive: every key M08 spells carries a measured disposition,
+/// is one of the two terminal outcome spellings, or is the one spelling the
+/// original's directive table does not hold (`WAKEUP_OBJECTIVE_WHEN_I_COMPLETE`,
+/// M03-B-FU1 / #803); no block is unreadable, and no record-level key falls
+/// outside the measured record vocabulary.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m08_b_the_measured_vocabulary_partitions_and_refuses_no_m08_key() {
@@ -519,13 +516,26 @@ fn accept_m08_b_the_measured_vocabulary_partitions_and_refuses_no_m08_key() {
     );
     assert_eq!(
         binding.unmeasured_keys(),
-        Vec::<String>::new(),
-        "every key M08 spells is covered by the M01-LC findings"
+        ["WAKEUP_OBJECTIVE_WHEN_I_COMPLETE"],
+        "the one key without a measured effect is the `WAKEUP_` spelling the \
+         original never looks up (finding 2026-10-18-m03-b-fu1-wakeup-objective-spelling)"
+    );
+    assert!(
+        matches!(
+            record
+                .key("WAKEUP_OBJECTIVE_WHEN_I_COMPLETE")
+                .expect("M08 spells the ignored wake key")
+                .disposition(),
+            DirectiveDisposition::Unmeasured {
+                reason: UnmeasuredReason::IgnoredByOriginal
+            }
+        ),
+        "that key is unmeasured because the original ignores it"
     );
     assert_eq!(
-        record.measured().len() + implemented.len(),
+        record.measured().len() + implemented.len() + binding.unmeasured_keys().len(),
         record.vocabulary() as usize,
-        "measured + implemented partitions M08's vocabulary"
+        "measured + implemented + the ignored spelling partitions M08's vocabulary"
     );
     for (key, directive) in record.measured() {
         assert!(
@@ -605,18 +615,36 @@ fn accept_m08_b_the_measured_vocabulary_partitions_and_refuses_no_m08_key() {
             "BEGIN_DORMANT",
             "COMPLETED_SOUND_GROUP",
             "COMPLETED_STOPPOINT",
-            "DANGER_ZONES_COMPLETED",
             "DEDG",
             "IDENTITY",
+            "INACTIVE1",
+            "INACTIVE10",
+            "INACTIVE11",
+            "INACTIVE12",
+            "INACTIVE13",
+            "INACTIVE14",
+            "INACTIVE2",
+            "INACTIVE3",
+            "INACTIVE4",
+            "INACTIVE5",
+            "INACTIVE6",
+            "INACTIVE7",
+            "INACTIVE8",
+            "INACTIVE9",
+            "INACTIVE_COMPLETION_COUNT",
             "INSTANTLOSS",
             "INSTANTWIN",
             "KILL_OBJECTIVE_WHEN_I_COMPLETE",
             "NAP_OBJECTIVE_WHEN_I_COMPLETE",
             "REMOVE_OBJECTIVE_TARGET",
+            "REMOVE_OTHER_TARGET",
             "SET_AI_NET",
-            "SET_AI_TEAM",
-            "TRAVELERS",
+            "SET_HELP_LABEL",
+            "STOP_QUEUED_SOUNDS",
+            "TICK_DEPENDS_ON_OBJ",
             "WAKEUP_ENEMIES",
+            "WAKEUP_GENERATOR",
+            "WAKEUP_OBJECTIVE_WHEN_I_COMPLETE",
             "WAKEUP_SOUND_GROUP",
             "WAKEUP_ZEP_TURRETS",
             "WAKE_ANIM",
@@ -635,8 +663,8 @@ fn accept_m08_b_the_measured_vocabulary_partitions_and_refuses_no_m08_key() {
 /// declares, and every edge lands where the mission's structure says it
 /// does.**
 ///
-/// The record declares `OBJECTIVE1` … `OBJECTIVE57`; the three
-/// cross-objective keys M08 spells carry 151 addresses, none zero, none
+/// The record declares `OBJECTIVE1` … `OBJECTIVE55`; the three
+/// cross-objective keys M08 spells carry 79 addresses, none zero, none
 /// negative and none past the last block — the largest value M08 spells
 /// *is* the block count. A spelled address names the block it decrements
 /// to (the parse stores `address - 1`; that rule, and the refusal it raises
@@ -672,8 +700,9 @@ fn accept_m08_b_the_block_graph_is_closed_under_the_records_own_numbering() {
     assert_eq!(spelled, numbers, "numbered 1..={BLOCKS}, no gaps");
 
     // The three cross-objective keys M08 spells (it spells no
-    // `SLEEP_…`, no bare `WAKE_OBJECTIVE`, no `TICK_DEPENDS_ON_OBJ` and no
-    // `HIDE_OBJ`), and every integer their sites address.
+    // `SLEEP_…`, no bare `WAKE_OBJECTIVE` and no `HIDE_OBJ`; its two
+    // `TICK_DEPENDS_ON_OBJ` sites address another block too, but are not an
+    // edge of the completion graph), and every integer their sites address.
     let directed = [
         "WAKE_OBJECTIVE_WHEN_I_COMPLETE",
         "KILL_OBJECTIVE_WHEN_I_COMPLETE",
@@ -682,7 +711,6 @@ fn accept_m08_b_the_block_graph_is_closed_under_the_records_own_numbering() {
     for absent in [
         "SLEEP_OBJECTIVE_WHEN_I_COMPLETE",
         "WAKE_OBJECTIVE",
-        "TICK_DEPENDS_ON_OBJ",
         "HIDE_OBJ",
     ] {
         assert!(
@@ -721,13 +749,13 @@ fn accept_m08_b_the_block_graph_is_closed_under_the_records_own_numbering() {
     );
     assert_eq!(
         addresses.len(),
-        151,
-        "M08 spells 151 cross-objective addresses"
+        79,
+        "M08 spells 79 cross-objective addresses"
     );
 
     // Every address names a block this record declares: none is zero or
     // negative, none is past the last block, so `address - 1` — the index
-    // the parse stores — always lands inside the record's own 57 blocks.
+    // the parse stores — always lands inside the record's own 55 blocks.
     assert!(
         addresses
             .iter()
@@ -754,12 +782,11 @@ fn accept_m08_b_the_block_graph_is_closed_under_the_records_own_numbering() {
     // **The terminal latches are gated.** Exactly one block spells each
     // outcome. Cross-objective edges are compared on the *spelled* value —
     // the record's own block numbering, the reading under which every edge
-    // below lands on the block the mission's structure names. The success
-    // latch is woken by exactly one other block, so it cannot fire before
-    // that block completes; the failure latch has no wake edge at all and is
-    // named only by the six nap sites of the group-depletion announcer blocks — a
-    // structure the runtime must observe before any wrong-actor /
-    // wrong-session claim is possible (M08-C).
+    // below lands on the block the mission's structure names. Neither latch
+    // has a wake edge: each is named only by nap sites, which re-wake their
+    // target after the spelled seconds — a structure the runtime must
+    // observe before any wrong-actor / wrong-session claim is possible
+    // (M08-C).
     let number_of = |block: &Block| -> u32 {
         block
             .key
@@ -767,70 +794,52 @@ fn accept_m08_b_the_block_graph_is_closed_under_the_records_own_numbering() {
             .parse::<u32>()
             .expect("a block key carries its number")
     };
+    let naming = |key: &str, target: u32| -> Vec<u32> {
+        blocks
+            .iter()
+            .filter(|block| {
+                block
+                    .sites
+                    .iter()
+                    .any(|(name, args)| name == key && integers(args).contains(&i64::from(target)))
+            })
+            .map(number_of)
+            .collect()
+    };
     let win: Vec<&Block> = blocks
         .iter()
         .filter(|block| block.sites.iter().any(|(key, _)| key == "INSTANTWIN"))
         .collect();
     assert_eq!(win.len(), 1, "M08 spells exactly one success latch");
-    let latch = win[0];
-    let latch_number = number_of(latch);
-    assert_eq!(latch_number, 8, "the success latch is OBJECTIVE8");
-    let wakeups: Vec<u32> = blocks
-        .iter()
-        .filter(|block| {
-            block.sites.iter().any(|(key, args)| {
-                key == "WAKE_OBJECTIVE_WHEN_I_COMPLETE"
-                    && integers(args).contains(&i64::from(latch_number))
-            })
-        })
-        .map(number_of)
-        .collect();
+    let latch_number = number_of(win[0]);
+    assert_eq!(latch_number, 33, "the success latch is OBJECTIVE33");
+    assert!(
+        naming("WAKE_OBJECTIVE_WHEN_I_COMPLETE", latch_number).is_empty(),
+        "nothing wakes the success latch directly"
+    );
     assert_eq!(
-        wakeups,
-        [7],
-        "the success latch is woken by exactly one block — OBJECTIVE7, whose \
-         completion also advances the stoppoint and arms the hook point — so \
-         before that block completes the latch cannot fire"
+        naming("NAP_OBJECTIVE_WHEN_I_COMPLETE", latch_number),
+        [32],
+        "the success latch is named by exactly one block — OBJECTIVE32's \
+         `NAP_OBJECTIVE_WHEN_I_COMPLETE [33]` — so before that block completes \
+         the latch cannot fire"
     );
     let loss: Vec<&Block> = blocks
         .iter()
         .filter(|block| block.sites.iter().any(|(key, _)| key == "INSTANTLOSS"))
         .collect();
     assert_eq!(loss.len(), 1, "M08 spells exactly one failure latch");
-    let failure = loss[0];
-    let failure_number = number_of(failure);
-    assert_eq!(failure_number, 49, "the failure latch is OBJECTIVE49");
-    let loss_wakes: Vec<u32> = blocks
-        .iter()
-        .filter(|block| {
-            block.sites.iter().any(|(key, args)| {
-                key == "WAKE_OBJECTIVE_WHEN_I_COMPLETE"
-                    && integers(args).contains(&i64::from(failure_number))
-            })
-        })
-        .map(number_of)
-        .collect();
+    let failure_number = number_of(loss[0]);
+    assert_eq!(failure_number, 7, "the failure latch is OBJECTIVE7");
     assert!(
-        loss_wakes.is_empty(),
-        "nothing wakes the failure latch directly: {:?}",
-        loss_wakes
+        naming("WAKE_OBJECTIVE_WHEN_I_COMPLETE", failure_number).is_empty(),
+        "nothing wakes the failure latch directly"
     );
-    let loss_naps: Vec<u32> = blocks
-        .iter()
-        .filter(|block| {
-            block.sites.iter().any(|(key, args)| {
-                key == "NAP_OBJECTIVE_WHEN_I_COMPLETE"
-                    && integers(args).contains(&i64::from(failure_number))
-            })
-        })
-        .map(number_of)
-        .collect();
     assert_eq!(
-        loss_naps,
-        [28, 29, 30, 31, 32, 33],
-        "the six group-depletion announcer blocks OBJECTIVE28…OBJECTIVE33 nap the failure \
-         latch (record order 27…32), and the nap re-wakes its target after the \
-         spelled seconds"
+        naming("NAP_OBJECTIVE_WHEN_I_COMPLETE", failure_number),
+        [6, 22, 23],
+        "OBJECTIVE6, OBJECTIVE22 and OBJECTIVE23 nap the failure latch, and \
+         the nap re-wakes its target after the spelled seconds"
     );
 
     // The record the census measured and the record the binding measured are
@@ -843,15 +852,11 @@ fn accept_m08_b_the_block_graph_is_closed_under_the_records_own_numbering() {
 }
 
 /// **M08's record lowers completely, and the campaign gate stays closed on the
-/// rows whose gaps remain.** M08's vocabulary is fully measured, so nothing
-/// refuses: eight `DANGER_ZONES_COMPLETED` completion conditions lower through
-/// M07-B-FU1 (#813)'s measured flag predicate (#813) — the refusal this pin was
-/// written against — and the other half, nineteen `KILL_…` sites running into
-/// the registry's per-signature argument bound, was closed on `main` by #800
-/// while this stage was in flight: the adapter now carries an objective-index
-/// list as one list argument, so every one of M08's 209 sites binds and the
-/// kill key registers. Both halves are asserted here, so a regression in
-/// either direction fails this test.
+/// rows whose gaps remain.** The two `WAKEUP_OBJECTIVE_WHEN_I_COMPLETE` sites
+/// are dropped as the original drops them (M03-B-FU1 / #803), so 311 of the
+/// 313 sites carry a call and bind; the 15 `KILL_…` sites carry their
+/// objective-index lists as one list argument (#800); and all 55 completion
+/// conditions lower. Nothing refuses.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m08_b_m08s_record_lowers_completely_and_the_gate_stays_closed_on_other_rows() {
@@ -878,8 +883,7 @@ fn accept_m08_b_m08s_record_lowers_completely_and_the_gate_stays_closed_on_other
     );
 
     // The host-call half is closed: no key refuses registration and every
-    // site carries a bound verdict — including the 19 kill sites whose lists
-    // are the longest the record spells.
+    // carried site has a bound verdict; the two ignored sites carry no call.
     assert!(
         attempt.unbound_keys.is_empty(),
         "no key refuses registration: {:?}",
@@ -895,22 +899,34 @@ fn accept_m08_b_m08s_record_lowers_completely_and_the_gate_stays_closed_on_other
         .collect();
     assert!(
         refused.is_empty(),
-        "every site binds, so nothing refuses: {refused:?}"
+        "every carried site binds, so nothing refuses: {refused:?}"
+    );
+    assert_eq!(
+        attempt.ignored_sites, 2,
+        "the two `WAKEUP_OBJECTIVE_WHEN_I_COMPLETE` sites are the original's ignored spelling"
     );
     assert_eq!(
         attempt.calls.len() as u32,
-        record.sites(),
-        "every site carries an outcome"
+        record.sites() - attempt.ignored_sites,
+        "every site but the ignored ones carries an outcome"
     );
-    assert_eq!(
+    assert!(
         attempt
             .calls
             .iter()
-            .filter(|outcome| **outcome == CallOutcome::Bound)
-            .count() as u32,
-        record.sites(),
-        "all {} sites bind",
-        record.sites()
+            .all(|outcome| *outcome == CallOutcome::Bound),
+        "all {} carried sites bind",
+        attempt.calls.len()
+    );
+    assert!(
+        lowered
+            .raw_program()
+            .expect("a raw program stood")
+            .objectives
+            .iter()
+            .flat_map(|objective| objective.calls.iter())
+            .all(|call| call.name != "WAKEUP_OBJECTIVE_WHEN_I_COMPLETE"),
+        "no call is emitted for the ignored spelling"
     );
     let kill = record
         .key("KILL_OBJECTIVE_WHEN_I_COMPLETE")
@@ -921,7 +937,7 @@ fn accept_m08_b_m08s_record_lowers_completely_and_the_gate_stays_closed_on_other
     );
     assert!(
         kill.agreed_shape().is_none(),
-        "the kill key's sites spell six shapes, so the lowering registers one \
+        "the kill key's sites spell four shapes, so the lowering registers one \
          signature per shape"
     );
     let longest = kill
@@ -931,18 +947,18 @@ fn accept_m08_b_m08s_record_lowers_completely_and_the_gate_stays_closed_on_other
         .max()
         .expect("the kill key has shapes");
     assert_eq!(
-        longest, 10,
-        "M08's longest kill list is the ten-index one OBJECTIVE28…OBJECTIVE33 spell"
+        longest, 5,
+        "M08's longest kill list is the five-index one OBJECTIVE27 and OBJECTIVE30 spell"
     );
     assert!(
-        longest > MAX_CALL_ARGS,
-        "that length ({longest}) is over MAX_CALL_ARGS ({MAX_CALL_ARGS}), which is \
-         exactly why #800's list-argument shaping is what lets these sites bind"
+        longest <= MAX_CALL_ARGS,
+        "this record's kill lists ({longest}) are within MAX_CALL_ARGS \
+         ({MAX_CALL_ARGS}); the over-wide case is pinned by the synthetic kill-shape test"
     );
     let spec = lowered
         .registry()
         .get("KILL_OBJECTIVE_WHEN_I_COMPLETE")
-        .expect("the kill key registers now that its lists are one argument");
+        .expect("the kill key registers as list-argument signatures");
     assert!(
         spec.signatures.iter().all(|signature| signature.len() == 1),
         "every measured kill shape registers as a single-argument signature: {:?}",
@@ -961,42 +977,19 @@ fn accept_m08_b_m08s_record_lowers_completely_and_the_gate_stays_closed_on_other
         "validation accepts every lowered condition: {validation:?}"
     );
 
-    // The danger-zones surface — the eight blocks OBJECTIVE17…OBJECTIVE24,
-    // which used to refuse — now lowers, and so does every other block.
+    // Every block's completion condition lowers.
     assert_eq!(
         attempt.conditions.len() as u32,
         record.blocks(),
         "every block carries a condition verdict"
     );
-    let condition_refusals: Vec<&str> = attempt
-        .conditions
-        .iter()
-        .filter_map(|outcome| match outcome {
-            ConditionOutcome::Refused(field) => Some(field.as_str()),
-            _ => None,
-        })
-        .collect();
     assert!(
-        condition_refusals.is_empty(),
-        "no completion condition refuses: {condition_refusals:?}"
-    );
-    for number in 17..=24 {
-        assert_eq!(
-            attempt.conditions[number as usize - 1],
-            ConditionOutcome::Lowered,
-            "OBJECTIVE{number} is one of the eight danger-zones blocks, and its \
-             flag-count predicate lowers"
-        );
-    }
-    let lowered_conditions = attempt
-        .conditions
-        .iter()
-        .filter(|outcome| **outcome == ConditionOutcome::Lowered)
-        .count();
-    assert_eq!(
-        lowered_conditions,
-        record.blocks() as usize,
-        "every completion condition lowers"
+        attempt
+            .conditions
+            .iter()
+            .all(|outcome| *outcome == ConditionOutcome::Lowered),
+        "every completion condition lowers: {:?}",
+        attempt.conditions
     );
 
     // A complete row is a lowering claim, not a launchable mission: the gate
@@ -1038,7 +1031,7 @@ fn accept_m08_b_m08s_record_lowers_completely_and_the_gate_stays_closed_on_other
 ///
 /// M08-A left all three unbound. What this stage can honestly add is the
 /// *data* each one is built from, plus the negative half: the control
-/// member's whole 22-key vocabulary carries no interaction, docking,
+/// member's whole 40-key vocabulary carries no interaction, docking,
 /// pickup, boarding or transfer directive (pinned by the vocabulary test),
 /// so the authorisation half of "protected transfer" is not in this member
 /// at all.
@@ -1064,15 +1057,15 @@ fn accept_m08_b_the_three_sheet_priorities_locate_in_the_measured_record() {
             .collect()
     };
 
-    // --- Logistics state: the record's only actor-ownership writes and its
-    // world-state evaluators. The team and net assignments are one site each
-    // in the same block, six named pairs apiece, so who owns which actor is
-    // spelled data — while *whether the wrong actor or a repeated event can
-    // satisfy it* is a runtime observation that stays unmeasured.
-    assert_eq!(
-        binding.record.key("SET_AI_TEAM").map(|key| key.sites),
-        Some(1),
-        "the team assignment is one site"
+    // --- Logistics state: the record's only actor-ownership write and its
+    // world-state evaluators. The record spells no `SET_AI_TEAM`; the net
+    // assignment is one site in OBJECTIVE10 with ten named pairs, so who is
+    // pointed at which node list is spelled data — while *whether the wrong
+    // actor or a repeated event can satisfy it* is a runtime observation
+    // that stays unmeasured.
+    assert!(
+        binding.record.key("SET_AI_TEAM").is_none(),
+        "M08's record spells no team assignment"
     );
     assert_eq!(
         binding.record.key("SET_AI_NET").map(|key| key.sites),
@@ -1080,42 +1073,11 @@ fn accept_m08_b_the_three_sheet_priorities_locate_in_the_measured_record() {
         "the net assignment is one site"
     );
     assert_eq!(
-        sites(3, "SET_AI_TEAM").len(),
+        sites(10, "SET_AI_NET").len(),
         1,
-        "both ownership writes are spelled in OBJECTIVE3"
+        "…and it is in OBJECTIVE10"
     );
-    assert_eq!(
-        sites(3, "SET_AI_NET").len(),
-        1,
-        "…and both are in OBJECTIVE3"
-    );
-    let teams: Vec<(String, i64)> = sites(3, "SET_AI_TEAM")
-        .pop()
-        .expect("one team site")
-        .iter()
-        .filter_map(|pair| match pair {
-            ZrdValue::List(pair) => match (&pair[0], &pair[1]) {
-                (ZrdValue::Text(name), ZrdValue::Int(team)) => {
-                    Some((name.clone(), i64::from(*team)))
-                }
-                _ => None,
-            },
-            _ => None,
-        })
-        .collect();
-    assert_eq!(
-        teams,
-        [
-            ("hafury_1".to_owned(), 2),
-            ("hafury_2".to_owned(), 1),
-            ("hafury_3".to_owned(), 2),
-            ("hafury_4".to_owned(), 2),
-            ("hafury_5".to_owned(), 1),
-            ("hafury_6".to_owned(), 2),
-        ],
-        "six actors, each with the team the record spells"
-    );
-    let nets: Vec<(String, String)> = sites(3, "SET_AI_NET")
+    let nets: Vec<(String, String)> = sites(10, "SET_AI_NET")
         .pop()
         .expect("one net site")
         .iter()
@@ -1129,181 +1091,150 @@ fn accept_m08_b_the_three_sheet_priorities_locate_in_the_measured_record() {
         .collect();
     assert_eq!(
         nets,
-        (1..=6)
-            .map(|n| (format!("hafury_{n}"), "M3Aces".to_owned()))
-            .collect::<Vec<_>>(),
-        "the same six actors, each pointed at the one node-list entry"
+        [
+            ("devastator_2", "Bravo2"),
+            ("devastator_3", "Charlie2"),
+            ("blakepeace_2_1", "Boeing2"),
+            ("blakepeace_2_2", "Boeing2"),
+            ("blakepeace_2_3", "Boeing2"),
+            ("blakepeace_2_4", "Boeing2"),
+            ("patrolboat_1", "Patrolboat1"),
+            ("patrolboat_2", "Patrolboat2"),
+            ("patrolboat_3", "Patrolboat3"),
+            ("patrolboat_4", "Patrolboat4"),
+        ]
+        .map(|(name, net)| (name.to_owned(), net.to_owned())),
+        "ten actors, each pointed at the node list the record spells"
     );
     let dedg = binding
         .record
         .key("DEDG")
         .expect("M08 spells the group-depletion evaluator");
-    assert_eq!(
-        dedg.sites, 17,
-        "seventeen group-depletion sites carry the mission's enemy state"
-    );
-
-    // --- Alternative objective paths: the danger-zone chain and the timed
-    // race pair. The chain's zone order is spelled data, and it is *not*
-    // the numeric order: dzpath5 comes before dzpath4 and dzpath8 never
-    // appears.
-    let zones: Vec<String> = (17..=24)
+    assert_eq!(dedg.sites, 4, "four group-depletion sites");
+    let generators: Vec<(u32, Vec<ZrdValue>)> = [12, 19, 26, 38]
+        .into_iter()
         .map(|number| {
-            let args = sites(number, "DANGER_ZONES_COMPLETED")
-                .pop()
-                .unwrap_or_else(|| panic!("OBJECTIVE{number} reads a danger zone"));
-            assert_eq!(texts(&args).len(), 1, "one zone per block");
-            texts(&args)[0].to_owned()
+            (
+                number,
+                sites(number, "WAKEUP_GENERATOR")
+                    .pop()
+                    .unwrap_or_else(|| panic!("OBJECTIVE{number} wakes a generator")),
+            )
         })
         .collect();
     assert_eq!(
-        zones,
+        generators,
         [
-            "dzpath1", "dzpath2", "dzpath3", "dzpath5", "dzpath4", "dzpath6", "dzpath7", "dzpath9",
+            (
+                12,
+                vec![ZrdValue::Text("vostokzep".to_owned()), ZrdValue::Int(2)]
+            ),
+            (
+                19,
+                vec![ZrdValue::Text("vostokzep".to_owned()), ZrdValue::Int(3)]
+            ),
+            (
+                26,
+                vec![ZrdValue::Text("vostokzep".to_owned()), ZrdValue::Int(3)]
+            ),
+            (
+                38,
+                vec![ZrdValue::Text("vostokzep".to_owned()), ZrdValue::Int(2)]
+            ),
         ],
-        "the chain M08 spells: seven of the nine dzpath names, 4 and 5 \
-         interleaved, 8 absent — a reordering question the record answers but \
-         no walkthrough may"
+        "the four generator wake-ups the record spells, each naming the zeppelin and a number"
     );
-    // The target each block hands to the next: sghangar is superseded by
-    // dz2 … dz9, and the last block of the chain retires it.
-    let targets: Vec<(String, String)> = (17..=24)
+
+    // --- Alternative objective paths: the timed blocks and the mutually
+    // exclusive trio. Every number is the record's own spelling, never an
+    // assumed meaning of the sound-group names.
+    let timers: Vec<(u32, Vec<ZrdValue>)> = [1, 6, 8, 9, 10, 13]
+        .into_iter()
         .map(|number| {
-            let removed = sites(number, "REMOVE_OBJECTIVE_TARGET")
-                .pop()
-                .map(|args| texts(&args)[0].to_owned())
-                .unwrap_or_default();
-            let added = sites(number, "ADD_OBJECTIVE_TARGET")
-                .pop()
-                .map(|args| texts(&args)[0].to_owned())
-                .unwrap_or_default();
-            (removed, added)
+            (
+                number,
+                sites(number, "BEGIN_DORMANT")
+                    .pop()
+                    .unwrap_or_else(|| panic!("OBJECTIVE{number} starts dormant")),
+            )
         })
         .collect();
     assert_eq!(
-        targets,
+        timers,
         [
-            ("sghangar".to_owned(), "dz2".to_owned()),
-            ("dz2".to_owned(), "dz3".to_owned()),
-            ("dz3".to_owned(), "dz5".to_owned()),
-            ("dz5".to_owned(), "dz4".to_owned()),
-            ("dz4".to_owned(), "dz6".to_owned()),
-            ("dz6".to_owned(), "dz7".to_owned()),
-            ("dz7".to_owned(), "dz9".to_owned()),
-            ("dz9".to_owned(), String::new()),
+            (1, vec![ZrdValue::Float(2.0)]),
+            (6, vec![ZrdValue::Float(180.0)]),
+            (8, vec![ZrdValue::Float(181.0)]),
+            (9, vec![ZrdValue::Float(215.0)]),
+            (10, vec![ZrdValue::Float(230.0)]),
+            (13, vec![ZrdValue::Float(260.0)]),
         ],
-        "each block retires the target its predecessor added, in the record's \
-         own order"
+        "the six blocks the record arms at a spelled mission-clock second"
     );
-    // The timed alternative: OBJECTIVE43 wakes itself at 190 seconds and
-    // retires the whole chain, while OBJECTIVE42 — woken by the chain's last
-    // block — retires OBJECTIVE43. Both are pinned by their own spellings,
-    // never by an assumed meaning of the two sound-group names.
-    let timer = sites(43, "BEGIN_DORMANT")
-        .pop()
-        .expect("OBJECTIVE43 starts dormant");
-    assert_eq!(
-        timer,
-        [ZrdValue::Float(190.0)],
-        "the alternative branch arms itself at 190 mission-clock seconds"
-    );
-    assert_eq!(
-        sites(43, "REMOVE_OBJECTIVE_TARGET").pop().map(|args| {
-            texts(&args)
-                .into_iter()
-                .map(str::to_owned)
-                .collect::<Vec<_>>()
-        }),
-        Some(
-            ["sghangar", "dz2", "dz3", "dz4", "dz5", "dz6", "dz7", "dz9"]
-                .map(str::to_owned)
-                .to_vec()
-        ),
-        "…and names every target the chain added, retiring the whole path with them"
-    );
-    assert_eq!(
-        integers(
-            &sites(43, "KILL_OBJECTIVE_WHEN_I_COMPLETE")
-                .pop()
-                .expect("the timed branch kills")
-        ),
-        [17, 18, 19, 20, 21, 22, 23, 24, 42],
-        "…including the win branch of the pair"
-    );
-    assert_eq!(
-        integers(
-            &sites(42, "KILL_OBJECTIVE_WHEN_I_COMPLETE")
-                .pop()
-                .expect("the win branch kills")
-        ),
-        [43],
-        "the win branch retires the timed branch, so exactly one of the pair \
-         survives each outcome"
-    );
-    assert_eq!(
-        integers(
-            &sites(24, "WAKE_OBJECTIVE_WHEN_I_COMPLETE")
-                .pop()
-                .expect("the last chain block wakes")
-        ),
-        [42],
-        "the chain's last block is what arms the win branch"
-    );
+    for (number, others) in [(36, [37, 47]), (37, [36, 47]), (47, [37, 36])] {
+        assert_eq!(
+            integers(
+                &sites(number, "KILL_OBJECTIVE_WHEN_I_COMPLETE")
+                    .pop()
+                    .unwrap_or_else(|| panic!("OBJECTIVE{number} kills its siblings"))
+            ),
+            others,
+            "OBJECTIVE{number} retires the other two blocks of the 36/37/47 trio"
+        );
+        assert_eq!(
+            integers(
+                &sites(number, "WAKE_OBJECTIVE_WHEN_I_COMPLETE")
+                    .pop()
+                    .unwrap_or_else(|| panic!("OBJECTIVE{number} wakes the join"))
+            ),
+            [38],
+            "whichever of the trio completes first wakes OBJECTIVE38"
+        );
+    }
 
-    // --- Protected transfer: the stoppoint advance, the hook-point target
-    // and the player-to-zeppelin approach the record spells — and nothing
-    // that authorises an interaction.
-    let stoppoint = sites(7, "COMPLETED_STOPPOINT")
-        .pop()
-        .expect("OBJECTIVE7 advances a stoppoint");
+    // --- Protected transfer: the stoppoint advances, the hook-point target
+    // and the zeppelin wake-ups the record spells — and nothing that
+    // authorises an interaction.
     assert_eq!(
-        stoppoint.len(),
-        1,
-        "the stoppoint record is one nested list"
+        sites(10, "COMPLETED_STOPPOINT").pop(),
+        Some(vec![
+            ZrdValue::List(vec![
+                ZrdValue::Text("Vostok1".to_owned()),
+                ZrdValue::Int(1),
+                ZrdValue::Int(0),
+            ]),
+            ZrdValue::List(vec![
+                ZrdValue::Text("Klondike1".to_owned()),
+                ZrdValue::Int(6),
+                ZrdValue::Int(0),
+            ]),
+        ]),
+        "the two named stoppoint pairs OBJECTIVE10 forwards on completion"
     );
     assert_eq!(
-        stoppoint,
-        [ZrdValue::List(vec![
-            ZrdValue::Text("M3Piratezep".to_owned()),
-            ZrdValue::Int(1),
-            ZrdValue::Int(0),
-        ])],
-        "the named stoppoint pair OBJECTIVE7 forwards on completion"
-    );
-    assert_eq!(
-        sites(7, "ADD_OBJECTIVE_TARGET").pop().map(|args| {
+        sites(32, "ADD_OBJECTIVE_TARGET").pop().map(|args| {
             texts(&args)
                 .into_iter()
                 .map(str::to_owned)
                 .collect::<Vec<_>>()
         }),
         Some(vec!["pzhookpoint".to_owned()]),
-        "the hook point becomes an objective target when OBJECTIVE7 completes"
+        "the hook point becomes an objective target when OBJECTIVE32 completes"
     );
     assert_eq!(
-        sites(7, "ADD_OTHER_TARGET").pop().map(|args| args.len()),
-        Some(1),
-        "the other-target site carries one nested pair record"
+        texts(
+            &sites(1, "WAKEUP_ZEP_TURRETS")
+                .pop()
+                .expect("OBJECTIVE1 wakes turrets")
+        ),
+        ["piratezep"],
+        "OBJECTIVE1 wakes the named zeppelin's turrets at start"
     );
-    let travelers = binding
-        .record
-        .key("TRAVELERS")
-        .expect("M08 spells the travelers evaluator");
-    assert_eq!(
-        travelers.sites, 1,
-        "one travelers site — the record holds one slot for it"
-    );
-    assert_eq!(
-        sites(48, "TRAVELERS").pop(),
-        Some(vec![
-            ZrdValue::Text("player".to_owned()),
-            ZrdValue::Text("APPROACHING".to_owned()),
-            ZrdValue::Text("piratezep".to_owned()),
-            ZrdValue::Float(1500.0),
-            ZrdValue::Int(1),
-        ]),
-        "the subject, the polarity token (the only spelling the findings \
-         measured), the anchor and the two numbers the record spells"
+    assert!(
+        binding.record.key("TRAVELERS").is_none()
+            && binding.record.key("ADD_OTHER_TARGET").is_some(),
+        "M08 spells no travelers evaluator; its other-target writes are the \
+         only transfer-adjacent target change"
     );
     // The interaction/authorisation half is absent, by the pinned vocabulary:
     // no key names a docking, pickup, boarding, transfer or authorisation.
@@ -1475,8 +1406,9 @@ fn accept_m08_b_m08s_kill_shapes_bind_as_one_list_argument_and_an_over_wide_one_
 }
 
 /// **A danger-zones completion condition lowers the measured predicate while
-/// a site the parse cannot read still refuses** — M08's danger-zones surface
-/// on authored records, so CI covers both arms without original data. The
+/// a site the parse cannot read still refuses** — the danger-zones surface the
+/// stage first measured, kept on authored records (the corrected record
+/// spells no such key), so CI covers both arms without original data. The
 /// measured shape (zone names beside the key) lowers and completes the
 /// authored record; the same key spelled with no list after it — the record
 /// the original's own lookup cannot read as a zone vector — is reported under
