@@ -186,6 +186,7 @@ pub mod binding;
 pub mod capture;
 pub mod carrier;
 pub mod events;
+pub mod keywords;
 pub mod lower;
 pub mod mission;
 pub mod playback;
