@@ -53,12 +53,13 @@ use cs_app::audio::{AudioSession, MusicSelector};
 use cs_app::mission_launch::{MissionLaunchPlan, plan_mission_launch};
 use cs_app::mission_session::{
     MissionHostReport, MissionRadio, ObjectiveLifecycles, RADIO_SOUND_CONTAINER, RadioLineOutcome,
-    build_headless, declared_engine_objectives, declared_sound_groups, dialogue_content_id,
-    offer_cues, stage_for, teardown,
+    RadioRefusal, build_headless, declared_engine_objectives, declared_sound_groups,
+    dialogue_content_id, offer_cues, stage_for, teardown,
 };
 use cs_app::objectives::recover_retail_objectives;
 use cs_app::physics::BASELINE_FIXED_HZ;
 use cs_app::scene::SceneGeneration;
+use cs_content::objectives_engine::{CueEmission, CueKind};
 use cs_sim::audio_events::{AudioAssetSpec, AudioRouter};
 use cs_types::content::ContentKind;
 use cs_types::net::SessionId;
@@ -386,4 +387,201 @@ fn accept_m01_play_radio_the_composition_queues_the_opening_conversation() {
         "the second opening line waits behind the first"
     );
     teardown(&mut app);
+}
+
+/// The voice groups M01's record can cue and the members each reaches, in the
+/// spelled order, as measured on the owner's installation
+/// (`docs/findings/2026-10-18-m01-radio-cue-inventory.md`).
+const VOICE_GROUPS: &[(&str, &[&str])] = &[
+    (
+        "snd_NW1BSwan",
+        &[
+            "VO_c2-NW-m1_BlackSwan_25.wav",
+            "VO_c2-NW-m1_Zachary_26.wav",
+            "VO_c2-NW-m1_BlackSwan_27.wav",
+            "VO_c2-NW-m1_BigJohn_28.wav",
+            "VO_c2-NW-m1_Zachary_29.wav",
+        ],
+    ),
+    (
+        "snd_NW1Fass",
+        &[
+            "VO_c2-NW-m1_Jack_30.wav",
+            "VO_c2-NW-m1_Zachary_31.wav",
+            "VO_c2-NW-m1_Jack_31-1.wav",
+            "VO_c2-NW-m1_Zachary_31-2.wav",
+            "VO_c2-NW-m1_Jack_32.wav",
+            "VO_c2-NW-m1_Zachary_33.wav",
+        ],
+    ),
+    (
+        "snd_NW1FirstHook",
+        &["VO_c2-NW-m1_Jack_22.wav", "VO_c2-NW-m1_Zachary_23.wav"],
+    ),
+    (
+        "snd_NW1Prim2",
+        &[
+            "VO_c2-NW-m1_WorkersVoyage_8.wav",
+            "VO_c2-NW-m1_WorkersVoyage_9.wav",
+            "VO_c2-NW-m1_Tex_10.wav",
+        ],
+    ),
+    (
+        "snd_NW1Prim5Suc",
+        &["VO_c2-NW-m1_Zachary_38.wav", "VO_c2-NW-m1_Sparks_39.wav"],
+    ),
+    (
+        "snd_NW1Sec1Suc",
+        &[
+            "VO_c2-NW-m1_BlackSwan_41.wav",
+            "VO_c2-NW-m1_Zachary_42.wav",
+            "VO_c2-NW-m1_Zachary_43.wav",
+        ],
+    ),
+    (
+        "snd_NW1Start",
+        &[
+            "VO_c2-NW-m1_WorkersVoyage_1.wav",
+            "VO_c2-NW-m1_Zachary_2.wav",
+        ],
+    ),
+    ("snd_c2-NW-m1_Jack_11", &["VO_c2-NW-m1_Jack_11.wav"]),
+    ("snd_c2-NW-m1_Jack_21", &["VO_c2-NW-m1_Jack_21.wav"]),
+    ("snd_c2-NW-m1_Jack_34", &["VO_c2-NW-m1_Jack_34.wav"]),
+    ("snd_c2-NW-m1_Jack_44", &["VO_c2-NW-m1_Jack_44.wav"]),
+    ("snd_c2-NW-m1_Jack_7", &["VO_c2-NW-m1_Jack_7.wav"]),
+    ("snd_c2-NW-m1_Sparks_24", &["VO_c2-NW-m1_Sparks_24.wav"]),
+    ("snd_c2-NW-m1_Sparks_3", &["VO_c2-NW-m1_Sparks_3.wav"]),
+    ("snd_c2-NW-m1_Sparks_4", &["VO_c2-NW-m1_Sparks_4.wav"]),
+    ("snd_c2-NW-m1_Sparks_40", &["VO_c2-NW-m1_Sparks_40.wav"]),
+    ("snd_c2-NW-m1_Sparks_6", &["VO_c2-NW-m1_Sparks_6.wav"]),
+    ("snd_c2-NW-m1_Tex_17", &["VO_c2-NW-m1_Tex_17.wav"]),
+    ("snd_c2-NW-m1_Tex_18", &["VO_c2-NW-m1_Tex_18.wav"]),
+    ("snd_c2-NW-m1_Tex_35", &["VO_c2-NW-m1_Tex_35.wav"]),
+    ("snd_c2-NW-m1_Tex_5", &["VO_c2-NW-m1_Tex_5.wav"]),
+    (
+        "snd_c2-NW-m1_WorkersVoyage_12",
+        &["VO_c2-NW-m1_WorkersVoyage_12.wav"],
+    ),
+    (
+        "snd_c2-NW-m1_WorkersVoyage_13",
+        &["VO_c2-NW-m1_WorkersVoyage_13.wav"],
+    ),
+    (
+        "snd_c2-NW-m1_WorkersVoyage_15",
+        &["VO_c2-NW-m1_WorkersVoyage_15.wav"],
+    ),
+    (
+        "snd_c2-NW-m1_WorkersVoyage_19",
+        &["VO_c2-NW-m1_WorkersVoyage_19.wav"],
+    ),
+    ("snd_c2-NW-m1_Zachary_14", &["VO_c2-NW-m1_Zachary_14.wav"]),
+    ("snd_c2-NW-m1_Zachary_20", &["VO_c2-NW-m1_Zachary_20.wav"]),
+    ("snd_c2-NW-m1_Zachary_37", &["VO_c2-NW-m1_Zachary_37.wav"]),
+    ("snd_c2-NW-m1_Zachary_45", &["VO_c2-NW-m1_Zachary_45.wav"]),
+];
+
+/// The music state requests M01's record can cue: the group, the stem its
+/// track members share, and how many tracks (`<stem>1.wav` ..
+/// `<stem><n>.wav`) the group reaches.
+const MUSIC_GROUPS: &[(&str, &str, usize)] = &[
+    ("music_battlesuccess_sg", "music_battlesuccess", 6),
+    ("music_missionsuccess_sg", "music_missionsuccess", 6),
+    ("music_prebattle_sg", "music_prebattle", 6),
+    ("music_primaryobj_sg", "music_primaryobj", 2),
+    ("music_secondaryobj_sg", "music_secondaryobj", 2),
+];
+
+/// **Every sound group M01's record can cue resolves to what the table
+/// says: voice members in the spelled order, or a music state request.**
+///
+/// Drives the production path the first member drives, then asks
+/// [`MissionRadio::plan`] about a cue for each group
+/// [`declared_sound_groups`] returns. Nothing may be refused, nothing may be
+/// [`RadioRefusal::GroupNotPrepared`], and the declared set must equal the
+/// recorded inventory exactly, so a group appearing or vanishing fails here.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_m01_play_radio_every_declared_group_resolves_to_the_recorded_inventory() {
+    let root = game_dir();
+    let plan: MissionLaunchPlan = plan_mission_launch(&root, label("M06"), "The Red Menace")
+        .expect("M01's launch closure plans");
+    let mission_dir = plan.mission_dir.clone();
+    drop(plan);
+    let recovery = recover_retail_objectives(&root, &mission_dir)
+        .expect("M01's objective record reads through the production recovery");
+    let engine = declared_engine_objectives(&recovery)
+        .expect("M01's engine lifecycle model builds from its own declarations");
+    let declared = declared_sound_groups(&engine);
+    let radio = MissionRadio::read(&root, declared.clone())
+        .expect("M01's sound groups read from sounds.zrd and their members decode");
+
+    let recorded: BTreeSet<String> = VOICE_GROUPS
+        .iter()
+        .map(|(group, _)| (*group).to_owned())
+        .chain(MUSIC_GROUPS.iter().map(|(group, _, _)| (*group).to_owned()))
+        .collect();
+    assert_eq!(
+        declared, recorded,
+        "the groups M01's record can cue changed from the recorded inventory"
+    );
+    assert_eq!(
+        radio.failures().collect::<Vec<_>>(),
+        Vec::<(&str, &RadioRefusal)>::new(),
+        "no declared group or member may refuse to prepare"
+    );
+
+    for wakeup in [CueKind::Wakeup, CueKind::Completed] {
+        for (group, members) in VOICE_GROUPS {
+            let outcomes = radio.plan(&CueEmission {
+                objective: 0,
+                kind: wakeup,
+                group: Some((*group).to_owned()),
+            });
+            let lines: Vec<&str> = outcomes
+                .iter()
+                .map(|outcome| match outcome {
+                    RadioLineOutcome::Queued {
+                        group: queued_group,
+                        member,
+                        speaker,
+                        duration_ticks,
+                    } => {
+                        assert_eq!(queued_group, group);
+                        assert!(*duration_ticks > 0, "{member} has no measured length");
+                        assert!(!speaker.is_empty(), "{member} has no speaker");
+                        member.as_str()
+                    }
+                    other => panic!("{group} must queue voice lines only, got {other:?}"),
+                })
+                .collect();
+            assert_eq!(
+                &lines, members,
+                "{group}: the member list changed from the recorded table"
+            );
+        }
+        for (group, stem, count) in MUSIC_GROUPS {
+            let outcomes = radio.plan(&CueEmission {
+                objective: 0,
+                kind: wakeup,
+                group: Some((*group).to_owned()),
+            });
+            assert_eq!(
+                outcomes,
+                vec![RadioLineOutcome::Music {
+                    group: (*group).to_owned()
+                }],
+                "{group} is a music state request, not a voice line"
+            );
+            let resolved = radio
+                .resolved(group)
+                .unwrap_or_else(|| panic!("{group} must be prepared"));
+            assert!(resolved.music, "{group} spells the MUSIC leaf");
+            let tracks: Vec<String> = (1..=*count).map(|n| format!("{stem}{n}.wav")).collect();
+            assert_eq!(
+                resolved.members, tracks,
+                "{group}: the track list changed from the recorded table"
+            );
+        }
+    }
 }
