@@ -744,6 +744,7 @@ fn accept_f49_d_02_retail_loadouts_are_a_measured_negative_not_an_identity_list(
         other => panic!("loadouts must stay unmeasured, got {}", other.label()),
     }
     assert!(table.loadouts().is_empty());
+}
 
 // ------------------------------------------------------------ relations ---
 
