@@ -30,8 +30,8 @@ use std::fmt;
 
 use cs_net::compat::SessionParameters;
 use cs_net::lobby::{
-    Admission, Applied, Callsign, Departure, JoinError, JoinRequest, LoadoutValidator, Lobby,
-    LobbyCommand, LobbyError, LobbyRules, Revision,
+    Admission, Applied, Callsign, Departure, JoinError, JoinRequest, LaunchError, LaunchProgress,
+    LaunchRequest, LoadoutValidator, Lobby, LobbyCommand, LobbyError, LobbyRules, Revision,
 };
 use cs_types::net::{PeerId, SessionId};
 
@@ -122,6 +122,53 @@ impl LobbyLink {
     /// broadcasts to everybody still in the lobby.
     pub fn leave(&mut self, from: PeerId) -> Option<Departure> {
         self.lobby.remove_peer(from)
+    }
+
+    /// The host asks the lobby to launch under the live revision and digest
+    /// (F56-C2: [`super::launch::MatchLauncher`] calls this only after the
+    /// rules validated, so a refused rule set never reaches the lobby).
+    ///
+    /// # Errors
+    ///
+    /// The [`LaunchError`] the lobby reports; a refusal changes nothing.
+    pub(super) fn begin_launch(&mut self, from: PeerId) -> Result<LaunchProgress, LaunchError> {
+        let request = self.launch_request();
+        self.lobby.begin_launch(from, request)
+    }
+
+    /// A member acknowledges the pending launch under the rules it holds.
+    ///
+    /// # Errors
+    ///
+    /// The [`LaunchError`] the lobby reports.
+    pub fn acknowledge_launch(&mut self, from: PeerId) -> Result<LaunchProgress, LaunchError> {
+        let ack = self.launch_request();
+        self.lobby.acknowledge_launch(from, ack)
+    }
+
+    /// The host cancels a pending launch; readiness is kept.
+    ///
+    /// # Errors
+    ///
+    /// The [`LaunchError`] the lobby reports.
+    pub fn cancel_launch(&mut self, from: PeerId) -> Result<Applied, LaunchError> {
+        self.lobby.cancel_launch(from)
+    }
+
+    /// The match is over: the lobby returns to gathering, everyone unready.
+    ///
+    /// # Errors
+    ///
+    /// [`LobbyError::WrongPhase`] unless a match is running.
+    pub(super) fn finish_match(&mut self) -> Result<Applied, LobbyError> {
+        self.lobby.finish_match()
+    }
+
+    fn launch_request(&self) -> LaunchRequest {
+        LaunchRequest {
+            revision: self.lobby.revision(),
+            digest: self.lobby.rules().digest(),
+        }
     }
 
     /// The authoritative lobby, read-only.

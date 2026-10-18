@@ -19,7 +19,9 @@
 //! localization lookup is wired yet: the reason carries its stable key and
 //! the designed English fallback only.
 
+pub mod launch;
 pub mod link;
+pub mod results;
 pub mod screen;
 
 use std::collections::BTreeSet;
@@ -29,7 +31,9 @@ use cs_net::lobby::{ChatText, LobbyEvent, Revision, RevokeReason};
 use cs_net::message::LobbyRefusal;
 use cs_types::net::PeerId;
 
+pub use launch::{LaunchInputs, LaunchRefusal, LaunchStep, MatchLauncher};
 pub use link::{HostSettings, LobbyLink};
+pub use results::ResultsScreen;
 pub use screen::{
     Back, Field, FieldProblem, HostDraft, JoinDraft, LobbyScreen, LobbyUiError, Stage,
 };
@@ -196,3 +200,7 @@ impl LobbyView {
         &self.notices
     }
 }
+
+// F56-C2: [`launch`] resolves the host's options into a match before the
+// lobby commits the launch, and [`results`] shows the finished match and
+// returns to the lobby.

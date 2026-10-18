@@ -119,6 +119,7 @@ mod accept_f54_c_drive;
 mod accept_f55_a_lobby_ui;
 mod accept_f55_bu1_lobby_view_feed;
 mod accept_f55_c_lobby_ui;
+mod accept_f56_c2_launch_and_results;
 mod accept_f57_a_latency_loss_and_reordering;
 mod accept_f57_c_01_schedule;
 mod accept_f58_a_replay_fire_packet;
