@@ -23,7 +23,11 @@
 //!   to this worktree, so concurrent agent builds cannot reuse each other's
 //!   artifacts (task #383), requires it to hold no artifact a worktree that
 //!   has since been removed produced (task #433), and requires it to hold no
-//!   artifact a different, still-present checkout produced (task #440).
+//!   artifact a different, still-present checkout produced (task #440). Its
+//!   [`target_dir::scan_fleet`] applies the same evidence fleet-wide
+//!   (task #1265): every checkout under one parent gets its `.env`
+//!   provisioning classified and its target directories read for dep-info
+//!   records naming a different checkout, live or gone.
 //! * [`package`] states what a release archive may contain, refuses a
 //!   candidate that carries proprietary content or drops a required notice, and
 //!   resolves the user-data base directory from the platform alone (F61-A).
@@ -47,8 +51,8 @@
 //!
 //! The `cs_xtask` binary exposes `test-select`, `test-layout`, `verify-ci`,
 //! `verify-bootstrap`, `verify-ci-budget`, `report-test-disk`,
-//! `verify-target-dir`, `verify-package`, `corpus` and `push-guard`;
-//! coverage commands arrive with later tooling tasks.
+//! `verify-target-dir`, `verify-target-dirs`, `verify-package`, `corpus` and
+//! `push-guard`; coverage commands arrive with later tooling tasks.
 
 pub mod bootstrap;
 pub mod budget;

@@ -25,6 +25,10 @@
 //!   artifacts a removed worktree produced (task #433); and that it does not
 //!   hold artifacts a different worktree that is still there produced (task
 //!   #440).
+//! * `verify-target-dirs` runs the same scan fleet-wide (task #1265): every
+//!   checkout under the fleet root — the workspace's parent — has its `.env`
+//!   provisioning checked and its target directories read for dep-info
+//!   records naming a different checkout, live or gone.
 //! * `verify-package` reads a candidate release manifest and fails when it
 //!   carries proprietary content, an unsafe member path or is missing a
 //!   required notice ([`package`], F61-A).
@@ -111,6 +115,17 @@ COMMANDS
         lets cargo run that worktree's binary. A green or red test run would
         not be evidence about this tree in any of them (tasks #383, #433 and
         #440).
+    verify-target-dirs [--workspace-root <dir>] [--fleet-root <dir>]
+        The fleet scan (task #1265): enumerate every checkout under the
+        fleet root — the workspace root's parent, or --fleet-root when
+        given — and check that no agent's environment can produce the
+        shared-directory defect. For each checkout, the CARGO_TARGET_DIR its
+        .env provisions must resolve inside that checkout (or name it below
+        the point of divergence), and every target directory that value or
+        the worktree-local default points at must hold no dep-info record
+        whose CARGO_MANIFEST_DIR names a different checkout, present or
+        gone. Exits 1 naming each finding; a declaration the scan cannot
+        resolve to a path is printed as a note, not a verdict.
     verify-package --manifest <file> [--workspace-root <dir>]
         Read a candidate release manifest (F61-A) and refuse it when it
         carries proprietary content, a member path that could escape the
@@ -147,6 +162,9 @@ OPTIONS
     --target-dir <dir>      report-test-disk only: the target directory whose
                             debug/deps holds the built test binaries (default:
                             $CARGO_TARGET_DIR or <workspace root>/target)
+    --fleet-root <dir>      verify-target-dirs only: the directory whose
+                            children are the fleet's checkouts (default: the
+                            workspace root's parent)
     --manifest <file>       verify-package only: candidate release manifest
                             to scan
     --private-root <dir>    corpus audit only: private corpus root,
@@ -187,6 +205,7 @@ fn main() -> ExitCode {
         "verify-ci-budget" => run_verify_ci_budget(&args[1..]),
         "report-test-disk" => run_report_test_disk(&args[1..]),
         "verify-target-dir" => run_verify_target_dir(&args[1..]),
+        "verify-target-dirs" => run_verify_target_dirs(&args[1..]),
         "verify-package" => run_verify_package(&args[1..]),
         "corpus" => run_corpus(&args[1..]),
         "push-guard" => run_push_guard(&args[1..]),
@@ -588,6 +607,102 @@ fn run_verify_target_dir(args: &[String]) -> ExitCode {
             ExitCode::from(EXIT_OK)
         }
         Err(error) => gate_failed(&error.to_string()),
+    }
+}
+
+/// Runs the fleet-wide target-directory scan (task #1265): every checkout
+/// under the fleet root — the workspace's parent by default — must neither
+/// provision a `CARGO_TARGET_DIR` other checkouts can write nor hold
+/// dep-info records a different checkout produced.
+fn run_verify_target_dirs(args: &[String]) -> ExitCode {
+    let mut workspace_root = PathBuf::from(".");
+    let mut fleet_root: Option<PathBuf> = None;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--workspace-root" => {
+                let Some(value) = args.get(index + 1) else {
+                    return usage_error("--workspace-root needs a value");
+                };
+                workspace_root = PathBuf::from(value);
+                index += 2;
+            }
+            "--fleet-root" => {
+                let Some(value) = args.get(index + 1) else {
+                    return usage_error("--fleet-root needs a value");
+                };
+                fleet_root = Some(PathBuf::from(value));
+                index += 2;
+            }
+            option => return usage_error(&format!("unknown option {option:?}")),
+        }
+    }
+    if let Err(error) = require_workspace(&workspace_root) {
+        return gate_failed(&error);
+    }
+    let fleet_root = match fleet_root {
+        Some(root) => root,
+        // The workspace path may be relative or end in `.` — canonicalize
+        // before asking for the parent so the fleet root is a real directory
+        // name rather than an empty path.
+        None => match workspace_root
+            .canonicalize()
+            .ok()
+            .and_then(|root| root.parent().map(Path::to_path_buf))
+        {
+            Some(parent) => parent,
+            None => {
+                return gate_failed(&format!(
+                    "{} has no parent directory to enumerate as the fleet",
+                    workspace_root.display()
+                ));
+            }
+        },
+    };
+
+    let report = target_dir::scan_fleet(&fleet_root);
+    for checkout in &report.checkouts {
+        let declared = match &checkout.declared {
+            target_dir::DeclaredTargetDir::InCheckoutDefault => "in-checkout default".to_string(),
+            target_dir::DeclaredTargetDir::Private(dir) => {
+                format!("provisions private {}", dir.display())
+            }
+            target_dir::DeclaredTargetDir::Shared(dir) => {
+                format!("provisions SHARED {}", dir.display())
+            }
+            target_dir::DeclaredTargetDir::Unverifiable(value) => {
+                format!("declares unverifiable {value:?}")
+            }
+        };
+        println!(
+            "verify-target-dirs: {}: {declared}, {} target dir(s) scanned, {} foreign record(s)",
+            checkout.root.display(),
+            checkout.scanned.len(),
+            checkout.foreign.len()
+        );
+    }
+    for note in report.notes() {
+        println!("verify-target-dirs: note: {note}");
+    }
+    if report.is_clean() {
+        println!(
+            "verify-target-dirs: {} checkout(s) under {}, {} target dir(s) scanned — \
+             no target directory holds artifacts another checkout built",
+            report.checkouts.len(),
+            report.fleet_root.display(),
+            report.scanned_dirs()
+        );
+        ExitCode::from(EXIT_OK)
+    } else {
+        let lines = report.lines();
+        for line in &lines {
+            eprintln!("cs-xtask: {line}");
+        }
+        gate_failed(&format!(
+            "the fleet under {} has {} target-dir finding(s)",
+            report.fleet_root.display(),
+            lines.len()
+        ))
     }
 }
 

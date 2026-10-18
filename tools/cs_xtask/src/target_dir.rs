@@ -72,6 +72,24 @@
 //! than from `env!("CARGO_MANIFEST_DIR")`, which is baked into whichever
 //! checkout compiled the binary. Without it a reused artifact judges the wrong
 //! tree and reports a private target directory as shared.
+//!
+//! The per-worktree gate looks only at the checkout it runs in, but the defect
+//! task #1265 reports is a *fleet* shape: the owner runs sibling checkouts
+//! under one parent, one per agent, and a cargo whose working directory is
+//! `bunny-2` once wrote artifacts into `bunny-alpha-2/target`. Nothing inside
+//! `bunny-alpha-2` notices a foreign checkout built there — `verify_workspace`
+//! sees the records only when that checkout's own `cargo test` runs. The
+//! session provisioning side is just as hard to see from one tree: each
+//! checkout's `.env` is what exports `CARGO_TARGET_DIR` for the sessions
+//! started in it, and a value that names a shared directory is the defect in
+//! waiting. [`scan_fleet`] is the cheap scan over both: it enumerates the
+//! checkouts under a fleet root, classifies the `CARGO_TARGET_DIR` each one
+//! provisions against [`is_per_worktree`], and reads every target directory
+//! those declarations or the worktree-local default point at for dep-info
+//! records naming a different checkout — a live one ([`TargetDirError::Foreign`]'s
+//! rule) or one that is gone ([`TargetDirError::Stale`]'s), reported the same
+//! either way because both mean a target directory still serves artifacts of
+//! a tree it does not belong to.
 
 use std::collections::BTreeSet;
 use std::env;
@@ -743,4 +761,360 @@ fn tail(log: &str, lines: usize) -> String {
     let all: Vec<&str> = log.lines().collect();
     let start = all.len().saturating_sub(lines);
     all[start..].join("\n")
+}
+
+/// The environment variable whose value session provisioning sets and cargo
+/// resolves into the effective target directory.
+const TARGET_DIR_VAR: &str = "CARGO_TARGET_DIR";
+
+/// The `CARGO_TARGET_DIR` a checkout's `.env` provisions for sessions started
+/// in it, classified against that checkout (task #1265).
+///
+/// The fleet's session launcher sources `<checkout>/.env` before the agent
+/// loop starts, so the assignment found there is the value every session in
+/// that checkout inherits. Judging it is the fleet-side half of the rule the
+/// per-worktree gate asserts from inside a running session.
+#[derive(Debug)]
+pub enum DeclaredTargetDir {
+    /// No `.env`, or no `CARGO_TARGET_DIR` assignment in it: cargo's
+    /// worktree-local `target/` applies, which is private by construction.
+    InCheckoutDefault,
+    /// A provisioned directory that is private to this checkout under
+    /// [`is_per_worktree`] — inside it, or naming it below the point of
+    /// divergence.
+    Private(PathBuf),
+    /// A provisioned directory other checkouts can compute identically — the
+    /// shared-`CARGO_TARGET_DIR` defect this task guards, waiting in the
+    /// provisioning instead of the environment of a live session.
+    Shared(PathBuf),
+    /// A value the scan cannot resolve to a path. `$PWD`/`${PWD}` expand to
+    /// the checkout, `$HOME`/`${HOME}` and a leading `~/` to the platform
+    /// home; anything beyond that is reported rather than guessed.
+    Unverifiable(String),
+}
+
+/// A dep-info record a checkout could not have written itself.
+#[derive(Debug)]
+pub struct ForeignRecord {
+    /// The target directory whose `.d` files carry the record.
+    pub target_dir: PathBuf,
+    /// The `CARGO_MANIFEST_DIR` the dep-info recorded, verbatim.
+    pub manifest_dir: PathBuf,
+    /// `manifest_dir` is still a directory: the foreign checkout is present
+    /// — [`TargetDirError::Foreign`]'s live case. `false` when it is gone —
+    /// [`TargetDirError::Stale`]'s shape at fleet scope: a checkout that was
+    /// removed (or renamed) built here.
+    pub live: bool,
+}
+
+/// One checkout under the fleet root and what the scan found in it.
+#[derive(Debug)]
+pub struct CheckoutReport {
+    /// The checkout root — a direct child of the fleet root whose own
+    /// `Cargo.toml` declares a `[workspace]` table.
+    pub root: PathBuf,
+    /// The `CARGO_TARGET_DIR` this checkout provisions for its sessions.
+    pub declared: DeclaredTargetDir,
+    /// Every target directory the scan read for this checkout:
+    /// `<root>/target` plus the provisioned directory when it resolves
+    /// elsewhere, deduplicated and canonicalized. Empty when the checkout
+    /// has built nothing yet — there is no directory to judge, which is
+    /// reported as nothing rather than as a pass on a guess.
+    pub scanned: Vec<PathBuf>,
+    /// The dep-info records across `scanned` that name a different checkout.
+    pub foreign: Vec<ForeignRecord>,
+}
+
+/// The fleet verdict (task #1265): every checkout under a shared parent and
+/// what its target directories hold.
+#[derive(Debug)]
+pub struct FleetReport {
+    /// The directory whose children were enumerated as checkouts.
+    pub fleet_root: PathBuf,
+    /// One entry per checkout found, in path order.
+    pub checkouts: Vec<CheckoutReport>,
+}
+
+impl FleetReport {
+    /// The scan found nothing to refuse: no checkout provisions a shared
+    /// `CARGO_TARGET_DIR`, and no scanned target directory holds a record
+    /// naming a different checkout. [`Self::notes`] may still carry a
+    /// declaration the scan could not resolve — reported, not judged.
+    pub fn is_clean(&self) -> bool {
+        self.checkouts.iter().all(|checkout| {
+            checkout.foreign.is_empty()
+                && !matches!(checkout.declared, DeclaredTargetDir::Shared(_))
+        })
+    }
+
+    /// How many target directories were read across the fleet, so a clean
+    /// report still shows the scan covered ground instead of an empty fleet.
+    pub fn scanned_dirs(&self) -> usize {
+        self.checkouts
+            .iter()
+            .map(|checkout| checkout.scanned.len())
+            .sum()
+    }
+
+    /// Every finding, one line each, for the subcommand's stderr.
+    pub fn lines(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        for checkout in &self.checkouts {
+            let name = checkout.root.display();
+            if let DeclaredTargetDir::Shared(dir) = &checkout.declared {
+                lines.push(format!(
+                    "{name} provisions {TARGET_DIR_VAR}={}, which is not private to \
+                     that checkout: sessions started there can build into a directory \
+                     sibling checkouts compute identically, and cargo will reuse the \
+                     artifacts whichever checkout wrote them (task #383). Point it at \
+                     a directory that names the checkout, e.g. $PWD/target.",
+                    dir.display()
+                ));
+            }
+            for record in &checkout.foreign {
+                lines.push(format!(
+                    "{} holds dep-info recording CARGO_MANIFEST_DIR={}, which is \
+                     outside {name} and outside cargo's home — an artifact a \
+                     different checkout built ({}). Clean the directory, e.g. \
+                     cargo clean --target-dir {}.",
+                    record.target_dir.display(),
+                    record.manifest_dir.display(),
+                    if record.live {
+                        "that checkout is still present"
+                    } else {
+                        "the recorded path is gone"
+                    },
+                    record.target_dir.display(),
+                ));
+            }
+        }
+        lines
+    }
+
+    /// What the scan saw but could not judge — a declaration that expands to
+    /// no path it can verify. Reported rather than guessed: the per-worktree
+    /// gate in that checkout's own `cargo test` remains the assertion that
+    /// covers it.
+    pub fn notes(&self) -> Vec<String> {
+        self.checkouts
+            .iter()
+            .filter_map(|checkout| match &checkout.declared {
+                DeclaredTargetDir::Unverifiable(value) => Some(format!(
+                    "{} declares {TARGET_DIR_VAR}={value:?}, which this scan cannot \
+                     resolve to a path",
+                    checkout.root.display()
+                )),
+                _ => None,
+            })
+            .collect()
+    }
+}
+
+/// Scans the fleet rooted at `fleet_root` (task #1265): every direct child
+/// directory whose own `Cargo.toml` declares a `[workspace]` table is a
+/// checkout; for each, the scan classifies the `CARGO_TARGET_DIR` its `.env`
+/// provisions and reads every target directory it or the worktree-local
+/// default points at, reporting the dep-info records that name a different
+/// checkout.
+pub fn scan_fleet(fleet_root: &Path) -> FleetReport {
+    scan_fleet_with_home(fleet_root, cargo_home().as_deref())
+}
+
+/// [`scan_fleet`] with cargo's home forced — the seam the acceptance tests
+/// use to point the registry-cache exclusion at a fixture `CARGO_HOME`
+/// instead of the machine's real one.
+pub fn scan_fleet_with_home(fleet_root: &Path, cargo_home: Option<&Path>) -> FleetReport {
+    FleetReport {
+        fleet_root: fleet_root.to_path_buf(),
+        checkouts: fleet_checkouts(fleet_root)
+            .into_iter()
+            .map(|root| scan_checkout(&root, cargo_home))
+            .collect(),
+    }
+}
+
+/// The checkouts under `fleet_root`: direct child directories whose own
+/// manifest carries the `[workspace]` table — the same line rule
+/// [`workspace_root_from`] uses to climb. Sorted so the report is stable.
+fn fleet_checkouts(fleet_root: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = transient::read_dir(fleet_root, transient::SCAN) else {
+        return Vec::new();
+    };
+    let mut roots: Vec<PathBuf> = entries
+        .flatten()
+        .filter(is_directory)
+        .map(|entry| entry.path())
+        .filter(|dir| {
+            transient::read_to_string(&dir.join("Cargo.toml"), transient::SCAN).is_ok_and(
+                |manifest| {
+                    manifest
+                        .lines()
+                        .any(|line| line.trim_start().starts_with(WORKSPACE_TABLE))
+                },
+            )
+        })
+        .collect();
+    roots.sort();
+    roots
+}
+
+/// The per-checkout half of the fleet scan: classify the provisioned
+/// `CARGO_TARGET_DIR`, then read every target directory it or the default
+/// points at for dep-info records naming a different checkout.
+fn scan_checkout(root: &Path, cargo_home: Option<&Path>) -> CheckoutReport {
+    let declared = declared_target_dir(root);
+    let mut candidates = vec![root.join("target")];
+    if let DeclaredTargetDir::Private(dir) | DeclaredTargetDir::Shared(dir) = &declared {
+        candidates.push(dir.clone());
+    }
+    let mut seen = BTreeSet::new();
+    let mut scanned = Vec::new();
+    let mut foreign = Vec::new();
+    for candidate in candidates {
+        let target = canonicalize_lenient(&candidate);
+        if !seen.insert(target.clone()) || !transient::is_dir(&target, transient::SCAN) {
+            continue;
+        }
+        foreign.extend(foreign_records(root, &target, cargo_home));
+        scanned.push(target);
+    }
+    CheckoutReport {
+        root: root.to_path_buf(),
+        declared,
+        scanned,
+        foreign,
+    }
+}
+
+/// The [`recorded_manifest_dirs`] in `target_dir` that name a different
+/// checkout than `workspace_root`: outside it and outside `cargo_home`,
+/// reported whether or not the recorded directory still exists —
+/// [`ForeignRecord::live`] says which. This is the fleet-scope reading of
+/// the same evidence [`foreign_manifest_dirs_with_home`] judges for one
+/// worktree, widened to the records a *removed* foreign checkout leaves
+/// behind too: a record inside the checkout itself is this checkout's own
+/// business ([`removed_manifest_dirs`] already gates it) even when the
+/// recorded path is gone.
+fn foreign_records(
+    workspace_root: &Path,
+    target_dir: &Path,
+    cargo_home: Option<&Path>,
+) -> Vec<ForeignRecord> {
+    let root = canonicalize_lenient(workspace_root);
+    let home = cargo_home.map(canonicalize_lenient);
+    recorded_manifest_dirs(target_dir)
+        .into_iter()
+        .filter_map(|manifest_dir| {
+            let candidate = canonicalize_lenient(&manifest_dir);
+            if candidate.starts_with(&root) {
+                return None;
+            }
+            if home
+                .as_ref()
+                .is_some_and(|home| candidate.starts_with(home))
+            {
+                return None;
+            }
+            Some(ForeignRecord {
+                target_dir: target_dir.to_path_buf(),
+                manifest_dir,
+                live: transient::is_dir(&candidate, transient::SCAN),
+            })
+        })
+        .collect()
+}
+
+/// The `CARGO_TARGET_DIR` `<root>/.env` provisions for sessions started in
+/// the checkout, classified against it.
+fn declared_target_dir(root: &Path) -> DeclaredTargetDir {
+    let Some(raw) = env_assignment(&root.join(".env"), TARGET_DIR_VAR) else {
+        return DeclaredTargetDir::InCheckoutDefault;
+    };
+    if raw.is_empty() {
+        return DeclaredTargetDir::InCheckoutDefault;
+    }
+    let Some(resolved) = resolve_declared(root, &raw) else {
+        return DeclaredTargetDir::Unverifiable(raw);
+    };
+    if is_per_worktree(root, &resolved) {
+        DeclaredTargetDir::Private(resolved)
+    } else {
+        DeclaredTargetDir::Shared(resolved)
+    }
+}
+
+/// The last `NAME=value` assignment in `file`, with an optional `export`
+/// prefix, a trailing ` #` comment and surrounding quotes stripped — the
+/// shape `.env` provisioning files use. `None` when the file cannot be read
+/// or never assigns `NAME`; later lines win, as they do for a shell.
+fn env_assignment(file: &Path, name: &str) -> Option<String> {
+    let text = transient::read_to_string(file, transient::SCAN).ok()?;
+    text.lines()
+        .filter_map(|line| {
+            let line = line.trim();
+            let line = match line.strip_prefix("export") {
+                Some(rest) if rest.starts_with(char::is_whitespace) => rest.trim_start(),
+                _ => line,
+            };
+            let (key, value) = line.split_once('=')?;
+            if key.trim_end() != name {
+                return None;
+            }
+            let value = value.trim();
+            let quoted = value
+                .strip_prefix('"')
+                .and_then(|v| v.strip_suffix('"'))
+                .or_else(|| value.strip_prefix('\'').and_then(|v| v.strip_suffix('\'')));
+            Some(match quoted {
+                Some(inner) => inner.to_string(),
+                None => value
+                    .split_once(" #")
+                    .map_or(value, |(head, _)| head.trim_end())
+                    .to_string(),
+            })
+        })
+        .next_back()
+}
+
+/// Resolves a provisioned `CARGO_TARGET_DIR` value to a path, or `None`
+/// when it still names a variable the scan cannot see: `$PWD`/`${PWD}`
+/// expand to `root`, `$HOME`/`${HOME}` and a leading `~/` to the platform
+/// home, and a remaining `$`-expansion is reported rather than guessed.
+fn resolve_declared(root: &Path, raw: &str) -> Option<PathBuf> {
+    let mut value = raw.to_string();
+    let root_display = root.display().to_string();
+    value = value
+        .replace("${PWD}", &root_display)
+        .replace("$PWD", &root_display);
+    if let Some(home) = home_dir() {
+        let home = home.display().to_string();
+        value = value.replace("${HOME}", &home).replace("$HOME", &home);
+        if let Some(rest) = value.strip_prefix("~/") {
+            value = format!("{home}/{rest}");
+        } else if value == "~" {
+            value = home;
+        }
+    }
+    if has_unexpanded_dollar(&value) {
+        return None;
+    }
+    let path = PathBuf::from(value);
+    Some(if path.is_absolute() {
+        path
+    } else {
+        root.join(path)
+    })
+}
+
+/// Whether `value` still carries a `$`-expansion the scan did not make —
+/// `$NAME`, `${NAME}` or `$(...)`. A trailing `$` or one followed by
+/// anything else is literal and does not make the value unverifiable.
+fn has_unexpanded_dollar(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    value.char_indices().any(|(index, character)| {
+        character == '$'
+            && bytes.get(index + 1).is_some_and(|next| {
+                matches!(next, b'{' | b'(') || next.is_ascii_alphanumeric() || *next == b'_'
+            })
+    })
 }
