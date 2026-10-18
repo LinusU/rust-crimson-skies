@@ -55,6 +55,7 @@ mod campaign {
 mod accept_doclib_conflict;
 mod accept_engine_image_outside_install;
 mod accept_evidence_content_digest_outliers;
+mod accept_f13_d_fu2_anim_event_keywords;
 mod accept_f25_a_rotor_visual;
 mod accept_f25_c_mission_only_session;
 mod accept_f25_e_exceptional_driver;
