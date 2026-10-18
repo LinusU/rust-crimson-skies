@@ -187,6 +187,74 @@ pub struct BoundZeppelin {
     pub actor: ActorId,
 }
 
+/// One bound ground target an entity was spawned for.
+#[derive(Clone, Debug, PartialEq)]
+pub struct BoundGroundTarget {
+    /// The container record's stored display name.
+    pub node: String,
+    /// The `targets.zrd` row that declared it, when one did.
+    pub declared: Option<usize>,
+    /// The composed world position in metres the target spawned at.
+    pub position_m: [f64; 3],
+    /// The spawned entity.
+    pub entity: Entity,
+    /// The session damage actor registered for it.
+    pub actor: ActorId,
+}
+
+/// Component: one bound ground target's ECS face — the entity the damage
+/// consumers and teardown name for a world-container record the mission's
+/// `targets.zrd` declares or the world group's damage set couples
+/// (M01-BRIDGE-CONVOY-SPAWN, #1566).
+#[derive(Component, Clone, Debug, PartialEq)]
+pub struct MissionGroundTarget {
+    /// The container record's stored display name — the damage node key the
+    /// target is addressable by.
+    pub node: String,
+    /// The `targets.zrd` row that declared it, when one did.
+    pub declared: Option<usize>,
+    /// The session damage actor this entity's [`DamageActorBinding`]
+    /// registers.
+    pub damage_actor: ActorId,
+    /// The scene generation the entity spawned under.
+    pub generation: crate::scene::SceneGeneration,
+    /// The composed world position in metres.
+    pub position_m: [f64; 3],
+    /// The node's authored `healthy` child, when it has one.
+    pub healthy: Option<String>,
+    /// The node's authored `destroyed` child, when it has one.
+    pub destroyed: Option<String>,
+    /// The damage-coupling field names the world group states for the node,
+    /// in [`crate::mission_targets::DAMAGE_COUPLING_FIELDS`] order — read,
+    /// never interpreted.
+    pub coupling: Vec<String>,
+    /// Whether the declaring row carried the `objective` marker.
+    pub objective: bool,
+    /// Whether the declaring row carried the `other_target` marker.
+    pub other_target: bool,
+}
+
+/// Resource: what the ground-target binding spawned — the entities, their
+/// registered damage actors and every refusal by name. Replaced on each spawn,
+/// so a restart's report is the fresh generation's own.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct MissionGroundTargetReport {
+    /// The session the targets were registered under.
+    pub session: Option<SessionId>,
+    /// The bound ground targets, in binding order.
+    pub targets: Vec<BoundGroundTarget>,
+    /// Every refusal, verbatim.
+    pub refusals: Vec<String>,
+}
+
+impl MissionGroundTargetReport {
+    /// The report entry for a container node, when one spawned.
+    #[must_use]
+    pub fn target(&self, node: &str) -> Option<&BoundGroundTarget> {
+        self.targets.iter().find(|target| target.node == node)
+    }
+}
+
 /// Resource: what [`spawn_mission_actors`] did — the entities spawned, the
 /// zeppelin bindings made, and every refusal by name. Replaced on each
 /// spawn, so a restart's report is the fresh generation's own.
@@ -620,6 +688,9 @@ struct StageBinding {
     /// [`crate::mission_session::MissionFlight`], for the same restart reason
     /// as the airframe table. `None` when the composition has no stage.
     wingman_one_record: Option<String>,
+    /// The mission's declared ground targets and the world group's authored
+    /// damage set, bound at stage build (M01-BRIDGE-CONVOY-SPAWN, #1566).
+    targets: crate::mission_targets::MissionTargetBinding,
 }
 
 /// The binding of a stage, or the empty one when the composition has no stage
@@ -633,6 +704,7 @@ fn stage_binding(stage: Option<&MissionStage>) -> StageBinding {
         turret_refusal: stage.turret_refusal.clone(),
         ai_airframes: Some(stage.ai_airframes.clone()),
         wingman_one_record: Some(stage.flight.wingman_record.clone()),
+        targets: stage.host.targets.clone(),
     })
 }
 
@@ -1011,6 +1083,119 @@ fn spawn_mission_actors_under(
         });
     }
 
+    // The mission's declared ground targets and the world group's authored
+    // damage set (M01-BRIDGE-CONVOY-SPAWN, #1566): one damageable actor per
+    // bound target, at the composed world position the binding read. The node
+    // name is the damage node key a hit addresses the target by, so a gun
+    // round or a mission effect can name it; the authored `healthy`/
+    // `destroyed` layout and coupling fields ride on the component, read and
+    // never interpreted.
+    let mut target_report = MissionGroundTargetReport {
+        session: Some(session),
+        ..MissionGroundTargetReport::default()
+    };
+    for target in &binding.targets.targets {
+        let node = match crate::mission_targets::target_damage_node(target) {
+            Ok(node) => node,
+            Err(reason) => {
+                target_report
+                    .refusals
+                    .push(format!("{}: {reason}", target.node));
+                continue;
+            }
+        };
+        if target.damage_key().is_err() {
+            target_report.refusals.push(format!(
+                "{}: the node name is not a damage node key",
+                target.node
+            ));
+            continue;
+        }
+        let subject = match ContentId::from_source(
+            ContentKind::Blueprint,
+            &format!("world-target.{}", target.node),
+        ) {
+            Ok(subject) => subject,
+            Err(error) => {
+                target_report
+                    .refusals
+                    .push(format!("{}: {error}", target.node));
+                continue;
+            }
+        };
+        let actor = match allocator.allocate() {
+            Ok(actor) => actor,
+            Err(error) => {
+                target_report.refusals.push(format!(
+                    "{}: the actor allocator refuses: {error}",
+                    target.node
+                ));
+                continue;
+            }
+        };
+        let graph = match DamageGraph::try_new(subject.clone(), vec![node]) {
+            Ok(graph) => graph,
+            Err(error) => {
+                target_report.refusals.push(format!(
+                    "{}: the damage graph refuses: {error}",
+                    target.node
+                ));
+                continue;
+            }
+        };
+        let policy = DamagePolicy {
+            attribution: AttributionRule::FirstLethalHit,
+        };
+        match session_damage(world, session).register_actor(actor, graph, policy) {
+            Ok(()) => {}
+            Err(error) => {
+                target_report.refusals.push(format!(
+                    "{}: damage registration refuses: {error}",
+                    target.node
+                ));
+                continue;
+            }
+        }
+        let [x, y, z] = target.position_m;
+        let entity = world
+            .spawn((
+                Transform::from_translation(Vec3::new(x as f32, y as f32, z as f32)),
+                bevy::prelude::Visibility::Inherited,
+                DamageActorBinding {
+                    actor,
+                    graph: subject,
+                    generation,
+                },
+                MissionGroundTarget {
+                    node: target.node.clone(),
+                    declared: target.declared,
+                    damage_actor: actor,
+                    generation,
+                    position_m: target.position_m,
+                    healthy: target.healthy.clone(),
+                    destroyed: target.destroyed.clone(),
+                    coupling: target.coupling.fields.clone(),
+                    objective: target.objective,
+                    other_target: target.other_target,
+                },
+            ))
+            .id();
+        target_report.targets.push(BoundGroundTarget {
+            node: target.node.clone(),
+            declared: target.declared,
+            position_m: target.position_m,
+            entity,
+            actor,
+        });
+    }
+    // Every refusal the binding itself recorded (a selector the container
+    // could not answer, a source it could not read) reaches this report by
+    // name, so a target nobody bound is visible instead of absent.
+    target_report
+        .refusals
+        .extend(binding.targets.refusals.iter().cloned());
+    world.insert_resource(target_report);
+
     // The AI spawn report: which records fly the designed law, which are
     // held and why, and every refusal on this path. It replaces any report a
     // previous generation left, so a restart reports its own spawn.
@@ -1056,6 +1241,7 @@ pub fn despawn_mission_actors(world: &mut World) {
         let mut query = world.query_filtered::<Entity, bevy::prelude::Or<(
             With<ScriptedAircraftActor>,
             With<MissionZeppelinActor>,
+            With<MissionGroundTarget>,
             With<parts::MissionPartState>,
         )>>();
         query.iter(world).collect()
@@ -1064,6 +1250,7 @@ pub fn despawn_mission_actors(world: &mut World) {
         let _ = world.despawn(entity);
     }
     world.remove_resource::<parts::MissionPartReport>();
+    world.remove_resource::<MissionGroundTargetReport>();
     world.remove_resource::<MissionZeppelinAllegianceReport>();
 }
 

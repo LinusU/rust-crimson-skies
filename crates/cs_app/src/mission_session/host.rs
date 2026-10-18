@@ -386,6 +386,13 @@ pub struct MissionHostSeed {
     /// A stage with no audio (the synthetic acceptance stages) carries
     /// [`MissionRadio::empty`], which answers every cue by refusing it.
     pub radio: MissionRadio,
+    /// The mission's declared ground targets and the world group's authored
+    /// damage set, bound against the mission's world container
+    /// (M01-BRIDGE-CONVOY-SPAWN, #1566). The spawn host registers one
+    /// damageable actor per bound target; a stage with no installation to read
+    /// one from (the synthetic acceptance stages) carries the empty binding and
+    /// spawns none.
+    pub targets: crate::mission_targets::MissionTargetBinding,
 }
 
 /// Launches the control session of `seed` for `generation`.

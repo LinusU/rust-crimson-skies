@@ -543,6 +543,17 @@ pub fn stage_for(
             .map_err(MissionCompositionError::Radio)?,
         None => MissionRadio::empty(),
     };
+    // The mission's declared ground targets and the world group's authored
+    // damage set (M01-BRIDGE-CONVOY-SPAWN, #1566), bound once here against the
+    // very world container the load will spawn: the mission's own `targets.zrd`
+    // rows and every damage-carrying animation definition of the group's reader
+    // archive, joined to the container's composed scene graph. The spawn host
+    // registers one damageable actor per bound target.
+    let targets = crate::mission_targets::bind_mission_targets(
+        install_root,
+        &plan.mission_dir,
+        &plan.group_dir,
+    );
     let host = MissionHostSeed {
         environment: content.environment.clone(),
         world_actors: content.world_actors.lowered().cloned(),
@@ -569,6 +580,7 @@ pub fn stage_for(
         // control program is refused by name, never granted from a guess.
         rewards: Vec::new(),
         radio,
+        targets,
     };
 
     // The message catalog is read once, here, from the installation root the
