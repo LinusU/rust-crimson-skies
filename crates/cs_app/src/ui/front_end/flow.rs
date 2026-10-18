@@ -74,6 +74,31 @@
 //! commit ([`FlowError::NoWingmateSlot`] /
 //! [`FlowError::AmbiguousWingmateSlot`]).
 //!
+//! # The measured producer of the flight check's slots (F45-C.5)
+//!
+//! The original's own data was read for the ammunition slot's meaning
+//! (task #1525): `ASSETS/LAYOUT.CSV`'s `[FlightCheck]` section gives
+//! `FC_B_CHANGEAMMO` and `FC_B_CHANGEAMMOW` the screen `OrdinanceLayout` — the
+//! aircraft's **gun and rocket ordnance** surface — and
+//! `FLIGHTCHECK.SCRIPT` stores `@globals@ZQ = -1` for the pilot's controls and
+//! `-2` for the wingmate's, which `ORDINANCELAYOUT.SCRIPT` reads to pick the
+//! plane it edits. So the flight check's ammunition **is** the selected
+//! plane's equipment, and it is offered per plane.
+//!
+//! When the application supplies that measurement
+//! ([`FlowSetup::flight_check_selection`]) the projection above is **gated on
+//! it**: if the measured original offers the wingmate slot no control that
+//! starts a screen with selectors, the flow refuses to make the ammunition
+//! that wingmate's equipment ([`FlowError::NoWingmateEquipment`]) instead of
+//! committing a projection the original contradicts. Without the measurement
+//! the flow keeps its designed default.
+//!
+//! The measurement also records the absence of the other thing the ammunition
+//! side asked for: the flight check's own section holds **no** selector row,
+//! so the original states no per-mission list of aircraft or loadouts; the
+//! candidate lists are filled by the executable's natives and stay unknown
+//! until an owner run.
+//!
 //! [`WingmateChoice`]: cs_sim::allies::WingmateChoice
 
 use std::collections::BTreeSet;
@@ -128,9 +153,9 @@ use crate::ui::scrapbook::{
 
 use super::import_dialog::ImportDialog;
 use super::{
-    Action, AudioScope, ConstructionDraft, Effect, FrontEnd, InputContext, Loadout, MissionOutcome,
-    Outcome, PageMove, Plan, ProfileIntent, Refusal, Request, Resource, Screen, ScreenDeck,
-    ScreenSession, ScreenSessionError,
+    Action, AudioScope, ConstructionDraft, Effect, FlightCheckSelection, FlightCheckSlot, FrontEnd,
+    InputContext, Loadout, MissionOutcome, Outcome, PageMove, Plan, ProfileIntent, Refusal,
+    Request, Resource, Screen, ScreenDeck, ScreenSession, ScreenSessionError,
 };
 
 /// Everything a profile, a campaign run and the construction screen need in
@@ -173,6 +198,11 @@ pub struct FlowSetup {
     /// (F45-C.2); without it the two slots have no consumer and the flow does
     /// not invent one.
     pub roster: Option<LoweredRoster>,
+    /// The measured original flight check ([`FlightCheckSelection`], F45-C.5),
+    /// when the application read the installation. When supplied, the
+    /// ammunition's projection onto a wingmate's equipment is gated on the
+    /// measurement rather than assumed; without it the designed default holds.
+    pub flight_check_selection: Option<FlightCheckSelection>,
     /// The construction rules a commit is judged by, when supplied.
     pub construction: Option<ConstructionInputs>,
     /// The scrapbook's declared catalog and page size, when the application
@@ -323,6 +353,7 @@ impl FlowSetup {
             session_generation: 1,
             roles: None,
             roster: None,
+            flight_check_selection: None,
             construction: None,
             scrapbook: None,
             instant_action: None,
@@ -372,6 +403,14 @@ impl FlowSetup {
     #[must_use]
     pub fn roster(mut self, roster: LoweredRoster) -> Self {
         self.roster = Some(roster);
+        self
+    }
+
+    /// The measured original flight check the ammunition projection is gated
+    /// on (F45-C.5). Without it the flow keeps its designed default.
+    #[must_use]
+    pub fn flight_check_selection(mut self, selection: FlightCheckSelection) -> Self {
+        self.flight_check_selection = Some(selection);
         self
     }
 
@@ -994,6 +1033,12 @@ pub enum FlowError {
     /// machine's own guard refuses this first, so it reports a wiring mistake
     /// rather than a player's mistake.
     NoAmmunition,
+    /// The measured original flight check (F45-C.5) offers the wingmate slot
+    /// no control that starts a screen with selectors, so the ammunition
+    /// cannot be made that wingmate's equipment. Only reported when the
+    /// application supplied the measurement; without it the designed default
+    /// holds.
+    NoWingmateEquipment,
     /// The flight check's wingmate slot is not an airframe, so it cannot be
     /// the geometry an authored wingmate slot launches in. The machine's own
     /// guard refuses this first; it is reported as a wiring mistake.
@@ -1117,6 +1162,10 @@ impl fmt::Display for FlowError {
                  fills is unknown"
             ),
             Self::NoAmmunition => f.write_str("the flight check committed no ammunition"),
+            Self::NoWingmateEquipment => f.write_str(
+                "the measured original flight check edits no wingmate equipment for this \
+                 ammunition",
+            ),
             Self::WingmateAirframe { error } => {
                 write!(f, "the committed wingmate is not a geometry: {error}")
             }
@@ -1790,8 +1839,15 @@ impl FlowDomain {
     /// slot the mission authors — nothing readable says which authored slot it
     /// fills when there are several, so more than one (or none) is refused
     /// rather than guessed. The `ammunition` slot is the equipment the
-    /// briefing commits ([`WingmateChoice::loadout`]): see this module's doc
-    /// for why that projection is design and not a measured original fact.
+    /// briefing commits ([`WingmateChoice::loadout`]): the original's own data
+    /// reads it as the selected plane's gun and rocket ordnance
+    /// (`docs/findings/2026-10-18-f45-c-5-flight-check-options-and-ammunition.md`,
+    /// F45-C.5). When the application supplied that measurement the projection
+    /// is gated on it: a measured original that offers the wingmate slot no
+    /// control starting a screen with selectors means the ammunition cannot be
+    /// that wingmate's equipment, and the flow refuses
+    /// ([`FlowError::NoWingmateEquipment`]) rather than committing a
+    /// projection the original contradicts.
     ///
     /// [`WingmateChoice::loadout`]: cs_sim::allies::WingmateChoice::loadout
     fn briefing_plan(
@@ -1805,6 +1861,11 @@ impl FlowDomain {
         let Some(wingmate) = loadout.wingmate.as_ref() else {
             return Ok(plan);
         };
+        if let Some(measured) = self.setup.flight_check_selection.as_ref()
+            && !measured.edits(FlightCheckSlot::Wingmate)
+        {
+            return Err(FlowError::NoWingmateEquipment);
+        }
         let slot = authored_slot(lowered)?;
         let aircraft = GeometryId::try_new(wingmate.clone())
             .map_err(|error| FlowError::WingmateAirframe { error })?;
