@@ -38,17 +38,23 @@
 //! audio half by name and the muzzle entity still spawns, because a missing
 //! audio record is not a reason to erase the flash.
 //!
-//! Like [`step_weapon_session`](crate::weapons::step_weapon_session), this is a
-//! function, not a registered system: `WeaponSession` lives with its caller,
-//! and the pass needs the weapon session, the audio session and the world
-//! together. Whoever owns the session's tick calls it once per tick after the
-//! step. One-shot *device* playback is F41's follow-up space — this stage stops
-//! at the accepted, placed cue the router holds, exactly where the loop
-//! systems stood before their mixer consumer.
+//! [`present_weapon_effects`] is a plain function, exactly like
+//! [`step_weapon_session`](crate::weapons::step_weapon_session): the weapon
+//! session lives with its caller, and the pass needs the weapon session, the
+//! audio session and the world together. [`WeaponEffectSchedulePlugin`] is the
+//! production caller (task F27-C-FX-SCHED #1304): it registers
+//! [`drive_weapon_effect_presentation`] on the session's **fixed loop**, once
+//! per committed tick, after the weapon step that emits the effects and before
+//! the damage consumers — the same stage and ordering
+//! [`WeaponSchedulePlugin`](crate::weapons::WeaponSchedulePlugin) gives
+//! [`drive_weapon_session`](crate::weapons::drive_weapon_session), which that
+//! plugin adds it from. One-shot *device* playback is F41's follow-up space —
+//! this stage stops at the accepted, placed cue the router holds, exactly where
+//! the loop systems stood before their mixer consumer.
 
 use bevy::ecs::component::Component;
 use bevy::ecs::resource::Resource;
-use bevy::prelude::{Entity, Transform, World};
+use bevy::prelude::{App, Entity, FixedPostUpdate, IntoScheduleConfigs, Plugin, Transform, World};
 use cs_sim::audio_events::{
     AudioEventError, AudioEventId, OneShotEvent, OneShotOutcome, SpatialError, SpatialMix,
     spatialize,
@@ -61,7 +67,8 @@ use cs_types::net::SessionId;
 use cs_types::space::WorldPosition;
 
 use crate::audio::{AudioSession, AudioSpatial};
-use crate::scene::SceneGeneration;
+use crate::physics::PhysicsTickLedger;
+use crate::scene::{SceneGeneration, SceneGenerations};
 use crate::weapons::{WeaponEffect, WeaponSession};
 
 /// The producer serial shot-sound one-shots this consumer creates are stamped
@@ -186,6 +193,14 @@ pub struct MuzzleEffectSpawn {
 /// gun fire can say which declared asset was missing.
 #[derive(Clone, Debug, PartialEq)]
 pub enum WeaponEffectRefusal {
+    /// No audio session is installed, so nothing could play the cue: the audio
+    /// half is refused by name and the muzzle half still presents the shot,
+    /// because a world with no audio is not a reason to erase the flash (the
+    /// same independence the undelivered-asset case below follows).
+    NoAudioSession {
+        /// The shot whose sound could not be presented.
+        projectile: ProjectileId,
+    },
     /// The installed load lowered no audio spec for the gun's declared
     /// shot-sound id, so nothing playable names that asset. The cue is not
     /// built and nothing is played — never a guessed clip
@@ -271,11 +286,40 @@ pub fn present_weapon_effects(
     spatial: Option<&AudioSpatial>,
     generation: SceneGeneration,
 ) -> WeaponEffectReport {
+    present_weapon_effects_with_audio(world, weapon, Some(audio), sequences, spatial, generation)
+}
+
+/// Presents every effect the weapon session has emitted since the last drain
+/// when the world may carry **no** audio session.
+///
+/// The same one-drain pass as [`present_weapon_effects`], for the scheduled
+/// caller: a tick whose world has no [`AudioSession`] still drains the log
+/// exactly once and still spawns each accepted shot's muzzle record, and it
+/// refuses that shot's *audio* half by name
+/// ([`WeaponEffectRefusal::NoAudioSession`]) rather than leaving the effect
+/// undrained for a later tick. The two halves are independent — the module's
+/// own rule — so a missing audio session must not erase the muzzle flash
+/// either.
+#[must_use]
+pub fn present_weapon_effects_with_audio(
+    world: &mut World,
+    weapon: &mut WeaponSession,
+    audio: Option<&mut AudioSession>,
+    sequences: &mut WeaponShotSequences,
+    spatial: Option<&AudioSpatial>,
+    generation: SceneGeneration,
+) -> WeaponEffectReport {
     let mut report = WeaponEffectReport::default();
+    let mut audio = audio;
     for effect in weapon.drain_effects() {
-        match trigger_shot_sound(&effect, audio, sequences, spatial) {
-            Ok(cue) => report.played.push(cue),
-            Err(refusal) => report.refusals.push(refusal),
+        match audio.as_deref_mut() {
+            Some(session) => match trigger_shot_sound(&effect, session, sequences, spatial) {
+                Ok(cue) => report.played.push(cue),
+                Err(refusal) => report.refusals.push(refusal),
+            },
+            None => report.refusals.push(WeaponEffectRefusal::NoAudioSession {
+                projectile: effect.projectile,
+            }),
         }
         report
             .spawned
@@ -420,4 +464,209 @@ pub fn release_muzzle_effects(world: &mut World) -> usize {
 fn muzzle_transform(position: WorldPosition) -> Transform {
     let [x, y, z] = position.to_array();
     Transform::from_translation(bevy::prelude::Vec3::new(x as f32, y as f32, z as f32))
+}
+
+// ------------------------------------------------------ the session schedule ----
+//
+// The pass above is a *function*: something must call it, once per committed
+// fixed tick, with the session's own inputs. This section is that caller — the
+// schedule a running session installs — registered by
+// [`WeaponSchedulePlugin`](crate::weapons::WeaponSchedulePlugin) so the
+// production composition gets it exactly where it gets
+// [`drive_weapon_session`](crate::weapons::drive_weapon_session): the same
+// stage (`FixedPostUpdate`), after the physics step the weapon step reads, and
+// after that step itself, so the effects a committed tick emitted are the ones
+// this pass presents in that same tick.
+//
+// What the schedule owns is the ordering and the honest gap: a tick with no
+// installed weapon session, no live scene generation or no audio session is
+// reported by name, and nothing is invented — but an effect is never left
+// undrained for a tick that could not present it either.
+
+/// An input the scheduled presentation pass needed but the world could not
+/// supply.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WeaponEffectScheduleMissing {
+    /// No [`SceneGenerations`]: no live generation exists to stamp the muzzle
+    /// spawns with, so the pass presents nothing rather than spawning under a
+    /// guessed stamp. A world in this state cannot have stepped either — the
+    /// weapon schedule names the same absence — so no effect waits with it.
+    Generation,
+}
+
+/// Resource: what the scheduled presentation pass did and did not do, one
+/// committed fixed tick at a time.
+///
+/// Every field answers for the tick `at` names. `presented` is the pass's own
+/// report — including its refusals — so nothing it decided is re-described
+/// here; `released` names the muzzle spawns this tick's session teardown
+/// released, and `missing` names what the pass needed and the world did not
+/// have.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct WeaponEffectScheduleReport {
+    /// Fixed ticks the schedule has run, including this one.
+    pub ticks: u64,
+    /// The session generation installed this run; `None` without one.
+    pub session: Option<u64>,
+    /// The committed tick this run served; `None` when no
+    /// [`PhysicsTickLedger`] could name it.
+    pub at: Option<Tick>,
+    /// The presentation pass's own report, when it ran.
+    pub presented: Option<WeaponEffectReport>,
+    /// Muzzle-effect spawns released this tick because the weapon session they
+    /// belonged to was removed or replaced — the same teardown
+    /// [`drive_weapon_session`](crate::weapons::drive_weapon_session) reports
+    /// in [`WeaponScheduleReport::tore_down`](crate::weapons::WeaponScheduleReport::tore_down),
+    /// observed and released here so no stale flash survives the swap.
+    pub released: usize,
+    /// The inputs the pass needed but the world did not have.
+    pub missing: Vec<WeaponEffectScheduleMissing>,
+}
+
+impl WeaponEffectScheduleReport {
+    /// Opens the report for a new run: every per-tick field clears, the run
+    /// count advances.
+    fn begin_tick(&mut self) {
+        self.ticks += 1;
+        self.session = None;
+        self.at = None;
+        self.presented = None;
+        self.released = 0;
+        self.missing.clear();
+    }
+}
+
+/// Resource: the presentation schedule's own bookkeeping across ticks.
+///
+/// `session` is the generation the schedule last presented under — the
+/// identity a swap or a removal is noticed against, so the dead generation's
+/// muzzle spawns are released in the very tick the weapon schedule
+/// ([`drive_weapon_session`](crate::weapons::drive_weapon_session)) reports the
+/// teardown, not one tick later.
+#[derive(Resource, Clone, Debug, Default)]
+struct WeaponEffectScheduleState {
+    session: Option<u64>,
+}
+
+/// Drives one committed fixed tick of the weapon-effect presentation: release
+/// a dead generation's muzzle spawns, then one [`present_weapon_effects`] —
+/// in that order — and records the run in [`WeaponEffectScheduleReport`].
+///
+/// Exclusive over the world because the pass it drives is exclusive, and
+/// ordered after [`drive_weapon_session`](crate::weapons::drive_weapon_session)
+/// so the drain sees exactly the effects the committed tick's step emitted, in
+/// the same tick: the pass runs once per fixed tick and the drain is once per
+/// pass, so an effect is presented once, never twice and never a tick late.
+///
+/// * no [`WeaponSession`] resource → the tick presented nothing (and, if the
+///   session was removed, released what the dead generation left);
+/// * a [`WeaponSession`] resource that is not the generation the schedule last
+///   presented under — the same swap or removal
+///   [`drive_weapon_session`](crate::weapons::drive_weapon_session) tears down
+///   in this very tick →
+///   [`release_muzzle_effects`] first, so the dead generation's spawns go in
+///   the tick it went away;
+/// * no [`SceneGenerations`] → [`WeaponEffectScheduleMissing::Generation`],
+///   and nothing is presented;
+/// * no [`AudioSession`] → the pass still drains the log once and still spawns
+///   each shot's muzzle record, refusing the audio half by name
+///   ([`WeaponEffectRefusal::NoAudioSession`]).
+///
+/// Directly callable, and the same code [`WeaponEffectSchedulePlugin`]
+/// installs, so a test drives exactly what a session runs.
+pub fn drive_weapon_effect_presentation(world: &mut World) {
+    let mut report = world
+        .remove_resource::<WeaponEffectScheduleReport>()
+        .unwrap_or_default();
+    report.begin_tick();
+    let mut state = world
+        .remove_resource::<WeaponEffectScheduleState>()
+        .unwrap_or_default();
+
+    let installed = world
+        .get_resource::<WeaponSession>()
+        .map(WeaponSession::session);
+    report.session = installed;
+    // The release happens before the pass, in the same tick: everything the
+    // dead generation left is released, and only then are this tick's effects
+    // (the new generation's, if a swap just happened) spawned.
+    if state.session != installed {
+        if state.session.take().is_some() {
+            report.released = release_muzzle_effects(world);
+        }
+        state.session = installed;
+    }
+
+    if installed.is_none() {
+        // No session: the tick presented nothing, and the report says so.
+        world.insert_resource(report);
+        world.insert_resource(state);
+        return;
+    }
+
+    report.at = world
+        .get_resource::<PhysicsTickLedger>()
+        .map(|ledger| Tick(ledger.ticks));
+    let Some(generation) = world
+        .get_resource::<SceneGenerations>()
+        .map(SceneGenerations::latest)
+    else {
+        report.missing.push(WeaponEffectScheduleMissing::Generation);
+        world.insert_resource(report);
+        world.insert_resource(state);
+        return;
+    };
+
+    let mut session = world
+        .remove_resource::<WeaponSession>()
+        .expect("the session was checked present above");
+    let mut audio = world.remove_resource::<AudioSession>();
+    let mut sequences = world
+        .remove_resource::<WeaponShotSequences>()
+        .unwrap_or_default();
+    let spatial = world.get_resource::<AudioSpatial>().copied();
+    report.presented = Some(present_weapon_effects_with_audio(
+        world,
+        &mut session,
+        audio.as_mut(),
+        &mut sequences,
+        spatial.as_ref(),
+        generation,
+    ));
+    world.insert_resource(session);
+    if let Some(audio) = audio {
+        world.insert_resource(audio);
+    }
+    world.insert_resource(sequences);
+    world.insert_resource(report);
+    world.insert_resource(state);
+}
+
+/// Installs the presentation consumer on the session's fixed loop.
+///
+/// Added by [`WeaponSchedulePlugin`](crate::weapons::WeaponSchedulePlugin)
+/// beside [`drive_weapon_session`](crate::weapons::drive_weapon_session), so
+/// every world that runs the weapon step — the production
+/// [`PhysicsSession`](crate::physics::PhysicsSession) and the composed mission
+/// — presents its accepted shots the same way. It owns the *call*, not the
+/// sessions: a mission installs its own [`WeaponSession`] and its own
+/// [`AudioSession`], and the schedule serves whichever pair is installed.
+///
+/// Register it once. It initialises [`WeaponShotSequences`],
+/// [`WeaponEffectScheduleReport`] and [`WeaponEffectScheduleState`], and adds
+/// [`drive_weapon_effect_presentation`] to `FixedPostUpdate` after the weapon
+/// step.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct WeaponEffectSchedulePlugin;
+
+impl Plugin for WeaponEffectSchedulePlugin {
+    fn build(&self, app: &mut App) {
+        app.init_resource::<WeaponShotSequences>()
+            .init_resource::<WeaponEffectScheduleReport>()
+            .init_resource::<WeaponEffectScheduleState>()
+            .add_systems(
+                FixedPostUpdate,
+                drive_weapon_effect_presentation.after(crate::weapons::drive_weapon_session),
+            );
+    }
 }

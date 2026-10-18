@@ -1069,15 +1069,26 @@ impl WeaponEffect {
 /// consumer plays one view or the other (drain the log for a session-wide
 /// stream, read the per-tick report to stay in step with a tick), never both:
 /// playing both would sound every shot twice.
+///
+/// The log keeps two counts, because the production consumer drains it: the
+/// *pending* records [`drain`](Self::drain) hands out, and
+/// [`recorded`](Self::recorded), the number of effects the session has ever
+/// emitted, which a drain never resets. A reader that wants "how many shots did
+/// this session accept" — a smoke measurement, an audit — reads
+/// `recorded`, because the pending view is empty whenever the presentation
+/// consumer ([`crate::weapon_effects::WeaponEffectSchedulePlugin`]) has run for
+/// the tick (task F27-C-FX-SCHED #1304).
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct WeaponEffectLog {
     effects: Vec<WeaponEffect>,
+    recorded: u64,
 }
 
 impl WeaponEffectLog {
     /// Records one accepted shot's effect.
     fn record(&mut self, effect: WeaponEffect) {
         self.effects.push(effect);
+        self.recorded += 1;
     }
 
     /// The effects emitted so far, oldest first.
@@ -1090,6 +1101,17 @@ impl WeaponEffectLog {
     #[must_use]
     pub fn drain(&mut self) -> Vec<WeaponEffect> {
         std::mem::take(&mut self.effects)
+    }
+
+    /// How many effects this session has emitted, drained or not.
+    ///
+    /// Monotone for the life of the log: a drain empties
+    /// [`effects`](Self::effects) and leaves this alone, so the count survives
+    /// the presentation consumer and answers "how many shots did the session
+    /// accept" for a reader that samples between ticks.
+    #[must_use]
+    pub const fn recorded(&self) -> u64 {
+        self.recorded
     }
 
     /// How many effects are waiting.
@@ -1511,6 +1533,19 @@ impl WeaponSession {
     #[must_use]
     pub fn effects(&self) -> &[WeaponEffect] {
         self.effects.effects()
+    }
+
+    /// How many accepted shots this session has emitted effects for.
+    ///
+    /// Monotone: [`drain_effects`](Self::drain_effects) empties
+    /// [`effects`](Self::effects) and leaves this alone, so a reader that
+    /// samples between ticks — the M01 owner smoke's gun check, an audit —
+    /// counts accepted shots even though the presentation consumer
+    /// ([`crate::weapon_effects::WeaponEffectSchedulePlugin`]) drains the log
+    /// every committed tick.
+    #[must_use]
+    pub const fn effects_recorded(&self) -> u64 {
+        self.effects.recorded()
     }
 
     /// Takes every effect emitted so far, leaving the log empty.
@@ -2819,6 +2854,13 @@ pub fn drive_weapon_session(world: &mut World) {
 /// tick that step committed. A world that installs this plugin without a
 /// session runs the schedule every fixed tick and steps nothing — the honest
 /// state of a world with no session, reported in [`WeaponScheduleReport`].
+///
+/// It adds
+/// [`WeaponEffectSchedulePlugin`](crate::weapon_effects::WeaponEffectSchedulePlugin)
+/// beside the step: the accepted shots a committed tick emits are presented —
+/// their declared sound through the installed audio session, their declared
+/// muzzle-effect record spawned — in that same tick, after this step and never
+/// twice (F27-C-FX-SCHED #1304).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct WeaponSchedulePlugin;
 
@@ -2827,6 +2869,7 @@ impl Plugin for WeaponSchedulePlugin {
         app.init_resource::<WeaponScheduleReport>()
             .init_resource::<WeaponScheduleState>()
             .init_resource::<WeaponTickInputs>()
+            .add_plugins(crate::weapon_effects::WeaponEffectSchedulePlugin)
             .add_systems(
                 FixedPostUpdate,
                 drive_weapon_session.after(PhysicsSystems::StepSimulation),
