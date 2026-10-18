@@ -87,6 +87,10 @@ const FIXED_HZ: u32 = 60;
 /// timers consume.
 const MAX_TICKS: u64 = 600;
 
+/// The committed tick the fixture reaches before it submits input stamped
+/// around tick 101, so those stamps sit inside the host's ±64 window.
+const SUBMIT_TICK: u64 = 90;
+
 /// The connection-layer window the fixture asks for, and why it is not the
 /// shipped default: see `accept_f54_c_lifecycle.rs`'s `LOOPBACK_WINDOW`.
 const LOOPBACK_WINDOW: ConnectWindow = ConnectWindow::new(120);
@@ -96,7 +100,7 @@ const LOOPBACK_WINDOW: ConnectWindow = ConnectWindow::new(120);
 /// pair at a time is what the machine's loopback path carries without loss.
 static LOOPBACK: Mutex<()> = Mutex::new(());
 
-fn loopback() -> MutexGuard<'static, ()> {
+pub(crate) fn loopback() -> MutexGuard<'static, ()> {
     LOOPBACK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner)
@@ -197,6 +201,16 @@ impl LinkedWorld {
     /// Commits `ticks` fixed ticks through the production stepper.
     fn step(&mut self, ticks: u64) {
         self.session.step(ticks).expect("the session steps");
+    }
+
+    /// Commits ticks until the host's committed tick is `SUBMIT_TICK` or
+    /// later. The host judges input against its own committed tick (F58-B,
+    /// ±64), so a packet stamped around tick 101 is honest only once the host
+    /// has simulated that far.
+    fn advance_to_submit_window(&mut self) {
+        while self.report().at.is_none_or(|at| at.0 < SUBMIT_TICK) {
+            self.step(1);
+        }
     }
 
     /// The just-committed run's report.
@@ -324,6 +338,7 @@ fn accept_f54_c_drive_the_session_round_trip_binds_every_boundary() {
         .resource_mut::<NetHost>()
         .bind_aircraft(peer, plane())
         .expect("the gate binds the peer's aircraft");
+    linked.advance_to_submit_window();
     linked
         .world()
         .resource_mut::<NetClient>()
@@ -589,6 +604,14 @@ fn accept_f54_c_drive_a_departed_peer_leaves_no_control_or_ownership() {
 
     // Give the peer real held state to leave behind: a deflected throttle
     // axis.
+    // Input is judged only in a launched (`Live`) match.
+    linked
+        .world()
+        .resource_mut::<NetHost>()
+        .session_mut()
+        .launch(Tick(0))
+        .expect("a gathering session launches");
+    linked.advance_to_submit_window();
     linked
         .world()
         .resource_mut::<NetClient>()
@@ -678,6 +701,14 @@ fn accept_f54_c_drive_an_unbound_peer_is_named_not_owned() {
     // No bind_aircraft: the peer is a session member with no aircraft. Its
     // input is admitted — the gate admits members — and the drive names the
     // missing binding instead of folding the frames somewhere unsound.
+    // Input is judged only in a launched (`Live`) match.
+    linked
+        .world()
+        .resource_mut::<NetHost>()
+        .session_mut()
+        .launch(Tick(0))
+        .expect("a gathering session launches");
+    linked.advance_to_submit_window();
     linked
         .world()
         .resource_mut::<NetClient>()

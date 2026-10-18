@@ -40,10 +40,30 @@ since it is keyed on the host-supplied `server_tick`.
 
 * Loadout asks and `Claim*` intents still have no wire form, so the banned set
   in the stage is carried but not consulted by the pump.
-* Nothing in `cs_app` calls `pump_staged` yet. The app-side driver does have a
-  committed tick (`PhysicsTickLedger`) but builds no `MatchStage` and passes no
-  phase, so wiring the running app is filed as a follow-up rather than guessed
-  at here.
+* ~~Nothing in `cs_app` calls `pump_staged` yet.~~ Closed by #1590, see below.
 * Values remain engine design, not measured (F58-D, `network_real`).
 
 Tests: `accept_f58_c_pump_stage_*` in `crates/cs_net/tests/accept_f58_c_pump_stage.rs`.
+
+## Closed in the app driver (#1590)
+
+`cs_app::network::session::drive_net_session` now calls `pump_staged` through
+`pump_host` whenever a committed tick exists:
+
+* `server_tick` is the committed `PhysicsTickLedger` tick.
+* The phase is the host session's own `ServerPhase`, the same one that gates
+  snapshot publication: `Gathering` is `Gathering`, `Live` is `InMatch`, and
+  `Finished`/`Closed` are `Closed` (input refused). The attached lobby's phase
+  is not read: `ServerSession::launch` does not move it, so it can lag the
+  session.
+* The banned set is the attached lobby's `rules().banned`, empty without a
+  lobby. It is still not consulted by the pump (no wire form for loadout asks).
+* With no committed tick (already reported as `NetDriveMissing::Timeline`) the
+  pump is the unstaged one, since the tick window has no anchor.
+
+Still true: no assembled application installs `NetSessionDrivePlugin`, so the
+`cs` binary does not host a net session yet. The pump-per-tick assumption above
+holds for this driver. Tests: `accept_f58_c_app_pump_stage_*` in
+`crates/cs_app/tests/accept_f58_c_app_pump_stage.rs`. `accept_f54_c_drive_*` now
+launches the host and submits input once the committed tick is near the stamped
+ticks, because the live window refuses input far from the host's tick.
