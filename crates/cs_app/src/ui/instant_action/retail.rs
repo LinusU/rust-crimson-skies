@@ -81,16 +81,22 @@ pub const IA_DIFFICULTY_UNMEASURED_CLAIM: &str = "f49.d.03.unmeasured.difficulty
 pub const IA_RULES_UNMEASURED_CLAIM: &str = "f49.d.03.unmeasured.rules";
 
 /// Why the actors' factions are unmeasured.
-pub const FACTION_UNMEASURED_REASON: &str = "the ia.zrd descriptor names a plane and a skill per \
-     actor but no faction, and the F14-D.5 faction rows are paint patterns, not an allegiance \
-     table; binding one to an actor would be a guess";
+pub const FACTION_UNMEASURED_REASON: &str = "neither the ia.zrd descriptor nor the executable's \
+     scenario setup (0x459390 reads it, 0x45a390 spawns from it) passes a faction or allegiance \
+     to the spawn call 0x47c210, which takes only a scene node, a placement and the plane; the \
+     allegiance lives in state 0x47c210 derives downstream from the node and the airframe \
+     template and has not been traced, and the F14-D.5 faction rows are paint patterns \
+     (docs/findings/2026-10-18-f49-d-03-fu-faction-survivability.md)";
 /// Why the actors' loadouts are unmeasured.
 pub const LOADOUT_UNMEASURED_REASON: &str = "the ia.zrd descriptor carries no loadout and no \
      production reader mints a loadout identity (F27-D/F27-E measure counts and ammunition, not \
      loadouts)";
 /// Why the actors' survivability is unmeasured.
-pub const SURVIVABILITY_UNMEASURED_REASON: &str = "the ia.zrd descriptor does not state whether \
-     an aircraft is mortal; the F33 survivability policy has no retail measurement";
+pub const SURVIVABILITY_UNMEASURED_REASON: &str = "neither the ia.zrd descriptor nor the \
+     executable's scenario setup passes mortality to the spawn call 0x47c210; the only \
+     per-group value it sets around the call is the GameIntensity console variable (always 1, \
+     a difficulty value, not mortality), so whether an actor is mortal is not measured \
+     (docs/findings/2026-10-18-f49-d-03-fu-faction-survivability.md)";
 /// Why a wingman's plane is unmeasured.
 pub const WINGMAN_PLANE_UNMEASURED_REASON: &str = "the ia.zrd descriptor declares a wingman \
      count but no wingman plane key";
