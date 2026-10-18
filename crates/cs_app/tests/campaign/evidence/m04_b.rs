@@ -12,7 +12,7 @@ const RETAIL_TESTS_M04_B: &[&str] = &[
     "accept_m04_b_every_directive_m04_spells_has_a_disposition_and_none_is_refused",
     "accept_m04_b_the_sheet_priorities_are_located_and_resolve_to_measured_operations",
     "accept_m04_b_the_terminal_blocks_are_gated_and_every_address_is_in_range",
-    "accept_m04_b_fu1_the_multi_pair_anim_state_sites_lower_and_m04s_record_completes",
+    "accept_m04_b_fu1_the_bound_record_spells_no_anim_state_and_m04s_record_completes",
     "accept_m04_b_fu1_m04_is_complete_and_the_campaign_stays_unready",
 ];
 
@@ -158,14 +158,19 @@ fn evidence_report_m04_b_writes_the_acceptance_report() {
         jstr(
             "acceptance suite run locally with the retail capability; every field is derived \
              from the recorded log and production discovery of $CS_GAME_DIR. The suite pins M04's \
-             measured control program (52 blocks, 201 sites, 40 keys, fully measured vocabulary), \
-             locates the sheet's three regression priorities in the record, gates both terminal \
-             latches and walks every block address, and pins M04's complete lowering — every one \
-             of its 201 sites binds and `MissionProgram::validate` accepts, since M04-B-FU1 \
-             (#806) closed the ANIM_STATE gap the suite first recorded: the key's whole operand \
-             list is carried as one list argument and the multi-pair walk appends every spelled \
-             descriptor. Claim is implemented only; no mission was played, no \
-             original executable was run and nothing is verified_original. Validated with \
+             measured control program (23 blocks, 126 sites, 29 keys, fully measured vocabulary) \
+             of ZBD/C3/M04/zrdr.zbd — the archive the corrected campaign layout binds to work \
+             order M04, not the ZBD/C1/M04 archive the suite was first measured on — locates the \
+             sheet's three regression priorities in the record, gates both terminal latches and \
+             walks every block address, and pins M04's complete lowering: every one of its 126 \
+             sites binds and `MissionProgram::validate` accepts. The bound record spells no \
+             ANIM_STATE key, so the operand-list mechanism M04-B-FU1 (#806) landed is pinned by \
+             synthetic members here and by the retail suites of the records that do spell it. \
+             Claim is implemented only; no mission was played, no \
+             original executable was run and nothing is verified_original. Regenerated on the \
+             re-pinned suite by swe2-max-1/swe2-max-1 (SWE-2 Max) in its Rally #1617 implement \
+             session, before review; `review.identity` above is unchanged and records M04-B's \
+             original implementer and review, not a review of this re-pin. Validated with \
              tools/validate_evidence.py --require-pass"
         ),
     );

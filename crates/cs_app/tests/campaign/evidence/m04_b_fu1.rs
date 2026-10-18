@@ -10,7 +10,7 @@ use super::*;
 /// control record lowers completely through the measured operand-list walk,
 /// and the row is complete while the campaign gate stays closed.
 const RETAIL_TESTS_M04_B_FU1: &[&str] = &[
-    "accept_m04_b_fu1_the_multi_pair_anim_state_sites_lower_and_m04s_record_completes",
+    "accept_m04_b_fu1_the_bound_record_spells_no_anim_state_and_m04s_record_completes",
     "accept_m04_b_fu1_m04_is_complete_and_the_campaign_stays_unready",
 ];
 
@@ -172,16 +172,24 @@ fn evidence_report_m04_b_fu1_writes_the_acceptance_report() {
              the measured way — every `ANIM` tag followed by a spec record appends one \
              {name, state} pair, `required` counts the appended pairs, the first \
              COMPLETION_COUNT found recursively inside the same list overwrites it, and the \
-             whole operand list registers and binds as ONE `Value::List` call argument — so \
-             M04's two 18-operand sites (eight descriptors at blocks 23 and 37, completion \
-             counts 1 and 3) lower, all 201 calls bind, `MissionProgram::validate` accepts and \
-             M04's census row is complete, `MAX_CALL_ARGS` staying 8. The same mechanism \
-             lowers M06's three completion-count sites (M06-B-FU1, #817) and all nine of \
-             M07's ANIM_STATE sites, whose remaining refusal is the unrelated \
-             DANGER_ZONES_COMPLETED gap. NOT CLAIMED: no directive is implemented by a \
+             whole operand list registers and binds as ONE `Value::List` call argument — \
+             `MAX_CALL_ARGS` staying 8. The same mechanism lowers the three \
+             completion-count sites of `zbd/c2/m01` (measured for M06-B-FU1, #817; the \
+             corrected layout binds that archive to M12) and all nine ANIM_STATE \
+             sites of `zbd/c2/m02`, whose remaining refusal is the unrelated \
+             DANGER_ZONES_COMPLETED gap. M04's own bound record — ZBD/C3/M04/zrdr.zbd \
+             under the corrected campaign layout — spells no ANIM_STATE key at all, so \
+             the retail pin here asserts its absence and that M04's 126 sites still \
+             all bind, `MissionProgram::validate` accepts and M04's census row is \
+             complete; the mechanism's arms are the synthetic members of this suite \
+             and the retail suites of the records that spell the key. \
+             NOT CLAIMED: no directive is implemented by a \
              measured effect, no mission was played, no original executable was run and \
              nothing is verified_original. Claim is implemented only; validated with \
-             tools/validate_evidence.py --require-pass. `candidate_tree` is the tree of the \
+             tools/validate_evidence.py --require-pass. Regenerated on the re-pinned suite by \
+             swe2-max-1/swe2-max-1 (SWE-2 Max) in its Rally #1617 implement session, before \
+             review; `review.identity` above is unchanged and records M04-B-FU1's original \
+             implementer and review, not a review of this re-pin. `candidate_tree` is the tree of the \
              commit the suite and this harness ran on; the only later delta is this report's \
              own copy under docs/findings/evidence/, which no acceptance test reads"
         ),
