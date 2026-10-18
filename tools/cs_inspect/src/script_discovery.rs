@@ -108,12 +108,12 @@ use cs_content::stunts::decode_zrd;
 use cs_formats::interp::{InterpRawLine, read_interp};
 use cs_formats::io::ParseContext;
 use cs_formats::script_raw::{
-    ByteSpan, ClaimError, Confidence, ContainerDiscovery, DirectiveKeyRow, DirectiveKeyStatus,
-    DirectiveProgramProbe, EvidenceLocator, ModelledProgramProbe, ProbeConfig, ProbeReport,
-    ProbeSession, ProgramKind, ProgramModel, RecordFieldSupport, RecordKeyRow, RecordKeyStatus,
-    RecordProbeError, RecordProbeStats, RecordReachability, ResearchMethod, ScriptEvidence,
-    ScriptRecord, ScriptSource, SignatureClaim, SignatureShape, SignatureTable, discover_container,
-    inventory_scripts, model_basis, probe_records, reads_as_named_commands,
+    AnimationPayloadCheck, ByteSpan, ClaimError, Confidence, ContainerDiscovery, DirectiveKeyRow,
+    DirectiveKeyStatus, DirectiveProgramProbe, EvidenceLocator, ModelledProgramProbe, ProbeConfig,
+    ProbeReport, ProbeSession, ProgramKind, ProgramModel, RecordFieldSupport, RecordKeyRow,
+    RecordKeyStatus, RecordProbeError, RecordProbeStats, RecordReachability, ResearchMethod,
+    ScriptEvidence, ScriptRecord, ScriptSource, SignatureClaim, SignatureShape, SignatureTable,
+    discover_container, inventory_scripts, model_basis, probe_records, reads_as_named_commands,
 };
 use cs_formats::zbd::{HeaderStatus, ZbdFamily};
 use cs_types::install::RelativePath;
@@ -969,9 +969,11 @@ fn structural_evidence(container: &str, span: ByteSpan, note: &str) -> ScriptEvi
 /// * an INTERP script body whose every line heads with a printable text
 ///   token is [`ProgramModel::NamedCommands`] — the F07-validated line
 ///   layout plus the text command head;
-/// * an animation container's payload behind its **validated** header is
-///   [`ProgramModel::EventRecords`] — the compiled animation ZBD whose
-///   event stream F20 (#690) measured over all 61 retail carriers.
+/// * an animation container whose header validated **and** whose payload
+///   decodes (every record walks and every sequence block's event stream
+///   steps exactly, task #1421) is [`ProgramModel::EventRecords`] — the
+///   compiled animation ZBD whose event stream F20 (#690) measured over all
+///   61 retail carriers.
 ///
 /// A member that does not decode, a body that does not read as text and an
 /// animation container whose header dispatch could not validate all answer
@@ -1023,6 +1025,10 @@ fn model_selection(
                 && matches!(
                     discovery.header_status(),
                     Some(HeaderStatus::Validated { .. })
+                )
+                && matches!(
+                    discovery.animation_payload(),
+                    Some(AnimationPayloadCheck::Decoded { .. })
                 ) =>
         {
             Some(ModelSelection {
@@ -1508,6 +1514,76 @@ mod tests {
         bytes
     }
 
+    /// An animation container whose payload decodes: empty index tables, the
+    /// 68-byte payload header declaring one record, the 40-byte gap, one
+    /// record with one ordinary sequence block holding `events`.
+    fn decodable_animation(events: &[u8]) -> Vec<u8> {
+        let mut payload = vec![0u8; 8]; // external and member counts
+        let mut header = [0u8; 68];
+        header[10..12].copy_from_slice(&1u16.to_le_bytes());
+        header[36..40].copy_from_slice(&(-9.8f32).to_le_bytes());
+        header[60..64].copy_from_slice(&1u32.to_le_bytes());
+        payload.extend_from_slice(&header);
+        payload.extend_from_slice(&[0u8; 40]);
+        let mut record = [0u8; 272];
+        record[216] = 1; // one ordinary sequence
+        payload.extend_from_slice(&record);
+        let mut info = [0u8; 64];
+        info[60..64].copy_from_slice(&(events.len() as u32).to_le_bytes());
+        payload.extend_from_slice(&info);
+        payload.extend_from_slice(events);
+        animation(&payload)
+    }
+
+    /// One well-formed eight-byte event: opcode 1, group 1, length 8.
+    const ONE_EVENT: [u8; 8] = [1, 1, 0, 0, 8, 0, 0, 0];
+
+    /// F13-D-FU4: a validated animation header over a payload that does not
+    /// decode is not modelled — it keeps the binary walk and its honest stop.
+    #[test]
+    fn accept_f13_d_fu4_a_validated_header_over_a_garbage_payload_is_not_modelled() {
+        let garbage: [&[u8]; 4] = [
+            b"\x11\x22\x33\x44",
+            // Declares no record at all: zeros where the payload header sits.
+            &[0u8; 76],
+            // A decodable container whose event stream has a bad length word.
+            &[1, 1, 0, 0, 7, 0, 0, 0],
+            // ... a tag outside the measured shape.
+            &[1, 9, 0, 0, 8, 0, 0, 0],
+        ];
+        for (index, events) in garbage.iter().enumerate() {
+            let bytes = if index < 2 {
+                animation(events)
+            } else {
+                decodable_animation(events)
+            };
+            let tree = Temp::new(&format!("f13d-fu4-garbage-{index}"));
+            tree.write("ZBD/C1/cam_anim.zbd", &bytes);
+            let result = run(&tree.0, &["--coverage"]);
+            let summary = result.summary.as_ref().expect("the command ran");
+            assert_eq!(summary.programs, 1, "case {index}");
+            assert_eq!(summary.modelled_programs, 0, "case {index}");
+            assert_eq!(summary.programs_retryable, 1, "case {index}");
+        }
+    }
+
+    /// F13-D-FU4: the same carrier with a decodable payload is modelled.
+    #[test]
+    fn accept_f13_d_fu4_a_decodable_payload_is_modelled_as_event_records() {
+        let tree = Temp::new("f13d-fu4-decodable");
+        let mut two = ONE_EVENT.to_vec();
+        two.extend_from_slice(&ONE_EVENT);
+        tree.write("ZBD/C1/cam_anim.zbd", &decodable_animation(&two));
+        let result = run(&tree.0, &["--coverage"]);
+        let summary = result.summary.as_ref().expect("the command ran");
+        assert_eq!(summary.modelled_programs, 1);
+        assert_eq!(
+            summary.modelled_by_model.get("event_records").copied(),
+            Some(1)
+        );
+        assert_eq!(summary.programs_retryable, 0);
+    }
+
     /// The F13-B production path over an authored installation: the `scripts`
     /// command locates the loading, mission and animation programs, classifies
     /// each by name or path and passes its coverage check.
@@ -1527,7 +1603,7 @@ mod tests {
                 (b"scene.zrd", b"\x04\x00\x00\x00"),
             ]),
         );
-        tree.write("ZBD/C1/cam_anim.zbd", &animation(b"\x11\x22\x33\x44"));
+        tree.write("ZBD/C1/cam_anim.zbd", &decodable_animation(&ONE_EVENT));
         tree.write("ZBD/C1/texture.zbd", &[0u8; 16]);
 
         let result = run(&tree.0, &["--coverage"]);
@@ -2425,7 +2501,7 @@ mod tests {
                 (b"blob.zrd", b"\x0a\x00\x00\x00\x0b\x00\x00\x00"),
             ]),
         );
-        tree.write("ZBD/C1/cam_anim.zbd", &animation(b"\x11\x22\x33\x44"));
+        tree.write("ZBD/C1/cam_anim.zbd", &decodable_animation(&ONE_EVENT));
 
         let result = run(&tree.0, &["--coverage"]);
         assert_eq!(result.exit_code, 0, "{:?}", result.diagnostics);
@@ -3518,8 +3594,7 @@ mod tests {
     ///    task's `unknowns` are exactly the limitations its own recording
     ///    pins — the unmeasured mission opcode table, the two unreconciled
     ///    anim vocabularies (#1415), the four unjoined event ids (#1416), the
-    ///    free-text record keys (#1417), the header-only anim gate (#1421),
-    ///    the four empty scripts and the provenance of the finding's
+    ///    free-text record keys (#1417), the four empty scripts and the provenance of the finding's
     ///    2026-10-14 questions. They are recorded rather than dropped: an
     ///    empty list would be a report claiming this stage closed questions it
     ///    did not close, and never dropping an unresolved issue to pass a
@@ -3628,7 +3703,7 @@ mod tests {
              this project's own structural decodes; the correction is recorded in \
              docs/findings/2026-10-14-f13-d-every-program-family-has-its-real-model.md. \
              Validated structurally with tools/validate_evidence.py — not with --require-pass, \
-             which exits 3 while a report lists unresolved issues and this one lists seven, \
+             which exits 3 while a report lists unresolved issues and this one lists six, \
              recorded rather than dropped.",
             summary.programs,
             summary.directive_programs,
@@ -3672,10 +3747,6 @@ mod tests {
              carries a citation and every unmeasured key names its vocabulary and resolving task. \
              Affected content: the scripts report's record-key axis. Resolving task: Rally #1417 \
              (F13-D-FU3).",
-            "anim_payload_gate: the event_records rule validates the animation container's header, \
-             not each payload, so a foreign or corrupted payload inside a validated animation \
-             carrier is filed as event records instead of walked. Affected content: the 61 retail \
-             animation carriers. Resolving task: Rally #1421 (F13-D-FU4).",
             "empty_interp_scripts: four retail INTERP scripts hold only the F07-validated zero \
              terminator (container offsets 20415, 46486, 78897, 84086) and what the original does \
              with an empty script is unmeasured. Affected content: those four loading scripts. \
