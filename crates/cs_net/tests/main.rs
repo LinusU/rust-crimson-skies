@@ -26,6 +26,7 @@ mod accept_f58_b_intent_validation;
 mod accept_f58_b_rate_and_resource_caps;
 mod accept_f58_b_recovery_claims;
 mod accept_f58_c_departure_ledger;
+mod accept_f58_c_pump_stage;
 mod accept_test_bin_rest_net;
 
 // Helpers shared by the modules above: the F54-C adversarial corpus and the
