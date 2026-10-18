@@ -40,8 +40,8 @@ use cs_assets::install::{self, content_fingerprint, fingerprint, sha256};
 use cs_content::ordnance::read_original_rocket_blasts;
 
 const RETAIL_TESTS: [&str; 2] = [
-    "accept_t1318_retail_range_minimum_reads_the_arming_pair",
-    "accept_t1318_image_pins_the_blast_unknowns",
+    "accept_t1318_retail_blast_unknowns::accept_t1318_retail_range_minimum_reads_the_arming_pair",
+    "accept_t1318_retail_blast_unknowns::accept_t1318_image_pins_the_blast_unknowns",
 ];
 
 const REVIEW_METHOD: &str = "Acceptance suite run locally with the retail capability (CS_GAME_DIR and CS_ENGINE_IMAGE set); this report is derived from the recorded log plus a second production pass recorded in blast-unknowns.json. MEASURED (task #548's open list, resolved by static analysis of the owner-supplied decrypted executable, sha-256 recorded): the unit scale - IMPACT_PROXIMITY, DETONATION_DISTANCE and RANGE_MINIMUM[0] reach the world-space distance comparisons with no conversion, and the world unit is the metre (F16-E landmarks); the projectile +0x678 multiplier - a blast-and-damage scale, spawned at 1.0 and multiplied by RANGE_MINIMUM[1] for a detonation inside the arming window (a zero second value suppresses the detonation outright - the torpedo's arming range); the apply loop's recipient gate - object +0xbc is an exclusion key the impact path passes as the hit object's damage group (detonations pass 0) and global 0xa1d7d4 is a re-entrancy guard cleared around nested impact processing; the area query's entry value - the centre-to-bounding-surface distance clamped at zero, squared (compared against radius^2 and stored at entry +0x1c); range-end removal - the step clears the projectile's +0x20 active word and the sweep unlinks and frees it; the special keys - a second parser fills a record at weapon +0x210 (SONIC 0x200, FLASH 0x800, BEEPER 0x4000 with TIME default 5.0, BEEPER_SEEKER 0x8000, SMOKE_SCREEN 0x10000 with TIME default 5.0, TANGLER 0x40000 with TIME/RADIUS and a tick callback at weapon +0x20c), and RANGE_MINIMUM's 0x4cd210 call toggles node flag bit 0x10. cs_content::ordnance::OriginalRocketBlast now carries the arming pair; cs_sim documents the measured surface-distance falloff and the impact exclusion. STILL UNMEASURED (none claimed): see the limitations array of blast-unknowns.json - the exact gameplay consumers of SONIC, FLASH, BEEPER and BEEPER_SEEKER (t1318.limit.status_consumers), the domain/writers of the +0xbc key (t1318.limit.exclusion_domain), and route_detonation_area still not wired into step_ordnance_session (t1318.limit.session_wiring). The claim is implemented: this awards nothing above that, and no agent review replaces the owner's human approval. Validated with tools/validate_evidence.py --require-pass.";
@@ -150,7 +150,7 @@ fn evidence_report_t1318_writes_the_acceptance_report() {
             .map(|(_, status)| *status)
             .unwrap_or_else(|| {
                 panic!(
-                    "{retail_test} did not run: #548 requires capability `retail`, run step 1 \
+                    "{retail_test} did not run: #1318 requires capability `retail`, run step 1 \
                      with --include-ignored, CS_GAME_DIR and CS_ENGINE_IMAGE set"
                 )
             });
