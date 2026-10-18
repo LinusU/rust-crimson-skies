@@ -332,5 +332,6 @@ mod owner_facts_table;
 mod parity_m01_atmo_a;
 mod parity_m01_atmo_e2;
 mod parity_m01_lc_measure_cam_frame;
+mod parity_m01_lc_measure_cam_timeline;
 mod record_objectives_sound;
 mod regenerate;
