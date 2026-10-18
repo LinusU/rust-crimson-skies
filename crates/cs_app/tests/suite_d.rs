@@ -1,6 +1,9 @@
 //! `cs_app`'s `cs_app_tests_d` integration-test binary (task #1543).
 //!
-//! Groups (see `docs/findings/2026-10-17-t1543-cs-app-test-binaries.md`): ev_f, a_f3a, a_f3b, d_physics, d_hud, c_m06up, c_f50, c_misc.
+//! Groups (see `docs/findings/2026-10-17-t1543-cs-app-test-binaries.md`): ev_f, a_f3a, a_f3b, d_physics, d_hud, c_m02up, c_f50, c_misc.
+//! The m02-m05 campaign members moved here from `cs_app_tests_a` (task
+//! #1615): this binary's `campaign/mod.rs` module root already carries their
+//! m06-m24 siblings and the shared machinery they bind.
 //!
 //! The crate declares several test binaries rather than one because a single
 //! binary's `__eh_frame` passes macOS's 16 MiB limit (task #336), and the

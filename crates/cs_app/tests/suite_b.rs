@@ -1,6 +1,10 @@
 //! `cs_app`'s `cs_app_tests_b` integration-test binary (task #1543).
 //!
-//! Groups (see `docs/findings/2026-10-17-t1543-cs-app-test-binaries.md`): a_f2a, playtest, d_render.
+//! Groups (see `docs/findings/2026-10-17-t1543-cs-app-test-binaries.md`): a_f2a, playtest, d_render, a_f40.
+//! The F40 cinematics members and their evidence harnesses moved here from
+//! `cs_app_tests_a` (task #1615): this binary already reaches the device
+//! playback/render code through `playtest_*` and `render/`, so they add
+//! ~0.15 MiB here while they cost `cs_app_tests_a` ~4.8 MiB.
 //!
 //! The crate declares several test binaries rather than one because a single
 //! binary's `__eh_frame` passes macOS's 16 MiB limit (task #336), and the
@@ -27,6 +31,13 @@ mod accept_f22_c_focus_ui_replay_ownership;
 mod accept_f22_d_device_families_and_command_coverage;
 mod accept_f22_wheel_mouse_wheel_producer;
 mod accept_f24_c_flight_wiring;
+mod accept_f40_d1_mpeg_playback;
+mod accept_f40_d3_camera_anim;
+mod accept_f40_d4_device_playback;
+mod accept_f40_d_story_cinematics;
+mod evidence_report_f40_d;
+mod evidence_report_f40_d1;
+mod evidence_report_f40_d4;
 mod playtest_b0004;
 mod playtest_fly;
 mod playtest_full_aircraft;

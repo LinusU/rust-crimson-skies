@@ -1,6 +1,10 @@
 //! `cs_app`'s `cs_app_tests_a` integration-test binary (task #1543).
 //!
-//! Groups (see `docs/findings/2026-10-17-t1543-cs-app-test-binaries.md`): c_big, ev_m01play, ev_oth, c_m02_05, accept_t, m01_lc, m01_misc, a_f5, a_f4a, a_f4b, a_f2b, ev_m01lc, ev_m01oth, m01_b, m01_hud, d_environment, d_flight.
+//! Groups (see `docs/findings/2026-10-17-t1543-cs-app-test-binaries.md`): c_big, ev_m01play, ev_oth, accept_t, m01_lc, m01_misc, a_f5, a_f4a, a_f4b, a_f2b, ev_m01lc, ev_m01oth, m01_b, m01_hud, d_environment, d_flight.
+//! The F40 cinematics members went to `cs_app_tests_b` and the m02-m05
+//! campaign members to `cs_app_tests_d` (task #1615): the cinematics set
+//! alone reaches ~4.8 MiB of `__eh_frame` and had pushed this binary over
+//! the 16 MiB compact-unwind limit.
 //!
 //! The crate declares several test binaries rather than one because a single
 //! binary's `__eh_frame` passes macOS's 16 MiB limit (task #336), and the
@@ -40,16 +44,6 @@ mod campaign {
     mod m01_window_world_draw;
     mod m01_window_world_import;
     mod m01_wingman_formation;
-    mod m02_a;
-    mod m02_b;
-    mod m02_b_fu2;
-    mod m02_t3;
-    mod m03_a;
-    mod m03_b;
-    mod m04_a;
-    mod m04_b;
-    mod m05_a;
-    mod m05_b;
     mod vs_m01_rt_evidence_audio;
     mod vs_m01_rt_host;
     mod vs_m01_rt_host_02;
@@ -85,10 +79,6 @@ mod accept_f29_c_6_eject_edge_bailout;
 mod accept_f29_c_damage_consumers;
 mod accept_f29_c_debris_spawn;
 mod accept_f29_e_initial_damage;
-mod accept_f40_d1_mpeg_playback;
-mod accept_f40_d3_camera_anim;
-mod accept_f40_d4_device_playback;
-mod accept_f40_d_story_cinematics;
 mod accept_f41_a_audio_boundary;
 mod accept_f41_b_audio_wiring;
 mod accept_f41_b_engine_loop_rebind;
@@ -206,9 +196,6 @@ mod accept_t718_mission_animations;
 mod accept_t761_deviating_command;
 mod accept_test_bin_cs_app;
 mod environment;
-mod evidence_report_f40_d;
-mod evidence_report_f40_d1;
-mod evidence_report_f40_d4;
 mod evidence_report_m01_b_obj;
 mod evidence_report_m01_b_obj_2;
 mod evidence_report_m01_b_obj_4;
