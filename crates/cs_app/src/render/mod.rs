@@ -40,8 +40,12 @@
 //!   is widened to 8-bit channels and its coverage is composed on the CPU
 //!   first, both by the decided policy in [`rgb565`].
 //! * [`bevy_state::render_state`] reads the render state out of a
-//!   [`material::ClassifiedMaterial`] and refuses the two facts nothing
-//!   measured (two-sidedness, addressing).
+//!   [`material::ClassifiedMaterial`] and refuses the facts nothing
+//!   established. [`bevy_state::render_state_for_mesh`] adds the stored
+//!   mesh group's measured two-sidedness (`0x400`, `OWNER-STATIC-2026-10-05`,
+//!   task #1406) so a stored two-sided polygon draws with nothing culled; a
+//!   group that mixes one- and two-sided polygons is still refused. Texture
+//!   addressing stays unmeasured.
 //! * [`capture::capture`] records one tick's frame — settings, camera, tick,
 //!   every surface's digests in draw order, every refusal with its reason —
 //!   so the same camera and tick captured twice can be compared (AC02)

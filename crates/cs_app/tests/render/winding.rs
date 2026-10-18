@@ -1,23 +1,26 @@
-//! `accept_f10_d_2_` tests for task #396 (`F10-D.2`): the front-face winding
-//! and culling decision measured from the original executable
-//! (`OWNER-STATIC-2026-10-05`; recorded in
+//! `accept_f10_d_2_` tests for task #396 (`F10-D.2`) and `accept_f10_f_1_`
+//! tests for task #1406 (`F10-F.1`): the front-face winding and culling
+//! decision measured from the original executable, and the stored polygon flag
+//! that selects the two-sided case (`OWNER-STATIC-2026-10-05`; recorded in
 //! `docs/findings/2026-10-14-f10-d-2-front-face-winding-and-culling.md`).
 //!
 //! The decision under test lives in `cs_app::render::bevy_mesh`
 //! (`FRONT_FACE`, `CullingClass`) and is read by
-//! `cs_app::render::bevy_state::render_state` — the production path every
-//! drawable material's cull face comes from. These tests fail if the CCW
+//! `cs_app::render::bevy_state::render_state(_for_group)` — the production path
+//! every drawable material's cull face comes from. These tests fail if the CCW
 //! front face, the one-sided back-face cull, the two-sided exception, the
-//! billboard exception or the pipeline's explicit front face is removed or
-//! changed.
+//! billboard exception, the pipeline's explicit front face, or the stored
+//! `0x400` flag plumbing that reaches them is removed or changed.
 
 use bevy::render::render_resource::{Face, FrontFace, PrimitiveState, RenderPipelineDescriptor};
-use cs_app::render::bevy_mesh::{CullingClass, FRONT_FACE, WINDING_EVIDENCE};
+use cs_app::render::bevy_mesh::{CullingClass, FRONT_FACE, WINDING_EVIDENCE, upload_group};
 use cs_app::render::bevy_state::{StateError, render_state, render_state_for_mesh};
 use cs_app::render::material::{
     AddressMode, Classification, ClassifiedMaterial, Coverage, DeclaredClass, MaterialClass,
     MaterialFacts, TextureAddress, classify,
 };
+use cs_content::mesh::RenderMesh;
+use cs_formats::gamez::{FLAG_TWO_SIDED, PrimitiveKind, RawCorner, RawMesh, RawPolygon};
 use cs_formats::texture::AlphaTest;
 use cs_types::evidence::ClaimStatus;
 
@@ -85,10 +88,10 @@ fn accept_f10_d_2_front_face_winding_and_culling_follow_the_measured_evidence() 
 /// additive pipeline gets the measured front face written into it
 /// explicitly rather than left to wgpu's default.
 ///
-/// The undeclared case stays refused — the *rule* is measured, but which
-/// stored surface is two-sided is per-polygon `0x400` data no reader has
-/// plumbed yet, and an invented class would silently halve or double a
-/// surface.
+/// A material record alone declares no two-sidedness, so `render_state` still
+/// refuses an undeclared surface — the *stored* fact that says which surface is
+/// two-sided is per-polygon `0x400` data, read by the content pipeline and
+/// supplied to [`render_state_for_mesh`], not invented here.
 #[test]
 fn accept_f10_d_2_the_render_state_reads_its_culling_from_the_measured_decision() {
     let one_sided = render_state(&authored(MaterialClass::Opaque, Some(false)))
@@ -156,8 +159,113 @@ fn accept_f10_d_2_the_render_state_reads_its_culling_from_the_measured_decision(
     assert_eq!(
         undeclared.err(),
         Some(StateError::CullFaceUnknown),
-        "which stored surface carries 0x400 is still unread data: an \
-         undeclared surface is refused, never defaulted to a class"
+        "a material record alone declares no two-sidedness, so `render_state` \
+         still refuses it — the stored polygon data is the other input"
+    );
+}
+
+/// One stored outline polygon over three positions, with `flags` as its stored
+/// flag field.
+fn stored_outline(flags: u32, material: u32) -> RawPolygon {
+    RawPolygon {
+        kind: PrimitiveKind::Polygon,
+        raw_flags: flags,
+        material,
+        corners: [0u32, 1, 2]
+            .into_iter()
+            .map(|position| RawCorner {
+                position,
+                normal: None,
+                uv: None,
+                color: None,
+            })
+            .collect(),
+    }
+}
+
+/// The stored mesh of one triangle, built only of authored values.
+fn stored_mesh(polygons: Vec<RawPolygon>) -> RawMesh {
+    RawMesh {
+        positions: vec![[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+        normals: Vec::new(),
+        polygons,
+    }
+}
+
+/// **A stored two-sided polygon reaches the renderer as
+/// [`CullingClass::TwoSided`].** The production chain is driven end to end from
+/// a stored flag: the polygon's `0x400` bit (`FLAG_TWO_SIDED`,
+/// `OWNER-STATIC-2026-10-05`) builds a render mesh whose group records
+/// two-sidedness, the F17-B adapter uploads that group and reports it, and the
+/// state reader turns it into the measured culling class — no cull face for a
+/// two-sided group, the back-face cull for a one-sided one, and a refusal for a
+/// group that mixes both.
+///
+/// Remove the flag plumbing at any step (the render group's `two_sided`, the
+/// adapter's `two_sided`, or the state reader's use of it) and the two-sided
+/// assertions below fail.
+#[test]
+fn accept_f10_f_1_a_stored_two_sided_polygon_reaches_the_culling_class() {
+    // Two-sided: the stored bit is on, so the group draws both sides.
+    let two_sided = RenderMesh::build(&stored_mesh(vec![stored_outline(FLAG_TWO_SIDED, 0)]))
+        .expect("the stored outline decodes");
+    let upload = upload_group(&two_sided, 0, &[]).expect("group 0 uploads");
+    assert_eq!(
+        upload.two_sided(),
+        Some(true),
+        "the adapter reports the stored group's two-sidedness"
+    );
+    let material = authored(MaterialClass::Opaque, None);
+    assert_eq!(
+        render_state(&material).err(),
+        Some(StateError::CullFaceUnknown),
+        "the material record alone still declares nothing"
+    );
+    let state = render_state_for_mesh(&material, false, upload.two_sided())
+        .expect("the stored group's two-sidedness completes the state");
+    assert_eq!(
+        state.cull_face(),
+        CullingClass::TwoSided.cull_face(),
+        "a stored two-sided polygon draws with nothing culled"
+    );
+    assert_eq!(state.cull_face(), None);
+
+    // One-sided: no stored bit, so the group culls its back face.
+    let one_sided =
+        RenderMesh::build(&stored_mesh(vec![stored_outline(0, 0)])).expect("the outline decodes");
+    let upload = upload_group(&one_sided, 0, &[]).expect("group 0 uploads");
+    assert_eq!(upload.two_sided(), Some(false));
+    let state = render_state_for_mesh(&material, false, upload.two_sided()).expect("one-sided state");
+    assert_eq!(
+        state.cull_face(),
+        CullingClass::OneSided.cull_face(),
+        "a one-sided stored polygon culls its back face"
+    );
+    assert_eq!(state.cull_face(), Some(Face::Back));
+}
+
+/// **A group that mixes one- and two-sided polygons settles neither.** Two
+/// polygons of one material, one carrying `0x400` and one not, are one upload
+/// with one cull face that cannot express both, so the group reports `None` and
+/// the state is refused rather than rounded to a side.
+#[test]
+fn accept_f10_f_1_a_mixed_group_is_refused_not_rounded() {
+    let mixed = RenderMesh::build(&stored_mesh(vec![
+        stored_outline(FLAG_TWO_SIDED, 0),
+        stored_outline(0, 0),
+    ]))
+    .expect("both outlines decode");
+    let upload = upload_group(&mixed, 0, &[]).expect("group 0 uploads");
+    assert_eq!(
+        upload.two_sided(),
+        None,
+        "one flagged and one unflagged polygon with the same material is mixed"
+    );
+    let material = authored(MaterialClass::Opaque, None);
+    assert_eq!(
+        render_state_for_mesh(&material, false, upload.two_sided()).err(),
+        Some(StateError::CullFaceUnknown),
+        "a mixed group leaves two-sidedness unknown, never defaulted"
     );
 }
 
@@ -169,11 +277,11 @@ fn accept_f10_d_2_the_render_state_reads_its_culling_from_the_measured_decision(
 fn accept_f10_f_2_billboard_mesh_surfaces_are_not_culled() {
     let material = authored(MaterialClass::Opaque, Some(false));
     assert_eq!(
-        render_state_for_mesh(&material, true).unwrap().cull_face(),
+        render_state_for_mesh(&material, true, None).unwrap().cull_face(),
         None
     );
     assert_eq!(
-        render_state_for_mesh(&material, false).unwrap().cull_face(),
+        render_state_for_mesh(&material, false, None).unwrap().cull_face(),
         Some(Face::Back)
     );
     assert_eq!(

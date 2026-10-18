@@ -232,10 +232,10 @@ pub const FRONT_FACE: FrontFace = FrontFace::Ccw;
 /// back-face-culls one-sided polygons, draws the back side of a two-sided
 /// (`0x400`) polygon with the negated normal, and skips the test entirely
 /// for billboard meshes. Which stored surface is two-sided or a billboard is
-/// per-polygon / per-mesh stored data. The mesh type words are plumbed
-/// (`RenderMesh::is_unculled_billboard`, selected by
-/// `bevy_state::render_state_for_mesh`); the per-polygon `0x400` flag is not
-/// (F10-F.1), so a producer still declares two-sidedness.
+/// per-polygon / per-mesh stored data, and both are plumbed: the mesh type
+/// words by `RenderMesh::is_unculled_billboard` and the per-polygon `0x400`
+/// flag by [`GroupUpload::two_sided`], both read by
+/// `bevy_state::render_state_for_mesh`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum CullingClass {
     /// A one-sided surface: the back face is culled. With [`FRONT_FACE`],
@@ -254,8 +254,8 @@ pub enum CullingClass {
     /// for the whole mesh, so nothing is culled. Word1 == 2 billboards (40
     /// retail meshes) do *not* skip the test in the original: they draw
     /// under the normal per-polygon rule, so whether one of their polygons
-    /// is two-sided is their own unread `0x400` data (F10-F.1) — this
-    /// adapter makes no assumption about them.
+    /// is two-sided is their own measured `0x400` data — this adapter makes
+    /// no assumption about them.
     Billboard,
 }
 
@@ -447,6 +447,7 @@ pub struct GroupUpload {
     part: GroupPart,
     mesh: Mesh,
     report: GroupReport,
+    two_sided: Option<bool>,
     unknowns: Vec<MeshPresentationUnknown>,
     fingerprint: ContentHash,
     collision: ColliderMesh,
@@ -550,6 +551,10 @@ fn build_upload(
     let mut slot_of: HashMap<u32, u32> = HashMap::with_capacity(source_triangles.len() * 3);
     let mut indices = Vec::with_capacity(source_triangles.len() * 3);
     let mut degenerate = 0usize;
+    // The stored two-sidedness of this upload's own triangles. A whole group
+    // has one value from its [`RenderGroup`]; a normal-split part is a subset,
+    // so its own triangles decide and a mixed part is again `None`.
+    let (mut saw_two_sided, mut saw_one_sided) = (false, false);
     for &triangle_index in source_triangles {
         let triangle = triangles
             .get(triangle_index)
@@ -557,12 +562,24 @@ fn build_upload(
         if triangle.degenerate {
             degenerate += 1;
         }
+        if triangle.two_sided {
+            saw_two_sided = true;
+        } else {
+            saw_one_sided = true;
+        }
         for &vertex_index in &triangle.vertices {
             let next = u32::try_from(slot_of.len())
                 .expect("an index buffer is u32, so its length fits in u32");
             indices.push(*slot_of.entry(vertex_index).or_insert(next));
         }
     }
+    let two_sided = match (saw_two_sided, saw_one_sided) {
+        (true, false) => Some(true),
+        (false, true) => Some(false),
+        // A group always has triangles; the both-false arm is unreachable and
+        // the mixed arm is the unknown.
+        (true, true) | (false, false) => None,
+    };
 
     // Rebuild the compacted vertex arrays in slot order. `slot_of` maps a
     // render vertex index to the slot it was handed, so invert it: slot `s`
@@ -661,6 +678,7 @@ fn build_upload(
         part,
         mesh,
         report,
+        two_sided,
         unknowns: unknowns.to_vec(),
         fingerprint,
         collision: ColliderMesh::of(render.collision()),
@@ -786,6 +804,21 @@ impl GroupUpload {
     /// What the buffers contain.
     pub const fn report(&self) -> &GroupReport {
         &self.report
+    }
+
+    /// The stored two-sidedness this upload's triangles establish, from the
+    /// source polygons' measured `0x400` flag under the outline rule
+    /// (`OWNER-STATIC-2026-10-05`): `Some(true)` draws both sides,
+    /// `Some(false)` culls the back face, and `None` means this upload mixes
+    /// one- and two-sided polygons — a decision a single cull face cannot
+    /// express, so it stays unknown.
+    ///
+    /// The class this maps to is [`CullingClass`]: `Some(true)` →
+    /// [`CullingClass::TwoSided`], `Some(false)` → [`CullingClass::OneSided`],
+    /// `None` → nothing established. A consumer that draws with a cull face
+    /// reads this rather than guessing one.
+    pub const fn two_sided(&self) -> Option<bool> {
+        self.two_sided
     }
 
     /// The presentation unknowns the caller handed in, carried unchanged.

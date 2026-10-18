@@ -127,8 +127,15 @@
 //! # Materials and flags
 //!
 //! Triangles are grouped by their raw, unresolved material index
-//! ([`RenderGroup`]). Raw polygon flags are never read: two meshes that
-//! differ only in a polygon's `raw_flags` build the same render mesh.
+//! ([`RenderGroup`]). The one raw flag bit the render mesh reads is the
+//! measured **two-sided** bit (`0x400`, `RawPolygon::is_two_sided`): an
+//! outline polygon that stores it is drawn from both sides
+//! (`OWNER-STATIC-2026-10-05`). [`RenderTriangle::two_sided`] keeps that fact
+//! per stored polygon, and [`RenderGroup::two_sided`] states it for the group
+//! a single draw call indexes — `Some(true)`, `Some(false)`, or `None` when
+//! the group mixes both, which is recorded as unknown rather than rounded to
+//! one side. Every other raw flag bit stays unread: two meshes whose polygons
+//! differ only in a bit other than `0x400` build the same render mesh.
 //!
 //! # The dependency audit
 //!
@@ -234,7 +241,8 @@ use cs_formats::ParseContext;
 use cs_formats::gamez::materials::{GameZMaterialError, GameZMaterials, MaterialKind, RawMaterial};
 use cs_formats::gamez::{
     FaceStatus, GameZError, GameZHeader, GameZMeshes, GameZNodes, MeshTopology, NodeMeshBindings,
-    RawMaterialGroup, RawMesh, RawMeshInfo, RawPolygon, read_gamez_materials, read_gamez_meshes,
+    PrimitiveKind, RawMaterialGroup, RawMesh, RawMeshInfo, RawPolygon, read_gamez_materials,
+    read_gamez_meshes,
 };
 use cs_formats::zbd::ZbdFamily;
 use cs_types::asset_id::{AssetKey, AssetVariant, MountId, SourceSpan};
@@ -337,6 +345,13 @@ pub struct RenderTriangle {
     /// group of the polygon: it is a property of the stored indices, not of the
     /// group.
     pub degenerate: bool,
+    /// The source polygon's **drawn** two-sidedness, from its stored
+    /// [`RawPolygon::is_two_sided`] bit under the measured outline rule: an
+    /// **outline** polygon with the bit is two-sided, and a strip is never —
+    /// the bit is reported, not trusted, on a strip. Evidence:
+    /// `OWNER-STATIC-2026-10-05`. All groups of one polygon share it, because
+    /// it is a property of the stored polygon, not of the group.
+    pub two_sided: bool,
 }
 
 /// The triangles of one raw material index, in source order.
@@ -350,6 +365,20 @@ pub struct RenderGroup {
     pub material: u32,
     /// Indices into [`RenderMesh::triangles`], ascending.
     pub triangles: Vec<usize>,
+    /// The stored two-sidedness of this group's source polygons, from their
+    /// measured [`RawPolygon::is_two_sided`] bit under the outline rule
+    /// (`OWNER-STATIC-2026-10-05`):
+    ///
+    /// * `Some(true)` — every source polygon of this group is two-sided: the
+    ///   original draws both sides, so nothing is culled;
+    /// * `Some(false)` — none is: the back face is culled;
+    /// * `None` — the group **mixes** one- and two-sided polygons. The group is
+    ///   the granularity a single draw call's cull face can express, so which
+    ///   of its triangles are two-sided is **not** settled here: the mixed fact
+    ///   is recorded as unknown, never rounded to one side. The per-triangle
+    ///   [`RenderTriangle::two_sided`] still says which triangles are which, so
+    ///   nothing is lost.
+    pub two_sided: Option<bool>,
 }
 
 /// One rejected face named by the validation gate.
@@ -773,6 +802,12 @@ impl RenderMesh {
             // The stored groups of this polygon, already checked to be non-empty
             // and to hold one coordinate per corner by `check_group_table`, or the
             // single group the IR's own fields describe.
+            //
+            // The drawn two-sidedness is the measured outline rule: the stored
+            // `0x400` bit on an **outline** draws both sides; a strip never
+            // does, whatever its bit says (the reader reports that case), so a
+            // strip's flag is not trusted here.
+            let two_sided = polygon.kind == PrimitiveKind::Polygon && polygon.is_two_sided();
             let mut group = 0usize;
             while let Some(attributes) = source.group(triangle.polygon, polygon, group) {
                 let mut indices = [0u32; 3];
@@ -855,24 +890,40 @@ impl RenderMesh {
                     group,
                     material: attributes.material,
                     degenerate: triangle.is_degenerate(),
+                    two_sided,
                 });
                 group += 1;
             }
         }
 
         let degenerate_triangles = triangles.iter().filter(|t| t.degenerate).count();
-        let mut by_material: BTreeMap<u32, Vec<usize>> = BTreeMap::new();
+        // The group's stored two-sidedness: the granularity one draw call's cull
+        // face can express. A group that mixes one- and two-sided source
+        // polygons is recorded as `None` (unknown), never rounded to a side.
+        let mut by_material: BTreeMap<u32, (Vec<usize>, bool, bool)> = BTreeMap::new();
         for (index, triangle) in triangles.iter().enumerate() {
-            by_material
+            let entry = by_material
                 .entry(triangle.material)
-                .or_default()
-                .push(index);
+                .or_insert_with(|| (Vec::new(), false, false));
+            entry.0.push(index);
+            if triangle.two_sided {
+                entry.1 = true;
+            } else {
+                entry.2 = true;
+            }
         }
         let groups = by_material
             .into_iter()
-            .map(|(material, triangles)| RenderGroup {
+            .map(|(material, (triangles, saw_two_sided, saw_one_sided))| RenderGroup {
                 material,
                 triangles,
+                two_sided: match (saw_two_sided, saw_one_sided) {
+                    (true, false) => Some(true),
+                    (false, true) => Some(false),
+                    // A group always has at least one triangle; the both-false
+                    // arm is unreachable and the mixed arm is the unknown.
+                    (true, true) | (false, false) => None,
+                },
             })
             .collect();
 
@@ -4320,7 +4371,9 @@ impl MeshUpload {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use cs_formats::gamez::{FaceIssue, MeshTriangle, PrimitiveKind, RawCorner, RawPolygon};
+    use cs_formats::gamez::{
+        FLAG_TWO_SIDED, FaceIssue, MeshTriangle, PrimitiveKind, RawCorner, RawPolygon,
+    };
 
     /// **F10-F.3: the measured front-face winding is off the unknown list.**
     /// CCW front is OWNER-STATIC-2026-10-05 (F10-D.2, static code evidence);
@@ -4766,6 +4819,94 @@ mod tests {
                 .all(|triangle| triangle.source.polygon != 1),
             "the culled face produces nothing"
         );
+    }
+
+    /// **The stored two-sided bit reaches the render group as `Some(true)`.**
+    /// An outline polygon whose stored flag field carries [`FLAG_TWO_SIDED`]
+    /// (the polygon dword's bit 10, `0x400`) is drawn from both sides by the
+    /// original (`OWNER-STATIC-2026-10-05`), so the group a draw call indexes
+    /// records it instead of leaving it unknown.
+    #[test]
+    fn accept_f10_f_1_a_stored_two_sided_outline_reaches_its_render_group() {
+        let mut first = triangle(7, vec![corner(0), corner(1), corner(2)]);
+        first.raw_flags = FLAG_TWO_SIDED;
+        let render = RenderMesh::build(&mesh(vec![first])).expect("the face decodes");
+
+        assert_eq!(
+            render.groups()[0].two_sided,
+            Some(true),
+            "the stored 0x400 bit makes the whole group two-sided"
+        );
+        assert!(
+            render.triangles().iter().all(|triangle| triangle.two_sided),
+            "the polygon's triangle keeps the stored fact"
+        );
+    }
+
+    /// A group that mixes a two-sided and a one-sided polygon settles
+    /// **neither**: one cull face cannot draw both, so the group records the
+    /// unknown rather than rounding it to a side, while the per-triangle fact
+    /// stays exact.
+    #[test]
+    fn accept_f10_f_1_a_group_mixing_one_and_two_sided_polygons_records_unknown() {
+        let mut two_sided = triangle(7, vec![corner(0), corner(1), corner(2)]);
+        two_sided.raw_flags = FLAG_TWO_SIDED;
+        let render = RenderMesh::build(&mesh(vec![
+            two_sided,
+            triangle(7, vec![corner(1), corner(3), corner(2)]),
+        ]))
+        .expect("both faces decode");
+
+        assert_eq!(
+            render.groups()[0].two_sided,
+            None,
+            "one flagged and one unflagged polygon with the same material is a mixed group"
+        );
+        let flagged: Vec<bool> = render
+            .triangles()
+            .iter()
+            .map(|triangle| triangle.two_sided)
+            .collect();
+        assert_eq!(
+            flagged,
+            [true, false],
+            "which triangle is which is not lost"
+        );
+    }
+
+    /// A group none of whose polygons carries the bit settles the other way:
+    /// the original culls the back face, and the group says so rather than
+    /// leaving it unknown.
+    #[test]
+    fn accept_f10_f_1_an_unflagged_outline_records_a_one_sided_group() {
+        let render = RenderMesh::build(&mesh(vec![triangle(0, vec![corner(0), corner(1), corner(2)])]))
+            .expect("the face decodes");
+        assert_eq!(render.groups()[0].two_sided, Some(false));
+        assert!(render.triangles().iter().all(|t| !t.two_sided));
+    }
+
+    /// **A strip's flag is reported, not trusted.** The measured meaning of the
+    /// bit is an outline rule; the original never runs the per-polygon face
+    /// test on a strip, so a strip that stores the bit does not become
+    /// two-sided at the render mesh — the reader reports the anomaly
+    /// (`cs_formats`, `ParseFinding::StripTwoSidedFlag`) and this layer reads
+    /// the strip as one-sided.
+    #[test]
+    fn accept_f10_f_1_a_strip_two_sided_flag_is_not_trusted_by_the_render_mesh() {
+        let mut flagged_strip = strip(0, &[0, 1, 2, 3]);
+        flagged_strip.raw_flags = FLAG_TWO_SIDED;
+        let render = RenderMesh::build(&mesh(vec![flagged_strip])).expect("the strip decodes");
+
+        assert_eq!(
+            render.groups()[0].two_sided,
+            Some(false),
+            "a strip is never read as two-sided from the stored bit"
+        );
+        assert!(
+            render.triangles().iter().all(|triangle| !triangle.two_sided),
+            "no strip triangle is marked two-sided"
+        );
+        assert_eq!(render.triangles().len(), 2, "the four-corner strip draws two");
     }
 
     #[test]
@@ -8834,6 +8975,104 @@ mod tests {
             "one report row per world and one for the airframes"
         );
         write_f10_d_render_gate(&report);
+    }
+
+    /// The per-archive two-sided outline counts measured on this installation
+    /// through the production reader and census. Nine archives, in the spelling
+    /// production discovery uses; they sum to 52 621, the owner note's count
+    /// (`OWNER-STATIC-2026-10-05`).
+    const EXPECTED_TWO_SIDED_OUTLINES: [(&str, u64); 9] = [
+        ("ZBD/planes.zbd", 7043),
+        ("ZBD/C1/gamez.zbd", 7386),
+        ("ZBD/C1B/gamez.zbd", 4074),
+        ("ZBD/C1C/gamez.zbd", 3643),
+        ("ZBD/C2/gamez.zbd", 4989),
+        ("ZBD/C2B/gamez.zbd", 3361),
+        ("ZBD/C3/gamez.zbd", 6126),
+        ("ZBD/C4/gamez.zbd", 7819),
+        ("ZBD/C5/gamez.zbd", 8180),
+    ];
+
+    /// **The retail two-sided census, per archive.** Every GameZ archive
+    /// production discovery names is read through the production reader and
+    /// counted through the production [`cs_formats::gamez::FaceCensus`], and
+    /// the outline polygons that store the measured two-sided flag (`0x400`,
+    /// `OWNER-STATIC-2026-10-05`) are reported per archive and summed. The
+    /// owner note measured **52 621** such outline polygons over the nine
+    /// archives and **0 of 22 124** strips; this asserts both, and pins the
+    /// per-archive split so a count that lands on the right total from the
+    /// wrong archives fails.
+    ///
+    /// The flag's meaning is static code evidence, never `verified_original`:
+    /// no original run produced these numbers.
+    #[test]
+    #[ignore = "requires CS_GAME_DIR"]
+    fn accept_f10_f_1_retail_two_sided_polygons_are_counted_per_archive() {
+        let game_dir = PathBuf::from(std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR"));
+        let found = install::discover(&game_dir).expect("the installation is discovered");
+        let mut archives: Vec<String> = found
+            .diagnosis
+            .world_groups
+            .iter()
+            .map(|group| format!("{}/gamez.zbd", group.as_str()))
+            .collect();
+        archives.sort();
+        archives.push(
+            found
+                .diagnosis
+                .planes_zbd
+                .clone()
+                .expect("discovery observes the airframe container")
+                .as_str()
+                .to_owned(),
+        );
+
+        let mut measured: BTreeMap<String, u64> = BTreeMap::new();
+        for relative in &archives {
+            let path = game_dir.join(relative);
+            let bytes = std::fs::read(&path)
+                .unwrap_or_else(|error| panic!("{relative}: the archive must be readable: {error}"));
+            let mut context = ParseContext::with_defaults(relative);
+            let parsed = read_gamez_meshes(&mut context, relative, &bytes)
+                .unwrap_or_else(|error| panic!("{relative}: the mesh section must read: {error}"));
+            let census = parsed.face_census();
+
+            // Strips never carry the bit in the measured corpus, and the reader
+            // reports one that does rather than this layer trusting it.
+            assert_eq!(
+                census.strip_two_sided_flag_faces, 0,
+                "{relative}: no stored strip carries the two-sided flag"
+            );
+            assert!(
+                !parsed
+                    .findings
+                    .iter()
+                    .any(|finding| finding.code() == "strip_two_sided_flag"),
+                "{relative}: the reader reports no strip with the two-sided flag"
+            );
+            // The flag is a stored fact independent of the draw outcome: the
+            // outline count is not the decoded count.
+            assert!(
+                census.two_sided_outline_faces <= census.stored_faces,
+                "{relative}: two-sided outlines are stored faces"
+            );
+            measured.insert(relative.clone(), census.two_sided_outline_faces);
+        }
+
+        let total: u64 = measured.values().sum();
+        println!("F10-F.1 two-sided outline polygons per archive: {measured:?}, total {total}");
+
+        for (relative, count) in EXPECTED_TWO_SIDED_OUTLINES {
+            assert_eq!(
+                measured.get(relative).copied(),
+                Some(count),
+                "{relative}: the measured two-sided outline count"
+            );
+        }
+        assert_eq!(
+            total, 52_621,
+            "the owner note's two-sided outline count over the nine archives"
+        );
     }
 
     /// Writes `render-gate.tsv` under `CS_EVIDENCE_DIR` when the evidence run

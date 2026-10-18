@@ -10,17 +10,18 @@
 //! are bound, and the addressing its image is sampled with. Every field is
 //! read from the classification; **no field is defaulted**.
 //!
-//! Two of them cannot be read, for different reasons:
+//! Two of them cannot be read from the classification alone, for different
+//! reasons:
 //!
-//! * `ClassifiedMaterial::two_sided()` is `None` when nothing declares the
-//!   surface. The *rule* is now measured (`OWNER-STATIC-2026-10-05`, task
-//!   #396: one-sided polygons cull their back face under the CCW front
-//!   convention, two-sided `0x400` polygons draw both sides —
-//!   [`CullingClass`](crate::render::bevy_mesh::CullingClass)), but which
-//!   stored surface carries `0x400` is per-polygon data no production reader
-//!   has interpreted yet. Picking a class would silently halve or double
-//!   every polygon of an undeclared surface, so the state is refused
-//!   ([`StateError::CullFaceUnknown`]).
+//! * `ClassifiedMaterial::two_sided()` is `None` when nothing *declared* the
+//!   surface. The rule is measured (`OWNER-STATIC-2026-10-05`, task #396) and
+//!   the stored polygon data now reaches the adapter: the content pipeline
+//!   reads each outline polygon's `0x400` flag into
+//!   [`GroupUpload::two_sided`](crate::render::bevy_mesh::GroupUpload::two_sided),
+//!   and [`render_state_for_mesh`] uses it when nothing declared the surface.
+//!   A group whose polygons **mix** one- and two-sidedness still establishes
+//!   neither, so it is refused ([`StateError::CullFaceUnknown`]) rather than
+//!   rounded to one cull face.
 //! * `ClassifiedMaterial::addressing()` is `None` because nothing measured
 //!   the original sampler. A sampler with invented address modes tiles or
 //!   stretches wrongly in a way no other report would show, so the state is
@@ -282,24 +283,48 @@ pub struct RenderState {
 /// [`StateError`] when the classification does not carry the two-sidedness or
 /// the addressing the state needs. Both are refused rather than defaulted.
 pub fn render_state(material: &ClassifiedMaterial) -> Result<RenderState, StateError> {
-    render_state_for_mesh(material, false)
+    render_state_for_mesh(material, false, None)
 }
 
-/// [`render_state`] for a surface of a mesh whose stored type words say it is
-/// an unculled billboard (`RenderMesh::is_unculled_billboard`: word0 == 1,
-/// word1 in {0, 1}). Such a mesh draws under [`CullingClass::Billboard`]
-/// whatever its material declares, because the original skipped the back-face
-/// test for the whole mesh. Only the culling exemption is applied; nothing of
-/// the billboard's facing is.
+/// [`render_state`] for one surface of a stored mesh, with the two stored mesh
+/// facts that select the culling class:
+///
+/// * `unculled_billboard` — the mesh's stored type words say it is an unculled
+///   billboard ([`RenderMesh::is_unculled_billboard`]: word0 == 1, word1 in
+///   {0, 1}). Such a mesh draws under [`CullingClass::Billboard`] whatever its
+///   material declares, because the original skipped the back-face test for the
+///   whole mesh. Only the culling exemption is applied; nothing of the
+///   billboard's facing is.
+/// * `stored_two_sided` — the drawn group's measured two-sidedness from the
+///   stored polygon flags (`0x400` on an outline, `OWNER-STATIC-2026-10-05`).
+///   The content pipeline surfaces it as
+///   [`GroupUpload::two_sided`](crate::render::bevy_mesh::GroupUpload::two_sided):
+///   `Some(true)`/`Some(false)` when every source polygon of the group agrees,
+///   `None` when the group **mixes** both — a case one cull face cannot express
+///   and which stays unknown rather than being rounded to a side.
+///
+/// `stored_two_sided` is only consulted when the classification left the fact
+/// open (`material.two_sided()` is `None`). A producer that declared the
+/// surface's two-sidedness — authored content, or an evidence-backed class
+/// table — keeps that declaration; the stored group fact closes the gap where
+/// nothing declared it, which is every surface built from a stored material
+/// record alone. A mixed group leaves it `None` from both, so the state is
+/// still refused with [`StateError::CullFaceUnknown`] and never defaulted.
 ///
 /// # Errors
 ///
-/// As [`render_state`].
+/// As [`render_state`]: [`StateError::CullFaceUnknown`] when neither the
+/// classification nor `stored_two_sided` establishes two-sidedness, and
+/// [`StateError::AddressModeUnknown`] when the addressing is not established.
 pub fn render_state_for_mesh(
     material: &ClassifiedMaterial,
     unculled_billboard: bool,
+    stored_two_sided: Option<bool>,
 ) -> Result<RenderState, StateError> {
-    let two_sided = material.two_sided().ok_or(StateError::CullFaceUnknown)?;
+    let two_sided = material
+        .two_sided()
+        .or(stored_two_sided)
+        .ok_or(StateError::CullFaceUnknown)?;
     let address = material
         .addressing()
         .ok_or(StateError::AddressModeUnknown)?;

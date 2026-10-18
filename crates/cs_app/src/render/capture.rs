@@ -454,6 +454,11 @@ pub fn upload_surface(surface: &SceneSurface<'_>) -> SceneOutcome {
     let state = match render_state_for_mesh(
         surface.item.material(),
         surface.mesh.is_unculled_billboard(),
+        // The stored mesh group's measured two-sidedness (`0x400` on an
+        // outline, `OWNER-STATIC-2026-10-05`). A group whose polygons mix
+        // one- and two-sidedness yields `None` and the state is refused below
+        // with `two_sided_unknown` rather than rounded to one side.
+        geometry.as_ref().and_then(GroupUpload::two_sided),
     ) {
         Ok(state) => Some(state),
         Err(error) => {
