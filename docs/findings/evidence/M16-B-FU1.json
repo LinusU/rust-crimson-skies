@@ -1,9 +1,9 @@
 {
  "schema_version": 1,
  "task_id": "M16-B-FU1",
- "candidate_tree": "b91b859e34995dd46b87e58e8366153c55e619d6",
+ "candidate_tree": "560289861ff77a1cb5f7a9da8a11afa4a1cc46db",
  "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
- "created_at": "2026-10-18T09:17:05Z",
+ "created_at": "2026-10-18T09:24:35Z",
  "command": {"argv": ["cargo", "test", "--locked", "-p", "cs_app", "--test", "cs_app_tests_d", "--", "accept_m16_b_fu1_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/swe2-max-1", "exit_code": 0},
  "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
  "seed": 0,
@@ -12,7 +12,7 @@
  "capabilities": ["retail", "synthetic"],
  "tests": {"discovered": 4, "executed": 4, "passed": 4, "failed": 0, "ignored": 0},
  "assertions": [{"id": "accept_m16_b_fu1_sound_name_lists_bind_as_one_list_argument_and_the_original_cap_is_applied", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m16_b_fu1_the_ten_name_cap_the_copy_loop_applies_is_in_the_image", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m16_b_fu1_no_census_row_refuses_a_sound_cleanup_site", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m16_b_fu1_m16s_record_does_not_lower_and_four_of_its_calls_refuse", "status": "pass", "evidence": ["cargo-test.log"]}],
- "artifacts": [{"path": "cargo-test.log", "sha256": "de134521ec97a5ff593688c2e15c9016e72105dd9b10962fbe031b33db64e6f8", "kind": "log"}, {"path": "sound-cleanup-census.json", "sha256": "66d9ebb89c93bcffa4298061419618d7499871437bdd67767b7f451d7d6c1bfa", "kind": "json"}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "97ce022c33aa669577ff6d4f88d4bc05f4c197a4d003a824d394e9eeeb6834cd", "kind": "log"}, {"path": "sound-cleanup-census.json", "sha256": "66d9ebb89c93bcffa4298061419618d7499871437bdd67767b7f451d7d6c1bfa", "kind": "json"}],
  "unknowns": [],
  "review": {"identity": "implementer: claude-2/claude-1 (Rally #1252); reviewer: swe2-max-1/swe2-max-1 (Devin SWE-2 Max, Rally review claim clm_adtcmmpvmbmhqbba of 2026-10-18) - a different agent instance and model with a fresh context, so this review is independent of the implementation, but it is an agent review of the code and tests, not independent original-reference evidence and not original-run evidence; no agent review replaces the owner's human approval", "method": "acceptance suite run locally with the retail capability and the owner-supplied engine image; every field is derived from the recorded log, production discovery of $CS_GAME_DIR and the mission-control census the suite measures. The suite pins this task's change: `STOP_QUEUED_SOUNDS`'s spelled name list is carried as ONE `Value::List` argument — the shape the other list-taking keys already use — so the 9- and 14-name signatures stay inside `MAX_CALL_ARGS`, all seven of M16's sites bind, `unbound_keys` no longer names the key, and no measured record census-wide refuses it; `DirectiveOperation::stop_queued_sounds_applied` hands the eventual consumer the first ten names, the bound the original's `cmp esi, 0xa; jg` name copy at VA 0x4688bc applies, verified in the image — the spelled fourteen stay faithful data in the call. NOT CLAIMED: no consumer runs the operation yet, so no runtime behavior is pinned; M16's record still does not lower (OBJECTIVE24's four bare comment words are unmeasured keys), M24's truncated `SET_AI_` key still refuses, no mission was played, no original executable was run and nothing is verified_original. Claim is implemented only; validated with tools/validate_evidence.py --require-pass. `candidate_tree` is the tree of the commit the suite and this harness ran on; the only later delta is this report's own copy under docs/findings/evidence/, which no acceptance test reads"},
  "claim": "implemented"
