@@ -54,10 +54,9 @@ use std::fmt;
 use crate::ir::{AnimationState, Condition, MAX_VALUE_ITEMS, MemberName, TravelersAnchor, Value};
 
 /// The measured polarity token `TRAVELERS` child1 spells for the *inside*
-/// pole. Only this token is a spelling the original stores as `1`; the
-/// outside pole's own word was never measured (finding C, unknown 6), so a
-/// site that spells anything else is refused rather than read as one pole or
-/// the other.
+/// pole. Only this token is a spelling the original stores as `1`; every
+/// other string is stored as `0`, the outside pole (finding C, parse at
+/// `0x467a70`), so M10's `LEAVING` is the outside pole.
 pub const TRAVELERS_APPROACHING: &str = "APPROACHING";
 
 /// The measured descriptor tag `ANIM_STATE` child0 spells — a five-byte
@@ -980,18 +979,21 @@ fn travelers(
             "`[text, text, text|list, float]` with an optional count and DELETE_ON_SUCCESS",
         ));
     }
-    let Value::Str(subject) = &args[0] else {
-        // A non-string subject arms the counting mode, whose cumulative
-        // matching-member count is written into `+0x5b8` **during**
-        // evaluation — a predicate with a write inside it, refused by name.
-        return Err(ConditionRefusal::UnknownChangesPredicate {
-            block: block.to_owned(),
-            key: directive.key.clone(),
-            detail: "a non-string subject arms TRAVELERS' counting mode, which accumulates its \
-                     matching-member count into +0x5b8 during evaluation — a write, so no \
-                     side-effect-free predicate can carry it"
-                .to_owned(),
-        });
+    let subject = match &args[0] {
+        Value::Str(subject) => Some(subject),
+        // A non-string child0 arms the counting mode: the raw payload is the
+        // AI group id the evaluator compares with each vehicle's group.
+        Value::Int(_) => None,
+        other => {
+            return Err(ConditionRefusal::BadOperands {
+                block: block.to_owned(),
+                key: directive.key.clone(),
+                detail: format!(
+                    "child0 is a text subject or an int group id and this site spells {}",
+                    value_label(other)
+                ),
+            });
+        }
     };
     let Value::Str(polarity) = &args[1] else {
         return Err(ConditionRefusal::BadOperands {
@@ -1003,15 +1005,10 @@ fn travelers(
             ),
         });
     };
-    if polarity != TRAVELERS_APPROACHING {
-        return Err(ConditionRefusal::UnknownChangesPredicate {
-            block: block.to_owned(),
-            key: directive.key.clone(),
-            detail: "the only measured polarity token is APPROACHING; the word for the other pole \
-                     was never measured, so this site's inside/outside test is unknown"
-                .to_owned(),
-        });
-    }
+    // Measured (finding C, parse at `0x467a70`): the stored polarity word is
+    // `1` when child1 compares equal to `APPROACHING` and `0` for every other
+    // string, so any other spelling (`LEAVING` in M10) is the outside pole.
+    let approaching = polarity == TRAVELERS_APPROACHING;
     let anchor = match &args[2] {
         Value::Str(name) => TravelersAnchor::Object(MemberName::from([name.clone()])),
         Value::List(point) => TravelersAnchor::Point(point_of(block, directive, point)?),
@@ -1070,14 +1067,29 @@ fn travelers(
             ),
         });
     }
+    let Some(subject) = subject else {
+        let Value::Int(group) = &args[0] else {
+            unreachable!("a counting site's child0 is an int");
+        };
+        let required = match args.get(4) {
+            Some(Value::Int(count)) => *count,
+            // Measured: child4 defaults to 1 (`+0x5b4`).
+            _ => 1,
+        };
+        return Ok(Some(Condition::TravelersCount {
+            group: *group,
+            anchor,
+            radius: *radius,
+            approaching,
+            required,
+            delete_matched: args.get(5).is_some(),
+        }));
+    };
     Ok(Some(Condition::Travelers {
         subject: MemberName::from([subject.clone()]),
         anchor,
         radius: *radius,
-        // The token check above has already refused every spelling that is
-        // not the measured inside pole, so this is never the unnamed
-        // direction.
-        approaching: true,
+        approaching,
     }))
 }
 

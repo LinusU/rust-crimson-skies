@@ -164,7 +164,12 @@ pub const MAX_PENDING_ITEMS: usize = 4096;
 /// `rng_state`, T583) where version 3 stored the draw count a restore had to
 /// replay (`rng_draws`). A count is not a state, so an older record is
 /// refused rather than reinterpreted.
-pub const SNAPSHOT_VERSION: u32 = 4;
+///
+/// Version 5 carries each objective's counting-`TRAVELERS` running total
+/// ([`MissionStateSnapshot::travelers_totals`]): the original keeps it in the
+/// objective record (`+0x5b8`) across ticks, so a record that dropped it would
+/// restart a half-counted objective from zero.
+pub const SNAPSHOT_VERSION: u32 = 5;
 
 /// Most draws a session may take and still have its save record restored.
 ///
@@ -990,6 +995,11 @@ pub struct MissionFacts {
     /// Group id → how many of its members are still in play (not despawned).
     /// A group nobody recorded is unknown, not empty.
     pub groups: BTreeMap<i32, u32>,
+    /// Group id → the world positions of its awake members (a sleeping
+    /// vehicle is skipped by the original's count, `vehicle+0x91d`).
+    /// [`Condition::TravelersCount`] reads it; a group nobody recorded counts
+    /// nothing.
+    pub group_members: BTreeMap<i32, Vec<[f64; 3]>>,
     /// Generator name → its pending-spawn count. A name that does not
     /// resolve owes **0** — measured: the original logs `Cannot find
     /// generator %s` and adds nothing.
@@ -1024,12 +1034,32 @@ impl MissionFacts {
         self.objectives.extend(other.objectives);
         self.members.extend(other.members);
         self.groups.extend(other.groups);
+        self.group_members.extend(other.group_members);
         self.generators.extend(other.generators);
         self.animations.extend(other.animations);
         // A set, so folding is union by construction: an earlier tick's
         // recorded zone can never be un-recorded by a later one, which is the
         // sticky flag the original stores.
         self.danger_zones.extend(other.danger_zones);
+    }
+}
+
+/// The anchor position a `TRAVELERS` site measures from, or `None` when the
+/// facts carry no description of the chain at all.
+fn travelers_anchor_point(anchor: &TravelersAnchor, facts: &MissionFacts) -> Option<[f64; 3]> {
+    match anchor {
+        TravelersAnchor::Object(chain) => match facts.members.get(chain) {
+            Some(row) if row.presence != MemberPresence::Missing => Some(row.position),
+            // Measured (finding B): the anchor name is resolved lazily and,
+            // while it never resolves, the record's explicit point is never
+            // written — so the original measures the distance from the
+            // **zeroed point**. A chain the facts do not carry at all is a
+            // different question: nobody observed it, so no distance may be
+            // taken from a world nobody described.
+            Some(_) => Some([0.0; 3]),
+            None => None,
+        },
+        TravelersAnchor::Point(point) => Some(*point),
     }
 }
 
@@ -1251,6 +1281,9 @@ pub struct MissionStateSnapshot {
     pub variables: Vec<(SymbolId, Value)>,
     /// Latched objectives in `SymbolId` order.
     pub completed: Vec<SymbolId>,
+    /// Each objective's counting-`TRAVELERS` running total, in `SymbolId`
+    /// order; an objective with no entry has tallied nothing.
+    pub travelers_totals: Vec<(SymbolId, i64)>,
     /// Every execution key already emitted, in key order.
     pub consumed: Vec<ExecutionKey>,
     /// The session's directive emissions so far, in `EventKey` order — the
@@ -1343,6 +1376,8 @@ pub enum RestoreDefect {
     /// The record carries two values for one variable, so which one a restore
     /// installed would be an accident of order.
     DuplicateVariable { symbol: SymbolId },
+    /// The record carries two running totals for one objective.
+    DuplicateTravelersTotal { symbol: SymbolId },
     /// The record carries more queued items than the session's queue may hold:
     /// the live path enforces that cap and a restore must not route around it.
     PendingQueueTooLong { count: usize, allowed: usize },
@@ -1485,6 +1520,13 @@ impl fmt::Display for RestoreError {
                 RestoreDefect::DuplicateVariable { symbol } => {
                     write!(f, "snapshot holds variable #{} twice", symbol.0)
                 }
+                RestoreDefect::DuplicateTravelersTotal { symbol } => {
+                    write!(
+                        f,
+                        "snapshot holds objective #{} running total twice",
+                        symbol.0
+                    )
+                }
                 RestoreDefect::PendingQueueTooLong { count, allowed } => write!(
                     f,
                     "snapshot carries {count} pending items, more than the queue's {allowed}"
@@ -1578,6 +1620,9 @@ pub struct MissionState {
     session: SessionGeneration,
     variables: BTreeMap<SymbolId, Value>,
     completed: BTreeSet<SymbolId>,
+    /// Each objective's counting-`TRAVELERS` running total (`+0x5b8`): what
+    /// the evaluations so far have tallied, cleared when the objective fires.
+    travelers_totals: BTreeMap<SymbolId, i64>,
     consumed: BTreeSet<ExecutionKey>,
     /// The session's directive emissions so far, in `EventKey` order.
     directives: Vec<DirectiveEmission>,
@@ -1627,6 +1672,7 @@ impl MissionState {
                 .map(|v| (v.id, v.initial.clone()))
                 .collect(),
             completed: BTreeSet::new(),
+            travelers_totals: BTreeMap::new(),
             consumed: BTreeSet::new(),
             directives: Vec::new(),
             terminal: TerminalState::Running,
@@ -1749,6 +1795,11 @@ impl MissionState {
                 .map(|(k, v)| (*k, v.clone()))
                 .collect(),
             completed: self.completed.iter().copied().collect(),
+            travelers_totals: self
+                .travelers_totals
+                .iter()
+                .map(|(k, v)| (*k, *v))
+                .collect(),
             consumed: self.consumed.iter().copied().collect(),
             directives: self.directives.clone(),
             terminal: self.terminal,
@@ -1838,6 +1889,17 @@ impl MissionState {
         for symbol in &snapshot.completed {
             if !program.program().objectives.iter().any(|o| o.id == *symbol) {
                 return Err(RestoreError::UnknownObjective { symbol: *symbol });
+            }
+        }
+        let mut travelers_totals = BTreeMap::new();
+        for (symbol, total) in &snapshot.travelers_totals {
+            if !program.program().objectives.iter().any(|o| o.id == *symbol) {
+                return Err(RestoreError::UnknownObjective { symbol: *symbol });
+            }
+            if travelers_totals.insert(*symbol, *total).is_some() {
+                return Err(RestoreError::Corrupt {
+                    defect: RestoreDefect::DuplicateTravelersTotal { symbol: *symbol },
+                });
             }
         }
         let mut consumed = BTreeSet::new();
@@ -2002,6 +2064,7 @@ impl MissionState {
             session: snapshot.session,
             variables,
             completed: snapshot.completed.iter().copied().collect(),
+            travelers_totals,
             consumed,
             directives: snapshot.directives,
             terminal: snapshot.terminal,
@@ -2217,12 +2280,23 @@ impl MissionState {
         // Observe: every condition against the start-of-tick state. All of
         // them are evaluated — including the objectives that will not be
         // admitted this tick — so a satisfied objective is never latched early.
+        //
+        // A counting `TRAVELERS` adds this tick's tally to its objective's
+        // running total as it evaluates (`+0x5b8`); the totals come back out
+        // of the pure evaluation and are stored here, for every objective
+        // evaluated. Only the objective that fires has its total cleared
+        // (`0x465df9`), below.
+        let mut totals = BTreeMap::new();
         let firing: Vec<_> = program
             .program()
             .objectives
             .iter()
-            .filter(|o| !self.completed.contains(&o.id) && self.holds(&o.condition, facts))
+            .filter(|o| {
+                !self.completed.contains(&o.id)
+                    && self.holds_in(Some(o.id), &o.condition, facts, &mut totals)
+            })
             .collect();
+        self.travelers_totals.extend(totals);
 
         // Queue + resolve *one* objective's actions: at most one objective
         // completes per tick, the lowest declaration index whose condition
@@ -2239,6 +2313,7 @@ impl MissionState {
         if let Some(o) = firing.into_iter().next() {
             run.work += 1;
             self.completed.insert(o.id);
+            self.travelers_totals.remove(&o.id);
             let session = self.session;
             let key = |sequence| EventKey {
                 session,
@@ -2637,7 +2712,26 @@ impl MissionState {
     /// A fact nobody populated is **not** a default: every world-shaped arm
     /// answers `false` when the map it reads does not hold the key, so an
     /// unpopulated [`MissionFacts`] completes nothing.
+    ///
+    /// A [`Condition::TravelersCount`] carries a running total that is state,
+    /// not a fact: here it is answered for one evaluation from a total of
+    /// zero. The tick pipeline runs [`Self::holds_in`] with the objective's
+    /// own total.
     pub fn holds(&self, condition: &Condition, facts: &MissionFacts) -> bool {
+        self.holds_in(None, condition, facts, &mut BTreeMap::new())
+    }
+
+    /// [`Self::holds`] for one objective's condition: the counting mode's
+    /// running total is read from this state and the total this evaluation
+    /// leaves is written to `totals` (keyed by the objective), never to
+    /// `self`, so evaluation stays a pure function of state and facts.
+    fn holds_in(
+        &self,
+        objective: Option<SymbolId>,
+        condition: &Condition,
+        facts: &MissionFacts,
+        totals: &mut BTreeMap<SymbolId, i64>,
+    ) -> bool {
         match condition {
             Condition::Const(b) => *b,
             Condition::ActorIs { actor, state } => facts.actors.get(actor) == Some(state),
@@ -2698,21 +2792,7 @@ impl MissionState {
                     // no armed group and returns false forever.
                     return false;
                 }
-                let anchor_point = match anchor {
-                    TravelersAnchor::Object(chain) => match facts.members.get(chain) {
-                        Some(row) if row.presence != MemberPresence::Missing => Some(row.position),
-                        // Measured (finding B): the anchor name is resolved
-                        // lazily and, while it never resolves, the record's
-                        // explicit point is never written — so the original
-                        // measures the distance from the **zeroed point**.
-                        // A chain the facts do not carry at all is a
-                        // different question: nobody observed it, so no
-                        // distance may be taken from a world nobody described.
-                        Some(_) => Some([0.0; 3]),
-                        None => None,
-                    },
-                    TravelersAnchor::Point(point) => Some(*point),
-                };
+                let anchor_point = travelers_anchor_point(anchor, facts);
                 let Some(anchor_point) = anchor_point else {
                     // No anchor the facts carry: no distance may be computed
                     // from a world nobody described.
@@ -2731,6 +2811,46 @@ impl MissionState {
                 } else {
                     distance_squared > limit
                 }
+            }
+            Condition::TravelersCount {
+                group,
+                anchor,
+                radius,
+                approaching,
+                required,
+                ..
+            } => {
+                let Some(anchor_point) = travelers_anchor_point(anchor, facts) else {
+                    return false;
+                };
+                let limit = radius * radius;
+                // Strict both ways: equality is neither inside nor outside.
+                let tally = facts.group_members.get(group).map_or(0, |members| {
+                    members
+                        .iter()
+                        .filter(|position| {
+                            let distance_squared: f64 = position
+                                .iter()
+                                .zip(anchor_point)
+                                .map(|(here, there)| (here - there) * (here - there))
+                                .sum();
+                            if *approaching {
+                                distance_squared < limit
+                            } else {
+                                distance_squared > limit
+                            }
+                        })
+                        .count() as i64
+                });
+                // `+0x5b8 += tally`, then `>= +0x5b4` (`0x465da4`/`0x465df9`).
+                let total = objective
+                    .and_then(|id| self.travelers_totals.get(&id))
+                    .map_or(0, |total| *total)
+                    + tally;
+                if let Some(id) = objective {
+                    totals.insert(id, total);
+                }
+                total >= i64::from(*required)
             }
             Condition::AnimationStates {
                 required,
@@ -2765,9 +2885,13 @@ impl MissionState {
                     .count() as u32
                     >= *required
             }
-            Condition::Not(c) => !self.holds(c, facts),
-            Condition::All(cs) => cs.iter().all(|c| self.holds(c, facts)),
-            Condition::Any(cs) => cs.iter().any(|c| self.holds(c, facts)),
+            Condition::Not(c) => !self.holds_in(objective, c, facts, totals),
+            Condition::All(cs) => cs
+                .iter()
+                .all(|c| self.holds_in(objective, c, facts, totals)),
+            Condition::Any(cs) => cs
+                .iter()
+                .any(|c| self.holds_in(objective, c, facts, totals)),
             Condition::Compare {
                 variable,
                 op,

@@ -772,6 +772,7 @@ fn accept_m01_lc_lowering_signatures_restore_checks_the_directive_log() {
         version: SNAPSHOT_VERSION,
         mission: program.program().mission.clone(),
         session: SessionGeneration(4),
+        travelers_totals: vec![],
         variables: vec![],
         completed: vec![],
         consumed: vec![],

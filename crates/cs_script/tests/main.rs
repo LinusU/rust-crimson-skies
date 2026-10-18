@@ -29,6 +29,7 @@ mod accept_f38_d1_native_rekey;
 mod accept_f38_d1_retail_native_census;
 mod accept_m01_lc_lowering_conditions;
 mod accept_m01_lc_lowering_signatures;
+mod accept_m10_b_fu1_travelers_counting;
 mod accept_t583_rng_state_record;
 mod accept_test_bin_rest_script;
 mod evidence_report_f38_b;

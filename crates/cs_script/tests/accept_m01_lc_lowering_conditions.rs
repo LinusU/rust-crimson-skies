@@ -278,6 +278,7 @@ fn leaves(condition: &Condition) -> Vec<&'static str> {
         Condition::InactiveMembers { .. } => vec!["inactive_members"],
         Condition::EnemyGroupDepletion { .. } => vec!["enemy_group_depletion"],
         Condition::Travelers { .. } => vec!["travelers"],
+        Condition::TravelersCount { .. } => vec!["travelers_count"],
         Condition::AnimationStates { .. } => vec!["animation_states"],
         Condition::DangerZoneFlags { .. } => vec!["danger_zone_flags"],
         Condition::Not(inner) => leaves(inner),
@@ -1456,15 +1457,8 @@ fn accept_m01_lc_lowering_conditions_refusals_name_the_block_and_the_key() {
         (
             vec![BlockDirective::new(
                 "TRAVELERS",
-                vec![s("player"), s("DEPARTING"), s("anchor"), Value::Float(10.0)],
-            )],
-            "TRAVELERS",
-        ),
-        (
-            vec![BlockDirective::new(
-                "TRAVELERS",
                 vec![
-                    Value::Int(3),
+                    Value::Float(3.0),
                     s(TRAVELERS_APPROACHING),
                     s("anchor"),
                     Value::Float(10.0),

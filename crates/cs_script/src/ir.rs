@@ -271,6 +271,17 @@ pub const DEDG_MEMBER_FIELD_REWRITES: &str = "the original's DEDG evaluator rewr
      counted member during evaluation; what they feed is untraced world state, so the rewrite is \
      a host effect with its own residual unknown and is never part of this condition";
 
+/// The residual unknown `TRAVELERS`' counting mode carries into
+/// [`Condition::TravelersCount`] when the site spells `DELETE_ON_SUCCESS`.
+///
+/// The original deletes each matching vehicle as the count finds it
+/// (`0x465a70` then `0x47bab0`), during evaluation. The count and the
+/// threshold are measured and live in the condition; the deletion is a host
+/// effect and is never part of the predicate.
+pub const TRAVELERS_COUNT_DELETE_HOST_EFFECT: &str = "the original's TRAVELERS counting mode deletes each matching group member as it counts \
+     it (0x465a70 -> 0x47bab0) when the site spells DELETE_ON_SUCCESS; the deletion is a host \
+     effect and is never part of this condition";
+
 /// The residual unknown `DANGER_ZONES_COMPLETED` carries into
 /// [`Condition::DangerZoneFlags`]: the flag **writer's** world test is not
 /// read.
@@ -387,6 +398,36 @@ pub enum Condition {
         /// `false` for the unnamed outside pole the parser also stores.
         approaching: bool,
     },
+    /// `TRAVELERS` with a non-string child0 (the **counting mode**): each
+    /// evaluation counts the awake members of AI group `group` that are inside
+    /// (`approaching`) or outside the radius about the anchor, adds that tally
+    /// to the objective's running total, and completes when the total reaches
+    /// `required`.
+    ///
+    /// Measured (finding C, `0x465b40`/`0x4659b0`): child0 is the AI group id
+    /// compared with `vehicle+0x388`, child4 the required total (default 1,
+    /// signed `>=`), child1 anything but `APPROACHING` the outside pole; a
+    /// sleeping vehicle (`+0x91d`) is skipped; both polarities are strict.
+    ///
+    /// The running total (`+0x5b8`) is **state**, not a fact: it lives in
+    /// `MissionState` per objective and the evaluator reads it through
+    /// `MissionState::observe`. [`crate::runtime::MissionState::holds`]
+    /// answers only for a single evaluation from a total of zero.
+    TravelersCount {
+        /// The AI group id child0 spelled.
+        group: i32,
+        /// Where the anchor comes from.
+        anchor: TravelersAnchor,
+        /// The radius in world units as the site spelled it.
+        radius: f64,
+        /// `true` for `APPROACHING` (inside the radius), `false` for every
+        /// other spelling (outside).
+        approaching: bool,
+        /// The running total that completes the objective.
+        required: i32,
+        /// Whether the site spelled `DELETE_ON_SUCCESS`.
+        delete_matched: bool,
+    },
     /// `ANIM_STATE`: true when at least `required` of the listed animations
     /// are in their wanted state.
     ///
@@ -455,8 +496,14 @@ impl Condition {
             Self::InactiveMembers { .. } => unknowns.push(IN_PLAY_BIT_WRITERS_UNTRACED),
             Self::EnemyGroupDepletion { .. } => unknowns.push(DEDG_MEMBER_FIELD_REWRITES),
             Self::DangerZoneFlags { .. } => unknowns.push(DANGER_ZONE_CROSSING_TEST_UNTRACED),
-            Self::Travelers { .. } | Self::AnimationStates { .. } | Self::ObjectiveAwake { .. } => {
-            }
+            Self::TravelersCount {
+                delete_matched: true,
+                ..
+            } => unknowns.push(TRAVELERS_COUNT_DELETE_HOST_EFFECT),
+            Self::TravelersCount { .. }
+            | Self::Travelers { .. }
+            | Self::AnimationStates { .. }
+            | Self::ObjectiveAwake { .. } => {}
             Self::Const(_)
             | Self::Compare { .. }
             | Self::ActorIs { .. }
@@ -1324,6 +1371,20 @@ impl Ctx<'_> {
                 self.condition_operands([zones.len()], trace)
             }
             Condition::EnemyGroupDepletion { .. } => Ok(()),
+            Condition::TravelersCount { anchor, radius, .. } => {
+                if !radius.is_finite() {
+                    return Err(ValidationError::NonFiniteValue { at: self.at(trace) });
+                }
+                match anchor {
+                    TravelersAnchor::Object(chain) => self.condition_operands([chain.len()], trace),
+                    TravelersAnchor::Point(point) => {
+                        if point.iter().any(|component| !component.is_finite()) {
+                            return Err(ValidationError::NonFiniteValue { at: self.at(trace) });
+                        }
+                        Ok(())
+                    }
+                }
+            }
             Condition::Travelers {
                 subject,
                 anchor,

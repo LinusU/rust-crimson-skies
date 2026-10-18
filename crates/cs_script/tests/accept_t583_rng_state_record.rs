@@ -197,14 +197,14 @@ fn accept_t583_restore_refuses_an_out_of_domain_rng_state() {
     assert!(MissionState::restore(&p, live.snapshot(&p)).is_ok());
 }
 
-/// `SNAPSHOT_VERSION` is 4: records carrying an older label — version 3's
-/// draw count or anything earlier — are refused rather than read as a state
+/// `SNAPSHOT_VERSION` is 5: records carrying an older label — version 3's
+/// draw count, version 4's missing running totals or anything earlier — are refused rather than read as a state
 /// record.
 #[test]
 fn accept_t583_older_versioned_records_are_refused() {
     let p = drawing_program();
     let live = MissionState::new(&p, SessionGeneration(9), ROOT_SEED);
-    for found in [2, 3] {
+    for found in [2, 3, 4] {
         let mut record = live.snapshot(&p);
         record.version = found;
         assert_eq!(
@@ -212,5 +212,5 @@ fn accept_t583_older_versioned_records_are_refused() {
             Err(RestoreError::SnapshotVersion { found })
         );
     }
-    assert_eq!(SNAPSHOT_VERSION, 4);
+    assert_eq!(SNAPSHOT_VERSION, 5);
 }
