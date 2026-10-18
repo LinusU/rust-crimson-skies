@@ -46,7 +46,7 @@ use std::collections::BTreeMap;
 use std::path::Path;
 use std::sync::Arc;
 
-use bevy::asset::{AssetApp, Assets};
+use bevy::asset::{AssetApp, Assets, Handle};
 use bevy::image::Image;
 use bevy::mesh::VertexAttributeValues;
 use bevy::prelude::{
@@ -132,6 +132,22 @@ pub struct MissionWorldParts {
     parts: BTreeMap<ContentId, Arc<Vec<PlaytestPart>>>,
     report: WorldDrawReport,
     water: Option<WorldWaterLevel>,
+    water_art: Option<WorldWaterArt>,
+}
+
+/// The art the world's own water tiles are drawn with, measured from the parts
+/// the world draw really binds (PARITY-M01-ATMO-C, Rally #1650), so the horizon
+/// sea can continue the same surface instead of a flat designed colour.
+#[derive(Clone, Debug, PartialEq)]
+pub struct WorldWaterArt {
+    /// The material of a water tile: the original `wtr0xxxx` image bound by
+    /// the world draw, with every setting the tile is drawn with.
+    pub material: Handle<StandardMaterial>,
+    /// The bound image's key (names the original texture).
+    pub image: String,
+    /// The tile's texture mapping, measured from its largest triangle:
+    /// `[u, v] = uv_from_xz * [x, z]`, in repeats per metre.
+    pub uv_from_xz: [[f32; 2]; 2],
 }
 
 /// The altitude of the world's own water, measured from its drawn geometry
@@ -192,6 +208,7 @@ impl MissionWorldParts {
                 .collect(),
             report,
             water: None,
+            water_art: None,
         }
     }
 
@@ -206,6 +223,19 @@ impl MissionWorldParts {
     #[must_use]
     pub const fn with_water_level(mut self, water: Option<WorldWaterLevel>) -> Self {
         self.water = water;
+        self
+    }
+
+    /// The art of the world's water tiles, when the world draw bound any.
+    #[must_use]
+    pub const fn water_art(&self) -> Option<&WorldWaterArt> {
+        self.water_art.as_ref()
+    }
+
+    /// This resource with the measured water art recorded.
+    #[must_use]
+    pub fn with_water_art(mut self, art: Option<WorldWaterArt>) -> Self {
+        self.water_art = art;
         self
     }
 
@@ -298,7 +328,10 @@ pub fn build_world_draw(
         parts.insert(known.value.clone(), bound);
     }
     let water = measure_water_level(app, definition, &parts);
-    MissionWorldParts::from_parts(parts).with_water_level(water)
+    let art = measure_water_art(app, definition, &parts);
+    MissionWorldParts::from_parts(parts)
+        .with_water_level(water)
+        .with_water_art(art)
 }
 
 /// Puts the drawn horizon sea at the world's own water altitude, when `parts`
@@ -315,7 +348,106 @@ pub fn bind_sea_to_world_water(app: &mut App, parts: &MissionWorldParts) -> bool
         return false;
     };
     spec.bind_world_water_level(water.level_m);
+    if let Some(art) = parts.water_art() {
+        spec.bind_world_water_art(art.material.clone(), art.uv_from_xz, &art.image);
+    }
     true
+}
+
+/// Measures the art of the world's water: the material of the water part with
+/// the most triangles, and its texture mapping from that part's largest
+/// non-degenerate triangle in world space (object placement applied). No water
+/// part, or none with a measurable mapping, gives `None`.
+fn measure_water_art(
+    app: &App,
+    definition: &WorldDefinition,
+    parts: &BTreeMap<ContentId, Vec<PlaytestPart>>,
+) -> Option<WorldWaterArt> {
+    let assets = app.world().get_resource::<Assets<Mesh>>()?;
+    let mut best: Option<(usize, WorldWaterArt)> = None;
+    for object in definition.objects() {
+        let Resolved::Known(known) = object.mesh() else {
+            continue;
+        };
+        let Some(bound) = parts.get(&known.value) else {
+            continue;
+        };
+        let placement = canonical_matrix(object.transform());
+        for part in bound {
+            let Some(image) = part.image.as_deref().filter(|key| is_water_image(key)) else {
+                continue;
+            };
+            if best.as_ref().is_some_and(|(n, _)| *n >= part.triangles) {
+                continue;
+            }
+            let Some(mesh) = assets.get(&part.mesh) else {
+                continue;
+            };
+            let Some(uv_from_xz) = texture_mapping(mesh, &placement) else {
+                continue;
+            };
+            best = Some((
+                part.triangles,
+                WorldWaterArt {
+                    material: part.material.clone(),
+                    image: image.to_owned(),
+                    uv_from_xz,
+                },
+            ));
+        }
+    }
+    best.map(|(_, art)| art)
+}
+
+/// The linear map from world `[x, z]` to `[u, v]` of the largest triangle of
+/// `mesh` under `placement`, or `None` when the mesh has no positions, no UVs
+/// or only degenerate triangles.
+fn texture_mapping(mesh: &Mesh, placement: &bevy::prelude::Mat4) -> Option<[[f32; 2]; 2]> {
+    let Some(VertexAttributeValues::Float32x3(positions)) =
+        mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+    else {
+        return None;
+    };
+    let Some(VertexAttributeValues::Float32x2(uvs)) = mesh.attribute(Mesh::ATTRIBUTE_UV_0) else {
+        return None;
+    };
+    let indices: Vec<usize> = match mesh.indices()? {
+        bevy::mesh::Indices::U16(i) => i.iter().map(|v| usize::from(*v)).collect(),
+        bevy::mesh::Indices::U32(i) => i.iter().map(|v| *v as usize).collect(),
+    };
+    let xz = |i: usize| {
+        let p = placement.transform_point3(Vec3::from(*positions.get(i)?));
+        Some([p.x, p.z])
+    };
+    let mut best: Option<(f32, [[f32; 2]; 2])> = None;
+    for tri in indices.as_chunks::<3>().0 {
+        let (Some(a), Some(b), Some(c)) = (xz(tri[0]), xz(tri[1]), xz(tri[2])) else {
+            continue;
+        };
+        let (Some(ua), Some(ub), Some(uc)) = (uvs.get(tri[0]), uvs.get(tri[1]), uvs.get(tri[2]))
+        else {
+            continue;
+        };
+        let (e1, e2) = ([b[0] - a[0], b[1] - a[1]], [c[0] - a[0], c[1] - a[1]]);
+        let det = e1[0] * e2[1] - e1[1] * e2[0];
+        if det.abs() < 1.0 || best.as_ref().is_some_and(|(d, _)| *d >= det.abs()) {
+            continue;
+        }
+        // Solve J * e = du for both edges: J = dU * E^-1.
+        let (d1, d2) = (
+            [ub[0] - ua[0], ub[1] - ua[1]],
+            [uc[0] - ua[0], uc[1] - ua[1]],
+        );
+        let inv = [[e2[1] / det, -e2[0] / det], [-e1[1] / det, e1[0] / det]];
+        let row = |k: usize| {
+            [
+                d1[k] * inv[0][0] + d2[k] * inv[1][0],
+                d1[k] * inv[0][1] + d2[k] * inv[1][1],
+            ]
+        };
+        best = Some((det.abs(), [row(0), row(1)]));
+    }
+    best.map(|(_, j)| j)
 }
 
 /// Measures the altitude of every vertex of every part bound to the water

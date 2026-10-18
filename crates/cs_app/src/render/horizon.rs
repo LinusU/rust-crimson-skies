@@ -64,7 +64,7 @@
 //! Nothing here is `verified_original`: this is a labelled development
 //! presentation over original content, and no original executable ran.
 
-use bevy::asset::Assets;
+use bevy::asset::{Assets, Handle};
 use bevy::math::primitives::{Plane3d, Sphere};
 use bevy::mesh::{Mesh, Mesh3d, VertexAttributeValues};
 use bevy::prelude::{
@@ -93,6 +93,14 @@ pub const WORLD_WATER_LABEL: &str =
 /// depth test, so the two coplanar surfaces do not z-fight. Designed
 /// ([`WORLD_WATER_LABEL`]).
 const SEA_DEPTH_BIAS: f32 = -4.0;
+
+/// The label the sea's surface carries once it is drawn with the world's own
+/// water art (PARITY-M01-ATMO-C, Rally #1650). The texture and its mapping are
+/// the original water tiles' own, measured from the geometry the world draw
+/// binds; that the original repeats the same surface out to the horizon, and
+/// the unit of the material's 16-frame `wtr0xxxx` cycle, are unmeasured, so the
+/// cycle is not played and the first frame is shown.
+pub const WORLD_WATER_ART_LABEL: &str = "PARITY-M01-ATMO-C sea textured with the world's own water art, mapping measured, extent and frame cycle unmeasured, 2026-10-18";
 
 /// One field of the drawn horizon, named so its origin can be asked for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -183,6 +191,15 @@ pub struct HorizonSpec {
     ambient_colour: [f32; 3],
     ambient_brightness: f32,
     origins: Vec<(HorizonField, HorizonOrigin)>,
+    water_art: Option<SeaArt>,
+}
+
+/// The original water art the sea is drawn with, once bound.
+#[derive(Clone, Debug, PartialEq)]
+struct SeaArt {
+    material: Handle<StandardMaterial>,
+    image: String,
+    uv_from_xz: [[f32; 2]; 2],
 }
 
 impl HorizonSpec {
@@ -240,6 +257,7 @@ impl HorizonSpec {
                 .iter()
                 .map(|field| (*field, HorizonOrigin::Designed(DESIGNED_LABEL)))
                 .collect(),
+            water_art: None,
         };
         if let Some((color, provenance)) = fog {
             spec.fog_colour = linear_to_srgb(color);
@@ -273,6 +291,65 @@ impl HorizonSpec {
             HorizonField::SeaLevel,
             HorizonOrigin::Designed(WORLD_WATER_LABEL),
         );
+    }
+
+    /// Draws the sea with the world's own water art: `material` is the
+    /// material of a water tile the world draw bound, `uv_from_xz` its measured
+    /// mapping from world `[x, z]` to `[u, v]` and `image` the bound texture's
+    /// key. The sea's colour then comes from the art, labelled
+    /// [`WORLD_WATER_ART_LABEL`].
+    pub fn bind_world_water_art(
+        &mut self,
+        material: Handle<StandardMaterial>,
+        uv_from_xz: [[f32; 2]; 2],
+        image: &str,
+    ) {
+        self.water_art = Some(SeaArt {
+            material,
+            image: image.to_owned(),
+            uv_from_xz,
+        });
+        self.set_origin(
+            HorizonField::SeaColour,
+            HorizonOrigin::Designed(WORLD_WATER_ART_LABEL),
+        );
+    }
+
+    /// The key of the original water texture the sea is drawn with, when bound.
+    #[must_use]
+    pub fn water_art_image(&self) -> Option<&str> {
+        self.water_art.as_ref().map(|art| art.image.as_str())
+    }
+
+    /// The sea's `[u, v]` at world offset `[x, z]` from its centre, when it is
+    /// drawn with the world's water art.
+    #[must_use]
+    pub fn sea_uv_at(&self, x: f32, z: f32) -> Option<[f32; 2]> {
+        let j = self.water_art.as_ref()?.uv_from_xz;
+        Some([j[0][0] * x + j[0][1] * z, j[1][0] * x + j[1][1] * z])
+    }
+
+    /// The nearest world position to `[x, z]` where the sea's texture repeats
+    /// seamlessly onto itself (both `u` and `v` whole numbers). The sea follows
+    /// the camera in these steps, so the water does not slide under it.
+    #[must_use]
+    pub fn sea_snap(&self, x: f32, z: f32) -> [f32; 2] {
+        let Some(art) = &self.water_art else {
+            return [x, z];
+        };
+        let j = art.uv_from_xz;
+        let det = j[0][0] * j[1][1] - j[0][1] * j[1][0];
+        if det.abs() < f32::EPSILON {
+            return [x, z];
+        }
+        let [u, v] = [
+            (j[0][0] * x + j[0][1] * z).round(),
+            (j[1][0] * x + j[1][1] * z).round(),
+        ];
+        [
+            (j[1][1] * u - j[0][1] * v) / det,
+            (-j[1][0] * u + j[0][0] * v) / det,
+        ]
     }
 
     fn set_origin(&mut self, field: HorizonField, origin: HorizonOrigin) {
@@ -434,10 +511,22 @@ impl HorizonSpec {
     }
 
     /// The sea's mesh: one flat quad in the XZ plane, twice
-    /// [`Self::sea_extent_m`] across.
+    /// [`Self::sea_extent_m`] across. With the world's water art bound its
+    /// texture coordinates repeat that art at the world tiles' own density.
     #[must_use]
     pub fn sea_mesh(&self) -> Mesh {
-        Mesh::from(Plane3d::new(Vec3::Y, Vec2::splat(self.sea_extent_m)))
+        let mut mesh = Mesh::from(Plane3d::new(Vec3::Y, Vec2::splat(self.sea_extent_m)));
+        if self.water_art.is_some()
+            && let Some(VertexAttributeValues::Float32x3(positions)) =
+                mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+        {
+            let uvs: Vec<[f32; 2]> = positions
+                .iter()
+                .filter_map(|p| self.sea_uv_at(p[0], p[2]))
+                .collect();
+            mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+        }
+        mesh
     }
 }
 
@@ -579,16 +668,29 @@ fn spawn_horizon(
         cull_mode: None,
         ..StandardMaterial::default()
     });
-    let sea_material = materials.add(StandardMaterial {
-        base_color: Color::srgb(
-            spec.sea_colour()[0],
-            spec.sea_colour()[1],
-            spec.sea_colour()[2],
-        ),
-        unlit: true,
-        depth_bias: SEA_DEPTH_BIAS,
-        perceptual_roughness: 1.0,
-        ..StandardMaterial::default()
+    // With the world's water art bound, the sea is drawn with the very
+    // material of the world's water tiles (their texture, tint and lighting),
+    // pushed back in depth; otherwise the designed flat colour.
+    let art_material = spec
+        .water_art
+        .as_ref()
+        .and_then(|art| materials.get(&art.material).cloned());
+    let sea_material = materials.add(match art_material {
+        Some(material) => StandardMaterial {
+            depth_bias: SEA_DEPTH_BIAS,
+            ..material
+        },
+        None => StandardMaterial {
+            base_color: Color::srgb(
+                spec.sea_colour()[0],
+                spec.sea_colour()[1],
+                spec.sea_colour()[2],
+            ),
+            unlit: true,
+            depth_bias: SEA_DEPTH_BIAS,
+            perceptual_roughness: 1.0,
+            ..StandardMaterial::default()
+        },
     });
     commands.spawn((
         HorizonDome,
@@ -657,6 +759,7 @@ fn place_around_camera(
         transform.scale = Vec3::splat(spec.dome_radius_m());
     }
     for mut transform in &mut seas {
-        transform.translation = Vec3::new(translation.x, spec.sea_level_m(), translation.z);
+        let [x, z] = spec.sea_snap(translation.x, translation.z);
+        transform.translation = Vec3::new(x, spec.sea_level_m(), z);
     }
 }
