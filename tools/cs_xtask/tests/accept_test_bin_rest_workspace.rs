@@ -26,6 +26,7 @@ fn workspace_root() -> PathBuf {
 
 #[test]
 fn accept_test_bin_rest_each_remaining_crate_links_one_test_binary() {
+    let _tree = crate::accept_test_bin_guard::real_tree_lock();
     for member in MIGRATED {
         let layout = test_layout::check_member(&workspace_root(), member)
             .unwrap_or_else(|error| panic!("{member} must be readable by the guard: {error:?}"));
@@ -51,6 +52,7 @@ fn accept_test_bin_rest_each_remaining_crate_links_one_test_binary() {
 
 #[test]
 fn accept_test_bin_rest_workspace_guard_reports_no_stray_test_file() {
+    let _tree = crate::accept_test_bin_guard::real_tree_lock();
     let report = test_layout::check_workspace(&workspace_root())
         .expect("the guard must be able to read this workspace");
     assert!(report.is_clean(), "guard findings: {:?}", report.lines());

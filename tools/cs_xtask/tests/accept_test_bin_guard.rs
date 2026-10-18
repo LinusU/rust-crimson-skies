@@ -29,9 +29,24 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::{Mutex, MutexGuard};
 
 use cs_xtask::test_layout::{self, LayoutFinding, LayoutReport};
 use cs_xtask::transient;
+
+/// Held by every test that scans this workspace's real `tests/` directories,
+/// and for the whole of the test that temporarily adds `tests/stray.rs` to one,
+/// so a scan can never see that file. Without it the two run on parallel test
+/// threads and the scan reports the temporary file as a real stray.
+static REAL_TREE: Mutex<()> = Mutex::new(());
+
+/// Takes [`REAL_TREE`]; a test that panicked while holding it does not poison
+/// the others.
+pub(crate) fn real_tree_lock() -> MutexGuard<'static, ()> {
+    REAL_TREE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
 
 fn workspace_root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
@@ -138,6 +153,7 @@ impl Drop for TemporaryFile {
 /// only one in the tree while it exists.
 #[test]
 fn accept_test_bin_guard_fails_on_a_temporary_stray_file_and_passes_on_this_workspace() {
+    let _tree = real_tree_lock();
     let root = workspace_root();
 
     let report =
