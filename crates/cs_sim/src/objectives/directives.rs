@@ -1,10 +1,10 @@
-//! The executor for the wake/sleep/kill/nap directive family (task
-//! `M02-B-FU4`, Rally #807).
+//! The executor for the wake/sleep/kill/nap directive family (tasks
+//! `M02-B-FU4`, Rally #807, and `M02-B-FU5`, Rally #1586).
 //!
 //! Shared contract: `docs/contracts/SCRIPT-MISSION.md` ("Objective event
 //! ordering": queued, no reentrancy). The measurement is
 //! `docs/findings/2026-10-09-m02-b-fu3-out-of-range-wake-address.md` (the
-//! address rule) and
+//! address rule and the wake walk's 15-entry window) and
 //! `docs/findings/2026-10-06-m01-lc-directive-b-objective-lifecycle-target-semantics.md`
 //! (the completion pipeline's order). Nothing here is `verified_original`.
 //!
@@ -16,19 +16,38 @@
 //!
 //! * **Lists** (`WakeObjectives`, `SleepObjectives`, `KillObjectives`,
 //!   `WakeObjectivesOnTransition`) arrive as the one `Value::List` the lowering
-//!   carries. The parse writes a `−1` terminator after the last child and
-//!   stores `address − 1`, so an authored `0` *is* the terminator: it ends the
-//!   walk and the children after it are never reached, which is not a refusal.
-//!   Any other address outside `[1, objectives]` — including a negative one,
-//!   which decodes below the terminator — is refused by name.
+//!   carries. The parse writes the spelled integers into a 15-slot array,
+//!   `address − 1` each, and a `−1` terminator in the last slot, so an
+//!   authored `0` *is* the terminator: it ends the walk and the children
+//!   after it are never reached, which is not a refusal. A spelled prefix
+//!   of [`ENGINE_LIST_WINDOW`] or more leaves no slot for the terminator
+//!   — the shape `TargetList::from_record` refuses — and the whole list
+//!   gets [`RuntimeError::DirectiveListTooLong`], never a truncated walk.
+//!   Any other address outside `[1, objectives]` — including a negative
+//!   one, which decodes below the terminator — is refused by name.
 //! * **`NapObjective`** spells `[address, seconds]`; a missing or non-numeric
 //!   `seconds` is refused (the original logs "has no nap_time specified").
 //! * **`WakeObjectivesOnTransition`, `DependencyGate`, `HideObjective`** feed
-//!   the same index arrays, so their addresses are checked by the same rule, but
-//!   the lifecycle has no consumer for them yet (they need the dormant/auto-nap
-//!   timers and the gate evaluation). They are reported as
-//!   [`RuntimeError::UnexecutedDirective`] and move nothing — never dropped in
-//!   silence, never approximated by another effect.
+//!   the same index arrays, so their addresses are checked by the same rule,
+//!   but the lifecycle has no consumer for them yet. Each is reported as
+//!   [`RuntimeError::UnexecutedDirective`] and moves nothing — never dropped
+//!   in silence, never approximated by another effect — because its measured
+//!   trigger is machinery this runtime deliberately does not carry:
+//!   `WakeObjectivesOnTransition` (`WAKE_OBJECTIVE_WHEN_I_SLEEP`, `+0xdc`)
+//!   fires only on the source's *timer-driven* nap and sleep transitions,
+//!   never on `NAP`/`SLEEP` completion effects, and this runtime keeps no
+//!   dormant/nap timers; `DependencyGate` (`TICK_DEPENDS_ON_OBJ`, `+0x10`)
+//!   gates the *dependent's own* evaluation — no timers, no conditions —
+//!   on the dependency being awake, and this runtime evaluates no
+//!   per-objective conditions a gate could hold; and `HideObjective`
+//!   (`HIDE_OBJ`, `+0xd8`) marks the named objective completed only when
+//!   the woken block's prior state was **dormant**, a state
+//!   [`ObjectiveState`](super::state::ObjectiveState) deliberately does not
+//!   have, so the guard cannot be evaluated here and firing it on every
+//!   wake the emission reports would complete objectives the engine never
+//!   touches. The record world runs all three through
+//!   `cs_content::objectives_engine`, which holds the dormant timers and
+//!   the gate.
 //!
 //! Each outcome is a [`Planned`]: an effect the runtime queues for its phase 7,
 //! or the refusal it reports there as
@@ -38,6 +57,14 @@ use cs_script::ir::{DirectiveOperation, SymbolId, Value};
 
 use super::address::resolve_objective_address;
 use super::runtime::{CompletionEffect, CompletionEffectKind, NapTime, RuntimeError};
+
+/// The engine's per-objective list window: the slots its `−1`-terminated
+/// target arrays hold, **terminator included** — the `cmpl $0xf` cap the
+/// wake walk at `0x469af0` carries (`cs_content::objectives_engine`
+/// publishes the same number as `ENGINE_LIST_CAPACITY`). A spelled list
+/// of this many addresses leaves no slot for its terminator and is
+/// refused whole rather than walked.
+const ENGINE_LIST_WINDOW: usize = 15;
 
 /// One decoded outcome of a family directive, in list order.
 pub type Planned = Result<CompletionEffect, RuntimeError>;
@@ -133,6 +160,24 @@ fn plan_list(
     let [Value::List(children)] = args else {
         return vec![Err(RuntimeError::MalformedDirective { operation })];
     };
+    // The parse stores the spelled integers until the authored `0`
+    // terminator, into an array whose last slot is the `−1` it writes:
+    // a prefix of [`ENGINE_LIST_WINDOW`] storable children leaves the
+    // terminator nowhere, and the record reader refuses the same shape
+    // (`EngineEffectError::ListTooLong`). The whole list is refused —
+    // the walk's `cmpl $0xf` cap is never reached with a stored list,
+    // so modelling a truncated walk would invent behaviour no record
+    // can produce.
+    let storable = children
+        .iter()
+        .take_while(|child| matches!(child, Value::Int(address) if *address != 0))
+        .count();
+    if storable >= ENGINE_LIST_WINDOW {
+        return vec![Err(RuntimeError::DirectiveListTooLong {
+            operation,
+            len: storable,
+        })];
+    }
     let mut out = Vec::new();
     for child in children {
         let Value::Int(address) = child else {
