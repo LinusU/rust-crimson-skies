@@ -58,6 +58,7 @@
 
 use std::path::Path;
 
+use crate::mission_world_actors::{AllegianceBinding, resolve_world_node_allegiance};
 use cs_assets::install::Discovery;
 use cs_content::coordinates::SourceAdapter;
 use cs_content::scene::{BindingMap, SceneGraph, SceneNode};
@@ -212,6 +213,9 @@ impl DamageCoupling {
     }
 }
 
+/// The state a bound target's allegiance holds until the resolver has run.
+const NOT_RESOLVED: &str = "the node resolver has not run over this binding";
+
 /// One node bound as a damageable target of the composition.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BoundTarget {
@@ -239,6 +243,10 @@ pub struct BoundTarget {
     pub objective: bool,
     /// Whether the declaring row carried the `other_target` marker.
     pub other_target: bool,
+    /// What the engine's node resolver (`0x4bf080` → `0x4bef90`) answers for
+    /// the node's subtree (M01-TARGET-ROSTER, #1592): the measured team int
+    /// and the source that settled it, or why none can be claimed.
+    pub allegiance: AllegianceBinding,
 }
 
 impl BoundTarget {
@@ -717,6 +725,13 @@ fn bind_mission_targets_from(
         }
     }
 
+    let names_bound: Vec<&str> = targets.iter().map(|target| target.node.as_str()).collect();
+    let resolved =
+        resolve_world_node_allegiance(install_root, found, mission_dir, group_dir, &names_bound);
+    for (target, (_, allegiance)) in targets.iter_mut().zip(resolved) {
+        target.allegiance = allegiance;
+    }
+
     MissionTargetBinding {
         targets,
         declared,
@@ -862,6 +877,7 @@ fn merge_target(
         coupling,
         objective,
         other_target,
+        allegiance: AllegianceBinding::Open(NOT_RESOLVED.to_owned()),
     });
 }
 

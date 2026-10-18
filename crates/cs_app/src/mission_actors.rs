@@ -95,7 +95,7 @@ use crate::mission_ai::{
 };
 use crate::mission_session::{MISSION_FACTION_PLAYER, MissionHost, MissionStage, parts};
 use crate::mission_start::{ScriptedAircraft, SpawnDispatch, stored_heading_radians};
-use crate::mission_world_actors::object3d_orientation;
+use crate::mission_world_actors::{AllegianceBinding, object3d_orientation};
 use crate::physics::{BodyMode, BodySpec, spawn_body};
 use crate::scene::SceneGenerations;
 use crate::targeting::TargetingSession;
@@ -232,6 +232,14 @@ pub struct MissionGroundTarget {
     pub objective: bool,
     /// Whether the declaring row carried the `other_target` marker.
     pub other_target: bool,
+    /// The target's targeting roster record (M01-TARGET-ROSTER, #1592): the
+    /// faction the engine's node resolver answers for the node's subtree,
+    /// and the designed relation the player's flight holds toward it.
+    /// `None` when the resolver could not settle a team — the reason is in
+    /// [`Self::allegiance_open`], and no faction is invented.
+    pub roster: Option<WorldActorRoster>,
+    /// Why no roster record exists, verbatim, when [`Self::roster`] is `None`.
+    pub allegiance_open: Option<String>,
 }
 
 /// Resource: what the ground-target binding spawned — the entities, their
@@ -379,6 +387,62 @@ pub fn measured_team(faction: &ContentId) -> Option<u32> {
         "enemy" => Some(2),
         _ => None,
     }
+}
+
+/// A bound ground target's roster record and the reason it has none
+/// (M01-TARGET-ROSTER, #1592).
+///
+/// The faction is the engine node resolver's own answer for the node's
+/// subtree (`0x4bf080` → `0x4bef90`, measured by #1155/#1177), spelled in the
+/// loader's vocabulary. The relation is the designed reading of
+/// [`declared_player_allegiance`], except that a `neutral` (team 0) node is
+/// rostered with **no** relation: nothing measured says the player's flight is
+/// opposed to a neutral node, and hostility is not invented for one.
+pub fn ground_target_roster(
+    target: &crate::mission_targets::BoundTarget,
+    player_team: Option<u32>,
+) -> (Option<WorldActorRoster>, Option<String>) {
+    let team = match &target.allegiance {
+        AllegianceBinding::Measured { team, .. } => *team,
+        AllegianceBinding::Open(reason) => return (None, Some(reason.clone())),
+    };
+    let spelling = match team {
+        0 => "neutral",
+        1 => "ally",
+        2 => "enemy",
+        other => {
+            return (
+                None,
+                Some(format!(
+                    "the resolver answered team {other}, outside the measured neutral/ally/enemy \
+                     vocabulary, so no faction is guessed"
+                )),
+            );
+        }
+    };
+    let faction = match ContentId::from_source(ContentKind::Faction, spelling) {
+        Ok(faction) => faction,
+        Err(error) => {
+            return (
+                None,
+                Some(format!("the faction cannot be spelled: {error}")),
+            );
+        }
+    };
+    let player_allegiance = if team == 0 {
+        None
+    } else {
+        declared_player_allegiance(&faction, player_team)
+    };
+    (
+        Some(WorldActorRoster {
+            faction,
+            class: TargetClass::WorldObject,
+            objective: target.objective,
+            player_allegiance,
+        }),
+        None,
+    )
 }
 
 /// The designed relation of the player's flight toward a world actor, read
@@ -1156,6 +1220,7 @@ fn spawn_mission_actors_under(
                 continue;
             }
         }
+        let (roster, allegiance_open) = ground_target_roster(target, player_team_of_player);
         let [x, y, z] = target.position_m;
         let entity = world
             .spawn((
@@ -1177,6 +1242,8 @@ fn spawn_mission_actors_under(
                     coupling: target.coupling.fields.clone(),
                     objective: target.objective,
                     other_target: target.other_target,
+                    roster,
+                    allegiance_open,
                 },
             ))
             .id();
@@ -1380,6 +1447,115 @@ pub fn roster_mission_zeppelins(world: &mut World) {
     world.insert_resource(report);
 }
 
+/// Resource: what [`roster_mission_ground_targets`] decided on its last pass
+/// (M01-TARGET-ROSTER, #1592).
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct MissionGroundTargetRosterReport {
+    /// Every rostered ground target, in ascending session-actor order: the
+    /// session damage actor, its measured faction and the designed relation
+    /// the player's flight holds toward it (`None` for a `neutral` node, or
+    /// when the player's own team was never read).
+    pub rostered: Vec<(ActorId, ContentId, Option<Allegiance>)>,
+    /// Every bound ground target the pass could not roster, with why.
+    pub unresolved: Vec<String>,
+}
+
+impl MissionGroundTargetRosterReport {
+    /// The faction `actor` is rostered under, per the last pass.
+    #[must_use]
+    pub fn faction_of(&self, actor: ActorId) -> Option<&ContentId> {
+        self.rostered
+            .iter()
+            .find(|(candidate, ..)| *candidate == actor)
+            .map(|(_, faction, _)| faction)
+    }
+}
+
+/// Rosters every bound ground target with the session's targeting store under
+/// the faction the engine's node resolver answers for it
+/// (M01-TARGET-ROSTER, #1592), so the player's reticle and selection can name
+/// a convoy truck.
+///
+/// A target whose resolver answer is open is reported by name and **not**
+/// rostered. Idempotent and generation-scoped exactly like
+/// [`roster_mission_zeppelins`]; a world with no targeting store yet does
+/// nothing.
+pub fn roster_mission_ground_targets(world: &mut World) {
+    let Some(targeting) = world.get_resource::<TargetingSession>() else {
+        return;
+    };
+    let generation = targeting.generation();
+    let mut candidates: Vec<(ActorId, WorldActorRoster, [f64; 3])> = Vec::new();
+    let mut unresolved: Vec<String> = Vec::new();
+    {
+        let mut query = world.query::<&MissionGroundTarget>();
+        for target in query.iter(world) {
+            if target.generation != generation {
+                continue;
+            }
+            match &target.roster {
+                Some(roster) => {
+                    candidates.push((target.damage_actor, roster.clone(), target.position_m));
+                }
+                None => unresolved.push(format!(
+                    "ground target {}: {}",
+                    target.node,
+                    target
+                        .allegiance_open
+                        .as_deref()
+                        .unwrap_or("no roster record was decided")
+                )),
+            }
+        }
+    }
+    candidates.sort_by_key(|(actor, ..)| *actor);
+    let Ok(player_faction) = ContentId::from_source(ContentKind::Faction, MISSION_FACTION_PLAYER)
+    else {
+        return;
+    };
+    let mut report = MissionGroundTargetRosterReport {
+        rostered: Vec::new(),
+        unresolved,
+    };
+    {
+        let mut targeting = world.resource_mut::<TargetingSession>();
+        let store = targeting.store_mut();
+        for (actor, roster, position_m) in candidates {
+            if let Some(allegiance) = roster.player_allegiance {
+                store.set_allegiance(player_faction.clone(), roster.faction.clone(), allegiance);
+                store.set_allegiance(roster.faction.clone(), player_faction.clone(), allegiance);
+            }
+            if !store.is_registered(&actor) {
+                let Ok(position) = WorldPosition::try_new(position_m) else {
+                    report.unresolved.push(format!(
+                        "session actor {actor:?}: the bind pose is not a finite world position"
+                    ));
+                    continue;
+                };
+                let record = TargetRecord {
+                    actor,
+                    faction: roster.faction.clone(),
+                    class: roster.class,
+                    objective: roster.objective,
+                    revealed: true,
+                    phase_eligible: true,
+                    position,
+                };
+                if let Err(error) = store.register(record) {
+                    report.unresolved.push(format!(
+                        "session actor {actor:?}: the targeting store refuses the record: {error}"
+                    ));
+                    continue;
+                }
+            }
+            report
+                .rostered
+                .push((actor, roster.faction.clone(), roster.player_allegiance));
+        }
+    }
+    world.insert_resource(report);
+}
+
 /// Installs [`roster_mission_zeppelins`] on the fixed tick, so a bound world
 /// actor is in the targeting store before the same tick's weapon step reads
 /// the `(shooter, target)` relation.
@@ -1389,6 +1565,10 @@ pub struct MissionZeppelinAllegiancePlugin;
 impl Plugin for MissionZeppelinAllegiancePlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<MissionZeppelinAllegianceReport>()
-            .add_systems(FixedPreUpdate, roster_mission_zeppelins);
+            .init_resource::<MissionGroundTargetRosterReport>()
+            .add_systems(
+                FixedPreUpdate,
+                (roster_mission_zeppelins, roster_mission_ground_targets),
+            );
     }
 }

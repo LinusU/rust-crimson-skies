@@ -784,6 +784,76 @@ fn allegiance_for(
     }
 }
 
+/// The allegiance the original's node resolver (`0x4bf080` → `0x4bef90`)
+/// answers for each named world-container node (M01-TARGET-ROSTER, #1592).
+///
+/// This is the same measured walk a `zeppelins.zrd` record's loader runs on
+/// its joined node (#1155, #1177), applied to the nodes a caller names. It
+/// answers what the **resolver** returns for the node's subtree; whether the
+/// engine ever asks it about a node that is not a zeppelin record is not
+/// established by this function. A name that joins no single node, an
+/// unreadable container, or an unsettled resolver answers
+/// [`AllegianceBinding::Open`] with the reason — never a guessed team.
+#[must_use]
+pub fn resolve_world_node_allegiance(
+    install_root: &Path,
+    found: &Discovery,
+    mission_dir: &str,
+    group_dir: &str,
+    node_names: &[&str],
+) -> Vec<(String, AllegianceBinding)> {
+    let scene = read_world_scene(install_root, found, group_dir);
+    let archives = [
+        format!("{mission_dir}/zrdr.zbd"),
+        format!("{group_dir}/zrdr.zbd"),
+        "zbd/zrdr.zbd".to_owned(),
+    ];
+    let (nodes, lookup) = match &scene {
+        Ok((_, nodes, _)) => (
+            Some(nodes),
+            Some(build_allegiance_lookup(
+                install_root,
+                found,
+                &archives,
+                nodes,
+            )),
+        ),
+        Err(_) => (None, None),
+    };
+    node_names
+        .iter()
+        .map(|&name| {
+            let binding = match (nodes, lookup.as_ref()) {
+                (Some(nodes), Some(lookup)) => {
+                    let matches: Vec<&RawNode> = nodes
+                        .nodes
+                        .iter()
+                        .filter(|node| node.name == name)
+                        .collect();
+                    match matches.as_slice() {
+                        [node] => match lookup.resolve(node) {
+                            Ok((team, source)) => AllegianceBinding::Measured {
+                                team,
+                                source: source.unwrap_or(AllegianceSource::NoBinding),
+                            },
+                            Err(reason) => AllegianceBinding::Open(reason),
+                        },
+                        other => AllegianceBinding::Open(format!(
+                            "`{name}` names {} nodes of the world container, so the resolver has \
+                             no single subtree",
+                            other.len()
+                        )),
+                    }
+                }
+                _ => AllegianceBinding::Open(
+                    "the world container's node array could not be read".to_owned(),
+                ),
+            };
+            (name.to_owned(), binding)
+        })
+        .collect()
+}
+
 /// The claim the subject join is reported under: a record's `node` name
 /// resolved through the world container's canonical scene graph.
 pub const NODE_JOIN_CLAIM: &str = "f34-world.zeppelin-node-join";
