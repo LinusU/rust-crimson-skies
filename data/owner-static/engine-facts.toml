@@ -795,3 +795,165 @@ va = 0x6032e0
 kind = "f32"
 value = 0.5
 meaning = "added to each of the three axis gains (vehicle+0x8c4..+0x8d0 or +0x8dc..+0x8e8) when the global byte 0x64ee4c is set (0x41be62..)"
+
+# The weather/atmosphere consumers for M01 (#1648 PARITY-M01-ATMO-A, finding
+# docs/findings/2026-10-18-parity-m01-atmo-a-weather-units-and-sky-consumers.md):
+# the CLOUD_COVER defaults, the colour scale, the degree-to-radian factor, the
+# clip-near floor and the engine's name literals for the nodes and flags the
+# atmosphere code looks up. `kind` is how the value is stored at `va`: f32 / f64
+# little-endian IEEE, u32 little-endian dword, cstr a NUL-terminated string.
+# Every value is read back from the image by
+# accept_parity_m01_atmo_a_rows_match_the_image. `static` only.
+
+[[atmo_weather]]
+name = "cloud_top_default"
+claim = "OWNER-STATIC-2026-10-18"
+provenance = "static"
+va = 0x4bc7da
+kind = "f32"
+value = 280.0
+meaning = "imm32 of `mov [ebx+4], imm` (0x4bc7d7): CLOUD_COVER.TOP when the record has no TOP key; no unit scale is applied to the file value"
+
+[[atmo_weather]]
+name = "cloud_bottom_default"
+claim = "OWNER-STATIC-2026-10-18"
+provenance = "static"
+va = 0x4bc827
+kind = "f32"
+value = 240.0
+meaning = "imm32 of `mov [ebx+8], imm` (0x4bc824): CLOUD_COVER.BOTTOM when the record has no BOTTOM key"
+
+[[atmo_weather]]
+name = "cloud_thickness_default"
+claim = "OWNER-STATIC-2026-10-18"
+provenance = "static"
+va = 0x4bc874
+kind = "u32"
+value = 0
+meaning = "imm32 of `mov [ebx+0xc], 0` (0x4bc871): CLOUD_COVER.THICKNESS when the record has no THICKNESS key"
+
+[[atmo_weather]]
+name = "cloud_colour_default"
+claim = "OWNER-STATIC-2026-10-18"
+provenance = "static"
+va = 0x4bc7df
+kind = "f32"
+value = 1.0
+meaning = "imm32 of `mov eax, 1.0f` (0x4bc7de) stored to all three channels of TOP_COLOR (record +0x10..+0x18) before the optional key is read; BOTTOM_COLOR (+0x1c..+0x24) gets the same 1.0f at 0x4bc82c"
+
+[[atmo_weather]]
+name = "colour_byte_scale"
+claim = "OWNER-STATIC-2026-10-18"
+provenance = "static"
+va = 0x6081b8
+kind = "f32"
+value = 0.003921568859368563
+meaning = "1/255: the triple reader 0x4bc350 multiplies a channel by it only when the channel is above 1.0f; used for FOG_COLOR, TOP_COLOR, BOTTOM_COLOR, SUNLIGHT_COLOR_DIFFUSE and SUNLIGHT_COLOR_AMBIENT"
+
+[[atmo_weather]]
+name = "degrees_to_radians"
+claim = "OWNER-STATIC-2026-10-18"
+provenance = "static"
+va = 0x6040e8
+kind = "f64"
+value = 0.01745329251994
+meaning = "pi/180 as an f64: multiplies SHADOW_ANGLES and the three SUNLIGHT_ORIENTATION angles (zone +0x28..+0x30) when the record is parsed; angles are degrees in the file and radians in memory"
+
+[[atmo_weather]]
+name = "zone_default_sun_pitch"
+claim = "OWNER-STATIC-2026-10-18"
+provenance = "static"
+va = 0x4bc43a
+kind = "f32"
+value = -1.5707963705062866
+meaning = "imm32 of `mov [esi+0x28], imm` (0x4bc437): the zone record constructor 0x4bc3e0 defaults SUNLIGHT_ORIENTATION[0] to -pi/2 radians; the other defaults are 0 (fog, clip, sun angles 1, 2) and 1.0f (sun diffuse, ambient, both colour triples)"
+
+[[atmo_weather]]
+name = "cloud_band_half_factor"
+claim = "OWNER-STATIC-2026-10-18"
+provenance = "static"
+va = 0x6032e0
+kind = "f32"
+value = 0.5
+meaning = "0.5f: the setup 0x473636 multiplies (TOP-BOTTOM) and THICKNESS by it, giving the band midpoint BOTTOM+(TOP-BOTTOM)/2 and the plateau half-width THICKNESS/2"
+
+[[atmo_weather]]
+name = "cloud_inside_fraction"
+claim = "OWNER-STATIC-2026-10-18"
+provenance = "static"
+va = 0x6034b0
+kind = "f32"
+value = 0.8
+meaning = "0.8f: the second camera-altitude consumer 0x42b7c0 tests camera Y against BOTTOM and BOTTOM+0.8*(TOP-BOTTOM)"
+
+[[atmo_weather]]
+name = "clip_near_floor"
+claim = "OWNER-STATIC-2026-10-18"
+provenance = "static"
+va = 0x60369c
+kind = "f32"
+value = 6.0
+meaning = "6.0f: the zone apply 0x472ea0 compares the zone CLIP_RANGES near value with it and substitutes the imm32 6.0f at 0x472f5f when the near value is below it"
+
+[[atmo_weather]]
+name = "cloud_floor_node_name"
+claim = "OWNER-STATIC-2026-10-18"
+provenance = "static"
+va = 0x6274ac
+kind = "cstr"
+value = "zone2_cloud_floor"
+meaning = "name literal passed to the node-by-name lookup 0x4d0280 (class 7) at 0x473636; the result is stored at 0x71c2b4 and read by the per-frame camera function 0x42ee60, which hands it to the node-state setter 0x4cca30"
+
+[[atmo_weather]]
+name = "sunlight_node_name"
+claim = "OWNER-STATIC-2026-10-18"
+provenance = "static"
+va = 0x6274c0
+kind = "cstr"
+value = "sunlight"
+meaning = "name literal looked up with class 10 at 0x473642 (the light node; the GameZ archive of ZBD/C3 holds a tag-9 node of this name); stored at 0x71c2b8 and configured by the zone apply 0x472ea0 from SUNLIGHT_*"
+
+[[atmo_weather]]
+name = "sun_node_name"
+claim = "OWNER-STATIC-2026-10-18"
+provenance = "static"
+va = 0x6274cc
+kind = "cstr"
+value = "sun"
+meaning = "name literal looked up with class 7 at 0x473653 (the sun billboard object, a child of the horizon zone1 node in ZBD/C3 gamez); stored at 0x71c2bc and moved per frame by 0x42f290"
+
+[[atmo_weather]]
+name = "no_cloud_flag_name"
+claim = "OWNER-STATIC-2026-10-18"
+provenance = "static"
+va = 0x62c09c
+kind = "cstr"
+value = "no_cloud"
+meaning = "flag-name literal compared at 0x4c2bda by the node-name flag parser; stores into the global at 0x62b868"
+
+[[atmo_weather]]
+name = "no_fog_flag_name"
+claim = "OWNER-STATIC-2026-10-18"
+provenance = "static"
+va = 0x62c094
+kind = "cstr"
+value = "no_fog"
+meaning = "flag-name literal compared at 0x4c2bfe by the node-name flag parser; stores into the global at 0x62b864"
+
+[[atmo_weather]]
+name = "pfhorizon_name"
+claim = "OWNER-STATIC-2026-10-18"
+provenance = "static"
+va = 0x627ccc
+kind = "cstr"
+value = "pfhorizon"
+meaning = "a player-vehicle part name in the list beside compass, rtracks and ltracks (0x627cb0..), referenced once at 0x476bd3; not the sky horizon node, which the image never names"
+
+[[atmo_weather]]
+name = "camdyn_cloudhack_label"
+claim = "OWNER-STATIC-2026-10-18"
+provenance = "static"
+va = 0x63b5ec
+kind = "cstr"
+value = " ZBT_CAMDYN_CLOUDHACK"
+meaning = "name field of a 0x114-stride record table initialised at 0x59c4e6..0x59c536 beside cam_dyn_render, ZBT_ZVID_DXBEGIN and zVidLockRenderBuffer; the image only stores the label there, so it is a timer or phase label and no cloud mechanism is read from it"
