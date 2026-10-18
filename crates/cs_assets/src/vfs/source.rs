@@ -37,7 +37,7 @@ use std::path::{Path, PathBuf};
 
 use cs_types::evidence::ContentHash;
 
-use crate::install::Sha256;
+use crate::install::{Sha256, with_hash_memo};
 use crate::vfs::mount::{MemberRecord, Mount, MountBuilder, MountError};
 
 /// Why an entry below a mounted directory did not become a member.
@@ -319,26 +319,29 @@ fn hash_file(path: &Path) -> Result<(u64, ContentHash), SourceError> {
             path: path.to_path_buf(),
         });
     }
-    let mut hasher = Sha256::new();
-    let mut buffer = [0u8; 64 * 1024];
-    let mut total: u64 = 0;
-    loop {
-        let read = file.read(&mut buffer).map_err(unreadable)?;
-        if read == 0 {
-            break;
+    let (total, digest, _remembered) = with_hash_memo(path, || {
+        let mut hasher = Sha256::new();
+        let mut buffer = [0u8; 64 * 1024];
+        let mut total: u64 = 0;
+        loop {
+            let read = file.read(&mut buffer).map_err(unreadable)?;
+            if read == 0 {
+                break;
+            }
+            hasher.update(&buffer[..read]);
+            total += read as u64;
         }
-        hasher.update(&buffer[..read]);
-        total += read as u64;
-    }
-    let after = file.metadata().map_err(unreadable)?;
-    let before_modified = before.modified().map_err(unreadable)?;
-    let after_modified = after.modified().map_err(unreadable)?;
-    if before.len() != total || after.len() != total || before_modified != after_modified {
-        return Err(SourceError::FileChangedDuringMount {
-            path: path.to_path_buf(),
-        });
-    }
-    Ok((total, hasher.finalize()))
+        let after = file.metadata().map_err(unreadable)?;
+        let before_modified = before.modified().map_err(unreadable)?;
+        let after_modified = after.modified().map_err(unreadable)?;
+        if before.len() != total || after.len() != total || before_modified != after_modified {
+            return Err(SourceError::FileChangedDuringMount {
+                path: path.to_path_buf(),
+            });
+        }
+        Ok((total, hasher.finalize()))
+    })?;
+    Ok((total, digest))
 }
 
 /// Why bytes could not be read for a resolution.

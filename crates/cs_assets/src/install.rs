@@ -760,9 +760,14 @@ fn hash_memo() -> &'static Mutex<BTreeMap<PathBuf, (FileSignature, ContentHash)>
     MEMO.get_or_init(Mutex::default)
 }
 
-/// Hashes one regular file, reusing the remembered digest while the file is
-/// unchanged. The flag is `true` when the digest came from the memo.
-fn hash_file_memoized(path: &Path) -> Result<(u64, ContentHash, bool), DiscoveryError> {
+/// Runs `compute` (a full read-and-hash of `path`) unless the digest of
+/// `path` is remembered and its metadata unchanged. The flag is `true` when
+/// the digest came from the memo. Shared by every reader that hashes
+/// installation files, so the bytes are hashed once per process.
+pub(crate) fn with_hash_memo<E>(
+    path: &Path,
+    compute: impl FnOnce() -> Result<(u64, ContentHash), E>,
+) -> Result<(u64, ContentHash, bool), E> {
     let signature = fs::metadata(path).ok().and_then(|m| FileSignature::of(&m));
     if let Some(signature) = signature {
         let memo = hash_memo().lock().unwrap_or_else(PoisonError::into_inner);
@@ -772,7 +777,7 @@ fn hash_file_memoized(path: &Path) -> Result<(u64, ContentHash, bool), Discovery
             return Ok((signature.len, *digest, true));
         }
     }
-    let (total, digest) = hash_file_uncached(path)?;
+    let (total, digest) = compute()?;
     // Remember only what a second look at the metadata still agrees with,
     // and only once the file has been quiet longer than the settle window.
     let after = fs::metadata(path).ok().and_then(|m| FileSignature::of(&m));
@@ -788,6 +793,11 @@ fn hash_file_memoized(path: &Path) -> Result<(u64, ContentHash, bool), Discovery
         memo.insert(path.to_path_buf(), (after, digest));
     }
     Ok((total, digest, false))
+}
+
+/// [`hash_file`] reusing the remembered digest while the file is unchanged.
+fn hash_file_memoized(path: &Path) -> Result<(u64, ContentHash, bool), DiscoveryError> {
+    with_hash_memo(path, || hash_file_uncached(path))
 }
 
 /// Hashes one regular file, returning the hashed byte count and digest.
