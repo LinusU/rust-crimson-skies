@@ -97,6 +97,7 @@ mod accept_f43_b_progression_and_economy;
 mod accept_f43_c_save_transitions;
 mod accept_f43_v1_graph_structure;
 mod accept_f43_v2_ending_entry;
+mod accept_f43_v3_results_records;
 mod accept_f44_b_transactional_economy;
 mod accept_f44_c_construction_screen;
 mod accept_f44_d_spawned_aircraft_equality;

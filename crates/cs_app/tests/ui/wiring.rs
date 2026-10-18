@@ -1682,3 +1682,61 @@ fn accept_f45_c_the_ledger_refuses_an_impossible_resource_stream() {
     assert_eq!(ledger.audio(), None);
     assert!(!ledger.holds_world());
 }
+
+// --- F43-V3: the results screen feeds both record stores -----------------
+
+/// **F43-V3.** The shipped results path (`Action::MissionSucceeded` →
+/// `FrontEndFlow` → `CampaignRun::report_mission_record`) lands a completed
+/// campaign mission in the persisted scrapbook — the slot under the node's
+/// bound mission and the mission-succeeded fact — in the very revision that
+/// carries the campaign's payout.
+#[test]
+fn accept_f43_v3_the_results_screen_writes_the_scrapbook_in_the_campaign_revision() {
+    use cs_sim::records::{Fact, FactKind, RecordKey};
+
+    let fx = Fixture::new("v3-results", None);
+    let mut flow = fx.flow();
+    to_flight_check(&mut flow, &loadout(pilotable()));
+    flow.press(Action::Launch).expect("the mission launches");
+    assert_eq!(
+        flow.drive_load().expect("the load runs"),
+        LoadVerdict::Ready
+    );
+    let stored_revision = |flow: &FrontEndFlow| {
+        flow.domain()
+            .profile()
+            .and_then(ProfileSession::document)
+            .expect("a profile is open")
+            .revision
+    };
+    let before = stored_revision(&flow);
+    let empty = cs_app::ui::scrapbook::stored(flow.domain().profile().expect("open"))
+        .expect("the scrapbook reads");
+    assert_eq!(empty.records.len(), 0, "nothing is recorded before the win");
+
+    flow.set_mission_outcome(mission_record(fx.profile, MissionResult::Succeeded, 2));
+    flow.press(Action::MissionSucceeded)
+        .expect("the outcome applies");
+
+    let mission = id(ContentKind::Mission, "m01");
+    let scrapbook = cs_app::ui::scrapbook::stored(flow.domain().profile().expect("open"))
+        .expect("the scrapbook reads");
+    let slot = scrapbook
+        .records
+        .slot(&RecordKey {
+            subject: mission.clone(),
+            difficulty: None,
+        })
+        .expect("the completed mission is in the persisted scrapbook");
+    assert_eq!(slot.best.score, 900);
+    assert_eq!(slot.latest.score, 900);
+    assert!(scrapbook.facts.has(&Fact {
+        kind: FactKind::MissionSucceeded,
+        subject: mission,
+    }));
+    assert_eq!(
+        stored_revision(&flow),
+        before.next().expect("a successor"),
+        "campaign and scrapbook are one profile revision"
+    );
+}

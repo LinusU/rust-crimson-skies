@@ -102,6 +102,7 @@ use cs_sim::campaign::{
     MissionOutcome as MissionOutcomeRecord, Outcome as MissionResult, ProfileId as IaProfileId,
     SessionGeneration as IaGeneration,
 };
+use cs_sim::records::RecordRule;
 use cs_types::content::ContentId;
 use cs_types::net::{PeerId, SessionId};
 use cs_types::profile::{ProfileId, ProfileKind};
@@ -1834,8 +1835,9 @@ impl FlowDomain {
             .as_mut()
             .ok_or(FlowError::Profile(SessionError::NoProfileSelected))?;
         let applied = run
-            .report_outcome(profile, &record)
-            .map_err(FlowError::Campaign)?;
+            .report_mission_record(profile, &record, RecordRule::DEFAULT)
+            .map_err(FlowError::Campaign)?
+            .campaign;
         self.applied = Some(applied);
         Ok(())
     }

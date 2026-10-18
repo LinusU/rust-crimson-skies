@@ -29,6 +29,10 @@ use cs_sim::campaign::{
     PurchaseDraft, PurchaseReceipt, Reward, RosterGate, RuntimeEdge, RuntimeNode, RuntimeNodeKind,
     SellDraft, SellReceipt, SessionGeneration, SymbolId,
 };
+use cs_sim::mission_records::{
+    MissionRecordError, MissionRecordReceipt, MissionRecordSubmission, apply_mission_record,
+};
+use cs_sim::records::{FIELD_PREFIX, Fact, FactKind, RecordReceipt, RecordRule, RestoreError};
 use cs_types::Tick;
 use cs_types::content::{ContentId, Resolved};
 use cs_types::profile::{ExtraField, ProfileDocument, ProfileId, ProfileKind};
@@ -288,6 +292,12 @@ pub enum CampaignSaveError {
     },
     /// A field would not survive the save's text format.
     Unrepresentable(String),
+    /// The scrapbook half of a mission record was refused; neither store was
+    /// written.
+    Record(MissionRecordError),
+    /// The stored scrapbook fields could not be read back; nothing was
+    /// written over them.
+    Scrapbook(RestoreError),
 }
 
 impl fmt::Display for CampaignSaveError {
@@ -302,6 +312,8 @@ impl fmt::Display for CampaignSaveError {
                 "campaign moved to revision {stored} while this run held {expected}; reload"
             ),
             Self::Unrepresentable(what) => write!(f, "cannot be saved: {what}"),
+            Self::Record(error) => write!(f, "mission record refused: {error}"),
+            Self::Scrapbook(error) => write!(f, "stored scrapbook is unreadable: {error}"),
         }
     }
 }
@@ -734,6 +746,152 @@ impl CampaignRun {
         outcome: &MissionOutcome,
     ) -> Result<AppliedOutcome, CampaignSaveError> {
         self.transact(session, |state, graph| state.apply_outcome(graph, outcome))
+    }
+
+    /// The results screen's transition with **both** record stores: applies a
+    /// finished mission's outcome to the campaign state and to the profile's
+    /// scrapbook through [`apply_mission_record`], under `rule`, and writes
+    /// the campaign snapshot and the `scrapbook.` fields as **one** profile
+    /// revision. The mission-succeeded fact is noted with the record, on a
+    /// victory the scrapbook had not yet seen.
+    ///
+    /// The scrapbook is read from the profile inside the commit, so a
+    /// conflicting-revision retry recomputes both halves from what is stored.
+    /// A replay both stores already hold writes nothing; a replay the
+    /// campaign holds but the scrapbook lacks (a store written campaign-only
+    /// before this entry point existed) finishes the scrapbook half without
+    /// paying the campaign twice.
+    ///
+    /// # Errors
+    ///
+    /// [`CampaignSaveError`]; on any error the run and the save are unchanged.
+    pub fn report_mission_record(
+        &mut self,
+        session: &mut ProfileSession,
+        outcome: &MissionOutcome,
+        rule: RecordRule,
+    ) -> Result<MissionRecordReceipt, CampaignSaveError> {
+        let mission = match self.graph.node(&outcome.node).map(|node| &node.kind) {
+            Some(RuntimeNodeKind::Mission { mission }) => mission.clone(),
+            Some(_) => {
+                return Err(CampaignError::NotAMission {
+                    node: outcome.node.clone(),
+                }
+                .into());
+            }
+            None => {
+                return Err(CampaignError::UnknownNode {
+                    node: outcome.node.clone(),
+                }
+                .into());
+            }
+        };
+        let base = self.state.revision();
+        let mut failure: Option<CampaignSaveError> = None;
+        let mut result: Option<(MissionRecordReceipt, CampaignState)> = None;
+        let committed = session.commit_with(|document| {
+            let refuse = |reason: &str| ChangeRefusal {
+                subject: "mission record".to_owned(),
+                reason: ChangeRefusalReason::Malformed(reason.to_owned()),
+            };
+            match read_snapshot(document) {
+                Ok(stored) => {
+                    let stored = stored.map(|held| held.revision);
+                    if stored != Some(base) {
+                        failure = Some(CampaignSaveError::Stale {
+                            expected: base,
+                            stored: stored.unwrap_or(0),
+                        });
+                        return Err(refuse("the stored campaign moved"));
+                    }
+                }
+                Err(error) => {
+                    failure = Some(error);
+                    return Err(refuse("the stored campaign is damaged"));
+                }
+            }
+            let mut scrapbook = match cs_sim::records::ScrapbookRecords::from_fields(
+                document
+                    .extra
+                    .iter()
+                    .map(|held| (held.key.as_str(), held.value.as_str())),
+            ) {
+                Ok(records) => records,
+                Err(error) => {
+                    failure = Some(CampaignSaveError::Scrapbook(error));
+                    return Err(refuse("the stored scrapbook is damaged"));
+                }
+            };
+            let mut next = self.state.clone();
+            let receipt = match apply_mission_record(
+                &mut next,
+                &self.graph,
+                &mut scrapbook,
+                MissionRecordSubmission {
+                    outcome,
+                    mission: &mission,
+                    rule,
+                },
+            ) {
+                Ok(receipt) => receipt,
+                Err(MissionRecordError::Campaign(error)) => {
+                    failure = Some(CampaignSaveError::Campaign(error));
+                    return Err(refuse("the campaign refused the outcome"));
+                }
+                Err(error) => {
+                    failure = Some(CampaignSaveError::Record(error));
+                    return Err(refuse("the mission record was refused"));
+                }
+            };
+            if matches!(receipt.record, RecordReceipt::Applied { .. })
+                && outcome.outcome == Outcome::Succeeded
+            {
+                // Whether the fact was new is not needed: the ledger only grows.
+                let _ = scrapbook.facts.note(Fact {
+                    kind: FactKind::MissionSucceeded,
+                    subject: mission.clone(),
+                });
+            }
+            let unchanged =
+                next.revision() == base && matches!(receipt.record, RecordReceipt::AlreadyApplied);
+            result = Some((receipt, next.clone()));
+            if unchanged {
+                return Err(ChangeRefusal {
+                    subject: "mission record".to_owned(),
+                    reason: ChangeRefusalReason::AlreadyApplied,
+                });
+            }
+            if let Err(error) = write_snapshot(document, &next.snapshot()) {
+                failure = Some(error);
+                return Err(refuse("the campaign cannot be represented"));
+            }
+            document
+                .extra
+                .retain(|held| !held.key.starts_with(FIELD_PREFIX));
+            document.extra.extend(
+                scrapbook
+                    .to_fields()
+                    .into_iter()
+                    .map(|(key, value)| ExtraField { key, value }),
+            );
+            Ok(())
+        });
+        match committed {
+            Ok(_) => {
+                let (receipt, next) = result.expect("a written record has its receipt");
+                self.state = next;
+                Ok(receipt)
+            }
+            Err(SessionError::Refused(refusal))
+                if failure.is_none() && refusal.reason == ChangeRefusalReason::AlreadyApplied =>
+            {
+                Ok(result.expect("an unchanged record has its receipt").0)
+            }
+            Err(SessionError::Refused(_)) if failure.is_some() => {
+                Err(failure.expect("checked just above"))
+            }
+            Err(error) => Err(CampaignSaveError::Session(error)),
+        }
     }
 
     /// The briefing/cutscene transition: crosses the selected interlude beats
