@@ -206,9 +206,10 @@ pub use smoke::{
 };
 pub use terminal::{MissionExit, MissionTerminal, MissionTerminalSource};
 pub use weapon_present::{
-    MISSION_WEAPON_VISUAL_CLAIM, MissionHudNotice, MissionNoticeHudPlugin, MissionNoticeLine,
-    MissionWeaponPresentationPlugin, NOTICE_HUD_CAPTION, NOTICE_LIFETIME_TICKS, WeaponVisual,
-    WeaponVisualKind, WeaponVisualSample,
+    MISSION_WEAPON_VISUAL_CLAIM, MUZZLE_FLASH_LIFETIME_TICKS, MUZZLE_FLASH_VISUAL_CLAIM,
+    MissionHudNotice, MissionNoticeHudPlugin, MissionNoticeLine, MissionWeaponPresentationPlugin,
+    MuzzleDrawable, MuzzleFlash, NOTICE_HUD_CAPTION, NOTICE_LIFETIME_TICKS, WeaponVisual,
+    WeaponVisualKind, WeaponVisualSample, resolve_muzzle_drawable,
 };
 pub use weapons::{
     MISSION_FACTION_HOSTILE, MISSION_FACTION_NEUTRAL, MISSION_FACTION_PLAYER, MISSION_FIRE_ROCKETS,

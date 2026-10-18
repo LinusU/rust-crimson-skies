@@ -14,6 +14,9 @@
 //!   trigger reads as a continuous stream of tracers;
 //! * one drawn child per live rocket — a body oriented along the rocket's own
 //!   flight path;
+//! * one drawn flash per accepted shot — a child of the shot's
+//!   [`MuzzleEffectSpawn`] record, at the emitted muzzle position, for a
+//!   designed number of committed fixed ticks ([`MUZZLE_FLASH_LIFETIME_TICKS`]);
 //! * [`MissionHudNotice`]: a weapon refusal the publisher records (today: the
 //!   rocket's "no declared-hostile damage target is live") is published for
 //!   the HUD to show, so a refused shot is reported on screen instead of
@@ -39,6 +42,7 @@
 
 use bevy::asset::{AssetApp, Assets};
 use bevy::mesh::Mesh;
+use bevy::prelude::FixedPostUpdate;
 use bevy::prelude::{
     Added, App, BackgroundColor, ChildOf, Children, Color, Commands, Component, Cuboid, Entity,
     Handle, IntoScheduleConfigs, Local, Mesh3d, MeshMaterial3d, Node, Plugin, PositionType, Quat,
@@ -47,10 +51,12 @@ use bevy::prelude::{
 };
 use bevy::text::FontSize;
 use cs_types::Tick;
+use cs_types::content::ContentId;
 
 use super::weapons::MissionWeaponReport;
 use crate::ordnance::OrdnanceItemMirror;
 use crate::physics::PhysicsTickLedger;
+use crate::weapon_effects::{MuzzleEffectSpawn, drive_weapon_effect_presentation};
 use crate::weapons::WeaponRoundMirror;
 
 /// The claim the mission's weapon visuals and its HUD notice line are filed
@@ -66,6 +72,20 @@ pub const NOTICE_HUD_CAPTION: &str = "WEAPONS — DESIGNED LAYOUT";
 /// composition's 120 Hz). A refusal the publisher records again refreshes it
 /// with its own tick.
 pub const NOTICE_LIFETIME_TICKS: u64 = 240;
+
+/// The claim the muzzle flash is filed under. The original's muzzle-effect id →
+/// drawable mapping is not recovered (`docs/findings/2026-10-19-f27-c-fx-render-muzzle-flash.md`),
+/// so the flash is a project-designed stand-in, never the 2000 original's art.
+pub const MUZZLE_FLASH_VISUAL_CLAIM: &str = "f27-c-fx-render.designed-muzzle-flash";
+
+/// How long a muzzle flash lives, in committed fixed ticks (50 ms at the
+/// composition's 120 Hz). The flash born on the shot's tick is drawn through
+/// the next `MUZZLE_FLASH_LIFETIME_TICKS - 1` ticks and released on the one
+/// after. Designed.
+pub const MUZZLE_FLASH_LIFETIME_TICKS: u64 = 6;
+
+/// The flash cube's edge, in metres. Designed.
+const MUZZLE_FLASH_SIZE_M: f32 = 0.55;
 
 /// The drawn streak's width, in metres. Designed.
 const TRACER_WIDTH_M: f32 = 0.14;
@@ -98,6 +118,46 @@ pub enum WeaponVisualKind {
     RoundTracer,
     /// The body of a live rocket.
     Rocket,
+    /// The flash at an accepted shot's muzzle.
+    MuzzleFlash,
+}
+
+/// What a declared muzzle-effect id resolves to for drawing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum MuzzleDrawable {
+    /// No original asset is recovered for the declared id: this designed
+    /// stand-in is drawn under `claim`. The id is kept as declared.
+    DesignedStandIn {
+        /// The declared muzzle-effect id the shot named.
+        declared: ContentId,
+        /// The claim the drawing is filed under.
+        claim: &'static str,
+    },
+}
+
+/// Resolves a declared muzzle-effect id to what is drawn for it.
+///
+/// No original-data mapping from a `hardpoint_equipment` muzzle-effect id to a
+/// mesh, sprite or particle has been measured, and a name is not a binding, so
+/// every id resolves to the designed stand-in, by name.
+#[must_use]
+pub fn resolve_muzzle_drawable(declared: &ContentId) -> MuzzleDrawable {
+    MuzzleDrawable::DesignedStandIn {
+        declared: declared.clone(),
+        claim: MUZZLE_FLASH_VISUAL_CLAIM,
+    }
+}
+
+/// Component: a [`MuzzleEffectSpawn`] record that has been drawn.
+///
+/// Its presence is the once-only guard: the attach pass skips a record that
+/// carries it, so a record is never drawn twice.
+#[derive(Component, Clone, Debug, PartialEq, Eq)]
+pub struct MuzzleFlash {
+    /// What the declared id resolved to.
+    pub drawable: MuzzleDrawable,
+    /// The first committed tick the flash is no longer drawn on.
+    pub expires_at: u64,
 }
 
 /// One mirror's motion sample, kept so the drawn child can be oriented along
@@ -159,6 +219,7 @@ struct VisualPair {
 struct WeaponVisualAssets {
     tracer: Option<VisualPair>,
     rocket: Option<VisualPair>,
+    flash: Option<VisualPair>,
 }
 
 impl WeaponVisualAssets {
@@ -173,6 +234,28 @@ impl WeaponVisualAssets {
                 mesh: meshes.add(Cuboid::new(TRACER_WIDTH_M, TRACER_WIDTH_M, 1.0)),
                 material: materials.add(StandardMaterial {
                     base_color: Color::srgb(1.0, 0.88, 0.25),
+                    unlit: true,
+                    ..default()
+                }),
+            })
+            .clone()
+    }
+
+    /// The muzzle flash pair, built on first use.
+    fn flash(
+        &mut self,
+        meshes: &mut Assets<Mesh>,
+        materials: &mut Assets<StandardMaterial>,
+    ) -> VisualPair {
+        self.flash
+            .get_or_insert_with(|| VisualPair {
+                mesh: meshes.add(Cuboid::new(
+                    MUZZLE_FLASH_SIZE_M,
+                    MUZZLE_FLASH_SIZE_M,
+                    MUZZLE_FLASH_SIZE_M,
+                )),
+                material: materials.add(StandardMaterial {
+                    base_color: Color::srgb(1.0, 0.95, 0.7),
                     unlit: true,
                     ..default()
                 }),
@@ -265,6 +348,63 @@ fn attach_rocket_visuals(
     }
 }
 
+/// Draws one flash for every muzzle-effect record that has none yet.
+///
+/// Runs on the fixed loop right after the presentation pass that spawns the
+/// records, so a shot's flash exists in the tick that accepted it. The flash is
+/// a child of the record: whatever releases the record releases the drawing.
+fn attach_muzzle_flashes(
+    mut commands: Commands,
+    mut assets: ResMut<WeaponVisualAssets>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    spawns: Query<(Entity, &MuzzleEffectSpawn), Without<MuzzleFlash>>,
+) {
+    if spawns.is_empty() {
+        return;
+    }
+    let drawn = assets.flash(&mut meshes, &mut materials);
+    for (entity, spawn) in &spawns {
+        commands.entity(entity).insert((
+            Visibility::Inherited,
+            MuzzleFlash {
+                drawable: resolve_muzzle_drawable(&spawn.effect),
+                expires_at: spawn.at.0.saturating_add(MUZZLE_FLASH_LIFETIME_TICKS),
+            },
+        ));
+        commands.spawn((
+            WeaponVisual {
+                kind: WeaponVisualKind::MuzzleFlash,
+            },
+            Mesh3d(drawn.mesh.clone()),
+            MeshMaterial3d(drawn.material.clone()),
+            Transform::IDENTITY,
+            ChildOf(entity),
+        ));
+    }
+}
+
+/// Releases every flash whose designed lifetime has run out, record and
+/// drawing together.
+///
+/// The clock is the committed tick ledger, so a paused or unfocused run
+/// freezes a flash exactly as it freezes the simulation; without a ledger
+/// nothing expires.
+fn expire_muzzle_flashes(
+    mut commands: Commands,
+    ledger: Option<Res<PhysicsTickLedger>>,
+    flashes: Query<(Entity, &MuzzleFlash)>,
+) {
+    let Some(ledger) = ledger else {
+        return;
+    };
+    for (entity, flash) in &flashes {
+        if ledger.ticks >= flash.expires_at {
+            commands.entity(entity).despawn();
+        }
+    }
+}
+
 /// Orients every drawn weapon visual along the way its projectile flew.
 ///
 /// A tracer spans the frame's travelled segment; a rocket body points along
@@ -290,6 +430,9 @@ fn orient_weapon_visuals(
                 WeaponVisualKind::Rocket => {
                     transform.rotation = Quat::from_rotation_arc(Vec3::Z, direction);
                 }
+                // A flash has no measured orientation and is not a child of a
+                // mirror, so it never reaches this loop.
+                WeaponVisualKind::MuzzleFlash => {}
             }
         }
     }
@@ -465,6 +608,12 @@ impl Plugin for MissionWeaponPresentationPlugin {
                     orient_weapon_visuals,
                 )
                     .chain(),
+            )
+            .add_systems(
+                FixedPostUpdate,
+                (attach_muzzle_flashes, expire_muzzle_flashes)
+                    .chain()
+                    .after(drive_weapon_effect_presentation),
             )
             .add_systems(Update, publish_rocket_notices.after(orient_weapon_visuals));
     }
