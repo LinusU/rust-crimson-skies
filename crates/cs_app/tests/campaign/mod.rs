@@ -315,6 +315,7 @@ mod m21_a;
 mod m21_b;
 mod m24_a;
 mod m24_b;
+mod m24_b_fu1;
 mod objaddr;
 mod owner_facts_table;
 mod record_objectives_sound;
