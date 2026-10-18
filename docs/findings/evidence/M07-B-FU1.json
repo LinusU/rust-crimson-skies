@@ -1,9 +1,9 @@
 {
  "schema_version": 1,
  "task_id": "M07-B-FU1",
- "candidate_tree": "719cca4562db4c7fcfe9e64946dfca065353db39",
+ "candidate_tree": "2c4223cba61f2e2472b0205cea1d6ad93a1db088",
  "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
- "created_at": "2026-10-18T10:31:24Z",
+ "created_at": "2026-10-18T10:37:50Z",
  "command": {"argv": ["cargo", "test", "--locked", "-p", "cs_app", "--test", "cs_app_tests_d", "--", "accept_m07_b_fu1_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/sonnet-2", "exit_code": 0},
  "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
  "seed": 0,
@@ -12,7 +12,7 @@
  "capabilities": ["retail", "synthetic"],
  "tests": {"discovered": 2, "executed": 2, "passed": 2, "failed": 0, "ignored": 0},
  "assertions": [{"id": "accept_m07_b_fu1_the_threshold_defaults_to_the_zone_count_and_the_first_site_wins", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m07_b_fu1_the_record_spells_no_danger_zones_site_so_no_block_carries_the_predicate", "status": "pass", "evidence": ["cargo-test.log"]}],
- "artifacts": [{"path": "cargo-test.log", "sha256": "dec34653b7b9dfa31f837c42943b38a433231fa75e93c4d968a7e69858f61502", "kind": "log"}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "9506bd264835b470be139a3296737fa0292a83655a3114df2d5bbcccc06f7ebc", "kind": "log"}],
  "unknowns": [],
  "review": {"identity": "implementer: sonnet-2/sonnet-2 (Rally #1597 M07-B-REPIN-CORRECTED-LAYOUT, session of 2026-10-18); this is the implementer's regenerated acceptance evidence on the corrected campaign layout, not a review; reviewer: not yet assigned; no agent review replaces the owner approval", "method": "acceptance suite run locally with the retail capability; the fields are derived from the recorded log and production discovery of $CS_GAME_DIR. The suite pins this task's change: the `DANGER_ZONES_COMPLETED` predicate is the engine image's own flag evaluator — the once-per-block parse (0x465ec0) strdups each listed zone name and zeroes one flag byte per name, the pass-2 evaluator (0x469ab0) counts the nonzero bytes and fires at count >= threshold with the threshold defaulting to the listed count, and the single runtime writer (0x446990) stores 1 and never 0 — so a site lowers to a sticky set-of-zones count that answers false without recorded flags (the synthetic arms pin the lowering; M08-B's retail blocks pin the evaluation). On the corrected campaign layout M07's own record (`ZBD/C1/M02`) spells no danger-zones site, and the retail test pins that fact through production lowering: no lowered condition is a danger-zones evaluator (the three blocks first pinned belong to another mission's record; Rally #1597). NOT CLAIMED: the producer's world test (0x446930 -> 0x55d6c0 and its two-flagged-entry gate) is untraced and carried as a named residual unknown, no directive is implemented by a measured effect, no mission was played, no original executable was run and nothing is verified_original. Claim is implemented only; validated with tools/validate_evidence.py --require-pass. `candidate_tree` is the tree of the commit the suite and this harness ran on; the only later delta is this report's own copy under docs/findings/evidence/, which no acceptance test reads"},
  "claim": "implemented"
