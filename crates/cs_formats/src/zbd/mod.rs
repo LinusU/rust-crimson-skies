@@ -46,6 +46,9 @@
 //! * [`placezeps`] decodes the mission-scoped `placezeps.zrd` placement member
 //!   (an `ANIMATION_DEFINITIONS` document of state statements) field by field
 //!   (task #791); every key it does not model arrives as an explicit unknown.
+//! * [`si_script`] reads the spline-interp (`.zan`) key records an animation
+//!   container stores inline after each `OBJECT_MOTION_SI_SCRIPT` path (task
+//!   #1659); the layout is measured, see the module and its finding.
 //! * [`wave`] reads the RIFF/WAVE header of one sound member into the
 //!   descriptor [`sound_archive`] reports (task #344).
 //! * [`adpcm`] reads the `fmt ` extension the two ADPCM tags carry and decodes
@@ -86,6 +89,7 @@ pub mod header;
 pub mod placezeps;
 pub mod reader_archive;
 pub mod role;
+pub mod si_script;
 pub mod sound_archive;
 pub mod sound_sample;
 pub mod trailer;
@@ -132,6 +136,11 @@ pub use reader_archive::{
 pub use role::{
     CONTENT_ROOT, OUTSIDE_CONTENT_ROOT, RoleLevel, RolePattern, RoleRule, UNOBSERVED_NAME, ZbdRole,
     role_for_path,
+};
+pub use si_script::{
+    SI_BLOCK_BYTES, SI_KEY_HEAD_BYTES, SI_LAYOUT_EVIDENCE, SI_TAG_ORIENTATION, SI_TAG_POSITION,
+    SiKey, SiOrientationBlock, SiPositionBlock, SiScript, SiScriptError, find_si_script,
+    read_si_scripts,
 };
 pub use sound_archive::{
     SAMPLES_NOT_DECODED_REASON, SoundArchive, SoundDescriptor, SoundEntry, SoundError, SoundField,
