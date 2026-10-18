@@ -24,8 +24,11 @@ use cs_sim::targeting::Allegiance;
 
 use super::actor_visual::{ActorVisualDrawn, MissionActorVisuals, attach_actor_visuals};
 use super::compose::{MissionPlayerBody, MissionStage};
-use crate::mission_actors::{MissionActorSpawnReport, MissionZeppelinActor, ScriptedAircraftActor};
+use crate::mission_actors::{
+    MissionActorSpawnReport, MissionGroundTarget, MissionZeppelinActor, ScriptedAircraftActor,
+};
 use crate::mission_start::SpawnDispatch;
+use crate::ui::hud::MissionMessages;
 use crate::world_actors::WorldActorBinding;
 
 /// How many hostile contacts the list and the brackets show.
@@ -341,6 +344,8 @@ fn update_contacts(
     zeppelins: ZeppelinQuery,
     cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     mut lists: Query<&mut Text, With<ContactList>>,
+    ground_targets: Query<&MissionGroundTarget>,
+    messages: Option<Res<MissionMessages>>,
     brackets: Query<Entity, With<ContactBracket>>,
     overlay: Option<Res<crate::playtest::visuals::DeveloperOverlay>>,
     windows: Query<&bevy::prelude::Window>,
@@ -387,6 +392,21 @@ fn update_contacts(
                 &mut placed,
             );
         }
+        if let Some(site) = super::cockpit_hud::objective_site(ground_targets) {
+            let catalog = messages.as_deref().and_then(MissionMessages::catalog);
+            if let Some(name) = super::cockpit_hud::objective_marker_name(site, catalog) {
+                let [x, y, z] = site.position_m;
+                spawn_objective_marker(
+                    &mut commands,
+                    &name,
+                    Vec3::new(x as f32, y as f32, z as f32),
+                    camera,
+                    camera_transform,
+                    window_size,
+                    &mut placed,
+                );
+            }
+        }
         return;
     }
     for row in marked {
@@ -431,18 +451,8 @@ fn spawn_original_marker(
     window: (f32, f32),
     placed: &mut Vec<super::cockpit_hud::LabelRect>,
 ) {
-    let toward = row.position_m - camera_transform.translation();
-    let forward = *camera_transform.forward();
-    let right = *camera_transform.right();
-    let relative_deg = toward.dot(right).atan2(toward.dot(forward)).to_degrees();
-    let on_screen = if toward.dot(forward) > 0.0 {
-        camera
-            .world_to_viewport(camera_transform, row.position_m)
-            .ok()
-            .filter(|at| at.x >= 0.0 && at.y >= 0.0 && at.x <= window.0 && at.y <= window.1)
-    } else {
-        None
-    };
+    let (relative_deg, on_screen) =
+        screen_bearing(row.position_m, camera, camera_transform, window);
     let name = row.marker_name();
     // The wanted spot: beside the contact on screen, else on the edge toward
     // its bearing. `place_label` then keeps it clear of the reticle, the
@@ -477,6 +487,119 @@ fn spawn_original_marker(
             ..default()
         },
         TextColor(Color::srgb(1.0, 0.2, 0.2)),
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Px(left),
+            top: Val::Px(top),
+            ..default()
+        },
+        ContactBracket,
+    ));
+}
+
+/// The bearing of a world point from the camera's heading, in degrees positive
+/// to the right, and its window position when it is in front of the camera
+/// and inside the window.
+fn screen_bearing(
+    position: Vec3,
+    camera: &Camera,
+    camera_transform: &GlobalTransform,
+    window: (f32, f32),
+) -> (f32, Option<bevy::prelude::Vec2>) {
+    let toward = position - camera_transform.translation();
+    let forward = *camera_transform.forward();
+    let right = *camera_transform.right();
+    let relative_deg = toward.dot(right).atan2(toward.dot(forward)).to_degrees();
+    let on_screen = if toward.dot(forward) > 0.0 {
+        camera
+            .world_to_viewport(camera_transform, position)
+            .ok()
+            .filter(|at| at.x >= 0.0 && at.y >= 0.0 && at.x <= window.0 && at.y <= window.1)
+    } else {
+        None
+    };
+    (relative_deg, on_screen)
+}
+
+/// Diameter of the off-screen objective circle, pixels (estimated from the
+/// capture, not measured).
+const OBJECTIVE_CIRCLE: f32 = 96.0;
+
+/// Draws the blue objective marker: on screen, its name beside the site; off
+/// screen, a circle at the screen edge toward the site, an arrow beside it
+/// pointing the way and the name with its clock bearing under it.
+///
+/// The target image inside the original's circle is unmeasured and not drawn.
+fn spawn_objective_marker(
+    commands: &mut Commands,
+    name: &str,
+    position: Vec3,
+    camera: &Camera,
+    camera_transform: &GlobalTransform,
+    window: (f32, f32),
+    placed: &mut Vec<super::cockpit_hud::LabelRect>,
+) {
+    let (blue_r, blue_g, blue_b) = super::cockpit_hud::OBJECTIVE_BLUE;
+    let blue = Color::srgb(blue_r, blue_g, blue_b);
+    let (relative_deg, on_screen) = screen_bearing(position, camera, camera_transform, window);
+    let (wanted, label) = match on_screen {
+        Some(at) => (
+            (at.x - 40.0, at.y - 8.0),
+            super::cockpit_hud::marker_text(name, None),
+        ),
+        None => {
+            let hour = super::cockpit_hud::clock_hour(relative_deg);
+            let right = relative_deg.rem_euclid(360.0) < 180.0;
+            let label = super::cockpit_hud::marker_text(name, Some(hour));
+            let width = super::cockpit_hud::label_width(label.chars().count());
+            let x = if right { window.0 - width - 10.0 } else { 10.0 };
+            let circle_left = if right {
+                window.0 - OBJECTIVE_CIRCLE - 24.0
+            } else {
+                24.0
+            };
+            let circle_top = window.1 * 0.25;
+            commands.spawn((
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(circle_left),
+                    top: Val::Px(circle_top),
+                    width: Val::Px(OBJECTIVE_CIRCLE),
+                    height: Val::Px(OBJECTIVE_CIRCLE),
+                    border: UiRect::all(Val::Px(2.0)),
+                    border_radius: bevy::prelude::BorderRadius::MAX,
+                    ..default()
+                },
+                bevy::prelude::BorderColor::all(blue),
+                ContactBracket,
+            ));
+            commands.spawn((
+                Text::new(if right { "->" } else { "<-" }),
+                TextFont {
+                    font_size: FontSize::Px(20.0),
+                    ..default()
+                },
+                TextColor(blue),
+                Node {
+                    position_type: PositionType::Absolute,
+                    left: Val::Px(if right { window.0 - 22.0 } else { 2.0 }),
+                    top: Val::Px(circle_top + OBJECTIVE_CIRCLE / 2.0 - 12.0),
+                    ..default()
+                },
+                ContactBracket,
+            ));
+            ((x, circle_top + OBJECTIVE_CIRCLE + 6.0), label)
+        }
+    };
+    let width = super::cockpit_hud::label_width(label.chars().count());
+    let (left, top) = super::cockpit_hud::place_label(wanted, width, window, placed);
+    commands.spawn((
+        Text::new(label),
+        TextFont {
+            font_size: FontSize::Px(16.0),
+            ..default()
+        },
+        TextColor(blue),
         Node {
             position_type: PositionType::Absolute,
             left: Val::Px(left),

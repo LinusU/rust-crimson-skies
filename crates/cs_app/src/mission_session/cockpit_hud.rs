@@ -28,10 +28,12 @@ use bevy::prelude::{
     TextColor, TextFont, UiRect, Update, Val, Window, With, default,
 };
 use bevy::text::FontSize;
+use cs_content::config::{MessageCatalog, MessageLookup};
 use cs_sim::damage::PartState;
 use cs_types::net::{ActorId, SessionId};
 
 use super::weapons::{MissionOrdnanceSession, MissionWeapons};
+use crate::mission_actors::MissionGroundTarget;
 use crate::playtest::PlaytestState;
 use crate::ui::hud::{airframe_zones, ordnance_rows, weapon_gauge};
 use crate::weapons::{SessionDamageResolver, WeaponSession};
@@ -91,6 +93,56 @@ pub const LABEL_CHAR_WIDTH: f32 = 10.5;
 pub const RETICLE_CLEARANCE: f32 = 48.0;
 /// Gap kept between labels and from the window border.
 const LABEL_GAP: f32 = 4.0;
+
+/// The blue the original draws the objective marker in (the capture's text and
+/// circle; the exact value is estimated from the screenshot, not measured).
+pub const OBJECTIVE_BLUE: (f32, f32, f32) = (0.15, 0.15, 1.0);
+
+/// The mission's objective site the marker points at: of the bound ground
+/// targets whose `targets.zrd` row carries the `objective` marker and a
+/// `description`, the one declared first.
+///
+/// **Designed selection.** M01 declares three such rows (`MSG_OBJ_SITE1..3`)
+/// and the capture shows Site #1 first; which site the original shows when is
+/// unmeasured (`ADD_OBJECTIVE_TARGET` never names a site in M01), so this
+/// takes the first declared row and never retires it.
+#[must_use]
+pub fn objective_site<'a>(
+    targets: impl IntoIterator<Item = &'a MissionGroundTarget>,
+) -> Option<&'a MissionGroundTarget> {
+    targets
+        .into_iter()
+        .filter(|target| target.objective && target.description.is_some())
+        .filter_map(|target| Some((target.declared?, target)))
+        .min_by_key(|(declared, _)| *declared)
+        .map(|(_, target)| target)
+}
+
+/// The installation's text for a message name, or the name itself when no
+/// catalog or no single string answers.
+#[must_use]
+pub fn message_text(name: &str, messages: Option<&MessageCatalog>) -> String {
+    messages
+        .and_then(|catalog| match catalog.resolve(name, None) {
+            MessageLookup::Found { row, .. } => row.text.clone(),
+            _ => None,
+        })
+        .unwrap_or_else(|| name.to_owned())
+}
+
+/// The objective marker's name: `[Examine] - Site #1`, the `help_label` text
+/// in brackets then the `description` text, as the capture spells it.
+#[must_use]
+pub fn objective_marker_name(
+    target: &MissionGroundTarget,
+    messages: Option<&MessageCatalog>,
+) -> Option<String> {
+    let description = message_text(target.description.as_deref()?, messages);
+    Some(match target.help_label.as_deref() {
+        Some(help) => format!("[{}] - {description}", message_text(help, messages)),
+        None => description,
+    })
+}
 
 /// An axis-aligned label rectangle, `(left, top, width, height)` in pixels.
 pub type LabelRect = (f32, f32, f32, f32);
@@ -586,6 +638,46 @@ mod tests {
             parse(words(&["--playtest", "--dev-overlay"])),
             CliRequest::Invalid { .. }
         ));
+    }
+
+    fn site(declared: Option<usize>, objective: bool, text: Option<&str>) -> MissionGroundTarget {
+        MissionGroundTarget {
+            node: "n".to_owned(),
+            declared,
+            damage_actor: ActorId {
+                session: SessionId::new(1).expect("nonzero"),
+                serial: 1,
+            },
+            generation: crate::scene::SceneGeneration::default(),
+            position_m: [0.0; 3],
+            healthy: None,
+            destroyed: None,
+            coupling: Vec::new(),
+            objective,
+            other_target: false,
+            description: text.map(str::to_owned),
+            help_label: Some("MSG_OBJ_EXAMINE".to_owned()),
+            roster: None,
+            allegiance_open: None,
+        }
+    }
+
+    #[test]
+    fn accept_parity_m01_hud_objective_marker_picks_first_declared_site() {
+        let rows = [
+            site(Some(9), true, Some("MSG_OBJ_SITE3")),
+            site(Some(7), true, Some("MSG_OBJ_SITE1")),
+            site(Some(1), false, Some("MSG_OBJ_DESTROY")),
+            site(None, true, Some("MSG_OBJ_SITE2")),
+        ];
+        let picked = objective_site(&rows).expect("a site");
+        assert_eq!(picked.description.as_deref(), Some("MSG_OBJ_SITE1"));
+        assert!(objective_site(&rows[2..3]).is_none());
+        // Without a catalog the marker names the messages instead of text.
+        assert_eq!(
+            objective_marker_name(picked, None).as_deref(),
+            Some("[MSG_OBJ_EXAMINE] - MSG_OBJ_SITE1")
+        );
     }
 
     #[test]
