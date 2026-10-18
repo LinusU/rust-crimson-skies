@@ -1820,10 +1820,14 @@ impl FlowDomain {
     ///
     /// # Errors
     ///
-    /// [`FlowError::NoWingmateSlot`] / [`FlowError::AmbiguousWingmateSlot`]
-    /// when the mapping onto an authored slot would have to be guessed,
-    /// [`FlowError::NoAmmunition`] when the equipment slot is empty, and
-    /// [`FlowError::Briefing`] for the roster rule's own refusal.
+    /// [`FlowError::NoWingmateEquipment`] when the measured original
+    /// (F45-C.5) offers the wingmate slot no control that starts a screen with
+    /// selectors (only reachable when the application supplied the
+    /// measurement), [`FlowError::NoWingmateSlot`] /
+    /// [`FlowError::AmbiguousWingmateSlot`] when the mapping onto an authored
+    /// slot would have to be guessed, [`FlowError::NoAmmunition`] when the
+    /// equipment slot is empty, and [`FlowError::Briefing`] for the roster
+    /// rule's own refusal.
     fn briefed_roster(&self, loadout: &Loadout) -> Result<Option<AlliesRoster>, FlowError> {
         let Some(lowered) = self.setup.roster.as_ref() else {
             return Ok(None);
