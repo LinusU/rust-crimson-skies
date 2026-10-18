@@ -1135,10 +1135,11 @@ fn accept_m16_b_fu1_no_census_row_refuses_a_sound_cleanup_site() {
             }
         }
     }
-    assert!(
-        spelled_sites > 0,
-        "the census measures spelled sound-cleanup sites — {spelled_sites} \
-         seen — so an empty selection cannot pass"
+    assert_eq!(
+        spelled_sites, 49,
+        "the census measures the corpus's 49 spelled sound-cleanup sites — \
+         the count the M01-LC mission-program finding's grammar-free audit \
+         reached independently — so an empty selection cannot pass"
     );
     assert!(
         offenders.is_empty(),
