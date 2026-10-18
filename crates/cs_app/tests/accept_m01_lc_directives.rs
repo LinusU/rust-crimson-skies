@@ -509,14 +509,14 @@ fn accept_m01_lc_directives_a_key_no_finding_covers_stays_counted_and_named() {
     let document = control_record(vec![block(
         1,
         vec![
-            directive("WAKEUP_OBJECTIVE_WHEN_I_COMPLETE", vec![zrd_int(3)]),
+            directive("WIN_ANIM", vec![zrd_int(3)]),
             vec![zrd_text("Change")],
             directive("INSTANTWIN", Vec::new()),
         ],
     )]);
     let (record, lowered) = lower(&document);
     assert_eq!(record.sites(), 3, "every spelled site is counted");
-    for name in ["WAKEUP_OBJECTIVE_WHEN_I_COMPLETE", "Change"] {
+    for name in ["WIN_ANIM", "Change"] {
         let key = record.key(name).expect("counted");
         assert_eq!(key.sites, 1);
         assert!(
@@ -534,9 +534,7 @@ fn accept_m01_lc_directives_a_key_no_finding_covers_stays_counted_and_named() {
         })
         .collect();
     assert!(
-        refused
-            .iter()
-            .any(|reason| reason.contains("WAKEUP_OBJECTIVE_WHEN_I_COMPLETE")),
+        refused.iter().any(|reason| reason.contains("WIN_ANIM")),
         "the unmeasured key's site refuses by name: {refused:?}"
     );
     assert!(
@@ -557,7 +555,7 @@ fn accept_m01_lc_directives_a_key_no_finding_covers_stays_counted_and_named() {
     assert!(
         unmeasured_fields
             .iter()
-            .any(|field| field.contains("WAKEUP_OBJECTIVE_WHEN_I_COMPLETE")),
+            .any(|field| field.contains("WIN_ANIM")),
         "the lowering rows name the unhonoured key: {unmeasured_fields:?}"
     );
     assert!(!record.is_complete(attempt));

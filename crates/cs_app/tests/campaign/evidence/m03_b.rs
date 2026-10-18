@@ -11,11 +11,11 @@ use super::*;
 /// report's run is the one that records them, so it requires them.
 const RETAIL_TESTS_M03_B: &[&str] = &[
     "accept_m03_b_the_control_program_is_the_member_that_declares_the_blocks",
-    "accept_m03_b_every_directive_m03_spells_has_a_disposition_and_one_is_refused",
-    "accept_m03_b_the_record_does_not_lower_and_exactly_two_sites_refuse",
+    "accept_m03_b_every_directive_m03_spells_has_a_disposition_and_one_is_ignored",
+    "accept_m03_b_the_record_lowers_and_the_two_wake_sites_are_dropped",
     "accept_m03_b_the_sheet_priorities_resolve_to_measured_operations",
     "accept_m03_b_the_terminal_blocks_are_gated_and_every_address_is_in_range",
-    "accept_m03_b_the_mission_stays_unready_until_the_refused_sites_are_measured",
+    "accept_m03_b_the_record_is_complete_and_the_campaign_gate_stays_closed",
     "accept_m03_b_fu2_the_ten_pair_net_site_binds_through_one_list_argument",
 ];
 
@@ -24,6 +24,7 @@ const RETAIL_TESTS_M03_B: &[&str] = &[
 /// one list argument and the positional refusal moved to `IDENTITY`.
 const SYNTHETIC_TESTS_M03_B: &[&str] = &[
     "accept_m03_b_a_key_with_two_shapes_is_refused_and_no_program_assembles",
+    "accept_m03_b_fu1_an_ignored_spelling_is_dropped_and_the_measured_one_still_binds",
     "accept_m03_b_fu2_a_net_assignment_carries_one_list_and_the_positional_bound_still_refuses",
 ];
 

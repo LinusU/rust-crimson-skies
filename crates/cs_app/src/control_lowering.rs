@@ -59,7 +59,7 @@
 use cs_content::mission_control::{
     CallOutcome, ConditionOutcome, DirectiveDisposition, DirectiveOperation as MeasuredOperation,
     DirectiveShape, LoweringAttempt, MeasuredArg, MeasuredControlRecord, MeasuredDirectiveKey,
-    TerminalOutcome,
+    TerminalOutcome, ignored_directive,
 };
 use cs_content::objectives::objective_block_number;
 use cs_content::stunts::{ZrdValue, objective_record, zrd_flat_fields};
@@ -198,6 +198,8 @@ pub fn lower_control_record(
     // The first carry refusal per block, if any: a block whose site could not
     // be represented faithfully has no trustworthy lowered condition.
     let mut block_damage: Vec<Option<String>> = Vec::new();
+    // Sites of keys the original never looks up, dropped without a call.
+    let mut ignored_sites = 0u32;
 
     for (key, value) in zrd_flat_fields(objective_record(document)) {
         let Some(number) = objective_block_number(key) else {
@@ -226,6 +228,18 @@ pub fn lower_control_record(
                 });
                 break;
             };
+            // A key the original never looks up is dropped as it drops it: no
+            // call, no verdict, and the condition side never sees it. Its
+            // follower (the list, if any) is consumed with it; a following
+            // text is the next key.
+            if ignored_directive(name).is_some() {
+                ignored_sites += 1;
+                index += match children.get(index + 1) {
+                    Some(ZrdValue::Text(_)) | None => 1,
+                    Some(_) => 2,
+                };
+                continue;
+            }
             match children.get(index + 1) {
                 Some(next) if next.as_list().is_some() => {
                     let items = next.as_list().unwrap_or_default();
@@ -443,6 +457,7 @@ pub fn lower_control_record(
             objectives: raw.as_ref().map_or(0, |raw| raw.objectives.len() as u32),
             conditions,
             calls,
+            ignored_sites,
             unbound_keys,
             validation,
         },

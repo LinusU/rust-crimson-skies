@@ -481,6 +481,11 @@ impl MeasuredDirectiveKey {
         if let Some(measured) = measured_directive(&self.key) {
             return DirectiveDisposition::Measured(measured);
         }
+        if ignored_directive(&self.key).is_some() {
+            return DirectiveDisposition::Unmeasured {
+                reason: UnmeasuredReason::IgnoredByOriginal,
+            };
+        }
         if self.shapes.len() > 1 {
             return DirectiveDisposition::Unmeasured {
                 reason: UnmeasuredReason::DisagreeingArgumentShape {
@@ -549,6 +554,9 @@ pub enum UnmeasuredReason {
         /// How many distinct shapes the sites spell.
         shapes: usize,
     },
+    /// The original never looks the key up (see [`ignored_directive`]): a site
+    /// spelling it has no effect. Measured absence, not an unknown.
+    IgnoredByOriginal,
 }
 
 impl UnmeasuredReason {
@@ -558,6 +566,7 @@ impl UnmeasuredReason {
         match self {
             Self::MeaningNotMeasured => "meaning_not_measured",
             Self::DisagreeingArgumentShape { .. } => "disagreeing_argument_shape",
+            Self::IgnoredByOriginal => "ignored_by_original",
         }
     }
 
@@ -570,6 +579,9 @@ impl UnmeasuredReason {
             }
             Self::DisagreeingArgumentShape { shapes } => {
                 format!("{shapes} distinct argument shapes across its sites")
+            }
+            Self::IgnoredByOriginal => {
+                "the original never looks this key up, so its sites have no effect".to_owned()
             }
         }
     }
@@ -588,6 +600,9 @@ impl fmt::Display for UnmeasuredReason {
 /// The findings documents the measured dispositions come from.
 const FINDING_A: &str = "2026-10-04-m01-lc-mission-program";
 const FINDING_B: &str = "2026-10-06-m01-lc-directive-b-objective-lifecycle-target-semantics";
+/// The finding that measured the directive table has no `WAKEUP_OBJECTIVE…`
+/// spelling (M03-B-FU1, #803).
+const FINDING_M03_FU1: &str = "2026-10-18-m03-b-fu1-wakeup-objective-spelling";
 const FINDING_C: &str = "2026-10-06-m01-lc-directive-c-ai-world-and-animation-directives";
 const FINDING_D: &str = "2026-10-06-m01-lc-directive-d-sound-help-timer-directives";
 const FINDING_F37_FU2: &str = "2026-10-07-f37-d-fu2-mission-terminal-precedence-and-tick-ordering";
@@ -912,6 +927,38 @@ pub struct MeasuredDirective {
     pub unknowns: &'static [&'static str],
 }
 
+/// A key the original's parser never looks up: a site spelling it is read by
+/// the document walk and then dropped, so it has no effect.
+///
+/// **Measured absence, not an unknown.** The parser reaches every key through
+/// an exact, case-sensitive field lookup and the directive string table holds
+/// no such spelling, so the original never asks the record for it. Its
+/// disposition is [`UnmeasuredReason::IgnoredByOriginal`]; the lowering adapter
+/// drops its sites and counts them in [`LoweringAttempt::ignored_sites`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IgnoredDirective {
+    /// Why the original ignores it, in one line.
+    pub summary: &'static str,
+    /// The findings documents the measurement comes from.
+    pub evidence: &'static [&'static str],
+}
+
+/// The ignored-by-the-original description of `key`, or `None` for every key
+/// the original does look up (or that no finding has examined).
+#[must_use]
+pub fn ignored_directive(key: &str) -> Option<IgnoredDirective> {
+    match key {
+        "WAKEUP_OBJECTIVE_WHEN_I_COMPLETE" => Some(IgnoredDirective {
+            summary: "the directive string table holds `WAKE_OBJECTIVE` and \
+                      `WAKE_OBJECTIVE_WHEN_I_COMPLETE` only; the `WAKEUP_` spelling is not in \
+                      the executable, so the exact-match field lookup never finds it and the \
+                      site wakes nothing",
+            evidence: &[FINDING_M03_FU1, FINDING_B],
+        }),
+        _ => None,
+    }
+}
+
 /// Whether `key` spells one of the measured `INACTIVE<n>` member-count keys —
 /// the parser's `sprintf("INACTIVE%d")` loop, `d` in `1..=100`
 /// ([`FINDING_A`]/[`FINDING_B`]).
@@ -931,7 +978,7 @@ fn measured_inactive_stage(key: &str) -> bool {
 /// The table is exactly the vocabulary the findings measure — every entry is a
 /// handler whose argument consumption and consumer were located in the
 /// original, and every key the findings do **not** cover stays `None` here:
-/// `SET_AI_`, `WAKEUP_OBJECTIVE_WHEN_I_COMPLETE`, `OBJECTIVE_HD_a`,
+/// `SET_AI_`, `OBJECTIVE_HD_a`,
 /// `OBJECTIVE_HD_b`, `TEST_COMPLETE`, `COMPLETION_COUNT`, `WIN_ANIM`,
 /// `LOSS_ANIM`, `DELETE_ON_SUCCESS`, the stray English words the corpus spells
 /// (`Change`, `to`, `mobile`, `net`) and the record-level keys
@@ -2217,7 +2264,11 @@ impl MeasuredControlRecord {
     pub fn is_complete(&self, attempt: &LoweringAttempt) -> bool {
         !self.keys.is_empty()
             && self.refusals.is_empty()
-            && self.unmeasured().is_empty()
+            && self.unmeasured().iter().all(|(_, disposition)| {
+                // A key the original never looks up is a measured absence: it
+                // has no effect to be unknown.
+                disposition.refusal() == Some(&UnmeasuredReason::IgnoredByOriginal)
+            })
             && self.lowering(attempt).complete()
     }
 
@@ -2524,6 +2575,10 @@ pub struct LoweringAttempt {
     /// The per-site call outcomes, in the order the sites appear in the
     /// record.
     pub calls: Vec<CallOutcome>,
+    /// How many sites spell a key the original never looks up
+    /// ([`ignored_directive`]): they carry no call and have no entry in
+    /// `calls`.
+    pub ignored_sites: u32,
     /// The keys the binding registry refused at registration, each named with
     /// the registry's reason.
     pub unbound_keys: Vec<String>,
@@ -2543,6 +2598,7 @@ impl LoweringAttempt {
             objectives: 0,
             conditions: Vec::new(),
             calls: Vec::new(),
+            ignored_sites: 0,
             unbound_keys: Vec::new(),
             validation: None,
         }
@@ -2786,8 +2842,19 @@ impl ControlLowering {
         let unmeasured_calls: Vec<&MeasuredDirectiveKey> = call_keys
             .iter()
             .copied()
-            .filter(|key| matches!(key.disposition(), DirectiveDisposition::Unmeasured { .. }))
+            .filter(|key| {
+                matches!(
+                    key.disposition(),
+                    DirectiveDisposition::Unmeasured { reason }
+                        if reason != UnmeasuredReason::IgnoredByOriginal
+                )
+            })
             .collect();
+        let ignored_sites_expected: u32 = call_keys
+            .iter()
+            .filter(|key| ignored_directive(&key.key).is_some())
+            .map(|key| key.sites)
+            .sum();
         let terminal_sites: u32 = keys
             .iter()
             .filter(|key| {
@@ -2820,10 +2887,17 @@ impl ControlLowering {
                 }
             }
             fields.extend(attempt.unbound_keys.iter().cloned());
-            if attempt.calls.len() as u32 != record.sites() {
+            if attempt.ignored_sites != ignored_sites_expected {
+                fields.push(format!(
+                    "the attempt dropped {} site(s) of keys the original never looks up, the \
+                     record spells {ignored_sites_expected}",
+                    attempt.ignored_sites
+                ));
+            }
+            if attempt.calls.len() as u32 + attempt.ignored_sites != record.sites() {
                 fields.push(format!(
                     "the attempt produced a call verdict for {} of {} directive site(s)",
-                    attempt.calls.len(),
+                    attempt.calls.len() as u32 + attempt.ignored_sites,
                     record.sites()
                 ));
             }
@@ -2843,12 +2917,14 @@ impl ControlLowering {
                     LoweringRequirementKind::CallArguments,
                     format!(
                         "{} directive site(s) over {} key(s): every site carried a `RawCall` and \
-                         every call bound — {measured_calls} measured non-condition key(s) to \
+                         every call bound, except {} site(s) of keys the original never looks \
+                         up, which it drops and so do we — {measured_calls} measured non-condition key(s) to \
                          `Lowering::Directive` and {terminal_sites} terminal-outcome site(s) to \
                          `Lowering::Finish`, widest arity {widest} — and the lowered program \
                          passes `MissionProgram::validate`",
                         record.sites(),
                         record.vocabulary(),
+                        attempt.ignored_sites,
                     ),
                 )
             } else {

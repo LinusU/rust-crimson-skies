@@ -355,7 +355,7 @@ fn accept_m01_lc_directive_e_measured_is_not_implemented_and_the_sets_partition(
                 directive("INACTIVE1", vec![zrd_text("workersvoyagezep")]),
                 directive("INACTIVE_COMPLETION_COUNT", vec![zrd_int(4)]),
                 directive("WAKE_ANIM", vec![zrd_text("wv_hookup")]),
-                directive("WAKEUP_OBJECTIVE_WHEN_I_COMPLETE", vec![zrd_int(3)]),
+                directive("WIN_ANIM", vec![zrd_int(3)]),
                 directive("INSTANTWIN", Vec::new()),
             ],
         ),
@@ -390,7 +390,7 @@ fn accept_m01_lc_directive_e_measured_is_not_implemented_and_the_sets_partition(
     assert_eq!(implemented, ["INSTANTLOSS", "INSTANTWIN"]);
     assert_eq!(
         unmeasured,
-        ["WAKEUP_OBJECTIVE_WHEN_I_COMPLETE"],
+        ["WIN_ANIM"],
         "the key no finding covers is the one refusal"
     );
     assert_eq!(
@@ -425,7 +425,7 @@ fn accept_m01_lc_directive_e_measured_is_not_implemented_and_the_sets_partition(
     assert!(
         attempt.calls.iter().any(|outcome| matches!(
             outcome,
-            CallOutcome::Refused(reason) if reason.contains("WAKEUP_OBJECTIVE_WHEN_I_COMPLETE")
+            CallOutcome::Refused(reason) if reason.contains("WIN_ANIM")
         )),
         "the unmeasured key's site is refused by name: {:?}",
         attempt.calls
@@ -442,7 +442,7 @@ fn accept_m01_lc_directive_e_measured_is_not_implemented_and_the_sets_partition(
         calls
             .unmeasured_fields
             .iter()
-            .any(|field| field.contains("WAKEUP_OBJECTIVE_WHEN_I_COMPLETE")),
+            .any(|field| field.contains("WIN_ANIM")),
         "the calls row names the unmeasured key: {:?}",
         calls.unmeasured_fields
     );

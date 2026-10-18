@@ -743,8 +743,8 @@ fn accept_m01_lc_a_bare_key_that_is_not_a_measured_outcome_key_is_refused() {
 ///
 /// The fixture spells one of each kind: an outcome key, a key whose effect a
 /// stage-B/C/D finding measures (`WAKE_ANIM`), and a key no finding covers
-/// (`WAKEUP_OBJECTIVE_WHEN_I_COMPLETE` — spelled in the corpus at
-/// `zbd/c1b/m03`, whose handler was never located). The three sets must
+/// (`WIN_ANIM` — a parser key whose handler
+/// was never located). The three sets must
 /// partition the vocabulary without overlap.
 #[test]
 fn accept_m01_lc_only_an_outcome_key_reaches_an_engine_operation() {
@@ -753,7 +753,7 @@ fn accept_m01_lc_only_an_outcome_key_reaches_an_engine_operation() {
         vec![
             directive("INSTANTWIN", Vec::new()),
             directive("WAKE_ANIM", vec![zrd_text("x")]),
-            directive("WAKEUP_OBJECTIVE_WHEN_I_COMPLETE", vec![zrd_int(3)]),
+            directive("WIN_ANIM", vec![zrd_int(3)]),
         ],
     )]);
     let (record, lowered) = lower(&document);
@@ -800,7 +800,7 @@ fn accept_m01_lc_only_an_outcome_key_reaches_an_engine_operation() {
         })
         .collect();
     assert_eq!(unmeasured.len(), 1);
-    assert_eq!(unmeasured[0].0, "WAKEUP_OBJECTIVE_WHEN_I_COMPLETE");
+    assert_eq!(unmeasured[0].0, "WIN_ANIM");
     assert_eq!(
         unmeasured[0].1,
         UnmeasuredReason::MeaningNotMeasured,
@@ -1337,7 +1337,10 @@ fn accept_m01_lc_every_mission_is_measured_and_the_gate_reports_who_lowers() {
         );
         if row.is_complete() {
             assert!(
-                record.unmeasured().is_empty(),
+                record
+                    .unmeasured()
+                    .iter()
+                    .all(|(_, d)| d.refusal() == Some(&UnmeasuredReason::IgnoredByOriginal)),
                 "{}: a complete record spells no unmeasured key: {:?}",
                 row.mission(),
                 record.unmeasured()

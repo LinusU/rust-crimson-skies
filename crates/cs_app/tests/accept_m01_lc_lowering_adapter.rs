@@ -33,7 +33,7 @@ use cs_app::control_lowering::{LoweredControlRecord, lower_control_record};
 use cs_app::mission_control::survey_mission_control_programs;
 use cs_content::mission_control::{
     CallOutcome, ConditionOutcome, DirectiveDisposition, LoweringAttempt, LoweringRequirementKind,
-    MeasuredControlRecord, measure_control_record,
+    MeasuredControlRecord, UnmeasuredReason, measure_control_record,
 };
 use cs_content::stunts::ZrdValue;
 use cs_script::bindings::Lowering;
@@ -343,7 +343,10 @@ fn accept_m01_lc_lowering_adapter_the_census_reports_complete_rows_and_keeps_the
         let record = row.record().expect("a complete row is measured");
         assert!(row.is_complete(), "{mission}: the row reports complete");
         assert!(
-            record.unmeasured().is_empty(),
+            record
+                .unmeasured()
+                .iter()
+                .all(|(_, d)| d.refusal() == Some(&UnmeasuredReason::IgnoredByOriginal)),
             "{mission}: no unmeasured key"
         );
         assert!(record.refusals().is_empty(), "{mission}: every block read");
@@ -386,8 +389,12 @@ fn accept_m01_lc_lowering_adapter_the_census_reports_complete_rows_and_keeps_the
     let unmeasured_rows: Vec<&str> = census
         .measured_rows()
         .filter(|row| {
-            row.record()
-                .is_some_and(|record| !record.unmeasured().is_empty())
+            row.record().is_some_and(|record| {
+                record
+                    .unmeasured()
+                    .iter()
+                    .any(|(_, d)| d.refusal() != Some(&UnmeasuredReason::IgnoredByOriginal))
+            })
         })
         .map(|row| row.mission())
         .collect();

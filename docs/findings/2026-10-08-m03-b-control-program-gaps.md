@@ -12,6 +12,13 @@ regenerated the evidence report from that run and validated it with
 and tests, not independent original-reference evidence, and no agent review
 replaces the owner's human approval.
 
+*Updated 2026-10-18 by M03-B-FU1 (#803, implementer sonnet-1): the
+`WAKEUP_OBJECTIVE_WHEN_I_COMPLETE` arm is closed. The key is absent from the
+original's directive table, so its two sites have no effect and the adapter
+drops them (`docs/findings/2026-10-18-m03-b-fu1-wakeup-objective-spelling.md`);
+M03's record now lowers and validates. The "does not lower" sections below are
+the measurement as M03-B made it.*
+
 *Updated 2026-10-09 by M03-B-FU2 (#810, implementer bunny-alpha-1): the
 `SET_AI_NET` arm below is closed, the refusal count moved from three sites to
 two, and the gap section records why. Everything else here — the archive, the

@@ -10,13 +10,13 @@
 //!
 //! * M03's control program is `objectives.zrd` with 55 numbered blocks and 313
 //!   directive sites, selected by the content rule and not by its name;
-//! * 38 of its 40 directive keys have a measured effect, two are terminal
-//!   outcomes and **one** (`WAKEUP_OBJECTIVE_WHEN_I_COMPLETE`) is refused,
-//!   because its two sites spell two argument shapes;
-//! * the record does **not** lower: two sites refuse (the two refused wake
-//!   sites), so no `MissionProgram` stands and the mission is not ready. The
-//!   third refusal this stage opened with — `SET_AI_NET`'s ten-pair site, whose
-//!   `{actor, net}` pairs ran past the host-call bound — now binds as one
+//! * 37 of its 40 directive keys have a measured effect, two are terminal
+//!   outcomes and **one** (`WAKEUP_OBJECTIVE_WHEN_I_COMPLETE`) is ignored by
+//!   the original: its directive table holds no such spelling (M03-B-FU1 /
+//!   #803, pinned by the `accept_m03_b_fu1_*` tests below);
+//! * the record lowers: the two ignored wake sites are dropped as the
+//!   original drops them, and the rest bind. The `SET_AI_NET` ten-pair site,
+//!   whose `{actor, net}` pairs ran past the host-call bound, binds as one
 //!   `Value::List` argument (M03-B-FU2 / #810, pinned by the
 //!   `accept_m03_b_fu2_*` tests below);
 //! * the sheet's three priorities (grouped objectives, world damage state,
@@ -24,10 +24,9 @@
 //!   operations, and the completion chain that reaches `INSTANTWIN` is pinned
 //!   address by address.
 //!
-//! No behaviour is invented here: the unmeasured key that still refuses is
-//! filed as a follow-up task (M03-B-FU1, see
-//! `docs/findings/2026-10-08-m03-b-control-program-gaps.md`) and the mission
-//! stays unready until it is measured.
+//! No behaviour is invented here: see
+//! `docs/findings/2026-10-08-m03-b-control-program-gaps.md` and
+//! `docs/findings/2026-10-18-m03-b-fu1-wakeup-objective-spelling.md`.
 //!
 //! The retail tests are `#[ignore = "requires CS_GAME_DIR"]`; the two synthetic
 //! tests run in CI.
@@ -194,15 +193,17 @@ fn accept_m03_b_the_control_program_is_the_member_that_declares_the_blocks() {
     );
 }
 
-/// **Every directive key has exactly one disposition, and one is refused.**
+/// **Every directive key has exactly one disposition, and one is ignored by
+/// the original.**
 ///
 /// Two keys are terminal outcomes (`INSTANTWIN`, `INSTANTLOSS`, one site each),
-/// one is unmeasured because its two sites disagree about their shape, and the
-/// other 37 have a measured effect. The sites are accounted for: the keys'
+/// one is `WAKEUP_OBJECTIVE_WHEN_I_COMPLETE`, a spelling the original's
+/// directive table does not hold (M03-B-FU1 / #803), and the other 37 have a
+/// measured effect. The sites are accounted for: the keys'
 /// sites sum to the record's.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m03_b_every_directive_m03_spells_has_a_disposition_and_one_is_refused() {
+fn accept_m03_b_every_directive_m03_spells_has_a_disposition_and_one_is_ignored() {
     let record = census().row(MISSION).unwrap().record().unwrap();
     let mut outcomes = BTreeMap::new();
     let mut refused = Vec::new();
@@ -229,78 +230,69 @@ fn accept_m03_b_every_directive_m03_spells_has_a_disposition_and_one_is_refused(
         refused,
         [(
             "WAKEUP_OBJECTIVE_WHEN_I_COMPLETE".to_owned(),
-            UnmeasuredReason::DisagreeingArgumentShape { shapes: 2 },
+            UnmeasuredReason::IgnoredByOriginal,
             2
         )],
-        "the one refused key spells [int] at one site and [int,int] at the other"
+        "the one unmeasured key is the `WAKEUP_` spelling the original never looks up \
+         (finding 2026-10-18-m03-b-fu1-wakeup-objective-spelling)"
     );
     assert_eq!(measured, 37);
     let sites: u32 = record.keys().iter().map(|key| key.sites).sum();
     assert_eq!(sites, SITES, "no site is dropped from the accounting");
 }
 
-/// **The record does not lower, and the reason is two named sites.**
+/// **The record lowers: the two `WAKEUP_` sites are dropped, as the original
+/// drops them.**
 ///
-/// Two refused `WAKEUP_OBJECTIVE_WHEN_I_COMPLETE` sites (blocks 13 and 14,
-/// 1-based) and nothing else: the `SET_AI_NET` site of block 10 now carries
-/// its ten `{actor, net}` pairs as one `Value::List` argument and binds
-/// (M03-B-FU2 / #810). All 311 other sites bind and all 55 conditions lower,
-/// yet no program stands: `validation` is `None`, the `call_arguments`
-/// requirement is the only unmet one, and the row is not complete.
+/// The original's directive table does not hold `WAKEUP_OBJECTIVE_WHEN_I_COMPLETE`
+/// (M03-B-FU1 / #803), so its two sites (blocks 13 and 14, 1-based) carry no
+/// call: 311 of the 313 sites bind, the two are counted in
+/// `ignored_sites`, and nothing is refused. All 55 conditions lower.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m03_b_the_record_does_not_lower_and_exactly_two_sites_refuse() {
+fn accept_m03_b_the_record_lowers_and_the_two_wake_sites_are_dropped() {
     let row = census().row(MISSION).unwrap();
     let attempt = row.lowering_attempt().unwrap();
     let lowered = attempt.attempt();
     assert_eq!(lowered.mission.as_deref(), Ok("mission/ch2-m03"));
     assert_eq!(lowered.objectives, BLOCKS);
-    assert_eq!(lowered.calls.len() as u32, SITES);
+    assert_eq!(lowered.ignored_sites, 2);
+    assert_eq!(lowered.calls.len() as u32, SITES - 2);
     assert!(
         lowered
             .conditions
             .iter()
             .all(|c| *c == cs_content::mission_control::ConditionOutcome::Lowered)
     );
-    let refusals: Vec<(usize, &str)> = lowered
-        .calls
-        .iter()
-        .enumerate()
-        .filter_map(|(index, call)| match call {
-            CallOutcome::Refused(text) => Some((index, text.as_str())),
-            CallOutcome::Bound => None,
-        })
-        .collect();
-    assert_eq!(refusals.len(), 2, "{refusals:?}");
     assert!(
-        refusals[0]
-            .1
-            .contains("objective#12 call 3: unknown host call `WAKEUP_OBJECTIVE_WHEN_I_COMPLETE`")
+        lowered
+            .calls
+            .iter()
+            .all(|call| matches!(call, CallOutcome::Bound)),
+        "every carried site binds: {:?}",
+        lowered.calls
     );
     assert!(
-        refusals[1]
-            .1
-            .contains("objective#13 call 4: unknown host call `WAKEUP_OBJECTIVE_WHEN_I_COMPLETE`")
+        attempt
+            .raw_program()
+            .unwrap()
+            .objectives
+            .iter()
+            .flat_map(|objective| objective.calls.iter())
+            .all(|call| call.name != "WAKEUP_OBJECTIVE_WHEN_I_COMPLETE"),
+        "no call is emitted for the ignored spelling"
     );
     assert!(
         lowered.unbound_keys.is_empty(),
-        "no key refuses registration: SET_AI_NET's ten-pair list is one argument now: {:?}",
+        "{:?}",
         lowered.unbound_keys
     );
-    assert!(
-        lowered.validation.is_none(),
-        "no program stood to be validated"
-    );
-    assert!(
-        attempt.program().is_none(),
-        "and none is handed to the runtime"
-    );
+    let validation = lowered.validation.as_ref().expect("a program stood");
+    assert!(validation.is_empty(), "{validation:?}");
 
     let lowering = row.lowering().unwrap();
     let unmet: Vec<String> = lowering.unmet().map(|r| r.kind.code().to_owned()).collect();
-    assert_eq!(unmet, ["call_arguments"]);
-    assert!(!row.is_complete());
-    assert!(!lowering.complete());
+    assert!(unmet.is_empty(), "{unmet:?}");
 }
 
 /// **M03's ten-pair `SET_AI_NET` site binds through one `Value::List`
@@ -308,8 +300,8 @@ fn accept_m03_b_the_record_does_not_lower_and_exactly_two_sites_refuse() {
 /// `{actor, net}` pairs, so it is carried as a single argument: the key
 /// registers one single-arity list signature instead of the ten-argument row
 /// [`MAX_CALL_ARGS`] (8) refuses, the site binds, and `unbound_keys` names no
-/// key. The record still refuses only at `WAKEUP_OBJECTIVE_WHEN_I_COMPLETE`
-/// (M03-B-FU1 / #803), and readiness stays the census's own verdict.
+/// key. M03-B-FU1 (#803) later settled
+/// the record's only other gap.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m03_b_fu2_the_ten_pair_net_site_binds_through_one_list_argument() {
@@ -358,30 +350,18 @@ fn accept_m03_b_fu2_the_ten_pair_net_site_binds_through_one_list_argument() {
         spec.signatures
     );
 
-    let refused: Vec<&str> = attempt
-        .calls
-        .iter()
-        .filter_map(|outcome| match outcome {
-            CallOutcome::Refused(reason) => Some(reason.as_str()),
-            CallOutcome::Bound => None,
-        })
-        .collect();
-    assert_eq!(refused.len(), 2, "{refused:?}");
     assert!(
-        refused
+        attempt
+            .calls
             .iter()
-            .all(|reason| reason.contains("WAKEUP_OBJECTIVE_WHEN_I_COMPLETE")),
-        "only the two refused wake sites are left: {refused:?}"
+            .all(|outcome| matches!(outcome, CallOutcome::Bound)),
+        "no site is refused any more (M03-B-FU1 dropped the ignored wake sites): {:?}",
+        attempt.calls
     );
     assert!(
         attempt.unbound_keys.is_empty(),
         "`SET_AI_NET` no longer names an unbound key: {:?}",
         attempt.unbound_keys
-    );
-
-    assert!(
-        !census().complete_missions().contains(&MISSION),
-        "M03 stays unready through the census's own verdict until M03-B-FU1 lands"
     );
 }
 
@@ -546,12 +526,13 @@ fn accept_m03_b_the_terminal_blocks_are_gated_and_every_address_is_in_range() {
     );
 }
 
-/// **M03 is not campaign-ready and the census does not hide it.**
+/// **M03's record is complete, and the census still keeps the campaign gate
+/// closed for the other rows.**
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m03_b_the_mission_stays_unready_until_the_refused_sites_are_measured() {
+fn accept_m03_b_the_record_is_complete_and_the_campaign_gate_stays_closed() {
     let census = census();
-    assert!(!census.complete_missions().contains(&MISSION));
+    assert!(census.complete_missions().contains(&MISSION));
     assert!(!census.campaign_ready());
     assert!(census.measured_rows().any(|row| row.mission() == MISSION));
 }
@@ -589,29 +570,21 @@ fn lower(document: &ZrdValue) -> cs_app::control_lowering::LoweredControlRecord 
 
 /// **A wake key that spells two shapes is refused and no majority is taken.**
 ///
-/// M03's two `WAKEUP_OBJECTIVE_WHEN_I_COMPLETE` sites spell `[int]` and
-/// `[int,int]`. Authored the same way, the key is unmeasured with a
-/// disagreeing-shape reason and the program does not assemble.
+/// An unmeasured key (`WIN_ANIM`; M03's `WAKEUP_` spelling was this fixture
+/// until M03-B-FU1) spelled `[int]` at one site and `[int,int]` at the other
+/// is unmeasured with a disagreeing-shape reason and the program does not
+/// assemble.
 #[test]
 fn accept_m03_b_a_key_with_two_shapes_is_refused_and_no_program_assembles() {
     let document = record_of(vec![
-        (
-            1,
-            vec![
-                text("WAKEUP_OBJECTIVE_WHEN_I_COMPLETE"),
-                ZrdValue::List(vec![int(2)]),
-            ],
-        ),
+        (1, vec![text("WIN_ANIM"), ZrdValue::List(vec![int(2)])]),
         (
             2,
-            vec![
-                text("WAKEUP_OBJECTIVE_WHEN_I_COMPLETE"),
-                ZrdValue::List(vec![int(1), int(1)]),
-            ],
+            vec![text("WIN_ANIM"), ZrdValue::List(vec![int(1), int(1)])],
         ),
     ]);
     let record = measure_control_record(&document);
-    let key = record.key("WAKEUP_OBJECTIVE_WHEN_I_COMPLETE").unwrap();
+    let key = record.key("WIN_ANIM").unwrap();
     assert_eq!(
         key.disposition(),
         DirectiveDisposition::Unmeasured {
@@ -627,6 +600,53 @@ fn accept_m03_b_a_key_with_two_shapes_is_refused_and_no_program_assembles() {
             .iter()
             .all(|call| matches!(call, CallOutcome::Refused(_)))
     );
+}
+
+/// **A site of a key the original never looks up is dropped, not refused and
+/// not bound.** (M03-B-FU1 / #803.)
+///
+/// `WAKEUP_OBJECTIVE_WHEN_I_COMPLETE` at the two shapes M03 spells, beside a
+/// measured `WAKE_OBJECTIVE_WHEN_I_COMPLETE` site: the `WAKEUP_` sites emit no
+/// call and no verdict, are counted in `ignored_sites`, and leave the measured
+/// wake site bound. Removing the disposition makes them refuse `unknown host
+/// call` again.
+#[test]
+fn accept_m03_b_fu1_an_ignored_spelling_is_dropped_and_the_measured_one_still_binds() {
+    let wake = |key: &str, targets: Vec<u32>| {
+        vec![
+            text(key),
+            ZrdValue::List(targets.into_iter().map(int).collect()),
+        ]
+    };
+    let document = record_of(vec![
+        (1, wake("WAKEUP_OBJECTIVE_WHEN_I_COMPLETE", vec![2, 3])),
+        (2, wake("WAKEUP_OBJECTIVE_WHEN_I_COMPLETE", vec![3])),
+        (3, wake("WAKE_OBJECTIVE_WHEN_I_COMPLETE", vec![1])),
+    ]);
+    let record = measure_control_record(&document);
+    assert_eq!(
+        record
+            .key("WAKEUP_OBJECTIVE_WHEN_I_COMPLETE")
+            .unwrap()
+            .disposition(),
+        DirectiveDisposition::Unmeasured {
+            reason: UnmeasuredReason::IgnoredByOriginal
+        },
+        "two shapes, but the disposition is the measured absence, not a shape refusal"
+    );
+    let lowered = lower(&document);
+    let attempt = lowered.attempt();
+    assert_eq!(attempt.ignored_sites, 2);
+    assert_eq!(attempt.calls, [CallOutcome::Bound]);
+    let calls: Vec<&str> = lowered
+        .raw_program()
+        .unwrap()
+        .objectives
+        .iter()
+        .flat_map(|objective| objective.calls.iter())
+        .map(|call| call.name.as_str())
+        .collect();
+    assert_eq!(calls, ["WAKE_OBJECTIVE_WHEN_I_COMPLETE"]);
 }
 
 /// **`SET_AI_NET`'s pair list is one list argument, and the host-call bound
