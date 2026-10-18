@@ -202,3 +202,14 @@ for; this note supersedes them on the danger-zones gap only.
 `docs/findings/2026-10-02-t463-stunt-encoding-and-gate-geometry.md`;
 `docs/findings/2026-10-02-t464-stunt-reward-and-repeat.md`;
 `docs/findings/2026-10-05-t513-dzones-framing.md`.
+
+## 2026-10-18: the three sites are not M07's on the corrected layout (#1597)
+
+The three `DANGER_ZONES_COMPLETED` sites above (blocks 37, 39, 41) are in
+`ZBD/C2/M02`, which the corrected campaign layout no longer binds to M07
+(`docs/findings/2026-10-09-m07-b-compatibility-gaps.md`, re-pin section).
+M07's record (`ZBD/C1/M02`) spells no danger-zones site, so the retail test
+`accept_m07_b_fu1_the_record_spells_no_danger_zones_site_so_no_block_carries_the_predicate`
+pins that absence through production lowering. The image measurement and the
+lowering rule are unchanged; the synthetic threshold test still pins them.
+

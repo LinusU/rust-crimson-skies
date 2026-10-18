@@ -9,6 +9,44 @@ branch — the evidence report's `review.identity` is read at run time from
 `CS_EVIDENCE_REVIEWER`, so each agent writes its own; no agent review replaces
 the owner's human approval.
 
+## 2026-10-18 re-pin on the corrected campaign layout (#1597)
+
+Every retail fact in the tables below was measured on
+`ZBD/C2/M02/zrdr.zbd`. The corrected campaign layout (commit `6df5715b0`,
+`docs/findings/2026-10-17-m01-archive-decision.md`) binds work order M07 to
+`mission/ch2-m02` / `script/c1-m02-zrdr` — `ZBD/C1/M02/zrdr.zbd`, the record
+M02-B used to pin (`missions/bindings/M07.json`). `ZBD/C2/M02` is the record of
+campaign position `mission/ch3-m01`. So the numbers below are **historical for
+M07** and describe that other archive. The acceptance tests now pin M07's own
+record, re-derived through the same production code
+(`SourceContext::control_program`, `discover_container`, `decode_zrd`,
+`measure_control_record`, the census):
+
+| Fact | Old pin (`ZBD/C2/M02`) | Re-pinned (`ZBD/C1/M02`, 117 252 bytes, SHA-256 `89f27219…423ad9`) |
+| --- | --- | --- |
+| Mission / program id | `mission/ch3-m01` / `script/c2-m02-zrdr` | `mission/ch2-m02` / `script/c1-m02-zrdr` |
+| Archive members | 19 | 20 |
+| Control member | `objectives.zrd`, 16 463 bytes at 18 437 | `objectives.zrd`, 12 410 bytes at 14 413 (only member with numbered blocks; a longer member exists) |
+| Record | 61 blocks, 231 sites, 29 keys | 50 blocks, 190 sites, 36 keys, 0 refusals |
+| Disposition | 2 outcomes, 27 measured | 2 outcomes (`INSTANTWIN` ×1, `INSTANTLOSS` ×2), 34 measured |
+| Record-level fields | five fields | five fields **and** the five record-level sound keys |
+| `ANIM_STATE` / `TRAVELERS` / `DANGER_ZONES_COMPLETED` | 9 / 2 / 3 sites | none of them spelled |
+| New keys | — | `SET_AI_NET`, `STOP_QUEUED_SOUNDS`, `WAKEUP_GENERATOR`, `WAKEUP_TURRETS`, `INACTIVE1`…`INACTIVE15` |
+| Cross-objective addresses | 102 (50 wake, 39 kill, 13 nap) in `1..=61` | 63 (21 wake, 23 kill, 19 nap) in `1..=50` |
+| Terminal blocks | 25 (`INSTANTLOSS`), 27 (`INSTANTWIN`) | 15 (`INSTANTWIN`, reached by block 14's nap), 24 and 36 (`INSTANTLOSS`; 24 by block 3's nine-target kill and block 19's nap, 36 by block 7's nap) |
+| HUD identities | three PRIMARY + one SECONDARY | four PRIMARY (slots 1–4) + one SECONDARY (slot 11) |
+| Lowering | complete | complete; census row `zbd/c1/m02` is a complete row |
+
+Consequences, stated plainly: the ANIM_STATE and danger-zones retail pins no
+longer have a site to pin on M07, so the retail tests became absence pins
+(derived through production lowering) and the mechanisms stay pinned by the
+synthetic tests and, for danger zones, by M08-B's retail blocks. The first
+priority's trailer-segment gates and moving-subject proximity evaluator are
+**not** in M07's control record; where the sheet's pickup lives is unmeasured.
+The evaluation test of the flag predicate against `MissionState` was removed
+with its retail sites; it is not replaced by an invented record. Nothing here
+is `verified_original`.
+
 The stage's minimum acceptance scenario is *"All discovered mission-specific
 behavior uses production engine systems and regression tests."* It holds for
 everything this note measures: M07's discovered mission-specific behavior is
