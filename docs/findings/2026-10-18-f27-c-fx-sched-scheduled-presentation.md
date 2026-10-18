@@ -99,9 +99,9 @@ a drain never resets, and the check reads that
 (`WeaponSession::effects_recorded`). The check's strength is unchanged: it
 still requires at least two rounds through the session during the held second.
 
-**Run of record.** The owner-command smoke on this branch's commit, on this
-machine (Apple M3 Pro, Metal), the same commanded run
-`docs/PLAYTEST.md` documents:
+**Run of record.** The owner-command smoke on this branch's rebased head (the
+2026-10-18 rebase onto `5be476b32`), on this machine (Apple M3 Pro, Metal),
+the same commanded run `docs/PLAYTEST.md` documents:
 
 ```sh
 cargo build --release --locked -p cs_app --bin cs
@@ -115,10 +115,13 @@ cargo test -p cs_app --test cs_app_tests_a -- accept_m01_owner_smoke --include-i
 **`weapon_guns_fire` pass — "holding Space for a second put 90 rounds through
 the mission's weapon session (66 live at once), floor 2"**, the same 90
 rounds / 66 live the 2026-10-17 run
-(`docs/findings/2026-10-17-m01-owner-smoke.md`) measured. The muzzle spawns
-this stage creates are not drawn by anything (below), so no other check
-changes; `weapon_rounds_drawn` still passes on the round tracers
-`M01-WINDOW-FIRE` (#1536) draws.
+(`docs/findings/2026-10-17-m01-owner-smoke.md`) measured. This head also
+carries the M01 ground-target binding another task landed in the same window,
+and the run has no failures — the only false verdict is `world_sea_visible`,
+the skip-by-name that check documents. The muzzle spawns this stage creates
+are not drawn by anything (below), so no other check changes;
+`weapon_rounds_drawn` still passes on the round tracers `M01-WINDOW-FIRE`
+(#1536) draws.
 
 ## Test sensitivity (measured, one mutation at a time)
 
