@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "F49-D.02b",
+ "candidate_tree": "7c28e72faecfb6783e7c81bcf734e06cc6008333",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-10-18T17:39:07Z",
+ "command": {"argv": ["cargo", "test", "--locked", "-p", "cs_content", "--", "accept_f49_d_02b_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/sonnet-2", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 2, "executed": 2, "passed": 2, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_f49_d_02b_engine_defaults::accept_f49_d_02b_synthetic_absent_keys_fall_back_and_present_keys_win", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f49_d_02b_engine_defaults::accept_f49_d_02b_retail_c2b_runs_on_the_executables_record_defaults", "status": "pass", "evidence": ["cargo-test.log"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "563996a87c94bac50a64bfd89c64fb9e113db8c3aac22d0208fab7235a89d655", "kind": "log"}, {"path": "ia-denominator.json", "sha256": "e6d5c9d219d09d1308260d8cf2e55e17fe0ef40eb62c869b48aafe76c38e4f63", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "pending: written by the implementing agent sonnet-2. The reviewing agent regenerates this report on the reviewed commit and records their identity (CS_EVIDENCE_REVIEW); no agent review awards more than `checked`. Method: the acceptance suite ran locally with the retail capability over $CS_GAME_DIR; the consumer trace is the production survey_retail_instant_action report. LIMITATION: ZBD/c2b/IA1 declares neither player_plane nor num_wingmen. The executable's scenario record keeps its initialiser's values for an absent key (airframe-table row 5, no wingmen); the catalog applies them as inferred from the absent key. Whether the original's Instant Action menu or a later game phase overrides them before launch is unmeasured. Affected content: ia_scenario/c2b-ia1 and its ia_preset ids. Resolving tasks: F49 UI consumer stages and the F49-D.03 follow-ups. LIMITATION: The same record initialiser also writes airframe-table row 5 as the default wingman_plane (0x459012), kept when a scenario declares no wingman_plane. Whether the eight descriptors declare one is not measured here, and this stage does not apply the default. Affected content: the wingman airframe of every ia_preset. Resolving task: #1583.", "method": "acceptance suite run locally with the retail capability; every field is derived from the recorded log, production discovery of $CS_GAME_DIR, the production survey over that installation, rustc and Cargo.lock; validated with tools/validate_evidence.py --require-pass."},
+ "claim": "implemented"
+}
