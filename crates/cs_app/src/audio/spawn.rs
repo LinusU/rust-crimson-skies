@@ -56,7 +56,10 @@
 //!
 //! * **No placement.** A binding carries no pose; where an emitter *is* is the
 //!   spawn path's own `Transform` (an emitter without one is reported as
-//!   unplaced by the mixer rather than guessed onto the listener).
+//!   unplaced by the mixer rather than guessed onto the listener). The one
+//!   decided exception is the world's ambience: it is **declared
+//!   non-positional** ([`NonPositionalEmitter`], F41-B3), because no spawn path
+//!   or retail record states a position for it.
 //! * **No lifecycle.** Stopping a loop when the entity dies is
 //!   [`sync_emitter_loops`](super::sync_emitter_loops)'s job; this system only
 //!   ever *adds* bindings, and only to entities that do not have one yet, so
@@ -65,6 +68,7 @@
 //!   bus is authored here; every one of those stays where it was measured or
 //!   designed (see the finding above).
 
+use bevy::ecs::component::Component;
 use bevy::ecs::entity::Entity;
 use bevy::ecs::query::{Or, With, Without};
 use bevy::ecs::resource::Resource;
@@ -83,6 +87,23 @@ use super::engine::EngineVoiceFollow;
 use super::handoff::{AudioHandoffLog, DeclaredAudioCatalog};
 use super::loops::AudioSession;
 use super::lower::{lower_bus, lower_mode};
+
+/// Marker: this emitter is declared **non-positional** — ambience that fills
+/// the world rather than sounding from a point (F41-B3, Rally #1277).
+///
+/// The world's environment loop is bound to the load's delivered item entity,
+/// which has no pose, and nothing in the delivered content or the original
+/// data measured at this stage states one; inventing a position would be a
+/// guess. So the policy is a decision, not an omission: the loop plays at the
+/// mix its voice started with and the spatial law never moves it.
+/// [`mix_session`](super::mix_session) counts such an emitter in
+/// [`AudioMixReport::non_positional`](super::AudioMixReport::non_positional)
+/// and **not** in [`AudioMixReport::unplaced`](super::AudioMixReport::unplaced),
+/// so `unplaced` keeps meaning "an emitter that ought to have a pose and has
+/// none". An emitter that carries this marker *and* a pose is placed by that
+/// pose; the marker only describes the absence of one.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NonPositionalEmitter;
 
 /// One of the two emitter roles this path produces.
 ///
@@ -416,7 +437,9 @@ pub fn bind_spawned_emitters(world: &mut World) {
             asset: asset.clone(),
             generation,
         };
-        world.entity_mut(entity).insert(binding.clone());
+        world
+            .entity_mut(entity)
+            .insert((binding.clone(), NonPositionalEmitter));
         record_bind(
             world,
             entity,

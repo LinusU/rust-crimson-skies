@@ -104,7 +104,7 @@ pub use plugin::AudioPlugin;
 pub use samples::{AudioSampleSource, CODE_SAMPLE_ABSENT, ContentSampleSource, SampleSource};
 pub use spawn::{
     AudioBindLog, AudioBindRecord, AudioBindRefusal, AudioEmitterIds, AudioEmitterRole,
-    bind_spawned_emitters,
+    NonPositionalEmitter, bind_spawned_emitters,
 };
 pub use voice::{
     DecodedVoiceMember, VoiceMemberError, VoicePublication, publish_voice_members, voice_member_id,
@@ -128,7 +128,9 @@ use crate::scene::SceneGeneration;
 /// An emitter the mixer can place also carries a `Transform`, so
 /// [`GlobalTransform`](bevy::prelude::GlobalTransform) gives
 /// [`mix_session`](mix_session) a pose. One without one is *not* assumed to be
-/// at the listener: it is reported as unplaced and keeps its last mix.
+/// at the listener: it is reported as unplaced and keeps its last mix. The world's ambient
+/// loop is the declared exception: [`NonPositionalEmitter`] says it has no
+/// position by design.
 #[derive(Component, Clone, Debug, PartialEq)]
 pub struct AudioEmitterBinding {
     /// The router emitter this entity drives.

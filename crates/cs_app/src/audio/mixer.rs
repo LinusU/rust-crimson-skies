@@ -31,6 +31,7 @@
 //! contract: the device may refuse every command, and the session, the radio
 //! queue's tick timing and mission progression behave exactly as before.
 
+use bevy::ecs::query::Has;
 use bevy::ecs::resource::Resource;
 use bevy::ecs::system::{Res, ResMut};
 use bevy::ecs::world::World;
@@ -47,6 +48,7 @@ use super::device::DeviceSampleLibrary;
 use super::engine::EngineVoices;
 use super::loops::AudioSession;
 use super::music::{LazyMusicTracks, ensure_music_published};
+use super::spawn::NonPositionalEmitter;
 
 /// Resource: the one device this world mixes to.
 ///
@@ -177,6 +179,11 @@ pub struct AudioMixReport {
     /// hidden. An emitter with no `GlobalTransform` is *not* treated as being
     /// at the listener's own position: that would be a guessed placement.
     pub unplaced: usize,
+    /// How many pose-less emitter bindings are **declared non-positional**
+    /// ([`NonPositionalEmitter`], F41-B3): the world's ambient loop. They are
+    /// not placed and not counted in [`Self::unplaced`]; they keep the mix
+    /// their voice started with by design.
+    pub non_positional: usize,
 }
 
 /// One mix pass: the session's outcomes become device commands.
@@ -206,7 +213,11 @@ pub fn mix_session(
     mut session: Option<ResMut<AudioSession>>,
     spatial: Option<Res<AudioSpatial>>,
     voices: Res<EngineVoices>,
-    emitters: Query<(&AudioEmitterBinding, Option<&GlobalTransform>)>,
+    emitters: Query<(
+        &AudioEmitterBinding,
+        Option<&GlobalTransform>,
+        Has<NonPositionalEmitter>,
+    )>,
     mut report: ResMut<AudioMixReport>,
 ) {
     let (Some(mixing), Some(output), Some(session), Some(spatial)) = (
@@ -233,9 +244,14 @@ pub fn mix_session(
     }
     let mut placed = Vec::with_capacity(emitters.iter().len());
     let mut unplaced = 0;
-    for (binding, transform) in &emitters {
+    let mut non_positional = 0;
+    for (binding, transform, declared_non_positional) in &emitters {
         let Some(transform) = transform else {
-            unplaced += 1;
+            if declared_non_positional {
+                non_positional += 1;
+            } else {
+                unplaced += 1;
+            }
             continue;
         };
         placed.push(EmitterMix {
@@ -271,6 +287,7 @@ pub fn mix_session(
         .mix_music(&music, Some(output.device_mut()));
     report.passes += 1;
     report.unplaced = unplaced;
+    report.non_positional = non_positional;
 }
 
 /// Decodes the music track a pending verdict starts, the first time it is

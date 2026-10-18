@@ -48,8 +48,8 @@ use bevy::ecs::entity::Entity;
 use bevy::ecs::world::World;
 use cs_app::audio::{
     AudioBindLog, AudioBindRecord, AudioBindRefusal, AudioEmitterBinding, AudioEmitterRole,
-    AudioPlugin, AudioSession, AudioSpatial, EngineVoiceFollow, EngineVoices, LoopRefusal,
-    lower_bus, lower_mode,
+    AudioMixReport, AudioPlugin, AudioSession, AudioSpatial, EngineVoiceFollow, EngineVoices,
+    LoopRefusal, NonPositionalEmitter, lower_bus, lower_mode,
 };
 use cs_app::loading::{
     CompletionVerdict, Criticality, ExpectedLoad, IoOutcome, LoadItem, LoadRequest, LoadState,
@@ -827,6 +827,58 @@ fn accept_f41_b_spawn_path_binds_the_delivered_environment_loop() {
             .is_none()
     );
     assert_eq!(world.device.sounding(), 0);
+}
+
+/// F41-B3: the world's ambience is declared non-positional, by the production
+/// spawn path, and the mixer reports it as that rather than as `unplaced`.
+///
+/// The delivered item entity has no pose and no spawn path states one, so
+/// nothing is placed (no position is invented): the emitter carries the
+/// [`NonPositionalEmitter`] declaration, `non_positional` counts it, and
+/// `unplaced` stays reserved for emitters that ought to have a pose — here the
+/// aircraft, whose pose is real and which still reaches the mixer placed.
+#[test]
+fn accept_f41_b3_world_ambience_is_declared_non_positional() {
+    let mut world = SpawnWorld::new(vec![sound_item(WIND_KEY)]);
+    world.step(2);
+
+    let item = world.delivered_item(&wind_asset());
+    assert!(
+        world
+            .world()
+            .entity(item)
+            .contains::<NonPositionalEmitter>(),
+        "the spawn path declared the world's ambient emitter non-positional"
+    );
+    assert!(
+        !world
+            .world()
+            .entity(item)
+            .contains::<bevy::prelude::GlobalTransform>(),
+        "nothing gave the ambient emitter a pose"
+    );
+    let report = world.world().resource::<AudioMixReport>();
+    assert_eq!(report.non_positional, 1, "the ambience is reported as such");
+    assert_eq!(report.unplaced, 0, "and is not reported as unplaced");
+    assert_eq!(world.device.sounding(), 1, "the loop still sounds");
+
+    // An aircraft with a real pose is placed: neither counter moves.
+    world.spawn_aircraft([5.0, 0.0, 0.0], 0.5);
+    world.step(3);
+    let report = world.world().resource::<AudioMixReport>();
+    assert_eq!(report.non_positional, 1);
+    assert_eq!(report.unplaced, 0);
+
+    // The declaration describes the absence of a pose only: an emitter without
+    // the declaration and without a pose is still `unplaced`.
+    world
+        .world_mut()
+        .entity_mut(item)
+        .remove::<NonPositionalEmitter>();
+    world.step(1);
+    let report = world.world().resource::<AudioMixReport>();
+    assert_eq!(report.non_positional, 0);
+    assert_eq!(report.unplaced, 1, "an undeclared pose-less emitter");
 }
 
 /// Content the load did not deliver is still refused by name, now through the
