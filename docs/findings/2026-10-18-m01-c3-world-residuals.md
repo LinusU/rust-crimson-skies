@@ -294,23 +294,44 @@ and stays).
 
 ## Commands run
 
+On this branch's head, after the rebase onto `origin/main` (which had moved by
+25 commits, including the five-binary `cs_app` test split and the
+`declared_missions()` helper — the rebase applied without conflicts and this
+branch's tests were adapted to that layout; no `Cargo.toml` or `Cargo.lock`
+change was needed):
+
 ```sh
 cargo fmt --all -- --check                                            # exit 0
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings   # exit 0
-cargo test --workspace --locked                                        # CI runs this
+cargo run --locked -p cs_xtask -- test-layout                          # exit 0, 588 sources reached
+cargo test -p cs_app --locked --test cs_app_tests_a --test cs_app_tests_b \
+  --test cs_app_tests_c --test cs_app_tests_d --test cs_app_tests_e   # exit 0, 2083 synthetic green
+cargo test -p cs_content --locked                                      # exit 0, 530 green
+# the task selection (this is the run the evidence report records):
 cargo test -p cs_app --locked -- accept_m01_c3_world_residuals_ --include-ignored
-cargo test -p cs_app --locked --test cs_app_tests_c -- --include-ignored     # the world suites
-cargo test -p cs_app --locked --test cs_app_tests_d -- --include-ignored     # the campaign suites
+#   exit 0: 4 tests discovered, executed and passed (1 synthetic, 3 retail)
+# the re-pinned sibling suites, with CS_GAME_DIR, in the binary that holds them:
+cargo test -p cs_app --locked --test cs_app_tests_c -- \
+  accept_f18_world_units_containers_ accept_m01_lc_world_residual_roles_ \
+  accept_f18_grid_collision_origin_ accept_m01_lc_fvol_roles_ --include-ignored   # exit 0, 14 passed
+cargo test -p cs_app --locked --test cs_app_tests_c -- \
+  accept_m01_window_world_imports_ accept_vs_m01_geometry_verdict_ --include-ignored  # exit 0, 2 passed
 # evidence (docs/contracts/CLI-EVIDENCE.md):
 cargo test --locked -p cs_app --test cs_app_tests_c -- \
-  evidence_m01_c3_world_residuals --ignored
+  evidence_m01_c3_world_residuals --ignored                            # exit 0, 1 passed
 python3 tools/validate_evidence.py private/evidence/M01-C3-WORLD-RESIDUALS/acceptance.json \
-  --artifact-root private/evidence/M01-C3-WORLD-RESIDUALS --require-pass
+  --artifact-root private/evidence/M01-C3-WORLD-RESIDUALS --require-pass  # exit 0, 15 artifacts
 # the owner-command smoke (docs/PLAYTEST.md, "The owner-command smoke"):
-cargo build --release --locked -p cs_app --bin cs
+cargo build --release --locked -p cs_app --bin cs                     # exit 0
 CS_CAPABILITIES=retail,gpu,audio target/release/cs --cs-path "$CS_GAME_DIR" --mission M01 \
   --smoke-seconds 45 --capture-dir private/evidence/M01-C3-WORLD-RESIDUALS/smoke
+#   exit 1: the capture is written and the window opened; 2 of 12 checks failed
+#   (world_terrain_lit, hud_objective_matches — see section F)
 ```
+
+`cargo test --workspace --locked` is not run locally (AGENTS: CI runs the full
+suite on the pushed commit); the crates this branch changes were run with `-p`,
+and the retail suites that read the installation were run with `--include-ignored`.
 
 ## Sources used
 
@@ -337,13 +358,25 @@ CS_CAPABILITIES=retail,gpu,audio target/release/cs --cs-path "$CS_GAME_DIR" --mi
 
 `docs/findings/evidence/M01-C3-WORLD-RESIDUALS.json` — schema
 `schemas/evidence.schema.json`, written by
-`crates/cs_app/tests/evidence_report_m01_c3_world_residuals.rs` and validated
-with `tools/validate_evidence.py … --require-pass`. Capabilities `retail`,
-`synthetic` and `gpu`; the candidate tree recorded in the JSON is the tree of the
-commit the acceptance run tested; the acceptance tests discovered, executed and
-passed with the retail capability; claim `implemented`. Its second artifact is a
+`crates/cs_app/tests/world/evidence_m01_c3_world_residuals.rs` and validated
+with `tools/validate_evidence.py … --require-pass` (exit 0,
+`structurally_valid: true`, 15 artifacts). Capabilities `retail`, `synthetic`
+and `gpu`; the candidate tree recorded in the JSON is the tree of the commit the
+acceptance run tested; 4 tests discovered, executed and passed; claim
+`implemented`. Its second artifact, `m01-c3-world-residuals-census.json`, is a
 **second production observation** — one discovery over the installation, one
-import per container, recording per group the grouping-class count, the
-four-term partition identity's terms and the open-role count — and the smoke's
-own `frame_*.png` captures are referenced as the `gpu` artifact. No original byte
-is in either file: ids, digests, counts and claim labels only.
+import per container, then the spawn over `c3`'s own uploaded geometry and M01's
+plan through `plan_mission_launch` — recording per group the four terms of the
+partition identity, the open-role count and the group's own container digest,
+plus `c3`'s spawn summary (458 objects, 374 colliders, **0 skips**, 84
+non-colliding, 0 presentation gaps) and M01's plan (`zbd/c3/m01`, `world_geometry`
+satisfied, no gaps, launchable). The report's `gpu` artifacts are the smoke's
+own `report.json` and its 12 framebuffer PNGs, all under `smoke/`. No original
+byte is in either file: ids, digests, counts and claim labels only.
+
+The three residuals are carried in the report's `review.method` — each naming
+the content it affects and the task that lifts it — and not in the schema's
+`unknowns` array, which `tools/validate_evidence.py --require-pass` requires to
+be empty. They are limits of code-derived evidence, not work this task left
+undone, and they gate `verified_original` and `release_approved` until #358
+supplies a run.
