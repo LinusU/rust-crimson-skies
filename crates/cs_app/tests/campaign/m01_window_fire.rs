@@ -425,3 +425,115 @@ fn accept_m01_window_fire_the_fire_binding_names_are_the_mission_ones() {
         "the rocket key is the mission's declared rocket command"
     );
 }
+
+// ---------------------------------------------------------------------------
+// The gun's shot sound (#1546): measured per weapon record, not bound to the
+// designed M01 gun.
+// ---------------------------------------------------------------------------
+
+mod gun_sound {
+    use cs_app::mission_session::{
+        WeaponSoundError, measure_weapon_sound, sound_like_keys, weapon_sound_from_documents,
+    };
+    use cs_content::original_airframe::OriginalDocuments;
+    use cs_content::stunts::ZrdValue;
+
+    fn text(value: &str) -> ZrdValue {
+        ZrdValue::Text(value.to_owned())
+    }
+
+    fn list(children: Vec<ZrdValue>) -> ZrdValue {
+        ZrdValue::List(children)
+    }
+
+    /// The measured shapes, newly authored: a ballistics record naming a
+    /// group, and a group record carrying a member and flags.
+    fn documents(with_field: bool) -> (ZrdValue, ZrdValue) {
+        let mut body = vec![text("DESC"), list(vec![text("x")])];
+        if with_field {
+            body.extend([text("LOOPED_SOUND_NAME"), list(vec![text("snd_synth")])]);
+        }
+        let weapons = list(vec![list(vec![
+            text("BALLISTICS"),
+            list(vec![text("wep_syn"), list(body)]),
+        ])]);
+        let sounds = list(vec![
+            list(vec![text("snd_other"), text("other.wav"), text("SFX")]),
+            list(vec![
+                text("snd_synth"),
+                text("synth.wav"),
+                text("3D"),
+                text("LOOPED"),
+            ]),
+        ]);
+        (weapons, sounds)
+    }
+
+    #[test]
+    fn accept_m01_window_fire_gun_sound_chain_reads_group_member_and_loop_flag() {
+        let (weapons, sounds) = documents(true);
+        let measured = weapon_sound_from_documents(&weapons, &sounds, "wep_syn")
+            .expect("the chain is complete");
+        assert_eq!(measured.group, "snd_synth");
+        assert_eq!(measured.member, "synth.wav");
+        assert!(measured.looped, "the group is flagged LOOPED");
+    }
+
+    #[test]
+    fn accept_m01_window_fire_gun_sound_a_record_without_the_field_is_unmeasured() {
+        let (weapons, sounds) = documents(false);
+        let refusal = weapon_sound_from_documents(&weapons, &sounds, "wep_syn")
+            .expect_err("no field, no binding");
+        assert!(
+            matches!(refusal, WeaponSoundError::Unmeasured(_)),
+            "{refusal}"
+        );
+        let refusal = weapon_sound_from_documents(&weapons, &sounds, "wep_missing")
+            .expect_err("no record, no binding");
+        assert!(
+            matches!(refusal, WeaponSoundError::Unmeasured(_)),
+            "{refusal}"
+        );
+    }
+
+    #[test]
+    #[ignore = "requires CS_GAME_DIR"]
+    fn accept_m01_window_fire_gun_sound_retail_weapon_records_name_their_gun_members() {
+        let root = std::path::PathBuf::from(std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR"));
+        // (weapon record, group, member): read from the installation on every
+        // run, so a stale expectation fails.
+        for (weapon, group, member) in [
+            ("wep_00", "snd_30cal", "30cal_gun.wav"),
+            ("wep_01", "snd_40cal", "40cal_gun.wav"),
+            ("wep_02", "snd_50cal", "50cal_gun.wav"),
+            ("wep_50", "snd_50cal", "50cal_gun.wav"),
+            ("wep_70", "snd_70cal", "70cal_gun.wav"),
+        ] {
+            let measured = measure_weapon_sound(&root, weapon).expect("the record is measured");
+            assert_eq!(measured.group, group, "{weapon}");
+            assert_eq!(measured.member, member, "{weapon}");
+            assert!(measured.looped, "{weapon}: the group is flagged LOOPED");
+        }
+        assert!(measure_weapon_sound(&root, "wep_9999").is_err());
+    }
+
+    #[test]
+    #[ignore = "requires CS_GAME_DIR"]
+    fn accept_m01_window_fire_gun_sound_the_player_airframe_record_names_no_gun_sound() {
+        let root = std::path::PathBuf::from(std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR"));
+        let documents = OriginalDocuments::read(&root).expect("the installation reads");
+        let vehicle = documents.vehicle().root().to_zrd_value();
+        // The chain basic_airplane -> player_airplane -> pdevastator: only the
+        // two engine sounds are sound-like at the top level of the leaf; the
+        // guns' sound is a property of the weapon record, not the airframe.
+        let leaf = sound_like_keys(&vehicle, "pdevastator");
+        assert_eq!(leaf, ["engine_sound", "cockpit_engine_sound"]);
+        let parent = sound_like_keys(&vehicle, "player_airplane");
+        assert!(
+            parent
+                .iter()
+                .all(|key| !key.contains("sound") && !key.contains("snd")),
+            "no sound field on the parent: {parent:?}"
+        );
+    }
+}
