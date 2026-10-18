@@ -9,12 +9,12 @@ use super::*;
 /// The retail acceptance tests M10-B's capabilities are judged on.
 const RETAIL_TESTS_M10_B: &[&str] = &[
     "accept_m10_b_the_control_program_is_the_member_that_declares_the_blocks",
-    "accept_m10_b_every_directive_m10_spells_is_measured_or_terminal",
-    "accept_m10_b_fu1_the_record_lowers_with_the_counting_sites",
-    "accept_m10_b_the_two_counting_travelers_sites_are_blocks_22_and_35",
+    "accept_m10_b_every_directive_m10_spells_has_a_disposition_and_none_is_refused",
+    "accept_m10_b_the_record_lowers_and_every_site_binds",
+    "accept_m10_b_the_one_travelers_site_is_block_53_and_spells_no_counting_mode",
     "accept_m10_b_the_sheet_priorities_resolve_to_measured_operations",
     "accept_m10_b_the_terminal_blocks_are_gated_and_every_address_is_in_range",
-    "accept_m10_b_fu1_m10_lowers_completely_and_the_campaign_stays_unready",
+    "accept_m10_b_m10_lowers_completely_and_the_campaign_stays_unready",
 ];
 
 /// The synthetic predicate tests M10-B's report must also record.
@@ -147,25 +147,20 @@ fn evidence_report_m10_b_writes_the_acceptance_report() {
         assertion_array(&suite.assertions),
         artifact_array(&artifacts),
         jstr(
-            "implementer: claude-2/claude-2 (Rally #286, Sonnet 5.5, session of 2026-10-09); \
-             reviewer: bunny-alpha-2/bunny-alpha-2 (Rally review claim of 2026-10-09T04:22Z) — a \
-             different agent instance and model with a fresh context (a new session that re-read \
-             the task history, the mission sheet, the shared contract and the diff), so this \
-             review is independent of the implementation, but it is an agent review of the code \
-             and tests, not independent original-reference evidence and not original-run \
-             evidence; no agent review replaces the owner's human approval"
+            "implementer of the re-pin: sonnet-1/sonnet-1 (Rally #1620, Sonnet 5.5, session of \
+             2026-10-18); the original M10-B implementation and review (Rally #286) measured the \
+             wrong archive and no longer stand; the re-pin has not been independently reviewed \
+             yet, and no agent review replaces the owner's human approval"
         ),
         jstr(
             "acceptance suite run locally with the retail capability; the fields are derived \
              from the recorded log and production discovery of $CS_GAME_DIR. The suite pins \
-             M10's measured control program (49 blocks, 232 sites, every call binds) and the two \
-             TRAVELERS counting-mode conditions that keep it from lowering to a valid program; \
-             claim is implemented only; the mission is NOT ready: the open gap (TRAVELERS counting \
-             mode, blocks 22 and 35) is recorded in \
-             docs/findings/2026-10-09-m10-b-control-program-gaps.md. The reviewer re-ran the \
-             whole acceptance suite with CS_GAME_DIR on the rebased commit, re-applied the two \
-             documented mutations, regenerated this report from that run and validated it with \
-             tools/validate_evidence.py --require-pass"
+             M10's measured control program on the archive missions/bindings/M10.json binds \
+             (ZBD/C1/M05/zrdr.zbd, mission/ch2-m05: 58 blocks, 208 sites, 22 keys, every call \
+             binds, the record lowers completely) and the production binding's identity and \
+             digests; claim is implemented only; the mission is NOT ready (no playthrough, \
+             difficulty or presentation evidence, M10-C). The earlier pins measured \
+             ZBD/C2/M05 (mission/ch3-m05), a different mission"
         ),
     );
 
