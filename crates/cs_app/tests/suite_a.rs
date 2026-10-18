@@ -186,6 +186,7 @@ mod accept_m01_radio_sample;
 mod accept_m01_smoke_c3_probes;
 mod accept_m01_smoke_no_teleport;
 mod accept_m01_window_hud_pending_objective;
+mod accept_parity_m01_lc_letterbox;
 mod accept_t1222_per_actor_disconnect_abort;
 mod accept_t1317_blast_recipients;
 mod accept_t1424_collision_topology;

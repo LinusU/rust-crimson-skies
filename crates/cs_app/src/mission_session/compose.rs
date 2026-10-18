@@ -936,6 +936,9 @@ fn add_composition(
         // overlay, which is hidden unless `--dev-overlay` asks for it.
         app.insert_resource(crate::playtest::visuals::DeveloperOverlay(false));
         app.add_plugins(crate::mission_session::MissionCockpitHudPlugin);
+        // The launch cinematic's letterbox bars (#1664), drawn only while the
+        // `LaunchLetterbox` flag is on.
+        app.add_plugins(crate::mission_session::MissionLetterboxPlugin);
     }
 
     // 1. The announced load: a fresh content session over the stage's

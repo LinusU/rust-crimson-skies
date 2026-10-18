@@ -100,6 +100,7 @@ mod gun_sound;
 mod host;
 mod landings;
 mod launch_sound;
+mod letterbox;
 mod lifecycles;
 mod observation;
 pub(crate) mod parts;
@@ -159,6 +160,10 @@ pub use landings::{
 pub use launch_sound::{
     LAUNCH_SOUND_CONTAINER, LaunchAudioProbe, LaunchSound, LaunchSoundError, backend_refusal,
     install_launch_audio, measure_launch_sound, member_content_id, stage_container,
+};
+pub use letterbox::{
+    LaunchLetterbox, LetterboxBars, MissionLetterboxPlugin, PICTURE_END, PICTURE_TOP, REF_HEIGHT,
+    REF_WIDTH, letterbox_bars,
 };
 pub use lifecycles::{LifecycleAdvance, ObjectiveLifecycleTick, ObjectiveLifecycles};
 pub use observation::{
