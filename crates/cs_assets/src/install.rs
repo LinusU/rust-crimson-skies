@@ -34,6 +34,8 @@ use std::fmt;
 use std::fs;
 use std::io::{self, Read as _};
 use std::path::{Component, Path, PathBuf};
+use std::sync::{Mutex, OnceLock, PoisonError};
+use std::time::{Duration, SystemTime};
 
 use cs_types::evidence::ContentHash;
 use cs_types::install::{
@@ -715,7 +717,92 @@ fn walk_directory(
     Ok(())
 }
 
+/// How long a file's modification time must lie in the past before its digest
+/// may be remembered. A rewrite that keeps the length and lands within the
+/// timestamp's granularity of an earlier read cannot be told apart by
+/// metadata alone (git's "racy" problem), so only files that have been quiet
+/// for this long are trusted; a freshly written fixture is simply re-hashed.
+const HASH_MEMO_SETTLE: Duration = Duration::from_secs(2);
+
+/// What the metadata of a file said when its digest was remembered.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct FileSignature {
+    len: u64,
+    modified: SystemTime,
+    /// Inode and change time (unix): a rewrite that restores the old
+    /// modification time still moves the change time.
+    identity: (u64, i64, i64),
+}
+
+impl FileSignature {
+    fn of(metadata: &fs::Metadata) -> Option<Self> {
+        #[cfg(unix)]
+        let identity = {
+            use std::os::unix::fs::MetadataExt as _;
+            (metadata.ino(), metadata.ctime(), metadata.ctime_nsec())
+        };
+        #[cfg(not(unix))]
+        let identity = (0, 0, 0);
+        Some(Self {
+            len: metadata.len(),
+            modified: metadata.modified().ok()?,
+            identity,
+        })
+    }
+}
+
+/// Process-wide digests of files already hashed, so the many independent
+/// readers of one installation (each calls [`discover`]) hash its bytes once
+/// rather than once per call. An entry is used only while the file's
+/// [`FileSignature`] is unchanged.
+fn hash_memo() -> &'static Mutex<BTreeMap<PathBuf, (FileSignature, ContentHash)>> {
+    static MEMO: OnceLock<Mutex<BTreeMap<PathBuf, (FileSignature, ContentHash)>>> = OnceLock::new();
+    MEMO.get_or_init(Mutex::default)
+}
+
+/// Hashes one regular file, reusing the remembered digest while the file is
+/// unchanged. The flag is `true` when the digest came from the memo.
+fn hash_file_memoized(path: &Path) -> Result<(u64, ContentHash, bool), DiscoveryError> {
+    let signature = fs::metadata(path).ok().and_then(|m| FileSignature::of(&m));
+    if let Some(signature) = signature {
+        let memo = hash_memo().lock().unwrap_or_else(PoisonError::into_inner);
+        if let Some((remembered, digest)) = memo.get(path)
+            && *remembered == signature
+        {
+            return Ok((signature.len, *digest, true));
+        }
+    }
+    let (total, digest) = hash_file_uncached(path)?;
+    // Remember only what a second look at the metadata still agrees with,
+    // and only once the file has been quiet longer than the settle window.
+    let after = fs::metadata(path).ok().and_then(|m| FileSignature::of(&m));
+    if let (Some(before), Some(after)) = (signature, after)
+        && before == after
+        && after.len == total
+        && after
+            .modified
+            .checked_add(HASH_MEMO_SETTLE)
+            .is_some_and(|settled| settled <= SystemTime::now())
+    {
+        let mut memo = hash_memo().lock().unwrap_or_else(PoisonError::into_inner);
+        memo.insert(path.to_path_buf(), (after, digest));
+    }
+    Ok((total, digest, false))
+}
+
 /// Hashes one regular file, returning the hashed byte count and digest.
+fn hash_file(path: &Path) -> Result<(u64, ContentHash), DiscoveryError> {
+    hash_file_memoized(path).map(|(total, digest, _)| (total, digest))
+}
+
+/// [`hash_file`] that also says whether the digest was remembered from an
+/// earlier call. Exists for the acceptance tests of the memo.
+#[doc(hidden)]
+pub fn hash_file_reporting_memo(path: &Path) -> Result<(u64, ContentHash, bool), DiscoveryError> {
+    hash_file_memoized(path)
+}
+
+/// Reads and hashes one regular file, returning the hashed byte count and digest.
 ///
 /// The size reported is the number of bytes actually read, and the read is
 /// bracketed by metadata checks: if the file's length or modification time
@@ -723,7 +810,7 @@ fn walk_directory(
 /// name. A same-length rewrite landing inside the read window is the
 /// documented residual race; the installation is owner-read-only in
 /// practice.
-fn hash_file(path: &Path) -> Result<(u64, ContentHash), DiscoveryError> {
+fn hash_file_uncached(path: &Path) -> Result<(u64, ContentHash), DiscoveryError> {
     let mut file = fs::File::open(path).map_err(|source| DiscoveryError::UnreadableFile {
         path: path.to_path_buf(),
         source,

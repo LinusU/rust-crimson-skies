@@ -10,6 +10,7 @@ mod common;
 
 mod accept_f02_a_cased_host_path_inventory;
 mod accept_f02_b_diagnosis_and_safe_discovery;
+mod accept_f02_b_hash_memoization;
 mod accept_f02_b_one_byte_edit_fingerprint_and_cache;
 mod accept_f02_b_retail_installation;
 mod accept_f02_b_sha256_hashing;
