@@ -31,16 +31,17 @@ use crate::physics::BASELINE_FIXED_HZ;
 use crate::world::{WorldMeshes, retail};
 use crate::world_facts::MemberResolver;
 
-/// The `vehicle.zrd` record a resolved player airframe flies, read off the
-/// committed owner-static engine-facts table (task #1432): the airframe
-/// row's `p` field is the record its scene root maps to — row 5 spells
-/// `player_pfighter` → `pdevastator`
+/// The committed owner-static airframe-table row a resolved player airframe
+/// selects (task #1432): the row `airframe_by_scene_root` finds —
+/// `player_pfighter` → row 5
 /// (`docs/findings/2026-10-06-m01-lc-player-airframe-source.md`, the same row
 /// `crate::mission_start::CAMPAIGN_AIRFRAME_ROW` measures the engine-state
 /// byte selecting). The lookup is a table row, never a name match: a
 /// resolved airframe the committed table does not carry is refused by name
 /// rather than mapped onto the nearest record.
-fn flight_record(airframe_key: &str) -> Result<String, MissionSessionError> {
+fn flight_airframe_row(
+    airframe_key: &str,
+) -> Result<crate::engine_facts::AirframeFact, MissionSessionError> {
     let facts =
         crate::engine_facts::engine_facts().map_err(|error| MissionSessionError::Provenance {
             claim: "owner-static.engine-facts",
@@ -51,7 +52,7 @@ fn flight_record(airframe_key: &str) -> Result<String, MissionSessionError> {
         })?;
     facts
         .airframe_by_scene_root(airframe_key)
-        .map(|row| row.p.clone())
+        .cloned()
         .ok_or_else(|| MissionSessionError::AirframeUnmapped {
             airframe: airframe_key.to_owned(),
             expected: "a scene root of the committed owner-static airframe table",
@@ -105,6 +106,13 @@ pub struct MissionFlight {
     pub model: OriginalFlightModel,
     /// The `vehicle.zrd` record the parameters came from (`pdevastator`).
     pub record: String,
+    /// The `vehicle.zrd` record a `wingman_1` special dispatch spawns under —
+    /// measured at `0x426d60` (`docs/findings/2026-10-18-m01-wingman-player-leader.md`
+    /// §1): the `w` pointer of the same airframe row whose `p` field is
+    /// [`Self::record`], `wingman` on the Devastator row M01 flies. Because
+    /// both come off one row, the wingman's template can never disagree with
+    /// the player's airframe.
+    pub wingman_record: String,
     /// The imported player fuel load, in the law's own fuel units.
     pub fuel: f64,
     /// The record's `kind_of` chain, ancestor first.
@@ -607,7 +615,9 @@ fn prepare_flight(
             });
         }
     };
-    let record = flight_record(&airframe_key)?;
+    let row = flight_airframe_row(&airframe_key)?;
+    let record = row.p.clone();
+    let wingman_record = row.w.clone();
     let refused = |reason: String| MissionSessionError::Flight {
         record: record.clone(),
         reason,
@@ -632,6 +642,7 @@ fn prepare_flight(
     Ok(MissionFlight {
         model: OriginalFlightModel::full(airframe, globals),
         record,
+        wingman_record,
         fuel,
         inheritance_chain: parameters.inheritance_chain.clone(),
         provenance: PROVENANCE_LABEL,

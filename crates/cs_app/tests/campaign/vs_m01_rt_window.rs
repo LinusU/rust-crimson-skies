@@ -143,6 +143,7 @@ fn synthetic_flight() -> MissionFlight {
     MissionFlight {
         model: OriginalFlightModel::full(airframe, globals),
         record: "synthetic".to_owned(),
+        wingman_record: "synthetic-wingman".to_owned(),
         fuel: 1.0,
         inheritance_chain: Vec::new(),
         provenance: PROVENANCE_LABEL,

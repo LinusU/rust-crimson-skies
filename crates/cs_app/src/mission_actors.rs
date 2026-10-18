@@ -209,9 +209,11 @@ pub struct MissionActorSpawnReport {
 pub struct ScriptedAircraftActor {
     /// The measured record (`ObservedTool` provenance).
     pub record: ScriptedAircraft,
-    /// The `vehicle.zrd` registry prefix the measured dispatch names —
-    /// **designed** as an airframe/model selection: #1453 measured the
-    /// name-prefix lookup, not which record the prefix binds.
+    /// The `vehicle.zrd` record the measured dispatch resolves — the
+    /// name-truncated registry prefix for the generic branch, and the player
+    /// airframe row's `w` pointer for `wingman_1` (`0x426d60`). **Designed**
+    /// as an airframe/model selection: #1453 measured the name-prefix lookup,
+    /// not which record the prefix binds.
     pub vehicle_record: String,
     /// The session damage actor this entity's [`DamageActorBinding`]
     /// registers.
@@ -612,6 +614,12 @@ struct StageBinding {
     /// non-asleep scripted aircraft would spawn the kinematic held body, with
     /// no law and no side, for the rest of the run.
     ai_airframes: Option<crate::mission_ai::MissionAiAirframes>,
+    /// The `vehicle.zrd` record a `wingman_1` record's measured
+    /// [`SpawnDispatch::WingmanOne`] resolves through — the player airframe
+    /// row's `w` pointer (`0x426d60`, finding §1) — carried on the stage's
+    /// [`crate::mission_session::MissionFlight`], for the same restart reason
+    /// as the airframe table. `None` when the composition has no stage.
+    wingman_one_record: Option<String>,
 }
 
 /// The binding of a stage, or the empty one when the composition has no stage
@@ -624,6 +632,7 @@ fn stage_binding(stage: Option<&MissionStage>) -> StageBinding {
         turrets: stage.turret_records.clone(),
         turret_refusal: stage.turret_refusal.clone(),
         ai_airframes: Some(stage.ai_airframes.clone()),
+        wingman_one_record: Some(stage.flight.wingman_record.clone()),
     })
 }
 
@@ -721,6 +730,20 @@ fn spawn_mission_actors_under(
         };
         let vehicle_record = match &record.dispatch {
             SpawnDispatch::VehicleRecord(prefix) => prefix.clone(),
+            // The `wingman_1` special dispatch resolves through the player
+            // airframe row's `w` pointer (measured `0x426d60`, finding §1) —
+            // the stage carries it on `MissionFlight::wingman_record`.
+            SpawnDispatch::WingmanOne => match &binding.wingman_one_record {
+                Some(resolved) => resolved.clone(),
+                None => {
+                    report.refusals.push(format!(
+                        "{name}: the measured `wingman_1` dispatch resolves through the player \
+                         airframe row's `w` pointer (`0x426d60`), and this stage carries no \
+                         player airframe record to resolve it against"
+                    ));
+                    continue;
+                }
+            },
             dispatch => {
                 report.refusals.push(format!(
                     "{name}: dispatch {dispatch:?} is not a vehicle-record spawn and this seam \

@@ -608,10 +608,13 @@ pub fn stage_for(
         aircraft: content.aircraft.clone(),
         // The scripted aircraft's own flight records (M01-PLAY-AI, #1436),
         // imported for every distinct name-prefix dispatch the measured
-        // records carry.
+        // records carry — plus the `vehicle.zrd` record the `wingman_1`
+        // special dispatch resolves through the player airframe row
+        // (`0x426d60`, M01-WINGMAN-FORMATION).
         ai_airframes: crate::mission_ai::MissionAiAirframes::prepare(
             install_root,
             &content.aircraft,
+            Some(&content.flight.wingman_record),
         ),
         flight: content.flight.clone(),
         // The player airframe's visual source: `zbd/planes.zbd` under this

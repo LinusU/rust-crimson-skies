@@ -183,6 +183,32 @@ pub const HOLD_COURSE_LOOKAHEAD_M: f32 = 1_200.0;
 /// reading this crate keeps.
 pub const STATION_OFFSET_M: [f32; 3] = [8.0, -2.0, 8.0];
 
+/// **Measured (static)**: the follower's station when its resolved leader is
+/// the player — `(6, 0, 18)` at `0x61fb88` (engine-facts rows
+/// `station_offset_player_leader_{x,y,z}`), selected at `0x41e792` only when
+/// `leader == [0x71c298]`, the global player vehicle (`0x41e78a`;
+/// `docs/findings/2026-10-18-m01-wingman-player-leader.md` §2).
+///
+/// The original's third component lies along the basis row the control
+/// writer treats as "ahead" (`bz > 0`, finding §4): this crate's nose is
+/// `-Z`, so ahead is written `-18`. **Not measured**: which side basis row 0
+/// is on, that row 1 is up, or that row 2 is the leader's nose rather than
+/// its tail (finding §2/§5); the signs `+x` right, `+y` up and `-z` ahead
+/// are the readings this crate keeps, consistent with [`STATION_OFFSET_M`].
+pub const STATION_OFFSET_PLAYER_M: [f32; 3] = [6.0, 0.0, -18.0];
+
+/// **Measured (static)**: the player-led wingman's engage window — the
+/// follower's unforced sub-state runs the transition table (finding §2), and
+/// state 0 flips to the station law when the player is awake, the squared
+/// gap to the player is under this (700 m; `0x6035e0`, row
+/// `follow_engage_dist2`) and the follower's own speed exceeds
+/// [`FOLLOW_ENGAGE_SPEED_M_S`].
+pub const FOLLOW_ENGAGE_DIST2: f32 = 490_000.0;
+
+/// **Measured (static)**: the follower speed the player-leader engage
+/// condition asks for, 20.576 m/s (`0x603594`, row `follow_engage_speed`).
+pub const FOLLOW_ENGAGE_SPEED_M_S: f32 = 20.576;
+
 /// **Measured (static)**: lower clamp of the follower's throttle target
 /// (`0x61fb28`, row `follow_throttle_min`).
 pub const FOLLOW_THROTTLE_MIN: f64 = 0.4;
@@ -308,7 +334,10 @@ pub enum MissionAiBehaviour {
         target: TargetRule,
     },
     /// A record of the player's flight whose stored `primary_target` names
-    /// another aircraft of that flight: hold the designed station on it.
+    /// another aircraft of that flight — or the fixed name `player`, which
+    /// the original's leader resolution binds to the player vehicle itself
+    /// (`docs/findings/2026-10-18-m01-wingman-player-leader.md` §1): hold the
+    /// measured station on it.
     Wingman {
         /// The record name the measured primary target spells.
         leader: String,
@@ -356,6 +385,15 @@ pub struct MissionAircraftAi {
     /// slewed by [`follow_throttle_target`]; a wingman flies
     /// `min(1, target)`.
     pub throttle_target: f64,
+    /// Whether a **player-led** wingman's engage transition has fired. The
+    /// original runs the `+0xd8` sub-state table for a player leader (state
+    /// 0 → 1 inside [`FOLLOW_ENGAGE_DIST2`] and faster than
+    /// [`FOLLOW_ENGAGE_SPEED_M_S`]; finding §2), while a non-player leader's
+    /// sub-state is forced every call — so the latch exists only on the
+    /// player branch. Its initial state and the route-object goal states are
+    /// unmeasured (finding §5); until the gate fires the designed stand-in
+    /// holds the spawn heading.
+    pub follow_engaged: bool,
 }
 
 impl MissionAircraftAi {
@@ -400,6 +438,7 @@ impl MissionAircraftAi {
             cooldown: 0,
             shots: 0,
             throttle_target: START_THROTTLE,
+            follow_engaged: false,
         }
     }
 
@@ -631,8 +670,15 @@ pub struct MissionAiAirframes {
 
 impl MissionAiAirframes {
     /// Imports an airframe for every distinct `SpawnDispatch::VehicleRecord`
-    /// prefix in `records`, and nothing else: the `player` record flies the
-    /// composition's own seat and an unmatched name has no record to import.
+    /// prefix in `records`, plus the `vehicle.zrd` record
+    /// `SpawnDispatch::WingmanOne` resolves to — the player airframe row's
+    /// `w` pointer (measured `0x426d60`, finding §1), handed in as
+    /// `wingman_one` by the stage that holds it (`MissionFlight::wingman_record`).
+    /// The `player` record flies the composition's own seat, an unmatched
+    /// name has no record to import, and a `WingmanFour` keeps the refusal
+    /// the spawn reports — its measured alternative (the player's own
+    /// airframe on `c3/m05`/`c4/m04`, `0x47502c`..`0x4750a4`) is not built
+    /// here.
     ///
     /// An AI chain states no `fuel` load — an explicit unknown, never a
     /// substituted number — and that is **not** a refusal here: the
@@ -644,18 +690,39 @@ impl MissionAiAirframes {
     /// Never: a prefix that will not import is recorded in
     /// [`Self::refusals`] and its aircraft spawns held instead.
     #[must_use]
-    pub fn prepare(install_root: &Path, records: &[ScriptedAircraft]) -> Self {
+    pub fn prepare(
+        install_root: &Path,
+        records: &[ScriptedAircraft],
+        wingman_one: Option<&str>,
+    ) -> Self {
         let mut prepared = Self::default();
         for record in records {
-            let SpawnDispatch::VehicleRecord(prefix) = &record.dispatch else {
-                continue;
+            let resolved = match &record.dispatch {
+                SpawnDispatch::VehicleRecord(prefix) => Some(prefix.clone()),
+                SpawnDispatch::WingmanOne => match wingman_one {
+                    Some(template) => Some(template.to_owned()),
+                    // The resolved record travels on the stage's
+                    // `MissionFlight`; a caller that supplies none gets the
+                    // refusal named instead of a guessed record.
+                    None => {
+                        prepared.refusals.push(format!(
+                            "{}: the measured `wingman_1` dispatch resolves through the player \
+                             airframe row's `w` pointer (`0x426d60`), and this stage supplies no \
+                             player airframe record to resolve it against",
+                            record.name
+                        ));
+                        None
+                    }
+                },
+                _ => None,
             };
-            if prepared.models.contains_key(prefix) {
+            let Some(prefix) = resolved else { continue };
+            if prepared.models.contains_key(&prefix) {
                 continue;
             }
-            match Self::import(install_root, prefix) {
+            match Self::import(install_root, &prefix) {
                 Ok(model) => {
-                    prepared.models.insert(prefix.clone(), model);
+                    prepared.models.insert(prefix, model);
                 }
                 Err(reason) => prepared.refusals.push(format!(
                     "{prefix}: the airframe could not be imported: {reason}"
@@ -1172,10 +1239,18 @@ fn decide_mission_aircraft_ai(
                 }
             }
             MissionAiBehaviour::Wingman { ref leader } => {
-                let resolved = cast
-                    .iter()
-                    .find(|(_, record, ..)| record == leader)
-                    .cloned();
+                // The measured leader selection (finding §1): the stored
+                // primary target resolves against the vehicle registry by
+                // name, and the fixed name `player` binds the player
+                // vehicle — the follower then tests *identity*
+                // (`leader == [0x71c298]` at `0x41e78a`), not the name.
+                let resolved = if leader == PLAYER_TARGET_NAME {
+                    player.clone()
+                } else {
+                    cast.iter()
+                        .find(|(_, record, ..)| record == leader)
+                        .cloned()
+                };
                 match resolved {
                     Some((
                         leader_entity,
@@ -1184,24 +1259,50 @@ fn decide_mission_aircraft_ai(
                         leader_orientation,
                         leader_velocity,
                     )) => {
-                        let station =
-                            station_point(leader_position, leader_orientation, STATION_OFFSET_M);
-                        let error = station - here;
-                        let max_speed = flight.model.airframe.fd_speed as f32;
-                        let demanded = follow_demanded_speed(error, leader_velocity, max_speed);
-                        ai.throttle_target = follow_throttle_target(
-                            ai.throttle_target,
-                            demanded,
-                            own_velocity.0.length(),
-                            max_speed,
-                            player
-                                .as_ref()
-                                .map(|(_, _, p, ..)| p.distance_squared(here)),
-                            1.0 / f64::from(crate::physics::BASELINE_FIXED_HZ),
-                        );
-                        let throttle = ai.throttle_target.min(1.0);
                         ai.leader = Some(leader_entity);
-                        (error, throttle, Some(station))
+                        // A player leader runs the unforced sub-state table:
+                        // state 0 engages when the player is awake, the gap
+                        // is under 700 m and the follower's own speed
+                        // exceeds 20.576 m/s (finding §2). The unengaged
+                        // states' goals are route objects this runtime never
+                        // gives it, so the designed stand-in holds the spawn
+                        // heading until the gate fires.
+                        let player_leader = player
+                            .as_ref()
+                            .is_some_and(|(entity, ..)| *entity == leader_entity);
+                        if player_leader
+                            && !ai.follow_engaged
+                            && own_velocity.0.length() > FOLLOW_ENGAGE_SPEED_M_S
+                            && leader_position.distance_squared(here) < FOLLOW_ENGAGE_DIST2
+                        {
+                            ai.follow_engaged = true;
+                        }
+                        if player_leader && !ai.follow_engaged {
+                            (hold_course_direction(nose), START_THROTTLE, None)
+                        } else {
+                            let offset = if player_leader {
+                                STATION_OFFSET_PLAYER_M
+                            } else {
+                                STATION_OFFSET_M
+                            };
+                            let station =
+                                station_point(leader_position, leader_orientation, offset);
+                            let error = station - here;
+                            let max_speed = flight.model.airframe.fd_speed as f32;
+                            let demanded = follow_demanded_speed(error, leader_velocity, max_speed);
+                            ai.throttle_target = follow_throttle_target(
+                                ai.throttle_target,
+                                demanded,
+                                own_velocity.0.length(),
+                                max_speed,
+                                player
+                                    .as_ref()
+                                    .map(|(_, _, p, ..)| p.distance_squared(here)),
+                                1.0 / f64::from(crate::physics::BASELINE_FIXED_HZ),
+                            );
+                            let throttle = ai.throttle_target.min(1.0);
+                            (error, throttle, Some(station))
+                        }
                     }
                     None => {
                         report.no_target += 1;
@@ -1479,6 +1580,8 @@ fn hold_course_direction(nose: Vec3) -> Vec3 {
 
 #[cfg(test)]
 mod tests {
+    use bevy::ecs::system::RunSystemOnce;
+
     use super::*;
 
     #[test]
@@ -1821,6 +1924,336 @@ mod tests {
             wake_enemy_names(&[Value::List(vec![Value::Str("bsfury_1".to_owned())])]),
             None,
             "a nested list is not the measured shape"
+        );
+    }
+
+    /// The constants the player-leader branch adds are the committed
+    /// `[[ai_follow]]` rows of the owner-static table — the slot the
+    /// `0x41e792` select picks for a player leader, and the state-0 engage
+    /// window it sits behind.
+    #[test]
+    fn accept_m01_wingman_formation_player_leader_constants_match_the_committed_rows() {
+        let text = include_str!("../../../data/owner-static/engine-facts.toml");
+        let value_of = |name: &str| -> f64 {
+            let at = text
+                .find(&format!("name = \"{name}\""))
+                .unwrap_or_else(|| panic!("row {name} is committed"));
+            let row = &text[at..];
+            let row = &row[..row.find("\n\n").unwrap_or(row.len())];
+            let line = row
+                .lines()
+                .find(|l| l.starts_with("value = "))
+                .expect("a value");
+            line["value = ".len()..].parse().expect("a float")
+        };
+        let f = |name| value_of(name) as f32;
+        assert_eq!(
+            f("station_offset_player_leader_x"),
+            STATION_OFFSET_PLAYER_M[0]
+        );
+        assert_eq!(
+            f("station_offset_player_leader_y"),
+            STATION_OFFSET_PLAYER_M[1]
+        );
+        // The committed z lies along the original's "ahead" basis row; this
+        // crate's nose is -Z, so ahead is written -z, exactly as
+        // `station_offset_other_leader_z` maps onto `-STATION_OFFSET_M[2]`.
+        assert_eq!(
+            f("station_offset_player_leader_z"),
+            -STATION_OFFSET_PLAYER_M[2]
+        );
+        assert_eq!(f("follow_engage_dist2"), FOLLOW_ENGAGE_DIST2);
+        assert_eq!(f("follow_engage_speed"), FOLLOW_ENGAGE_SPEED_M_S);
+    }
+
+    /// A `vehicle.zrd` airframe for the decide tests: the synthetic field
+    /// tables the campaign fixture declares, imported through the same
+    /// `from_values` boundaries the production import runs.
+    fn synthetic_airframe(record_name: &str) -> MissionAiAirframe {
+        let airframe = OriginalAirframe::from_values(&[
+            ("roll_torque", 7.5),
+            ("pitch_torque", 3.3),
+            ("rudder_torque", 2.0),
+            ("level_off_rate", 1.0),
+            ("return_rate", 3.0),
+            ("ang_momentum_damp", 5.0),
+            ("rec_moments_inertia_x", 1.18),
+            ("rec_moments_inertia_y", 1.0),
+            ("rec_moments_inertia_z", 1.1),
+            ("fd_speed", 135.0),
+            ("engine_factor", 0.62),
+            ("drag_factor", 0.37),
+            ("veh_weight", 1900.0),
+            ("ref_area", 330.0),
+            ("gravity", 20.0),
+        ])
+        .expect("the declared airframe fields are complete");
+        let globals = OriginalGlobals::from_values(&[
+            ("nom_gravity", 20.0),
+            ("lift_aoa_0_deg", 5.0),
+            ("lift_aoa_1_deg", 9.0),
+            ("max_aoa_deg", 46.0),
+            ("high_g_0", 9.0),
+            ("high_g_1", 15.0),
+            ("low_g_0", -6.0),
+            ("low_g_1", -9.0),
+            ("lift_accel_rate", 0.75),
+            ("stall_mag", 1.25),
+            ("turn_fade_in_mph", 10.0),
+            ("turn_fade_out_mph", 50.0),
+            ("yaw_low_speed", 0.0625),
+            ("yaw_high_speed", 0.17),
+            ("yaw_fade_in_mph", 10.0),
+            ("yaw_max_mph", 50.0),
+            ("yaw_fade_out_mph", 400.0),
+        ])
+        .expect("the declared globals are complete");
+        MissionAiAirframe {
+            model: OriginalFlightModel::full(airframe, globals),
+            record: record_name.to_owned(),
+            inheritance_chain: Vec::new(),
+            provenance: PROVENANCE_LABEL,
+        }
+    }
+
+    /// A decide world: the two resources the system mutates, then whichever
+    /// bodies the test asks for.
+    fn decide_world() -> World {
+        let mut world = World::new();
+        world.init_resource::<MissionAiReport>();
+        world.init_resource::<MissionAiFireOrders>();
+        world
+    }
+
+    /// A scripted aircraft body the decide system's queries see: its own
+    /// record, law and pose. `player_team` is the measured team the spawn
+    /// passes `for_record` — the same value the stage's `player` record
+    /// stores.
+    fn scripted_aircraft(
+        world: &mut World,
+        record: &ScriptedAircraft,
+        player_team: Option<u32>,
+        position: Vec3,
+        velocity: Vec3,
+    ) -> Entity {
+        world
+            .spawn((
+                MissionAircraftAi::for_record(record, player_team),
+                ai_flight_record(&synthetic_airframe("wingman"), position, Quat::IDENTITY),
+                Position(position),
+                Rotation(Quat::IDENTITY),
+                LinearVelocity(velocity),
+                ScriptedAircraftActor {
+                    record: record.clone(),
+                    vehicle_record: "wingman".to_owned(),
+                    damage_actor: cs_sim::damage::ActorId {
+                        session: cs_types::net::SessionId::new(9).expect("session 9"),
+                        serial: 7,
+                    },
+                    generation: crate::scene::SceneGeneration(0),
+                    asleep: false,
+                },
+            ))
+            .id()
+    }
+
+    /// One player body the leader resolution binds by component, exactly as
+    /// the composed mission presents it.
+    fn player_body(world: &mut World, position: Vec3, velocity: Vec3) -> Entity {
+        world
+            .spawn((
+                MissionPlayerBody,
+                Position(position),
+                Rotation(Quat::IDENTITY),
+                LinearVelocity(velocity),
+            ))
+            .id()
+    }
+
+    /// A scripted leader the roster can carry: another scripted aircraft
+    /// entity, so the cast — not the player query — supplies it.
+    fn scripted_leader(world: &mut World, name: &str, position: Vec3, velocity: Vec3) -> Entity {
+        scripted_aircraft(
+            world,
+            &record(name, Some(1), None, false),
+            Some(1),
+            position,
+            velocity,
+        )
+    }
+
+    /// A player-led wingman inside the engage window and moving resolves the
+    /// player **body** as its leader — `player` is not a record name the cast
+    /// can carry — latches `follow_engaged`, and aims at the player-leader
+    /// slot ahead of the player, not the other-leader slot.
+    #[test]
+    fn accept_m01_wingman_formation_a_player_leader_engages_and_aims_at_the_player_slot() {
+        let mut world = decide_world();
+        let player = player_body(
+            &mut world,
+            Vec3::new(0.0, 150.0, 0.0),
+            Vec3::new(0.0, 0.0, -80.0),
+        );
+        // Betty's measured spawn offset is roughly (+48, 0, +107) — well
+        // inside the 700 m window — so only the speed gate stands between
+        // her and the station law once she is moving.
+        let here = Vec3::new(48.0, 150.0, 107.0);
+        let wingman = scripted_aircraft(
+            &mut world,
+            &record("wingman_1", Some(1), Some("player"), false),
+            Some(1),
+            here,
+            Vec3::new(0.0, 0.0, -80.0),
+        );
+
+        world
+            .run_system_once(decide_mission_aircraft_ai)
+            .expect("the decide system runs");
+
+        let ai = world
+            .get::<MissionAircraftAi>(wingman)
+            .expect("the wingman's law");
+        assert_eq!(
+            ai.leader,
+            Some(player),
+            "the stored `player` target binds the player body, not a record"
+        );
+        assert!(
+            ai.follow_engaged,
+            "inside 700 m and faster than 20.576 m/s the engage latch fires"
+        );
+        let station = station_point(
+            Vec3::new(0.0, 150.0, 0.0),
+            Quat::IDENTITY,
+            STATION_OFFSET_PLAYER_M,
+        );
+        assert!(
+            (ai.range_m - (station - here).length()).abs() < 1.0e-3,
+            "the aim point is the player-leader slot (6, 0, -18), not the \
+             other-leader one: {} vs {}",
+            ai.range_m,
+            (station - here).length()
+        );
+        let flight = world
+            .get::<PlaytestOriginalFlight>(wingman)
+            .expect("the wingman's flight record");
+        assert!(
+            flight.command.throttle >= FOLLOW_THROTTLE_MIN,
+            "the engaged wingman flies the follow law's throttle, not the \
+             parked course's: {}",
+            flight.command.throttle
+        );
+    }
+
+    /// Both arms of the measured gate must hold: a player-led wingman that is
+    /// close but too slow, and one that is fast but beyond 700 m, keep the
+    /// spawn-heading stand-in and never latch `follow_engaged` — while the
+    /// leader itself still resolves.
+    #[test]
+    fn accept_m01_wingman_formation_the_engage_gate_needs_range_and_speed() {
+        let mut world = decide_world();
+        let player = player_body(
+            &mut world,
+            Vec3::new(0.0, 150.0, 0.0),
+            Vec3::new(0.0, 0.0, -80.0),
+        );
+        let slow = scripted_aircraft(
+            &mut world,
+            &record("wingman_1", Some(1), Some("player"), false),
+            Some(1),
+            Vec3::new(48.0, 150.0, 107.0),
+            Vec3::new(0.0, 0.0, -10.0),
+        );
+        let far = scripted_aircraft(
+            &mut world,
+            &record("wingman_2", Some(1), Some("player"), false),
+            Some(1),
+            Vec3::new(0.0, 150.0, 800.0),
+            Vec3::new(0.0, 0.0, -80.0),
+        );
+
+        world
+            .run_system_once(decide_mission_aircraft_ai)
+            .expect("the decide system runs");
+
+        for (entity, why) in [
+            (slow, "inside 700 m but slower than 20.576 m/s"),
+            (far, "faster than 20.576 m/s but 800 m out"),
+        ] {
+            let ai = world.get::<MissionAircraftAi>(entity).expect("the law");
+            assert_eq!(
+                ai.leader,
+                Some(player),
+                "the leader still resolves while the gate holds: {why}"
+            );
+            assert!(
+                !ai.follow_engaged,
+                "the latch stays down while one arm fails: {why}"
+            );
+            assert!(
+                ai.range_m.is_nan(),
+                "the unengaged stand-in holds the spawn heading and aims at \
+                 nothing: {why}"
+            );
+            let flight = world
+                .get::<PlaytestOriginalFlight>(entity)
+                .expect("the flight record");
+            assert!(
+                (flight.command.throttle - START_THROTTLE).abs() < 1.0e-9,
+                "the stand-in flies the course-hold throttle: {why}"
+            );
+        }
+    }
+
+    /// A wingman whose leader is another scripted record keeps the measured
+    /// non-player path: no engage gate — the original forces its sub-state
+    /// every call — so `follow_engaged` stays down and the other-leader slot
+    /// applies.
+    #[test]
+    fn accept_m01_wingman_formation_a_scripted_leader_skips_the_engage_gate() {
+        let mut world = decide_world();
+        let _player = player_body(
+            &mut world,
+            Vec3::new(0.0, 150.0, 0.0),
+            Vec3::new(0.0, 0.0, -80.0),
+        );
+        let leader = scripted_leader(
+            &mut world,
+            "devastator_2",
+            Vec3::new(0.0, 150.0, -300.0),
+            Vec3::new(0.0, 0.0, -80.0),
+        );
+        let here = Vec3::new(48.0, 150.0, 107.0);
+        let wingman = scripted_aircraft(
+            &mut world,
+            &record("wingman_2", Some(1), Some("devastator_2"), false),
+            Some(1),
+            here,
+            Vec3::new(0.0, 0.0, -10.0),
+        );
+
+        world
+            .run_system_once(decide_mission_aircraft_ai)
+            .expect("the decide system runs");
+
+        let ai = world
+            .get::<MissionAircraftAi>(wingman)
+            .expect("the wingman's law");
+        assert_eq!(ai.leader, Some(leader), "the scripted leader resolves");
+        assert!(
+            !ai.follow_engaged,
+            "a scripted leader's sub-state is forced, so the latch never sets"
+        );
+        let station = station_point(
+            Vec3::new(0.0, 150.0, -300.0),
+            Quat::IDENTITY,
+            STATION_OFFSET_M,
+        );
+        assert!(
+            (ai.range_m - (station - here).length()).abs() < 1.0e-3,
+            "the aim point is the other-leader slot (8, -2, 8): {} vs {}",
+            ai.range_m,
+            (station - here).length()
         );
     }
 }
