@@ -274,7 +274,7 @@ covers, and both are recorded here rather than hidden behind a green line.
 
 | test | covers | fails when |
 | --- | --- | --- |
-| `accept_m01_c3_world_residuals_a_grouping_grid_record_resolves_and_a_kept_one_does_not` (`crates/cs_app/tests/world/grouping_roles.rs`, synthetic, CI) | a grouping record resolving role `None` + the grouping shape claim + `OBJECT_STORES_NO_MESH`, the partition identity's new term, and a same-store-class record that stores `0x40` keeping `GRID_GROUPING_NODE_ROLE_UNMEASURED` with `objects_unresolved_collision == 1` and the verdict open; then the spawn presenting the answered one and reporting no `unknown_mesh` | the new arm is removed (the answered record inherits `Solid`+`FromMesh`, the grouping counter drops to 0, and the spawn skips it as `unknown_mesh`), the flags test becomes unconditional (the kept record resolves `None`), or a counter/skip list moves |
+| `accept_m01_c3_world_residuals_a_grouping_grid_record_resolves_and_a_kept_one_does_not` (`crates/cs_app/tests/world/grouping_roles.rs`, synthetic, CI) | a grouping record resolving role `None` + the grouping shape claim + `OBJECT_STORES_NO_MESH`, the partition identity's new term, a same-store-class record that stores `0x40` keeping `GRID_GROUPING_NODE_ROLE_UNMEASURED` with `objects_unresolved_collision == 1` and the verdict open, and a record with the **same box store shape but a mesh bound** staying the index's `Solid` + `FromMesh`; then the spawn presenting the answered one and reporting no `unknown_mesh` | the new arm is removed (the answered record inherits `Solid`+`FromMesh`, the grouping counter drops to 0, and the spawn skips it as `unknown_mesh`), the arm stops requiring the record's own no-mesh store, the flags test becomes unconditional (the kept record resolves `None`), or a counter/skip list moves |
 | `accept_m01_c3_world_residuals_c3_leaves_no_grouping_record_open` (retail, `#[ignore]`) | one production read of `c3`: the 47 counter, the four-term partition identity, the 47 records re-derived from the container's own bytes (`unk112 = 2`, box in 164, children > 0, bit `0x40` clear) each resolving `None` + the grouping claim + `OBJECT_STORES_NO_MESH`, `objects_unresolved_collision == 0`, the verdict `Satisfied`, and the spawn's colliders/skips/non-colliding balance with no `unknown_mesh` at all | any count moves, a record stays open or inherits the index's role, or one skip reappears |
 | `accept_m01_c3_world_residuals_m01_s_plan_is_launchable` (retail, `#[ignore]`) | the CLI's own read: `plan_mission_launch(label M01, "The Lost Treasure")` resolves `zbd/c3` + `zbd/c3/m01`, `world_geometry` is `Satisfied`, the gap list is empty and `launchable()` is true | the container stops being launchable, or the binding resolves another group |
 | `accept_m01_c3_world_residuals_c3_has_a_horizon_environment_subtree` (retail, `#[ignore]`) | `c3`'s `horizon` child and its 5 descendants, each resolving `None`, the count equal to `environment_records()` | the subtree stops being imported or a descendant resolves another role |
@@ -313,9 +313,9 @@ cargo test -p cs_app --locked -- accept_m01_c3_world_residuals_ --include-ignore
 # the re-pinned sibling suites, with CS_GAME_DIR, in the binary that holds them:
 cargo test -p cs_app --locked --test cs_app_tests_c -- \
   accept_f18_world_units_containers_ accept_m01_lc_world_residual_roles_ \
-  accept_f18_grid_collision_origin_ accept_m01_lc_fvol_roles_ --include-ignored   # exit 0, 14 passed
-cargo test -p cs_app --locked --test cs_app_tests_c -- \
-  accept_m01_window_world_imports_ accept_vs_m01_geometry_verdict_ --include-ignored  # exit 0, 2 passed
+  accept_f18_grid_collision_origin_ accept_m01_lc_fvol_roles_ \
+  accept_m01_window_world_imports_ accept_vs_m01_geometry_verdict_ --include-ignored
+#   exit 0, 16 passed
 # evidence (docs/contracts/CLI-EVIDENCE.md):
 cargo test --locked -p cs_app --test cs_app_tests_c -- \
   evidence_m01_c3_world_residuals --ignored                            # exit 0, 1 passed
@@ -328,6 +328,12 @@ CS_CAPABILITIES=retail,gpu,audio target/release/cs --cs-path "$CS_GAME_DIR" --mi
 #   exit 1: the capture is written and the window opened; 2 of 12 checks failed
 #   (world_terrain_lit, hud_objective_matches — see section F)
 ```
+
+Every command above was re-run on the final head: the last code change is the
+guard fix in commit `3cf113a0`, and the acceptance run, the census, the smoke and
+the retail suites all ran after it. The evidence report's `candidate_tree` is
+therefore the tree of `3cf113a0` — the code tree this branch is judged by; the
+commits after it are documentation and the report itself.
 
 `cargo test --workspace --locked` is not run locally (AGENTS: CI runs the full
 suite on the pushed commit); the crates this branch changes were run with `-p`,
