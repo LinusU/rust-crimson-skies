@@ -3074,9 +3074,11 @@ mod tests {
             "every record reports reachability"
         );
         assert!(!report.contains("\"reachability\": null"), "{report}");
+        // A modelled program row (F13-D) also spells `"evidence": "..."`, so
+        // the string count is the records' plus one per modelled program.
         assert_eq!(
             report.matches("\"evidence\": \"").count(),
-            summary.records,
+            summary.records + summary.modelled_programs,
             "every record carries its reachability evidence"
         );
 
