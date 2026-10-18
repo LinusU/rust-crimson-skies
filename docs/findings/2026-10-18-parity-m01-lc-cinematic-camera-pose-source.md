@@ -203,14 +203,14 @@ for scene 1 `gi_cam1` 20 %, `gi_cam1b` 16 %, `gi_cam1c` 12.8 %, `gi_cam1d`
 
 | unknown | affects | notes |
 | --- | --- | --- |
-| the frame of the positions: `camera1`'s parent node in `gamez.zbd` (event flag bit 0 is 0, so the track is the node's own position, not a base plus offset) | where the camera sits relative to the Pandora in the world | the intro's `player`, `piratefighter` and `camera1` tracks are all of the order 0–800, so one shared frame is plausible, not measured. Resolving: **#1665-prereq** (filed below) |
-| composition order of the rotation polynomial with the segment quaternion, and the Euler convention `0x53df30` produces | camera orientation inside a segment (the segment's start quaternion is exact; for `gi_cam1` the polynomial terms are < 1e-3) | read the five helpers above in full |
-| how `gi_scene1`, `gi_scene2`, `gi_1stperson`, `gi_playerdrop` follow one another: `gi_scene1` and `gi_scene2` are called from `generic_intro`'s `start_script`, `gi_1stperson` and `gi_playerdrop` from `check_warhawk` and `drop_planes`, every call with `START_TIME` 0, and stopped at 15.9, 12.4, 9.9 and 1.95; `gi_scene2` opens the Pandora's launch doors at 5.0 s; the nominal sum of the four lengths is 40.3 s | the total length and cut points of the cinematic | the compiled streams do not state a chain; needs the activation/time rules of the instance scheduler, or the owner's capture timing |
+| the frame of the positions: `camera1`'s parent node in `gamez.zbd` (event flag bit 0 is 0, so the track is the node's own position, not a base plus offset) | where the camera sits relative to the Pandora in the world | the intro's `player`, `piratefighter` and `camera1` tracks are all of the order 0–800, so one shared frame is plausible, not measured. Resolving: **#1673** |
+| composition order of the rotation polynomial with the segment quaternion, and the Euler convention `0x53df30` produces | camera orientation inside a segment (the segment's start quaternion is exact; for `gi_cam1` the polynomial terms are < 1e-3) | read the five helpers above in full. Resolving: **#1673** |
+| how `gi_scene1`, `gi_scene2`, `gi_1stperson`, `gi_playerdrop` follow one another: `gi_scene1` and `gi_scene2` are called from `generic_intro`'s `start_script`, `gi_1stperson` and `gi_playerdrop` from `check_warhawk` and `drop_planes`, every call with `START_TIME` 0, and stopped at 15.9, 12.4, 9.9 and 1.95; `gi_scene2` opens the Pandora's launch doors at 5.0 s; the nominal sum of the four lengths is 40.3 s | the total length and cut points of the cinematic | the compiled streams do not state a chain; needs the activation/time rules of the instance scheduler, or the owner's capture timing. Resolving: **#1674** |
 | the camera's field of view | the projection during the cinematic | no track has a field-of-view channel; `CAMERA_STATE` (`0x114`) occurs in no camera record (F40-D3) |
-| the time unit and the tick rate of the scheduler that drives `u` | duration in real time | consistent with seconds, not proved |
+| the time unit and the tick rate of the scheduler that drives `u` | duration in real time | consistent with seconds, not proved. Resolving: **#1674** |
 | `type`, the second `ptr`/`mode` words and the position part's word 3 | nothing the camera needs | `mode` is 1 for every intro track |
 | the 15 `mode == 0` blocks | none of the launch cinematic | linear parts, only in mission carriers |
-| whether the random generator behind the variant choice is seeded | which camera path the player sees | |
+| whether the random generator behind the variant choice is seeded | which camera path the player sees | Resolving: **#1674** |
 | the letterbox object (`letterbox` / `letterbox.zrd`) | bar geometry (the owner's task #1664 measures it from the capture) | not touched here |
 | the Flight Check screen | not part of this task | #1661 |
 
