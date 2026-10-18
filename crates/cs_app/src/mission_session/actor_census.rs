@@ -50,6 +50,34 @@ pub struct CensusRow {
     pub ally: bool,
     /// Spawned asleep (held until the mission wakes it).
     pub asleep: bool,
+    /// The original's airframe display name (`Kestrel`) for an aircraft whose
+    /// `kind_of` chain reaches a row of the executable's airframe table; `None`
+    /// when no measured name exists (every world actor).
+    pub display_name: Option<&'static str>,
+}
+
+/// The original's airframe display name a `kind_of` chain (ancestor first)
+/// reaches: the row of the executable's airframe table (`0x620c70`, #715)
+/// whose display name, scene root or model the nearest ancestor names.
+#[must_use]
+pub fn airframe_display_name(chain: &[String]) -> Option<&'static str> {
+    chain.iter().rev().find_map(|name| {
+        crate::mission_start::AIRFRAME_TABLE.iter().find_map(|row| {
+            [row.display_name, row.scene_root, row.model]
+                .iter()
+                .any(|spelling| spelling.eq_ignore_ascii_case(name))
+                .then_some(row.display_name)
+        })
+    })
+}
+
+impl CensusRow {
+    /// What a marker calls the contact: the measured display name, else the
+    /// record id (the original's name for it is unmeasured).
+    #[must_use]
+    pub fn marker_name(&self) -> &str {
+        self.display_name.unwrap_or(&self.name)
+    }
 }
 
 impl CensusRow {
@@ -134,10 +162,11 @@ type ZeppelinQuery<'w, 's> = Query<
 
 fn rows_of(
     player: Vec3,
-    team: Option<u32>,
+    stage: Option<&MissionStage>,
     aircraft: &AircraftQuery,
     zeppelins: &ZeppelinQuery,
 ) -> Vec<CensusRow> {
+    let team = player_team(stage);
     let mut rows = Vec::new();
     for (actor, transform, drawn) in aircraft {
         let position_m = transform.translation();
@@ -152,6 +181,9 @@ fn rows_of(
             hostile: matches!((actor.record.team, team), (Some(a), Some(b)) if a != b),
             ally: actor.vehicle_record == "wingman",
             asleep: actor.asleep,
+            display_name: stage
+                .and_then(|stage| stage.ai_airframes.models.get(&actor.vehicle_record))
+                .and_then(|airframe| airframe_display_name(&airframe.inheritance_chain)),
         });
     }
     for (actor, binding, transform, drawn) in zeppelins {
@@ -176,6 +208,7 @@ fn rows_of(
                 .is_some_and(|roster| roster.player_allegiance == Some(Allegiance::Hostile)),
             ally: false,
             asleep: false,
+            display_name: None,
         });
     }
     rows.sort_by(|a, b| a.distance_m.total_cmp(&b.distance_m));
@@ -202,7 +235,7 @@ fn print_census(
     let Ok(player) = players.single() else { return };
     *pending = false;
     let player = player.translation();
-    let rows = rows_of(player, player_team(stage.as_deref()), &aircraft, &zeppelins);
+    let rows = rows_of(player, stage.as_deref(), &aircraft, &zeppelins);
     println!(
         "mission actors: {} aircraft, {} zeppelins; player at ({:.0}, {:.0}, {:.0})",
         report.aircraft.len(),
@@ -257,7 +290,7 @@ fn print_wingmen(
     }
     let rows = rows_of(
         player.translation(),
-        player_team(stage.as_deref()),
+        stage.as_deref(),
         &aircraft,
         &zeppelins,
     );
@@ -319,7 +352,7 @@ fn update_contacts(
     let Ok(player) = players.single() else { return };
     let rows = rows_of(
         player.translation(),
-        player_team(stage.as_deref()),
+        stage.as_deref(),
         &aircraft,
         &zeppelins,
     );
@@ -339,15 +372,19 @@ fn update_contacts(
         // The original-style markers: the bare name on screen, `Name 7
         // o'clock` clamped to the screen edge when off screen (#1641).
         let Ok(window) = windows.single() else { return };
-        let mut stacked = 0usize;
+        let window_size = (window.width(), window.height());
+        let mut placed = vec![super::cockpit_hud::reticle_keep_out(
+            window_size.0,
+            window_size.1,
+        )];
         for row in marked.filter(|row| !row.ally) {
             spawn_original_marker(
                 &mut commands,
                 row,
                 camera,
                 camera_transform,
-                window,
-                &mut stacked,
+                window_size,
+                &mut placed,
             );
         }
         return;
@@ -391,8 +428,8 @@ fn spawn_original_marker(
     row: &CensusRow,
     camera: &Camera,
     camera_transform: &GlobalTransform,
-    window: &bevy::prelude::Window,
-    stacked: &mut usize,
+    window: (f32, f32),
+    placed: &mut Vec<super::cockpit_hud::LabelRect>,
 ) {
     let toward = row.position_m - camera_transform.translation();
     let forward = *camera_transform.forward();
@@ -402,34 +439,37 @@ fn spawn_original_marker(
         camera
             .world_to_viewport(camera_transform, row.position_m)
             .ok()
-            .filter(|at| {
-                at.x >= 0.0 && at.y >= 0.0 && at.x <= window.width() && at.y <= window.height()
-            })
+            .filter(|at| at.x >= 0.0 && at.y >= 0.0 && at.x <= window.0 && at.y <= window.1)
     } else {
         None
     };
-    let (at, label) = match on_screen {
-        Some(at) => (at, super::cockpit_hud::marker_text(&row.name, None)),
+    let name = row.marker_name();
+    // The wanted spot: beside the contact on screen, else on the edge toward
+    // its bearing. `place_label` then keeps it clear of the reticle, the
+    // window border and every label placed before it.
+    let (wanted, label) = match on_screen {
+        Some(at) => (
+            (at.x + 14.0, at.y - 8.0),
+            super::cockpit_hud::marker_text(name, None),
+        ),
         None => {
-            // Along the edge, toward the bearing: right/left by sign, level.
             let hour = super::cockpit_hud::clock_hour(relative_deg);
-            let (x, arrow) = if relative_deg.rem_euclid(360.0) < 180.0 {
-                (window.width() - 260.0, "->")
+            let (arrow, right) = if relative_deg.rem_euclid(360.0) < 180.0 {
+                ("->", true)
             } else {
-                (10.0, "<-")
+                ("<-", false)
             };
-            // Off-screen markers stack down the edge so they never overlap.
-            let y = window.height() * 0.4 + 24.0 * *stacked as f32;
-            *stacked += 1;
-            (
-                bevy::prelude::Vec2::new(x, y),
-                format!(
-                    "{arrow} {}",
-                    super::cockpit_hud::marker_text(&row.name, Some(hour))
-                ),
-            )
+            let label = format!(
+                "{arrow} {}",
+                super::cockpit_hud::marker_text(name, Some(hour))
+            );
+            let width = super::cockpit_hud::label_width(label.chars().count());
+            let x = if right { window.0 - width - 10.0 } else { 10.0 };
+            ((x, window.1 * 0.4), label)
         }
     };
+    let width = super::cockpit_hud::label_width(label.chars().count());
+    let (left, top) = super::cockpit_hud::place_label(wanted, width, window, placed);
     commands.spawn((
         Text::new(label),
         TextFont {
@@ -439,8 +479,8 @@ fn spawn_original_marker(
         TextColor(Color::srgb(1.0, 0.2, 0.2)),
         Node {
             position_type: PositionType::Absolute,
-            left: Val::Px(at.x),
-            top: Val::Px(at.y - 8.0),
+            left: Val::Px(left),
+            top: Val::Px(top),
             ..default()
         },
         ContactBracket,
@@ -482,6 +522,7 @@ mod tests {
             hostile,
             ally: false,
             asleep: false,
+            display_name: None,
         }
     }
 
@@ -501,5 +542,25 @@ mod tests {
             contact_list_text(&[row("friend", 1.0, false)]),
             "HOSTILES: none live"
         );
+    }
+
+    #[test]
+    fn accept_parity_m01_hud_marker_names_come_from_the_airframe_table() {
+        let chain = |names: &[&str]| names.iter().map(|n| (*n).to_owned()).collect::<Vec<_>>();
+        // The nearest ancestor that names a table row wins.
+        assert_eq!(
+            airframe_display_name(&chain(&["aircraft", "kestrel", "medkestrel"])),
+            Some("Kestrel")
+        );
+        // A model spelling resolves to its row's display name.
+        assert_eq!(
+            airframe_display_name(&chain(&["piratefighter", "rusdevastator"])),
+            Some("Devastator")
+        );
+        assert_eq!(airframe_display_name(&chain(&["cargozep"])), None);
+        let mut named = row("medkestrel_2", 10.0, true);
+        assert_eq!(named.marker_name(), "medkestrel_2");
+        named.display_name = Some("Kestrel");
+        assert_eq!(named.marker_name(), "Kestrel");
     }
 }

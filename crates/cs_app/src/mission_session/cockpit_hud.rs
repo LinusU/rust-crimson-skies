@@ -81,6 +81,79 @@ pub fn marker_text(name: &str, off_screen_hour: Option<u32>) -> String {
     }
 }
 
+/// Pixel height of one contact label row at the label font size.
+pub const LABEL_HEIGHT: f32 = 20.0;
+/// Designed pixel width of one label character at the label font size. The
+/// original's font metrics are unmeasured (`docs/findings/2026-10-18-m01-cockpit-hud.md`).
+pub const LABEL_CHAR_WIDTH: f32 = 10.5;
+/// Side of the square around the screen centre that labels keep clear of, so a
+/// contact dead ahead never prints its name on the reticle.
+pub const RETICLE_CLEARANCE: f32 = 48.0;
+/// Gap kept between labels and from the window border.
+const LABEL_GAP: f32 = 4.0;
+
+/// An axis-aligned label rectangle, `(left, top, width, height)` in pixels.
+pub type LabelRect = (f32, f32, f32, f32);
+
+/// The estimated pixel width of a label of `chars` characters.
+#[must_use]
+pub fn label_width(chars: usize) -> f32 {
+    chars as f32 * LABEL_CHAR_WIDTH
+}
+
+/// The rectangle labels must keep clear of: the reticle's clearance square at
+/// the centre of a `width` x `height` window.
+#[must_use]
+pub fn reticle_keep_out(width: f32, height: f32) -> LabelRect {
+    (
+        width / 2.0 - RETICLE_CLEARANCE / 2.0,
+        height / 2.0 - RETICLE_CLEARANCE / 2.0,
+        RETICLE_CLEARANCE,
+        RETICLE_CLEARANCE,
+    )
+}
+
+fn overlaps(a: LabelRect, b: LabelRect) -> bool {
+    a.0 < b.0 + b.2 + LABEL_GAP
+        && b.0 < a.0 + a.2 + LABEL_GAP
+        && a.1 < b.1 + b.3 + LABEL_GAP
+        && b.1 < a.1 + a.3 + LABEL_GAP
+}
+
+/// Places a `label_width` wide label as near the wanted `(x, y)` as the window
+/// and the rectangles already `placed` allow, records it in `placed` and
+/// returns its top-left. The label is clamped inside the window so it never
+/// clips, then moved down (else up) in whole rows until it overlaps nothing.
+pub fn place_label(
+    wanted: (f32, f32),
+    label_width: f32,
+    window: (f32, f32),
+    placed: &mut Vec<LabelRect>,
+) -> (f32, f32) {
+    let max_x = (window.0 - label_width - LABEL_GAP).max(LABEL_GAP);
+    let max_y = (window.1 - LABEL_HEIGHT - LABEL_GAP).max(LABEL_GAP);
+    let x = wanted.0.clamp(LABEL_GAP, max_x);
+    let y0 = wanted.1.clamp(LABEL_GAP, max_y);
+    let step = LABEL_HEIGHT + LABEL_GAP;
+    let free = |y: f32, placed: &[LabelRect]| {
+        let rect = (x, y, label_width, LABEL_HEIGHT);
+        placed.iter().all(|other| !overlaps(rect, *other))
+    };
+    let rows = (max_y / step).ceil() as u32 + 1;
+    let y = (0..rows)
+        .map(|k| y0 + step * k as f32)
+        .filter(|y| *y <= max_y)
+        .chain(
+            (1..rows)
+                .map(|k| y0 - step * k as f32)
+                .filter(|y| *y >= LABEL_GAP),
+        )
+        .find(|y| free(*y, placed))
+        .unwrap_or(y0);
+    placed.push((x, y, label_width, LABEL_HEIGHT));
+    (x, y)
+}
+
 /// The eight compass letters at the multiples of 45 degrees.
 fn compass_letter(degrees: i32) -> Option<&'static str> {
     match degrees.rem_euclid(360) {
@@ -513,5 +586,34 @@ mod tests {
             parse(words(&["--playtest", "--dev-overlay"])),
             CliRequest::Invalid { .. }
         ));
+    }
+
+    #[test]
+    fn accept_parity_m01_hud_labels_never_overlap_or_clip() {
+        let window = (1024.0, 768.0);
+        let mut placed = vec![reticle_keep_out(window.0, window.1)];
+        // Three contacts wanting the same right-edge spot, one dead ahead.
+        let mut spots = Vec::new();
+        for (wanted, chars) in [
+            ((1020.0, 300.0), 12),
+            ((1020.0, 300.0), 6),
+            ((1010.0, 305.0), 20),
+            ((512.0 + 14.0, 384.0 - 8.0), 7),
+        ] {
+            let width = label_width(chars);
+            let (x, y) = place_label(wanted, width, window, &mut placed);
+            assert!(x >= 0.0 && x + width <= window.0, "clipped horizontally");
+            assert!(
+                y >= 0.0 && y + LABEL_HEIGHT <= window.1,
+                "clipped vertically"
+            );
+            spots.push((x, y, width, LABEL_HEIGHT));
+        }
+        for (i, a) in spots.iter().enumerate() {
+            for b in &spots[i + 1..] {
+                assert!(!overlaps(*a, *b), "{a:?} overlaps {b:?}");
+            }
+            assert!(!overlaps(*a, reticle_keep_out(window.0, window.1)));
+        }
     }
 }
