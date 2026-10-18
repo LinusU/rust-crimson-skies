@@ -23,8 +23,8 @@
 //! mission-specific behavior uses production engine systems and regression
 //! tests."* M16's discovered mission-specific behavior is its control
 //! record: 37 numbered blocks, 133 directive sites, 28 distinct keys, the
-//! block graph those spell, and the two lowering gaps measured below. What is
-//! different at M16:
+//! block graph those spell, and the remaining lowering gap measured below.
+//! What is different at M16:
 //!
 //! * **Both terminal outcomes are spelled, and both are nap-armed.**
 //!   `INSTANTWIN` (OBJECTIVE20) and `INSTANTLOSS` (OBJECTIVE19) each start
@@ -36,15 +36,16 @@
 //!   schedules. Whether a success and a failure armed in the same window can
 //!   conflict is the precedence the contract says must be measured, and it
 //!   stays a runtime question (M16-C).
-//! * **`STOP_QUEUED_SOUNDS` does not register.** M16 spells it seven times
-//!   with 1, 3, 3, 4, 7, 9 and 14 names; the measured shapes produce one
-//!   signature each, and the 9- and 14-name signatures exceed
-//!   `MAX_CALL_ARGS` (8), so the whole spec is refused and every one of the
-//!   seven sites — even the one-name site — reports `unknown host call`.
-//!   The original reads at most ten names (`cmp esi, 0xa`, the M01-LC-D
-//!   finding), so the fourteen-name site is faithful data the original
-//!   truncates; carrying the name list as one list argument, the shape the
-//!   other list-taking keys already use, is the follow-up this stage names.
+//! * **`STOP_QUEUED_SOUNDS` registers as one list argument.** M16 spells it
+//!   seven times with 1, 3, 3, 4, 7, 9 and 14 names; as positional call
+//!   arguments the 9- and 14-name signatures exceeded `MAX_CALL_ARGS` (8)
+//!   and the whole spec refused — the gap this file's M16-B-FU1 follow-up
+//!   closed by carrying the spelled name list as one `Value::List`
+//!   argument, the shape the other list-taking keys already use. The
+//!   original reads at most ten names (`cmp esi, 0xa`, the M01-LC-D
+//!   finding), so all fourteen names stay faithful data in the call and
+//!   `stop_queued_sounds_applied` hands the consumer the original's first
+//!   ten.
 //! * **Four spelled words are not directives.** OBJECTIVE24 spells the bare
 //!   words `Change`, `to`, `mobile`, `net` — a designer note labelling the
 //!   `SET_AI_NET` site below it, which the engine-image test shows absent
@@ -998,14 +999,14 @@ fn accept_m16_b_the_block_graph_is_closed_under_the_records_own_numbering() {
 /// calls.** All 37 conditions lower and 129 of 133 calls bind: the seven
 /// `STOP_QUEUED_SOUNDS` sites — 1, 3, 3, 4, 7, 9 and 14 names — carry their
 /// spelled list as one `Value::List` argument, so the 9- and 14-name shapes
-/// no longer exceed `MAX_CALL_ARGS`. The four bare comment words of
-/// OBJECTIVE24 refuse `unknown host call`, because an unmeasured key
-/// registers nothing by design. No program is assembled, `validation` never
-/// runs and the only unmet row is `call_arguments`; the mission is not
-/// complete.
+/// no longer exceed `MAX_CALL_ARGS` (M16-B-FU1). The four bare comment
+/// words of OBJECTIVE24 refuse `unknown host call`, because an unmeasured
+/// key registers nothing by design. No program is assembled, `validation`
+/// never runs and the only unmet row is `call_arguments`; the mission is
+/// not complete.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m16_b_m16s_record_does_not_lower_and_four_of_its_calls_refuse() {
+fn accept_m16_b_fu1_m16s_record_does_not_lower_and_four_of_its_calls_refuse() {
     let binding = control_binding();
     let row = census_row();
     let lowered = row
@@ -1093,6 +1094,57 @@ fn accept_m16_b_m16s_record_does_not_lower_and_four_of_its_calls_refuse() {
     assert!(!record.is_complete(attempt));
     assert!(!lowering.complete());
     assert!(!row.is_complete());
+}
+
+/// **The sound-cleanup fix is census-wide: no measured control record still
+/// refuses a `STOP_QUEUED_SOUNDS` site.**
+///
+/// The task's own survey: `survey_mission_control_programs` over every
+/// mission-scoped archive, not M16's row alone. Each record that spells the
+/// key registers one `[List]` signature per distinct shape, so every site
+/// binds — no row's `unbound_keys` names it and no refused call reports
+/// `unknown host call `STOP_QUEUED_SOUNDS``. The spelled-site total is
+/// counted from the records, so the check cannot pass on an empty
+/// selection.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_m16_b_fu1_no_census_row_refuses_a_sound_cleanup_site() {
+    let census = census();
+    let mut spelled_sites = 0u32;
+    let mut offenders = Vec::new();
+    for row in census.measured_rows() {
+        let key = row
+            .record()
+            .and_then(|record| record.key("STOP_QUEUED_SOUNDS"));
+        let Some(key) = key else { continue };
+        spelled_sites += key.sites;
+        let attempt = row
+            .lowering_attempt()
+            .expect("a measured record carries its lowering attempt")
+            .attempt();
+        for text in &attempt.unbound_keys {
+            if text.contains("STOP_QUEUED_SOUNDS") {
+                offenders.push(format!("{}: unbound key {text}", row.mission()));
+            }
+        }
+        for call in &attempt.calls {
+            if let CallOutcome::Refused(text) = call
+                && text.contains("STOP_QUEUED_SOUNDS")
+            {
+                offenders.push(format!("{}: {text}", row.mission()));
+            }
+        }
+    }
+    assert!(
+        spelled_sites > 0,
+        "the census measures spelled sound-cleanup sites — {spelled_sites} \
+         seen — so an empty selection cannot pass"
+    );
+    assert!(
+        offenders.is_empty(),
+        "every one of the {spelled_sites} spelled STOP_QUEUED_SOUNDS sites \
+         binds, census-wide: {offenders:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1574,6 +1626,39 @@ fn accept_m16_b_the_four_comment_words_are_not_in_the_measured_directive_table()
             "{neighbour:?} sits beside the lone `net` in the parameter cluster"
         );
     }
+}
+
+/// The name-copy bound the original applies to `STOP_QUEUED_SOUNDS` — the
+/// `cmp esi, 0xa; jg` site the M01-LC-D finding measured at VA `0x4688bc`
+/// (`.text`, so file offset `0x688bc`).
+const STOP_QUEUED_SOUNDS_CAP_OFFSET: usize = 0x688bc;
+
+/// **The ten-name cap `stop_queued_sounds_applied` applies is in the engine
+/// image — `cmp esi, 0xa` guards the copy loop.**
+///
+/// The M01-LC-D finding measured the original's name copy: each spelled
+/// name is stored into the objective record until the index reaches ten,
+/// `cmp esi, 0xa` / `jg` at VA `0x4688bc` skipping the copy when more names
+/// are spelled. The lowered call keeps all fourteen of M16's longest site
+/// as faithful data and the consumer helper applies this bound — the test
+/// pins the constant the helper claims, not a guessed number.
+#[test]
+#[ignore = "requires CS_ENGINE_IMAGE"]
+fn accept_m16_b_fu1_the_ten_name_cap_the_copy_loop_applies_is_in_the_image() {
+    let image = load_engine_image().expect("CS_ENGINE_IMAGE names the measured image");
+    assert_eq!(
+        image
+            .bytes
+            .get(STOP_QUEUED_SOUNDS_CAP_OFFSET..STOP_QUEUED_SOUNDS_CAP_OFFSET + 4)
+            .expect("the cap site lies inside the image"),
+        &[0x83, 0xfe, 0x0a, 0x7f],
+        "cmp esi, 0xa; jg — the copy loop stops at ten names at VA 0x4688bc"
+    );
+    assert_eq!(
+        DirectiveOperation::STOP_QUEUED_SOUNDS_NAME_CAP,
+        10,
+        "the helper's cap is the image's 0xa"
+    );
 }
 
 /// M16's directive keys whose names the measured table carries.
