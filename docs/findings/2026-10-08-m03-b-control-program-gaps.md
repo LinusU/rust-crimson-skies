@@ -25,6 +25,49 @@ two, and the gap section records why. Everything else here — the archive, the
 counts, the dispositions and the priorities — is the measurement M03-B made
 and was not re-derived.*
 
+## 2026-10-18 re-pin on the corrected campaign layout (#1605)
+
+Every retail fact in the tables below was measured on `ZBD/C1B/M03/zrdr.zbd`.
+The corrected campaign layout (commit `6df5715b0`,
+`docs/findings/2026-10-17-m01-archive-decision.md`) binds that archive to work
+order **M08** (`mission/ch2-m03`, re-pinned by #1598), while M03's own binding
+(`missions/bindings/M03.json`) names `mission/ch1-m03` /
+`script/c3-m03-zrdr` / `ZBD/C3/M03/zrdr.zbd` (118 635 bytes, SHA-256
+`37a227cc…fe`). So the numbers below are **historical for M03** and describe
+M08's archive. The acceptance tests now pin M03's own record, re-derived
+through the same production code (the census, `read_control_member`,
+`measure_control_record`, `lower_control_record`):
+
+| Fact | Old pin (`ZBD/C1B/M03`, now M08's) | Re-pinned (`ZBD/C3/M03`) |
+| --- | --- | --- |
+| Mission id | `mission/ch2-m03` | `mission/ch1-m03` |
+| Archive members | 22 | 16 |
+| Control member | `objectives.zrd` (only member with numbered blocks) | `objectives.zrd` (only member with numbered blocks) |
+| Record | 55 blocks, 313 sites, 40 keys | 38 blocks, 178 sites, 36 keys, 0 refusals, no unclassified record key |
+| Dispositions | 2 terminal, 37 measured, 1 ignored (`WAKEUP_OBJECTIVE_WHEN_I_COMPLETE` ×2) | 2 terminal, 34 measured, none ignored or unmeasured |
+| Success / failure latch | `OBJECTIVE33` (nap of 32) / `OBJECTIVE7` (naps of 6, 22, 23) | `OBJECTIVE16` (nap of 15) / `OBJECTIVE7` (nap of 6); both `BEGIN_DORMANT -1`, no other `INSTANT*` block |
+| Cross-objective addresses | 84 (25 wake, 3 wakeup, 36 kill, 18 nap, 2 gate), range 1…55 | 41 (20 wake, 4 kill, 15 nap, 2 gate), range 4…38; block 9 naps `38`, the last block |
+| Grouped objectives (`DEDG`) | blocks 11, 31, 32, 46 | blocks 13, 14, 21 (`[2,0] [3,0] [1,0]`) |
+| World damage state | 111 `INACTIVE<n>` sites, 8 thresholds | 54 `INACTIVE<n>` sites, 4 thresholds (blocks 3–6) |
+| Completion ordering | 20 wake / 15 kill / 18 nap blocks, gates in blocks 31 and 41 | 12 wake / 2 kill (blocks 12, 27) / 15 nap blocks, gates in blocks 15 and 21 on blocks 19 and 29 |
+| Other keys | — | one `TRAVELERS`, one `WAKEUP_GENERATOR` site |
+| `SET_AI_NET` | one site, ten pairs (block 10) | one site, one pair `{britkestrel_1, M3BritAce}` (block 25) |
+| Lowering | 311 of 313 sites bind, 2 dropped | complete: 178 of 178 sites bind, none dropped, all 38 conditions lower |
+
+Test changes: the ignored-wake retail pin and the ten-pair retail pin
+described M08's archive, so their tests were renamed
+(`…_and_none_is_unmeasured`, `…_binds_every_site`,
+`…_the_net_site_binds_through_one_list_argument`) and re-pinned; the two arms
+themselves stay pinned by the synthetic `accept_m03_b_fu1_*` and
+`accept_m03_b_fu2_*` tests. The `zbd/c1b/m03` record in
+`accept_objaddr_every_reconciled_record_spells_its_own_block_count` is real
+data and stays, relabelled as M08's. Nothing here is `verified_original`; the
+wrong-actor, wrong-session and repeated-event halves of the sheet's priorities
+stay unmeasured runtime observations.
+
+The sections below are the measurement as M03-B originally made it, kept as
+history.
+
 ## What changed
 
 No production code. The census (`cs_app::mission_control`), the directive
