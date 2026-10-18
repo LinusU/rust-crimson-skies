@@ -72,6 +72,7 @@ impl ResultsScreen {
         let reason = match self.reason_key() {
             "match.end.score_limit" => "The score limit was reached",
             "match.end.time_limit" => "The time limit was reached",
+            "match.end.departure" => "A pilot left and the match ended",
             _ => "The score and time limits were reached together",
         };
         let outcome = match &self.record.outcome {
