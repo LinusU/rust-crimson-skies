@@ -51,7 +51,7 @@ Wiring only: `crates/cs_app/tests/campaign/main.rs` (`mod m24_b;`).
 | Control member | `objectives.zrd`, offset 23 007, 19 590 bytes, SHA-256 `b0430f95…12da8`. Exactly one member declares numbered blocks. For M24 the control member is *also* the archive's longest — length would coincide with the rule here, recorded as a fact, not as the rule (position still cannot be it: the member is the eighth of fourteen) |
 | Control record | 63 numbered blocks, 267 directive sites, 40 distinct keys, no block refusal, no record key outside the measured vocabulary |
 | Dispositions | 37 measured, 2 terminal (`INSTANTWIN` block 21, `INSTANTLOSS` block 39), **1 unmeasured** (`SET_AI_`, block 19), 0 refused by the grammar |
-| Lowering | mission `mission/ch5-m04`, 63 `RawObjective`s, all 63 conditions lowered, 260 of 267 calls bound, 7 refused, unbound `["`STOP_QUEUED_SOUNDS`: binding `STOP_QUEUED_SOUNDS`: too many arguments"]`, no program assembled, `validation` never runs, unmet `["call_arguments"]`, census row **not complete** |
+| Lowering | mission `mission/ch5-m04`, 63 `RawObjective`s, all 63 conditions lowered, **266 of 267 calls bound, 1 refused**, no unbound keys, no program assembled, `validation` never runs, unmet `["call_arguments"]`, census row **not complete** (at the stage's measurement: 260/267, 7 refused, unbound `["`STOP_QUEUED_SOUNDS`: binding `STOP_QUEUED_SOUNDS`: too many arguments"]` — the six sound sites bound after M16-B-FU1 (#1252)) |
 | Campaign | `zbd/c5/m04` is a measured census row under `call_arguments` only; `campaign_ready()` is false |
 | Record-level fields | `MISSION_TIMER [0.0]`; `PLAYER_INIT [1, [-10582, 250, -12909], [0, -45, 0], 0.8, 180]`; the three animation lists are empty |
 | Zones | M24's `MissionZoneDeclaration` is this archive's own `dzones.zrd` (offset 18 561, 826 bytes, same container digest); the five zones the record spells (`dzpath28…32`) all have nodes in `ZBD/C5/zrdr.zbd` and appear in the declaration; **no declaration gap** |
@@ -119,15 +119,16 @@ beside the thresholds that gate them.
 
 ## The measured gaps
 
-1. **`STOP_QUEUED_SOUNDS` does not register** — the same gap M16-B, M02-B,
-   M03-B and M06-B record. M24 spells it six times with 1, 9, 7, 8, 7 and 8
-   names (blocks 5, 10, 13, 38, 59, 62); the 9-name shape (OBJECTIVE10's
-   fall cleanup) exceeds `MAX_CALL_ARGS` (8), so the whole spec is refused
-   and all six sites report `unknown host call` — even the one-name site.
-   The original reads at most ten names (the M01-LC-D finding), so the
-   nine-name site is faithful data the original truncates; carrying the
-   name list as one list argument is the follow-up **M16-B-FU1** (#1252)
-   already tracks.
+1. **`STOP_QUEUED_SOUNDS` did not register — closed by M16-B-FU1
+   (#1252).** The same gap M16-B, M02-B, M03-B and M06-B record. M24 spells
+   it six times with 1, 9, 7, 8, 7 and 8 names (blocks 5, 10, 13, 38, 59,
+   62); the 9-name shape (OBJECTIVE10's fall cleanup) exceeded
+   `MAX_CALL_ARGS` (8), so the whole spec was refused and all six sites
+   reported `unknown host call` — even the one-name site. The original
+   reads at most ten names (the M01-LC-D finding), so the nine-name site
+   is faithful data the original truncates; #1252 carried the name list as
+   one `Value::List` argument, so all six sites bind and the consumer
+   helper applies the original's ten-name cap.
 2. **`SET_AI_` is a truncated spelling.** One site, OBJECTIVE19, carries the
    five `{actor, net}` pairs `SET_AI_NET` spells (`devastator_1/2`,
    `wingman_1/2/3` onto `M4Defend`). The engine-image member shows the
@@ -265,8 +266,10 @@ acceptance suite reads.
   declarations. This stage cross-checked only the zeppelin names, the five
   nets and the five zones. Resolving task: **M24-B-FU1** (#1271, filed with
   this stage).
-- **`STOP_QUEUED_SOUNDS` as one list argument** — the six sound-cleanup
-  sites stay refused; the mechanism and its fix are **M16-B-FU1** (#1252).
+- **`STOP_QUEUED_SOUNDS` as one list argument** — closed by **M16-B-FU1**
+  (#1252): the six sound-cleanup sites bind through the one-list-argument
+  signature and `stop_queued_sounds_applied` applies the original's
+  ten-name cap.
 - **The runtime halves of all three priorities** — who wins a window in
   which OBJECTIVE21 and OBJECTIVE39 are both armed, whether the wrong actor
   or a repeated event can satisfy a threshold, what the cannon byte and the

@@ -31,7 +31,7 @@ evidence harness in `evidence/m16_b.rs`. Wiring: `campaign/main.rs` and
 | Record-level keys | the five measured fields (`MISSION_TIMER`, `PLAYER_INIT`, `RESTORE_ANIMS`, `EXECUTE_ANIMS`, `INVALIDATE_ANIMS`), each once, none unclassified |
 | Terminal outcomes | `INSTANTLOSS` in OBJECTIVE19 and `INSTANTWIN` in OBJECTIVE20 — one bare site each, both nap-armed at 15 s; M12 spelled no loss latch, M16 spells both |
 | Dispositions | 2 implemented (the two latches), 22 measured, 4 unmeasured, 0 refused parse rows |
-| Calls | 122 of 133 bind; **11 refuse** (`unknown host call`): the 7 `STOP_QUEUED_SOUNDS` sites and the 4 bare comment words; 1 unbound key |
+| Calls | **129 of 133 bind; 4 refuse** (`unknown host call`): the 4 bare comment words; 0 unbound keys — the 7 `STOP_QUEUED_SOUNDS` sites bound after M16-B-FU1 (#1252) carried the name list as one list argument (at the stage's measurement it was 122/133, 11 refused, 1 unbound key) |
 | Conditions | all 37 lower |
 | Cross-objective edges | 41 addresses over `WAKE`/`NAP`/`KILL_OBJECTIVE_WHEN_I_COMPLETE`, all in `1..=37`; min 1, max 37 |
 | Latch arming | OBJECTIVE20's only incoming edge is OBJECTIVE11's `NAP … [20, 15.0]`; OBJECTIVE19's only incoming edge is OBJECTIVE17's `NAP … [19, 15.0]`; both latches `BEGIN_DORMANT -1` |
@@ -92,22 +92,24 @@ not a walkthrough's.
 
 ## The M16-specific gaps
 
-All 37 conditions lower and 122 of 133 calls bind, yet no program
+All 37 conditions lower and 129 of 133 calls bind, yet no program
 assembles, `validation` never runs, the only unmet row is
 `call_arguments` and M16 is not ready:
 
-**`STOP_QUEUED_SOUNDS` never registers** (7 sites, spelling 1, 3, 3, 4, 7,
-9 and 14 names). The measured shapes produce one signature each, and the
-9- and 14-name signatures exceed `MAX_CALL_ARGS` (8); one unfit signature
-makes the whole spec unfit, so the key registers nothing and all seven
-sites — even the one-name site of OBJECTIVE7 — refuse `unknown host call`
-(the sole `unbound_keys` entry is `` `STOP_QUEUED_SOUNDS`: binding
-`STOP_QUEUED_SOUNDS`: too many arguments ``). The original's parser copies
-at most ten names (`cmp esi, 0xa` at `0x4688bc`, the M01-LC-D finding), so
-the fourteen-name site of OBJECTIVE37 is faithful data the original
-truncates; carrying the name list as one list argument — the shape the
-other list-taking keys already use — is the follow-up this gap names,
-tracked as **M16-B-FU1** (#1252).
+**`STOP_QUEUED_SOUNDS` did not register — closed by M16-B-FU1 (#1252).**
+(7 sites, spelling 1, 3, 3, 4, 7, 9 and 14 names). The measured shapes
+produced one signature each, and the 9- and 14-name signatures exceeded
+`MAX_CALL_ARGS` (8); one unfit signature made the whole spec unfit, so the
+key registered nothing and all seven sites — even the one-name site of
+OBJECTIVE7 — refused `unknown host call` (the sole `unbound_keys` entry
+was `` `STOP_QUEUED_SOUNDS`: binding `STOP_QUEUED_SOUNDS`: too many
+arguments ``). The original's parser copies at most ten names (`cmp esi,
+0xa` at `0x4688bc`, the M01-LC-D finding), so the fourteen-name site of
+OBJECTIVE37 is faithful data the original truncates. #1252 carried the
+name list as one `Value::List` argument — the shape the other list-taking
+keys already use — so all seven sites bind and `unbound_keys` is empty;
+`DirectiveOperation::stop_queued_sounds_applied` hands the eventual
+consumer the original's first ten, the cap pinned against the image.
 
 **OBJECTIVE24's four bare words are not directive keys** (`Change`, `to`,
 `mobile`, `net` — a designer note labelling the `SET_AI_NET` site below
