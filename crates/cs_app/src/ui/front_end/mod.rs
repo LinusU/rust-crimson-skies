@@ -34,6 +34,9 @@
 //!   [`LobbyInputs`]: the session epoch and compatibility signature a
 //!   host opens under, the resolved endpoint and client hello a join
 //!   offers, and the shared `cs_net::lobby::LoadoutValidator`.
+//! * [`FlightCheckView`] (in `flight_check_view`, M01-LC-FC-A) — the Flight
+//!   Check screen's view model read from the mission's own data, with the
+//!   gun and rocket lists unknown until the loadout is measured.
 //! * [`FrontEnd`] (in `machine`) — the machine that walks the table.
 //! * [`ScreenSession`] (in `screens`, F45-B) — the front end presented through
 //!   a validated [`ScreenDeck`] of authored artwork and hotspots: pointer
@@ -74,6 +77,7 @@
 //! for F45-D's.
 
 mod capture;
+mod flight_check_view;
 mod flow;
 mod import_dialog;
 mod machine;
@@ -89,6 +93,10 @@ use cs_content::ui_layout::ScreenLayout;
 pub use capture::{
     Artwork, CapturedButton, SCREEN_CAPTURE_HEIGHT, SCREEN_CAPTURE_SURFACE, SCREEN_CAPTURE_WIDTH,
     ScreenCapture, ScreenCaptureError, capture_artwork, capture_screen,
+};
+pub use flight_check_view::{
+    Entry, FlightCheckButton, FlightCheckView, FlightCheckViewError, LOADOUT_RESOLVING_TASK,
+    LOADOUT_UNKNOWN_REASON, ObjectiveRow, SlotView, objective_keys,
 };
 pub use flow::{
     ConstructionInputs, FlowDomainView, FlowError, FlowSetup, FrontEndFlow, InstantActionInputs,

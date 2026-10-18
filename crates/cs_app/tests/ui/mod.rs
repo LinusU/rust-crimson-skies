@@ -73,6 +73,7 @@ use crate::f64_c_support as import_fixture;
 mod instant_action;
 mod layout;
 mod lobby;
+mod m01_lc_fc_a;
 mod original;
 mod scrapbook_dispatch;
 mod screens;
