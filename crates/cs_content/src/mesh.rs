@@ -233,7 +233,7 @@ use cs_formats::ParseContext;
 use cs_formats::gamez::materials::{GameZMaterialError, GameZMaterials, MaterialKind, RawMaterial};
 use cs_formats::gamez::{
     FaceStatus, GameZError, GameZHeader, GameZMeshes, GameZNodes, MeshTopology, NodeMeshBindings,
-    RawMaterialGroup, RawMesh, RawPolygon, read_gamez_materials, read_gamez_meshes,
+    RawMaterialGroup, RawMesh, RawMeshInfo, RawPolygon, read_gamez_materials, read_gamez_meshes,
 };
 use cs_formats::zbd::ZbdFamily;
 use cs_types::asset_id::{AssetKey, AssetVariant, MountId, SourceSpan};
@@ -597,6 +597,7 @@ pub struct RenderMesh {
     extra_group_degenerate: usize,
     culled_faces: Vec<usize>,
     collision: CollisionMesh,
+    unculled_billboard: bool,
 }
 
 /// Where a render mesh's per-corner material and texture coordinate come from.
@@ -884,7 +885,27 @@ impl RenderMesh {
             extra_group_degenerate,
             culled_faces,
             collision: CollisionMesh::of(mesh),
+            unculled_billboard: false,
         })
+    }
+
+    /// Carries the stored mesh type words (`RawMeshInfo::type_words`) onto the
+    /// render mesh: a mesh whose words say the original skipped the back-face
+    /// test ([`RawMeshInfo::skips_back_face_test`]) is flagged
+    /// [`Self::is_unculled_billboard`]. Nothing about billboard *facing* is
+    /// read.
+    #[must_use]
+    pub fn with_type_words(mut self, info: &RawMeshInfo) -> Self {
+        self.unculled_billboard = info.skips_back_face_test();
+        self
+    }
+
+    /// The whole mesh is a billboard the original drew without the back-face
+    /// test (mesh word0 == 1, word1 in {0, 1}). `false` when the type words
+    /// were never attached, and for word1 == 2.
+    #[must_use]
+    pub const fn is_unculled_billboard(&self) -> bool {
+        self.unculled_billboard
     }
 
     /// The **collision** view of the same stored mesh: the canonical
@@ -3178,10 +3199,10 @@ impl MeshContainer {
                     // Every stored material group, not just the first: the CS
                     // layout stores one UV set and one material index per group,
                     // and `RawMesh` mirrors only the first onto its own fields.
-                    render.push(Some(RenderMesh::from_stored_groups(
-                        &mesh.mesh,
-                        &mesh.material_groups,
-                    )));
+                    render.push(Some(
+                        RenderMesh::from_stored_groups(&mesh.mesh, &mesh.material_groups)
+                            .map(|render| render.with_type_words(&mesh.info)),
+                    ));
                     // The gate's own accounting is in the same view the
                     // render build used: the original's measured outline
                     // rule, not the canonical ear-clipped one.
@@ -6317,6 +6338,7 @@ mod tests {
         polygons: Vec<StoredPolygon>,
         material_refs: Vec<u32>,
         declared_polygons: u32,
+        type_words: (u32, u32),
     }
 
     impl StoredMesh {
@@ -6334,7 +6356,14 @@ mod tests {
                 normals,
                 polygons,
                 material_refs,
+                type_words: (1, 0),
             }
+        }
+
+        /// The stored mesh type words `(file_ptr, unk04)`.
+        fn with_type_words(mut self, word0: u32, word1: u32) -> Self {
+            self.type_words = (word0, word1);
+            self
         }
 
         /// The 25 stored words of the 100-byte record, in the layout's order.
@@ -6342,10 +6371,10 @@ mod tests {
         /// so a fixture cannot contradict itself by accident.
         fn record_words(&self) -> [u32; 25] {
             [
-                1, // file_ptr: the reference asserts 0 or 1
-                0, // unk04
-                0, // unk08
-                1, // parent_count: non-zero marks a present record
+                self.type_words.0, // file_ptr: the reference asserts 0 or 1
+                self.type_words.1, // unk04
+                0,                 // unk08
+                1,                 // parent_count: non-zero marks a present record
                 self.declared_polygons,
                 self.positions.len() as u32,
                 self.normals.len() as u32,
@@ -6971,6 +7000,56 @@ mod tests {
                 Ok(StoredMesh::new(block(0.0, 1), Vec::new(), vec![])),
             ],
         )
+    }
+
+    /// Task #1407 (`F10-F.2`): the stored type words reach the render mesh of a
+    /// container opened through the production path. Words (0, 0) and (1, 2)
+    /// are one-sided; (1, 0) and (1, 1) are unculled billboards.
+    #[test]
+    fn accept_f10_f_2_container_open_flags_unculled_billboard_meshes() {
+        let mesh = |word0, word1| {
+            StoredMesh::new(
+                block(0.0, 3),
+                block(1000.0, 3),
+                vec![StoredPolygon::new(
+                    &[0, 1, 2],
+                    0,
+                    &[[0.0, 0.0], [0.5, 0.0], [0.25, 0.25]],
+                )],
+            )
+            .with_type_words(word0, word1)
+        };
+        let tree = Tree::world(&["sky"], &[]);
+        tree.write(
+            "ZBD/c1/gamez.zbd",
+            &gamez_container_with(
+                &["sky"],
+                &[0],
+                &[
+                    Ok(mesh(0, 0)),
+                    Ok(mesh(1, 0)),
+                    Ok(mesh(1, 1)),
+                    Ok(mesh(1, 2)),
+                ],
+            ),
+        );
+        let session = world_session(&tree.0, "ZBD/c1");
+        let textures = TextureCatalog::open(&session, std::slice::from_ref(&texture_key()));
+        let archive = texture_key();
+        let dependencies = seam_dependencies(&textures, &archive);
+        let catalog = MeshCatalog::open(&session, &[gamez_key()], &dependencies);
+        assert_eq!(catalog.failures().count(), 0, "the fixture container opens");
+        let container = catalog.containers().next().expect("one container");
+        let flagged: Vec<bool> = (0..4)
+            .map(|index| {
+                container
+                    .render(index)
+                    .expect("present")
+                    .expect("builds")
+                    .is_unculled_billboard()
+            })
+            .collect();
+        assert_eq!(flagged, vec![false, true, true, false]);
     }
 
     /// The world's `gamez.zbd` when one mesh reaches **three** materials whose
