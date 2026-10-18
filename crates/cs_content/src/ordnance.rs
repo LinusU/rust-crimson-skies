@@ -2381,16 +2381,18 @@ pub const ORIGINAL_ROCKET_FLAG: &str = "ROCKET";
 ///
 /// **Measured** from `weapons.zrd` (task #548,
 /// `docs/findings/2026-10-11-f28-c-2-lost-target-blast-measured.md`). Every
-/// number is in the original's own units: this struct deliberately has no
-/// meters, because the unit scale of `IMPACT_PROXIMITY` is not a property of the
-/// record.
+/// distance is in metres: task #1318 measured in the engine image that the
+/// record values reach the world-space distance comparisons with no unit
+/// conversion, and the world unit is the metre (the F16-E calibration
+/// landmarks). `docs/findings/2026-10-18-t1318-blast-unknowns-measured.md`
+/// carries the byte windows.
 #[derive(Clone, Debug, PartialEq)]
 pub struct OriginalRocketBlast {
     /// The record name (`wep_04`).
     pub record: String,
-    /// `IMPACT_PROXIMITY`: the blast radius, original units.
+    /// `IMPACT_PROXIMITY`: the blast radius, metres.
     pub impact_proximity: Option<f64>,
-    /// `DETONATION_DISTANCE`: the lock-on proximity trigger, original units.
+    /// `DETONATION_DISTANCE`: the lock-on proximity trigger, metres.
     pub detonation_distance: Option<f64>,
     /// `DETONATION_TIME`: the timer trigger, seconds.
     pub detonation_time_s: Option<f64>,
@@ -2400,6 +2402,14 @@ pub struct OriginalRocketBlast {
     pub health_damage: Option<f64>,
     /// `LOCK_ON`, the first value.
     pub lock_on: Option<f64>,
+    /// `RANGE_MINIMUM`, the first value: the arming distance, metres. Measured
+    /// (task #1318): an impact or detonation inside it is governed by
+    /// [`Self::range_minimum_blast_scale`].
+    pub range_minimum: Option<f64>,
+    /// `RANGE_MINIMUM`, the second value: inside the arming window the
+    /// projectile's blast-and-damage scale is multiplied by it — `0.0`
+    /// suppresses the detonation outright (the torpedo's `300, 0` pair).
+    pub range_minimum_blast_scale: Option<f64>,
     /// Every key the record declares, at its top level, sorted.
     pub keys: BTreeSet<String>,
 }
@@ -2499,16 +2509,25 @@ fn rocket_blast(
 ) -> Option<OriginalRocketBlast> {
     let mut keys = BTreeSet::new();
     let mut scalar = BTreeMap::new();
+    let mut second = BTreeMap::new();
     for field in body.chunks(2) {
         let [key, value] = field else { continue };
         let Some(key) = key.as_text() else { continue };
         keys.insert(key.to_owned());
-        if let Some(number) = value
-            .as_list()
-            .and_then(|list| list.first())
+        let Some(list) = value.as_list() else {
+            continue;
+        };
+        if let Some(number) = list
+            .first()
             .and_then(crate::original_airframe::SpannedValue::as_scalar_f64)
         {
             scalar.insert(key.to_owned(), number);
+        }
+        if let Some(number) = list
+            .get(1)
+            .and_then(crate::original_airframe::SpannedValue::as_scalar_f64)
+        {
+            second.insert(key.to_owned(), number);
         }
     }
     if !keys.contains(ORIGINAL_ROCKET_FLAG) {
@@ -2523,6 +2542,8 @@ fn rocket_blast(
         armor_damage: number("ARMOR_DAMAGE"),
         health_damage: number("HEALTH_DAMAGE"),
         lock_on: number("LOCK_ON"),
+        range_minimum: number("RANGE_MINIMUM"),
+        range_minimum_blast_scale: second.get("RANGE_MINIMUM").copied(),
         keys,
     })
 }

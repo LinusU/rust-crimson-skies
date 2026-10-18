@@ -745,6 +745,13 @@ impl AreaEffect {
     /// recipient's armor and health damage by `1 - d^2 / r^2` where `r` is the
     /// weapon record's `IMPACT_PROXIMITY` (see
     /// `docs/findings/2026-10-11-f28-c-2-lost-target-blast-measured.md`).
+    /// Task #1318 measured what `d` is: the distance from the blast centre to
+    /// the recipient's bounding surface, clamped to zero — the area query
+    /// stores `max(0, centre distance - bound)^2` as the entry value the
+    /// falloff divides by `r^2`
+    /// (`docs/findings/2026-10-18-t1318-blast-unknowns-measured.md`). A
+    /// recipient the centre is inside therefore takes the full amount, which
+    /// `distance_m = 0` already produces here.
     /// `None` for a negative or non-finite distance, which has no fraction.
     #[must_use]
     pub fn blast_fraction(&self, distance_m: f64) -> Option<f64> {
@@ -5051,6 +5058,14 @@ impl OrdnanceRuntime {
     /// channels times [`AreaEffect::blast_fraction`]. A recipient at or beyond
     /// the radius, or whose scaled amount is zero, produces no hit. Like
     /// [`route_detonation`](Self::route_detonation) the item latches once.
+    ///
+    /// The measured original adds one filter the producer is responsible for:
+    /// on the impact path (not a timed/proximity detonation) the apply loop
+    /// skips the recipient whose damage-group key matches the object that was
+    /// directly hit — that object already took its impact damage. Recipients
+    /// supplied here are the set after that exclusion; a detonation that hit
+    /// nothing excludes nothing
+    /// (`docs/findings/2026-10-18-t1318-blast-unknowns-measured.md`).
     ///
     /// # Errors
     ///
