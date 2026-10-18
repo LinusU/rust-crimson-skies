@@ -57,7 +57,8 @@ fn text(value: &str) -> ZrdValue {
     ZrdValue::Text(value.to_owned())
 }
 
-/// A player record with M01's measured stored pose (#676).
+/// A player record with the stored pose #676 measured on the `zbd/c1c/m01`
+/// archive — ch2-m01, M06 under #1565's corrected layout.
 fn player_document() -> ZrdValue {
     let mut fields = vec![ZrdValue::Int(0); 8];
     fields[0] = ZrdValue::Int(u32::MAX);
@@ -237,7 +238,8 @@ fn accept_m01_lc_campaign_airframe_pose_stored_heading_converts_like_the_origina
     assert!((turns - std::f32::consts::TAU).abs() < 1e-5, "{turns}");
     let half = stored_heading_radians(180.0);
     assert!((half - std::f32::consts::PI).abs() < 1e-5, "{half}");
-    // M01's stored heading (#676), the value the binding hands the player.
+    // The heading #676 measured on M06's archive, the value the binding
+    // hands the player.
     let m01 = stored_heading_radians(170.0);
     assert_eq!(m01, 2.9670596);
     // ... and it is the image's conversion, not an f32 shortcut that would
@@ -251,7 +253,7 @@ fn accept_m01_lc_campaign_airframe_pose_stored_heading_converts_like_the_origina
 
 #[test]
 #[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
-fn accept_m01_lc_campaign_airframe_pose_retail_m01_binds_from_the_measured_bytes() {
+fn accept_m01_lc_campaign_airframe_pose_retail_m06_binds_from_the_measured_bytes() {
     let root = PathBuf::from(std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR must be set"));
 
     // The image is loaded from `CS_ENGINE_IMAGE`, not from the installation
@@ -288,10 +290,10 @@ fn accept_m01_lc_campaign_airframe_pose_retail_m01_binds_from_the_measured_bytes
     );
 
     // The production reader, end to end.
-    let config = recover_retail_start_configuration(&root, "zbd/c1c/m01").expect("M01 reads");
+    let config = recover_retail_start_configuration(&root, "zbd/c1c/m01").expect("M06 reads");
 
     let Resolved::Known(airframe) = config.airframe() else {
-        panic!("M01's campaign airframe is measured engine state");
+        panic!("M06's campaign airframe is measured engine state");
     };
     assert_eq!(
         airframe.value.key(),
@@ -308,7 +310,7 @@ fn accept_m01_lc_campaign_airframe_pose_retail_m01_binds_from_the_measured_bytes
     assert_eq!(airframe.provenance.source.as_ref(), Some(&engine.airframe));
 
     let Resolved::Known(pose) = config.initial_pose() else {
-        panic!("M01's start pose is a decoded binding through a measured convention");
+        panic!("M06's start pose is a decoded binding through a measured convention");
     };
     assert_eq!(pose.value.position, [-3694.0, 1318.0, -12482.0]);
     assert_eq!(pose.value.heading, stored_heading_radians(170.0));
@@ -317,7 +319,7 @@ fn accept_m01_lc_campaign_airframe_pose_retail_m01_binds_from_the_measured_bytes
 
     // The stored pose is still bound on its own terms.
     let Resolved::Known(stored) = config.stored_pose() else {
-        panic!("M01's player record has the pose shape");
+        panic!("M06's player record has the pose shape");
     };
     assert_eq!(stored.value.heading, 170.0);
 }

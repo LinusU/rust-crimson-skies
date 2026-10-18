@@ -8,7 +8,8 @@
 //! as the `[aiv_layout]` row of `data/owner-static/engine-facts.toml`, so a
 //! normal run never needs `$CS_ENGINE_IMAGE`. The synthetic tests exercise
 //! the production reader over authored records; the retail member re-derives
-//! the measured values of all twelve of M01's records from `$CS_GAME_DIR`
+//! the measured values of all twelve of the `zbd/c1c/m01` records from
+//! `$CS_GAME_DIR` — M06's archive under #1565's corrected layout
 //! through the production decoder; the image member re-reads the cited bytes
 //! so the committed table cannot silently drift. Nothing here is
 //! `verified_original`.
@@ -295,11 +296,11 @@ type MeasuredRow = (
     SpawnDispatch,
 );
 
-/// The measured values of all twelve of M01's records, in record order.
+/// The measured values of all twelve of M06's records, in record order.
 /// Re-derived from the installation through the production decoder.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m01_aiv_layout_retail_m01_records_match_the_measured_values() {
+fn accept_m01_aiv_layout_retail_m06_records_match_the_measured_values() {
     let (document, source) = member_document(&game_dir(), "zbd/c1c/m01/zrdr.zbd", "aiv.zrd");
     let aircraft = read_aircraft_records("zbd/c1c/m01", &document, &source).expect("read");
     let rows: Vec<MeasuredRow> = vec![
@@ -463,7 +464,7 @@ fn accept_m01_aiv_layout_retail_m01_records_match_the_measured_values() {
     assert_eq!(
         aircraft.len(),
         rows.len(),
-        "M01's aiv.zrd holds a header plus twelve aircraft records"
+        "M06's aiv.zrd holds a header plus twelve aircraft records"
     );
     for (
         aircraft,
@@ -495,7 +496,7 @@ fn accept_m01_aiv_layout_retail_m01_records_match_the_measured_values() {
             aircraft.starts_asleep,
             Some(*asleep),
             "{name}: only bsfury_1 carries the non-zero deactivated field, and \
-             it is the aircraft M01's WAKEUP_ENEMIES (OBJECTIVE13) wakes"
+             it is the aircraft M06's WAKEUP_ENEMIES (OBJECTIVE13) wakes"
         );
         assert_eq!(&aircraft.dispatch, dispatch, "{name}: name dispatch");
         assert_eq!(

@@ -37,16 +37,18 @@ use cs_types::content::{ContentId, ContentKind, Resolved};
 use cs_types::evidence::ClaimStatus;
 use cs_types::install::RelativePath;
 
-/// A player record with M01's measured stored pose (#676), synthetic.
+/// A player record with M01's measured stored pose (#1580: `zbd/c3/m01`
+/// under the corrected layout, `docs/findings/2026-10-18-m01-c3-player-config.md`),
+/// synthetic.
 fn player_document() -> ZrdValue {
     let mut fields = vec![ZrdValue::Int(0); 8];
     fields[0] = ZrdValue::Int(u32::MAX);
     fields[1] = ZrdValue::List(vec![
-        ZrdValue::Float(-3694.0),
-        ZrdValue::Float(1318.0),
-        ZrdValue::Float(-12482.0),
+        ZrdValue::Float(-1426.0),
+        ZrdValue::Float(150.0),
+        ZrdValue::Float(-1813.0),
     ]);
-    fields[2] = ZrdValue::Float(170.0);
+    fields[2] = ZrdValue::Float(40.0);
     ZrdValue::List(vec![
         ZrdValue::List(vec![ZrdValue::Int(1)]),
         ZrdValue::List(vec![
@@ -188,7 +190,7 @@ fn accept_owner_facts_table_parses_and_spells_the_measured_facts() {
         .collect();
     assert_eq!(known.len(), 1, "only M01's airframe is committed");
     let m01 = &known[0];
-    assert_eq!(m01.dir, "zbd/c1c/m01");
+    assert_eq!(m01.dir, "zbd/c3/m01");
     let MissionAirframe::Known { index, record, .. } = &m01.airframe else {
         panic!("M01's row is known");
     };
@@ -220,7 +222,7 @@ fn accept_owner_facts_table_binds_m01_like_the_image_does() {
     let source = span(16, 64);
     let why = "$CS_ENGINE_IMAGE is unset in this test";
 
-    let mut config = MissionStartConfiguration::read("zbd/c1c/m01", &player_document(), &source)
+    let mut config = MissionStartConfiguration::read("zbd/c3/m01", &player_document(), &source)
         .expect("the synthetic record reads");
     config
         .bind_engine_facts(facts, why)
@@ -251,8 +253,8 @@ fn accept_owner_facts_table_binds_m01_like_the_image_does() {
     let Resolved::Known(pose) = config.initial_pose() else {
         panic!("M01's pose convention is committed");
     };
-    assert_eq!(pose.value.position, [-3694.0, 1318.0, -12482.0]);
-    assert_eq!(pose.value.heading, stored_heading_radians(170.0));
+    assert_eq!(pose.value.position, [-1426.0, 150.0, -1813.0]);
+    assert_eq!(pose.value.heading, stored_heading_radians(40.0));
     assert_eq!(
         pose.provenance.source.as_ref(),
         Some(&image_engine.heading),
@@ -269,25 +271,30 @@ fn accept_owner_facts_table_unknown_missions_refuse_with_both_sources_named() {
     let source = span(16, 64);
     let why = "$CS_ENGINE_IMAGE is unset in this test";
 
-    // `zbd/c4/m02` (M17's directory) carries an explicit unknown row.
-    let mut config = MissionStartConfiguration::read("zbd/c4/m02", &player_document(), &source)
-        .expect("the synthetic record reads");
-    config
-        .bind_engine_facts(facts, why)
-        .expect("the table binds");
-    let Resolved::Unknown { reason, .. } = config.airframe() else {
-        panic!("no per-mission airframe is committed for zbd/c4/m02");
-    };
-    for needle in ["CS_ENGINE_IMAGE", ENGINE_FACTS_PATH, "unknown"] {
+    // `zbd/c4/m02` (M17's directory) carries an explicit unknown row, and so
+    // does `zbd/c1c/m01` — the directory #1565 re-keyed to M06; its old M01
+    // row moved to `zbd/c3/m01` rather than leaving M06 a committed airframe
+    // (#1580).
+    for dir in ["zbd/c4/m02", "zbd/c1c/m01"] {
+        let mut config = MissionStartConfiguration::read(dir, &player_document(), &source)
+            .expect("the synthetic record reads");
+        config
+            .bind_engine_facts(facts, why)
+            .expect("the table binds");
+        let Resolved::Unknown { reason, .. } = config.airframe() else {
+            panic!("no per-mission airframe is committed for {dir}");
+        };
+        for needle in ["CS_ENGINE_IMAGE", ENGINE_FACTS_PATH, "unknown"] {
+            assert!(
+                reason.contains(needle),
+                "the refusal must name {needle:?}: {reason}"
+            );
+        }
         assert!(
-            reason.contains(needle),
-            "the refusal must name {needle:?}: {reason}"
+            config.initial_pose().is_known(),
+            "the heading convention is global, not per-mission"
         );
     }
-    assert!(
-        config.initial_pose().is_known(),
-        "the heading convention is global, not per-mission"
-    );
 
     // A directory the table does not cover refuses by naming that absence.
     let mut config = MissionStartConfiguration::read("zbd/c9/m99", &player_document(), &source)
@@ -312,8 +319,8 @@ fn accept_owner_facts_table_unknown_missions_refuse_with_both_sources_named() {
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_owner_facts_table_retail_m01_binds_through_the_committed_table() {
     let root = game_dir();
-    let (document, source) = member_document(&root, "zbd/c1c/m01/zrdr.zbd", "aiv.zrd");
-    let mut config = MissionStartConfiguration::read("zbd/c1c/m01", &document, &source)
+    let (document, source) = member_document(&root, "zbd/c3/m01/zrdr.zbd", "aiv.zrd");
+    let mut config = MissionStartConfiguration::read("zbd/c3/m01", &document, &source)
         .expect("M01's aircraft table reads");
     config
         .bind_engine_facts(
@@ -330,23 +337,26 @@ fn accept_owner_facts_table_retail_m01_binds_through_the_committed_table() {
     let Resolved::Known(pose) = config.initial_pose() else {
         panic!("M01's pose is committed: {:?}", config.initial_pose());
     };
-    assert_eq!(pose.value.position, [-3694.0, 1318.0, -12482.0]);
-    assert_eq!(pose.value.heading, stored_heading_radians(170.0));
+    assert_eq!(pose.value.position, [-1426.0, 150.0, -1813.0]);
+    assert_eq!(pose.value.heading, stored_heading_radians(40.0));
 }
 
-/// The whole launch gate: with only `CS_GAME_DIR` named, M01's plan is
-/// launchable and its content prepares. Wherever `CS_ENGINE_IMAGE` happens
-/// to point, this test runs the same production path the binary does —
-/// under `env -u CS_ENGINE_IMAGE` it is the committed table that binds.
+/// The whole launch gate: with the engine image named, M06's plan — the
+/// `zbd/c1c/m01` mission, ch2-m01 under #1565's corrected layout — is
+/// launchable and its content prepares. `bind_engine_state` binds the
+/// measured fresh-profile default for any mission dir, so the image leg is
+/// what a launchable plan stands on; the committed table keeps M06's
+/// airframe an explicit unknown (#1580), so the image is a real requirement
+/// here.
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
-fn accept_owner_facts_table_retail_m01_plans_and_prepares() {
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
+fn accept_owner_facts_table_retail_m06_plans_and_prepares() {
     let root = game_dir();
     let label = MissionLabel::new("M06").expect("the label is valid");
     let plan = plan_mission_launch(&root, label, "The Red Menace").expect("M06's plan");
     assert!(
         plan.launchable(),
-        "M01 must be launchable without naming the image; gaps: {:?}",
+        "M06 must be launchable with the image named; gaps: {:?}",
         plan.gaps().collect::<Vec<_>>()
     );
     let report = plan
@@ -358,10 +368,10 @@ fn accept_owner_facts_table_retail_m01_plans_and_prepares() {
         report.verdict
     );
 
-    let content = prepare_mission_content(&root, &plan).expect("M01's content prepares");
+    let content = prepare_mission_content(&root, &plan).expect("M06's content prepares");
     assert_eq!(
         content.flight.record, "pdevastator",
-        "the committed table's row-5 record drives the flight law"
+        "the measured default's row-5 record drives the flight law"
     );
 }
 
@@ -455,7 +465,7 @@ fn accept_owner_facts_table_image_rows_match_the_image() {
     }
 
     // The mission row's deciding record carries the committed index at +0x2c.
-    let m01 = facts.mission("zbd/c1c/m01").expect("the M01 row");
+    let m01 = facts.mission("zbd/c3/m01").expect("the M01 row");
     let MissionAirframe::Known { index, record, va } = &m01.airframe else {
         panic!("M01's row is committed");
     };
@@ -491,7 +501,7 @@ fn accept_owner_facts_table_image_rows_match_the_image() {
     // table's M01 agrees.
     if std::env::var_os("CS_GAME_DIR").is_some() {
         let config =
-            recover_retail_start_configuration(&game_dir(), "zbd/c1c/m01").expect("M01 reads");
+            recover_retail_start_configuration(&game_dir(), "zbd/c3/m01").expect("M01 reads");
         let Resolved::Known(airframe) = config.airframe() else {
             panic!("M01's airframe binds from the image");
         };

@@ -55,7 +55,10 @@ use cs_types::install::RelativePath;
 /// the selection cannot credit a sibling task's assertions to this report.
 const ACCEPTANCE_PREFIX: &str = "accept_m01_lc_campaign_airframe_pose_";
 
-/// The mission this task measures.
+/// The archive this task measures — ch2-m01, M06 under #1565's
+/// corrected layout (`docs/findings/2026-10-17-m01-archive-decision.md`);
+/// the stage predates that decision, so the prose names the mission the
+/// archive belongs to.
 const MEASURED_MISSION: &str = "zbd/c1c/m01/zrdr.zbd";
 
 /// How this run was reviewed, with every measured number **derived** from the
@@ -74,12 +77,12 @@ fn review_method(archives: usize, members: usize, row: u32, constant: f64, tests
          implemented only. MEASURED: (a) the campaign player's airframe — CS_ENGINE_IMAGE \
          names the decrypted image at the recorded digest, engine_state_source names \
          the plane-roster record at file offset 0x21a81c whose +0x2c dword reads {row} here, which \
-         is CAMPAIGN_AIRFRAME_ROW, and M01's player is bound as ContentId airframe/{root} with the \
+         is CAMPAIGN_AIRFRAME_ROW, and M06's player is bound as ContentId airframe/{root} with the \
          profile/flight-check chain named in CAMPAIGN_AIRFRAME_SOURCE (roster init 0x4113b0, \
          selection 0x411477, campaign-start setter 0x41712c, spawn 0x474d48); three engine \
          defaults agree on that row and on the campaign path the roster is the only writer; (b) \
          the start pose — the π/180 double at file offset 0x2040e8 reads {constant} here, which is \
-         STORED_HEADING_DEGREES_TO_RADIANS, and M01's player record's stored heading 170 converts \
+         STORED_HEADING_DEGREES_TO_RADIANS, and M06's player record's stored heading 170 converts \
          through it to {radians} radians with the position read in metres (scale 1.0, #436's owner \
          note of 2026-10-05: +Y up, right-handed, identity axis map), so the pose is the record's \
          own value through the conversion 0x47c4e5..0x47c500 performs and never an invented yaw. \
@@ -94,7 +97,7 @@ fn review_method(archives: usize, members: usize, row: u32, constant: f64, tests
          before launch is undecoded (F13-B/C, F38); (3) the airframe model's nose axis in the \
          unparsed .flt geometry is not measured — it decides how one spells the world direction \
          the nose points at yaw 0, not the pose, which is the node's transform; (4) the frame \
-         relation of a stored start to the world node grid is open: M01's start lies 194 stored \
+         relation of a stored start to the world node grid is open: M06's start lies 194 stored \
          units outside c1c's node bounds and its wingmen 777 and 826 (#676). `unknowns` is empty \
          because every unresolved item above is a limit on this claim rather than a failed \
          measurement of this run: every archive walked, every byte range re-read, every task \
@@ -332,7 +335,7 @@ fn render_campaign_airframe_pose(
     let engine =
         engine_state_source(&engine_image).expect("CS_ENGINE_IMAGE names the measured image");
     let config = recover_retail_start_configuration(game_dir, "zbd/c1c/m01")
-        .expect("M01's start configuration reads");
+        .expect("M06's start configuration reads");
     let stored = match config.stored_pose() {
         cs_types::content::Resolved::Known(known) => format!(
             "{:?} m (heading as stored {}, radians {})",

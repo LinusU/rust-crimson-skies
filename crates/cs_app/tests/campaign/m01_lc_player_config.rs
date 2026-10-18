@@ -117,14 +117,18 @@ fn accept_m01_lc_player_config_refuses_a_missing_or_ambiguous_player() {
     }
 }
 
+/// The `zbd/c1c/m01` archive is ch2-m01, M06 "The Red Menace" (#1565's
+/// corrected layout): these are M06's measured record values, kept as M06
+/// measurements. The image-backed leg binds the measured fresh-profile
+/// default for any mission dir, so the airframe stays Known here.
 #[test]
 #[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
-fn accept_m01_lc_player_config_retail_m01_binds_player_and_names_unknowns() {
+fn accept_m01_lc_player_config_retail_m06_binds_player_and_names_unknowns() {
     let root = PathBuf::from(std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR must be set"));
-    let config = recover_retail_start_configuration(&root, "zbd/c1c/m01").expect("M01 reads");
+    let config = recover_retail_start_configuration(&root, "zbd/c1c/m01").expect("M06 reads");
 
     let Resolved::Known(player) = config.player() else {
-        panic!("M01 has exactly one `player` record");
+        panic!("M06 has exactly one `player` record");
     };
     assert_eq!(player.value.name, "player");
     assert_eq!(player.value.index, 1);
@@ -149,7 +153,7 @@ fn accept_m01_lc_player_config_retail_m01_binds_player_and_names_unknowns() {
     assert_eq!(pose.value.position, [-3694.0, 1318.0, -12482.0]);
     assert_eq!(pose.value.heading, stored_heading_radians(170.0));
 
-    // Measured values of M01's player record (and no airframe in field 0).
+    // Measured values of M06's player record (and no airframe in field 0).
     assert_eq!(player.value.field_zero, Some(u32::MAX));
     assert!(
         config
@@ -158,7 +162,7 @@ fn accept_m01_lc_player_config_retail_m01_binds_player_and_names_unknowns() {
             .all(|w| w.field_zero == Some(u32::MAX))
     );
     let Resolved::Known(stored) = config.stored_pose() else {
-        panic!("M01's player record has the pose shape");
+        panic!("M06's player record has the pose shape");
     };
     assert_eq!(stored.value.position, [-3694.0, 1318.0, -12482.0]);
     assert_eq!(stored.value.heading, 170.0);
@@ -168,24 +172,31 @@ fn accept_m01_lc_player_config_retail_m01_binds_player_and_names_unknowns() {
     );
 }
 
-/// **M01's start pose is the `player` record of `aiv.zrd`, and nothing else.**
+/// **The staged start pose is the `player` record of `aiv.zrd`, and nothing
+/// else.**
 ///
-/// The pose comes from `ZBD/C1C/M01/zrdr.zbd` → member `aiv.zrd` → the record
-/// named `player` (document index 1): field 1 (`POSITION_FIELD`, three floats,
-/// metres, axis 1 vertical) and field 2 (`HEADING_FIELD`, degrees-like, turned
-/// into radians by `stored_heading_radians`). The composition's stage, its
-/// player spawn recipe and the live body must all equal what the production
-/// reader returns for that record, and the record's source span names its
-/// bytes in the member.
+/// This stage composes the `zbd/c1c/m01` mission — ch2-m01, M06 "The Red
+/// Menace" under #1565's corrected layout — whose pose comes from
+/// `ZBD/C1C/M01/zrdr.zbd` → member `aiv.zrd` → the record named `player`
+/// (document index 1): field 1 (`POSITION_FIELD`, three floats, metres, axis
+/// 1 vertical) and field 2 (`HEADING_FIELD`, degrees-like, turned into
+/// radians by `stored_heading_radians`). The composition's stage, its player
+/// spawn recipe and the live body must all equal what the production reader
+/// returns for that record, and the record's source span names its bytes in
+/// the member.
+///
+/// Composing the stage also binds the player's airframe: `zbd/c1c/m01` is a
+/// progression-reached mission, so the committed table keeps it an explicit
+/// unknown (#1580) and only the engine image supplies the measured default.
 #[test]
 #[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_window_world_start_pose_is_the_aiv_zrd_player_record() {
     let root = PathBuf::from(std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR must be set"));
-    let config = recover_retail_start_configuration(&root, "zbd/c1c/m01").expect("M01 reads");
+    let config = recover_retail_start_configuration(&root, "zbd/c1c/m01").expect("M06 reads");
 
     // The record the numbers come from, with the span of its bytes.
     let Resolved::Known(player) = config.player() else {
-        panic!("M01 has exactly one `player` record");
+        panic!("M06 has exactly one `player` record");
     };
     assert_eq!(
         (player.value.name.as_str(), player.value.index),
@@ -205,7 +216,7 @@ fn accept_m01_window_world_start_pose_is_the_aiv_zrd_player_record() {
         "the record names a non-empty byte range"
     );
     let Resolved::Known(stored) = config.stored_pose() else {
-        panic!("M01's player record has the pose shape");
+        panic!("M06's player record has the pose shape");
     };
     assert_eq!(stored.provenance.source.as_ref(), Some(source));
     let expected_position = stored.value.position_metres();
@@ -216,12 +227,12 @@ fn accept_m01_window_world_start_pose_is_the_aiv_zrd_player_record() {
 
     // The composition's stage, spawn recipe and live body carry that pose.
     let plan = plan_mission_launch(&root, label("M06"), "The Red Menace")
-        .expect("M01's launch closure plans");
-    let stage = stage_for(&root, &plan).expect("M01's stage reads");
+        .expect("M06's launch closure plans");
+    let stage = stage_for(&root, &plan).expect("M06's stage reads");
     assert_eq!(stage.start.position, expected_position);
     assert_eq!(stage.start.heading, expected_heading);
 
-    let mut app = build_headless(&stage).expect("M01's stage composes headlessly");
+    let mut app = build_headless(&stage).expect("M06's stage composes headlessly");
     app.update();
     let recipe = app.world().resource::<MissionPlayerStart>();
     assert_eq!(recipe.position_m, expected_position);

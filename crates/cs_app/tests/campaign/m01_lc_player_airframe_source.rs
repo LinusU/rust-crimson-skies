@@ -173,7 +173,8 @@ fn accept_m01_lc_player_airframe_source_stored_position_is_metres_and_the_refusa
  {
     assert_eq!(STORED_POSITION_METRES_PER_UNIT, 1.0);
 
-    // M01's measured player start (#676): the scale change is the whole
+    // The player start #676 measured on M06's archive: the scale change is
+    // the whole
     // binding, and the heading it cannot convert stays outside this type.
     let stored = StoredStartPose {
         position: [-3694.0, 1318.0, -12482.0],
@@ -247,16 +248,17 @@ fn decoded_members(root: &Path, container_key: &str) -> Vec<(String, ZrdValue)> 
 
 #[test]
 #[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
-fn accept_m01_lc_player_airframe_source_retail_m01_has_no_airframe_key_and_the_scenario_does() {
+fn accept_m01_lc_player_airframe_source_retail_m06_has_no_airframe_key_and_the_scenario_does() {
     let root = PathBuf::from(std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR must be set"));
 
-    // Measured absence: M01's reader archive names no airframe through the key
+    // Measured absence: the `zbd/c1c/m01` reader archive — M06 under #1565's
+    // corrected layout — names no airframe through the key
     // the executable reads, whatever the member.
     let members = decoded_members(&root, "zbd/c1c/m01/zrdr.zbd");
     assert_eq!(
         members.len(),
         12,
-        "M01's reader archive and its members: {:?}",
+        "M06's reader archive and its members: {:?}",
         members.iter().map(|(name, _)| name).collect::<Vec<_>>()
     );
     assert!(
@@ -290,9 +292,9 @@ fn accept_m01_lc_player_airframe_source_retail_m01_has_no_airframe_key_and_the_s
     // The start configuration itself: metres measured (#436), and — since
     // #770 — the airframe and the metric pose bound from the measured engine
     // state with their sources named.
-    let config = recover_retail_start_configuration(&root, "zbd/c1c/m01").expect("M01 reads");
+    let config = recover_retail_start_configuration(&root, "zbd/c1c/m01").expect("M06 reads");
     let Resolved::Known(stored) = config.stored_pose() else {
-        panic!("M01's player record has the pose shape");
+        panic!("M06's player record has the pose shape");
     };
     assert_eq!(stored.value.position_metres(), [-3694.0, 1318.0, -12482.0]);
     assert_eq!(stored.value.heading, 170.0);

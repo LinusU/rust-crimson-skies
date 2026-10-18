@@ -254,6 +254,7 @@
 // `shared_test_sources` names it. A new suite here is one file plus one `mod`
 // line in exactly one `tests/suite_*.rs`; `cs_xtask test-layout` fails if none
 // (or two) of them reach it.
+mod accept_m01_c3_player_config;
 mod closure;
 mod common;
 mod coverage;
