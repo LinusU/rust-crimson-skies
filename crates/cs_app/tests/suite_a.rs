@@ -37,6 +37,7 @@ mod campaign {
     mod m01_window_fire;
     mod m01_window_world_draw;
     mod m01_window_world_import;
+    mod m01_wingman_formation;
     mod m02_a;
     mod m02_b;
     mod m02_b_fu2;
@@ -234,6 +235,7 @@ mod evidence_report_m01_play_triggers_parts;
 mod evidence_report_m01_play_triggers_windowed;
 mod evidence_report_m01_play_weather;
 mod evidence_report_m01_radio_sample;
+mod evidence_report_m01_wingman_formation;
 mod evidence_report_retail_smoke_script;
 mod evidence_report_t463;
 mod evidence_report_t464;
