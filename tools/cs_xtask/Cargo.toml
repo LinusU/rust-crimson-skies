@@ -44,3 +44,6 @@ name = "cs_xtask"
 test = false
 
 [dependencies]
+# PNG/JPEG decode, encode and resampling for `parity` (task #1646); the same
+# package and version `cs_app` already pins, so the graph gains no package.
+image = { version = "0.25.10", default-features = false, features = ["png", "jpeg"] }

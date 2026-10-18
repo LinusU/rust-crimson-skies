@@ -60,6 +60,7 @@ pub mod ci;
 pub mod corpus;
 pub mod footprint;
 pub mod package;
+pub mod parity;
 pub mod pins;
 pub mod push_guard;
 pub mod target_dir;

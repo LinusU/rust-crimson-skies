@@ -39,6 +39,8 @@
 //!   remote refs a `git push` from this branch would update and refuses any
 //!   push whose destination is `refs/heads/main` ([`push_guard`], task
 //!   #1170).
+//! * `parity` pairs original Drydock frames with our M01 capture and writes a
+//!   contact sheet and per-pair numbers ([`parity`], task #1646).
 //!
 //! Exit codes: 0 gate passed, 1 the gate failed, 2 the request itself was
 //! invalid. Failures are printed on stderr, never returned as success.
@@ -53,6 +55,7 @@ use cs_xtask::ci;
 use cs_xtask::corpus;
 use cs_xtask::footprint;
 use cs_xtask::package;
+use cs_xtask::parity;
 use cs_xtask::push_guard;
 use cs_xtask::target_dir;
 use cs_xtask::test_layout;
@@ -143,6 +146,13 @@ COMMANDS
         (the read-only original installation or a private corpus dir), each
         private selector is enumerated and fingerprinted; without it the
         private suite is reported unavailable rather than passed.
+    parity --ref-dir <dir> --ours-dir <dir> --out <private/...>
+        [--offset-seconds S] [--tolerance-seconds T] [--ref-unit s|ms|frame60]
+        Compare original reference frames (named by mission time) with our
+        `cs --mission M01 --capture-dir` frames at 1024x768 and write a
+        contact sheet and per-pair numbers under --out, which must be a
+        private/ directory. Never a parity verdict: it says
+        visual comparison needed (task #1646).
     push-guard [--workspace-root <dir>] [--branch <name>]
         Resolve, from git's own configuration and without touching the
         network, the remote refs a `git push` from this branch would update
@@ -209,6 +219,7 @@ fn main() -> ExitCode {
         "verify-package" => run_verify_package(&args[1..]),
         "corpus" => run_corpus(&args[1..]),
         "push-guard" => run_push_guard(&args[1..]),
+        "parity" => run_parity(&args[1..]),
         other => {
             eprintln!("cs-xtask: unknown command {other:?}");
             eprint!("{USAGE}");
@@ -814,6 +825,19 @@ fn count_private_selectors() -> usize {
 /// Runs the push-destination guard (task #1170): which remote refs a push
 /// from this branch would update, resolved offline from git's own
 /// configuration, and a loud refusal when any of them is `refs/heads/main`.
+fn run_parity(args: &[String]) -> ExitCode {
+    match parity::run(args) {
+        Ok(summary) => {
+            println!("{summary}");
+            ExitCode::from(EXIT_OK)
+        }
+        Err(error) => {
+            eprintln!("cs-xtask: parity: {error}");
+            ExitCode::from(EXIT_USAGE)
+        }
+    }
+}
+
 fn run_push_guard(args: &[String]) -> ExitCode {
     let options = match parse_options(args, false, false, false, true) {
         Ok(options) => options,
