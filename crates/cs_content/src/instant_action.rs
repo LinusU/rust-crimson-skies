@@ -52,7 +52,9 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::Path;
 
-use cs_types::content::{ContentId, ContentKind, Known, Origin, Provenance, Resolved};
+use cs_types::content::{
+    ContentId, ContentKind, Known, Origin, Provenance, Resolved, ResolvedError,
+};
 use cs_types::evidence::ClaimId;
 use cs_types::random::SplitMix64;
 
@@ -176,11 +178,14 @@ impl fmt::Display for RosterSlot {
 pub struct ScenarioActorSpec {
     side: ScenarioSide,
     slot: RosterSlot,
-    faction: ContentId,
+    faction: Resolved<ContentId>,
     airframe: Resolved<ContentId>,
     loadout: Resolved<ContentId>,
     pilot: Option<ContentId>,
     survivability: Resolved<DeclaredSurvivability>,
+    skill: Option<String>,
+    authored_count: Option<u32>,
+    label: Option<String>,
     provenance: Provenance,
 }
 
@@ -225,6 +230,7 @@ impl ScenarioActorSpec {
         {
             return Err(ScenarioSchemaError::PilotKindMismatch { id: pilot.clone() });
         }
+        let faction = Resolved::Known(Known::new(faction, provenance.clone()));
         Ok(Self {
             side,
             slot,
@@ -233,8 +239,62 @@ impl ScenarioActorSpec {
             loadout,
             pilot,
             survivability,
+            skill: None,
+            authored_count: None,
+            label: None,
             provenance,
         })
+    }
+
+    /// Records that the faction this actor flies for is not measured.
+    ///
+    /// The original's descriptors name a plane and a skill per actor but no
+    /// faction, so a retail preset's actor keeps its faction explicitly
+    /// unknown instead of borrowing one from a paint pattern.
+    #[must_use]
+    pub fn with_unmeasured_faction(mut self, claim_id: ClaimId, reason: &str) -> Self {
+        self.faction = Resolved::Unknown {
+            claim_id,
+            reason: reason.to_owned(),
+        };
+        self
+    }
+
+    /// Attaches the original's own skill label (`novice`, `veteran`, `ace`).
+    ///
+    /// The label is the descriptor's spelling. Which AI knobs it selects is a
+    /// separate, unmeasured question; nothing here maps it onto a tier.
+    #[must_use]
+    pub fn with_skill(mut self, skill: String) -> Self {
+        self.skill = Some(skill);
+        self
+    }
+
+    /// Attaches the number of aircraft the descriptor authors for this actor's
+    /// group. It is an authored number, not a measured spawn count.
+    #[must_use]
+    pub const fn with_authored_count(mut self, count: u32) -> Self {
+        self.authored_count = Some(count);
+        self
+    }
+
+    /// Attaches the original's localized name label (`MSG_…`) for this actor.
+    #[must_use]
+    pub fn with_label(mut self, label: String) -> Self {
+        self.label = Some(label);
+        self
+    }
+
+    /// Carries over the authored attributes a slot edit does not touch: the
+    /// faction (kept even when unmeasured), the skill label, the authored
+    /// count and the name label of `original`.
+    #[must_use]
+    pub fn with_authored_from(mut self, original: &Self) -> Self {
+        self.faction = original.faction.clone();
+        self.skill = original.skill.clone();
+        self.authored_count = original.authored_count;
+        self.label = original.label.clone();
+        self
     }
 
     /// The side this actor is spawned on.
@@ -249,10 +309,37 @@ impl ScenarioActorSpec {
         self.slot
     }
 
-    /// The faction this actor flies for.
+    /// The faction this actor flies for, or why it is unknown.
     #[must_use]
-    pub const fn faction(&self) -> &ContentId {
+    pub const fn faction(&self) -> &Resolved<ContentId> {
         &self.faction
+    }
+
+    /// The faction id, when it is known.
+    #[must_use]
+    pub const fn faction_id(&self) -> Option<&ContentId> {
+        match &self.faction {
+            Resolved::Known(known) => Some(&known.value),
+            Resolved::Unknown { .. } => None,
+        }
+    }
+
+    /// The original's skill label, when the descriptor declares one.
+    #[must_use]
+    pub fn skill(&self) -> Option<&str> {
+        self.skill.as_deref()
+    }
+
+    /// The aircraft count the descriptor authors for this actor's group.
+    #[must_use]
+    pub const fn authored_count(&self) -> Option<u32> {
+        self.authored_count
+    }
+
+    /// The original's localized name label, when the descriptor declares one.
+    #[must_use]
+    pub fn label(&self) -> Option<&str> {
+        self.label.as_deref()
     }
 
     /// The airframe this actor is built from.
@@ -614,9 +701,81 @@ pub struct ScenarioParameters {
     world: Resolved<WorldId>,
     environment: Resolved<EnvironmentId>,
     roster: ScenarioRoster,
-    difficulty: DifficultyProfile,
-    rules: VictoryRules,
+    difficulty: Declared<DifficultyProfile>,
+    rules: Declared<VictoryRules>,
     seed: ScenarioSeed,
+}
+
+/// A scenario dimension that is either declared or explicitly unmeasured.
+///
+/// The `Resolved`/claim/reason pattern for values that carry no per-value
+/// provenance of their own (a player's chosen difficulty, a preset's rules).
+/// A retail preset whose original difficulty or rules are not measured holds
+/// [`Declared::Unmeasured`] with the claim and reason; the lowering refuses it
+/// ([`require_declared`]) instead of launching a defaulted scenario.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Declared<T> {
+    /// The value, as declared by the preset or chosen by the player.
+    Declared(T),
+    /// The original's value is not measured; nothing is substituted.
+    Unmeasured {
+        /// The claim the unknown belongs to.
+        claim_id: ClaimId,
+        /// Why the value is unmeasured.
+        reason: String,
+    },
+}
+
+impl<T> Declared<T> {
+    /// An explicit unmeasured value, refusing an empty reason.
+    ///
+    /// # Errors
+    ///
+    /// [`ResolvedError::EmptyReason`] when `reason` is empty or whitespace.
+    pub fn unmeasured(claim_id: ClaimId, reason: &str) -> Result<Self, ResolvedError> {
+        if reason.trim().is_empty() {
+            return Err(ResolvedError::EmptyReason);
+        }
+        Ok(Self::Unmeasured {
+            claim_id,
+            reason: reason.to_owned(),
+        })
+    }
+
+    /// The declared value, when there is one.
+    #[must_use]
+    pub const fn declared(&self) -> Option<&T> {
+        match self {
+            Self::Declared(value) => Some(value),
+            Self::Unmeasured { .. } => None,
+        }
+    }
+
+    /// Whether the value is declared.
+    #[must_use]
+    pub const fn is_declared(&self) -> bool {
+        matches!(self, Self::Declared(_))
+    }
+}
+
+/// Requires a declared value, naming the field an unmeasured one belongs to.
+///
+/// # Errors
+///
+/// [`ScenarioSchemaError::UnresolvedValue`] carrying the unmeasured value's own
+/// claim and reason.
+pub fn require_declared<'a, T>(
+    field: &'static str,
+    value: &'a Declared<T>,
+) -> Result<&'a T, ScenarioSchemaError> {
+    match value {
+        Declared::Declared(value) => Ok(value),
+        Declared::Unmeasured { claim_id, reason } => Err(ScenarioSchemaError::UnresolvedValue {
+            field,
+            claim_id: claim_id.clone(),
+            reason: reason.clone(),
+        }),
+    }
 }
 
 impl ScenarioParameters {
@@ -634,10 +793,30 @@ impl ScenarioParameters {
             world,
             environment,
             roster,
-            difficulty,
-            rules,
+            difficulty: Declared::Declared(difficulty),
+            rules: Declared::Declared(rules),
             seed,
         }
+    }
+
+    /// Records that the preset's original difficulty is not measured.
+    #[must_use]
+    pub fn with_unmeasured_difficulty(mut self, claim_id: ClaimId, reason: &str) -> Self {
+        self.difficulty = Declared::Unmeasured {
+            claim_id,
+            reason: reason.to_owned(),
+        };
+        self
+    }
+
+    /// Records that the preset's original victory rules are not measured.
+    #[must_use]
+    pub fn with_unmeasured_rules(mut self, claim_id: ClaimId, reason: &str) -> Self {
+        self.rules = Declared::Unmeasured {
+            claim_id,
+            reason: reason.to_owned(),
+        };
+        self
     }
 
     /// The world this scenario loads.
@@ -658,15 +837,15 @@ impl ScenarioParameters {
         &self.roster
     }
 
-    /// The declared difficulty profile.
+    /// The declared difficulty profile, or why it is unmeasured.
     #[must_use]
-    pub const fn difficulty(&self) -> &DifficultyProfile {
+    pub const fn difficulty(&self) -> &Declared<DifficultyProfile> {
         &self.difficulty
     }
 
-    /// The declared victory rules.
+    /// The declared victory rules, or why they are unmeasured.
     #[must_use]
-    pub const fn rules(&self) -> &VictoryRules {
+    pub const fn rules(&self) -> &Declared<VictoryRules> {
         &self.rules
     }
 
@@ -690,6 +869,7 @@ pub struct InstantActionPreset {
     scenario: ContentId,
     title: Resolved<String>,
     parameters: ScenarioParameters,
+    original_mission_type: Option<String>,
     origin: Origin,
     provenance: Provenance,
 }
@@ -736,9 +916,27 @@ impl InstantActionPreset {
             scenario,
             title,
             parameters,
+            original_mission_type: None,
             origin,
             provenance,
         })
+    }
+
+    /// Attaches the original mission type this preset selects within its
+    /// scenario (`dogfight_ace`, …).
+    ///
+    /// Several presets launch one `IA#` scenario and differ only by this type,
+    /// so it is part of the preset's identity next to its scenario id.
+    #[must_use]
+    pub fn with_original_mission_type(mut self, mission_type: String) -> Self {
+        self.original_mission_type = Some(mission_type);
+        self
+    }
+
+    /// The original mission type this preset selects, when it has one.
+    #[must_use]
+    pub fn original_mission_type(&self) -> Option<&str> {
+        self.original_mission_type.as_deref()
     }
 
     /// The `ia_preset` id this preset is selected by.
@@ -1383,6 +1581,7 @@ pub struct ScenarioOptions {
     victory_conditions: Vec<VictoryCondition>,
     relations: Vec<DeclaredRelation>,
     max_players: u8,
+    unmeasured: Vec<ScenarioOptionDimension>,
 }
 
 impl ScenarioOptions {
@@ -1403,6 +1602,36 @@ impl ScenarioOptions {
     // would hide which list is empty or mis-namespaced at the call site.
     #[allow(clippy::too_many_arguments)]
     pub fn try_new(
+        worlds: Vec<WorldId>,
+        environments: Vec<EnvironmentId>,
+        factions: Vec<ContentId>,
+        airframes: Vec<ContentId>,
+        loadouts: Vec<ContentId>,
+        pilots: Vec<ContentId>,
+        difficulty_tiers: Vec<DifficultyTier>,
+        victory_conditions: Vec<VictoryCondition>,
+        relations: Vec<DeclaredRelation>,
+        max_players: u8,
+    ) -> Result<Self, ScenarioSchemaError> {
+        Self::assemble(
+            worlds,
+            environments,
+            factions,
+            airframes,
+            loadouts,
+            pilots,
+            difficulty_tiers,
+            victory_conditions,
+            relations,
+            max_players,
+            Vec::new(),
+        )
+    }
+
+    /// The shared assembly: [`Self::try_new`] with `unmeasured` naming the
+    /// dimensions whose list may be empty because it is recorded unmeasured.
+    #[allow(clippy::too_many_arguments)]
+    fn assemble(
         mut worlds: Vec<WorldId>,
         mut environments: Vec<EnvironmentId>,
         mut factions: Vec<ContentId>,
@@ -1413,13 +1642,29 @@ impl ScenarioOptions {
         mut victory_conditions: Vec<VictoryCondition>,
         relations: Vec<DeclaredRelation>,
         max_players: u8,
+        unmeasured: Vec<ScenarioOptionDimension>,
     ) -> Result<Self, ScenarioSchemaError> {
-        check_unique_list("worlds", &worlds)?;
-        check_unique_list("environments", &environments)?;
-        check_option_list("factions", &factions, ContentKind::Faction)?;
-        check_option_list("airframes", &airframes, ContentKind::Airframe)?;
-        check_option_list("loadouts", &loadouts, ContentKind::Loadout)?;
-        check_option_list("pilots", &pilots, ContentKind::Pilot)?;
+        let may_be_empty = |dimension: ScenarioOptionDimension, len: usize| {
+            len == 0 && unmeasured.contains(&dimension)
+        };
+        if !may_be_empty(ScenarioOptionDimension::Worlds, worlds.len()) {
+            check_unique_list("worlds", &worlds)?;
+        }
+        if !may_be_empty(ScenarioOptionDimension::Environments, environments.len()) {
+            check_unique_list("environments", &environments)?;
+        }
+        if !may_be_empty(ScenarioOptionDimension::Factions, factions.len()) {
+            check_option_list("factions", &factions, ContentKind::Faction)?;
+        }
+        if !may_be_empty(ScenarioOptionDimension::Airframes, airframes.len()) {
+            check_option_list("airframes", &airframes, ContentKind::Airframe)?;
+        }
+        if !may_be_empty(ScenarioOptionDimension::Loadouts, loadouts.len()) {
+            check_option_list("loadouts", &loadouts, ContentKind::Loadout)?;
+        }
+        if !may_be_empty(ScenarioOptionDimension::Pilots, pilots.len()) {
+            check_option_list("pilots", &pilots, ContentKind::Pilot)?;
+        }
         if difficulty_tiers.is_empty() || victory_conditions.is_empty() {
             return Err(ScenarioSchemaError::EmptyOptionTable {
                 what: "difficulty tiers or victory conditions",
@@ -1480,7 +1725,16 @@ impl ScenarioOptions {
             victory_conditions,
             relations,
             max_players,
+            unmeasured,
         })
+    }
+
+    /// The dimensions whose list is empty because the original's list is not
+    /// measured (see [`ScenarioOptionTable::validate_partial`]). Empty for a
+    /// table built by [`Self::try_new`].
+    #[must_use]
+    pub fn unmeasured_dimensions(&self) -> &[ScenarioOptionDimension] {
+        &self.unmeasured
     }
 
     /// The supported worlds, in canonical id order.
@@ -1653,7 +1907,7 @@ impl InstantActionCatalog {
             return Err(ScenarioSchemaError::NoPresets);
         }
         let mut by_id: BTreeMap<ContentId, InstantActionPreset> = BTreeMap::new();
-        let mut scenarios: BTreeMap<ContentId, ContentId> = BTreeMap::new();
+        let mut scenarios: BTreeMap<(ContentId, Option<String>), ContentId> = BTreeMap::new();
         for preset in presets {
             if by_id.insert(preset.id().clone(), preset.clone()).is_some() {
                 return Err(ScenarioSchemaError::DuplicatePreset {
@@ -1674,7 +1928,15 @@ impl InstantActionCatalog {
                     id: preset.id().clone(),
                 });
             }
-            if let Some(first) = scenarios.insert(preset.scenario().clone(), preset.id().clone())
+            // Presets of one `IA#` scenario differ by the mission type they
+            // select, so a scenario may be launched by several presets; two
+            // presets that select the same scenario *and* the same (or no)
+            // mission type are one preset under two ids.
+            let launch = (
+                preset.scenario().clone(),
+                preset.original_mission_type().map(str::to_owned),
+            );
+            if let Some(first) = scenarios.insert(launch, preset.id().clone())
                 && first != *preset.id()
             {
                 return Err(ScenarioSchemaError::DuplicateScenario(Box::new(
@@ -1711,12 +1973,24 @@ impl InstantActionCatalog {
         self.presets.get(id)
     }
 
-    /// The preset that launches a given `ia_scenario` id.
+    /// The first preset (in id order) that launches a given `ia_scenario` id.
+    ///
+    /// Retail scenarios are launched by several presets, one per mission type;
+    /// [`Self::presets_for_scenario`] lists them all.
     #[must_use]
     pub fn preset_for_scenario(&self, scenario: &ContentId) -> Option<&InstantActionPreset> {
         self.presets
             .values()
             .find(|preset| preset.scenario() == scenario)
+    }
+
+    /// Every preset that launches a given `ia_scenario` id, in id order.
+    #[must_use]
+    pub fn presets_for_scenario(&self, scenario: &ContentId) -> Vec<&InstantActionPreset> {
+        self.presets
+            .values()
+            .filter(|preset| preset.scenario() == scenario)
+            .collect()
     }
 
     /// The supported custom-scenario dimensions.
@@ -1784,31 +2058,47 @@ impl InstantActionCatalog {
                 }
             }
         }
-        if !self
-            .options
-            .difficulty_tiers()
-            .contains(&parameters.difficulty().tier())
-        {
-            found.push(ScenarioProblem::new(
+        match parameters.difficulty() {
+            Declared::Unmeasured { claim_id, reason } => found.push(ScenarioProblem::unknown(
                 ScenarioProblemCode::UnsupportedDifficulty,
-                format!(
-                    "difficulty tier {} is not offered by this catalog",
-                    parameters.difficulty().tier()
-                ),
-            ));
+                "difficulty",
+                claim_id.clone(),
+                reason,
+            )),
+            Declared::Declared(difficulty) => {
+                if !self.options.difficulty_tiers().contains(&difficulty.tier()) {
+                    found.push(ScenarioProblem::new(
+                        ScenarioProblemCode::UnsupportedDifficulty,
+                        format!(
+                            "difficulty tier {} is not offered by this catalog",
+                            difficulty.tier()
+                        ),
+                    ));
+                }
+            }
         }
-        if !self
-            .options
-            .victory_conditions()
-            .contains(&parameters.rules().condition())
-        {
-            found.push(ScenarioProblem::new(
+        match parameters.rules() {
+            Declared::Unmeasured { claim_id, reason } => found.push(ScenarioProblem::unknown(
                 ScenarioProblemCode::UnsupportedVictoryCondition,
-                format!(
-                    "victory condition {} is not offered by this catalog",
-                    parameters.rules().condition()
-                ),
-            ));
+                "rules",
+                claim_id.clone(),
+                reason,
+            )),
+            Declared::Declared(rules) => {
+                if !self
+                    .options
+                    .victory_conditions()
+                    .contains(&rules.condition())
+                {
+                    found.push(ScenarioProblem::new(
+                        ScenarioProblemCode::UnsupportedVictoryCondition,
+                        format!(
+                            "victory condition {} is not offered by this catalog",
+                            rules.condition()
+                        ),
+                    ));
+                }
+            }
         }
         found.extend(self.check_seats(request));
         found.extend(self.check_roster(parameters.roster()));
@@ -1951,16 +2241,26 @@ impl InstantActionCatalog {
             // refuses it where the actor is assembled, and a `ScenarioRoster`
             // holds nothing else. So the only faction question left is whether
             // this catalog can spawn it.
-            if !self.options.factions().contains(actor.faction()) {
-                found.push(ScenarioProblem::about(
-                    ScenarioProblemCode::ImpossibleFaction,
-                    actor.faction().clone(),
-                    format!(
-                        "{} slot {} names a faction a custom scenario cannot spawn",
-                        actor.side(),
-                        actor.slot().index()
-                    ),
-                ));
+            match actor.faction() {
+                Resolved::Unknown { claim_id, reason } => found.push(ScenarioProblem::unknown(
+                    ScenarioProblemCode::UnmeasuredActorField,
+                    "roster",
+                    claim_id.clone(),
+                    reason,
+                )),
+                Resolved::Known(Known { value, .. }) => {
+                    if !self.options.factions().contains(value) {
+                        found.push(ScenarioProblem::about(
+                            ScenarioProblemCode::ImpossibleFaction,
+                            value.clone(),
+                            format!(
+                                "{} slot {} names a faction a custom scenario cannot spawn",
+                                actor.side(),
+                                actor.slot().index()
+                            ),
+                        ));
+                    }
+                }
             }
         }
 
@@ -1994,10 +2294,17 @@ impl InstantActionCatalog {
         };
         for ours in roster.actors_on(player_side) {
             for theirs in roster.actors_on(ScenarioSide::Enemy) {
-                if ours.faction() == theirs.faction() {
+                // An unmeasured faction cannot prove the fight impossible; it
+                // is reported by `check_roster` as an unmeasured actor field.
+                let (Some(our_faction), Some(their_faction)) =
+                    (ours.faction_id(), theirs.faction_id())
+                else {
+                    continue;
+                };
+                if our_faction == their_faction {
                     found.push(ScenarioProblem::about(
                         ScenarioProblemCode::ImpossibleFaction,
-                        theirs.faction().clone(),
+                        their_faction.clone(),
                         format!(
                             "{} slot {} fights its own faction at {} slot {}",
                             ours.side(),
@@ -2008,7 +2315,7 @@ impl InstantActionCatalog {
                     ));
                     continue;
                 }
-                match self.options.relation(ours.faction(), theirs.faction()) {
+                match self.options.relation(our_faction, their_faction) {
                     Some(DeclaredRelation {
                         allegiance:
                             Resolved::Known(Known {
@@ -2018,11 +2325,10 @@ impl InstantActionCatalog {
                         ..
                     }) => found.push(ScenarioProblem::about(
                         ScenarioProblemCode::ImpossibleFaction,
-                        theirs.faction().clone(),
+                        their_faction.clone(),
                         format!(
                             "{} is declared friendly toward {}, so the scenario cannot be fought",
-                            ours.faction(),
-                            theirs.faction()
+                            our_faction, their_faction
                         ),
                     )),
                     Some(DeclaredRelation {
@@ -2034,11 +2340,10 @@ impl InstantActionCatalog {
                         ..
                     }) => found.push(ScenarioProblem::about(
                         ScenarioProblemCode::ImpossibleFaction,
-                        theirs.faction().clone(),
+                        their_faction.clone(),
                         format!(
                             "{} and {} are declared neutral, so no side has a target",
-                            ours.faction(),
-                            theirs.faction()
+                            our_faction, their_faction
                         ),
                     )),
                     _ => {}
@@ -2056,7 +2361,11 @@ impl InstantActionCatalog {
     /// winnable scenario, and refusing it would be validation inventing a rule
     /// the sheet does not state.
     fn check_victory_feasibility(&self, parameters: &ScenarioParameters) -> Vec<ScenarioProblem> {
-        let rules = parameters.rules();
+        // An unmeasured rule set names no condition to be unsatisfiable;
+        // `validate_custom` already reports it.
+        let Some(rules) = parameters.rules().declared() else {
+            return Vec::new();
+        };
         if !self
             .options
             .victory_conditions()
@@ -2883,6 +3192,43 @@ impl ScenarioOptionTable {
             self.victory_conditions,
             self.relations,
             self.max_players,
+        )
+    }
+}
+
+impl ScenarioOptionTable {
+    /// Validates the lists into a [`ScenarioOptions`] while keeping the
+    /// unmeasured dimensions unmeasured.
+    ///
+    /// [`Self::validate`] refuses a table with an empty required list, which is
+    /// right for a custom-scenario form but makes the retail catalog
+    /// unbuildable while the loadout and pilot identities are unmeasured. This
+    /// variant tolerates an empty list **only** for a dimension whose evidence
+    /// is [`OptionListEvidence::Unmeasured`]; a measured or designed dimension
+    /// with an empty list, a wrong namespace or a duplicate is refused exactly
+    /// as in [`Self::validate`]. The resulting table lists the tolerated
+    /// dimensions in [`ScenarioOptions::unmeasured_dimensions`], and every
+    /// custom selection on one of them is refused as unsupported because the
+    /// list has no entry to select.
+    ///
+    /// # Errors
+    ///
+    /// Whatever [`ScenarioOptions::try_new`] refuses, apart from the tolerated
+    /// empty lists.
+    pub fn validate_partial(self) -> Result<ScenarioOptions, ScenarioSchemaError> {
+        let unmeasured = self.unmeasured_dimensions();
+        ScenarioOptions::assemble(
+            self.worlds,
+            self.environments,
+            self.factions,
+            self.airframes,
+            self.loadouts,
+            self.pilots,
+            self.difficulty_tiers,
+            self.victory_conditions,
+            self.relations,
+            self.max_players,
+            unmeasured,
         )
     }
 }
@@ -4347,10 +4693,14 @@ mod tests {
                 assert!(catalog.options().loadouts().contains(&loadout));
             }
 
+            let rules = parameters
+                .rules()
+                .declared()
+                .expect("a synthetic preset declares its rules");
             // A condition that needs enemies has them. The converse is not
             // required: a survive-to-deadline scenario may still have enemies.
             assert!(
-                !parameters.rules().condition().needs_enemies()
+                !rules.condition().needs_enemies()
                     || !parameters
                         .roster()
                         .actors_on(ScenarioSide::Enemy)
@@ -4360,8 +4710,8 @@ mod tests {
             );
             // A deadline is present exactly when the condition ends on one.
             assert_eq!(
-                parameters.rules().condition().needs_deadline(),
-                parameters.rules().deadline_ticks().is_some()
+                rules.condition().needs_deadline(),
+                rules.deadline_ticks().is_some()
             );
 
             // Preset identity resolves both ways.

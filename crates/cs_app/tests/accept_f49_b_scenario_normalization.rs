@@ -41,8 +41,23 @@ fn base_draft(rules: Option<VictoryRules>) -> CustomScenarioDraft {
         .with_world(request.parameters().world().clone())
         .with_environment(request.parameters().environment().clone())
         .with_roster(actors)
-        .with_difficulty(request.parameters().difficulty().clone())
-        .with_rules(rules.unwrap_or(*request.parameters().rules()))
+        .with_difficulty(
+            request
+                .parameters()
+                .difficulty()
+                .declared()
+                .expect("the fixture declares its difficulty")
+                .clone(),
+        )
+        .with_rules(
+            rules.unwrap_or(
+                *request
+                    .parameters()
+                    .rules()
+                    .declared()
+                    .expect("the fixture declares its rules"),
+            ),
+        )
         .with_seed(request.parameters().seed())
         .with_players(request.players())
         .with_provenance(request.provenance().clone())

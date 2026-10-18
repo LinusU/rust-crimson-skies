@@ -60,7 +60,7 @@ use cs_content::instant_action::{
 };
 use cs_content::world::WorldId;
 use cs_sim::campaign::{ProfileId, SessionGeneration};
-use cs_types::content::{ContentId, Known, Resolved};
+use cs_types::content::{ContentId, ContentKind, Known, Resolved};
 
 use super::{
     CustomDimension, InstantActionPresetRow, LowerError, LoweredScenario, ScenarioOutcome,
@@ -1177,18 +1177,26 @@ impl InstantActionFlow {
             })
         })?;
         let parameters = preset.parameters();
-        Ok(CustomScenarioDraft::new()
+        let mut draft = CustomScenarioDraft::new()
             .with_subject(subject)
             .with_world(parameters.world().clone())
             .with_environment(parameters.environment().clone())
             .with_roster(parameters.roster().actors().to_vec())
-            .with_difficulty(parameters.difficulty().clone())
-            .with_rules(*parameters.rules())
             .with_seed(parameters.seed())
             // A preset is authored single-player until evidence says
             // otherwise, exactly as `lower_preset` reads it.
             .with_players(1)
-            .with_provenance(preset.provenance().clone()))
+            .with_provenance(preset.provenance().clone());
+        // A dimension the original does not measure is not copied: the draft
+        // leaves it unset and names it in `unset_dimensions`, so the player
+        // chooses it instead of inheriting a guess.
+        if let Some(difficulty) = parameters.difficulty().declared() {
+            draft = draft.with_difficulty(difficulty.clone());
+        }
+        if let Some(rules) = parameters.rules().declared() {
+            draft = draft.with_rules(*rules);
+        }
+        Ok(draft)
     }
 
     /// Lowers the current selection, keeping the refusal for the screen.
@@ -1277,14 +1285,15 @@ impl InstantActionFlow {
                 let updated = ScenarioActorSpec::try_new(
                     side,
                     slot,
-                    actor.faction().clone(),
+                    placeholder_faction(&actor),
                     Resolved::Known(Known::new(airframe, actor.provenance().clone())),
                     actor.loadout().clone(),
                     actor.pilot().cloned(),
                     actor.survivability().clone(),
                     actor.provenance().clone(),
                 )
-                .map_err(IaRefusal::Edit)?;
+                .map_err(IaRefusal::Edit)?
+                .with_authored_from(&actor);
                 replace_actor(draft.as_mut(), updated)?;
             }
             IaEdit::SlotLoadout {
@@ -1296,18 +1305,33 @@ impl InstantActionFlow {
                 let updated = ScenarioActorSpec::try_new(
                     side,
                     slot,
-                    actor.faction().clone(),
+                    placeholder_faction(&actor),
                     actor.airframe().clone(),
                     Resolved::Known(Known::new(loadout, actor.provenance().clone())),
                     actor.pilot().cloned(),
                     actor.survivability().clone(),
                     actor.provenance().clone(),
                 )
-                .map_err(IaRefusal::Edit)?;
+                .map_err(IaRefusal::Edit)?
+                .with_authored_from(&actor);
                 replace_actor(draft.as_mut(), updated)?;
             }
         }
         Ok(())
+    }
+}
+
+/// The faction id `ScenarioActorSpec::try_new` validates for a rebuilt actor.
+///
+/// An actor whose faction is unmeasured has no id to validate; the edit then
+/// rebuilds it over a namespace-valid stand-in id that
+/// `ScenarioActorSpec::with_authored_from` immediately replaces with the
+/// actor's own (unknown) faction, so the stand-in is never observable.
+fn placeholder_faction(actor: &ScenarioActorSpec) -> ContentId {
+    match actor.faction() {
+        Resolved::Known(known) => known.value.clone(),
+        Resolved::Unknown { .. } => ContentId::from_source(ContentKind::Faction, "unmeasured")
+            .expect("the stand-in faction key is valid"),
     }
 }
 

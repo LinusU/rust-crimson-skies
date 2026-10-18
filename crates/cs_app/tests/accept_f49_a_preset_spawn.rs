@@ -163,8 +163,13 @@ fn accept_f49_a_every_discovered_preset_launches_with_its_expected_actors_world_
             );
             assert_eq!(
                 &lowered_actor.faction,
-                &cs_sim::allies::FactionId::try_new(declared_actor.faction().clone())
-                    .expect("a declared faction is a valid faction id"),
+                &cs_sim::allies::FactionId::try_new(
+                    declared_actor
+                        .faction_id()
+                        .expect("a fixture actor declares its faction")
+                        .clone(),
+                )
+                .expect("a declared faction is a valid faction id"),
                 "preset {} {} lowered the wrong faction",
                 row.preset_id,
                 declared_actor.slot()
@@ -178,11 +183,46 @@ fn accept_f49_a_every_discovered_preset_launches_with_its_expected_actors_world_
         }
 
         // Rules.
-        assert_eq!(lowered.condition(), declared.rules().condition());
-        assert_eq!(lowered.respawns(), declared.rules().respawns());
-        assert_eq!(lowered.deadline_ticks(), declared.rules().deadline_ticks());
-        assert_eq!(lowered.tie_outcome(), declared.rules().tie_outcome());
-        assert_eq!(lowered.difficulty(), declared.difficulty().tier());
+        assert_eq!(
+            lowered.condition(),
+            declared
+                .rules()
+                .declared()
+                .expect("the fixture declares its rules")
+                .condition()
+        );
+        assert_eq!(
+            lowered.respawns(),
+            declared
+                .rules()
+                .declared()
+                .expect("the fixture declares its rules")
+                .respawns()
+        );
+        assert_eq!(
+            lowered.deadline_ticks(),
+            declared
+                .rules()
+                .declared()
+                .expect("the fixture declares its rules")
+                .deadline_ticks()
+        );
+        assert_eq!(
+            lowered.tie_outcome(),
+            declared
+                .rules()
+                .declared()
+                .expect("the fixture declares its rules")
+                .tie_outcome()
+        );
+        assert_eq!(
+            lowered.difficulty(),
+            declared
+                .difficulty()
+                .declared()
+                .expect("the fixture declares its difficulty")
+                .tier()
+        );
 
         // Seed: explicit, never derived from anything else.
         assert_eq!(lowered.seed().root(), declared.seed().root());
@@ -331,8 +371,21 @@ fn accept_f49_a_a_valid_custom_request_lowers_to_its_declared_scenario() {
         .with_world(request.parameters().world().clone())
         .with_environment(request.parameters().environment().clone())
         .with_roster(request.parameters().roster().actors().to_vec())
-        .with_difficulty(request.parameters().difficulty().clone())
-        .with_rules(*request.parameters().rules())
+        .with_difficulty(
+            request
+                .parameters()
+                .difficulty()
+                .declared()
+                .expect("the fixture declares its difficulty")
+                .clone(),
+        )
+        .with_rules(
+            *request
+                .parameters()
+                .rules()
+                .declared()
+                .expect("the fixture declares its rules"),
+        )
         .with_seed(request.parameters().seed())
         .with_players(request.players())
         .with_provenance(request.provenance().clone());
@@ -347,7 +400,12 @@ fn accept_f49_a_a_valid_custom_request_lowers_to_its_declared_scenario() {
     assert_eq!(lowered.actors().len(), request.parameters().roster().len());
     assert_eq!(
         lowered.condition(),
-        request.parameters().rules().condition()
+        request
+            .parameters()
+            .rules()
+            .declared()
+            .expect("the fixture declares its rules")
+            .condition()
     );
     assert_eq!(lowered.seed(), request.parameters().seed());
     assert_eq!(lowered.difficulty(), DifficultyTier::Standard);
@@ -877,8 +935,21 @@ fn draft_with(
         .with_world(request.parameters().world().clone())
         .with_environment(request.parameters().environment().clone())
         .with_roster(actors)
-        .with_difficulty(request.parameters().difficulty().clone())
-        .with_rules(*request.parameters().rules())
+        .with_difficulty(
+            request
+                .parameters()
+                .difficulty()
+                .declared()
+                .expect("the fixture declares its difficulty")
+                .clone(),
+        )
+        .with_rules(
+            *request
+                .parameters()
+                .rules()
+                .declared()
+                .expect("the fixture declares its rules"),
+        )
         .with_seed(request.parameters().seed())
         .with_players(request.players())
         .with_provenance(request.provenance().clone())
@@ -1002,8 +1073,21 @@ fn accept_f49_a_the_lowered_actor_order_is_the_declared_order() {
         .with_world(request.parameters().world().clone())
         .with_environment(request.parameters().environment().clone())
         .with_roster(request.parameters().roster().actors().to_vec())
-        .with_difficulty(request.parameters().difficulty().clone())
-        .with_rules(*request.parameters().rules())
+        .with_difficulty(
+            request
+                .parameters()
+                .difficulty()
+                .declared()
+                .expect("the fixture declares its difficulty")
+                .clone(),
+        )
+        .with_rules(
+            *request
+                .parameters()
+                .rules()
+                .declared()
+                .expect("the fixture declares its rules"),
+        )
         .with_seed(request.parameters().seed())
         .with_players(request.players())
         .with_provenance(request.provenance().clone());
@@ -1032,8 +1116,21 @@ fn accept_f49_a_the_lowered_actor_order_is_the_declared_order() {
         .with_world(request.parameters().world().clone())
         .with_environment(request.parameters().environment().clone())
         .with_roster(reversed)
-        .with_difficulty(request.parameters().difficulty().clone())
-        .with_rules(*request.parameters().rules())
+        .with_difficulty(
+            request
+                .parameters()
+                .difficulty()
+                .declared()
+                .expect("the fixture declares its difficulty")
+                .clone(),
+        )
+        .with_rules(
+            *request
+                .parameters()
+                .rules()
+                .declared()
+                .expect("the fixture declares its rules"),
+        )
         .with_seed(request.parameters().seed())
         .with_players(request.players())
         .with_provenance(request.provenance().clone());

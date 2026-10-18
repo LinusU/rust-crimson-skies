@@ -60,7 +60,7 @@ use std::fmt;
 use cs_content::instant_action::{
     CustomScenarioDraft, CustomScenarioRequest, InstantActionCatalog, RosterSlot,
     ScenarioActorSpec, ScenarioParameters, ScenarioProblem, ScenarioProblems, ScenarioSeed,
-    ScenarioSide, require_known,
+    ScenarioSide, require_declared, require_known,
 };
 use cs_content::pilots::DeclaredSurvivability;
 use cs_sim::allies::{
@@ -458,7 +458,14 @@ fn lower_parameters(
             .map_err(unknown_as)?
             .to_string(),
     };
-    let rules = parameters.rules();
+    // The preset's difficulty and rules are measured per scenario or not at all
+    // (F49-D.03): an unmeasured one refuses here with its claim and reason, so a
+    // retail preset never launches under a defaulted tier or victory rule.
+    let difficulty = require_declared("scenario difficulty", parameters.difficulty())
+        .map_err(unknown_as)?
+        .tier();
+    let rules =
+        *require_declared("scenario victory rules", parameters.rules()).map_err(unknown_as)?;
     let mut actors = Vec::with_capacity(parameters.roster().len());
     for actor in parameters.roster().actors() {
         actors.push(lower_actor(actor)?);
@@ -472,7 +479,7 @@ fn lower_parameters(
         respawns: rules.respawns(),
         deadline_ticks: rules.deadline_ticks(),
         tie_outcome: rules.tie_outcome(),
-        difficulty: parameters.difficulty().tier(),
+        difficulty,
         seed: parameters.seed(),
     })
 }
@@ -527,11 +534,14 @@ fn synthetic_boundary_claim() -> ClaimId {
 fn lower_actor(actor: &ScenarioActorSpec) -> Result<LoweredScenarioActor, LowerError> {
     let label = format!("{} slot {} airframe", actor.side(), actor.slot().index());
 
-    let faction =
-        FactionId::try_new(actor.faction().clone()).map_err(|error| LowerError::Identity {
-            field: "scenario faction",
-            error,
-        })?;
+    let faction = FactionId::try_new(require_known_at(
+        &format!("{} slot {} faction", actor.side(), actor.slot().index()),
+        actor.faction(),
+    )?)
+    .map_err(|error| LowerError::Identity {
+        field: "scenario faction",
+        error,
+    })?;
     let geometry =
         GeometryId::try_new(require_known_at(&label, actor.airframe())?).map_err(|error| {
             LowerError::Identity {
