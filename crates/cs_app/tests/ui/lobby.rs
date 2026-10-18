@@ -323,6 +323,53 @@ fn accept_f55_cu1_back_inside_the_room_leaves_the_room_first_then_exits() {
     assert!(flow.domain().lobby_link().is_none());
 }
 
+/// While the room is open the live link is not swapped out from under
+/// it: a resolved join endpoint arriving then is refused, the hosted
+/// lobby stays the room's link, and the departure a later `Back`
+/// broadcasts is still its own. On the join form the same call is the
+/// endpoint's job and stands.
+#[test]
+fn accept_f55_cu1_the_rooms_live_link_is_not_swapped_while_open() {
+    let mut flow = at_lobby();
+    host_through(&mut flow);
+    let host = flow
+        .domain()
+        .lobby_link()
+        .expect("a hosted link")
+        .host_peer();
+
+    let refused = flow
+        .set_lobby_endpoint(endpoint_lobby(None, 4))
+        .unwrap_err();
+    assert!(
+        matches!(refused, FlowError::LobbyRoomStillOpen),
+        "{refused:?}"
+    );
+    {
+        let domain = flow.domain();
+        let link = domain.lobby_link().expect("the live link is kept");
+        assert_eq!(link.host_peer(), host);
+        assert_eq!(link.lobby().phase(), Phase::Gathering);
+    }
+
+    // Back still tears the hosted room down and reports its departure —
+    // the leave runs on the lobby the player is in, not the refused
+    // endpoint's.
+    let step = flow.lobby_back().expect("Back leaves the room");
+    assert!(
+        matches!(step, LobbyStep::LeftRoom(Some(Departure::LobbyClosed))),
+        "{step:?}"
+    );
+    assert_eq!(
+        flow.domain().lobby_link().unwrap().lobby().phase(),
+        Phase::Closed
+    );
+
+    // And on the join form the resolved endpoint is the link again.
+    flow.set_lobby_endpoint(endpoint_lobby(None, 4))
+        .expect("the join form takes a resolved endpoint");
+}
+
 /// The application supplies `submit_host`'s outside values through
 /// `LobbyInputs`: the hosted lobby is opened under the supplied session
 /// epoch and compatibility signature, and the supplied validator factory

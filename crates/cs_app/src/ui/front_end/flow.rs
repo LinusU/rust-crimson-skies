@@ -1066,10 +1066,12 @@ pub enum FlowError {
     /// The lobby screen refused the step (F55-CU1); the refusal is the
     /// screen's own kept one.
     Lobby(LobbyUiError),
-    /// `Back` reached the domain while the room was still open: the
-    /// lobby's own table leaves the room first
-    /// ([`FrontEndFlow::lobby_back`]), so the front-end row is refused
-    /// rather than dropping a live room behind the screen's back.
+    /// The step would drop or replace a live room's link: `Back` reaching
+    /// the domain is refused rather than dropping a live room behind the
+    /// screen's back (the lobby's own table leaves the room first,
+    /// [`FrontEndFlow::lobby_back`]), and a resolved join endpoint is
+    /// refused for the same reason while the room is open
+    /// ([`FrontEndFlow::set_lobby_endpoint`]).
     LobbyRoomStillOpen,
     /// The front end and the lobby screen are out of step — a wiring
     /// fault, not a player's mistake.
@@ -2459,9 +2461,21 @@ impl FrontEndFlow {
     /// # Errors
     ///
     /// [`FlowError::Screen`] off the lobby screen or while a prompt is
-    /// open.
+    /// open, [`FlowError::NoLobby`] when the screen and the front end are
+    /// out of step, and [`FlowError::LobbyRoomStillOpen`] inside the room
+    /// — the live link is not swapped out from under it.
     pub fn set_lobby_endpoint(&mut self, endpoint: LobbyLink) -> Result<(), FlowError> {
         self.expect_lobby_screen()?;
+        if self
+            .domain
+            .lobby_screen
+            .as_ref()
+            .ok_or(FlowError::NoLobby)?
+            .stage()
+            == LobbyStage::Room
+        {
+            return Err(FlowError::LobbyRoomStillOpen);
+        }
         self.domain.lobby_link = Some(endpoint);
         Ok(())
     }
