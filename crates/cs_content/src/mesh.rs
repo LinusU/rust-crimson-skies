@@ -216,7 +216,8 @@
 //!
 //! The design decisions, the recorded unknowns (the UV convention, the
 //! corner-colour meaning and the presentation of a multi-group polygon are
-//! still unknown; front-face winding was measured by F10-D.2 and retired) and the test inventory are in
+//! still unknown; front-face winding was measured by F10-D.2 and retired) and
+//! the test inventory are in
 //! `docs/findings/2026-09-29-f10-c-01-render-vertex-splitting.md`,
 //! `docs/findings/2026-09-29-f10-c-02-gamez-material-records.md`,
 //! `docs/findings/2026-09-29-f10-c-03-mesh-container-catalog-and-upload.md`,
