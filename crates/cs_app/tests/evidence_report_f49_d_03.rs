@@ -18,7 +18,7 @@
 //!    CS_CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}') \
 //!    CS_EVIDENCE_ARGV="cargo test --locked -p cs_app -- accept_f49_d_03_ --include-ignored" \
 //!    CS_EVIDENCE_EXIT_CODE=<status from step 1> \
-//!      cargo test -p cs_app --locked --test evidence_report_f49_d_03 -- --ignored
+//!      cargo test -p cs_app --locked --test cs_app_tests_d -- evidence_report_f49_d_03 --ignored
 //!    ```
 //! 3. ```sh
 //!    python3 tools/validate_evidence.py private/evidence/F49-D.03/acceptance.json \
