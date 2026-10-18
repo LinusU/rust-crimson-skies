@@ -157,3 +157,49 @@ original-run evidence.
 Not fixed here, unchanged and still open: OBJECTIVE36's `TRAVELERS` counting
 mode is the shared unimplemented gap **M10-B-FU1** (#812) tracks, and M12 stays
 unready until it is measured.
+
+## 2026-10-18 re-pin on the corrected campaign layout (#1599)
+
+Every retail fact in the tables above was measured on `ZBD/C3/M02/zrdr.zbd`.
+The corrected campaign layout (commit `6df5715b0`,
+`docs/findings/2026-10-17-m01-archive-decision.md`) binds *The Great Plane
+Robbery* to `ZBD/C2/M01` / `mission/ch3-m02` / `script/c2-m01-zrdr`
+(`missions/bindings/M12.json`); `ZBD/C3/M02` is the record of work order M02
+(re-pinned by #1594, see `2026-10-08-m02-b-compatibility-gaps.md`). So the
+numbers above are **historical for M12** and describe M02's archive. The
+acceptance tests now pin M12's own record, re-derived through the same
+production code (`SourceContext::control_program`, `discover_container`,
+`decode_zrd`, `measure_control_record`, the census row `zbd/c2/m01`):
+
+| Fact | Old pin (`ZBD/C3/M02`) | Re-pinned (`ZBD/C2/M01`, 100 905 bytes, SHA-256 `d6e9315d…fd9f63`) |
+| --- | --- | --- |
+| Mission / program id | `mission/ch1-m02` / `script/c3-m02-zrdr` | `mission/ch3-m02` / `script/c2-m01-zrdr` |
+| Members | 16 | 15; control member `objectives.zrd`, 18 651 bytes (only member with numbered blocks; `barge.zrd` is longer, `aiv.zrd` is first) |
+| Record | 52 blocks, 187 sites, 29 keys | 82 blocks, 265 sites, 26 keys, 0 refusals |
+| Terminal outcomes | `INSTANTWIN` ×1 only | `INSTANTWIN` (OBJECTIVE47) and `INSTANTLOSS` (OBJECTIVE51), one bare site each, both `BEGIN_DORMANT -1` |
+| Record-level fields | five fields | the same five fields; no record-level sound key |
+| Cross-objective addresses | 25 over wake/kill/nap/`TICK_DEPENDS_ON_OBJ`, min 4, max 52 | 107 over wake/kill/nap only, all in `1..=82`; min 5, max 82; no `TICK_DEPENDS_ON_OBJ` |
+| Success latch | woken by OBJECTIVE9's wake | napped by OBJECTIVE46 (itself woken by OBJECTIVE68) and killed by OBJECTIVE50 |
+| Failure latch | none | napped awake by OBJECTIVE50 alone (30 s) |
+| Conditions | 51 of 52 lowered, 1 refused (`TRAVELERS` counting) | 82 of 82 lowered; the record spells no `TRAVELERS`, `WAKEUP_TURRETS` or `WAKEUP_ZEP_TURRETS` |
+| Calls | every site bound | 265 of 265 sites bound; the program assembles and validates |
+| Keys new to the pins | — | `DEDG`, `SET_AI_NET`, `WAKEUP_ENEMIES`, `WAKEUP_GENERATOR`, `STOP_QUEUED_SOUNDS` |
+
+The lowering test (and the evidence list that names it) was renamed with the
+content: `…_record_lowers_with_its_counting_site` is now
+`…_record_lowers_completely`, because the record has no counting site.
+
+The sheet's three priorities are located again in the new record as spelled
+data only: the engine-count blocks (`INACTIVE_COMPLETION_COUNT` 1, 2, 3 and 4
+over eight `g_engine*` members, blocks 72–74 and 50) that reach the failure
+latch, `kkgate` and the four tug-and-barge targets, and the path animation
+states. Whose engines or gates those names resolve to is the world's binding;
+the record does not say and the pins claim nothing about it. The synthetic
+`accept_m12_b_` tests (travelers shapes, wildcard turret name) are unchanged:
+they pin parser and lowering behaviour on built values, not M12's record. The
+wrong-actor, wrong-session and repeated-event halves stay runtime observations
+(M12-C). Nothing here is `verified_original`.
+
+The "OBJECTIVE36 `TRAVELERS` counting mode is still open" remark above no
+longer applies to M12: the corrected record spells no such site (the counting
+gap itself remains M10-B-FU1's, for the missions that do spell one).
