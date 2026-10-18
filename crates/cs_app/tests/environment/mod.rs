@@ -56,7 +56,7 @@
 
 mod air;
 mod clock;
-mod common;
+pub(crate) mod common;
 mod cosmetic;
 mod effects;
 mod records;

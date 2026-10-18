@@ -755,6 +755,7 @@ pub mod run;
 pub mod scenario_control;
 pub mod scene;
 pub mod score;
+pub mod session_weapons;
 pub mod stunts;
 pub mod synthetic;
 pub mod targeting;

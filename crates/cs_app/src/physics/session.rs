@@ -297,10 +297,15 @@ impl PhysicsSession {
     /// the weapon step publishes. Callers add their own plugins through
     /// [`configure`](PhysicsSessionBuilder::configure) and must not add
     /// `AnimationPlugin`, `AnimationSchedulePlugin`, `WeaponSchedulePlugin`
-    /// or `DamageSchedulePlugin` again.
+    /// or `DamageSchedulePlugin` again. The
+    /// [`SessionWeaponPublishPlugin`](crate::session_weapons::SessionWeaponPublishPlugin)
+    /// publishes the weapon schedule's per-tick inputs for a world that
+    /// installs a [`SessionWeaponHost`](crate::session_weapons::SessionWeaponHost);
+    /// without one it publishes nothing.
     pub fn production_builder() -> PhysicsSessionBuilder {
         Self::builder().configure(|app| {
             app.add_plugins(crate::animation::AnimationPlugin);
+            app.add_plugins(crate::session_weapons::SessionWeaponPublishPlugin);
             app.add_plugins(crate::weapons::WeaponSchedulePlugin);
             app.add_plugins(crate::damage::DamageSchedulePlugin);
         })

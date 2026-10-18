@@ -20,9 +20,14 @@
 
 use avian3d::prelude::LinearVelocity;
 use bevy::prelude::{ChildOf, Entity, GlobalTransform, Vec3, World};
+use cs_app::environment::{EnvironmentSession, RunSeeds};
 use cs_app::input::{DeviceEvent, FrameInput, InputSession, SessionMode};
 use cs_app::physics::{PhysicsSession, PhysicsTickLedger};
 use cs_app::scene::{NodeVisualTransform, SceneGeneration, SceneGenerations};
+use cs_app::session_weapons::{
+    SessionCockpitActions, SessionInstallRefusal, SessionLocalSeat, SessionWeaponHost,
+    SessionWeaponOrders, SessionWeaponPublishReport, install_session_weapons,
+};
 use cs_app::targeting::{TargetingSession, lower_rules, lower_selection_actions};
 use cs_app::weapons::{
     CockpitInput, DroppedTickInput, DroppedTickInputReason, MountPoseBinding, PartSweptBox,
@@ -1091,4 +1096,206 @@ fn accept_f27_c_sched_the_steps_own_refusals_still_apply() {
         0,
         "no round and no mirror exist"
     );
+}
+
+// ----------------------------------------------- F27-C-PUBLISH (task #1299) --
+
+fn host_environment() -> EnvironmentSession {
+    EnvironmentSession::new(
+        crate::environment::common::storm(),
+        crate::environment::common::tick_rate(),
+        RunSeeds::from_root(7),
+    )
+    .expect("the storm fixture's schedule is ordered")
+}
+
+fn unmeasured_wind_environment() -> EnvironmentSession {
+    use crate::environment::common;
+    use cs_content::environment::{
+        EnvironmentDefinition, EnvironmentId, EnvironmentProfile, EnvironmentState,
+        EnvironmentTimeline, FogDefinition, LightingDefinition, PrecipitationDefinition,
+        PrecipitationKind,
+    };
+    let definition = EnvironmentDefinition::try_new(
+        EnvironmentId::new("fixture.publish-unknown-wind").expect("a valid key"),
+        Origin::SyntheticFixture,
+        EnvironmentProfile::SyntheticDeveloper,
+        common::authored_sky(),
+        common::default_orientation(),
+        LightingDefinition::try_new(
+            common::unknown("f27c.publish.sun", "no sun"),
+            common::unknown("f27c.publish.ambient", "no ambient"),
+        )
+        .expect("lighting"),
+        FogDefinition::designed_default(1e-3, [0.7, 0.8, 0.95], "f27c.publish.fog").expect("fog"),
+        Vec::new(),
+        EnvironmentState::new(
+            common::unknown("f27c.publish.wind", "nobody measured the wind"),
+            PrecipitationDefinition::new(common::known(
+                PrecipitationKind::Clear,
+                "f27c.publish.precipitation",
+            )),
+            common::unknown("f27c.publish.visibility", "no sight range"),
+        ),
+        EnvironmentTimeline::default(),
+        Provenance::designed(common::claim("f27c.publish.record")),
+    )
+    .expect("a valid definition");
+    EnvironmentSession::new(definition, common::tick_rate(), RunSeeds::from_root(7))
+        .expect("an ordered schedule")
+}
+
+fn publishing_session(environment: EnvironmentSession) -> PhysicsSession {
+    let mut session = schedule_session();
+    shooter_world(world(&mut session), &[NOSE_MOUNT]);
+    let (weapons, _) = session_with_one_gun(90);
+    let w = world(&mut session);
+    let mut generations = SceneGenerations::default();
+    while generations.latest() < GENERATION {
+        generations.take_next();
+    }
+    w.insert_resource(generations);
+    install_session_weapons(
+        w,
+        weapons,
+        SessionDamageResolver::new(damage_resolver(SESSION, &[actor(2)])),
+        targeting_session(SESSION, GENERATION),
+    )
+    .expect("one generation installs");
+    w.insert_resource(SessionWeaponHost {
+        environment,
+        local_seat: Some(SessionLocalSeat {
+            shooter: actor(1),
+            producer: COCKPIT_PRODUCER,
+        }),
+    });
+    session
+}
+
+/// The host publishes every committed tick on its own: the schedule serves
+/// the measured wind, the queued authored order and the delivered edge
+/// without a test calling `publish`.
+#[test]
+fn accept_f27_c_publish_the_host_serves_wind_orders_and_the_cockpit_edge() {
+    let mut session = publishing_session(host_environment());
+
+    // Tick 1: nothing queued, a measured wind: the step runs with no orders.
+    step(&mut session, 1);
+    let first = report(&session);
+    assert!(!first.missing_inputs, "the host published: {first:?}");
+    assert!(!first.wind_unavailable);
+    assert!(first.stepped.is_some(), "the step ran: {first:?}");
+    let published = session
+        .world()
+        .expect("active")
+        .resource::<SessionWeaponPublishReport>()
+        .clone();
+    assert_eq!(published.at, Some(Tick(1)));
+    assert!(published.wind_measured);
+
+    // Tick 2: an authored order and a real delivered FirePrimary edge.
+    let select = WeaponOrder::SelectBank {
+        shooter: actor(1),
+        bank: GunBank::try_new([key(NOSE_MOUNT)]).expect("a valid bank"),
+    };
+    let w = world(&mut session);
+    w.resource_mut::<SessionWeaponOrders>().push(select.clone());
+    w.resource_mut::<SessionCockpitActions>()
+        .extend(delivered_actions(&[Key::Space]));
+    step(&mut session, 1);
+    let second = report(&session);
+    assert_eq!(second.at, Some(Tick(2)));
+    assert_eq!(second.orders.len(), 2, "authored then minted: {second:?}");
+    assert_eq!(second.orders[0], select, "authored orders come first");
+    let WeaponOrder::Fire(minted) = &second.orders[1] else {
+        panic!("the edge minted a fire order: {second:?}")
+    };
+    assert_eq!(minted.id.producer, COCKPIT_PRODUCER);
+    assert_eq!(minted.id.tick, Tick(2));
+    assert_eq!(minted.shooter, actor(1));
+    assert_eq!(
+        second.stepped.as_ref().expect("stepped").accepted.len(),
+        1,
+        "the delivered edge fired the gun"
+    );
+
+    // Tick 3: the edge was taken once; the press does not repeat.
+    step(&mut session, 1);
+    let third = report(&session);
+    assert!(third.orders.is_empty(), "no repeat: {third:?}");
+}
+
+/// An environment with no measured wind publishes `None`, and the schedule
+/// reports it instead of stepping on still air.
+#[test]
+fn accept_f27_c_publish_an_unmeasured_wind_is_reported_not_invented() {
+    let mut session = publishing_session(unmeasured_wind_environment());
+    step(&mut session, 1);
+    let ran = report(&session);
+    assert!(ran.wind_unavailable, "{ran:?}");
+    assert!(ran.stepped.is_none(), "no step on invented air: {ran:?}");
+    assert!(
+        !session
+            .world()
+            .expect("active")
+            .resource::<SessionWeaponPublishReport>()
+            .wind_measured
+    );
+}
+
+/// A restart installs a new generation: the old rounds and pending records go,
+/// the new session is served under its own generation, and a mixed set is
+/// refused before anything is replaced.
+#[test]
+fn accept_f27_c_publish_a_restart_replaces_the_generation() {
+    let mut session = publishing_session(host_environment());
+    step(&mut session, 1);
+    assert_eq!(report(&session).session, Some(SESSION));
+
+    // A mixed-generation set is refused and leaves the session untouched.
+    let (stale, _) = session_with_one_gun(90);
+    let refused = install_session_weapons(
+        world(&mut session),
+        stale,
+        SessionDamageResolver::new(damage_resolver(SESSION + 1, &[])),
+        targeting_session(SESSION, GENERATION),
+    );
+    assert!(
+        matches!(
+            refused,
+            Err(SessionInstallRefusal::GenerationMismatch { .. })
+        ),
+        "{refused:?}"
+    );
+    step(&mut session, 1);
+    assert_eq!(report(&session).session, Some(SESSION));
+
+    // The restart: generation SESSION + 1, installed whole.
+    let next = SESSION + 1;
+    let fresh = WeaponSession::new(next, Tick(0), ROUTER_PRODUCER).expect("opens");
+    install_session_weapons(
+        world(&mut session),
+        fresh,
+        SessionDamageResolver::new(damage_resolver(next, &[])),
+        targeting_session(next, GENERATION),
+    )
+    .expect("one generation installs");
+    step(&mut session, 1);
+    let after = report(&session);
+    assert_eq!(after.session, Some(next));
+    assert_eq!(
+        after.tore_down.as_ref().map(|t| t.session),
+        Some(SESSION),
+        "the old generation was torn down: {after:?}"
+    );
+    assert!(
+        !after.missing_inputs,
+        "the new generation is served: {after:?}"
+    );
+    let published = session
+        .world()
+        .expect("active")
+        .resource::<SessionWeaponPublishReport>()
+        .clone();
+    assert_eq!(published.at, Some(Tick(3)));
 }
