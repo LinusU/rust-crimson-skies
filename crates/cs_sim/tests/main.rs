@@ -69,6 +69,7 @@ mod accept_f57_a_net_state_authority;
 mod accept_m01_lc_lowering_conditions_lifecycle;
 mod accept_m02_b_fu3_objective_address;
 mod accept_m02_b_fu4_directive_family;
+mod accept_t1319_coast_then_detonate;
 mod accept_t397_animation_event_identity;
 mod accept_t442_shared_damage_identity;
 mod accept_t447_loop_route_progress;

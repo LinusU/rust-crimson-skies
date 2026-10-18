@@ -628,6 +628,15 @@ pub enum LostTargetBehavior {
     /// lifetime expires. Bounded by construction: the lifetime is the
     /// item's, so coasting cannot continue forever.
     Coast,
+    /// The original's measured rule (`docs/findings/2026-10-11-f28-c-2-lost-target-blast-measured.md`):
+    /// a lost target is only a cleared pointer. The item flies on its last
+    /// vector like [`Coast`](Self::Coast), keeps its own declared fuse (a
+    /// [`FuseRule::Timed`] clock still detonates it), and where `Coast`
+    /// expires silently at the end of its lifetime this one **detonates** at
+    /// the position it reached. The lifetime stands for the end of `RANGE`;
+    /// its unit conversion, and what removes an item that passes `RANGE`
+    /// without detonating, are unmeasured and not modelled here.
+    CoastThenDetonate,
     /// Stop being live: no detonation, no damage, no effect. The item
     /// remains a visible dud until its lifetime expires.
     Disarm,
@@ -635,7 +644,12 @@ pub enum LostTargetBehavior {
 
 impl LostTargetBehavior {
     /// Every lost-target behavior, in a stable order.
-    pub const ALL: &'static [LostTargetBehavior] = &[Self::Detonate, Self::Coast, Self::Disarm];
+    pub const ALL: &'static [LostTargetBehavior] = &[
+        Self::Detonate,
+        Self::Coast,
+        Self::CoastThenDetonate,
+        Self::Disarm,
+    ];
 
     /// The stable label used in reports.
     #[must_use]
@@ -643,6 +657,7 @@ impl LostTargetBehavior {
         match self {
             Self::Detonate => "detonate",
             Self::Coast => "coast",
+            Self::CoastThenDetonate => "coast-then-detonate",
             Self::Disarm => "disarm",
         }
     }
@@ -2923,7 +2938,9 @@ impl GuidanceTracker {
                     reason,
                     behavior: LostTargetBehavior::Detonate,
                 },
-                LostTargetBehavior::Coast => GuidanceUpdate::Coast,
+                LostTargetBehavior::Coast | LostTargetBehavior::CoastThenDetonate => {
+                    GuidanceUpdate::Coast
+                }
                 LostTargetBehavior::Disarm => GuidanceUpdate::Disarmed,
             },
         }
@@ -2948,7 +2965,9 @@ impl GuidanceTracker {
                 (None, Some(target)) => GuidanceUpdate::Tracked { target },
                 (None, None) => self.lose(LostTargetReason::Unassigned),
                 (Some(_), _) => match self.rule.lost_target() {
-                    Some(LostTargetBehavior::Coast) => GuidanceUpdate::Coast,
+                    Some(LostTargetBehavior::Coast | LostTargetBehavior::CoastThenDetonate) => {
+                        GuidanceUpdate::Coast
+                    }
                     Some(LostTargetBehavior::Disarm) => GuidanceUpdate::Disarmed,
                     // A detonating item has already ended on the tick its
                     // target was lost; holding it afterwards reports the
@@ -4311,13 +4330,21 @@ pub struct OrdnanceTick {
     /// Items removed because their fuse had already triggered on an earlier
     /// tick and their damage had a tick to be routed.
     pub triggered: Vec<ProjectileId>,
+    /// Items that lost their target under
+    /// [`LostTargetBehavior::CoastThenDetonate`] and reached the end of their
+    /// lifetime: they are also listed in `expired`, but end by detonating at
+    /// the position of their final segment instead of vanishing.
+    pub range_end_detonated: Vec<GuidanceDetonation>,
 }
 
 impl OrdnanceTick {
     /// Whether the tick moved no item and retired nothing.
     #[must_use]
     pub fn is_empty(&self) -> bool {
-        self.segments.is_empty() && self.expired.is_empty() && self.triggered.is_empty()
+        self.segments.is_empty()
+            && self.expired.is_empty()
+            && self.triggered.is_empty()
+            && self.range_end_detonated.is_empty()
     }
 }
 
@@ -4753,6 +4780,23 @@ impl OrdnanceRuntime {
         for live in self.live.values() {
             if live.state.is_expired() {
                 tick.expired.push(live.projectile);
+                let coasting_to_detonate = !live.state.is_retired()
+                    && self
+                        .guidance
+                        .require(&live.projectile)
+                        .is_ok_and(|tracker| {
+                            tracker.lost().is_some()
+                                && tracker.rule().lost_target()
+                                    == Some(LostTargetBehavior::CoastThenDetonate)
+                        });
+                if coasting_to_detonate {
+                    tick.range_end_detonated.push(GuidanceDetonation {
+                        projectile: live.projectile,
+                        shooter: live.shooter,
+                        definition: live.definition.clone(),
+                        position: live.current,
+                    });
+                }
             } else if live.state.is_triggered() {
                 tick.triggered.push(live.projectile);
             }

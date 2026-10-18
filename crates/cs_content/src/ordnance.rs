@@ -267,6 +267,9 @@ pub enum DeclaredLostTargetBehavior {
     Detonate,
     /// Stop tracking and fly the last velocity until the item expires.
     Coast,
+    /// Fly on like `Coast`, but detonate at the end of the item's lifetime
+    /// (the original's measured lost-target rule).
+    CoastThenDetonate,
     /// Stop being live: no detonation, no damage, no effect.
     Disarm,
 }
@@ -276,6 +279,7 @@ impl fmt::Display for DeclaredLostTargetBehavior {
         f.write_str(match self {
             Self::Detonate => "detonate",
             Self::Coast => "coast",
+            Self::CoastThenDetonate => "coast-then-detonate",
             Self::Disarm => "disarm",
         })
     }

@@ -527,7 +527,9 @@ fn accept_f28_a_a_targeted_item_launched_without_a_target_reports_one_unassigned
                 reason: LostTargetReason::Unassigned,
                 behavior: LostTargetBehavior::Detonate,
             },
-            LostTargetBehavior::Coast => GuidanceUpdate::Coast,
+            LostTargetBehavior::Coast | LostTargetBehavior::CoastThenDetonate => {
+                GuidanceUpdate::Coast
+            }
             LostTargetBehavior::Disarm => GuidanceUpdate::Disarmed,
         };
         assert_eq!(

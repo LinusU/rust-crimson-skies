@@ -352,6 +352,7 @@ fn lower_lost_target(
     Ok(match declared {
         DeclaredLostTargetBehavior::Detonate => LostTargetBehavior::Detonate,
         DeclaredLostTargetBehavior::Coast => LostTargetBehavior::Coast,
+        DeclaredLostTargetBehavior::CoastThenDetonate => LostTargetBehavior::CoastThenDetonate,
         DeclaredLostTargetBehavior::Disarm => LostTargetBehavior::Disarm,
     })
 }
