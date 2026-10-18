@@ -60,9 +60,9 @@ use bevy::ecs::query::Has;
 use bevy::input::keyboard::KeyCode;
 use bevy::input::{ButtonInput, InputSystems};
 use bevy::prelude::{
-    App, AppExit, ChildOf, ClearColor, Commands, Entity, GlobalTransform, IntoScheduleConfigs,
-    Last, Mesh3d, MessageWriter, On, Plugin, PostUpdate, PreUpdate, Quat, Query, Res, ResMut,
-    Resource, Text, Transform, Update, Vec2, Vec3, Visibility, With,
+    App, AppExit, ChildOf, ClearColor, Commands, DistanceFog, Entity, FogFalloff, GlobalTransform,
+    IntoScheduleConfigs, Last, Local, Mesh3d, MessageWriter, On, Plugin, PostUpdate, PreUpdate,
+    Quat, Query, Res, ResMut, Resource, Text, Transform, Update, Vec2, Vec3, Visibility, With,
 };
 use bevy::render::render_resource::TextureFormat;
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk};
@@ -1197,6 +1197,8 @@ fn apply_probe(
     visuals: Query<Entity, With<WorldVisual>>,
     ui: Query<(Entity, Has<crate::playtest::visuals::DeveloperOverlayNode>), With<Node>>,
     overlay: Option<Res<crate::playtest::visuals::DeveloperOverlay>>,
+    mut fogs: Query<&mut DistanceFog>,
+    mut kept_fog: Local<Option<FogFalloff>>,
 ) {
     let mode = mode.0;
     let hidden = Visibility::Hidden;
@@ -1222,6 +1224,24 @@ fn apply_probe(
     // something else hides every actor body and lets each part inherit it.
     // The probe's own target is restored last, below.
     let body_value = if anything_hidden { hidden } else { shown };
+    // The distance fog is the atmosphere's, like the dome: a record that fogs
+    // the world to the haze colour within a few kilometres (M01's
+    // `FOG_RANGES 1000 4500`, PARITY-M01-ATMO-B) would paint a probe's
+    // terrain flat. The falloff is parked far away while a probe isolates
+    // something and put back with the restored frame.
+    for mut fog in &mut fogs {
+        if anything_hidden {
+            if kept_fog.is_none() {
+                *kept_fog = Some(fog.falloff.clone());
+            }
+            fog.falloff = FogFalloff::Linear {
+                start: 1.0e9,
+                end: 2.0e9,
+            };
+        } else if let Some(falloff) = kept_fog.take() {
+            fog.falloff = falloff;
+        }
+    }
     write_all(&mut visibility, domes.iter(), hidden);
     write_all(&mut visibility, weather.iter(), hidden);
     write_all(&mut visibility, precip.iter(), hidden);
