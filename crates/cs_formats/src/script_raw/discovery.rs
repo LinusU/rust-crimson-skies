@@ -49,7 +49,7 @@ use crate::interp::read_interp;
 use crate::io::ParseContext;
 use crate::zbd::{
     ANIMATION_VERSION_OFFSET, HeaderStatus, ZbdDispatch, ZbdFamily, ZbdProbe, dispatch,
-    read_reader_archive, read_version_one_index,
+    read_animation_index, read_reader_archive, read_version_one_index,
 };
 
 /// Bytes of an animation container's validated header: the signature word at
@@ -323,11 +323,40 @@ pub struct ContainerDiscovery<'a> {
     path: RelativePath,
     family: Option<ZbdFamily>,
     header_status: Option<HeaderStatus>,
+    animation_payload: Option<AnimationPayloadCheck>,
     programs: Vec<LocatedProgram<'a>>,
     findings: Vec<DiscoveryFinding>,
 }
 
+/// Whether an animation container's payload decodes: the payload header, the
+/// record walk and every sequence block's event stream (task #1421).
+///
+/// The check reads the payload's own bytes and fails closed: any record or
+/// event stream it cannot walk is a [`Self::Refused`] with the stable code
+/// of the first failure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AnimationPayloadCheck {
+    /// Every record walked and every sequence block's events stepped exactly.
+    Decoded {
+        /// Records walked (at least one).
+        records: usize,
+        /// Sequence blocks whose event streams were stepped.
+        blocks: usize,
+    },
+    /// The payload did not decode.
+    Refused {
+        /// Stable code of the first failure.
+        code: &'static str,
+    },
+}
+
 impl<'a> ContainerDiscovery<'a> {
+    /// The payload-level decode of an animation container, when the
+    /// container routed to the animation family.
+    pub const fn animation_payload(&self) -> Option<AnimationPayloadCheck> {
+        self.animation_payload
+    }
+
     /// Provenance label of the container.
     pub fn container(&self) -> &str {
         &self.container
@@ -417,6 +446,7 @@ pub fn discover_container<'a>(
                 path: path.clone(),
                 family: None,
                 header_status: None,
+                animation_payload: None,
                 programs: Vec::new(),
                 findings: vec![DiscoveryFinding::DispatchRefused { code: error.code() }],
             };
@@ -425,6 +455,8 @@ pub fn discover_container<'a>(
     let family = decision.family();
     let header_status = Some(decision.header_status());
     let mut findings = Vec::new();
+    let animation_payload =
+        (family == ZbdFamily::Animation).then(|| check_animation_payload(label, decision, bytes));
     let programs = match family {
         ZbdFamily::Interp => interp_programs(label, bytes, mission.as_deref(), &mut findings),
         ZbdFamily::Reader => {
@@ -444,9 +476,77 @@ pub fn discover_container<'a>(
         path: path.clone(),
         family: Some(family),
         header_status,
+        animation_payload,
         programs,
         findings,
     }
+}
+
+/// Walks an animation container's payload: the index, the payload header,
+/// every record and every sequence block's event stream.
+///
+/// The event rule is the two-word event header F20 measured over all 56 994
+/// retail blocks (`cs_app::animation::events::walk_event_stream`, which
+/// `cs_formats` cannot depend on): a tag word with a zero high half and a
+/// second byte in `1..=3`, then a length word that is the event's own size,
+/// header included, at least eight and a multiple of four; stepping by it must
+/// consume the block exactly. A container with no record is refused too.
+fn check_animation_payload(
+    label: &str,
+    decision: ZbdDispatch<'_>,
+    bytes: &[u8],
+) -> AnimationPayloadCheck {
+    let mut context = ParseContext::with_defaults(label);
+    let refused = |code| AnimationPayloadCheck::Refused { code };
+    let Ok(index) = read_animation_index(&mut context, decision, bytes) else {
+        return refused("index_refused");
+    };
+    let Ok(payload) = index.payload() else {
+        return refused("payload_refused");
+    };
+    let Ok(records) = payload.records() else {
+        return refused("records_refused");
+    };
+    if records.is_empty() {
+        return refused("no_records");
+    }
+    let mut blocks = 0;
+    for record in records.iter() {
+        for sequence in record.sequences() {
+            if !events_step_exactly(sequence.events()) {
+                return refused("event_stream_refused");
+            }
+            blocks += 1;
+        }
+    }
+    AnimationPayloadCheck::Decoded {
+        records: records.len(),
+        blocks,
+    }
+}
+
+/// Steps one block's events by their own length words; `true` only when the
+/// stream is consumed exactly with every tag in the measured shape.
+fn events_step_exactly(events: &[u8]) -> bool {
+    let mut offset = 0_usize;
+    while offset < events.len() {
+        let Some(header) = events.get(offset..offset + 8) else {
+            return false;
+        };
+        let tag = u32::from_le_bytes(header[..4].try_into().expect("four bytes"));
+        let length = u32::from_le_bytes(header[4..].try_into().expect("four bytes"));
+        if tag >> 16 != 0 || !(1..=3).contains(&((tag >> 8) & 0xff)) {
+            return false;
+        }
+        if length < 8 || length % 4 != 0 {
+            return false;
+        }
+        match offset.checked_add(length as usize) {
+            Some(end) if end <= events.len() => offset = end,
+            _ => return false,
+        }
+    }
+    true
 }
 
 /// One program per INTERP script body, each at [`Confidence::Documented`].

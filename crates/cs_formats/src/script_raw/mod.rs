@@ -62,9 +62,9 @@ pub mod source_map;
 pub mod ui_host_calls;
 
 pub use discovery::{
-    ANIMATION_HEADER_BYTES, CAM_ANIM_MEMBER, ContainerDiscovery, DiscoveryFinding, LocatedProgram,
-    MIS_ANIM_MEMBER, MISSION_CONTROL_MEMBERS, MISSION_MEMBER_REASON, ProgramKind,
-    READER_MEMBER_REASON, discover_container, mission_scope,
+    ANIMATION_HEADER_BYTES, AnimationPayloadCheck, CAM_ANIM_MEMBER, ContainerDiscovery,
+    DiscoveryFinding, LocatedProgram, MIS_ANIM_MEMBER, MISSION_CONTROL_MEMBERS,
+    MISSION_MEMBER_REASON, ProgramKind, READER_MEMBER_REASON, discover_container, mission_scope,
 };
 pub use evidence::{
     ByteSpan, Confidence, EvidenceError, EvidenceLocator, LocatorKind, MAX_NOTE_BYTES,
