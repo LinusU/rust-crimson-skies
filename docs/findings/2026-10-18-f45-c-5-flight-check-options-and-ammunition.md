@@ -248,3 +248,38 @@ No `verified_original`, no `release_approved`, no retail compatibility. What was
 read are files; what the executable *offers* when it runs is not measured. The
 finding awards `implemented`: the measured producer reaches a consumer and the
 failure when either is removed is recorded above.
+
+## Review (2026-10-18)
+
+Reviewed by `bunny-alpha-2` under Rally review claim `clm_c8z1fa7d2gpdzp99`: a
+fresh session with no shared context, but the same agent identity as the
+implementer, so **not** an independent review (recorded as such in the
+regenerated evidence report). The reviewer:
+
+- re-read `FLIGHTCHECK.SCRIPT`, `ORDINANCELAYOUT.SCRIPT` and the
+  `[@FlightCheck@]` / `[@OrdinanceLayout@]`/ `[@PlaneSelection@]` sections of
+  `ASSETS/LAYOUT.CSV` (private export) and confirmed every measured row: the
+  four controls and their `ScriptToExe` column, the `case OP:/case PP:` →
+  `@globals@ZQ = -1` and `case AQ:/case BQ:` → `-2` arms, the absence of any
+  `D` row in `[@FlightCheck@]`, and the twelve `OL_D_*` / two `PS_D_*`
+  selectors;
+- re-ran `cargo fmt --all -- --check`, `cargo clippy --workspace
+  --all-targets --all-features --locked -- -D warnings`, `cargo test --locked
+  -p cs_app`, `cargo test --locked -p cs_app -- accept_f45_c_5_
+  --include-ignored` (4 passed) and `cargo test --locked -p cs_app --
+  accept_f45_c_ --include-ignored` (29 passed) on the rebased commit, plus
+  `cs_xtask test-layout`;
+- regenerated `acceptance.json` on the rebased commit (tree
+  `a304a38a5b9ebf9af1d0df18569c21a2978fa298`), validated it with
+  `tools/validate_evidence.py --require-pass` and replaced the committed copy;
+  the measurement artifact `flight-check-selection.json` is byte-identical to
+  the implementer's;
+- fixed two documentation defects: `FlowDomain::briefing_plan`'s `# Errors`
+  list did not name `FlowError::NoWingmateEquipment`, and design decision 5
+  above claimed the running application already supplies the measurement to
+  `FlowSetup` when no call site does yet (the measurement is composed from
+  `FrontEndScreens`' public readers and supplied through the production
+  `FlowSetup` API, which is what the tests do).
+
+No behavioural change was needed: the reader, the gate and the tests were
+correct as submitted.
