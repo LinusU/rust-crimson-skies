@@ -45,7 +45,11 @@ each other's artifacts, so a `cargo test` result is no longer evidence
 about the tree it ran in. `cargo run -p cs_xtask -- verify-target-dir`
 reports the directory cargo will really use and fails when it is shared or
 when it still holds artifacts a checkout that has since been removed
-produced (task #433).
+produced (task #433). `cargo run -p cs_xtask -- verify-target-dirs` runs
+the same check fleet-wide (task #1265): every checkout under this one's
+parent directory gets its `.env` `CARGO_TARGET_DIR` classification and its
+`target/` scanned for dep-info records naming a different checkout, and a
+`cargo test --workspace` anywhere in the fleet runs that scan too.
 
 [`opencode.json`](opencode.json) configures the `rally` MCP server for opencode from `RALLY_AGENT_TOKEN`.
 
