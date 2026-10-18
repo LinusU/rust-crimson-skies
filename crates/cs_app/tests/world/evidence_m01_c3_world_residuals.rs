@@ -20,9 +20,9 @@
 //! 3. ```sh
 //!    CS_EVIDENCE_DIR=private/evidence/M01-C3-WORLD-RESIDUALS \
 //!    CS_CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}') \
-//!    CS_EVIDENCE_ARGV="cargo test --locked -p cs_app -- accept_m01_c3_world_residuals_ --include-ignored" \
+//!    CS_EVIDENCE_ARGV="cargo test -p cs_app --locked -- accept_m01_c3_world_residuals_ --include-ignored" \
 //!    CS_EVIDENCE_EXIT_CODE=<status> CS_EVIDENCE_REVIEWER=<identity> \
-//!      cargo test --locked -p cs_app --test world -- \
+//!      cargo test --locked -p cs_app --test cs_app_tests_c -- \
 //!      evidence_m01_c3_world_residuals --ignored
 //!    ```
 //! 4. `python3 tools/validate_evidence.py
@@ -557,12 +557,17 @@ fn render_census(
         spawned.presentation_gap_count(),
     );
 
-    // M01's plan, through the same call the CLI makes.
-    let title = "The Lost Treasure";
+    // M01's plan, through the same call the CLI makes and over the identity
+    // the launch itself declares.
+    let (declared_label, declared_title) = cs_app::mission_launch::declared_missions()
+        .iter()
+        .find(|(declared, _)| declared.eq_ignore_ascii_case("M01"))
+        .copied()
+        .expect("the launch declares M01");
     let plan = plan_mission_launch(
         game_dir,
-        MissionLabel::new("M01").expect("M01 is a label"),
-        title,
+        MissionLabel::new(declared_label).expect("M01 is a label"),
+        declared_title,
     )
     .expect("M01's launch closure plans");
     let geometry = plan

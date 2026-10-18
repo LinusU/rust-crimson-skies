@@ -32,6 +32,7 @@ use cs_app::world::{
     MESH_SETTLE_UPDATES, RetailWorldContainer, SkipReason, read_world_container, spawn_world,
     world_app,
 };
+use cs_content::campaign_bindings::MissionLabel;
 use cs_content::coordinates::{CoordinateSource, SourceAdapter};
 use cs_content::textures::WorldTextureLoad;
 use cs_content::world::{
@@ -41,11 +42,27 @@ use cs_content::world::{
 use cs_formats::gamez::RawNode;
 use cs_types::content::{Origin, Resolved};
 
-use crate::common::label;
-use crate::vs_m01_rt_window::game_dir;
-
 /// `ZBD/C3/gamez.zbd`, the container M01 is set in since #1565.
 const GROUP: &str = "C3";
+
+/// The original installation, as the environment declares it.
+///
+/// Read here rather than from another suite's helper: a test binary compiles
+/// only the `tests/campaign/` files its own suite declares, so a cross-suite
+/// import would tie this file to that suite's binary.
+fn game_dir() -> PathBuf {
+    PathBuf::from(std::env::var("CS_GAME_DIR").unwrap_or_else(|_| {
+        panic!(
+            "CS_GAME_DIR is not set: these members need the retail capability; run them with \
+             `--include-ignored` and CS_GAME_DIR pointing at the read-only installation"
+        )
+    }))
+}
+
+/// The `M01` work-order label.
+fn label(text: &str) -> MissionLabel {
+    MissionLabel::new(text).expect("the label is valid")
+}
 
 /// Reads and imports `c3`'s world container through the production path.
 fn c3() -> (RetailWorldContainer, cs_content::world::ImportedWorld) {
@@ -214,7 +231,14 @@ fn accept_m01_c3_world_residuals_c3_leaves_no_grouping_record_open() {
 #[test]
 #[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_c3_world_residuals_m01_s_plan_is_launchable() {
-    let plan = plan_mission_launch(&game_dir(), label("M01"), "The Lost Treasure")
+    // The declared identity, so this member plans exactly what the launch
+    // plans rather than repeating the label and title it declares.
+    let (declared_label, declared_title) = cs_app::mission_launch::declared_missions()
+        .iter()
+        .find(|(declared, _)| declared.eq_ignore_ascii_case("M01"))
+        .copied()
+        .expect("the launch declares M01");
+    let plan = plan_mission_launch(&game_dir(), label(declared_label), declared_title)
         .expect("the installation yields a launch plan for M01");
 
     assert_eq!(

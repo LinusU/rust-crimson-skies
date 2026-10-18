@@ -299,10 +299,11 @@ cargo fmt --all -- --check                                            # exit 0
 cargo clippy --workspace --all-targets --all-features --locked -- -D warnings   # exit 0
 cargo test --workspace --locked                                        # CI runs this
 cargo test -p cs_app --locked -- accept_m01_c3_world_residuals_ --include-ignored
-cargo test -p cs_app --locked --test world -- --include-ignored
-cargo test -p cs_app --locked --test campaign -- --include-ignored
+cargo test -p cs_app --locked --test cs_app_tests_c -- --include-ignored     # the world suites
+cargo test -p cs_app --locked --test cs_app_tests_d -- --include-ignored     # the campaign suites
 # evidence (docs/contracts/CLI-EVIDENCE.md):
-cargo test --locked -p cs_app --test evidence_report_m01_c3_world_residuals -- --ignored
+cargo test --locked -p cs_app --test cs_app_tests_c -- \
+  evidence_m01_c3_world_residuals --ignored
 python3 tools/validate_evidence.py private/evidence/M01-C3-WORLD-RESIDUALS/acceptance.json \
   --artifact-root private/evidence/M01-C3-WORLD-RESIDUALS --require-pass
 # the owner-command smoke (docs/PLAYTEST.md, "The owner-command smoke"):
