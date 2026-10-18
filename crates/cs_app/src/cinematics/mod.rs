@@ -34,6 +34,7 @@
 //! `f40d3.*` unknowns (`cs_content::cinematics::declared_camera_sequence`).
 
 pub mod camera_anim;
+pub mod mpeg;
 pub mod playback;
 pub mod session;
 pub mod timeline;
