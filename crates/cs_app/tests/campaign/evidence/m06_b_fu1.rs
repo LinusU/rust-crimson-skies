@@ -6,24 +6,28 @@
 
 use super::*;
 
-/// The retail acceptance tests M06-B-FU1's capability is judged on: M06's
-/// three `COMPLETION_COUNT` `ANIM_STATE` sites lower through the measured
-/// operand-list walk, and the row is complete while the campaign gate stays
-/// closed.
+/// The retail acceptance tests M06-B-FU1's capability is judged on: the
+/// three `COMPLETION_COUNT` `ANIM_STATE` sites the follow-up measured —
+/// which sit on the archive the corrected layout binds to **M12** (#1596) —
+/// lower through the measured operand-list walk, and M06's own row is
+/// complete while the campaign gate stays closed.
 const RETAIL_TESTS_M06_B_FU1: &[&str] = &[
     "accept_m06_b_fu1_the_completion_count_sites_lower_and_m06s_record_completes",
     "accept_m06_b_fu1_m06_is_complete_and_the_campaign_stays_unready",
 ];
 
-/// The synthetic predicate test M06-B-FU1's report must also record: M06's
-/// own three-site spelling lowered on an authored record, into CI, where
-/// there is no original data.
+/// The synthetic predicate test M06-B-FU1's report must also record: the
+/// measured three-site spelling lowered on an authored record, into CI,
+/// where there is no original data.
 const SYNTHETIC_TESTS_M06_B_FU1: &[&str] =
     &["accept_m06_b_fu1_m06s_spelling_lowers_all_three_sites"];
 
 /// Evidence-report harness for task M06-B-FU1 (Rally #817), the follow-up
-/// that pins M06's three `COMPLETION_COUNT` `ANIM_STATE` condition sites
-/// lowering through the shared operand-list walk M04-B-FU1 (#806) landed.
+/// that pins the three `COMPLETION_COUNT` `ANIM_STATE` condition sites it
+/// measured lowering through the shared operand-list walk M04-B-FU1 (#806)
+/// landed — re-pinned on the corrected layout (#1596), where the measured
+/// archive `zbd/c2/m01` binds to **M12** and M06's own record is
+/// `zbd/c1c/m01`.
 /// It follows the sequence in this module's doc with `M06-B-FU1` and
 /// `accept_m06_b_fu1_` in place of `M01-A` and `accept_m01_a_`:
 ///
@@ -166,13 +170,18 @@ fn evidence_report_m06_b_fu1_writes_the_acceptance_report() {
         jstr(
             "acceptance suite run locally with the retail capability; the \
              fields are derived from the recorded log and production discovery of $CS_GAME_DIR. \
-             The suite pins this task's verdict: M06's three six-operand ANIM_STATE sites \
-             (blocks 9, 11 and 41 — COMPLETION_COUNT [1] plus the path3/path4/path5 \
-             continue/accelerate RUNNING descriptors, each its block's first directive) lower \
-             the measured way through M04-B-FU1 #806's operand-list walk — both pairs append, \
-             the in-list count overwrites `required`, each operand list binds as one \
-             Value::List argument — so all 265 calls bind, all 82 conditions lower, \
-             MissionProgram::validate accepts and M06's census row is complete while the \
+             Re-pinned on the corrected campaign layout (#1596, after #1565 \
+             M01-ARCHIVE-DECISION): the three six-operand ANIM_STATE sites the follow-up \
+             measured sit in zbd/c2/m01's control member — blocks 9, 11 and 41, \
+             COMPLETION_COUNT [1] plus the path3/path4/path5 continue/accelerate RUNNING \
+             descriptors, each its block's first directive — and that record is bound to M12, \
+             not M06, under the corrected layout; M06's own record (zbd/c1c/m01) spells \
+             ANIM_STATE only as single-pair sites, so the gap class has no M06 instance. The \
+             suite pins the sites where they were measured: they lower the measured way \
+             through M04-B-FU1 #806's operand-list walk — both pairs append, the in-list count \
+             overwrites `required`, each operand list binds as one Value::List argument — so \
+             all 265 calls of that record bind, all 82 conditions lower and \
+             MissionProgram::validate accepts, while M06's own census row is complete and the \
              campaign gate stays closed. NOT CLAIMED: no mission was played, no original \
              executable was run and nothing is verified_original; the runtime half of the \
              evaluator (which world writes put an animation in its wanted state) stays with \

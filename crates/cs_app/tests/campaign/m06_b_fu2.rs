@@ -2,40 +2,59 @@
 //! M06's passenger/extraction entity lives (`missions/M06.md`, work order
 //! `M06-B`, follow-up of #274).
 //!
-//! M06-B measured that the mission's own reader archive spells exactly one
-//! passenger-named string — the location node `Passenger_hangar` in
-//! `location.zrd` — and that no directive, target or actor names a passenger,
-//! so the sheet's *passenger identity* priority had no actor or program to
-//! predicate. This stage closes the question that left open, by measuring the
-//! rest of the installation instead of inferring a mechanic from the
-//! discovery cue "airborne extraction" (which is a research label, not a
-//! verified id):
+//! **Archive attribution (#1596, after #1565 `M01-ARCHIVE-DECISION`).** This
+//! follow-up measured `zbd/c2/m01`, the archive the pre-correction campaign
+//! layout bound to M06; that record declares `snd_c3-HW-m2` — Hollywood
+//! mission 2 — and the corrected layout binds it to **M12**. Every member
+//! and world fact below is therefore a measurement of **M12's** record and
+//! chapter world, kept where it was measured rather than re-attributed:
+//! its own pins still hold because the archive's bytes never moved. M06's
+//! own reader archive is `zbd/c1c/m01`, and its answer to this follow-up's
+//! question is the opposite of the one measured here — its startup event
+//! table fires `call_add_jack`, the shared crew animation that drives the
+//! world node `apassengers` (M06-B-FU4, #1184; the end-to-end pins live in
+//! `m06_b.rs`). The one measurement below that still speaks for M06 is the
+//! `location.zrd` verdict, and it carries: the member is the same bytes in
+//! `ZBD/C1C/M01`, `ZBD/C2/M01` and `ZBD/C2/M02`, so "Passenger_hangar is a
+//! shared teleport point, not an actor" is a fact about M06's own archive
+//! too.
 //!
-//! * `location.zrd` is the mission's **teleport-destination list**, not an
-//!   actor list: it is byte-identical to the sibling mission's copy, its four
-//!   entries are a name plus two float triples (a position and a heading), and
-//!   the owner's decrypted image spells the member's consumer as a Teleport
-//!   feature (`Teleport`, `Current Location`, `location.bak`, and the
-//!   developer annotation that the file "stores teleport data for this
-//!   mission");
-//! * the installation's passenger vocabulary that does exist is **shared and
-//!   non-mission**: the library member `passengers.zrd` declares seventeen
-//!   `ON_CALL` crew animations that drive the world node `apassengers` (M01's
-//!   startup fires one of them, `call_add_jack`; M06 fires none), the chapter
-//!   world `ZBD/C2/gamez.zbd` carries exactly one `apassengers` and one
-//!   `passall` node that nothing in M06 addresses, and the instant-action
-//!   record `ia.zrd` names `passenger_zeppelin` as one of its target classes;
+//! The original stage measured that the measured archive spells exactly one
+//! passenger-named string — the location node `Passenger_hangar` in
+//! `location.zrd` — and that no directive, target or actor of that archive
+//! names a passenger, so the sheet's *passenger identity* priority had no
+//! actor or program to predicate in that record. This stage closed the
+//! question that left open, by measuring the rest of the installation
+//! instead of inferring a mechanic from the discovery cue "airborne
+//! extraction" (which is a research label, not a verified id):
+//!
+//! * `location.zrd` is a **teleport-destination list**, not an actor list:
+//!   it is byte-identical across the three archives measured (the measured
+//!   archive's, its sibling's and M06's own), its four entries are a name
+//!   plus two float triples (a position and a heading), and the owner's
+//!   decrypted image spells the member's consumer as a Teleport feature
+//!   (`Teleport`, `Current Location`, `location.bak`, and the developer
+//!   annotation that the file "stores teleport data for this mission");
+//! * the installation's passenger vocabulary that does exist is **shared
+//!   and non-mission**: the library member `passengers.zrd` declares
+//!   seventeen `ON_CALL` crew animations that drive the world node
+//!   `apassengers` (M01's startup fires one of them, `call_add_jack`; the
+//!   measured archive fires none — M06's own archive fires exactly that
+//!   one), the chapter-two world `ZBD/C2/gamez.zbd` carries exactly one
+//!   `apassengers` and one `passall` node that nothing in the measured
+//!   archive addresses, and the instant-action record `ia.zrd` names
+//!   `passenger_zeppelin` as one of its target classes;
 //! * the only objective string id carrying the word is
 //!   `MSG_OBJ_PASSENGERHANGER`, and of the census's mission-scoped archives
 //!   exactly one carries it — `ZBD/C1/IA1/zrdr.zbd`, chapter one's instant
-//!   action — never M06's.
+//!   action — never the measured archive's.
 //!
 //! The retail members read `$CS_GAME_DIR` (and one reads
 //! `$CS_ENGINE_IMAGE`), so CI skips them and the implementer and reviewer run
 //! them with `--include-ignored`. The synthetic member carries the location
 //! record's shape into CI without original data. Nothing here invents a
 //! passenger actor, a predicate or a mechanic: the answer this stage pins is
-//! that the shipped data binds none for M06.
+//! that the shipped data binds none for the record it measured.
 //!
 //! `missions/bindings/M06.json` is deliberately **unchanged**: its `unknowns`
 //! are derived by production code from one global list every mission shares,
@@ -57,11 +76,16 @@ use cs_formats::io::ParseContext;
 use cs_formats::script_raw::discover_container;
 use cs_types::install::RelativePath;
 
-/// M06's reader archive, the program span `missions/bindings/M06.json` cites.
+/// The archive this follow-up measured: the program span the pre-correction
+/// `missions/bindings/M06.json` cited, which the corrected layout binds to
+/// **M12** (`missions/bindings/M12.json`; M06's own archive is
+/// `ZBD/C1C/M01`).
 const CONTAINER: &str = "ZBD/C2/M01/zrdr.zbd";
-/// SHA-256 of that whole archive, from production discovery (M06-A/M06-B).
+/// SHA-256 of that whole archive, from production discovery (M06-A/M06-B,
+/// under the pre-correction layout).
 const CONTAINER_SHA256: &str = "d6e9315d580a0570ae8744d2c1b154c4c1af9086bf45cc2fcc125f0921fd9f63";
-/// The chapter world container the mission is flown in.
+/// The chapter world container the measured archive is flown in (M12's
+/// chapter-two world).
 const WORLD_CONTAINER: &str = "ZBD/C2/gamez.zbd";
 /// SHA-256 of the whole world container.
 const WORLD_SHA256: &str = "2b2cf09bcaef9024937145cfdf8906446a301ec53409bf3368a965a6f4c924b6";
@@ -74,15 +98,18 @@ const PASSENGERS_MEMBER: &str = "passengers.zrd";
 /// SHA-256 of that member's own bytes.
 const PASSENGERS_MEMBER_SHA256: &str =
     "2dedd152f019716e4815e14eb4ba2d64589b269041ea3974c9815f9f28ab092d";
-/// The chapter's instant-action archive, whose record names the zeppelin
-/// classes.
+/// The measured chapter's instant-action archive, whose record names the
+/// zeppelin classes.
 const INSTANT_ACTION_CONTAINER: &str = "ZBD/C2/IA1/zrdr.zbd";
-/// SHA-256 of M06's own `location.zrd` member.
+/// SHA-256 of the `location.zrd` member — the same bytes in every archive
+/// measured: the measured archive's, its sibling's and M06's own
+/// (`ZBD/C1C/M01`).
 const LOCATION_MEMBER_SHA256: &str =
     "ece361bcc757158077c547630d8d96f53b55c78cd1808885115ac94630c8b724";
 
-/// The four locations M06's `location.zrd` spells, in member order: the name,
-/// its world position and its heading. Every value is record data.
+/// The four locations the shared `location.zrd` member spells, in member
+/// order: the name, its world position and its heading. Every value is
+/// record data.
 const LOCATIONS: [(&str, [f32; 3], [f32; 3]); 4] = [
     (
         "Airport_terminal",
@@ -124,9 +151,10 @@ const CREW_ANIMATIONS: [&str; 17] = [
 /// The object node the seventeen crew animations drive.
 const CREW_NODE: &str = "apassengers";
 
-/// The world nodes M06's own directives, targets and evaluator member lists
-/// name, each of which must resolve in the chapter world exactly once — the
-/// contrast that shows the mission addresses what it uses.
+/// The world nodes the measured archive's own directives, targets and
+/// evaluator member lists name, each of which must resolve in its chapter
+/// world exactly once — the contrast that shows the mission addresses what
+/// it uses.
 const MISSION_NODES: [&str; 15] = [
     "sprucegoose",
     "propane",
@@ -145,10 +173,10 @@ const MISSION_NODES: [&str; 15] = [
     "g_engine8",
 ];
 
-/// The chapter node the *sibling* missions name (`ZBD/C2/M02`,
-/// `ZBD/C2/M03` and the chapter's instant-action record spell `sghangar`) and
-/// M06's archive spells nowhere — the counter-example that keeps the list
-/// above honest about whose names it lists.
+/// The chapter node the measured archive's *sibling* missions name
+/// (`ZBD/C2/M02`, `ZBD/C2/M03` and the chapter's instant-action record spell
+/// `sghangar`) and the measured archive spells nowhere — the counter-example
+/// that keeps the list above honest about whose names it lists.
 const SIBLING_ONLY_NODE: &str = "sghangar";
 
 /// The one message id the installation spells with the word, and the one
@@ -156,8 +184,9 @@ const SIBLING_ONLY_NODE: &str = "sghangar";
 const PASSENGER_MESSAGE_ID: &str = "MSG_OBJ_PASSENGERHANGER";
 const PASSENGER_MESSAGE_CARRIER: &str = "ZBD/C1/IA1/zrdr.zbd";
 
-/// The startup animation names M06's own startup member fires, in order —
-/// four at `NEW_GAME_START` and `player_setup` again at `LOAD_GAME_START`.
+/// The startup animation names the measured archive's own startup member
+/// fires, in order — four at `NEW_GAME_START` and `player_setup` again at
+/// `LOAD_GAME_START`.
 const FIRED_STARTUP_ANIMATIONS: [&str; 5] = [
     "player_setup",
     "kktorch_burning1",
@@ -166,7 +195,8 @@ const FIRED_STARTUP_ANIMATIONS: [&str; 5] = [
     "player_setup",
 ];
 
-/// The message ids M06's archive references anywhere in its fifteen members.
+/// The message ids the measured archive references anywhere in its fifteen
+/// members.
 const MISSION_MESSAGE_IDS: [&str; 15] = [
     "MSG_BJOHN_NAME",
     "MSG_BRF_HWM2_OBJ1",
@@ -304,27 +334,31 @@ fn find(haystack: &[u8], needle: &[u8]) -> Option<usize> {
 }
 
 // ---------------------------------------------------------------------------
-// Retail: what M06's own archive carries
+// Retail: what the measured archive carries
 // ---------------------------------------------------------------------------
 
-/// **The only passenger-named string in M06's own data is a map location.**
+/// **The only passenger-named string in the measured archive's data is a map
+/// location — and the member is M06's own too, byte for byte.**
 ///
-/// The archive's fifteen members all decode; walking every member's text nodes
-/// finds exactly one passenger-named string, `Passenger_hangar`, and it is in
-/// `location.zrd` alone. That member is not mission-authored content: its bytes
-/// are **identical** to the sibling mission's copy of the same member
-/// (`ZBD/C2/M02/zrdr.zbd` carries the same four names at the same bytes), so it
-/// is the chapter's shared place list, and its four entries are a name plus a
-/// position and a heading — a marked point, not an actor: no kind, no plane, no
-/// net, no spawn.
+/// The archive under test is `zbd/c2/m01`, the record this follow-up
+/// measured and the corrected layout binds to **M12** (#1596). Its fifteen
+/// members all decode; walking every member's text nodes finds exactly one
+/// passenger-named string, `Passenger_hangar`, and it is in `location.zrd`
+/// alone. That member is not mission-authored content: its bytes are
+/// **identical** to both the sibling mission's copy (`ZBD/C2/M02/zrdr.zbd`)
+/// and **M06's own archive's** (`ZBD/C1C/M01/zrdr.zbd`), so it is the shared
+/// place list, and its four entries are a name plus a position and a
+/// heading — a marked point, not an actor: no kind, no plane, no net, no
+/// spawn.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m06_b_fu2_the_only_passenger_string_in_m06s_own_data_is_a_map_location() {
-    let bytes = std::fs::read(game_dir().join(CONTAINER)).expect("M06's reader archive reads");
+    let bytes =
+        std::fs::read(game_dir().join(CONTAINER)).expect("the measured reader archive reads");
     assert_eq!(
         cs_assets::install::sha256(&bytes).to_hex(),
         CONTAINER_SHA256,
-        "the reader archive is the program M06-A bound"
+        "the reader archive this follow-up measured (the corrected layout's M12 record)"
     );
     let members = members_of(CONTAINER);
     assert_eq!(members.len(), 15, "the archive declares fifteen members");
@@ -361,18 +395,23 @@ fn accept_m06_b_fu2_the_only_passenger_string_in_m06s_own_data_is_a_map_location
         "a location is a name, a position and a heading: record data, not a guess"
     );
 
-    // The member is the chapter's shared copy, byte for byte.
-    let sibling = member_bytes("ZBD/C2/M02/zrdr.zbd", "location.zrd");
-    assert_eq!(
-        cs_assets::install::sha256(&sibling).to_hex(),
-        LOCATION_MEMBER_SHA256,
-        "the sibling mission carries the same location member"
-    );
-    assert_eq!(
-        sibling,
-        member_bytes(CONTAINER, "location.zrd"),
-        "M06's location list is the chapter's shared list, not mission-authored content"
-    );
+    // The member is the shared copy, byte for byte — in the sibling
+    // archive's chapter and in M06's own archive alike, which is what lets
+    // this follow-up's location verdict carry to M06 under the corrected
+    // layout.
+    for archive in ["ZBD/C2/M02/zrdr.zbd", "ZBD/C1C/M01/zrdr.zbd"] {
+        let sibling = member_bytes(archive, "location.zrd");
+        assert_eq!(
+            cs_assets::install::sha256(&sibling).to_hex(),
+            LOCATION_MEMBER_SHA256,
+            "{archive} carries the same location member"
+        );
+        assert_eq!(
+            sibling,
+            member_bytes(CONTAINER, "location.zrd"),
+            "{archive}'s location list is the shared list, not mission-authored content"
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -450,38 +489,45 @@ fn accept_m06_b_fu2_the_image_spells_location_zrd_as_teleport_data() {
 }
 
 // ---------------------------------------------------------------------------
-// Retail: nothing else in the shipped data binds a passenger for M06
+// Retail: nothing else in the shipped data binds a passenger for the
+// record this follow-up measured
 // ---------------------------------------------------------------------------
 
-/// **No shipped record binds a passenger entity to M06.**
+/// **No shipped record binds a passenger entity to the archive this
+/// follow-up measured — the corrected layout's M12 record.**
 ///
-/// Three surfaces the entity could have lived on, measured rather than
-/// assumed:
+/// The archive under test is `zbd/c2/m01` (#1596: the corrected layout binds
+/// it to **M12**, not M06; M06's own `zbd/c1c/m01` answers this question the
+/// other way — its startup table fires `call_add_jack`, pinned in
+/// `m06_b.rs`). Three surfaces the entity could have lived on, measured
+/// rather than assumed:
 ///
-/// * **the mission's startup animations.** `startanims.zrd` fires
+/// * **the measured record's startup animations.** `startanims.zrd` fires
 ///   `player_setup`, `kktorch_burning1`, `kktorch_burning2` and
 ///   `place_the_goose` at `NEW_GAME_START` (and `player_setup` again at
 ///   `LOAD_GAME_START`). The library member that declares the crew animations
 ///   — seventeen `ON_CALL` definitions, every one driving the world node
 ///   `apassengers`, which is how a mission puts its gang aboard (M01 fires
-///   `call_add_jack`) — declares none of the names M06 fires, so M06 puts no
+///   `call_add_jack`, and so does M06's own archive — M06-B-FU4) — declares
+///   none of the names the measured archive fires, so this record puts no
 ///   crew aboard through that mechanism.
 /// * **the chapter world's nodes.** `ZBD/C2/gamez.zbd` carries exactly one
-///   `apassengers` and one `passall` node, and the world nodes M06's own
-///   directives, targets and evaluator member lists name (`sprucegoose`,
-///   `propane`, `kkgate`, `tugandbarge01..04`, `g_engine1..8`) each resolve
-///   exactly once — so the mission addresses what it uses, and it addresses
-///   neither passenger node. The sibling missions' `sghangar` resolves once
-///   too, and M06's archive spells it nowhere.
+///   `apassengers` and one `passall` node, and the world nodes the measured
+///   archive's own directives, targets and evaluator member lists name
+///   (`sprucegoose`, `propane`, `kkgate`, `tugandbarge01..04`,
+///   `g_engine1..8`) each resolve exactly once — so the mission addresses
+///   what it uses, and it addresses neither passenger node. The sibling
+///   missions' `sghangar` resolves once too, and the measured archive spells
+///   it nowhere.
 /// * **the message table.** Of the census's mission-scoped archives, exactly
 ///   one carries `MSG_OBJ_PASSENGERHANGER`, and it is chapter one's instant
-///   action; M06's own archive references fifteen message ids and none of them
-///   is passenger-named.
+///   action; the measured archive references fifteen message ids and none of
+///   them is passenger-named.
 ///
 /// The installation's passenger vocabulary that *does* exist is instant-action
 /// and cosmetic: `ia.zrd` names `passenger_zeppelin` beside `cargo_zeppelin`
 /// and `military_zeppelin`, and the library member above is crew cosmetics.
-/// Neither is reachable from M06's data.
+/// Neither is reachable from the measured archive's data.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 #[allow(clippy::too_many_lines)]
@@ -504,7 +550,8 @@ fn accept_m06_b_fu2_no_shipped_record_binds_a_passenger_entity_for_m06() {
     assert_eq!(
         animation_names,
         FIRED_STARTUP_ANIMATIONS.to_vec(),
-        "M06's startup fires four animations and reloads one; none is a crew animation"
+        "the measured archive's startup fires four animations and reloads one; none is a crew \
+         animation"
     );
 
     // --- the crew animation library, and what it drives -------------------
@@ -570,7 +617,7 @@ fn accept_m06_b_fu2_no_shipped_record_binds_a_passenger_entity_for_m06() {
         animation_names
             .iter()
             .all(|fired| !CREW_ANIMATIONS.contains(fired)),
-        "M06 fires none of the crew animations: {animation_names:?}"
+        "the measured archive fires none of the crew animations: {animation_names:?}"
     );
 
     // --- the chapter world's nodes ----------------------------------------
@@ -598,33 +645,35 @@ fn accept_m06_b_fu2_no_shipped_record_binds_a_passenger_entity_for_m06() {
     assert_eq!(
         count_of(CREW_NODE),
         1,
-        "the world carries exactly one crew node, which nothing in M06 names"
+        "the world carries exactly one crew node, which nothing in the measured archive names"
     );
     assert_eq!(
         count_of("passall"),
         1,
-        "the world carries exactly one passenger-crowd node, which nothing in M06 names"
+        "the world carries exactly one passenger-crowd node, which nothing in the measured \
+         archive names"
     );
-    // The neighbouring node the sibling missions name resolves too — and M06's
-    // own archive spells it nowhere, which is the other half of the split: the
-    // mission names the world nodes it uses and nothing else.
+    // The neighbouring node the sibling missions name resolves too — and the
+    // measured archive spells it nowhere, which is the other half of the
+    // split: the mission names the world nodes it uses and nothing else.
     assert_eq!(
         count_of(SIBLING_ONLY_NODE),
         1,
         "the world carries exactly one {SIBLING_ONLY_NODE}, the node the siblings name"
     );
-    let archive = std::fs::read(game_dir().join(CONTAINER)).expect("M06's reader archive reads");
+    let archive =
+        std::fs::read(game_dir().join(CONTAINER)).expect("the measured reader archive reads");
     assert!(
         find(&archive, SIBLING_ONLY_NODE.as_bytes()).is_none(),
-        "M06's archive spells no {SIBLING_ONLY_NODE}: the sibling missions' node is not this \
-         mission's content"
+        "the measured archive spells no {SIBLING_ONLY_NODE}: the sibling missions' node is not \
+         this mission's content"
     );
     for member in ["objectives.zrd", "targets.zrd", "aiv.zrd", "location.zrd"] {
         let texts = member_texts(CONTAINER, member);
         for node in [CREW_NODE, "passall"] {
             assert!(
                 !texts.iter().any(|text| text == node),
-                "M06's {member} does not name the world's {node}"
+                "the measured archive's {member} does not name the world's {node}"
             );
         }
     }
@@ -642,7 +691,8 @@ fn accept_m06_b_fu2_no_shipped_record_binds_a_passenger_entity_for_m06() {
     assert_eq!(
         carriers,
         vec![PASSENGER_MESSAGE_CARRIER.to_owned()],
-        "the passenger objective string is chapter one's instant action, never M06's"
+        "the passenger objective string is chapter one's instant action, never the measured \
+         archive's"
     );
 
     let mut referenced: Vec<String> = Vec::new();
@@ -669,8 +719,8 @@ fn accept_m06_b_fu2_no_shipped_record_binds_a_passenger_entity_for_m06() {
     assert_eq!(
         referenced,
         MISSION_MESSAGE_IDS.to_vec(),
-        "M06's whole message vocabulary: crew names, two objective labels, four targets and its \
-         three objective texts"
+        "the measured archive's whole message vocabulary: crew names, two objective labels, four \
+         targets and its three objective texts"
     );
 
     // The instant-action record's own vocabulary, which is where the
@@ -729,7 +779,7 @@ fn crew_definitions(document: &ZrdValue) -> Vec<ZrdValue> {
 /// **A location entry is a name plus two float triples, and carries nothing
 /// else.**
 ///
-/// The retail assertions above read M06's `location.zrd` as four
+/// The retail assertions above read the shared `location.zrd` member as four
 /// `(name, position, heading)` entries. That reading is pinned here on an
 /// authored document in the same shape — the one-element wrapper around a flat
 /// name/value list — so CI covers the grammar without original data, through

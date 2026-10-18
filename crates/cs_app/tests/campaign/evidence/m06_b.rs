@@ -158,19 +158,25 @@ fn evidence_report_m06_b_writes_the_acceptance_report() {
         jstr(&reviewer),
         jstr(
             "acceptance suite run locally with the retail capability; every field is derived \
-             from the recorded log and production discovery of $CS_GAME_DIR. The suite pins M06's \
-             measured control program (82 blocks, 265 sites, 26 keys, fully measured vocabulary), \
-             locates the sheet's three regression priorities in the record — the engine-part \
-             thresholds, the target-flag chain and the unreferenced Passenger_hangar location that \
-             leaves passenger identity unbound — gates both terminal latches and walks every block \
-             address, and pins M06's complete lowering: every call binds (the \
-             twelve-target kill sites bind through M02-B-FU1 #800's list shaping, re-measured on \
-             that landing) and every condition lowers — the three ANIM_STATE \
-             completion-count sites append both their descriptors and let the in-list count \
-             overwrite `required` through M04-B-FU1 #806's generalized operand-list walk, so \
-             MissionProgram::validate accepts and M06's row is complete. Claim is implemented \
-             only; the mission is not played, the closed gap is recorded in \
-             docs/findings/2026-10-09-m06-b-compatibility-gaps.md and \
+             from the recorded log and production discovery of $CS_GAME_DIR. Re-pinned on the \
+             corrected campaign layout (#1596, after #1565 M01-ARCHIVE-DECISION): the suite pins \
+             M06's own control program — zbd/c1c/m01's objectives.zrd, 58 blocks, 353 sites, 43 \
+             keys, fully measured vocabulary — locates the sheet's three regression priorities \
+             in the record (subsystem disablement through the INACTIVE member chains, the \
+             INACTIVE_COMPLETION_COUNT thresholds and the DEDG tallies; the tailhook boarding \
+             chain's approach gate, target-flag walk, animation wakeups, nap re-wakes and \
+             TICK_DEPENDS_ON_OBJ gates; and passenger identity bound end to end by name — the \
+             copilot exchange's three single-pair ANIM_STATE sites, wv_tailhook.zrd's boarding \
+             nodes and the call_add_jack crew animation the startup event table fires), gates \
+             both terminal latches (INSTANTWIN block 24 woken only by block 18, INSTANTLOSS \
+             block 40 napped only by block 39) and walks every block address including the \
+             spelled 58 that equals the record's own count, and pins M06's complete lowering: \
+             every call binds and every condition lowers, MissionProgram::validate accepts and \
+             M06's row is complete. The three six-operand ANIM_STATE completion-count sites \
+             M06-B-FU1 measured live on the archive the corrected layout binds to M12 \
+             (zbd/c2/m01), where the follow-up's pins are re-derived; M06's own record spells \
+             none. Claim is implemented only; the mission is not played, the closed gap is \
+             recorded in docs/findings/2026-10-09-m06-b-compatibility-gaps.md and \
              docs/findings/2026-10-09-m04-b-fu1-anim-state-operand-list.md. No mission was played, no \
              original executable was run and nothing is verified_original. Validated with \
              tools/validate_evidence.py --require-pass"

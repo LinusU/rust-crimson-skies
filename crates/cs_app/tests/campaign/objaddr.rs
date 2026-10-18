@@ -20,10 +20,18 @@
 //! The suite pins the convention itself rather than any one mission: the
 //! synthetic test holds the parse conversion's boundaries (a spelled value
 //! equal to the block count is in range — the reading a zero-based
-//! interpretation cannot explain), and the retail test re-walks all four
-//! reconciled records (`zbd/c1/m02`, `zbd/c1b/m03`, `zbd/c1/m04`,
-//! `zbd/c2/m01`) and pins the discriminating fact on each: every one of them
-//! spells an address equal to its own block count.
+//! interpretation cannot explain), and the retail test re-walks the
+//! reconciled records and pins the discriminating fact on each: every one
+//! of them spells an address equal to its own block count.
+//!
+//! **Archive attribution (#1596, after #1565 `M01-ARCHIVE-DECISION`).** The
+//! four records the follow-up reconciled were read under the pre-correction
+//! campaign layout; the corrected layout binds `zbd/c1/m02` to **M07**,
+//! `zbd/c1b/m03` to **M08**, `zbd/c1/m04` to no declared work order and
+//! `zbd/c2/m01` to **M12**. They stay walked where they were reconciled —
+//! the archives' bytes never moved — and M06's own corrected record
+//! `zbd/c1c/m01` is walked beside them: its block 17 wakes `[18, 25, 49,
+//! 58]`, spelling its own count through `WAKE_OBJECTIVE_WHEN_I_COMPLETE`.
 //!
 //! The retail test is `#[ignore = "requires CS_GAME_DIR"]`; the synthetic
 //! test runs in CI.
@@ -201,19 +209,25 @@ fn accept_objaddr_a_spelled_address_is_the_one_based_block_number() {
     );
 }
 
-/// **Every reconciled record spells one-based block numbers — and each of
-/// the four spells an address equal to its own block count.**
+/// **Every reconciled record spells one-based block numbers — and each
+/// spells an address equal to its own block count.**
 ///
-/// The convention's discriminator is not one record's word: M02's block 13
-/// wakes `[14, 50]` on a 50-block record, M03's block 21 naps `55` on a
-/// 55-block record, M04's block 23 wakes `[37, 52]` on a 52-block record and
-/// M06's block 67 wakes `[68, 71, 82]` on an 82-block record — under a
-/// zero-based reading each of those addresses is one past the record's last
-/// index, while under the measured one-based rule each names the record's
-/// last block (`OBJECTIVE50`, `OBJECTIVE55`, `OBJECTIVE52`, `OBJECTIVE82`).
-/// M06's second discriminator is pinned with them: nothing in its record
+/// The convention's discriminator is not one record's word: `zbd/c1/m02`'s
+/// block 13 wakes `[14, 50]` on a 50-block record, `zbd/c1b/m03`'s block 21
+/// naps `55` on a 55-block record, `zbd/c1/m04`'s block 23 wakes `[37, 52]`
+/// on a 52-block record and `zbd/c2/m01`'s block 67 wakes `[68, 71, 82]` on
+/// an 82-block record — under a zero-based reading each of those addresses
+/// is one past the record's last index, while under the measured one-based
+/// rule each names the record's last block (`OBJECTIVE50`, `OBJECTIVE55`,
+/// `OBJECTIVE52`, `OBJECTIVE82`). Two second discriminators are pinned with
+/// them. `zbd/c2/m01`'s — the archive the pre-correction layout attributed
+/// to M06, the corrected layout's **M12** record: nothing in its record
 /// spells `50` although block 50 naps `51`, so under an index reading its
-/// `INSTANTLOSS` latch (block 51) would have no completion edge at all.
+/// `INSTANTLOSS` latch (block 51) would have no completion edge at all. And
+/// M06's own corrected record `zbd/c1c/m01`'s: block 39 naps `40` — the
+/// `INSTANTLOSS` latch's one completion edge — while block 38 naps `39`, so
+/// under an index reading the countdown would reach the latch a step early
+/// and the spelled `40` would land on `OBJECTIVE41`.
 ///
 /// Each record is re-read from the installation through production
 /// discovery, its blocks are walked by the measured grammar and every
@@ -222,7 +236,12 @@ fn accept_objaddr_a_spelled_address_is_the_one_based_block_number() {
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_objaddr_every_reconciled_record_spells_its_own_block_count() {
-    // (census row, expected block count, the site that spells the count)
+    // (census row, expected block count, the site that spells the count).
+    // The first four rows are the records M06-B-FU3 reconciled under the
+    // pre-correction layout — `zbd/c1/m02` is the corrected layout's M07
+    // record, `zbd/c1b/m03` its M08, `zbd/c1/m04` binds no declared work
+    // order and `zbd/c2/m01` is its M12; the fifth is M06's own record on
+    // the corrected layout, which discriminates the same way.
     let reconciled = [
         (
             "zbd/c1/m02",
@@ -232,6 +251,7 @@ fn accept_objaddr_every_reconciled_record_spells_its_own_block_count() {
         ("zbd/c1b/m03", 55, (21, "NAP_OBJECTIVE_WHEN_I_COMPLETE")),
         ("zbd/c1/m04", 52, (23, "WAKE_OBJECTIVE_WHEN_I_COMPLETE")),
         ("zbd/c2/m01", 82, (67, "WAKE_OBJECTIVE_WHEN_I_COMPLETE")),
+        ("zbd/c1c/m01", 58, (17, "WAKE_OBJECTIVE_WHEN_I_COMPLETE")),
     ];
 
     for (mission, blocks, (speller, key)) in reconciled {
@@ -297,16 +317,17 @@ fn accept_objaddr_every_reconciled_record_spells_its_own_block_count() {
         );
     }
 
-    // M06's second discriminator: under an index reading the INSTANTLOSS
-    // latch (block 51) would have no incoming edge — block 50 naps 51 and no
-    // site anywhere in the record spells 50.
+    // The M12 record's second discriminator — the archive the pre-correction
+    // layout attributed to M06: under an index reading the INSTANTLOSS
+    // latch (block 51) would have no incoming edge, because block 50 naps 51
+    // and no site anywhere in the record spells 50.
     let (document, _member) = read_control_member(&game_dir(), "zbd/c2/m01")
         .expect("the measured rule finds zbd/c2/m01's control member");
     let sites = walk(&document);
     assert!(
         sites.iter().all(|site| !site.addresses.contains(&50)),
-        "nothing in M06 spells 50, so an index reading leaves the failure \
-         latch unreachable"
+        "nothing in zbd/c2/m01 spells 50, so an index reading leaves the \
+         failure latch unreachable"
     );
     assert!(
         sites.iter().any(|site| {
@@ -317,4 +338,24 @@ fn accept_objaddr_every_reconciled_record_spells_its_own_block_count() {
         "block 50 naps 51 — the failure latch's one completion edge, present \
          only under the block-number reading"
     );
+
+    // M06's own record's second discriminator: the fail countdown lands on
+    // the latch exactly under block numbers — block 38 naps 39, block 39
+    // naps 40, and block 40 is the INSTANTLOSS latch — while an index
+    // reading would reach the latch a countdown step early on 39 and land
+    // the spelled 40 on OBJECTIVE41.
+    let (document, _member) = read_control_member(&game_dir(), "zbd/c1c/m01")
+        .expect("the measured rule finds zbd/c1c/m01's control member");
+    let sites = walk(&document);
+    for (block, target) in [(38, 39), (39, 40)] {
+        assert!(
+            sites.iter().any(|site| {
+                site.block == block
+                    && site.key == "NAP_OBJECTIVE_WHEN_I_COMPLETE"
+                    && site.addresses.contains(&target)
+            }),
+            "block {block} naps {target} — the fail countdown's completion \
+             edges, present only under the block-number reading"
+        );
+    }
 }

@@ -31,13 +31,19 @@ const RECONCILED_TESTS_M06_B_FU3: &[&str] = &[
 const SYNTHETIC_TESTS_M06_B_FU3: &[&str] =
     &["accept_objaddr_a_spelled_address_is_the_one_based_block_number"];
 
-/// The four reconciled records, as `(census row, expected block count, the
-/// site that spells the count)`.
+/// The reconciled records, as `(census row, expected block count, the site
+/// that spells the count)`. The first four are the records the follow-up
+/// reconciled under the pre-correction layout — `zbd/c1/m02` is the
+/// corrected layout's M07 record, `zbd/c1b/m03` its M08, `zbd/c1/m04` binds
+/// no declared work order and `zbd/c2/m01` is its M12; the fifth is M06's
+/// own record on the corrected layout (`zbd/c1c/m01`, #1596), which spells
+/// its own count the same way.
 const RECONCILED: &[(&str, u32, u32, &str)] = &[
     ("zbd/c1/m02", 50, 13, "WAKE_OBJECTIVE_WHEN_I_COMPLETE"),
     ("zbd/c1b/m03", 55, 21, "NAP_OBJECTIVE_WHEN_I_COMPLETE"),
     ("zbd/c1/m04", 52, 23, "WAKE_OBJECTIVE_WHEN_I_COMPLETE"),
     ("zbd/c2/m01", 82, 67, "WAKE_OBJECTIVE_WHEN_I_COMPLETE"),
+    ("zbd/c1c/m01", 58, 17, "WAKE_OBJECTIVE_WHEN_I_COMPLETE"),
 ];
 
 /// Evidence-report harness for task M06-B-FU3, the follow-up that reconciled
@@ -51,11 +57,14 @@ const RECONCILED: &[(&str, u32, u32, &str)] = &[
 ///   tests — so the recorded assertions are the convention's own pin and the
 ///   four suites' terminal-gate pins it reconciles, in one run;
 /// * the artifact beside the report is the **reconciliation record**
-///   re-derived from the installation: for each of the four records the
+///   re-derived from the installation: for each reconciled record the
 ///   block count, every spelled cross-objective address with its block and
 ///   key and the record index the production rule resolves it to, and the
 ///   boundary site that spells the count — ids, numbers and the rule's own
-///   verdicts, never a byte of any document.
+///   verdicts, never a byte of any document. The record set is the four
+///   archives the follow-up reconciled under the pre-correction layout
+///   (bound to M07, M08, no declared work order and M12 on the corrected
+///   layout, #1596) plus M06's own corrected record `zbd/c1c/m01`.
 ///
 /// `review.identity` is read whole from `CS_EVIDENCE_REVIEWER` (the runtime
 /// shape the reader above documents), so the report names whoever actually
@@ -213,10 +222,15 @@ fn evidence_report_m06_b_fu3_writes_the_acceptance_report() {
              INSTANTLOSS latches by block 3's kill plus block 19's nap and by block 7's nap. \
              M04: INSTANTWIN block 32 is named by block 31's nap, INSTANTLOSS block 41 by block \
              27's nap, and block 42's TICK_DEPENDS_ON_OBJ gates on block 40, not on the latch). \
-             DISCRIMINATING RECORD FACTS: each of the four records spells an address equal to \
-             its own block count (M02 OBJECTIVE13 -> 50, M03 OBJECTIVE21 -> 55, M04 OBJECTIVE23 \
-             -> 52, M06 OBJECTIVE67 -> 82), in range only under the one-based reading, and in \
-             M06 nothing spells 50 although block 50 naps 51. NOT CLAIMED: what the original \
+             DISCRIMINATING RECORD FACTS: each reconciled record spells an address equal to \
+             its own block count (zbd/c1/m02 OBJECTIVE13 -> 50, zbd/c1b/m03 OBJECTIVE21 -> 55, \
+             zbd/c1/m04 OBJECTIVE23 -> 52, zbd/c2/m01 OBJECTIVE67 -> 82 — the records the \
+             follow-up reconciled, bound to M07, M08, no declared work order and M12 \
+             respectively under the corrected campaign layout — and M06's own zbd/c1c/m01 \
+             OBJECTIVE17 -> 58), in range only under the one-based reading; in zbd/c2/m01 \
+             nothing spells 50 although block 50 naps 51, and in zbd/c1c/m01 block 38 naps 39 \
+             while block 39 naps 40, the INSTANTLOSS latch's only completion edge. NOT CLAIMED: \
+             what the original \
              observes when a genuinely out-of-range stored index reaches its unchecked wake \
              walk is allocator-dependent and stays unknown (#802); WAKEUP_OBJECTIVE_WHEN_I_\
              COMPLETE's decrement is unmeasured and stays out of the address walk; no original \

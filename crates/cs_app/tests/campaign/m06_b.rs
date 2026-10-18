@@ -1,6 +1,17 @@
 //! Acceptance stage M06-B: the mission-specific compatibility gaps of the
 //! sixth mission (`missions/M06.md`, work order `M06-B`).
 //!
+//! **Archive attribution (#1596, after #1565 `M01-ARCHIVE-DECISION`).** This
+//! suite was first pinned on `zbd/c2/m01`, the archive the pre-correction
+//! layout bound to M06; that record declares `snd_c3-HW-m2` — Hollywood
+//! mission 2 — and the corrected content-derived campaign layout binds it to
+//! **M12**. M06's own reader archive is `zbd/c1c/m01` — the Northwest
+//! mission-1 archive, bound to M01 when the record's measurements were
+//! written — and every pin below is re-derived from it through production
+//! code. See `docs/findings/2026-10-17-m01-archive-decision.md` and the
+//! 2026-10-18 section of
+//! `docs/findings/2026-10-09-m06-b-compatibility-gaps.md`.
+//!
 //! M06-A bound M06's identities and left its program unmeasured. The
 //! machinery that measures a control program (the `.zrd` reader, the census,
 //! the directive dispositions, the record → `RawProgram` adapter and the
@@ -9,45 +20,46 @@
 //! reader archive and pins what is *different* at M06, so the gaps are
 //! recorded as measurements instead of surfacing later as a silent failure:
 //!
-//! * M06's control program is `objectives.zrd` with **82** numbered blocks
-//!   and **265** directive sites across **26** keys, selected by the content
+//! * M06's control program is `objectives.zrd` with **58** numbered blocks
+//!   and **353** directive sites across **43** keys, selected by the content
 //!   rule and never by its name;
-//! * every key has a disposition: two terminal outcomes and 24 measured
+//! * every key has a disposition: two terminal outcomes and 41 measured
 //!   effects, **no** unmeasured key, no refusal and no unclassified
 //!   record-level key;
 //! * the sheet's three regression priorities are located in the record with
-//!   the actors the original spells — subsystem disablement (the eight
-//!   `g_engine*` in-play parts and the threshold that clears 4/1/2/3 of them,
-//!   beside the barge and gate chains), multi-step interaction (the
-//!   target-flag chain that walks `propane` → `sprucegoose` →
-//!   `tugandbarge01..04`, the 35 nap re-wakes and the `SET_AI_NET`
-//!   re-pointings) and passenger identity, whose **only expression in the
-//!   whole archive is an unreferenced location node** — no directive, target
-//!   or actor names a passenger, so no predicate is assigned here;
+//!   the actors the original spells — subsystem disablement (the Workers'
+//!   Voyage zeppelin's eighteen `reng*`/`leng*` engines and nine turret
+//!   parts, the pirate zeppelin's twelve engines and the `DEDG` group
+//!   tallies), multi-step interaction (the tailhook boarding chain — the
+//!   approach gate, the target-flag walk onto `wv_tailhook`/`peoplehook`, the
+//!   `activate_*_node` animation wakeups, the 27 nap re-wakes that pace the
+//!   radio warning chains, the `SET_AI_NET` re-pointings and the three
+//!   `TICK_DEPENDS_ON_OBJ` gates) and passenger identity, bound end to end by
+//!   name rather than by a `passenger` actor: the copilot exchange is spelled
+//!   in the record's own `ANIM_STATE` sites, the archive's largest member
+//!   `wv_tailhook.zrd` declares the boarding nodes and the startup event
+//!   table fires `call_add_jack`, the shared crew animation M06-B-FU4
+//!   (#1184) measured driving the world node `apassengers`;
 //! * both terminal latches are gated and every cross-objective address the
 //!   record spells is a block of this record — including the address equal to
 //!   the block count, which is what makes the record's addressing measurable
 //!   rather than assumed;
-//! * **the record lowers completely**: the fifteen
-//!   `KILL_OBJECTIVE_WHEN_I_COMPLETE` sites (two of them twelve targets wide)
-//!   bind because M02-B-FU1 (#800) reshaped list-taking directives, and the
-//!   three `ANIM_STATE` sites that spell a `COMPLETION_COUNT` override with
-//!   two descriptors lower because M04-B-FU1 (#806) generalized the same
-//!   mechanism to the operand list an `ANIM_STATE` evaluator reads — every
-//!   pair appends and the in-list count overwrites `required`. All 265 sites
-//!   bind, all 82 conditions lower and `MissionProgram::validate` accepts.
+//! * **the record lowers completely**: all 353 sites bind, all 58 conditions
+//!   lower and `MissionProgram::validate` accepts.
 //!
 //! No behaviour is invented here. The runtime halves of the sheet's
 //! priorities — the wrong actor, the wrong session, a repeated event — need
 //! ordinary play (M06-C) and stay open; nothing in this file simulates them.
-//! The lowering gap this stage recorded and the shared fix that closed it
-//! are in `docs/findings/2026-10-09-m06-b-compatibility-gaps.md` and
-//! `docs/findings/2026-10-09-m04-b-fu1-anim-state-operand-list.md`.
+//! The lowering gap this stage originally recorded and the shared fix that
+//! closed it are in `docs/findings/2026-10-09-m06-b-compatibility-gaps.md`
+//! and `docs/findings/2026-10-09-m04-b-fu1-anim-state-operand-list.md`.
 //!
-//! M06-B-FU1 (#817) adds the `accept_m06_b_fu1_*` members: two retail tests
-//! pin the three completion-count sites' own spelled operand lists, lowered
-//! evaluators, bound calls and the census's verdict, and one synthetic test
-//! carries M06's three-site spelling into CI.
+//! M06-B-FU1 (#817) adds the `accept_m06_b_fu1_*` members. The three
+//! six-operand `ANIM_STATE` sites the follow-up measured sit in the archive
+//! the corrected layout binds to **M12**, so the retail pins re-derive them
+//! from that record — M06's own record spells `ANIM_STATE` only as
+//! single-pair sites, and the pins say so — while one synthetic test still
+//! carries the measured spelling into CI.
 //!
 //! The retail tests are `#[ignore = "requires CS_GAME_DIR"]`; the three
 //! synthetic tests run in CI.
@@ -76,28 +88,41 @@ use cs_types::content::{ContentId, ContentKind};
 
 use crate::campaign::common::load_inventory;
 
-/// The census row label of the mission.
-pub(crate) const MISSION: &str = "zbd/c2/m01";
+/// The census row label of the mission — M06's own reader archive under the
+/// corrected campaign layout (`missions/bindings/M06.json`).
+pub(crate) const MISSION: &str = "zbd/c1c/m01";
 
 /// The reader archive M06-A bound as the mission's program.
-const CONTAINER: &str = "ZBD/C2/M01/zrdr.zbd";
+const CONTAINER: &str = "ZBD/C1C/M01/zrdr.zbd";
 /// SHA-256 of that whole archive, from production discovery.
-const CONTAINER_SHA256: &str = "d6e9315d580a0570ae8744d2c1b154c4c1af9086bf45cc2fcc125f0921fd9f63";
+const CONTAINER_SHA256: &str = "33b60a402dd8a8374faf02db808c074181754370e29d1b5115aad01b41b22c9f";
 /// The member the block-carrying rule picks (never a filename constant).
 const CONTROL_MEMBER: &str = "objectives.zrd";
 /// SHA-256 of the control member's own bytes.
-const CONTROL_SHA256: &str = "3b315798547528764afe5ae6c0370ba7f99ba946f386ffce2682eb7d353b534c";
+const CONTROL_SHA256: &str = "edb84d894ec9c424645cec0840c0c081c69642115753b44026c2157d382a8e92";
 
 /// The numbered blocks of the control member.
-const BLOCKS: u32 = 82;
+const BLOCKS: u32 = 58;
 /// The directive sites of the control member.
-const SITES: u32 = 265;
+const SITES: u32 = 353;
 /// The distinct directive keys of the control member.
-const KEYS: usize = 26;
+const KEYS: usize = 43;
 
 /// The four named locations `location.zrd` spells, in member order. The second
 /// is the archive's only passenger-named string.
 const LOCATIONS: [&str; 4] = ["Airport_terminal", "Passenger_hangar", "Crops", "Coast"];
+
+/// The work order the corrected layout binds the M06-B-FU1 follow-up's
+/// measured archive to: `zbd/c2/m01` declares `snd_c3-HW-m2`, Hollywood
+/// mission 2.
+const FOLLOWUP_WORK_ORDER: &str = "M12";
+/// The census row label of that measured archive.
+const FOLLOWUP_ARCHIVE: &str = "zbd/c2/m01";
+/// Its container, bound by the work order the corrected layout assigns it.
+const FOLLOWUP_CONTAINER: &str = "ZBD/C2/M01/zrdr.zbd";
+/// Its control record's block and site counts, for the re-pinned FU1 arms.
+const FOLLOWUP_BLOCKS: u32 = 82;
+const FOLLOWUP_SITES: u32 = 265;
 
 fn game_dir() -> PathBuf {
     PathBuf::from(std::env::var("CS_GAME_DIR").unwrap_or_else(|_| {
@@ -116,25 +141,34 @@ fn census() -> &'static RetailControlCensus {
     })
 }
 
+/// The source context, read once for the whole suite (fingerprinting the
+/// installation walks every file, so it happens exactly once).
+fn context() -> &'static SourceContext {
+    static CONTEXT: OnceLock<SourceContext> = OnceLock::new();
+    CONTEXT.get_or_init(|| {
+        SourceContext::read(&game_dir()).expect("the installation yields a source context")
+    })
+}
+
+/// One work order's production control-program binding.
+fn control_binding_of(work_order: &str) -> MissionControlBinding {
+    let title = load_inventory()
+        .iter()
+        .find(|(candidate, _)| candidate.as_str() == work_order)
+        .map(|(_, title)| title.clone())
+        .unwrap_or_else(|| panic!("the declared inventory has an {work_order} work order"));
+    context()
+        .control_program(
+            MissionLabel::new(work_order).unwrap_or_else(|error| panic!("{work_order}: {error}")),
+            &title,
+        )
+        .unwrap_or_else(|error| panic!("{work_order}'s control program binds: {error}"))
+}
+
 /// The production control-program binding, built once for the whole suite.
 fn control_binding() -> &'static MissionControlBinding {
     static BINDING: OnceLock<MissionControlBinding> = OnceLock::new();
-    BINDING.get_or_init(|| {
-        let inventory = load_inventory();
-        let title = inventory
-            .iter()
-            .find(|(label, _)| label.as_str() == "M06")
-            .map(|(_, title)| title.clone())
-            .expect("the declared inventory has an M06 work order");
-        let context = SourceContext::read(&game_dir())
-            .expect("production source context reads the installation");
-        context
-            .control_program(
-                MissionLabel::new("M06").expect("M06 is a valid label"),
-                &title,
-            )
-            .expect("M06's control program binds through the measured rule")
-    })
+    BINDING.get_or_init(|| control_binding_of("M06"))
 }
 
 /// The M06 mission binding M06-A derives, built once — this stage consumes its
@@ -148,9 +182,7 @@ fn mission_binding() -> &'static SourceBinding {
             .find(|(label, _)| label.as_str() == "M06")
             .map(|(_, title)| title.clone())
             .expect("the declared inventory has an M06 work order");
-        let context = SourceContext::read(&game_dir())
-            .expect("production source context reads the installation");
-        context
+        context()
             .bind(
                 MissionLabel::new("M06").expect("M06 is a valid label"),
                 &title,
@@ -256,6 +288,15 @@ fn spelled(blocks: &[(u32, Vec<Directive>)], key: &str) -> Vec<Vec<ZrdValue>> {
         .collect()
 }
 
+/// The directives of one numbered block.
+fn directives_of(blocks: &[(u32, Vec<Directive>)], number: u32) -> &Vec<Directive> {
+    &blocks
+        .iter()
+        .find(|(n, _)| *n == number)
+        .unwrap_or_else(|| panic!("OBJECTIVE{number} exists"))
+        .1
+}
+
 /// One `.zrd` text node.
 fn text(value: &str) -> ZrdValue {
     ZrdValue::Text(value.to_owned())
@@ -339,55 +380,20 @@ fn member_texts(name: &str) -> Vec<String> {
     texts
 }
 
-/// One `targets.zrd` record as authored: its `(key, value)` pairs in order.
-fn target_records() -> Vec<Vec<(String, ZrdValue)>> {
-    let bytes = std::fs::read(game_dir().join(CONTAINER)).expect("the archive reads");
-    let relative = cs_types::install::RelativePath::new(&CONTAINER.to_lowercase())
-        .expect("the archive path is relative");
-    let container_key = relative.logical_key();
-    let discovery = cs_formats::script_raw::discover_container(&container_key, &relative, &bytes);
-    for program in discovery.programs() {
-        if program.locator().member() != Some("targets.zrd") {
-            continue;
-        }
-        let document =
-            cs_content::stunts::decode_zrd(program.bytes()).expect("targets.zrd decodes");
-        let mut records = Vec::new();
-        let outer = document.as_list().expect("targets.zrd is a list");
-        for record in outer {
-            let mut pairs = Vec::new();
-            for pair in record.as_list().expect("a target record is a list") {
-                let pair = pair.as_list().expect("a target field is a pair");
-                let key = pair
-                    .first()
-                    .and_then(ZrdValue::as_text)
-                    .expect("a target field starts with its key")
-                    .to_owned();
-                // A field may be spelled as its key alone (`objective` is, in
-                // M06's propane target): no value node follows it.
-                let value = pair.get(1).cloned().unwrap_or(ZrdValue::List(Vec::new()));
-                pairs.push((key, value));
-            }
-            records.push(pairs);
-        }
-        return records;
-    }
-    panic!("targets.zrd is in {CONTAINER}");
-}
-
 // ---------------------------------------------------------------------------
 // Retail: what M06's control program is
 // ---------------------------------------------------------------------------
 
 /// **The control program is the member that declares the numbered blocks.**
 ///
-/// The member is found by the content rule: of the 15 members of M06's reader
-/// archive exactly one declares numbered `OBJECTIVE<N>` blocks. Neither size
-/// nor position decides it — the chosen member is the eighth, and `barge.zrd`
-/// and `goosepath.zrd` are both longer than it. The blocks and sites the
-/// census measures equal an independent walk of the same document, the
-/// archive is the program span M06-A bound, and the production control
-/// binding reaches the same member, span and digests through its own walk.
+/// The member is found by the content rule: of the twelve members of M06's
+/// reader archive exactly one declares numbered `OBJECTIVE<N>` blocks.
+/// Neither size nor position decides it — the chosen member is the seventh,
+/// and `wv_tailhook.zrd`, the boarding feature's own definition, is longer
+/// than it. The blocks and sites the census measures equal an independent
+/// walk of the same document, the archive is the program span M06-A bound,
+/// and the production control binding reaches the same member, span and
+/// digests through its own walk.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m06_b_the_control_program_is_the_member_that_declares_the_blocks() {
@@ -397,7 +403,7 @@ fn accept_m06_b_the_control_program_is_the_member_that_declares_the_blocks() {
         row.container_sha256, CONTAINER_SHA256,
         "the reader archive is the program M06-A bound"
     );
-    assert_eq!(row.members.len(), 15);
+    assert_eq!(row.members.len(), 12);
 
     let with_blocks: Vec<&str> = row
         .members
@@ -419,7 +425,7 @@ fn accept_m06_b_the_control_program_is_the_member_that_declares_the_blocks() {
         .iter()
         .position(|member| member.is_control)
         .expect("one member is the control program");
-    assert_eq!(index, 7, "the eighth member, not the first");
+    assert_eq!(index, 6, "the seventh member, not the first");
     let chosen = &row.members[index];
     let longer: Vec<&str> = row
         .members
@@ -429,8 +435,8 @@ fn accept_m06_b_the_control_program_is_the_member_that_declares_the_blocks() {
         .collect();
     assert_eq!(
         longer,
-        ["barge.zrd", "goosepath.zrd"],
-        "size is not the rule: the two longest members are not the control member"
+        ["wv_tailhook.zrd"],
+        "size is not the rule: the longest member is not the control member"
     );
 
     let record = row.record().expect("M06 has a measured control program");
@@ -448,7 +454,7 @@ fn accept_m06_b_the_control_program_is_the_member_that_declares_the_blocks() {
     assert_eq!(
         numbers,
         (1..=BLOCKS).collect::<Vec<_>>(),
-        "numbered 1..=82, no gaps"
+        "numbered 1..=58, no gaps"
     );
     let walked: usize = blocks.iter().map(|(_, directives)| directives.len()).sum();
     assert_eq!(walked as u32, record.sites(), "the independent walk agrees");
@@ -464,8 +470,8 @@ fn accept_m06_b_the_control_program_is_the_member_that_declares_the_blocks() {
     // The production binding and the census must not disagree about the
     // mission, the program, the member or the record.
     let bound = control_binding();
-    assert_eq!(bound.mission.as_str(), "mission/ch3-m02");
-    assert_eq!(bound.program_id.as_str(), "script/c2-m01-zrdr");
+    assert_eq!(bound.mission.as_str(), "mission/ch2-m01");
+    assert_eq!(bound.program_id.as_str(), "script/c1c-m01-zrdr");
     assert_eq!(bound.program_asset, CONTAINER);
     assert_eq!(bound.program_sha256, row.container_sha256);
     assert_eq!(bound.control_member, CONTROL_MEMBER);
@@ -498,9 +504,9 @@ fn accept_m06_b_the_control_program_is_the_member_that_declares_the_blocks() {
 /// refused.**
 ///
 /// Two keys are terminal outcomes (`INSTANTWIN`, `INSTANTLOSS`, one bare site
-/// each), the other 24 have a measured effect, and no key is Unmeasured. The
+/// each), the other 41 have a measured effect, and no key is Unmeasured. The
 /// sites are accounted for: the keys' sites sum to the record's, and the
-/// sorted vocabulary is exactly the 26 keys the archive spells.
+/// sorted vocabulary is exactly the 43 keys the archive spells.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m06_b_every_directive_m06_spells_has_a_disposition_and_none_is_refused() {
@@ -530,7 +536,7 @@ fn accept_m06_b_every_directive_m06_spells_has_a_disposition_and_none_is_refused
         refused.is_empty(),
         "M06's vocabulary is fully measured: {refused:?}"
     );
-    assert_eq!(measured, 24);
+    assert_eq!(measured, 41);
     let sites: u32 = record.keys().iter().map(|key| key.sites).sum();
     assert_eq!(sites, SITES, "no site is dropped from the accounting");
 
@@ -540,12 +546,23 @@ fn accept_m06_b_every_directive_m06_spells_has_a_disposition_and_none_is_refused
         vocabulary,
         [
             "ADD_OBJECTIVE_TARGET",
+            "ADD_OTHER_TARGET",
             "ANIM_STATE",
             "BEGIN_DORMANT",
             "COMPLETED_SOUND_GROUP",
+            "COMPLETED_STOPPOINT",
             "DEDG",
             "IDENTITY",
             "INACTIVE1",
+            "INACTIVE10",
+            "INACTIVE11",
+            "INACTIVE12",
+            "INACTIVE13",
+            "INACTIVE14",
+            "INACTIVE15",
+            "INACTIVE16",
+            "INACTIVE17",
+            "INACTIVE18",
             "INACTIVE2",
             "INACTIVE3",
             "INACTIVE4",
@@ -553,6 +570,7 @@ fn accept_m06_b_every_directive_m06_spells_has_a_disposition_and_none_is_refused
             "INACTIVE6",
             "INACTIVE7",
             "INACTIVE8",
+            "INACTIVE9",
             "INACTIVE_COMPLETION_COUNT",
             "INSTANTLOSS",
             "INSTANTWIN",
@@ -560,13 +578,18 @@ fn accept_m06_b_every_directive_m06_spells_has_a_disposition_and_none_is_refused
             "NAP_OBJECTIVE_WHEN_I_COMPLETE",
             "REMOVE_OBJECTIVE_TARGET",
             "SET_AI_NET",
+            "SET_HELP_LABEL",
             "STOP_QUEUED_SOUNDS",
+            "TICK_DEPENDS_ON_OBJ",
+            "TRAVELERS",
             "WAKEUP_ENEMIES",
             "WAKEUP_GENERATOR",
             "WAKEUP_SOUND_GROUP",
+            "WAKEUP_ZEP_TURRETS",
+            "WAKE_ANIM",
             "WAKE_OBJECTIVE_WHEN_I_COMPLETE",
         ],
-        "the exact 26 keys, so a key that appears or disappears fails here"
+        "the exact 43 keys, so a key that appears or disappears fails here"
     );
 
     // The two outcome keys answer for their own name and take no arguments.
@@ -584,22 +607,28 @@ fn accept_m06_b_every_directive_m06_spells_has_a_disposition_and_none_is_refused
 /// **The sheet's three regression priorities are in the record, with the
 /// actors the original spells, and resolve to measured operations.**
 ///
-/// * **subsystem disablement**: the eight `g_engine1..g_engine8` parts, each
-///   listed as a `healthy_part` chain, and the four `INACTIVE_COMPLETION_COUNT`
-///   thresholds (4, 1, 2, 3) that let a *part* of the list clear a block —
-///   beside the barge and gate chains that use the same evaluator with a
-///   single member each, and the target-list entry the engine part draws;
-/// * **multi-step interaction**: the target-flag chain that walks `propane` →
-///   `sprucegoose` → `tugandbarge01..04` across blocks 4, 8, 13, 17, 21 and
-///   25 (each step adds the next object, and the later ones also remove the
-///   objects the earlier steps added), the 35 nap re-wakes that clear a
-///   completed flag so a step can complete again, and the eight `SET_AI_NET`
-///   re-pointings of the patrol boats and firebrands;
-/// * **passenger identity**: **no directive, target or actor names a
-///   passenger.** The archive's only passenger-named string is the
-///   `Passenger_hangar` location node, which no other member and no directive
-///   site references — so this priority has no program binding to predicate
-///   yet, and nothing here invents one.
+/// * **subsystem disablement**: the Workers' Voyage zeppelin's eighteen
+///   engines, listed as `owner → part → healthy` chains under
+///   `INACTIVE1..INACTIVE18` with `INACTIVE_COMPLETION_COUNT` thresholds that
+///   let a *part* of the list clear a block (1/5/9 of eighteen at blocks
+///   6/8/9, 2 at block 55), the nine turret parts at blocks 7 and 28, the
+///   pirate zeppelin's twelve engines at blocks 36..39 (2/6/10/12 cleared,
+///   the fail countdown) and the `DEDG` group tallies;
+/// * **multi-step interaction**: the tailhook boarding chain — the
+///   `TRAVELERS` approach gate, the target flags that walk the objective
+///   pip from `workersvoyagezep` onto `wv_tailhook`/`peoplehook` and off
+///   again, the `WAKE_ANIM` wakeups that open the dropoff and pickup nodes,
+///   the 27 nap re-wakes that pace the radio warning chains, the kill lists
+///   that cancel them, the `SET_AI_NET` re-pointings and the
+///   `TICK_DEPENDS_ON_OBJ` dependency gates;
+/// * **passenger identity**: bound **end to end by name** — the copilot
+///   exchange the record gates as three `ANIM_STATE` sites
+///   (`wv_drop_copilot`, `wv_pickup_copilot`, `hooked_to_klondike`), the
+///   boarding nodes the archive's own `wv_tailhook.zrd` member declares, and
+///   the `call_add_jack` crew animation the startup event table fires. No
+///   actor member names a passenger and `Passenger_hangar` stays a
+///   location-only string, so the identity is the crew-animation mechanism,
+///   never an invented actor.
 ///
 /// Every key is asserted to resolve to the operation the shared finding
 /// measured, so a key that silently lost its meaning fails here, and the
@@ -614,25 +643,21 @@ fn accept_m06_b_the_sheet_priorities_are_located_and_resolve_to_measured_operati
         other => panic!("{key} is not measured: {other:?}"),
     };
 
-    // Subsystem disablement.
-    for key in [
-        "INACTIVE1",
-        "INACTIVE2",
-        "INACTIVE3",
-        "INACTIVE4",
-        "INACTIVE5",
-        "INACTIVE6",
-        "INACTIVE7",
-        "INACTIVE8",
-    ] {
-        assert_eq!(operation(key), DirectiveOperation::InactiveMembers);
+    // Subsystem disablement: the eighteen stage keys, the threshold and the
+    // group tally.
+    for index in 1..=18 {
+        assert_eq!(
+            operation(&format!("INACTIVE{index}")),
+            DirectiveOperation::InactiveMembers
+        );
     }
     assert_eq!(
         operation("INACTIVE_COMPLETION_COUNT"),
         DirectiveOperation::InactiveThreshold
     );
     assert_eq!(operation("DEDG"), DirectiveOperation::EnemyGroupDepletion);
-    // Multi-step interaction.
+    // Multi-step interaction: the target flags, the lifecycle keys, the
+    // approach gate, the animation wakeups and the dependency gates.
     assert_eq!(
         operation("ADD_OBJECTIVE_TARGET"),
         DirectiveOperation::SetTargetFlag {
@@ -645,6 +670,13 @@ fn accept_m06_b_the_sheet_priorities_are_located_and_resolve_to_measured_operati
         DirectiveOperation::SetTargetFlag {
             objective: true,
             set: false
+        }
+    );
+    assert_eq!(
+        operation("ADD_OTHER_TARGET"),
+        DirectiveOperation::SetTargetFlag {
+            objective: false,
+            set: true
         }
     );
     assert_eq!(operation("SET_AI_NET"), DirectiveOperation::AssignNet);
@@ -660,14 +692,63 @@ fn accept_m06_b_the_sheet_priorities_are_located_and_resolve_to_measured_operati
         operation("KILL_OBJECTIVE_WHEN_I_COMPLETE"),
         DirectiveOperation::KillObjectives
     );
-    // And the record's own lifecycle markers.
+    assert_eq!(
+        operation("TICK_DEPENDS_ON_OBJ"),
+        DirectiveOperation::DependencyGate
+    );
+    assert_eq!(operation("TRAVELERS"), DirectiveOperation::Travelers);
+    assert_eq!(operation("WAKE_ANIM"), DirectiveOperation::WakeAnimation);
+    assert_eq!(
+        operation("WAKEUP_GENERATOR"),
+        DirectiveOperation::FeedGenerator
+    );
+    assert_eq!(
+        operation("WAKEUP_ZEP_TURRETS"),
+        DirectiveOperation::WakeZeppelinTurrets
+    );
+    assert_eq!(operation("WAKEUP_ENEMIES"), DirectiveOperation::WakeEnemies);
+    assert_eq!(
+        operation("COMPLETED_STOPPOINT"),
+        DirectiveOperation::AdvanceStopPoint
+    );
+    assert_eq!(
+        operation("SET_HELP_LABEL"),
+        DirectiveOperation::SetHelpLabel
+    );
+    assert_eq!(
+        operation("IDENTITY"),
+        DirectiveOperation::PresentationIdentity
+    );
+    // The boarding's human cargo: the animation gates.
+    assert_eq!(operation("ANIM_STATE"), DirectiveOperation::AnimationStates);
+    // The sound keys and the record's own lifecycle markers.
+    assert_eq!(
+        operation("COMPLETED_SOUND_GROUP"),
+        DirectiveOperation::CompletedSoundGroup
+    );
+    assert_eq!(
+        operation("WAKEUP_SOUND_GROUP"),
+        DirectiveOperation::WakeSoundGroup
+    );
+    assert_eq!(
+        operation("STOP_QUEUED_SOUNDS"),
+        DirectiveOperation::StopQueuedSounds
+    );
     assert_eq!(operation("BEGIN_DORMANT"), DirectiveOperation::DormantStart);
 
     let (document, _member) = read_control_member(&game_dir(), MISSION).expect("control member");
     let blocks = blocks_of(&document);
 
     // --- subsystem disablement -----------------------------------------
-    assert_eq!(with(&blocks, "INACTIVE_COMPLETION_COUNT"), [50, 72, 73, 74]);
+    //
+    // The mission's ship-disabling work is measured by part lists: a block's
+    // `INACTIVE<k>` sites each spell one `owner → part → healthy` chain and
+    // the block completes when at least its `INACTIVE_COMPLETION_COUNT` of
+    // them are out of play (absent, the threshold defaults to all).
+    assert_eq!(
+        with(&blocks, "INACTIVE_COMPLETION_COUNT"),
+        [6, 7, 8, 9, 36, 37, 38, 39, 55]
+    );
     let thresholds: Vec<i64> = spelled(&blocks, "INACTIVE_COMPLETION_COUNT")
         .iter()
         .map(|args| match args.as_slice() {
@@ -675,70 +756,112 @@ fn accept_m06_b_the_sheet_priorities_are_located_and_resolve_to_measured_operati
             other => panic!("an INACTIVE_COMPLETION_COUNT site spells {other:?}"),
         })
         .collect();
-    assert_eq!(thresholds, [4, 1, 2, 3], "each threshold is record data");
-    for number in [50u32, 72, 73, 74] {
-        let directives = &blocks
-            .iter()
-            .find(|(n, _)| *n == number)
-            .unwrap_or_else(|| panic!("block {number} exists"))
-            .1;
-        let listed: Vec<&Directive> = directives
-            .iter()
-            .filter(|d| d.key.starts_with("INACTIVE") && d.key != "INACTIVE_COMPLETION_COUNT")
-            .collect();
-        assert_eq!(
-            listed.len(),
-            8,
-            "block {number} lists the eight engine parts"
-        );
-        for (position, directive) in listed.iter().enumerate() {
-            assert_eq!(
-                directive.key,
-                format!("INACTIVE{}", position + 1),
-                "block {number} spells the parts in order"
-            );
-            let chain = directive.args.as_deref().unwrap_or(&[]);
-            assert_eq!(
-                chain,
-                [
-                    text(&format!("g_engine{}", position + 1)),
-                    text("healthy_part")
-                ],
-                "block {number} {} addresses its own part's in-play flag",
-                directive.key
-            );
-        }
-    }
-    // The same evaluator with a single member elsewhere: the barge and gate
-    // chains, in the order the record spells them.
     assert_eq!(
-        with(&blocks, "INACTIVE1"),
-        [4, 13, 17, 21, 25, 33, 34, 35, 36, 50, 72, 73, 74]
+        thresholds,
+        [1, 1, 5, 9, 2, 6, 10, 12, 2],
+        "each threshold is record data"
     );
-    let single_member: Vec<Vec<ZrdValue>> = spelled(&blocks, "INACTIVE1")
-        .iter()
-        .take(9)
-        .cloned()
+
+    // A block's member chains, in the order the record spells them.
+    let chains = |number: u32| -> Vec<(String, Vec<ZrdValue>)> {
+        directives_of(&blocks, number)
+            .iter()
+            .filter(|directive| {
+                directive.key.starts_with("INACTIVE")
+                    && directive.key != "INACTIVE_COMPLETION_COUNT"
+            })
+            .map(|directive| {
+                let chain = directive.args.clone().unwrap_or_else(|| {
+                    panic!("block {number}'s {} spells a member chain", directive.key)
+                });
+                (directive.key.clone(), chain)
+            })
+            .collect()
+    };
+    let expected = |owner: &str, parts: &[&str]| -> Vec<(String, Vec<ZrdValue>)> {
+        parts
+            .iter()
+            .enumerate()
+            .map(|(index, part)| {
+                (
+                    format!("INACTIVE{}", index + 1),
+                    vec![text(owner), text(part), text("healthy")],
+                )
+            })
+            .collect()
+    };
+
+    // The Workers' Voyage's eighteen engines — right then left, nine each —
+    // gate four blocks: 1, 5 and 9 of eighteen (blocks 6, 8 and 9, the last
+    // the first PRIMARY objective) and 2 (block 55, the completion echo).
+    let wv_engines: Vec<String> = (1..=9)
+        .map(|n| format!("reng{n}"))
+        .chain((1..=9).map(|n| format!("leng{n}")))
         .collect();
-    assert_eq!(
-        single_member,
-        [
-            vec![text("kkgate"), text("healthy")],
-            vec![text("tugandbarge01"), text("thlthy")],
-            vec![text("tugandbarge02"), text("thlthy")],
-            vec![text("tugandbarge03"), text("thlthy")],
-            vec![text("tugandbarge04"), text("thlthy")],
-            vec![text("tugandbarge01"), text("thlthy")],
-            vec![text("tugandbarge02"), text("thlthy")],
-            vec![text("tugandbarge03"), text("thlthy")],
-            vec![text("tugandbarge04"), text("thlthy")],
-        ]
-    );
-    assert_eq!(
-        with(&blocks, "DEDG"),
-        [12, 43, 46, 65, 68],
-        "five group-depletion conditions"
-    );
+    for number in [6u32, 8, 9, 55] {
+        assert_eq!(
+            chains(number),
+            expected(
+                "workersvoyagezep",
+                &wv_engines.iter().map(String::as_str).collect::<Vec<_>>()
+            ),
+            "block {number} disables the voyage's eighteen engines in order"
+        );
+    }
+    // The same evaluator on the voyage's nine turret parts: block 7 needs
+    // one cleared, and block 28 — which spells no threshold — needs them all.
+    for number in [7u32, 28] {
+        assert_eq!(
+            chains(number),
+            expected(
+                "workersvoyagezep",
+                &[
+                    "utur1", "utur2", "utur3", "utur4", "ctur1", "ctur2", "ctur3", "ctur4",
+                    "maingun9",
+                ]
+            ),
+            "block {number} lists the voyage's nine turret parts"
+        );
+    }
+    // The pirate zeppelin's twelve engines gate the four-step fail
+    // countdown: 2, 6, 10 and 12 cleared, each step napping the next 15 s on.
+    let pz_engines: Vec<String> = ["reng", "leng"]
+        .iter()
+        .flat_map(|side| {
+            [11, 12, 21, 22, 31, 32]
+                .iter()
+                .map(move |n| format!("{side}{n}"))
+        })
+        .collect();
+    for number in [36u32, 37, 38, 39] {
+        assert_eq!(
+            chains(number),
+            expected(
+                "piratezep",
+                &pz_engines.iter().map(String::as_str).collect::<Vec<_>>()
+            ),
+            "block {number} disables the pirate zep's twelve engines in order"
+        );
+    }
+    // The same evaluator on a one-member chain: the pirate zep itself, the
+    // condition two dependency-gated blocks and block 57's dependency spell.
+    for number in [54u32, 56] {
+        assert_eq!(
+            chains(number),
+            [("INACTIVE1".to_owned(), vec![text("piratezep")])],
+            "block {number} completes when the pirate zep itself is out of play"
+        );
+    }
+    // The part names are the zeppelin member's own: `zeppelins.zrd` spells
+    // every engine part the chains disable, for both zeppelins.
+    let zeppelins = member_texts("zeppelins.zrd");
+    for part in wv_engines.iter().chain(pz_engines.iter()) {
+        assert!(
+            zeppelins.iter().any(|value| value == part),
+            "zeppelins.zrd spells the part {part} the chains disable"
+        );
+    }
+    assert_eq!(with(&blocks, "DEDG"), [2, 16, 17, 20, 21, 42, 43, 44]);
     let dedg: Vec<Vec<i64>> = spelled(&blocks, "DEDG")
         .iter()
         .map(|args| {
@@ -752,86 +875,101 @@ fn accept_m06_b_the_sheet_priorities_are_located_and_resolve_to_measured_operati
         .collect();
     assert_eq!(
         dedg,
-        [vec![1, 2], vec![2, 0], vec![1, 0], vec![1, 2], vec![2, 0]],
-        "each threshold is record data: a group with N members left, not a guess"
-    );
-
-    // The target list carries the engine part as a target of its own, which is
-    // how the disabled subsystem reaches the player's target info.
-    let targets = target_records();
-    assert_eq!(targets.len(), 7, "seven authored targets");
-    let descriptions: Vec<&str> = targets
-        .iter()
-        .map(|record| {
-            record
-                .iter()
-                .find(|(key, _)| key == "description")
-                .map(|(_, value)| value.as_text().unwrap_or("?"))
-                .expect("every target spells a description")
-        })
-        .collect();
-    assert_eq!(
-        descriptions,
         [
-            "MSG_TRGT_SGOOSE",
-            "MSG_TRGT_SGOOSE_ENGINE",
-            "MSG_TRGT_PROPANE_TANKS",
-            "MSG_TRGT_BARGE",
-            "MSG_TRGT_BARGE",
-            "MSG_TRGT_BARGE",
-            "MSG_TRGT_BARGE",
-        ]
-    );
-    let engine = &targets[1];
-    let nodes = engine
-        .iter()
-        .find(|(key, _)| key == "nodes")
-        .map(|(_, value)| value.clone())
-        .expect("the engine target lists its nodes");
-    assert_eq!(
-        nodes,
-        ZrdValue::List(vec![text("healthy_part")]),
-        "the engine target resolves to the same part chain the blocks disable"
+            vec![1, 0],
+            vec![1, 0],
+            vec![2, 0],
+            vec![3, 0],
+            vec![4, 0],
+            vec![2, 0],
+            vec![2, 0],
+            vec![4, 1],
+        ],
+        "each tally is record data: a group with N members left, not a guess"
     );
 
     // --- multi-step interaction ----------------------------------------
-    assert_eq!(with(&blocks, "ADD_OBJECTIVE_TARGET"), [4, 8, 13, 17, 21]);
+    //
+    // The boarding is an objective chain, and the record spells every
+    // mechanism it runs on: the approach gate, the target flags, the node
+    // wakeups, the pacing naps, the kills that cancel the warning chains,
+    // the AI re-pointings and the dependency gates.
+    assert_eq!(with(&blocks, "TRAVELERS"), [3]);
+    assert_eq!(
+        spelled(&blocks, "TRAVELERS"),
+        [vec![
+            text("player"),
+            text("APPROACHING"),
+            text("workersvoyagezep"),
+            ZrdValue::Float(700.0),
+            int(1),
+        ]],
+        "the approach gate: the player inside 700 of the Workers' Voyage"
+    );
+    assert_eq!(with(&blocks, "ADD_OBJECTIVE_TARGET"), [2, 17, 47, 50]);
     assert_eq!(
         spelled(&blocks, "ADD_OBJECTIVE_TARGET"),
         [
-            vec![text("sprucegoose")],
-            vec![text("tugandbarge01")],
-            vec![text("tugandbarge02")],
-            vec![text("tugandbarge03")],
-            vec![text("tugandbarge04")],
-        ]
+            vec![text("workersvoyagezep")],
+            vec![text("pzhookpoint")],
+            vec![ZrdValue::List(vec![
+                text("wv_tailhook"),
+                text("peoplehook")
+            ])],
+            vec![ZrdValue::List(vec![
+                text("wv_tailhook"),
+                text("peoplehook")
+            ])],
+        ],
+        "the objective flag walks the zeppelin to its tailhook nodes"
     );
-    assert_eq!(
-        with(&blocks, "REMOVE_OBJECTIVE_TARGET"),
-        [4, 13, 17, 21, 25]
-    );
+    assert_eq!(with(&blocks, "REMOVE_OBJECTIVE_TARGET"), [2, 11, 15, 50]);
     assert_eq!(
         spelled(&blocks, "REMOVE_OBJECTIVE_TARGET"),
         [
-            vec![text("propane")],
-            vec![text("tugandbarge01")],
-            vec![text("tugandbarge01"), text("tugandbarge02")],
-            vec![
-                text("tugandbarge01"),
-                text("tugandbarge02"),
-                text("tugandbarge03")
-            ],
-            vec![
-                text("tugandbarge01"),
-                text("tugandbarge02"),
-                text("tugandbarge03"),
-                text("tugandbarge04")
-            ],
+            vec![ZrdValue::List(vec![
+                text("piratezep"),
+                text("rock_zeppelin")
+            ])],
+            vec![ZrdValue::List(vec![
+                text("wv_tailhook"),
+                text("peoplehook")
+            ])],
+            vec![ZrdValue::List(vec![
+                text("wv_tailhook"),
+                text("peoplehook")
+            ])],
+            vec![text("workersvoyagezep")],
         ],
-        "each step removes the objects the previous steps added"
+        "the flag comes off the pirate zep at the start and off the hook twice"
+    );
+    assert_eq!(with(&blocks, "ADD_OTHER_TARGET"), [2, 13, 50]);
+    assert_eq!(
+        spelled(&blocks, "ADD_OTHER_TARGET"),
+        [
+            vec![ZrdValue::List(vec![
+                text("piratezep"),
+                text("rock_zeppelin")
+            ])],
+            vec![text("blackswanzep")],
+            vec![text("workersvoyagezep")],
+        ],
+        "the other-target flag lands on the pirate zep, the Black Swan and the voyage"
+    );
+    assert_eq!(with(&blocks, "WAKE_ANIM"), [11, 13, 15, 18, 49]);
+    assert_eq!(
+        spelled(&blocks, "WAKE_ANIM"),
+        [
+            vec![text("activate_dropoff_node")],
+            vec![text("fadein_bszep")],
+            vec![text("activate_pickup_node")],
+            vec![text("pzhomebase")],
+            vec![text("activate_dropoff_node")],
+        ],
+        "the hook opens twice, the Black Swan fades in and the zep heads home"
     );
     let naps = spelled(&blocks, "NAP_OBJECTIVE_WHEN_I_COMPLETE");
-    assert_eq!(naps.len(), 35, "the re-wake mechanism is spelled 35 times");
+    assert_eq!(naps.len(), 27, "the re-wake mechanism is spelled 27 times");
     for nap in &naps {
         assert!(
             nap.len() == 2
@@ -840,58 +978,163 @@ fn accept_m06_b_the_sheet_priorities_are_located_and_resolve_to_measured_operati
             "a nap spells [target block, delay seconds]: {nap:?}"
         );
     }
-    assert_eq!(
-        with(&blocks, "SET_AI_NET"),
-        [58, 59, 60, 61, 62, 63, 70, 71]
-    );
+    assert_eq!(with(&blocks, "SET_AI_NET"), [2, 19, 22]);
     assert_eq!(
         spelled(&blocks, "SET_AI_NET"),
         [
-            vec![ZrdValue::List(vec![
-                text("patrolboat_eg0"),
-                text("M2GoosePatrol")
-            ])],
-            vec![ZrdValue::List(vec![
-                text("patrolboat_eg1"),
-                text("M2GoosePatrol")
-            ])],
-            vec![ZrdValue::List(vec![
-                text("patrolboat_eg2"),
-                text("M2GoosePatrol")
-            ])],
-            vec![ZrdValue::List(vec![
-                text("patrolboat_eg3"),
-                text("M2GoosePatrol")
-            ])],
-            vec![ZrdValue::List(vec![
-                text("patrolboat_eg4"),
-                text("M2GoosePatrol")
-            ])],
-            vec![ZrdValue::List(vec![
-                text("patrolboat_eg5"),
-                text("M2GoosePatrol")
-            ])],
             vec![
-                ZrdValue::List(vec![text("patrolboat_eg0"), text("M2PatrolStop")]),
-                ZrdValue::List(vec![text("patrolboat_eg1"), text("M2PatrolStop")]),
-                ZrdValue::List(vec![text("patrolboat_eg2"), text("M2PatrolStop")]),
-                ZrdValue::List(vec![text("patrolboat_eg3"), text("M2PatrolStop")]),
-                ZrdValue::List(vec![text("patrolboat_eg4"), text("M2PatrolStop")]),
-                ZrdValue::List(vec![text("patrolboat_eg5"), text("M2PatrolStop")]),
+                ZrdValue::List(vec![text("devastator_2"), text("Bravo2")]),
+                ZrdValue::List(vec![text("devastator_3"), text("Charlie2")]),
             ],
-            vec![
-                ZrdValue::List(vec![text("hkfirebrand_1"), text("M2Third")]),
-                ZrdValue::List(vec![text("hkfirebrand_2"), text("M2Third")]),
-                ZrdValue::List(vec![text("hkfirebrand_3"), text("M2Third")]),
-                ZrdValue::List(vec![text("hkfirebrand_9"), text("M2Third")]),
-            ],
+            vec![ZrdValue::List(vec![text("bsfury_1"), text("BlackSwan")])],
+            vec![ZrdValue::List(vec![text("blackswanzep"), text("SwanZep2")])],
         ],
-        "six single re-pointings, then the six-boat and four-firebrand moves"
+        "the devastator pair and the two Black Swan re-pointings"
+    );
+    assert_eq!(with(&blocks, "TICK_DEPENDS_ON_OBJ"), [42, 43, 57]);
+    assert_eq!(
+        spelled(&blocks, "TICK_DEPENDS_ON_OBJ"),
+        [vec![int(54)], vec![int(54)], vec![int(56)]],
+        "three dependency gates: two on the pirate zep's fall, one on block 56"
+    );
+    assert_eq!(with(&blocks, "IDENTITY"), [9, 11, 15, 18, 21]);
+    assert_eq!(
+        spelled(&blocks, "IDENTITY"),
+        [
+            vec![text("PRIMARY"), int(1), text("MSG_BRF_NWM1_OBJ1")],
+            vec![text("PRIMARY"), int(2), text("MSG_BRF_NWM1_OBJ2")],
+            vec![text("PRIMARY"), int(3), text("MSG_BRF_NWM1_OBJ3")],
+            vec![text("PRIMARY"), int(4), text("MSG_BRF_NWM1_OBJ4")],
+            vec![text("SECONDARY"), int(11)],
+        ],
+        "four PRIMARY objectives and one SECONDARY, the NWM1 briefing strings"
+    );
+    assert_eq!(with(&blocks, "SET_HELP_LABEL"), [2, 50]);
+    assert_eq!(
+        spelled(&blocks, "SET_HELP_LABEL"),
+        [
+            vec![
+                ZrdValue::List(vec![text("piratezep"), text("rock_zeppelin")]),
+                text(" "),
+            ],
+            vec![text("workersvoyagezep"), text(" ")],
+        ],
+        "the help label clears on the pirate zep at the start and on the voyage"
+    );
+    assert_eq!(with(&blocks, "WAKEUP_GENERATOR"), [9, 13, 27, 45]);
+    assert_eq!(
+        spelled(&blocks, "WAKEUP_GENERATOR"),
+        [
+            vec![text("workersvoyagezep"), int(3)],
+            vec![text("blackswanzep"), int(2)],
+            vec![text("workersvoyagezep"), int(3)],
+            vec![text("blackswanzep"), int(4)],
+        ]
+    );
+    assert_eq!(with(&blocks, "WAKEUP_ZEP_TURRETS"), [1, 5, 13]);
+    assert_eq!(
+        spelled(&blocks, "WAKEUP_ZEP_TURRETS"),
+        [
+            vec![text("piratezep")],
+            vec![text("workersvoyagezep")],
+            vec![text("blackswanzep")],
+        ]
+    );
+    assert_eq!(with(&blocks, "WAKEUP_ENEMIES"), [13]);
+    assert_eq!(
+        spelled(&blocks, "WAKEUP_ENEMIES"),
+        [vec![text("bsfury_1"), text("blackswanzep")]]
+    );
+    assert_eq!(with(&blocks, "COMPLETED_STOPPOINT"), [13]);
+    assert_eq!(
+        spelled(&blocks, "COMPLETED_STOPPOINT"),
+        [vec![ZrdValue::List(vec![text("SwanZep1"), int(1), int(0)])]]
+    );
+    let kills: Vec<Vec<i64>> = spelled(&blocks, "KILL_OBJECTIVE_WHEN_I_COMPLETE")
+        .iter()
+        .map(|args| {
+            args.iter()
+                .filter_map(|value| match value {
+                    ZrdValue::Int(int) => Some(i64::from(*int)),
+                    _ => None,
+                })
+                .collect()
+        })
+        .collect();
+    assert_eq!(
+        kills,
+        [
+            vec![41, 48],
+            vec![42],
+            vec![43],
+            vec![29, 30, 31],
+            vec![33, 34, 35],
+            vec![44, 45],
+            vec![58],
+            vec![3],
+            vec![57],
+        ],
+        "blocks 11 and 15 kill the Jack and Tex warning chains their boarding step cancels"
     );
 
     // --- passenger identity --------------------------------------------
-    // The archive spells four locations, each in `location.zrd` and nowhere
-    // else, and no directive site names any of them.
+    //
+    // The boarding's human cargo is bound by name, not by a `passenger`
+    // actor. Three `ANIM_STATE` sites gate the exchange the `wv_tailhook`
+    // member defines: the copilot drops aboard (block 11), climbs back
+    // (block 15) and the captured zep ends slaved to the Klondike (block 18).
+    let anim_spec = |name: &str, state: &str| {
+        vec![
+            text("ANIM"),
+            ZrdValue::List(vec![
+                text("NAME"),
+                ZrdValue::List(vec![text(name)]),
+                text("STATE"),
+                ZrdValue::List(vec![text(state)]),
+            ]),
+        ]
+    };
+    assert_eq!(with(&blocks, "ANIM_STATE"), [11, 15, 18]);
+    assert_eq!(
+        spelled(&blocks, "ANIM_STATE"),
+        [
+            anim_spec("wv_drop_copilot", "RUNNING"),
+            anim_spec("wv_pickup_copilot", "EXECUTED"),
+            anim_spec("hooked_to_klondike", "EXECUTED"),
+        ],
+        "the copilot exchange is spelled end to end in the record"
+    );
+    // The archive's largest member is the boarding feature itself and
+    // declares the nodes and animations the record names.
+    let hook = member_texts("wv_tailhook.zrd");
+    for name in [
+        "wv_tailhook",
+        "peoplehook",
+        "dropoff_node",
+        "pickup_node",
+        "activate_dropoff_node",
+        "activate_pickup_node",
+        "wv_drop_copilot",
+        "wv_pickup_copilot",
+    ] {
+        assert!(
+            hook.iter().any(|value| value == name),
+            "wv_tailhook.zrd declares the boarding's {name}"
+        );
+    }
+    // The crew member boards through the shared crew mechanism: the startup
+    // event table fires `call_add_jack`, the library crew animation that
+    // drives the world node `apassengers` — the contrast M06-B-FU4 (#1184)
+    // measured between M06's data and M12's.
+    let startup = member_texts("startanims.zrd");
+    assert!(
+        startup.iter().any(|value| value == "call_add_jack"),
+        "the startup event table puts the crew member aboard"
+    );
+    // What the archive still does not bind: no actor member names a
+    // passenger, and the only passenger-named string anywhere in it is still
+    // `location.zrd`'s shared teleport entry — the same bytes the sibling
+    // archives carry.
     let locations = member_texts("location.zrd");
     for name in LOCATIONS {
         assert!(
@@ -901,19 +1144,16 @@ fn accept_m06_b_the_sheet_priorities_are_located_and_resolve_to_measured_operati
     }
     for member in [
         "aiv.zrd",
-        "dzones.zrd",
         "egen.zrd",
         "map.zrd",
         "mis_anim.zrd",
         "net.zrd",
         "objectives.zrd",
+        "placezeps.zrd",
         "startanims.zrd",
-        "targets.zrd",
         "weather.zrd",
-        "barge.zrd",
-        "goosepath.zrd",
-        "security_destroy.zrd",
-        "zepstate.zrd",
+        "wv_tailhook.zrd",
+        "zeppelins.zrd",
     ] {
         let texts = member_texts(member);
         for name in LOCATIONS {
@@ -923,8 +1163,7 @@ fn accept_m06_b_the_sheet_priorities_are_located_and_resolve_to_measured_operati
             );
         }
     }
-    // No control directive addresses a location, so the passenger-identity
-    // priority has no program binding in this record.
+    // No control directive addresses a location either.
     let addressed: Vec<u32> = blocks
         .iter()
         .filter(|(_, directives)| {
@@ -942,8 +1181,6 @@ fn accept_m06_b_the_sheet_priorities_are_located_and_resolve_to_measured_operati
         addressed.is_empty(),
         "no directive names a location: {addressed:?}"
     );
-    // The whole archive carries exactly one passenger-named string, and it is
-    // the location node — no actor in the actor-init member is a passenger.
     let actors = member_texts("aiv.zrd");
     let passengers: Vec<&String> = actors
         .iter()
@@ -977,46 +1214,44 @@ fn accept_m06_b_the_sheet_priorities_are_located_and_resolve_to_measured_operati
 /// **Both terminal latches are gated, and every block address the record
 /// spells is a block of this record.**
 ///
-/// `INSTANTWIN` sits in block 47 and `INSTANTLOSS` in block 51; no other block
-/// ends the mission. Both start dormant with no timed wake (`BEGIN_DORMANT`
-/// `-1`), and of the 64 dormant markers only blocks 1, 2 and 3 — the mission
-/// start — arm a timed self-wake, so neither latch can fire on its own clock.
+/// `INSTANTWIN` sits in block 24 and `INSTANTLOSS` in block 40; no other
+/// block ends the mission. Both start dormant with no timed wake
+/// (`BEGIN_DORMANT` `-1`), and of the 52 dormant markers only block 1 — the
+/// mission start — arms a timed self-wake, so neither latch can fire on its
+/// own clock.
 ///
-/// The address walk covers 107 spelled integers — 25 wake, 47 kill and 35 nap
-/// — and every one lies in `1..=82`. The addressing itself is not assumed
-/// here: M02-B-FU3 (#802) measured the original's parse decrementing every
-/// objective address before storing it, so a spelled number **is** the block
-/// number, and `cs_sim::objectives::address` implements that rule
-/// (`[1, objectives]`, mapping to index `address - 1`). Two values of M06's
-/// record discriminate the readings and both agree with the measured rule:
-/// block 67 spells `82`, the block count itself (the last block, in range — an
-/// index reading would call it dangling), and **nothing spells `50`** although
-/// block 50 naps `51`, so the failure latch has the completion edge the
-/// block-number reading gives it. The two latches' edges are pinned below;
-/// the sibling suites that had read an address as an index (M02-B, M04-B)
-/// were reconciled to the same measured convention by **M06-B-FU3** (#819),
-/// which also pins the conversion itself under `accept_objaddr_`.
+/// The address walk covers 72 spelled integers — 27 wake, 15 kill, 27 nap
+/// and 3 dependency gates — and every one lies in `1..=58`. The addressing
+/// itself is not assumed here: M02-B-FU3 (#802) measured the original's
+/// parse decrementing every objective address before storing it, so a
+/// spelled number **is** the block number, and `cs_sim::objectives::address`
+/// implements that rule (`[1, objectives]`, mapping to index
+/// `address - 1`). M06's record discriminates the readings three ways and
+/// each agrees with the measured rule: block 17 spells `58`, the block
+/// count itself (the last block, in range — an index reading would call it
+/// dangling); the success latch's only edge is block 18's spelled `24`,
+/// which an index reading would land on OBJECTIVE25 while block 21's
+/// SECONDARY wake of `23` would reach the latch; and the failure latch's
+/// only edge is block 39's nap of `40`, which an index reading would land
+/// on OBJECTIVE41 while block 38's nap of `39` would reach the latch a
+/// countdown step early. The sibling suites that had read an address as an
+/// index (M02-B, M04-B) were reconciled to the same measured convention by
+/// **M06-B-FU3** (#819), which also pins the conversion itself under
+/// `accept_objaddr_`.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m06_b_the_terminal_blocks_are_gated_and_every_address_is_in_range() {
     let (document, _member) = read_control_member(&game_dir(), MISSION).expect("control member");
     let blocks = blocks_of(&document);
-    let block = |number: u32| {
-        &blocks
-            .iter()
-            .find(|(n, _)| *n == number)
-            .unwrap_or_else(|| panic!("OBJECTIVE{number} exists"))
-            .1
-    };
 
     let outcomes: Vec<u32> = blocks
         .iter()
         .filter(|(_, directives)| directives.iter().any(|d| d.key.starts_with("INSTANT")))
         .map(|(number, _)| *number)
         .collect();
-    assert_eq!(outcomes, [47, 51], "no other block ends the mission");
-    for (number, outcome) in [(47, "INSTANTWIN"), (51, "INSTANTLOSS")] {
-        let directives = block(number);
+    assert_eq!(outcomes, [24, 40], "no other block ends the mission");
+    for (number, outcome) in [(24, "INSTANTWIN"), (40, "INSTANTLOSS")] {
+        let directives = directives_of(&blocks, number);
         assert!(
             directives
                 .iter()
@@ -1050,14 +1285,14 @@ fn accept_m06_b_the_terminal_blocks_are_gated_and_every_address_is_in_range() {
             timed_wakes.push(*number);
         }
     }
-    assert_eq!(dormant_count, 64);
+    assert_eq!(dormant_count, 52);
     assert_eq!(
         timed_wakes,
-        [1, 2, 3],
-        "only the three mission-start blocks arm a timed self-wake; the other 61 markers spell -1"
+        [1],
+        "only the mission-start block arms a timed self-wake; the other 51 markers spell -1"
     );
     assert!(
-        !timed_wakes.contains(&47) && !timed_wakes.contains(&51),
+        !timed_wakes.contains(&24) && !timed_wakes.contains(&40),
         "neither terminal latch may wake on its own clock: {timed_wakes:?}"
     );
     let undormant: Vec<u32> = blocks
@@ -1067,10 +1302,8 @@ fn accept_m06_b_the_terminal_blocks_are_gated_and_every_address_is_in_range() {
         .collect();
     assert_eq!(
         undormant,
-        [
-            4, 9, 11, 33, 34, 35, 36, 37, 38, 39, 40, 41, 50, 64, 69, 72, 73, 74
-        ],
-        "18 blocks are entered through a predecessor's edge rather than a dormant marker"
+        [2, 3, 6, 7, 36, 55],
+        "six blocks are entered through a predecessor's edge rather than a dormant marker"
     );
 
     // The addresses, walked with the measured child rules.
@@ -1094,11 +1327,12 @@ fn accept_m06_b_the_terminal_blocks_are_gated_and_every_address_is_in_range() {
     assert_eq!(
         edges,
         BTreeMap::from([
-            ("KILL_OBJECTIVE_WHEN_I_COMPLETE", 47),
-            ("NAP_OBJECTIVE_WHEN_I_COMPLETE", 35),
-            ("WAKE_OBJECTIVE_WHEN_I_COMPLETE", 25),
+            ("KILL_OBJECTIVE_WHEN_I_COMPLETE", 15),
+            ("NAP_OBJECTIVE_WHEN_I_COMPLETE", 27),
+            ("TICK_DEPENDS_ON_OBJ", 3),
+            ("WAKE_OBJECTIVE_WHEN_I_COMPLETE", 27),
         ]),
-        "the address walk visits every spelled address: 25 wake, 47 kill, 35 nap"
+        "the address walk visits every spelled address: 27 wake, 15 kill, 27 nap, 3 gates"
     );
     assert!(
         out_of_range.is_empty(),
@@ -1107,12 +1341,13 @@ fn accept_m06_b_the_terminal_blocks_are_gated_and_every_address_is_in_range() {
     assert_eq!(
         highest,
         i64::from(BLOCKS),
-        "block 67 spells 82 — the block count itself, which an index reading \
+        "block 17 spells 58 — the block count itself, which an index reading \
          would report as dangling"
     );
 
     // Who may fire the two latches: a completion edge names each of them, and
-    // no address equals the failure latch's predecessor-less number 50.
+    // under the index reading both latches' edges land one block late — the
+    // neighbours' spelled numbers would reach the latches instead.
     let spelled_addresses: Vec<(u32, String, Vec<i64>)> = blocks
         .iter()
         .flat_map(|(number, directives)| {
@@ -1123,12 +1358,6 @@ fn accept_m06_b_the_terminal_blocks_are_gated_and_every_address_is_in_range() {
                 .collect::<Vec<_>>()
         })
         .collect();
-    assert!(
-        !spelled_addresses
-            .iter()
-            .any(|(_, _, addresses)| addresses.contains(&50)),
-        "nothing spells 50, so an index reading would leave the failure latch unreachable"
-    );
     let naming = |target: i64| -> Vec<(u32, String, Vec<i64>)> {
         spelled_addresses
             .iter()
@@ -1137,43 +1366,49 @@ fn accept_m06_b_the_terminal_blocks_are_gated_and_every_address_is_in_range() {
             .collect()
     };
     assert_eq!(
-        naming(47),
-        [
-            (46, "NAP_OBJECTIVE_WHEN_I_COMPLETE".to_owned(), vec![47]),
-            (
-                50,
-                "KILL_OBJECTIVE_WHEN_I_COMPLETE".to_owned(),
-                vec![29, 30, 31, 32, 37, 38, 39, 40, 44, 45, 46, 47]
-            ),
-        ],
-        "the success latch is napped by block 46 and killed by block 50's twelve-part kill"
+        naming(24),
+        [(18, "WAKE_OBJECTIVE_WHEN_I_COMPLETE".to_owned(), vec![24])],
+        "the success latch's only completion edge: the hookup step's own wake"
     );
     assert_eq!(
-        naming(51),
-        [(50, "NAP_OBJECTIVE_WHEN_I_COMPLETE".to_owned(), vec![51])],
-        "the failure latch has exactly one completion edge: block 50's nap"
+        naming(40),
+        [(39, "NAP_OBJECTIVE_WHEN_I_COMPLETE".to_owned(), vec![40])],
+        "the failure latch's only completion edge: the fail countdown's last nap"
+    );
+    assert_eq!(
+        naming(23),
+        [(
+            21,
+            "WAKE_OBJECTIVE_WHEN_I_COMPLETE".to_owned(),
+            vec![22, 23]
+        )],
+        "under an index reading the SECONDARY block's wake would reach the success latch"
+    );
+    assert_eq!(
+        naming(39),
+        [(38, "NAP_OBJECTIVE_WHEN_I_COMPLETE".to_owned(), vec![39])],
+        "under an index reading block 38's nap would reach the failure latch a step early"
     );
 }
 
 /// **Every call binds, every condition lowers and M06's record completes.**
 ///
-/// * **calls**: all 265 sites bind — the fifteen
-///   `KILL_OBJECTIVE_WHEN_I_COMPLETE` sites (two of them twelve targets wide,
-///   past [`MAX_CALL_ARGS`] as positional operands) through M02-B-FU1's
-///   list-argument carrying (#800), and the eight `ANIM_STATE` sites through
-///   M04-B-FU1's generalization of the same mechanism (#806): the operand
-///   list an `ANIM_STATE` evaluator reads is carried as one `Value::List`
-///   argument. The registry's bound itself is unchanged, which the synthetic
-///   pair at the end of this file pins on a key that takes no index list;
-/// * **conditions**: all 82 block conditions lower — the three `ANIM_STATE`
-///   sites at blocks 9, 11 and 41 that spell a `COMPLETION_COUNT` override
-///   with two descriptors append both pairs and let the in-list count
-///   overwrite `required` to 1, the way the original's operand-list walk
-///   reads them.
+/// * **calls**: all 353 sites bind. The nine
+///   `KILL_OBJECTIVE_WHEN_I_COMPLETE` sites are at most three targets wide —
+///   inside [`MAX_CALL_ARGS`] either way — and the wide-list arm of
+///   M02-B-FU1's mechanism (#800) stays pinned by the synthetic test below
+///   and by the archive the corrected layout binds to M12, which spells
+///   twelve-target kills. The three `ANIM_STATE` sites are each the
+///   two-operand single-pair shape; the six-operand override shape the
+///   follow-up measured lives on that same M12 record;
+/// * **conditions**: all 58 block conditions lower — the copilot exchange's
+///   three `ANIM_STATE` evaluators among them, each a single pair under its
+///   own count.
 ///
 /// The bound program reaches `MissionProgram::validate` and validates; the
-/// row is complete. The condition-shape class this pin recorded was filed as
-/// M04-B-FU1 (#806), and M06's own instance as M06-B-FU1 (#817).
+/// row is complete. The condition-shape class this pin originally recorded
+/// was filed as M04-B-FU1 (#806), and the follow-up's own instance — now on
+/// the record the corrected layout binds to M12 — as M06-B-FU1 (#817).
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m06_b_every_call_binds_every_condition_lowers_and_m06s_record_completes() {
@@ -1183,7 +1418,7 @@ fn accept_m06_b_every_call_binds_every_condition_lowers_and_m06s_record_complete
     let kill = record
         .key("KILL_OBJECTIVE_WHEN_I_COMPLETE")
         .expect("it is spelled");
-    assert_eq!((kill.blocks, kill.sites), (15, 15));
+    assert_eq!((kill.blocks, kill.sites), (9, 9));
     let mut kill_shapes: Vec<(usize, u32)> = kill
         .shapes
         .iter()
@@ -1192,8 +1427,8 @@ fn accept_m06_b_every_call_binds_every_condition_lowers_and_m06s_record_complete
     kill_shapes.sort();
     assert_eq!(
         kill_shapes,
-        [(1, 8), (3, 5), (12, 2)],
-        "eight single-target sites, five three-target ones and two twelve-target ones"
+        [(1, 5), (2, 2), (3, 2)],
+        "five single-target sites, two two-target ones and two three-target ones"
     );
     let longest = kill_shapes
         .iter()
@@ -1201,13 +1436,13 @@ fn accept_m06_b_every_call_binds_every_condition_lowers_and_m06s_record_complete
         .max()
         .unwrap_or(0);
     assert!(
-        longest > MAX_CALL_ARGS,
-        "the twelve-target shape is {longest} positional operands, past {MAX_CALL_ARGS} — \
-         it only binds because the list is carried as one argument"
+        longest <= MAX_CALL_ARGS,
+        "the widest kill is {longest} positional operands, inside {MAX_CALL_ARGS} — \
+         the wide-list case lives on M12's record and the synthetic pin below"
     );
 
     let anim = record.key("ANIM_STATE").expect("it is spelled");
-    assert_eq!((anim.blocks, anim.sites), (8, 8));
+    assert_eq!((anim.blocks, anim.sites), (3, 3));
     let mut anim_shapes: Vec<(usize, u32)> = anim
         .shapes
         .iter()
@@ -1216,13 +1451,13 @@ fn accept_m06_b_every_call_binds_every_condition_lowers_and_m06s_record_complete
     anim_shapes.sort();
     assert_eq!(
         anim_shapes,
-        [(2, 5), (6, 3)],
-        "five single-pair sites and the three COMPLETION_COUNT sites"
+        [(2, 3)],
+        "three single-pair sites; M06's own record spells no COMPLETION_COUNT site"
     );
 
     let attempt = row.lowering_attempt().unwrap();
     let lowered = attempt.attempt();
-    assert_eq!(lowered.mission.as_deref(), Ok("mission/ch3-m02"));
+    assert_eq!(lowered.mission.as_deref(), Ok("mission/ch2-m01"));
     assert_eq!(lowered.objectives, BLOCKS);
     assert_eq!(lowered.calls.len() as u32, SITES);
     let refused_calls: Vec<&str> = lowered
@@ -1243,7 +1478,7 @@ fn accept_m06_b_every_call_binds_every_condition_lowers_and_m06s_record_complete
     );
     assert!(
         attempt.program().is_some(),
-        "a program stands for all 82 objectives"
+        "a program stands for all 58 objectives"
     );
     assert_eq!(
         lowered.validation,
@@ -1264,25 +1499,23 @@ fn accept_m06_b_every_call_binds_every_condition_lowers_and_m06s_record_complete
         .collect();
     assert!(
         refused_conditions.is_empty(),
-        "all 82 block conditions lower: {refused_conditions:?}"
+        "all 58 block conditions lower: {refused_conditions:?}"
     );
 
-    // The three override sites carry the measured evaluators: both
-    // descriptors appended, and each in-list COMPLETION_COUNT [1] overwrites
-    // `required`.
+    // The three ANIM_STATE evaluators: the copilot drops aboard (RUNNING),
+    // climbs back (EXECUTED) and the zeppelin ends slaved to the Klondike
+    // (EXECUTED) — each a single pair under its own count.
     let raw = attempt.raw_program().expect("the program assembled");
-    for index in [8usize, 10, 40] {
+    for (index, name, state) in [
+        (10usize, "wv_drop_copilot", AnimationState::Running),
+        (14, "wv_pickup_copilot", AnimationState::Executed),
+        (17, "hooked_to_klondike", AnimationState::Executed),
+    ] {
         let (required, pairs) = animation_evaluator(&raw.objectives[index].condition);
         assert_eq!(
-            required,
-            1,
-            "block {}'s COMPLETION_COUNT [1] overwrites the two-pair count",
-            index + 1
-        );
-        assert_eq!(
-            pairs.len(),
-            2,
-            "block {} appends both its descriptors",
+            (required, pairs.as_slice()),
+            (1, &[(name.to_owned(), state)][..]),
+            "block {}'s evaluator is its own spelled pair",
             index + 1
         );
     }
@@ -1316,30 +1549,64 @@ fn accept_m06_b_m06_is_complete_and_the_campaign_stays_unready() {
     assert!(row.is_complete(), "M06's row is complete");
 }
 
-/// **M06's three `COMPLETION_COUNT` sites lower the measured way and the
-/// record completes.** (M06-B-FU1, #817)
+/// **The completion-count sites this follow-up measured still lower — on the
+/// record the corrected layout binds to M12 — and M06's own record completes
+/// without them.** (M06-B-FU1, #817; re-pinned on the corrected layout,
+/// #1596)
 ///
-/// `ANIM_STATE` is spelled at eight sites in two shapes: five single-pair
-/// sites of two operands and — the gap M06-B pinned — three sites of six
-/// operands, blocks 9, 11 and 41. Each is its block's first directive and
-/// spells `COMPLETION_COUNT [1]` plus the two `ANIM` descriptors of its own
-/// patrol path (`path3`, `path4`, `path5` `continue`/`accelerate`, every one
-/// wanting `RUNNING`).
+/// `ANIM_STATE` is spelled at three sites of the measured archive's record,
+/// blocks 9, 11 and 41 of `zbd/c2/m01`'s control member — each its block's
+/// first directive, `COMPLETION_COUNT [1]` plus the two `ANIM` descriptors
+/// of its own patrol path (`path3`, `path4`, `path5`
+/// `continue`/`accelerate`, every one wanting `RUNNING`). The record itself
+/// declares `snd_c3-HW-m2`, so the corrected campaign layout binds it to
+/// M12, not M06 — and M06's own record spells `ANIM_STATE` only as
+/// single-pair sites: the gap the follow-up pinned has no M06 instance.
 ///
 /// The original's parse helper `0x4691d0` walks the whole operand list —
 /// every `ANIM`/spec pair appends and the `COMPLETION_COUNT` found inside
 /// the same list overwrites `required` — and the operand list is the
 /// evaluator's one call argument, carried as a single `Value::List`. That is
 /// the mechanism M04-B-FU1 (#806) measured in the decrypted image and
-/// lowered for every mission; this test pins M06's own three sites through
-/// it: the spelled operand lists themselves, the lowered evaluators, the
-/// bound calls and the validating program.
+/// lowered for every mission; this test pins the measured sites where they
+/// sit, on the record that spells them.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m06_b_fu1_the_completion_count_sites_lower_and_m06s_record_completes() {
-    let row = census().row(MISSION).unwrap();
-    let record = row.record().unwrap();
+    // M06's own record spells no override: its ANIM_STATE vocabulary is the
+    // three single-pair sites the priorities pin above.
+    let own = census().row(MISSION).unwrap();
+    let anim = own
+        .record()
+        .unwrap()
+        .key("ANIM_STATE")
+        .expect("it is spelled");
+    assert_eq!((anim.blocks, anim.sites), (3, 3));
+    let mut own_shapes: Vec<(usize, u32)> = anim
+        .shapes
+        .iter()
+        .map(|(shape, sites)| (shape.arity(), *sites))
+        .collect();
+    own_shapes.sort();
+    assert_eq!(
+        own_shapes,
+        [(2, 3)],
+        "M06's own record spells only the single-pair shape — the gap class has no M06 instance"
+    );
 
+    // The three sites the follow-up measured sit in the archive the
+    // corrected layout binds to M12; pin them where they were measured.
+    let binding = control_binding_of(FOLLOWUP_WORK_ORDER);
+    assert_eq!(
+        binding.program_asset, FOLLOWUP_CONTAINER,
+        "the corrected layout binds the measured archive to M12"
+    );
+    let row = census().row(FOLLOWUP_ARCHIVE).unwrap();
+    let record = row.record().unwrap();
+    assert_eq!(
+        (record.blocks(), record.sites()),
+        (FOLLOWUP_BLOCKS, FOLLOWUP_SITES)
+    );
     let anim = record.key("ANIM_STATE").expect("it is spelled");
     assert_eq!((anim.blocks, anim.sites), (8, 8));
     let mut shapes: Vec<(usize, u32)> = anim
@@ -1356,14 +1623,11 @@ fn accept_m06_b_fu1_the_completion_count_sites_lower_and_m06s_record_completes()
 
     // The three sites are each their block's first directive and spell the
     // record's own operand list — pinned here, never assumed.
-    let (document, _member) = read_control_member(&game_dir(), MISSION).expect("control member");
+    let (document, _member) =
+        read_control_member(&game_dir(), FOLLOWUP_ARCHIVE).expect("control member");
     let blocks = blocks_of(&document);
     for (number, path) in [(9u32, "path3"), (11, "path4"), (41, "path5")] {
-        let directives = &blocks
-            .iter()
-            .find(|(n, _)| *n == number)
-            .unwrap_or_else(|| panic!("block {number} exists"))
-            .1;
+        let directives = directives_of(&blocks, number);
         assert_eq!(
             directives.first().map(|directive| directive.key.as_str()),
             Some("ANIM_STATE"),
@@ -1371,7 +1635,7 @@ fn accept_m06_b_fu1_the_completion_count_sites_lower_and_m06s_record_completes()
         );
         assert_eq!(
             directives[0].args.as_deref(),
-            Some(m06_anim_state_operands(path).as_slice()),
+            Some(measured_anim_state_operands(path).as_slice()),
             "block {number} spells the {path} pair under COMPLETION_COUNT [1]"
         );
     }
@@ -1381,7 +1645,7 @@ fn accept_m06_b_fu1_the_completion_count_sites_lower_and_m06s_record_completes()
 
     // Every site binds: the operand list is one argument, so a six-operand
     // site's width is a list length, never an arity.
-    assert_eq!(lowered.calls.len() as u32, SITES);
+    assert_eq!(lowered.calls.len() as u32, FOLLOWUP_SITES);
     assert!(
         lowered
             .calls
@@ -1521,7 +1785,8 @@ fn accept_m06_b_fu1_m06_is_complete_and_the_campaign_stays_unready() {
 // ---------------------------------------------------------------------------
 
 /// An `ANIM_STATE` operand list: an optional `COMPLETION_COUNT` override, then
-/// `pairs` `ANIM` descriptors — the shapes M06 spells (2 and 6 operands).
+/// `pairs` `ANIM` descriptors — the two shapes the measured record spells
+/// (2 and 6 operands).
 fn anim_state_operands(pairs: usize, completion_count: Option<u32>) -> Vec<ZrdValue> {
     let mut operands = Vec::new();
     if let Some(count) = completion_count {
@@ -1540,7 +1805,7 @@ fn anim_state_operands(pairs: usize, completion_count: Option<u32>) -> Vec<ZrdVa
     operands
 }
 
-/// One `ANIM` spec record as M06's three sites spell it:
+/// One `ANIM` spec record as the measured three sites spell it:
 /// `[NAME [<name>], STATE [RUNNING]]`.
 fn anim_descriptor(name: &str) -> ZrdValue {
     ZrdValue::List(vec![
@@ -1551,10 +1816,11 @@ fn anim_descriptor(name: &str) -> ZrdValue {
     ])
 }
 
-/// M06's six-operand `ANIM_STATE` spelling: `COMPLETION_COUNT [1]` then the
-/// path's `continue`/`accelerate` `RUNNING` descriptors — what blocks 9, 11
-/// and 41 each spell for `path3`, `path4` and `path5` (M06-B-FU1, #817).
-fn m06_anim_state_operands(path: &str) -> Vec<ZrdValue> {
+/// The six-operand `ANIM_STATE` spelling the follow-up measured (on the
+/// record the corrected layout binds to M12): `COMPLETION_COUNT [1]` then
+/// the path's `continue`/`accelerate` `RUNNING` descriptors — what blocks 9,
+/// 11 and 41 each spell for `path3`, `path4` and `path5` (M06-B-FU1, #817).
+fn measured_anim_state_operands(path: &str) -> Vec<ZrdValue> {
     vec![
         text("COMPLETION_COUNT"),
         ZrdValue::List(vec![int(1)]),
@@ -1583,14 +1849,15 @@ fn animation_evaluator(condition: &Condition) -> (u32, &Vec<(String, AnimationSt
         .unwrap_or_else(|| panic!("the block carries no animation evaluator: {condition:?}"))
 }
 
-/// **M06's completion-count spelling lowers: both pairs append and the
-/// in-list count overwrites `required`.**
+/// **A completion-count spelling lowers: both pairs append and the in-list
+/// count overwrites `required`.**
 ///
-/// The spelling M06's blocks 9, 11 and 41 use — a `COMPLETION_COUNT [1]`
-/// plus two `ANIM` descriptors inside the one operand list, six operands —
-/// lowers the measured way: the operand list is one call argument, so the
-/// site binds inside the bound either way; every pair appends; and the
-/// sibling count found in the same list overwrites `required`.
+/// The spelling the measured record's blocks 9, 11 and 41 use — a
+/// `COMPLETION_COUNT [1]` plus two `ANIM` descriptors inside the one operand
+/// list, six operands — lowers the measured way: the operand list is one
+/// call argument, so the site binds inside the bound either way; every pair
+/// appends; and the sibling count found in the same list overwrites
+/// `required`.
 #[test]
 fn accept_m06_b_a_completion_count_site_lowers_with_its_override() {
     let authored = |operands: Vec<ZrdValue>| {
@@ -1626,12 +1893,12 @@ fn accept_m06_b_a_completion_count_site_lowers_with_its_override() {
         "the single-pair site produced a bound call"
     );
 
-    let m06_shape = authored(anim_state_operands(2, Some(1)));
-    let record = measure_control_record(&m06_shape);
-    let lowered = lower_control_record(mission, "zbd/synth/mission", &m06_shape, &record);
+    let override_shape = authored(anim_state_operands(2, Some(1)));
+    let record = measure_control_record(&override_shape);
+    let lowered = lower_control_record(mission, "zbd/synth/mission", &override_shape, &record);
     assert!(
         record.is_complete(lowered.attempt()),
-        "M06's spelling lowers now: {:?}",
+        "the measured spelling lowers now: {:?}",
         lowered.attempt()
     );
     let raw = lowered.raw_program().expect("the program assembled");
@@ -1654,13 +1921,13 @@ fn accept_m06_b_a_completion_count_site_lowers_with_its_override() {
 /// **A twelve-target kill binds as one list argument; a wide key that takes no
 /// list argument still refuses.**
 ///
-/// M06's retail record leans on both halves. Its widest
-/// `KILL_OBJECTIVE_WHEN_I_COMPLETE` site spells twelve targets — twelve
-/// positional operands, past [`MAX_CALL_ARGS`] — and binds because M02-B-FU1
-/// (#800) carries a list-taking directive's spelled list as one `Value::List`
-/// argument; authored the same way here, the record lowers completely. The
-/// bound itself was never raised, so a key whose measured operation takes no
-/// list argument still refuses its whole registration when its sites are wide
+/// The retail half of the wide arm sits on the archive the corrected layout
+/// binds to M12, whose record spells twelve-target
+/// `KILL_OBJECTIVE_WHEN_I_COMPLETE` sites — twelve positional operands, past
+/// [`MAX_CALL_ARGS`], bound through M02-B-FU1's (#800) list carrying;
+/// authored the same way here, the record lowers completely. The bound
+/// itself was never raised, so a key whose measured operation takes no list
+/// argument still refuses its whole registration when its sites are wide
 /// enough: a positional `IDENTITY` site of [`MAX_CALL_ARGS`] + 1 arguments
 /// refuses, its site refuses with it and the key never enters the registry.
 /// Both arms run in CI without original data, and whichever follow-up widens
@@ -1689,7 +1956,7 @@ fn accept_m06_b_a_wide_kill_list_binds_and_a_wide_non_index_key_still_refuses() 
         )])
     };
 
-    // M06's widest kill site, authored as the archive spells it.
+    // The widest kill site the measured record spells, authored that way.
     let widest = kill_record(12);
     let record = measure_control_record(&widest);
     let lowered = lower(&widest);
@@ -1831,29 +2098,38 @@ fn accept_m06_b_a_wide_kill_list_binds_and_a_wide_non_index_key_still_refuses() 
     );
 }
 
-/// **M06's own three-site spelling lowers on an authored record.**
+/// **The measured three-site spelling lowers on an authored record.**
 /// (M06-B-FU1)
 ///
-/// The operand lists blocks 9, 11 and 41 spell — `COMPLETION_COUNT [1]` plus
-/// the path's `continue`/`accelerate` `RUNNING` descriptors — are authored
-/// here verbatim, one site per block. Each lowers to its own
-/// `AnimationStates { required: 1, … }`, each site binds its operand list as
-/// one `Value::List` argument and the program validates — the measured
-/// mechanism carried into CI, where there is no original data.
+/// The operand lists the measured record's blocks 9, 11 and 41 spell —
+/// `COMPLETION_COUNT [1]` plus the path's `continue`/`accelerate` `RUNNING`
+/// descriptors — are authored here verbatim, one site per block. Each lowers
+/// to its own `AnimationStates { required: 1, … }`, each site binds its
+/// operand list as one `Value::List` argument and the program validates —
+/// the measured mechanism carried into CI, where there is no original data.
 #[test]
 fn accept_m06_b_fu1_m06s_spelling_lowers_all_three_sites() {
     let document = control_record(vec![
         block(
             1,
-            vec![directive("ANIM_STATE", m06_anim_state_operands("path3"))],
+            vec![directive(
+                "ANIM_STATE",
+                measured_anim_state_operands("path3"),
+            )],
         ),
         block(
             2,
-            vec![directive("ANIM_STATE", m06_anim_state_operands("path4"))],
+            vec![directive(
+                "ANIM_STATE",
+                measured_anim_state_operands("path4"),
+            )],
         ),
         block(
             3,
-            vec![directive("ANIM_STATE", m06_anim_state_operands("path5"))],
+            vec![directive(
+                "ANIM_STATE",
+                measured_anim_state_operands("path5"),
+            )],
         ),
     ]);
     let record = measure_control_record(&document);

@@ -7,9 +7,11 @@
 use super::*;
 
 /// The retail acceptance tests M06-B-FU2's `retail` capability is judged on:
-/// M06's only passenger-named string is the shared `location.zrd` place list,
-/// and no shipped record — startup animation, world node or message id — binds
-/// a passenger entity to the mission.
+/// the measured archive's only passenger-named string is the shared
+/// `location.zrd` place list — the same bytes M06's own archive carries —
+/// and no shipped record — startup animation, world node or message id —
+/// binds a passenger entity to the record the follow-up measured (the
+/// corrected layout's M12 record, `zbd/c2/m01`, #1596).
 const RETAIL_TESTS_M06_B_FU2: &[&str] = &[
     "accept_m06_b_fu2_the_only_passenger_string_in_m06s_own_data_is_a_map_location",
     "accept_m06_b_fu2_no_shipped_record_binds_a_passenger_entity_for_m06",
@@ -160,20 +162,26 @@ fn evidence_report_m06_b_fu2_writes_the_acceptance_report() {
         jstr(
             "acceptance suite run locally with the retail capability and the owner-supplied \
              engine image; the fields are derived from the recorded log and production discovery \
-             of $CS_GAME_DIR. The suite pins this task's verdict: the shipped data binds no \
-             passenger or extraction entity to M06. The archive's one passenger-named string is \
-             `Passenger_hangar`, an entry of `location.zrd` — a name plus a position and a \
-             heading, byte-identical to the sibling mission's copy, whose consumer the decrypted \
-             image spells as a Teleport feature; the installation's other passenger vocabulary is \
-             the library's seventeen ON_CALL crew animations over the world node `apassengers` \
-             (M06 fires none), the chapter world's `apassengers`/`passall` nodes (addressed by \
-             nothing in M06), and the instant-action record's `passenger_zeppelin` class; \
+             of $CS_GAME_DIR. Re-pinned on the corrected campaign layout (#1596, after #1565 \
+             M01-ARCHIVE-DECISION): the archive this follow-up measured is zbd/c2/m01, which the \
+             corrected layout binds to M12 — the suite pins the verdict where it was measured, \
+             that the shipped data binds no passenger or extraction entity to that record. The \
+             archive's one passenger-named string is `Passenger_hangar`, an entry of \
+             `location.zrd` — a name plus a position and a heading, byte-identical in the \
+             measured archive, the sibling's and M06's own (zbd/c1c/m01), so the member verdict \
+             carries to M06 — whose consumer the decrypted image spells as a Teleport feature; \
+             the installation's other passenger vocabulary is the library's seventeen ON_CALL \
+             crew animations over the world node `apassengers` (the measured archive fires \
+             none; M06's own archive fires `call_add_jack`, M06-B-FU4), the chapter-two \
+             world's `apassengers`/`passall` nodes (addressed by nothing in the measured \
+             archive), and the instant-action record's `passenger_zeppelin` class; \
              `MSG_OBJ_PASSENGERHANGER` is carried by chapter one's instant action only. NOT \
-             CLAIMED: what the teleport feature does with an entry, whether M06's objective texts \
-             mention passengers (their name-to-string-id join is unmeasured) and every runtime \
-             half stay open — a predicate needs an original reference run (M06-C) or the owner's \
-             ruling; nothing is verified_original and no original executable was run. Claim is \
-             implemented only; validated with tools/validate_evidence.py --require-pass. \
+             CLAIMED: what the teleport feature does with an entry, whether the measured \
+             record's objective texts mention passengers (their name-to-string-id join is \
+             unmeasured) and every runtime half stay open — a predicate needs an original \
+             reference run (M06-C) or the owner's ruling; nothing is verified_original and no \
+             original executable was run. Claim is implemented only; validated with \
+             tools/validate_evidence.py --require-pass. \
              `candidate_tree` is the tree of the commit the suite and this harness ran on; the \
              only later delta is this report's own copy under docs/findings/evidence/, which no \
              acceptance test reads"
