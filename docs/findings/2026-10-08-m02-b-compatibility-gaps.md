@@ -10,6 +10,42 @@ report's `review.identity` is read at run time from `CS_EVIDENCE_REVIEWER`,
 so each agent writes its own; no agent review replaces the owner's human
 approval.
 
+## 2026-10-18 re-pin on the corrected campaign layout (#1594)
+
+Every retail fact in the tables below was measured on `ZBD/C1/M02/zrdr.zbd`.
+The corrected campaign layout (commit `6df5715b0`,
+`docs/findings/2026-10-17-m01-archive-decision.md`) re-derived *The Bomber
+Heist* to `ZBD/C3/M02` / `mission/ch1-m02` / `script/c3-m02-zrdr`
+(`missions/bindings/M02.json`); `ZBD/C1/M02` is the record of campaign position
+`mission/ch2-m02`, which the layout binds to work order M07. So the numbers
+below are **historical for M02** and describe M07's archive. The acceptance
+tests now pin M02's own record, re-derived through the same production code
+(`SourceContext::control_program`, `discover_container`, `decode_zrd`,
+`measure_control_record`, the census):
+
+| Fact | Old pin (`ZBD/C1/M02`) | Re-pinned (`ZBD/C3/M02`, 94 049 bytes, SHA-256 `5a5eb706…05fbda`) |
+| --- | --- | --- |
+| Mission / program id | `mission/ch2-m02` / `script/c1-m02-zrdr` | `mission/ch1-m02` / `script/c3-m02-zrdr` |
+| Control member | `objectives.zrd`, 12 410 bytes | `objectives.zrd`, 12 312 bytes (only member with numbered blocks; longer members and an earlier first member still exist) |
+| Record | 50 blocks, 190 sites, 36 keys | 52 blocks, 187 sites, 29 keys, 0 refusals |
+| Implemented outcome keys | `INSTANTWIN` ×1, `INSTANTLOSS` ×2 | `INSTANTWIN` ×1 only; the record spells **no `INSTANTLOSS`**, so no block-level failure latch is measured for M02 |
+| Record-level fields | five fields + five sound keys | the same five fields; **no record-level sound key** |
+| Success latch | `OBJECTIVE15`, woken by `OBJECTIVE14`'s nap | `OBJECTIVE48`, woken by `OBJECTIVE9`'s `WAKE_OBJECTIVE_WHEN_I_COMPLETE [48]` |
+| Last-block address | `OBJECTIVE13` wakes `[14, 50]` | `OBJECTIVE4` wakes `[42, 52]`; 52 is the last block |
+| Kill sites | 8, up to nine indices (the host-call-bound gap) | 2, one index each: the bound is not reached on this record; the long-list case stays pinned by the synthetic `accept_m02_b_fu1_a_long_index_list_binds_as_one_list_argument` |
+| Lowering | complete (since M02-B-FU1) | complete; census row `zbd/c3/m02` is a complete row |
+
+The five record-level sound keys M02-B-FU2 measured are spelled by
+`ZBD/C1/M02`, i.e. M07's record. `m02_b_fu2.rs` therefore reads them through
+M07's control binding (and asserts it is the `zbd/c1/m02` archive). The
+M02-B-FU3 address rule is pinned on M02's `52`. The sheet's failure
+priorities (wrong actor, remaining-target failure as a latch) are not located
+in a failure block for M02 any more; they stay unmeasured. Nothing here is
+`verified_original`.
+
+Drift in other stages found by the same sweep is filed separately (M06-B,
+M07-B, M08-B, M12-B, M13-B retail pins fail on the corrected layout).
+
 The stage's minimum acceptance scenario is *"All discovered mission-specific
 behavior uses production engine systems and regression tests."* It holds for
 everything this note measures: M02's discovered mission-specific behavior is
