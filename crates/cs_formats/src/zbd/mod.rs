@@ -81,6 +81,7 @@
 
 pub mod adpcm;
 pub mod anim;
+pub mod anim_tracks;
 pub mod archive;
 pub mod detection_zones;
 pub mod dispatch;
