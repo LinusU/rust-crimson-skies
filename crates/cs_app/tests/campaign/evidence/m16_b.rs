@@ -11,9 +11,9 @@ const RETAIL_TESTS_M16_B: &[&str] = &[
     "accept_m16_b_m16s_control_program_is_bound_to_the_same_identities_as_its_mission_binding",
     "accept_m16_b_the_measured_vocabulary_partitions_and_refuses_no_m16_key",
     "accept_m16_b_the_block_graph_is_closed_under_the_records_own_numbering",
-    "accept_m16_b_m16s_record_does_not_lower_and_eleven_of_its_calls_refuse",
+    "accept_m16_b_m16s_record_does_not_lower_and_four_of_its_calls_refuse",
     "accept_m16_b_the_three_sheet_priorities_locate_in_the_measured_record",
-    "accept_m16_b_m16_stays_unready_while_its_sound_cleanup_and_comment_calls_refuse",
+    "accept_m16_b_m16_stays_unready_while_its_comment_calls_refuse",
 ];
 
 /// The engine-image acceptance test M16-B's static code reading is judged
@@ -27,12 +27,12 @@ const IMAGE_TESTS_M16_B: &[&str] =
     &["accept_m16_b_the_four_comment_words_are_not_in_the_measured_directive_table"];
 
 /// The synthetic predicate tests M16-B's report must also record: they carry
-/// the two refusal mechanisms the retail record leans on — one oversized
-/// `STOP_QUEUED_SOUNDS` signature unregistering the whole key, and the
+/// the two mechanisms the retail record leans on — the
+/// `STOP_QUEUED_SOUNDS` name list carried as one list argument, and the
 /// unmeasured bare words refusing as unknown calls — into CI, where there is
 /// no original data.
 const SYNTHETIC_TESTS_M16_B: &[&str] = &[
-    "accept_m16_b_one_oversized_sound_site_poisons_the_whole_sound_key",
+    "accept_m16_b_fu1_sound_name_lists_bind_as_one_list_argument_and_the_original_cap_is_applied",
     "accept_m16_b_unmeasured_bare_keys_refuse_but_a_two_latch_program_validates",
 ];
 
@@ -312,15 +312,12 @@ fn evidence_report_m16_b_writes_the_acceptance_report() {
              derives from it (mission and program identities equal to the M16-A binding, the \
              control member chosen by the measured rule over the archive's whole member set, \
              the directive accounting of the member it spells). NOT CLAIMED: M16's control \
-             record does not lower — every one of its 37 conditions lowers and 122 of its 133 \
-             calls bind, but `STOP_QUEUED_SOUNDS` never registers (its measured shapes include \
-             9-name and 14-name lists, and a signature past `MAX_CALL_ARGS` makes the whole \
-             spec unfit, so all seven sites refuse `unknown host call`) and OBJECTIVE24's four \
-             bare comment words are unmeasured keys that register nothing — the engine-image \
+             record does not lower — every one of its 37 conditions lowers and 129 of its 133 \
+             calls bind (the seven `STOP_QUEUED_SOUNDS` sites, 1 to 14 names, carry their name \
+             list as one list argument) but OBJECTIVE24's four bare comment words are unmeasured keys that register nothing — the engine-image \
              member shows the words absent from the directive-key table the original parser \
              looks names up in — so no program assembles, `call_arguments` is unmet, M16 stays \
-             Unsupported and the campaign gate stays closed; carrying the name list as one \
-             list argument is the follow-up the findings name; the wrong-actor, wrong-session \
+             Unsupported and the campaign gate stays closed; the wrong-actor, wrong-session \
              and repeated-event halves of the sheet's three priorities are runtime \
              observations and stay unmeasured (M16-C); no mission was played, no original \
              executable was run and nothing is verified_original. Claim is implemented only; \

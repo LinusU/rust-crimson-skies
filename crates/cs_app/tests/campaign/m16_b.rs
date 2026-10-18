@@ -85,7 +85,7 @@ use cs_content::mission_control::{
 use cs_content::objectives::objective_block_number;
 use cs_content::stunts::{ZrdValue, decode_zrd, objective_record, zrd_flat_fields};
 use cs_formats::script_raw::discover_container;
-use cs_script::ir::Value;
+use cs_script::ir::{DirectiveOperation, Value};
 use cs_types::content::{ContentId, ContentKind};
 use cs_types::install::RelativePath;
 
@@ -105,7 +105,7 @@ const KEYS: usize = 28;
 /// kill lists).
 const EDGES: usize = 41;
 /// The `STOP_QUEUED_SOUNDS` sites and the comment-word sites that refuse.
-const REFUSED: usize = 11;
+const REFUSED: usize = 4;
 
 /// The original installation, as the environment declares it.
 fn game_dir() -> PathBuf {
@@ -994,19 +994,18 @@ fn accept_m16_b_the_block_graph_is_closed_under_the_records_own_numbering() {
     );
 }
 
-/// **M16's record does not lower, and the refusal is exactly eleven named
-/// calls of two kinds.** All 37 conditions lower and 122 of 133 calls bind,
-/// yet `STOP_QUEUED_SOUNDS` never registers: its measured shapes include a
-/// 9-name and a 14-name list, and a signature past `MAX_CALL_ARGS` makes the
-/// whole spec unfit — "accepting a name means accepting every measured
-/// shape it was registered with" — so all seven sites refuse `unknown host
-/// call`, including the one-name site. The four bare comment words refuse
-/// the same way, because an unmeasured key registers nothing by design. No
-/// program is assembled, `validation` never runs and the only unmet row is
-/// `call_arguments`; the mission is not complete.
+/// **M16's record does not lower, and the refusal is exactly four named
+/// calls.** All 37 conditions lower and 129 of 133 calls bind: the seven
+/// `STOP_QUEUED_SOUNDS` sites — 1, 3, 3, 4, 7, 9 and 14 names — carry their
+/// spelled list as one `Value::List` argument, so the 9- and 14-name shapes
+/// no longer exceed `MAX_CALL_ARGS`. The four bare comment words of
+/// OBJECTIVE24 refuse `unknown host call`, because an unmeasured key
+/// registers nothing by design. No program is assembled, `validation` never
+/// runs and the only unmet row is `call_arguments`; the mission is not
+/// complete.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m16_b_m16s_record_does_not_lower_and_eleven_of_its_calls_refuse() {
+fn accept_m16_b_m16s_record_does_not_lower_and_four_of_its_calls_refuse() {
     let binding = control_binding();
     let row = census_row();
     let lowered = row
@@ -1036,9 +1035,8 @@ fn accept_m16_b_m16s_record_does_not_lower_and_eleven_of_its_calls_refuse() {
          refuses"
     );
 
-    // Exactly eleven refused calls: the seven `STOP_QUEUED_SOUNDS` sites
-    // (one registration refusal poisons the key) and the four comment words
-    // of OBJECTIVE24 (unmeasured keys register nothing).
+    // Exactly four refused calls: the four comment words of OBJECTIVE24
+    // (unmeasured keys register nothing).
     let refused: Vec<(usize, &str)> = attempt
         .calls
         .iter()
@@ -1050,17 +1048,10 @@ fn accept_m16_b_m16s_record_does_not_lower_and_eleven_of_its_calls_refuse() {
         .collect();
     let expected: Vec<(usize, u32, u32, &str)> = vec![
         // (flat site index, zero-based block, call inside block, key)
-        (14, 1, 7, "STOP_QUEUED_SOUNDS"),
-        (36, 5, 7, "STOP_QUEUED_SOUNDS"),
-        (45, 6, 8, "STOP_QUEUED_SOUNDS"),
-        (62, 11, 5, "STOP_QUEUED_SOUNDS"),
-        (68, 12, 5, "STOP_QUEUED_SOUNDS"),
-        (79, 16, 7, "STOP_QUEUED_SOUNDS"),
         (93, 23, 1, "Change"),
         (94, 23, 2, "to"),
         (95, 23, 3, "mobile"),
         (96, 23, 4, "net"),
-        (132, 36, 1, "STOP_QUEUED_SOUNDS"),
     ];
     assert_eq!(
         refused.len(),
@@ -1076,11 +1067,12 @@ fn accept_m16_b_m16s_record_does_not_lower_and_eleven_of_its_calls_refuse() {
             "{text}"
         );
     }
-    assert_eq!(
-        attempt.unbound_keys,
-        ["`STOP_QUEUED_SOUNDS`: binding `STOP_QUEUED_SOUNDS`: too many arguments"],
-        "the only registration refusal is the sound key's oversized signature — \
-         the comment words were never registered, so they name no binding error"
+    assert!(
+        attempt.unbound_keys.is_empty(),
+        "`STOP_QUEUED_SOUNDS` registers — its list argument fits the bound — \
+         and the comment words were never registered, so no key names a \
+         binding error: {:?}",
+        attempt.unbound_keys
     );
     assert!(
         lowered.program().is_none(),
@@ -1640,7 +1632,7 @@ fn standalone_offsets(haystack: &[u8], word: &[u8]) -> Vec<usize> {
 /// **M16 is not campaign-ready and the census does not hide it.**
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m16_b_m16_stays_unready_while_its_sound_cleanup_and_comment_calls_refuse() {
+fn accept_m16_b_m16_stays_unready_while_its_comment_calls_refuse() {
     let census = census();
     assert!(!census.complete_missions().contains(&MISSION));
     assert!(!census.campaign_ready());
@@ -1738,19 +1730,21 @@ fn lower(document: &ZrdValue) -> cs_app::control_lowering::LoweredControlRecord 
     )
 }
 
-/// **One `STOP_QUEUED_SOUNDS` site past `MAX_CALL_ARGS` poisons the whole
-/// key — a shorter site in the same record refuses too — and a record whose
-/// sites all fit registers and binds the key.**
+/// **`STOP_QUEUED_SOUNDS` carries its name list as one list argument, so a
+/// site of any measured length binds — and the original's ten-name cap is
+/// applied by the consumer, never silently dropped from the call.**
 ///
-/// The retail test observes M16's refusal on the installation; this carries
-/// the mechanism into CI: an authored record spelling a nine-name site —
-/// inside the original's measured ten-name cap but outside the registry's
-/// eight-argument bound — beside a one-name site refuses both, because one
-/// unfit signature makes the spec unfit rather than narrowing what the name
-/// accepts. The same record with every site at eight names or fewer binds
-/// every call, so the failure is the oversized signature, not the key.
+/// M16 spells the key with 1, 3, 3, 4, 7, 9 and 14 names; as positional
+/// arguments the 9- and 14-name shapes exceeded `MAX_CALL_ARGS` and the whole
+/// key refused. This authors those shapes: every call binds, the registry
+/// holds one `[List]` signature per distinct shape, the call keeps all
+/// fourteen names of the longest site, and
+/// `DirectiveOperation::stop_queued_sounds_applied` keeps the first ten —
+/// `cmp esi, 0xa` at `0x4688bc` — in spelled order. The over-bound poisoning
+/// semantics themselves stay pinned for positional keys by M02-B's
+/// over-bound `IDENTITY` test.
 #[test]
-fn accept_m16_b_one_oversized_sound_site_poisons_the_whole_sound_key() {
+fn accept_m16_b_fu1_sound_name_lists_bind_as_one_list_argument_and_the_original_cap_is_applied() {
     let sound_sites = |counts: &[usize]| -> Vec<(String, ZrdValue)> {
         counts
             .iter()
@@ -1770,41 +1764,14 @@ fn accept_m16_b_one_oversized_sound_site_poisons_the_whole_sound_key() {
             .collect()
     };
 
-    // M16's shape, in miniature: a nine-name site and a one-name site.
-    let document = control_record(sound_sites(&[9, 1]));
-    let lowered = lower(&document);
-    let attempt = lowered.attempt();
-    assert_eq!(
-        attempt.unbound_keys,
-        ["`STOP_QUEUED_SOUNDS`: binding `STOP_QUEUED_SOUNDS`: too many arguments"],
-        "one oversized signature unregisters the whole key: {:?}",
-        attempt.unbound_keys
-    );
-    let refused: Vec<&str> = attempt
-        .calls
-        .iter()
-        .filter_map(|call| match call {
-            CallOutcome::Bound => None,
-            CallOutcome::Refused(text) => Some(text.as_str()),
-        })
-        .collect();
-    assert_eq!(refused.len(), 2, "both sound sites refuse: {refused:?}");
-    assert!(
-        refused
-            .iter()
-            .all(|text| text.contains("unknown host call `STOP_QUEUED_SOUNDS`")),
-        "the one-name site refuses too — the key itself is gone: {refused:?}"
-    );
-    assert!(lowered.program().is_none(), "no program assembles");
-
-    // The bound is the signature's argument count, not the key: the same
-    // sites at eight names or fewer register and bind.
-    let document = control_record(sound_sites(&[8, 1]));
+    // M16's seven shapes, in miniature.
+    let counts = [1, 3, 3, 4, 7, 9, 14];
+    let document = control_record(sound_sites(&counts));
     let lowered = lower(&document);
     let attempt = lowered.attempt();
     assert!(
         attempt.unbound_keys.is_empty(),
-        "a record whose sites fit the bound registers the key: {:?}",
+        "the key registers: {:?}",
         attempt.unbound_keys
     );
     assert!(
@@ -1814,6 +1781,34 @@ fn accept_m16_b_one_oversized_sound_site_poisons_the_whole_sound_key() {
             .all(|call| matches!(call, CallOutcome::Bound)),
         "every site binds: {:?}",
         attempt.calls
+    );
+    let spec = lowered
+        .registry()
+        .get("STOP_QUEUED_SOUNDS")
+        .expect("the sound key is registered");
+    assert_eq!(
+        spec.signatures.len(),
+        6,
+        "one signature per distinct shape (the two 3-name sites share one)"
+    );
+    assert!(
+        spec.signatures.iter().all(|signature| matches!(
+            signature.as_slice(),
+            [cs_script::bindings::ArgDomain::List(_)]
+        )),
+        "each signature is one list argument: {:?}",
+        spec.signatures
+    );
+
+    // The consumer's side: the call carries every spelled name; the cap keeps
+    // the first ten.
+    let names: Vec<Value> = (0..14).map(|n| Value::Str(format!("snd_{n}"))).collect();
+    let applied = DirectiveOperation::stop_queued_sounds_applied(&names);
+    assert_eq!(applied, &names[..10], "the first ten, in spelled order");
+    assert_eq!(
+        DirectiveOperation::stop_queued_sounds_applied(&names[..9]),
+        &names[..9],
+        "a list under the cap is applied whole"
     );
 }
 

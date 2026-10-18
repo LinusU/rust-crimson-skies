@@ -14,8 +14,8 @@ const RETAIL_TESTS_M24_B: &[&str] = &[
     "accept_m24_b_the_capital_battle_transition_is_the_zeppelin_chain_the_record_spells",
     "accept_m24_b_the_target_eligibility_changes_are_five_writes_and_the_record_never_adds_a_target",
     "accept_m24_b_the_campaign_ending_is_one_win_and_one_loss_latch_with_measured_arming_chains",
-    "accept_m24_b_m24s_record_does_not_lower_and_its_calls_refuse_by_two_named_gaps",
-    "accept_m24_b_m24_stays_unready_while_its_sound_cleanup_and_truncated_key_refuse",
+    "accept_m24_b_m24s_record_does_not_lower_and_its_truncated_key_refuses",
+    "accept_m24_b_m24_stays_unready_while_its_truncated_key_refuses",
 ];
 
 /// The engine-image acceptance test M24-B's static code reading is judged
@@ -29,12 +29,12 @@ const IMAGE_TESTS_M24_B: &[&str] =
     &["accept_m24_b_the_truncated_set_ai_key_is_not_in_the_measured_directive_table"];
 
 /// The synthetic predicate tests M24-B's report must also record: they carry
-/// the two refusal mechanisms the retail record leans on — one oversized
-/// `STOP_QUEUED_SOUNDS` signature unregistering the whole key, and the
+/// the two mechanisms the retail record leans on — the
+/// `STOP_QUEUED_SOUNDS` name list carried as one list argument, and the
 /// truncated net key refusing as an unknown call — into CI, where there is
 /// no original data.
 const SYNTHETIC_TESTS_M24_B: &[&str] = &[
-    "accept_m24_b_one_oversized_sound_site_poisons_the_whole_sound_key",
+    "accept_m24_b_the_nine_name_sound_site_binds_as_one_list_argument",
     "accept_m24_b_the_truncated_set_ai_site_refuses_but_the_measured_net_site_binds",
 ];
 
@@ -314,15 +314,13 @@ fn evidence_report_m24_b_writes_the_acceptance_report() {
              derives from it (mission and program identities equal to the M24-A binding, the \
              control member chosen by the measured rule over the archive's whole member set, \
              the directive accounting of the member it spells). NOT CLAIMED: M24's control \
-             record does not lower — every one of its 63 conditions lowers and 260 of its 267 \
-             calls bind, but `STOP_QUEUED_SOUNDS` never registers (its measured shapes include \
-             a 9-name list, and a signature past `MAX_CALL_ARGS` makes the whole spec unfit, \
-             so all six sites refuse `unknown host call`) and OBJECTIVE19's truncated `SET_AI_` \
+             record does not lower — every one of its 63 conditions lowers and 266 of its 267 \
+             calls bind (the six `STOP_QUEUED_SOUNDS` sites, 1 to 9 names, carry their name \
+             list as one list argument) but OBJECTIVE19's truncated `SET_AI_` \
              site is an unmeasured key that registers nothing — the engine-image member shows \
              the spelling absent from the directive-key table the original parser looks names \
              up in — so no program assembles, `call_arguments` is unmet, M24 stays Unsupported \
-             and the campaign gate stays closed; carrying the name list as one list argument \
-             is the follow-up the findings name; the wrong-actor, wrong-session and \
+             and the campaign gate stays closed; the wrong-actor, wrong-session and \
              repeated-event halves of the sheet's three priorities (capital-battle \
              transition, target-eligibility change, campaign ending) are runtime observations \
              and stay unmeasured (M24-C); no mission was played, no original executable was \

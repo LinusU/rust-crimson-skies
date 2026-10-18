@@ -50,11 +50,10 @@
 //!   (OBJECTIVE39) by two naps, 15 seconds from OBJECTIVE38 and 20 from
 //!   OBJECTIVE62. Nothing addresses OBJECTIVE1, and M24 is the campaign's
 //!   last row, so no successor mission follows the win.
-//! * **The record does not lower, by two named gaps.**
+//! * **The record does not lower, by one named gap.**
 //!   `STOP_QUEUED_SOUNDS` is spelled six times with 1, 9, 7, 8, 7 and 8
-//!   names; the 9-name shape exceeds `MAX_CALL_ARGS`, so the whole spec is
-//!   refused and all six sites report `unknown host call` — the same
-//!   measured gap M16-B, M02-B, M03-B and M06-B record. And `SET_AI_`, the
+//!   names; its name list is one list argument (M16-B-FU1), so all six
+//!   sites bind. `SET_AI_`, the
 //!   single site of block 19's five-pair list, is a truncated spelling no
 //!   finding covers; the engine-image test shows it absent from the
 //!   directive-key table the original parser looks names up in, exactly
@@ -131,8 +130,8 @@ const BLOCKS: u32 = 63;
 const SITES: u32 = 267;
 /// The distinct directive keys of the control member.
 const KEYS: usize = 40;
-/// The `STOP_QUEUED_SOUNDS` sites and the one `SET_AI_` site that refuse.
-const REFUSED: usize = 7;
+/// The one `SET_AI_` site that refuses.
+const REFUSED: usize = 1;
 
 /// The original installation, as the environment declares it.
 fn game_dir() -> PathBuf {
@@ -1853,20 +1852,17 @@ fn accept_m24_b_the_campaign_ending_is_one_win_and_one_loss_latch_with_measured_
 // Retail: the record does not lower, by two named gaps
 // ---------------------------------------------------------------------------
 
-/// **M24's record does not lower, and the refusal is exactly seven named
-/// calls of two kinds.** All 63 conditions lower and 260 of 267 calls bind,
-/// yet `STOP_QUEUED_SOUNDS` never registers: its measured shapes include a
-/// 9-name list, and a signature past `MAX_CALL_ARGS` makes the whole spec
-/// unfit — "accepting a name means accepting every measured shape it was
-/// registered with" — so all six sites refuse `unknown host call`, including
-/// the one-name site. The truncated `SET_AI_` refuses the same way, because
-/// an unmeasured key registers nothing by design. No program is assembled,
-/// `validation` never runs and the only unmet row is `call_arguments`; the
-/// mission is not complete. Carrying the name list as one list argument is
-/// the follow-up the findings name — the same one M16-B names.
+/// **M24's record does not lower, and the refusal is exactly one named
+/// call.** All 63 conditions lower and 266 of 267 calls bind: the six
+/// `STOP_QUEUED_SOUNDS` sites — 1, 9, 7, 8, 7 and 8 names — carry their
+/// spelled list as one `Value::List` argument, so the 9-name shape no longer
+/// exceeds `MAX_CALL_ARGS`. The truncated `SET_AI_` refuses `unknown host
+/// call`, because an unmeasured key registers nothing by design. No program
+/// is assembled, `validation` never runs and the only unmet row is
+/// `call_arguments`; the mission is not complete.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m24_b_m24s_record_does_not_lower_and_its_calls_refuse_by_two_named_gaps() {
+fn accept_m24_b_m24s_record_does_not_lower_and_its_truncated_key_refuses() {
     let row = census_row();
     let lowered = row
         .lowering_attempt()
@@ -1912,16 +1908,11 @@ fn accept_m24_b_m24s_record_does_not_lower_and_its_calls_refuse_by_two_named_gap
     for (index, _) in &refused {
         assert!(
             refused_sites().contains(index),
-            "site {index} refused but is not one of the six sound sites or \
-             the truncated key: {refused:?}"
+            "site {index} refused but is not the truncated key: {refused:?}"
         );
     }
     for (index, text) in &refused {
-        let key = if *index == 109 {
-            "SET_AI_"
-        } else {
-            "STOP_QUEUED_SOUNDS"
-        };
+        let key = "SET_AI_";
         assert!(
             text.contains(&format!(
                 "mission/ch5-m04 objective#{} call {}: unknown host call `{key}`",
@@ -1931,12 +1922,11 @@ fn accept_m24_b_m24s_record_does_not_lower_and_its_calls_refuse_by_two_named_gap
             "{text}"
         );
     }
-    assert_eq!(
-        attempt.unbound_keys,
-        ["`STOP_QUEUED_SOUNDS`: binding `STOP_QUEUED_SOUNDS`: too many arguments"],
-        "the only registration refusal is the sound key's oversized signature \
-         — the truncated SET_AI_ was never registered, so it names no \
-         binding error"
+    assert!(
+        attempt.unbound_keys.is_empty(),
+        "the sound key registers and the truncated SET_AI_ was never \
+         registered, so no key names a binding error: {:?}",
+        attempt.unbound_keys
     );
     assert!(
         lowered.program().is_none(),
@@ -1961,10 +1951,7 @@ fn accept_m24_b_m24s_record_does_not_lower_and_its_calls_refuse_by_two_named_gap
     assert!(!lowering.complete());
     assert!(!row.is_complete());
 
-    // The poison is one site: OBJECTIVE10's nine-name cleanup. Its nine
-    // names exceed `MAX_CALL_ARGS`, and the bound is the signature's
-    // argument count, not the key's — the one-name site of OBJECTIVE5
-    // refuses because the whole spec is gone.
+    // The sound-cleanup name counts the list argument carries.
     let (document, _) = control_document();
     let blocks = blocks_of(&document);
     let name_counts: Vec<(u32, usize)> = blocks
@@ -1981,15 +1968,14 @@ fn accept_m24_b_m24s_record_does_not_lower_and_its_calls_refuse_by_two_named_gap
     assert_eq!(
         name_counts,
         [(5, 1), (10, 9), (13, 7), (38, 8), (59, 7), (62, 8)],
-        "the six sound-cleanup sites and their name counts — the 9-name site \
-         is the one past the bound"
+        "the six sound-cleanup sites and their name counts — all bind"
     );
 }
 
-/// The flat site indices of the seven refused calls, as the record order
-/// spells them: six `STOP_QUEUED_SOUNDS` sites and the truncated key.
+/// The flat site index of the one refused call, as the record order spells
+/// it: the truncated key.
 fn refused_sites() -> Vec<usize> {
-    vec![22, 74, 92, 109, 183, 246, 263]
+    vec![109]
 }
 
 /// The numbered block a flat site index sits in, from the record's own
@@ -2021,7 +2007,7 @@ fn refused_locations() -> Vec<(usize, u32, u32)> {
     let mut found = Vec::new();
     for block in &blocks {
         for (position, (key, _)) in block.sites.iter().enumerate() {
-            if key == "STOP_QUEUED_SOUNDS" || key == "SET_AI_" {
+            if key == "SET_AI_" {
                 found.push((flat, number_of(block), position as u32));
             }
             flat += 1;
@@ -2033,7 +2019,7 @@ fn refused_locations() -> Vec<(usize, u32, u32)> {
 /// **M24 is not campaign-ready and the census does not hide it.**
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m24_b_m24_stays_unready_while_its_sound_cleanup_and_truncated_key_refuse() {
+fn accept_m24_b_m24_stays_unready_while_its_truncated_key_refuses() {
     let census = census();
     assert!(!census.complete_missions().contains(&MISSION));
     assert!(!census.campaign_ready());
@@ -2260,16 +2246,14 @@ fn lower(document: &ZrdValue) -> cs_app::control_lowering::LoweredControlRecord 
     )
 }
 
-/// **M24's own site sizes, in miniature: one oversized sound site poisons
-/// the whole key, and eight names is the bound.**
+/// **M24's own site sizes, in miniature: the nine-name sound site binds.**
 ///
 /// The retail record spells six `STOP_QUEUED_SOUNDS` sites with 1, 9, 7, 8,
-/// 7 and 8 names; this authors exactly those shapes and pins both halves of
-/// the refusal: at the retail sizes every site refuses, and at the same
-/// sizes with the 9-name site reduced to 8 the whole key registers and every
-/// site binds. The bound is the signature's argument count, not the key.
+/// 7 and 8 names; this authors exactly those shapes. The name list is one
+/// list argument, so the 9-name shape no longer exceeds `MAX_CALL_ARGS`, the
+/// key registers and every site binds.
 #[test]
-fn accept_m24_b_one_oversized_sound_site_poisons_the_whole_sound_key() {
+fn accept_m24_b_the_nine_name_sound_site_binds_as_one_list_argument() {
     let sound_sites = |counts: &[usize]| -> Vec<(String, ZrdValue)> {
         counts
             .iter()
@@ -2293,37 +2277,9 @@ fn accept_m24_b_one_oversized_sound_site_poisons_the_whole_sound_key() {
     let document = control_record(sound_sites(&[1, 9, 7, 8, 7, 8]));
     let lowered = lower(&document);
     let attempt = lowered.attempt();
-    assert_eq!(
-        attempt.unbound_keys,
-        ["`STOP_QUEUED_SOUNDS`: binding `STOP_QUEUED_SOUNDS`: too many arguments"],
-        "one oversized signature unregisters the whole key: {:?}",
-        attempt.unbound_keys
-    );
-    let refused: Vec<&str> = attempt
-        .calls
-        .iter()
-        .filter_map(|call| match call {
-            CallOutcome::Bound => None,
-            CallOutcome::Refused(text) => Some(text.as_str()),
-        })
-        .collect();
-    assert_eq!(refused.len(), 6, "all six sound sites refuse: {refused:?}");
-    assert!(
-        refused
-            .iter()
-            .all(|text| text.contains("unknown host call `STOP_QUEUED_SOUNDS`")),
-        " the one-name site refuses too — the key itself is gone: {refused:?}"
-    );
-    assert!(lowered.program().is_none(), "no program assembles");
-
-    // The bound is the signature's argument count, not the key: the same
-    // six sites with the 9-name list at eight register and bind.
-    let document = control_record(sound_sites(&[1, 8, 7, 8, 7, 8]));
-    let lowered = lower(&document);
-    let attempt = lowered.attempt();
     assert!(
         attempt.unbound_keys.is_empty(),
-        "a record whose sites fit the bound registers the key: {:?}",
+        "the key registers: {:?}",
         attempt.unbound_keys
     );
     assert!(
