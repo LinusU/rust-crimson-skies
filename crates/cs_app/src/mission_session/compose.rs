@@ -932,6 +932,10 @@ fn add_composition(
         // every other widget; the notice itself is published by the
         // presentation plugin, which every composition runs.
         app.add_plugins(crate::mission_session::MissionNoticeHudPlugin);
+        // The original-style cockpit HUD (#1641) replaces the developer
+        // overlay, which is hidden unless `--dev-overlay` asks for it.
+        app.insert_resource(crate::playtest::visuals::DeveloperOverlay(false));
+        app.add_plugins(crate::mission_session::MissionCockpitHudPlugin);
     }
 
     // 1. The announced load: a fresh content session over the stage's
@@ -1469,6 +1473,7 @@ pub fn run_windowed(
     plan: &MissionLaunchPlan,
     smoke: Option<&crate::playtest::SmokeRequest>,
     smoke_mode: crate::mission_session::MissionSmokeMode,
+    dev_overlay: bool,
 ) -> Result<(), MissionCompositionError> {
     // A requested capture is judged before any content is read.
     let capture = crate::mission_session::CaptureSettings::from_env()
@@ -1478,6 +1483,9 @@ pub fn run_windowed(
         settings.scenario.apply(&mut stage.start);
     }
     let mut app = build_windowed(&stage)?;
+    if dev_overlay {
+        app.insert_resource(crate::playtest::visuals::DeveloperOverlay(true));
+    }
     let smoke_handle = smoke.map(|request| {
         // A smoke run is deterministic: every rendered frame is exactly 1/60 s
         // of simulated time whatever the machine's frame pacing — the playtest

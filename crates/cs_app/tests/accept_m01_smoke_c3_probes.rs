@@ -134,6 +134,7 @@ fn accept_m01_smoke_c3_probes_a_missing_objective_line_fails_the_judge() {
         drawn_line: Some(line.clone()),
         drawn_visible: true,
         region_text_pixels: Some(MIN_OBJECTIVE_TEXT_PIXELS + 1),
+        overlay_hidden: false,
     });
     assert!(drawn.passed, "{}", drawn.detail);
     let missing = judged(HudMetrics {
@@ -141,6 +142,7 @@ fn accept_m01_smoke_c3_probes_a_missing_objective_line_fails_the_judge() {
         drawn_line: None,
         drawn_visible: false,
         region_text_pixels: None,
+        overlay_hidden: false,
     });
     assert!(
         !missing.passed,

@@ -92,6 +92,7 @@
 
 mod actor_census;
 mod actor_visual;
+mod cockpit_hud;
 mod compose;
 mod content;
 mod evidence;
@@ -117,6 +118,10 @@ pub use actor_census::{
 pub use actor_visual::{
     ACTOR_MODEL_CLAIM, ActorVisualDrawn, MissionActorVisuals, attach_actor_visuals,
     build_actor_visuals,
+};
+pub use cockpit_hud::{
+    MissionCockpitHudPlugin, clock_hour, compass_strip, damage_fraction, damage_tint, marker_text,
+    safe_area,
 };
 pub use compose::{
     MissionComposition, MissionCompositionError, MissionPlayerBody, MissionPlayerStart,

@@ -56,6 +56,7 @@ use std::sync::{Arc, Mutex};
 use avian3d::prelude::{AngularVelocity, LinearVelocity, Position, Rotation};
 use bevy::camera::Camera;
 use bevy::camera::visibility::InheritedVisibility;
+use bevy::ecs::query::Has;
 use bevy::input::keyboard::KeyCode;
 use bevy::input::{ButtonInput, InputSystems};
 use bevy::prelude::{
@@ -378,6 +379,9 @@ pub struct HudMetrics {
     pub drawn_visible: bool,
     /// The text pixels counted inside the widget's own UI region.
     pub region_text_pixels: Option<usize>,
+    /// The developer overlay was hidden (the default): the original cockpit
+    /// draws no objective line, so the line must *not* be on screen (#1641).
+    pub overlay_hidden: bool,
 }
 
 /// What the gun hold measured.
@@ -639,20 +643,32 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
             )
         },
     });
-    let hud_match = m.hud.model_line == m.hud.drawn_line
-        && (m.hud.model_line.is_none()
-            || (m.hud.drawn_visible
-                && m.hud.region_text_pixels.unwrap_or(0) >= MIN_OBJECTIVE_TEXT_PIXELS));
+    let hud_match = if m.hud.overlay_hidden {
+        !m.hud.drawn_visible
+    } else {
+        m.hud.model_line == m.hud.drawn_line
+            && (m.hud.model_line.is_none()
+                || (m.hud.drawn_visible
+                    && m.hud.region_text_pixels.unwrap_or(0) >= MIN_OBJECTIVE_TEXT_PIXELS))
+    };
     checks.push(Check {
         id: "hud_objective_matches".to_owned(),
         applies: true,
         passed: hud_match,
-        detail: format!(
-            "model {:?}, drawn {:?} (visible {}, region text pixels {:?}): the drawn line must \
+        detail: if m.hud.overlay_hidden {
+            format!(
+                "developer overlay hidden: the original cockpit draws no objective line, and \
+                 the designed caption line is visible {} (must be false)",
+                m.hud.drawn_visible
+            )
+        } else {
+            format!(
+                "model {:?}, drawn {:?} (visible {}, region text pixels {:?}): the drawn line must \
              equal the read model's and hold at least {MIN_OBJECTIVE_TEXT_PIXELS} pixels of its \
              own text when one is current",
-            m.hud.model_line, m.hud.drawn_line, m.hud.drawn_visible, m.hud.region_text_pixels
-        ),
+                m.hud.model_line, m.hud.drawn_line, m.hud.drawn_visible, m.hud.region_text_pixels
+            )
+        },
     });
 
     // --- actors ------------------------------------------------------------
@@ -1179,7 +1195,8 @@ fn apply_probe(
     aircraft: Query<Entity, With<ScriptedAircraftActor>>,
     zeppelins: Query<Entity, With<MissionZeppelinActor>>,
     visuals: Query<Entity, With<WorldVisual>>,
-    ui: Query<Entity, With<Node>>,
+    ui: Query<(Entity, Has<crate::playtest::visuals::DeveloperOverlayNode>), With<Node>>,
+    overlay: Option<Res<crate::playtest::visuals::DeveloperOverlay>>,
 ) {
     let mode = mode.0;
     let hidden = Visibility::Hidden;
@@ -1213,7 +1230,16 @@ fn apply_probe(
     write_all(&mut visibility, aircraft.iter(), body_value);
     write_all(&mut visibility, zeppelins.iter(), body_value);
     write_all(&mut visibility, visuals.iter(), world_value);
-    write_all(&mut visibility, ui.iter(), body_value);
+    // Restoring the UI must not re-show what the developer overlay hides.
+    let overlay_on = crate::playtest::visuals::overlay_visible(overlay.as_deref());
+    for (entity, developer) in &ui {
+        let value = if developer && !overlay_on {
+            hidden
+        } else {
+            body_value
+        };
+        write_all(&mut visibility, std::iter::once(entity), value);
+    }
     if let ProbeMode::Actor(Some(keep)) = mode {
         write_all(&mut visibility, std::iter::once(keep), shown);
     }
@@ -1564,6 +1590,7 @@ fn smoke_script(
     mut exit: MessageWriter<AppExit>,
     clear: Option<Res<ClearColor>>,
     objective_nodes: ObjectiveNodes<'_, '_>,
+    overlay: Option<Res<crate::playtest::visuals::DeveloperOverlay>>,
     player: Query<&Position, With<MissionPlayerBody>>,
     poses: Query<(Option<&Position>, Option<&Transform>)>,
     camera: Query<(&Camera, &GlobalTransform), With<crate::playtest::PlaytestCameraMarker>>,
@@ -1684,6 +1711,8 @@ fn smoke_script(
                 queue.0.push(KeyOp::Pause);
             } else if at == HUD_SHOT_OFFSET {
                 data.hud_region = objective_region(&objective_nodes);
+                data.measurements.hud.overlay_hidden =
+                    !crate::playtest::visuals::overlay_visible(overlay.as_deref());
                 if let Some((line, visible)) = drawn_objective(&objective_nodes) {
                     data.measurements.hud.drawn_line = Some(line);
                     data.measurements.hud.drawn_visible = visible;
@@ -2366,7 +2395,7 @@ fn write_artifacts(
          \"wingman_threshold_m\":{threshold},\"wingmen\":[{wingmen}],\
          \"verified_original\":false,\"frames\":{frames},\"ticks\":{ticks},\
          \"hud\":{{\"model_line\":{model_line},\"drawn_line\":{drawn_line},\
-         \"drawn_visible\":{visible},\"region_text_pixels\":{region}}},\
+         \"drawn_visible\":{visible},\"region_text_pixels\":{region},\"overlay_hidden\":{overlay_hidden}}},\
          \"guns\":{{\"effects\":{effects},\"max_live_rounds\":{live},\"rounds_drawn\":{drawn},\
          \"rounds_examined\":{examined}}},\"rocket\":{{\"launched\":{launched},\
          \"max_rockets\":{max_rockets},\"refusals\":[{refusals}]}},\
@@ -2392,6 +2421,7 @@ fn write_artifacts(
         model_line = model_line,
         drawn_line = drawn_line,
         visible = report.measurements.hud.drawn_visible,
+        overlay_hidden = report.measurements.hud.overlay_hidden,
         region = json_option_usize(report.measurements.hud.region_text_pixels),
         effects = report.measurements.guns.effects,
         live = report.measurements.guns.max_live_rounds,

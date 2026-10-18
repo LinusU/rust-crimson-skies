@@ -86,6 +86,7 @@ fn healthy() -> SmokeMeasurements {
             drawn_line: Some("Find the lost treasure".to_owned()),
             drawn_visible: true,
             region_text_pixels: Some(900),
+            overlay_hidden: false,
         },
         actors: vec![
             seen("player", "player"),

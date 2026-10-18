@@ -209,7 +209,7 @@ impl Hud {
 
 /// The weapon gauge's gather: the actor's registered guns with their live
 /// state, or `None` when the actor has no arsenal in this session.
-fn weapon_gauge(
+pub(crate) fn weapon_gauge(
     weapons: Option<&WeaponSession>,
     bound: SessionId,
     actor: ActorId,
@@ -263,7 +263,7 @@ fn weapon_gauge(
 
 /// The damage panel's gather: every node of the actor's graph with its live
 /// part state, or `None` when the resolver does not describe the actor.
-fn airframe_zones(
+pub(crate) fn airframe_zones(
     damage: Option<&DamageResolver>,
     bound: SessionId,
     actor: ActorId,
@@ -298,7 +298,7 @@ fn airframe_zones(
 
 /// The launcher cluster's gather: the actor's launchable components, or
 /// `None` when the session is closed or the actor has none.
-fn ordnance_rows(
+pub(crate) fn ordnance_rows(
     ordnance: Option<&OrdnanceSession>,
     bound: SessionId,
     actor: ActorId,

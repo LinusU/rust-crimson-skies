@@ -301,6 +301,7 @@ fn spawn_objective_line(mut commands: Commands) {
         },
         Visibility::Hidden,
         ObjectiveLine,
+        crate::playtest::visuals::DeveloperOverlayNode,
     ));
 }
 
@@ -311,9 +312,14 @@ fn spawn_objective_line(mut commands: Commands) {
 fn update_objective_line(
     host: Option<Res<MissionHost>>,
     messages: Option<Res<MissionMessages>>,
+    overlay: Option<Res<crate::playtest::visuals::DeveloperOverlay>>,
     mut lines: Query<(&mut Text, &mut Visibility), With<ObjectiveLine>>,
-    mut last: Local<Option<String>>,
+    mut last: Local<Option<(Option<String>, bool)>>,
 ) {
+    // The caption is a developer label: the original cockpit draws no
+    // objective line (its objective is the world-space marker), so the line
+    // follows the developer overlay (#1641).
+    let overlay_on = crate::playtest::visuals::overlay_visible(overlay.as_deref());
     let line = host.and_then(|host| match host.lifecycles() {
         ObjectiveLifecycles::Engine(engine) => {
             let hud = ObjectiveHud::from_engine(engine);
@@ -321,13 +327,15 @@ fn update_objective_line(
         }
         ObjectiveLifecycles::Declared { .. } => None,
     });
-    if line == *last {
+    let key = (line, overlay_on);
+    if Some(&key) == last.as_ref() {
         return;
     }
-    let text = line.as_ref().map_or_else(String::new, |line| {
+    let line = key.0.as_ref();
+    let text = line.map_or_else(String::new, |line| {
         format!("{OBJECTIVE_HUD_CAPTION}\n{line}")
     });
-    let visible = line.is_some();
+    let visible = line.is_some() && overlay_on;
     for (mut node, mut visibility) in &mut lines {
         node.0.clone_from(&text);
         *visibility = if visible {
@@ -336,5 +344,5 @@ fn update_objective_line(
             Visibility::Hidden
         };
     }
-    *last = line;
+    *last = Some(key);
 }

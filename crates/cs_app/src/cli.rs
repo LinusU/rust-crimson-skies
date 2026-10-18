@@ -46,6 +46,10 @@ pub struct MissionRequest {
     /// run, never moves the player and judges only whether the wingmen fly
     /// near it (Rally #1572 `M01-SMOKE-NO-TELEPORT`).
     pub smoke_no_teleport: bool,
+    /// `--dev-overlay`: draw the developer overlay (telemetry, key help,
+    /// contact list, designed-layout captions) on top of the cockpit HUD
+    /// (Rally #1641 `PARITY-M01-HUD`).
+    pub dev_overlay: bool,
 }
 
 /// What the caller asked the binary to do.
@@ -120,6 +124,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
     let mut aircraft: Option<String> = None;
     let mut mission: Option<String> = None;
     let mut smoke_no_teleport = false;
+    let mut dev_overlay = false;
     let mut unknown = false;
 
     let mut index = 0;
@@ -131,6 +136,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
             "--headless" => headless = true,
             "--playtest" => playtest = true,
             "--smoke-no-teleport" => smoke_no_teleport = true,
+            "--dev-overlay" => dev_overlay = true,
             "--smoke-seconds" => {
                 let Some(value) = args.get(index + 1).cloned() else {
                     return CliRequest::Unsupported { args };
@@ -217,6 +223,11 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
     if unknown {
         return CliRequest::Unsupported { args };
     }
+    if dev_overlay && mission.is_none() {
+        return CliRequest::Invalid {
+            reason: "--dev-overlay is a flag of --cs-path <dir> --mission <id>".to_string(),
+        };
+    }
     if smoke_no_teleport && (mission.is_none() || smoke_seconds.is_none()) {
         return CliRequest::Invalid {
             reason: "--smoke-no-teleport is a mode of --cs-path <dir> --mission <id> \
@@ -268,6 +279,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
             mission,
             smoke,
             smoke_no_teleport,
+            dev_overlay,
         });
     }
     if playtest {
@@ -449,6 +461,10 @@ WINDOWED PLAYTEST (development, not original)
         weapons (Space fires the guns, Left Ctrl a rocket), radio dialogue and
         music, the objective HUD and the mission triggers. See
         docs/PLAYTEST.md, section 'Original mission M01'
+    --mission <id> --dev-overlay
+        Also draw the developer overlay (telemetry, key help, hostile list,
+        designed-layout captions). Off by default: the mission shows only the
+        original-style cockpit HUD.
     --mission <id> --smoke-seconds <n> [--smoke-no-teleport] [--capture-dir <dir>]
         The same windowed launch driven as a scripted smoke (n >= 45
         simulated seconds): it injects keys through the real input path,

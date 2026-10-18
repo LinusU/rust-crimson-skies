@@ -295,6 +295,7 @@ fn spawn_contact_list(mut commands: Commands) {
         },
         Visibility::Visible,
         ContactList,
+        crate::playtest::visuals::DeveloperOverlayNode,
     ));
 }
 
@@ -308,7 +309,10 @@ fn update_contacts(
     cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
     mut lists: Query<&mut Text, With<ContactList>>,
     brackets: Query<Entity, With<ContactBracket>>,
+    overlay: Option<Res<crate::playtest::visuals::DeveloperOverlay>>,
+    windows: Query<&bevy::prelude::Window>,
 ) {
+    let overlay_on = crate::playtest::visuals::overlay_visible(overlay.as_deref());
     for entity in &brackets {
         commands.entity(entity).despawn();
     }
@@ -331,6 +335,23 @@ fn update_contacts(
     let marked = nearest_hostiles(&rows, MAX_CONTACTS)
         .into_iter()
         .chain(rows.iter().filter(|row| row.ally));
+    if !overlay_on {
+        // The original-style markers: the bare name on screen, `Name 7
+        // o'clock` clamped to the screen edge when off screen (#1641).
+        let Ok(window) = windows.single() else { return };
+        let mut stacked = 0usize;
+        for row in marked.filter(|row| !row.ally) {
+            spawn_original_marker(
+                &mut commands,
+                row,
+                camera,
+                camera_transform,
+                window,
+                &mut stacked,
+            );
+        }
+        return;
+    }
     for row in marked {
         // Behind the camera has no screen position.
         let toward = row.position_m - camera_transform.translation();
@@ -360,6 +381,70 @@ fn update_contacts(
             ContactBracket,
         ));
     }
+}
+
+/// Draws one hostile marker in the original form: red, the contact's name, and
+/// when the contact is off screen an arrow at the screen edge and the clock
+/// bearing from the camera's heading.
+fn spawn_original_marker(
+    commands: &mut Commands,
+    row: &CensusRow,
+    camera: &Camera,
+    camera_transform: &GlobalTransform,
+    window: &bevy::prelude::Window,
+    stacked: &mut usize,
+) {
+    let toward = row.position_m - camera_transform.translation();
+    let forward = *camera_transform.forward();
+    let right = *camera_transform.right();
+    let relative_deg = toward.dot(right).atan2(toward.dot(forward)).to_degrees();
+    let on_screen = if toward.dot(forward) > 0.0 {
+        camera
+            .world_to_viewport(camera_transform, row.position_m)
+            .ok()
+            .filter(|at| {
+                at.x >= 0.0 && at.y >= 0.0 && at.x <= window.width() && at.y <= window.height()
+            })
+    } else {
+        None
+    };
+    let (at, label) = match on_screen {
+        Some(at) => (at, super::cockpit_hud::marker_text(&row.name, None)),
+        None => {
+            // Along the edge, toward the bearing: right/left by sign, level.
+            let hour = super::cockpit_hud::clock_hour(relative_deg);
+            let (x, arrow) = if relative_deg.rem_euclid(360.0) < 180.0 {
+                (window.width() - 260.0, "->")
+            } else {
+                (10.0, "<-")
+            };
+            // Off-screen markers stack down the edge so they never overlap.
+            let y = window.height() * 0.4 + 24.0 * *stacked as f32;
+            *stacked += 1;
+            (
+                bevy::prelude::Vec2::new(x, y),
+                format!(
+                    "{arrow} {}",
+                    super::cockpit_hud::marker_text(&row.name, Some(hour))
+                ),
+            )
+        }
+    };
+    commands.spawn((
+        Text::new(label),
+        TextFont {
+            font_size: FontSize::Px(16.0),
+            ..default()
+        },
+        TextColor(Color::srgb(1.0, 0.2, 0.2)),
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Px(at.x),
+            top: Val::Px(at.y - 8.0),
+            ..default()
+        },
+        ContactBracket,
+    ));
 }
 
 /// Installs the visual attach pass, the census and (windowed compositions

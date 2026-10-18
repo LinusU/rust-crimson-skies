@@ -52,6 +52,7 @@ impl Plugin for PlaytestVisualsPlugin {
                     attach_aircraft,
                     update_aspect,
                     update_hud,
+                    apply_overlay_visibility,
                 ),
             );
     }
@@ -59,6 +60,43 @@ impl Plugin for PlaytestVisualsPlugin {
 
 #[derive(Component)]
 struct HudStatus;
+
+/// Whether the developer overlay (banner, telemetry block, key help, contact
+/// list, objective caption and weapon notice) is drawn. The playtest draws it
+/// always; the composed mission inserts `DeveloperOverlay(false)` and shows
+/// the original-style cockpit HUD instead (#1641), unless the owner passes
+/// `--dev-overlay`.
+#[derive(bevy::prelude::Resource, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct DeveloperOverlay(pub bool);
+
+/// Marks a root UI node that belongs to the developer overlay: it is hidden
+/// while [`DeveloperOverlay`] is `false`.
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct DeveloperOverlayNode;
+
+/// Whether the overlay is on: absent resource means on (the playtest).
+#[must_use]
+pub fn overlay_visible(world_flag: Option<&DeveloperOverlay>) -> bool {
+    world_flag.is_none_or(|flag| flag.0)
+}
+
+/// Applies [`DeveloperOverlay`] to every overlay root.
+pub fn apply_overlay_visibility(
+    flag: Option<Res<DeveloperOverlay>>,
+    mut nodes: Query<&mut bevy::prelude::Visibility, With<DeveloperOverlayNode>>,
+) {
+    // Only the hidden state is forced: while the overlay is on, each widget
+    // keeps managing its own visibility (the objective line hides itself when
+    // it has no text).
+    if overlay_visible(flag.as_deref()) {
+        return;
+    }
+    for mut visibility in &mut nodes {
+        if *visibility != bevy::prelude::Visibility::Hidden {
+            *visibility = bevy::prelude::Visibility::Hidden;
+        }
+    }
+}
 
 fn spawn_lights_and_hud(mut commands: Commands, state: Res<PlaytestState>) {
     let label = state.label;
@@ -77,14 +115,17 @@ fn spawn_lights_and_hud(mut commands: Commands, state: Res<PlaytestState>) {
     };
     // Banner.
     commands
-        .spawn(Node {
-            position_type: PositionType::Absolute,
-            top: Val::Px(6.0),
-            width: Val::Percent(100.0),
-            justify_content: JustifyContent::Center,
-            align_items: AlignItems::Center,
-            ..default()
-        })
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                top: Val::Px(6.0),
+                width: Val::Percent(100.0),
+                justify_content: JustifyContent::Center,
+                align_items: AlignItems::Center,
+                ..default()
+            },
+            DeveloperOverlayNode,
+        ))
         .with_children(|parent| {
             parent.spawn((
                 Text::new(label),
@@ -107,6 +148,7 @@ fn spawn_lights_and_hud(mut commands: Commands, state: Res<PlaytestState>) {
             ..default()
         },
         HudStatus,
+        DeveloperOverlayNode,
     ));
     // Controls.
     commands.spawn((
@@ -121,6 +163,7 @@ fn spawn_lights_and_hud(mut commands: Commands, state: Res<PlaytestState>) {
             padding: UiRect::all(Val::Px(6.0)),
             ..default()
         },
+        DeveloperOverlayNode,
     ));
 }
 
@@ -323,5 +366,23 @@ mod tests {
         let mut world = World::new();
         let entity = world.spawn(window_camera()).id();
         assert_eq!(world.get::<Msaa>(entity), Some(&Msaa::Sample4));
+    }
+
+    /// The developer overlay follows the `DeveloperOverlay` resource: shown by
+    /// default (the playtest), hidden when the mission composition says so.
+    #[test]
+    fn accept_parity_m01_hud_developer_overlay_is_hidden_by_resource() {
+        use bevy::prelude::{IntoScheduleConfigs as _, Schedule, Visibility};
+        let mut world = World::new();
+        let node = world
+            .spawn((Visibility::Inherited, DeveloperOverlayNode))
+            .id();
+        let mut schedule = Schedule::default();
+        schedule.add_systems(apply_overlay_visibility.into_configs());
+        schedule.run(&mut world);
+        assert_eq!(world.get::<Visibility>(node), Some(&Visibility::Inherited));
+        world.insert_resource(DeveloperOverlay(false));
+        schedule.run(&mut world);
+        assert_eq!(world.get::<Visibility>(node), Some(&Visibility::Hidden));
     }
 }

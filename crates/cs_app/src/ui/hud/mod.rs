@@ -59,6 +59,7 @@ mod objectives;
 mod session;
 
 pub use frame::{DamageZone, HudFrame, HudSources, MountedGun, MountedOrdnance, WeaponGauge};
+pub(crate) use frame::{airframe_zones, ordnance_rows, weapon_gauge};
 pub use objectives::{
     HudObjective, MESSAGE_IMAGE, MissionMessages, OBJECTIVE_HUD_CAPTION, ObjectiveHud,
     ObjectiveHudPlugin,

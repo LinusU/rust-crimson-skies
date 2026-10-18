@@ -391,6 +391,7 @@ fn spawn_notice_line(mut commands: Commands) {
         },
         Visibility::Hidden,
         NoticeLine,
+        crate::playtest::visuals::DeveloperOverlayNode,
     ));
 }
 
@@ -401,16 +402,24 @@ fn spawn_notice_line(mut commands: Commands) {
 fn update_notice_line(
     notice: Option<Res<MissionHudNotice>>,
     ledger: Option<Res<PhysicsTickLedger>>,
+    overlay: Option<Res<crate::playtest::visuals::DeveloperOverlay>>,
     mut lines: Query<(&mut Text, &mut Visibility), With<NoticeLine>>,
-    mut last: Local<Option<String>>,
+    mut last: Local<Option<(String, bool)>>,
 ) {
+    // A developer diagnostic: shown only with the overlay (#1641).
+    let overlay_on = crate::playtest::visuals::overlay_visible(overlay.as_deref());
     let current = notice.as_deref().and_then(|notice| notice.current.as_ref());
     let now = ledger.map_or(0, |ledger| ledger.ticks);
-    let shown = current.filter(|line| now.saturating_sub(line.at.0) <= NOTICE_LIFETIME_TICKS);
+    let shown = current
+        .filter(|line| now.saturating_sub(line.at.0) <= NOTICE_LIFETIME_TICKS)
+        .filter(|_| overlay_on);
     let text = shown.map_or_else(String::new, |line| {
         format!("{NOTICE_HUD_CAPTION}\n{}", line.text)
     });
-    if Some(&text) == last.as_ref() {
+    if last
+        .as_ref()
+        .is_some_and(|(t, o)| *t == text && *o == overlay_on)
+    {
         return;
     }
     for (mut node, mut visibility) in &mut lines {
@@ -421,7 +430,7 @@ fn update_notice_line(
             Visibility::Hidden
         };
     }
-    *last = Some(text);
+    *last = Some((text, overlay_on));
 }
 
 /// Wires the mission's weapon presentation: the two drawn mirrors, their
