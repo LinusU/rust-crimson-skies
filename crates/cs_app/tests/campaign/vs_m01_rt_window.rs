@@ -221,6 +221,9 @@ fn synthetic_host_seed() -> MissionHostSeed {
         engine_objectives: None,
         sound_archives: Vec::new(),
         radio: MissionRadio::empty(),
+        // No installation to read a `targets.zrd` or a damage set from: the
+        // synthetic stage binds no ground target.
+        targets: cs_app::mission_targets::MissionTargetBinding::default(),
         objectives: no_declared_objectives(),
         markers: MissionMarkerBindings::default(),
         resolver: MemberResolver::from_hierarchy([("harbor".to_owned(), None)]),

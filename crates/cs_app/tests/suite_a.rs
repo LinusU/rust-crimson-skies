@@ -14,6 +14,7 @@ mod campaign {
     mod common;
     mod f29_c_3b_score;
     mod f37_c_fu1;
+    mod m01_bridge_convoy_spawn;
     mod m01_play_actors;
     mod m01_play_ai;
     mod m01_play_ai_arm_order;
