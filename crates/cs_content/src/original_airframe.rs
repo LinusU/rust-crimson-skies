@@ -1412,6 +1412,166 @@ pub fn import_retail_globals(
     OriginalDocuments::read(install_root)?.globals()
 }
 
+// ------------------------------------------------ AI parameter randomisation ---
+
+/// The half-width of the AI randomisation band: every AI airframe parameter is
+/// scaled by a factor in `[1 - 0.05, 1 + 0.05)`. Read from the static analysis
+/// of `0x4771c6` (`OWNER-STATIC-2026-10-08`), never `verified_original`.
+pub const AI_RANDOMISATION_BAND: f64 = 0.05;
+
+/// The claim id the randomisation's band and "player never" rule are recorded
+/// under.
+pub const AI_RANDOMISATION_CLAIM: &str = "f805.ai_randomisation.0x4771c6";
+
+/// The domain constant of the AI airframe stream, the big-endian ASCII bytes
+/// `"AI_AIRFR"`. A remake choice (the original's RNG was not recovered), not
+/// original-game data; see `cs_types::random::SplitMix64::for_domain`.
+pub const AI_AIRFRAME_DOMAIN: u64 = 0x4149_5F41_4952_4652;
+
+/// Who flies an airframe: the original rolls the band for AI only.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AirframeController {
+    /// A player aircraft: the imported values are used exactly.
+    Player,
+    /// An AI aircraft: every parameter is rolled inside the band.
+    Ai,
+}
+
+/// One parameter's roll, as the evidence record shows it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct AirframeRoll {
+    /// The flat field name.
+    pub field: &'static str,
+    /// The imported (retail) value.
+    pub imported: f64,
+    /// The scale factor drawn, in `[1 - band, 1 + band)`; `1.0` when nothing
+    /// was rolled.
+    pub factor: f64,
+    /// The value the aircraft flies with: `imported * factor`.
+    pub rolled: f64,
+}
+
+/// Why a rolled record was refused.
+#[derive(Clone, Debug, PartialEq)]
+pub enum AirframeRollError {
+    /// A rolled value is not finite (the imported value already was not, or
+    /// overflowed when scaled). Nothing is clamped.
+    NonFinite {
+        /// The field.
+        field: &'static str,
+    },
+}
+
+impl std::fmt::Display for AirframeRollError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::NonFinite { field } => write!(f, "the rolled {field} is not finite"),
+        }
+    }
+}
+
+impl std::error::Error for AirframeRollError {}
+
+/// An airframe after the spawn-time roll: the parameters to fly with, plus
+/// the seed, the domain and every factor so the roll is never hidden from the
+/// evidence record.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RolledAirframe {
+    /// Who the record was rolled for.
+    pub controller: AirframeController,
+    /// The root seed the stream was derived from (`None` for a player, which
+    /// draws nothing).
+    pub seed: Option<u64>,
+    /// The parameters to fly with; provenance still names the imported bytes.
+    pub parameters: OriginalAirframeParameters,
+    /// One entry per [`AIRFRAME_FIELDS`] name, in that order.
+    pub rolls: Vec<AirframeRoll>,
+}
+
+impl RolledAirframe {
+    /// The evidence record's override lines: the seed, the band and one line
+    /// per rolled parameter (`field imported -> rolled`). Empty for a player.
+    #[must_use]
+    pub fn evidence_overrides(&self) -> Vec<String> {
+        let Some(seed) = self.seed else {
+            return Vec::new();
+        };
+        let mut lines = vec![format!(
+            "{AI_RANDOMISATION_CLAIM}: record {} seed {seed} domain {AI_AIRFRAME_DOMAIN:#x} band +-{AI_RANDOMISATION_BAND}",
+            self.parameters.record
+        )];
+        lines.extend(self.rolls.iter().map(|roll| {
+            format!(
+                "{} {} -> {} (x{})",
+                roll.field, roll.imported, roll.rolled, roll.factor
+            )
+        }));
+        lines
+    }
+}
+
+impl OriginalAirframeParameters {
+    /// Applies the original's spawn-time randomisation (`0x4771c6`): an AI
+    /// record has every [`AIRFRAME_FIELDS`] value scaled by an independent
+    /// factor in `[0.95, 1.05)`; a player record is returned unchanged.
+    ///
+    /// The draws come from a `SplitMix64` stream of `seed` in the
+    /// [`AI_AIRFRAME_DOMAIN`], one per field in [`AIRFRAME_FIELDS`] order, so
+    /// the same seed and record always roll the same. The generator and the
+    /// uniform distribution are remake choices: the original's were not
+    /// recovered.
+    ///
+    /// # Errors
+    ///
+    /// [`AirframeRollError::NonFinite`] naming the first rolled value that is
+    /// not finite; nothing is clamped.
+    pub fn randomised(
+        &self,
+        controller: AirframeController,
+        seed: u64,
+    ) -> Result<RolledAirframe, AirframeRollError> {
+        let mut stream = cs_types::random::SplitMix64::for_domain(seed, AI_AIRFRAME_DOMAIN);
+        let mut parameters = self.clone();
+        let mut rolls = Vec::with_capacity(AIRFRAME_FIELDS.len());
+        for field in AIRFRAME_FIELDS {
+            let Some(entry) = parameters
+                .values
+                .iter_mut()
+                .find(|entry| entry.field == field)
+            else {
+                continue;
+            };
+            let imported = entry.value;
+            let factor = match controller {
+                AirframeController::Player => 1.0,
+                AirframeController::Ai => {
+                    1.0 + AI_RANDOMISATION_BAND * (2.0 * stream.unit_f64() - 1.0)
+                }
+            };
+            let rolled = match controller {
+                AirframeController::Player => imported,
+                AirframeController::Ai => imported * factor,
+            };
+            if !rolled.is_finite() {
+                return Err(AirframeRollError::NonFinite { field });
+            }
+            entry.value = rolled;
+            rolls.push(AirframeRoll {
+                field,
+                imported,
+                factor,
+                rolled,
+            });
+        }
+        Ok(RolledAirframe {
+            controller,
+            seed: (controller == AirframeController::Ai).then_some(seed),
+            parameters,
+            rolls,
+        })
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

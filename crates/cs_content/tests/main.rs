@@ -82,6 +82,7 @@ mod accept_f59_a_replay_schema;
 mod accept_f64_a_legacy_import_plan;
 mod accept_f64_b_blueprint_import;
 mod accept_f64_b_retail_import_surface;
+mod accept_flight_ai_parameter_randomisation;
 mod accept_flight_original_retail;
 mod accept_t442_shared_damage_key;
 mod accept_t548_retail_blast;
