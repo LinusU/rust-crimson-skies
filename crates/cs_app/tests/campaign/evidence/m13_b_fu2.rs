@@ -153,7 +153,8 @@ fn evidence_report_m13_b_fu2_writes_the_acceptance_report() {
              not in the empty mis_anim.zrd) and refuses `cg1zep_engines_stop` as an ambiguous \
              declaration. NOT CLAIMED: which declaration the original selects, and any runtime \
              half; nothing is verified_original and no original executable was run. Claim is \
-             implemented only; validated with tools/validate_evidence.py --require-pass. \
+             implemented only; validated structurally with tools/validate_evidence.py; --require-pass refuses \
+             the recorded unknown, which is kept on purpose. \
              `candidate_tree` is the tree of the commit the suite and this harness ran on; the \
              only later delta is this report's own copy under docs/findings/evidence/, which no \
              acceptance test reads"
