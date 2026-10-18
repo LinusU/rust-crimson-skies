@@ -58,13 +58,17 @@
 //!
 //! **The collider is shared the same way** (task #1430). Avian's
 //! `ColliderCache` — the thing that used to make N objects naming one mesh share
-//! one derived `TriMesh` — is keyed by mesh handle and is only consulted for
-//! `TrimeshFromMesh`, which reads the *drawn* buffer task #1424 forbids. So the
-//! entry also holds the collision shape derived from the upload once, and every
-//! colliding record gets clones of that one [`Collider`]: one allocation behind
-//! N colliders, still one `Collider` component per entity so each keeps its own
-//! pose and scale. A record whose collision view carries no triangle never
-//! reaches it — that object is reported, not spawned.
+//! one derived `TriMesh` — is keyed by mesh handle, and Avian's
+//! `init_collider_constructors` consults it only for a constructor whose
+//! `ColliderConstructor::requires_mesh()` is true. `TrimeshFromMesh` is one, but
+//! it reads the *drawn* buffer task #1424 forbids; the explicit constructor
+//! #1424 put in its place carries its own buffers, so it never reaches that
+//! cache and every instance naming the mesh derived its own copy. The entry
+//! therefore also holds the collision shape derived from the upload once, and
+//! every colliding record gets clones of that one [`Collider`]: one allocation
+//! behind N colliders, still one `Collider` component per entity so each keeps
+//! its own pose and scale. A record whose collision view carries no triangle
+//! never reaches it — that object is reported, not spawned.
 //!
 //! **The world loader does keep an owning handle, and it is released with the
 //! world.** [`WorldMeshAssets`] holds the strong handles, so a sector that
@@ -318,12 +322,14 @@ impl MeshReference {
 /// **The derived collider is stored beside the handle and cloned for every
 /// object** (task #1430). The pair is one upload with two engine-side
 /// artefacts: one [`Mesh`] the renderer draws and one [`Collider`] a body is
-/// stopped by. A `Trimesh*` constructor does not go through Avian's
-/// handle-keyed `ColliderCache`, so building the collider per object would
-/// copy the collision view's vertices and indices — and its BVH — once per
-/// instance naming the mesh, which is the regression #1430 removes. It is
-/// `None` until the first **colliding** object asks for it, so a
-/// presentation-only record never builds a shape it cannot use.
+/// stopped by. Only a constructor that asks Avian for a mesh (such as
+/// `TrimeshFromMesh`) reaches Avian's handle-keyed `ColliderCache`; the
+/// explicit `TrimeshWithConfig` of task #1424 carries its own buffers, so
+/// building the collider per object would copy the collision view's vertices
+/// and indices — and its BVH — once per instance naming the mesh, which is the
+/// regression #1430 removes. It is `None` until the first **colliding** object
+/// asks for it, so a presentation-only record never builds a shape it cannot
+/// use.
 #[derive(Clone, Debug)]
 struct SharedWorldMesh {
     fingerprint: ContentHash,
@@ -995,8 +1001,8 @@ fn shared_mesh(app: &mut App, upload: ResolvedUpload<'_>) -> Handle<Mesh> {
 ///
 /// The shape is derived only here, and only after `spawn_object` has refused a
 /// collision view that carries no triangle as
-/// [`SkipReason::CollisionTopologyUnavailable`], so an explicit `Trimesh`
-/// constructor that panics on an empty index buffer is never reached.
+/// [`SkipReason::CollisionTopologyUnavailable`], so a triangle mesh built from
+/// an empty index buffer — which panics — is never reached.
 fn shared_collider(app: &mut App, upload: ResolvedUpload<'_>) -> Collider {
     let id = upload.id.clone();
     let fingerprint = upload.upload.fingerprint();
@@ -1601,9 +1607,10 @@ fn mesh_collider_buffers(collision: &ColliderMesh) -> (Vec<Vec3>, Vec<[u32; 3]>)
 pub(crate) fn mesh_collider(collision: &ColliderMesh) -> Collider {
     // An empty view cannot reach here: `spawn_object` reports an object whose
     // collision view carries no triangle as `SkipReason::
-    // CollisionTopologyUnavailable` instead of spawning it, because Avian's
-    // explicit `Trimesh*` constructors **panic** on an empty index buffer
-    // where `TrimeshFromMesh` returned `None`.
+    // CollisionTopologyUnavailable` instead of spawning it, because
+    // `Collider::trimesh_with_config` — like Avian's explicit `Trimesh*`
+    // constructors — **panics** on an empty index buffer where
+    // `TrimeshFromMesh` returned `None`.
     let (vertices, indices) = mesh_collider_buffers(collision);
     Collider::trimesh_with_config(vertices, indices, MESH_TRIMESH_FLAGS)
 }
