@@ -64,8 +64,9 @@
 //! cubic of one segment evaluated at its length equals the next segment's start
 //! position to 3.1e-5 in the 14 `generic_intro` tracks.
 //!
-//! The in-memory address of the descriptor table, the meaning of `type`, and
-//! the frame of reference of the positions are **not** measured.
+//! The in-memory address of the descriptor table and the meaning of `type` are
+//! **not** measured. The frame of the positions is the parent's, decided by the
+//! node the track moves (#1673, see the finding above).
 
 use std::fmt;
 
@@ -122,6 +123,23 @@ impl TrackPart {
     /// block's mode word is zero.
     pub fn linear_rate(&self) -> [f32; 3] {
         [self.words[4], self.words[5], self.words[6]]
+    }
+
+    /// The rotation vector the engine builds from a rotation part at local
+    /// time `u` (`0x4ea5c0`..`0x4ea623`): the three cubics when the block's
+    /// mode word is not zero, otherwise `u` times words 4..7, with **no**
+    /// start term (the position part of the same mode adds word 0..3).
+    pub fn rotation_vector_at(&self, cubic: bool, u: f32) -> [f32; 3] {
+        if cubic {
+            [
+                self.cubic_at(0, u),
+                self.cubic_at(1, u),
+                self.cubic_at(2, u),
+            ]
+        } else {
+            let rate = self.linear_rate();
+            [u * rate[0], u * rate[1], u * rate[2]]
+        }
     }
 
     /// Channel `channel` (0..3) of the cubic: `[a0, a1, a2, a3]`.
@@ -192,6 +210,109 @@ impl TrackSegment {
     /// The scale part, when flag bit 2 is set.
     pub const fn scale(&self) -> Option<&TrackPart> {
         self.scale.as_ref()
+    }
+
+    /// The orientation the engine writes to the node at local time `u`
+    /// (`time - start`), or `None` without a rotation part. `cubic` is the
+    /// block's mode word being non-zero ([`TrackBlock::mode`]).
+    ///
+    /// The composition is `exp(v(u)) * q_start`, normalised, converted to a
+    /// matrix and to Euler angles; see [`SegmentOrientation`]. Every step is
+    /// the cited helper's formula read from the image; arithmetic here is
+    /// `f64` where the engine uses the x87 stack, so results agree to the
+    /// float's precision, not bit for bit.
+    pub fn orientation_at(&self, cubic: bool, u: f32) -> Option<SegmentOrientation> {
+        let part = self.rotation.as_ref()?;
+        let v = part.rotation_vector_at(cubic, u);
+        let start = part.start_quaternion();
+        let delta = quaternion_exp([f64::from(v[0]), f64::from(v[1]), f64::from(v[2])]);
+        let composed = quaternion_normalise(quaternion_product(delta, start.map(f64::from)));
+        let matrix = quaternion_matrix(composed);
+        Some(SegmentOrientation {
+            quaternion: composed,
+            matrix,
+            euler: matrix_euler(matrix),
+        })
+    }
+}
+
+/// What the engine derives from a rotation part (`0x4ea5ab`..`0x4ea6d5`), at
+/// one local time.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct SegmentOrientation {
+    /// The composed unit quaternion `(w, x, y, z)`: the exponential of the
+    /// rotation vector (`0x53fbf0`) on the left of the part's start
+    /// quaternion (`0x53f920`), then normalised (`0x53f850`).
+    pub quaternion: [f64; 4],
+    /// `0x53fa40`'s 3x3 matrix, rows `m[0]`..`m[2]`, laid out for row vectors:
+    /// the **transpose** of the usual column-vector rotation matrix.
+    pub matrix: [[f64; 3]; 3],
+    /// `0x53df30`'s angles in radians `[x, y, z]` (pitch, yaw, roll) for the
+    /// composition `R = Ry(y) * Rx(x) * Rz(z)` on column vectors; the
+    /// `SetRotation` setters store them as given.
+    pub euler: [f64; 3],
+}
+
+/// `0x53f920`: the Hamilton product `a * b` of two `(w, x, y, z)` quaternions.
+fn quaternion_product(a: [f64; 4], b: [f64; 4]) -> [f64; 4] {
+    [
+        a[0] * b[0] - a[1] * b[1] - a[2] * b[2] - a[3] * b[3],
+        a[1] * b[0] + b[1] * a[0] + b[3] * a[2] - b[2] * a[3],
+        a[2] * b[0] + b[2] * a[0] + b[1] * a[3] - b[3] * a[1],
+        a[3] * b[0] + b[3] * a[0] + b[2] * a[1] - b[1] * a[2],
+    ]
+}
+
+/// `0x53fbf0`: `(cos |v|, sin |v| * v / |v|)`, the identity when `|v|` is not
+/// above the image's float at `0x6032c8` (zero). The angle is **not** halved:
+/// the rotation this quaternion stands for turns by `2 |v|`.
+fn quaternion_exp(v: [f64; 3]) -> [f64; 4] {
+    let length = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    if length <= 0.0 {
+        return [1.0, 0.0, 0.0, 0.0];
+    }
+    let scale = length.sin() / length;
+    [length.cos(), v[0] * scale, v[1] * scale, v[2] * scale]
+}
+
+/// `0x53f850`: scale by `1 / approx_sqrt(s)` where `s` is the squared length
+/// and `approx_sqrt` halves the float's bit pattern and adds `0x1fc00000`.
+fn quaternion_normalise(q: [f64; 4]) -> [f64; 4] {
+    let squared = (q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]) as f32;
+    let approx = f32::from_bits(((squared.to_bits() as i32 >> 1) + 0x1fc0_0000) as u32);
+    let factor = f64::from(1.0 / approx);
+    [q[0] * factor, q[1] * factor, q[2] * factor, q[3] * factor]
+}
+
+/// `0x53fa40`: the matrix of a unit quaternion, in the engine's layout.
+fn quaternion_matrix(q: [f64; 4]) -> [[f64; 3]; 3] {
+    let [w, x, y, z] = q;
+    let (xx, yy, zz) = (2.0 * x * x, 2.0 * y * y, 2.0 * z * z);
+    let (xy, xz, yz) = (2.0 * x * y, 2.0 * x * z, 2.0 * y * z);
+    let (xw, yw, zw) = (2.0 * x * w, 2.0 * y * w, 2.0 * z * w);
+    [
+        [1.0 - yy - zz, xy + zw, xz - yw],
+        [xy - zw, 1.0 - xx - zz, yz + xw],
+        [xz + yw, yz - xw, 1.0 - xx - yy],
+    ]
+}
+
+/// `0x53df30`: matrix to `[x, y, z]`. Below `|m[2][1]| = 1.0` it is
+/// `[asin(-m21), atan2(m20, m22), atan2(m01, m11)]`; at or above, the gimbal
+/// branch `[-copysign(pi/2, m21), atan2(-m02, m00), 0]`.
+fn matrix_euler(m: [[f64; 3]; 3]) -> [f64; 3] {
+    if m[2][1].abs() < 1.0 {
+        [
+            (-m[2][1]).asin(),
+            m[2][0].atan2(m[2][2]),
+            m[0][1].atan2(m[1][1]),
+        ]
+    } else {
+        [
+            -std::f64::consts::FRAC_PI_2.copysign(m[2][1]),
+            (-m[0][2]).atan2(m[0][0]),
+            0.0,
+        ]
     }
 }
 
