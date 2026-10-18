@@ -674,13 +674,17 @@ pub fn stage_for(
 /// `ObjectiveRecovery::engine_declarations()` for the measured lifecycle
 /// model. The detail a run reports is **the reader's own message** and not
 /// a summary of it. `program()` computes its refusal from the record's
-/// census and names the unrecovered field families per mission: for M01, 308
-/// of 358 fields are recovered and the refusal names exactly `ControlDirective`
-/// x45 and `RecordDirective` x5, the world-side directive families
-/// (`docs/findings/2026-10-12-m01-b-obj-integration-family-verdict.md`). Every
-/// original mission whose record still has such families refuses, so the stage
-/// carries [`no_declared_objectives`] and records why, while the engine model
-/// needs only the recovered families and is carried beside it.
+/// census, never assuming one, and names the unrecovered field families of
+/// the record it read: for the record the M01-B-OBJ stages measured
+/// (`zbd/c1c/m01` — campaign position ch2-m01, work order M06 since
+/// `docs/findings/2026-10-17-m01-archive-decision.md`), 308 of 358 fields
+/// are recovered and the refusal names exactly `ControlDirective` x45 and
+/// `RecordDirective` x5, the world-side directive families
+/// (`docs/findings/2026-10-12-m01-b-obj-integration-family-verdict.md`). A
+/// record that leaves no family unrecovered still refuses — naming the
+/// declared schema's missing carrier instead — so every original mission's
+/// stage carries [`no_declared_objectives`] and records why, while the engine
+/// model needs only the recovered families and is carried beside it.
 ///
 /// The `Ok` arms are the forward path: when the recovery does lower a
 /// declared program, the stage carries **that** program and raises no
