@@ -1,5 +1,10 @@
 # F40-D3: what `cam_anim.zbd` actually stores — the measured camera-cinematic format
 
+> **Update (#1662, 2026-10-18).** The statement below that no measured field carries a camera pose
+> is true of the record walk only. The poses are `.zan` tracks in the region after the last record;
+> see `docs/findings/2026-10-18-parity-m01-lc-cinematic-camera-pose-source.md`. The rest of this
+> document stands.
+
 Date: 2026-10-13. Task: #662 (`F40-D3`) "Identify the original in-engine
 camera animation format (cam_anim.zbd)". Spec:
 `specs/F40-cutscenes-video-scripted-cameras-and-transitions.md`, stage
