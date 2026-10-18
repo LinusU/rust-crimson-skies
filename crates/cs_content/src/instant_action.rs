@@ -58,7 +58,7 @@ use cs_types::content::{
 use cs_types::evidence::ClaimId;
 use cs_types::random::SplitMix64;
 
-use crate::ai::{DifficultyProfile, DifficultyTier};
+use crate::ai::{DeclaredSkillTier, DifficultyProfile, DifficultyTier};
 use crate::catalog::baseline::{Baseline, BaselineError, retail_baseline};
 use crate::environment::EnvironmentId;
 use crate::pilots::DeclaredSurvivability;
@@ -183,9 +183,10 @@ pub struct ScenarioActorSpec {
     loadout: Resolved<ContentId>,
     pilot: Option<ContentId>,
     survivability: Resolved<DeclaredSurvivability>,
-    skill: Option<String>,
+    skill: Option<DeclaredSkillTier>,
     authored_count: Option<u32>,
     label: Option<String>,
+    role: Option<String>,
     provenance: Provenance,
 }
 
@@ -212,8 +213,44 @@ impl ScenarioActorSpec {
         survivability: Resolved<DeclaredSurvivability>,
         provenance: Provenance,
     ) -> Result<Self, ScenarioSchemaError> {
-        if faction.kind() != ContentKind::Faction {
-            return Err(ScenarioSchemaError::FactionKindMismatch { id: faction });
+        let faction = Resolved::Known(Known::new(faction, provenance.clone()));
+        Self::try_new_resolved(
+            side,
+            slot,
+            faction,
+            airframe,
+            loadout,
+            pilot,
+            survivability,
+            provenance,
+        )
+    }
+
+    /// [`Self::try_new`] over a faction that may be explicitly unmeasured.
+    ///
+    /// The original's descriptors name a plane and a skill per actor but no
+    /// faction, so a retail preset's actor keeps its faction `Unknown` (with
+    /// the claim and reason) instead of borrowing one from a paint pattern. An
+    /// unknown faction passes here and refuses in validation and lowering.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::try_new`].
+    #[allow(clippy::too_many_arguments)]
+    pub fn try_new_resolved(
+        side: ScenarioSide,
+        slot: RosterSlot,
+        faction: Resolved<ContentId>,
+        airframe: Resolved<ContentId>,
+        loadout: Resolved<ContentId>,
+        pilot: Option<ContentId>,
+        survivability: Resolved<DeclaredSurvivability>,
+        provenance: Provenance,
+    ) -> Result<Self, ScenarioSchemaError> {
+        if let Resolved::Known(Known { value, .. }) = &faction
+            && value.kind() != ContentKind::Faction
+        {
+            return Err(ScenarioSchemaError::FactionKindMismatch { id: value.clone() });
         }
         if let Resolved::Known(Known { value, .. }) = &airframe
             && value.kind() != ContentKind::Airframe
@@ -230,7 +267,6 @@ impl ScenarioActorSpec {
         {
             return Err(ScenarioSchemaError::PilotKindMismatch { id: pilot.clone() });
         }
-        let faction = Resolved::Known(Known::new(faction, provenance.clone()));
         Ok(Self {
             side,
             slot,
@@ -242,30 +278,17 @@ impl ScenarioActorSpec {
             skill: None,
             authored_count: None,
             label: None,
+            role: None,
             provenance,
         })
     }
 
-    /// Records that the faction this actor flies for is not measured.
+    /// Attaches the original's own skill tier (`novice`, `veteran`, `ace`).
     ///
-    /// The original's descriptors name a plane and a skill per actor but no
-    /// faction, so a retail preset's actor keeps its faction explicitly
-    /// unknown instead of borrowing one from a paint pattern.
+    /// Which AI knobs a tier selects is a separate, unmeasured question
+    /// (F32-D); nothing here maps it onto a [`DifficultyTier`].
     #[must_use]
-    pub fn with_unmeasured_faction(mut self, claim_id: ClaimId, reason: &str) -> Self {
-        self.faction = Resolved::Unknown {
-            claim_id,
-            reason: reason.to_owned(),
-        };
-        self
-    }
-
-    /// Attaches the original's own skill label (`novice`, `veteran`, `ace`).
-    ///
-    /// The label is the descriptor's spelling. Which AI knobs it selects is a
-    /// separate, unmeasured question; nothing here maps it onto a tier.
-    #[must_use]
-    pub fn with_skill(mut self, skill: String) -> Self {
+    pub const fn with_skill(mut self, skill: DeclaredSkillTier) -> Self {
         self.skill = Some(skill);
         self
     }
@@ -285,15 +308,29 @@ impl ScenarioActorSpec {
         self
     }
 
+    /// Attaches the role the descriptor gives this actor (`player`, `wingman`,
+    /// `group1`, `ace`), so a consumer can tell an enemy group from the ace.
+    #[must_use]
+    pub fn with_role(mut self, role: String) -> Self {
+        self.role = Some(role);
+        self
+    }
+
+    /// The role the descriptor gives this actor, when it names one.
+    #[must_use]
+    pub fn role(&self) -> Option<&str> {
+        self.role.as_deref()
+    }
+
     /// Carries over the authored attributes a slot edit does not touch: the
-    /// faction (kept even when unmeasured), the skill label, the authored
-    /// count and the name label of `original`.
+    /// skill tier, the authored count, the name label and the role of
+    /// `original`.
     #[must_use]
     pub fn with_authored_from(mut self, original: &Self) -> Self {
-        self.faction = original.faction.clone();
-        self.skill = original.skill.clone();
+        self.skill = original.skill;
         self.authored_count = original.authored_count;
         self.label = original.label.clone();
+        self.role = original.role.clone();
         self
     }
 
@@ -324,10 +361,10 @@ impl ScenarioActorSpec {
         }
     }
 
-    /// The original's skill label, when the descriptor declares one.
+    /// The original's skill tier, when the descriptor declares one.
     #[must_use]
-    pub fn skill(&self) -> Option<&str> {
-        self.skill.as_deref()
+    pub const fn skill(&self) -> Option<DeclaredSkillTier> {
+        self.skill
     }
 
     /// The aircraft count the descriptor authors for this actor's group.
@@ -799,6 +836,37 @@ impl ScenarioParameters {
         }
     }
 
+    /// Assembles the parameter set of an original preset whose difficulty and
+    /// victory rules are not measured.
+    ///
+    /// Nothing stands in for the two dimensions: both are
+    /// [`Declared::Unmeasured`] with the given claim and reason, and the
+    /// lowering refuses them by name.
+    #[must_use]
+    pub fn new_unmeasured_rules(
+        world: Resolved<WorldId>,
+        environment: Resolved<EnvironmentId>,
+        roster: ScenarioRoster,
+        seed: ScenarioSeed,
+        difficulty: (ClaimId, &str),
+        rules: (ClaimId, &str),
+    ) -> Self {
+        Self {
+            world,
+            environment,
+            roster,
+            difficulty: Declared::Unmeasured {
+                claim_id: difficulty.0,
+                reason: difficulty.1.to_owned(),
+            },
+            rules: Declared::Unmeasured {
+                claim_id: rules.0,
+                reason: rules.1.to_owned(),
+            },
+            seed,
+        }
+    }
+
     /// Records that the preset's original difficulty is not measured.
     #[must_use]
     pub fn with_unmeasured_difficulty(mut self, claim_id: ClaimId, reason: &str) -> Self {
@@ -870,6 +938,7 @@ pub struct InstantActionPreset {
     title: Resolved<String>,
     parameters: ScenarioParameters,
     original_mission_type: Option<String>,
+    unmeasured: Vec<UnmeasuredPresetFact>,
     origin: Origin,
     provenance: Provenance,
 }
@@ -917,6 +986,7 @@ impl InstantActionPreset {
             title,
             parameters,
             original_mission_type: None,
+            unmeasured: Vec::new(),
             origin,
             provenance,
         })
@@ -931,6 +1001,24 @@ impl InstantActionPreset {
     pub fn with_original_mission_type(mut self, mission_type: String) -> Self {
         self.original_mission_type = Some(mission_type);
         self
+    }
+
+    /// Records a fact about the preset the original does not measure and the
+    /// roster cannot express (for example the number of wingmen of a scenario
+    /// whose descriptor declares none).
+    ///
+    /// [`lower_preset`](../../cs_app/ui/instant_action/index.html) refuses a
+    /// preset that carries one, so it never launches without the fact.
+    #[must_use]
+    pub fn with_unmeasured_fact(mut self, fact: UnmeasuredPresetFact) -> Self {
+        self.unmeasured.push(fact);
+        self
+    }
+
+    /// The facts about this preset the original does not measure.
+    #[must_use]
+    pub fn unmeasured_facts(&self) -> &[UnmeasuredPresetFact] {
+        &self.unmeasured
     }
 
     /// The original mission type this preset selects, when it has one.
@@ -979,6 +1067,17 @@ impl InstantActionPreset {
     pub const fn provenance(&self) -> &Provenance {
         &self.provenance
     }
+}
+
+/// One fact about a preset that the original does not measure.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnmeasuredPresetFact {
+    /// What is unmeasured, as a field name (`"wingman count"`).
+    pub field: String,
+    /// The claim the unknown is recorded under.
+    pub claim_id: ClaimId,
+    /// Why it is unmeasured.
+    pub reason: String,
 }
 
 /// Largest accepted original preset title, in bytes.

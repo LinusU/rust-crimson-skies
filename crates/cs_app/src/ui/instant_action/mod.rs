@@ -54,6 +54,7 @@
 mod flow;
 mod normalize;
 mod persist;
+mod retail;
 
 use std::fmt;
 
@@ -75,6 +76,19 @@ pub use flow::{
 };
 
 pub use persist::{IaPersistError, read_records};
+
+pub use retail::{
+    DirectoryInputs, RetailCatalogError, assemble_retail_catalog, directory_presets,
+    directory_roster, preset_seed, retail_instant_action_catalog,
+};
+
+pub use retail::{
+    DIFFICULTY_UNMEASURED_REASON, FACTION_UNMEASURED_REASON, IA_CATALOG_CLAIM,
+    IA_DIFFICULTY_UNMEASURED_CLAIM, IA_ENVIRONMENT_CLAIM, IA_FACTION_UNMEASURED_CLAIM,
+    IA_LOADOUT_UNMEASURED_CLAIM, IA_PRESET_CLAIM, IA_RULES_UNMEASURED_CLAIM, IA_WORLD_CLAIM,
+    LOADOUT_UNMEASURED_REASON, SURVIVABILITY_UNMEASURED_REASON, TITLE_UNMEASURED_REASON,
+    WINGMAN_PLANE_UNMEASURED_REASON,
+};
 
 pub use normalize::{
     ActorField, ScenarioChange, ScenarioOutcome, ScenarioResult, ScenarioSnapshot, diff_scenarios,
@@ -374,12 +388,118 @@ pub fn lower_preset(
         .ok_or_else(|| LowerError::UnknownPreset {
             preset: preset_id.clone(),
         })?;
+    // A fact the roster cannot express and the original does not measure (a
+    // scenario with no declared wingman count) refuses the launch instead of
+    // starting a scenario that silently lacks it.
+    if let Some(fact) = preset.unmeasured_facts().first() {
+        return Err(LowerError::UnknownValue {
+            field: fact.field.clone(),
+            claim_id: fact.claim_id.clone(),
+            reason: fact.reason.clone(),
+        });
+    }
     lower_parameters(
         preset.scenario().clone(),
         preset.parameters(),
         // A preset is authored single-player until evidence says otherwise.
         1,
     )
+}
+
+/// One declared actor of a preset, lowered as far as the original measures it.
+///
+/// [`lower_preset`] needs every dimension of an actor (faction, loadout,
+/// survivability) and refuses a retail preset because the original's
+/// descriptors do not measure them. This is the part that **is** measured -
+/// which aircraft, how skilled, how many - so the expected-actors half of
+/// AC01 can be checked against the installation without launching anything.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LoweredRosterEntry {
+    /// The side this actor is spawned on.
+    pub side: ScenarioSide,
+    /// The authored slot index within its side.
+    pub slot: RosterSlot,
+    /// The role the descriptor gives it (`player`, `wingman`, `group1`, `ace`).
+    pub role: Option<String>,
+    /// The original's localized name label, when the descriptor declares one.
+    pub label: Option<String>,
+    /// The runtime geometry identity, or why the airframe is unmeasured.
+    pub geometry: Result<GeometryId, UnmeasuredField>,
+    /// The original's skill tier, when declared.
+    pub skill: Option<cs_content::ai::DeclaredSkillTier>,
+    /// The aircraft count the descriptor authors for the actor's group.
+    pub authored_count: Option<u32>,
+}
+
+/// A value the original does not measure, with its claim and reason.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct UnmeasuredField {
+    /// The claim the unknown is recorded under.
+    pub claim_id: ClaimId,
+    /// Why it is unmeasured.
+    pub reason: String,
+}
+
+/// A preset's declared roster, lowered as far as it is measured.
+#[derive(Clone, Debug, PartialEq)]
+pub struct LoweredPresetRoster {
+    /// The `ia_scenario` id the preset launches.
+    pub scenario: ContentId,
+    /// The actors in `(side, slot)` order.
+    pub entries: Vec<LoweredRosterEntry>,
+    /// Facts the roster cannot express because the original does not measure
+    /// them.
+    pub unmeasured: Vec<cs_content::instant_action::UnmeasuredPresetFact>,
+}
+
+/// Lowers the measured part of a preset's roster.
+///
+/// # Errors
+///
+/// [`LowerError::UnknownPreset`] when the catalog holds no such preset, and
+/// [`LowerError::Identity`] when a known airframe is not a valid runtime
+/// geometry identity. An unmeasured airframe is **not** an error here: it is
+/// carried in [`LoweredRosterEntry::geometry`] with its claim and reason.
+pub fn lower_preset_roster(
+    catalog: &InstantActionCatalog,
+    preset_id: &ContentId,
+) -> Result<LoweredPresetRoster, LowerError> {
+    let preset = catalog
+        .preset(preset_id)
+        .ok_or_else(|| LowerError::UnknownPreset {
+            preset: preset_id.clone(),
+        })?;
+    let mut entries = Vec::new();
+    for actor in preset.parameters().roster().actors() {
+        let geometry = match actor.airframe() {
+            Resolved::Known(known) => {
+                Ok(GeometryId::try_new(known.value.clone()).map_err(|error| {
+                    LowerError::Identity {
+                        field: "scenario airframe",
+                        error,
+                    }
+                })?)
+            }
+            Resolved::Unknown { claim_id, reason } => Err(UnmeasuredField {
+                claim_id: claim_id.clone(),
+                reason: reason.clone(),
+            }),
+        };
+        entries.push(LoweredRosterEntry {
+            side: actor.side(),
+            slot: actor.slot(),
+            role: actor.role().map(str::to_owned),
+            label: actor.label().map(str::to_owned),
+            geometry,
+            skill: actor.skill(),
+            authored_count: actor.authored_count(),
+        });
+    }
+    Ok(LoweredPresetRoster {
+        scenario: preset.scenario().clone(),
+        entries,
+        unmeasured: preset.unmeasured_facts().to_vec(),
+    })
 }
 
 /// Lowers a custom-scenario draft through the production lowering path.

@@ -60,7 +60,7 @@ use cs_content::instant_action::{
 };
 use cs_content::world::WorldId;
 use cs_sim::campaign::{ProfileId, SessionGeneration};
-use cs_types::content::{ContentId, ContentKind, Known, Resolved};
+use cs_types::content::{ContentId, Known, Resolved};
 
 use super::{
     CustomDimension, InstantActionPresetRow, LowerError, LoweredScenario, ScenarioOutcome,
@@ -1266,13 +1266,19 @@ impl InstantActionFlow {
                 **draft = next;
             }
             IaEdit::Difficulty(tier) => {
-                let current = draft.difficulty().ok_or(IaRefusal::NoDraft)?.clone();
-                let profile = DifficultyProfile::try_new(
-                    tier,
-                    current.overrides().to_vec(),
-                    current.provenance().clone(),
-                )
-                .map_err(IaRefusal::Difficulty)?;
+                // A draft seeded from an original preset has no difficulty
+                // until the player picks one (the original records none per
+                // scenario), so the first pick starts from an empty override
+                // list under the draft's own provenance.
+                let (overrides, provenance) = match (draft.difficulty(), draft.provenance()) {
+                    (Some(current), _) => {
+                        (current.overrides().to_vec(), current.provenance().clone())
+                    }
+                    (None, Some(provenance)) => (Vec::new(), provenance.clone()),
+                    (None, None) => return Err(IaRefusal::NoDraft),
+                };
+                let profile = DifficultyProfile::try_new(tier, overrides, provenance)
+                    .map_err(IaRefusal::Difficulty)?;
                 let next = std::mem::take(draft.as_mut()).with_difficulty(profile);
                 **draft = next;
             }
@@ -1282,10 +1288,10 @@ impl InstantActionFlow {
                 airframe,
             } => {
                 let actor = held_actor(draft.as_ref(), side, slot)?;
-                let updated = ScenarioActorSpec::try_new(
+                let updated = ScenarioActorSpec::try_new_resolved(
                     side,
                     slot,
-                    placeholder_faction(&actor),
+                    actor.faction().clone(),
                     Resolved::Known(Known::new(airframe, actor.provenance().clone())),
                     actor.loadout().clone(),
                     actor.pilot().cloned(),
@@ -1302,10 +1308,10 @@ impl InstantActionFlow {
                 loadout,
             } => {
                 let actor = held_actor(draft.as_ref(), side, slot)?;
-                let updated = ScenarioActorSpec::try_new(
+                let updated = ScenarioActorSpec::try_new_resolved(
                     side,
                     slot,
-                    placeholder_faction(&actor),
+                    actor.faction().clone(),
                     actor.airframe().clone(),
                     Resolved::Known(Known::new(loadout, actor.provenance().clone())),
                     actor.pilot().cloned(),
@@ -1318,20 +1324,6 @@ impl InstantActionFlow {
             }
         }
         Ok(())
-    }
-}
-
-/// The faction id `ScenarioActorSpec::try_new` validates for a rebuilt actor.
-///
-/// An actor whose faction is unmeasured has no id to validate; the edit then
-/// rebuilds it over a namespace-valid stand-in id that
-/// `ScenarioActorSpec::with_authored_from` immediately replaces with the
-/// actor's own (unknown) faction, so the stand-in is never observable.
-fn placeholder_faction(actor: &ScenarioActorSpec) -> ContentId {
-    match actor.faction() {
-        Resolved::Known(known) => known.value.clone(),
-        Resolved::Unknown { .. } => ContentId::from_source(ContentKind::Faction, "unmeasured")
-            .expect("the stand-in faction key is valid"),
     }
 }
 
