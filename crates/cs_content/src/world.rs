@@ -5045,10 +5045,11 @@ pub const INTERSECTION_NARROW_PHASE_FLAG: u32 = 0x40;
 ///
 /// Measured over the original installation: one such record per `c1c` and
 /// `c2b`, eight in `c1b`, thirteen in `c1`, twenty-three in `c2`, eighteen in
-/// `c3`, four in `c4` and eighty in `c5` — a **subset** of
-/// [`WorldImportReport::partition_records_with_mesh`]'s complement, because a
-/// grid record with no mesh that still stores a box in one of the other two
-/// slots keeps whatever its container says and is not resolved by this claim.
+/// `c3`, four in `c4` and eighty in `c5` — one half of
+/// [`WorldImportReport::partition_records_with_mesh`]'s complement, the other
+/// being the grid records that bind no mesh and store a **grouping box**
+/// ([`GRID_GROUPING_NODE_NEVER_BLOCKS`], task #1578, and measured to be the
+/// whole of what is left).
 ///
 /// Evidence class: `observed_tool` (the store's bytes through the production
 /// readers), never `verified_original`.

@@ -496,3 +496,28 @@ differ. `review.identity` records both sides honestly: the implementer was
 a fresh session with fresh context but **not** a different instance, so this
 review is not independent evidence in the sense AGENTS.md asks for, and no agent
 review replaces the owner's human approval.
+
+## Superseded in part (2026-10-18, task #1578)
+
+Two statements above are narrowed by
+`docs/findings/2026-10-18-m01-c3-world-residuals.md`, and **no number in this
+file was edited**:
+
+* *"the other 219 store a box in one of the two slots `stored_extent` does not
+  read and are **not** resolved by this task"* — they are resolved **now**. Task
+  #1578 measured that every one of those 219 records stores its box **only** in
+  the third slot, selected by the record's own stored word (`unk112 = 2`, the
+  "grouping node" class section A of this file already named), that every one has
+  children, and that the image's intersection walk therefore descends into them
+  instead of testing their own box. They resolve role `None` under
+  `f18-world.grid-grouping-node-never-blocks`.
+* the `geometry_verdict` arithmetic quoted in "The binding" gains the third
+  subtraction,
+  `- report.partition_records_grouping_node()`; the partition identity in this
+  file is the three termed version of the four-term identity task #1578 pins.
+* the note this file filed on #359 — "replace its `fog` term with
+  `objects_unresolved_collision()` and its `meshless` term with the three-term
+  subtraction" — is extended by task #1578: the `meshless` term is now the
+  **four**-term subtraction, and `c1c`'s own numbers in this file (0 open roles,
+  1 empty record, 0 grouping records) are unchanged by #1578.
+
