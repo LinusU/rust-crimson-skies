@@ -81,6 +81,7 @@ use cs_net::recovery::{
     DepartureError, DepartureLedger, DepartureRecord, DisconnectCause, RecoveryDecision,
     RecoveryPolicy, RecoveryRequest, SessionGenerations, Settlement,
 };
+use cs_net::rules::DisconnectPolicy;
 use cs_net::validation::{
     Admission, ClientIntent, FireRequest, IntentRefusal, IntentValidator, IntentVerdict,
     MatchStage, RateBudget, SessionGate, SessionViolation, ThreatDisposition, fire_requests,
@@ -89,7 +90,7 @@ use cs_sim::interaction::{AbortReason, InteractionAbort, InteractionSession};
 use cs_sim::multiplayer::objective::{
     ObjectiveAction, ObjectiveEvent, ObjectiveId, ObjectiveState,
 };
-use cs_sim::multiplayer::result::Submitted;
+use cs_sim::multiplayer::result::{Strike, Submitted};
 use cs_sim::multiplayer::session::{MatchSession, SessionError};
 use cs_sim::weapons::{FireIntent, FireIntentId};
 use cs_types::Tick;
@@ -467,6 +468,20 @@ pub enum HostLossAction {
     ReturnToMenu,
 }
 
+/// What the mode's [`DisconnectPolicy`] did to the standings on one departure.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum StandingChange {
+    /// [`DisconnectPolicy::KeepScore`]: the departed pilot's score stays on
+    /// the board; nothing changed.
+    Kept,
+    /// [`DisconnectPolicy::StrikeScore`]: the pilot's score was struck; the
+    /// payload says how.
+    Struck(Strike),
+    /// [`DisconnectPolicy::EndMatch`]: the departure ended the running match
+    /// (`true`), or the match was already over (`false`).
+    EndedMatch(bool),
+}
+
 /// The result of settling one peer's departure: the teardown, what this
 /// report settled, and what it refused to settle a second time.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -489,6 +504,10 @@ pub struct Departure {
     /// on a duplicate report: an aborted interaction is terminal, so the
     /// authoritative state resolves once.
     pub aborted: Vec<InteractionAbort>,
+    /// What the mode's disconnect policy did to the standings. `None` on a
+    /// duplicate report, when no match state was passed, or when the flow
+    /// was given no policy (see [`RecoveryFlow::with_disconnect_policy`]).
+    pub standing: Option<StandingChange>,
 }
 
 /// The result of the host-loss flow.
@@ -544,6 +563,7 @@ pub struct RecoveryFlow {
     receiver: SessionReceiver,
     departures: DepartureLedger,
     ended: Option<DepartureRecord>,
+    disconnect: Option<DisconnectPolicy>,
 }
 
 impl RecoveryFlow {
@@ -554,7 +574,29 @@ impl RecoveryFlow {
             receiver: SessionReceiver::new(session),
             departures: DepartureLedger::new(),
             ended: None,
+            disconnect: None,
         }
+    }
+
+    /// Applies the mode's resolved `MatchRules::disconnect()` at every
+    /// departure: [`DisconnectPolicy::KeepScore`] leaves the standings,
+    /// [`DisconnectPolicy::StrikeScore`] strikes the departed pilot's score
+    /// and [`DisconnectPolicy::EndMatch`] ends the running match — each once
+    /// per peer, because only a first report settles.
+    ///
+    /// A flow built without a policy leaves the standings alone and reports
+    /// no [`StandingChange`]: the policy is a rule the host must resolve, so
+    /// the flow never invents one.
+    #[must_use]
+    pub fn with_disconnect_policy(mut self, policy: DisconnectPolicy) -> Self {
+        self.disconnect = Some(policy);
+        self
+    }
+
+    /// The disconnect policy this flow applies, if one was given.
+    #[must_use]
+    pub const fn disconnect_policy(&self) -> Option<DisconnectPolicy> {
+        self.disconnect
     }
 
     /// The live session epoch.
@@ -715,6 +757,7 @@ impl RecoveryFlow {
                 settlement: Settlement::Duplicate { tick: record.tick },
                 dropped: Vec::new(),
                 aborted: Vec::new(),
+                standing: None,
             });
         }
         // The ledger's bound is paid before anything is torn down or
@@ -729,6 +772,7 @@ impl RecoveryFlow {
         self.receiver.forget_peer(peer);
 
         let mut dropped = Vec::new();
+        let mut standing = None;
         if let Some(state) = match_state {
             let session = state.session();
             for objective in state.objective_ids().collect::<Vec<_>>() {
@@ -754,6 +798,16 @@ impl RecoveryFlow {
                     Err(error) => return Err(FlowError::Settlement(error)),
                 }
             }
+            // The standings change only after the fallible drops, so a
+            // refusal above leaves them untouched and the corrected report
+            // still applies the policy.
+            standing = self.disconnect.map(|policy| match policy {
+                DisconnectPolicy::KeepScore => StandingChange::Kept,
+                DisconnectPolicy::StrikeScore => StandingChange::Struck(state.strike_score(peer)),
+                DisconnectPolicy::EndMatch => {
+                    StandingChange::EndedMatch(state.end_on_departure(tick))
+                }
+            });
         }
 
         // The departed peer's own in-flight interactions abort after the
@@ -775,6 +829,7 @@ impl RecoveryFlow {
             settlement,
             dropped,
             aborted,
+            standing,
         })
     }
 
