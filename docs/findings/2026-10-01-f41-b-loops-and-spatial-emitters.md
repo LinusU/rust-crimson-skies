@@ -160,14 +160,21 @@ project data.
 
 ## Still not done / still unmeasured (gates fidelity claims)
 
-- **The world's emitter is placed nowhere.** The environment loop now binds
-  and reaches the device, but the entity it binds is the delivered item
-  entity, which carries no `Transform`: `AudioMixReport::unplaced` reports it
-  and the designed spatial law never places it — it keeps the mix its voice
-  started with. Deciding whether the world's ambience is positional, and if
-  so which spawn path gives it a pose, is **F41-B3 (#1277)**; nothing here
-  guesses a position. Affects every world/environment loop, synthetic and
-  retail alike.
+- **The world's ambience is non-positional by declared design (F41-B3,
+  #1277).** The environment loop binds to the delivered item entity, which has
+  no pose, and neither the delivered content nor any measurement states where
+  the world's ambience sounds from, so no position is invented. The decision:
+  `bind_spawned_emitters` marks that entity `NonPositionalEmitter`, the loop
+  plays at the mix its voice started with, and `AudioMixReport::non_positional`
+  counts it while `AudioMixReport::unplaced` stays reserved for an emitter
+  that ought to have a pose and has none (an engine whose pose propagation
+  never ran). An emitter with the marker and a real pose is still placed by
+  that pose. Produced and tested by
+  `accept_f41_b3_world_ambience_is_declared_non_positional`. Unmeasured:
+  whether the original's ambience is positional at all, and any attenuation it
+  has; a later measurement can replace the declaration by giving the emitter a
+  pose through a scene spawn path (outside F41's owner paths). Affects every
+  world/environment loop, synthetic and retail alike.
 - **Over retail content this path still binds nothing.** Every retail sound
   row's bus, level and playback mode are still `Resolved::Unknown`
   (F14-D.7, `CLAIM_SOUND_PLAYBACK`), so `lower_record` refuses them, no role
