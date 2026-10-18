@@ -31,15 +31,16 @@
 //! unmeasured until a runtime observes them, and nothing here assigns a
 //! timing, count or coordinate the record does not spell.
 //!
-//! One compatibility gap is measured and pinned, not worked around: M02's
+//! One compatibility gap was measured here and has since been closed
+//! (M02-B-FU1, pinned by `accept_m02_b_fu1_*`): M02's
 //! `KILL_OBJECTIVE_WHEN_I_COMPLETE` sites spell argument lists up to nine
-//! integers, and the host-binding registry's per-signature bound
-//! (`cs_script::bindings::MAX_CALL_ARGS`) refuses a signature longer than
-//! eight — so the key cannot register, all eight of its sites refuse, and
-//! M02's control record does **not** lower completely. The engine's honest
-//! answer stays "Unsupported", the campaign gate stays closed, and the
-//! follow-up that changes the bound owns this pin. Nothing here lowers an
-//! unmeasured or refused directive to a no-op (AGENTS.md rule 4).
+//! integers, longer than the host-binding registry's per-signature bound
+//! (`cs_script::bindings::MAX_CALL_ARGS`, eight), so the key used to refuse
+//! registration. The adapter now carries each index list as one list
+//! argument, so M02's control record lowers completely. That is lowering
+//! evidence, not an implemented effect, and the campaign gate still needs
+//! every row. Nothing here lowers an unmeasured or refused directive to a
+//! no-op (AGENTS.md rule 4).
 //!
 //! The retail tests are `#[ignore = "requires CS_GAME_DIR"]`, so CI skips
 //! them and the implementing and reviewing agents run them with
