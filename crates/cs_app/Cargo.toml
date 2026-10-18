@@ -59,6 +59,13 @@ rodio = { version = "0.22", default-features = false, features = ["playback"] }
 # four decoders this stage reads are enabled.
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "tga", "bmp"] }
 
+# `slopmpeg` is a production dependency of `src/cinematics/mpeg.rs` (F40-D1): it
+# demuxes the retail MPEG-1 program streams and decodes their MPEG-1 video and
+# MP2 audio. The owner approved it as the decoder dependency (task #660 note,
+# 2026-10-18); it is the author's own Rust port of PL_MPEG, taken as a regular
+# git dependency with the revision pinned by Cargo.lock.
+slopmpeg = { git = "https://github.com/LinusU/slopmpeg" }
+
 [dev-dependencies]
 # `accept_test_bin_cs_app_` asks the one-test-binary guard (`cs_xtask
 # test-layout`, task #1542) about this very crate, through its library function.
