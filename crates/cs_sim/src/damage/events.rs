@@ -195,6 +195,23 @@ impl LifecycleKind {
     pub const fn is_terminal(self) -> bool {
         matches!(self, Self::Despawned | Self::MissionRemoved)
     }
+
+    /// Whether the transition ends the actor's ability to act — fire,
+    /// follow a route, hold an AI role, be targeted.
+    ///
+    /// This is the one owner of the designed split: destruction, despawn and
+    /// mission removal end action. A bailout and a capture deliberately do
+    /// **not** — a bailed-out airframe is still a physical object, and a
+    /// capture changes *who owns* the actor rather than whether it exists.
+    /// `AllyStatus::ends_action`, `targeting`'s target eligibility and the
+    /// F29-C damage consumer all delegate here. The split is designed, not
+    /// measured from the original game.
+    pub const fn ends_action(self) -> bool {
+        matches!(
+            self,
+            Self::Destroyed | Self::Despawned | Self::MissionRemoved
+        )
+    }
 }
 
 impl fmt::Display for LifecycleKind {

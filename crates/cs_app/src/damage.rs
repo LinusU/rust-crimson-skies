@@ -1281,10 +1281,7 @@ fn apply_mount(
 /// *who owns* the actor rather than whether it exists — so an intact mount
 /// stays live on a captured or bailed-out airframe (F33-C).
 fn lifecycle_ends_action(kind: LifecycleKind) -> bool {
-    matches!(
-        kind,
-        LifecycleKind::Destroyed | LifecycleKind::Despawned | LifecycleKind::MissionRemoved
-    )
+    kind.ends_action()
 }
 
 /// Authored initial damage for a world object: the damage node it is and the

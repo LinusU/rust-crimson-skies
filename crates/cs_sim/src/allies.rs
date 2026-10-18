@@ -608,10 +608,12 @@ impl AllyStatus {
     /// Whether the status ends the actor's ability to act.
     #[must_use]
     pub const fn ends_action(self) -> bool {
-        matches!(
-            self,
-            Self::Destroyed | Self::Despawned | Self::MissionRemoved
-        )
+        match self {
+            Self::Active | Self::BailedOut | Self::Captured => false,
+            Self::Destroyed => LifecycleKind::Destroyed.ends_action(),
+            Self::Despawned => LifecycleKind::Despawned.ends_action(),
+            Self::MissionRemoved => LifecycleKind::MissionRemoved.ends_action(),
+        }
     }
 }
 

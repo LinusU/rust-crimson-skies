@@ -345,10 +345,7 @@ pub struct TargetRecord {
 /// not whether it exists. Which of these the original game treats as
 /// targetable is unmeasured; this split is the designed contract.
 const fn ends_targeting(kind: LifecycleKind) -> bool {
-    matches!(
-        kind,
-        LifecycleKind::Destroyed | LifecycleKind::Despawned | LifecycleKind::MissionRemoved
-    )
+    kind.ends_action()
 }
 
 /// Which targets a selection request considers.
