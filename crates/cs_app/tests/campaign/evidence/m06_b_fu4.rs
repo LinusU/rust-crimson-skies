@@ -7,10 +7,13 @@
 use super::*;
 
 /// The retail acceptance test M06-B-FU4's `retail` capability is judged on:
-/// M06's derived record names the passenger-identity limitation, and M01's —
-/// whose startup fires the library crew animation `call_add_jack` — does not.
+/// M12's derived record — the work order the corrected campaign layout
+/// (`docs/findings/2026-10-17-m01-archive-decision.md`) binds the measured
+/// `zbd/c2/m01` archive to — names the passenger-identity limitation, and
+/// M06's — whose own `zbd/c1c/m01` startup fires the library crew animation
+/// `call_add_jack` — does not.
 const RETAIL_TESTS_M06_B_FU4: &[&str] =
-    &["accept_m06_b_fu4_m06s_record_names_the_passenger_identity_limitation_and_m01s_does_not"];
+    &["accept_m06_b_fu4_m12s_record_names_the_passenger_identity_limitation_and_m06s_does_not"];
 
 /// The synthetic predicate test M06-B-FU4's report must also record: the
 /// mission-scoped unknown reaches only the work order it was measured for,
@@ -19,20 +22,21 @@ const SYNTHETIC_TESTS_M06_B_FU4: &[&str] =
     &["accept_m06_b_fu4_a_mission_scoped_unknown_reaches_only_the_work_order_it_was_measured_for"];
 
 /// Evidence-report harness for task M06-B-FU4 (Rally #1184), the follow-up
-/// that records M06's passenger-identity verdict inside the binding record's
-/// own unknowns. It follows the sequence in this module's doc with
-/// `M06-B-FU4` and `accept_m06_b_fu4_` in place of `M01-A` and
-/// `accept_m01_a_`:
+/// that records the passenger-identity verdict inside the bound work order's
+/// own unknowns — M12's under the corrected campaign layout, since the
+/// archive it was measured on (`zbd/c2/m01`) is M12's record. It follows the
+/// sequence in this module's doc with `M06-B-FU4` and `accept_m06_b_fu4_` in
+/// place of `M01-A` and `accept_m01_a_`:
 ///
 /// * the acceptance-log parser selects `accept_m06_b_fu4_` tests, so the
 ///   recorded assertions are this follow-up's own — the selection must be the
 ///   prefix's own run (step 1 with that prefix), or the counts would describe
 ///   a wider run than the assertions;
-/// * the artifact beside the report is the **M06** binding, derived from the
+/// * the artifact beside the report is the **M12** binding, derived from the
 ///   committed inventory's declared title through production code — the
-///   derivation whose new mission-scoped entry this task regenerated
-///   `missions/bindings/M06.json` from — so the report cites the record it is
-///   evidence for;
+///   derivation whose mission-scoped entry `missions/bindings/M12.json`
+///   carries under the corrected campaign layout — so the report cites the
+///   record it is evidence for;
 /// * the review identity is written by whoever runs the harness, as the
 ///   module doc requires: this report is the implementer's hand-over run, and
 ///   the reviewing agent regenerates it on the reviewed commit.
@@ -100,7 +104,7 @@ fn evidence_report_m06_b_fu4_writes_the_acceptance_report() {
     let install_sha256 = fingerprint(&found.manifest).to_hex();
     let content_sha256 = content_fingerprint(&found.manifest).to_hex();
 
-    let source_binding = source_binding_for(&game_dir, "M06");
+    let source_binding = source_binding_for(&game_dir, "M12");
     assert!(
         source_binding.unresolved_critical().is_empty(),
         "the acceptance run passed while a critical dependency is unresolved; the report must \
@@ -111,10 +115,18 @@ fn evidence_report_m06_b_fu4_writes_the_acceptance_report() {
             .unknowns
             .iter()
             .any(|entry| entry.contains("passenger identity")),
-        "the derived M06 record no longer carries the mission-scoped passenger-identity \
+        "the derived M12 record no longer carries the mission-scoped passenger-identity \
          limitation; the report must not be written"
     );
-    let binding_path = evidence_dir.join("m06-binding.json");
+    assert!(
+        !source_binding_for(&game_dir, "M06")
+            .unknowns
+            .iter()
+            .any(|entry| entry.to_lowercase().contains("passenger")),
+        "M06's data binds a passenger-like entity — its `zbd/c1c/m01` startup fires \
+         call_add_jack — so its record must not carry the `zbd/c2/m01` limitation"
+    );
+    let binding_path = evidence_dir.join("m12-binding.json");
     fs::write(&binding_path, source_binding.to_json())
         .unwrap_or_else(|error| panic!("write {}: {error}", binding_path.display()));
     let mut artifacts = vec![artifact(&log_path, "log", &evidence_dir)];
@@ -166,18 +178,21 @@ fn evidence_report_m06_b_fu4_writes_the_acceptance_report() {
             "acceptance suite run locally with the retail capability; the fields are derived \
              from the recorded log, production discovery of $CS_GAME_DIR and the binding \
              `SourceContext::read` + `SourceContext::bind` derive from it (all five critical \
-             dependencies resolved; the new mission-scoped entry is carried in \
-             missions/bindings/M06.json, regenerated through production code). This task adds \
+             dependencies resolved; the mission-scoped entry is carried in \
+             missions/bindings/M12.json, regenerated through production code). The task added \
              the mission-scoped unknown mechanism to cs_content::campaign_bindings: the \
-             shared SOURCE_BINDING_UNKNOWNS stays global, and M06's passenger-identity verdict \
-             — the shipped data binds no passenger or extraction entity to the mission, \
-             measured by M06-B-FU2 — is keyed by work order, so it reaches M06's record alone \
-             while M01 (whose startup fires the crew animation call_add_jack, declared by the \
-             library's passengers.zrd driving the world node apassengers) receives none. The \
-             entry names the limitation, the reason and what settles it: an original reference \
-             run under M06-C or the owner's ruling. NOT CLAIMED: nothing is verified_original, \
-             no original executable was run, and the global checklist is unchanged for every \
-             other mission. Claim is implemented only; validated with \
+             shared SOURCE_BINDING_UNKNOWNS stays global, and the passenger-identity verdict \
+             — the shipped data binds no passenger or extraction entity to the measured \
+             archive, measured by M06-B-FU2 — is keyed by work order. The corrected campaign \
+             layout (docs/findings/2026-10-17-m01-archive-decision.md) binds that archive, \
+             `zbd/c2/m01`, to M12, so the entry reaches M12's record alone while M06 — whose \
+             own `zbd/c1c/m01` startup fires the crew animation call_add_jack, declared by \
+             the library's passengers.zrd driving the world node apassengers — receives \
+             none, which this regeneration also asserts. The entry names the limitation, \
+             the reason and what settles it: an original reference run under M12-C or the \
+             owner's ruling. NOT CLAIMED: nothing is verified_original, no original \
+             executable was run, and the global checklist is unchanged for every other \
+             mission. Claim is implemented only; validated with \
              tools/validate_evidence.py --require-pass. `candidate_tree` is the tree of the \
              commit the suite and this harness ran on; the only later delta is this report's \
              own copy under docs/findings/evidence/, which no acceptance test reads"
