@@ -525,6 +525,7 @@ fn takes_list_argument(key: &MeasuredDirectiveKey) -> bool {
                 | MeasuredOperation::WakeObjectivesOnTransition
                 | MeasuredOperation::AnimationStates
                 | MeasuredOperation::AssignNet
+                | MeasuredOperation::StopQueuedSounds
         )
     )
 }

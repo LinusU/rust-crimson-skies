@@ -684,6 +684,23 @@ pub enum DirectiveOperation {
 }
 
 impl DirectiveOperation {
+    /// The most names the original keeps from a `STOP_QUEUED_SOUNDS` site:
+    /// its parse copy stops at ten (`cmp esi, 0xa; jg` at `0x4688bc`,
+    /// `docs/findings/2026-10-06-m01-lc-directive-d-sound-help-timer-directives.md`).
+    /// The call carries the whole spelled list — M16's fourteen-name site is
+    /// faithful data — and the consumer applies the cap with
+    /// [`Self::stop_queued_sounds_applied`].
+    pub const STOP_QUEUED_SOUNDS_NAME_CAP: usize = 10;
+
+    /// The names of a `STOP_QUEUED_SOUNDS` call's list argument that the
+    /// original stores and flags: the first
+    /// [`Self::STOP_QUEUED_SOUNDS_NAME_CAP`], in spelled order. The names
+    /// past the cap are never stored by the original and are never applied.
+    #[must_use]
+    pub fn stop_queued_sounds_applied(names: &[Value]) -> &[Value] {
+        &names[..names.len().min(Self::STOP_QUEUED_SOUNDS_NAME_CAP)]
+    }
+
     /// Every measured operation code, as variants — one entry per code
     /// [`Self::code`] publishes, so the parameterized mechanisms appear once
     /// per spelling (`SetTargetFlag` four times, `OutcomeClass` twice).
