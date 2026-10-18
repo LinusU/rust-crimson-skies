@@ -9,9 +9,10 @@
 //!
 //! M02's control record is the record that carries the mission's only
 //! cross-objective address past its own block count when the document's
-//! integers are read as record positions: block `OBJECTIVE13` spells
-//! `WAKE_OBJECTIVE_WHEN_I_COMPLETE [14, 50]` while the record declares 50
-//! numbered blocks. What the original *does* with such an address is measured
+//! integers are read as record positions: block `OBJECTIVE4` spells
+//! `WAKE_OBJECTIVE_WHEN_I_COMPLETE [42, 52]` while the record declares 52
+//! numbered blocks (`ZBD/C3/M02`; the corrected campaign layout re-derived
+//! M02's record, whose earlier `OBJECTIVE13 [14, 50]` site was `ZBD/C1/M02`'s). What the original *does* with such an address is measured
 //! from the executable (the parse decrements the address; the wake walk
 //! `0x469af0` checks nothing at all), and this test pins the rule this engine
 //! decided on top of that measurement against the record itself:
@@ -19,8 +20,8 @@
 //! * every cross-objective address M02 spells resolves **inside** its block
 //!   count under the one-based rule — so the record contains no address this
 //!   engine would have to refuse;
-//! * M02's own `50` resolves to record index 49, the block the record spells
-//!   `OBJECTIVE50`, and **not** to a record past the end;
+//! * M02's own `52` resolves to record index 51, the block the record spells
+//!   `OBJECTIVE52`, and **not** to a record past the end;
 //! * one past M02's count refuses, so the retail boundary is the same
 //!   boundary the synthetic suite exercises (`cs_sim`'s
 //!   `accept_m02_b_fu3_*`).
@@ -178,7 +179,7 @@ pub(crate) fn blocks_with_addresses(document: &ZrdValue) -> Vec<Block> {
 }
 
 /// **Every cross-objective address M02 spells resolves inside its block count,
-/// and M02's own `50` names the record the block `OBJECTIVE50` spells — one
+/// and M02's own `52` names the record the block `OBJECTIVE52` spells — one
 /// past M02's count refuses.**
 ///
 /// The record is read fresh from the installation, the addresses are taken
@@ -205,7 +206,7 @@ fn accept_m02_b_fu3_m02s_wake_addresses_resolve_inside_its_block_count() {
     let census = survey_mission_control_programs(&game_dir())
         .expect("the installation measures a control census");
     let row = census
-        .row("zbd/c1/m02")
+        .row("zbd/c3/m02")
         .expect("M02's reader archive is measured by the census");
     assert_eq!(
         row.record()
@@ -243,7 +244,7 @@ fn accept_m02_b_fu3_m02s_wake_addresses_resolve_inside_its_block_count() {
         "M02 spells cross-objective addresses; the walk above measured some"
     );
 
-    // The site the findings name: `OBJECTIVE13` wakes `[14, 50]`, and `50` is
+    // The site the findings name: `OBJECTIVE4` wakes `[42, 52]`, and `52` is
     // exactly M02's block count — the address a zero-based reading would put
     // past the record's end and the one-based reading (the parse's `dec`)
     // spells as the last block. The literal is pinned by M02-B's graph test;
@@ -251,7 +252,7 @@ fn accept_m02_b_fu3_m02s_wake_addresses_resolve_inside_its_block_count() {
     let waking = blocks
         .iter()
         .find_map(|block| {
-            (block.number == 13).then(|| {
+            (block.number == 4).then(|| {
                 block
                     .addresses
                     .iter()
@@ -260,19 +261,19 @@ fn accept_m02_b_fu3_m02s_wake_addresses_resolve_inside_its_block_count() {
             })
         })
         .flatten()
-        .expect("M02's OBJECTIVE13 spells a wake directive");
+        .expect("M02's OBJECTIVE4 spells a wake directive");
     let boundary = i64::from(count);
     assert!(
         waking
             .1
             .iter()
             .any(|address| i64::from(*address) == boundary),
-        "OBJECTIVE13 spells the address {boundary} — M02's own block count: {:?}",
+        "OBJECTIVE4 spells the address {boundary} — M02's own block count: {:?}",
         waking.1
     );
 
     // The rule's answer for M02's own at-the-count address: the record index
-    // 49 — the block the record spells `OBJECTIVE50`, the last one — and never
+    // 51 — the block the record spells `OBJECTIVE52`, the last one — and never
     // a record past the end.
     assert_eq!(
         resolve_objective_address(boundary, count),

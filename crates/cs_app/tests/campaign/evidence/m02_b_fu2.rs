@@ -139,17 +139,24 @@ fn evidence_report_m02_b_fu2_writes_the_acceptance_report() {
     });
     let title = inventory
         .iter()
-        .find(|(work_order, _)| work_order.as_str() == "M02")
+        .find(|(work_order, _)| work_order.as_str() == "M07")
         .map(|(_, title)| title.clone())
-        .expect("the declared inventory has an M02 work order");
+        .expect("the declared inventory has an M07 work order");
     let context =
         SourceContext::read(&game_dir).expect("production source context reads the installation");
     let control = context
         .control_program(
-            MissionLabel::new("M02").expect("M02 is a valid label"),
+            MissionLabel::new("M07").expect("M07 is a valid label"),
             &title,
         )
-        .expect("M02's control program binds through the measured rule");
+        .expect("M07's control program binds through the measured rule");
+    // The five sound keys are spelled by `ZBD/C1/M02`, which the corrected campaign
+    // layout binds to M07; M02's own record (`ZBD/C3/M02`) spells none (#1594).
+    assert_eq!(
+        control.program_asset.to_lowercase(),
+        "zbd/c1/m02/zrdr.zbd",
+        "the record whose sound keys are reported is the one that spells them"
+    );
     assert_eq!(
         context.install_sha256(),
         install_sha256,
@@ -272,7 +279,9 @@ fn evidence_report_m02_b_fu2_writes_the_acceptance_report() {
             "acceptance suite re-run locally with the retail capability and the owner-supplied \
              engine image; this harness derives every field from the recorded log, production \
              discovery of $CS_GAME_DIR and the control-program binding \
-             `SourceContext::control_program` derives from it, and the dispositions come from \
+             `SourceContext::control_program` derives from it for the archive that spells the keys \
+             (`ZBD/C1/M02`, bound to work order M07 on the corrected layout; M02's own `ZBD/C3/M02` \
+             spells none), and the dispositions come from \
              `cs_content::mission_control::record_sound_disposition` — five keys, each measured \
              with its consumer, its mission-object field, its parse site and its consumer site. \
              The image member re-reads $CS_ENGINE_IMAGE (the owner-supplied decrypted executable, \

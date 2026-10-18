@@ -115,6 +115,25 @@ pub(crate) fn control_binding() -> cs_content::campaign_bindings::MissionControl
         .expect("M02's control program binds through the measured rule")
 }
 
+/// The control binding of any work order in the committed inventory, derived
+/// through the same production path as [`control_binding`].
+///
+/// `pub(crate)` for the M02-B-FU2 seam: the record-level sound keys that
+/// follow-up measured are spelled by `ZBD/C1/M02`, which the corrected
+/// campaign layout binds to M07 and not to M02.
+pub(crate) fn control_binding_of(
+    work_order: &str,
+) -> cs_content::campaign_bindings::MissionControlBinding {
+    let title = load_inventory()
+        .iter()
+        .find(|(candidate, _)| candidate.as_str() == work_order)
+        .map(|(_, title)| title.clone())
+        .unwrap_or_else(|| panic!("the declared inventory has an {work_order} work order"));
+    context()
+        .control_program(label(work_order), &title)
+        .unwrap_or_else(|error| panic!("{work_order}'s control program binds: {error}"))
+}
+
 /// M02's row in the retail control census: the same installation measured a
 /// second time through `cs_app::mission_control`.
 fn census_row() -> &'static cs_app::mission_control::RetailControlRow {
@@ -123,7 +142,7 @@ fn census_row() -> &'static cs_app::mission_control::RetailControlRow {
         let census = survey_mission_control_programs(&game_dir())
             .expect("the installation measures a control census");
         census
-            .row("zbd/c1/m02")
+            .row("zbd/c3/m02")
             .expect("M02's reader archive is measured by the census")
             .clone()
     })
@@ -136,7 +155,13 @@ fn census_row() -> &'static cs_app::mission_control::RetailControlRow {
 /// `pub(crate)` for the M02-B-FU2 seam (`m02_b_fu2.rs`, Rally #801), which
 /// walks the record-level keys independently of `measure_control_record`.
 pub(crate) fn control_document() -> (ZrdValue, Vec<(String, u64, u64, u32)>) {
-    let binding = control_binding();
+    control_document_of(&control_binding())
+}
+
+/// [`control_document`] for any control binding.
+pub(crate) fn control_document_of(
+    binding: &cs_content::campaign_bindings::MissionControlBinding,
+) -> (ZrdValue, Vec<(String, u64, u64, u32)>) {
     let bytes = std::fs::read(game_dir().join(&binding.program_asset))
         .expect("M02's reader archive reads from disk");
     let logical = binding.program_asset.to_lowercase();
@@ -270,7 +295,7 @@ fn accept_m02_b_m02s_control_program_is_bound_to_the_same_identities_as_its_miss
     );
     assert_eq!(
         binding.mission.as_str(),
-        "mission/ch2-m02",
+        "mission/ch1-m02",
         "the join selected campaign position {}, whose directory is chapter 1, mission 2",
         mission_binding
             .campaign_position
@@ -285,7 +310,7 @@ fn accept_m02_b_m02s_control_program_is_bound_to_the_same_identities_as_its_miss
     );
     assert_eq!(
         binding.program_id.as_str(),
-        "script/c1-m02-zrdr",
+        "script/c3-m02-zrdr",
         "the program identity is the world group's reader archive for mission 2"
     );
 
@@ -426,8 +451,8 @@ fn accept_m02_b_the_measured_vocabulary_partitions_and_refuses_no_m02_key() {
     let binding = control_binding();
     let record = &binding.record;
 
-    assert_eq!(record.blocks(), 50, "M02 declares 50 numbered blocks");
-    assert_eq!(record.sites(), 190, "M02 spells 190 directive sites");
+    assert_eq!(record.blocks(), 52, "M02 declares 52 numbered blocks");
+    assert_eq!(record.sites(), 187, "M02 spells 187 directive sites");
     assert_eq!(
         record.keys().iter().map(|key| key.sites).sum::<u32>(),
         record.sites(),
@@ -440,8 +465,8 @@ fn accept_m02_b_the_measured_vocabulary_partitions_and_refuses_no_m02_key() {
     );
     assert_eq!(
         record.vocabulary(),
-        36,
-        "M02 spells 36 distinct directive keys"
+        29,
+        "M02 spells 29 distinct directive keys"
     );
     assert!(
         record.refusals().is_empty(),
@@ -449,8 +474,8 @@ fn accept_m02_b_the_measured_vocabulary_partitions_and_refuses_no_m02_key() {
         record.refusals()
     );
 
-    // The partition: two implemented outcome keys, the rest measured, none
-    // unmeasured.
+    // The partition: one implemented outcome key (the success latch; the
+    // record spells no `INSTANTLOSS`), the rest measured, none unmeasured.
     let implemented: Vec<(&str, _)> = record
         .implemented()
         .into_iter()
@@ -458,17 +483,11 @@ fn accept_m02_b_the_measured_vocabulary_partitions_and_refuses_no_m02_key() {
         .collect();
     assert_eq!(
         implemented,
-        [
-            (
-                "INSTANTLOSS",
-                cs_content::mission_control::TerminalOutcome::Failed
-            ),
-            (
-                "INSTANTWIN",
-                cs_content::mission_control::TerminalOutcome::Succeeded
-            ),
-        ],
-        "M02's only implemented directives are its two outcome spellings"
+        [(
+            "INSTANTWIN",
+            cs_content::mission_control::TerminalOutcome::Succeeded
+        )],
+        "M02's only implemented directive is its success outcome spelling"
     );
     assert_eq!(
         binding.unmeasured_keys(),
@@ -496,10 +515,14 @@ fn accept_m02_b_the_measured_vocabulary_partitions_and_refuses_no_m02_key() {
         );
     }
 
-    // The outcome keys are bare spellings and answer only for their own
-    // names.
-    for key in ["INSTANTWIN", "INSTANTLOSS"] {
-        let spelled = record.key(key).expect("M02 spells its outcome keys");
+    // The outcome key is a bare spelling and answers only for its own name;
+    // the record spells no failure outcome at all.
+    assert!(
+        record.key("INSTANTLOSS").is_none(),
+        "M02's record spells no INSTANTLOSS"
+    );
+    for key in ["INSTANTWIN"] {
+        let spelled = record.key(key).expect("M02 spells its outcome key");
         assert!(
             spelled
                 .agreed_shape()
@@ -520,18 +543,17 @@ fn accept_m02_b_the_measured_vocabulary_partitions_and_refuses_no_m02_key() {
         "in M02 every bare key spells an outcome"
     );
 
-    // The record-level keys: the five measured fields, and the five M02
-    // sound keys, which M02-B-FU2 admitted to their own vocabulary after
-    // measuring what the original does with each — so nothing M02 spells
-    // outside the numbered blocks is left unclassified. The sound vocabulary
-    // is larger than M02's five: RECORD-OBJECTIVES-SOUND (#808) admitted the
-    // two `OBJECTIVES_*_SOUND` keys no retail record spells, so the check is
-    // membership per spelled key, not a count against the whole vocabulary.
+    // The record-level keys: the five measured fields. M02's own record
+    // (`ZBD/C3/M02`) spells none of the record-level sound keys M02-B-FU2
+    // admitted to their own vocabulary — the five-sound record the stage
+    // first pinned was `ZBD/C1/M02`'s, a different mission — so nothing M02
+    // spells outside the numbered blocks is left unclassified and the sound
+    // vocabulary is checked as membership per spelled key (here: none).
     let all: Vec<(ControlRecordField, u32)> = record.record_fields().to_vec();
     assert_eq!(
         all.len(),
-        10,
-        "M02 spells ten record-level keys: the five shape fields and its five sound keys"
+        5,
+        "M02 spells five record-level keys: the five shape fields and no sound key"
     );
     assert!(
         all.iter().all(|(field, _)| {
@@ -558,15 +580,8 @@ fn accept_m02_b_the_measured_vocabulary_partitions_and_refuses_no_m02_key() {
     );
     assert_eq!(
         record.record_sounds(),
-        [
-            (ControlRecordSound::PrimaryComplete, 1),
-            (ControlRecordSound::SecondaryComplete, 1),
-            (ControlRecordSound::TertiaryComplete, 1),
-            (ControlRecordSound::MissionWon, 1),
-            (ControlRecordSound::MissionLost, 1),
-        ],
-        "M02's record spells each of the five record-level sound keys once, in \
-         the vocabulary's parse order"
+        Vec::<(ControlRecordSound, u32)>::new(),
+        "M02's record spells none of the record-level sound keys"
     );
     assert!(
         binding.unclassified_record_keys().is_empty(),
@@ -625,9 +640,8 @@ fn accept_m02_b_the_objective_graph_the_sheet_priorities_need_is_measured_not_in
     // cross-objective directive spells is the one-based number of a block this
     // record declares (M02-B-FU3 / #802 measured the original's parse
     // decrementing it to the record index), so none points past the record's
-    // own end — `OBJECTIVE13`'s spelled 50 names `OBJECTIVE50`, the last
-    // block, and only looked dangling under the zero-based reading this walk
-    // previously applied.
+    // own end — `OBJECTIVE4`'s spelled 52 names `OBJECTIVE52`, the last
+    // block, and only looks dangling under the zero-based reading.
     let directed_keys = [
         "WAKE_OBJECTIVE_WHEN_I_COMPLETE",
         "KILL_OBJECTIVE_WHEN_I_COMPLETE",
@@ -662,13 +676,13 @@ fn accept_m02_b_the_objective_graph_the_sheet_priorities_need_is_measured_not_in
     assert!(
         dangling.is_empty(),
         "every cross-objective address M02 spells is the one-based number of a \
-         block the record declares — `OBJECTIVE13`'s 50 included, which names \
-         `OBJECTIVE50`, the last block, not a position past it: {dangling:?}"
+         block the record declares — `OBJECTIVE4`'s 52 included, which names \
+         `OBJECTIVE52`, the last block, not a position past it: {dangling:?}"
     );
     assert!(
-        edges.contains(&(13, "WAKE_OBJECTIVE_WHEN_I_COMPLETE".to_owned(), 50)),
-        "OBJECTIVE13's spelled 50 is a real edge to OBJECTIVE50 — the \
-         discriminating address the zero-based reading reported as dangling"
+        edges.contains(&(4, "WAKE_OBJECTIVE_WHEN_I_COMPLETE".to_owned(), 52)),
+        "OBJECTIVE4's spelled 52 is a real edge to OBJECTIVE52 — the \
+         discriminating address the zero-based reading reports as dangling"
     );
     assert!(
         !edges.is_empty(),
@@ -676,8 +690,10 @@ fn accept_m02_b_the_objective_graph_the_sheet_priorities_need_is_measured_not_in
     );
 
     // **Success versus destruction.** The mission's success latch is the one
-    // block that spells the bare INSTANTWIN; its failure causes are the two
-    // bare INSTANTLOSS blocks. The latch is not free-running: exactly one
+    // block that spells the bare INSTANTWIN. This record (`ZBD/C3/M02`)
+    // spells no INSTANTLOSS at all, so the failure cause is not a block latch
+    // here — the sheet's failure priorities need a runtime to observe them
+    // and stay unmeasured. The latch is not free-running: exactly one
     // completion edge names its block number, so nothing can satisfy it
     // before that block completes.
     let win: Vec<&Block> = blocks
@@ -692,6 +708,7 @@ fn accept_m02_b_the_objective_graph_the_sheet_priorities_need_is_measured_not_in
             .map_or("no block".to_owned(), |block| block.key.clone())
     );
     let latch = win[0];
+    assert_eq!(latch.number, 48, "the success latch is OBJECTIVE48");
     assert_eq!(
         binding
             .record
@@ -708,53 +725,27 @@ fn accept_m02_b_the_objective_graph_the_sheet_priorities_need_is_measured_not_in
         .collect();
     assert_eq!(
         wakeups,
-        [(14, "NAP_OBJECTIVE_WHEN_I_COMPLETE")],
-        "the success latch's only completion edge is OBJECTIVE14's \
-         `NAP_OBJECTIVE_WHEN_I_COMPLETE [15, 22.0]` — block 15 is re-woken the \
-         spelled 22 seconds after block 14 completes, the `woken by exactly \
-         one other block` fact reached through a nap, not a wake; the \
-         wrong-actor and wrong-session halves of the sheet's priority need a \
-         runtime to observe and stay unmeasured here"
+        [(9, "WAKE_OBJECTIVE_WHEN_I_COMPLETE")],
+        "the success latch's only completion edge is OBJECTIVE9's \
+         `WAKE_OBJECTIVE_WHEN_I_COMPLETE [48]`: the latch is woken by exactly \
+         one other block; the wrong-actor and wrong-session halves of the \
+         sheet's priority need a runtime to observe and stay unmeasured here"
     );
-    let loss: Vec<&Block> = blocks
+    assert!(
+        !blocks
+            .iter()
+            .any(|block| block.sites.iter().any(|(key, _)| key == "INSTANTLOSS")),
+        "M02's record spells no failure latch"
+    );
+    let kills: Vec<(u32, u32)> = edges
         .iter()
-        .filter(|block| block.sites.iter().any(|(key, _)| key == "INSTANTLOSS"))
+        .filter(|(_, key, _)| key == "KILL_OBJECTIVE_WHEN_I_COMPLETE")
+        .map(|(from, _, address)| (*from, *address))
         .collect();
     assert_eq!(
-        loss.len(),
-        2,
-        "M02 spells two failure latches ({}), matching the measurement's two \
-         INSTANTLOSS sites",
-        loss.iter()
-            .map(|block| block.key.as_str())
-            .collect::<Vec<_>>()
-            .join(", ")
-    );
-    let incoming = |target: u32| -> Vec<(u32, &str)> {
-        edges
-            .iter()
-            .filter(|(_, _, address)| *address == target)
-            .map(|(from, key, _)| (*from, key.as_str()))
-            .collect()
-    };
-    assert_eq!(
-        incoming(24),
-        [
-            (3, "KILL_OBJECTIVE_WHEN_I_COMPLETE"),
-            (19, "NAP_OBJECTIVE_WHEN_I_COMPLETE")
-        ],
-        "OBJECTIVE24's INSTANTLOSS is named by OBJECTIVE3's nine-target kill \
-         and by OBJECTIVE19's nap of it"
-    );
-    assert_eq!(
-        incoming(36),
-        [(7, "NAP_OBJECTIVE_WHEN_I_COMPLETE")],
-        "OBJECTIVE36's INSTANTLOSS is named by OBJECTIVE7's nap alone"
-    );
-    assert_eq!(
-        loss.iter().map(|block| block.number).collect::<Vec<_>>(),
-        vec![24, 36],
-        "the failure latches are OBJECTIVE24 and OBJECTIVE36"
+        kills,
+        [(4, 41), (7, 42)],
+        "the two kill edges are OBJECTIVE4's kill of 41 and OBJECTIVE7's kill of 42"
     );
 
     // **Remaining-target failure.** The inactive-completion-count blocks are
@@ -811,13 +802,12 @@ fn accept_m02_b_the_objective_graph_the_sheet_priorities_need_is_measured_not_in
     );
 
     // **Player-aircraft transfer and capture versus destruction** need the
-    // target-flag and inactive-member vocabulary, which M02 spells on both
-    // sides: objective targets are added and removed, other targets are
-    // added and removed, and inactive member lists resolve chained names.
+    // target-flag and inactive-member vocabulary: this record adds and removes
+    // objective targets, removes other targets (it spells no
+    // `ADD_OTHER_TARGET`), and inactive member lists resolve chained names.
     for key in [
         "ADD_OBJECTIVE_TARGET",
         "REMOVE_OBJECTIVE_TARGET",
-        "ADD_OTHER_TARGET",
         "REMOVE_OTHER_TARGET",
         "INACTIVE1",
         "BEGIN_DORMANT",
@@ -911,12 +901,17 @@ fn accept_m02_b_fu1_the_kill_sites_lower_through_one_list_argument_and_m02_lower
         .record
         .key("KILL_OBJECTIVE_WHEN_I_COMPLETE")
         .expect("M02 spells the kill key");
-    assert!(kill.agreed_shape().is_none());
+    assert_eq!(
+        kill.agreed_shape().map(|shape| shape.label()),
+        Some("[int]".to_owned()),
+        "both of this record's kill sites spell one index"
+    );
     assert!(
         kill.shapes
             .iter()
-            .any(|(shape, _)| shape.arity() > MAX_CALL_ARGS),
-        "a measured kill shape spells more than {MAX_CALL_ARGS} indices"
+            .all(|(shape, _)| shape.arity() <= MAX_CALL_ARGS),
+        "this record's kill shapes are within the positional bound; the long-list \
+         case is pinned by the synthetic `accept_m02_b_fu1_` test"
     );
     let spec = lowered
         .registry()
@@ -936,7 +931,7 @@ fn accept_m02_b_fu1_the_kill_sites_lower_through_one_list_argument_and_m02_lower
         .flat_map(|objective| objective.calls.iter())
         .filter(|call| call.name == "KILL_OBJECTIVE_WHEN_I_COMPLETE")
         .collect();
-    assert_eq!(kill_calls.len(), 8, "M02 spells eight kill sites");
+    assert_eq!(kill_calls.len(), 2, "M02 spells two kill sites");
     assert!(
         kill_calls
             .iter()
@@ -948,7 +943,7 @@ fn accept_m02_b_fu1_the_kill_sites_lower_through_one_list_argument_and_m02_lower
     // because its row is complete.
     let census = survey_mission_control_programs(&game_dir()).expect("the census measures");
     assert!(
-        census.complete_missions().contains(&"zbd/c1/m02"),
+        census.complete_missions().contains(&"zbd/c3/m02"),
         "M02 is one of the census's complete rows"
     );
 }

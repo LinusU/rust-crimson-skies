@@ -51,7 +51,7 @@ use cs_content::mission_control::{
 use cs_content::objectives::objective_block_number;
 use cs_content::stunts::{objective_record, zrd_flat_fields};
 
-use crate::campaign::m02_b::{control_binding, control_document};
+use crate::campaign::m02_b::{control_binding_of, control_document_of};
 
 /// The image's base address, and with it the file-offset rule this task's
 /// measurements are written in: `VA = file offset + 0x400000`.
@@ -144,9 +144,17 @@ fn string_at(image: &[u8], va: u32, expected: &str) {
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m02_b_fu2_m02s_five_record_sound_keys_are_measured_with_their_consumers() {
-    let binding = control_binding();
+    // The five sound keys are spelled by `ZBD/C1/M02`, the record the corrected
+    // campaign layout binds to M07 (`mission/ch2-m02`); M02's own record
+    // (`ZBD/C3/M02`) spells none of them (pinned in `m02_b.rs`).
+    let binding = control_binding_of("M07");
+    assert_eq!(
+        binding.program_asset.to_lowercase(),
+        "zbd/c1/m02/zrdr.zbd",
+        "the record under test is the one that spells the sound keys"
+    );
     let record = &binding.record;
-    let (document, _) = control_document();
+    let (document, _) = control_document_of(&binding);
 
     // The two vocabularies are disjoint, so a key can never be counted twice.
     for key in CONTROL_RECORD_SOUND_KEY_VOCABULARY {

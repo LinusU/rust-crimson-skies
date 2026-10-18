@@ -176,8 +176,8 @@ fn evidence_report_m02_b_fu3_writes_the_acceptance_report() {
              block with the count at +0xc48 (0x467956, 0x469043), and the wake walk 0x469af0 \
              checks no address at all - no clamp, no ignore, no log. NOT CLAIMED: what the \
              original *observes* when an address past the count reaches that walk depends on the \
-             memory after the array and stays unknown; M02's own address 50 resolves inside its \
-             50 blocks as record 49; the wake/sleep/kill directive family still has no consumer \
+             memory after the array and stays unknown; M02's own address 52 (ZBD/C3/M02, \
+             OBJECTIVE4's wake) resolves inside its 52 blocks as record 51; the wake/sleep/kill directive family still has no consumer \
              in this build, so the rule is the objective lifecycle's resolver and refusal for \
              that executor to use; no mission was played and nothing is verified_original. Claim \
              is implemented only; validated with tools/validate_evidence.py --require-pass. \
