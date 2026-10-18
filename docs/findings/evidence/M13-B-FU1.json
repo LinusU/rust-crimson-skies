@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "M13-B-FU1",
+ "candidate_tree": "60762aed6e05f56ecd03a819f57db458c134c0de",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-10-18T23:38:10Z",
+ "command": {"argv": ["cargo", "test", "--locked", "-p", "cs_app", "--", "accept_m13_b_fu1_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/sonnet-2", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 3, "executed": 3, "passed": 3, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_m13_b_fu1_the_actor_limitation_is_an_unknown_of_m03_alone", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m13_b_fu1_the_derived_m03_record_carries_the_actor_limitation", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m13_b_fu1_an_undeclared_actor_name_misses_in_the_set_ai_net_consumer", "status": "pass", "evidence": ["cargo-test.log"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "c19432e4850406c09b55a630b1dffab4d27c41dc1652f94a8fb40e4a46362ab0", "kind": "log"}],
+ "unknowns": [],
+ "review": {"identity": "implementer sonnet-2/sonnet-2 (Rally #1243); review pending, not independent", "method": "acceptance suite run locally with the retail capability and the owner-supplied decrypted engine image; the fields are derived from the recorded log and production discovery of $CS_GAME_DIR. The suite pins by static reading that the SET_AI_NET consumer misses (logs and skips) a name the shipped data and the image do not declare, and that `britkestrel_1` belongs to M03's record (`ZBD/C3/M03`), where the surviving limitation is recorded as a mission-scoped unknown in missions/bindings/M03.json (whether another path registers the name at run time is untraced; resolver M03-C or a registry-insert trace). NOT CLAIMED: any runtime half; nothing is verified_original and no original executable was run. Claim is implemented only; validated with tools/validate_evidence.py --require-pass. `candidate_tree` is the tree of the commit the suite and this harness ran on; the only later delta is this report's own copy under docs/findings/evidence/, which no acceptance test reads"},
+ "claim": "implemented"
+}
