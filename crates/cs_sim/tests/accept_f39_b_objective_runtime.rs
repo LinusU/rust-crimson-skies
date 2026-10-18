@@ -1869,9 +1869,17 @@ fn accept_f39_b_the_event_stream_is_key_ordered_and_reproducible() {
     let mut sorted = keys.clone();
     sorted.sort();
     assert_eq!(keys, sorted, "the stream is sorted by EventKey");
-    // Counted actors share the reserved source and are ordered by sequence.
-    assert_eq!(keys[0].source, ACTOR_EVENT_SOURCE);
-    assert!(keys[0].sequence < keys[1].sequence);
+    // Counted actors share the reserved source — `SymbolId(u32::MAX)`, past
+    // every declaration's symbol — so their events sort after the tick's
+    // declaration events and are ordered among themselves by `sequence`.
+    let (declarations, actors) = keys.split_at(keys.len() - 2);
+    assert!(
+        declarations
+            .iter()
+            .all(|key| key.source != ACTOR_EVENT_SOURCE)
+    );
+    assert!(actors.iter().all(|key| key.source == ACTOR_EVENT_SOURCE));
+    assert!(actors[0].sequence < actors[1].sequence);
     assert!(
         keys.iter()
             .all(|key| key.session == SESSION && key.tick == Tick(1))

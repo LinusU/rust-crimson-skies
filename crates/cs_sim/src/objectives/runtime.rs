@@ -200,7 +200,15 @@ use super::trigger::{Movement, SweptTrigger, TriggerError, TriggerEvent};
 /// [`add_condition`](Self::add_condition), [`add_timer`](Self::add_timer) and
 /// [`add_trigger`](Self::add_trigger) all refuse it — so a counted event can
 /// never be mistaken for a declaration's event.
-pub const ACTOR_EVENT_SOURCE: SymbolId = SymbolId(0);
+///
+/// The reserved value is `u32::MAX` because `0` is a real symbol: a record's
+/// blocks carry `SymbolId(0..objectives)` and
+/// [`resolve_objective_address`](super::address::resolve_objective_address)
+/// mints the same space (`address − 1`), so `SymbolId(0)` is the record's first
+/// block, not a spare marker (M02-B-FU5). The count is a `u32`, so no record
+/// index and no resolved address can reach `u32::MAX`, and a counted event
+/// therefore sorts after every declaration's in the tick's key order.
+pub const ACTOR_EVENT_SOURCE: SymbolId = SymbolId(u32::MAX);
 
 /// The first [`ActorId`] a spawned wave instance ever takes: the low end of the
 /// band this runtime allocates from.
