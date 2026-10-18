@@ -98,6 +98,19 @@ pub enum TerminalPrecedence {
     /// becomes a new named variant so every existing caller keeps its meaning.
     #[default]
     SyntheticConservative,
+    /// The measured original rule: after each objective pass the mission's
+    /// lost flag is tested before its won flag, so a mission with both set is
+    /// lost (`cs_content::objectives_conditions::MissionEndFlags::end` is the
+    /// reference behavior; finding
+    /// `docs/findings/2026-10-12-m01-b-obj-3-stage-conditions-and-outcomes.md`,
+    /// objective pass at `0x46af76`, provenance `static`).
+    ///
+    /// Only `Failure` beating `Success` is measured. The engine has no
+    /// extraction ending, so where `Extraction` sits relative to the other two
+    /// is **unmeasured**; this variant keeps the synthetic relative order
+    /// (`Failure`, `Extraction`, `Success`) for it and claims nothing there.
+    /// Not `verified_original`.
+    MeasuredLostBeforeWon,
 }
 
 impl TerminalPrecedence {
@@ -105,7 +118,7 @@ impl TerminalPrecedence {
     #[must_use]
     pub const fn rank(self, outcome: TerminalOutcome) -> u8 {
         match self {
-            Self::SyntheticConservative => match outcome {
+            Self::SyntheticConservative | Self::MeasuredLostBeforeWon => match outcome {
                 TerminalOutcome::Failure => 0,
                 TerminalOutcome::Extraction => 1,
                 TerminalOutcome::Success => 2,
@@ -132,6 +145,7 @@ impl TerminalPrecedence {
     pub const fn label(self) -> &'static str {
         match self {
             Self::SyntheticConservative => "synthetic_conservative",
+            Self::MeasuredLostBeforeWon => "measured_lost_before_won",
         }
     }
 }
