@@ -110,3 +110,26 @@ implementer's.
   `LobbyScreen::submit_host` / `LobbyLink`.
 * Independently: F44-D's measured component masses/prices, and F14-D.10's
   missing armor/ammunition/hardpoint rows.
+
+## Resolution (owner decision 2026-10-17, task #764)
+
+Option (a), one vocabulary. `cs_net::lobby::is_component_kind` now also accepts
+`ContentKind::Weapon`, the kind construction fits guns and ordnance as; the
+F58-B shape check (`check_loadout_shape_and_bans`) uses the same function, so
+it is consistent. `Gun`/`Ammo` stay accepted by the shape check; a loadout that
+names them cannot equal an authored blueprint's components and is judged
+`loadout_mismatch`. No key-, kind- or position-based translation exists.
+The content-side module is `cs_content::lobby_loadout` (`cs_content::lobby`
+was taken by the F55-CU2 scenario menu).
+
+Tests: `accept_f55_bu2_lobby_*` in `crates/cs_app/tests/accept_f55_bu2_lobby_validator.rs`
+drive `ConstructionLoadoutValidator` through `LobbyScreen::submit_host` /
+`LobbyLink`: the fixture blueprint's component set is accepted, an unknown
+blueprint is `Invalid{unknown_blueprint}`, a `Gun`-kind id is `Invalid{loadout_mismatch}`.
+
+### Unknown (Gap 1, unchanged)
+
+The authored blueprint-id -> `AircraftBlueprint` table for an installation is
+not provisioned. The catalog is injected and a blueprint it does not hold is
+refused `unknown_blueprint`. Resolving task: F44-D (unmeasured). Nothing is
+claimed about retail blueprints.

@@ -123,6 +123,7 @@ mod accept_f53_fu6_dependent_save_reopen;
 mod accept_f54_c_drive;
 mod accept_f55_a_lobby_ui;
 mod accept_f55_bu1_lobby_view_feed;
+mod accept_f55_bu2_lobby_validator;
 mod accept_f55_c_lobby_ui;
 mod accept_f56_c2_launch_and_results;
 mod accept_f57_a_latency_loss_and_reordering;

@@ -399,12 +399,21 @@ pub trait LoadoutValidator {
 }
 
 /// Whether `kind` names something a loadout carries or a host may ban.
+///
+/// The lobby names fitments in the vocabulary construction
+/// (`cs_content::construction`, F44) fits a blueprint with, because
+/// construction is the authority for what a blueprint carries: guns and
+/// ordnance are [`ContentKind::Weapon`]. `Gun` and `Ammo` stay accepted by the
+/// shape check; a loadout that names them simply cannot equal an authored
+/// blueprint's fitted components and is judged `loadout_mismatch` by the
+/// content-side validator. No translation between the two is made here.
 pub const fn is_component_kind(kind: ContentKind) -> bool {
     matches!(
         kind,
         ContentKind::Airframe
             | ContentKind::Engine
             | ContentKind::Armor
+            | ContentKind::Weapon
             | ContentKind::Gun
             | ContentKind::Ammo
             | ContentKind::HardpointEquipment

@@ -12,7 +12,7 @@
 //! [`ConstructionLoadoutValidator`] is the thin adapter: it holds the
 //! [`LobbyConstructionCatalog`] the application built from its authored
 //! construction content and delegates the whole judgement to
-//! [`LobbyConstructionCatalog::judge`] in `cs_content::lobby`, which documents
+//! [`LobbyConstructionCatalog::judge`] in `cs_content::lobby_loadout`, which documents
 //! the mapping and the stable reason codes. Nothing is judged here, so the
 //! rule the lobby enforces and the rule the construction screen enforces are
 //! the same [`ConstructionRules::validate`] (F44-B).
@@ -22,15 +22,17 @@
 //! and the price book. Until an application supplies a blueprint table
 //! populated from the original installation, a lobby wired to this validator
 //! refuses a blueprint it does not hold rather than accepting it unjudged
-//! (see `cs_content::lobby`).
+//! (see `cs_content::lobby_loadout`).
 //!
-//! **Blocked open item.** The lobby's loadout component vocabulary
-//! (`Gun`/`Ammo`/...) is disjoint from construction's (`Weapon`), so a real
-//! member loadout cannot yet be handed to this validator honestly; the evidence
-//! and the owner decision are in
-//! `docs/findings/2026-10-17-f55-bu2-lobby-loadout-validator-mapping.md`.
+//! The lobby names fitments in construction's vocabulary (owner decision,
+//! 2026-10-17: `cs_net::lobby::is_component_kind` accepts `Weapon`), so the
+//! fixture blueprint's own component set reaches this judgement. A loadout that
+//! names lobby `Gun`/`Ammo` ids cannot equal an authored blueprint's fitments
+//! and is judged `loadout_mismatch`. Provisioning the authored blueprint table
+//! from an installation is F44-D's unmeasured work; nothing here claims retail
+//! blueprints.
 
-use cs_content::lobby::LobbyConstructionCatalog;
+use cs_content::lobby_loadout::LobbyConstructionCatalog;
 use cs_net::lobby::{Loadout, LoadoutValidator};
 
 /// The production lobby loadout validator over `cs_content` construction.

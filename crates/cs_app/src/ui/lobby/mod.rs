@@ -23,7 +23,7 @@
 //! ([`validator::ConstructionLoadoutValidator`]): the
 //! `cs_net::lobby::LoadoutValidator` the lobby had only test doubles for,
 //! judged over the shared `cs_content::construction` rules through an authored
-//! blueprint catalog (`cs_content::lobby`). Without one injected, the lobby
+//! blueprint catalog (`cs_content::lobby_loadout`). Without one injected, the lobby
 //! refuses a loadout it cannot judge rather than accepting it unjudged.
 
 pub mod launch;
