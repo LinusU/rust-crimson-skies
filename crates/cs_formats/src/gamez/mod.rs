@@ -121,11 +121,10 @@ pub use polygon::{NgonIssue, OutlineDraw, outline_draw, triangulate_polygon};
 pub use reader::{
     CORNER_COUNT_MASK, FLAG_MASK, FLAG_NORMALS, FLAG_SHIFT, FLAG_TRIANGLE_STRIP, FLAG_TWO_SIDED,
     FLAG_UNK2, FLAG_UNK3, FLAG_UNK6, GAMEZ_HEADER_BYTES, GameZError, GameZHeader, GameZMesh,
-    GameZMeshes,
-    KNOWN_POLYGON_FLAGS, MAX_POLYGON_CORNERS, MAX_POLYGON_FLAGS, MESH_INDEX_BYTES, MESH_INFO_BYTES,
-    MESH_INFO_TRAILER_BYTES, MESH_LIGHT_HEADER_BYTES, MESH_MATERIAL_INFO_BYTES, MESHES_ENTRYPOINT,
-    MeshIndex, POLYGON_INFO_BYTES, ParseFinding, RawMaterialGroup, RawMeshInfo, RawMeshLight,
-    RawMeshLightHeader, RawMeshMaterialInfo, RawPolygonInfo, UNK08_C4, UNK08_PLANES, VEC3_BYTES,
-    read_gamez_meshes,
+    GameZMeshes, KNOWN_POLYGON_FLAGS, MAX_POLYGON_CORNERS, MAX_POLYGON_FLAGS, MESH_INDEX_BYTES,
+    MESH_INFO_BYTES, MESH_INFO_TRAILER_BYTES, MESH_LIGHT_HEADER_BYTES, MESH_MATERIAL_INFO_BYTES,
+    MESHES_ENTRYPOINT, MeshIndex, POLYGON_INFO_BYTES, ParseFinding, RawMaterialGroup, RawMeshInfo,
+    RawMeshLight, RawMeshLightHeader, RawMeshMaterialInfo, RawPolygonInfo, UNK08_C4, UNK08_PLANES,
+    VEC3_BYTES, read_gamez_meshes,
 };
 pub use strip::{MIN_STRIP_INDICES, StripError, StripTriangle, decode_strip};

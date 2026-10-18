@@ -914,17 +914,19 @@ impl RenderMesh {
         }
         let groups = by_material
             .into_iter()
-            .map(|(material, (triangles, saw_two_sided, saw_one_sided))| RenderGroup {
-                material,
-                triangles,
-                two_sided: match (saw_two_sided, saw_one_sided) {
-                    (true, false) => Some(true),
-                    (false, true) => Some(false),
-                    // A group always has at least one triangle; the both-false
-                    // arm is unreachable and the mixed arm is the unknown.
-                    (true, true) | (false, false) => None,
+            .map(
+                |(material, (triangles, saw_two_sided, saw_one_sided))| RenderGroup {
+                    material,
+                    triangles,
+                    two_sided: match (saw_two_sided, saw_one_sided) {
+                        (true, false) => Some(true),
+                        (false, true) => Some(false),
+                        // A group always has at least one triangle; the both-false
+                        // arm is unreachable and the mixed arm is the unknown.
+                        (true, true) | (false, false) => None,
+                    },
                 },
-            })
+            )
             .collect();
 
         Ok(Self {
@@ -4879,8 +4881,11 @@ mod tests {
     /// leaving it unknown.
     #[test]
     fn accept_f10_f_1_an_unflagged_outline_records_a_one_sided_group() {
-        let render = RenderMesh::build(&mesh(vec![triangle(0, vec![corner(0), corner(1), corner(2)])]))
-            .expect("the face decodes");
+        let render = RenderMesh::build(&mesh(vec![triangle(
+            0,
+            vec![corner(0), corner(1), corner(2)],
+        )]))
+        .expect("the face decodes");
         assert_eq!(render.groups()[0].two_sided, Some(false));
         assert!(render.triangles().iter().all(|t| !t.two_sided));
     }
@@ -4903,10 +4908,17 @@ mod tests {
             "a strip is never read as two-sided from the stored bit"
         );
         assert!(
-            render.triangles().iter().all(|triangle| !triangle.two_sided),
+            render
+                .triangles()
+                .iter()
+                .all(|triangle| !triangle.two_sided),
             "no strip triangle is marked two-sided"
         );
-        assert_eq!(render.triangles().len(), 2, "the four-corner strip draws two");
+        assert_eq!(
+            render.triangles().len(),
+            2,
+            "the four-corner strip draws two"
+        );
     }
 
     #[test]
@@ -9030,8 +9042,9 @@ mod tests {
         let mut measured: BTreeMap<String, u64> = BTreeMap::new();
         for relative in &archives {
             let path = game_dir.join(relative);
-            let bytes = std::fs::read(&path)
-                .unwrap_or_else(|error| panic!("{relative}: the archive must be readable: {error}"));
+            let bytes = std::fs::read(&path).unwrap_or_else(|error| {
+                panic!("{relative}: the archive must be readable: {error}")
+            });
             let mut context = ParseContext::with_defaults(relative);
             let parsed = read_gamez_meshes(&mut context, relative, &bytes)
                 .unwrap_or_else(|error| panic!("{relative}: the mesh section must read: {error}"));
