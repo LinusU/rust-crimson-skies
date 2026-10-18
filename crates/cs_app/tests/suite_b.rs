@@ -13,6 +13,7 @@
 //! count; `cs_xtask test-layout` requires every `.rs` file under `tests/` to
 //! be reached from one target (a shared, test-free helper excepted).
 
+mod accept_f13_d_fu1_keyword_reconciliation;
 mod accept_f20_a_animation_boundary;
 mod accept_f20_b_animation_playback;
 mod accept_f20_c_01_attachment_hierarchy;
