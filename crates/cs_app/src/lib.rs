@@ -210,8 +210,12 @@
 //! [`objectives::ObjectiveSession`] step, exactly once per marker activation
 //! ([`mission_markers::MarkerActivation`]) so a loop pass, a skip or a
 //! re-drained batch cannot duplicate a mission event (F20 non-negotiable
-//! behavior 5). It is task #507's slice; no production mission host drives it
-//! yet (the animation composition is filed as #509).
+//! behavior 5). It is task #507's slice, and
+//! [`mission_session::MissionHost`] drives it on every committed tick through
+//! [`mission_animations::step_mission_animations`]. What is still missing is
+//! the declared program, not the composition: the F39 objective declarations
+//! cannot be recovered (Rally #1219), so the host launches the session from
+//! the empty `LoweredObjectives`.
 //! `### F20-C.04` gives the verdict's collider half its reader in
 //! [`physics::collider`], so the clip's half of the verdict now reaches the
 //! simulation and the animation path still writes nothing but its own record.

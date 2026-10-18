@@ -124,10 +124,14 @@
 //!   signal is spent on a pickup, an ammo grant or an objective is the
 //!   declared program's decision (F27/F36 own those effects), and this module
 //!   neither names nor counts them.
-//! * **No production mission host.** [`ObjectiveSession`] is host-owned, not a
-//!   resource, and no production composition drives it yet (the animation
-//!   composition is filed as #509). The entries here are therefore plain
-//!   functions the host calls per committed tick, the same shape
+//! * **The declared program is missing, not the host.**
+//!   [`ObjectiveSession`] is host-owned, not a resource, and
+//!   [`crate::mission_session::MissionHost`] drives it: `MissionHost::step`
+//!   calls [`crate::mission_animations::step_mission_animations`] once per
+//!   committed tick. What the host cannot yet supply is the program, because
+//!   the F39 objective declarations are unrecoverable (Rally #1219), so it
+//!   launches the session from the empty `LoweredObjectives`. The entries here
+//!   are plain functions the host calls per committed tick, the same shape
 //!   [`bind_animated_node`](crate::animation::bind_animated_node) and
 //!   [`apply_attachment_transitions`](crate::animation::apply_attachment_transitions)
 //!   already use.

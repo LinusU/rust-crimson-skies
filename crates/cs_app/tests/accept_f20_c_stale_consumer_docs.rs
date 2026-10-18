@@ -26,6 +26,10 @@ use cs_types::net::SessionId;
 const ANIMATION_MOD_RS: &str = include_str!("../src/animation/mod.rs");
 const ANIMATION_BINDING_RS: &str = include_str!("../src/animation/binding.rs");
 
+/// The two outside-the-animation-module paragraphs (task #1405).
+const LIB_RS: &str = include_str!("../src/lib.rs");
+const MISSION_MARKERS_RS: &str = include_str!("../src/mission_markers.rs");
+
 /// The two files, as `(path, source)` for assertion messages.
 const DOC_SOURCES: [(&str, &str); 2] = [
     ("crates/cs_app/src/animation/mod.rs", ANIMATION_MOD_RS),
@@ -128,4 +132,30 @@ fn accept_f20_c_stale_consumer_docs_cross_links_compile() {
     let _refusal_is_public: Option<MissionHostRefusal> = None;
     let _empty_program: LoweredObjectives = cs_app::mission_session::no_declared_objectives();
     let _composed_tick = cs_app::mission_animations::step_mission_animations;
+}
+
+#[test]
+fn accept_f20_c_stale_509_refs_in_lib_and_mission_markers_are_corrected() {
+    for (path, source) in [
+        ("crates/cs_app/src/lib.rs", LIB_RS),
+        ("crates/cs_app/src/mission_markers.rs", MISSION_MARKERS_RS),
+    ] {
+        assert!(
+            source.contains("MissionHost") && source.contains("step_mission_animations"),
+            "{path} must name the mission host and the per-tick consumer step"
+        );
+        assert!(
+            source.contains("#1219"),
+            "{path} must name #1219 as the gap"
+        );
+        assert!(
+            !source.contains("#509"),
+            "{path} must not cite #509 as an open gap"
+        );
+        assert!(
+            !source.contains("no production mission host drives")
+                && !source.contains("no production composition drives it"),
+            "{path} must not claim no production host drives the path"
+        );
+    }
 }
