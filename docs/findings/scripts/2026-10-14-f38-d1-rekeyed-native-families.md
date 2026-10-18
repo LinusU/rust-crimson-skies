@@ -160,12 +160,12 @@ unmeasured natives and the unmeasured target), 0 are dropped.
 4. **The mission language is not decoded** (F13-D): nothing here covers a
    mission instruction or a mission native call; these are the UI script
    programs only.
-5. **The differential trace (`bindings::differential`) still identifies a
-   declared step by (form, value)**, not (host, value): a scenario that
-   declared the same id under two natives would compare them as one call
-   identity. The family table and audit are re-keyed; the differential's
-   identity is filed as follow-up task **#1411**, outside this slice's
-   acceptance criteria.
+5. **Resolved by #1411 (F38-D.2).** The differential trace
+   (`bindings::differential`) identified a declared step by (form, value), so
+   a scenario declaring the same id under two natives compared them as one
+   call identity. `DeclaredStep` and `TraceStepKind::Measured` now carry the
+   `MeasuredHost`; goscallback#6 and uicontrol#6 are distinct steps and a swap
+   between them is reported (`accept_f38_d2_`). Static code evidence only.
 6. **Binding here is a measured meaning, not a runtime operation.** A bound UI
    family is deliberately **not** registered in the mission
    `HostBindingRegistry` (still empty): the mission IR has no UI operation and
