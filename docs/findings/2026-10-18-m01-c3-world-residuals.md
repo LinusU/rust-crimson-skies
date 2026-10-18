@@ -204,6 +204,43 @@ imported and resolve role `None`. A retail member asserts the count, the child's
 identity and that every environment record is a descendant of that `horizon`
 child.
 
+## F. The owner-command smoke
+
+`docs/PLAYTEST.md`'s owner-command smoke ran on this branch's commit, after the
+release build, with `CS_CAPABILITIES=retail,gpu,audio`:
+
+```sh
+target/release/cs --cs-path "$CS_GAME_DIR" --mission M01 --smoke-seconds 45 \
+  --capture-dir private/evidence/M01-C3-WORLD-RESIDUALS/smoke
+```
+
+**It gets past launch planning and opens the real window on `zbd/c3/m01`** — the
+acceptance this task was filed for. The run composed `ORIGINAL MISSION M01 /
+ORIGINAL WORLD`, bound **377 meshes / 643 drawn parts** from `world/c3`, placed
+the player at `(-1426, 150, -1813)`, spawned 3 aircraft and 2 zeppelins, and
+wrote **12 real framebuffer captures** (`frame_*_world|sea_visible|sea_absent|
+actor_0..5|hud|guns|rocket.png`) plus `report.json`. It then exited **non-zero**,
+failing 2 of its 12 checks, both of them other tasks' subjects:
+
+| check | result | what it measures |
+| --- | --- | --- |
+| `world_terrain_drawn` | **pass** | 3 686 400 of 3 686 400 pixels off the clear colour |
+| `world_terrain_textured` | **pass** | 22 per mille local detail (floor 20), 28 731 distinct colours |
+| `world_terrain_lit` | **fail** | near field spans luminance 42..47 (spread 5, floor 24) — #1537's subject |
+| `world_sea_visible` | *skip* | the world's records declare no known water surface |
+| `hud_objective_current` | **pass** | the model marks a current objective |
+| `hud_objective_matches` | **fail** | the drawn HUD line is absent — the HUD objective widget gap (#1537's window bullet / the HUD surface) |
+| `actors_project_and_cover` | **pass** | all 6 spawned actors project and cover ≥ 8 pixels |
+| `weapon_guns_fire` / `weapon_rounds_drawn` | **pass** | 90 rounds, 66 live, all 66 drawn |
+| `weapon_rocket_launches` | **pass** | a rocket launched beside a declared-hostile actor |
+| `audio_radio_queued` / `audio_engine_queued` | **pass** | 1 radio line, 1 engine loop |
+| `smoke_shots_delivered` | **pass** | every requested capture arrived |
+
+So the world this task answered **is drawn**: terrain pixels, textures, actors,
+projectiles. The two failures are the unlit/near-field gap #1537 owns and the
+absent HUD objective line, neither of which this task's surface (`world_geometry`)
+covers, and both are recorded here rather than hidden behind a green line.
+
 ## Unknowns and limitations (recorded, not guessed)
 
 * **The children of these 47 records are not imported.** This flat
