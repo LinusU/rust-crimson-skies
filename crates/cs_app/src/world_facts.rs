@@ -16,6 +16,7 @@
 //! | --- | --- | --- |
 //! | [`cs_script::ir::Condition::InactiveMembers`] | `members` | a node/part/part-state **name chain** per listed member |
 //! | [`cs_script::ir::Condition::Travelers`] | `members` | a subject chain and, for an object anchor, an anchor chain |
+//! | [`cs_script::ir::Condition::TravelersCount`] | `group_members`, `members` | a **group id** and, for an object anchor, an anchor chain |
 //! | [`cs_script::ir::Condition::EnemyGroupDepletion`] | `groups`, `generators` | a **group id** and an optional generator name |
 //! | [`cs_script::ir::Condition::AnimationStates`] | `animations` | an **animation name** per listed pair |
 //! | [`cs_script::ir::Condition::DangerZoneFlags`] | `danger_zones` | a **zone name** per listed zone |
@@ -304,6 +305,8 @@ pub struct WorldObservation {
     members: BTreeMap<MemberName, MemberObservation>,
     /// Group id → how many of its members are still in play.
     groups: BTreeMap<i32, u32>,
+    /// Group id → the world positions of its awake members.
+    group_members: BTreeMap<i32, Vec<[f64; 3]>>,
     /// Generator name → how many spawns it still owes.
     generators: BTreeMap<String, u32>,
     /// Animation name → its current state byte (`UNDEFINED` 0 …
@@ -332,6 +335,14 @@ impl WorldObservation {
     #[must_use]
     pub fn group(mut self, id: i32, living: u32) -> Self {
         self.groups.insert(id, living);
+        self
+    }
+
+    /// Reports the world positions of one group's awake members — the
+    /// vehicles a counting `TRAVELERS` tests (a sleeping vehicle is skipped).
+    #[must_use]
+    pub fn group_members(mut self, id: i32, positions: Vec<[f64; 3]>) -> Self {
+        self.group_members.insert(id, positions);
         self
     }
 
@@ -406,6 +417,8 @@ pub struct WorldOperands {
     pub members: BTreeSet<MemberName>,
     /// Every group id any `EnemyGroupDepletion` names.
     pub groups: BTreeSet<i32>,
+    /// Every group id any `TravelersCount` counts the members of.
+    pub group_members: BTreeSet<i32>,
     /// Every generator name any `EnemyGroupDepletion` names — M01 spells none,
     /// so M01's set is empty and its `DEDG` blocks read no pending spawns.
     pub generators: BTreeSet<String>,
@@ -445,6 +458,12 @@ impl WorldOperands {
                 subject, anchor, ..
             } => {
                 operands.members.insert(subject.clone());
+                if let TravelersAnchor::Object(chain) = anchor {
+                    operands.members.insert(chain.clone());
+                }
+            }
+            Condition::TravelersCount { group, anchor, .. } => {
+                operands.group_members.insert(*group);
                 if let TravelersAnchor::Object(chain) = anchor {
                     operands.members.insert(chain.clone());
                 }
@@ -614,6 +633,11 @@ impl WorldFactTable {
         for group in &operands.groups {
             if let Some(living) = self.observation.groups.get(group) {
                 facts.groups.insert(*group, *living);
+            }
+        }
+        for group in &operands.group_members {
+            if let Some(positions) = self.observation.group_members.get(group) {
+                facts.group_members.insert(*group, positions.clone());
             }
         }
         for name in &operands.generators {

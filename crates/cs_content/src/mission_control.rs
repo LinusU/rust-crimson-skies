@@ -1067,11 +1067,11 @@ pub fn measured_directive(key: &str) -> Option<MeasuredDirective> {
                       deletes the subject on firing",
             evidence: &[FINDING_B, FINDING_C],
             unknowns: &[
-                "the token naming `TRAVELERS`' unspelled polarity — only `APPROACHING` is a \
-                 measured spelling; the outside case's word is unknown",
                 "which of the two modes M01's site takes is a runtime property of the world \
                  build, not of the spelling",
                 "what group id 0 means in the counting mode",
+                "the counting mode's `DELETE_ON_SUCCESS` deletion of each matched vehicle is a \
+                 host effect no consumer performs yet",
             ],
         },
         "ANIM_STATE" => MeasuredDirective {

@@ -424,17 +424,29 @@ pub fn mission_world_observation(world: &mut World) {
                 }
             }
         }
-        let mut query = world.query::<&ScriptedAircraftActor>();
-        for actor in query.iter(world) {
+        // The counting `TRAVELERS` tests the awake members' positions
+        // (`0x4659b0` skips a vehicle whose sleep byte is set), reported for
+        // exactly the groups whose count is accounted for above.
+        let mut positions: BTreeMap<i32, Vec<[f64; 3]>> = BTreeMap::new();
+        let mut query = world.query::<(&ScriptedAircraftActor, Option<&Transform>)>();
+        for (actor, transform) in query.iter(world) {
             if let Some(group) = actor.record.group
                 && let Ok(id) = i32::try_from(group)
                 && let Some(count) = living.get_mut(&id)
             {
                 *count += 1;
+                let members = positions.entry(id).or_default();
+                if !actor.asleep
+                    && let Some(transform) = transform
+                {
+                    let [x, y, z] = transform.translation.to_array();
+                    members.push([f64::from(x), f64::from(y), f64::from(z)]);
+                }
             }
         }
         for (id, count) in living {
             observation = observation.group(id, count);
+            observation = observation.group_members(id, positions.remove(&id).unwrap_or_default());
         }
     }
 
