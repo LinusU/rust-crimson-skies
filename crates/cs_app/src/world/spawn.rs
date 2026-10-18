@@ -56,6 +56,16 @@
 //! caller that registers different geometry under a reference it used before is
 //! given a new asset rather than the one a previous load left behind.
 //!
+//! **The collider is shared the same way** (task #1430). Avian's
+//! `ColliderCache` — the thing that used to make N objects naming one mesh share
+//! one derived `TriMesh` — is keyed by mesh handle and is only consulted for
+//! `TrimeshFromMesh`, which reads the *drawn* buffer task #1424 forbids. So the
+//! entry also holds the collision shape derived from the upload once, and every
+//! colliding record gets clones of that one [`Collider`]: one allocation behind
+//! N colliders, still one `Collider` component per entity so each keeps its own
+//! pose and scale. A record whose collision view carries no triangle never
+//! reaches it — that object is reported, not spawned.
+//!
 //! **The world loader does keep an owning handle, and it is released with the
 //! world.** [`WorldMeshAssets`] holds the strong handles, so a sector that
 //! streams away and comes back re-uses the geometry the engine already has
@@ -74,7 +84,7 @@
 //! which is what makes it visible to Avian's swept CCD: the collider-on-body
 //! rule is stated, measured and enforced in [`crate::asset_stack`]. The mesh
 //! path is therefore one entity — static body, `Mesh3d` and the collision-view
-//! [`ColliderConstructor`] together — and a cuboid is a second
+//! [`Collider`] together — and a cuboid is a second
 //! entity beside the presentation. A body whose colliders all lived on children
 //! would be skipped by `SweptCcdBodyQuery` and every swept body would pass
 //! through the world's geometry, which is the measured failure task #420
@@ -296,17 +306,29 @@ impl MeshReference {
     }
 }
 
-/// One engine mesh asset as this Bevy world holds it: the handle, and the
-/// upload that handle is the geometry of.
+/// One engine mesh asset as this Bevy world holds it: the handle, the upload
+/// that handle is the geometry of, and the collision shape derived from that
+/// upload once.
 ///
 /// The fingerprint is what makes the entry safe to re-use. A `ContentId` says
 /// *which* mesh; the fingerprint says *which upload of it*, and a caller that
 /// registered different geometry under the same reference must be given a new
 /// asset instead of the previous one.
+///
+/// **The derived collider is stored beside the handle and cloned for every
+/// object** (task #1430). The pair is one upload with two engine-side
+/// artefacts: one [`Mesh`] the renderer draws and one [`Collider`] a body is
+/// stopped by. A `Trimesh*` constructor does not go through Avian's
+/// handle-keyed `ColliderCache`, so building the collider per object would
+/// copy the collision view's vertices and indices — and its BVH — once per
+/// instance naming the mesh, which is the regression #1430 removes. It is
+/// `None` until the first **colliding** object asks for it, so a
+/// presentation-only record never builds a shape it cannot use.
 #[derive(Clone, Debug)]
 struct SharedWorldMesh {
     fingerprint: ContentHash,
     handle: Handle<Mesh>,
+    collider: Option<Collider>,
 }
 
 /// The engine mesh assets this Bevy world holds for the mesh references its
@@ -316,8 +338,9 @@ struct SharedWorldMesh {
 /// many objects name it: the first object to name a reference uploads it into
 /// [`Assets<Mesh>`], and every later object gets a clone of that same strong
 /// handle. Presentation-only and colliding objects therefore share one
-/// [`Mesh3d`] handle, and so does the collider Avian derives from it, which is
-/// what "one upload, one fingerprint, one asset" means at the engine boundary.
+/// [`Mesh3d`] handle, and (task #1430) every colliding object also gets a clone
+/// of **one** derived collision shape, which is what "one upload, one
+/// fingerprint, one asset" means at the engine boundary.
 ///
 /// **This resource is the world loader's owning handle**, and it is released by
 /// [`super::residency::unload_world`], which removes it. See the module docs for
@@ -336,6 +359,22 @@ impl WorldMeshAssets {
             .get(id)
             .filter(|shared| shared.fingerprint == fingerprint)
             .map(|shared| shared.handle.clone())
+    }
+
+    /// The collision shape this Bevy world already derived for `id`, when it
+    /// derived one for the upload named by `fingerprint`.
+    ///
+    /// Cloning the returned [`Collider`] clones its [`SharedShape`] arcs, so
+    /// every object that gets one here collides from **one** stored shape —
+    /// task #1430's whole point. A missing entry (or a fingerprint that has
+    /// moved on) means the shape still has to be derived from the collision
+    /// view, never that the object should go without one.
+    #[must_use]
+    pub fn collider(&self, id: &ContentId, fingerprint: ContentHash) -> Option<Collider> {
+        self.assets
+            .get(id)
+            .filter(|shared| shared.fingerprint == fingerprint)
+            .and_then(|shared| shared.collider.clone())
     }
 
     /// How many engine mesh assets this world holds for world object records.
@@ -358,14 +397,30 @@ impl WorldMeshAssets {
 
     /// Records `handle` as the asset for the upload named by `fingerprint`,
     /// replacing any earlier asset for `id`.
+    ///
+    /// A replacement resets the derived collider with it: the entry names a
+    /// different upload now, so a shape derived from the old geometry must not
+    /// be handed to the next object that names this reference
+    /// (see [`Self::collider`]).
     fn insert(&mut self, id: ContentId, fingerprint: ContentHash, handle: Handle<Mesh>) {
         self.assets.insert(
             id,
             SharedWorldMesh {
                 fingerprint,
                 handle,
+                collider: None,
             },
         );
+    }
+
+    /// Records `collider` as the shape derived from the upload named by
+    /// `fingerprint`, when that upload is still the one this entry names.
+    fn insert_collider(&mut self, id: &ContentId, fingerprint: ContentHash, collider: Collider) {
+        if let Some(shared) = self.assets.get_mut(id)
+            && shared.fingerprint == fingerprint
+        {
+            shared.collider = Some(collider);
+        }
     }
 }
 
@@ -376,8 +431,9 @@ pub struct SpawnedCollider {
     pub object: WorldObjectId,
     /// The entity that holds the [`Collider`] a narrow phase resolves against.
     /// For a mesh-derived object this is also the entity that presents the
-    /// object, and the collider does not exist until Avian's
-    /// `init_collider_constructors` has run.
+    /// object, and the [`Collider`] is on it as soon as the spawn returns
+    /// (task #1430; the mesh's shape is derived once per upload and inserted
+    /// directly, rather than waited for out of `init_collider_constructors`).
     pub entity: Entity,
     /// The static rigid body the collider hangs from, when it hangs from one.
     ///
@@ -924,6 +980,40 @@ fn shared_mesh(app: &mut App, upload: ResolvedUpload<'_>) -> Handle<Mesh> {
     handle
 }
 
+/// The one derived collider **every colliding record** naming `upload` gets:
+/// the shape this Bevy world already derived for that exact upload, or a newly
+/// derived one.
+///
+/// This is the mesh analogue of [`shared_mesh`], and the fix of task #1430. Two
+/// records that resolve to the same
+/// [`WorldMesh`](super::meshes::WorldMesh) end up holding clones of **one**
+/// [`Collider`], so their colliders' shapes are one allocation
+/// (`Arc::ptr_eq` on `Collider::shape`) rather than a copy of the collision
+/// view's vertices, indices and BVH per instance. Records that resolve to
+/// different meshes cannot meet in the cache: a different [`ContentId`], or the
+/// same id with a new fingerprint, is a different entry and a different shape.
+///
+/// The shape is derived only here, and only after `spawn_object` has refused a
+/// collision view that carries no triangle as
+/// [`SkipReason::CollisionTopologyUnavailable`], so an explicit `Trimesh`
+/// constructor that panics on an empty index buffer is never reached.
+fn shared_collider(app: &mut App, upload: ResolvedUpload<'_>) -> Collider {
+    let id = upload.id.clone();
+    let fingerprint = upload.upload.fingerprint();
+    if let Some(collider) = app
+        .world()
+        .get_resource::<WorldMeshAssets>()
+        .and_then(|assets| assets.collider(&id, fingerprint))
+    {
+        return collider;
+    }
+    let collider = mesh_collider(upload.upload.collision());
+    app.world_mut()
+        .get_resource_or_insert_with(WorldMeshAssets::default)
+        .insert_collider(&id, fingerprint, collider.clone());
+    collider
+}
+
 /// Spawns one object instance into `app`.
 ///
 /// This is the unit [`spawn_world`] and the sector load transaction in
@@ -1251,17 +1341,23 @@ fn spawn_cuboid_collider(
 /// that upload's own **collision** view, so two records naming one mesh present
 /// from a single [`Assets<Mesh>`] entry and collide from a single stored
 /// triangulation. The two consumers no longer share an index buffer, which is
-/// the point (task #1424): the constructor is [`mesh_collider_constructor`],
-/// not `ColliderConstructor::TrimeshFromMesh`, so what a body is stopped by is
+/// the point (task #1424): the shape is [`mesh_collider`], not
+/// `ColliderConstructor::TrimeshFromMesh`, so what a body is stopped by is
 /// `RawMesh::topology()` and what the renderer submits is the measured fan.
 /// Nothing here can close a traversable opening either way — the collision
 /// view keeps every triangle the stored outline triangulates to, with no hull,
 /// bounding box or decimation.
 ///
+/// **The shape is derived once per upload and shared** (task #1430):
+/// [`shared_collider`] hands every record naming one mesh clones of the *same*
+/// [`Collider`], so a second instance copies no buffers and builds no second
+/// BVH. Each object still gets its own `Collider` component, so its own
+/// transform and scale stay its own.
+///
 /// **For `Solid`, that node is also the rigid body.** The entity carries
-/// [`RigidBody::Static`], the [`Mesh3d`] and the constructor together, so the
-/// derived [`Collider`] lands on the body entity itself rather than on a child
-/// of it. This is the collider-on-body rule
+/// [`RigidBody::Static`], the [`Mesh3d`] and the [`Collider`] together, so a
+/// body a swept body must stop against carries its collider on itself rather
+/// than on a child. This is the collider-on-body rule
 /// ([`crate::asset_stack`]): Avian's `solve_swept_ccd` resolves a body through
 /// `SweptCcdBodyQuery`, whose `collider: &'static Collider` field is read off
 /// the body entity, so a body whose colliders live on descendants is skipped
@@ -1286,7 +1382,11 @@ fn spawn_mesh_collider(
     // other record naming this mesh already got: a trigger volume is a
     // presentation too, so sharing has to reach it as well.
     let handle = shared_mesh(app, upload);
-    let collision = upload.upload.collision();
+    // And the same derived shape every other **colliding** record naming this
+    // mesh already got, so a second instance does not copy the collision view's
+    // buffers and BVH (task #1430). One shape, however many bodies a record
+    // spawns: the entity's own scale is applied by Avian, per collider.
+    let collider = shared_collider(app, upload);
     if is_trigger_volume(role) {
         // A trigger volume: the same bundle with the rigid body left off, so the
         // derived collider is a standalone one. Spawned here rather than by
@@ -1295,13 +1395,13 @@ fn spawn_mesh_collider(
         return spawn_mesh_trigger_volume(
             app,
             handle,
-            collision,
+            collider,
             transform,
             static_world_membership(),
             binding,
         );
     }
-    let entity = spawn_mesh_body(app, transform, handle, collision, static_world_membership());
+    let entity = spawn_mesh_body(app, transform, handle, collider, static_world_membership());
     // The event opt-in is read from the collider's own entity, and the derived
     // collider lands there, so marking it now is enough.
     app.world_mut().entity_mut(entity).insert((
@@ -1314,7 +1414,7 @@ fn spawn_mesh_collider(
 }
 
 /// Spawns one mesh-derived **static body**: the collider-on-body layout, on an
-/// already-shared asset handle.
+/// already-shared asset handle and an already-shared derived shape.
 ///
 /// These are the components of
 /// [`crate::asset_stack::spawn_static_mesh_collider_on_body`], in its order,
@@ -1323,10 +1423,13 @@ fn spawn_mesh_collider(
 /// what sharing one asset between objects forbids — and `asset_stack` is F00-A's
 /// path, which this stage does not edit.
 ///
-/// The returned entity is the body, the presentation node and the constructor's
-/// entity at once, which is the collider-on-body rule: Avian's
-/// `init_collider_constructors` derives onto the entity holding the constructor,
-/// so the [`Collider`] lands on the body itself and swept CCD can resolve it.
+/// The returned entity is the body, the presentation node and the collider's own
+/// entity at once, which is the collider-on-body rule: the [`Collider`] the
+/// caller hands in is inserted here, so it lands on the body itself and swept
+/// CCD can resolve it. `collider` is a clone of the upload's one derived shape
+/// ([`shared_collider`]), so two bodies naming one mesh hold two `Collider`
+/// components over **one** `SharedShape`; Avian applies each entity's own scale
+/// to its own collider, so the shared unscaled shape never carries a pose.
 ///
 /// # Panics
 ///
@@ -1336,18 +1439,19 @@ fn spawn_mesh_body(
     app: &mut App,
     transform: Transform,
     handle: Handle<Mesh>,
-    collision: &ColliderMesh,
+    collider: Collider,
     membership: CollisionLayers,
 ) -> Entity {
-    // The collider constructor needs the `Mesh3d` it presents with on the
-    // *same* entity only when it derives *from* that mesh — this one does not:
-    // it carries the mesh's own collision view (task #1424), so the body, the
-    // presentation and the constructor are one entity for the collider-on-body
-    // rule rather than because they share an index buffer.
+    // The `Collider` is explicit rather than a constructor deriving from the
+    // `Mesh3d` beside it: it carries the mesh's own collision view (task #1424)
+    // and, when this record shares its mesh, the one derived shape every other
+    // colliding record already holds (task #1430). The body, the presentation
+    // and the collider are one entity for the collider-on-body rule rather than
+    // because they share an index buffer.
     //
     // The layers go on the entity rather than through
     // `ColliderConstructorHierarchy::with_default_layers`, which the hierarchy
-    // form has and this one does not: the derived `Collider` lands here, so the
+    // form has and this one does not: the `Collider` is on this entity, so the
     // `CollisionLayers` component beside it is the membership Avian reads.
     // The declared layer below is that *same* layer, and the two are bound here
     // rather than left to agree: this function takes the membership as a
@@ -1365,7 +1469,7 @@ fn spawn_mesh_body(
         .spawn((
             RigidBody::Static,
             Mesh3d(handle),
-            mesh_collider_constructor(collision),
+            collider,
             avian_layers(membership),
             BodyLayer(static_world_layer()),
             transform,
@@ -1399,16 +1503,17 @@ fn spawn_mesh_body(
 fn spawn_mesh_trigger_volume(
     app: &mut App,
     handle: Handle<Mesh>,
-    collision: &ColliderMesh,
+    collider: Collider,
     transform: Transform,
     membership: CollisionLayers,
     binding: WorldObjectBinding,
 ) -> Entity {
-    // The constructor carries the mesh's own collision view, so the derived
-    // collider lands here as a standalone one while the `Mesh3d` beside it is
-    // what draws. Every canonical triangle is kept, exactly as on the solid
-    // path: this changes where the collider sits and which index buffer it
-    // reads, never what the volume is for.
+    // The `Collider` carries the mesh's own collision view, so it sits here as a
+    // standalone one while the `Mesh3d` beside it is what draws. Every canonical
+    // triangle is kept, exactly as on the solid path: this changes where the
+    // collider sits and which index buffer it reads, never what the volume is
+    // for. Like the solid path it is a clone of the upload's one derived shape
+    // (task #1430), not a per-instance copy.
     //
     // The declared layer and the membership are bound together for the reason
     // [`spawn_mesh_body`] states.
@@ -1423,7 +1528,7 @@ fn spawn_mesh_trigger_volume(
             WorldColliderInstance::new(WorldCollisionRole::Sensor),
             binding,
             Mesh3d(handle),
-            mesh_collider_constructor(collision),
+            collider,
             avian_layers(membership),
             BodyLayer(static_world_layer()),
             Sensor,
@@ -1435,52 +1540,91 @@ fn spawn_mesh_trigger_volume(
         .id()
 }
 
-/// The constructor a mesh-derived world collider is spawned with: the mesh's
-/// **collision** view as an explicit triangle mesh.
+/// The preprocessing flag a mesh-derived world collider is built with: the one
+/// `TrimeshFromMesh` itself passes, so the derived shape differs from that old
+/// path in its **index buffer** and in nothing else — the stored positions are
+/// merged across duplicates the same way, no triangle is deleted, and the BVH
+/// is built the same way.
+const MESH_TRIMESH_FLAGS: TrimeshFlags = TrimeshFlags::MERGE_DUPLICATE_VERTICES;
+
+/// The collision view's buffers, as the physics backend takes them.
 ///
-/// This is task #1424's fix in one function. `ColliderConstructor::
-/// TrimeshFromMesh` derives from the `Mesh3d` on the entity — the buffer the
-/// renderer draws, which for a stored outline is the original's measured
-/// `D3DPT_TRIANGLEFAN` fan from corner 0. A fan triangle that folds against
-/// its own outline is a leaf parry's `Triangle::local_support_point` can tie
-/// all three corners on (it returns `c`), `closest_points_cuboid_triangle`
-/// trusts that pick as the closest vertex, and `compute_toi`'s bisection lands
-/// mid-window: a phantom time of impact at half a tick with no contact, which
-/// the solver pays for by clamping travel. Measured on the hangar-shell sweep,
-/// the corner-0 fan order phantom-hits a leaf no swept body should touch
-/// (`docs/findings/2026-10-14-f10-d-1-what-the-original-renderer-drew.md`,
-/// honest limits).
-///
-/// The constructor therefore names its own vertices and index triples, taken
-/// from [`WorldMesh::collision`] — `RawMesh::topology()`, the view
-/// `cs_formats` documents as the collision one — so render fidelity and
-/// collision geometry no longer share an index buffer. Nothing else changes:
-/// the same stored positions (canonicalised under
-/// [`crate::render::bevy_mesh::SUBNORMAL_POSITION_CLAIM`]), the same entity,
-/// the same layer, the same pose, and still every triangle the stored outline
-/// describes rather than a hull or a box of its corners.
-///
-/// [`WorldMesh::collision`]: super::meshes::WorldMesh::collision
-pub(crate) fn mesh_collider_constructor(collision: &ColliderMesh) -> ColliderConstructor {
-    // `TrimeshWithConfig` with the one flag `TrimeshFromMesh` itself passes,
-    // so the derived shape differs from the old path in its index buffer and
-    // in nothing else: the stored positions are merged across duplicates the
-    // same way, no triangle is deleted, and the BVH is built the same way.
-    //
-    // An empty view cannot reach here: `spawn_object` reports an object whose
-    // collision view carries no triangle as `SkipReason::
-    // CollisionTopologyUnavailable` instead of spawning it, because Avian's
-    // explicit `Trimesh*` constructors **panic** on an empty index buffer
-    // where `TrimeshFromMesh` returned `None`.
-    ColliderConstructor::TrimeshWithConfig {
-        vertices: collision
+/// The one place the [`ColliderMesh`] pair is converted, so the explicit
+/// [`Collider`] a world collider holds ([`mesh_collider`]) and the
+/// [`ColliderConstructor`] `asset_stack` still spawns with
+/// ([`mesh_collider_constructor`]) can never disagree about their geometry or
+/// their flags.
+fn mesh_collider_buffers(collision: &ColliderMesh) -> (Vec<Vec3>, Vec<[u32; 3]>) {
+    (
+        collision
             .vertices()
             .iter()
             .copied()
             .map(Vec3::from)
             .collect(),
-        indices: collision.indices().to_vec(),
-        flags: TrimeshFlags::MERGE_DUPLICATE_VERTICES,
+        collision.indices().to_vec(),
+    )
+}
+
+/// The [`Collider`] a mesh-derived world collider holds: the mesh's
+/// **collision** view as an explicit triangle mesh.
+///
+/// This is task #1424's fix, as a value rather than a constructor. `Collider`s
+/// built here are derived once per upload and cloned for every object naming it
+/// ([`shared_collider`], task #1430): a clone shares the [`SharedShape`], so N
+/// objects collide from one allocation instead of N copies of the collision
+/// view's buffers and BVH.
+///
+/// `ColliderConstructor::TrimeshFromMesh` would instead derive from the
+/// `Mesh3d` on the entity — the buffer the renderer draws, which for a stored
+/// outline is the original's measured `D3DPT_TRIANGLEFAN` fan from corner 0. A
+/// fan triangle that folds against its own outline is a leaf parry's
+/// `Triangle::local_support_point` can tie all three corners on (it returns
+/// `c`), `closest_points_cuboid_triangle` trusts that pick as the closest
+/// vertex, and `compute_toi`'s bisection lands mid-window: a phantom time of
+/// impact at half a tick with no contact, which the solver pays for by clamping
+/// travel. Measured on the hangar-shell sweep, the corner-0 fan order
+/// phantom-hits a leaf no swept body should touch
+/// (`docs/findings/2026-10-14-f10-d-1-what-the-original-renderer-drew.md`,
+/// honest limits).
+///
+/// The shape therefore names its own vertices and index triples, taken from
+/// [`WorldMesh::collision`] — `RawMesh::topology()`, the view `cs_formats`
+/// documents as the collision one — so render fidelity and collision geometry
+/// no longer share an index buffer. Nothing else changes: the same stored
+/// positions (canonicalised under
+/// [`crate::render::bevy_mesh::SUBNORMAL_POSITION_CLAIM`]), the same entity,
+/// the same layer, the same pose, and still every triangle the stored outline
+/// describes rather than a hull or a box of its corners.
+///
+/// [`WorldMesh::collision`]: super::meshes::WorldMesh::collision
+pub(crate) fn mesh_collider(collision: &ColliderMesh) -> Collider {
+    // An empty view cannot reach here: `spawn_object` reports an object whose
+    // collision view carries no triangle as `SkipReason::
+    // CollisionTopologyUnavailable` instead of spawning it, because Avian's
+    // explicit `Trimesh*` constructors **panic** on an empty index buffer
+    // where `TrimeshFromMesh` returned `None`.
+    let (vertices, indices) = mesh_collider_buffers(collision);
+    Collider::trimesh_with_config(vertices, indices, MESH_TRIMESH_FLAGS)
+}
+
+/// The constructor a caller outside the world spawn path
+/// ([`crate::asset_stack::spawn_static_mesh_collider_on_body`]) spawns a
+/// mesh-derived collider with: the mesh's **collision** view as an explicit
+/// triangle mesh.
+///
+/// It is the [`ColliderConstructor`]-typed twin of [`mesh_collider`], sharing
+/// its buffers and flags through [`mesh_collider_buffers`], and it exists
+/// because Avian derives a constructor's collider in `init_collider_constructors`
+/// while that helper's caller has no shared shape to hand it. The world spawn
+/// path instead builds the shape once per upload and inserts it directly
+/// (`spawn_mesh_body`, `spawn_mesh_trigger_volume`).
+pub(crate) fn mesh_collider_constructor(collision: &ColliderMesh) -> ColliderConstructor {
+    let (vertices, indices) = mesh_collider_buffers(collision);
+    ColliderConstructor::TrimeshWithConfig {
+        vertices,
+        indices,
+        flags: MESH_TRIMESH_FLAGS,
     }
 }
 
