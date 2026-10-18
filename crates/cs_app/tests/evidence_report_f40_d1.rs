@@ -1,0 +1,482 @@
+//! Evidence-report harness for task F40-D1 (Rally #660):
+//! `docs/contracts/CLI-EVIDENCE.md`, schema `schemas/evidence.schema.json`.
+//! Not named `accept_f40_d1_*`: it is not part of the acceptance suite and
+//! fails loudly when its inputs are missing.
+//!
+//! 1. `CS_GAME_DIR=<installation> cargo test --locked -p cs_app -- accept_f40_d1_ \
+//!    --include-ignored 2>&1 | tee private/evidence/F40-D1/cargo-test.log`
+//!    (note the exit status)
+//! 2. ```sh
+//!    CS_EVIDENCE_DIR=private/evidence/F40-D1 \
+//!    CS_CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}') \
+//!    CS_EVIDENCE_ARGV="cargo test --locked -p cs_app -- accept_f40_d1_ --include-ignored" \
+//!    CS_EVIDENCE_EXIT_CODE=<status> CS_EVIDENCE_REVIEWER=<identity> \
+//!    CS_GAME_DIR=<installation> \
+//!      cargo test --locked -p cs_app --test cs_app_tests_a -- --ignored \
+//!      evidence_report_f40_d1
+//!    ```
+//! 3. `python3 tools/validate_evidence.py private/evidence/F40-D1/acceptance.json \
+//!    --artifact-root private/evidence/F40-D1` — **without** `--require-pass`:
+//!    that flag rejects any report whose `unknowns` are non-empty, and this
+//!    task's unresolved items are the honest content of its evidence. The
+//!    harness itself asserts every other condition the flag checks: exit 0, a
+//!    nonempty selection, zero failures, every assertion `pass`.
+//! 4. Commit a copy as `docs/findings/evidence/F40-D1.json`.
+//!
+//! Every count and assertion status is **derived from the recorded log's
+//! prefixed test lines** — never from the per-binary `test result:`
+//! summaries and never hardcoded — and the installation/content fingerprints
+//! come from production discovery of `$CS_GAME_DIR`, the engine versions from
+//! `rustc` and `Cargo.lock`.
+
+use std::collections::VecDeque;
+use std::fs;
+use std::path::{Path, PathBuf};
+use std::process::Command;
+use std::time::{SystemTime, UNIX_EPOCH};
+
+use cs_assets::install::{content_fingerprint, discover, fingerprint};
+
+/// Every acceptance test the report must see pass.
+const ACCEPTANCE_PREFIX: &str = "accept_f40_d1_";
+
+/// The acceptance tests this task owns. The harness refuses to write a report
+/// that does not see **all** of them in the log: a selection that silently
+/// lost one (renamed, deleted, or skipped by `#[ignore]`) must not produce a
+/// green report.
+const EXPECTED: [&str; 6] = [
+    "accept_f40_d1_mpeg_playback::accept_f40_d1_synthetic_stream_decodes_video_and_audio_through_the_sources",
+    "accept_f40_d1_mpeg_playback::accept_f40_d1_decoded_frames_are_presented_against_the_master_clock",
+    "accept_f40_d1_mpeg_playback::accept_f40_d1_missing_file_is_a_media_failure_and_never_a_completion",
+    "accept_f40_d1_mpeg_playback::accept_f40_d1_a_file_that_is_not_an_mpeg_program_stream_names_the_missing_decoder",
+    "accept_f40_d1_mpeg_playback::accept_f40_d1_a_read_failure_is_a_decode_failure_and_open_errors_map_to_failures",
+    "accept_f40_d1_mpeg_playback::accept_f40_d1_retail_cinematics_match_the_measured_baseline",
+];
+
+/// The unresolved items this task records honestly (`docs/findings/
+/// 2026-10-15-m01-hud-objective-message-ids.md`, "What stays unknown"), each
+/// naming the affected content and what would resolve it. They stay in the
+/// report: the claim is `implemented`, and an unresolved issue is never
+/// deleted to satisfy a validator.
+const UNKNOWNS: [&str; 4] = [
+    "the decoded frames and samples are not yet consumed by the renderer and the audio device: \
+     this stage delivers the sources only; affected content is every retail cinematic's actual \
+     playback and its audio/video sync on a real device; resolved by F40-D4 (#663)",
+    "pixel and sample fidelity against an independent decoder is not measured here: slopmpeg is \
+     a port of PL_MPEG with limited human review, its output was compared with PL_MPEG's hashes \
+     (its own regression suite) and its picture counts with the bitstream, not with ffmpeg \
+     output (no ffmpeg on this host); affected content is all ten cinematics' pixels and \
+     samples; resolved by a frame-hash comparison against ffmpeg or an owner review",
+    "the decoder's duration is the video stream's last timestamp and differs from ffprobe's \
+     container duration by up to 0.3 s (audio tail); which one the original used for end of \
+     playback is unmeasured; affected content is the end-of-video moment of each cinematic; \
+     resolved by F40-D4's playback evidence",
+    "the original decoder's behavior on the last frames (slopmpeg returns every coded picture; \
+     PL_MPEG dropped the last one in nine files) was not compared with the original engine; \
+     affected content is the final frame of nine cinematics; resolved by an original-run capture",
+];
+
+#[test]
+#[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_EVIDENCE_REVIEWER, CS_GAME_DIR"]
+fn evidence_report_f40_d1_writes_the_acceptance_report() {
+    let evidence_dir = workspace_path(&env_var("CS_EVIDENCE_DIR"));
+    let candidate_tree = env_var("CS_CANDIDATE_TREE");
+    let argv: Vec<String> = env_var("CS_EVIDENCE_ARGV")
+        .split_whitespace()
+        .map(str::to_owned)
+        .collect();
+    assert!(
+        !argv.is_empty(),
+        "CS_EVIDENCE_ARGV must hold the acceptance command"
+    );
+    let exit_code: i32 = env_var("CS_EVIDENCE_EXIT_CODE")
+        .parse()
+        .expect("CS_EVIDENCE_EXIT_CODE must be the exit status of the acceptance run");
+    let reviewer = env_var("CS_EVIDENCE_REVIEWER");
+    let game_dir = PathBuf::from(env_var("CS_GAME_DIR"));
+
+    assert_eq!(
+        candidate_tree,
+        git(&["rev-parse", "HEAD^{tree}"]),
+        "CS_CANDIDATE_TREE must be the tree of the tested commit"
+    );
+
+    // The recorded acceptance run: its counts and per-test results.
+    let log_path = evidence_dir.join("cargo-test.log");
+    let log = fs::read_to_string(&log_path)
+        .unwrap_or_else(|error| panic!("cannot read {}: {error}", log_path.display()));
+    let suite = parse_suite(&log);
+    assert!(
+        suite.passed > 0 && !suite.assertions.is_empty(),
+        "the acceptance log was not understood: {suite:?}"
+    );
+    for expected in EXPECTED {
+        let seen = suite
+            .assertions
+            .iter()
+            .find(|(name, _)| name == expected)
+            .unwrap_or_else(|| panic!("the acceptance log never ran {expected}"));
+        assert_eq!(
+            seen.1, "pass",
+            "{expected} must pass in the recorded acceptance run"
+        );
+    }
+
+    // The source fingerprints, from production discovery of the installation
+    // the retail acceptance test read.
+    let found = discover(&game_dir).expect("production discovery reads the installation");
+    let install_sha256 = fingerprint(&found.manifest).to_hex();
+    let content_sha256 = content_fingerprint(&found.manifest).to_hex();
+
+    let artifacts = vec![artifact(&log_path, "log", &evidence_dir)];
+    let engine = Engine {
+        rust: rustc_version(),
+        bevy: locked_version("bevy"),
+        avian: locked_version("avian3d"),
+    };
+    let report = format!(
+        "{{\n \"schema_version\": 1,\n \"task_id\": \"F40-D1\",\n \"candidate_tree\": {},\n \"engine\": {},\n \"created_at\": {},\n \"command\": {{\"argv\": {}, \"cwd\": {}, \"exit_code\": {}}},\n \"source\": {{\"install_sha256\": {}, \"content_sha256\": {}}},\n \"seed\": 0,\n \"ticks\": {{\"start\": 0, \"end\": 0}},\n \"overrides\": [],\n \"capabilities\": [\"synthetic\", \"retail\"],\n \"tests\": {{\"discovered\": {}, \"executed\": {}, \"passed\": {}, \"failed\": {}, \"ignored\": {}}},\n \"assertions\": [{}],\n \"artifacts\": [{}],\n \"unknowns\": {},\n \"review\": {{\"identity\": {}, \"method\": {}}},\n \"claim\": \"implemented\"\n}}\n",
+        jstr(&candidate_tree),
+        engine_json(&engine),
+        jstr(&iso_utc_now()),
+        str_array(&argv),
+        jstr(&git(&["rev-parse", "--show-toplevel"])),
+        exit_code,
+        jstr(&install_sha256),
+        jstr(&content_sha256),
+        suite.discovered,
+        suite.executed,
+        suite.passed,
+        suite.failed,
+        suite.ignored,
+        assertion_array(&suite.assertions),
+        artifact_array(&artifacts),
+        str_array(
+            &UNKNOWNS
+                .iter()
+                .map(|unknown| (*unknown).to_owned())
+                .collect::<Vec<_>>()
+        ),
+        jstr(&reviewer),
+        jstr(review_method()),
+    );
+    let out = evidence_dir.join("acceptance.json");
+    fs::write(&out, &report).expect("write acceptance.json");
+    assert!(
+        suite.failed == 0 && suite.executed == suite.passed && exit_code == 0,
+        "the acceptance run failed (exit {exit_code}, {} failed): the report must NOT validate",
+        suite.failed
+    );
+    println!("wrote {}", out.display());
+}
+
+/// How this report was produced, with every claim tied to a real run: the
+/// recorded selection log, production discovery of `$CS_GAME_DIR`, and the
+/// versions `rustc`/`Cargo.lock` report on this checkout.
+fn review_method() -> &'static str {
+    "Acceptance suite run locally with the retail capability: step 1 ran the task's own \
+     selection (prefix accept_f40_d1_) through cargo on this tree, with the retail test decoding \
+     all ten cinematics from $CS_GAME_DIR through the production sources. This harness derives \
+     every count and assertion status from the recorded log's prefixed test lines (never from the \
+     per-binary summaries), the installation/content fingerprints from production discovery of \
+     $CS_GAME_DIR, and the engine versions from rustc and Cargo.lock. unknowns lists the four \
+     unresolved items, each naming its affected content; validate_evidence.py therefore runs \
+     without --require-pass while every other condition that flag checks is asserted here. Claim \
+     is implemented: nothing here observed the original game running, no GPU frame and no human \
+     play, and no agent review replaces the owner's approval"
+}
+
+// ---------------------------------------------------------------- inputs ---
+
+fn env_var(name: &str) -> String {
+    std::env::var(name).unwrap_or_else(|_| {
+        panic!(
+            "{name} is not set: this harness only runs through the sequence in its module doc \
+             (crates/cs_app/tests/evidence_report_f40_d1.rs)"
+        )
+    })
+}
+
+/// Cargo runs a test binary with its working directory set to the *package*
+/// root, so a path like `private/evidence/F40-D1` written relative
+/// to the workspace root in the module doc must be re-anchored here.
+fn workspace_path(as_described: &str) -> PathBuf {
+    let path = PathBuf::from(as_described);
+    if path.is_absolute() {
+        return path;
+    }
+    Path::new(&git(&["rev-parse", "--show-toplevel"])).join(path)
+}
+
+fn git(args: &[&str]) -> String {
+    let output = Command::new("git").args(args).output().expect("git runs");
+    assert!(
+        output.status.success(),
+        "git {:?} failed: {}",
+        args,
+        String::from_utf8_lossy(&output.stderr)
+    );
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+fn rustc_version() -> String {
+    let output = Command::new("rustc")
+        .arg("--version")
+        .output()
+        .expect("rustc runs");
+    assert!(output.status.success(), "rustc --version failed");
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
+}
+
+/// The locked version of one `Cargo.lock` package: read, never asserted from
+/// memory.
+fn locked_version(package: &str) -> String {
+    let lock_path = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("crates/")
+        .parent()
+        .expect("workspace root")
+        .join("Cargo.lock");
+    let lock = fs::read_to_string(&lock_path)
+        .unwrap_or_else(|error| panic!("read {}: {error}", lock_path.display()));
+    let mut wanted = false;
+    for line in lock.lines() {
+        let line = line.trim();
+        if line == "[[package]]" {
+            wanted = false;
+        } else if let Some(name) = line.strip_prefix("name = \"") {
+            wanted = name.trim_end_matches('"') == package;
+        } else if let Some(version) = line.strip_prefix("version = \"")
+            && wanted
+        {
+            return version.trim_end_matches('"').to_owned();
+        }
+    }
+    panic!("package {package:?} is not in {}", lock_path.display());
+}
+
+fn iso_utc_now() -> String {
+    let since = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("the clock is after the epoch")
+        .as_secs();
+    let days = (since / 86_400) as i64;
+    let (year, month, day) = civil_from_days(days);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}:{:02}Z",
+        (since % 86_400) / 3600,
+        (since % 3600) / 60,
+        since % 60
+    )
+}
+
+/// Howard Hinnant's `civil_from_days`: days since 1970-01-01 to (y, m, d).
+fn civil_from_days(days: i64) -> (i64, u32, u32) {
+    let shifted = days + 719_468;
+    let era = shifted.div_euclid(146_097);
+    let day_of_era = shifted.rem_euclid(146_097);
+    let year_of_era =
+        (day_of_era - day_of_era / 1460 + day_of_era / 36_524 - day_of_era / 146_096) / 365;
+    let year = year_of_era + era * 400;
+    let day_of_year = day_of_era - (365 * year_of_era + year_of_era / 4 - year_of_era / 100);
+    let shifted_month = (5 * day_of_year + 2) / 153;
+    let day = (day_of_year - (153 * shifted_month + 2) / 5 + 1) as u32;
+    let month = if shifted_month < 10 {
+        shifted_month + 3
+    } else {
+        shifted_month - 9
+    } as u32;
+    (if month <= 2 { year + 1 } else { year }, month, day)
+}
+
+// ---------------------------------------------------------- log parsing ---
+
+/// What the recorded `cargo test` output says actually happened.
+#[derive(Debug, Default)]
+struct Suite {
+    discovered: u64,
+    executed: u64,
+    passed: u64,
+    failed: u64,
+    ignored: u64,
+    /// `(test name, "pass" | "fail" | "unknown")`, in log order, deduplicated.
+    assertions: Vec<(String, &'static str)>,
+}
+
+/// Extracts the per-test results of the `accept_f40_d1_` tests
+/// from a recorded `cargo test` output.
+///
+/// The counts come from the **prefixed test lines**, not from the
+/// `test result:` summaries: a summary aggregates every test binary cargo ran,
+/// so reading it would report hundreds of unrelated tests as this task's
+/// acceptance selection. A prefixed test that was skipped is recorded with the
+/// schema's `unknown` status rather than counted as a pass, so a report can
+/// never claim an assertion it did not run.
+fn parse_suite(log: &str) -> Suite {
+    let mut suite = Suite::default();
+    let mut pending: VecDeque<String> = VecDeque::new();
+    for line in log.lines() {
+        let trimmed = line.trim_start();
+        if pending.front().is_some()
+            && let Some(status) = finished(trimmed)
+        {
+            let name = pending.pop_front().expect("pending test");
+            record(&mut suite, name, status);
+            continue;
+        }
+        let mut cursor = trimmed;
+        while let Some(position) = cursor.find("test ") {
+            let after = &cursor[position + 5..];
+            let Some(separator) = after.find(" ... ") else {
+                break;
+            };
+            let name = after[..separator].to_owned();
+            let tail = after[separator + 5..].trim();
+            cursor = &after[separator + 5..];
+            if !carries_prefix(&name) {
+                continue;
+            }
+            match finished(tail) {
+                Some(status) => record(&mut suite, name, status),
+                None => pending.push_back(name),
+            }
+        }
+    }
+    suite.assertions.dedup_by(|left, right| left.0 == right.0);
+    suite.passed = count(&suite, "pass");
+    suite.failed = count(&suite, "fail");
+    suite.ignored = count(&suite, "unknown");
+    suite.executed = suite.passed + suite.failed;
+    suite.discovered = suite.passed + suite.failed + suite.ignored;
+    suite
+}
+
+/// Whether a libtest name is one of this task's tests.
+///
+/// The prefix is matched on the name's **last** path segment, because libtest
+/// prints an in-module unit test under its module path. Matching the whole
+/// name instead would silently drop every in-module acceptance test from
+/// `discovered`, from the assertion list and from the log.
+fn carries_prefix(name: &str) -> bool {
+    name.rsplit("::")
+        .next()
+        .is_some_and(|segment| segment.starts_with(ACCEPTANCE_PREFIX))
+}
+
+/// The libtest result word at the head of a test's tail line.
+fn finished(tail: &str) -> Option<&'static str> {
+    match tail.split_whitespace().next() {
+        Some("ok") => Some("pass"),
+        Some("FAILED") => Some("fail"),
+        Some("ignored") => Some("unknown"),
+        _ => None,
+    }
+}
+
+fn count(suite: &Suite, status: &str) -> u64 {
+    suite
+        .assertions
+        .iter()
+        .filter(|(_, seen)| *seen == status)
+        .count() as u64
+}
+
+fn record(suite: &mut Suite, name: String, status: &'static str) {
+    if suite.assertions.iter().any(|(seen, _)| *seen == name) {
+        return;
+    }
+    suite.assertions.push((name, status));
+}
+
+// ------------------------------------------------------------- artifacts ---
+
+/// One referenced artifact: hashed here with the production SHA-256 (the
+/// validator re-hashes it with `hashlib` independently).
+fn artifact(source: &Path, kind: &str, evidence_dir: &Path) -> (String, String, String) {
+    let name = source
+        .file_name()
+        .expect("artifact has a file name")
+        .to_string_lossy()
+        .into_owned();
+    let target = evidence_dir.join(&name);
+    if source != target {
+        fs::copy(source, &target).unwrap_or_else(|error| {
+            panic!("copy {} -> {}: {error}", source.display(), target.display())
+        });
+    }
+    let bytes =
+        fs::read(&target).unwrap_or_else(|error| panic!("read {}: {error}", target.display()));
+    (
+        name,
+        cs_assets::install::sha256(&bytes).to_hex(),
+        kind.to_owned(),
+    )
+}
+
+// ------------------------------------------------------------- rendering ---
+
+struct Engine {
+    rust: String,
+    bevy: String,
+    avian: String,
+}
+
+fn engine_json(engine: &Engine) -> String {
+    format!(
+        "{{\"rust\": {}, \"bevy\": {}, \"avian\": {}}}",
+        jstr(&engine.rust),
+        jstr(&engine.bevy),
+        jstr(&engine.avian)
+    )
+}
+
+fn assertion_array(assertions: &[(String, &'static str)]) -> String {
+    let items: Vec<String> = assertions
+        .iter()
+        .map(|(name, status)| {
+            format!(
+                "{{\"id\": {}, \"status\": {status:?}, \"evidence\": [\"cargo-test.log\"]}}",
+                jstr(name)
+            )
+        })
+        .collect();
+    items.join(", ")
+}
+
+fn artifact_array(artifacts: &[(String, String, String)]) -> String {
+    let items: Vec<String> = artifacts
+        .iter()
+        .map(|(name, digest, kind)| {
+            format!(
+                "{{\"path\": {}, \"sha256\": {digest:?}, \"kind\": {kind:?}}}",
+                jstr(name)
+            )
+        })
+        .collect();
+    items.join(", ")
+}
+
+fn str_array(items: &[String]) -> String {
+    let quoted: Vec<String> = items.iter().map(|item| jstr(item)).collect();
+    format!("[{}]", quoted.join(", "))
+}
+
+/// A JSON string literal: quoted and escaped, so no report field can break out
+/// of its string.
+fn jstr(value: &str) -> String {
+    let mut out = String::with_capacity(value.len() + 2);
+    out.push('"');
+    for character in value.chars() {
+        match character {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            other if (other as u32) < 0x20 => out.push_str(&format!("\\u{:04x}", other as u32)),
+            other => out.push(other),
+        }
+    }
+    out.push('"');
+    out
+}
