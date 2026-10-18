@@ -100,7 +100,7 @@ a drain never resets, and the check reads that
 still requires at least two rounds through the session during the held second.
 
 **Run of record.** The owner-command smoke on this branch's rebased head (the
-2026-10-18 rebase onto `5be476b32`), on this machine (Apple M3 Pro, Metal),
+2026-10-18 rebase onto `98fb34a20`), on this machine (Apple M3 Pro, Metal),
 the same commanded run `docs/PLAYTEST.md` documents:
 
 ```sh
