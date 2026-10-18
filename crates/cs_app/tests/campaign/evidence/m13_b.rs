@@ -10,10 +10,11 @@ use super::*;
 const RETAIL_TESTS_M13_B: &[&str] = &[
     "accept_m13_b_the_control_program_is_the_member_that_declares_the_blocks",
     "accept_m13_b_every_directive_m13_spells_has_a_disposition_and_none_is_refused",
-    "accept_m13_b_the_sheet_priorities_resolve_to_measured_operations_and_none_changes_allegiance",
-    "accept_m13_b_the_damage_ladder_and_the_dependency_gates_are_record_data",
-    "accept_m13_b_every_actor_the_record_names_resolves_in_the_shipped_data_but_one",
-    "accept_m13_b_the_ai_net_actor_is_declared_by_no_archive_in_the_installation",
+    "accept_m13_b_the_sheet_priorities_resolve_to_measured_operations_and_the_allegiance_key_is_set_ai_team",
+    "accept_m13_b_the_allegiance_transition_is_spelled_by_set_ai_team_and_set_ai_net",
+    "accept_m13_b_the_danger_zone_course_and_the_ace_wake_graph_are_record_data",
+    "accept_m13_b_every_actor_the_record_names_resolves_in_the_shipped_data",
+    "accept_m13_b_the_ai_net_node_is_declared_by_the_mission_and_the_chapter_world",
     "accept_m13_b_the_terminal_blocks_are_gated_and_every_address_is_in_range",
     "accept_m13_b_the_two_outcomes_have_disjoint_prerequisites_and_the_rest_is_not_mandatory",
     "accept_m13_b_every_call_binds_every_condition_lowers_and_m13s_record_completes",
@@ -29,9 +30,8 @@ const SYNTHETIC_TESTS_M13_B: &[&str] = &[
 
 /// Evidence-report harness for task M13-B: M13's mission-specific
 /// compatibility gaps. Same sequence as the M06-B and M08-B reports; it
-/// records the `accept_m13_b_` tests, the fully lowering record they pin and
-/// the one measured gap they record (`britkestrel_1`), and claims
-/// `implemented` only.
+/// records the `accept_m13_b_` tests and the fully lowering record they pin on
+/// the corrected archive `ZBD/C2/M03/zrdr.zbd`, and claims `implemented` only.
 ///
 /// `CS_EVIDENCE_REVIEWER` fills `review.identity` whole, so whoever runs the
 /// harness — the implementing agent at hand-over or the reviewing agent on the
@@ -162,22 +162,24 @@ fn evidence_report_m13_b_writes_the_acceptance_report() {
         jstr(
             "acceptance suite run locally with the retail capability; every field is derived \
              from the recorded log and production discovery of $CS_GAME_DIR. The suite pins M13's \
-             measured control program (objectives.zrd of ZBD/C3/M03/zrdr.zbd: 38 blocks, 178 \
-             directive sites, 36 keys, a fully measured vocabulary) through the retail control \
+             measured control program (objectives.zrd of ZBD/C2/M03/zrdr.zbd: 57 blocks, 209 \
+             directive sites, 22 keys, a fully measured vocabulary) through the retail control \
              census, the production control-program binding and M13-A's mission binding, and \
-             locates the sheet's three regression priorities in the record: the four-stage damage \
-             ladder over the same twelve pirate-zeppelin engines under rising thresholds 3, 5, 7 \
-             and 10 with each stage entering the next only through its own nap, plus the two \
-             TICK_DEPENDS_ON_OBJ gates that lower as the dependency's ObjectiveAwake conjunct; \
-             the measured absence of any allegiance-changing directive beside the actor and node \
-             resolution table that leaves the SET_AI_NET actor britkestrel_1 declared by no \
-             archive in the installation (its node operand M3BritAce is declared by the chapter \
-             world's neindex.zrd); and the two latches' disjoint prerequisite closures. Both \
-             terminal gates are pinned with all 41 spelled block addresses in range, and M13's \
-             lowering is complete: every call binds, every condition lowers, \
-             MissionProgram::validate accepts and M13's census row is complete while the campaign \
-             stays unready. Claim is implemented only; no mission was played, no original \
-             executable was run, nothing is verified_original, and the measured gap and the \
+             locates the sheet's three regression priorities in the record: the danger-zone \
+             course blocks 17-24 spell (dzpath1->dzpath2->dzpath3->dzpath5->dzpath4->dzpath6->\
+             dzpath7->dzpath9) with its add/remove target hand-off, each step entering the next \
+             only through its own spelled wake; the ace chain of 17 DEDG group depletions whose \
+             last phase naps the failure latch; the allegiance transition block 3 really spells, \
+             one SET_AI_TEAM assigning the six hafury_* flight members teams 2/1/2/2/1/2 and one \
+             SET_AI_NET pointing each of them at the node M3Aces (declared by the chapter world's \
+             neindex.zrd, not by any member of M13's archive); and the two latches' disjoint \
+             prerequisite closures. Both terminal gates are pinned with all 151 spelled block \
+             addresses in range, and M13's lowering is complete: every call binds, every \
+             condition lowers, MissionProgram::validate accepts and M13's census row is complete \
+             while the campaign stays unready. The pins were re-derived from ZBD/C2/M03 after the \
+             corrected campaign layout (Rally #1600; the earlier pins measured ZBD/C3/M03, which \
+             the corrected layout binds to work order M03). Claim is implemented only; no mission \
+             was played, no original executable was run, nothing is verified_original, and the \
              unmeasured runtime halves are recorded in \
              docs/findings/2026-10-10-m13-b-compatibility-gaps.md. Validated with \
              tools/validate_evidence.py --require-pass"

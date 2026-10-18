@@ -8,35 +8,33 @@
 //! pins what is **different** at M13, together with the three regression
 //! priorities the sheet names:
 //!
-//! * M13's control program is `objectives.zrd` with 38 numbered blocks and 178
-//!   directive sites, selected by the content rule and not by its name (three
-//!   members of the archive are longer than it);
-//! * all 36 of its directive keys have a disposition — 2 terminal outcomes and
-//!   34 with a measured effect, **none refused** — and the record **lowers
+//! * M13's control program is `objectives.zrd` with 57 numbered blocks and 209
+//!   directive sites, selected by the content rule and not by its name (one
+//!   member is longer than it);
+//! * all 22 of its directive keys have a disposition — 2 terminal outcomes and
+//!   20 with a measured effect, **none refused** — and the record **lowers
 //!   completely**: every site binds, every condition lowers, the program
 //!   validates and M13's census row is complete;
-//! * **ordered traversal** is the damage ladder: blocks 3–6 spell the same
-//!   twelve `piratezep` engine chains under rising `INACTIVE_COMPLETION_COUNT`
-//!   thresholds (3, 5, 7, 10), each stage entering the next only through that
-//!   stage's nap, and the two `TICK_DEPENDS_ON_OBJ` gates (15 → 19, 21 → 29)
-//!   lower into the program as the dependency's own `ObjectiveAwake`
-//!   conjunct — order is record data, never a timing guess;
-//! * **allegiance transition** has **no directive**: no key of M13's vocabulary
-//!   changes an owner, a faction, a team or an attitude. What the record does
-//!   spell is `SET_AI_NET` (block 25, `britkestrel_1` → node `M3BritAce`) and
-//!   `WAKEUP_ENEMIES` (block 26, `britpeace_1..4`), and the stage measures
-//!   where each name is declared: every other actor the record names resolves
-//!   in a member of the archive, while `britkestrel_1` is declared by
-//!   **no archive in the installation** — that gap is recorded, not worked
-//!   around — and the whole record is covered, not only the seventeen-name
-//!   table: of the 63 distinct texts its sites spell, all but three
-//!   (`britkestrel_1` and the two `MSG_…` operands of the `IDENTITY` sites)
-//!   are declared somewhere outside the control member that spells them;
-//! * **optional versus mandatory outcome** is the two latches: `INSTANTLOSS`
-//!   (block 7) and `INSTANTWIN` (block 16), each dormant with no timed wake and
-//!   each named by exactly one nap, with disjoint prerequisite closures; the 20
-//!   blocks outside both closures are named by neither, and nothing here calls
-//!   any of them a reward (M13-A binds no stunt or reward ids).
+//! * **ordered traversal** is the danger-zone course: blocks 17–24 spell the
+//!   `dzpath1→dzpath2→dzpath3→dzpath5→dzpath4→dzpath6→dzpath7→dzpath9`
+//!   flythrough with an add/remove target hand-off at each step, each block
+//!   entering the next only through its own `WAKE_OBJECTIVE_WHEN_I_COMPLETE`
+//!   edge (34–37 are the optional timed short-cuts, 38–41 their reciprocal
+//!   timed kills), and the ace chain (blocks 6→27 then 28–33) is a run of
+//!   `DEDG` group depletions whose only terminal edge is the failure latch;
+//! * **allegiance transition** **is** spelled here, unlike the record this
+//!   stage once measured: block 3's `SET_AI_TEAM` assigns the six `hafury_*`
+//!   flight members teams 2/1/2/2/1/2 and block 3's `SET_AI_NET` points each
+//!   of them at the node `M3Aces` (declared by the chapter world's
+//!   `neindex.zrd`, not by any member of M13's archive), and
+//!   `WAKEUP_ENEMIES` wakes the two `devastator_*` and three `wingman_*`
+//!   friendly aircraft;
+//! * **optional versus mandatory outcome** is the two latches: `INSTANTWIN`
+//!   (block 8, on the zeppelin's `ANIM_STATE`) and `INSTANTLOSS` (block 49,
+//!   reached from the six ace depletions), each dormant with no timed wake and
+//!   each named by a disjoint prerequisite closure; the 32 blocks outside both
+//!   closures are named by neither, and nothing here calls any of them a reward
+//!   (M13-A binds no stunt or reward ids).
 //!
 //! A lowered program is **not** a played mission: no playthrough, difficulty,
 //! media or presentation row is covered (that is M13-C, with `human_play`), and
@@ -44,6 +42,12 @@
 //! priorities are runtime observations that stay unmeasured here. The measured
 //! unknowns are written up in
 //! `docs/findings/2026-10-10-m13-b-compatibility-gaps.md`.
+//!
+//! The pins below were re-derived from `ZBD/C2/M03/zrdr.zbd` — the archive
+//! `missions/bindings/M13.json` names after the corrected campaign layout
+//! (`docs/findings/2026-10-17-m01-archive-decision.md`, re-pinned by Rally
+//! #1600). The earlier pins measured `ZBD/C3/M03/zrdr.zbd`, which the corrected
+//! layout binds to work order M03.
 //!
 //! The retail tests are `#[ignore = "requires CS_GAME_DIR"]`; the synthetic
 //! tests run in CI.
@@ -67,42 +71,42 @@ use cs_content::mission_control::{
 use cs_content::objectives::objective_block_number;
 use cs_content::stunts::{ZrdValue, decode_zrd, objective_record, zrd_flat_fields};
 use cs_formats::script_raw::discover_container;
-use cs_script::ir::{Condition, MemberName, TravelersAnchor};
+use cs_script::ir::{AnimationState, Condition, MemberName, TravelersAnchor};
 use cs_types::content::{ContentId, ContentKind};
 use cs_types::install::RelativePath;
 
 use crate::campaign::common::load_inventory;
 
 /// The census row label of the mission (F13-B's mission-scope rule).
-const MISSION: &str = "zbd/c3/m03";
+const MISSION: &str = "zbd/c2/m03";
 /// The reader archive the installation ships for M13 — the program span
 /// `missions/bindings/M13.json` cites.
-const CONTAINER: &str = "ZBD/C3/M03/zrdr.zbd";
+const CONTAINER: &str = "ZBD/C2/M03/zrdr.zbd";
 /// SHA-256 of that whole archive, from production discovery.
-const CONTAINER_SHA256: &str = "37a227cce5d6fc99a12481ecb27e5e8b640bfeca1a9cf9c48c630bf9e4fd6efe";
+const CONTAINER_SHA256: &str = "a72c66b14ea74055e3cee09967218971f7e1fc1fcd357d2e505d769953295886";
 /// The archive's length in bytes — M13-A's own source span.
-const CONTAINER_LENGTH: u64 = 118_635;
+const CONTAINER_LENGTH: u64 = 41_769;
 /// The member the measured rule chose.
 const CONTROL_MEMBER: &str = "objectives.zrd";
 /// SHA-256 of the control member's own bytes.
-const CONTROL_SHA256: &str = "4a691f0cd60928c9a6b350411fae52e96fd16bd692fde3b6cb58b02ce5bee400";
+const CONTROL_SHA256: &str = "b0db161f97772ab6f4c4ee8ada8a554169b9cd0412bd88abc4058848d130531e";
 /// The control member's first byte inside the archive.
-const CONTROL_OFFSET: u64 = 12_552;
+const CONTROL_OFFSET: u64 = 17_212;
 /// The control member's length in bytes.
-const CONTROL_LENGTH: u64 = 11_773;
-/// The chapter-3 world-group archive, which carries the node list the record's
+const CONTROL_LENGTH: u64 = 13_980;
+/// The chapter-2 world-group archive, which carries the node list the record's
 /// one `SET_AI_NET` site points at.
-const WORLD_CONTAINER: &str = "ZBD/C3/zrdr.zbd";
+const WORLD_CONTAINER: &str = "ZBD/C2/zrdr.zbd";
 /// The numbered blocks of the control member.
-const BLOCKS: u32 = 38;
+const BLOCKS: u32 = 57;
 /// The directive sites of the control member.
-const SITES: u32 = 178;
+const SITES: u32 = 209;
 /// The distinct directive keys of the control member.
-const KEYS: usize = 36;
+const KEYS: usize = 22;
 /// The distinct text nodes the record's directive sites spell — actors, engine
 /// and state chains, keywords, sound and message operands. Full-coverage claims
 /// below are measured against this count.
-const NAMED_TEXTS: usize = 63;
+const NAMED_TEXTS: usize = 90;
 
 fn game_dir() -> PathBuf {
     PathBuf::from(std::env::var("CS_GAME_DIR").unwrap_or_else(|_| {
@@ -273,7 +277,7 @@ fn block(blocks: &[(u32, Vec<Directive>)], number: u32) -> &[Directive] {
         .1
 }
 
-/// `(predecessor, target)` of every completion edge — a wake or a nap — plus
+/// `(predecessor, target)` of every completion edge — a wake or a nap plus
 /// `(gate target, dependency)` for every `TICK_DEPENDS_ON_OBJ`.
 ///
 /// A **kill** is deliberately not an edge here: killing a block prevents it, it
@@ -437,13 +441,13 @@ fn installation_texts_outside_control() -> BTreeSet<String> {
 
 /// **The control program is the member that declares the numbered blocks.**
 ///
-/// Of the 16 members of M13's reader archive exactly one declares numbered
-/// `OBJECTIVE<N>` blocks: it is the eighth member, and the three members that
-/// are longer than it (`sub_movement`, `submarine`, `destroy_cargozep`) declare
-/// none, so neither size nor position picks it. The blocks and sites the census
-/// measures equal an independent walk of the same document, the archive is the
-/// program span M13-A bound, and the production control binding reaches the
-/// same member, span and digests through its own walk.
+/// Of the 13 members of M13's reader archive exactly one declares numbered
+/// `OBJECTIVE<N>` blocks: it is the eighth member, and the one member that is
+/// longer than it (`aiv.zrd`) declares none, so neither size nor position picks
+/// it. The blocks and sites the census measures equal an independent walk of
+/// the same document, the archive is the program span M13-A bound, and the
+/// production control binding reaches the same member, span and digests through
+/// its own walk.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m13_b_the_control_program_is_the_member_that_declares_the_blocks() {
@@ -453,7 +457,7 @@ fn accept_m13_b_the_control_program_is_the_member_that_declares_the_blocks() {
         row.container_sha256, CONTAINER_SHA256,
         "the reader archive is the program M13-A bound"
     );
-    assert_eq!(row.members.len(), 16);
+    assert_eq!(row.members.len(), 13);
 
     let with_blocks: Vec<&str> = row
         .members
@@ -489,8 +493,8 @@ fn accept_m13_b_the_control_program_is_the_member_that_declares_the_blocks() {
         .collect();
     assert_eq!(
         longer,
-        ["sub_movement.zrd", "submarine.zrd", "destroy_cargozep.zrd"],
-        "size is not the rule: the three longest members are not the control member"
+        ["aiv.zrd"],
+        "size is not the rule: the longest member is not the control member"
     );
 
     let record = row.record().expect("M13 has a measured control program");
@@ -512,7 +516,7 @@ fn accept_m13_b_the_control_program_is_the_member_that_declares_the_blocks() {
     assert_eq!(
         numbers,
         (1..=BLOCKS).collect::<Vec<_>>(),
-        "numbered 1..=38, no gaps"
+        "numbered 1..=57, no gaps"
     );
     let walked: usize = blocks.iter().map(|(_, directives)| directives.len()).sum();
     assert_eq!(walked as u32, record.sites(), "the independent walk agrees");
@@ -528,8 +532,8 @@ fn accept_m13_b_the_control_program_is_the_member_that_declares_the_blocks() {
     // The production binding and the census must not disagree about the
     // mission, the program, the member or the record.
     let bound = control_binding();
-    assert_eq!(bound.mission.as_str(), "mission/ch1-m03");
-    assert_eq!(bound.program_id.as_str(), "script/c3-m03-zrdr");
+    assert_eq!(bound.mission.as_str(), "mission/ch3-m03");
+    assert_eq!(bound.program_id.as_str(), "script/c2-m03-zrdr");
     assert_eq!(bound.program_asset, CONTAINER);
     assert_eq!(bound.program_length, CONTAINER_LENGTH);
     assert_eq!(bound.program_sha256, row.container_sha256);
@@ -583,9 +587,9 @@ fn accept_m13_b_the_control_program_is_the_member_that_declares_the_blocks() {
 /// refused.**
 ///
 /// Two keys are terminal outcomes (`INSTANTWIN`, `INSTANTLOSS`, one bare site
-/// each), the other 34 have a measured effect, and no key is Unmeasured. The
+/// each), the other 20 have a measured effect, and no key is Unmeasured. The
 /// sites are accounted for: the keys' sites sum to the record's, and the sorted
-/// vocabulary is exactly the 36 keys the archive spells — so a key that appears,
+/// vocabulary is exactly the 22 keys the archive spells — so a key that appears,
 /// disappears or silently loses its meaning fails here.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
@@ -616,7 +620,7 @@ fn accept_m13_b_every_directive_m13_spells_has_a_disposition_and_none_is_refused
         refused.is_empty(),
         "M13's vocabulary is fully measured: {refused:?}"
     );
-    assert_eq!(measured, 34);
+    assert_eq!(measured, 20);
     let sites: u32 = record.keys().iter().map(|key| key.sites).sum();
     assert_eq!(sites, SITES, "no site is dropped from the accounting");
 
@@ -626,43 +630,29 @@ fn accept_m13_b_every_directive_m13_spells_has_a_disposition_and_none_is_refused
         vocabulary,
         [
             "ADD_OBJECTIVE_TARGET",
+            "ADD_OTHER_TARGET",
+            "ANIM_STATE",
             "BEGIN_DORMANT",
             "COMPLETED_SOUND_GROUP",
             "COMPLETED_STOPPOINT",
+            "DANGER_ZONES_COMPLETED",
             "DEDG",
             "IDENTITY",
-            "INACTIVE1",
-            "INACTIVE10",
-            "INACTIVE11",
-            "INACTIVE12",
-            "INACTIVE2",
-            "INACTIVE3",
-            "INACTIVE4",
-            "INACTIVE5",
-            "INACTIVE6",
-            "INACTIVE7",
-            "INACTIVE8",
-            "INACTIVE9",
-            "INACTIVE_COMPLETION_COUNT",
             "INSTANTLOSS",
             "INSTANTWIN",
             "KILL_OBJECTIVE_WHEN_I_COMPLETE",
             "NAP_OBJECTIVE_WHEN_I_COMPLETE",
             "REMOVE_OBJECTIVE_TARGET",
             "SET_AI_NET",
-            "SET_HELP_LABEL",
-            "STOP_QUEUED_SOUNDS",
-            "TICK_DEPENDS_ON_OBJ",
+            "SET_AI_TEAM",
             "TRAVELERS",
             "WAKEUP_ENEMIES",
-            "WAKEUP_GENERATOR",
             "WAKEUP_SOUND_GROUP",
-            "WAKEUP_TURRETS",
             "WAKEUP_ZEP_TURRETS",
             "WAKE_ANIM",
             "WAKE_OBJECTIVE_WHEN_I_COMPLETE",
         ],
-        "the exact 36 keys, so a key that appears or disappears fails here"
+        "the exact 22 keys, so a key that appears or disappears fails here"
     );
 
     // The two outcome keys answer for their own name and take no arguments.
@@ -677,25 +667,28 @@ fn accept_m13_b_every_directive_m13_spells_has_a_disposition_and_none_is_refused
     }
 }
 
-/// **The sheet's three regression priorities resolve to measured operations —
-/// and none of M13's keys can change an allegiance.**
+/// **The sheet's three regression priorities resolve to measured operations,
+/// and M13's record does spell an allegiance-changing directive.**
 ///
-/// * **ordered traversal**: the twelve `INACTIVE<n>` sites the four ladder
-///   blocks spell, their `INACTIVE_COMPLETION_COUNT` thresholds, the wake and
-///   nap operations the ladder is built from, and the two dependency gates;
-/// * **allegiance transition**: the vocabulary carries **no** directive that
-///   changes an owner, a faction, a team or an attitude — asserted against the
-///   exact 36-key vocabulary rather than by looking for one name — and what the
-///   record spells instead is `SET_AI_NET` (assign a node) and `WAKEUP_ENEMIES`
-///   (wake named vehicles), both measured operations;
+/// * **ordered traversal**: the danger-zone course, the depletion and wake/nap
+///   completion edges, the kill edges and the animation-state gate — all
+///   measured operations;
+/// * **allegiance transition**: the record's vocabulary carries
+///   `SET_AI_TEAM` (owner/team assignment) and `SET_AI_NET` (node assignment),
+///   both measured, plus `WAKEUP_ENEMIES`. Unlike the archive this stage once
+///   measured, **the fleet's teams really are reassigned here**, so the
+///   negative assertion that "no key can change an allegiance" would be false
+///   on this record and is replaced by the positive one;
 /// * **optional versus mandatory outcome**: exactly two terminal outcome keys,
-///   one site each.
+///   one site each, closed at the structure level by the disjoint prerequisite
+///   closures the next test pins.
 ///
 /// Every key is asserted to resolve to the operation the shared finding
 /// measured, so a key that silently lost its meaning fails here.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m13_b_the_sheet_priorities_resolve_to_measured_operations_and_none_changes_allegiance() {
+fn accept_m13_b_the_sheet_priorities_resolve_to_measured_operations_and_the_allegiance_key_is_set_ai_team()
+ {
     let record = census().row(MISSION).unwrap().record().unwrap();
     let operation = |key: &str| match record.key(key).unwrap().disposition() {
         DirectiveDisposition::Measured(measured) => measured.operation,
@@ -704,54 +697,66 @@ fn accept_m13_b_the_sheet_priorities_resolve_to_measured_operations_and_none_cha
 
     // Ordered traversal.
     for key in [
-        "INACTIVE1",
-        "INACTIVE2",
-        "INACTIVE3",
-        "INACTIVE4",
-        "INACTIVE5",
-        "INACTIVE6",
-        "INACTIVE7",
-        "INACTIVE8",
-        "INACTIVE9",
-        "INACTIVE10",
-        "INACTIVE11",
-        "INACTIVE12",
+        "DANGER_ZONES_COMPLETED",
+        "DEDG",
+        "WAKE_OBJECTIVE_WHEN_I_COMPLETE",
+        "NAP_OBJECTIVE_WHEN_I_COMPLETE",
+        "KILL_OBJECTIVE_WHEN_I_COMPLETE",
+        "ANIM_STATE",
+        "BEGIN_DORMANT",
     ] {
-        assert_eq!(operation(key), DirectiveOperation::InactiveMembers, "{key}");
+        let measured = match record.key(key).unwrap().disposition() {
+            DirectiveDisposition::Measured(measured) => measured.operation,
+            other => panic!("{key} is not measured: {other:?}"),
+        };
+        assert!(
+            matches!(
+                measured,
+                DirectiveOperation::DangerZoneFlags
+                    | DirectiveOperation::EnemyGroupDepletion
+                    | DirectiveOperation::WakeObjectives
+                    | DirectiveOperation::NapObjective
+                    | DirectiveOperation::KillObjectives
+                    | DirectiveOperation::AnimationStates
+                    | DirectiveOperation::DormantStart
+            ),
+            "{key} resolved to {measured:?}"
+        );
     }
     assert_eq!(
-        operation("INACTIVE_COMPLETION_COUNT"),
-        DirectiveOperation::InactiveThreshold
+        operation("DANGER_ZONES_COMPLETED"),
+        DirectiveOperation::DangerZoneFlags
     );
-    assert_eq!(
-        operation("TICK_DEPENDS_ON_OBJ"),
-        DirectiveOperation::DependencyGate
-    );
-    assert_eq!(
-        operation("NAP_OBJECTIVE_WHEN_I_COMPLETE"),
-        DirectiveOperation::NapObjective
-    );
-    assert_eq!(
-        operation("WAKE_OBJECTIVE_WHEN_I_COMPLETE"),
-        DirectiveOperation::WakeObjectives
-    );
-    assert_eq!(
-        operation("KILL_OBJECTIVE_WHEN_I_COMPLETE"),
-        DirectiveOperation::KillObjectives
-    );
-    assert_eq!(operation("BEGIN_DORMANT"), DirectiveOperation::DormantStart);
-
-    // Allegiance transition: what the record spells instead.
-    assert_eq!(operation("SET_AI_NET"), DirectiveOperation::AssignNet);
-    assert_eq!(operation("WAKEUP_ENEMIES"), DirectiveOperation::WakeEnemies);
     assert_eq!(operation("DEDG"), DirectiveOperation::EnemyGroupDepletion);
-
-    // Optional versus mandatory outcome: two keys, one site each.
     assert_eq!(
         operation("TRAVELERS"),
         DirectiveOperation::Travelers,
-        "M13's own predicate (block 30, the player approaching `barracuda`)"
+        "M13's own predicate (block 48, the player approaching `piratezep`)"
     );
+
+    // Allegiance transition: what this record really spells.
+    assert_eq!(operation("SET_AI_TEAM"), DirectiveOperation::AssignTeam);
+    assert_eq!(operation("SET_AI_NET"), DirectiveOperation::AssignNet);
+    assert_eq!(operation("WAKEUP_ENEMIES"), DirectiveOperation::WakeEnemies);
+    assert!(
+        record.key("SET_FACTION").is_none(),
+        "this record spells no faction directive"
+    );
+
+    // Ordered traversal, asserted on the record's own vocabulary: this archive
+    // spells no `INACTIVE*` member-count key at all (the record this stage once
+    // measured did), so a re-pin that kept those keys would be measuring a
+    // different archive.
+    assert!(
+        record.key("INACTIVE1").is_none(),
+        "M13's corrected record spells no INACTIVE member key"
+    );
+    assert!(
+        record.key("TICK_DEPENDS_ON_OBJ").is_none(),
+        "M13's corrected record spells no dependency gate"
+    );
+
+    // Optional versus mandatory outcome: two keys, one site each.
     for (name, outcome) in [
         ("INSTANTWIN", TerminalOutcome::Succeeded),
         ("INSTANTLOSS", TerminalOutcome::Failed),
@@ -763,275 +768,299 @@ fn accept_m13_b_the_sheet_priorities_resolve_to_measured_operations_and_none_cha
         );
         assert_eq!(key.sites, 1);
     }
+}
 
-    // No directive of this record can change who an actor belongs to.
-    let forbidden = [
-        "FACTION",
-        "OWNER",
-        "TEAM",
-        "ATTITUDE",
-        "ALLEGIANCE",
-        "LOYAL",
-    ];
-    let mut allegiance_keys = Vec::new();
-    for key in record.keys() {
-        let upper = key.key.to_ascii_uppercase();
-        if forbidden.iter().any(|token| upper.contains(token)) {
-            allegiance_keys.push(key.key.as_str());
-        }
+/// **The allegiance transition is spelled by one `SET_AI_TEAM` and one
+/// `SET_AI_NET` site, both on the `hafury_*` flight, and the node it points at
+/// is declared by the chapter world rather than by M13's own archive.**
+///
+/// Block 3 assigns teams 2/1/2/2/1/2 to `hafury_1..6` and points every one of
+/// them at the node `M3Aces`. Six of the seven distinct names that site spells
+/// are declared by the archive's own `aiv.zrd`; `M3Aces` is not declared by any
+/// member of M13's archive — it is a node of the chapter-2 world, whose node
+/// index `ZBD/C2/zrdr.zbd:neindex.zrd` carries it.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_m13_b_the_allegiance_transition_is_spelled_by_set_ai_team_and_set_ai_net() {
+    let blocks = blocks_of(&control_document());
+    assert_eq!(with(&blocks, "SET_AI_TEAM"), [3]);
+    assert_eq!(with(&blocks, "SET_AI_NET"), [3]);
+    assert_eq!(with(&blocks, "WAKEUP_ENEMIES"), [4, 5]);
+
+    let teams = spelled(&blocks, "SET_AI_TEAM");
+    assert_eq!(teams.len(), 1, "one team site");
+    let expected_teams: Vec<ZrdValue> = [
+        ("hafury_1", 2i64),
+        ("hafury_2", 1),
+        ("hafury_3", 2),
+        ("hafury_4", 2),
+        ("hafury_5", 1),
+        ("hafury_6", 2),
+    ]
+    .into_iter()
+    .map(|(name, team)| {
+        vec![ZrdValue::List(vec![
+            ZrdValue::Text(name.to_owned()),
+            ZrdValue::Int(u32::try_from(team).expect("team fits")),
+        ])]
+    })
+    .flatten()
+    .collect();
+    assert_eq!(
+        teams[0], expected_teams,
+        "block 3 assigns the six flight members their teams in spelling order"
+    );
+
+    let nets = spelled(&blocks, "SET_AI_NET");
+    assert_eq!(nets.len(), 1, "one node site");
+    let expected_nets: Vec<ZrdValue> = (1..=6)
+        .map(|position| {
+            ZrdValue::List(vec![
+                ZrdValue::Text(format!("hafury_{position}")),
+                ZrdValue::Text("M3Aces".to_owned()),
+            ])
+        })
+        .collect();
+    assert_eq!(
+        nets[0], expected_nets,
+        "block 3 points every flight member at the node M3Aces"
+    );
+
+    // The six actors are declared by the archive's own aiv.zrd; the node is
+    // declared by the chapter world's node index, not by M13's archive.
+    let archive = member_texts(CONTAINER, "aiv.zrd");
+    for name in [
+        "hafury_1", "hafury_2", "hafury_3", "hafury_4", "hafury_5", "hafury_6",
+    ] {
+        assert!(
+            archive.iter().any(|text| text == name),
+            "aiv.zrd declares {name:?}"
+        );
     }
     assert!(
-        allegiance_keys.is_empty(),
-        "M13's control member spells no allegiance-changing directive: {allegiance_keys:?}"
+        !archive.iter().any(|text| text == "M3Aces"),
+        "no member of M13's archive declares the node M3Aces"
     );
+    let world = member_texts(WORLD_CONTAINER, "neindex.zrd");
     assert!(
-        record.key("SET_AI_TEAM").is_none(),
-        "M13 spells no AI-team assignment (unlike M10)"
+        world.iter().any(|text| text == "M3Aces"),
+        "the chapter world's node index declares M3Aces: {world:?}"
     );
 }
 
-/// **The damage ladder and the two dependency gates are record data.**
+/// **The danger-zone course and the ace wake graph are record data.**
 ///
-/// Blocks 3–6 spell the same twelve `piratezep` engine chains under rising
-/// thresholds — 3, 5, 7, 10 of the twelve — and each stage enters the next
-/// only through that stage's own nap, on the delay the record spells (15, 15,
-/// 10, 25 seconds). Block 6's nap names block 7, the `INSTANTLOSS` latch.
-///
-/// Block 3 is the only block of the record with **no** dormant marker, so the
-/// ladder starts with the mission; blocks 4, 5, 6 and both latches spell
-/// `BEGIN_DORMANT -1` (no timed self-wake), and only blocks 1 and 2 arm a clock
-/// (2 s and 13.5 s). The two `TICK_DEPENDS_ON_OBJ` gates lower into the program
-/// as the dependency's own `ObjectiveAwake` conjunct — order is a gate on
-/// evaluation, never a timing guess.
+/// * The eight `DANGER_ZONES_COMPLETED` steps are blocks 17–24, spelling
+///   `dzpath1, dzpath2, dzpath3, dzpath5, dzpath4, dzpath6, dzpath7, dzpath9`
+///   in order, and each step wakes the next only through its own spelled
+///   completion edge.
+/// * The target hand-off is the guided course: block 17 removes `sghangar` and
+///   adds `dz2`, and each following block removes the zone it just completed
+///   and adds the next — block 24 removes `dz9` and adds nothing.
+/// * The ace chain is a run of `DEDG` group depletions: block 6 depletes group
+///   3 and wakes block 25, blocks 25→26→27 walk groups 4, 5, 7, block 27 wakes
+///   block 47 and naps block 7, and block 7's completion wakes the success latch
+///   (8), the optional music block (16) and the approach predicate (48).
+/// * `TICK_DEPENDS_ON_OBJ` is absent from this record: every gate is a spelled
+///   wake or nap edge, never a dependency conjunct.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m13_b_the_damage_ladder_and_the_dependency_gates_are_record_data() {
+fn accept_m13_b_the_danger_zone_course_and_the_ace_wake_graph_are_record_data() {
     let row = census().row(MISSION).unwrap();
     let blocks = blocks_of(&control_document());
+
+    // The course, step by step.
     assert_eq!(
-        with(&blocks, "INACTIVE_COMPLETION_COUNT"),
-        [3, 4, 5, 6],
-        "four ladder blocks spell a threshold"
+        with(&blocks, "DANGER_ZONES_COMPLETED"),
+        [17, 18, 19, 20, 21, 22, 23, 24],
+        "eight danger-zone steps, in block order"
     );
-    let thresholds: Vec<i64> = spelled(&blocks, "INACTIVE_COMPLETION_COUNT")
+    let zones: Vec<String> = spelled(&blocks, "DANGER_ZONES_COMPLETED")
         .iter()
         .map(|args| match args.as_slice() {
-            [ZrdValue::Int(number)] => i64::from(*number),
-            other => panic!("an INACTIVE_COMPLETION_COUNT site spells {other:?}"),
+            [ZrdValue::Text(zone)] => zone.clone(),
+            other => panic!("a DANGER_ZONES_COMPLETED site spells {other:?}"),
         })
         .collect();
     assert_eq!(
-        thresholds,
-        [3, 5, 7, 10],
-        "the thresholds are record data, rising along the ladder"
-    );
-
-    let engines = [
-        "reng11", "reng12", "reng21", "reng22", "reng31", "reng32", "leng11", "leng12", "leng21",
-        "leng22", "leng31", "leng32",
-    ];
-    let chains: Vec<MemberName> = engines
-        .iter()
-        .map(|engine| {
-            ["piratezep", engine, "healthy"]
-                .into_iter()
-                .map(str::to_owned)
-                .collect()
-        })
-        .collect();
-    for number in [3u32, 4, 5, 6] {
-        let directives = block(&blocks, number);
-        let listed: Vec<&Directive> = directives
-            .iter()
-            .filter(|d| d.key.starts_with("INACTIVE") && d.key != "INACTIVE_COMPLETION_COUNT")
-            .collect();
-        assert_eq!(
-            listed.len(),
-            12,
-            "block {number} lists the twelve pirate-zeppelin engines"
-        );
-        for (position, directive) in listed.iter().enumerate() {
-            assert_eq!(
-                directive.key,
-                format!("INACTIVE{}", position + 1),
-                "block {number} spells the engines in order"
-            );
-            let chain = directive.args.as_deref().unwrap_or(&[]);
-            assert_eq!(
-                chain,
-                [
-                    ZrdValue::Text("piratezep".to_owned()),
-                    ZrdValue::Text(engines[position].to_owned()),
-                    ZrdValue::Text("healthy".to_owned()),
-                ],
-                "block {number} {} addresses its own engine's chain",
-                directive.key
-            );
-        }
-    }
-
-    // The ladder's own edges: each stage naps the next, block 6 naps the loss
-    // latch, and no other block of the ladder is entered by anything else.
-    let ladder_naps: Vec<(u32, i64, f32)> = [3u32, 4, 5, 6]
-        .into_iter()
-        .flat_map(|number| {
-            block(&blocks, number)
-                .iter()
-                .filter(|d| d.key == "NAP_OBJECTIVE_WHEN_I_COMPLETE")
-                .map(move |directive| {
-                    let args = directive.args.as_deref().unwrap_or(&[]);
-                    let target = i64::from(match args.first() {
-                        Some(ZrdValue::Int(number)) => *number,
-                        other => panic!("a nap spells a target, not {other:?}"),
-                    });
-                    let delay = match args.get(1) {
-                        Some(ZrdValue::Float(seconds)) => *seconds,
-                        other => panic!("a nap spells a delay, not {other:?}"),
-                    };
-                    (number, target, delay)
-                })
-                .collect::<Vec<_>>()
-        })
-        .collect();
-    assert_eq!(
-        ladder_naps,
-        [(3, 4, 15.0), (4, 5, 15.0), (5, 6, 10.0), (6, 7, 25.0)],
-        "each stage enters the next on its own spelled delay; the fourth nap is the failure latch"
-    );
-
-    // Dormancy: which blocks are entered by their own clock and which by an
-    // edge.
-    let mut timed_wakes = Vec::new();
-    let mut dormant_count = 0;
-    let mut undormant = Vec::new();
-    for (number, directives) in &blocks {
-        let Some(dormant) = directives.iter().find(|d| d.key == "BEGIN_DORMANT") else {
-            undormant.push(*number);
-            continue;
-        };
-        dormant_count += 1;
-        let armed = match dormant.args.as_ref().and_then(|args| args.first()) {
-            Some(ZrdValue::Float(seconds)) => *seconds >= 0.0,
-            _ => true,
-        };
-        if armed {
-            timed_wakes.push((*number, dormant.args.clone().unwrap_or_default()));
-        }
-    }
-    assert_eq!(dormant_count, 37, "every block but block 3 spells one");
-    assert_eq!(
-        undormant,
-        [3],
-        "the ladder starts with the mission: block 3 is never dormant"
-    );
-    assert_eq!(
-        timed_wakes,
+        zones,
         [
-            (1, vec![ZrdValue::Float(2.0)]),
-            (2, vec![ZrdValue::Float(13.5)]),
+            "dzpath1", "dzpath2", "dzpath3", "dzpath5", "dzpath4", "dzpath6", "dzpath7", "dzpath9"
         ],
-        "only blocks 1 and 2 arm a clock; the latches and the ladder stages spell -1"
+        "the zones are record data, in the order the course walks them"
     );
-    for number in [4u32, 5, 6, 7, 16] {
-        assert_eq!(
-            block(&blocks, number)
-                .iter()
-                .find(|d| d.key == "BEGIN_DORMANT")
-                .and_then(|d| d.args.as_deref()),
-            Some(&[ZrdValue::Float(-1.0)][..]),
-            "block {number} never wakes on its own clock"
-        );
-    }
 
-    // The two gates, as the program lowered them: block 15 depends on block 19
-    // and block 21 on block 29, each conjunct carrying the dependency's own
-    // zero-based index — `child0 − 1`, the measured convention.
-    assert_eq!(with(&blocks, "TICK_DEPENDS_ON_OBJ"), [15, 21]);
-    let gates: Vec<i64> = spelled(&blocks, "TICK_DEPENDS_ON_OBJ")
-        .iter()
-        .flat_map(|args| {
-            args.iter().filter_map(|value| match value {
-                ZrdValue::Int(number) => Some(i64::from(*number)),
+    // The add/remove hand-off: each step removes the zone it completed and adds
+    // the next; the last removes and adds nothing.
+    let names_of = |number: u32, key: &str| -> Vec<String> {
+        block(&blocks, number)
+            .iter()
+            .filter(|d| d.key == key)
+            .flat_map(|d| d.args.as_deref().unwrap_or(&[]).iter())
+            .filter_map(|value| match value {
+                ZrdValue::Text(name) => Some(name.clone()),
                 _ => None,
             })
+            .collect()
+    };
+    let removes: Vec<Vec<String>> = (17..=24)
+        .map(|number| names_of(number, "REMOVE_OBJECTIVE_TARGET"))
+        .collect();
+    assert_eq!(
+        removes,
+        [
+            vec!["sghangar"],
+            vec!["dz2"],
+            vec!["dz3"],
+            vec!["dz5"],
+            vec!["dz4"],
+            vec!["dz6"],
+            vec!["dz7"],
+            vec!["dz9"],
+        ],
+        "each step removes the zone it just completed"
+    );
+    let adds: Vec<Vec<String>> = (17..=24)
+        .map(|number| names_of(number, "ADD_OBJECTIVE_TARGET"))
+        .collect();
+    assert_eq!(
+        adds,
+        [
+            vec!["dz2"],
+            vec!["dz3"],
+            vec!["dz5"],
+            vec!["dz4"],
+            vec!["dz6"],
+            vec!["dz7"],
+            vec!["dz9"],
+            Vec::<&str>::new(),
+        ],
+        "each step adds the next zone; the last step adds nothing"
+    );
+    assert_eq!(
+        with(&blocks, "ADD_OBJECTIVE_TARGET"),
+        [7, 17, 18, 19, 20, 21, 22, 23],
+        "block 7 adds the first target and the course adds the rest"
+    );
+
+    // Every step enters the next only through its own wake edge.
+    let edges = |number: u32| -> Vec<i64> {
+        block(&blocks, number)
+            .iter()
+            .filter(|d| d.key == "WAKE_OBJECTIVE_WHEN_I_COMPLETE")
+            .flat_map(|d| addresses(d))
+            .collect()
+    };
+    assert_eq!(
+        edges(17),
+        [18, 34],
+        "the first step also opens the `34` short-cut"
+    );
+    assert_eq!(edges(18), [19, 35]);
+    assert_eq!(edges(19), [20, 36]);
+    assert_eq!(edges(20), [21]);
+    assert_eq!(edges(21), [22]);
+    assert_eq!(edges(22), [23, 37]);
+    assert_eq!(edges(23), [24]);
+    assert_eq!(edges(24), [42], "the course ends at the race secondary");
+
+    // Block 42 hands the race back to block 2 as a nap, so the course is data.
+    let naps = |number: u32| -> Vec<(i64, f32)> {
+        block(&blocks, number)
+            .iter()
+            .filter(|d| d.key == "NAP_OBJECTIVE_WHEN_I_COMPLETE")
+            .map(|d| {
+                let args = d.args.as_deref().unwrap_or(&[]);
+                let target = match args.first() {
+                    Some(ZrdValue::Int(number)) => i64::from(*number),
+                    other => panic!("a nap spells a target, not {other:?}"),
+                };
+                let delay = match args.get(1) {
+                    Some(ZrdValue::Float(seconds)) => *seconds,
+                    other => panic!("a nap spells a delay, not {other:?}"),
+                };
+                (target, delay)
+            })
+            .collect()
+    };
+    assert_eq!(naps(24), [(2, 5.0)], "the finish re-arms the race clock");
+    assert_eq!(naps(3), [(4, 90.0)]);
+    assert_eq!(naps(2), [(3, 20.0)]);
+
+    // The ace chain: DEDG groups in block order, and the wake that closes it.
+    let groups: Vec<i64> = spelled(&blocks, "DEDG")
+        .iter()
+        .map(|args| match args.as_slice() {
+            [ZrdValue::Int(group), ZrdValue::Int(remaining)] => {
+                assert_eq!(*remaining, 0, "every M13 depletion needs zero survivors");
+                i64::from(*group)
+            }
+            other => panic!("a DEDG site spells {other:?}"),
         })
         .collect();
-    assert_eq!(gates, [19, 29]);
+    assert_eq!(groups.len(), 17, "seventeen group depletions");
+    assert_eq!(edges(6), [25]);
+    assert_eq!(edges(25), [26]);
+    assert_eq!(edges(26), [27]);
+    let mut block_27 = edges(27);
+    block_27.sort_unstable();
+    assert_eq!(block_27, [47], "the last ace phase wakes its music block");
+    assert_eq!(
+        naps(27),
+        [(7, 20.0)],
+        "…and naps the shared completion block 7"
+    );
+    assert_eq!(edges(4), [6], "the enemy wake opens the ace chain");
 
+    // The lowered program carries the course's own conditions, not a generic
+    // completion: every step is gated on its own zone flag.
     let attempt = row.lowering_attempt().unwrap();
     let raw = attempt.raw_program().expect("the program assembled");
-    assert_eq!(
-        raw.objectives[14].condition,
-        Condition::All(vec![
-            Condition::ObjectiveAwake { index: 14 },
-            Condition::ObjectiveAwake { index: 18 },
-        ]),
-        "block 15's gate on block 19 is a conjunct, not a dropped directive"
-    );
-    assert_eq!(
-        raw.objectives[20].condition,
-        Condition::All(vec![
-            Condition::ObjectiveAwake { index: 20 },
-            Condition::ObjectiveAwake { index: 28 },
-            Condition::EnemyGroupDepletion {
-                group: 1,
-                remaining: 0,
-                generator: None,
-            },
-        ]),
-        "block 21 gates on block 29 and depletes group 1"
-    );
-
-    // The ladder's own conditions, as the program lowered them: the same twelve
-    // chains under the threshold the block spelled, and the loss latch is
-    // complete as soon as it is awake.
-    let expect_ladder = |index: u32, threshold: u32| {
+    for (offset, zone) in zones.iter().enumerate() {
+        let index = u32::try_from(16 + offset).expect("index fits");
         assert_eq!(
             raw.objectives[index as usize].condition,
             Condition::All(vec![
                 Condition::ObjectiveAwake { index },
-                Condition::InactiveMembers {
-                    members: chains.clone(),
-                    threshold,
+                Condition::DangerZoneFlags {
+                    zones: vec![zone.clone()],
+                    required: 1,
                 },
             ]),
-            "block {} lowers the ladder condition it spelled",
+            "block {} lowers the danger-zone condition it spelled",
             index + 1
         );
-    };
-    expect_ladder(2, 3);
-    expect_ladder(3, 5);
-    expect_ladder(4, 7);
-    expect_ladder(5, 10);
-    assert_eq!(
-        raw.objectives[6].condition,
-        Condition::ObjectiveAwake { index: 6 },
-        "the failure latch completes on wake alone — its nap is the gate"
-    );
+    }
 }
 
-/// **Every actor and node the record names resolves in the shipped data, with
-/// exactly one exception.**
+// ---------------------------------------------------------------------------
+// Retail: actors, latches and the lowered program
+// ---------------------------------------------------------------------------
+
+/// **Every text M13's record spells resolves in the shipped data.**
 ///
-/// The record's directives name actors by string; this walks the archive's
-/// other fifteen members and says where each name is *declared*. The exception
-/// is `britkestrel_1`, the actor M13's single `SET_AI_NET` site points at a node
-/// for: no member of this archive declares it. Its node operand `M3BritAce` is
-/// declared by the chapter world's node index, which is what makes the two
-/// halves of that site distinguishable at all.
+/// The record's directives name actors, zones, nodes, sounds and message
+/// operands by string; this walks the archive's other twelve members and says
+/// where each name is *declared*. **Every** name resolves somewhere:
 ///
-/// Nothing here guesses what the original does with an undeclared name; the
-/// gap is measured and filed (`docs/findings/2026-10-10-m13-b-compatibility-gaps.md`).
+/// * the flight and enemy actors (`hafury_*`, `habloodhawk_*`, `devastator_*`,
+///   `wingman_*`) are declared by the archive's own `aiv.zrd`;
+/// * the course zones, the player and the zeppelin are declared by
+///   `dzones.zrd`, `map.zrd`, `targets.zrd` and `zeppelins.zrd`;
+/// * the sound groups and the node `M3Aces` are declared by the shared root
+///   archive `ZBD/zrdr.zbd` and the chapter world's `neindex.zrd` — none of them
+///   by M13's archive.
 ///
-/// The table is representative, so the last block below closes it: every one of
-/// the [`NAMED_TEXTS`] distinct texts the record spells is declared somewhere
-/// outside M13's control member, except a measured set of three — the
-/// `SET_AI_NET` actor and the two `MSG_…` operands of the `IDENTITY` sites.
-/// That assertion is what makes the test's name true for *every* actor and
-/// operand the record names, not only the seventeen the table walks.
+/// All but three of the [`NAMED_TEXTS`] distinct texts the record spells are
+/// declared somewhere outside M13's control member; the exception set is
+/// measured, not chosen — the three `MSG_BRF_HWM3_OBJ*` operands the `IDENTITY`
+/// sites spell (blocks 7, 8 and 24), which no other `.zrd` member of the
+/// installation spells. `IDENTITY`'s other operand (`PRIMARY`/`SECONDARY`), the
+/// key itself and every actor and zone all resolve elsewhere, so the record is
+/// covered, not only the twenty-two-name table.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m13_b_every_actor_the_record_names_resolves_in_the_shipped_data_but_one() {
+fn accept_m13_b_every_actor_the_record_names_resolves_in_the_shipped_data() {
     let blocks = blocks_of(&control_document());
     // The names a directive spells — walked recursively, because a site's
     // argument list may nest one level deeper (`COMPLETED_STOPPOINT` and
@@ -1049,48 +1078,29 @@ fn accept_m13_b_every_actor_the_record_names_resolves_in_the_shipped_data_but_on
 
     // (name, members of M13's archive, other than the control member, that
     // declare it) — the control member only *spells* a name.
-    let expected: [(&str, &[&str]); 17] = [
-        (
-            "piratezep",
-            &[
-                "aiv.zrd",
-                "destroy_cargozep.zrd",
-                "targets.zrd",
-                "zeppelins.zrd",
-            ],
-        ),
-        ("M3PirateZep", &["zeppelins.zrd"]),
-        ("reng11", &["zeppelins.zrd"]),
-        ("leng32", &["zeppelins.zrd"]),
-        ("britpeace_1", &["aiv.zrd"]),
-        ("britpeace_4", &["aiv.zrd"]),
-        ("britkestrel_1", &[]),
-        ("M3BritAce", &[]),
-        (
-            "player",
-            &[
-                "aiv.zrd",
-                "destroy_cargozep.zrd",
-                "map.zrd",
-                "zeppelins.zrd",
-            ],
-        ),
-        (
-            "barracuda",
-            &[
-                "egen.zrd",
-                "sub_movement.zrd",
-                "submarine.zrd",
-                "targets.zrd",
-            ],
-        ),
-        ("sub_tower", &["sub_movement.zrd", "targets.zrd"]),
-        ("subhealthy", &["egen.zrd", "submarine.zrd"]),
-        ("aagun98", &["targets.zrd"]),
-        ("aagun99", &["targets.zrd"]),
-        ("8igun01", &["targets.zrd"]),
-        ("runway_door", &["submarine.zrd"]),
-        ("movebridge1", &["destroy_cargozep.zrd"]),
+    let expected: [(&str, &[&str]); 22] = [
+        ("hafury_1", &["aiv.zrd"]),
+        ("hafury_2", &["aiv.zrd"]),
+        ("hafury_3", &["aiv.zrd"]),
+        ("hafury_4", &["aiv.zrd"]),
+        ("hafury_5", &["aiv.zrd"]),
+        ("hafury_6", &["aiv.zrd"]),
+        ("habloodhawk_1", &["aiv.zrd"]),
+        ("habloodhawk_5", &["aiv.zrd"]),
+        ("devastator_2", &["aiv.zrd"]),
+        ("devastator_3", &["aiv.zrd"]),
+        ("wingman_1", &["aiv.zrd"]),
+        ("wingman_2", &["aiv.zrd"]),
+        ("wingman_3", &["aiv.zrd"]),
+        ("player", &["aiv.zrd", "map.zrd", "zeppelins.zrd"]),
+        ("piratezep", &["targets.zrd", "zeppelins.zrd"]),
+        ("M3Piratezep", &["zeppelins.zrd"]),
+        ("M3Aces", &[]),
+        ("pzhookpoint", &["targets.zrd"]),
+        ("rock_zeppelin", &["targets.zrd"]),
+        ("sghangar", &["targets.zrd"]),
+        ("dzpath1", &["dzones.zrd"]),
+        ("dz9", &["targets.zrd"]),
     ];
     let archive_members: Vec<String> = census()
         .row(MISSION)
@@ -1099,7 +1109,7 @@ fn accept_m13_b_every_actor_the_record_names_resolves_in_the_shipped_data_but_on
         .iter()
         .map(|member| member.name.clone())
         .collect();
-    assert_eq!(archive_members.len(), 16);
+    assert_eq!(archive_members.len(), 13);
     assert!(archive_members.iter().any(|name| name == CONTROL_MEMBER));
 
     // Every other member's texts, read once: the control member only *spells*
@@ -1109,7 +1119,7 @@ fn accept_m13_b_every_actor_the_record_names_resolves_in_the_shipped_data_but_on
         .filter(|member| member.as_str() != CONTROL_MEMBER)
         .map(|member| (member.clone(), member_texts(CONTAINER, member)))
         .collect();
-    assert_eq!(declarations.len(), 15);
+    assert_eq!(declarations.len(), 12);
 
     for (name, declaring) in expected {
         assert!(
@@ -1131,26 +1141,22 @@ fn accept_m13_b_every_actor_the_record_names_resolves_in_the_shipped_data_but_on
     }
 
     // The node operand of the one `SET_AI_NET` site is declared by the chapter
-    // world's node index — the second half of the site resolves, the first does
-    // not.
+    // world's node index, the second half of the site that no member of M13's
+    // archive carries.
     let world = member_texts(WORLD_CONTAINER, "neindex.zrd");
     assert!(
-        world.iter().any(|text| text == "M3BritAce"),
-        "the chapter world's node index declares M3BritAce: {world:?}"
+        world.iter().any(|text| text == "M3Aces"),
+        "the chapter world's node index declares M3Aces: {world:?}"
     );
     let mission_texts = member_texts(CONTAINER, CONTROL_MEMBER);
-    assert!(mission_texts.iter().any(|text| text == "britkestrel_1"));
-    assert!(
-        !world.iter().any(|text| text == "britkestrel_1"),
-        "the node index does not declare the actor"
-    );
+    assert!(mission_texts.iter().any(|text| text == "M3Aces"));
 
-    // Full coverage: the seventeen names above are a table, not the whole
-    // record, so ask the same question of every text the record spells. All
-    // but three are declared somewhere outside the control member that spells
-    // them; that exception set is measured over the installation, not chosen —
-    // the `SET_AI_NET` actor of block 25 and the two `MSG_…` operands the
-    // `IDENTITY` sites of blocks 15 and 16 spell.
+    // Full coverage: the table above is a sample, not the whole record, so ask
+    // the same question of every text the record spells. All but three are
+    // declared somewhere outside the control member that spells them; that
+    // exception set is measured over the installation, not chosen — the three
+    // `MSG_BRF_HWM3_OBJ*` operands the `IDENTITY` sites of blocks 7, 8 and 24
+    // spell.
     assert_eq!(
         named.len(),
         NAMED_TEXTS,
@@ -1164,32 +1170,28 @@ fn accept_m13_b_every_actor_the_record_names_resolves_in_the_shipped_data_but_on
         .collect();
     assert_eq!(
         record_only,
-        ["MSG_BRF_HAM3_OBJ1", "MSG_BRF_HAM3_OBJ2", "britkestrel_1"],
-        "every text the record spells has a declaration outside M13's control member, except \
-         these three"
+        [
+            "MSG_BRF_HWM3_OBJ1",
+            "MSG_BRF_HWM3_OBJ2",
+            "MSG_BRF_HWM3_OBJ3"
+        ],
+        "every other text the record spells has a declaration outside M13's control member"
     );
 }
 
-/// **`britkestrel_1` is declared by no archive in the installation.**
+/// **The node `M3Aces` is declared by the mission and by the chapter world's
+/// node index, and by no other archive.**
 ///
-/// The whole installation, decoded member by member through production
+/// The whole installation is decoded member by member through production
 /// discovery: every `.zbd` container, every member its index names, every text
-/// node its `.zrd` decoder yields. The one name M13's `SET_AI_NET` site points at
-/// appears in exactly one place — M13's own control record, the site that spells
-/// it. Every other directive actor the record names has a declaration
-/// (pinned by the test above); this is the measured gap, not a guess about what
-/// the original does with it. The node operand `M3BritAce` is declared twice:
-/// here and in the chapter world's node index.
+/// node its `.zrd` decoder yields. The one non-archive name M13's `SET_AI_NET`
+/// site spells resolves exactly twice, which is what makes the second half of
+/// that site distinguishable from a record-only operand.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m13_b_the_ai_net_actor_is_declared_by_no_archive_in_the_installation() {
+fn accept_m13_b_the_ai_net_node_is_declared_by_the_mission_and_the_chapter_world() {
     assert_eq!(
-        declarations_of("britkestrel_1"),
-        [(CONTAINER.to_owned(), CONTROL_MEMBER.to_owned())],
-        "the SET_AI_NET actor is declared only by the site that spells it"
-    );
-    assert_eq!(
-        declarations_of("M3BritAce"),
+        declarations_of("M3Aces"),
         [
             (CONTAINER.to_owned(), CONTROL_MEMBER.to_owned()),
             (WORLD_CONTAINER.to_owned(), "neindex.zrd".to_owned()),
@@ -1198,22 +1200,22 @@ fn accept_m13_b_the_ai_net_actor_is_declared_by_no_archive_in_the_installation()
     );
 }
 
-/// **Both terminal latches are gated by exactly one nap, and every block
+/// **Both terminal latches are gated by their completion edges, and every block
 /// address the record spells is a block of this record.**
 ///
-/// `INSTANTLOSS` sits in block 7 and `INSTANTWIN` in block 16; no other block
+/// `INSTANTWIN` sits in block 8 and `INSTANTLOSS` in block 49; no other block
 /// ends the mission. Both start dormant with no timed wake, so neither latch
-/// can fire on its own clock, and each is named by exactly one completion edge
-/// — block 6's nap and block 15's nap, both with the delay the record spells.
+/// can fire on its own clock: block 8 is named by block 7's wake alone, and
+/// block 49 by the six naps the ace depletions (blocks 28–33) all spell, each
+/// with the delay the record spells.
 ///
-/// The address walk covers 41 spelled integers — 20 wake, 4 kill, 15 nap, 2
-/// gates — and every one lies in `1..=38`. The addressing itself is not assumed
-/// here: M02-B-FU3 (#802) measured the original's parse decrementing every
-/// objective address before storing it, so a spelled number **is** the block
-/// number, and M06-B-FU3 (#819) reconciled the sibling suites to it. Two values
-/// of M13's record discriminate the readings: block 9 spells `38`, the block
-/// count itself (an index reading would report it out of range), and nothing
-/// spells `0`.
+/// The address walk covers 151 spelled integers — 43 wake, 12 nap, 96 kill —
+/// and every one lies in `1..=57`. The addressing itself is not assumed here:
+/// M02-B-FU3 (#802) measured the original's parse decrementing every objective
+/// address before storing it, so a spelled number **is** the block number, and
+/// M06-B-FU3 (#819) reconciled the sibling suites to it. Blocks 28–33 spell
+/// `56, 57`, and `57` is the block count itself — the value a zero-based
+/// reading would report out of range — and nothing spells `0`.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m13_b_the_terminal_blocks_are_gated_and_every_address_is_in_range() {
@@ -1223,8 +1225,8 @@ fn accept_m13_b_the_terminal_blocks_are_gated_and_every_address_is_in_range() {
         .filter(|(_, directives)| directives.iter().any(|d| d.key.starts_with("INSTANT")))
         .map(|(number, _)| *number)
         .collect();
-    assert_eq!(outcomes, [7, 16], "no other block ends the mission");
-    for (number, outcome) in [(7, "INSTANTLOSS"), (16, "INSTANTWIN")] {
+    assert_eq!(outcomes, [8, 49], "no other block ends the mission");
+    for (number, outcome) in [(8, "INSTANTWIN"), (49, "INSTANTLOSS")] {
         let directives = block(&blocks, number);
         assert!(
             directives
@@ -1265,12 +1267,11 @@ fn accept_m13_b_the_terminal_blocks_are_gated_and_every_address_is_in_range() {
     assert_eq!(
         edges,
         BTreeMap::from([
-            ("KILL_OBJECTIVE_WHEN_I_COMPLETE", 4),
-            ("NAP_OBJECTIVE_WHEN_I_COMPLETE", 15),
-            ("TICK_DEPENDS_ON_OBJ", 2),
-            ("WAKE_OBJECTIVE_WHEN_I_COMPLETE", 20),
+            ("KILL_OBJECTIVE_WHEN_I_COMPLETE", 96),
+            ("NAP_OBJECTIVE_WHEN_I_COMPLETE", 12),
+            ("WAKE_OBJECTIVE_WHEN_I_COMPLETE", 43),
         ]),
-        "the address walk visits every spelled address: 20 wake, 4 kill, 15 nap, 2 gates"
+        "the address walk visits every spelled address: 43 wake, 12 nap, 96 kill, no gate"
     );
     assert!(
         out_of_range.is_empty(),
@@ -1279,7 +1280,7 @@ fn accept_m13_b_the_terminal_blocks_are_gated_and_every_address_is_in_range() {
     assert_eq!(
         highest,
         i64::from(BLOCKS),
-        "block 9 spells 38 — the block count itself"
+        "blocks 28–33 spell 57 — the block count itself"
     );
     assert!(
         !spelled_addresses
@@ -1297,71 +1298,98 @@ fn accept_m13_b_the_terminal_blocks_are_gated_and_every_address_is_in_range() {
             .collect()
     };
     assert_eq!(
-        naming(7),
-        [(6, "NAP_OBJECTIVE_WHEN_I_COMPLETE".to_owned(), vec![7])],
-        "the failure latch has exactly one completion edge: block 6's nap"
+        naming(8),
+        [(
+            7,
+            "WAKE_OBJECTIVE_WHEN_I_COMPLETE".to_owned(),
+            vec![8, 16, 48]
+        )],
+        "the success latch has exactly one completion edge: block 7's wake"
     );
     assert_eq!(
-        naming(16),
-        [(15, "NAP_OBJECTIVE_WHEN_I_COMPLETE".to_owned(), vec![16])],
-        "the success latch has exactly one completion edge: block 15's nap"
+        naming(49),
+        (28..=33)
+            .map(|number| (number, "NAP_OBJECTIVE_WHEN_I_COMPLETE".to_owned(), vec![49]))
+            .collect::<Vec<_>>(),
+        "the failure latch is named by the six ace depletions' naps"
     );
     assert_eq!(
-        naming(38),
-        [(9, "NAP_OBJECTIVE_WHEN_I_COMPLETE".to_owned(), vec![38])],
+        naming(57),
+        (28..=33)
+            .map(|number| (
+                number,
+                "WAKE_OBJECTIVE_WHEN_I_COMPLETE".to_owned(),
+                vec![56, 57]
+            ))
+            .chain(std::iter::once((
+                42,
+                "WAKE_OBJECTIVE_WHEN_I_COMPLETE".to_owned(),
+                vec![45, 56, 57]
+            )))
+            .collect::<Vec<_>>(),
         "the discriminating address: the last block, in range only under the measured rule"
     );
 }
 
-/// **The two outcomes have disjoint prerequisites; the other twenty blocks are
-/// named by neither latch.**
+/// **The two outcomes have disjoint prerequisites; the other thirty-two blocks
+/// are named by neither latch.**
 ///
 /// "Mandatory" here is stated narrowly, as the data supports: the blocks that
 /// must be *entered* before a latch can be entered — every block that wakes or
-/// naps its way towards it, plus the dependencies its gates declare. Kill edges
-/// are deliberately excluded (killing block 9 does not enter it; block 12's kill
-/// is asserted below not to read as a prerequisite).
+/// naps its way towards it. Kill edges are deliberately excluded (killing a
+/// block prevents it; it does not enter it) and no dependency gate exists on
+/// this record.
 ///
-/// * success (block 16): 13 blocks — `{2, 8, 9, 12, 13, 14, 15, 16, 19, 20, 21,
-///   26, 29}` — reached from the mission's own 13.5 s clock through the wake and
-///   nap chain and the two gates;
-/// * failure (block 7): the five-block damage ladder `{3, 4, 5, 6, 7}`, disjoint
-///   from it;
-/// * the remaining 20 blocks are named by no prerequisite edge of either latch.
+/// * success (block 8): 18 blocks — `{2, 3, 4, 6, 7, 8, 17, 18, 19, 20, 21, 22,
+///   23, 24, 25, 26, 27, 43}` — the ace chain and the whole danger-zone course,
+///   reached from block 2's own 20-second nap;
+/// * failure (block 49): the seven-block ace phase `{28, 29, 30, 31, 32, 33,
+///   49}`, disjoint from it;
+/// * the remaining 32 blocks are named by no prerequisite edge of either latch.
 ///
-/// Whether any of those 20 is an *optional reward or stunt branch* is **not**
+/// Whether any of those 32 is an *optional reward or stunt branch* is **not**
 /// measured: M13-A binds no stunt or reward ids, so nothing here calls one
-/// optional in that sense. What is pinned is that 23 blocks (including both
+/// optional in that sense. What is pinned is that 30 blocks (including both
 /// latches) lower to a bare `ObjectiveAwake` — they complete on wake alone —
-/// and 15 spell a real evaluator or a gate.
+/// and 27 spell a real evaluator.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m13_b_the_two_outcomes_have_disjoint_prerequisites_and_the_rest_is_not_mandatory() {
     let blocks = blocks_of(&control_document());
     let prerequisites = prerequisites(&blocks);
 
-    // Kills are not prerequisites: block 12 kills block 9, but block 9's only
-    // predecessor is block 8's nap.
-    assert_eq!(prerequisites.get(&9), Some(&vec![8]));
-    assert_eq!(prerequisites.get(&10), Some(&vec![38]));
+    // Kills are not prerequisites: block 34 kills block 38, but block 38's
+    // predecessor is the clock, not block 34.
+    assert_eq!(prerequisites.get(&8), Some(&vec![7]));
     assert_eq!(
-        prerequisites.get(&16),
-        Some(&vec![15]),
-        "one nap enters the success latch"
+        prerequisites.get(&49),
+        Some(&vec![28, 29, 30, 31, 32, 33]),
+        "six naps enter the failure latch"
     );
-    assert_eq!(prerequisites.get(&7), Some(&vec![6]));
+    assert_eq!(prerequisites.get(&15), Some(&vec![48]));
+    assert_eq!(
+        prerequisites.get(&2),
+        Some(&vec![24, 43]),
+        "the race restarts from the finish and from the timeout"
+    );
+    assert!(
+        !prerequisites.contains_key(&38),
+        "the timed short-cut is entered by its own clock, not by the block that kills it"
+    );
 
-    let win = closure(&prerequisites, 16);
+    let win = closure(&prerequisites, 8);
     assert_eq!(
         win,
-        [2, 8, 9, 12, 13, 14, 15, 16, 19, 20, 21, 26, 29],
+        [
+            2, 3, 4, 6, 7, 8, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 43
+        ],
         "the blocks that must be entered before the success latch can be entered"
     );
-    let loss = closure(&prerequisites, 7);
+    let loss = closure(&prerequisites, 49);
     assert_eq!(
         loss,
-        [3, 4, 5, 6, 7],
-        "the damage ladder is its own closure"
+        [28, 29, 30, 31, 32, 33, 49],
+        "the ace phase is its own closure"
     );
     assert!(
         win.iter().all(|number| !loss.contains(number)),
@@ -1374,13 +1402,14 @@ fn accept_m13_b_the_two_outcomes_have_disjoint_prerequisites_and_the_rest_is_not
     assert_eq!(
         outside,
         [
-            1, 10, 11, 17, 18, 22, 23, 24, 25, 27, 28, 30, 31, 32, 33, 34, 35, 36, 37, 38
+            1, 5, 9, 10, 11, 12, 13, 14, 15, 16, 34, 35, 36, 37, 38, 39, 40, 41, 42, 44, 45, 46,
+            47, 48, 50, 51, 52, 53, 54, 55, 56, 57
         ],
-        "twenty blocks are named by no prerequisite edge of either latch"
+        "thirty-two blocks are named by no prerequisite edge of either latch"
     );
 
-    // The condition shapes: 23 blocks complete on wake alone, 15 spell an
-    // evaluator or a gate.
+    // The condition shapes: 30 blocks complete on wake alone, 27 spell an
+    // evaluator.
     let attempt = census().row(MISSION).unwrap().lowering_attempt().unwrap();
     let raw = attempt.raw_program().expect("the program assembled");
     let mut wake_only = Vec::new();
@@ -1407,37 +1436,56 @@ fn accept_m13_b_the_two_outcomes_have_disjoint_prerequisites_and_the_rest_is_not
     assert_eq!(
         wake_only,
         [
-            1, 2, 7, 8, 9, 10, 11, 16, 17, 18, 20, 22, 23, 24, 25, 26, 27, 28, 34, 35, 36, 37, 38
+            1, 2, 3, 4, 5, 15, 16, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 49, 50,
+            51, 52, 53, 54, 55, 56, 57
         ],
-        "23 blocks — including both latches — complete on wake alone"
+        "30 blocks — including both latches — complete on wake alone"
     );
     assert_eq!(
         evaluated,
-        [3, 4, 5, 6, 12, 13, 14, 15, 19, 21, 29, 30, 31, 32, 33],
-        "15 blocks spell an evaluator or a dependency gate"
+        [
+            6, 7, 8, 9, 10, 11, 12, 13, 14, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30,
+            31, 32, 33, 48
+        ],
+        "27 blocks spell an evaluator"
+    );
+
+    // Two of the evaluators, spelled out: the success latch's animation gate and
+    // M13's own approach predicate.
+    assert_eq!(
+        raw.objectives[7].condition,
+        Condition::All(vec![
+            Condition::ObjectiveAwake { index: 7 },
+            Condition::AnimationStates {
+                required: 1,
+                animations: vec![("hooked_to_klondike".to_owned(), AnimationState::Executed)],
+            },
+        ]),
+        "block 8 completes when the zeppelin's hook-up animation has executed"
     );
     assert_eq!(
-        raw.objectives[29].condition,
+        raw.objectives[47].condition,
         Condition::All(vec![
-            Condition::ObjectiveAwake { index: 29 },
+            Condition::ObjectiveAwake { index: 47 },
             Condition::Travelers {
                 subject: vec!["player".to_owned()],
-                anchor: TravelersAnchor::Object(vec!["barracuda".to_owned()]),
-                radius: 300.0,
+                anchor: TravelersAnchor::Object(vec!["piratezep".to_owned()]),
+                radius: 1500.0,
                 approaching: true,
             },
         ]),
-        "block 30 is M13's TRAVELERS site: the player approaching `barracuda` at 300"
+        "block 48 is M13's TRAVELERS site: the player approaching `piratezep` at 1500"
     );
 }
 
 /// **Every call binds, every condition lowers and M13's record completes.**
 ///
-/// All 178 sites bind — the two `KILL_OBJECTIVE_WHEN_I_COMPLETE` sites (one
-/// three targets wide) among them — and all 38 block conditions lower. The
-/// bound program reaches `MissionProgram::validate` and validates; no lowering
-/// requirement is unmet and M13's census row is complete. The census as a whole
-/// stays not campaign-ready: other missions carry their own gaps.
+/// All 209 sites bind — including the six ten-target kill sites of blocks
+/// 28–33, whose long index list the adapter carries as one list argument
+/// (#800) — and all 57 block conditions lower. The bound program reaches
+/// `MissionProgram::validate` and validates; no lowering requirement is unmet
+/// and M13's census row is complete. The census as a whole stays not
+/// campaign-ready: other missions carry their own gaps.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m13_b_every_call_binds_every_condition_lowers_and_m13s_record_completes() {
@@ -1447,7 +1495,7 @@ fn accept_m13_b_every_call_binds_every_condition_lowers_and_m13s_record_complete
     let kill = record
         .key("KILL_OBJECTIVE_WHEN_I_COMPLETE")
         .expect("it is spelled");
-    assert_eq!((kill.blocks, kill.sites), (2, 2));
+    assert_eq!((kill.blocks, kill.sites), (19, 19));
     let mut kill_shapes: Vec<(usize, u32)> = kill
         .shapes
         .iter()
@@ -1456,15 +1504,15 @@ fn accept_m13_b_every_call_binds_every_condition_lowers_and_m13s_record_complete
     kill_shapes.sort();
     assert_eq!(
         kill_shapes,
-        [(1, 1), (3, 1)],
-        "one single-target site and one three-target site"
+        [(1, 9), (5, 1), (6, 1), (7, 1), (9, 1), (10, 6)],
+        "six ten-target sites and one three-target site, all bound"
     );
     let travelers = record.key("TRAVELERS").expect("it is spelled");
     assert_eq!((travelers.blocks, travelers.sites), (1, 1));
 
     let attempt = row.lowering_attempt().unwrap();
     let lowered = attempt.attempt();
-    assert_eq!(lowered.mission.as_deref(), Ok("mission/ch1-m03"));
+    assert_eq!(lowered.mission.as_deref(), Ok("mission/ch3-m03"));
     assert_eq!(lowered.objectives, BLOCKS);
     assert_eq!(lowered.calls.len() as u32, SITES);
     let refused_calls: Vec<&str> = lowered
@@ -1477,7 +1525,7 @@ fn accept_m13_b_every_call_binds_every_condition_lowers_and_m13s_record_complete
         .collect();
     assert!(
         refused_calls.is_empty(),
-        "every site binds: {refused_calls:?}"
+        "every site binds, the long kill lists included: {refused_calls:?}"
     );
     assert!(
         lowered.unbound_keys.is_empty(),
@@ -1486,7 +1534,7 @@ fn accept_m13_b_every_call_binds_every_condition_lowers_and_m13s_record_complete
     );
     assert!(
         attempt.program().is_some(),
-        "a program stands for all 38 objectives"
+        "a program stands for all 57 objectives"
     );
     assert_eq!(
         lowered.validation,
@@ -1507,36 +1555,9 @@ fn accept_m13_b_every_call_binds_every_condition_lowers_and_m13s_record_complete
         .collect();
     assert!(
         refused_conditions.is_empty(),
-        "all 38 block conditions lower: {refused_conditions:?}"
+        "all 57 block conditions lower: {refused_conditions:?}"
     );
     assert_eq!(lowered.conditions.len(), BLOCKS as usize);
-
-    // Two retail blocks spell no `INACTIVE_COMPLETION_COUNT` of their own, so
-    // the threshold that reaches them is their own member count — the default
-    // the synthetic member above pins on authored records.
-    let raw = attempt.raw_program().expect("the program assembled");
-    assert_eq!(
-        raw.objectives[11].condition,
-        Condition::All(vec![
-            Condition::ObjectiveAwake { index: 11 },
-            Condition::InactiveMembers {
-                members: vec![vec!["barracuda".to_owned(), "subhealthy".to_owned()]],
-                threshold: 1,
-            },
-        ]),
-        "block 12 spells no count: one member, threshold one"
-    );
-    assert_eq!(
-        raw.objectives[18].condition,
-        Condition::All(vec![
-            Condition::ObjectiveAwake { index: 18 },
-            Condition::InactiveMembers {
-                members: vec![vec!["piratezep".to_owned()]],
-                threshold: 1,
-            },
-        ]),
-        "block 19 spells no count either"
-    );
 
     let lowering = row.lowering().unwrap();
     assert_eq!(
@@ -1626,7 +1647,7 @@ fn lower(document: &ZrdValue) -> LoweredControlRecord {
     )
 }
 
-/// M13's own `TRAVELERS` spelling (block 30) with a chosen subject.
+/// M13's own `TRAVELERS` spelling (block 48) with a chosen subject.
 fn travelers(subject: ZrdValue) -> ZrdValue {
     control_record(vec![block_site(
         1,
@@ -1637,8 +1658,8 @@ fn travelers(subject: ZrdValue) -> ZrdValue {
                 vec![
                     subject,
                     text("APPROACHING"),
-                    text("barracuda"),
-                    ZrdValue::Float(300.0),
+                    text("piratezep"),
+                    ZrdValue::Float(1500.0),
                     int(1),
                 ],
             ),
@@ -1649,11 +1670,11 @@ fn travelers(subject: ZrdValue) -> ZrdValue {
 /// **M13's `TRAVELERS` site lowers as a predicate; the counting-mode spelling
 /// lowers to the counting condition.**
 ///
-/// The same key at two subjects, so the lowering differs by mode and not
-/// by the spelling: a named subject is the side-effect-free inside/outside test
-/// M13 block 30 spells and lowers clean, a numeric `child0` arms a counter write
-/// and refuses. This is the failure arm that keeps a "the record lowers" claim
-/// from hiding an unmeasured predicate.
+/// The same key at two subjects, so the lowering differs by mode and not by the
+/// spelling: a named subject is the side-effect-free inside/outside test M13
+/// block 48 spells and lowers clean, a numeric `child0` arms a counter write and
+/// refuses. This is the failure arm that keeps a "the record lowers" claim from
+/// hiding an unmeasured predicate.
 #[test]
 fn accept_m13_b_m13s_travelers_site_lowers_and_a_counting_mode_lowers_too() {
     let named = lower(&travelers(text("player")));
@@ -1680,22 +1701,19 @@ fn accept_m13_b_m13s_travelers_site_lowers_and_a_counting_mode_lowers_too() {
 
 /// **A directive this build measures no effect for is refused, not honoured.**
 ///
-/// The allegiance half of the sheet's priorities has no directive in M13's
-/// record; if one were spelled anyway — an authored `SET_FACTION` here — the
-/// production measurement reports it unmeasured and the lowering refuses the
-/// site by name instead of quietly doing nothing. That is the guard against an
-/// implementation "supporting" an allegiance transition the shipped data never
-/// spells, and against a guessed key ever being treated as measured.
+/// M13's record spells `SET_AI_TEAM` but no faction directive; if one were
+/// spelled anyway — an authored `SET_FACTION` here — the production measurement
+/// reports it unmeasured and the lowering refuses the site by name instead of
+/// quietly doing nothing. That is the guard against an implementation
+/// "supporting" a directive the shipped data never spells, and against a
+/// guessed key ever being treated as measured.
 #[test]
 fn accept_m13_b_an_ungrounded_allegiance_directive_is_refused_rather_than_honoured() {
     let document = control_record(vec![block_site(
         1,
         vec![
             site("BEGIN_DORMANT", vec![ZrdValue::Float(-1.0)]),
-            site(
-                "SET_FACTION",
-                vec![text("britkestrel_1"), text("britpeace")],
-            ),
+            site("SET_FACTION", vec![text("hafury_1"), text("britpeace")]),
         ],
     )]);
     let record = measure_control_record(&document);
@@ -1754,18 +1772,20 @@ fn accept_m13_b_an_ungrounded_allegiance_directive_is_refused_rather_than_honour
 /// **A nap's delay is data, and an `INACTIVE` threshold defaults to the list it
 /// spells.**
 ///
-/// The damage ladder's whole mechanism is naps carrying a delay (15, 15, 10, 25
-/// seconds), so a delay must never be read as an address: a nap at `2` whose
-/// delay is `9999` in a two-block record lowers and validates, while an integer
-/// in an address position is walked as one by the graph test — the addressing
-/// rule itself is pinned once for the reconciled suites by M06-B-FU3 (#819).
+/// The nap arm is M13's own mechanism: block 24 naps block 2 with a 5-second
+/// delay and block 27 naps block 7 with 20, so a delay must never be read as an
+/// address — a nap at `2` whose delay is `9999` in a two-block record lowers and
+/// validates, while an integer in an address position is walked as one by the
+/// graph test; the addressing rule itself is pinned once for the reconciled
+/// suites by M06-B-FU3 (#819).
 ///
-/// The other half is M13's own evaluator: six of its blocks spell `INACTIVE1`
-/// with **no** `INACTIVE_COMPLETION_COUNT`, and the lowering writes the block's
-/// own member count as the threshold — never `1`, never an invented default. A
-/// spelled count wins over that default, and it is carried exactly as spelled:
-/// a count of `99` against three members stays `99`, because the record is data
-/// and clamping it would be a guess.
+/// The other half is a shared evaluator M13's corrected record does **not**
+/// spell (`INACTIVE*` belongs to the archive this stage once measured): six
+/// authored blocks spell `INACTIVE1` with **no** `INACTIVE_COMPLETION_COUNT`, and
+/// the lowering writes the block's own member count as the threshold — never
+/// `1`, never an invented default. A spelled count wins over that default, and
+/// it is carried exactly as spelled: a count of `99` against three members stays
+/// `99`, because the record is data and clamping it would be a guess.
 #[test]
 fn accept_m13_b_a_nap_delay_is_data_and_an_inactive_threshold_defaults_to_its_list() {
     let nap = control_record(vec![
