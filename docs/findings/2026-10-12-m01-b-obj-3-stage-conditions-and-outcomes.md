@@ -1,5 +1,7 @@
 # M01-B-OBJ-3: what `INACTIVE<n>`, `INACTIVE_COMPLETION_COUNT` and `INSTANTWIN`/`INSTANTLOSS` do
 
+> **Archive attribution note (#1568, after #1565 `M01-ARCHIVE-DECISION`).** The measurements in this document were taken on `ZBD/C1C/M01/zrdr.zbd` under the pre-decision "M01" label. That archive is campaign position `ch2-m01`, work order **M06** "The Red Menace"; M01 "The Lost Treasure" is `ZBD/C3/M01/zrdr.zbd`. The bytes measured are unchanged; read every "M01" attribution below as M06. See `docs/findings/2026-10-17-m01-archive-decision.md`. The text below is the original historical record and is not rewritten.
+
 Date: 2026-10-12. Task: #1360 `M01-B-OBJ-3` (parent #1355 `M01-B-OBJ`). Test prefix
 `accept_m01_b_obj_3_`. Capabilities used: `retail` (read of `$CS_GAME_DIR`) and
 `CS_ENGINE_IMAGE` (read-only static analysis of `crimson.decrypted.exe`, 2,580,480

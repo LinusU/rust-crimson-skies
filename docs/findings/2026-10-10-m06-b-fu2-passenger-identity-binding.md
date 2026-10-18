@@ -1,5 +1,7 @@
 # M06-B-FU2: where M06's passenger identity would live, and why nothing binds it
 
+> **Archive attribution note (#1568, after #1565 `M01-ARCHIVE-DECISION`).** The measurements in this document were taken on `ZBD/C2/M01/zrdr.zbd`, which declares `snd_c3-HW-m2`: campaign position `ch3-m02`, work order **M12**, not M06. Read the "M06" attribution below as M12 (the passenger-identity unknown now lives in M12's binding record). See `docs/findings/2026-10-17-m01-archive-decision.md`. The text below is the original historical record and is not rewritten.
+
 Date: 2026-10-10. Task: M06-B-FU2 (Rally #818) "Locate M06's passenger-identity
 binding: `Passenger_hangar` is referenced by nothing", the follow-up of M06-B
 (#274, `missions/M06.md`, work order `M06-B`). Owner paths used:

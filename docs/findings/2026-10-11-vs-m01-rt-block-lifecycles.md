@@ -1,5 +1,7 @@
 # M01's control record spells one positive clock and six awake blocks, and the block indices are record positions
 
+> **Archive attribution note (#1568, after #1565 `M01-ARCHIVE-DECISION`).** The measurements in this document were taken on `ZBD/C1C/M01/zrdr.zbd` under the pre-decision "M01" label. That archive is campaign position `ch2-m01`, work order **M06** "The Red Menace"; M01 "The Lost Treasure" is `ZBD/C3/M01/zrdr.zbd`. The bytes measured are unchanged; read every "M01" attribution below as M06. See `docs/findings/2026-10-17-m01-archive-decision.md`. The text below is the original historical record and is not rewritten.
+
 Stage VS-M01-RT-HOST-BLOCK-LIFECYCLES (Rally #1282). Measured 2026-10-11 over the
 owner's installation by walking M01's own control member
 (`zbd/c1c/m01`, `objectives.zrd`, 58 numbered blocks) through the production reader

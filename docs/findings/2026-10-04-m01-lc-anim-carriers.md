@@ -1,5 +1,7 @@
 # M01-LC-ANIM-CARRIERS: what `mis_anim.zbd` / `cam_anim.zbd` actually carry
 
+> **Archive attribution note (#1568, after #1565 `M01-ARCHIVE-DECISION`).** The measurements in this document were taken on `ZBD/C1C/M01/zrdr.zbd` under the pre-decision "M01" label. That archive is campaign position `ch2-m01`, work order **M06** "The Red Menace"; M01 "The Lost Treasure" is `ZBD/C3/M01/zrdr.zbd`. The bytes measured are unchanged; read every "M01" attribution below as M06. See `docs/findings/2026-10-17-m01-archive-decision.md`. The text below is the original historical record and is not rewritten.
+
 Date: 2026-10-04. Task: #633 (`M01-LC-ANIM-CARRIERS`). Capability used:
 **`retail`** (read-only access to `$CS_GAME_DIR`) and ordinary build/test. No
 original run happened; nothing here is `verified_original`, and nothing here

@@ -1,5 +1,7 @@
 # M01-B-WAKE: the world facts that wake M01's dormant `Finish` blocks
 
+> **Archive attribution note (#1568, after #1565 `M01-ARCHIVE-DECISION`).** The measurements in this document were taken on `ZBD/C1C/M01/zrdr.zbd` under the pre-decision "M01" label. That archive is campaign position `ch2-m01`, work order **M06** "The Red Menace"; M01 "The Lost Treasure" is `ZBD/C3/M01/zrdr.zbd`. The bytes measured are unchanged; read every "M01" attribution below as M06. See `docs/findings/2026-10-17-m01-archive-decision.md`. The text below is the original historical record and is not rewritten.
+
 Date: 2026-10-12. Task: #1357 `M01-B-WAKE` (parent #1355 `M01-B`, itself under
 `M01-B`'s mission-specific compatibility gaps). Test prefix `accept_m01_b_wake_`.
 Capabilities used: `retail` (read of `$CS_GAME_DIR`) plus the measured objective

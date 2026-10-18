@@ -1,5 +1,7 @@
 # VS-M01-RT-EVIDENCE-B: which sound the M01 launch legitimately starts
 
+> **Archive attribution note (#1568, after #1565 `M01-ARCHIVE-DECISION`).** The measurements in this document were taken on `ZBD/C1C/M01/zrdr.zbd` under the pre-decision "M01" label. That archive is campaign position `ch2-m01`, work order **M06** "The Red Menace"; M01 "The Lost Treasure" is `ZBD/C3/M01/zrdr.zbd`. The bytes measured are unchanged; read every "M01" attribution below as M06. See `docs/findings/2026-10-17-m01-archive-decision.md`. The text below is the original historical record and is not rewritten.
+
 Date: 2026-10-11. Task #1313 (VS-M01-RT-EVIDENCE-B), part of #1218 (VS-M01-RT-EVIDENCE).
 Capability used: `retail` (read access to the original installation). This is file
 evidence only — it is not an original-run capture and proves nothing about audible
