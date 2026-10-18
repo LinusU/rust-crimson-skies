@@ -487,17 +487,10 @@ fn read_member(dir: &Path, container: &str, offset: u64, length: u64) -> Vec<u8>
 /// rather than leaving this one standing.
 fn review_identity() -> String {
     let recorded = String::from(
-        "implementer: openrouter/stealth-space-bunny-alpha (bunny-alpha-2, Rally #490, implement \
-         claim of 2026-10-03T06:16:44Z, branch commit 1fd3d88f). reviewer: \
-         openrouter/stealth-space-bunny-alpha (bunny-alpha-2, Rally #490, review claim of \
-         2026-10-03T07:26:53Z) — the same agent instance and model as the implementer, so this \
-         review is not independent evidence: it is a self-review and it cannot stand in for a \
-         fresh-context agent or for the owner's human approval. Its context was not fresh: this \
-         session started from the implementer's own hand-over summary and read the branch diff from \
-         there, so the summary was treated as a claim to re-check rather than as evidence; every \
-         retail count below was re-derived from the installation, and what the re-checking changed \
-         is listed under \"Review corrections\" in \
-         docs/findings/2026-10-03-f14-d-7-sound-cue-collection.md. \
+        "implementer: anthropic/claude-sonnet-5-5 (sonnet-1, Rally #579, implement claim of \
+         2026-10-18T11:25:28Z), applying the owner ruling of 2026-10-12 recorded on that task. \
+         reviewer: none yet — this report is the implementer's own and is not independent \
+         evidence; it cannot stand in for a fresh-context agent or for the owner's human approval. \
          `checked` is the ceiling for an agent review",
     );
     std::env::var("CS_EVIDENCE_REVIEW").unwrap_or(recorded)
@@ -528,9 +521,12 @@ fn review_method() -> String {
          its one static edge points at the container's inventory row. A name declared \
          twice with identical bytes is one cue with the repeat counted \
          (duplicate_member), and a name declared twice with different bytes is no row at \
-         all (ambiguous_member_name); a member whose extent is not inside the container, \
-         whose name is not keyable text, or whose RIFF/WAVE header does not read is a named \
-         gap under the producing reader's own code. Implementer mutation probes on this \
+         all (ambiguous_member_name). Owner ruling #579 (option 3, split by identity): a \
+         member whose name is empty, not text or not keyable, or whose repeated name is \
+         ambiguous, cannot be named and is a gap under its own code; a member that can be \
+         named but whose extent is outside the container or whose RIFF/WAVE header does not \
+         read is an inventory row with parse_state `failed` carrying the producing reader's \
+         own error code. Implementer mutation probes on this \
          branch: removing the sound_rows call from retail_baseline, keying a cue by the \
          member name without the container, turning a member with an unreadable header \
          into a row, minting a music or dialogue row from a member-name prefix, and \
@@ -548,18 +544,6 @@ fn review_method() -> String {
 /// affected content and the task that resolves it (AGENTS owner directive,
 /// 2026-09-28: a limitation must survive into machine-readable evidence).
 const UNKNOWN_LIMITATIONS: &[&str] = &[
-    "A member the sound family could not turn into a row is a named gap, not a row: IDENTITY-CONTENT \
-     requires a collection to keep failed entries (`an opaque unparsed member is still an inventory \
-     row`), while this stage's own rule is that a cue named only by a member name is not a row. On \
-     this installation the two rules cost nothing measurable — all 5041 members of both archives read \
-     their RIFF/WAVE header and are accounted for as 4951 rows plus 90 counted byte-identical repeats \
-     — but a member whose extent is out of bounds, whose name is not keyable text, whose name has no \
-     valid id key, or whose header does not read is currently counted in collection_status.gaps \
-     instead of being given an inventory row with parse_state `failed`. Affected content: any such \
-     member in another installation or another build. Resolving task: the owner rules which of the \
-     two statements wins (a reconciliation of this stage's rule with IDENTITY-CONTENT, to be taken \
-     up by the next F14-D collection follow-up); until then both readings are recorded here and in \
-     docs/findings/2026-10-03-f14-d-7-sound-cue-collection.md.",
     "Nine of the collections IDENTITY-CONTENT requires are now populated: install files, \
      campaign missions, mission programs, the instant-action and multiplayer scenario \
      directories (F14-D.1), multiplayer rules (F14-D.2), world groups (F14-D.3), factions \
