@@ -274,6 +274,7 @@ mod m01_lc_player_config;
 mod m01_play_triggers_turret_class;
 mod m01_window_actors;
 mod m01_wingman_formation_a;
+mod m01_wingman_player_leader;
 mod m02_b_fu3;
 mod m06_a;
 mod m06_b;
