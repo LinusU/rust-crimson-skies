@@ -169,7 +169,10 @@ fn evidence_report_m04_b_writes_the_acceptance_report() {
              Claim is implemented only; no mission was played, no \
              original executable was run and nothing is verified_original. Regenerated on the \
              re-pinned suite by swe2-max-1/swe2-max-1 (SWE-2 Max) in its Rally #1617 implement \
-             session, before review; `review.identity` above is unchanged and records M04-B's \
+             session, and again on the reviewed commit by swe2-max-1/swe2-max-1 (SWE-2 Max) in \
+             its Rally #1617 review session — a separate session with a fresh context, but the \
+             same agent name and model as the re-pin's implementer, so NOT independent review; \
+             `review.identity` above is unchanged and records M04-B's \
              original implementer and review, not a review of this re-pin. Validated with \
              tools/validate_evidence.py --require-pass"
         ),

@@ -187,8 +187,11 @@ fn evidence_report_m04_b_fu1_writes_the_acceptance_report() {
              measured effect, no mission was played, no original executable was run and \
              nothing is verified_original. Claim is implemented only; validated with \
              tools/validate_evidence.py --require-pass. Regenerated on the re-pinned suite by \
-             swe2-max-1/swe2-max-1 (SWE-2 Max) in its Rally #1617 implement session, before \
-             review; `review.identity` above is unchanged and records M04-B-FU1's original \
+             swe2-max-1/swe2-max-1 (SWE-2 Max) in its Rally #1617 implement session, and again \
+             on the reviewed commit by swe2-max-1/swe2-max-1 (SWE-2 Max) in its Rally #1617 \
+             review session — a separate session with a fresh context, but the same agent name \
+             and model as the re-pin's implementer, so NOT independent review; \
+             `review.identity` above is unchanged and records M04-B-FU1's original \
              implementer and review, not a review of this re-pin. `candidate_tree` is the tree of the \
              commit the suite and this harness ran on; the only later delta is this report's \
              own copy under docs/findings/evidence/, which no acceptance test reads"
