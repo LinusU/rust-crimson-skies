@@ -839,6 +839,49 @@ fn accept_f47_d_both_production_readers_apply_the_one_shared_grouping_rule() {
     assert_eq!(status.rows, 2, "the baseline rows are the bound items");
 }
 
+/// F47-C4: the scrapbook-table read and the resource-header read reach
+/// `GOSDATA/ASSETS/crimson.rof` through one shared find + mount + member +
+/// read path, so both locate the archive by the F02 logical key rather than by
+/// a spelling one of them happens to prefer. An installation whose inventory
+/// records the container with the other host's component separator
+/// (`GOSDATA\ASSETS\crimson.rof`) is the same archive to both: discovery
+/// reads the table, and `resource_names` resolves the names in the same
+/// container's `*.H` members.
+///
+/// If the header read went back to its own exact-spelling match, it would
+/// report the archive missing here while the table read still finds it — the
+/// divergence this test prevents.
+#[test]
+fn accept_f47_d_both_readers_find_the_archive_through_the_one_shared_member_read() {
+    let member = table(&[record("0_1_1", 1, "ART_A")]);
+    let resource = b"#define IDS_ONE 101\r\n#define IDS_TWO 102\r\n";
+    let resrc1 = b"#define IDS_THREE 103\r\n";
+    let temp = TempInstall::new("shared-find");
+    let entries = vec![
+        Entry::plain("SCRAPBOOK.CSV", &member),
+        Entry::plain("SCRIPTS/RESOURCE.H", resource),
+        Entry::plain("SCRIPTS/RESRC1.H", resrc1),
+        Entry::plain("GRAPHICS/SCRAPBOOK/ART_A.PNG", b"authored picture bytes"),
+    ];
+    // The inventory records the archive with the other host's separator; F02's
+    // logical key folds the two to the same `gosdata/assets/crimson.rof`.
+    temp.write(
+        "GOSDATA\\ASSETS\\crimson.rof",
+        &rof_container("ASSETS", &entries),
+    );
+
+    let discovered = DiscoveredScrapbook::discover(&temp.0)
+        .expect("the table read finds the archive by its logical key");
+    assert_eq!(discovered.paged_items(), 1);
+    assert_eq!(discovered.pages[0].items[0].key, "0_1_1");
+
+    let names = resource_names(&temp.0)
+        .expect("the header read finds the same archive by the same logical key");
+    assert_eq!(names.get(b"IDS_ONE".as_slice()), Some(&101));
+    assert_eq!(names.get(b"IDS_TWO".as_slice()), Some(&102));
+    assert_eq!(names.get(b"IDS_THREE".as_slice()), Some(&103));
+}
+
 /// The owner's installation, read through production discovery: the measured
 /// shape of the real table, and the audit of it against the real progression.
 #[test]
