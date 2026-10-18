@@ -711,6 +711,7 @@
 
 pub mod accessibility;
 pub mod ai;
+pub mod airframe_damage;
 pub mod airframe_visual;
 pub mod animation;
 pub mod asset_stack;
