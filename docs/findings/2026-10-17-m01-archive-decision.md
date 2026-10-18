@@ -170,7 +170,7 @@ finding measured did not move; the campaign position they belong to did).
 - **Runtime launch path.** `cs`'s M01 launch still resolves `zbd/c1c/m01`
   through its own path table, so `cs --mission M01` today runs M06's archive
   under M01's label. Re-pointing the runtime at `zbd/c3/m01` is follow-up
-  work — filed as #1567 `M01-RUNTIME-ARCHIVE-REPOINT` (M01's real content
+  work (done by #1567, see `2026-10-18-m01-runtime-archive-repoint.md`) — filed as #1567 `M01-RUNTIME-ARCHIVE-REPOINT` (M01's real content
   wiring, the bridge convoy, is dependent task #1566
   `M01-BRIDGE-CONVOY-SPAWN`), not part of this decision.
 - **Past evidence reports** (`docs/findings/evidence/M01-*.json`, the

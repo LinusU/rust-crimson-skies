@@ -569,6 +569,13 @@ impl std::error::Error for MissionLaunchError {}
 /// orders' own identities; the binding confirms them against the install).
 const DECLARED_MISSIONS: &[(&str, &str)] = &[("M01", "The Lost Treasure")];
 
+/// The `(label, discovery title)` pairs `--mission` accepts, so a test plans
+/// exactly what the launch plans.
+#[must_use]
+pub const fn declared_missions() -> &'static [(&'static str, &'static str)] {
+    DECLARED_MISSIONS
+}
+
 /// Plans the requested mission and, when the closure is satisfied, runs it in
 /// the windowed composition (#1215). A plan with any unsatisfied surface is
 /// refused with its diagnostics: nothing is spawned, drawn or played.

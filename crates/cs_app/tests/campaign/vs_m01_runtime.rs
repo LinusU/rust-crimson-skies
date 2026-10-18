@@ -450,3 +450,38 @@ fn accept_vs_m01_runtime_retail_launch_reaches_the_composition_seam() {
             .join("; ")
     );
 }
+
+/// **Retail: the `cs --mission M01` launch plan is the Lost Treasure's
+/// archive, `ZBD/C3/M01`.** `launch_mission` plans the declared
+/// `("M01", "The Lost Treasure")` identity through the same binding the
+/// records use (M01-RUNTIME-ARCHIVE-REPOINT, #1567), so the plan's identities
+/// and directories are `world/c3`, `script/c3-m01-zrdr` and `zbd/c3/m01` —
+/// not the `zbd/c1c/m01` archive that is M06's.
+#[test]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
+fn accept_vs_m01_runtime_retail_m01_launch_plan_mounts_the_c3_archive() {
+    let (declared_label, declared_title) = cs_app::mission_launch::declared_missions()
+        .iter()
+        .find(|(declared, _)| declared.eq_ignore_ascii_case("M01"))
+        .copied()
+        .expect("the launch declares M01");
+    let plan = plan_mission_launch(&game_dir(), label(declared_label), declared_title)
+        .expect("the installation yields a launch plan for M01");
+
+    assert_eq!(plan.catalog_id, cid(ContentKind::Mission, "ch1-m01"));
+    assert_eq!(plan.world_id, cid(ContentKind::World, "c3"));
+    assert_eq!(plan.program_id, cid(ContentKind::Script, "c3-m01-zrdr"));
+    assert_eq!(plan.mission_dir, "zbd/c3/m01");
+    assert_eq!(plan.group_dir, "zbd/c3");
+    let program = plan
+        .surface(LaunchSurface::MissionProgram)
+        .expect("the program surface is reported");
+    assert!(
+        program
+            .assets
+            .iter()
+            .any(|asset| asset.key == "zbd/c3/m01/zrdr.zbd"),
+        "the launch mounts zbd/c3/m01/zrdr.zbd: {:?}",
+        program.assets.iter().map(|a| &a.key).collect::<Vec<_>>()
+    );
+}
