@@ -44,13 +44,15 @@
 //! audio session and the world together. [`WeaponEffectSchedulePlugin`] is the
 //! production caller (task F27-C-FX-SCHED #1304): it registers
 //! [`drive_weapon_effect_presentation`] on the session's **fixed loop**, once
-//! per committed tick, after the weapon step that emits the effects and before
-//! the damage consumers — the same stage and ordering
-//! [`WeaponSchedulePlugin`](crate::weapons::WeaponSchedulePlugin) gives
-//! [`drive_weapon_session`](crate::weapons::drive_weapon_session), which that
-//! plugin adds it from. One-shot *device* playback is F41's follow-up space —
-//! this stage stops at the accepted, placed cue the router holds, exactly where
-//! the loop systems stood before their mixer consumer.
+//! per committed tick and ordered after the weapon step that emits the effects
+//! — the same stage
+//! [`WeaponSchedulePlugin`](crate::weapons::WeaponSchedulePlugin) runs
+//! [`drive_weapon_session`](crate::weapons::drive_weapon_session) in, which
+//! that plugin adds it from — so the effects a committed tick emitted are the
+//! ones this pass presents, in that same tick. One-shot *device* playback is
+//! F41's follow-up space — this stage stops at the accepted, placed cue the
+//! router holds, exactly where the loop systems stood before their mixer
+//! consumer.
 
 use bevy::ecs::component::Component;
 use bevy::ecs::resource::Resource;
