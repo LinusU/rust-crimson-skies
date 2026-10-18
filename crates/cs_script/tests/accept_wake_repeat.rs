@@ -8,8 +8,8 @@
 //! original run.
 
 use cs_script::ir::{
-    Action, Condition, DirectiveOperation, IR_VERSION, MissionProgram, Objective, SymbolId, Value,
-    ValidatedProgram,
+    Action, Condition, DirectiveOperation, IR_VERSION, MissionProgram, Objective, SymbolId,
+    ValidatedProgram, Value,
 };
 use cs_script::runtime::{
     MissionFacts, MissionState, ObjectiveLifecycle, RestoreDefect, RestoreError, SessionGeneration,
@@ -55,7 +55,13 @@ use ObjectiveLifecycle::{Awake, Dormant, Napping};
 fn accept_wake_repeat_a_wake_from_nap_emits_the_wake_effect_again() {
     let p = program();
     let mut state = MissionState::new(&p, SessionGeneration(1), 0);
-    for (tick, l) in [(1, Dormant), (2, Awake), (3, Awake), (4, Napping), (5, Napping)] {
+    for (tick, l) in [
+        (1, Dormant),
+        (2, Awake),
+        (3, Awake),
+        (4, Napping),
+        (5, Napping),
+    ] {
         step(&mut state, &p, tick, l);
     }
     assert_eq!(state.directives().len(), 1, "the first wake emitted once");
@@ -97,7 +103,11 @@ fn accept_wake_repeat_the_wake_ledger_survives_a_save_record() {
     assert_eq!(state.directives().len(), 2);
     let mut restored = MissionState::restore(&p, state.snapshot(&p)).expect("restores");
     step(&mut restored, &p, 4, Awake);
-    assert_eq!(restored.directives().len(), 2, "the wake it was on is not repeated");
+    assert_eq!(
+        restored.directives().len(),
+        2,
+        "the wake it was on is not repeated"
+    );
     step(&mut restored, &p, 5, Napping);
     step(&mut restored, &p, 6, Awake);
     assert_eq!(restored.directives().len(), 3, "the next wake still fires");
