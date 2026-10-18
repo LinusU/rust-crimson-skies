@@ -6427,21 +6427,28 @@ fn stores_no_stored_geometry(record: &RawNode) -> bool {
         })
 }
 
-/// Whether the record stores **a grouping box and nothing else**: its stored
-/// selector word is [`GROUPING_BOX_SELECTOR`] (`unk112 = 2`, the loader's
-/// pointer to the third box), that third box is non-empty, and the first two
-/// are empty.
+/// Whether the record binds **no mesh** and stores **a grouping box and nothing
+/// else**: its stored selector word is [`GROUPING_BOX_SELECTOR`] (`unk112 = 2`,
+/// the loader's pointer to the third box), that third box is non-empty, and the
+/// first two are empty.
 ///
 /// This is the store state task #1578 measured for the grid-named records that
 /// bind no mesh and hold a box in the slot [`stored_extent`] does not read
-/// ([`GRID_GROUPING_NODE_NEVER_BLOCKS`]). The selector is required, not just
-/// "some box is non-empty": a record that named its own box with a different
-/// selector is a different class and is left to the rest of the role match. A
-/// box this function cannot parse (non-finite or inverted) counts as "not
+/// ([`GRID_GROUPING_NODE_NEVER_BLOCKS`]). Both halves are required:
+///
+/// * the `mesh_index < 0` half is what makes the record's box a *grouping*
+///   volume rather than its own geometry — a record that binds a mesh is the
+///   index's static geometry whatever its selector word says, and it is left to
+///   [`INDEXED_RECORD_IS_STATIC`] exactly as before this task;
+/// * the selector is required, not just "some box is non-empty": a record that
+///   named its own box with a different selector is a different class and is
+///   left to the rest of the role match.
+///
+/// A box this function cannot parse (non-finite or inverted) counts as "not
 /// empty", so the record keeps its container's silence rather than being told
 /// it groups its children.
 fn stores_only_a_grouping_box(record: &RawNode) -> bool {
-    if record.info.unk112 != GROUPING_BOX_SELECTOR {
+    if record.mesh_index() >= 0 || record.info.unk112 != GROUPING_BOX_SELECTOR {
         return false;
     }
     let parse = |stored: [[f32; 3]; 2]| {

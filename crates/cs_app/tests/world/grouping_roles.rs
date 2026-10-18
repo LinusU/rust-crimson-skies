@@ -19,6 +19,9 @@
 //! * the same store class **with** [`INTERSECTION_NARROW_PHASE_FLAG`] stored
 //!   keeps [`GRID_GROUPING_NODE_ROLE_UNMEASURED`] on role and shape, so the rule
 //!   is keyed on the record's own measurement and not on "binds no mesh";
+//! * a record with the **same box store shape but a mesh bound** stays the
+//!   index's `Solid` + `FromMesh`, so the arm is keyed on the record's own
+//!   no-mesh store and not on the box shape alone;
 //! * the report's partition identity gains the grouping term, and
 //!   `geometry_verdict` stays open while the kept record is;
 //! * `spawn_world` presents the answered record and never reports it as a gap,
@@ -46,8 +49,8 @@ use cs_types::content::{Origin, Resolved};
 use cs_types::evidence::ContentHash;
 
 use super::import_retail::{
-    Fixture, MARKER, ObjectSpec, SLAB, TILE_A, TILE_B, VOLUME, fixture_meshes, mesh_slots,
-    provenance, read, write_container,
+    Fixture, MARKER, MESH_SLAB, ObjectSpec, SLAB, TILE_A, TILE_B, VOLUME, fixture_meshes,
+    mesh_slots, provenance, read, write_container,
 };
 
 /// The fixture slot of the grouping record whose stored narrow-phase bit is
@@ -61,6 +64,11 @@ const GROUPING_DROPPED: u32 = 5;
 /// the image's walk would copy its box: the class that keeps the explicit
 /// unknown.
 const GROUPING_KEPT: u32 = 6;
+
+/// The fixture slot of a record that stores the **same** grouping box shape but
+/// binds a mesh: it is the index's static geometry, not a grouping node, so the
+/// new arm must not fire for it.
+const GROUPING_MESHED: u32 = 7;
 
 /// **A grouping grid record resolves `None`; one that stores the narrow-phase
 /// bit keeps its own unknown.**
@@ -81,7 +89,7 @@ fn accept_m01_c3_world_residuals_a_grouping_grid_record_resolves_and_a_kept_one_
     let world = imported.definition();
 
     // The report counts the store class the way the verdict reads it.
-    assert_eq!(report.partition_records(), 5, "the grid names five records");
+    assert_eq!(report.partition_records(), 6, "the grid names six records");
     assert_eq!(
         report.partition_records_grouping_node(),
         2,
@@ -102,8 +110,25 @@ fn accept_m01_c3_world_residuals_a_grouping_grid_record_resolves_and_a_kept_one_
     );
     assert_eq!(
         report.objects_solid(),
-        3,
-        "the three records with a mesh keep {INDEXED_RECORD_IS_STATIC}"
+        4,
+        "the four records with a mesh keep {INDEXED_RECORD_IS_STATIC}"
+    );
+
+    // The control: the same store shape with a mesh bound is the index's static
+    // geometry, so the grouping arm is keyed on the record's own no-mesh store
+    // and not on the box shape alone.
+    let meshed = world
+        .object(&object(GROUPING_MESHED))
+        .expect("the meshed control imported");
+    assert_eq!(
+        meshed.known_collision(),
+        Some(WorldCollisionRole::Solid),
+        "a record that binds a mesh is static geometry whatever its box selector says"
+    );
+    assert_eq!(
+        meshed.known_shape(),
+        Some(cs_content::world::WorldCollisionShape::FromMesh),
+        "and its collider is derived from that mesh"
     );
 
     // The grouping record the walk descends past: role `None`, its absent
@@ -225,8 +250,14 @@ fn grouping_fixture() -> Fixture {
             // between the walk descending past the box and testing it.
             .flags(0x0308_851c | INTERSECTION_NARROW_PHASE_FLAG),
     );
+    // The control: the same store shape, but the record binds a mesh, so it is
+    // the index's static geometry and the grouping arm must not fire.
+    fixture.objects.push(
+        ObjectSpec::new("grouping_meshed", MESH_SLAB)
+            .grouping_box([-2.0, 0.0, -2.0], [-1.0, 1.0, -1.0]),
+    );
     fixture.grid = vec![
-        vec![TILE_A, SLAB, GROUPING_DROPPED],
+        vec![TILE_A, SLAB, GROUPING_DROPPED, GROUPING_MESHED],
         vec![TILE_B, GROUPING_KEPT],
     ];
     fixture
