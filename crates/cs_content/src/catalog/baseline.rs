@@ -101,8 +101,11 @@
 //!   [`ContentKind::Music`] and [`ContentKind::Dialogue`] hold no row and say
 //!   so in their own [`CollectionStatus`] records instead of being minted from a
 //!   member-name prefix. A member the sound reader could not list, whose name is
-//!   not keyable text, or whose header does not read is a named gap, never a
-//!   dropped row; a name one container declares twice with **identical** bytes
+//!   not keyable text is a named gap, never a dropped row. A member whose name
+//!   is keyable but whose extent is outside the container or whose header does
+//!   not read is still a row, with `parse_state: failed` and the reader's own
+//!   error code as the reason (owner ruling #579: only a member that cannot be
+//!   *named* is a gap); a name one container declares twice with **identical** bytes
 //!   is one cue with the repeat counted (`duplicate_member`), and a name
 //!   declared twice with **different** bytes has no identity that tells the two
 //!   apart, so neither is a row (`ambiguous_member_name`). A member name the id
@@ -389,8 +392,10 @@ pub const SOUND_CONTAINER_PATTERN: &str = "ZBD/sounds*.zbd";
 /// prefix first, so a file that is not a sound container is never read whole.
 const SOUND_PROBE_BYTES: usize = 16;
 
-/// Gap code: one member the sound reader listed, but its declared extent is not
-/// inside the container, so there are no bytes to read.
+/// Reason code of a failed sound row whose declared extent is not inside the
+/// container, used when the listing records no more specific member error. The
+/// member is named, so it is a row with `parse_state: failed` and no digest, not
+/// a gap (owner ruling #579).
 const GAP_SOUND_EXTENT: &str = "member_out_of_bounds";
 
 /// Gap code: one member the sound reader listed whose declared name is not
@@ -5000,8 +5005,12 @@ struct SoundCue {
     /// The member's declared extent, extended with the container path and the
     /// member key so the row names its own bytes.
     span: SourceSpan,
-    /// Digest of the member's stored bytes.
-    digest: ContentHash,
+    /// Digest of the member's stored bytes; `None` when the declared extent is
+    /// outside the container, so there are no bytes.
+    digest: Option<ContentHash>,
+    /// Why the member's bytes could not be decoded (the reader's own error code
+    /// first), when they could not. The member is still a row, as a failed parse.
+    failure: Option<String>,
 }
 
 /// The `sound` rows the installation's ZBD sound containers hold, plus the
@@ -5015,9 +5024,11 @@ struct SoundCue {
 /// index and [`cs_formats::zbd::read_sound_archive`] — and every listed member
 /// contributes.
 ///
-/// A row is minted only for a member whose extent lies inside the container and
-/// whose RIFF/WAVE header reads: that is what makes a cue a recording this
-/// engine has read rather than a name. The identity is the **container plus the
+/// A row is minted for every member that can be named. One whose extent lies
+/// inside the container and whose RIFF/WAVE header reads is `parsed`: that is
+/// what makes a cue a recording this engine has read rather than a name. One
+/// that can be named but not read is a row with `parse_state: failed` (owner
+/// ruling #579, option 3). The identity is the **container plus the
 /// name that container's own index declares** — never a bare member name (which
 /// is declared in both sound containers with different bytes, a low-rate and a
 /// high-rate recording of one cue) and never a position in a walk — so the two
@@ -5031,13 +5042,14 @@ struct SoundCue {
 ///
 /// * a container dispatch, index or listing refuses is counted under that
 ///   reader's own stable code, and the other containers still produce rows;
-/// * a member whose extent failed its bounds check is counted under its own
-///   member-error code (`member_out_of_bounds` or `extent_overflow`);
+/// * a member whose extent failed its bounds check is a **failed row** carrying
+///   its own member-error code (`member_out_of_bounds` or `extent_overflow`) and
+///   no digest;
 /// * a member whose name is not keyable text, is empty, or has no valid id key
 ///   is counted under [`GAP_SOUND_NAME_NOT_TEXT`] / [`GAP_SOUND_NAME_EMPTY`] /
 ///   [`GAP_SOUND_NAME_NOT_KEYABLE`];
-/// * a member whose RIFF/WAVE header does not read is counted under that header
-///   reader's own code (`WaveError::code`), never dropped;
+/// * a member whose RIFF/WAVE header does not read is a **failed row** carrying
+///   that header reader's own code (`WaveError::code`), never dropped;
 /// * a name one container declares several times with **identical** bytes is one
 ///   cue, and each repeat is counted under [`GAP_SOUND_DUPLICATE_MEMBER`];
 /// * a name declared several times with **different** bytes has no identity that
@@ -5188,15 +5200,7 @@ fn sound_cues(
         })?;
 
     for row in archive.listing().rows() {
-        // A member whose extent failed its bounds check is in the index but has
-        // no bytes inside the container, so there is nothing to read.
-        let Some(entry) = archive.entry(row.index()) else {
-            *gaps
-                .entry(row.error().map_or(GAP_SOUND_EXTENT, |error| error.code()))
-                .or_default() += 1;
-            continue;
-        };
-        let Ok(name) = std::str::from_utf8(entry.name()) else {
+        let Ok(name) = std::str::from_utf8(row.name()) else {
             *gaps.entry(GAP_SOUND_NAME_NOT_TEXT).or_default() += 1;
             continue;
         };
@@ -5212,13 +5216,29 @@ fn sound_cues(
             *gaps.entry(GAP_SOUND_NAME_NOT_KEYABLE).or_default() += 1;
             continue;
         };
-        // The header is the evidence that the member is a recording: a member
-        // whose bytes are not a RIFF/WAVE file is a gap, not a guessed cue.
-        if let Err(error) = entry.wave() {
-            *gaps.entry(error.code()).or_default() += 1;
-            continue;
-        }
-        let digest = cs_assets::install::sha256(entry.content());
+        // Owner ruling (#579, option 3): the member has an identity now, so
+        // whatever the readers could not do with its bytes is the row's failed
+        // parse state and not a missing row. A member outside the container has
+        // no bytes to hash; a member whose RIFF/WAVE header does not read keeps
+        // the digest of the bytes it stores.
+        let (digest, failure) = match archive.entry(row.index()) {
+            None => (
+                None,
+                Some(format!(
+                    "{}: the member's declared extent is not inside its container",
+                    row.error().map_or(GAP_SOUND_EXTENT, |error| error.code())
+                )),
+            ),
+            Some(entry) => (
+                Some(cs_assets::install::sha256(entry.content())),
+                entry.wave().err().map(|error| {
+                    format!(
+                        "{}: the member's RIFF/WAVE header does not read",
+                        error.code()
+                    )
+                }),
+            ),
+        };
         // The archive's own span is the byte range inside the container; the row's
         // span below is that range plus the container path and the member key.
         let member = row.span();
@@ -5228,7 +5248,7 @@ fn sound_cues(
             Some(name),
             member.offset,
             member.length,
-            Some(digest),
+            digest,
         )
         .map_err(|source| BaselineError::Span {
             path: format!("{spelling}/{name}"),
@@ -5243,6 +5263,7 @@ fn sound_cues(
                 index: row.index(),
                 span,
                 digest,
+                failure,
             });
     }
 
@@ -5253,7 +5274,11 @@ fn sound_cues(
         let Some(first) = cues.first() else {
             continue;
         };
-        if cues.iter().any(|cue| cue.digest != first.digest) {
+        // Identical means identical stored bytes: a member with no bytes to
+        // compare cannot be shown identical to anything, so it is ambiguous too.
+        if cues.len() > 1
+            && (first.digest.is_none() || cues.iter().any(|cue| cue.digest != first.digest))
+        {
             // Two different recordings under one identity: neither can be keyed
             // without guessing which member the engine would resolve.
             *gaps.entry(GAP_SOUND_AMBIGUOUS_MEMBER).or_default() += cues.len();
@@ -5289,6 +5314,13 @@ fn sound_row(cue: &SoundCue, file_id: &ContentId) -> Result<CatalogElement, Base
              and nothing else about it is known (F41-A leaves {CLAIM_SOUND_PLAYBACK} unknown)"
         ),
     };
+    let parse_state = match &cue.failure {
+        None => cs_types::install::ParseState::Parsed,
+        Some(diagnostic) => cs_types::install::ParseState::Failed {
+            diagnostic: diagnostic.clone(),
+        },
+    };
+    let parse_state_for_reason = parse_state.clone();
     Ok(CatalogElement {
         kind: ContentKind::Sound,
         id: cue.id.clone(),
@@ -5301,14 +5333,14 @@ fn sound_row(cue: &SoundCue, file_id: &ContentId) -> Result<CatalogElement, Base
             kind: DependencyKind::Static,
             provenance: observed(CLAIM_SOUND_MEMBER, &cue.span)?,
         }],
-        parse_state: cs_types::install::ParseState::Parsed,
+        parse_state,
         normalize_state: NormalizeState::NotNormalized,
         runtime_consumers: Vec::new(),
         readiness: Readiness::Unavailable,
-        unsupported_reasons: vec![UnsupportedReason::NotNormalized, playback],
-        fingerprint: Some(Fingerprint {
+        unsupported_reasons: vec![unparsed_reason(&parse_state_for_reason), playback],
+        fingerprint: cue.digest.map(|sha256| Fingerprint {
             kind: FingerprintKind::Installation,
-            sha256: cue.digest,
+            sha256,
         }),
     })
 }

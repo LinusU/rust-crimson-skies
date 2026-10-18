@@ -323,8 +323,30 @@ fn accept_f14_d_7_a_readable_member_yields_a_sound_row() {
     );
     let baseline = retail_baseline(&temp.0).expect("the fixture installation reads");
 
-    let rows = rows_of(&baseline, ContentKind::Sound);
-    assert_eq!(rows.len(), 2, "one row per readable member, not per name");
+    let all_rows = rows_of(&baseline, ContentKind::Sound);
+    assert_eq!(
+        all_rows.len(),
+        3,
+        "one row per nameable member, not per name"
+    );
+    // Owner ruling #579: the member whose header does not read has a name, so it
+    // is a row with a failed parse state and the header reader's own code.
+    let broken = all_rows
+        .iter()
+        .find(|row| row.id == cue_id(LOW, "broken.wav"))
+        .expect("the nameable member whose header does not read is still a row");
+    match &broken.parse_state {
+        ParseState::Failed { diagnostic } => {
+            assert!(diagnostic.starts_with("not_riff"), "{diagnostic}")
+        }
+        other => panic!("expected a failed parse state, got {other:?}"),
+    }
+    assert_eq!(reasons(broken)[0], "parse_failed");
+    let rows: Vec<_> = all_rows
+        .iter()
+        .copied()
+        .filter(|row| row.id != broken.id)
+        .collect();
     assert_eq!(
         rows.iter().map(|row| row.id.clone()).collect::<Vec<_>>(),
         vec![
@@ -410,20 +432,19 @@ fn accept_f14_d_7_a_readable_member_yields_a_sound_row() {
     let status = status_of(&baseline, ContentKind::Sound);
     assert_eq!(status.source, SOUND_CONTAINER_PATTERN);
     assert_eq!(status.language, None);
-    assert_eq!(status.rows, 2);
-    assert_eq!(
-        status.gaps.get("not_riff"),
-        Some(&1),
-        "the member whose header does not read is a named gap, not a dropped row"
+    assert_eq!(status.rows, 3);
+    assert!(
+        status.gaps.is_empty(),
+        "a nameable member whose header does not read is a failed row, not a gap: {:?}",
+        status.gaps
     );
     assert_eq!(status.diagnostic, None);
 
     let report = baseline_report_json(&baseline);
-    assert!(report.contains("\"sound\":2"), "{report}");
-    assert!(report.contains("\"not_riff\":1"), "{report}");
+    assert!(report.contains("\"sound\":3"), "{report}");
     assert!(
         report.contains(&format!(
-            "\"kind\":\"sound\",\"source\":\"{SOUND_CONTAINER_PATTERN}\",\"language\":null,\"rows\":2"
+            "\"kind\":\"sound\",\"source\":\"{SOUND_CONTAINER_PATTERN}\",\"language\":null,\"rows\":3"
         )),
         "{report}"
     );
@@ -616,12 +637,12 @@ fn accept_f14_d_7_music_and_dialogue_hold_no_row_and_say_why() {
     assert!(!report.contains("\"dialogue\":"), "{report}");
 }
 
-/// A member whose declared extent is not inside the container, or whose name is
-/// empty, or whose name the id grammar cannot key, is a named gap: it is in the
-/// index, so it must be accounted for, and it has no identity that could back a
-/// cue — and the members beside it still become rows.
+/// A member whose name is empty, or whose name the id grammar cannot key, is a
+/// named gap: it has no identity that could back a row. A member with a name
+/// whose declared extent is not inside the container is a failed row (owner
+/// ruling #579). The members beside them still become rows.
 #[test]
-fn accept_f14_d_7_a_member_with_no_readable_bytes_is_a_named_gap() {
+fn accept_f14_d_7_a_member_with_no_identity_is_a_gap_and_a_nameable_one_a_failed_row() {
     let good = pcm_member(11_025, &[1, 2, 3], 0);
     // A name that fills the 64-byte name field with bytes the key grammar has to
     // escape, so `container + name` is longer than the id grammar's byte bound.
@@ -660,14 +681,29 @@ fn accept_f14_d_7_a_member_with_no_readable_bytes_is_a_named_gap() {
     );
     let baseline = retail_baseline(&temp.0).expect("the fixture installation reads");
 
-    assert_eq!(rows_of(&baseline, ContentKind::Sound).len(), 1);
-    let status = status_of(&baseline, ContentKind::Sound);
-    assert_eq!(status.rows, 1);
+    let rows = rows_of(&baseline, ContentKind::Sound);
+    assert_eq!(rows.len(), 2);
+    let past_end = rows
+        .iter()
+        .find(|row| row.id == cue_id(LOW, "past_end.wav"))
+        .expect("a named member outside the container is a row");
+    match &past_end.parse_state {
+        ParseState::Failed { diagnostic } => {
+            assert!(
+                diagnostic.starts_with("member_out_of_bounds"),
+                "{diagnostic}"
+            )
+        }
+        other => panic!("expected a failed parse state, got {other:?}"),
+    }
     assert_eq!(
-        status.gaps.get("member_out_of_bounds"),
-        Some(&1),
-        "a member with no bytes inside the container cannot be a cue"
+        past_end.fingerprint, None,
+        "there are no bytes to fingerprint"
     );
+    assert_eq!(reasons(past_end)[0], "parse_failed");
+    let status = status_of(&baseline, ContentKind::Sound);
+    assert_eq!(status.rows, 2);
+    assert_eq!(status.gaps.get("member_out_of_bounds"), None);
     assert_eq!(status.gaps.get("member_name_empty"), Some(&1));
     assert_eq!(
         status.gaps.get("member_name_not_keyable"),
