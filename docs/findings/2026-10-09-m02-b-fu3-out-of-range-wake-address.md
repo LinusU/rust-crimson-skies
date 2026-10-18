@@ -465,20 +465,29 @@ installation through the production rule on the rebased tree.
    completion-effect phase in the measured `WAKE → NAP → KILL → SLEEP` order.
    An out-of-range or negative address is reported as `RequestRefused`
    (`RuntimeError::Address`) and applies nothing; an authored `0` is the
-   parse's `−1` terminator and truncates the list without a refusal. Still
-   open: (a) `WakeObjectivesOnTransition`, `DependencyGate` and `HideObjective`
-   check their addresses but have no lifecycle consumer (they need the
-   dormant/auto-nap timers and gate evaluation), so they are reported as
-   `RuntimeError::UnexecutedDirective` and move nothing; (b) the wake walk's
-   15-entry cap (`0x469af0`) is not modelled; (c) no mission driver calls
-   `submit_directives` yet — `MissionCountdown::apply_new` still consumes only
-   the timer operations, so the rule is exercised by the runtime's tests
-   (`accept_m02_b_fu4_`), not yet by a running mission; (d) the rule maps
-   address 1 to `SymbolId(0)`, which `ObjectiveRuntime` reserves for actor
-   events (`ACTOR_EVENT_SOURCE`), so a record's first block cannot be
-   registered there and a directive naming it is reported as
-   `UnknownObjective` rather than applied (pinned by
-   `accept_m02_b_fu4_the_first_address_names_the_reserved_symbol_and_is_reported`).
+   parse's `−1` terminator and truncates the list without a refusal. M02-B-FU5
+   (#1586) closed three of the four residuals: (c) `MissionSession::submit_directives`
+   is now the running-mission driver — the session supplies the record's block
+   count and its own directive log, like `Countdown::apply_new` does for the
+   timer operations, and `accept_m02_b_fu5_` covers the path end to end;
+   (b) the wake walk's 15-entry window (`0x469af0`) is modelled — a spelled
+   prefix of 15 or more leaves no slot for the `−1` terminator and the whole
+   list is refused as `RuntimeError::DirectiveListTooLong`, the same shape
+   `TargetList::from_record` refuses; (d) the `SymbolId(0)` clash is resolved
+   by moving `ACTOR_EVENT_SOURCE` to `SymbolId(u32::MAX)` — a value no record
+   index and no resolved address can reach, so the first block registers like
+   any other and a directive naming address 1 applies (re-pinned by
+   `accept_m02_b_fu4_the_first_address_names_the_first_block_and_applies`).
+   Still open: (a) `WakeObjectivesOnTransition`, `DependencyGate` and
+   `HideObjective` check their addresses but stay
+   `RuntimeError::UnexecutedDirective` — each one's measured trigger is
+   machinery this runtime deliberately does not carry (the dormant/auto-nap
+   timers the transition list fires on, the per-objective evaluation the gate
+   holds, and the dormant state the hide's guard requires); the record world
+   runs all three through `cs_content::objectives_engine`. A related
+   consequence: a counted actor's events now sort *after* a tick's declared
+   events in `EventKey` order (the reserved source is the largest symbol),
+   where before they sorted first.
 5. **`verified_original` is not claimed.** Nothing here ran the original, and
    no reference capture exists for M02 (REF-OWNER-FIRST-CAPTURE stays blocked on
    the owner).
