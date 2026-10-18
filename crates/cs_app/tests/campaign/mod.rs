@@ -279,6 +279,7 @@ mod m01_b;
 mod m01_c3_world_residuals;
 mod m01_lc_campaign_airframe_pose;
 mod m01_lc_campaign_airframe_pose_evidence;
+mod m01_lc_fc_b;
 mod m01_lc_player_airframe_source;
 mod m01_lc_player_config;
 mod m01_play_triggers_turret_class;
