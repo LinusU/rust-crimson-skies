@@ -763,11 +763,10 @@ pub fn read_scrapbook_table<'a>(
     install_hash: cs_types::evidence::ContentHash,
     files: impl IntoIterator<Item = &'a InstallFileRecord>,
 ) -> Result<ScrapbookTable, ScrapbookTableFailure> {
+    let container_key = SCRAPBOOK_CONTAINER.to_ascii_lowercase();
     let record = files
         .into_iter()
-        .find(|record| {
-            record.relative_spelling.logical_key() == SCRAPBOOK_CONTAINER.to_ascii_lowercase()
-        })
+        .find(|record| record.relative_spelling.logical_key() == container_key)
         .ok_or(ScrapbookTableFailure::MissingContainer)?;
     let path = install_root.join(record.relative_spelling.as_str());
 
