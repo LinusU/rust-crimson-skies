@@ -2209,18 +2209,33 @@ const SOURCE_BINDING_UNKNOWNS: &[&str] = &[
 /// task or ruling that would settle it — and the follow-up that settles it
 /// removes the entry (M12's passenger identity sits here, measured on
 /// `zbd/c2/m01` by M06-B-FU2 under the pre-correction layout).
-const MISSION_SCOPED_UNKNOWNS: &[(&str, &[&str])] = &[(
-    "M12",
-    &[
-        "passenger identity: the shipped data binds no passenger or extraction entity to this \
+const MISSION_SCOPED_UNKNOWNS: &[(&str, &[&str])] = &[
+    (
+        "M13",
+        &[
+            "startup animation `cg1zep_engines_stop`: two shared-root members, \
+             `cg1_zep_nacelles.zrd` and `dante_zep_nacelles.zrd` (`zbd/zrdr.zbd`), both declare \
+             it for object `cargozep1`, and no measured rule picks one, so production refuses \
+             the NEW_GAME_START row as ambiguous (its carrier record, mis_anim.zbd #245, is \
+             unique); the other eight startup names of `zbd/c3/m03` each bind one declaring \
+             member and one carrier record (M13-B-FU2, measured through \
+             `bind_mission_animation`); needs a rule for which declaration the original selects, \
+             which an original reference run under M13-C would settle",
+        ],
+    ),
+    (
+        "M12",
+        &[
+            "passenger identity: the shipped data binds no passenger or extraction entity to this \
       mission — the archive's only passenger-named string is the shared `location.zrd` teleport \
       entry `Passenger_hangar`, and no directive, target, actor, startup animation, world node or \
       message id names one (measured on `zbd/c2/m01` by M06-B-FU2, which bound this archive under \
       the pre-correction campaign layout; task M01-ARCHIVE-DECISION corrected the layout and the \
       entry follows the archive it was measured on); needs an original reference run under \
       M12-C or the owner's ruling",
-    ],
-)];
+        ],
+    ),
+];
 
 /// The checklist entries recorded in a source binding for one work order
 /// alone ([`MISSION_SCOPED_UNKNOWNS`]), in table order — empty when the work
