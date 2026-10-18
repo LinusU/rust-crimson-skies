@@ -744,4 +744,50 @@ fn accept_f49_d_02_retail_loadouts_are_a_measured_negative_not_an_identity_list(
         other => panic!("loadouts must stay unmeasured, got {}", other.label()),
     }
     assert!(table.loadouts().is_empty());
+
+// ------------------------------------------------------------ relations ---
+
+/// The installation states allegiance only as a per-record team spelling in the
+/// loader's own vocabulary, and no record names a faction row, so no directed
+/// faction relation exists to list; the table's relations stay empty with the
+/// measured negative as the reason.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_f49_d_02_retail_relations_are_a_measured_negative() {
+    let table = retail_table();
+    let measurement =
+        cs_content::target_rules::measure_retail_relation_surface(&game_dir(), table.factions())
+            .expect("the installation's relation surface reads");
+
+    assert!(
+        !measurement.team_spellings().is_empty(),
+        "the installation states some team spellings, so the negative is measured over data"
+    );
+    assert!(
+        measurement.outside_vocabulary().is_empty(),
+        "every team spelling is in the loader's vocabulary: {:?}",
+        measurement.outside_vocabulary()
+    );
+    assert!(!measurement.states_cross_faction_relation());
+    assert!(table.relations().is_empty());
+    match table
+        .evidence(ScenarioOptionDimension::Relations)
+        .expect("a named dimension")
+    {
+        OptionListEvidence::Unmeasured { reason, .. } => {
+            assert!(reason.starts_with("measured negative"), "{reason}");
+        }
+        other => panic!("relations must record the measured negative, got {other:?}"),
+    }
+}
+
+/// A faction key used as a team spelling is a stated relation surface; the
+/// negative is only as good as this check, so it is exercised on its own.
+#[test]
+fn accept_f49_d_02_the_team_vocabulary_is_the_loaders_three_words() {
+    let words: Vec<_> = cs_content::target_rules::ORIGINAL_TEAM_VOCABULARY
+        .iter()
+        .map(|(word, number)| (*word, *number))
+        .collect();
+    assert_eq!(words, vec![("neutral", 0), ("ally", 1), ("enemy", 2)]);
 }

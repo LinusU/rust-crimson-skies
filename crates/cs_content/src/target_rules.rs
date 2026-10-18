@@ -755,3 +755,84 @@ pub fn declared_synthetic_selection_actions() -> DeclaredSelectionActions {
     )
     .expect("the declared synthetic selection-action fixture is valid")
 }
+
+/// The original's allegiance vocabulary: the three `team` spellings the
+/// zeppelin loader compares (`neutral`/`ally`/`enemy`) and the integer each
+/// writes (`0`/`1`/`2`).
+///
+/// Static facts from `docs/findings/2026-10-09-m01-lc-zeppelin-allegiance.md`
+/// (`0x4bd9b1`..`0x4bda3b`); provenance `static`, never `verified_original`.
+/// The allegiance is a per-actor team number, not a pair of factions.
+pub const ORIGINAL_TEAM_VOCABULARY: [(&str, u8); 3] = [("neutral", 0), ("ally", 1), ("enemy", 2)];
+
+/// What the installation states about cross-faction allegiance (F49-D.02-FU).
+///
+/// The retail `faction` rows are `vehicle.zrd` paint patterns; the only
+/// allegiance the data states is a record's `team` spelling. This record keeps
+/// the measured spellings beside the faction ids so "no directed faction
+/// relation is stated" is a checked negative, not an assumption.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RetailRelationMeasurement {
+    team_spellings: std::collections::BTreeMap<String, u64>,
+    outside_vocabulary: Vec<String>,
+    faction_keys_used_as_teams: Vec<String>,
+}
+
+impl RetailRelationMeasurement {
+    /// The `team` spellings the decoded records carry, with their counts.
+    pub fn team_spellings(&self) -> &std::collections::BTreeMap<String, u64> {
+        &self.team_spellings
+    }
+
+    /// Spellings that are not in [`ORIGINAL_TEAM_VOCABULARY`].
+    pub fn outside_vocabulary(&self) -> &[String] {
+        &self.outside_vocabulary
+    }
+
+    /// Faction keys (paint patterns) that some record uses as its team.
+    pub fn faction_keys_used_as_teams(&self) -> &[String] {
+        &self.faction_keys_used_as_teams
+    }
+
+    /// Whether the data states a directed relation between two factions.
+    ///
+    /// It does only if a record's team names a faction row. A team that is
+    /// `ally`/`enemy`/`neutral` relates an actor to the player's side, and
+    /// which side hates which is native code (`aiv` finding, open item 4),
+    /// so it is not a relation between the installation's factions.
+    pub fn states_cross_faction_relation(&self) -> bool {
+        !self.faction_keys_used_as_teams.is_empty()
+    }
+}
+
+/// Measures the allegiance the installation states, against its faction rows.
+///
+/// # Errors
+/// Returns the carrier-census error when the installation cannot be read.
+pub fn measure_retail_relation_surface(
+    install_root: &std::path::Path,
+    factions: &[ContentId],
+) -> Result<RetailRelationMeasurement, crate::pilots::CarrierCensusError> {
+    let census = crate::pilots::survey_retail_zeppelin_carrier(install_root)?;
+    let team_spellings = census.team_spellings().clone();
+    let outside_vocabulary = team_spellings
+        .keys()
+        .filter(|spelling| {
+            !ORIGINAL_TEAM_VOCABULARY
+                .iter()
+                .any(|(known, _)| known == spelling)
+        })
+        .cloned()
+        .collect();
+    let faction_keys_used_as_teams = factions
+        .iter()
+        .map(|faction| faction.key())
+        .filter(|key| team_spellings.contains_key(*key))
+        .map(str::to_owned)
+        .collect();
+    Ok(RetailRelationMeasurement {
+        team_spellings,
+        outside_vocabulary,
+        faction_keys_used_as_teams,
+    })
+}

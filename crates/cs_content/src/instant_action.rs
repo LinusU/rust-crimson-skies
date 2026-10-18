@@ -3067,9 +3067,10 @@ pub const PILOT_UNMEASURED_REASON: &str = "no Instant Action descriptor ace was 
      IaDenominator::ace_pilot_ids (ia.zrd ace_name), and this assembly was given none";
 
 /// Why the `relations` dimension has no measured list.
-pub const RELATION_UNMEASURED_REASON: &str = "F30-A declares the directed-relation schema but no measurement binds the installation's own \
-     factions into one; a relation table over designed fixture factions would be a fabricated \
-     faction table, not a retail relation";
+pub const RELATION_UNMEASURED_REASON: &str = "measured negative (F49-D.02-FU): the installation's factions are vehicle.zrd paint patterns and \
+     the only allegiance it states is a record's team spelling (neutral/ally/enemy, a per-actor \
+     number), never a pair of factions; which team fights which is native code, so no directed \
+     faction relation can be listed without guessing";
 
 /// The sheet text that declares the victory-condition vocabulary design.
 pub const VICTORY_CONDITION_DESIGN_RATIONALE: &str = "F49-A authors the victory vocabulary (specs/F49-instant-action-presets-and-custom-scenarios.md, \
@@ -3522,7 +3523,7 @@ pub fn retail_scenario_options_with_pilots(
                 ScenarioOptionDimension::Relations,
                 OptionListEvidence::Unmeasured {
                     reason: RELATION_UNMEASURED_REASON,
-                    resolving_task: "F30-D (the original target/vocabulary measurement)",
+                    resolving_task: "an original run or a native-code measurement of the team-hostility rule (F30-D territory)",
                 },
             ),
             (

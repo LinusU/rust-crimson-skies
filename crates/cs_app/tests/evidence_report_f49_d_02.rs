@@ -342,9 +342,11 @@ const UNKNOWN_LIMITATIONS: &[&str] = &[
      whether the original's menu lets a player select a pilot is unmeasured, and the labels are \
      not resolved to display names. Affected content: a custom actor's pilot identity. \
      Resolving task: F49-D.03 and an original run observing the IA options screen (human_play).",
-    "The relation option list is unmeasured: F30-A declares the directed-relation schema but no \
-     measurement binds the installation's own factions into one. Affected content: the \
-     faction-relation table a roster is judged against. Resolving task: F30-D.",
+    "The relation option list is a measured negative: the retail factions are vehicle.zrd paint \
+     patterns and the only allegiance the installation states is a record's team spelling \
+     (neutral/ally/enemy), never a pair of factions; which team fights which is native code. \
+     Affected content: the faction-relation table a roster is judged against stays empty. \
+     Resolving task: a native-code measurement of the team-hostility rule or an original run.",
     "The original's player-count limit and victory vocabulary are unmeasured; the retail table \
      declares the module's MAX_SCENARIO_PLAYERS and the F49-A victory vocabulary as design. \
      Affected content: the seat ceiling and the victory conditions offered. Resolving task: an \
