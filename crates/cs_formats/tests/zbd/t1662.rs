@@ -19,11 +19,11 @@ use cs_types::install::RelativePath;
 
 use super::t340::game_dir;
 
-fn put_u32(out: &mut Vec<u8>, value: u32) {
+pub(super) fn put_u32(out: &mut Vec<u8>, value: u32) {
     out.extend_from_slice(&value.to_le_bytes());
 }
 
-fn put_f32(out: &mut Vec<u8>, value: f32) {
+pub(super) fn put_f32(out: &mut Vec<u8>, value: f32) {
     out.extend_from_slice(&value.to_le_bytes());
 }
 
@@ -50,7 +50,7 @@ fn segment(flags: u32, start: f32, end: f32) -> Vec<u8> {
 }
 
 /// A region of `blocks` = (path, object, mode, segments).
-fn region(blocks: &[(&str, &str, u32, Vec<Vec<u8>>)]) -> Vec<u8> {
+pub(super) fn region(blocks: &[(&str, &str, u32, Vec<Vec<u8>>)]) -> Vec<u8> {
     let mut out = Vec::new();
     for (_, _, mode, segments) in blocks {
         let data: usize = segments.iter().map(Vec::len).sum();
@@ -179,7 +179,7 @@ fn accept_parity_m01_lc_measure_cam_refuses_regions_that_do_not_tile() {
     assert_eq!(refusal(&short[..cut], 1).code(), "track_segment_truncated");
 }
 
-fn normalize(path: &[u8]) -> String {
+pub(super) fn normalize(path: &[u8]) -> String {
     String::from_utf8_lossy(path)
         .replace("\\\\", "\\")
         .to_ascii_lowercase()
@@ -187,19 +187,19 @@ fn normalize(path: &[u8]) -> String {
 
 /// An animation container read from the installation: the tracks, and every
 /// member path.
-struct Container {
+pub(super) struct Container {
     bytes: Vec<u8>,
 }
 
 impl Container {
-    fn open(spelling: &str) -> Self {
+    pub(super) fn open(spelling: &str) -> Self {
         let path = game_dir().join(spelling);
         let bytes = std::fs::read(&path)
             .unwrap_or_else(|error| panic!("{spelling}: cannot read the container: {error}"));
         Self { bytes }
     }
 
-    fn with<R>(
+    pub(super) fn with<R>(
         &self,
         spelling: &str,
         f: impl FnOnce(
@@ -238,7 +238,7 @@ fn zan_rows(index: &cs_formats::zbd::AnimationIndex<'_>) -> Vec<String> {
         .collect()
 }
 
-fn tracks_of<'a>(
+pub(super) fn tracks_of<'a>(
     spelling: &str,
     index: &cs_formats::zbd::AnimationIndex<'_>,
     records: &cs_formats::zbd::AnimationRecords<'a>,
@@ -348,7 +348,7 @@ fn accept_parity_m01_lc_measure_cam_retail_every_tail_is_tracks() {
     );
 }
 
-const GENERIC_INTRO: [(&str, &str, usize, f32); 14] = [
+pub(super) const GENERIC_INTRO: [(&str, &str, usize, f32); 14] = [
     ("gi_cam1.zan", "camera1", 48, 15.933_334),
     ("gi_cam1b.zan", "camera1", 24, 15.933_334),
     ("gi_cam1c.zan", "camera1", 24, 15.933_334),
