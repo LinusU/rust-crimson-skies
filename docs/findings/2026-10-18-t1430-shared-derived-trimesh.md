@@ -111,16 +111,20 @@ Both were **verified to fail** when the sharing is removed (a temporary
 | --- | --- |
 | `cargo fmt --all -- --check` | clean |
 | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | clean |
-| `cargo test --locked -p cs_app --test cs_app_tests_a` | 903 passed, 0 failed (225 ignored) |
-| `cargo test --locked -p cs_app --test cs_app_tests_b` | 282 passed, 0 failed (63 ignored) |
-| `cargo test --locked -p cs_app --test cs_app_tests_c` | 529 passed, 0 failed (64 ignored) |
-| `cargo test --locked -p cs_app --test cs_app_tests_d` | 439 passed, 0 failed (403 ignored) |
-| `cargo test --locked -p cs_app --test cs_app_tests_e` | 12 passed, 0 failed (11 ignored) |
+| `cargo test --locked -p cs_app --test cs_app_tests_a` | green (225 ignored) |
+| `cargo test --locked -p cs_app --test cs_app_tests_b` | green (63 ignored) |
+| `cargo test --locked -p cs_app --test cs_app_tests_c` | green (64 ignored) |
+| `cargo test --locked -p cs_app --test cs_app_tests_d` | green (403 ignored) |
+| `cargo test --locked -p cs_app --test cs_app_tests_e` | green (11 ignored) |
 | `cargo test --locked -p cs_app --test cs_app_tests_c -- world:: --include-ignored` | 158 passed, 3 failed — all three pre-existing evidence-harness preconditions (see below) |
 | `cargo test --locked -p cs_app --test cs_app_tests_c -- accept_f18_b_ --include-ignored` | 45 passed, 0 failed |
 | `cargo test --locked -p cs_app --test cs_app_tests_a -- accept_t424_ accept_t420_ accept_t1424_ --include-ignored` | 23 passed, 0 failed |
 | `cargo test --locked -p cs_app --test cs_app_tests_a -- accept_t1430_ --include-ignored` | 2 discovered, 2 passed |
 | `cargo test --locked -p cs_app --test cs_app_tests_b -- accept_playtest_retail_retail_c1c_area_and_bloodhawk_mesh_spawn_and_capture --include-ignored` | 1 passed (retail, GPU capture; screenshots in `private/`) |
+
+All of it was measured on the final rebased tree; the whole `cs_app` test
+binaries were re-run after the last rebase, which changed no file this task
+touches.
 
 The three `world::*` failures under `--include-ignored` are the
 pre-existing `CS_EVIDENCE_DIR is not set` evidence-harness preconditions
