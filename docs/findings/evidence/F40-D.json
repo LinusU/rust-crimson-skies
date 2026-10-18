@@ -1,9 +1,9 @@
 {
  "schema_version": 1,
  "task_id": "F40-D",
- "candidate_tree": "708b80b42edc8a297319ef6e14d44f7fbe9b2cee",
+ "candidate_tree": "8660e00ca1671551336f5b5e2a960e51e473b97f",
  "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
- "created_at": "2026-10-18T12:39:21Z",
+ "created_at": "2026-10-18T12:40:54Z",
  "command": {"argv": ["cargo", "test", "--locked", "-p", "cs_app", "--", "accept_f40_d_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/sonnet-2", "exit_code": 0},
  "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
  "seed": 0,
