@@ -1040,6 +1040,15 @@ impl MissionHost {
         // mid-restart here — not yet a world resource — so it is handed
         // over by reference.
         crate::mission_actors::despawn_mission_actors(world);
+        // The fresh generation's ledger is opened before the respawn so the
+        // rebuilt actors are admitted to it and not to the torn-down one.
+        if world
+            .get_resource::<SessionScoreLedger>()
+            .map(SessionScoreLedger::session)
+            != Some(self.served)
+        {
+            world.insert_resource(SessionScoreLedger::open(self.served));
+        }
         crate::mission_actors::respawn_mission_actors(world, self, stage);
 
         // The previous composed step's report describes the generation just

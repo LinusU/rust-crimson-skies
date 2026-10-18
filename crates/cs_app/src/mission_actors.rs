@@ -82,12 +82,13 @@ use cs_sim::damage::{
     AttributionRule, DamageGraph, DamageNode, DamageNodeKey, DamageNodeKind, DamagePolicy,
     DamageResolver,
 };
+use cs_sim::net_state::{NetActorState, NetControlMode};
 use cs_sim::targeting::{Allegiance, TargetClass, TargetRecord};
 use cs_sim::world_actors::runtime::WorldActorKind;
 use cs_types::content::{ContentId, ContentKind, Resolved};
 use cs_types::evidence::ClaimId;
 use cs_types::net::{ActorAllocator, ActorId, SessionId};
-use cs_types::space::WorldPosition;
+use cs_types::space::{Quaternion, WorldPosition};
 
 use crate::damage::DamageActorBinding;
 use crate::mission_ai::{
@@ -98,6 +99,7 @@ use crate::mission_start::{ScriptedAircraft, SpawnDispatch, stored_heading_radia
 use crate::mission_world_actors::{AllegianceBinding, object3d_orientation};
 use crate::physics::{BodyMode, BodySpec, spawn_body};
 use crate::scene::SceneGenerations;
+use crate::score::SessionScoreLedger;
 use crate::targeting::TargetingSession;
 use crate::weapons::SessionDamageResolver;
 use crate::world_actors::WorldActorBinding;
@@ -572,6 +574,46 @@ fn designed_frame_node(spelling: &str) -> Result<(ContentId, DamageNode), String
 /// installed or replaced so registration never lands on a torn-down
 /// generation's ledger (a restart installs a new resolver for the new
 /// generation, exactly as the weapons session contract spells).
+/// Admits one damage actor the spawn host just registered to the session's
+/// score ledger (VS-M01-SCORE-ADMIT, #1426).
+///
+/// The admitted [`NetActorState`] is built from the spawn record the caller
+/// holds: the pose the body was spawned at, a live lifecycle, at rest, and
+/// the control mode the spawn path knows. The record holds **no** weapon
+/// bank for a scripted actor, so its round counts are admitted as zero and
+/// not as an invented loadout (`docs/findings/2026-10-18-vs-m01-score-admit.md`).
+///
+/// A world with no ledger, or one still serving another generation, admits
+/// nothing: it scores nothing, which is the damage schedule's own statement.
+///
+/// # Errors
+///
+/// The refusal, spelled for a spawn report: a pose the ledger cannot hold or
+/// the ledger's own [`cs_sim::net_state::NetStateError`].
+fn admit_spawned(
+    world: &mut World,
+    session: SessionId,
+    actor: ActorId,
+    position_m: [f64; 3],
+    orientation: [f64; 4],
+    control: NetControlMode,
+) -> Result<(), String> {
+    let Some(mut ledger) = world.get_resource_mut::<SessionScoreLedger>() else {
+        return Ok(());
+    };
+    if ledger.session() != session {
+        return Ok(());
+    }
+    let position = WorldPosition::try_new(position_m).map_err(|error| error.to_string())?;
+    let orientation = Quaternion::try_new(orientation).map_err(|error| error.to_string())?;
+    let mut state = NetActorState::spawn(actor, position, orientation, 0);
+    state.control = control;
+    ledger
+        .admit(state)
+        .map(|_| ())
+        .map_err(|error| error.to_string())
+}
+
 fn session_damage(world: &mut World, session: SessionId) -> &mut DamageResolver {
     if world
         .get_resource::<SessionDamageResolver>()
@@ -962,6 +1004,23 @@ fn spawn_mission_actors_under(
                             graph: subject,
                             generation,
                         });
+                        let control = if airframe.is_some() {
+                            NetControlMode::Autopilot
+                        } else {
+                            NetControlMode::Uncontrolled
+                        };
+                        if let Err(reason) = admit_spawned(
+                            world,
+                            session,
+                            actor,
+                            position.to_array().map(f64::from),
+                            orientation.to_array().map(f64::from),
+                            control,
+                        ) {
+                            report
+                                .refusals
+                                .push(format!("{name}: score admission refuses: {reason}"));
+                        }
                     }
                     Err(error) => report
                         .refusals
@@ -1103,6 +1162,18 @@ fn spawn_mission_actors_under(
                             graph: graph_subject,
                             generation,
                         });
+                        if let Err(reason) = admit_spawned(
+                            world,
+                            session,
+                            actor,
+                            position_m,
+                            orientation,
+                            NetControlMode::Uncontrolled,
+                        ) {
+                            report.refusals.push(format!(
+                                "zeppelin {world_actor:?}: score admission refuses: {reason}"
+                            ));
+                        }
                         for (chain, node) in &planned {
                             let part_entity = parts::spawn_part_state(
                                 world,
@@ -1219,6 +1290,21 @@ fn spawn_mission_actors_under(
                 ));
                 continue;
             }
+        }
+        // A ground target has no authored orientation: it spawns with the
+        // identity rotation below, and that is the pose admitted.
+        if let Err(reason) = admit_spawned(
+            world,
+            session,
+            actor,
+            target.position_m,
+            Quaternion::IDENTITY.components(),
+            NetControlMode::Uncontrolled,
+        ) {
+            target_report.refusals.push(format!(
+                "{}: score admission refuses: {reason}",
+                target.node
+            ));
         }
         let (roster, allegiance_open) = ground_target_roster(target, player_team_of_player);
         let [x, y, z] = target.position_m;

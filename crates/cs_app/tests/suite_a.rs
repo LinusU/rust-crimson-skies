@@ -18,6 +18,7 @@ mod campaign {
     mod accept_m01_b_wake;
     mod common;
     mod f29_c_3b_score;
+    mod f29_c_3c_admit;
     mod f29_c_3c_extraction;
     mod f37_c_fu1;
     mod m01_bridge_convoy_spawn;
