@@ -798,13 +798,12 @@ fn accept_m13_b_the_allegiance_transition_is_spelled_by_set_ai_team_and_set_ai_n
         ("hafury_6", 2),
     ]
     .into_iter()
-    .map(|(name, team)| {
+    .flat_map(|(name, team)| {
         vec![ZrdValue::List(vec![
             ZrdValue::Text(name.to_owned()),
             ZrdValue::Int(u32::try_from(team).expect("team fits")),
         ])]
     })
-    .flatten()
     .collect();
     assert_eq!(
         teams[0], expected_teams,
@@ -948,7 +947,7 @@ fn accept_m13_b_the_danger_zone_course_and_the_ace_wake_graph_are_record_data() 
         block(&blocks, number)
             .iter()
             .filter(|d| d.key == "WAKE_OBJECTIVE_WHEN_I_COMPLETE")
-            .flat_map(|d| addresses(d))
+            .flat_map(addresses)
             .collect()
     };
     assert_eq!(
