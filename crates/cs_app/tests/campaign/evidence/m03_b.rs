@@ -7,16 +7,16 @@
 use super::*;
 
 /// The retail acceptance tests M03-B's capabilities are judged on, plus the
-/// M03-B-FU2 (#810) tests the shared `accept_m03_b_` prefix selects: this
-/// report's run is the one that records them, so it requires them.
+/// M03-B-FU2 (#810) test the shared `accept_m03_b_` prefix selects: this
+/// report's run is the one that records it, so it requires it.
 const RETAIL_TESTS_M03_B: &[&str] = &[
     "accept_m03_b_the_control_program_is_the_member_that_declares_the_blocks",
-    "accept_m03_b_every_directive_m03_spells_has_a_disposition_and_one_is_ignored",
-    "accept_m03_b_the_record_lowers_and_the_two_wake_sites_are_dropped",
+    "accept_m03_b_every_directive_m03_spells_has_a_disposition_and_none_is_unmeasured",
+    "accept_m03_b_the_record_lowers_and_binds_every_site",
     "accept_m03_b_the_sheet_priorities_resolve_to_measured_operations",
     "accept_m03_b_the_terminal_blocks_are_gated_and_every_address_is_in_range",
     "accept_m03_b_the_record_is_complete_and_the_campaign_gate_stays_closed",
-    "accept_m03_b_fu2_the_ten_pair_net_site_binds_through_one_list_argument",
+    "accept_m03_b_fu2_the_net_site_binds_through_one_list_argument",
 ];
 
 /// The synthetic predicate tests M03-B's report must also record. The net
@@ -164,17 +164,21 @@ fn evidence_report_m03_b_writes_the_acceptance_report() {
         jstr(
             "acceptance suite run locally with the retail capability; the fields are derived \
              from the recorded log and production discovery of $CS_GAME_DIR. The suite pins \
-             M03's measured control program and its refused lowering: two refused \
-             WAKEUP_OBJECTIVE_WHEN_I_COMPLETE sites and nothing else, because M03-B-FU2 (#810) \
-             carried the ten `{actor, net}` pairs of `SET_AI_NET` as one `Value::List` argument, so \
-             `unbound_keys` names no key; claim is implemented only and the mission is NOT \
-             ready: the remaining gap (WAKEUP_OBJECTIVE_WHEN_I_COMPLETE, M03-B-FU1 / #803) is \
+             M03's own measured control program, re-pinned (Rally #1605) from ZBD/C1B/M03 - which \
+             the corrected archive layout (#1565) binds to M08 - to ZBD/C3/M03 (the archive \
+             missions/bindings/M03.json names, script/c3-m03-zrdr): 38 blocks, 178 sites, 36 \
+             keys of which 34 are measured and 2 are terminal outcomes, and no \
+             WAKEUP_OBJECTIVE_WHEN_I_COMPLETE site. The record lowers completely: all 178 sites \
+             bind (the SET_AI_NET site's one pair as one Value::List argument, M03-B-FU2 / #810) \
+             and nothing is dropped or refused. The ignored-spelling and ten-pair arms stay \
+             pinned by the synthetic tests. Claim is implemented only and the mission is NOT \
+             ready: the wrong-actor, wrong-session and repeated-event halves of the sheet's \
+             priorities are runtime observations and stay unmeasured, no mission was played, no \
+             original executable was run and nothing is verified_original; the re-pin is \
              recorded in docs/findings/2026-10-08-m03-b-control-program-gaps.md. Regenerated on \
-             the rebased commit by bunny-alpha-1/bunny-alpha-1 in its Rally #810 review session — \
-             a separate session with a fresh context from the session that implemented #810 — \
-             from that session's own `accept_m03_b_` run with CS_GAME_DIR, after #810 re-pinned \
-             the suite and this harness text; `review.identity` above is byte-unchanged and still \
-             records M03-B's own implementer and its review. Validated with \
+             the re-pinned suite by claude-1 (Sonnet 5.5) in its Rally #1605 implement session, \
+             before review; `review.identity` above is unchanged and records M03-B's original \
+             implementer and review, not a review of this re-pin. Validated with \
              tools/validate_evidence.py --require-pass"
         ),
     );

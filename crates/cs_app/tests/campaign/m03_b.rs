@@ -8,21 +8,28 @@
 //! reader archive and pins what is **different** at M03, so that the gaps are
 //! recorded as measurements and not discovered later as a silent failure:
 //!
-//! * M03's control program is `objectives.zrd` with 55 numbered blocks and 313
-//!   directive sites, selected by the content rule and not by its name;
-//! * 37 of its 40 directive keys have a measured effect, two are terminal
-//!   outcomes and **one** (`WAKEUP_OBJECTIVE_WHEN_I_COMPLETE`) is ignored by
-//!   the original: its directive table holds no such spelling (M03-B-FU1 /
-//!   #803, pinned by the `accept_m03_b_fu1_*` tests below);
-//! * the record lowers: the two ignored wake sites are dropped as the
-//!   original drops them, and the rest bind. The `SET_AI_NET` ten-pair site,
-//!   whose `{actor, net}` pairs ran past the host-call bound, binds as one
-//!   `Value::List` argument (M03-B-FU2 / #810, pinned by the
-//!   `accept_m03_b_fu2_*` tests below);
+//! * M03's control program is `objectives.zrd` of `ZBD/C3/M03/zrdr.zbd` (the
+//!   archive `missions/bindings/M03.json` names, `script/c3-m03-zrdr`), with 38
+//!   numbered blocks and 178 directive sites, selected by the content rule and
+//!   not by its name;
+//! * all 36 of its directive keys are classified: 34 have a measured effect and
+//!   two are terminal outcomes. M03 spells no
+//!   `WAKEUP_OBJECTIVE_WHEN_I_COMPLETE` (the key the original ignores, M03-B-FU1 /
+//!   #803; the synthetic `accept_m03_b_fu1_*` test keeps that arm);
+//! * the record lowers completely: all 178 sites bind, nothing is dropped and all
+//!   38 conditions lower. The `SET_AI_NET` site (one `{actor, net}` pair) binds
+//!   as one `Value::List` argument (M03-B-FU2 / #810; the ten-pair width stays
+//!   pinned by the synthetic `accept_m03_b_fu2_*` test);
 //! * the sheet's three priorities (grouped objectives, world damage state,
 //!   completion ordering) are present in the record and resolve to measured
 //!   operations, and the completion chain that reaches `INSTANTWIN` is pinned
 //!   address by address.
+//!
+//! **Re-pinned on the corrected archive layout (#1605).** Until then this file
+//! pinned `ZBD/C1B/M03`, which the corrected layout (#1565,
+//! `docs/findings/2026-10-17-m01-archive-decision.md`) binds to work order M08
+//! (`mission/ch2-m03`); M08-B now pins that record. Every retail fact here is
+//! re-derived from M03's own `ZBD/C3/M03`.
 //!
 //! No behaviour is invented here: see
 //! `docs/findings/2026-10-08-m03-b-control-program-gaps.md` and
@@ -50,14 +57,14 @@ use cs_script::ir::Value;
 use cs_types::content::{ContentId, ContentKind};
 
 /// The census row label of the mission.
-pub(crate) const MISSION: &str = "zbd/c1b/m03";
+pub(crate) const MISSION: &str = "zbd/c3/m03";
 
 /// The numbered blocks of the control member.
-const BLOCKS: u32 = 55;
+const BLOCKS: u32 = 38;
 /// The directive sites of the control member.
-const SITES: u32 = 313;
+const SITES: u32 = 178;
 /// The distinct directive keys of the control member.
-const KEYS: usize = 40;
+const KEYS: usize = 36;
 
 fn game_dir() -> PathBuf {
     PathBuf::from(std::env::var("CS_GAME_DIR").unwrap_or_else(|_| {
@@ -141,7 +148,7 @@ fn addresses(directive: &Directive) -> Vec<i64> {
 
 /// **The control program is the member that declares the numbered blocks.**
 ///
-/// The member is found by the content rule: of the 22 members of M03's reader
+/// The member is found by the content rule: of the 16 members of M03's reader
 /// archive exactly one declares numbered `OBJECTIVE<N>` blocks. The blocks and
 /// sites the census measures equal an independent walk of the same document,
 /// and the archive is the program span M03-A bound.
@@ -149,12 +156,12 @@ fn addresses(directive: &Directive) -> Vec<i64> {
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m03_b_the_control_program_is_the_member_that_declares_the_blocks() {
     let row = census().row(MISSION).expect("M03 is in the census");
-    assert_eq!(row.container, "ZBD/C1B/M03/zrdr.zbd");
+    assert_eq!(row.container, "ZBD/C3/M03/zrdr.zbd");
     assert_eq!(
-        row.container_sha256, "5a3051e025b1877eae01be1c78136a99c6650f599bf20ca858eb3c54e4f76ddc",
+        row.container_sha256, "37a227cce5d6fc99a12481ecb27e5e8b640bfeca1a9cf9c48c630bf9e4fd6efe",
         "the reader archive is the program M03-A bound"
     );
-    assert_eq!(row.members.len(), 22);
+    assert_eq!(row.members.len(), 16);
     let with_blocks: Vec<&str> = row
         .members
         .iter()
@@ -179,7 +186,7 @@ fn accept_m03_b_the_control_program_is_the_member_that_declares_the_blocks() {
     assert_eq!(
         numbers,
         (1..=BLOCKS).collect::<Vec<_>>(),
-        "numbered 1..=55, no gaps"
+        "numbered 1..=38, no gaps"
     );
     let walked: usize = blocks.iter().map(|(_, directives)| directives.len()).sum();
     assert_eq!(walked as u32, record.sites(), "the independent walk agrees");
@@ -189,21 +196,20 @@ fn accept_m03_b_the_control_program_is_the_member_that_declares_the_blocks() {
     );
     assert!(
         record.unclassified_record_keys().is_empty(),
-        "unlike one other mission, M03 spells no record key outside the measured vocabulary"
+        "M03 spells no record key outside the measured vocabulary"
     );
 }
 
-/// **Every directive key has exactly one disposition, and one is ignored by
+/// **Every directive key has exactly one disposition, and none is ignored by
 /// the original.**
 ///
-/// Two keys are terminal outcomes (`INSTANTWIN`, `INSTANTLOSS`, one site each),
-/// one is `WAKEUP_OBJECTIVE_WHEN_I_COMPLETE`, a spelling the original's
-/// directive table does not hold (M03-B-FU1 / #803), and the other 37 have a
-/// measured effect. The sites are accounted for: the keys'
-/// sites sum to the record's.
+/// Two keys are terminal outcomes (`INSTANTWIN`, `INSTANTLOSS`, one site each)
+/// and the other 34 have a measured effect. M03 spells no
+/// `WAKEUP_OBJECTIVE_WHEN_I_COMPLETE` (M03-B-FU1 / #803), so no key is
+/// unmeasured. The sites are accounted for: the keys' sites sum to the record's.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m03_b_every_directive_m03_spells_has_a_disposition_and_one_is_ignored() {
+fn accept_m03_b_every_directive_m03_spells_has_a_disposition_and_none_is_unmeasured() {
     let record = census().row(MISSION).unwrap().record().unwrap();
     let mut outcomes = BTreeMap::new();
     let mut refused = Vec::new();
@@ -228,36 +234,33 @@ fn accept_m03_b_every_directive_m03_spells_has_a_disposition_and_one_is_ignored(
     );
     assert_eq!(
         refused,
-        [(
-            "WAKEUP_OBJECTIVE_WHEN_I_COMPLETE".to_owned(),
-            UnmeasuredReason::IgnoredByOriginal,
-            2
-        )],
-        "the one unmeasured key is the `WAKEUP_` spelling the original never looks up \
-         (finding 2026-10-18-m03-b-fu1-wakeup-objective-spelling)"
+        [] as [(String, UnmeasuredReason, u32); 0],
+        "every key M03 spells is measured or terminal"
     );
-    assert_eq!(measured, 37);
+    assert!(
+        record.key("WAKEUP_OBJECTIVE_WHEN_I_COMPLETE").is_none(),
+        "M03 spells none of the key the original ignores"
+    );
+    assert_eq!(measured, 34);
     let sites: u32 = record.keys().iter().map(|key| key.sites).sum();
     assert_eq!(sites, SITES, "no site is dropped from the accounting");
 }
 
-/// **The record lowers: the two `WAKEUP_` sites are dropped, as the original
-/// drops them.**
+/// **The record lowers completely and nothing is dropped.**
 ///
-/// The original's directive table does not hold `WAKEUP_OBJECTIVE_WHEN_I_COMPLETE`
-/// (M03-B-FU1 / #803), so its two sites (blocks 13 and 14, 1-based) carry no
-/// call: 311 of the 313 sites bind, the two are counted in
-/// `ignored_sites`, and nothing is refused. All 55 conditions lower.
+/// M03 spells no `WAKEUP_OBJECTIVE_WHEN_I_COMPLETE` (the original ignores that
+/// spelling, M03-B-FU1 / #803), so all 178 sites carry a call and bind, none is
+/// counted in `ignored_sites` and nothing is refused. All 38 conditions lower.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m03_b_the_record_lowers_and_the_two_wake_sites_are_dropped() {
+fn accept_m03_b_the_record_lowers_and_binds_every_site() {
     let row = census().row(MISSION).unwrap();
     let attempt = row.lowering_attempt().unwrap();
     let lowered = attempt.attempt();
-    assert_eq!(lowered.mission.as_deref(), Ok("mission/ch2-m03"));
+    assert_eq!(lowered.mission.as_deref(), Ok("mission/ch1-m03"));
     assert_eq!(lowered.objectives, BLOCKS);
-    assert_eq!(lowered.ignored_sites, 2);
-    assert_eq!(lowered.calls.len() as u32, SITES - 2);
+    assert_eq!(lowered.ignored_sites, 0);
+    assert_eq!(lowered.calls.len() as u32, SITES);
     assert!(
         lowered
             .conditions
@@ -269,18 +272,19 @@ fn accept_m03_b_the_record_lowers_and_the_two_wake_sites_are_dropped() {
             .calls
             .iter()
             .all(|call| matches!(call, CallOutcome::Bound)),
-        "every carried site binds: {:?}",
+        "every site binds: {:?}",
         lowered.calls
     );
-    assert!(
+    assert_eq!(
         attempt
             .raw_program()
             .unwrap()
             .objectives
             .iter()
-            .flat_map(|objective| objective.calls.iter())
-            .all(|call| call.name != "WAKEUP_OBJECTIVE_WHEN_I_COMPLETE"),
-        "no call is emitted for the ignored spelling"
+            .map(|objective| objective.calls.len() as u32)
+            .sum::<u32>(),
+        SITES,
+        "every site is emitted as a call"
     );
     assert!(
         lowered.unbound_keys.is_empty(),
@@ -295,16 +299,16 @@ fn accept_m03_b_the_record_lowers_and_the_two_wake_sites_are_dropped() {
     assert!(unmet.is_empty(), "{unmet:?}");
 }
 
-/// **M03's ten-pair `SET_AI_NET` site binds through one `Value::List`
-/// argument.** (M03-B-FU2 / #810.) The site's operand list *is* its list of
-/// `{actor, net}` pairs, so it is carried as a single argument: the key
-/// registers one single-arity list signature instead of the ten-argument row
-/// [`MAX_CALL_ARGS`] (8) refuses, the site binds, and `unbound_keys` names no
-/// key. M03-B-FU1 (#803) later settled
-/// the record's only other gap.
+/// **M03's `SET_AI_NET` site binds through one `Value::List` argument.**
+/// (M03-B-FU2 / #810.) The site's operand list *is* its list of `{actor, net}`
+/// pairs, so it is carried as a single argument: the key registers a
+/// single-arity list signature, the site binds and `unbound_keys` names no key.
+/// M03 spells one pair (`britkestrel_1` onto `M3BritAce`, block 25); the
+/// ten-pair width that exceeded [`MAX_CALL_ARGS`] (8) is M08's and stays pinned
+/// by the synthetic test below.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m03_b_fu2_the_ten_pair_net_site_binds_through_one_list_argument() {
+fn accept_m03_b_fu2_the_net_site_binds_through_one_list_argument() {
     let row = census().row(MISSION).unwrap();
     let lowered = row.lowering_attempt().expect("M03 has a lowering attempt");
     let attempt = lowered.attempt();
@@ -318,17 +322,25 @@ fn accept_m03_b_fu2_the_ten_pair_net_site_binds_through_one_list_argument() {
         .flat_map(|objective| objective.calls.iter())
         .filter(|call| call.name == "SET_AI_NET")
         .collect();
-    assert_eq!(nets.len(), 1, "block 10 is M03's only `SET_AI_NET` site");
+    assert_eq!(nets.len(), 1, "block 25 is M03's only `SET_AI_NET` site");
     assert_eq!(
         nets[0].args.len(),
         1,
-        "the ten pairs are one argument, not a positional row: {:?}",
+        "the pair list is one argument, not a positional row: {:?}",
         nets[0].args
     );
     let Value::List(pairs) = &nets[0].args[0] else {
         panic!("the single argument is a list: {:?}", nets[0].args);
     };
-    assert_eq!(pairs.len(), 10, "M03 spells ten `{{actor, net}}` pairs");
+    assert_eq!(pairs.len(), 1, "M03 spells one `{{actor, net}}` pair");
+    assert_eq!(
+        pairs[0],
+        Value::List(vec![
+            Value::Str("britkestrel_1".to_owned()),
+            Value::Str("M3BritAce".to_owned())
+        ]),
+        "the pair names its actor and its net"
+    );
     assert!(
         pairs.iter().all(|pair| matches!(
             pair,
@@ -355,7 +367,7 @@ fn accept_m03_b_fu2_the_ten_pair_net_site_binds_through_one_list_argument() {
             .calls
             .iter()
             .all(|outcome| matches!(outcome, CallOutcome::Bound)),
-        "no site is refused any more (M03-B-FU1 dropped the ignored wake sites): {:?}",
+        "no site is refused: {:?}",
         attempt.calls
     );
     assert!(
@@ -368,12 +380,13 @@ fn accept_m03_b_fu2_the_ten_pair_net_site_binds_through_one_list_argument() {
 /// **The sheet's three priorities are in the record and resolve to measured
 /// operations.**
 ///
-/// * grouped objectives: `DEDG` (enemy-group depletion) completes blocks 11, 31,
-///   32 and 46, with the group at child0 and a remaining count of 0;
-/// * world damage state: 111 `INACTIVE<n>` sites (in-play bit of listed
-///   members) with their completion counts;
+/// * grouped objectives: `DEDG` (enemy-group depletion) completes blocks 13, 14
+///   and 21, with the group at child0 and a remaining count of 0;
+/// * world damage state: 54 `INACTIVE<n>` sites (in-play bit of listed
+///   members) with their completion counts in blocks 3 to 6;
 /// * completion ordering: wake, kill and nap chains plus two
-///   `TICK_DEPENDS_ON_OBJ` gates, both on block 54.
+///   `TICK_DEPENDS_ON_OBJ` gates, on blocks 19 and 29 and spelled by blocks 15
+///   and 21.
 ///
 /// Every key is asserted to resolve to the operation the shared finding
 /// measured, so a key that silently lost its meaning fails here.
@@ -387,6 +400,11 @@ fn accept_m03_b_the_sheet_priorities_resolve_to_measured_operations() {
     };
     assert_eq!(operation("DEDG"), DirectiveOperation::EnemyGroupDepletion);
     assert_eq!(operation("INACTIVE1"), DirectiveOperation::InactiveMembers);
+    assert_eq!(operation("TRAVELERS"), DirectiveOperation::Travelers);
+    assert_eq!(
+        operation("WAKEUP_GENERATOR"),
+        DirectiveOperation::FeedGenerator
+    );
     assert_eq!(
         operation("INACTIVE_COMPLETION_COUNT"),
         DirectiveOperation::InactiveThreshold
@@ -416,44 +434,53 @@ fn accept_m03_b_the_sheet_priorities_resolve_to_measured_operations() {
             .map(|(n, _)| *n)
             .collect()
     };
-    assert_eq!(with("DEDG"), [11, 31, 32, 46]);
+    assert_eq!(with("DEDG"), [13, 14, 21]);
     let dedg: Vec<Vec<i64>> = blocks
         .iter()
         .flat_map(|(_, d)| d.iter().filter(|d| d.key == "DEDG").map(addresses))
         .collect();
-    assert_eq!(dedg, [vec![3, 0], vec![1, 0], vec![2, 0], vec![3, 0]]);
+    assert_eq!(dedg, [vec![2, 0], vec![3, 0], vec![1, 0]]);
 
     let inactive_sites: usize = blocks
         .iter()
         .flat_map(|(_, d)| d.iter())
         .filter(|d| d.key.starts_with("INACTIVE") && d.key != "INACTIVE_COMPLETION_COUNT")
         .count();
-    assert_eq!(inactive_sites, 111);
-    assert_eq!(with("INACTIVE_COMPLETION_COUNT").len(), 8);
+    assert_eq!(inactive_sites, 54);
+    assert_eq!(with("INACTIVE_COMPLETION_COUNT"), [3, 4, 5, 6]);
 
-    assert_eq!(with("WAKE_OBJECTIVE_WHEN_I_COMPLETE").len(), 20);
-    assert_eq!(with("KILL_OBJECTIVE_WHEN_I_COMPLETE").len(), 15);
-    assert_eq!(with("NAP_OBJECTIVE_WHEN_I_COMPLETE").len(), 18);
-    assert_eq!(with("WAKEUP_OBJECTIVE_WHEN_I_COMPLETE"), [13, 14]);
-    assert_eq!(with("TICK_DEPENDS_ON_OBJ"), [31, 41]);
+    assert_eq!(with("WAKE_OBJECTIVE_WHEN_I_COMPLETE").len(), 12);
+    assert_eq!(with("KILL_OBJECTIVE_WHEN_I_COMPLETE"), [12, 27]);
+    assert_eq!(with("NAP_OBJECTIVE_WHEN_I_COMPLETE").len(), 15);
+    assert!(with("WAKEUP_OBJECTIVE_WHEN_I_COMPLETE").is_empty());
+    assert_eq!(with("TICK_DEPENDS_ON_OBJ"), [15, 21]);
+    let gates: Vec<Vec<i64>> = blocks
+        .iter()
+        .flat_map(|(_, d)| {
+            d.iter()
+                .filter(|d| d.key == "TICK_DEPENDS_ON_OBJ")
+                .map(addresses)
+        })
+        .collect();
+    assert_eq!(gates, [vec![19], vec![29]]);
 }
 
 /// **The completion chain to `INSTANTWIN` and `INSTANTLOSS` is gated, and every
 /// cross-objective address is a block of this record.**
 ///
 /// Both terminal blocks start dormant with no timed wake (`BEGIN_DORMANT`
-/// `-1`), so neither can fire on its own clock. Block 33 (`INSTANTWIN`) is named
-/// by exactly one other block, 32, through a nap; block 7 (`INSTANTLOSS`) by
-/// blocks 6, 22 and 23, also through naps. Every wake, kill, nap and gate
-/// address lies in `1..=55`: the spelled value is the block number (the
-/// original `dec`s it to an index), so none points past the record.
+/// `-1`), so neither can fire on its own clock. Block 16 (`INSTANTWIN`) is named
+/// by exactly one other block, 15, through a nap; block 7 (`INSTANTLOSS`) by
+/// block 6, also through a nap. Every wake, kill, nap and gate address lies in
+/// `1..=38`: the spelled value is the block number (the original `dec`s it to
+/// an index), so none points past the record.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m03_b_the_terminal_blocks_are_gated_and_every_address_is_in_range() {
     let blocks = blocks_of(&control_document());
     let block = |number: u32| &blocks.iter().find(|(n, _)| *n == number).unwrap().1;
 
-    for (number, outcome) in [(33, "INSTANTWIN"), (7, "INSTANTLOSS")] {
+    for (number, outcome) in [(16, "INSTANTWIN"), (7, "INSTANTLOSS")] {
         let directives = block(number);
         assert!(
             directives
@@ -475,7 +502,7 @@ fn accept_m03_b_the_terminal_blocks_are_gated_and_every_address_is_in_range() {
         .filter(|(_, d)| d.iter().any(|d| d.key.starts_with("INSTANT")))
         .map(|(n, _)| *n)
         .collect();
-    assert_eq!(outcomes, [7, 33], "no other block ends the mission");
+    assert_eq!(outcomes, [7, 16], "no other block ends the mission");
 
     let mut edges = 0;
     for (number, directives) in &blocks {
@@ -495,8 +522,8 @@ fn accept_m03_b_the_terminal_blocks_are_gated_and_every_address_is_in_range() {
         }
     }
     assert_eq!(
-        edges, 84,
-        "the address walk visits every spelled address: 25 wake, 3 wakeup, 36 kill, 18 nap, 2 gate"
+        edges, 41,
+        "the address walk visits every spelled address: 20 wake, 4 kill, 15 nap, 2 gate"
     );
 
     let incoming = |target: i64| -> Vec<(u32, String)> {
@@ -513,16 +540,12 @@ fn accept_m03_b_the_terminal_blocks_are_gated_and_every_address_is_in_range() {
             .collect()
     };
     assert_eq!(
-        incoming(33),
-        [(32, "NAP_OBJECTIVE_WHEN_I_COMPLETE".to_owned())]
+        incoming(16),
+        [(15, "NAP_OBJECTIVE_WHEN_I_COMPLETE".to_owned())]
     );
     assert_eq!(
         incoming(7),
-        [
-            (6, "NAP_OBJECTIVE_WHEN_I_COMPLETE".to_owned()),
-            (22, "NAP_OBJECTIVE_WHEN_I_COMPLETE".to_owned()),
-            (23, "NAP_OBJECTIVE_WHEN_I_COMPLETE".to_owned()),
-        ]
+        [(6, "NAP_OBJECTIVE_WHEN_I_COMPLETE".to_owned())]
     );
 }
 
@@ -679,7 +702,8 @@ fn accept_m03_b_fu2_a_net_assignment_carries_one_list_and_the_positional_bound_s
             .collect()
     };
 
-    // M03's own shape, ten pairs: one list argument, one bound call.
+    // The ten-pair shape (M08's, which this suite pinned before the corrected
+    // layout): one list argument, one bound call.
     let ten = record_of(vec![(1, vec![text("SET_AI_NET"), pairs(10)])]);
     let lowered = lower(&ten);
     assert!(
