@@ -1484,7 +1484,13 @@ fn smoke_sample(
     );
     if data.phase == Phase::Guns {
         if let Some(weapons) = weapons.as_ref() {
-            let effects = u64::try_from(weapons.effects().len()).unwrap_or(u64::MAX);
+            // The count of accepted shots, not the pending log: the production
+            // presentation consumer (`WeaponEffectSchedulePlugin`,
+            // F27-C-FX-SCHED #1304) drains the log every committed tick, so the
+            // pending view is empty by the time this frame's sample runs. The
+            // log's own monotone `recorded` count is what "rounds through the
+            // mission's weapon session" means here.
+            let effects = weapons.effects_recorded();
             let start = *data.effects_at_hold_start.get_or_insert(effects);
             data.measurements.guns.effects = effects.saturating_sub(start);
         }
