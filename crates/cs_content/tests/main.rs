@@ -72,6 +72,7 @@ mod accept_f48_a_save_schema;
 mod accept_f48_b_atomic_persistence;
 mod accept_f48_d_crash_recovery_matrix;
 mod accept_f49_d_02_option_table;
+mod accept_f49_d_03_fu_menu_titles;
 mod accept_f52_original_options;
 mod accept_f53_d_mod_isolation;
 mod accept_f55_bu2_loadout_validator;
