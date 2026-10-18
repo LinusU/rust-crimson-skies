@@ -322,6 +322,7 @@ mod m17_b;
 mod m17_b_fu1;
 mod m18_a;
 mod m18_b;
+mod m18_b_fu1;
 mod m18_b_fu2;
 mod m19_a;
 mod m19_b;
