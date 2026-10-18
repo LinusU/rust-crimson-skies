@@ -587,3 +587,29 @@ cargo run --locked -p cs_xtask -- parity \
 
 The comparison's numbers are a reading aid; its report always says "visual
 comparison needed" and nothing in it is `verified_original`.
+
+#### The engagement mode (#1653 `PARITY-M01-OUTCOME-A`)
+
+```sh
+target/release/cs --cs-path /path/to/retail --mission M01 \
+  --smoke-seconds 120 --smoke-engagement --capture-dir private/evidence/PARITY-M01-OUTCOME-A
+```
+
+`--smoke-engagement` (valid only with `--mission … --smoke-seconds`, not with
+`--smoke-no-teleport`) flies the measured start with **no input** and **no
+teleport** for the whole `--smoke-seconds` budget and judges one check beside
+`smoke_shots_delivered`:
+
+| check | fails when |
+| --- | --- |
+| `hostiles_damage_idle_player` | the player's hull pool was never readable, or it never fell below its first reading within the budget |
+
+The player is a damage victim (`mission_session::player_victim`): a damage
+actor on the session's resolver with a **designed** hull pool and a designed
+swept box, so the rounds the mission's hostile aircraft fire through the
+production gun step land on it. Neither value is measured, and neither is
+fitted to the retail capture (first damage and failure at 1:37). The report's
+`engagement` object carries the start and lowest hull, the frame of the first
+hit and a hull sample every 10 s; screenshots are `flight` (t+10 s), `damaged`
+(1.5 s after the first hit) or `end` (the budget ran out with no hit). The
+mode and its retail run are in `docs/findings/2026-10-18-m01-hostile-engagement.md`.
