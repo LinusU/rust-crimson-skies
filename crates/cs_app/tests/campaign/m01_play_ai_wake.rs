@@ -490,7 +490,7 @@ fn accept_m01_play_ai_wake_synthetic_release_flies_the_record() {
 /// released record then flies on the fixed tick, and the composed restart
 /// respawns it asleep and held.
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_play_ai_wake_retail_the_wake_releases_bsfury_1_and_a_restart_re_holds_it() {
     let stage = retail_stage();
     let mut app = build_headless(&stage).expect("M01's stage composes headlessly");
@@ -680,7 +680,7 @@ fn accept_m01_play_ai_wake_retail_the_wake_releases_bsfury_1_and_a_restart_re_ho
 /// fail-closed leg: the release is the mission's own directive and nothing
 /// else spawns it flying.
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_play_ai_wake_retail_without_the_lifecycle_model_bsfury_1_stays_held() {
     let mut stage = retail_stage();
     stage.host.engine_objectives = None;

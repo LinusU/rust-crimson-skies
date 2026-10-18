@@ -447,7 +447,7 @@ fn accept_m01_play_ai_restart_synthetic_composed_restart_respawns_the_record_fly
 /// composed restart flies after it — freshly allocated, same behaviour — and
 /// the measured sleeper stays held on both sides.**
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_play_ai_restart_retail_composed_restart_respawns_every_flown_record() {
     let stage = retail_stage();
     let mut app = build_headless(&stage).expect("M01's stage composes headlessly");

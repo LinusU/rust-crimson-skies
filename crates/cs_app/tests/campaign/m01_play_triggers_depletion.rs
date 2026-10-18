@@ -201,7 +201,7 @@ fn accept_m01_play_triggers_depletion_a_refused_enabled_record_keeps_its_group_u
 /// **Every DEDG group of retail M01 has a measured count, and removing a
 /// spawned member through the world drives its count down — retail leg.**
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_play_triggers_depletion_all_four_m01_groups_are_observed() {
     let root = game_dir();
     let plan = plan_mission_launch(&root, label("M06"), "The Red Menace")

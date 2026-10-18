@@ -216,7 +216,7 @@ fn retail_stage() -> MissionStage {
 /// two `Finish` blocks must load dormant — the state the whole wake graph
 /// exists to leave.
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_b_wake_retail_m01_carries_the_recovered_lifecycle_model() {
     let stage = retail_stage();
     let engine = stage
@@ -268,7 +268,7 @@ fn accept_m01_b_wake_retail_m01_carries_the_recovered_lifecycle_model() {
 /// control program's own `Action::Finish(Succeeded)`, requested by the
 /// block the program says asked — index 23 — not a test shortcut.
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_b_wake_a_driven_run_reaches_instantwin_through_measured_facts() {
     let stage = retail_stage();
     let mut app = build_headless(&stage).expect("M01's stage composes headlessly");
@@ -317,7 +317,7 @@ fn accept_m01_b_wake_a_driven_run_reaches_instantwin_through_measured_facts() {
 /// reported, so the win chain never starts — the outcome is the record's
 /// own `INSTANTLOSS`, not a race.
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_b_wake_a_driven_run_reaches_instantloss_through_measured_facts() {
     let stage = retail_stage();
     let mut app = build_headless(&stage).expect("M01's stage composes headlessly");
@@ -353,7 +353,7 @@ fn accept_m01_b_wake_a_driven_run_reaches_instantloss_through_measured_facts() {
 /// clock this test's steps advance, which is the positive control that the
 /// run is alive while it cannot end.
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_b_wake_an_unobserved_world_reaches_no_terminal() {
     let stage = retail_stage();
     let mut app = build_headless(&stage).expect("M01's stage composes headlessly");
@@ -402,7 +402,7 @@ fn accept_m01_b_wake_an_unobserved_world_reaches_no_terminal() {
 /// twelve and the twelfth part was never reported out of play. The run
 /// neither settles nor pretends the chain finished.
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_b_wake_a_missing_member_stalls_the_chain_at_its_threshold() {
     let stage = retail_stage();
     let mut app = build_headless(&stage).expect("M01's stage composes headlessly");
@@ -467,7 +467,7 @@ fn accept_m01_b_wake_a_missing_member_stalls_the_chain_at_its_threshold() {
 /// `OBJECTIVE8` stays dormant forever and the chain dies at the first
 /// hop. This is the provider-removal leg for the lifecycle model itself.
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_b_wake_removing_the_lifecycle_model_blocks_the_effects() {
     let mut stage = retail_stage();
     stage.host.engine_objectives = None;

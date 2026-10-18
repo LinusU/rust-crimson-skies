@@ -119,7 +119,7 @@ fn accept_m01_play_actors_the_roster_filter_is_the_measured_enabled_skip() {
 /// **The stage carries M01's twelve measured records, and the roster the
 /// composition spawns is exactly the nine the original's loop keeps.**
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_play_actors_the_stage_and_roster_carry_the_measured_set() {
     let stage = retail_stage();
     let mut names: Vec<&str> = stage
@@ -172,7 +172,7 @@ fn accept_m01_play_actors_the_stage_and_roster_carry_the_measured_set() {
 /// **A composed run spawns every enabled scripted aircraft at its measured
 /// pose — and nothing else.**
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_play_actors_a_composed_run_spawns_the_enabled_aircraft() {
     let stage = retail_stage();
     let mut app = build_headless(&stage).expect("M01's stage composes headlessly");
@@ -249,7 +249,7 @@ fn accept_m01_play_actors_a_composed_run_spawns_the_enabled_aircraft() {
 /// **Every spawned actor registers a session damage actor through the F29
 /// consumer path.**
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_play_actors_every_actor_registers_with_the_damage_resolver() {
     let stage = retail_stage();
     let mut app = build_headless(&stage).expect("M01's stage composes headlessly");
@@ -302,7 +302,7 @@ fn accept_m01_play_actors_every_actor_registers_with_the_damage_resolver() {
 /// **The three `zeppelins.zrd` actors bind ECS entities through the
 /// world-actor session the host launched — not through a parallel spawn.**
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_play_actors_the_zeppelins_bind_through_the_world_actor_session() {
     let stage = retail_stage();
     let mut app = build_headless(&stage).expect("M01's stage composes headlessly");
@@ -354,7 +354,7 @@ fn accept_m01_play_actors_the_zeppelins_bind_through_the_world_actor_session() {
 
 /// **A restart respawns exactly the roster under the fresh generation.**
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_play_actors_a_restart_respawns_exactly_the_roster() {
     let stage = retail_stage();
     let mut app = build_headless(&stage).expect("M01's stage composes headlessly");
@@ -400,7 +400,7 @@ fn accept_m01_play_actors_a_restart_respawns_exactly_the_roster() {
 /// **Remove the stage's aircraft records and nothing spawns** — the tests
 /// above exercise the production roster, never a synthetic constant.
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_play_actors_an_empty_record_set_spawns_no_scripted_aircraft() {
     let mut stage = retail_stage();
     stage.aircraft.clear();

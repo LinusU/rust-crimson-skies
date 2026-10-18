@@ -442,7 +442,7 @@ fn accept_m01_play_triggers_actor_bit_an_actor_the_world_does_not_hold_gets_no_r
 ///    scripted port → exactly its row goes out of play, block 53 completes,
 ///    `workersvoyagezep` stays in play and block 54 does not move.
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_play_triggers_actor_bit_m01_s_actor_level_ladders_read_the_piratezep_row() {
     let stage = retail_stage();
     let mut app = build_headless(&stage).expect("M01's stage composes headlessly");

@@ -130,7 +130,7 @@ fn smallest(sample: &[(String, f32)]) -> f32 {
 /// **The stage imports an airframe for every scripted record's measured
 /// name prefix, and the spawn attaches the law to every awake record.**
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_play_ai_the_stage_imports_an_airframe_for_every_scripted_record() {
     let stage = retail_stage();
     let airframes: &MissionAiAirframes = &stage.ai_airframes;
@@ -245,7 +245,7 @@ fn accept_m01_play_ai_the_stage_imports_an_airframe_for_every_scripted_record() 
 /// engagement window within `RUN_SECONDS`, and Betty stays within the
 /// designed station distance of her measured leader.**
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_play_ai_hostiles_close_and_betty_holds_station_within_n_seconds() {
     let stage = retail_stage();
     let mut app = build_headless(&stage).expect("M01's stage composes headlessly");

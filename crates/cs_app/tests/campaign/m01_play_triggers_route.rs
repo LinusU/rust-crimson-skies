@@ -504,7 +504,7 @@ fn expect_win(app: &App) -> MissionTerminal {
 /// from the live entities, and the terminal from the control program's own
 /// `Finish(Succeeded)`.
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_play_triggers_route_a_scripted_flight_reaches_instantwin() {
     let stage = retail_stage();
     assert!(

@@ -527,7 +527,7 @@ fn accept_m01_play_parts_geometry_the_allegiance_reading_is_the_measured_team_sp
 /// provenance is a designed claim and the container's own per-node box it
 /// stands in for is an explicit unknown under its own claim.
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_play_parts_geometry_m01_binds_the_measured_allegiance_and_a_labelled_box_on_every_part()
  {
     let stage = retail_stage();

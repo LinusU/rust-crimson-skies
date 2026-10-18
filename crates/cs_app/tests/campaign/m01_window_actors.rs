@@ -21,7 +21,7 @@ fn game_dir() -> PathBuf {
 /// pieces under it, and the model each aircraft draws follows its record's
 /// `kind_of` chain.
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_window_actors_retail_every_actor_draws_a_model() {
     let root = game_dir();
     let plan = plan_mission_launch(&root, label("M06"), "The Red Menace")

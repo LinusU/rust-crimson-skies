@@ -482,7 +482,7 @@ fn accept_vs_m01_rt_host_block_lifecycles_retail_m01_declares_its_58_measured_bl
 /// (VS-M01-RT-MISSION-HOST.01's retail member holds the same seam): the
 /// host folds the table the reader declared, not an empty one.
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_vs_m01_rt_host_block_lifecycles_retail_m01_stage_carries_the_declared_table_to_the_host()
 {
     let root = game_dir();

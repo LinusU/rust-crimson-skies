@@ -506,7 +506,7 @@ fn accept_m01_play_triggers_observe_the_synthetic_trigger_fires_only_when_observ
 ///    record's own `NAP`/`WAKE`/`KILL` effects — including the nap's
 ///    re-wake, which a later tick's lifecycle section reports.
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_play_triggers_observe_the_trigger_fires_from_the_players_real_position() {
     let stage = retail_stage();
 
@@ -742,7 +742,7 @@ fn accept_m01_play_triggers_observe_the_trigger_fires_from_the_players_real_posi
 /// despawns group 1's four entities and expects the measured count (`0`) and
 /// the resulting completion of `OBJECTIVE2`; it expects 2 and 4 to count 0.
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_play_triggers_observe_group_counts_come_from_the_live_entities() {
     let stage = retail_stage();
     let mut app = build_headless(&stage).expect("M01's stage composes headlessly");

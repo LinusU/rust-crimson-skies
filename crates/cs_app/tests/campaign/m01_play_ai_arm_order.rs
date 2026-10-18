@@ -284,7 +284,7 @@ fn accept_m01_play_ai_arm_order_composed_restart_arms_into_the_fresh_session() {
 /// same as the synthetic leg's — nothing here is `verified_original` and no
 /// original executable ran.
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_play_ai_arm_order_retail_restart_binds_every_flown_record_fresh() {
     let root = game_dir();
     let plan = plan_mission_launch(&root, label("M06"), "The Red Menace")

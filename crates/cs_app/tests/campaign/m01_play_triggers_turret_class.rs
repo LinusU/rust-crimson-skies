@@ -124,7 +124,7 @@ fn accept_m01_play_triggers_turret_class_the_nine_chains_are_declared_weapon_mou
 }
 
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_play_triggers_turret_class_exactly_the_nine_of_the_39_chains_are_mounts() {
     let records = read_turret_records(&retail_ai_zrd());
     let stage = retail_stage();

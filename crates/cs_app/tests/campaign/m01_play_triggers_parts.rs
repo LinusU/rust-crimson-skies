@@ -205,7 +205,7 @@ fn destroy_part(app: &mut App, actor: ActorId, node: &str) -> PartState {
 /// no node, and `["workersvoyagezep"]`/`["piratezep"]` name the actors
 /// themselves, which are #1480's own actor rows.
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_play_triggers_parts_m01_binds_one_live_part_per_spelled_chain() {
     let stage = retail_stage();
     let mut app = build_headless(&stage).expect("M01's stage composes headlessly");
@@ -301,7 +301,7 @@ fn accept_m01_play_triggers_parts_m01_binds_one_live_part_per_spelled_chain() {
 /// completes index 5 and must not complete index 7 or index 35; four more
 /// complete index 7 (whose block index 5's own completion wakes).
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_play_triggers_parts_a_destroyed_engine_completes_its_ladder_and_not_the_others() {
     let stage = retail_stage();
     let mut app = build_headless(&stage).expect("M01's stage composes headlessly");

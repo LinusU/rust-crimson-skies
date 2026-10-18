@@ -261,7 +261,7 @@ fn accept_m01_play_triggers_group_refusal_a_partial_spawn_stays_unobserved_and_n
 /// **On retail M01 every enabled record spawns, so the new rule changes
 /// nothing: all four measured groups are observed exactly as before.**
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_play_triggers_group_refusal_retail_m01s_groups_are_all_observed() {
     let stage = retail_stage();
     let mut app = build_headless(&stage).expect("M01's stage composes headlessly");

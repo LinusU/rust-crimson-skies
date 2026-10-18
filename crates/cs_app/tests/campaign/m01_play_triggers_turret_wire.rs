@@ -125,7 +125,7 @@ fn graph_class(
 /// it, for one that drops the `disables` edge, and for one that classifies a
 /// part no record declares.
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_play_triggers_turret_wire_the_live_graph_classes_the_nine_mounts() {
     let stage = retail_stage();
 

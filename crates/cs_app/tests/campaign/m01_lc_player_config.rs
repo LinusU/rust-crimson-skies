@@ -178,7 +178,7 @@ fn accept_m01_lc_player_config_retail_m01_binds_player_and_names_unknowns() {
 /// reader returns for that record, and the record's source span names its
 /// bytes in the member.
 #[test]
-#[ignore = "requires CS_GAME_DIR"]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_window_world_start_pose_is_the_aiv_zrd_player_record() {
     let root = PathBuf::from(std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR must be set"));
     let config = recover_retail_start_configuration(&root, "zbd/c1c/m01").expect("M01 reads");
