@@ -9,12 +9,13 @@
 use bevy::camera::{PerspectiveProjection, Projection};
 use bevy::mesh::{Mesh, Mesh3d};
 use bevy::prelude::{
-    Added, AlignItems, App, Assets, BackgroundColor, Camera3d, ChildOf, ClearColor, Color,
+    Added, AlignItems, App, Assets, BackgroundColor, Bundle, Camera3d, ChildOf, ClearColor, Color,
     Commands, Component, Cuboid, DirectionalLight, Entity, GlobalAmbientLight, JustifyContent,
     Local, MeshMaterial3d, Node, Plugin, PositionType, Query, Res, ResMut, StandardMaterial,
     Startup, Text, TextColor, TextFont, Transform, UiRect, Update, Val, Visibility, Window, With,
     default,
 };
+use bevy::render::view::Msaa;
 use bevy::text::FontSize;
 use cs_content::cameras::AspectRatio;
 
@@ -123,16 +124,33 @@ fn spawn_lights_and_hud(mut commands: Commands, state: Res<PlaytestState>) {
     ));
 }
 
+/// The multisampling the interactive playtest window renders with.
+///
+/// Decision (#1458): this camera is human-facing, not a comparison capture,
+/// so it is **not** pinned to the fidelity baseline (`Msaa::Off`, one sample
+/// per pixel) and keeps four-sample antialiasing — a designed improvement
+/// (spec F17 non-negotiable 5), never evidence of original-renderer parity.
+/// It is stated here rather than left to `CameraPlugin`'s required-component
+/// default so that the choice is explicit and a Bevy default change cannot
+/// alter it silently. The window camera takes no tone-curve decision: it
+/// keeps `Camera3d`'s own `Tonemapping`.
+const WINDOW_MSAA: Msaa = Msaa::Sample4;
+
+fn window_camera() -> impl Bundle {
+    (
+        Camera3d::default(),
+        Projection::Perspective(PerspectiveProjection {
+            near: 0.5,
+            far: FAR_PLANE_M,
+            ..PerspectiveProjection::default()
+        }),
+        WINDOW_MSAA,
+    )
+}
+
 fn attach_camera(mut commands: Commands, cameras: Query<Entity, Added<PlaytestCameraMarker>>) {
     for entity in &cameras {
-        commands.entity(entity).insert((
-            Camera3d::default(),
-            Projection::Perspective(PerspectiveProjection {
-                near: 0.5,
-                far: FAR_PLANE_M,
-                ..PerspectiveProjection::default()
-            }),
-        ));
+        commands.entity(entity).insert(window_camera());
     }
 }
 
@@ -289,5 +307,21 @@ fn update_hud(
             node.0.clone_from(&text);
         }
         *last = text;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use bevy::ecs::world::World;
+
+    use super::*;
+
+    /// The window camera's antialiasing is an explicit component, not the
+    /// renderer's required-component default.
+    #[test]
+    fn accept_f17_e_the_playtest_window_camera_pins_its_antialiasing_explicitly() {
+        let mut world = World::new();
+        let entity = world.spawn(window_camera()).id();
+        assert_eq!(world.get::<Msaa>(entity), Some(&Msaa::Sample4));
     }
 }

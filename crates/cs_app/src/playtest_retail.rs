@@ -179,9 +179,9 @@ use bevy::camera::{ClearColorConfig, PerspectiveProjection, Projection};
 use bevy::image::{Image, ImageSampler};
 use bevy::mesh::Mesh;
 use bevy::prelude::{
-    Assets, Camera, Camera3d, Color, DefaultPlugins, DirectionalLight, Entity, Handle, Mesh3d,
-    MeshMaterial3d, On, Res, Resource, StandardMaterial, Transform, Visibility, WindowPlugin,
-    default,
+    Assets, Bundle, Camera, Camera3d, Color, DefaultPlugins, DirectionalLight, Entity, Handle,
+    Mesh3d, MeshMaterial3d, On, Res, Resource, StandardMaterial, Transform, Visibility,
+    WindowPlugin, default,
 };
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk};
@@ -214,6 +214,8 @@ use crate::playtest_textures::{
     NeutralColor, PlaytestPart, PlaytestTextureArchive, PlaytestTextureError,
     PlaytestTextureReport, TextureBinder,
 };
+use crate::render::capture::ComparisonSettings;
+use crate::render::profile::{bevy_tonemapping, msaa_for};
 use crate::world::WorldMeshes;
 use crate::world::audit::GEOMETRY_CONTAINER_FILE;
 use crate::world::fixture::MESH_SETTLE_UPDATES;
@@ -4000,6 +4002,44 @@ fn grow(
     Ok(())
 }
 
+/// The camera a playtest capture is drawn through: the clear colour,
+/// projection and framing at `view`, **and the fixed comparison set as
+/// components**.
+///
+/// `CameraPlugin` registers `Msaa` as a required component of `Camera` and
+/// `Core3dPlugin` registers `Tonemapping` on `Camera3d`, so a spawn that said
+/// nothing would render four samples a pixel under `TonyMcMapface`. The
+/// comparison baseline is one sample and no tone curve (antialiasing is a
+/// designed improvement, spec F17 non-negotiable 5), applied through
+/// [`msaa_for`] and [`bevy_tonemapping`] as `world::textured_capture` does.
+fn capture_camera(view: &PlaytestCameraView, distance: f32, image: Handle<Image>) -> impl Bundle {
+    let settings = ComparisonSettings::comparison();
+    (
+        Camera3d::default(),
+        Camera {
+            clear_color: ClearColorConfig::Custom(Color::srgba(
+                CLEAR_COLOR[0],
+                CLEAR_COLOR[1],
+                CLEAR_COLOR[2],
+                CLEAR_COLOR[3],
+            )),
+            ..default()
+        },
+        RenderTarget::Image(image.into()),
+        Projection::Perspective(PerspectiveProjection {
+            fov: CAMERA_FOV_DEGREES.to_radians(),
+            near: (distance * NEAR_PLANE_FRACTION).max(0.01),
+            far: distance * FAR_PLANE_FACTOR,
+            ..PerspectiveProjection::default()
+        }),
+        Transform::from_xyz(view.eye[0], view.eye[1], view.eye[2])
+            .looking_at(bevy::math::Vec3::from(view.target), bevy::math::Vec3::Y),
+        msaa_for(settings.msaa_samples())
+            .expect("the fixed comparison sample count is a count Bevy expresses"),
+        bevy_tonemapping(settings.tonemap()),
+    )
+}
+
 /// The camera, the two lights and the render target a capture drives, at `view`.
 fn add_camera_and_lights(
     app: &mut App,
@@ -4012,27 +4052,7 @@ fn add_camera_and_lights(
     let distance = bevy::math::Vec3::from(view.target).distance(bevy::math::Vec3::from(view.eye));
     let camera = app
         .world_mut()
-        .spawn((
-            Camera3d::default(),
-            Camera {
-                clear_color: ClearColorConfig::Custom(Color::srgba(
-                    CLEAR_COLOR[0],
-                    CLEAR_COLOR[1],
-                    CLEAR_COLOR[2],
-                    CLEAR_COLOR[3],
-                )),
-                ..default()
-            },
-            RenderTarget::Image(handle.clone().into()),
-            Projection::Perspective(PerspectiveProjection {
-                fov: CAMERA_FOV_DEGREES.to_radians(),
-                near: (distance * NEAR_PLANE_FRACTION).max(0.01),
-                far: distance * FAR_PLANE_FACTOR,
-                ..PerspectiveProjection::default()
-            }),
-            Transform::from_xyz(view.eye[0], view.eye[1], view.eye[2])
-                .looking_at(bevy::math::Vec3::from(view.target), bevy::math::Vec3::Y),
-        ))
+        .spawn(capture_camera(view, distance, handle.clone()))
         .id();
     let key = DirectionalLight {
         illuminance: KEY_LIGHT_ILLUMINANCE,
@@ -5056,5 +5076,35 @@ fn measure(image: &Image) -> FrameFacts {
         distinct_luminance: levels.len(),
         covered_pixels: covered,
         pixels: data.clone(),
+    }
+}
+
+#[cfg(test)]
+mod capture_camera_tests {
+    use bevy::core_pipeline::tonemapping::Tonemapping as BevyTonemapping;
+    use bevy::ecs::world::World;
+    use bevy::render::view::Msaa;
+
+    use super::*;
+
+    /// `Camera` would otherwise take `Msaa::Sample4` as a required component
+    /// and `Camera3d` `TonyMcMapface`. Asserted on the spawned entity, so a
+    /// bundle that forgets the components fails the test.
+    #[test]
+    fn accept_f17_e_the_playtest_capture_camera_carries_the_fidelity_baseline_as_components() {
+        let view = PlaytestCameraView {
+            name: "test",
+            eye: [10.0, 10.0, 10.0],
+            target: [0.0, 0.0, 0.0],
+        };
+        let mut world = World::new();
+        let entity = world
+            .spawn(capture_camera(&view, 10.0, Handle::<Image>::default()))
+            .id();
+        assert_eq!(world.get::<Msaa>(entity), Some(&Msaa::Off));
+        assert_eq!(
+            world.get::<BevyTonemapping>(entity),
+            Some(&BevyTonemapping::None)
+        );
     }
 }
