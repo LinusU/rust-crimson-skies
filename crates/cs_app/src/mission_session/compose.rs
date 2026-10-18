@@ -362,6 +362,8 @@ pub enum MissionCompositionError {
     /// The device error carries the stable code `audibility_exit_code` maps
     /// to the CLI exit status (4 for a missing `audio` capability).
     Audio(cs_sim::audio_events::DeviceError),
+    /// The Flight Check phase could not be read or built.
+    FlightCheck(super::flight_check::FlightCheckPhaseError),
     /// The app exited with an error.
     Exit(String),
 }
@@ -401,6 +403,7 @@ impl fmt::Display for MissionCompositionError {
             ),
             Self::Radio(error) => write!(f, "the mission's radio dialogue refuses: {error}"),
             Self::Audio(error) => write!(f, "the mission audio refuses: {error}"),
+            Self::FlightCheck(error) => write!(f, "{error}"),
             Self::Exit(reason) => write!(f, "the mission window exited with an error: {reason}"),
         }
     }
@@ -1461,6 +1464,8 @@ pub fn teardown(app: &mut App) {
     world.remove_resource::<crate::targeting::TargetingSession>();
     world.remove_resource::<ExpectedLoad>();
     world.remove_resource::<MissionStage>();
+    world.remove_resource::<super::flight_check::FlightCheckPhase>();
+    world.remove_resource::<super::flight_check::FlightCheckArtwork>();
     world.remove_resource::<MissionHost>();
     world.remove_resource::<crate::mission_session::MissionHostReport>();
     world.remove_resource::<crate::mission_session::MissionHostRestartRequest>();
@@ -1500,6 +1505,24 @@ pub fn run_windowed(
         settings.scenario.apply(&mut stage.start);
     }
     let mut app = build_windowed(&stage)?;
+    // The Flight Check holds the mission until Fly Mission. A capture scenario
+    // (the developer shortcuts) and a smoke run start the mission directly and
+    // say so.
+    if capture.is_some() || smoke.is_some() {
+        println!("{}", super::flight_check::SKIP_NOTICE);
+    } else {
+        let (phase, artwork) = super::flight_check::FlightCheckPhase::from_retail(
+            install_root,
+            &plan.mission_dir,
+            &stage,
+        )
+        .map_err(MissionCompositionError::FlightCheck)?;
+        for line in phase.report_lines() {
+            println!("{line}");
+        }
+        super::flight_check::install_flight_check(&mut app, phase);
+        super::flight_check::install_flight_check_screen(&mut app, artwork);
+    }
     if dev_overlay {
         app.insert_resource(crate::playtest::visuals::DeveloperOverlay(true));
     }

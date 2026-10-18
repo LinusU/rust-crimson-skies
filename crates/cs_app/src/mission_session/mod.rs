@@ -96,6 +96,7 @@ mod cockpit_hud;
 mod compose;
 mod content;
 mod evidence;
+mod flight_check;
 mod gun_sound;
 mod host;
 mod landings;
@@ -137,6 +138,13 @@ pub use evidence::{
     CAPABILITIES_ENV, CAPTURE_ENV, CaptureHandle, CaptureRefusal, CaptureSettings,
     EVIDENCE_DIR_ENV, MIN_CLEAR_COVERAGE_PERMILLE, MIN_WORLD_COVERAGE_PERMILLE,
     MissionCapturePlugin, PLAYBACK_FILE, TRACE_FILE, finish as finish_capture, write_playback,
+};
+pub use flight_check::{
+    ButtonRole, CHANGE_AMMO_UNAVAILABLE, CHANGE_PLANE_UNAVAILABLE, FlightCheckArtwork,
+    FlightCheckPhase, FlightCheckPhaseError, FlightCheckScene, FlightCheckSceneError,
+    FlightCheckScreenPlugin, PhaseResponse, RETURN_TO_BRIEFING_UNAVAILABLE, SKIP_NOTICE,
+    SceneButton, SceneText, SceneUnknown, install_flight_check, install_flight_check_screen,
+    mission_is_held, mission_is_released,
 };
 pub use gun_sound::{
     WeaponSound, WeaponSoundError, measure_weapon_sound, sound_like_keys,

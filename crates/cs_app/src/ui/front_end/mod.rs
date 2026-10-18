@@ -108,6 +108,7 @@ pub use machine::{
     ConstructionDraft, Effect, FrontEnd, LoadFailure, Loadout, LoadoutProblem, MissionOutcome,
     Outcome, PageMove, Plan, ProfileIntent, Refusal, Request,
 };
+pub use original::Row as LayoutRow;
 pub use original::{
     ArtExtents, BUTTON_STATE_FRAMES, BoundButton, FlightCheckControl, FlightCheckSelection,
     FlightCheckSelectionError, FlightCheckSlot, LAYOUT_MEMBER, LayoutTextError, OriginalLayout,
