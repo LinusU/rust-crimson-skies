@@ -21,15 +21,15 @@ const RETAIL_TESTS_M06_B_FU3: &[&str] =
 /// (`zbd/c1/m02`), M08 (`zbd/c1b/m03`), no declared work order (`zbd/c1/m04`),
 /// M12 (`zbd/c2/m01`) and M06 (`zbd/c1c/m01`): `m07_b` green-pins `c1/m02`
 /// since its own repin, `m03_b` and `m04_b` still read `c1b/m03` and
-/// `c1/m04` by container path and pass, and `m06_b`'s terminal pin now walks
+/// `c1/m04` by container path and pass, `m12_b` green-pins `c2/m01` since
+/// its own repin landed on main, and `m06_b`'s terminal pin now walks
 /// `c1c/m01` (#1596). `m02_b` no longer corroborates `zbd/c1/m02` — its
-/// suite binds M02's own corrected record `zbd/c3/m02` (#1594) — and no
-/// green terminal-graph pin yet measures `zbd/c2/m01`: the M12-B repin is
-/// separate pending work.
+/// suite binds M02's own corrected record `zbd/c3/m02` (#1594).
 const RECONCILED_TESTS_M06_B_FU3: &[&str] = &[
     "accept_m07_b_the_objective_graph_is_closed_and_the_terminal_blocks_are_gated",
     "accept_m03_b_the_terminal_blocks_are_gated_and_every_address_is_in_range",
     "accept_m04_b_the_terminal_blocks_are_gated_and_every_address_is_in_range",
+    "accept_m12_b_the_block_graph_is_closed_under_the_records_own_numbering",
     "accept_m06_b_the_terminal_blocks_are_gated_and_every_address_is_in_range",
 ];
 
@@ -60,8 +60,8 @@ const RECONCILED: &[(&str, u32, u32, &str)] = &[
 /// module's doc with `M06-B-FU3` and `accept_objaddr_` in place of `M01-A`
 /// and `accept_m01_a_`, and differs in two ways from the M02-B-FU3 report:
 ///
-/// * the acceptance log holds **one** cargo invocation with five filters —
-///   the `accept_objaddr_` prefix plus the four reconciled terminal-graph
+/// * the acceptance log holds **one** cargo invocation with six filters —
+///   the `accept_objaddr_` prefix plus the five reconciled terminal-graph
 ///   tests — so the recorded assertions are the convention's own pin and the
 ///   reconciled suites' terminal-gate pins it reconciles, in one run;
 /// * the artifact beside the report is the **reconciliation record**
@@ -207,15 +207,16 @@ fn evidence_report_m06_b_fu3_writes_the_acceptance_report() {
         artifact_array(&artifacts),
         jstr(&reviewer),
         jstr(
-            "one acceptance invocation with five filters: the `accept_objaddr_` prefix (the \
+            "one acceptance invocation with six filters: the `accept_objaddr_` prefix (the \
              synthetic boundary/refusal pin over `resolve_objective_address` plus the retail \
              re-walk of all five reconciled records) and the terminal-graph tests of the \
              suites that measure reconciled records (`accept_m07_b_…objective_graph…` on \
              zbd/c1/m02, `accept_m03_b_…terminal…` on zbd/c1b/m03, \
-             `accept_m04_b_…terminal…` on zbd/c1/m04, `accept_m06_b_…terminal…` on zbd/c1c/m01), \
+             `accept_m04_b_…terminal…` on zbd/c1/m04, `accept_m12_b_…block_graph…` on \
+             zbd/c2/m01, `accept_m06_b_…terminal…` on zbd/c1c/m01), \
              so the report records the convention pin and every green reconciled pin in one \
              run — under the corrected campaign layout zbd/c2/m01 belongs to M12, whose own \
-             repin is pending, so no green terminal-graph pin corroborates it yet; this \
+             repin landed on main with that block-graph pin; this \
              harness derives every \
              field from the recorded log, production discovery of $CS_GAME_DIR and the decoded \
              control members that `objaddr.rs` re-reads through `read_control_member` \
@@ -288,6 +289,7 @@ fn parse_m06_b_fu3_suite(log: &str) -> Suite {
         "accept_m07_b_the_objective_graph",
         "accept_m03_b_the_terminal",
         "accept_m04_b_the_terminal",
+        "accept_m12_b_the_block_graph",
         "accept_m06_b_the_terminal",
     ] {
         let partial = parse_suite_prefixed(log, prefix);
@@ -296,7 +298,7 @@ fn parse_m06_b_fu3_suite(log: &str) -> Suite {
         }
     }
     // `Suite`'s counters are global per summary line: every parse saw the same
-    // `test result:` totals, so `suite`'s already cover all six tests.
+    // `test result:` totals, so `suite`'s already cover all seven tests.
     suite
 }
 
