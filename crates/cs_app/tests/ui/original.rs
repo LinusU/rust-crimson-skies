@@ -65,7 +65,11 @@ fn accept_f45_b_1_the_parser_reads_sections_variables_and_keeps_unresolved_place
     let section = layout.section("passengercabin").expect("case-insensitive");
     assert_eq!(section.panes.len(), 2);
     assert_eq!(section.buttons.len(), 10);
-    assert_eq!(section.other_rows, 1, "the text row is counted, not read");
+    assert_eq!(
+        section.other.len(),
+        1,
+        "the text row is counted, not built into a screen"
+    );
 
     let back = &section.buttons[0];
     assert_eq!(back.id, "B_BACK");

@@ -25,6 +25,17 @@
 //! option data, F45-D measured artwork, F27-D measured the *construction*
 //! loadout surface), so the finding records it as unknown and the flow never
 //! invents a list.
+//!
+//! Follow-up stage F45-C.5 (#1525) reads the original screen scripts and
+//! measures what the flight check's own controls state: its ammunition
+//! controls start the aircraft's ordnance screen
+//! (`ASSETS/LAYOUT.CSV`'s `[FlightCheck]` `ScriptToExe`), the plane slot each
+//! edits comes from `FLIGHTCHECK.SCRIPT`'s own `@globals@ZQ` state, and the
+//! flight check's own section holds **no** selector row — so the original
+//! states no per-mission list of aircraft or loadouts. Its tests are
+//! `accept_f45_c_5_*` below and the flow gates the ammunition projection on
+//! the measurement. See
+//! `docs/findings/2026-10-18-f45-c-5-flight-check-options-and-ammunition.md`.
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -33,7 +44,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use cs_app::loading::{Criticality, LoadItem, LoadTarget};
 use cs_app::roster::{LoweredRoster, lower_roster};
 use cs_app::ui::front_end::{
-    Action, FlowError, FlowSetup, FrontEndFlow, LoadPlan, Loadout, Screen,
+    Action, FlightCheckSelection, FlightCheckSlot, FlowError, FlowSetup, FrontEndFlow,
+    FrontEndScreens, LoadPlan, Loadout, OriginalLayout, Screen, script_member,
 };
 use cs_assets::cache::{CacheBudget, CacheDirectory, CacheStore};
 use cs_assets::vfs::{ContentSession, MountBuilder, SessionBuilder};
@@ -473,4 +485,363 @@ fn accept_f45_c_2_closing_the_profile_drops_the_roster_with_the_session() {
         flow.domain().roster().is_none(),
         "the closed campaign's roster is not reported as the next one's"
     );
+}
+
+// ---- F45-C.5 (#1525): the measured producer of the flight check's slots ----
+
+/// A JSON string literal for the evidence artifact, so no measured id can
+/// break out of its string.
+fn json_str(value: &str) -> String {
+    let mut out = String::from("\"");
+    for character in value.chars() {
+        match character {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            control if control.is_control() => out.push(' '),
+            other => out.push(other),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// A synthetic original layout **in the original's own format**: a flight
+/// check whose ammunition controls start an ordnance screen (a section with
+/// selector rows) and whose plane control starts the plane screen. The names
+/// are invented; the row kinds and columns are the originals'.
+const FLIGHT_CHECK_LAYOUT: &str = "\
+[@FlightCheck@]
+FC_B_CHANGEAMMO =B,FC_B_PaperButton.Png,274,132,0,IDS_FC_B_CHANGEAMMO,OrdinanceLayout,0x1000,1
+FC_B_CHANGEAMMOW=B,FC_B_PaperButton.Png,274,350,0,IDS_FC_B_CHANGEAMMO,OrdinanceLayout,0x1000,1
+FC_B_CHANGEPLANE=B,FC_B_PaperButton.Png,128,132,0,IDS_FC_B_CHANGEPLANE,PlaneSelection,0x1000,1
+
+[@OrdinanceLayout@]
+OL_D_AMMO0 =D,slider,up,down,dropup,dropdown,136,120,155,148,20,5
+OL_D_ROCKETS0=D,slider,up,down,dropup,dropdown,136,320,120,148,20,12
+
+[@PlaneSelection@]
+PS_D_PILOTPLANE=D,slider,up,down,dropup,dropdown,138,132,0,271,20,13
+";
+
+/// The same flight check without the wingmate ammunition control: the original
+/// shape that offers the wingmate slot no equipment.
+const FLIGHT_CHECK_LAYOUT_NO_WINGMATE: &str = "\
+[@FlightCheck@]
+FC_B_CHANGEAMMO =B,FC_B_PaperButton.Png,274,132,0,IDS_FC_B_CHANGEAMMO,OrdinanceLayout,0x1000,1
+
+[@OrdinanceLayout@]
+OL_D_AMMO0 =D,slider,up,down,dropup,dropdown,136,120,155,148,20,5
+";
+
+/// A synthetic screen script in the original's *shape* (`object X = @ctl@BE`
+/// then `X.YC = "row id"`, arms in `gui_mailbox`). `FC_B_CHANGEAMMO` selects
+/// the pilot's plane (`@globals@ZQ = -1`) and `FC_B_CHANGEAMMOW` the
+/// wingmate's (`-2`), exactly as `FLIGHTCHECK.SCRIPT` does.
+const FLIGHT_CHECK_SCRIPT: &str = "\
+main
+{
+gui_create
+{
+object OP = @ctl@BE
+OP.YC = \"fc_b_changeammo\"
+object PP = @ctl@BE
+PP.YC = \"fc_b_changeammow\"
+}
+gui_mailbox
+{
+switch (getmessage())
+{
+case 10003:
+switch (sender)
+{
+case OP:
+@globals@ZQ = -1
+break
+case PP:
+@globals@ZQ = -2
+break
+}
+}
+}
+}
+";
+
+/// The production measurement of one synthetic layout.
+fn measured(layout_text: &str) -> FlightCheckSelection {
+    let layout = OriginalLayout::parse(layout_text).expect("the fixture layout parses");
+    let scripts =
+        |section: &str| (section == "FlightCheck").then(|| FLIGHT_CHECK_SCRIPT.to_owned());
+    layout
+        .flight_check_selection(&scripts)
+        .expect("the fixture flight check is measured")
+}
+
+impl Fixture {
+    /// A flow whose application read the original flight check and supplies
+    /// the measurement (F45-C.5).
+    fn measured_flow(&self, slots: usize, measured: FlightCheckSelection) -> FrontEndFlow {
+        let mut flow = FrontEndFlow::new(
+            preflight_deck(),
+            self.setup(slots).flight_check_selection(measured),
+        );
+        flow.set_content_session(self.session());
+        flow.set_cache_store(self.store());
+        flow.set_load_plan(load_plan());
+        flow
+    }
+}
+
+/// The production reader measures the flight check's own controls, the plane
+/// slot each edits and the selector rows of the sections they start — and
+/// measures that the flight check's own section holds **no** selector row, so
+/// the original states no per-mission list of aircraft or loadouts. Remove the
+/// reader (or its `@globals@ZQ` reading) and this test fails.
+#[test]
+fn accept_f45_c_5_the_reader_measures_the_controls_their_slots_and_their_selectors() {
+    let first = measured(FLIGHT_CHECK_LAYOUT);
+    let controls: Vec<_> = first
+        .controls
+        .iter()
+        .map(|control| (control.id.as_str(), control.starts.as_str(), control.slot))
+        .collect();
+    assert_eq!(
+        controls,
+        vec![
+            (
+                "FC_B_CHANGEAMMO",
+                "OrdinanceLayout",
+                Some(FlightCheckSlot::Player)
+            ),
+            (
+                "FC_B_CHANGEAMMOW",
+                "OrdinanceLayout",
+                Some(FlightCheckSlot::Wingmate)
+            ),
+            ("FC_B_CHANGEPLANE", "PlaneSelection", None),
+        ],
+        "the control, the screen it starts and the slot its arm selects"
+    );
+    assert!(
+        first.selectors.is_empty(),
+        "the flight check's own section holds no selector row: no option list is in the data"
+    );
+    assert_eq!(
+        first.destinations,
+        vec![
+            (
+                "OrdinanceLayout".to_owned(),
+                vec!["OL_D_AMMO0".to_owned(), "OL_D_ROCKETS0".to_owned()]
+            ),
+            (
+                "PlaneSelection".to_owned(),
+                vec!["PS_D_PILOTPLANE".to_owned()]
+            ),
+        ],
+        "the option surfaces live in the screens the buttons start"
+    );
+    assert!(first.edits(FlightCheckSlot::Player));
+    assert!(first.edits(FlightCheckSlot::Wingmate));
+
+    // An original whose flight check offers the wingmate slot no control that
+    // starts a screen with selectors edits no wingmate equipment.
+    let none = measured(FLIGHT_CHECK_LAYOUT_NO_WINGMATE);
+    assert!(none.edits(FlightCheckSlot::Player));
+    assert!(
+        !none.edits(FlightCheckSlot::Wingmate),
+        "no wingmate control: the wingmate's equipment is not editable"
+    );
+}
+
+/// The measured producer gates the projection: with the measurement supplied
+/// and a wingmate control reaching an option surface, the committed ammunition
+/// is still that wingmate's equipment.
+#[test]
+fn accept_f45_c_5_a_measured_producer_with_a_wingmate_control_commits_the_equipment() {
+    let fx = Fixture::new("measured");
+    let mut flow = fx.measured_flow(1, measured(FLIGHT_CHECK_LAYOUT));
+    let choice = loadout();
+    to_flight_check(&mut flow, &choice);
+
+    flow.press(Action::Launch)
+        .expect("the measured original edits the wingmate's equipment");
+    assert_eq!(flow.domain().committed_loadout(), Some(&choice));
+    let domain = flow.domain();
+    let assignment = domain
+        .roster()
+        .expect("the roster is opened")
+        .wingmate(cs_sim::allies::WingmateSlot(SLOT))
+        .expect("the authored slot is assigned");
+    assert_eq!(assignment.loadout, id(ContentKind::Ammo, AMMUNITION));
+    assert_eq!(
+        assignment.aircraft.as_content(),
+        &id(ContentKind::Airframe, WINGMATE_AIRFRAME)
+    );
+}
+
+/// The gate itself: with the measurement supplied and no wingmate control
+/// reaching an option surface, the flow refuses to make the ammunition that
+/// wingmate's equipment before the machine moves — nothing is committed, no
+/// load starts and the flight check stays on screen.
+#[test]
+fn accept_f45_c_5_a_measured_producer_without_a_wingmate_control_refuses_the_equipment() {
+    let fx = Fixture::new("no-wingmate-control");
+    let mut flow = fx.measured_flow(1, measured(FLIGHT_CHECK_LAYOUT_NO_WINGMATE));
+    to_flight_check(&mut flow, &loadout());
+
+    let refused = flow
+        .press(Action::Launch)
+        .expect_err("the measured original edits no wingmate equipment");
+    assert!(
+        matches!(refused, FlowError::NoWingmateEquipment),
+        "the refusal is named: {refused}"
+    );
+    assert_eq!(flow.front_end().screen(), Screen::FlightCheck);
+    assert_eq!(flow.load().attempts(), 0, "no load was started");
+    assert!(flow.domain().committed_loadout().is_none());
+    assert!(flow.domain().launch().is_none());
+    assert!(flow.domain().roster().is_none());
+}
+
+/// **The retail half.** What the installation's own front-end data states for
+/// the flight check's ammunition: the layout gives `FC_B_CHANGEAMMO` /
+/// `FC_B_CHANGEAMMOW` the screen `OrdinanceLayout`, the screen script selects
+/// the plane slot each edits, and the ordnance screen holds the plane's gun and
+/// rocket selector rows. The flight check's own section holds no selector row,
+/// so the original states no per-mission option list.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_f45_c_5_retail_the_flight_checks_ammunition_is_the_planes_ordnance_screen() {
+    let dir = PathBuf::from(
+        std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR must point at the original installation"),
+    );
+    assert!(
+        dir.is_dir(),
+        "CS_GAME_DIR {} is not a directory",
+        dir.display()
+    );
+    let screens = FrontEndScreens::open(&dir).expect("the original screen container opens");
+    let (text, layout_sha) = screens.layout_text().expect("the layout member reads");
+    let layout = OriginalLayout::parse(&text).expect("the original layout parses");
+    let scripts = |section: &str| screens.script_text(&script_member(section));
+    let measured = layout
+        .flight_check_selection(&scripts)
+        .expect("the original flight check is measured");
+
+    for (id, starts, slot) in [
+        (
+            "FC_B_CHANGEAMMO",
+            "OrdinanceLayout",
+            FlightCheckSlot::Player,
+        ),
+        (
+            "FC_B_CHANGEAMMOW",
+            "OrdinanceLayout",
+            FlightCheckSlot::Wingmate,
+        ),
+        (
+            "FC_B_CHANGEPLANE",
+            "PlaneSelection",
+            FlightCheckSlot::Player,
+        ),
+        (
+            "FC_B_CHANGEPLANEW",
+            "PlaneSelection",
+            FlightCheckSlot::Wingmate,
+        ),
+    ] {
+        let control = measured
+            .controls
+            .iter()
+            .find(|control| control.id == id)
+            .unwrap_or_else(|| panic!("{id} is one of the flight check's controls"));
+        assert_eq!(control.starts, starts, "{id} starts {starts}");
+        assert_eq!(control.slot, Some(slot), "{id} edits {slot:?}");
+    }
+
+    assert!(
+        measured.selectors.is_empty(),
+        "the flight check's own section holds no selector row"
+    );
+    assert!(measured.edits(FlightCheckSlot::Wingmate));
+
+    let (_, ordnance) = measured
+        .destinations
+        .iter()
+        .find(|(starts, _)| starts == "OrdinanceLayout")
+        .expect("the ordnance screen is reached");
+    assert_eq!(
+        ordnance.len(),
+        12,
+        "the plane's ordnance: four gun and eight rocket selectors"
+    );
+    assert_eq!(
+        ordnance
+            .iter()
+            .filter(|id| id.starts_with("OL_D_AMMO"))
+            .count(),
+        4,
+        "four gun selectors"
+    );
+    assert_eq!(
+        ordnance
+            .iter()
+            .filter(|id| id.starts_with("OL_D_ROCKETS"))
+            .count(),
+        8,
+        "eight rocket selectors"
+    );
+
+    if let Ok(dir) = std::env::var("CS_EVIDENCE_DIR") {
+        let dir = PathBuf::from(dir);
+        let dir = if dir.is_absolute() {
+            dir
+        } else {
+            Path::new(env!("CARGO_MANIFEST_DIR"))
+                .parent()
+                .and_then(Path::parent)
+                .expect("workspace root")
+                .join(dir)
+        };
+        fs::create_dir_all(&dir).expect("the evidence directory is created");
+        let controls: Vec<String> = measured
+            .controls
+            .iter()
+            .map(|control| {
+                format!(
+                    "{{\"id\": {}, \"starts\": {}, \"slot\": {}}}",
+                    json_str(&control.id),
+                    json_str(&control.starts),
+                    json_str(match control.slot {
+                        Some(FlightCheckSlot::Player) => "player",
+                        Some(FlightCheckSlot::Wingmate) => "wingmate",
+                        None => "none",
+                    })
+                )
+            })
+            .collect();
+        let destinations: Vec<String> = measured
+            .destinations
+            .iter()
+            .map(|(starts, selectors)| {
+                let ids: Vec<String> = selectors.iter().map(|id| json_str(id)).collect();
+                format!(
+                    "{{\"starts\": {}, \"selectors\": [{}]}}",
+                    json_str(starts),
+                    ids.join(", ")
+                )
+            })
+            .collect();
+        let document = format!(
+            "{{\n  \"member\": \"GOSDATA/ASSETS/crimson.rof::ASSETS/LAYOUT.CSV\",\n  \
+             \"script\": \"ASSETS/SCRIPTS/FLIGHTCHECK.SCRIPT\",\n  \
+             \"install_sha256\": {},\n  \"layout_sha256\": {},\n  \
+             \"controls\": [{}],\n  \"flight_check_selectors\": [],\n  \"destinations\": [{}]\n}}\n",
+            json_str(screens.install_sha256()),
+            json_str(&layout_sha),
+            controls.join(", "),
+            destinations.join(", ")
+        );
+        fs::write(dir.join("flight-check-selection.json"), document)
+            .expect("the artifact is written");
+    }
 }
