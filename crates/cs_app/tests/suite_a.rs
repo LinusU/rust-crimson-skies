@@ -126,6 +126,7 @@ mod accept_f57_a_latency_loss_and_reordering;
 mod accept_f57_c_01_schedule;
 mod accept_f58_a_replay_fire_packet;
 mod accept_f58_b_refused_ask_spawns_nothing;
+mod accept_f58_c_disconnect_policy;
 mod accept_f58_c_disconnect_settles_carried_objectives;
 mod accept_f58_c_full_ledger_refuses_before_teardown;
 mod accept_f58_c_host_loss_ends_the_match_once;
