@@ -65,6 +65,7 @@ mod accept_f25_c_mission_only_session;
 mod accept_f25_e_exceptional_driver;
 mod accept_f27_a_weapon_boundary;
 mod accept_f27_b_live_mounts_and_parts;
+mod accept_f27_c_fx_sched_weapon_effect_schedule;
 mod accept_f27_c_fx_weapon_effect_presentation;
 mod accept_f27_c_weapon_damage_wiring;
 mod accept_f27_c_weapon_schedule;
