@@ -955,17 +955,19 @@ pub enum RuntimeError {
     /// A family directive's arguments do not have the shape the parse can
     /// produce (a list that is not a list of integers, a nap without a number).
     MalformedDirective { operation: DirectiveOperation },
-    /// A family directive's list spells more addresses than the engine's
+    /// A family directive's list spells more children than the engine's
     /// 15-entry window can store (`0x469af0`'s `cmpl $0xf` cap, carried by
     /// `cs_content::objectives_engine` as `ENGINE_LIST_CAPACITY`). The
-    /// window keeps its last slot for the `−1` terminator, so a spelled
-    /// prefix of 15 or more leaves none and the whole list is refused —
-    /// never truncated, the same refusal `TargetList::from_record` gives
-    /// the shape.
+    /// parse's tag-blind store loop stores every spelled child — a
+    /// spelled `0` stores the `−1` that ends the walk but still occupies
+    /// its slot — and appends its terminator one slot past the last, so
+    /// 15 or more leave none and the whole list is refused — never
+    /// truncated, the same refusal `TargetList::from_record` gives the
+    /// shape.
     DirectiveListTooLong {
         /// The operation whose list overran the window.
         operation: DirectiveOperation,
-        /// How many addresses the spelled prefix holds.
+        /// How many children the spelled list stores.
         len: usize,
     },
     /// A family directive was decoded and its addresses checked, but the
@@ -1054,7 +1056,7 @@ impl fmt::Display for RuntimeError {
             }
             Self::DirectiveListTooLong { operation, len } => write!(
                 f,
-                "{operation:?} directive's list spells {len} addresses before its terminator; \
+                "{operation:?} directive's list spells {len} children before its terminator; \
                  the engine's 15-entry list window stores at most 14 plus the terminator"
             ),
             Self::UnexecutedDirective { operation } => write!(

@@ -288,6 +288,90 @@ fn accept_m02_b_fu5_a_list_filling_the_engines_window_applies_and_one_past_is_re
     }
 }
 
+/// The window counts *stored* children, not walked ones: the parse's
+/// tag-blind store loop writes every spelled child's decremented payload
+/// into the 15-dword field — a spelled `0` stores the `−1` that ends the
+/// walk but still occupies its slot, and children after it are stored
+/// however dead — so a list whose pre-terminator prefix would fit is
+/// refused whole once the spelled list itself reaches 15, the shape
+/// `TargetList::from_record` refuses.
+#[test]
+fn accept_m02_b_fu5_a_spelled_zero_still_counts_toward_the_window() {
+    // `[0, 1..=14]`: the authored `0` ends the walk at slot 0, but its `−1`
+    // plus the 14 stored addresses fill the window — the appended
+    // terminator has no slot and the whole list is refused.
+    let mut session = MissionSession::launch(
+        program({
+            let mut objectives: Vec<Objective> = (0..15)
+                .map(|index| block(index, Condition::Const(false), vec![]))
+                .collect();
+            objectives[0].condition = Condition::Const(true);
+            objectives[0].actions = vec![Action::Directive {
+                operation: DirectiveOperation::WakeObjectives,
+                args: vec![list(&std::iter::once(0).chain(1..=14).collect::<Vec<_>>())],
+            }];
+            objectives
+        }),
+        SESSION,
+        Vec::new(),
+    )
+    .unwrap();
+    let mut objectives = runtime(15, ObjectiveState::Pending);
+    session.advance(&MissionFacts::default(), Tick(1)).unwrap();
+    assert_eq!(session.submit_directives(&mut objectives), Ok(1));
+    let tick = objectives.step(&TickInput::at(Tick(1))).unwrap();
+    assert_eq!(
+        refusals(&tick),
+        [&RuntimeError::DirectiveListTooLong {
+            operation: DirectiveOperation::WakeObjectives,
+            len: 15
+        }]
+    );
+
+    // `[2..=15, 0, 1]`: fourteen addresses ahead of the `0` would *walk*
+    // inside the window, but the parse stores all sixteen integers — the
+    // whole list is refused, never walked truncated.
+    let mut session = MissionSession::launch(
+        program({
+            let mut objectives: Vec<Objective> = (0..16)
+                .map(|index| block(index, Condition::Const(false), vec![]))
+                .collect();
+            objectives[0].condition = Condition::Const(true);
+            objectives[0].actions = vec![Action::Directive {
+                operation: DirectiveOperation::WakeObjectives,
+                args: vec![list(
+                    &(2..=15)
+                        .chain(std::iter::once(0))
+                        .chain(std::iter::once(1))
+                        .collect::<Vec<_>>(),
+                )],
+            }];
+            objectives
+        }),
+        SESSION,
+        Vec::new(),
+    )
+    .unwrap();
+    let mut objectives = runtime(16, ObjectiveState::Pending);
+    session.advance(&MissionFacts::default(), Tick(1)).unwrap();
+    assert_eq!(session.submit_directives(&mut objectives), Ok(1));
+    let tick = objectives.step(&TickInput::at(Tick(1))).unwrap();
+    assert_eq!(
+        refusals(&tick),
+        [&RuntimeError::DirectiveListTooLong {
+            operation: DirectiveOperation::WakeObjectives,
+            len: 16
+        }]
+    );
+    for symbol in 0..16 {
+        assert_eq!(
+            objectives.objective_state(SymbolId(symbol)),
+            Some(ObjectiveState::Pending),
+            "symbol {symbol} moved though the whole list was refused"
+        );
+    }
+}
+
 /// `WakeObjectivesOnTransition`, `DependencyGate` and `HideObjective` keep
 /// their named refusal through the running-mission path — the first arrives
 /// as a completion directive, the second likewise, the third as the

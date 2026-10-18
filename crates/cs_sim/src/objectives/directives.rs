@@ -16,13 +16,15 @@
 //!
 //! * **Lists** (`WakeObjectives`, `SleepObjectives`, `KillObjectives`,
 //!   `WakeObjectivesOnTransition`) arrive as the one `Value::List` the lowering
-//!   carries. The parse writes the spelled integers into a 15-slot array,
-//!   `address − 1` each, and a `−1` terminator in the last slot, so an
-//!   authored `0` *is* the terminator: it ends the walk and the children
-//!   after it are never reached, which is not a refusal. A spelled prefix
-//!   of [`ENGINE_LIST_WINDOW`] or more leaves no slot for the terminator
-//!   — the shape `TargetList::from_record` refuses — and the whole list
-//!   gets [`RuntimeError::DirectiveListTooLong`], never a truncated walk.
+//!   carries. The parse's store loop decrements and writes every spelled
+//!   child's payload into the record's 15-dword list field and appends a
+//!   `−1` terminator one slot past the last, so an authored `0` stores the
+//!   `−1` the walk stops on: it ends the walk and the children after it
+//!   are never reached, which is not a refusal — but they are still
+//!   *stored*, so [`ENGINE_LIST_WINDOW`] or more spelled children leave
+//!   the appended terminator no slot, the shape `TargetList::from_record`
+//!   refuses, and the whole list gets [`RuntimeError::DirectiveListTooLong`],
+//!   never a truncated walk.
 //!   Any other address outside `[1, objectives]` — including a negative
 //!   one, which decodes below the terminator — is refused by name.
 //! * **`NapObjective`** spells `[address, seconds]`; a missing or non-numeric
@@ -62,7 +64,7 @@ use super::runtime::{CompletionEffect, CompletionEffectKind, NapTime, RuntimeErr
 /// target arrays hold, **terminator included** — the `cmpl $0xf` cap the
 /// wake walk at `0x469af0` carries (`cs_content::objectives_engine`
 /// publishes the same number as `ENGINE_LIST_CAPACITY`). A spelled list
-/// of this many addresses leaves no slot for its terminator and is
+/// of this many children leaves no slot for its terminator and is
 /// refused whole rather than walked.
 const ENGINE_LIST_WINDOW: usize = 15;
 
@@ -160,22 +162,23 @@ fn plan_list(
     let [Value::List(children)] = args else {
         return vec![Err(RuntimeError::MalformedDirective { operation })];
     };
-    // The parse stores the spelled integers until the authored `0`
-    // terminator, into an array whose last slot is the `−1` it writes:
-    // a prefix of [`ENGINE_LIST_WINDOW`] storable children leaves the
-    // terminator nowhere, and the record reader refuses the same shape
-    // (`EngineEffectError::ListTooLong`). The whole list is refused —
-    // the walk's `cmpl $0xf` cap is never reached with a stored list,
-    // so modelling a truncated walk would invent behaviour no record
-    // can produce.
-    let storable = children
-        .iter()
-        .take_while(|child| matches!(child, Value::Int(address) if *address != 0))
-        .count();
-    if storable >= ENGINE_LIST_WINDOW {
+    // The parse's store loop is tag-blind: it decrements and writes
+    // **every** spelled child's payload into the record's 15-dword list
+    // field — a spelled `0` stores the `−1` the walk later stops on but
+    // still occupies its slot, and the children after it are stored too,
+    // however dead they are to the walk — then appends its own `−1`
+    // terminator one slot past the last child. [`ENGINE_LIST_WINDOW`]
+    // stored children leave that terminator nowhere (it lands in the
+    // next field's first slot), and the record reader refuses the same
+    // shape (`EngineEffectError::ListTooLong` counts the whole spelled
+    // list, not the walked prefix). The whole list is refused — the
+    // walk's `cmpl $0xf` cap is never reached with a stored list, so
+    // modelling a truncated walk would invent behaviour no record can
+    // produce.
+    if children.len() >= ENGINE_LIST_WINDOW {
         return vec![Err(RuntimeError::DirectiveListTooLong {
             operation,
-            len: storable,
+            len: children.len(),
         })];
     }
     let mut out = Vec::new();

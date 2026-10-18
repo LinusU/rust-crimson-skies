@@ -470,9 +470,12 @@ installation through the production rule on the rebased tree.
    is now the running-mission driver — the session supplies the record's block
    count and its own directive log, like `Countdown::apply_new` does for the
    timer operations, and `accept_m02_b_fu5_` covers the path end to end;
-   (b) the wake walk's 15-entry window (`0x469af0`) is modelled — a spelled
-   prefix of 15 or more leaves no slot for the `−1` terminator and the whole
-   list is refused as `RuntimeError::DirectiveListTooLong`, the same shape
+   (b) the wake walk's 15-entry window (`0x469af0`) is modelled — the parse's
+   tag-blind store loop stores every spelled child's decremented payload (a
+   spelled `0` stores the `−1` that ends the walk but still occupies its
+   slot) and appends its terminator one slot past the last, so 15 or more
+   leave none and the whole list is refused as
+   `RuntimeError::DirectiveListTooLong`, the same shape
    `TargetList::from_record` refuses; (d) the `SymbolId(0)` clash is resolved
    by moving `ACTOR_EVENT_SOURCE` to `SymbolId(u32::MAX)` — a value no record
    index and no resolved address can reach, so the first block registers like
