@@ -317,25 +317,25 @@ fn rotate(q: [f64; 4], v: [f64; 3]) -> [f64; 3] {
     ]
 }
 
-fn word(event: &[u8], offset: usize) -> u32 {
+pub(super) fn word(event: &[u8], offset: usize) -> u32 {
     u32::from_le_bytes(event[offset..offset + 4].try_into().expect("four bytes"))
 }
 
-fn half(event: &[u8], offset: usize) -> i16 {
+pub(super) fn half(event: &[u8], offset: usize) -> i16 {
     i16::from_le_bytes(event[offset..offset + 2].try_into().expect("two bytes"))
 }
 
-fn text(name: &[u8]) -> String {
+pub(super) fn text(name: &[u8]) -> String {
     String::from_utf8_lossy(name).into_owned()
 }
 
-fn node_name(record: &AnimationRecord<'_>, index: i64) -> Option<String> {
+pub(super) fn node_name(record: &AnimationRecord<'_>, index: i64) -> Option<String> {
     let table = record.table(AnimationRecordTableKind::Nodes)?;
     let index = usize::try_from(index).ok()?;
     table.name(index).map(text)
 }
 
-fn record_named<'r, 'a>(
+pub(super) fn record_named<'r, 'a>(
     records: &'r cs_formats::zbd::AnimationRecords<'a>,
     name: &'r str,
 ) -> Result<&'r AnimationRecord<'a>, LaunchEndPoseError> {
@@ -352,15 +352,15 @@ fn record_named<'r, 'a>(
 }
 
 /// One event of an ordinary sequence: its bytes, header included.
-struct SequenceEvent<'a> {
-    sequence: String,
-    offset: u64,
-    opcode: u8,
-    bytes: &'a [u8],
+pub(super) struct SequenceEvent<'a> {
+    pub(super) sequence: String,
+    pub(super) offset: u64,
+    pub(super) opcode: u8,
+    pub(super) bytes: &'a [u8],
 }
 
 /// Every event of a record's non-reset sequences.
-fn ordinary_events<'a>(
+pub(super) fn ordinary_events<'a>(
     record: &AnimationRecord<'a>,
 ) -> Result<Vec<SequenceEvent<'a>>, LaunchEndPoseError> {
     let mut out = Vec::new();
