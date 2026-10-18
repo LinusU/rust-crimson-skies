@@ -92,7 +92,7 @@ aarch64, default `test` profile):
 | --- | --- | --- |
 | `cs_app_tests_a` | `accept_f25`-`f29`, `f40`-`f44`, `f47`-`f49`, `f53`-`f59`, all 44 `accept_m01_*`, `accept_t*`, the other 46 `evidence_report_*` (m01, t463-t542, retail), `environment/`, `flight/`, and 40 campaign modules (the M01 play/window families, `m02`-`m05`, …) | 15,226,348 B (14.52 MiB) |
 | `cs_app_tests_b` | `accept_f20`, `f22`, `f24`, 5 `playtest_*` files, `render/` | 14,852,400 B (14.16 MiB) |
-| `cs_app_tests_c` | `accept_f00`, `f16`, `f17`, `f60`, `f64`, `evidence_report_f64_*`, `world/` (+ `vs_m01_geometry_verdict`), `ui/`, `camera/`, `text/`, `accessibility/`, `scrapbook/`, the F64 supports | 15,343,804 B (14.63 MiB) |
+| `cs_app_tests_c` | `accept_f00`, `f16`, `f17`, `f60`, `f64`, `evidence_report_f64_*`, `world/` (+ `vs_m01_geometry_verdict`), `ui/`, `camera/`, `text/`, `accessibility/`, `scrapbook/`, the F64 supports | 15,415,292 B (14.70 MiB) |
 | `cs_app_tests_d` | `accept_f30`-`f36`, `f39`, 13 `evidence_report_*` (f18-f21, f33, f39, flight), `physics/`, `hud/`, and the campaign module root (`m06`-`m24`, `f50`, `evidence/`, …) | 13,441,964 B (12.82 MiB) |
 | `cs_app_tests_e` | the `vs_m01_*` runtime-host suites incl. `vs_m01_runtime`, `m01_play_world_evidence` | 15,394,972 B (14.68 MiB) |
 
