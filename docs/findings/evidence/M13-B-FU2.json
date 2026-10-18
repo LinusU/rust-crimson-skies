@@ -1,9 +1,9 @@
 {
  "schema_version": 1,
  "task_id": "M13-B-FU2",
- "candidate_tree": "00d4d7b54a30f5cc36b1a47ca88e2a0b79765117",
+ "candidate_tree": "46759909e4ce9374b488908def018a5a773229fe",
  "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
- "created_at": "2026-10-18T08:01:40Z",
+ "created_at": "2026-10-18T08:12:11Z",
  "command": {"argv": ["cargo", "test", "--locked", "-p", "cs_app", "--", "accept_m13_b_fu2_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/sonnet-2", "exit_code": 0},
  "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
  "seed": 0,
@@ -11,8 +11,8 @@
  "overrides": [],
  "capabilities": ["retail", "synthetic"],
  "tests": {"discovered": 4, "executed": 4, "passed": 4, "failed": 0, "ignored": 0},
- "assertions": [{"id": "accept_m13_b_fu2_the_ambiguous_startup_name_is_an_unknown_of_m13_alone", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m13_b_fu2_synthetic_binding_keeps_single_ambiguous_and_unresolved_apart", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m13_b_fu2_retail_startup_table_and_empty_mis_anim_member", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m13_b_fu2_retail_each_startup_name_resolves_or_is_refused_by_name", "status": "pass", "evidence": ["cargo-test.log"]}],
- "artifacts": [{"path": "cargo-test.log", "sha256": "54396eaf193cca09253e1a13ae0d9c17d89812b16b7eaea294e4e968644fd09f", "kind": "log"}],
+ "assertions": [{"id": "accept_m13_b_fu2_the_ambiguous_startup_name_is_an_unknown_of_m13_alone", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m13_b_fu2_retail_startup_table_and_empty_mis_anim_member", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m13_b_fu2_synthetic_binding_keeps_single_ambiguous_and_unresolved_apart", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m13_b_fu2_retail_each_startup_name_resolves_or_is_refused_by_name", "status": "pass", "evidence": ["cargo-test.log"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "abcfd2d0b012486d61eaeaf85a29d9612a36f14eb78e45f3e5db9c3014b81080", "kind": "log"}],
  "unknowns": ["startup animation `cg1zep_engines_stop` is declared by two shared-root members (`cg1_zep_nacelles.zrd`, `dante_zep_nacelles.zrd`) and no measured rule picks one; production refuses the row as ambiguous; affects M13's NEW_GAME_START; resolving task: M13-C (original reference run)"],
  "review": {"identity": "implementer: sonnet-2/sonnet-2 (Rally #1244 implement claim, 2026-10-18); no review yet - this is the implementer's hand-over run, not independent review", "method": "acceptance suite run locally with the retail capability; the fields are derived from the recorded log and production discovery of $CS_GAME_DIR. The suite pins this task's verdict: `bind_mission_animation` over `zbd/c3/m03` binds eight of M13's nine startup animation names to exactly one declaring member and one carrier record each (declarations live in the mission, c3 group and shared root zrdr.zbd members, not in the empty mis_anim.zrd) and refuses `cg1zep_engines_stop` as an ambiguous declaration. NOT CLAIMED: which declaration the original selects, and any runtime half; nothing is verified_original and no original executable was run. Claim is implemented only; validated structurally with tools/validate_evidence.py; --require-pass refuses the recorded unknown, which is kept on purpose. `candidate_tree` is the tree of the commit the suite and this harness ran on; the only later delta is this report's own copy under docs/findings/evidence/, which no acceptance test reads"},
  "claim": "implemented"
