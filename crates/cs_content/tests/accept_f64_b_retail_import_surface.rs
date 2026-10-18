@@ -150,8 +150,12 @@ fn accept_f64_b_retail_custom_aircraft_is_referenced_by_the_construction_screen(
         "the measured construction-screen reference turns the requirement on"
     );
     assert_eq!(
-        aircraft.referenced_by(),
-        &[PLANE_CONSTRUCTION],
+        aircraft
+            .referenced_by()
+            .iter()
+            .map(|r| r.path)
+            .collect::<Vec<_>>(),
+        [PLANE_CONSTRUCTION],
         "the inventory must record the measured referencing path"
     );
 }

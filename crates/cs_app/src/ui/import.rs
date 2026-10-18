@@ -1277,7 +1277,14 @@ fn requirement_text(requirement: ImportRequirement) -> String {
             "required when an original content path references it, none does yet".to_owned()
         }
         ImportRequirement::RequiredWhenReferenced { referenced_by } => {
-            format!("required, referenced by {}", referenced_by.join(", "))
+            format!(
+                "required, referenced by {}",
+                referenced_by
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join(", ")
+            )
         }
         ImportRequirement::OptionalEnhancement {
             label,

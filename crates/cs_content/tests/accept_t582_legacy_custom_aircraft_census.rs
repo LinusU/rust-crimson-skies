@@ -231,8 +231,12 @@ fn accept_t582_the_inventory_row_keeps_its_measured_reference_and_unknown_layout
         "the measured construction-screen reference keeps the requirement on"
     );
     assert_eq!(
-        row.requirement.referenced_by(),
-        &[PLANE_CONSTRUCTION],
+        row.requirement
+            .referenced_by()
+            .iter()
+            .map(|r| r.path)
+            .collect::<Vec<_>>(),
+        [PLANE_CONSTRUCTION],
         "the inventory records the one measured referencing member"
     );
     assert_eq!(

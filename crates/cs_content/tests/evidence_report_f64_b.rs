@@ -224,7 +224,7 @@ fn evidence_report_f64_b_writes_the_acceptance_report() {
                 requirement
                     .referenced_by()
                     .iter()
-                    .map(|path| jstr(path))
+                    .map(|reference| jstr(reference.path))
                     .collect::<Vec<_>>()
                     .join(", ")
             )

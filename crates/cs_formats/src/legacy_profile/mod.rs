@@ -50,7 +50,8 @@ pub use document::{
     synthetic_blueprint_layout, synthetic_layout,
 };
 pub use inventory::{
-    ArtifactProposal, ArtifactProposalError, ImportRequirement, LEGACY_LAYOUT_INVENTORY,
-    LEGACY_PROFILE_ENTRYPOINT, LEGACY_SAVE_IMPORT_SWITCH, LegacyArtifactClass, LegacyLayoutRecord,
-    MAX_LEGACY_SOURCE_BYTES, layout_record,
+    ArtifactProposal, ArtifactProposalError, BASE_CONTAINER, ContentReference, ImportRequirement,
+    LEGACY_LAYOUT_INVENTORY, LEGACY_PROFILE_ENTRYPOINT, LEGACY_SAVE_IMPORT_SWITCH,
+    LegacyArtifactClass, LegacyLayoutRecord, MAX_LEGACY_SOURCE_BYTES, ReferenceResolution,
+    layout_record,
 };

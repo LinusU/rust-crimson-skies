@@ -65,8 +65,9 @@ fn accept_f64_d_retail_the_custom_aircraft_reference_resolves_to_the_shipped_con
         "{BASE_CONTAINER} ships and is inventoried, so its members can be read"
     );
 
-    for recorded in referenced {
-        let (source, member) = read_reference(&root, &manifest, recorded).unwrap_or_else(|| {
+    for reference in referenced {
+        let recorded = reference.path;
+        let (source, member) = read_reference(&root, &manifest, reference).unwrap_or_else(|| {
             panic!(
                 "the inventory records {recorded:?} as a referencing original path, but nothing \
                  in {} resolves it: no inventoried file spells it and {} holds no such member",

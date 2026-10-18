@@ -271,9 +271,10 @@ fn switch_trace(root: &Path, manifest: &cs_types::install::InstallManifest) -> S
         let record = layout_record(class);
         let optional = record.requirement.is_optional_enhancement();
         let mut refs: Vec<String> = Vec::new();
-        for recorded in record.requirement.referenced_by() {
+        for reference in record.requirement.referenced_by() {
+            let recorded = reference.path;
             references += 1;
-            match reference_digest(root, manifest, recorded) {
+            match reference_digest(root, manifest, reference) {
                 Some((source, bytes, digest)) => {
                     resolved_references += 1;
                     let label = source.label();

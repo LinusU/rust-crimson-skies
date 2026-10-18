@@ -40,6 +40,7 @@ use cs_content::catalog::Catalog;
 use cs_content::construction::{ConstructionPolicy, ConstructionRules, PriceBook};
 use cs_content::legacy_import::{LayoutAdmission, LegacyIdMap, legacy_save_import_rule};
 use cs_content::save::settings::SettingCatalog;
+use cs_formats::legacy_profile::{ContentReference, ReferenceResolution};
 use cs_types::asset_id::{AssetKey, MountId, MountNamespace, PrecedenceClass, ResolveContext};
 use cs_types::content::Origin;
 use cs_types::install::InstallManifest;
@@ -180,40 +181,48 @@ impl ReferenceSource {
     }
 }
 
-/// Resolves a recorded original-content path against this installation.
-///
-/// An inventoried file wins when the manifest spells the path (a reference
-/// could point at a root file); otherwise the path is read as a member of the
-/// base container through the production ROF mount. `None` means nothing in
-/// this installation resolves the reference — a stale note, which the caller
-/// must fail on.
+/// Resolves a recorded original-content reference through the resolution kind
+/// the inventory declares for it (F64-E): an installation-root file is read
+/// from the root, a container member through the production ROF mount. There
+/// is no fallback from one kind to the other — a reference that does not
+/// resolve through its own declared kind is a stale note, and `None` makes the
+/// caller fail on it.
 pub fn read_reference(
     root: &Path,
     manifest: &InstallManifest,
-    recorded: &str,
+    reference: &ContentReference,
 ) -> Option<(ReferenceSource, Vec<u8>)> {
-    if let Some(file) = find_spelling(manifest, recorded) {
-        let bytes = std::fs::read(root.join(file)).ok()?;
-        return Some((ReferenceSource::InstallFile(file.to_owned()), bytes));
+    match reference.resolution {
+        ReferenceResolution::InstallationRootFile => {
+            let file = find_spelling(manifest, reference.path)?;
+            let bytes = std::fs::read(root.join(file)).ok()?;
+            Some((ReferenceSource::InstallFile(file.to_owned()), bytes))
+        }
+        ReferenceResolution::ContainerMember { container } => {
+            // `read_member` mounts the base container only.
+            if !container.eq_ignore_ascii_case(BASE_CONTAINER) {
+                return None;
+            }
+            let container = find_spelling(manifest, container)?.to_owned();
+            let bytes = read_member(root, reference.path)?;
+            Some((
+                ReferenceSource::ContainerMember {
+                    container,
+                    spelling: reference.path.to_owned(),
+                },
+                bytes,
+            ))
+        }
     }
-    let container = find_spelling(manifest, BASE_CONTAINER)?.to_owned();
-    let bytes = read_member(root, recorded)?;
-    Some((
-        ReferenceSource::ContainerMember {
-            container,
-            spelling: recorded.to_owned(),
-        },
-        bytes,
-    ))
 }
 
 /// One reference's decoded length and SHA-256, for the evidence artifact.
 pub fn reference_digest(
     root: &Path,
     manifest: &InstallManifest,
-    recorded: &str,
+    reference: &ContentReference,
 ) -> Option<(ReferenceSource, u64, String)> {
-    let (source, bytes) = read_reference(root, manifest, recorded)?;
+    let (source, bytes) = read_reference(root, manifest, reference)?;
     Some((source, bytes.len() as u64, sha256(&bytes).to_hex()))
 }
 

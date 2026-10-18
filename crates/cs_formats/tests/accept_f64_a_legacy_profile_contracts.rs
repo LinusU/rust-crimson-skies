@@ -134,8 +134,12 @@ fn accept_f64_a_custom_aircraft_import_is_not_required_until_a_path_references_i
          so custom-aircraft import is required"
     );
     assert_eq!(
-        aircraft.referenced_by(),
-        &["ASSETS/SCRIPTS/PLANECONSTRUCTION.SCRIPT"],
+        aircraft
+            .referenced_by()
+            .iter()
+            .map(|r| r.path)
+            .collect::<Vec<_>>(),
+        ["ASSETS/SCRIPTS/PLANECONSTRUCTION.SCRIPT"],
         "the required row must record the measured referencing path"
     );
 

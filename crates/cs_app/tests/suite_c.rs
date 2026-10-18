@@ -28,6 +28,7 @@ mod accept_f64_c_import_report;
 mod accept_f64_c_persist_import;
 mod accept_f64_d_optional_save_switch;
 mod accept_f64_d_retail_custom_aircraft_and_optional_saves;
+mod accept_f64_e_reference_resolution;
 mod accessibility;
 mod camera;
 mod evidence_report_f64_c;

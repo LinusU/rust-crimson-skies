@@ -129,6 +129,44 @@ impl fmt::Display for LegacyArtifactClass {
     }
 }
 
+/// The shipped base container whose members the recorded asset spellings name
+/// (installation-relative). F64-D measured `ASSETS/SCRIPTS/PLANECONSTRUCTION.SCRIPT`
+/// to be a member of it, read through the production ROF mount.
+pub const BASE_CONTAINER: &str = "GOSDATA/ASSETS/crimson.rof";
+
+/// Where a recorded original-content path resolves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ReferenceResolution {
+    /// A file at the installation root, by its inventoried spelling.
+    InstallationRootFile,
+    /// A member of a shipped container, by its asset spelling.
+    ContainerMember {
+        /// The container's installation-relative spelling.
+        container: &'static str,
+    },
+}
+
+/// One original content path measured to reference an artifact class, and
+/// where that path resolves.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ContentReference {
+    /// The recorded path (an asset spelling for a container member).
+    pub path: &'static str,
+    /// Where `path` resolves.
+    pub resolution: ReferenceResolution,
+}
+
+impl fmt::Display for ContentReference {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.resolution {
+            ReferenceResolution::InstallationRootFile => f.write_str(self.path),
+            ReferenceResolution::ContainerMember { container } => {
+                write!(f, "{container}#{}", self.path)
+            }
+        }
+    }
+}
+
 /// Whether importing one artifact class is required or an optional
 /// enhancement (spec F64, "Deliverable and interfaces").
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -142,7 +180,7 @@ pub enum ImportRequirement {
         /// measured `ASSETS/SCRIPTS/PLANECONSTRUCTION.SCRIPT` to fill a
         /// four-slot saved-plane grid, so `CustomAircraft` carries it; an
         /// empty list means "not required yet", never "never required".
-        referenced_by: &'static [&'static str],
+        referenced_by: &'static [ContentReference],
     },
     /// A separately labeled compatibility enhancement. Not importing it is
     /// never a corruption of the source and never blocks a new-engine fresh
@@ -179,7 +217,7 @@ impl ImportRequirement {
     }
 
     /// The measured original content paths that reference the class.
-    pub const fn referenced_by(self) -> &'static [&'static str] {
+    pub const fn referenced_by(self) -> &'static [ContentReference] {
         match self {
             Self::RequiredWhenReferenced { referenced_by } => referenced_by,
             Self::OptionalEnhancement { .. } => &[],
@@ -220,7 +258,12 @@ pub static LEGACY_LAYOUT_INVENTORY: [LegacyLayoutRecord; 5] = [
     LegacyLayoutRecord {
         class: LegacyArtifactClass::CustomAircraft,
         requirement: ImportRequirement::RequiredWhenReferenced {
-            referenced_by: &["ASSETS/SCRIPTS/PLANECONSTRUCTION.SCRIPT"],
+            referenced_by: &[ContentReference {
+                path: "ASSETS/SCRIPTS/PLANECONSTRUCTION.SCRIPT",
+                resolution: ReferenceResolution::ContainerMember {
+                    container: BASE_CONTAINER,
+                },
+            }],
         },
         evidence: ClaimStatus::Unknown,
         unknowns: &[
