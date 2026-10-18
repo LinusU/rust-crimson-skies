@@ -599,6 +599,8 @@ pub fn launch_mission(request: &crate::cli::MissionRequest) -> Result<(), Missio
         request.smoke.as_ref(),
         if request.smoke_no_teleport {
             crate::mission_session::MissionSmokeMode::NoTeleport
+        } else if request.smoke_engagement {
+            crate::mission_session::MissionSmokeMode::Engagement
         } else {
             crate::mission_session::MissionSmokeMode::Scripted
         },

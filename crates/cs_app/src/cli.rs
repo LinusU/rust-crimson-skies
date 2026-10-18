@@ -54,6 +54,11 @@ pub struct MissionRequest {
     /// original game's default controls (Rally #1733
     /// `PARITY2-ORIGINAL-KEYBINDINGS`).
     pub dev_keys: bool,
+    /// `--smoke-engagement`: the smoke flies the measured start with no input
+    /// for the whole `--smoke-seconds` budget and judges whether the mission's
+    /// hostile aircraft damage the player (Rally #1653
+    /// `PARITY-M01-OUTCOME-A`).
+    pub smoke_engagement: bool,
 }
 
 /// What the caller asked the binary to do.
@@ -130,6 +135,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
     let mut smoke_no_teleport = false;
     let mut dev_overlay = false;
     let mut dev_keys = false;
+    let mut smoke_engagement = false;
     let mut unknown = false;
 
     let mut index = 0;
@@ -143,6 +149,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
             "--smoke-no-teleport" => smoke_no_teleport = true,
             "--dev-overlay" => dev_overlay = true,
             "--dev-keys" => dev_keys = true,
+            "--smoke-engagement" => smoke_engagement = true,
             "--smoke-seconds" => {
                 let Some(value) = args.get(index + 1).cloned() else {
                     return CliRequest::Unsupported { args };
@@ -246,6 +253,13 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
                 .to_string(),
         };
     }
+    if smoke_engagement && (mission.is_none() || smoke_seconds.is_none() || smoke_no_teleport) {
+        return CliRequest::Invalid {
+            reason: "--smoke-engagement is a mode of --cs-path <dir> --mission <id> \
+ --smoke-seconds <n> and does not combine with --smoke-no-teleport"
+                .to_string(),
+        };
+    }
     if let Some(mission) = mission {
         if playtest || synthetic || headless || world.is_some() || aircraft.is_some() {
             return CliRequest::Invalid {
@@ -292,6 +306,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
             smoke_no_teleport,
             dev_overlay,
             dev_keys,
+            smoke_engagement,
         });
     }
     if playtest {
@@ -481,7 +496,7 @@ WINDOWED PLAYTEST (development, not original)
         Fly with the developer key layout (W/S Q/E A/D, Left Shift / F
         throttle, R reset, F10 quit) instead of the original game's default
         controls.
-    --mission <id> --smoke-seconds <n> [--smoke-no-teleport] [--capture-dir <dir>]
+    --mission <id> --smoke-seconds <n> [--smoke-no-teleport | --smoke-engagement] [--capture-dir <dir>]
         The same windowed launch driven as a scripted smoke (n >= 45
         simulated seconds): it injects keys through the real input path,
         places the player near each spawned actor, saves framebuffer PNGs and
@@ -491,6 +506,10 @@ WINDOWED PLAYTEST (development, not original)
         --smoke-no-teleport flies the measured start for the whole run,
         never moves the player and judges only wingmen_near_player: each
         wingman's distance from the player at t+1, 5, 10, 20 and 30 s
+        --smoke-engagement flies the measured start with no input for the
+        whole --smoke-seconds budget, never moves the player and judges only
+        hostiles_damage_idle_player: whether the mission's hostile aircraft
+        lowered the player's hull
 
 `--help` and `--version` read no environment variable, open no installation
 and start no asset discovery: they succeed without a GPU and without a retail

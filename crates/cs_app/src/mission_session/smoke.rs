@@ -803,7 +803,38 @@ pub enum MissionSmokeMode {
     /// whole run and is never moved; the one judged check is
     /// `wingmen_near_player`.
     NoTeleport,
+    /// `--smoke-engagement`: the player flies the measured start for the
+    /// whole `--smoke-seconds` budget, gives no input and is never moved; the
+    /// one judged check is `hostiles_damage_idle_player`.
+    Engagement,
 }
+
+/// Everything the engagement mode measured about the idle player's hull.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct EngagementMetrics {
+    /// The frame budget the run watched for (`--smoke-seconds` at 60 Hz).
+    pub watch_frames: u32,
+    /// The player's hull integrity at the first frame it could be read.
+    pub start_hull: Option<f64>,
+    /// The lowest hull integrity read.
+    pub min_hull: Option<f64>,
+    /// The frame the hull first read below its start.
+    pub first_damage_frame: Option<u32>,
+    /// `(whole second, hull integrity)` every [`ENGAGEMENT_SAMPLE_EVERY_S`]
+    /// seconds.
+    pub samples: Vec<(u32, f64)>,
+}
+
+/// The engagement mode records the hull this often, in whole seconds.
+pub const ENGAGEMENT_SAMPLE_EVERY_S: u32 = 10;
+
+/// The engagement mode takes its "flight" screenshot at this frame (10 s in,
+/// while the hostiles are still closing).
+const ENGAGEMENT_FLIGHT_SHOT_FRAME: u32 = 600;
+
+/// The engagement mode takes its "damaged" screenshot this many frames after
+/// the first hit, so the presentation has had time to show it.
+const ENGAGEMENT_DAMAGED_SHOT_DELAY: u32 = 90;
 
 /// Every wingman's distance from the player at one sample time.
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -922,6 +953,8 @@ pub struct SmokeMeasurements {
     pub targeting: TargetingMetrics,
     /// The examine hand-off phase (M01-EXAMINE-OBJECTIVE, #1754).
     pub examine: ExamineMetrics,
+    /// The idle player's hull ([`MissionSmokeMode::Engagement`] only).
+    pub engagement: Option<EngagementMetrics>,
 }
 
 /// One pass/fail verdict with its evidence.
@@ -946,6 +979,9 @@ pub struct Check {
 /// water is the only such case today.
 #[must_use]
 pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
+    if let Some(engagement) = &m.engagement {
+        return evaluate_engagement(m, engagement);
+    }
     if m.no_teleport {
         // The no-teleport run passes through the Flight Check to release the
         // mission and records what it saw, but judges only the wingmen.
@@ -1580,6 +1616,61 @@ fn evaluate_flight_check(m: &SmokeMeasurements) -> Vec<Check> {
     checks
 }
 
+/// The engagement checks: whether the mission's own hostile aircraft damaged
+/// a player nothing moved and nothing steered, and the pictures arriving.
+fn evaluate_engagement(m: &SmokeMeasurements, e: &EngagementMetrics) -> Vec<Check> {
+    let rows = e
+        .samples
+        .iter()
+        .map(|(second, hull)| format!("t+{second}s {hull:.0}"))
+        .collect::<Vec<_>>()
+        .join("; ");
+    let (passed, verdict) = match (e.start_hull, e.first_damage_frame) {
+        (None, _) => (
+            false,
+            "the player's damage pool was never readable, so no hit could be seen".to_owned(),
+        ),
+        (Some(start), Some(frame)) => (
+            true,
+            format!(
+                "the hull fell from {start:.0} to {:.0}; first hit at t+{:.1}s",
+                e.min_hull.unwrap_or(start),
+                f64::from(frame) / 60.0
+            ),
+        ),
+        (Some(start), None) => (
+            false,
+            format!(
+                "the hull stayed at {start:.0} for the {:.0}s the run watched",
+                f64::from(e.watch_frames) / 60.0
+            ),
+        ),
+    };
+    vec![
+        Check {
+            id: "hostiles_damage_idle_player".to_owned(),
+            applies: true,
+            passed,
+            detail: format!(
+                "{verdict}. The player was never moved and no key was sent. Hull: {rows}"
+            ),
+        },
+        Check {
+            id: "smoke_shots_delivered".to_owned(),
+            applies: true,
+            passed: m.missing_shots.is_empty(),
+            detail: if m.missing_shots.is_empty() {
+                "every requested framebuffer screenshot arrived".to_owned()
+            } else {
+                format!(
+                    "the renderer never delivered: {}",
+                    m.missing_shots.join(", ")
+                )
+            },
+        },
+    ]
+}
+
 /// The no-teleport checks: the wingmen's distance from a player nothing moved,
 /// and the picture arriving.
 fn evaluate_no_teleport(m: &SmokeMeasurements) -> Vec<Check> {
@@ -1975,6 +2066,7 @@ fn add_script_systems(app: &mut App) {
             smoke_wingmen,
             smoke_cinematic,
             smoke_first_control,
+            smoke_hull,
             smoke_script,
             smoke_rounds,
             smoke_flashes,
@@ -2505,7 +2597,16 @@ fn smoke_sample(
             crate::playtest::retail::RETAIL_START_SPEED_M_S as f32
         };
         data.measurements.mission = "M01".to_owned();
-        data.measurements.no_teleport = config.mode == MissionSmokeMode::NoTeleport;
+        data.measurements.no_teleport = matches!(
+            config.mode,
+            MissionSmokeMode::NoTeleport | MissionSmokeMode::Engagement
+        );
+        if config.mode == MissionSmokeMode::Engagement {
+            data.measurements.engagement = Some(EngagementMetrics {
+                watch_frames: config.request.seconds.saturating_mul(60),
+                ..EngagementMetrics::default()
+            });
+        }
     }
     data.measurements.ticks = ledger.ticks;
     sample_audio(
@@ -2546,6 +2647,43 @@ fn smoke_sample(
         if data.measurements.hud.model_line.is_none() {
             data.measurements.hud.model_line = Some(line);
         }
+    }
+}
+
+/// Reads the player's hull integrity from the session's damage authority
+/// every frame (engagement mode only).
+fn smoke_hull(
+    config: Res<SmokeConfig>,
+    mut data: ResMut<SmokeData>,
+    victim: Option<Res<super::player_victim::PlayerVictim>>,
+    resolver: Option<Res<crate::weapons::SessionDamageResolver>>,
+) {
+    if config.mode != MissionSmokeMode::Engagement {
+        return;
+    }
+    let (Some(victim), Some(resolver)) = (victim, resolver) else {
+        return;
+    };
+    let Ok(hull) = cs_sim::damage::DamageNodeKey::new(super::weapons::MISSION_TARGET_NODE) else {
+        return;
+    };
+    let Some(now) = resolver
+        .resolver()
+        .remaining_integrity(&victim.actor, &hull)
+    else {
+        return;
+    };
+    let frame = data.frame;
+    let Some(metrics) = data.measurements.engagement.as_mut() else {
+        return;
+    };
+    let start = *metrics.start_hull.get_or_insert(now);
+    metrics.min_hull = Some(metrics.min_hull.map_or(now, |low| low.min(now)));
+    if metrics.first_damage_frame.is_none() && now < start {
+        metrics.first_damage_frame = Some(frame);
+    }
+    if frame.is_multiple_of(ENGAGEMENT_SAMPLE_EVERY_S * 60) {
+        metrics.samples.push((frame / 60, now));
     }
 }
 
@@ -2730,6 +2868,25 @@ fn smoke_script(
     }
     let at = frame.saturating_sub(data.phase_start);
     match data.phase {
+        _ if config.mode == MissionSmokeMode::Engagement => {
+            if data.phase != Phase::Final && data.phase != Phase::Ended {
+                let metrics = data.measurements.engagement.clone().unwrap_or_default();
+                if frame == ENGAGEMENT_FLIGHT_SHOT_FRAME {
+                    due.push("flight".to_owned());
+                }
+                if let Some(first) = metrics.first_damage_frame
+                    && frame >= first + ENGAGEMENT_DAMAGED_SHOT_DELAY
+                {
+                    due.push("damaged".to_owned());
+                    data.phase = Phase::Final;
+                    data.phase_start = frame + 1;
+                } else if frame >= metrics.watch_frames.max(ENGAGEMENT_FLIGHT_SHOT_FRAME + 1) {
+                    due.push("end".to_owned());
+                    data.phase = Phase::Final;
+                    data.phase_start = frame + 1;
+                }
+            }
+        }
         // The no-teleport script has no phases to walk: the player flies the
         // measured start, `PendingPlacement` is never filled, and one
         // framebuffer is taken at each owner-capture second (#1644) and after
@@ -4182,6 +4339,24 @@ fn write_artifacts(
         })
         .collect::<Vec<_>>()
         .join(",");
+    let engagement = report.measurements.engagement.as_ref().map_or_else(
+        || "null".to_owned(),
+        |e| {
+            format!(
+                "{{\"start_hull\":{},\"min_hull\":{},\"first_damage_frame\":{},\
+                 \"samples\":[{}]}}",
+                json_option_f64(e.start_hull),
+                json_option_f64(e.min_hull),
+                e.first_damage_frame
+                    .map_or_else(|| "null".to_owned(), |frame| frame.to_string()),
+                e.samples
+                    .iter()
+                    .map(|(second, hull)| format!("{{\"second\":{second},\"hull\":{hull}}}"))
+                    .collect::<Vec<_>>()
+                    .join(",")
+            )
+        },
+    );
     let placements = report
         .placements
         .iter()
@@ -4256,6 +4431,7 @@ fn write_artifacts(
     let body = format!(
         "{{\"kind\":{kind},\"mission\":{mission},\"human_play\":false,\
          \"mode\":{mode},\"player_teleported\":{teleported},\
+         \"engagement\":{engagement},\
          \"wingman_threshold_m\":{threshold},\"wingmen\":[{wingmen}],\
          \"verified_original\":false,\"frames\":{frames},\"ticks\":{ticks},\
          \"hud\":{{\"model_line\":{model_line},\"drawn_line\":{drawn_line},\
@@ -4285,12 +4461,15 @@ fn write_artifacts(
          \"checks\":[{checks}],\"failures\":[{failures}],\"passed\":{passed}}}\n",
         kind = json_string(SMOKE_KIND),
         mission = json_string(&report.mission),
-        mode = json_string(if report.measurements.no_teleport {
+        mode = json_string(if report.measurements.engagement.is_some() {
+            "engagement"
+        } else if report.measurements.no_teleport {
             "no_teleport"
         } else {
             "scripted"
         }),
         teleported = !report.placements.is_empty(),
+        engagement = engagement,
         threshold = MAX_WINGMAN_DISTANCE_M,
         wingmen = wingmen,
         frames = report.frames,
