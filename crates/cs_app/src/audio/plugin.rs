@@ -245,7 +245,10 @@ impl Plugin for AudioPlugin {
                 publish_requested_music,
                 mix_session,
             )
-                .chain(),
+                .chain()
+                // The mission is held behind the Flight Check (#1671): no
+                // engine loop starts and no line plays before Fly Mission.
+                .run_if(crate::mission_session::mission_is_released),
         );
     }
 }
