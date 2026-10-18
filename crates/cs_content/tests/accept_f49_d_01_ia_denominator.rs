@@ -32,7 +32,7 @@ impl TempInstall {
         Self(root)
     }
 
-    fn write(&self, relative: &str, bytes: &[u8]) {
+    pub(crate) fn write(&self, relative: &str, bytes: &[u8]) {
         let path = self.0.join(relative);
         fs::create_dir_all(path.parent().expect("a parent directory"))
             .expect("the fixture directory is created");
@@ -46,19 +46,19 @@ impl Drop for TempInstall {
     }
 }
 
-fn zrd_int(value: u32) -> Vec<u8> {
+pub(crate) fn zrd_int(value: u32) -> Vec<u8> {
     let mut bytes = 1_u32.to_le_bytes().to_vec();
     bytes.extend_from_slice(&value.to_le_bytes());
     bytes
 }
 
-fn zrd_float(value: f32) -> Vec<u8> {
+pub(crate) fn zrd_float(value: f32) -> Vec<u8> {
     let mut bytes = 2_u32.to_le_bytes().to_vec();
     bytes.extend_from_slice(&value.to_le_bytes());
     bytes
 }
 
-fn zrd_text(text: &str) -> Vec<u8> {
+pub(crate) fn zrd_text(text: &str) -> Vec<u8> {
     let mut bytes = 3_u32.to_le_bytes().to_vec();
     bytes.extend_from_slice(&(text.len() as u32).to_le_bytes());
     bytes.extend_from_slice(text.as_bytes());
@@ -66,7 +66,7 @@ fn zrd_text(text: &str) -> Vec<u8> {
 }
 
 /// A list node; the stored count is one more than the child count.
-fn zrd_list(children: Vec<Vec<u8>>) -> Vec<u8> {
+pub(crate) fn zrd_list(children: Vec<Vec<u8>>) -> Vec<u8> {
     let mut bytes = 4_u32.to_le_bytes().to_vec();
     bytes.extend_from_slice(&((children.len() as u32) + 1).to_le_bytes());
     for child in children {
@@ -75,7 +75,7 @@ fn zrd_list(children: Vec<Vec<u8>>) -> Vec<u8> {
     bytes
 }
 
-fn reader_archive(members: &[(&str, Vec<u8>)]) -> Vec<u8> {
+pub(crate) fn reader_archive(members: &[(&str, Vec<u8>)]) -> Vec<u8> {
     let mut bytes = Vec::new();
     let mut entries = Vec::new();
     for (name, member) in members {
@@ -95,7 +95,7 @@ fn reader_archive(members: &[(&str, Vec<u8>)]) -> Vec<u8> {
     bytes
 }
 
-fn spawn_list(count: usize) -> Vec<u8> {
+pub(crate) fn spawn_list(count: usize) -> Vec<u8> {
     zrd_list(
         (0..count)
             .map(|_| {

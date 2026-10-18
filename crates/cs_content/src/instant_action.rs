@@ -3053,10 +3053,18 @@ pub const LOADOUT_UNMEASURED_REASON: &str = "the original offers no loadout iden
 pub const LOADOUT_RESOLVING_TASK: &str = "the per-slot loadout selection model (the original selects guns, gun ammunition and rocket \
      ammunition per slot, not a named loadout)";
 
-/// Why the `pilots` dimension has no measured list.
-pub const PILOT_UNMEASURED_REASON: &str = "the F33-A pilot roster is declared design and the F33-D retail measurement has not run; \
-     cs_content::pilots measures a mission's zeppelin carrier surface, not a pilot identity \
-     list, so no ContentKind::Pilot option list can be produced without guessing";
+/// The reader that produced the `pilots` option list (F49-D.02-FU-PILOT).
+///
+/// The list is the distinct named aces the installation's `ia.zrd`
+/// descriptors declare (`ace_name`), one `pilot/<label>` id per distinct
+/// localized name label. It is the pilot identities the original *stores*; that
+/// the original's menu lets a player pick one is **not** measured.
+pub const PILOT_OPTION_READER: &str = "cs_content::instant_action::IaDenominator::ace_pilot_ids, the ia.zrd ace_name labels \
+     (F49-D.02-FU-PILOT)";
+
+/// Why the `pilots` dimension has no measured list when no ace was surveyed.
+pub const PILOT_UNMEASURED_REASON: &str = "no Instant Action descriptor ace was surveyed for this table: the pilots list comes from \
+     IaDenominator::ace_pilot_ids (ia.zrd ace_name), and this assembly was given none";
 
 /// Why the `relations` dimension has no measured list.
 pub const RELATION_UNMEASURED_REASON: &str = "F30-A declares the directed-relation schema but no measurement binds the installation's own \
@@ -3366,7 +3374,8 @@ impl ScenarioOptionTable {
 ///   recorded [`OptionListEvidence::Unmeasured`];
 /// * `victory_conditions` and `max_players` — declared design, with the
 ///   rationale each constant carries;
-/// * `loadouts`, `pilots` and `relations` — **unmeasured**: no production
+/// * `pilots` — the distinct `ia.zrd` ace names ([`IaDenominator::ace_pilot_ids`]);
+/// * `loadouts` and `relations` — **unmeasured**: no production
 ///   reader in this workspace locates those families in the installation, so
 ///   the lists stay empty and [`ScenarioOptionTable::validate`] refuses the
 ///   table naming them. They are recorded, never filled from the fixture.
@@ -3377,12 +3386,26 @@ impl ScenarioOptionTable {
 pub fn retail_scenario_options(
     install_root: &Path,
     environments: Vec<EnvironmentId>,
-) -> Result<ScenarioOptionTable, BaselineError> {
-    let baseline = retail_baseline(install_root)?;
-    Ok(retail_scenario_options_from_baseline(
+) -> Result<ScenarioOptionTable, RetailOptionError> {
+    let baseline = retail_baseline(install_root).map_err(RetailOptionError::Baseline)?;
+    let pilots = survey_retail_instant_action(install_root)
+        .map_err(RetailOptionError::Survey)?
+        .ace_pilot_ids()
+        .map_err(RetailOptionError::Survey)?;
+    Ok(retail_scenario_options_with_pilots(
         &baseline,
         environments,
+        pilots,
     ))
+}
+
+/// Why the retail option table could not be assembled from an installation.
+#[derive(Debug)]
+pub enum RetailOptionError {
+    /// The installation baseline could not be read.
+    Baseline(BaselineError),
+    /// The Instant Action descriptors could not be surveyed.
+    Survey(IaSurveyError),
 }
 
 /// The same assembly over an already-read [`Baseline`].
@@ -3393,11 +3416,37 @@ pub fn retail_scenario_options(
 /// identical to [`retail_scenario_options`]: every list and every evidence
 /// class comes from the baseline and the caller's environments, and nothing
 /// here reads the installation again.
+///
+/// This variant is given no surveyed pilots, so its `pilots` list is recorded
+/// unmeasured; [`retail_scenario_options_with_pilots`] takes them.
 #[must_use]
 pub fn retail_scenario_options_from_baseline(
     baseline: &Baseline,
     environments: Vec<EnvironmentId>,
 ) -> ScenarioOptionTable {
+    retail_scenario_options_with_pilots(baseline, environments, Vec::new())
+}
+
+/// The same assembly over an already-read [`Baseline`] and the pilot ids
+/// [`IaDenominator::ace_pilot_ids`] measured.
+///
+/// An empty `pilots` list is recorded [`OptionListEvidence::Unmeasured`].
+#[must_use]
+pub fn retail_scenario_options_with_pilots(
+    baseline: &Baseline,
+    environments: Vec<EnvironmentId>,
+    pilots: Vec<ContentId>,
+) -> ScenarioOptionTable {
+    let pilot_evidence = if pilots.is_empty() {
+        OptionListEvidence::Unmeasured {
+            reason: PILOT_UNMEASURED_REASON,
+            resolving_task: "F49-D.02-FU-PILOT (the ia.zrd ace survey)",
+        }
+    } else {
+        OptionListEvidence::Measured {
+            reader: PILOT_OPTION_READER,
+        }
+    };
     let worlds = option_worlds(baseline);
     let factions = option_ids(baseline, ContentKind::Faction);
     let airframes = option_ids(baseline, ContentKind::Airframe);
@@ -3424,7 +3473,7 @@ pub fn retail_scenario_options_from_baseline(
         factions,
         airframes,
         Vec::new(),
-        Vec::new(),
+        pilots,
         difficulty_tiers,
         victory_conditions,
         Vec::new(),
@@ -3456,13 +3505,7 @@ pub fn retail_scenario_options_from_baseline(
                     resolving_task: LOADOUT_RESOLVING_TASK,
                 },
             ),
-            (
-                ScenarioOptionDimension::Pilots,
-                OptionListEvidence::Unmeasured {
-                    reason: PILOT_UNMEASURED_REASON,
-                    resolving_task: "F33-D (the retail pilot-identity measurement)",
-                },
-            ),
+            (ScenarioOptionDimension::Pilots, pilot_evidence),
             (
                 ScenarioOptionDimension::DifficultyTiers,
                 OptionListEvidence::Measured {
@@ -4215,6 +4258,29 @@ impl IaDenominator {
     #[must_use]
     pub fn directories(&self) -> &[IaDirectory] {
         &self.directories
+    }
+
+    /// The distinct named aces the descriptors declare, as `pilot/<label>` ids
+    /// in id order.
+    ///
+    /// The key is the lowercase localized name label (`ace_name`, for example
+    /// `msg_palblake_name`): the original's own identity for the pilot, not a
+    /// resolved display name. The same label in two directories is one pilot
+    /// (it flies a different plane in each). A directory with no `ace_name`
+    /// contributes none.
+    ///
+    /// # Errors
+    ///
+    /// [`IaSurveyError::Id`] when a label is not a valid content id key.
+    pub fn ace_pilot_ids(&self) -> Result<Vec<ContentId>, IaSurveyError> {
+        let mut ids = std::collections::BTreeMap::new();
+        for directory in &self.directories {
+            if let Some(label) = directory.aircraft.ace().name_label() {
+                let id = ia_id(ContentKind::Pilot, label, &directory.container)?;
+                ids.insert(id.to_string(), id);
+            }
+        }
+        Ok(ids.into_values().collect())
     }
 
     /// The observed mission-type vocabulary: the union of every directory's

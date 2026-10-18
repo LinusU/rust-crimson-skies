@@ -146,8 +146,8 @@ fn evidence_report_f49_d_02_writes_the_acceptance_report() {
     );
     assert_eq!(
         table.empty_required_lists(),
-        vec!["loadouts", "pilots"],
-        "the only unmeasured required axes are the loadout and pilot identity lists"
+        vec!["loadouts"],
+        "the only unmeasured required axis is the loadout identity list"
     );
 
     let trace_path = evidence_dir.join("option-table.json");
@@ -338,9 +338,10 @@ const UNKNOWN_LIMITATIONS: &[&str] = &[
      custom scenario selects. Affected content: the custom scenario's ordnance options and the \
      Non-negotiable 2 'unsupported ordnance' refusal, which cannot name a supported set until a \
      loadout identity producer exists. Resolving task: filed from #784.",
-    "The pilot option list is unmeasured: cs_content::pilots measures a mission's zeppelin \
-     carrier surface, not a pilot identity list, and the F33-A pilot roster is declared design. \
-     Affected content: a custom actor's pilot identity. Resolving task: F33-D.",
+    "The pilot option list is the named aces the ia.zrd descriptors declare (ace_name labels); \
+     whether the original's menu lets a player select a pilot is unmeasured, and the labels are \
+     not resolved to display names. Affected content: a custom actor's pilot identity. \
+     Resolving task: F49-D.03 and an original run observing the IA options screen (human_play).",
     "The relation option list is unmeasured: F30-A declares the directed-relation schema but no \
      measurement binds the installation's own factions into one. Affected content: the \
      faction-relation table a roster is judged against. Resolving task: F30-D.",

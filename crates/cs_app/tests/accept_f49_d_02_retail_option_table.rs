@@ -82,9 +82,11 @@ fn accept_f49_d_02_retail_the_measured_environments_and_airframe_rows_are_offere
         "a caller-supplied, really-measured environment list is tagged measured"
     );
 
-    // The loadout and pilot dimensions still have no producer, so they stay
-    // empty and refuse the table by name rather than being filled in.
-    assert_eq!(table.empty_required_lists(), vec!["loadouts", "pilots"]);
+    // The loadout dimension still has no producer, so it stays empty and
+    // refuses the table by name rather than being filled in. The pilots are the
+    // ia.zrd aces (F49-D.02-FU-PILOT).
+    assert_eq!(table.empty_required_lists(), vec!["loadouts"]);
+    assert!(!table.pilots().is_empty());
     assert_eq!(
         table
             .clone()
