@@ -11,7 +11,7 @@ const RETAIL_TESTS_M16_B: &[&str] = &[
     "accept_m16_b_m16s_control_program_is_bound_to_the_same_identities_as_its_mission_binding",
     "accept_m16_b_the_measured_vocabulary_partitions_and_refuses_no_m16_key",
     "accept_m16_b_the_block_graph_is_closed_under_the_records_own_numbering",
-    "accept_m16_b_m16s_record_does_not_lower_and_four_of_its_calls_refuse",
+    "accept_m16_b_fu1_m16s_record_does_not_lower_and_four_of_its_calls_refuse",
     "accept_m16_b_the_three_sheet_priorities_locate_in_the_measured_record",
     "accept_m16_b_m16_stays_unready_while_its_comment_calls_refuse",
 ];
