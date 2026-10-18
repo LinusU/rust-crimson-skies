@@ -80,9 +80,8 @@ carefully, neither produces the `ContentKind::Loadout` / `ContentKind::Pilot`
   (`survey_retail_zeppelin_carrier`, `team_spellings`), not a pilot identity
   list; the F33-A pilot roster is declared design and the F33-D retail
   measurement has not run.
-- F30-A declares the directed-relation *schema* (`DeclaredRelation`); no
-  measurement binds the installation's own factions into a relation table, and a
-  table over the fixture's factions would be a fabricated faction table.
+- F30-A declares the directed-relation *schema* (`DeclaredRelation`). #1577
+  has since measured `relations`: see "Relations: a measured negative" below.
 
 These are the same gaps the F14-D.6 finding records for the `ammo`,
 `hardpoint_equipment` and `gun` collections. They are resolved by the follow-up
@@ -139,11 +138,48 @@ is called, never edited.)
 - The **environment** ids are per-mission weather environments, not a measured
   installation-wide environment table; whether the original's IA screen offers
   each of them is F49-D.03/F19 territory.
-- **Relations between the installation's own factions** are unmeasured; the
-  option table declares none rather than a fixture set.
+- **Relations between the installation's own factions**: measured negative
+  (below); the option table declares none rather than a fixture set.
 
 No retail data was written or committed; the retail tests read the installation
 read-only. The per-dimension sources are the earlier evidence stages' own
 claims (F14-D.3, F14-D.5, F14-D.6, F27-D, F32-D, F19/F20), named in the
 `OptionListEvidence::Measured` reader strings and in `docs/findings/evidence/
 F49-D.02.json`.
+
+## Relations: a measured negative (#1577, F49-D.02-FU-RELATION)
+
+Capability `retail`, read-only; static facts come from existing findings, no
+original run, nothing `verified_original`.
+
+**Question.** Does the original state a cross-faction allegiance relation that
+can be keyed by the 11 retail `faction` rows (`vehicle.zrd` paint patterns)?
+
+**Answer: no.** What the original states is allegiance as a *per-actor team
+number*, not a pair of factions:
+
+- The loader's vocabulary is three words, `neutral`/`ally`/`enemy`, writing
+  `0`/`1`/`2` (`0x4bd9b1`..`0x4bda3b`, finding
+  `2026-10-09-m01-lc-zeppelin-allegiance.md`); committed as
+  `cs_content::target_rules::ORIGINAL_TEAM_VOCABULARY`, provenance `static`.
+- `aiv.zrd` records carry `team` as field 3, written into the vehicle's base
+  team slot (`2026-10-15-m01-aiv-layout.md`); the meaning of team 1 versus 2 for
+  targeting is recorded there as not measured (native code).
+- `cs_content::target_rules::measure_retail_relation_surface` reads the
+  installation's `zeppelins.zrd` records through the production carrier survey
+  and checks every `team` spelling against the vocabulary and against the
+  faction ids. Over retail: every spelling is in the vocabulary, and no spelling
+  names a faction row, so `states_cross_faction_relation()` is false.
+- The paint-pattern factions carry no team field (F14-D.5), so a directed table
+  over them would be invented.
+
+**Effect.** `retail_scenario_options` still returns an empty `relations` list,
+now with the reason `RELATION_UNMEASURED_REASON` ("measured negative ...")
+instead of "no measurement". The dimension is still reported
+`OptionListEvidence::Unmeasured`, because the team-hostility rule itself is
+unmeasured; resolving it needs a native-code measurement or an original run.
+Limits: the survey covers `zeppelins.zrd` records only (16 with `team`); the
+`aiv.zrd` team values are documented in the aiv-layout finding rather than
+re-surveyed here. Tests: `accept_f49_d_02_retail_relations_are_a_measured_negative`
+(retail, ignored without `CS_GAME_DIR`) and
+`accept_f49_d_02_the_team_vocabulary_is_the_loaders_three_words`.
