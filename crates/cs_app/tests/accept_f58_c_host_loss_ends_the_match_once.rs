@@ -215,7 +215,7 @@ fn accept_f58_c_a_reconnect_reopens_the_boundary_on_a_fresh_epoch() {
     );
 
     let departure = flow
-        .depart(original, DisconnectCause::Voluntary, Tick(11), None)
+        .depart(original, DisconnectCause::Voluntary, Tick(11), None, None)
         .expect("a farewell settles");
     assert_eq!(departure.settlement, Settlement::Applied { tick: Tick(11) });
     assert_eq!(departure.actor, Some(aircraft));

@@ -37,8 +37,9 @@
 //! host-loss flow over that boundary. Its producer is the receive path
 //! (`departure_cause`/`receive_and_depart`), its consumers are the peer
 //! teardown and the authoritative state the peer still held (`depart` drops
-//! what it carried, once), the mission's in-flight interactions and the
-//! clients' return to the menu (`host_lost`), and the retry
+//! what it carried and aborts the in-flight interactions its aircraft was
+//! party to, once), the mission's in-flight interactions and the clients'
+//! return to the menu (`host_lost`), and the retry
 //! (`recover` reopens the boundary on the fresh epoch). What it does *not*
 //! wire — the pinned transport's own pump, which still admits packets without
 //! a [`cs_net::validation::MatchStage`] — is named in

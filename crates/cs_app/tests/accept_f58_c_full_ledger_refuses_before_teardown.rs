@@ -42,7 +42,7 @@ fn fill_ledger(flow: &mut RecoveryFlow, keep: u16) {
         if number == keep {
             continue;
         }
-        flow.depart(peer(number), DisconnectCause::Timeout, Tick(3), None)
+        flow.depart(peer(number), DisconnectCause::Timeout, Tick(3), None, None)
             .expect("room inside the peer space");
     }
     assert_eq!(
@@ -72,7 +72,7 @@ fn accept_f58_c_a_full_ledger_refuses_before_anything_is_torn_down() {
 
     // The next departure has no room, and the refusal names the bound.
     let error = flow
-        .depart(peer(1), DisconnectCause::Voluntary, Tick(4), None)
+        .depart(peer(1), DisconnectCause::Voluntary, Tick(4), None, None)
         .expect_err("a full ledger refuses the next departure");
     assert!(
         matches!(
@@ -111,7 +111,7 @@ fn accept_f58_c_a_full_ledger_still_answers_a_duplicate_report() {
     // Peer 2 departed at tick 3 above; the ledger is now full.
     assert!(flow.departures().is_settled(peer(2)));
     let again = flow
-        .depart(peer(2), DisconnectCause::Voluntary, Tick(9), None)
+        .depart(peer(2), DisconnectCause::Voluntary, Tick(9), None, None)
         .expect("a duplicate report is not an error, even when the ledger is full");
     assert_eq!(
         again.settlement,

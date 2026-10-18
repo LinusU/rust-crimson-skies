@@ -38,8 +38,10 @@
 //! [`cs_net::validation::ThreatDisposition::Disconnect`]. Its consumers are
 //! the boundary itself and the authoritative state a departing peer held:
 //! [`RecoveryFlow::depart`] tears the peer down, drops what it still carried
-//! in the authoritative match and records the departure, so a second report
-//! of the same peer applies nothing ([`cs_net::recovery::Settlement`]).
+//! in the authoritative match, aborts the in-flight interactions its
+//! aircraft was party to ([`InteractionSession::disconnect`] — only that
+//! peer's, never an honest pilot's) and records the departure, so a second
+//! report of the same peer applies nothing ([`cs_net::recovery::Settlement`]).
 //! [`RecoveryFlow::host_lost`] ends the match cleanly once — clients return
 //! to the menu, no migration is claimed — and [`RecoveryFlow::recover`] runs
 //! the F58-A decision and reopens the boundary on the fresh epoch.
@@ -482,6 +484,11 @@ pub struct Departure {
     /// The objectives the peer was still carrying, queued to drop on this
     /// tick. Always empty on a duplicate report.
     pub dropped: Vec<ObjectiveId>,
+    /// The mission interactions the departed peer's aircraft was party to,
+    /// aborted with [`AbortReason::Disconnect`] on this report. Always empty
+    /// on a duplicate report: an aborted interaction is terminal, so the
+    /// authoritative state resolves once.
+    pub aborted: Vec<InteractionAbort>,
 }
 
 /// The result of the host-loss flow.
@@ -519,9 +526,10 @@ pub struct SettledInbound {
 /// * **consumer** — the boundary and the authoritative state.
 ///   [`RecoveryFlow::depart`] tears the peer down (aircraft binding,
 ///   membership, replay window), settles what it still held (the objectives
-///   it carried are queued to drop) and records the departure, so a second
-///   report of the same peer is [`Settlement::Duplicate`] and applies
-///   nothing.
+///   it carried are queued to drop; the interactions its aircraft was party
+///   to abort with [`AbortReason::Disconnect`]) and records the departure,
+///   so a second report of the same peer is [`Settlement::Duplicate`] and
+///   applies nothing.
 /// * **teardown / retry** — [`RecoveryFlow::host_lost`] ends the match
 ///   cleanly once and aborts the mission's in-flight interactions;
 ///   [`RecoveryFlow::recover`] runs the F58-A decision and, on a resume,
@@ -627,7 +635,10 @@ impl RecoveryFlow {
     /// The settlement's stamp is [`MatchStage::server_tick`] — the server's
     /// own clock, never anything the client sent. `match_state` is the
     /// authoritative match whose carried objectives settle with the peer;
-    /// pass `None` for a mode that holds none.
+    /// pass `None` for a mode that holds none. `interactions` is the
+    /// mission's interaction session, settled exactly as [`Self::depart`]
+    /// settles it; pass `None` for a mode that holds none (a multiplayer
+    /// match).
     ///
     /// # Errors
     ///
@@ -643,10 +654,13 @@ impl RecoveryFlow {
         message: &ClientMessage,
         stage: MatchStage<'_>,
         match_state: Option<&mut MatchSession>,
+        interactions: Option<&mut InteractionSession>,
     ) -> Result<SettledInbound, FlowError> {
         let inbound = self.receiver.receive_validated(peer, message, stage);
         let departure = match Self::departure_cause(message, &inbound) {
-            Some(cause) => Some(self.depart(peer, cause, stage.server_tick, match_state)?),
+            Some(cause) => {
+                Some(self.depart(peer, cause, stage.server_tick, match_state, interactions)?)
+            }
             None => None,
         };
         Ok(SettledInbound { inbound, departure })
@@ -669,12 +683,18 @@ impl RecoveryFlow {
     ///    for the board to apply when the tick closes; a refusal there is
     ///    propagated as [`FlowError::Settlement`] and **nothing is recorded**,
     ///    so a corrected report can still settle it;
-    /// 5. only then is the departure recorded, which is what makes the next
+    /// 5. every non-terminal interaction the departed peer's aircraft is a
+    ///    party to aborts with [`AbortReason::Disconnect`]
+    ///    ([`InteractionSession::disconnect`]) — only that peer's attempts:
+    ///    an honest pilot's in-flight interaction is untouched, and control
+    ///    of a surviving initiator returns to it;
+    /// 6. only then is the departure recorded, which is what makes the next
     ///    report of this peer a duplicate.
     ///
     /// `tick` is the server's own tick — the one currently being simulated. A
     /// tick the board already closed is refused rather than silently
-    /// retimed.
+    /// retimed. `interactions` is the mission's interaction session; pass
+    /// `None` for a mode that holds none (a multiplayer match).
     ///
     /// # Errors
     ///
@@ -685,6 +705,7 @@ impl RecoveryFlow {
         cause: DisconnectCause,
         tick: Tick,
         match_state: Option<&mut MatchSession>,
+        interactions: Option<&mut InteractionSession>,
     ) -> Result<Departure, FlowError> {
         if let Some(record) = self.departures.get(peer) {
             return Ok(Departure {
@@ -693,6 +714,7 @@ impl RecoveryFlow {
                 actor: self.receiver.actor_of(peer),
                 settlement: Settlement::Duplicate { tick: record.tick },
                 dropped: Vec::new(),
+                aborted: Vec::new(),
             });
         }
         // The ledger's bound is paid before anything is torn down or
@@ -734,6 +756,14 @@ impl RecoveryFlow {
             }
         }
 
+        // The departed peer's own in-flight interactions abort after the
+        // fallible drops: a settlement refusal above leaves them in flight,
+        // so the corrected report still resolves — and reports — them.
+        let aborted = match (interactions, actor) {
+            (Some(session), Some(actor)) => session.disconnect(actor),
+            _ => Vec::new(),
+        };
+
         let settlement = self
             .departures
             .record(peer, cause, tick)
@@ -744,6 +774,7 @@ impl RecoveryFlow {
             actor,
             settlement,
             dropped,
+            aborted,
         })
     }
 

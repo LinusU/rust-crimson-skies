@@ -149,7 +149,13 @@ fn accept_f58_c_a_disconnect_while_carrying_resolves_the_objective_once() {
 
     // Producer 1: the client's own farewell, on the wire.
     let settled = flow
-        .receive_and_depart(peer(1), &farewell(1), stage(7, &banned), Some(&mut played))
+        .receive_and_depart(
+            peer(1),
+            &farewell(1),
+            stage(7, &banned),
+            Some(&mut played),
+            None,
+        )
         .expect("a farewell settles");
     assert!(
         settled.inbound.admitted(),
@@ -210,6 +216,7 @@ fn accept_f58_c_a_disconnect_while_carrying_resolves_the_objective_once() {
             DisconnectCause::Timeout,
             Tick(7),
             Some(&mut played),
+            None,
         )
         .expect("a duplicate report is not an error");
     assert_eq!(
@@ -268,7 +275,13 @@ fn accept_f58_c_an_abusive_packet_settles_a_cut_off_with_a_bounded_reason() {
     let banned = BTreeSet::new();
 
     let settled = flow
-        .receive_and_depart(peer(1), &oversized(), stage(7, &banned), Some(&mut played))
+        .receive_and_depart(
+            peer(1),
+            &oversized(),
+            stage(7, &banned),
+            Some(&mut played),
+            None,
+        )
         .expect("the cut-off settles");
     assert!(
         !settled.inbound.admitted(),
@@ -316,6 +329,7 @@ fn accept_f58_c_an_abusive_packet_settles_a_cut_off_with_a_bounded_reason() {
             },
             Tick(7),
             Some(&mut played),
+            None,
         )
         .expect("a duplicate report is not an error");
     assert_eq!(again.settlement, Settlement::Duplicate { tick: Tick(7) });
@@ -341,6 +355,7 @@ fn accept_f58_c_a_refused_settlement_is_named_and_recorded_nothing() {
             DisconnectCause::Timeout,
             Tick(3),
             Some(&mut played),
+            None,
         )
         .expect_err("a closed tick cannot take the settlement");
     assert!(
@@ -369,6 +384,7 @@ fn accept_f58_c_a_refused_settlement_is_named_and_recorded_nothing() {
             DisconnectCause::Timeout,
             Tick(6),
             Some(&mut played),
+            None,
         )
         .expect("the corrected report settles");
     assert_eq!(
