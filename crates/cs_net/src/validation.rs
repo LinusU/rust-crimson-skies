@@ -1358,6 +1358,31 @@ impl IntentValidator {
                 RateViolation::TooManyPeers { max } => IntentRefusal::TooManyPeers { max },
             });
         }
+        Self::judge(peer, intent, ownership, stage)
+    }
+
+    /// Checks 3 to 6 of [`Self::validate`] — actors, match state, tick window
+    /// and loadout — without charging any budget.
+    ///
+    /// A host that already charges every offered packet against its own
+    /// [`RateBudget`] (the pinned transport pump does, on its session clock)
+    /// calls this so the same packet is never charged twice. It changes no
+    /// state and applies nothing.
+    ///
+    /// # Errors
+    ///
+    /// The [`IntentRefusal`] naming the check that refused it.
+    pub fn judge(
+        peer: PeerId,
+        intent: &ClientIntent,
+        ownership: &ActorOwnership,
+        stage: MatchStage<'_>,
+    ) -> Result<(), IntentRefusal> {
+        if intent.asserts_truth() {
+            return Err(IntentRefusal::ClientAuthoredTruth {
+                domain: intent.domain(),
+            });
+        }
         // 3. Server-owned actors.
         if let Some(actor) = intent.actor() {
             ownership
