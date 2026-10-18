@@ -1416,6 +1416,9 @@ pub const ORIGINAL_ACE_STAT_MAX: i64 = 9;
 /// (`ASSETS/SCRIPTS/DEBUGINFO.TXT`) nor its resource header
 /// ([`ORIGINAL_RESOURCE_HEADER`]) carries an identifier for an ace stat slot.
 /// [`AceStatSlots`] therefore keeps ordered, unnamed slots and refuses a name.
+/// The executable's nine pilot attributes match the slot count and the `0..=9`
+/// range but no consumer of the slots was found, so they do not name them
+/// (`docs/findings/2026-10-18-f32-asi-pilot-attributes-and-ace-stats.md`).
 pub const ORIGINAL_ACE_STAT_SLOTS_NAMED: bool = false;
 
 /// The original's ace stat vector: ordered integer slots with **no** names.
@@ -4737,6 +4740,96 @@ mod f32_d {
             overlay - placeholders,
             ORIGINAL_AI_MODE_LABEL_COUNT,
             "the overlay's mode labels, excluding its `N/A` placeholders"
+        );
+    }
+
+    /// The nine pilot attribute keys of the original's AI-vehicle node format,
+    /// in the order its own format comment lists them.
+    const PILOT_ATTRIBUTE_KEYS: [&str; 9] = [
+        "dare_devil",
+        "natural_touch",
+        "sixth_sense",
+        "dead_eye",
+        "quick_draw",
+        "steady_hand",
+        "stun_recovery",
+        "talker",
+        "constitution",
+    ];
+
+    /// F32-ASI: the image names nine pilot attributes in a fixed order, but
+    /// nothing in it binds them to `ace_stats` slots, so the slots stay
+    /// unnamed and a pilot attribute name is refused as a slot name.
+    #[test]
+    fn accept_f32_asi_pilot_attribute_names_are_refused_as_ace_slot_names() {
+        assert_eq!(PILOT_ATTRIBUTE_KEYS.len(), ORIGINAL_ACE_STAT_SLOTS);
+        let stats = AceStatSlots::try_from_list(&[9; 9]).expect("nine slots");
+        for name in PILOT_ATTRIBUTE_KEYS {
+            assert_eq!(
+                stats.slot_named(name),
+                Err(CombatSchemaError::AceStatSlotNameUnmeasured {
+                    name: name.to_owned()
+                })
+            );
+        }
+        assert!(!std::hint::black_box(ORIGINAL_ACE_STAT_SLOTS_NAMED));
+    }
+
+    /// F32-ASI: re-measures, over the owner's decrypted image, the facts
+    /// `docs/findings/2026-10-18-f32-asi-pilot-attributes-and-ace-stats.md`
+    /// records: the node-format comment and the descriptor-parser key table
+    /// both list the nine keys in the same order, and the parser's key for the
+    /// stat vector is `ace_stats`. Counts, order and key spellings only.
+    #[test]
+    #[ignore = "requires CS_ENGINE_IMAGE"]
+    fn accept_f32_asi_retail_image_lists_nine_pilot_attributes_in_one_order() {
+        let path = std::env::var_os("CS_ENGINE_IMAGE")
+            .expect("CS_ENGINE_IMAGE is not set: the search needs the decrypted image");
+        let image = std::fs::read(&path).expect("the engine image reads");
+        assert_eq!(
+            cs_assets::install::sha256(&image).to_string(),
+            ENGINE_IMAGE_SHA256,
+            "the image the search was run over"
+        );
+        let find = |needle: &[u8]| {
+            image
+                .windows(needle.len())
+                .position(|w| w == needle)
+                .expect("the needle is in the image")
+        };
+        // The node-format comment: the nine keys, then the altitude key.
+        let comment = find(b"dare_devil natural_touch sixth_sense dead_eye quick_draw");
+        let tail = &image[comment..comment + 200];
+        let text = String::from_utf8_lossy(tail);
+        let words: Vec<&str> = text
+            .split(|c: char| c.is_whitespace() || c == ';')
+            .filter(|w| !w.is_empty())
+            .take(10)
+            .collect();
+        assert_eq!(&words[..9], &PILOT_ATTRIBUTE_KEYS);
+        assert_eq!(words[9], "pref_engage_alt");
+        // The parser's NUL-separated key table: the same nine, in the same
+        // order, with the altitude key between the seventh and the eighth.
+        let table = find(b"pilot\0\0\0dare_devil\0");
+        let region = &image[table..table + 200];
+        let keys: Vec<String> = region
+            .split(|b| *b == 0)
+            .filter(|k| !k.is_empty())
+            .take(12)
+            .map(|k| String::from_utf8_lossy(k).into_owned())
+            .collect();
+        assert_eq!(keys[0], "pilot");
+        let mut expected: Vec<&str> = PILOT_ATTRIBUTE_KEYS[..7].to_vec();
+        expected.push("preferred_engagement_altitude");
+        expected.extend_from_slice(&PILOT_ATTRIBUTE_KEYS[7..]);
+        assert_eq!(keys[1..11], expected[..]);
+        // The descriptor parser's own key for the vector.
+        assert_eq!(
+            image
+                .windows(b"ace_stats\0".len())
+                .filter(|w| *w == b"ace_stats\0")
+                .count(),
+            1
         );
     }
 
