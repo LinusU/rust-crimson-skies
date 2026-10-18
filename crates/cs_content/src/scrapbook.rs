@@ -84,7 +84,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::path::Path;
 
-use cs_assets::rof::mount_rof_into;
+use cs_assets::rof::{RofMemberInfo, mount_rof_into};
 use cs_assets::vfs::{INSTALL_NAMESPACE, MountBuilder, SessionBuilder};
 use cs_formats::text::resource_header::read_resource_header;
 use cs_types::asset_id::{
@@ -685,6 +685,153 @@ pub enum ScrapbookTableFailure {
     },
 }
 
+// ---------------------------------------------------------------------------
+// The shared container member read (F47-C4)
+// ---------------------------------------------------------------------------
+
+/// Where the shared find + mount + member + read steps refuse.
+///
+/// These are only the steps a caller performs before it touches the member's
+/// bytes; the scrapbook-table read's own `Span` and `Document` refusals stay
+/// in [`ScrapbookTableFailure`], which adds them after this read. Each caller
+/// maps these variants onto its own refusal type, so the two keep exactly the
+/// diagnostics they had before the steps were shared.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum ContainerReadFailure {
+    /// The inventory holds no [`SCRAPBOOK_CONTAINER`] record.
+    MissingContainer,
+    /// The mount id or namespace could not be built.
+    MountIdentity {
+        /// Why.
+        reason: String,
+    },
+    /// The archive does not mount as the observed ROF container.
+    Mount {
+        /// Why.
+        reason: String,
+    },
+    /// The member [`AssetKey`] could not be built.
+    MemberKey {
+        /// Why.
+        reason: String,
+    },
+    /// The archive holds no such member.
+    MissingMember,
+    /// The member's stored extent could not be read.
+    Read {
+        /// Why.
+        reason: String,
+    },
+}
+
+impl From<ContainerReadFailure> for ScrapbookTableFailure {
+    fn from(failure: ContainerReadFailure) -> Self {
+        match failure {
+            ContainerReadFailure::MissingContainer => Self::MissingContainer,
+            ContainerReadFailure::MountIdentity { reason } => Self::MountIdentity { reason },
+            ContainerReadFailure::Mount { reason } => Self::Mount { reason },
+            ContainerReadFailure::MemberKey { reason } => Self::MemberKey { reason },
+            ContainerReadFailure::MissingMember => Self::MissingMember,
+            ContainerReadFailure::Read { reason } => Self::Read { reason },
+        }
+    }
+}
+
+/// One member of [`SCRAPBOOK_CONTAINER`], found, mounted and read: the shared
+/// find + mount + member + read steps (F47-C4).
+///
+/// The scrapbook-table read (F47-C3) continues with the span, the parse and
+/// the grouping; [`resource_header_bytes`] keeps only the bytes. Either way
+/// the container is located by its F02 logical key, mounted through the
+/// production ROF reader, and the member is looked up and read exactly once
+/// by this code, so the two readers cannot drift apart in how they reach the
+/// archive.
+struct ContainerMemberRead {
+    /// The container record the member was read from, for the caller's own
+    /// row or edge.
+    container: InstallFileRecord,
+    /// The member's stored extent: the mount's offset and declared decoded
+    /// length, which the scrapbook table's span cites.
+    member: RofMemberInfo,
+    /// The member's decoded bytes.
+    bytes: Vec<u8>,
+    /// Every member spelling the mounted archive declares, in the container's
+    /// own order — for the caller that joins member data against the
+    /// archive's other members.
+    member_spellings: Vec<String>,
+}
+
+/// Finds `member` inside [`SCRAPBOOK_CONTAINER`] and reads it: the one
+/// production find + mount + member + read path both the scrapbook-table read
+/// (F47-C3) and the resource-header read (F47-C4) use.
+///
+/// The container record is found by its F02 logical key
+/// ([`RelativePath::logical_key`]) in `files`, so a spelling the inventory
+/// recorded with the other host's separator or letter case still names the
+/// same archive. The mount is the production `rof` mount under
+/// [`SCRAPBOOK_CONTAINER`]'s own label, and the member is looked up and read
+/// through the mount's own namespace.
+///
+/// [`RelativePath::logical_key`]: cs_types::install::RelativePath::logical_key
+///
+/// # Errors
+///
+/// [`ContainerReadFailure`], staged by the step that refused.
+fn read_container_member<'a>(
+    install_root: &Path,
+    install_hash: cs_types::evidence::ContentHash,
+    files: impl IntoIterator<Item = &'a InstallFileRecord>,
+    member: &str,
+) -> Result<ContainerMemberRead, ContainerReadFailure> {
+    let container_key = SCRAPBOOK_CONTAINER.to_ascii_lowercase();
+    let record = files
+        .into_iter()
+        .find(|record| record.relative_spelling.logical_key() == container_key)
+        .ok_or(ContainerReadFailure::MissingContainer)?;
+    let path = install_root.join(record.relative_spelling.as_str());
+
+    let mut builder = SessionBuilder::new(ResolveContext::new(install_hash));
+    let mount = MountBuilder::new(
+        MountId::new("rof-scrapbook").map_err(|error| ContainerReadFailure::MountIdentity {
+            reason: error.to_string(),
+        })?,
+        MountNamespace::new(INSTALL_NAMESPACE).map_err(|error| {
+            ContainerReadFailure::MountIdentity {
+                reason: error.to_string(),
+            }
+        })?,
+        PrecedenceClass::Shared,
+        SCRAPBOOK_CONTAINER,
+    )
+    .retail();
+    let source = mount_rof_into(&mut builder, mount, &path).map_err(|error| {
+        ContainerReadFailure::Mount {
+            reason: error.to_string(),
+        }
+    })?;
+    let key = AssetKey::from_spelling(source.namespace().as_str(), member, "default").map_err(
+        |error| ContainerReadFailure::MemberKey {
+            reason: error.to_string(),
+        },
+    )?;
+    let info = source
+        .member(&key)
+        .cloned()
+        .ok_or(ContainerReadFailure::MissingMember)?;
+    let read = source
+        .read(&key)
+        .map_err(|error| ContainerReadFailure::Read {
+            reason: error.to_string(),
+        })?;
+    let member_spellings = source.members().map(|info| info.spelling.clone()).collect();
+    Ok(ContainerMemberRead {
+        container: record.clone(),
+        member: info,
+        bytes: read.data,
+        member_spellings,
+    })
+}
+
 /// One key group of the scrapbook table after the shared read: the records
 /// the member declares under one entry key, in member order.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -753,7 +900,9 @@ pub struct ScrapbookTable {
 /// This is the one production read of the member (F47-C3): F14-D.8's
 /// `scrapbook_item` rows and [`DiscoveredScrapbook::discover`] both bind
 /// this product, so a change to the find, mount, read, parse or grouping
-/// rule moves both readers together.
+/// rule moves both readers together. The find, mount, member and read steps
+/// themselves are one shared production path, shared with the resource-header
+/// read (F47-C4).
 ///
 /// # Errors
 ///
@@ -763,57 +912,21 @@ pub fn read_scrapbook_table<'a>(
     install_hash: cs_types::evidence::ContentHash,
     files: impl IntoIterator<Item = &'a InstallFileRecord>,
 ) -> Result<ScrapbookTable, ScrapbookTableFailure> {
-    let container_key = SCRAPBOOK_CONTAINER.to_ascii_lowercase();
-    let record = files
-        .into_iter()
-        .find(|record| record.relative_spelling.logical_key() == container_key)
-        .ok_or(ScrapbookTableFailure::MissingContainer)?;
-    let path = install_root.join(record.relative_spelling.as_str());
-
-    let mut builder = SessionBuilder::new(ResolveContext::new(install_hash));
-    let mount = MountBuilder::new(
-        MountId::new("rof-scrapbook").map_err(|error| ScrapbookTableFailure::MountIdentity {
-            reason: error.to_string(),
-        })?,
-        MountNamespace::new(INSTALL_NAMESPACE).map_err(|error| {
-            ScrapbookTableFailure::MountIdentity {
-                reason: error.to_string(),
-            }
-        })?,
-        PrecedenceClass::Shared,
-        SCRAPBOOK_CONTAINER,
-    )
-    .retail();
-    let source = mount_rof_into(&mut builder, mount, &path).map_err(|error| {
-        ScrapbookTableFailure::Mount {
-            reason: error.to_string(),
-        }
-    })?;
-    let key = AssetKey::from_spelling(source.namespace().as_str(), SCRAPBOOK_MEMBER, "default")
-        .map_err(|error| ScrapbookTableFailure::MemberKey {
-            reason: error.to_string(),
-        })?;
-    let info = source
-        .member(&key)
-        .cloned()
-        .ok_or(ScrapbookTableFailure::MissingMember)?;
-    let read = source
-        .read(&key)
-        .map_err(|error| ScrapbookTableFailure::Read {
-            reason: error.to_string(),
-        })?;
-    let bytes = read.data.as_slice();
+    let ContainerMemberRead {
+        container,
+        member,
+        bytes,
+        member_spellings,
+    } = read_container_member(install_root, install_hash, files, SCRAPBOOK_MEMBER)
+        .map_err(ScrapbookTableFailure::from)?;
+    let bytes = bytes.as_slice();
     let member_sha256 = cs_assets::install::sha256(bytes);
-    let member_spellings: Vec<String> = source
-        .members()
-        .map(|member| member.spelling.clone())
-        .collect();
     let span = cs_types::asset_id::SourceSpan::new(
         install_hash,
         SCRAPBOOK_CONTAINER,
         Some(SCRAPBOOK_MEMBER),
-        info.offset,
-        info.declared_decoded_len,
+        member.offset,
+        member.declared_decoded_len,
         Some(member_sha256),
     )
     .map_err(|source| ScrapbookTableFailure::Span { source })?;
@@ -862,7 +975,7 @@ pub fn read_scrapbook_table<'a>(
         document,
         groups,
         gaps,
-        container: record.clone(),
+        container,
         member_spellings,
     })
 }
@@ -1807,56 +1920,35 @@ const RESOURCE_HEADER_MEMBER_RESRC1: &str = "ASSETS/SCRIPTS/RESRC1.H";
 const RESOURCE_HEADER_MEMBERS: &[&str] = &[ORIGINAL_RESOURCE_HEADER, RESOURCE_HEADER_MEMBER_RESRC1];
 
 /// Reads `member`'s decoded bytes out of
-/// [`SCRAPBOOK_CONTAINER`] — the same inventory and ROF mount
-/// [`DiscoveredScrapbook::discover`] performs — so a missing or unreadable
-/// header is an error, never an empty name table.
+/// [`SCRAPBOOK_CONTAINER`] through the shared find + mount + member + read
+/// steps ([`read_container_member`]) the scrapbook-table read also uses, so a
+/// missing or unreadable header is an error, never an empty name table, and
+/// the two readers cannot locate or open the archive differently.
 fn resource_header_bytes(install_root: &Path, member: &str) -> Result<Vec<u8>, DeclareError> {
     let fail = |reason: String| DeclareError::ResourceHeader { reason };
     let found = cs_assets::install::discover(install_root)
         .map_err(|error| fail(format!("the installation cannot be inventoried: {error}")))?;
     let install = cs_assets::install::fingerprint(&found.manifest);
-    let record = found
-        .manifest
-        .files
-        .iter()
-        .find(|record| {
-            record
-                .relative_spelling
-                .as_str()
-                .eq_ignore_ascii_case(SCRAPBOOK_CONTAINER)
-        })
-        .ok_or_else(|| {
-            fail(format!(
-                "the installation inventories no {SCRAPBOOK_CONTAINER}, so \
-                 {member} has no bytes to read"
-            ))
+    let read = read_container_member(install_root, install, found.manifest.files.iter(), member)
+        .map_err(|failure| match failure {
+            ContainerReadFailure::MissingContainer => fail(format!(
+                "the installation inventories no {SCRAPBOOK_CONTAINER}, so {member} has no \
+             bytes to read"
+            )),
+            ContainerReadFailure::MountIdentity { reason }
+            | ContainerReadFailure::MemberKey { reason } => fail(reason),
+            ContainerReadFailure::Mount { reason } => fail(format!(
+                "{SCRAPBOOK_CONTAINER} does not mount as an ROF container: {reason}"
+            )),
+            ContainerReadFailure::MissingMember => fail(format!(
+                "{SCRAPBOOK_CONTAINER} holds no {member} member, so the scrapbook's resource \
+             names cannot be resolved"
+            )),
+            ContainerReadFailure::Read { reason } => {
+                fail(format!("the member {member} does not decode: {reason}"))
+            }
         })?;
-    let path = install_root.join(record.relative_spelling.as_str());
-    let mut builder = SessionBuilder::new(ResolveContext::new(install));
-    let mount = MountBuilder::new(
-        MountId::new("rof-scrapbook").map_err(|error| fail(error.to_string()))?,
-        MountNamespace::new(INSTALL_NAMESPACE).map_err(|error| fail(error.to_string()))?,
-        PrecedenceClass::Shared,
-        SCRAPBOOK_CONTAINER,
-    )
-    .retail();
-    let source = mount_rof_into(&mut builder, mount, &path).map_err(|error| {
-        fail(format!(
-            "{SCRAPBOOK_CONTAINER} does not mount as an ROF container: {error}"
-        ))
-    })?;
-    let key = AssetKey::from_spelling(source.namespace().as_str(), member, "default")
-        .map_err(|error| fail(error.to_string()))?;
-    source.member(&key).cloned().ok_or_else(|| {
-        fail(format!(
-            "{SCRAPBOOK_CONTAINER} holds no {member} member, so the \
-             scrapbook's resource names cannot be resolved"
-        ))
-    })?;
-    source
-        .read(&key)
-        .map(|read| read.data.as_slice().to_vec())
-        .map_err(|error| fail(format!("the member {member} does not decode: {error}")))
+    Ok(read.bytes)
 }
 
 /// The resource names the archive's headers define, each mapped to the id
