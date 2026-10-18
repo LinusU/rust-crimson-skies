@@ -1275,8 +1275,10 @@ pub struct StartupStatement {
     /// The `ACTIVATION` spelling of the definition carrying the statement,
     /// verbatim.
     pub activation: String,
-    /// The three numbers as the executable stores them in the event —
-    /// radians for a rotate, the triple as parsed for a translate (#791).
+    /// The three numbers as the document states them — degrees for a
+    /// rotate, the triple as parsed for a translate (#791). A rotate's
+    /// degrees convert to radians in [`attitude_for`] through the
+    /// `retail_zrd` adapter (F16-E-4, #1429), not here.
     pub values: [f32; 3],
     /// The statement's `STATE` list, spanned inside the reader archive.
     pub state_span: SourceSpan,
@@ -1685,7 +1687,7 @@ fn read_startup_member(
                 kind: statement.kind(),
                 node: statement.node().to_owned(),
                 activation: activation.to_owned(),
-                values: statement.parsed(),
+                values: statement.state(),
                 state_span: SourceSpan::new(
                     fingerprint,
                     archive,
@@ -1843,6 +1845,7 @@ fn attitude_for(
     node: &str,
     spawn: Result<AttitudeSource, ZrdAngleError>,
     startup: &StartupRead,
+    adapter: &SourceAdapter,
 ) -> AttitudeBinding {
     let refused = |error: ZrdAngleError| AttitudeBinding::Open(error.to_string());
     match startup {
@@ -1865,10 +1868,22 @@ fn attitude_for(
                 [] => spawn.map_or_else(refused, AttitudeBinding::Measured),
                 [statement] if statement.unmodelled.is_empty() => {
                     // The startup write overwrites the spawn write, so a
-                    // refused spawn conversion settles nothing here.
-                    AttitudeBinding::Measured(AttitudeSource::StartupPlacement {
-                        rotation_radians: statement.values,
-                    })
+                    // refused spawn conversion settles nothing here. The
+                    // rotate triple converts through the same measured
+                    // `.zrd` source (F16-E-4, #1429); a refusal keeps the
+                    // attitude open by name.
+                    let mut rotation_radians = [0.0_f32; 3];
+                    for ((radians, degrees), key) in rotation_radians
+                        .iter_mut()
+                        .zip(statement.values)
+                        .zip(["rotate_r0", "rotate_r1", "rotate_r2"])
+                    {
+                        match zrd_angle_radians(adapter, key, degrees) {
+                            Ok(value) => *radians = value,
+                            Err(error) => return refused(error),
+                        }
+                    }
+                    AttitudeBinding::Measured(AttitudeSource::StartupPlacement { rotation_radians })
                 }
                 [statement] => AttitudeBinding::Open(format!(
                     "the startup carrier states an OBJECT_ROTATE_STATE for `{node}`, but the \
@@ -1991,7 +2006,12 @@ fn declare_row(
         stored_position: record.position(),
         stored_yaw: record.yaw(),
         stored_pitch: record.pitch(),
-        attitude: attitude_for(record.node(), spawn_attitude(record, adapter), startup),
+        attitude: attitude_for(
+            record.node(),
+            spawn_attitude(record, adapter),
+            startup,
+            adapter,
+        ),
         position: position_for(record.node(), record.position(), startup),
         team: record.team().map(str::to_owned),
         allegiance: allegiance_for(record, scene.map(|(_, nodes, _)| nodes), allegiance),
@@ -3243,7 +3263,9 @@ mod tests {
             "ON_STARTUP",
             &["AT_NODE"],
         )]);
-        let AttitudeBinding::Open(reason) = attitude_for("piratezep", Ok(spawn()), &startup) else {
+        let AttitudeBinding::Open(reason) =
+            attitude_for("piratezep", Ok(spawn()), &startup, &retail_zrd_adapter())
+        else {
             panic!("a flagged rotate settles nothing");
         };
         assert!(reason.contains("AT_NODE"), "{reason}");
@@ -3312,6 +3334,39 @@ mod tests {
             object3d_orientation(0.0, f64::from(yaw_radians), 0.0),
             "the converted radians compose as Ry(yaw)·Rx(pitch) with a clear roll slot"
         );
+    }
+
+    /// **F16-E-4 (#1429): a startup `OBJECT_ROTATE_STATE` converts through
+    /// the measured `retail_zrd` source.** The statement's degrees arrive as
+    /// canonical radians, and a wrong-unit declaration keeps the attitude
+    /// open with the refusal verbatim instead of binding a guessed angle.
+    #[test]
+    fn accept_f16_e4_startup_rotation_converts_through_the_retail_zrd_source() {
+        let mut statement = startup_statement(StateKind::Rotate, "piratezep", "ON_STARTUP", &[]);
+        statement.values = [90.0, 0.0, 180.0];
+        let startup = StartupRead::Decoded(vec![statement]);
+        let spawn = || {
+            spawn_attitude(
+                fixture_record(&one_record_member("piratezep", 0.0), "piratezep"),
+                &retail_zrd_adapter(),
+            )
+        };
+
+        let AttitudeBinding::Measured(AttitudeSource::StartupPlacement { rotation_radians }) =
+            attitude_for("piratezep", spawn(), &startup, &retail_zrd_adapter())
+        else {
+            panic!("the measured source converts the startup rotation");
+        };
+        assert!((f64::from(rotation_radians[0]) - std::f64::consts::FRAC_PI_2).abs() < 1e-6);
+        assert_eq!(rotation_radians[1], 0.0);
+        assert!((f64::from(rotation_radians[2]) - std::f64::consts::PI).abs() < 1e-6);
+
+        let AttitudeBinding::Open(reason) =
+            attitude_for("piratezep", spawn(), &startup, &radians_adapter())
+        else {
+            panic!("a wrong-unit declaration must keep the attitude open");
+        };
+        assert!(reason.contains("degrees"), "{reason}");
     }
 
     /// **F16-E-3 (#720): a declaration that is not degrees fails loudly.**

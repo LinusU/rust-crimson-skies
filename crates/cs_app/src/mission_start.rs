@@ -149,7 +149,7 @@
 use std::fmt;
 use std::path::Path;
 
-use cs_content::coordinates::EngineImage;
+use cs_content::coordinates::{CoordinateSource, EngineImage, SourceAdapter};
 use cs_content::stunts::{ZrdValue, decode_zrd};
 use cs_types::asset_id::SourceSpan;
 use cs_types::content::{ContentId, ContentKind, Known, Provenance, Resolved};
@@ -1164,7 +1164,7 @@ impl MissionStartConfiguration {
         if let Resolved::Known(stored) = &self.stored_pose {
             let pose = StartPose {
                 position: stored.value.position_metres(),
-                heading: stored_heading_radians(stored.value.heading),
+                heading: zrd_heading_radians(stored)?,
             };
             self.initial_pose = Resolved::Known(Known::new(
                 pose,
@@ -1276,7 +1276,7 @@ impl MissionStartConfiguration {
                 Resolved::Known(Known::new(
                     StartPose {
                         position: stored.value.position_metres(),
-                        heading: stored_heading_radians(stored.value.heading),
+                        heading: zrd_heading_radians(stored)?,
                     },
                     provenance("initial-pose", &span)?,
                 ))
@@ -1538,6 +1538,32 @@ pub fn recover_retail_start_configuration(
     Ok(configuration)
 }
 
+/// The stored heading in canonical radians, converted through the
+/// F16-E-measured `.zrd` source ([`CoordinateSource::retail_zrd`] over the
+/// document's own span, F16-E-4 #1429) rather than a hand-rolled π/180.
+///
+/// The `f32` result is bit-identical to [`stored_heading_radians`] for the
+/// measured constant, which stays as the #770 evidence artifact.
+fn zrd_heading_radians(stored: &Known<StoredStartPose>) -> Result<f32, MissionStartError> {
+    let span = stored.provenance.source.clone().ok_or_else(|| {
+        MissionStartError::Provenance(
+            "the stored pose carries no document span to measure the `.zrd` angle unit over"
+                .to_owned(),
+        )
+    })?;
+    heading_through(
+        &SourceAdapter::new(CoordinateSource::retail_zrd(span)),
+        stored.value.heading,
+    )
+}
+
+/// A stored heading through `adapter`, refusing a source that does not
+/// declare the measured `.zrd` degrees (or a non-finite number).
+fn heading_through(adapter: &SourceAdapter, degrees: f32) -> Result<f32, MissionStartError> {
+    crate::mission_world_actors::zrd_angle_radians(adapter, "heading", degrees)
+        .map_err(|error| MissionStartError::Provenance(error.to_string()))
+}
+
 fn stored_pose(fields: &[ZrdValue]) -> Option<StoredStartPose> {
     let [x, y, z] = fields.get(POSITION_FIELD)?.as_list()? else {
         return None;
@@ -1566,4 +1592,61 @@ fn claim_id(id: &str) -> Result<ClaimId, MissionStartError> {
 fn unknown<T>(claim: ClaimId, reason: &str) -> Result<Resolved<T>, MissionStartError> {
     Resolved::unknown(claim, reason)
         .map_err(|error| MissionStartError::Provenance(error.to_string()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn span() -> SourceSpan {
+        SourceSpan::new(
+            ContentHash::from_hex(&"a".repeat(64)).expect("test hash"),
+            "zbd/c1c/m01/zrdr.zbd",
+            Some("aiv.zrd"),
+            0,
+            4,
+            None,
+        )
+        .expect("test span")
+    }
+
+    /// **F16-E-4 (#1429): the start-pose heading converts through the
+    /// measured `retail_zrd` source.** The adapter's radians equal the #770
+    /// evidence artifact for the measured constant, and a source that does
+    /// not declare degrees refuses instead of being assumed.
+    #[test]
+    fn accept_f16_e4_start_heading_converts_through_the_retail_zrd_source() {
+        let retail = SourceAdapter::new(CoordinateSource::retail_zrd(span()));
+        for degrees in [0.0_f32, 40.0, 170.0, -90.0, 359.75] {
+            assert_eq!(
+                heading_through(&retail, degrees).expect("degrees convert"),
+                stored_heading_radians(degrees),
+                "{degrees}° through the adapter is the measured conversion"
+            );
+        }
+        let canonical = SourceAdapter::declared()
+            .into_iter()
+            .find(|adapter| adapter.source().label() == "canonical")
+            .expect("the registry declares the canonical source");
+        let error = heading_through(&canonical, 170.0)
+            .expect_err("a radians declaration must refuse for a .zrd heading");
+        assert!(error.to_string().contains("degrees"), "{error}");
+
+        let stored = Known::new(
+            StoredStartPose {
+                position: [0.0; 3],
+                heading: 170.0,
+            },
+            Provenance::new(
+                ClaimId::new("start-config.m01.player-stored-pose").expect("claim"),
+                ClaimStatus::ObservedTool,
+                Some(span()),
+            )
+            .expect("provenance"),
+        );
+        assert_eq!(
+            zrd_heading_radians(&stored).expect("converts"),
+            stored_heading_radians(170.0)
+        );
+    }
 }
