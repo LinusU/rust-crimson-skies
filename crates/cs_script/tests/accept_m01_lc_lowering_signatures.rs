@@ -21,8 +21,9 @@ use cs_script::bindings::{
     lower_program,
 };
 use cs_script::ir::{
-    Action, Condition, DirectiveOperation, IR_VERSION, MAX_VALUE_DEPTH, MAX_VALUE_ITEMS,
-    MissionProgram, Objective, Outcome, Phase, SourceSpan, SymbolId, ValidationError, Value,
+    Action, Condition, DirectiveOperation, DirectiveRole, IR_VERSION, MAX_VALUE_DEPTH,
+    MAX_VALUE_ITEMS, MissionProgram, Objective, Outcome, Phase, SourceSpan, SymbolId,
+    ValidationError, Value,
 };
 use cs_script::runtime::{
     DirectiveEmission, EventKey, MISSION_EVALUATOR_DOMAIN, MissionFacts, MissionState,
@@ -371,6 +372,20 @@ fn accept_m01_lc_lowering_signatures_nested_arguments_stay_nested() {
     assert_eq!(directives[1].args, stoppoint_args);
 }
 
+/// The measured role identifier (`cs_content::mission_control::DirectiveRole::
+/// code`) of the mirror's role. Exhaustive, so a new mirror role must be named
+/// here before the cross-check compiles.
+fn role_code(role: DirectiveRole) -> &'static str {
+    match role {
+        DirectiveRole::CompletionCondition => "completion_condition",
+        DirectiveRole::ObjectiveRecord => "objective_record",
+        DirectiveRole::CompletionEffect => "completion_effect",
+        DirectiveRole::WakeEffect => "wake_effect",
+        DirectiveRole::TransitionEffect => "transition_effect",
+        DirectiveRole::OutcomeAggregation => "outcome_aggregation",
+    }
+}
+
 /// AC: every operation code `cs_content::mission_control::DirectiveOperation`
 /// publishes has a `cs_script::ir::DirectiveOperation` — the same codes, one
 /// for one — so the two copies of the measured vocabulary cannot drift apart.
@@ -583,6 +598,13 @@ fn accept_m01_lc_lowering_signatures_every_measured_operation_maps() {
         );
         // And the mirror publishes the identical code.
         assert_eq!(mirror.code(), code);
+        // And assigns the operation the identical lifecycle role, so the
+        // hand-kept role tables cannot drift apart.
+        assert_eq!(
+            role_code(mirror.role()),
+            measured.role().code(),
+            "measured code {code} must feed the same lifecycle role"
+        );
     }
     // `ALL` is exactly the measured set: same variants, same codes, no
     // remainder — a code `from_code` cannot name does not exist.
