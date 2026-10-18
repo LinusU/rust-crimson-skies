@@ -141,9 +141,34 @@ pub const FLAG_SHIFT: u32 = 8;
 /// [`RawPolygonInfo::flags`]. The largest value a flag field can hold is `0xFE`.
 pub const FLAG_MASK: u32 = 0xFE00;
 
-/// `PolygonBitFlags::UNK2`. Retained so a caller can see the bit occurred; the
-/// reference names it `UNK2` and nothing more, so it is not interpreted.
+/// `PolygonBitFlags::UNK2` in the pinned reference, which names the bit and
+/// nothing more.
+///
+/// Static analysis of the owner-supplied decrypted executable settled what it
+/// means for an **outline** polygon: it is the **two-sided** flag. The original
+/// computes the face test over the first three stored corners and, for a
+/// polygon with this bit set, draws the back side too, with the face normal
+/// negated (`0x554bf7`–`0x554ce9` D3D, `0x552e1f`–`0x552f19` software; owner
+/// note `OWNER-STATIC-2026-10-05`, recorded in
+/// `docs/findings/2026-10-14-f10-d-2-front-face-winding-and-culling.md` §2).
+/// The bit is on 52 621 retail outline polygons and on 0 of the 22 124 retail
+/// strips.
+///
+/// It stays equal to the reference's `UNK2` name: [`FLAG_TWO_SIDED`] is the
+/// measured meaning, this constant is the reference's spelling of the same bit.
 pub const FLAG_UNK2: u32 = 1 << 2;
+
+/// The measured **two-sided** polygon flag (`0x400` of the stored polygon
+/// dword, i.e. bit 2 of the flag field [`RawPolygonInfo::flags`] returns).
+///
+/// Set on an **outline** polygon: the original draws its back side too, with
+/// the face normal negated. A **strip** never carries the bit in the measured
+/// corpus, and the original never runs the per-polygon face test on a strip
+/// (strips are drawn `D3DCULL_CW`), so a strip that stores it is reported
+/// ([`ParseFinding::StripTwoSidedFlag`]) rather than trusted. Evidence:
+/// `OWNER-STATIC-2026-10-05`; the addresses and the retail counts are in
+/// `docs/findings/2026-10-14-f10-d-2-front-face-winding-and-culling.md`.
+pub const FLAG_TWO_SIDED: u32 = FLAG_UNK2;
 
 /// `PolygonBitFlags::UNK3`. The reference notes it is absent from `mechlib`.
 pub const FLAG_UNK3: u32 = 1 << 3;
@@ -584,6 +609,17 @@ impl RawPolygonInfo {
         self.flags() & FLAG_TRIANGLE_STRIP != 0
     }
 
+    /// The stored polygon carries the measured two-sided flag
+    /// ([`FLAG_TWO_SIDED`]).
+    ///
+    /// The bit's meaning is only established for an **outline**; a strip that
+    /// sets it is reported as [`ParseFinding::StripTwoSidedFlag`] instead of
+    /// being read as two-sided, because the original never applies the
+    /// per-polygon face test to a strip.
+    pub const fn is_two_sided(&self) -> bool {
+        self.flags() & FLAG_TWO_SIDED != 0
+    }
+
     /// The corner topology the established flag selects.
     pub const fn kind(&self) -> PrimitiveKind {
         if self.is_triangle_strip() {
@@ -823,6 +859,19 @@ pub enum ParseFinding {
         /// Polygon index in that mesh.
         polygon: u32,
     },
+    /// A strip polygon sets the measured two-sided flag ([`FLAG_TWO_SIDED`]).
+    ///
+    /// The flag is on 0 of the 22 124 retail strips, and the original never runs
+    /// the per-polygon face test on a strip — it draws strips with
+    /// `D3DCULL_CW` — so the bit is **reported** and not trusted:
+    /// `cs_content::mesh::RenderMesh` reads a strip's two-sidedness as `false`
+    /// whatever the bit says. Evidence: `OWNER-STATIC-2026-10-05`.
+    StripTwoSidedFlag {
+        /// Mesh array index.
+        mesh: u32,
+        /// Polygon index in that mesh.
+        polygon: u32,
+    },
     /// A polygon stored no material group (`mat_count == 0`), which the
     /// reference asserts against. The face is read with no group.
     PolygonWithoutMaterial {
@@ -850,6 +899,7 @@ impl ParseFinding {
         match self {
             Self::UnknownPolygonFlagBits { .. } => "unknown_polygon_flag_bits",
             Self::StripWithoutNormals { .. } => "strip_without_normals",
+            Self::StripTwoSidedFlag { .. } => "strip_two_sided_flag",
             Self::PolygonWithoutMaterial { .. } => "polygon_without_material",
             Self::PolygonTooFewCorners { .. } => "polygon_too_few_corners",
         }
@@ -860,6 +910,7 @@ impl ParseFinding {
         match self {
             Self::UnknownPolygonFlagBits { mesh, .. }
             | Self::StripWithoutNormals { mesh, .. }
+            | Self::StripTwoSidedFlag { mesh, .. }
             | Self::PolygonWithoutMaterial { mesh, .. }
             | Self::PolygonTooFewCorners { mesh, .. } => *mesh,
         }
@@ -882,6 +933,9 @@ impl fmt::Display for ParseFinding {
             }
             Self::StripWithoutNormals { polygon, .. } => {
                 write!(f, "{code}: polygon {polygon} is a strip without normals")
+            }
+            Self::StripTwoSidedFlag { polygon, .. } => {
+                write!(f, "{code}: strip polygon {polygon} sets the two-sided flag")
             }
             Self::PolygonWithoutMaterial { polygon, .. } => {
                 write!(f, "{code}: polygon {polygon} stored no material group")
@@ -1857,6 +1911,16 @@ fn read_mesh_polygons(
         }
         if info.is_triangle_strip() && !info.has_normals() {
             findings.push(ParseFinding::StripWithoutNormals {
+                mesh,
+                polygon: polygon_index,
+            });
+        }
+        if info.is_triangle_strip() && info.is_two_sided() {
+            // The two-sided bit is measured for outlines only: the original
+            // draws strips with `D3DCULL_CW` and never runs the per-polygon
+            // face test on them, and no retail strip stores the bit. Report it
+            // rather than read a strip as two-sided.
+            findings.push(ParseFinding::StripTwoSidedFlag {
                 mesh,
                 polygon: polygon_index,
             });

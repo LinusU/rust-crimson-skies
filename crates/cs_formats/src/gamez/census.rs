@@ -141,6 +141,18 @@ pub struct FaceCensus {
     pub triangles: u64,
     /// Of those, triangles with two equal position indices.
     pub degenerate_triangles: u64,
+    /// Stored **outline** polygons that carry the measured two-sided flag
+    /// (`OWNER-STATIC-2026-10-05`): the original draws their back side too,
+    /// with the face normal negated. Counted whether or not the face decodes —
+    /// the flag is a stored fact, not a draw outcome. Retail: 52 621 of the
+    /// nine archives' outline polygons.
+    pub two_sided_outline_faces: u64,
+    /// Stored **strip** polygons that carry the two-sided flag. The flag's
+    /// meaning is measured for outlines only and no retail strip stores it, so
+    /// this count is reported rather than trusted; it is 0 on the measured
+    /// corpus. The reader also raises
+    /// [`super::reader::ParseFinding::StripTwoSidedFlag`] for each such face.
+    pub strip_two_sided_flag_faces: u64,
     /// Every face that draws nothing, in mesh then polygon order.
     pub missing: Vec<MissingFace>,
 }
@@ -166,6 +178,22 @@ impl FaceCensus {
             // shortfall.
             census.shortfall_faces +=
                 u64::from(mesh.info.polygon_count).saturating_sub(stored as u64);
+
+            // The measured two-sided flag is a stored fact, counted here
+            // whatever the face's draw outcome: an outline that carries it is
+            // drawn from both sides, and a strip that carries it is reported,
+            // not trusted.
+            for polygon in &mesh.mesh.polygons {
+                if !polygon.is_two_sided() {
+                    continue;
+                }
+                match polygon.kind {
+                    super::mesh::PrimitiveKind::Polygon => census.two_sided_outline_faces += 1,
+                    super::mesh::PrimitiveKind::TriangleStrip => {
+                        census.strip_two_sided_flag_faces += 1;
+                    }
+                }
+            }
 
             let topology = mesh.draw_topology();
             census.triangles += topology.triangles.len() as u64;

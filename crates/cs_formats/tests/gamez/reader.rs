@@ -973,6 +973,28 @@ fn accept_f10_b_gamez_flags_select_strip_and_normals() {
     );
     assert_eq!(strip.raw_flags, FLAG_TRIANGLE_STRIP | FLAG_UNK2);
 
+    // The outline's flag bit is the measured two-sided flag
+    // (`OWNER-STATIC-2026-10-05`): the IR reports it, and the strip that also
+    // stores it is **reported**, not read as two-sided, because the original
+    // never runs the per-polygon face test on a strip.
+    assert!(
+        polygon.is_two_sided(),
+        "the outline's stored bit is the two-sided flag"
+    );
+    assert!(
+        strip.is_two_sided(),
+        "the raw stored bit is still visible on the strip"
+    );
+    assert_eq!(
+        parsed
+            .findings
+            .iter()
+            .map(|finding| finding.code())
+            .collect::<Vec<_>>(),
+        ["strip_without_normals", "strip_two_sided_flag"],
+        "a strip that stores the two-sided flag is reported, not trusted"
+    );
+
     // The shared production path agrees: a five-corner outline triangulates to
     // three triangles, and a five-step strip draws three steps.
     let topology = read.topology();

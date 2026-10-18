@@ -26,8 +26,9 @@ use std::collections::BTreeMap;
 use cs_formats::ParseContext;
 use cs_formats::gamez::reader::{Fixup, RawMeshInfo};
 use cs_formats::gamez::{
-    FaceIssue, FaceStatus, GameZHeader, GameZMesh, GameZMeshes, MeshIndex, MissingFace,
-    MissingFaceReason, PrimitiveKind, RawCorner, RawMesh, RawPolygon, read_gamez_meshes,
+    FLAG_TWO_SIDED, FaceIssue, FaceStatus, GameZHeader, GameZMesh, GameZMeshes, MeshIndex,
+    MissingFace, MissingFaceReason, PrimitiveKind, RawCorner, RawMesh, RawPolygon,
+    read_gamez_meshes,
 };
 
 // ------------------------------------------------------------- synthetic ---
@@ -293,6 +294,51 @@ fn accept_f10_d_census_names_every_missing_face_with_its_exact_reason() {
     assert_eq!(
         census.missing_faces(),
         census.shortfall_faces + census.missing.len() as u64
+    );
+}
+
+/// **The measured two-sided flag is a stored fact the census counts.** An
+/// outline polygon that stores `0x400` (the dword bit 10, `FLAG_TWO_SIDED`) is
+/// drawn from both sides by the original (`OWNER-STATIC-2026-10-05`), so the
+/// census counts it whatever the face's draw outcome; a strip that stores the
+/// bit is counted separately because the flag's meaning is an outline rule and
+/// a strip is never read as two-sided.
+#[test]
+fn accept_f10_f_1_census_counts_two_sided_outlines_and_reports_strip_flags() {
+    let mut flagged_outline = polygon(
+        PrimitiveKind::Polygon,
+        vec![corner(0), corner(1), corner(2)],
+    );
+    flagged_outline.raw_flags = FLAG_TWO_SIDED;
+    let plain_outline = polygon(
+        PrimitiveKind::Polygon,
+        vec![corner(1), corner(2), corner(3)],
+    );
+    let mut flagged_strip = polygon(
+        PrimitiveKind::TriangleStrip,
+        vec![corner(0), corner(1), corner(2)],
+    );
+    flagged_strip.raw_flags = FLAG_TWO_SIDED;
+
+    let meshes = container(
+        vec![(0, 3, vec![flagged_outline, plain_outline, flagged_strip])],
+        1,
+        &[],
+    );
+    let census = meshes.face_census();
+
+    assert_eq!(census.stored_faces, 3);
+    assert_eq!(
+        census.decoded_faces, 3,
+        "the counts are a stored fact, not a draw outcome"
+    );
+    assert_eq!(
+        census.two_sided_outline_faces, 1,
+        "only the outline that stored the bit is a two-sided outline"
+    );
+    assert_eq!(
+        census.strip_two_sided_flag_faces, 1,
+        "a strip that stored the bit is reported, never trusted"
     );
 }
 

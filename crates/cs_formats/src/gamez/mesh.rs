@@ -56,8 +56,10 @@ pub struct RawCorner {
 pub struct RawPolygon {
     /// Corner topology.
     pub kind: PrimitiveKind,
-    /// Stored flag bits, unchanged. Their meaning is unknown until a variant
-    /// establishes it; no bit is interpreted here.
+    /// Stored flag bits, unchanged. Every bit is still carried here even though
+    /// [`Self::is_two_sided`] and the reader now give the measured
+    /// [`super::reader::FLAG_TWO_SIDED`] bit a meaning: the raw word is the
+    /// lossless record, and a bit no reference names is not interpreted.
     pub raw_flags: u32,
     /// Material index of material group `0` of this polygon, unchanged. The
     /// material record layout is unknown; this is a reference, not a resolved
@@ -75,6 +77,26 @@ pub struct RawPolygon {
     pub material: u32,
     /// Corners in stored order.
     pub corners: Vec<RawCorner>,
+}
+
+impl RawPolygon {
+    /// Whether this stored polygon carries the measured **two-sided** flag
+    /// (bit 2 of the flag field, `0x400` of the stored polygon dword).
+    ///
+    /// The meaning is established for an **outline** only: the original draws
+    /// the back side of such a polygon as well, with the face normal negated.
+    /// A strip that stores the bit is reported by the reader as
+    /// [`super::reader::ParseFinding::StripTwoSidedFlag`] and must not be read
+    /// as two-sided — the original never applies the per-polygon face test to a
+    /// strip. Evidence: `OWNER-STATIC-2026-10-05`, recorded in
+    /// `docs/findings/2026-10-14-f10-d-2-front-face-winding-and-culling.md`.
+    ///
+    /// This reports the stored bit and nothing about [`Self::kind`]; a consumer
+    /// that needs the *drawn* two-sidedness of a polygon applies the outline
+    /// rule (see `cs_content::mesh`).
+    pub const fn is_two_sided(&self) -> bool {
+        self.raw_flags & super::reader::FLAG_TWO_SIDED != 0
+    }
 }
 
 /// One mesh as stored.
