@@ -35,6 +35,7 @@ mod campaign {
     mod m01_play_weapons;
     mod m01_play_world_visible;
     mod m01_radio_wire;
+    mod m01_target_roster;
     mod m01_window_fire;
     mod m01_window_world_draw;
     mod m01_window_world_import;
