@@ -102,8 +102,9 @@
 //! All of this is newly authored engine design: no original networked
 //! behavior has been measured, and none is asserted here.
 
-use std::collections::{BTreeMap, VecDeque};
+use std::collections::{BTreeMap, BTreeSet, VecDeque};
 use std::fmt;
+use std::time::Duration;
 
 use avian3d::prelude::{PhysicsSystems, Position, Rotation};
 use bevy::app::{App, Plugin};
@@ -121,8 +122,9 @@ use cs_net::lifecycle::{
     ClientNotice, ClientPhase, ClientSession, PeerInput, ServerFault, ServerNotice, ServerPhase,
     ServerSession,
 };
+use cs_net::lobby::Phase;
 use cs_net::message::{EventBody, ReliableEvent};
-use cs_net::validation::SessionViolation;
+use cs_net::validation::{MatchStage, SessionViolation};
 use cs_sim::control::{ControlBuffer, ControlError};
 use cs_sim::net_state::{NetStateError, NetStateLedger};
 use cs_types::Tick;
@@ -1015,9 +1017,53 @@ fn consume_input(host: &mut NetHost, input: &PeerInput, at: Option<Tick>) -> Con
     consumed
 }
 
+/// The match phase the host's pump judges input against, from the one
+/// source that is exact at pump time: the session's own [`ServerPhase`], the
+/// same phase that gates snapshot publication.
+///
+/// Only `Live` is `InMatch`, the one phase that accepts input. `Gathering`
+/// has no simulation yet. `Finished` and `Closed` are over, and
+/// [`Phase::Closed`] refuses input just as they do. The attached lobby's own
+/// phase is deliberately not read: `ServerSession::launch` does not move it,
+/// so the two can disagree and the session is the one that owns the epoch.
+const fn stage_phase(phase: ServerPhase) -> Phase {
+    match phase {
+        ServerPhase::Gathering => Phase::Gathering,
+        ServerPhase::Live { .. } => Phase::InMatch,
+        ServerPhase::Finished { .. } | ServerPhase::Closed => Phase::Closed,
+    }
+}
+
+/// Pumps the host once. With a committed tick the pump is staged: the tick is
+/// the server's own, the phase is [`stage_phase`] and the banned set is the
+/// attached lobby's rules (empty without a lobby). Without a committed tick
+/// (already reported as [`NetDriveMissing::Timeline`]) there is no anchor for
+/// the tick window, so the pump is the unstaged one and judges no intent.
+fn pump_host(
+    session: &mut ServerSession,
+    elapsed: Duration,
+    at: Option<Tick>,
+) -> Vec<ServerNotice> {
+    let Some(server_tick) = at else {
+        return session.pump(elapsed);
+    };
+    let no_bans = BTreeSet::new();
+    let banned = session
+        .lobby()
+        .map_or(&no_bans, |lobby| &lobby.rules().banned);
+    // The stage borrows the lobby's set while the pump needs `&mut`, so the
+    // set is copied for the call.
+    let banned = banned.clone();
+    let stage = MatchStage::new(stage_phase(session.phase()), server_tick, &banned);
+    session.pump_staged(elapsed, stage)
+}
+
 /// Drives one committed fixed tick of the network sessions: teardown
 /// detection first, then the host pump/drain/publish, then the client
 /// pump/feed — in that order — recorded in [`NetSessionReport`].
+///
+/// The host pump is staged ([`pump_host`]) whenever a committed tick exists,
+/// so the F58-B tick window and match-phase check are live here.
 ///
 /// Exclusive over the world because the session owners are resources and the
 /// mirror may be constructed on the fly; running it anywhere else would be a
@@ -1093,7 +1139,7 @@ pub fn drive_net_session(world: &mut World) {
 
     // --- host ----------------------------------------------------------------
     if let Some(mut host) = world.remove_resource::<NetHost>() {
-        let notices = host.session.pump(elapsed);
+        let notices = pump_host(&mut host.session, elapsed, at);
         // A departed peer's buffer releases with the notice that carried it,
         // in notice order, so a buffer never outlives the membership fact
         // that ended it.

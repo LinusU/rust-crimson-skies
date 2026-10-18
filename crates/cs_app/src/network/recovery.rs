@@ -46,12 +46,11 @@
 //! to the menu, no migration is claimed — and [`RecoveryFlow::recover`] runs
 //! the F58-A decision and reopens the boundary on the fresh epoch.
 //!
-//! **Not wired here:** `cs_net::lifecycle`'s `ServerSession::pump` still
-//! admits packets straight through the transport's own gate and never builds
-//! a [`MatchStage`], so the rate caps and the tick window are not yet charged
-//! on the wire path (F58-B finding 2). That pump is not an F58-C owner path;
-//! the gap is recorded in `docs/findings/2026-10-10-f58-c-disconnect-reconnect-and-host-loss.md`
-//! and filed as a follow-up task rather than reached into from here.
+//! **Pump staging:** `cs_net::lifecycle`'s `ServerSession::pump_staged` takes
+//! the host's `MatchStage` (F58-B finding 2). The app-side driver,
+//! [`crate::network::session::drive_net_session`], builds that stage every
+//! committed tick, so the rate caps and the tick window are charged on the
+//! wire path (task #1590).
 //!
 //! # The intent path (F58-B)
 //!
