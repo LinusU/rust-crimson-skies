@@ -48,6 +48,7 @@ mod campaign {
     mod m01_window_world_import;
     mod m01_wingman_formation;
     mod parity_m01_atmo_c;
+    mod parity_m01_clouds;
     mod vs_m01_rt_evidence_audio;
     mod vs_m01_rt_host;
     mod vs_m01_rt_host_02;

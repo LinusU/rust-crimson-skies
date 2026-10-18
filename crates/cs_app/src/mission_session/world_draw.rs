@@ -42,7 +42,7 @@
 //! playtest's own unmeasured question; this stage draws the definition's own
 //! records, every one, so a record the mission loads is a record it shows.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::path::Path;
 use std::sync::Arc;
 
@@ -50,15 +50,18 @@ use bevy::asset::{AssetApp, Assets, Handle};
 use bevy::image::Image;
 use bevy::mesh::VertexAttributeValues;
 use bevy::prelude::{
-    Added, App, ChildOf, Commands, Entity, Mesh, Mesh3d, MeshMaterial3d, Plugin, Query, Res,
-    Resource, StandardMaterial, Transform, Update, Vec3, Visibility,
+    Added, App, Camera3d, ChildOf, Color, Commands, Component, Entity, GlobalTransform, Local,
+    Mesh, Mesh3d, MeshMaterial3d, Plugin, Query, Res, Resource, StandardMaterial, Transform,
+    Update, Vec3, Visibility, With,
 };
 use cs_content::world::WorldDefinition;
+use cs_formats::gamez::GameZMaterials;
 use cs_types::content::{ContentId, Resolved};
 
 use crate::playtest_retail::{WorldSources, read_world_sources};
 use crate::playtest_textures::{NeutralColor, PlaytestPart, TextureBinder};
 use crate::render::horizon::HorizonSpec;
+use crate::render::matrix::HORIZON_ANCHOR;
 use crate::world::WorldMeshes;
 use crate::world::contacts::{WorldObjectBinding, WorldVisual};
 use crate::world::spawn::canonical_matrix;
@@ -133,6 +136,76 @@ pub struct MissionWorldParts {
     report: WorldDrawReport,
     water: Option<WorldWaterLevel>,
     water_art: Option<WorldWaterArt>,
+    horizon: Option<HorizonSubtree>,
+}
+
+/// The label the world's `horizon` subtree carries (PARITY-M01-ATMO-D, Rally
+/// #1651). Which records hang under `horizon`, their art and their geometry are
+/// the archive's own; that the original re-anchors the node to the camera each
+/// render pass is measured (`docs/findings/2026-10-11-t541-horizon-commands-
+/// anchor-scenery-to-camera.md`). Drawing the subtree unlit and unfogged is this
+/// build's own choice: how the original lights and fogs the sky records is
+/// unmeasured.
+pub const HORIZON_SUBTREE_LABEL: &str = "PARITY-M01-ATMO-D horizon subtree drawn from the archive, camera anchor measured, lighting and fog of the sky records unmeasured, 2026-10-19";
+
+/// The stored node slots of the world's `horizon` record and its descendants.
+///
+/// `root` is the `horizon` record itself; `nodes` holds every slot below it
+/// under the stored parent slots, `root` excluded.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HorizonSubtree {
+    root: u32,
+    nodes: BTreeSet<u32>,
+}
+
+impl HorizonSubtree {
+    /// Reads the subtree out of a container's node records: the record named
+    /// `horizon` and everything reached from it through the parent slots.
+    /// `None` when the container stores no such record.
+    #[must_use]
+    pub fn read(nodes: &cs_formats::gamez::GameZNodes) -> Option<Self> {
+        let root = nodes
+            .nodes
+            .iter()
+            .find(|node| node.name.eq_ignore_ascii_case(HORIZON_ANCHOR))?
+            .index;
+        let mut children: BTreeMap<u32, Vec<u32>> = BTreeMap::new();
+        for node in &nodes.nodes {
+            if let Some(parent) = node.parent {
+                children.entry(parent).or_default().push(node.index);
+            }
+        }
+        let mut reached = BTreeSet::new();
+        let mut stack = children.get(&root).cloned().unwrap_or_default();
+        while let Some(slot) = stack.pop() {
+            if reached.insert(slot)
+                && let Some(below) = children.get(&slot)
+            {
+                stack.extend(below.iter().copied());
+            }
+        }
+        Some(Self {
+            root,
+            nodes: reached,
+        })
+    }
+
+    /// The stored slot of the `horizon` record.
+    #[must_use]
+    pub const fn root(&self) -> u32 {
+        self.root
+    }
+
+    /// Whether `slot` is the `horizon` record or one of its descendants.
+    #[must_use]
+    pub fn contains(&self, slot: u32) -> bool {
+        slot == self.root || self.nodes.contains(&slot)
+    }
+}
+
+/// The stored node slot an imported object id (`node-<slot>`) names.
+fn node_slot_of(id: &str) -> Option<u32> {
+    id.strip_prefix("node-")?.parse().ok()
 }
 
 /// The art the world's own water tiles are drawn with, measured from the parts
@@ -209,7 +282,22 @@ impl MissionWorldParts {
             report,
             water: None,
             water_art: None,
+            horizon: None,
         }
+    }
+
+    /// The world's `horizon` record and its descendants, when the container
+    /// stores one.
+    #[must_use]
+    pub const fn horizon(&self) -> Option<&HorizonSubtree> {
+        self.horizon.as_ref()
+    }
+
+    /// This resource with the `horizon` subtree recorded.
+    #[must_use]
+    pub fn with_horizon(mut self, horizon: Option<HorizonSubtree>) -> Self {
+        self.horizon = horizon;
+        self
     }
 
     /// The world's own water altitude, when its water geometry is one flat
@@ -307,6 +395,7 @@ pub fn build_world_draw(
     }
     let mut binder = TextureBinder::new(source.sources.textures(), true, true);
     let mut parts: BTreeMap<ContentId, Vec<PlaytestPart>> = BTreeMap::new();
+    let horizon = HorizonSubtree::read(source.sources.world().nodes());
     for object in definition.objects() {
         let Resolved::Known(known) = object.mesh() else {
             continue;
@@ -318,13 +407,20 @@ pub fn build_world_draw(
             continue;
         };
         let stored_slot = source.slots.get(&known.value).copied().unwrap_or(0);
-        let bound = binder.parts(
+        let mut bound = binder.parts(
             app,
             source.sources.world(),
             world_mesh,
             NeutralColor(WORLD_NEUTRAL_COLOR),
             stored_slot,
         );
+        if node_slot_of(object.id().as_str()).is_some_and(|slot| {
+            horizon
+                .as_ref()
+                .is_some_and(|subtree| subtree.contains(slot))
+        }) {
+            sky_materials(app, source.sources.world().materials(), &mut bound);
+        }
         parts.insert(known.value.clone(), bound);
     }
     let water = measure_water_level(app, definition, &parts);
@@ -332,6 +428,91 @@ pub fn build_world_draw(
     MissionWorldParts::from_parts(parts)
         .with_water_level(water)
         .with_water_art(art)
+        .with_horizon(horizon)
+}
+
+/// Gives each part of a `horizon` record its own unlit, unfogged copy of its
+/// material ([`HORIZON_SUBTREE_LABEL`]): the stored vertex colours carry the
+/// sky's shading, a distance fog would wash the 4-9 km sky records flat, and a
+/// copy keeps every other user of the shared material as it was. A part whose
+/// stored material names no texture is drawn in its vertex colours alone. A part
+/// whose stored material names a texture the group's archives do not hold is
+/// **not drawn**: M01's `cloud1.tif` and `cloud2.tif` (the two 22 m quads of
+/// `g1155`) are in no `ZBD/C3` texture archive, and a white stand-in square
+/// would be invented art.
+fn sky_materials(app: &mut App, stored: &GameZMaterials, parts: &mut Vec<PlaytestPart>) {
+    parts.retain(|part| {
+        part.image.is_some()
+            || !stored
+                .material(part.stored_material)
+                .is_some_and(|material| stored.names_a_texture(material))
+    });
+    let mut materials = app.world_mut().resource_mut::<Assets<StandardMaterial>>();
+    for part in parts {
+        let Some(mut sky) = materials.get(&part.material).cloned() else {
+            continue;
+        };
+        sky.unlit = true;
+        sky.fog_enabled = false;
+        if part.image.is_none() {
+            sky.base_color = Color::WHITE;
+        }
+        part.material = materials.add(sky);
+    }
+}
+
+/// A `horizon` record's offset from the `horizon` record, kept so the subtree
+/// can follow the camera as one rigid piece.
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
+pub struct HorizonRest(pub Vec3);
+
+/// Drags the `horizon` subtree to the camera's world position every frame, all
+/// three axes and no rotation, as the original's `CameraSetHorizon horizon`
+/// does (`docs/findings/2026-10-11-t541-horizon-commands-anchor-scenery-to-
+/// camera.md`). Every record keeps its stored offset from the `horizon`
+/// record.
+fn anchor_horizon_to_camera(
+    mut commands: Commands,
+    mut home: Local<Option<Vec3>>,
+    parts: Res<MissionWorldParts>,
+    cameras: Query<&GlobalTransform, With<Camera3d>>,
+    mut records: Query<(
+        Entity,
+        &WorldObjectBinding,
+        &mut Transform,
+        Option<&HorizonRest>,
+    )>,
+) {
+    let (Some(horizon), Ok(camera)) = (parts.horizon(), cameras.single()) else {
+        return;
+    };
+    let camera = camera.translation();
+    if home.is_none() {
+        // The `horizon` record's own stored translation, read before the
+        // first move: every other record's rest is its offset from it.
+        *home = records
+            .iter()
+            .find(|(_, binding, _, _)| {
+                node_slot_of(binding.object().as_str()) == Some(horizon.root())
+            })
+            .map(|(_, _, transform, _)| transform.translation);
+    }
+    let Some(root) = *home else {
+        return;
+    };
+    for (entity, binding, mut transform, rest) in &mut records {
+        if !node_slot_of(binding.object().as_str()).is_some_and(|slot| horizon.contains(slot)) {
+            continue;
+        }
+        match rest {
+            Some(rest) => transform.translation = camera + rest.0,
+            None => {
+                let rest = transform.translation - root;
+                commands.entity(entity).insert(HorizonRest(rest));
+                transform.translation = camera + rest;
+            }
+        }
+    }
 }
 
 /// Puts the drawn horizon sea at the world's own water altitude, when `parts`
@@ -561,6 +742,6 @@ pub struct MissionWorldDrawPlugin;
 
 impl Plugin for MissionWorldDrawPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, attach_world_parts);
+        app.add_systems(Update, (attach_world_parts, anchor_horizon_to_camera));
     }
 }
