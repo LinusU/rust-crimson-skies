@@ -101,7 +101,8 @@ pub use machine::{
     Outcome, PageMove, Plan, ProfileIntent, Refusal, Request,
 };
 pub use original::{
-    ArtExtents, BUTTON_STATE_FRAMES, BoundButton, LAYOUT_MEMBER, LayoutTextError, OriginalLayout,
+    ArtExtents, BUTTON_STATE_FRAMES, BoundButton, FlightCheckControl, FlightCheckSelection,
+    FlightCheckSelectionError, FlightCheckSlot, LAYOUT_MEMBER, LayoutTextError, OriginalLayout,
     OriginalScreens, SCREEN_SECTIONS, ScreenHandlers, ScreenRefusal, ScreenReport, ScreenScripts,
     UnboundButton, UnboundReason, script_member,
 };

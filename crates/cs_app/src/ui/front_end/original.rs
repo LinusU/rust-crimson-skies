@@ -90,6 +90,10 @@ impl<F: Fn(&str) -> Option<(u32, u32)>> ArtExtents for F {
 pub struct Row {
     /// The row id as written, upper-cased.
     pub id: String,
+    /// The row's kind letter, upper-cased (`P`, `B`, `T`, `A`, `D`, `S`, `M`,
+    /// …). The header comment names the kinds; a row's own kind is the letter
+    /// before its first comma.
+    pub kind: String,
     /// The fields after the kind letter, trimmed, placeholders substituted.
     pub fields: Vec<String>,
     /// The names of the `<NAME>` placeholders no variable defined.
@@ -115,9 +119,12 @@ pub struct Section {
     pub panes: Vec<Row>,
     /// `B` rows in declaration order.
     pub buttons: Vec<Row>,
-    /// How many rows of other kinds (text, lists, edit boxes, …) it holds;
-    /// those are not read here.
-    pub other_rows: usize,
+    /// Every other row (text, text list, dropdown, scrolling text, movie, …),
+    /// in declaration order. [`Self::panes`] and [`Self::buttons`] hold the two
+    /// kinds this loader builds screens from; the rest are kept so a later
+    /// measurement can read the screen a control starts *and what that screen
+    /// holds* (F45-C.5) without re-parsing the file.
+    pub other: Vec<Row>,
 }
 
 /// A parsed `LAYOUT.CSV`.
@@ -192,7 +199,7 @@ impl OriginalLayout {
                             name: name.to_owned(),
                             panes: Vec::new(),
                             buttons: Vec::new(),
-                            other_rows: 0,
+                            other: Vec::new(),
                         },
                         BTreeMap::new(),
                     ));
@@ -239,13 +246,14 @@ impl OriginalLayout {
                 .collect();
             let row = Row {
                 id: id.to_ascii_uppercase(),
+                kind: kind.clone(),
                 fields,
                 unresolved,
             };
             match kind.as_str() {
                 "P" => section.panes.push(row),
                 "B" => section.buttons.push(row),
-                _ => section.other_rows += 1,
+                _ => section.other.push(row),
             }
         }
         Ok(Self {
@@ -389,6 +397,174 @@ impl ScreenScripts for NoScripts {
 #[must_use]
 pub fn script_member(section: &str) -> String {
     format!("ASSETS/SCRIPTS/{}.SCRIPT", section.to_ascii_uppercase())
+}
+
+/// The plane slot a flight-check control edits (F45-C.5).
+///
+/// Measured from the screen script itself, not assigned: in
+/// `ASSETS/SCRIPTS/FLIGHTCHECK.SCRIPT` the pilot's plane picture is
+/// initialised with the native call `callback($$E$$, 2010, -1)` and the
+/// wingmate's with `-2`, and the controls that edit a plane store
+/// `@globals@ZQ = -1` (pilot) or `-2` (wingmate). `ORDINANCELAYOUT.SCRIPT`
+/// then reads `@globals@ZQ` to pick the plane it edits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FlightCheckSlot {
+    /// The pilot's own plane (`@globals@ZQ = -1`).
+    Player,
+    /// The wingmate's plane (`@globals@ZQ = -2`).
+    Wingmate,
+}
+
+/// One `B` row of the original `FlightCheck` section: the control, the screen
+/// its `ScriptToExe` column starts, and the plane slot its handler selects.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FlightCheckControl {
+    /// The layout row id, upper-cased as written.
+    pub id: String,
+    /// The section the control starts, as written.
+    pub starts: String,
+    /// The slot the control edits, read from its arm in the screen script.
+    /// `None` when its arm states none.
+    pub slot: Option<FlightCheckSlot>,
+}
+
+/// What the original flight check's own section and controls state (F45-C.5),
+/// measured from `ASSETS/LAYOUT.CSV` and the screen scripts.
+///
+/// This is a **measurement**, not a designed selection rule: the controls and
+/// where they go come from the layout's `ScriptToExe` column, the slot each
+/// edits comes from the screen script's own `@globals@ZQ` state, and the
+/// selectors come from the destination sections' own rows. It deliberately
+/// says nothing about *which* aircraft or loadouts are offered: on this
+/// installation the flight check's own section holds no selector row at all,
+/// and the screens its buttons start fill their lists from scripting natives
+/// (`callback($$E$$, 2018/2019/2020, …)`, `callback($$E$$, 2027/2028, …)`)
+/// whose tables are not readable. No per-mission option list is read here
+/// because the original data states none.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct FlightCheckSelection {
+    /// Every control of the section that starts a screen, in declaration
+    /// order.
+    pub controls: Vec<FlightCheckControl>,
+    /// The section's own selector rows: its rows of kind `D` (a dropdown is
+    /// the one row kind that offers a choice). Empty on this installation.
+    pub selectors: Vec<String>,
+    /// Every section a control starts, once each in first-seen order, with
+    /// that section's own selector rows.
+    pub destinations: Vec<(String, Vec<String>)>,
+}
+
+impl FlightCheckSelection {
+    /// Whether the measurement places a control on `slot` that starts a screen
+    /// holding selectors — that slot's plane is editable there.
+    ///
+    /// The designed projection of the flight check's ammunition onto a
+    /// wingmate's equipment is supported only where the original's own data
+    /// offers that slot a control (F45-C.5).
+    #[must_use]
+    pub fn edits(&self, slot: FlightCheckSlot) -> bool {
+        self.controls.iter().any(|control| {
+            control.slot == Some(slot)
+                && self.destinations.iter().any(|(starts, selectors)| {
+                    starts.eq_ignore_ascii_case(&control.starts) && !selectors.is_empty()
+                })
+        })
+    }
+}
+
+/// Why the original flight check's selection could not be measured.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum FlightCheckSelectionError {
+    /// The layout has no `FlightCheck` section.
+    NoSection,
+}
+
+impl fmt::Display for FlightCheckSelectionError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoSection => f.write_str("the layout has no FlightCheck section"),
+        }
+    }
+}
+
+impl std::error::Error for FlightCheckSelectionError {}
+
+impl OriginalLayout {
+    /// Measures the original flight check's own controls and the option
+    /// surfaces they reach (F45-C.5): its `B` rows, the screen each starts,
+    /// the plane slot its screen-script arm selects, and the selector rows of
+    /// both the section itself and the sections it starts.
+    ///
+    /// # Errors
+    ///
+    /// [`FlightCheckSelectionError::NoSection`] when the layout has no
+    /// `FlightCheck` section.
+    pub fn flight_check_selection(
+        &self,
+        scripts: &dyn ScreenScripts,
+    ) -> Result<FlightCheckSelection, FlightCheckSelectionError> {
+        let section = self
+            .section("FlightCheck")
+            .ok_or(FlightCheckSelectionError::NoSection)?;
+        let handlers = scripts
+            .script("FlightCheck")
+            .map(|text| ScreenHandlers::parse(&text));
+        let mut controls = Vec::new();
+        let mut destinations: Vec<(String, Vec<String>)> = Vec::new();
+        for button in &section.buttons {
+            // Fields after the kind letter: art, X, Y, Z, ResID, ScriptToExe, …
+            let starts = button.field(5);
+            if starts.is_empty() {
+                continue;
+            }
+            controls.push(FlightCheckControl {
+                id: button.id.clone(),
+                starts: starts.to_owned(),
+                slot: handlers
+                    .as_ref()
+                    .and_then(|handlers| handlers.handler(&button.id))
+                    .and_then(selected_slot),
+            });
+            if let Some(target) = self.section(starts)
+                && !destinations
+                    .iter()
+                    .any(|(name, _)| name.eq_ignore_ascii_case(starts))
+            {
+                destinations.push((starts.to_owned(), selectors(target)));
+            }
+        }
+        Ok(FlightCheckSelection {
+            controls,
+            selectors: selectors(section),
+            destinations,
+        })
+    }
+}
+
+/// The selector (dropdown) row ids of a section, in declaration order.
+fn selectors(section: &Section) -> Vec<String> {
+    section
+        .other
+        .iter()
+        .filter(|row| row.kind == "D")
+        .map(|row| row.id.clone())
+        .collect()
+}
+
+/// The plane slot a handler's statements select, from the last `@globals@ZQ`
+/// assignment in them: `-1` is the pilot's plane and `-2` the wingmate's.
+fn selected_slot(statements: &[String]) -> Option<FlightCheckSlot> {
+    statements.iter().rev().find_map(|statement| {
+        let (name, value) = statement.split_once('=')?;
+        if !name.trim().eq_ignore_ascii_case("@globals@ZQ") {
+            return None;
+        }
+        match value.trim() {
+            "-1" => Some(FlightCheckSlot::Player),
+            "-2" => Some(FlightCheckSlot::Wingmate),
+            _ => None,
+        }
+    })
 }
 
 /// The button handlers of one screen script: for each button control the
