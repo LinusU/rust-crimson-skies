@@ -18,9 +18,9 @@ use std::time::{Duration, Instant};
 
 use bevy::app::App;
 use cs_app::audio::{
-    AudioBackendKind, AudioBackendLog, AudioHandoffLog, AudioMixReport, AudioSession,
-    CODE_CAPABILITY_ABSENT, CapabilityDeclaration, EXIT_MISSING_CAPABILITY, SampleLibrary,
-    audibility_exit_code,
+    AudioBackendKind, AudioBackendLog, AudioBindLog, AudioEmitterRole, AudioHandoffLog,
+    AudioMixReport, AudioSession, CODE_CAPABILITY_ABSENT, CapabilityDeclaration,
+    EXIT_MISSING_CAPABILITY, SampleLibrary, audibility_exit_code,
 };
 use cs_app::mission_launch::{MissionLaunchError, plan_mission_launch};
 use cs_app::mission_session::{
@@ -197,7 +197,38 @@ fn accept_vs_m01_runtime_evidence_audio_the_launch_plays_the_engine_loop_through
         .resource::<AudioSession>()
         .router
         .active_loop_count();
-    assert_eq!(bound, 1, "exactly the engine loop is bound");
+    // Every aircraft in M01 (the player and each wingman and enemy) carries its
+    // own emitter playing the same engine loop, so the count is the number of
+    // engine emitters the launch bound (nine in M01), not one. Measured on
+    // 2026-10-18; every loop must be the launch's engine asset on the engine bus.
+    let session = app.world().resource::<AudioSession>();
+    assert!(
+        bound >= 1,
+        "the launch binds at least the player's engine loop"
+    );
+    for binding in session.router.active_loops() {
+        assert_eq!(
+            binding.asset, launch.content,
+            "only the engine loop is bound"
+        );
+        assert_eq!(binding.bus, cs_sim::audio_events::AudioBus::Engine);
+    }
+    let bind_log = app.world().resource::<AudioBindLog>();
+    assert!(bind_log.refusals.is_empty(), "{bind_log:?}");
+    let engine_emitters = bind_log
+        .bound
+        .iter()
+        .filter(|record| record.role == AudioEmitterRole::Engine)
+        .count();
+    assert_eq!(
+        bind_log.bound.len(),
+        engine_emitters,
+        "no other role is bound"
+    );
+    assert_eq!(
+        bound, engine_emitters,
+        "one running loop per engine emitter"
+    );
     let mixed = app.world().resource::<AudioMixReport>().clone();
     assert!(
         mixed.passes > 0 && mixed.last.refusals.is_empty(),
