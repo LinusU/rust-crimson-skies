@@ -102,7 +102,8 @@ use std::process::ExitCode;
 
 use cs_assets::install;
 use cs_content::mission_control::{
-    DecodedMember, DirectiveDisposition, FieldSupport, control_member, measure_control_record,
+    ControlRecordField, DecodedMember, DirectiveDisposition, FieldSupport, MeasuredControlRecord,
+    RecordSoundDisposition, control_member, measure_control_record, record_sound_disposition,
 };
 use cs_content::stunts::decode_zrd;
 use cs_formats::interp::{InterpRawLine, read_interp};
@@ -130,8 +131,11 @@ use cs_types::install::RelativePath;
 /// it — a program on the binary walk or a directive program), the top-level
 /// `summary.modelled_programs`, and in the probe section `modelled`,
 /// `modelled_by_model`, `model_basis` and `modelled_program_rows`; the
-/// F13-B fields are unchanged.
-pub const SCRIPTS_REPORT_VERSION: &str = "cs-inspect-scripts/5";
+/// F13-B fields are unchanged; version 6 makes every record-level key row
+/// machine-readably `measured` (with `citations`) or `outside_vocabulary`
+/// (with `code`, `vocabulary` and `resolving_task`) and adds the record-key
+/// gate (`probe.record_key_gate`, F13-D-FU3).
+pub const SCRIPTS_REPORT_VERSION: &str = "cs-inspect-scripts/6";
 
 /// The instruction unit the walk assumes when `--word-bytes` is omitted. It
 /// is an **assumption**, reported as such in `probe.assumed`; F13 has not
@@ -249,6 +253,13 @@ pub struct ScriptsSummary {
     /// Record-level keys (summed per program) outside both record
     /// vocabularies: listed as explicitly unknown with their reason.
     pub directive_record_keys_unclassified: usize,
+    /// Record-level keys (summed per program) that break the citation gate: a
+    /// measured key with no citation, or an outside-vocabulary key that does
+    /// not name its vocabulary and resolving task (F13-D-FU3).
+    pub record_key_gate_violations: usize,
+    /// Record-level keys (summed per program) the census counted that the
+    /// listing dropped.
+    pub record_keys_dropped: usize,
     /// Blocks of directive programs that did not read as a directive list.
     pub directive_refused_blocks: usize,
     /// Located programs classified with their family's real model (F13-D,
@@ -263,6 +274,16 @@ impl ScriptsSummary {
     /// container located a program and no script container hid a finding.
     pub fn covered(&self) -> bool {
         self.dispatch_refused == 0 && self.unlocated_containers == 0 && self.finding_containers == 0
+    }
+
+    /// The record-level key gate (F13-D-FU3): **every measured key carries a
+    /// citation; every unmeasured key names the vocabulary it is outside and
+    /// the task that would resolve it**, and no key the census counted is
+    /// dropped from the listing. Unlike [`Self::signatures_complete`] it does
+    /// not depend on `--signatures`: it asks about provenance, not about the
+    /// opcode table.
+    pub fn record_key_gate_passes(&self) -> bool {
+        self.record_key_gate_violations == 0 && self.record_keys_dropped == 0
     }
 
     /// Whether every located program was accounted for: walked to the end
@@ -406,6 +427,7 @@ pub fn scripts_command_result(args: &[String], env_cs_path: Option<OsString>) ->
     let mut rows = Vec::with_capacity(files.len());
     let mut diagnostics = Vec::new();
     let mut runtime_failed = false;
+    let mut dropped_total = 0usize;
     for record in files {
         let spelling = record.relative_spelling.as_str();
         let host = cs_path.join(spelling);
@@ -439,6 +461,9 @@ pub fn scripts_command_result(args: &[String], env_cs_path: Option<OsString>) ->
         summary.unused_unknown_records += record_stats.unused_unknown;
         let interp_lines = interp_lines_by_offset(spelling, &discovery, &bytes);
         let directive = directive_program_of(&discovery);
+        if let Some(found) = &directive {
+            dropped_total += found.record_keys_dropped;
+        }
         let mut models: Vec<Option<ProgramModel>> = Vec::with_capacity(discovery.len());
         for (index, program) in discovery.programs().iter().enumerate() {
             let modelled = model_selection(&discovery, index, &interp_lines);
@@ -516,9 +541,11 @@ pub fn scripts_command_result(args: &[String], env_cs_path: Option<OsString>) ->
         summary.directive_record_keys_classified += program.classified_record_keys();
         summary.directive_record_keys_unclassified += program.unclassified_record_keys();
         summary.directive_refused_blocks += program.refused_blocks() as usize;
+        summary.record_key_gate_violations += program.record_key_gate_violations();
     }
+    summary.record_keys_dropped = dropped_total;
     let signature_check = !signatures_supplied || summary.signatures_complete();
-    let passes = summary.covered() && signature_check;
+    let passes = summary.covered() && signature_check && summary.record_key_gate_passes();
     let probe_section = probe_json(&probe_report, signatures_supplied, assumed, &summary);
     let report = scripts_report_json(
         &found,
@@ -750,7 +777,8 @@ fn probe_json(
          \"retryable\": {}, \"complete\": {}, \"stops\": {{{stops}}}, \
          \"directive_programs\": {}, \"directive_keys_known\": {}, \
          \"directive_keys_unknown\": {}, \"directive_record_keys_classified\": {}, \
-         \"directive_record_keys_unclassified\": {}, \"directive_program_rows\": [{directive_rows}], \
+         \"directive_record_keys_unclassified\": {}, \"record_key_gate\": \
+         {{\"passes\": {}, \"violations\": {}, \"dropped\": {}}}, \"directive_program_rows\": [{directive_rows}], \
          \"modelled\": {}, \"modelled_by_model\": {{{modelled_by_model}}}, \
          \"model_basis\": {{{model_basis_json}}}, \
          \"modelled_program_rows\": [{modelled_rows}]}}",
@@ -770,6 +798,9 @@ fn probe_json(
         summary.directive_keys_unknown,
         summary.directive_record_keys_classified,
         summary.directive_record_keys_unclassified,
+        summary.record_key_gate_passes(),
+        summary.record_key_gate_violations,
+        summary.record_keys_dropped,
         summary.modelled_programs,
     )
 }
@@ -782,6 +813,8 @@ struct DirectiveSelection {
     refused_blocks: u32,
     keys: Vec<DirectiveKeyRow>,
     record_keys: Vec<RecordKeyRow>,
+    /// Record-level keys the census counted that `record_keys` does not carry.
+    record_keys_dropped: usize,
 }
 
 /// The findings that record the reading of a terminal-outcome spelling.
@@ -790,16 +823,91 @@ const TERMINAL_EVIDENCE: [&str; 2] = [
     "2026-10-06-m01-lc-directive-meaning",
 ];
 
-/// The stable reason an unclassified record key carries: the key matches
+/// The stable code an outside-vocabulary record key carries: the key matches
 /// neither measured record vocabulary, so the census counts it, names it and
-/// never reads it.
+/// never reads it. "Outside the vocabulary" is not "measured to be nothing".
 const UNCLASSIFIED_RECORD_KEY_CODE: &str = "outside_both_record_vocabularies";
 
-/// The measured detail behind [`UNCLASSIFIED_RECORD_KEY_CODE`].
-const UNCLASSIFIED_RECORD_KEY_DETAIL: &str = "the record-level walk classifies a key only \
-     through a measured vocabulary — the shape-measured record fields or the record-level \
-     sound keys; this key matches neither, so it is counted and named by the census and \
-     nothing reads it";
+/// The vocabularies an outside-vocabulary record key does not match.
+const UNCLASSIFIED_RECORD_KEY_VOCABULARY: &str =
+    "CONTROL_RECORD_KEY_VOCABULARY + CONTROL_RECORD_SOUND_KEY_VOCABULARY";
+
+/// The task that would resolve an outside-vocabulary record key (F13-D-FU3-
+/// RESOLVE): measure the key and extend a `cs_content` record vocabulary.
+const UNCLASSIFIED_RECORD_KEY_RESOLVING_TASK: &str = "#1623";
+
+/// The findings that measured the five shape-measured record fields' value
+/// shapes (`MISSION_TIMER`, `PLAYER_INIT` and the three animation lists).
+const SHAPE_MEASURED_RECORD_CITATIONS: [&str; 2] = [
+    "2026-10-04-m01-lc-mission-program",
+    "2026-10-06-m01-lc-directive-meaning",
+];
+
+/// The citations behind a classified record field: the findings that measured
+/// its shape, or, for a sound key, the findings behind its measured effect.
+/// A sound key whose disposition is refused carries none, which the citation
+/// gate then reports instead of the row passing as measured.
+fn record_field_citations(field: ControlRecordField) -> Vec<String> {
+    match field.support() {
+        FieldSupport::ShapeMeasured => SHAPE_MEASURED_RECORD_CITATIONS.map(str::to_owned).to_vec(),
+        FieldSupport::EffectMeasured => match record_sound_disposition(field.key()) {
+            Some(RecordSoundDisposition::Measured(measured)) => {
+                measured.evidence.iter().map(|&s| s.to_owned()).collect()
+            }
+            _ => Vec::new(),
+        },
+    }
+}
+
+/// Every record-level key a measured control record spells, as gate-ready
+/// rows: measured fields with their citations and shapes, and keys outside
+/// both vocabularies with the vocabulary and resolving task.
+fn record_key_rows(record: &MeasuredControlRecord) -> Vec<RecordKeyRow> {
+    let mut rows: Vec<RecordKeyRow> = record
+        .record_fields()
+        .iter()
+        .map(|(field, sites)| {
+            let shapes = record
+                .record_field_shapes()
+                .iter()
+                .filter(|(key, _)| key == field.key())
+                .map(|(_, shape)| shape.label())
+                .collect();
+            RecordKeyRow::new(
+                field.key(),
+                Some(*sites),
+                shapes,
+                RecordKeyStatus::Measured {
+                    support: match field.support() {
+                        FieldSupport::ShapeMeasured => RecordFieldSupport::ShapeMeasured,
+                        FieldSupport::EffectMeasured => RecordFieldSupport::EffectMeasured,
+                    },
+                    citations: record_field_citations(*field),
+                },
+            )
+        })
+        .collect();
+    for key in record.unclassified_record_keys() {
+        rows.push(RecordKeyRow::new(
+            key,
+            None,
+            Vec::new(),
+            RecordKeyStatus::OutsideVocabulary {
+                code: UNCLASSIFIED_RECORD_KEY_CODE.to_owned(),
+                vocabulary: UNCLASSIFIED_RECORD_KEY_VOCABULARY.to_owned(),
+                resolving_task: UNCLASSIFIED_RECORD_KEY_RESOLVING_TASK.to_owned(),
+            },
+        ));
+    }
+    rows
+}
+
+/// Record-level keys the census counted that the listing does not carry: the
+/// "dropped" half of the gate. Each census key must appear exactly once.
+fn dropped_record_keys(record: &MeasuredControlRecord, rows: &[RecordKeyRow]) -> usize {
+    let expected = record.record_fields().len() + record.unclassified_record_keys().len();
+    expected.saturating_sub(rows.len())
+}
 
 /// Classifies the one control member of a reader container as a directive
 /// program.
@@ -862,50 +970,19 @@ fn directive_program_of(discovery: &ContainerDiscovery<'_>) -> Option<DirectiveS
         })
         .collect();
     // The record-level axis: every key the control record spells outside its
-    // numbered blocks. A classified field carries its sites and the distinct
-    // shapes the census measured; a key outside both vocabularies is listed
-    // explicitly unknown with its reason — the census counts it as a distinct
-    // name only, so its site count stays `None` and is never invented.
-    let mut record_keys: Vec<RecordKeyRow> = record
-        .record_fields()
-        .iter()
-        .map(|(field, sites)| {
-            let shapes = record
-                .record_field_shapes()
-                .iter()
-                .filter(|(key, _)| key == field.key())
-                .map(|(_, shape)| shape.label())
-                .collect();
-            RecordKeyRow::new(
-                field.key(),
-                Some(*sites),
-                shapes,
-                RecordKeyStatus::Classified {
-                    support: match field.support() {
-                        FieldSupport::ShapeMeasured => RecordFieldSupport::ShapeMeasured,
-                        FieldSupport::EffectMeasured => RecordFieldSupport::EffectMeasured,
-                    },
-                },
-            )
-        })
-        .collect();
-    for key in record.unclassified_record_keys() {
-        record_keys.push(RecordKeyRow::new(
-            key,
-            None,
-            Vec::new(),
-            RecordKeyStatus::Unknown {
-                code: UNCLASSIFIED_RECORD_KEY_CODE.to_owned(),
-                detail: UNCLASSIFIED_RECORD_KEY_DETAIL.to_owned(),
-            },
-        ));
-    }
+    // numbered blocks, each machine-readably `measured` (with citations) or
+    // `outside_vocabulary` (with the vocabulary and resolving task). The
+    // census counts an outside-vocabulary key as a distinct name only, so its
+    // site count stays `None` and is never invented.
+    let record_keys = record_key_rows(&record);
+    let record_keys_dropped = dropped_record_keys(&record, &record_keys);
     Some(DirectiveSelection {
         index,
         blocks: record.blocks(),
         refused_blocks: record.refusals().len() as u32,
         keys,
         record_keys,
+        record_keys_dropped,
     })
 }
 
@@ -1063,24 +1140,33 @@ fn modelled_program_json(program: &ModelledProgramProbe) -> String {
 /// stays the directive-axis spelling, and the two axes are separate
 /// vocabularies.
 fn record_key_json(row: &RecordKeyRow) -> String {
-    let (status, support, reason) = match row.status() {
-        RecordKeyStatus::Classified { support } => (
-            "classified",
-            format!(", \"support\": {}", jstr(support.label())),
-            String::new(),
-        ),
-        RecordKeyStatus::Unknown { code, detail } => (
-            "unknown",
-            String::new(),
-            format!(", \"reason\": {}, \"detail\": {}", jstr(code), jstr(detail)),
+    let detail = match row.status() {
+        RecordKeyStatus::Measured { support, citations } => {
+            let citations: Vec<String> = citations.iter().map(|stem| jstr(stem)).collect();
+            format!(
+                ", \"support\": {}, \"citations\": [{}]",
+                jstr(support.label()),
+                citations.join(", ")
+            )
+        }
+        RecordKeyStatus::OutsideVocabulary {
+            code,
+            vocabulary,
+            resolving_task,
+        } => format!(
+            ", \"reason\": {}, \"vocabulary\": {}, \"resolving_task\": {}",
+            jstr(code),
+            jstr(vocabulary),
+            jstr(resolving_task)
         ),
     };
+    let status = row.status().label();
     let sites = row
         .sites()
         .map_or_else(|| "null".to_owned(), |n| n.to_string());
     let shapes: Vec<String> = row.shapes().iter().map(|shape| jstr(shape)).collect();
     format!(
-        "{{\"record_key\": {}, \"status\": \"{status}\"{support}{reason}, \"sites\": {sites}, \
+        "{{\"record_key\": {}, \"status\": \"{status}\"{detail}, \"sites\": {sites}, \
          \"shapes\": [{}]}}",
         jstr(row.key()),
         shapes.join(", "),
@@ -1405,7 +1491,10 @@ mod tests {
     use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{ScriptsRun, scripts_command_result};
+    use super::{
+        RecordFieldSupport, RecordKeyStatus, ScriptsRun, ScriptsSummary, decode_zrd,
+        dropped_record_keys, measure_control_record, record_key_rows, scripts_command_result,
+    };
     use cs_formats::zbd::{
         ANIMATION_SIGNATURE, ANIMATION_VERSION, INTERP_SIGNATURE, INTERP_VERSION,
     };
@@ -2255,18 +2344,30 @@ mod tests {
             report.contains("\"directive_record_keys_unclassified\": 1"),
             "{report}"
         );
+        assert!(
+            report.contains(
+                "\"record_key_gate\": {\"passes\": true, \"violations\": 0, \"dropped\": 0}"
+            ),
+            "{report}"
+        );
         // Classified fields carry their measured shape and support level.
         assert!(
             report.contains(
-                "{\"record_key\": \"MISSION_TIMER\", \"status\": \"classified\", \
-                 \"support\": \"shape_measured\", \"sites\": 1, \"shapes\": [\"[float]\"]}"
+                "{\"record_key\": \"MISSION_TIMER\", \"status\": \"measured\", \
+                 \"support\": \"shape_measured\", \
+                 \"citations\": [\"2026-10-04-m01-lc-mission-program\", \
+                 \"2026-10-06-m01-lc-directive-meaning\"], \"sites\": 1, \
+                 \"shapes\": [\"[float]\"]}"
             ),
             "{report}"
         );
         assert!(
             report.contains(
-                "{\"record_key\": \"MISSION_WON_SOUND\", \"status\": \"classified\", \
-                 \"support\": \"effect_measured\", \"sites\": 1, \"shapes\": [\"not_a_list\"]}"
+                "{\"record_key\": \"MISSION_WON_SOUND\", \"status\": \"measured\", \
+                 \"support\": \"effect_measured\", \"citations\": [\"2026-10-06-m01-lc-directive-b-objective-lifecycle-target-semantics\", \
+                 \"2026-10-06-m01-lc-directive-d-sound-help-timer-directives\", \
+                 \"2026-10-09-m02-b-fu2-record-sound-keys\"], \"sites\": 1, \
+                 \"shapes\": [\"not_a_list\"]}"
             ),
             "{report}"
         );
@@ -2274,8 +2375,10 @@ mod tests {
         // count invented beside it.
         assert!(
             report.contains(
-                "{\"record_key\": \"MYSTERY_SETTING\", \"status\": \"unknown\", \"reason\": \
-                 \"outside_both_record_vocabularies\""
+                "{\"record_key\": \"MYSTERY_SETTING\", \"status\": \"outside_vocabulary\", \
+                 \"reason\": \"outside_both_record_vocabularies\", \"vocabulary\": \
+                 \"CONTROL_RECORD_KEY_VOCABULARY + CONTROL_RECORD_SOUND_KEY_VOCABULARY\", \
+                 \"resolving_task\": \"#1623\""
             ),
             "{report}"
         );
@@ -2365,8 +2468,8 @@ mod tests {
         assert!(report.contains("\"refused_blocks\": 1"), "{report}");
         assert!(
             report.contains(
-                "{\"record_key\": \"MISSION_TIMER\", \"status\": \"classified\", \
-                 \"support\": \"shape_measured\""
+                "{\"record_key\": \"MISSION_TIMER\", \"status\": \"measured\", \
+                 \"support\": \"shape_measured\", \"citations\""
             ),
             "{report}"
         );
@@ -2391,68 +2494,130 @@ mod tests {
             SignatureTable::new(),
             ProbeConfig::new(4, 16).expect("a valid config"),
         );
-        let classified = || {
+        let measured = |citations: Vec<String>| {
             RecordKeyRow::new(
                 "MISSION_TIMER",
                 Some(1),
                 vec!["[float]".to_owned()],
-                RecordKeyStatus::Classified {
+                RecordKeyStatus::Measured {
                     support: RecordFieldSupport::ShapeMeasured,
+                    citations,
                 },
             )
         };
-        let unclassified = |code: &str, detail: &str| {
+        let cited = || measured(vec!["2026-10-04-m01-lc-mission-program".to_owned()]);
+        let outside = || {
             RecordKeyRow::new(
                 "MYSTERY_SETTING",
                 None,
                 Vec::new(),
-                RecordKeyStatus::Unknown {
-                    code: code.to_owned(),
-                    detail: detail.to_owned(),
+                RecordKeyStatus::OutsideVocabulary {
+                    code: "outside_both_record_vocabularies".to_owned(),
+                    vocabulary: "CONTROL_RECORD_KEY_VOCABULARY".to_owned(),
+                    resolving_task: "#1623".to_owned(),
                 },
             )
         };
         let error = session
-            .record_directive_program(
-                program,
-                1,
-                0,
-                vec![],
-                vec![classified(), unclassified(" ", " ")],
-            )
-            .expect_err("an unknown record key with no reason is refused");
-        assert_eq!(error.code(), "invalid_directive_program");
-        assert!(
-            error.to_string().contains("unknown_without_reason"),
-            "{error}"
-        );
-        let error = session
-            .record_directive_program(program, 1, 0, vec![], vec![classified(), classified()])
+            .record_directive_program(program, 1, 0, vec![], vec![cited(), cited()])
             .expect_err("a record key listed twice is refused");
+        assert_eq!(error.code(), "invalid_directive_program");
         assert!(error.to_string().contains("duplicate_key"), "{error}");
         session
-            .record_directive_program(
-                program,
-                1,
-                0,
-                vec![],
-                vec![
-                    classified(),
-                    unclassified(
-                        "outside_both_record_vocabularies",
-                        "matches neither measured record vocabulary",
-                    ),
-                ],
-            )
-            .expect("a reasoned record-level listing is filed");
+            .record_directive_program(program, 1, 0, vec![], vec![cited(), outside()])
+            .expect("a cited, named record-level listing is filed");
         assert!(session.probes().is_empty());
         let report = session.teardown();
         let filed = &report.directive_programs()[0];
         assert_eq!(filed.classified_record_keys(), 1);
         assert_eq!(filed.unclassified_record_keys(), 1);
+        assert_eq!(filed.record_key_gate_violations(), 0);
         assert_eq!(filed.record_keys()[0].key(), "MISSION_TIMER");
         assert_eq!(filed.record_keys()[1].key(), "MYSTERY_SETTING");
         assert_eq!(filed.record_keys()[1].sites(), None);
+    }
+
+    /// F13-D-FU3: the citation gate. A measured key with no citation, and an
+    /// outside-vocabulary key that names neither its vocabulary nor its
+    /// resolving task, each fail it with a stable code; a cited, named key
+    /// passes. The CLI fails its coverage check (exit 3) on the count.
+    #[test]
+    fn accept_f13_d_fu3_gate_flags_uncited_measured_and_unnamed_outside_keys() {
+        let measured = |citations: Vec<String>| RecordKeyStatus::Measured {
+            support: RecordFieldSupport::ShapeMeasured,
+            citations,
+        };
+        let outside = |vocabulary: &str, task: &str| RecordKeyStatus::OutsideVocabulary {
+            code: "outside_both_record_vocabularies".to_owned(),
+            vocabulary: vocabulary.to_owned(),
+            resolving_task: task.to_owned(),
+        };
+        assert_eq!(
+            measured(vec![]).gate_violation(),
+            Some("measured_without_citation")
+        );
+        assert_eq!(
+            measured(vec![" ".to_owned()]).gate_violation(),
+            Some("measured_without_citation")
+        );
+        assert_eq!(
+            measured(vec!["a-finding".to_owned()]).gate_violation(),
+            None
+        );
+        assert_eq!(
+            outside("", "#1623").gate_violation(),
+            Some("outside_vocabulary_without_vocabulary")
+        );
+        assert_eq!(
+            outside("CONTROL_RECORD_KEY_VOCABULARY", " ").gate_violation(),
+            Some("outside_vocabulary_without_resolving_task")
+        );
+        assert_eq!(
+            outside("CONTROL_RECORD_KEY_VOCABULARY", "#1623").gate_violation(),
+            None
+        );
+        assert_eq!(measured(vec![]).label(), "measured");
+        assert_eq!(outside("v", "#1").label(), "outside_vocabulary");
+    }
+
+    /// F13-D-FU3: the summary's gate is false on any violation or dropped key
+    /// and true otherwise, independent of `--signatures`.
+    #[test]
+    fn accept_f13_d_fu3_summary_gate_fails_on_violation_or_dropped_key() {
+        let mut summary = ScriptsSummary::default();
+        assert!(summary.record_key_gate_passes());
+        summary.record_key_gate_violations = 1;
+        assert!(!summary.record_key_gate_passes());
+        summary.record_key_gate_violations = 0;
+        summary.record_keys_dropped = 1;
+        assert!(!summary.record_key_gate_passes());
+    }
+
+    /// F13-D-FU3: the production rows built from a measured control record
+    /// pass the gate — every classified field cites findings (sound keys the
+    /// findings behind their measured effect) and the unclassified key names
+    /// its vocabulary and the resolving task — and none is dropped.
+    #[test]
+    fn accept_f13_d_fu3_production_rows_are_cited_and_complete() {
+        let document = decode_zrd(&authored_objectives_with_record_keys())
+            .expect("the authored record decodes");
+        let record = measure_control_record(&document);
+        let rows = record_key_rows(&record);
+        assert_eq!(dropped_record_keys(&record, &rows), 0);
+        assert!(!rows.is_empty());
+        for row in &rows {
+            assert_eq!(row.status().gate_violation(), None, "{}", row.key());
+        }
+        let unclassified = rows
+            .iter()
+            .find(|row| row.key() == "MYSTERY_SETTING")
+            .expect("the unclassified key is listed, not dropped");
+        assert!(matches!(
+            unclassified.status(),
+            RecordKeyStatus::OutsideVocabulary { resolving_task, .. } if resolving_task == "#1623"
+        ));
+        // A listing that lost a key is reported as dropped.
+        assert_eq!(dropped_record_keys(&record, &rows[1..]), 1);
     }
 
     // --- F13-D: the real model of every program family (#640) ----------------
@@ -2739,32 +2904,35 @@ mod tests {
         ] {
             assert!(
                 row.contains(&format!(
-                    "{{\"record_key\": \"{key}\", \"status\": \"classified\","
+                    "{{\"record_key\": \"{key}\", \"status\": \"measured\","
                 )),
                 "{row}"
             );
         }
-        // Each field's measured M01 shape (M01-LC findings).
+        // Each field's measured M01 shape (M01-LC findings), now with the
+        // findings that measured it (F13-D-FU3).
+        let cited = "\"citations\": [\"2026-10-04-m01-lc-mission-program\", \
+                     \"2026-10-06-m01-lc-directive-meaning\"]";
         assert!(
-            row.contains(
-                "\"record_key\": \"MISSION_TIMER\", \"status\": \"classified\", \"support\": \
-                 \"shape_measured\", \"sites\": 1, \"shapes\": [\"[float]\"]"
-            ),
+            row.contains(&format!(
+                "\"record_key\": \"MISSION_TIMER\", \"status\": \"measured\", \"support\": \
+                 \"shape_measured\", {cited}, \"sites\": 1, \"shapes\": [\"[float]\"]"
+            )),
             "{row}"
         );
         assert!(
-            row.contains(
-                "\"record_key\": \"PLAYER_INIT\", \"status\": \"classified\", \"support\": \
-                 \"shape_measured\", \"sites\": 1, \"shapes\": \
+            row.contains(&format!(
+                "\"record_key\": \"PLAYER_INIT\", \"status\": \"measured\", \"support\": \
+                 \"shape_measured\", {cited}, \"sites\": 1, \"shapes\": \
                  [\"[int,[float,float,float],[float,float,float],float,float]\"]"
-            ),
+            )),
             "{row}"
         );
         for key in ["RESTORE_ANIMS", "EXECUTE_ANIMS", "INVALIDATE_ANIMS"] {
             assert!(
                 row.contains(&format!(
-                    "\"record_key\": \"{key}\", \"status\": \"classified\", \"support\": \
-                     \"shape_measured\", \"sites\": 1, \"shapes\": [\"[]\"]"
+                    "\"record_key\": \"{key}\", \"status\": \"measured\", \"support\": \
+                     \"shape_measured\", {cited}, \"sites\": 1, \"shapes\": [\"[]\"]"
                 )),
                 "{row}"
             );

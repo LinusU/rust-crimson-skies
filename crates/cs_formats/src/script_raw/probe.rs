@@ -32,9 +32,10 @@
 //!   distinct key it reaches is listed as measured (with the findings that
 //!   measure it) or as explicitly unknown (with the reason), and nothing is
 //!   guessed. The record-level axis is listed beside it: every key the
-//!   control record spells **outside** its numbered blocks, either classified
-//!   through a measured record vocabulary with its value's shapes
-//!   ([`RecordKeyRow`]) or explicitly unknown with its reason. No numeric
+//!   control record spells **outside** its numbered blocks, either measured
+//!   through a record vocabulary with its citations and value shapes
+//!   ([`RecordKeyRow`]) or outside the measured vocabularies, naming the
+//!   vocabulary and the task that would resolve it. No numeric
 //!   [`SignatureClaim`] ever describes such a program.
 //! * [`ModelledProgramProbe`] is the third accounted-for shape (F13-D,
 //!   task #640): a program whose family's **real model** the owner's static
@@ -866,22 +867,36 @@ impl RecordFieldSupport {
 
 /// What is known about one record-level key a control record spells outside
 /// its numbered blocks.
+///
+/// Every key is exactly one of two machine-readable states, and each state
+/// carries the evidence that makes it honest: a **measured** key names the
+/// findings that measured it, and an **outside_vocabulary** key names the
+/// vocabulary it does not match and the task that would resolve it. The pair
+/// replaces the older `classified`/`unknown` split and its free-text reason,
+/// which could not tell a key a finding measured from a key merely outside
+/// the two measured vocabularies (F13-D-FU3, #1417).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RecordKeyStatus {
     /// The key is one of the measured record vocabularies' fields, so its
     /// value's shape (and, for a sound key, its effect) is measured.
-    Classified {
-        /// How far the classification measures the field.
+    Measured {
+        /// How far the measurement goes.
         support: RecordFieldSupport,
+        /// The findings (file stems under `docs/findings/`) that measured
+        /// the key. A measured key with none is a gate violation.
+        citations: Vec<String>,
     },
-    /// The key is outside both measured record vocabularies: the census
-    /// counts it and names it, and nothing reads it. Listed with its reason
-    /// instead of being dropped or absorbed into a documented field.
-    Unknown {
-        /// Stable reason code, for example `outside_both_record_vocabularies`.
+    /// The key is outside the measured record vocabularies: the census counts
+    /// it and names it, and nothing reads it. Listed with the vocabulary it
+    /// does not match instead of being dropped or absorbed into a documented
+    /// field. "Outside the vocabulary" is not "measured to be nothing".
+    OutsideVocabulary {
+        /// Stable code, for example `outside_both_record_vocabularies`.
         code: String,
-        /// The measured detail behind the reason.
-        detail: String,
+        /// The vocabulary (or vocabularies) the key does not match.
+        vocabulary: String,
+        /// The Rally task that would resolve the key, as `#<id>`.
+        resolving_task: String,
     },
 }
 
@@ -889,14 +904,45 @@ impl RecordKeyStatus {
     /// Stable lowercase label for reports.
     pub const fn label(&self) -> &'static str {
         match self {
-            Self::Classified { .. } => "classified",
-            Self::Unknown { .. } => "unknown",
+            Self::Measured { .. } => "measured",
+            Self::OutsideVocabulary { .. } => "outside_vocabulary",
         }
     }
 
-    /// Whether the key is explicitly unknown.
-    pub const fn is_unknown(&self) -> bool {
-        matches!(self, Self::Unknown { .. })
+    /// Whether the key is outside the measured vocabularies.
+    pub const fn is_outside_vocabulary(&self) -> bool {
+        matches!(self, Self::OutsideVocabulary { .. })
+    }
+
+    /// The gate this status must pass, or the stable code of the way it
+    /// fails: "every measured key carries a citation; every unmeasured key
+    /// names the vocabulary it is outside and the task that would resolve it".
+    pub fn gate_violation(&self) -> Option<&'static str> {
+        let blank = |text: &str| text.trim().is_empty();
+        match self {
+            Self::Measured { citations, .. } => {
+                if citations.is_empty() || citations.iter().any(|c| blank(c)) {
+                    Some("measured_without_citation")
+                } else {
+                    None
+                }
+            }
+            Self::OutsideVocabulary {
+                code,
+                vocabulary,
+                resolving_task,
+            } => {
+                if blank(code) {
+                    Some("outside_vocabulary_without_code")
+                } else if blank(vocabulary) {
+                    Some("outside_vocabulary_without_vocabulary")
+                } else if blank(resolving_task) {
+                    Some("outside_vocabulary_without_resolving_task")
+                } else {
+                    None
+                }
+            }
+        }
     }
 }
 
@@ -1029,18 +1075,28 @@ impl DirectiveProgramProbe {
         &self.record_keys
     }
 
-    /// Record-level keys classified through a measured vocabulary.
+    /// Record-level keys measured through a vocabulary.
     pub fn classified_record_keys(&self) -> usize {
         self.record_keys
             .iter()
-            .filter(|row| !row.status.is_unknown())
+            .filter(|row| !row.status.is_outside_vocabulary())
             .count()
     }
 
-    /// Record-level keys outside both vocabularies, listed as explicitly
-    /// unknown with their reason.
+    /// Record-level keys outside the measured vocabularies, listed with the
+    /// vocabulary they miss and the task that would resolve them.
     pub fn unclassified_record_keys(&self) -> usize {
         self.record_keys.len() - self.classified_record_keys()
+    }
+
+    /// Record-level keys that break the citation gate: a measured key with no
+    /// citation, or an outside-vocabulary key that does not name its
+    /// vocabulary and resolving task.
+    pub fn record_key_gate_violations(&self) -> usize {
+        self.record_keys
+            .iter()
+            .filter(|row| row.status.gate_violation().is_some())
+            .count()
     }
 }
 
@@ -1170,10 +1226,6 @@ impl ProbeSession {
                 Some("empty_key")
             } else if index > 0 && record_keys[index - 1].key == row.key {
                 Some("duplicate_key")
-            } else if matches!(&row.status, RecordKeyStatus::Unknown { code, detail }
-                if code.trim().is_empty() || detail.trim().is_empty())
-            {
-                Some("unknown_without_reason")
             } else {
                 None
             };
