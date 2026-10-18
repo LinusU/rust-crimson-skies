@@ -2655,15 +2655,19 @@ fn accept_f54_c_the_farewell_reaches_the_host_without_another_client_pump() {
 
         link.client.leave().expect("the farewell sends");
         // The client is never pumped again: only what `leave` itself wrote to
-        // the socket can tell the host. A few rounds is the bound on purpose —
-        // the connection layer's own silence timeout would also depart the
-        // peer, but only after seconds of simulated time, which is not the
-        // farewell.
-        for _ in 0..8 {
-            link.host_notices.extend(link.host.pump(STEP));
+        // the socket can tell the host. The host is pumped with no simulated
+        // time, so the connection layer's own silence timeout (which would
+        // also depart the peer, but only after seconds of simulated time and
+        // is not the farewell) can never fire; what bounds the wait is a
+        // generous wall-clock deadline for the loopback to deliver the
+        // datagram, since a fixed round count raced a loaded host's scheduler.
+        let deadline = std::time::Instant::now() + Duration::from_secs(30);
+        while std::time::Instant::now() < deadline {
+            link.host_notices.extend(link.host.pump(Duration::ZERO));
             if link.host_has(|notice| matches!(notice, ServerNotice::PeerLeft { .. })) {
                 break;
             }
+            std::thread::sleep(Duration::from_millis(2));
         }
         assert!(
             link.host_has(|notice| matches!(notice, ServerNotice::PeerLeft { .. })),
