@@ -350,7 +350,7 @@ fn check_an_empty_roster(catalog: &InstantActionCatalog, base: &Base) {
     );
     assert!(!text.contains("EmptyRoster"), "not Debug: {text}");
     assert!(
-        !matches!(lower_custom(catalog, base.draft(Vec::new(), 1)), Ok(_)),
+        lower_custom(catalog, base.draft(Vec::new(), 1)).is_err(),
         "an empty roster never lowers into a scenario"
     );
 
