@@ -7,34 +7,27 @@
 use super::*;
 
 /// The retail acceptance tests M13-B-FU2's `retail` capability is judged on:
-/// the archive's startup table is the nine names, and production binds eight
-/// of them to one declaring member and one carrier record each while refusing
-/// `cg1zep_engines_stop` as an ambiguous declaration.
+/// the archive's startup table is the two names, and production binds both of
+/// them to one declaring member and one carrier record each.
 const RETAIL_TESTS_M13_B_FU2: &[&str] = &[
     "accept_m13_b_fu2_retail_startup_table_and_empty_mis_anim_member",
     "accept_m13_b_fu2_retail_each_startup_name_resolves_or_is_refused_by_name",
 ];
 
-/// The limitation that survives, as recorded in the report's `unknowns`.
-const UNKNOWN_M13_B_FU2: &str = "startup animation `cg1zep_engines_stop` is declared by two \
-shared-root members (`cg1_zep_nacelles.zrd`, `dante_zep_nacelles.zrd`) and no measured rule picks \
-one; production refuses the row as ambiguous; affects M13's NEW_GAME_START; resolving task: M13-C \
-(original reference run)";
-
 /// The synthetic tests M13-B-FU2's report must also record: the join keeps
-/// single, ambiguous and unresolved apart, and the limitation reaches M13's
-/// record alone.
+/// single, ambiguous and unresolved apart, and the limitation measured under
+/// the M13 label reaches the archive it was measured on.
 const SYNTHETIC_TESTS_M13_B_FU2: &[&str] = &[
     "accept_m13_b_fu2_synthetic_binding_keeps_single_ambiguous_and_unresolved_apart",
-    "accept_m13_b_fu2_the_ambiguous_startup_name_is_an_unknown_of_m13_alone",
+    "accept_m13_b_fu2_the_ambiguous_startup_name_is_an_unknown_of_m03_alone",
 ];
 
 /// Evidence-report harness for task M13-B-FU2 (Rally #1244): where each of
-/// M13's nine startup animation names resolves. It follows the sequence in this
+/// M13's startup animation names resolves. It follows the sequence in this
 /// module's doc with `M13-B-FU2` and `accept_m13_b_fu2_` in place of `M01-A`
-/// and `accept_m01_a_`; the only artifact is the acceptance log, and the
-/// surviving limitation is recorded in `unknowns`. The review identity is
-/// written by whoever runs the harness.
+/// and `accept_m01_a_`; the only artifact is the acceptance log, and M13's
+/// corrected archive leaves no unknown. The review identity is written by
+/// whoever runs the harness.
 #[test]
 #[ignore = "evidence harness: needs CS_EVIDENCE_DIR, CS_CANDIDATE_TREE, CS_EVIDENCE_ARGV, CS_EVIDENCE_EXIT_CODE, CS_EVIDENCE_REVIEWER, CS_GAME_DIR"]
 fn evidence_report_m13_b_fu2_writes_the_acceptance_report() {
@@ -123,7 +116,7 @@ fn evidence_report_m13_b_fu2_writes_the_acceptance_report() {
          \x20\"tests\": {{\"discovered\": {}, \"executed\": {}, \"passed\": {}, \"failed\": {}, \"ignored\": {}}},\n\
          \x20\"assertions\": [{}],\n\
          \x20\"artifacts\": [{}],\n\
-         \x20\"unknowns\": [{}],\n\
+         \x20\"unknowns\": [],\n\
          \x20\"review\": {{\"identity\": {}, \"method\": {}}},\n\
          \x20\"claim\": \"implemented\"\n\
          }}\n",
@@ -142,19 +135,21 @@ fn evidence_report_m13_b_fu2_writes_the_acceptance_report() {
         suite.ignored,
         assertion_array(&suite.assertions),
         artifact_array(&artifacts),
-        jstr(UNKNOWN_M13_B_FU2),
         jstr(&reviewer),
         jstr(
             "acceptance suite run locally with the retail capability; the fields are derived from \
              the recorded log and production discovery of $CS_GAME_DIR. The suite pins this \
-             task's verdict: `bind_mission_animation` over `zbd/c3/m03` binds eight of M13's nine \
-             startup animation names to exactly one declaring member and one carrier record \
-             each (declarations live in the mission, c3 group and shared root zrdr.zbd members, \
-             not in the empty mis_anim.zrd) and refuses `cg1zep_engines_stop` as an ambiguous \
-             declaration. NOT CLAIMED: which declaration the original selects, and any runtime \
+             task's verdict on M13's corrected archive: `bind_mission_animation` over \
+             `zbd/c2/m03` binds all three of M13's startup rows (`player_setup` and \
+             `pzep_engines_start` on NEW_GAME_START, `player_setup` again on LOAD_GAME_START) to \
+             exactly one declaring member and one carrier record each, and refuses none. The \
+             archive's own `mis_anim.zrd` declares no definition and only names authoring files. \
+             The ambiguous `cg1zep_engines_stop` this task first measured belongs to \
+             `ZBD/C3/M03/zrdr.zbd`, which the corrected campaign layout binds to work order M03; \
+             its mission-scoped unknown now sits in M03's record (M01-ARCHIVE-DECISION) and is \
+             pinned there, so this report records no unknown for M13. NOT CLAIMED: any runtime \
              half; nothing is verified_original and no original executable was run. Claim is \
-             implemented only; validated structurally with tools/validate_evidence.py; --require-pass refuses \
-             the recorded unknown, which is kept on purpose. \
+             implemented only; validated with tools/validate_evidence.py --require-pass. \
              `candidate_tree` is the tree of the commit the suite and this harness ran on; the \
              only later delta is this report's own copy under docs/findings/evidence/, which no \
              acceptance test reads"

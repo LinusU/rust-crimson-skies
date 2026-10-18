@@ -402,6 +402,12 @@ fn regenerate_m06_b_fu4_writes_the_committed_record_through_production() {
 /// If the entry were moved into the shared checklist every mission carries,
 /// this fails; if the mechanism vanished, the production function it exercises
 /// would be gone with it.
+///
+/// M03 is the one sibling that carries a *different* mission-scoped entry (the
+/// ambiguous startup animation of `zbd/c3/m03`, measured under the M13 label by
+/// M13-B-FU2 before the corrected campaign layout and moved to the archive it
+/// was measured on): it is allowed to be non-empty, but the passenger-identity
+/// limitation must not have reached it either.
 #[test]
 fn accept_m06_b_fu4_a_mission_scoped_unknown_reaches_only_the_work_order_it_was_measured_for() {
     let label = |work_order: &str| {
@@ -426,15 +432,16 @@ fn accept_m06_b_fu4_a_mission_scoped_unknown_reaches_only_the_work_order_it_was_
         if work_order.as_str() == "M12" {
             continue;
         }
-        if work_order.as_str() == "M13" {
-            // M13 carries its own limitation (M13-B-FU2, the ambiguous startup
-            // animation); the passenger one measured on `zbd/c2/m01` must not
-            // have reached it.
+        if work_order.as_str() == "M03" {
+            // M03 carries its own limitation (the ambiguous startup animation of
+            // `zbd/c3/m03`, moved from the M13 label by M13-B-FU2 under the
+            // corrected campaign layout); the passenger one measured on
+            // `zbd/c2/m01` must not have reached it.
             assert!(
                 mission_scoped_unknowns(work_order)
                     .iter()
                     .all(|entry| !entry.contains("passenger identity")),
-                "the limitation measured on `zbd/c2/m01` reached M13's record"
+                "the limitation measured on `zbd/c2/m01` reached M03's record"
             );
             others.push(work_order.as_str());
             continue;

@@ -1,13 +1,16 @@
-//! Acceptance stage M13-B-FU2 (Rally #1244): where each of M13's nine startup
+//! Acceptance stage M13-B-FU2 (Rally #1244): where each of M13's startup
 //! animation names resolves, measured through production code.
 //!
-//! M13-B read the reader archive `ZBD/C3/M03/zrdr.zbd` and found a
-//! `startanims.zrd` naming nine animations (eight under `NEW_GAME_START`, one
-//! under `LOAD_GAME_START`) beside a `mis_anim.zrd` member that declares no
-//! definition at all. It did not claim whether production binds the names. This
-//! stage runs `bind_mission_animation` (the M01-LC machinery) over the scope
-//! `zbd/c3/m03` and records one row per name: the declaring member(s), the
-//! carrier record, and the refusals the production join spells.
+//! M13-B read the reader archive `ZBD/C2/M03/zrdr.zbd` (re-pinned by Rally
+//! #1600 after the corrected campaign layout; the earlier archive
+//! `ZBD/C3/M03/zrdr.zbd` is work order M03's) and found a `startanims.zrd`
+//! naming two animations across two events (`player_setup` and
+//! `pzep_engines_start` on `NEW_GAME_START`, `player_setup` again on
+//! `LOAD_GAME_START`) beside a `mis_anim.zrd` member that names only authoring
+//! files and declares no definition at all. This stage runs
+//! `bind_mission_animation` (the M01-LC machinery) over the scope `zbd/c2/m03`
+//! and records one row per name: the declaring member(s), the carrier record,
+//! and the refusals the production join spells.
 //!
 //! The synthetic member authors a startup table and definition members in the
 //! measured `.zrd` shapes and runs them through the production readers and
@@ -33,16 +36,11 @@ use cs_types::asset_id::SourceSpan;
 use cs_types::evidence::ContentHash;
 use cs_types::install::RelativePath;
 
-/// The nine startup names, in stored order, with their event.
-const NAMES: [(&str, &str); 9] = [
-    (NEW_GAME_START, "place_tntboxes"),
-    (NEW_GAME_START, "pzep_todrydock"),
-    (NEW_GAME_START, "cgzepstate"),
-    (NEW_GAME_START, "set_cggasbagstate"),
-    (NEW_GAME_START, "cg1zep_engines_stop"),
+/// M13's startup table, in stored order: the event and the animation it fires.
+/// `player_setup` is fired on both events, so it appears twice.
+const NAMES: [(&str, &str); 3] = [
+    (NEW_GAME_START, "player_setup"),
     (NEW_GAME_START, "pzep_engines_start"),
-    (NEW_GAME_START, "calldestroy_the_cargozep"),
-    (NEW_GAME_START, "flag_state_pirate"),
     (LOAD_GAME_START, "player_setup"),
 ];
 
@@ -176,12 +174,16 @@ fn accept_m13_b_fu2_synthetic_binding_keeps_single_ambiguous_and_unresolved_apar
     assert!(rows[3].resolution().is_resolved());
 }
 
-/// **Against the owner's installation: the archive's startup table is the nine
-/// names, and its `mis_anim.zrd` declares none of them.**
+/// **Against the owner's installation: the archive's startup table is the three
+/// rows, and its `mis_anim.zrd` names only authoring files.**
+///
+/// `read_startup_animations` reads the member's own bytes, so the table is the
+/// stored event→names shape, not one row per distinct animation: `player_setup`
+/// is fired by both events.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m13_b_fu2_retail_startup_table_and_empty_mis_anim_member() {
-    let container = "ZBD/C3/M03/zrdr.zbd";
+    let container = "ZBD/C2/M03/zrdr.zbd";
     let bytes = std::fs::read(game_dir().join(container)).expect("the archive reads");
     let relative = RelativePath::new(&container.to_lowercase()).expect("relative");
     let discovery = discover_container(&relative.logical_key(), &relative, &bytes);
@@ -211,85 +213,78 @@ fn accept_m13_b_fu2_retail_startup_table_and_empty_mis_anim_member() {
         .collect();
     assert_eq!(stored, expected);
 
+    // The two events the member declares, with their own name lists.
+    let events: Vec<(String, Vec<String>)> = table
+        .events()
+        .iter()
+        .map(|event| (event.event().to_owned(), event.animation_names().to_vec()))
+        .collect();
+    assert_eq!(
+        events,
+        [
+            (
+                NEW_GAME_START.to_owned(),
+                vec!["player_setup".to_owned(), "pzep_engines_start".to_owned()]
+            ),
+            (LOAD_GAME_START.to_owned(), vec!["player_setup".to_owned()]),
+        ]
+    );
+
     let mis_anim = read_animation_definition_member("mis_anim.zrd", &member("mis_anim.zrd"))
         .expect("mis_anim.zrd reads");
     assert!(
         mis_anim.definitions().is_empty(),
         "M13's own mis_anim.zrd declares no definition"
     );
+    assert!(
+        !mis_anim.definition_files().is_empty(),
+        "…it names the authoring files the definitions live in instead"
+    );
 }
 
-/// **Against the owner's installation: production binds eight of the nine names
-/// to one declaring member and one carrier record each, and refuses the ninth
-/// by name.**
+/// **Against the owner's installation: production binds every startup row to
+/// one declaring member and one carrier record, and refuses none.**
 ///
-/// The declarations are not in the archive's `mis_anim.zrd`; they are in
-/// members of the mission archive, the `c3` group archive and the shared root
-/// archive. `cg1zep_engines_stop` is declared by two root members, and no
-/// measured rule picks one: production refuses it as ambiguous.
+/// The declarations are not in the archive's `mis_anim.zrd`: they are in
+/// members of the shared root archive. The payload records are in the mission
+/// (for `pzep_engines_start`) and camera (for `player_setup`) carriers. Unlike
+/// the archive this stage once measured, **no row is ambiguous**.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m13_b_fu2_retail_each_startup_name_resolves_or_is_refused_by_name() {
-    let binding = bind_mission_animation(&game_dir(), "zbd/c3/m03")
+    let binding = bind_mission_animation(&game_dir(), "zbd/c2/m03")
         .expect("M13's animation closure reads through the production readers");
-    // (name, declaring member, carrier, record index)
+    // (event, name, declaring member, carrier, record index)
     let measured = [
         (
-            "place_tntboxes",
-            "zbd/c3/m03/zrdr.zbd:destroy_cargozep.zrd",
-            CarrierKind::Mission,
-            359,
-        ),
-        (
-            "pzep_todrydock",
-            "zbd/c3/m03/zrdr.zbd:destroy_cargozep.zrd",
-            CarrierKind::Mission,
-            358,
-        ),
-        (
-            "cgzepstate",
-            "zbd/c3/m03/zrdr.zbd:zepstate.zrd",
-            CarrierKind::Mission,
-            215,
-        ),
-        (
-            "set_cggasbagstate",
-            "zbd/zrdr.zbd:cg1_hawaii_set.zrd",
-            CarrierKind::Mission,
-            342,
-        ),
-        (
-            "pzep_engines_start",
-            "zbd/zrdr.zbd:pirate_zep_nacelles.zrd",
-            CarrierKind::Mission,
-            49,
-        ),
-        (
-            "calldestroy_the_cargozep",
-            "zbd/c3/m03/zrdr.zbd:destroy_cargozep.zrd",
-            CarrierKind::Mission,
-            361,
-        ),
-        (
-            "flag_state_pirate",
-            "zbd/c3/zrdr.zbd:flag_pirate.zrd",
-            CarrierKind::Mission,
-            1,
-        ),
-        (
+            NEW_GAME_START,
             "player_setup",
             "zbd/zrdr.zbd:player_setup.zrd",
             CarrierKind::Camera,
-            126,
+            116,
+        ),
+        (
+            NEW_GAME_START,
+            "pzep_engines_start",
+            "zbd/zrdr.zbd:pirate_zep_nacelles.zrd",
+            CarrierKind::Mission,
+            33,
+        ),
+        (
+            LOAD_GAME_START,
+            "player_setup",
+            "zbd/zrdr.zbd:player_setup.zrd",
+            CarrierKind::Camera,
+            116,
         ),
     ];
     assert_eq!(binding.startup().len(), NAMES.len());
-    for (name, member, carrier, index) in measured {
+    for (event, name, member, carrier, index) in measured {
         let row = binding
             .startup()
             .iter()
-            .find(|row| row.identity() == name)
-            .unwrap_or_else(|| panic!("{name} is a startup row"));
+            .find(|row| row.event() == event && row.identity() == name)
+            .unwrap_or_else(|| panic!("{event}:{name} is a startup row"));
         let site = row
             .declaration()
             .resolution()
@@ -311,64 +306,56 @@ fn accept_m13_b_fu2_retail_each_startup_name_resolves_or_is_refused_by_name() {
         assert!(row.is_playable(), "{name}: {:?}", row.refusals());
     }
 
-    // The ninth: two members declare it, so production refuses to pick.
-    let row = binding
+    // No row of M13's table is refused: every declaration is unique.
+    let refused: Vec<&str> = binding
         .startup()
         .iter()
-        .find(|row| row.identity() == "cg1zep_engines_stop")
-        .expect("cg1zep_engines_stop is a startup row");
-    let sites = row
-        .declaration()
-        .resolution()
-        .ambiguous()
-        .expect("two members declare cg1zep_engines_stop");
-    let members: Vec<&str> = sites.iter().map(|site| site.member()).collect();
-    assert_eq!(members, ["cg1_zep_nacelles.zrd", "dante_zep_nacelles.zrd"]);
-    assert!(sites.iter().all(|site| site.archive() == "zbd/zrdr.zbd"));
-    let record = row.bound_record().expect("the carrier record is unique");
-    assert_eq!(
-        (record.carrier(), record.index()),
-        (CarrierKind::Mission, 245)
-    );
-    assert!(!row.is_playable());
-    assert_eq!(row.refusals().len(), 1, "{:?}", row.refusals());
+        .filter(|row| !row.is_playable())
+        .map(|row| row.identity())
+        .collect();
     assert!(
-        matches!(
-            row.refusals()[0],
-            cs_app::animation::mission::PlayRefusal::AmbiguousDeclaration { sites: 2, .. }
-        ),
-        "{:?}",
-        row.refusals()
+        refused.is_empty(),
+        "M13's corrected archive refuses no startup name: {refused:?}"
     );
 }
 
-/// **The surviving limitation reaches M13's record alone, and the committed
-/// record carries it.**
+/// **The startup limitation measured under the M13 label belongs to M03's
+/// record now, and M13's own record carries none.**
+///
+/// The ambiguous `cg1zep_engines_stop` is a property of `ZBD/C3/M03/zrdr.zbd`,
+/// which the corrected campaign layout binds to work order M03; the
+/// `MISSION_SCOPED_UNKNOWNS` entry follows the archive it was measured on
+/// (M01-ARCHIVE-DECISION), and M13's corrected archive has no ambiguity at all.
 #[test]
-fn accept_m13_b_fu2_the_ambiguous_startup_name_is_an_unknown_of_m13_alone() {
+fn accept_m13_b_fu2_the_ambiguous_startup_name_is_an_unknown_of_m03_alone() {
     let m13 = mission_scoped_unknowns(&MissionLabel::new("M13").expect("label"));
-    assert_eq!(m13.len(), 1);
+    assert!(
+        m13.is_empty(),
+        "M13's corrected archive binds both startup names uniquely: {m13:?}"
+    );
+    let m03 = mission_scoped_unknowns(&MissionLabel::new("M03").expect("label"));
+    assert_eq!(m03.len(), 1, "the limitation reached M03's record: {m03:?}");
     for needle in [
         "cg1zep_engines_stop",
         "cg1_zep_nacelles.zrd",
         "dante_zep_nacelles.zrd",
-        "M13-C",
+        "M03-C",
     ] {
         assert!(
-            m13[0].contains(needle),
+            m03[0].contains(needle),
             "the unknown no longer names {needle:?}"
         );
     }
     assert!(
         mission_scoped_unknowns(&MissionLabel::new("M01").expect("label")).is_empty(),
-        "a limitation measured for M13 must not reach a sibling"
+        "a limitation measured for M03 must not reach a sibling"
     );
     let committed = std::fs::read_to_string(
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../missions/bindings/M13.json"),
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../missions/bindings/M03.json"),
     )
-    .expect("missions/bindings/M13.json exists");
+    .expect("missions/bindings/M03.json exists");
     assert!(
         committed.contains("startup animation `cg1zep_engines_stop`"),
-        "the committed M13 record dropped the ambiguous-startup limitation"
+        "the committed M03 record dropped the ambiguous-startup limitation"
     );
 }

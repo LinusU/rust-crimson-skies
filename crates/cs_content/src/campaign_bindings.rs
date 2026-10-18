@@ -2211,16 +2211,18 @@ const SOURCE_BINDING_UNKNOWNS: &[&str] = &[
 /// `zbd/c2/m01` by M06-B-FU2 under the pre-correction layout).
 const MISSION_SCOPED_UNKNOWNS: &[(&str, &[&str])] = &[
     (
-        "M13",
+        "M03",
         &[
             "startup animation `cg1zep_engines_stop`: two shared-root members, \
              `cg1_zep_nacelles.zrd` and `dante_zep_nacelles.zrd` (`zbd/zrdr.zbd`), both declare \
              it for object `cargozep1`, and no measured rule picks one, so production refuses \
              the NEW_GAME_START row as ambiguous (its carrier record, mis_anim.zbd #245, is \
              unique); the other eight startup names of `zbd/c3/m03` each bind one declaring \
-             member and one carrier record (M13-B-FU2, measured through \
-             `bind_mission_animation`); needs a rule for which declaration the original selects, \
-             which an original reference run under M13-C would settle",
+             member and one carrier record (measured under the M13 label by M13-B-FU2, which \
+             bound this archive before the corrected campaign layout; the entry follows the \
+             archive it was measured on, M01-ARCHIVE-DECISION); needs a rule for which \
+             declaration the original selects, which an original reference run under M03-C \
+             would settle",
         ],
     ),
     (
