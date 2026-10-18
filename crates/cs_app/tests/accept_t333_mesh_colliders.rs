@@ -76,10 +76,7 @@ const BOX_FACES: [[u32; 4]; 6] = [
 
 /// The presentation questions this synthetic mesh leaves open. They travel
 /// with the upload untouched; nothing here settles them.
-const MESH_UNKNOWNS: [MeshPresentationUnknown; 2] = [
-    MeshPresentationUnknown::FrontFaceWinding,
-    MeshPresentationUnknown::UvOrigin,
-];
+const MESH_UNKNOWNS: [MeshPresentationUnknown; 1] = [MeshPresentationUnknown::UvOrigin];
 
 /// How many updates a mesh collider needs: the `ColliderConstructorHierarchy`
 /// is a normal `Update` system, and the collider is attached to its body by a

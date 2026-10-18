@@ -214,9 +214,9 @@
 //! design is in
 //! `docs/findings/2026-09-29-f10-c-03-mesh-container-catalog-and-upload.md`.
 //!
-//! The design decisions, the recorded unknowns (front-face winding, the UV
-//! convention, the corner-colour meaning and the presentation of a multi-group
-//! polygon are all still unknown) and the test inventory are in
+//! The design decisions, the recorded unknowns (the UV convention, the
+//! corner-colour meaning and the presentation of a multi-group polygon are
+//! still unknown; front-face winding was measured by F10-D.2 and retired) and the test inventory are in
 //! `docs/findings/2026-09-29-f10-c-01-render-vertex-splitting.md`,
 //! `docs/findings/2026-09-29-f10-c-02-gamez-material-records.md`,
 //! `docs/findings/2026-09-29-f10-c-03-mesh-container-catalog-and-upload.md`,
@@ -3515,7 +3515,15 @@ impl RenderMeshReadiness {
 pub enum MeshPresentationUnknown {
     /// Which winding faces the viewer, and therefore which winding is culled.
     /// A render triangle keeps the stored winding; the mesh does not decide
-    /// handedness. Carried from F10-A/F10-B and still open in F10-C.01.
+    /// handedness.
+    ///
+    /// **Measured, and no longer on any list** (`mesh_presentation_unknowns`
+    /// does not emit it): counter-clockwise is the front, from the original
+    /// executable (OWNER-STATIC-2026-10-05, claim class static code evidence,
+    /// never `verified_original`; F10-D.2,
+    /// `docs/findings/2026-10-14-f10-d-2-front-face-winding-and-culling.md`).
+    /// The variant and its code stay so older catalogs still parse and the
+    /// closed vocabulary does not silently shrink.
     FrontFaceWinding,
     /// The UV convention: no V flip, wrap, clamp or scale is applied to a
     /// stored texture coordinate, and the original renderer's convention is
@@ -3563,7 +3571,7 @@ impl fmt::Display for MeshPresentationUnknown {
 
 /// The presentation decisions open for one GameZ mesh.
 ///
-/// The first three are a property of the pipeline, not of one container, so they
+/// The first two are a property of the pipeline, not of one container, so they
 /// are one fixed list rather than something recomputed per mesh and able to
 /// drift. [`MeshPresentationUnknown::MultiMaterialGroup`] is the exception and is
 /// appended only when the mesh's own stored bytes have a polygon with more than
@@ -3571,7 +3579,6 @@ impl fmt::Display for MeshPresentationUnknown {
 /// question, and saying so on its row would be a false claim about the corpus.
 fn mesh_presentation_unknowns(faces: Option<&MeshFaceCounts>) -> Vec<MeshPresentationUnknown> {
     let mut unknowns = vec![
-        MeshPresentationUnknown::FrontFaceWinding,
         MeshPresentationUnknown::UvOrigin,
         MeshPresentationUnknown::VertexColor,
     ];
@@ -4313,6 +4320,25 @@ impl MeshUpload {
 mod tests {
     use super::*;
     use cs_formats::gamez::{FaceIssue, MeshTriangle, PrimitiveKind, RawCorner, RawPolygon};
+
+    /// **F10-F.3: the measured front-face winding is off the unknown list.**
+    /// CCW front is OWNER-STATIC-2026-10-05 (F10-D.2, static code evidence);
+    /// the other presentation questions stay open, in their fixed order.
+    #[test]
+    fn accept_f10_f_3_front_face_winding_is_not_a_presentation_unknown() {
+        let unknowns = mesh_presentation_unknowns(None);
+        assert!(
+            !unknowns.contains(&MeshPresentationUnknown::FrontFaceWinding),
+            "the winding is measured and must not be reported open: {unknowns:?}"
+        );
+        assert_eq!(
+            unknowns,
+            [
+                MeshPresentationUnknown::UvOrigin,
+                MeshPresentationUnknown::VertexColor,
+            ]
+        );
+    }
 
     /// ```text
     /// 2 (0,1) ---- 3 (1,1)
@@ -7430,12 +7456,11 @@ mod tests {
             &container.container_bytes()[stored.data_offset as usize..stored.data_end as usize];
         assert_eq!(seam.fingerprint, Some(sha256(span)));
         // `sky` resolved and every presentation decision is still open, so the
-        // row is Blocked with exactly the three codes and no material code.
+        // row is Blocked with exactly the two codes and no material code.
         assert_eq!(seam.readiness, RenderMeshReadiness::Blocked);
         assert_eq!(
             seam.unsupported_reasons,
             vec![
-                "front_face_winding_unknown".to_owned(),
                 "uv_origin_unknown".to_owned(),
                 "vertex_color_unknown".to_owned(),
             ]
@@ -7461,7 +7486,6 @@ mod tests {
             missing.unsupported_reasons,
             vec![
                 "texture_not_found".to_owned(),
-                "front_face_winding_unknown".to_owned(),
                 "uv_origin_unknown".to_owned(),
                 "vertex_color_unknown".to_owned(),
             ]
@@ -7542,7 +7566,6 @@ mod tests {
         assert_eq!(
             upload.unknowns(),
             &[
-                MeshPresentationUnknown::FrontFaceWinding,
                 MeshPresentationUnknown::UvOrigin,
                 MeshPresentationUnknown::VertexColor,
             ]
@@ -8307,7 +8330,6 @@ mod tests {
             "unknown_field",
             "duplicate_texture_name",
             "archive_unavailable",
-            MeshPresentationUnknown::FrontFaceWinding.code(),
             MeshPresentationUnknown::UvOrigin.code(),
             MeshPresentationUnknown::VertexColor.code(),
             MeshPresentationUnknown::MultiMaterialGroup.code(),
@@ -9273,7 +9295,7 @@ mod tests {
                 .extra_group_triangles(),
             7
         );
-        // The three pipeline-wide presentation questions are on every payload,
+        // The two pipeline-wide presentation questions are on every payload,
         // in their fixed order, with the conditional one appended.
         let upload = catalog
             .prepare_upload(&session, &resolved)
@@ -9281,7 +9303,6 @@ mod tests {
         assert_eq!(
             upload.unknowns(),
             [
-                MeshPresentationUnknown::FrontFaceWinding,
                 MeshPresentationUnknown::UvOrigin,
                 MeshPresentationUnknown::VertexColor,
                 MeshPresentationUnknown::MultiMaterialGroup,
@@ -9296,7 +9317,6 @@ mod tests {
         assert_eq!(
             single.unknowns(),
             [
-                MeshPresentationUnknown::FrontFaceWinding,
                 MeshPresentationUnknown::UvOrigin,
                 MeshPresentationUnknown::VertexColor,
             ],

@@ -50,6 +50,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use avian3d::prelude::Collider;
+use cs_app::world::retail::stored_presentation_unknowns;
 use cs_app::world::{
     GRID_IS_THE_SECTOR_INDEX, MESH_SETTLE_UPDATES, RETAIL_WORLD_IMPORT, RetailWorldContainer,
     SkipReason, WorldMeshes, read_world_container, spawn_world, world_app,
@@ -468,10 +469,7 @@ fn tile_mesh() -> RawMesh {
 /// The mesh source the spawn consumes: one engine mesh per stored mesh slot the
 /// definition names, uploaded through the production F17-B adapter.
 pub(super) fn fixture_meshes(world: &cs_content::world::WorldDefinition) -> WorldMeshes {
-    const UNKNOWNS: [MeshPresentationUnknown; 2] = [
-        MeshPresentationUnknown::FrontFaceWinding,
-        MeshPresentationUnknown::UvOrigin,
-    ];
+    const UNKNOWNS: [MeshPresentationUnknown; 1] = [MeshPresentationUnknown::UvOrigin];
     let mut meshes = WorldMeshes::new();
     let stored = tile_mesh();
     let render = RenderMesh::build(&stored).expect("the fixture tile has a decodable outline");
@@ -1358,5 +1356,22 @@ fn accept_f18_mesh_catalog_world_references_are_catalog_elements() {
         meshes.len() + gaps.len(),
         referenced.len(),
         "one engine mesh per catalog element the world names, bar the empty slot"
+    );
+}
+
+/// **F10-F.3: the production mirror list agrees with the content list.** The
+/// measured front-face winding (OWNER-STATIC-2026-10-05, F10-D.2) is not
+/// reported open; UV origin and vertex colour still are.
+#[test]
+fn accept_f10_f_3_stored_presentation_unknowns_omit_the_measured_winding() {
+    let render = RenderMesh::build(&tile_mesh()).expect("the fixture tile has a decodable outline");
+    let unknowns = stored_presentation_unknowns(&render);
+    assert!(!unknowns.contains(&MeshPresentationUnknown::FrontFaceWinding));
+    assert_eq!(
+        unknowns,
+        [
+            MeshPresentationUnknown::UvOrigin,
+            MeshPresentationUnknown::VertexColor,
+        ]
     );
 }

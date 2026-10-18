@@ -859,9 +859,9 @@ fn accept_f18_d_a_gpu_capture_proves_the_stored_geometry_was_drawn() {
     assert_eq!(capture.groups, 1, "one material group, one draw");
     assert_eq!(capture.triangles, 8, "four quad faces of the authored arch");
     assert!(capture.vertices >= 3, "{}", capture.vertices);
-    // Back-face culling is expected and is *not* a defect here: the capture
-    // presents the stored winding, and which winding the original treated as
-    // front-facing is F17's open `FrontFaceWinding` question. The capture
+    // Partial coverage is expected and is *not* a defect here: the capture
+    // presents the stored winding and draws both sides as a geometry witness
+    // (the front winding itself is measured, F10-D.2). The capture
     // therefore reports the triangles it submitted and the coverage the
     // surviving ones reached, and makes no claim about how many faces the
     // original would have drawn.
@@ -1677,7 +1677,7 @@ fn geometry_digest(render: &RenderMesh) -> cs_types::evidence::ContentHash {
 /// The presentation unknowns handed to the upload adapter are **empty** on
 /// purpose, and the reason is stated here rather than left implicit: the
 /// capture presents a flat colour with no stored texture, so F17's open
-/// questions (`FrontFaceWinding`, `UvOrigin`, `VertexColor`,
+/// questions (`UvOrigin`, `VertexColor`,
 /// `MultiMaterialGroup`) change nothing about the frame this measures. Passing
 /// them would make the artifact depend on a subsystem this stage makes no claim
 /// about. The geometry — the part the capture *is* evidence for — is the

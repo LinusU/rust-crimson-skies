@@ -328,10 +328,7 @@ pub const OBJECT_UNEVIDENCED_SHAPE: &str = "hangar.unevidenced_shape";
 
 /// The presentation questions a bare stored mesh leaves open. They travel with
 /// each upload untouched; nothing in this fixture settles them.
-const MESH_UNKNOWNS: [MeshPresentationUnknown; 2] = [
-    MeshPresentationUnknown::FrontFaceWinding,
-    MeshPresentationUnknown::UvOrigin,
-];
+const MESH_UNKNOWNS: [MeshPresentationUnknown; 1] = [MeshPresentationUnknown::UvOrigin];
 
 /// A stored mesh under construction: positions and polygon outlines, in stored
 /// units and stored order.

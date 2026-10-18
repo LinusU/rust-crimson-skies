@@ -612,8 +612,8 @@ pub fn stored_render_mesh(
 
 /// The presentation decisions open for one render mesh.
 ///
-/// The first three are properties of the render pipeline, not of one container,
-/// so they are one fixed list; the fourth exists only when the mesh really
+/// The first two are properties of the render pipeline, not of one container,
+/// so they are one fixed list; the third exists only when the mesh really
 /// stored a polygon with more than one material group, because a mesh that
 /// stores one group per polygon has no such question.
 ///
@@ -623,7 +623,6 @@ pub fn stored_render_mesh(
 #[must_use]
 pub fn stored_presentation_unknowns(render: &RenderMesh) -> Vec<MeshPresentationUnknown> {
     let mut unknowns = vec![
-        MeshPresentationUnknown::FrontFaceWinding,
         MeshPresentationUnknown::UvOrigin,
         MeshPresentationUnknown::VertexColor,
     ];

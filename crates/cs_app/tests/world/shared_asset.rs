@@ -483,11 +483,8 @@ fn accept_f18_b_a_replaced_upload_under_one_reference_gets_its_own_engine_asset(
 
 /// The presentation questions a stored mesh leaves open; they travel with the
 /// upload and settle nothing.
-fn replacement_unknowns() -> [MeshPresentationUnknown; 2] {
-    [
-        MeshPresentationUnknown::FrontFaceWinding,
-        MeshPresentationUnknown::UvOrigin,
-    ]
+fn replacement_unknowns() -> [MeshPresentationUnknown; 1] {
+    [MeshPresentationUnknown::UvOrigin]
 }
 
 /// A stored mesh of one box, in metres, on stored material `0`.

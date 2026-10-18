@@ -31,7 +31,7 @@
 //!   anything's size.
 //! * **Not the original's appearance.** The material is a flat colour chosen
 //!   here, the lighting is a declared key light, and F17's presentation unknowns
-//!   (`FrontFaceWinding`, `UvOrigin`, `VertexColor`) are open. The capture is
+//!   (`UvOrigin`, `VertexColor`) are open. The capture is
 //!   evidence about *geometry*, drawn through the real pipeline.
 //!
 //! # The refusals
@@ -610,13 +610,13 @@ fn spawn_scene(app: &mut App, uploads: &[Mesh], request: &CaptureRequest<'_>) ->
             base_color: Color::srgb(MESH_COLOR[0], MESH_COLOR[1], MESH_COLOR[2]),
             metallic: 0.0,
             // No back-face culling, and this is a declared decision rather than a
-            // default. The capture is a **geometry** witness: whether a stored
-            // winding is front-facing is F17's open `FrontFaceWinding` question,
-            // so culling on an unmeasured rule would make the artifact depend on
-            // a question this stage does not answer — and a one-sided stored mesh
-            // would come back as an empty frame, which
-            // [`GpuCaptureError::UniformFrame`] would then refuse. Drawing both
-            // sides keeps the frame about the stored triangles and nothing else.
+            // default. The front winding is measured (counter-clockwise,
+            // OWNER-STATIC-2026-10-05, F10-D.2) and the F17-B adapter culls on
+            // it, but this capture is a **geometry** witness: it must show every
+            // stored triangle, and a one-sided stored mesh would otherwise come
+            // back as an empty frame, which [`GpuCaptureError::UniformFrame`]
+            // would then refuse. Drawing both sides keeps the frame about the
+            // stored triangles and nothing else.
             cull_mode: None,
             ..default()
         });

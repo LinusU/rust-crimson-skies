@@ -18,8 +18,7 @@ use cs_formats::texture::{
 /// The presentation questions an original mesh hands over unsettled. The
 /// adapter must carry these through untouched: none of them is F17-B's to
 /// answer.
-pub const MESH_UNKNOWNS: [MeshPresentationUnknown; 3] = [
-    MeshPresentationUnknown::FrontFaceWinding,
+pub const MESH_UNKNOWNS: [MeshPresentationUnknown; 2] = [
     MeshPresentationUnknown::UvOrigin,
     MeshPresentationUnknown::VertexColor,
 ];
