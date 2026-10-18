@@ -82,10 +82,10 @@ use cs_types::install::RelativePath;
 use crate::campaign::common::load_inventory;
 
 /// The census row label of the mission (F13-B's mission-scope rule).
-const MISSION: &str = "zbd/c4/m02";
+pub(super) const MISSION: &str = "zbd/c4/m02";
 /// The reader archive the installation ships for M17 — the program span
 /// `missions/bindings/M17.json` cites.
-const CONTAINER: &str = "ZBD/C4/M02/zrdr.zbd";
+pub(super) const CONTAINER: &str = "ZBD/C4/M02/zrdr.zbd";
 /// SHA-256 of that whole archive, from production discovery.
 const CONTAINER_SHA256: &str = "f21d5b6a2a734c983ee2775aad645acae436e228d7cf71c0a8e3ff8d5914786d";
 /// The archive's length in bytes — M17-A's own source span.
@@ -107,7 +107,7 @@ const DZONES_LENGTH: u64 = 529;
 /// SHA-256 of the detection-zone member's own bytes.
 const DZONES_SHA256: &str = "517a6b6fd63cb2ffe6f8bb51fba507d1104c67e17c1a89f4acce99a2085e99f6";
 /// The aircraft member `cs_app::mission_start` reads the player record from.
-const AIRCRAFT_MEMBER: &str = "aiv.zrd";
+pub(super) const AIRCRAFT_MEMBER: &str = "aiv.zrd";
 /// The numbered blocks of the control member.
 const BLOCKS: u32 = 38;
 /// The directive sites of the control member.
@@ -121,7 +121,7 @@ const NAMED_TEXTS: usize = 128;
 /// The texts of that walk which **no** `.zrd` member outside M17's control
 /// member declares, and which are therefore recorded rather than resolved.
 /// Sorted the way the walk sorts them.
-const RECORD_ONLY_TEXTS: [&str; 9] = [
+pub(super) const RECORD_ONLY_TEXTS: [&str; 9] = [
     "MSG_BRF_RMM2_OBJ1",
     "MSG_BRF_RMM2_OBJ2",
     "WARP_VEHICLE",
@@ -133,7 +133,7 @@ const RECORD_ONLY_TEXTS: [&str; 9] = [
     "snd_c4-RM-m2_Zachary_15",
 ];
 
-fn game_dir() -> PathBuf {
+pub(super) fn game_dir() -> PathBuf {
     PathBuf::from(std::env::var("CS_GAME_DIR").unwrap_or_else(|_| {
         panic!(
             "CS_GAME_DIR is not set: M17-B needs the retail capability; run this suite with \
@@ -201,15 +201,15 @@ fn zone_survey() -> &'static RetailTriggerVolumeSurvey {
 }
 
 /// One directive of a block as authored: key and, unless bare, its argument list.
-struct Directive {
-    key: String,
-    args: Option<Vec<ZrdValue>>,
+pub(super) struct Directive {
+    pub(super) key: String,
+    pub(super) args: Option<Vec<ZrdValue>>,
 }
 
 /// Walks a decoded control record into `(block number, directives)`, reading the
 /// grammar independently of the census: a text key, then its argument list if
 /// the next child is a list.
-fn blocks_of(document: &ZrdValue) -> Vec<(u32, Vec<Directive>)> {
+pub(super) fn blocks_of(document: &ZrdValue) -> Vec<(u32, Vec<Directive>)> {
     let mut blocks = Vec::new();
     for (key, value) in zrd_flat_fields(objective_record(document)) {
         let Some(number) = objective_block_number(key) else {
@@ -244,7 +244,7 @@ fn blocks_of(document: &ZrdValue) -> Vec<(u32, Vec<Directive>)> {
 /// The control member's decoded document, re-read from the archive through
 /// production discovery — an independent walk from the binding's, so the graph
 /// assertions below cannot be satisfied by the binding's own output.
-fn control_document() -> ZrdValue {
+pub(super) fn control_document() -> ZrdValue {
     read_control_member(&game_dir(), MISSION)
         .expect("the rule finds M17's control member")
         .0
@@ -271,7 +271,7 @@ fn integers(directive: &Directive) -> Vec<i64> {
 }
 
 /// The text arguments a directive spells, in order.
-fn texts(directive: &Directive) -> Vec<&str> {
+pub(super) fn texts(directive: &Directive) -> Vec<&str> {
     directive
         .args
         .iter()
@@ -311,7 +311,7 @@ fn addresses_blocks(directive: &Directive) -> bool {
 }
 
 /// The argument lists one key is spelled with, in block order.
-fn spelled(blocks: &[(u32, Vec<Directive>)], key: &str) -> Vec<Vec<ZrdValue>> {
+pub(super) fn spelled(blocks: &[(u32, Vec<Directive>)], key: &str) -> Vec<Vec<ZrdValue>> {
     blocks
         .iter()
         .flat_map(|(_, directives)| directives.iter())
@@ -330,7 +330,11 @@ fn block(blocks: &[(u32, Vec<Directive>)], number: u32) -> &[Directive] {
 }
 
 /// The argument lists one key is spelled with inside one block.
-fn sites(blocks: &[(u32, Vec<Directive>)], number: u32, key: &str) -> Vec<Vec<ZrdValue>> {
+pub(super) fn sites(
+    blocks: &[(u32, Vec<Directive>)],
+    number: u32,
+    key: &str,
+) -> Vec<Vec<ZrdValue>> {
     block(blocks, number)
         .iter()
         .filter(|directive| directive.key == key)
@@ -414,7 +418,7 @@ fn walk_texts(value: &ZrdValue, texts: &mut Vec<String>) {
 /// Every `.zrd` text the whole installation declares, indexed once through
 /// production discovery and the production `.zrd` decoder: the text to the set
 /// of `(container, member)` pairs that spell it.
-fn text_index() -> &'static BTreeMap<String, BTreeSet<(String, String)>> {
+pub(super) fn text_index() -> &'static BTreeMap<String, BTreeSet<(String, String)>> {
     static INDEX: OnceLock<BTreeMap<String, BTreeSet<(String, String)>>> = OnceLock::new();
     INDEX.get_or_init(|| {
         let found = discover(&game_dir()).expect("production discovery reads the installation");
@@ -455,7 +459,7 @@ fn text_index() -> &'static BTreeMap<String, BTreeSet<(String, String)>> {
 /// Every `(container, member)` whose decoded texts spell `name` exactly,
 /// **outside** M17's control member — the declarations a directive's operand
 /// can resolve against, sorted.
-fn declarations_of(name: &str) -> Vec<(String, String)> {
+pub(super) fn declarations_of(name: &str) -> Vec<(String, String)> {
     text_index()
         .get(name)
         .map(|set| {
@@ -484,7 +488,7 @@ fn texts_declared_outside_control() -> BTreeSet<String> {
 
 /// Every file of the installation whose **raw bytes** contain `needle` — the
 /// scan that backs "declared by no file", independent of any decoder.
-fn raw_files_containing(needle: &str) -> Vec<String> {
+pub(super) fn raw_files_containing(needle: &str) -> Vec<String> {
     let found = discover(&game_dir()).expect("production discovery reads the installation");
     let mut hits = Vec::new();
     for record in &found.manifest.files {
