@@ -143,8 +143,9 @@ restored it from `git` after each run.
   pipeline resolves the declared id to a mesh, sprite or particle, so nothing
   is drawn for it and the record is what the render stage will read (the same
   designed boundary `SpawnedDebris` states). Affected content: every muzzle
-  flash in the game. Follow-up: filed from this task (a weapon-effect render
-  consumer).
+  flash in the game. Resolving task: `F27-C-FX-RENDER` (#1595, filed from this
+  task; it also owns measuring whether the original's declared muzzle-effect id
+  resolves to a real asset).
 - **One-shot device playback.** The accepted cue reaches the router's one-shot
   ledger; whether a shot is *audible* on real hardware is F41's device-voice
   follow-up, and the mission's own gun-sound binding is
