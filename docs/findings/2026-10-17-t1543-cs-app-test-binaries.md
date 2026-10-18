@@ -137,7 +137,7 @@ exit codes are 101 (a failing test), and every failure is accounted for:
 | d | 653 | 77 | 2,723 s | 75 `evidence_report_*` + `regenerate_m01_b_…` and `regenerate_m06_b_fu4_…` (they assert `CS_REGENERATE_*=1` is set) |
 | e | 19 | 2 | 2,085 s | 2 `evidence_report_*` |
 
-That is 2602 passed and 143 failed of 2745, none of them a layout effect: 138
+That is 2602 passed and 143 failed of 2745, none of them a layout effect: 139
 need `CS_EVIDENCE_DIR`, 2 need `CS_REGENERATE_*`, 1 needs the evidence
 directory, 1 is the audio assertion, and the t336 `__eh_frame` gate, which
 failed in the single-binary attempt, **passes** in all five. The windowed
