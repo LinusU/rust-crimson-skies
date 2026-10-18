@@ -27,12 +27,13 @@ use std::path::Path;
 
 use bevy::asset::{AssetApp, Assets};
 use bevy::image::Image;
-use bevy::prelude::{Entity, Quat, Resource, StandardMaterial, World};
+use bevy::prelude::{AlphaMode, Entity, Quat, Resource, StandardMaterial, Visibility, World};
 
-use crate::playtest::propeller::PropellerSpin;
+use crate::playtest::propeller::{PropellerBlur, PropellerSpin};
 use crate::playtest_retail::{
-    AircraftPartAsset, AircraftSources, PlaytestAircraftReport, PlaytestConfig, PropellerSpinSpec,
-    STORED_AIRCRAFT_NOSE_AXIS, build_aircraft_visual, nose_mapping, read_aircraft_sources,
+    AircraftPartAsset, AircraftSources, PlaytestAircraftReport, PlaytestConfig, PropellerBlurSpec,
+    PropellerSpinSpec, STORED_AIRCRAFT_NOSE_AXIS, build_aircraft_visual, nose_mapping,
+    read_aircraft_sources,
 };
 use crate::playtest_textures::TextureBinder;
 
@@ -59,6 +60,16 @@ pub const MISSION_PLAYER_PROP_NODE_SLOT: u32 = 210;
 
 /// The authored name the pinned propeller node stores.
 pub const MISSION_PLAYER_PROP_NODE_NAME: &str = "staticprop1";
+
+/// The stored slot of the propeller **blur disc**: `prop1` under `dontmove`
+/// (slot 207), bound to mesh #108 whose material is `rotorblur.tif`. Its
+/// sibling `prop1b` (212, mesh #109) is a second stored state of the same
+/// texture and stays undrawn: which of the two the original shows is
+/// unmeasured (`docs/findings/2026-10-18-m01-propeller-blur-disc.md`).
+pub const MISSION_PLAYER_BLUR_NODE_SLOT: u32 = 211;
+
+/// The authored name the pinned blur node stores.
+pub const MISSION_PLAYER_BLUR_NODE_NAME: &str = "prop1";
 
 /// The viewer distance the player airframe's LOD band is selected at: the
 /// playtest's own designed value — the original's LOD rule is unmeasured. It
@@ -116,6 +127,7 @@ pub struct MissionPlayerVisual {
     parts: Vec<AircraftPartAsset>,
     rotation: Quat,
     propeller: Option<PropellerSpinSpec>,
+    blur: Option<PropellerBlurSpec>,
     report: PlaytestAircraftReport,
 }
 
@@ -136,6 +148,12 @@ impl MissionPlayerVisual {
     #[must_use]
     pub const fn propeller(&self) -> Option<&PropellerSpinSpec> {
         self.propeller.as_ref()
+    }
+
+    /// The drawn propeller blur disc and its measured radius.
+    #[must_use]
+    pub const fn blur(&self) -> Option<&PropellerBlurSpec> {
+        self.blur.as_ref()
     }
 
     /// What the selection read: the pinned nodes, the chosen LOD band, the
@@ -177,6 +195,10 @@ pub fn build_player_visual(
         aircraft_intact_node_name: MISSION_PLAYER_INTACT_NODE_NAME.to_owned(),
         aircraft_prop_node_slot: MISSION_PLAYER_PROP_NODE_SLOT,
         aircraft_prop_node_name: MISSION_PLAYER_PROP_NODE_NAME.to_owned(),
+        aircraft_blur_node: Some((
+            MISSION_PLAYER_BLUR_NODE_SLOT,
+            MISSION_PLAYER_BLUR_NODE_NAME.to_owned(),
+        )),
         aircraft_lod_distance_m: MISSION_PLAYER_LOD_DISTANCE_M,
         ..PlaytestConfig::documented()
     };
@@ -201,6 +223,7 @@ pub fn build_player_visual(
         parts: visual.parts,
         rotation,
         propeller: visual.propeller,
+        blur: visual.blur,
         report: visual.report,
     })
 }
@@ -229,6 +252,29 @@ pub fn spawn_player_visual(world: &mut World, body: Entity) {
                 .entity_mut(entity)
                 .insert(PropellerSpin::from_hub(&spec.hub, base));
         }
+        if let Some(blur) = visual.blur()
+            && blur.node_slot == part.node_slot
+        {
+            // Hidden until the engine state shows it; the pieces draw
+            // translucent from the texture's own coverage.
+            world
+                .entity_mut(entity)
+                .insert((PropellerBlur, Visibility::Hidden));
+            blend_pieces(world, part);
+        }
     }
     world.insert_resource(visual);
+}
+
+/// Draws a part's pieces alpha-blended: the blur disc is translucent in the
+/// original, and its opacity is the texture's own coverage plane — no opacity
+/// constant is invented here. The material handles are shared with nothing
+/// else (one material per stored group of this mesh).
+fn blend_pieces(world: &mut World, part: &AircraftPartAsset) {
+    let mut materials = world.resource_mut::<Assets<StandardMaterial>>();
+    for piece in &part.pieces {
+        if let Some(mut material) = materials.get_mut(&piece.material) {
+            material.alpha_mode = AlphaMode::Blend;
+        }
+    }
 }

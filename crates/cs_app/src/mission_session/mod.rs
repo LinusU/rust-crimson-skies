@@ -177,7 +177,8 @@ pub use parts::{
     plan_part_states, read_turret_records, spawn_part_state, turret_part_node, turret_record_for,
 };
 pub use player_visual::{
-    MISSION_PLAYER_AIRCRAFT_ROOT_NAME, MISSION_PLAYER_INTACT_NODE_NAME,
+    MISSION_PLAYER_AIRCRAFT_ROOT_NAME, MISSION_PLAYER_BLUR_NODE_NAME,
+    MISSION_PLAYER_BLUR_NODE_SLOT, MISSION_PLAYER_INTACT_NODE_NAME,
     MISSION_PLAYER_INTACT_NODE_SLOT, MISSION_PLAYER_LOD_DISTANCE_M, MISSION_PLAYER_PROP_NODE_NAME,
     MISSION_PLAYER_PROP_NODE_SLOT, MissionPlayerVisual, PlayerAirframeSource, build_player_visual,
     spawn_player_visual,

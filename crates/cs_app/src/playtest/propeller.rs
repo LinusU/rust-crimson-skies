@@ -37,7 +37,7 @@
 //! it through [`propeller_spin_json`].
 
 use bevy::math::{Quat, Vec3};
-use bevy::prelude::{ChildOf, Component, Query, Res, Time, Transform};
+use bevy::prelude::{ChildOf, Component, Query, Res, Time, Transform, Visibility, With};
 use bevy::time::Virtual;
 use cs_sim::flight::EngineState;
 
@@ -246,6 +246,49 @@ pub fn spin_propellers(
         }
         spin.advance((rate * dt_s) as f32);
         *transform = spin.transform();
+    }
+}
+
+/// Marks the player's propeller **blur disc** (`prop1`, `rotorblur.tif`):
+/// shown while the body's engine is running, hidden otherwise.
+///
+/// The original shows a translucent blur disc over a running propeller
+/// (owner capture, task #1644). Which spool/rpm it appears at is **unknown**
+/// (`docs/findings/2026-10-18-m01-propeller-blur-disc.md`); the rule is the
+/// engine's own `running` flag, nothing finer.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PropellerBlur;
+
+/// Whether the blur disc shows for one engine state: the engine is running.
+#[must_use]
+pub const fn propeller_blur_visible(engine: EngineState) -> bool {
+    engine.running
+}
+
+/// Shows or hides every [`PropellerBlur`] from its flight body's engine state,
+/// read from the same two producers as [`spin_propellers`]. Writes only the
+/// blur part's own [`Visibility`].
+pub fn update_propeller_blur(
+    engines: Query<(Option<&FlightAircraft>, Option<&PlaytestOriginalFlight>)>,
+    mut blurs: Query<(&ChildOf, &mut Visibility), With<PropellerBlur>>,
+) {
+    for (child, mut visibility) in &mut blurs {
+        let Ok((aircraft, original)) = engines.get(child.parent()) else {
+            continue;
+        };
+        let engine = match (aircraft, original) {
+            (Some(record), _) => record.engine(),
+            (_, Some(record)) => record.engine(),
+            (None, None) => continue,
+        };
+        let wanted = if propeller_blur_visible(engine) {
+            Visibility::Inherited
+        } else {
+            Visibility::Hidden
+        };
+        if *visibility != wanted {
+            *visibility = wanted;
+        }
     }
 }
 

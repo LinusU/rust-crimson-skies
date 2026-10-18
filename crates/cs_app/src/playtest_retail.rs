@@ -808,6 +808,19 @@ pub struct PropellerSpinSpec {
     pub hub: PropellerHub,
 }
 
+/// The drawn propeller blur disc and its radius **measured from its own
+/// triangles**. Whether and when it shows is the engine state's
+/// (`mission_session::player_visual`), not the container's.
+#[derive(Clone, Debug, PartialEq)]
+pub struct PropellerBlurSpec {
+    /// The stored slot of the blur binding.
+    pub node_slot: u32,
+    /// The authored name that node stores (`prop1`).
+    pub node_name: String,
+    /// The disc radius in the mesh frame, metres, from [`measure_propeller_hub`].
+    pub radius_m: f32,
+}
+
 /// How many views a capture drives. Three: two that frame the aircraft and one
 /// that frames the area.
 pub const VIEW_COUNT: usize = 3;
@@ -2204,6 +2217,12 @@ fn select_aircraft_parts<'g>(
         "aircraft propeller node",
     )?;
 
+    let blur = config
+        .aircraft_blur_node
+        .as_ref()
+        .map(|(slot, name)| pinned(*slot, name, "aircraft propeller blur node"))
+        .transpose()?;
+
     let intact_members: BTreeSet<u32> = planes
         .subtree(intact.id())
         .iter()
@@ -2245,7 +2264,9 @@ fn select_aircraft_parts<'g>(
             continue;
         };
         airframe_bindings += 1;
-        let reason = if node.index() == prop.index() {
+        let reason = if node.index() == prop.index()
+            || blur.is_some_and(|blur| blur.index() == node.index())
+        {
             None
         } else if !intact_members.contains(&node.index()) {
             Some(
@@ -2361,6 +2382,10 @@ pub struct PlaytestConfig {
     pub aircraft_prop_node_slot: u32,
     /// The authored name that node must store.
     pub aircraft_prop_node_name: String,
+    /// The stored slot and authored name of a propeller **blur disc** mesh to
+    /// draw in addition to the propeller (`prop1` under `dontmove`:
+    /// `rotorblur.tif`). `None` draws none, as the playtest always has.
+    pub aircraft_blur_node: Option<(u32, String)>,
     /// The viewer distance the aircraft's LOD band is selected at, in metres.
     pub aircraft_lod_distance_m: f64,
     /// The viewer distance the area's LOD bands are selected at, in metres.
@@ -2406,6 +2431,7 @@ impl PlaytestConfig {
             aircraft_intact_node_name: PLAYTEST_AIRCRAFT_INTACT_NODE_NAME.to_owned(),
             aircraft_prop_node_slot: PLAYTEST_AIRCRAFT_PROP_NODE_SLOT,
             aircraft_prop_node_name: PLAYTEST_AIRCRAFT_PROP_NODE_NAME.to_owned(),
+            aircraft_blur_node: None,
             aircraft_lod_distance_m: PLAYTEST_AIRCRAFT_LOD_DISTANCE_M,
             area_lod_distance_m: PLAYTEST_AREA_LOD_DISTANCE_M,
             select_area_variants: true,
@@ -3196,6 +3222,8 @@ pub struct AircraftVisual {
     /// pinned propeller node. The free-flight playtest spins it; a caller
     /// without a spin system draws it where the spawn put it.
     pub propeller: Option<PropellerSpinSpec>,
+    /// The drawn blur disc, when the configuration pinned one.
+    pub blur: Option<PropellerBlurSpec>,
     /// What the airframe read: the selection, the drawn parts and every
     /// binding it did not draw, with its reason.
     pub report: PlaytestAircraftReport,
@@ -3241,6 +3269,7 @@ pub fn build_aircraft_visual(
     let mut built = Vec::new();
     // The drawn propeller's measured hub, filled in while the bindings build.
     let mut propeller: Option<PropellerSpinSpec> = None;
+    let mut blur: Option<PropellerBlurSpec> = None;
     let mut aircraft_min = [f64::INFINITY; 3];
     let mut aircraft_max = [f64::NEG_INFINITY; 3];
     for node in &selection.draw {
@@ -3287,6 +3316,17 @@ pub fn build_aircraft_visual(
                 node_slot: node.index(),
                 node_name: node.name().to_owned(),
                 hub: measure_propeller_hub(&render)?,
+            });
+        }
+        if config
+            .aircraft_blur_node
+            .as_ref()
+            .is_some_and(|(slot, _)| *slot == node.index())
+        {
+            blur = Some(PropellerBlurSpec {
+                node_slot: node.index(),
+                node_name: node.name().to_owned(),
+                radius_m: measure_propeller_hub(&render)?.radius_m,
             });
         }
         built.push((*node, id));
@@ -3372,6 +3412,7 @@ pub fn build_aircraft_visual(
     Ok(AircraftVisual {
         parts: aircraft_parts,
         propeller,
+        blur,
         report,
     })
 }
@@ -3660,6 +3701,7 @@ pub fn spawn_playtest_content(
     let AircraftVisual {
         parts: aircraft_parts,
         propeller,
+        blur: _,
         report: aircraft,
     } = build_aircraft_visual(app, sources.aircraft(), &mut binder, config)?;
 

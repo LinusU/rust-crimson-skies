@@ -11,6 +11,7 @@ mod eh_frame_gate;
 mod campaign {
     mod common;
     mod m01_play_world_evidence;
+    mod m01_player_prop_blur;
     mod vs_m01_rt_content;
     mod vs_m01_rt_evidence_capture;
     mod vs_m01_rt_evidence_report;

@@ -368,6 +368,7 @@ impl Plugin for PlaytestPlugin {
                     // After `sync_pause`: a pause that begins in a frame
                     // freezes the drawn propeller in that same frame.
                     propeller::spin_propellers,
+                    propeller::update_propeller_blur,
                     update_telemetry,
                     follow_camera,
                 )
