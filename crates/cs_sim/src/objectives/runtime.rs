@@ -172,8 +172,8 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 
-use cs_script::ir::{ActorId, SymbolId};
-use cs_script::runtime::{EventKey, SessionGeneration};
+use cs_script::ir::{ActorId, DirectiveOperation, SymbolId};
+use cs_script::runtime::{DirectiveEmission, EventKey, ExecutionKey, SessionGeneration};
 use cs_types::Tick;
 use cs_types::content::ContentId;
 
@@ -184,6 +184,7 @@ use super::bailout::{
     BailoutConfirmation, BailoutRefusal, MissionTransition, MissionTransitions, TransitionOutcome,
 };
 use super::counters::{ActorCounters, CountKind};
+use super::directives;
 use super::spawn::{Admission, Emission, EmissionLedger, IdempotencyKey};
 use super::state::{IllegalTransition, ObjectiveCell, ObjectiveState};
 use super::terminal::{Resolution, TerminalLatch, TerminalOutcome, TerminalPrecedence};
@@ -943,6 +944,17 @@ pub enum RuntimeError {
     /// so the report says which address was past which record, and no
     /// neighbouring objective is moved in its place.
     Address(AddressRefusal),
+    /// A family directive's arguments do not have the shape the parse can
+    /// produce (a list that is not a list of integers, a nap without a number).
+    MalformedDirective { operation: DirectiveOperation },
+    /// A family directive was decoded and its addresses checked, but the
+    /// lifecycle has no consumer for it yet, so nothing was applied.
+    UnexecutedDirective { operation: DirectiveOperation },
+    /// A directive emission belongs to another session generation.
+    StaleDirective {
+        expected: SessionGeneration,
+        given: SessionGeneration,
+    },
 }
 
 impl fmt::Display for RuntimeError {
@@ -1013,6 +1025,20 @@ impl fmt::Display for RuntimeError {
             ),
             Self::Trigger(error) => write!(f, "trigger movement refused: {error}"),
             Self::Address(refusal) => write!(f, "{refusal}"),
+            Self::MalformedDirective { operation } => {
+                write!(
+                    f,
+                    "{operation:?} directive has an argument shape the parse cannot produce"
+                )
+            }
+            Self::UnexecutedDirective { operation } => write!(
+                f,
+                "{operation:?} directive was decoded but the objective lifecycle has no consumer for it; nothing was applied"
+            ),
+            Self::StaleDirective { expected, given } => write!(
+                f,
+                "directive emission from session {given:?} given to session {expected:?}"
+            ),
         }
     }
 }
@@ -1100,6 +1126,8 @@ pub struct ObjectiveRuntime {
     /// next tick — and no effect kind can queue anything, because none of them
     /// moves its target to `Succeeded`.
     pending_effects: Vec<QueuedEffect>,
+    /// Directive emissions already queued, so one is applied exactly once.
+    consumed_directives: BTreeSet<ExecutionKey>,
     /// The next instance id an admitted spawn group takes. It starts at
     /// [`SPAWNED_ACTOR_BASE`] and only ever increases, so no spawned instance
     /// ever wears a placed actor's id.
@@ -1137,6 +1165,7 @@ impl ObjectiveRuntime {
             ledger: EmissionLedger::new(session),
             latch: TerminalLatch::new(),
             pending_effects: Vec::new(),
+            consumed_directives: BTreeSet::new(),
             next_instance: SPAWNED_ACTOR_BASE,
             requests: Vec::new(),
             sequence: 0,
@@ -1682,6 +1711,7 @@ impl ObjectiveRuntime {
             + timers
             + self.objectives.len()
             + self.declared_completion_effects()
+            + self.pending_effects.len()
     }
 
     /// How many events one tick's lifecycle facts could produce at most.
@@ -2050,6 +2080,19 @@ impl ObjectiveRuntime {
         let due: Vec<QueuedEffect> = std::mem::take(&mut self.pending_effects);
         let mut wake_stopped: BTreeSet<SymbolId> = BTreeSet::new();
         for QueuedEffect { source, effect } in due {
+            let effect = match effect {
+                Ok(effect) => effect,
+                Err(reason) => {
+                    out.push(
+                        source,
+                        ObjectiveEventKind::RequestRefused {
+                            request: source,
+                            reason,
+                        },
+                    );
+                    continue;
+                }
+            };
             match effect.kind {
                 CompletionEffectKind::Wake | CompletionEffectKind::Wakeup => {
                     self.apply_wake(source, effect.target, &mut wake_stopped, out);
@@ -2292,6 +2335,77 @@ impl ObjectiveRuntime {
         true
     }
 
+    /// Queues the wake/sleep/kill/nap family's emissions for the next tick's
+    /// phase 7, the executor path of `M02-B-FU4` (see [`directives`]).
+    ///
+    /// `objectives` is the record's block count. Each address is resolved
+    /// through [`resolve_objective_address`](super::address::resolve_objective_address);
+    /// a refusal is queued beside the effects and reported by the tick as
+    /// [`ObjectiveEventKind::RequestRefused`], so nothing is clamped or dropped
+    /// in silence. Emissions of one source apply in the engine's fixed order
+    /// (`WAKE`, `NAP`, `KILL`, `SLEEP`), list order inside each, and an
+    /// emission whose execution key was queued before is not queued again.
+    /// Emissions outside the family are left to their own consumers.
+    ///
+    /// # Errors
+    ///
+    /// [`RuntimeError::StaleDirective`] when an emission carries another
+    /// session; nothing from the call is queued then. Returns how many
+    /// emissions were queued.
+    pub fn submit_directives(
+        &mut self,
+        objectives: u32,
+        emissions: &[DirectiveEmission],
+    ) -> Result<usize, RuntimeError> {
+        let family: Vec<&DirectiveEmission> = emissions
+            .iter()
+            .filter(|emission| directives::is_family(emission.operation))
+            .collect();
+        if let Some(stale) = family.iter().find(|e| e.key.session != self.session) {
+            return Err(RuntimeError::StaleDirective {
+                expected: self.session,
+                given: stale.key.session,
+            });
+        }
+        let mut sources: Vec<(SymbolId, Vec<(u8, directives::Planned)>)> = Vec::new();
+        let mut queued = 0;
+        for emission in family {
+            if !self
+                .consumed_directives
+                .insert(emission.key.execution_key())
+            {
+                continue;
+            }
+            queued += 1;
+            let source = emission.key.source;
+            let rank = directives::rank(emission.operation);
+            let planned: Vec<(u8, directives::Planned)> = if self.objectives.contains_key(&source) {
+                directives::plan(emission.operation, &emission.args, objectives)
+                    .into_iter()
+                    .map(|item| (rank, item))
+                    .collect()
+            } else {
+                vec![(
+                    rank,
+                    Err(RuntimeError::UnknownObjective { objective: source }),
+                )]
+            };
+            match sources.iter_mut().find(|(s, _)| *s == source) {
+                Some((_, items)) => items.extend(planned),
+                None => sources.push((source, planned)),
+            }
+        }
+        for (source, mut items) in sources {
+            items.sort_by_key(|(rank, _)| *rank);
+            self.pending_effects.extend(
+                items
+                    .into_iter()
+                    .map(|(_, effect)| QueuedEffect { source, effect }),
+            );
+        }
+        Ok(queued)
+    }
+
     /// Queues the completion effects an objective declares, remembering which
     /// objective declared each one: that objective is the `source` its effects'
     /// events report under, because the effect belongs to *its* declaration and
@@ -2312,11 +2426,11 @@ impl ObjectiveRuntime {
         let source = objective;
         let mut effects: Vec<CompletionEffect> = tracked.completion_effects.clone();
         effects.sort_by_key(|effect| effect.kind.engine_order());
-        self.pending_effects.extend(
-            effects
-                .into_iter()
-                .map(|effect| QueuedEffect { source, effect }),
-        );
+        self.pending_effects
+            .extend(effects.into_iter().map(|effect| QueuedEffect {
+                source,
+                effect: Ok(effect),
+            }));
     }
 
     /// Reveals every hidden objective whose declared rule this event satisfies.
@@ -2499,10 +2613,12 @@ struct CountBinding {
 
 /// One queued completion effect: the effect, and the objective whose declaration
 /// carries it (the `source` its events report under).
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 struct QueuedEffect {
     source: SymbolId,
-    effect: CompletionEffect,
+    /// A refusal is queued in the same place as an effect, so the stream
+    /// reports them in the order the directive spelled them.
+    effect: Result<CompletionEffect, RuntimeError>,
 }
 
 /// One objective's live state.

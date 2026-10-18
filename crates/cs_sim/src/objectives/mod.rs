@@ -53,6 +53,14 @@
 //!   nothing) is in
 //!   `docs/findings/2026-10-09-m02-b-fu3-out-of-range-wake-address.md`.
 //!
+//! # `M02-B-FU4` — the directive family's executor
+//!
+//! - [`directives`]: decodes the wake/sleep/kill/nap family's emissions and
+//!   [`runtime::ObjectiveRuntime::submit_directives`] queues them for the
+//!   tick's completion-effect phase, resolving every address through
+//!   [`address::resolve_objective_address`] and reporting a refusal as an
+//!   event.
+//!
 //! # Stage F39-E5 — completion effects, aligned in M01-B-OBJ-1-FU1
 //!
 //! - [`runtime::CompletionEffect`] / [`runtime::CompletionEffectKind`]: what
@@ -93,6 +101,7 @@
 pub mod address;
 pub mod bailout;
 pub mod counters;
+pub mod directives;
 pub mod runtime;
 pub mod spawn;
 pub mod state;

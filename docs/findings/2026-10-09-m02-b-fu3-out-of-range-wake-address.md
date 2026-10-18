@@ -458,11 +458,27 @@ installation through the production rule on the rebased tree.
    bytes at different layers; whether the record's *author* intended numbers or
    positions is an intent question the code does not answer (the code's answer,
    `dec` before storage, is measured).
-4. **No directive family consumer exists.** The wake/sleep/kill/nap operations
-   are measured, lowered and carried as emissions, but no executor applies
-   them, so the rule has no live call site yet; wiring it is `M02-B-FU4`
-   (#807), and nothing here pretends the rule has been exercised by a running
-   mission.
+4. **The directive family has an executor (M02-B-FU4, #807) — partly.**
+   `ObjectiveRuntime::submit_directives` (`cs_sim::objectives::directives`)
+   decodes the wake/sleep/kill/nap emissions, resolves every address through
+   `resolve_objective_address`, and queues the effects for the tick's
+   completion-effect phase in the measured `WAKE → NAP → KILL → SLEEP` order.
+   An out-of-range or negative address is reported as `RequestRefused`
+   (`RuntimeError::Address`) and applies nothing; an authored `0` is the
+   parse's `−1` terminator and truncates the list without a refusal. Still
+   open: (a) `WakeObjectivesOnTransition`, `DependencyGate` and `HideObjective`
+   check their addresses but have no lifecycle consumer (they need the
+   dormant/auto-nap timers and gate evaluation), so they are reported as
+   `RuntimeError::UnexecutedDirective` and move nothing; (b) the wake walk's
+   15-entry cap (`0x469af0`) is not modelled; (c) no mission driver calls
+   `submit_directives` yet — `MissionCountdown::apply_new` still consumes only
+   the timer operations, so the rule is exercised by the runtime's tests
+   (`accept_m02_b_fu4_`), not yet by a running mission; (d) the rule maps
+   address 1 to `SymbolId(0)`, which `ObjectiveRuntime` reserves for actor
+   events (`ACTOR_EVENT_SOURCE`), so a record's first block cannot be
+   registered there and a directive naming it is reported as
+   `UnknownObjective` rather than applied (pinned by
+   `accept_m02_b_fu4_the_first_address_names_the_reserved_symbol_and_is_reported`).
 5. **`verified_original` is not claimed.** Nothing here ran the original, and
    no reference capture exists for M02 (REF-OWNER-FIRST-CAPTURE stays blocked on
    the owner).
