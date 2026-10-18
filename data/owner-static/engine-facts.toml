@@ -957,3 +957,114 @@ va = 0x63b5ec
 kind = "cstr"
 value = " ZBT_CAMDYN_CLOUDHACK"
 meaning = "name field of a 0x114-stride record table initialised at 0x59c4e6..0x59c536 beside cam_dyn_render, ZBT_ZVID_DXBEGIN and zVidLockRenderBuffer; the image only stores the label there, so it is a timer or phase label and no cloud mechanism is read from it"
+
+# The Flight Check's gun and rocket lists (#1670 M01-LC-FC-B, finding
+# docs/findings/2026-10-19-m01-lc-fc-b-flight-check-gun-and-rocket-lists.md).
+#
+# The Flight Check script fills its four list controls with
+# `callback($$E$$, 2005..2008, index, buffer)`. The `$$E$$` host function is
+# `dispatcher_va` (it switches on `id - 2000` through the dword table at
+# `jump_table_va`); ids 2005 and 2007 land on `gun_list_va`, 2006 and 2008 on
+# `rocket_list_va`. Index -1 answers the item count (`list_items`, stored by
+# those handlers), any other index is one numbered line. A handler resolves
+# the slot (-1 pilot, -2 wingman) through `slot_resolver_va`: the selection
+# cell at `selection_cells_va + 4 * slot`, and when that holds -3 the default
+# cell at `default_cells_va + 4 * slot`. The result indexes the live plane
+# record array (`record_array_va`, `record_stride` bytes each, `record_count`
+# records). In the record: the gun slots, their ammunition kinds, the
+# pair-mask byte and the rocket slots sit at the offsets below. Names are
+# string-table ids (`gun_label_base + gun`, `ammo_label_base + kind`,
+# `rocket_label_base + rocket`); a gun of `gun_none` / a rocket of
+# `rocket_none` is shown as an empty line.
+#
+# The roster init (`roster_init_va`) stores the roster base at
+# `roster_pointer_va`, resets both selection cells to -3 and the default cells
+# to 0 (pilot) and 1 (wingman); `pilot_copy_va` / `wingman_copy_va` copy
+# roster records 11 and 12 into live records 0 and 1. A line is shown for gun
+# item `n` when slot `n >> 1` holds a gun, and for an odd `n` only when bit
+# `n >> 1` of the pair mask is set; the item-number prefix is the string
+# `item_number_string`, formatted with the item index plus one.
+[flight_check_layout]
+claim = "OWNER-STATIC-2026-10-19"
+provenance = "static"
+dispatcher_va = 0x4093a0
+jump_table_va = 0x40f518
+jump_table_base_id = 2000
+jump_table_entries = 39
+gun_list_va = 0x409c14
+rocket_list_va = 0x409cfa
+slot_resolver_va = 0x40fac0
+selection_cells_va = 0x6480bc
+default_cells_va = 0x64b67c
+record_array_va = 0x64b78c
+record_stride = 0xcc
+record_count = 25
+roster_init_va = 0x4113b0
+roster_pointer_va = 0x41134d
+pilot_copy_va = 0x411579
+wingman_copy_va = 0x4115a8
+roster_va = 0x619f58
+pilot_roster_record = 11
+wingman_roster_record = 12
+plane_id_offset = 0x2c
+pair_mask_offset = 0x84
+gun_offset = 0x88
+ammo_offset = 0x98
+rocket_offset = 0xa8
+gun_slots = 4
+rocket_slots = 8
+list_items = 8
+gun_none = 5
+rocket_none = 11
+gun_label_base = 3320
+ammo_label_base = 3365
+rocket_label_base = 3395
+item_number_string = 519
+
+[[flight_check_default]]
+slot = "pilot"
+claim = "OWNER-STATIC-2026-10-19"
+provenance = "static"
+va = 0x61a81c
+plane_id = 5
+pair_mask = 7
+gun_0 = 2
+gun_1 = 1
+gun_2 = 0
+gun_3 = 5
+ammo_0 = 0
+ammo_1 = 0
+ammo_2 = 0
+ammo_3 = 4
+rocket_0 = 1
+rocket_1 = 1
+rocket_2 = 11
+rocket_3 = 11
+rocket_4 = 1
+rocket_5 = 1
+rocket_6 = 11
+rocket_7 = 11
+
+[[flight_check_default]]
+slot = "wingman"
+claim = "OWNER-STATIC-2026-10-19"
+provenance = "static"
+va = 0x61a8e8
+plane_id = 5
+pair_mask = 7
+gun_0 = 2
+gun_1 = 1
+gun_2 = 0
+gun_3 = 5
+ammo_0 = 0
+ammo_1 = 0
+ammo_2 = 0
+ammo_3 = 4
+rocket_0 = 1
+rocket_1 = 1
+rocket_2 = 11
+rocket_3 = 11
+rocket_4 = 1
+rocket_5 = 1
+rocket_6 = 11
+rocket_7 = 11

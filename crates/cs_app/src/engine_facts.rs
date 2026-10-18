@@ -119,6 +119,8 @@ pub struct EngineFacts {
     missions: Vec<MissionFact>,
     /// The development-value rows.
     provisionals: Vec<ProvisionalFact>,
+    /// The Flight Check's list layout and fresh-campaign defaults (#1670).
+    flight_check: FlightCheckFacts,
 }
 
 /// The stored-heading convention: the image's own conversion of a record's
@@ -328,6 +330,7 @@ impl EngineFacts {
             airframes: airframe_facts(&document, image_va_base)?,
             missions: Vec::new(),
             provisionals: provisional_facts(&document)?,
+            flight_check: flight_check_facts(&document, image_va_base)?,
         };
         let missions = mission_facts(&document, &facts, image_va_base)?;
         Ok(Self { missions, ..facts })
@@ -381,6 +384,13 @@ impl EngineFacts {
         self.airframes
             .iter()
             .find(|row| row.scene_root == scene_root)
+    }
+
+    /// The Flight Check's gun and rocket list layout and the fresh-campaign
+    /// pilot and wingman defaults (#1670).
+    #[must_use]
+    pub fn flight_check(&self) -> &FlightCheckFacts {
+        &self.flight_check
     }
 
     /// The per-mission player-airframe rows, in file order.
@@ -621,6 +631,270 @@ fn aiv_layout_fact(
         }
     }
     Ok(fact)
+}
+
+/// The keys of `[flight_check_layout]`, every one an integer. The `*_va`
+/// keys and `roster_va` are virtual addresses in the image; the rest are
+/// record offsets, counts, sentinels and string-table ids.
+const FLIGHT_CHECK_LAYOUT_KEYS: &[&str] = &[
+    "dispatcher_va",
+    "jump_table_va",
+    "jump_table_base_id",
+    "jump_table_entries",
+    "gun_list_va",
+    "rocket_list_va",
+    "slot_resolver_va",
+    "selection_cells_va",
+    "default_cells_va",
+    "record_array_va",
+    "record_stride",
+    "record_count",
+    "roster_init_va",
+    "roster_pointer_va",
+    "pilot_copy_va",
+    "wingman_copy_va",
+    "roster_va",
+    "pilot_roster_record",
+    "wingman_roster_record",
+    "plane_id_offset",
+    "pair_mask_offset",
+    "gun_offset",
+    "ammo_offset",
+    "rocket_offset",
+    "gun_slots",
+    "rocket_slots",
+    "list_items",
+    "gun_none",
+    "rocket_none",
+    "gun_label_base",
+    "ammo_label_base",
+    "rocket_label_base",
+    "item_number_string",
+];
+
+/// The Flight Check's two plane slots: the script's `-1` and `-2`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FlightCheckPlaneSlot {
+    /// The pilot's plane (script slot `-1`).
+    Pilot,
+    /// The wingman's plane (script slot `-2`).
+    Wingman,
+}
+
+/// The Flight Check's list layout, as the `$$E$$` host function reads it.
+#[derive(Clone, Debug)]
+pub struct FlightCheckLayoutFact {
+    /// The claim id the table was recorded under.
+    pub claim: String,
+    values: Vec<(&'static str, u64)>,
+}
+
+impl FlightCheckLayoutFact {
+    /// One layout value by its `[flight_check_layout]` key.
+    ///
+    /// # Panics
+    ///
+    /// When `key` is not one of the schema's keys; the parser guarantees
+    /// every schema key is present.
+    #[must_use]
+    pub fn value(&self, key: &str) -> u64 {
+        self.values
+            .iter()
+            .find(|(name, _)| *name == key)
+            .map(|(_, value)| *value)
+            .unwrap_or_else(|| panic!("{key:?} is not a [flight_check_layout] key"))
+    }
+}
+
+/// One gun line of a Flight Check list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FlightCheckGunLine {
+    /// The 1-based item number the line is prefixed with.
+    pub number: u32,
+    /// The gun id; the caliber label is string `gun_label_base + gun`.
+    pub gun: u32,
+    /// The ammunition kind; its label is `ammo_label_base + ammo`.
+    pub ammo: u32,
+}
+
+/// One rocket line of a Flight Check list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct FlightCheckRocketLine {
+    /// The 1-based item number the line is prefixed with.
+    pub number: u32,
+    /// The rocket id; its label is string `rocket_label_base + rocket`.
+    pub rocket: u32,
+}
+
+/// A fresh campaign's plane record for one Flight Check slot: the roster
+/// record the roster init copies into the live record the lists read.
+#[derive(Clone, Debug)]
+pub struct FlightCheckDefaultFact {
+    /// Which Flight Check slot the record is copied into.
+    pub slot: FlightCheckPlaneSlot,
+    /// The claim id the row was recorded under.
+    pub claim: String,
+    /// The roster record's virtual address.
+    pub va: u64,
+    /// The record's plane id (the airframe-table row for the campaign's
+    /// planes; `5` is the Devastator).
+    pub plane_id: u32,
+    /// The record's pair-mask byte.
+    pub pair_mask: u32,
+    /// The four gun slots.
+    pub guns: [u32; 4],
+    /// The four ammunition kinds.
+    pub ammo: [u32; 4],
+    /// The eight rocket slots.
+    pub rockets: [u32; 8],
+}
+
+/// The Flight Check's measured list layout and fresh-campaign defaults.
+#[derive(Clone, Debug)]
+pub struct FlightCheckFacts {
+    layout: FlightCheckLayoutFact,
+    defaults: Vec<FlightCheckDefaultFact>,
+}
+
+impl FlightCheckFacts {
+    /// The list layout.
+    #[must_use]
+    pub fn layout(&self) -> &FlightCheckLayoutFact {
+        &self.layout
+    }
+
+    /// The fresh-campaign default record of a slot.
+    #[must_use]
+    pub fn default_for(&self, slot: FlightCheckPlaneSlot) -> &FlightCheckDefaultFact {
+        self.defaults
+            .iter()
+            .find(|row| row.slot == slot)
+            .expect("the parser requires one default row per slot")
+    }
+
+    /// The gun list the handler for ids 2005 / 2007 answers for `slot`, one
+    /// entry per list item (`None` is an empty line): item `n` shows slot
+    /// `n >> 1`'s gun unless that slot holds the no-gun id, and an odd item
+    /// only when bit `n >> 1` of the pair mask is set.
+    #[must_use]
+    pub fn gun_list(&self, slot: FlightCheckPlaneSlot) -> Vec<Option<FlightCheckGunLine>> {
+        let row = self.default_for(slot);
+        let none = self.layout.value("gun_none") as u32;
+        (0..self.layout.value("list_items") as u32)
+            .map(|item| {
+                let gun_slot = (item >> 1) as usize;
+                let gun = *row.guns.get(gun_slot)?;
+                let paired = row.pair_mask >> gun_slot & 1 == 1;
+                (gun != none && (item % 2 == 0 || paired)).then(|| FlightCheckGunLine {
+                    number: item + 1,
+                    gun,
+                    ammo: row.ammo[gun_slot],
+                })
+            })
+            .collect()
+    }
+
+    /// The rocket list the handler for ids 2006 / 2008 answers for `slot`:
+    /// item `n` shows rocket slot `n` unless it holds the no-rocket id.
+    #[must_use]
+    pub fn rocket_list(&self, slot: FlightCheckPlaneSlot) -> Vec<Option<FlightCheckRocketLine>> {
+        let row = self.default_for(slot);
+        let none = self.layout.value("rocket_none") as u32;
+        (0..self.layout.value("list_items") as u32)
+            .map(|item| {
+                let rocket = *row.rockets.get(item as usize)?;
+                (rocket != none).then_some(FlightCheckRocketLine {
+                    number: item + 1,
+                    rocket,
+                })
+            })
+            .collect()
+    }
+}
+
+/// `[flight_check_layout]` and its two `[[flight_check_default]]` rows.
+fn flight_check_facts(
+    document: &subset::Document,
+    image_va_base: u64,
+) -> Result<FlightCheckFacts, EngineFactsError> {
+    let table = single(document, "flight_check_layout")?;
+    let mut allowed = vec!["claim", "provenance"];
+    allowed.extend_from_slice(FLIGHT_CHECK_LAYOUT_KEYS);
+    known_keys(table, &allowed, "flight_check_layout")?;
+    let claim = cited(table, "flight_check_layout")?;
+    let mut values = Vec::with_capacity(FLIGHT_CHECK_LAYOUT_KEYS.len());
+    for key in FLIGHT_CHECK_LAYOUT_KEYS {
+        let value = scalar_int_in(table, key)?;
+        let value = u64::try_from(value).map_err(|_| {
+            EngineFactsError::schema(format!("flight_check_layout: {key} is negative"))
+        })?;
+        if key.ends_with("_va") || *key == "roster_va" {
+            scalar_va(table, key, image_va_base)?;
+        }
+        values.push((*key, value));
+    }
+    let layout = FlightCheckLayoutFact { claim, values };
+    for (key, expected) in [("gun_slots", 4), ("rocket_slots", 8)] {
+        if layout.value(key) != expected {
+            return Err(EngineFactsError::schema(format!(
+                "flight_check_layout: {key} is {}, the rows carry {expected}",
+                layout.value(key)
+            )));
+        }
+    }
+
+    let mut defaults = Vec::new();
+    for row in array(document, "flight_check_default")? {
+        let mut allowed = vec!["slot", "claim", "provenance", "va", "plane_id", "pair_mask"];
+        let gun_keys: Vec<String> = (0..4).map(|n| format!("gun_{n}")).collect();
+        let ammo_keys: Vec<String> = (0..4).map(|n| format!("ammo_{n}")).collect();
+        let rocket_keys: Vec<String> = (0..8).map(|n| format!("rocket_{n}")).collect();
+        for key in gun_keys.iter().chain(&ammo_keys).chain(&rocket_keys) {
+            allowed.push(key);
+        }
+        known_keys(row, &allowed, "flight_check_default")?;
+        let slot = match scalar_str_in(row, "slot")?.as_str() {
+            "pilot" => FlightCheckPlaneSlot::Pilot,
+            "wingman" => FlightCheckPlaneSlot::Wingman,
+            other => {
+                return Err(EngineFactsError::schema(format!(
+                    "flight_check_default: slot {other:?} is not `pilot` or `wingman`"
+                )));
+            }
+        };
+        let read = |keys: &[String]| -> Result<Vec<u32>, EngineFactsError> {
+            keys.iter()
+                .map(|key| {
+                    u32::try_from(scalar_int_in(row, key)?).map_err(|_| {
+                        EngineFactsError::schema(format!("flight_check_default: {key} is negative"))
+                    })
+                })
+                .collect()
+        };
+        let guns = read(&gun_keys)?;
+        let ammo = read(&ammo_keys)?;
+        let rockets = read(&rocket_keys)?;
+        defaults.push(FlightCheckDefaultFact {
+            slot,
+            claim: cited(row, "flight_check_default")?,
+            va: scalar_va(row, "va", image_va_base)?,
+            plane_id: u32::try_from(scalar_int_in(row, "plane_id")?)
+                .map_err(|_| EngineFactsError::schema("flight_check_default: plane_id"))?,
+            pair_mask: u32::try_from(scalar_int_in(row, "pair_mask")?)
+                .map_err(|_| EngineFactsError::schema("flight_check_default: pair_mask"))?,
+            guns: guns.try_into().expect("four gun keys"),
+            ammo: ammo.try_into().expect("four ammo keys"),
+            rockets: rockets.try_into().expect("eight rocket keys"),
+        });
+    }
+    for slot in [FlightCheckPlaneSlot::Pilot, FlightCheckPlaneSlot::Wingman] {
+        if defaults.iter().filter(|row| row.slot == slot).count() != 1 {
+            return Err(EngineFactsError::schema(format!(
+                "flight_check_default: exactly one {slot:?} row is required"
+            )));
+        }
+    }
+    Ok(FlightCheckFacts { layout, defaults })
 }
 
 /// The `[[airframe]]` rows: exactly [`AIRFRAME_ROWS`], in index order at the
