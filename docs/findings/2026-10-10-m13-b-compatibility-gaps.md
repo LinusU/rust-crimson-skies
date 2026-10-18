@@ -11,6 +11,44 @@ session, so it is not independent review, an agent review never replaces the
 owner's human approval, and nothing here is `verified_original`
 (AGENTS.md rule 8).
 
+## 2026-10-18 re-pin on the corrected campaign layout (#1600)
+
+Every retail fact in the tables below was measured on `ZBD/C3/M03/zrdr.zbd`.
+The corrected campaign layout (commit `6df5715b0`,
+`docs/findings/2026-10-17-m01-archive-decision.md`) re-derived *The Nefarious
+Trap* to `ZBD/C2/M03` / `mission/ch3-m03` / `script/c2-m03-zrdr`
+(`missions/bindings/M13.json`); `ZBD/C3/M03` is the record of campaign position
+`mission/ch1-m03`, which the layout binds to work order **M03**. So the numbers
+below are **historical for M13** and describe M03's archive. The acceptance
+tests now pin M13's own record, re-derived through the same production code
+(`SourceContext::control_program`, `discover_container`, `decode_zrd`,
+`measure_control_record`, the census):
+
+| Fact | Old pin (`ZBD/C3/M03`, 118 635 bytes, SHA-256 `37a227cc…`) | Re-pinned (`ZBD/C2/M03`, 41 769 bytes, SHA-256 `a72c66b1…`) |
+| --- | --- | --- |
+| Mission / program id | `mission/ch1-m03` / `script/c3-m03-zrdr` | `mission/ch3-m03` / `script/c2-m03-zrdr` |
+| Control member | `objectives.zrd`, 11 773 bytes, 8th of 16 members | `objectives.zrd`, 13 980 bytes, 8th of 13 members (only member with numbered blocks; `aiv.zrd` is longer) |
+| Record | 38 blocks, 178 sites, 36 keys | 57 blocks, 209 sites, 22 keys, 0 refusals |
+| Vocabulary | the `INACTIVE1..12` ladder, `SET_AI_NET`, `WAKEUP_ENEMIES`, … | the danger-zone course, `SET_AI_TEAM`, `SET_AI_NET`, `ANIM_STATE`, `DEDG`, …; **no `INACTIVE*` and no `TICK_DEPENDS_ON_OBJ`** |
+| Ordered traversal | four `piratezep` engine chains under `INACTIVE_COMPLETION_COUNT` 3/5/7/10 | the `dzpath1…9` flythrough (blocks 17–24), the ace chain (17 `DEDG` sites) and the timed short-cuts 34–41 |
+| Allegiance transition | **absent**: no key changed an owner, faction, team or attitude | **present**: block 3's `SET_AI_TEAM` (`hafury_1..6` → teams 2/1/2/2/1/2) and block 3's `SET_AI_NET` (`hafury_1..6` → node `M3Aces`) |
+| Two latches | `INSTANTWIN` block 16, `INSTANTLOSS` block 7 | `INSTANTWIN` block 8 (gated on `ANIM_STATE hooked_to_klondike`), `INSTANTLOSS` block 49 (from the six ace naps) |
+| Addresses | 41 spelled, block 9 spells 38 | 151 spelled (43 wake, 12 nap, 96 kill), blocks 28–33 spell 57 |
+| Actor gap | `britkestrel_1` declared by no archive in the installation | **none**: every one of the record's 90 distinct texts is declared outside the control member; `M3Aces` by the chapter world's `neindex.zrd` |
+| Lowering | complete (38 objectives) | complete (57 objectives, 209 calls bound, the six ten-target kill sites included) |
+| Census | `zbd/c3/m03` a complete row | `zbd/c2/m03` a complete row |
+
+`accept_m13_b_the_ai_net_actor_is_declared_by_no_archive_in_the_installation`
+and the `britkestrel_1` gap it recorded are gone: the name and the gap belong
+to M03's record. The M13-B-FU2 startup-animation limitation
+(`cg1zep_engines_stop`, measured on `zbd/c3/m03`) follows the archive it was
+measured on (M01-ARCHIVE-DECISION): it now sits in M03's
+`MISSION_SCOPED_UNKNOWNS` entry and `missions/bindings/M03.json`, and M13's own
+record carries no mission-scoped unknown. The sheet's failure priorities
+(wrong actor, wrong session, repeated event) and any optional-branch reading
+remain runtime observations for M13-C. Nothing here is `verified_original`.
+
+
 The stage's minimum acceptance scenario is *"All discovered mission-specific
 behavior uses production engine systems and regression tests."* It holds for
 everything this note measures: M13's discovered mission-specific behavior is its
