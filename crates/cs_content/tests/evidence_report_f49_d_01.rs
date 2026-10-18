@@ -588,8 +588,8 @@ fn denominator_json(survey: &cs_content::instant_action::IaDenominator) -> Strin
             let (offset, length) = dir.member_span();
             let plane = match dir.player_plane() {
                 cs_content::instant_action::IaPlayerPlane::Declared(_) => "declared".to_owned(),
-                cs_content::instant_action::IaPlayerPlane::Unknown { reason } => {
-                    format!("unknown: {reason}")
+                cs_content::instant_action::IaPlayerPlane::EngineDefault { index } => {
+                    format!("engine default: airframe table row {index}")
                 }
             };
             let presets: Vec<String> = dir

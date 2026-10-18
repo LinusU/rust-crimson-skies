@@ -13,13 +13,14 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use cs_content::instant_action::{
-    IA_MISSION_TYPE_VOCABULARY, IaPlayerPlane, IaSurveyError, survey_retail_instant_action,
+    IA_MISSION_TYPE_VOCABULARY, IaPlayerPlane, IaSurveyError, IaWingmen,
+    survey_retail_instant_action,
 };
 
-struct TempInstall(PathBuf);
+pub(crate) struct TempInstall(pub(crate) PathBuf);
 
 impl TempInstall {
-    fn new(label: &str) -> Self {
+    pub(crate) fn new(label: &str) -> Self {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let root = std::env::temp_dir().join(format!(
             "cs-f49-d-01-{label}-{}-{}",
@@ -110,8 +111,9 @@ fn spawn_list(count: usize) -> Vec<u8> {
 }
 
 /// An `ia.zrd` root: spawn points per offered type, optional disallow list,
-/// default mission type and an optional player plane.
-fn ia_document(
+/// default mission type and an optional player plane. A document without a
+/// player plane also leaves out `num_wingmen`, like `ZBD/c2b/IA1`.
+pub(crate) fn ia_document(
     offered: &[(&str, usize)],
     disallow: Option<&[&str]>,
     default: &str,
@@ -121,9 +123,9 @@ fn ia_document(
     if let Some(plane) = plane {
         children.push(zrd_text("player_plane"));
         children.push(zrd_list(vec![zrd_text(plane)]));
+        children.push(zrd_text("num_wingmen"));
+        children.push(zrd_list(vec![zrd_int(3)]));
     }
-    children.push(zrd_text("num_wingmen"));
-    children.push(zrd_list(vec![zrd_int(3)]));
     let mut spawn = Vec::new();
     for (name, count) in offered {
         spawn.push(zrd_text(name));
@@ -146,7 +148,7 @@ fn ia_without_spawn_points() -> Vec<u8> {
     ])
 }
 
-fn add_directory(temp: &TempInstall, group: &str, leaf: &str, ia: Vec<u8>) {
+pub(crate) fn add_directory(temp: &TempInstall, group: &str, leaf: &str, ia: Vec<u8>) {
     temp.write(
         &format!("ZBD/{group}/{leaf}/zrdr.zbd"),
         &reader_archive(&[("ia.zrd", ia), ("map.zrd", zrd_int(1))]),
@@ -154,7 +156,7 @@ fn add_directory(temp: &TempInstall, group: &str, leaf: &str, ia: Vec<u8>) {
     temp.write(&format!("ZBD/{group}/{leaf}/mis_anim.zbd"), b"animation");
 }
 
-fn campaign_tree(label: &str) -> TempInstall {
+pub(crate) fn campaign_tree(label: &str) -> TempInstall {
     let temp = TempInstall::new(label);
     temp.write(
         "ZBD/C1/M01/zrdr.zbd",
@@ -206,10 +208,12 @@ fn accept_f49_d_01_synthetic_directory_is_read_with_offered_disallowed_and_roste
         IaPlayerPlane::Declared("Kestrel".into())
     );
     let second = &survey.directories()[1];
-    assert!(matches!(
+    assert_eq!(
         second.player_plane(),
-        IaPlayerPlane::Unknown { .. }
-    ));
+        IaPlayerPlane::EngineDefault { index: 5 }
+    );
+    assert_eq!(second.wingmen(), IaWingmen::EngineDefault(0));
+    assert_eq!(first.wingmen(), IaWingmen::Declared(3));
     let ids = survey.preset_ids().expect("ids are valid");
     let presets: BTreeSet<_> = ids.iter().map(|(p, _)| p.to_string()).collect();
     assert_eq!(presets.len(), 3, "2 + 1 offered types, all unique");
@@ -407,14 +411,15 @@ fn accept_f49_d_01_retail_denominator_is_remeasured_from_ia_zrd() {
             "{name}"
         );
         // The scoping note said all eight declare `num_wingmen = 3`; c2b
-        // declares none, like its absent `player_plane` (a finding).
+        // declares none, like its absent `player_plane`; both fall back to the
+        // executable's record defaults (#1573).
         let expected_wingmen = (dir.world_group() != "c2b").then_some(3);
         assert_eq!(dir.aircraft().wingmen(), expected_wingmen, "{name}");
         assert_eq!(dir.aircraft().enemy_groups().len(), 4, "{name}");
         assert!(dir.aircraft().ace().is_declared(), "{name}");
         match (dir.world_group(), dir.player_plane()) {
-            ("c2b", IaPlayerPlane::Unknown { .. }) => {}
-            ("c2b", other) => panic!("c2b must report an unknown plane, got {other:?}"),
+            ("c2b", IaPlayerPlane::EngineDefault { index: 5 }) => {}
+            ("c2b", other) => panic!("c2b must report the engine default plane, got {other:?}"),
             (_, IaPlayerPlane::Declared(_)) => {}
             (group, other) => panic!("{group} must declare a plane, got {other:?}"),
         }

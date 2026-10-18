@@ -20,7 +20,7 @@
 //!
 //! Everything the descriptors do not say stays explicitly unmeasured with a
 //! claim id and a reason: the actors' factions, loadouts and survivability, the
-//! wingmen's planes (and, for one scenario, their count), the preset's title,
+//! wingmen's planes, the preset's title,
 //! difficulty and victory rules. The lowering ([`super::lower_preset`])
 //! therefore refuses every retail preset today, naming the first unmeasured
 //! field, and [`super::lower_preset_roster`] exposes the measured part of the
@@ -39,10 +39,10 @@ use cs_content::ai::DeclaredSkillTier;
 use cs_content::catalog::baseline::{Baseline, BaselineError, retail_baseline};
 use cs_content::environment::EnvironmentId;
 use cs_content::instant_action::{
-    IaDenominator, IaDirectory, IaPlayerPlane, IaSurveyError, InstantActionCatalog,
-    InstantActionPreset, RosterSlot, SCENARIO_SEED_DOMAIN, ScenarioActorSpec, ScenarioOptions,
-    ScenarioParameters, ScenarioRoster, ScenarioSchemaError, ScenarioSeed, ScenarioSide,
-    UnmeasuredPresetFact, retail_scenario_options_from_baseline, survey_retail_instant_action,
+    IA_ENGINE_DEFAULTS_CLAIM, IaDenominator, IaDirectory, IaPlayerPlane, IaSurveyError, IaWingmen,
+    InstantActionCatalog, InstantActionPreset, RosterSlot, SCENARIO_SEED_DOMAIN, ScenarioActorSpec,
+    ScenarioOptions, ScenarioParameters, ScenarioRoster, ScenarioSchemaError, ScenarioSeed,
+    ScenarioSide, retail_scenario_options_from_baseline, survey_retail_instant_action,
 };
 use cs_content::world::WorldId;
 use cs_types::asset_id::SourceSpan;
@@ -50,7 +50,7 @@ use cs_types::content::{ContentId, ContentKind, Known, Origin, Provenance, Resol
 use cs_types::evidence::{ClaimId, ClaimStatus, ContentHash};
 
 use crate::environment::retail::read_mission_weather;
-use crate::mission_start::airframe_entry;
+use crate::mission_start::{AIRFRAME_TABLE, AirframeEntry, airframe_entry};
 
 /// The claim every retail preset record is observed under.
 pub const IA_PRESET_CLAIM: &str = "f49.d.03.ia-preset";
@@ -69,12 +69,8 @@ pub const IA_FACTION_UNMEASURED_CLAIM: &str = "f49.d.03.unmeasured.faction";
 pub const IA_LOADOUT_UNMEASURED_CLAIM: &str = "f49.d.03.unmeasured.loadout";
 /// Unmeasured: the actors' survivability.
 pub const IA_SURVIVABILITY_UNMEASURED_CLAIM: &str = "f49.d.03.unmeasured.survivability";
-/// Unmeasured: a scenario with no `player_plane`.
-pub const IA_PLAYER_PLANE_UNMEASURED_CLAIM: &str = "f49.d.03.unmeasured.player-plane";
 /// Unmeasured: the wingmen's planes.
 pub const IA_WINGMAN_PLANE_UNMEASURED_CLAIM: &str = "f49.d.03.unmeasured.wingman-plane";
-/// Unmeasured: a scenario with no `num_wingmen`.
-pub const IA_WINGMAN_COUNT_UNMEASURED_CLAIM: &str = "f49.d.03.unmeasured.wingman-count";
 /// Unmeasured: an enemy group without a plane.
 pub const IA_GROUP_PLANE_UNMEASURED_CLAIM: &str = "f49.d.03.unmeasured.group-plane";
 /// Unmeasured: the preset title.
@@ -263,6 +259,32 @@ fn resolve_airframe(
         role: role.to_owned(),
         plane: plane.to_owned(),
     })?;
+    airframe_id(entry, role, inputs)
+}
+
+/// Resolves an airframe-table row index (the executable's own default) onto an
+/// airframe the option table offers.
+fn resolve_airframe_index(
+    index: usize,
+    role: &str,
+    inputs: &DirectoryInputs<'_>,
+) -> Result<ContentId, RetailCatalogError> {
+    let entry = AIRFRAME_TABLE
+        .get(index)
+        .ok_or_else(|| RetailCatalogError::UnknownPlane {
+            container: inputs.container_path.to_owned(),
+            role: role.to_owned(),
+            plane: format!("airframe table row {index}"),
+        })?;
+    airframe_id(entry, role, inputs)
+}
+
+fn airframe_id(
+    entry: &AirframeEntry,
+    role: &str,
+    inputs: &DirectoryInputs<'_>,
+) -> Result<ContentId, RetailCatalogError> {
+    let container = inputs.container_path.to_owned();
     let id = ContentId::from_source(ContentKind::Airframe, entry.scene_root).map_err(|error| {
         RetailCatalogError::Provenance {
             what: format!("airframe key {}: {error}", entry.scene_root),
@@ -325,8 +347,8 @@ fn actor(
     .map_err(schema)
 }
 
-/// The roster one directory's descriptor declares, and the facts it cannot
-/// express.
+/// The roster one directory's descriptor declares, with the executable's own
+/// defaults for a `player_plane` / `num_wingmen` it leaves out.
 ///
 /// # Errors
 ///
@@ -336,49 +358,62 @@ pub fn directory_roster(
     directory: &IaDirectory,
     inputs: &DirectoryInputs<'_>,
     source: &SourceSpan,
-) -> Result<(ScenarioRoster, Vec<UnmeasuredPresetFact>), RetailCatalogError> {
+) -> Result<ScenarioRoster, RetailCatalogError> {
     let subject = directory.container().to_owned();
     let provenance = observed(IA_ROSTER_CLAIM, source)?;
     let known = |id: ContentId| Resolved::Known(Known::new(id, provenance.clone()));
     let mut actors = Vec::new();
-    let mut facts = Vec::new();
 
-    let player_airframe = match directory.player_plane() {
-        IaPlayerPlane::Declared(plane) => known(resolve_airframe(&plane, "player_plane", inputs)?),
-        IaPlayerPlane::Unknown { reason } => unknown(IA_PLAYER_PLANE_UNMEASURED_CLAIM, reason)?,
+    // A scenario that declares no `player_plane` / `num_wingmen` keeps the
+    // values the executable's record initialiser wrote (see `IaPlayerPlane`).
+    // Those are recorded as inferred from the absent key, not as declared.
+    let default_provenance = Provenance::new(
+        claim(IA_ENGINE_DEFAULTS_CLAIM)?,
+        ClaimStatus::Inferred,
+        Some(source.clone()),
+    )
+    .map_err(|error| RetailCatalogError::Provenance {
+        what: format!("claim {IA_ENGINE_DEFAULTS_CLAIM}: {error}"),
+    })?;
+    let (player_airframe, player_provenance) = match directory.player_plane() {
+        IaPlayerPlane::Declared(plane) => (
+            known(resolve_airframe(&plane, "player_plane", inputs)?),
+            provenance.clone(),
+        ),
+        IaPlayerPlane::EngineDefault { index } => (
+            Resolved::Known(Known::new(
+                resolve_airframe_index(index, "player_plane", inputs)?,
+                default_provenance.clone(),
+            )),
+            default_provenance.clone(),
+        ),
     };
     actors.push(actor(
         ScenarioSide::Player,
         0,
         "player",
         player_airframe,
-        &provenance,
+        &player_provenance,
         &subject,
     )?);
 
-    match directory.aircraft().wingmen() {
-        Some(count) => {
-            for slot in 0..count {
-                actors.push(actor(
-                    ScenarioSide::Ally,
-                    slot,
-                    "wingman",
-                    unknown(
-                        IA_WINGMAN_PLANE_UNMEASURED_CLAIM,
-                        WINGMAN_PLANE_UNMEASURED_REASON,
-                    )?,
-                    &provenance,
-                    &subject,
-                )?);
-            }
-        }
-        None => facts.push(UnmeasuredPresetFact {
-            field: "wingman count".to_owned(),
-            claim_id: claim(IA_WINGMAN_COUNT_UNMEASURED_CLAIM)?,
-            reason: "the descriptor declares no num_wingmen, so how many wingmen the scenario \
-                     seats is unmeasured"
-                .to_owned(),
-        }),
+    let wingmen = directory.wingmen();
+    let wingman_provenance = match wingmen {
+        IaWingmen::Declared(_) => &provenance,
+        IaWingmen::EngineDefault(_) => &default_provenance,
+    };
+    for slot in 0..wingmen.count() {
+        actors.push(actor(
+            ScenarioSide::Ally,
+            slot,
+            "wingman",
+            unknown(
+                IA_WINGMAN_PLANE_UNMEASURED_CLAIM,
+                WINGMAN_PLANE_UNMEASURED_REASON,
+            )?,
+            wingman_provenance,
+            &subject,
+        )?);
     }
 
     let mut next_enemy_slot = 0_u32;
@@ -443,7 +478,7 @@ pub fn directory_roster(
 
     let roster = ScenarioRoster::try_new(actors)
         .map_err(|error| RetailCatalogError::Schema { subject, error })?;
-    Ok((roster, facts))
+    Ok(roster)
 }
 
 /// One preset per offered mission type of one directory.
@@ -493,7 +528,7 @@ pub fn directory_presets(
         )),
         Err(reason) => unknown(IA_ENVIRONMENT_CLAIM, reason)?,
     };
-    let (roster, facts) = directory_roster(directory, inputs, &source)?;
+    let roster = directory_roster(directory, inputs, &source)?;
 
     let mut presets = Vec::new();
     for ((preset_id, scenario_id), offered) in directory
@@ -517,7 +552,7 @@ pub fn directory_presets(
                 &rules_unmeasured_reason(mission_type),
             ),
         );
-        let mut preset = InstantActionPreset::try_new(
+        let preset = InstantActionPreset::try_new(
             preset_id,
             scenario_id,
             unknown(IA_TITLE_UNMEASURED_CLAIM, TITLE_UNMEASURED_REASON)?,
@@ -529,9 +564,6 @@ pub fn directory_presets(
         )
         .map_err(schema)?
         .with_original_mission_type(mission_type.to_owned());
-        for fact in &facts {
-            preset = preset.with_unmeasured_fact(fact.clone());
-        }
         presets.push(preset);
     }
     Ok(presets)

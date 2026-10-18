@@ -39,7 +39,7 @@ use cs_content::world::WorldId;
 use cs_sim::allies::SurvivabilityPolicy;
 use cs_types::asset_id::SourceSpan;
 use cs_types::content::{ContentId, ContentKind, Origin, Resolved};
-use cs_types::evidence::ClaimId;
+use cs_types::evidence::{ClaimId, ClaimStatus};
 
 // ------------------------------------------------------------ retail setup ---
 
@@ -247,33 +247,25 @@ fn accept_f49_d_03_retail_every_preset_lowers_to_its_declared_actors() {
                     );
                 }
                 None => {
-                    // `ZBD/c2b/IA1` declares no player_plane: unknown, never a
-                    // substituted airframe.
+                    // `ZBD/c2b/IA1` declares no player_plane: the executable's
+                    // record keeps row 5 of its airframe table (#1573).
                     assert_eq!(directory.container(), "zbd/c2b/ia1/zrdr.zbd");
-                    let unmeasured = players[0]
+                    let geometry = players[0]
                         .geometry
                         .as_ref()
-                        .expect_err("an undeclared player plane stays unmeasured");
-                    assert!(unmeasured.reason.contains("player_plane"));
+                        .expect("the engine default player plane lowers");
+                    assert_eq!(geometry.as_content(), &table_airframe("Devastator"));
                 }
             }
 
-            // Wingmen: one slot each, plane unmeasured; an undeclared count is
-            // a recorded fact, not zero wingmen.
+            // Wingmen: one slot each, plane unmeasured. An undeclared count is
+            // the executable's default of none (#1573).
             let wingmen = on(ScenarioSide::Ally);
-            match aircraft.wingmen() {
-                Some(count) => {
-                    assert_eq!(wingmen.len(), count as usize, "{}", preset.id());
-                    assert!(lowered.unmeasured.is_empty());
-                    for wingman in wingmen {
-                        assert!(wingman.geometry.is_err(), "no wingman plane is measured");
-                    }
-                }
-                None => {
-                    assert!(wingmen.is_empty());
-                    assert_eq!(lowered.unmeasured.len(), 1);
-                    assert_eq!(lowered.unmeasured[0].field, "wingman count");
-                }
+            let expected = aircraft.wingmen().unwrap_or(0);
+            assert_eq!(wingmen.len(), expected as usize, "{}", preset.id());
+            assert!(lowered.unmeasured.is_empty());
+            for wingman in wingmen {
+                assert!(wingman.geometry.is_err(), "no wingman plane is measured");
             }
 
             // Enemy groups, in record order, then the ace.
@@ -320,10 +312,12 @@ fn accept_f49_d_03_retail_every_preset_lowers_to_its_declared_actors() {
     assert_eq!(checked, 30, "all thirty presets were checked");
 }
 
-/// Four measured facts that would be easy to get wrong, pinned to the data.
+/// The scenario without a `player_plane` or `num_wingmen` runs on the
+/// executable's initialiser defaults (airframe-table row 5, no wingmen), and
+/// the catalog says where they came from.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_f49_d_03_retail_the_scenario_without_a_player_plane_keeps_it_unknown() {
+fn accept_f49_d_02b_retail_the_scenario_without_a_player_plane_uses_the_engine_default() {
     let retail = retail();
     let c2b = retail
         .denominator
@@ -333,26 +327,27 @@ fn accept_f49_d_03_retail_the_scenario_without_a_player_plane_keeps_it_unknown()
         .expect("c2b is one of the eight directories");
     assert!(c2b.aircraft().player_plane().is_none());
     assert!(c2b.aircraft().wingmen().is_none());
+    // The engine default is row 5 of the airframe table: the Devastator.
+    assert_eq!(cs_app::mission_start::airframe_index("Devastator"), Some(5));
+    let default_airframe = table_airframe("Devastator");
     for preset in retail
         .catalog
         .presets_for_scenario(&c2b.scenario_id().expect("a scenario id"))
     {
-        let player = &preset.parameters().roster().actors_on(ScenarioSide::Player)[0];
-        assert!(
-            matches!(player.airframe(), Resolved::Unknown { .. }),
-            "{}: the player airframe is unknown, not defaulted",
-            preset.id()
-        );
-        assert_eq!(preset.unmeasured_facts().len(), 1);
-        // The launch is refused on the missing wingman count before anything
-        // else, naming it.
-        let refusal = lower_preset(&retail.catalog, preset.id())
-            .expect_err("a preset with an unmeasured fact does not launch");
-        let LowerError::UnknownValue { field, reason, .. } = refusal else {
-            panic!("expected an UnknownValue refusal");
+        let roster = preset.parameters().roster();
+        let player = &roster.actors_on(ScenarioSide::Player)[0];
+        let Resolved::Known(known) = player.airframe() else {
+            panic!("{}: the engine default airframe is known", preset.id());
         };
-        assert_eq!(field, "wingman count");
-        assert!(reason.contains("num_wingmen"));
+        assert_eq!(&known.value, &default_airframe, "{}", preset.id());
+        assert_eq!(
+            known.provenance.claim_id.as_str(),
+            "f49.d.02b.ia-scenario-defaults",
+            "the default is recorded as inferred from the absent key"
+        );
+        assert_eq!(known.provenance.class, ClaimStatus::Inferred);
+        assert!(roster.actors_on(ScenarioSide::Ally).is_empty());
+        assert!(preset.unmeasured_facts().is_empty());
     }
 }
 
@@ -413,7 +408,6 @@ fn accept_f49_d_03_retail_every_unmeasured_dimension_refuses_at_lowering_with_it
         ));
         assert!(matches!(preset.title(), Resolved::Unknown { .. }));
 
-        let wingmen_known = preset.unmeasured_facts().is_empty();
         let refusal = lower_preset(&retail.catalog, preset_id)
             .expect_err("no retail preset launches while its dimensions are unmeasured");
         let LowerError::UnknownValue {
@@ -424,17 +418,13 @@ fn accept_f49_d_03_retail_every_unmeasured_dimension_refuses_at_lowering_with_it
         else {
             panic!("{preset_id}: expected UnknownValue, got {refusal:?}");
         };
-        if wingmen_known {
-            assert_eq!(field, "scenario difficulty", "{preset_id}");
-            assert_eq!(reason, DIFFICULTY_UNMEASURED_REASON);
-            assert!(claim_id.as_str().starts_with("f49.d.03.unmeasured."));
-            // The refusal reads as a sentence naming field and reason.
-            let sentence = refusal.to_string();
-            assert!(sentence.contains("scenario difficulty is unknown"));
-            assert!(sentence.contains("F32-D"));
-        } else {
-            assert_eq!(field, "wingman count");
-        }
+        assert_eq!(field, "scenario difficulty", "{preset_id}");
+        assert_eq!(reason, DIFFICULTY_UNMEASURED_REASON);
+        assert!(claim_id.as_str().starts_with("f49.d.03.unmeasured."));
+        // The refusal reads as a sentence naming field and reason.
+        let sentence = refusal.to_string();
+        assert!(sentence.contains("scenario difficulty is unknown"));
+        assert!(sentence.contains("F32-D"));
 
         // Supply difficulty from the fixture: the rules refuse next.
         let with_difficulty = rebuilt(
@@ -449,14 +439,12 @@ fn accept_f49_d_03_retail_every_unmeasured_dimension_refuses_at_lowering_with_it
         else {
             panic!("expected UnknownValue");
         };
-        if wingmen_known {
-            assert_eq!(field, "scenario victory rules", "{preset_id}");
-            assert!(reason.contains("VictoryCondition vocabulary"));
-            assert!(
-                reason.contains(preset.original_mission_type().expect("a mission type")),
-                "the rules refusal names the mission type it could not map"
-            );
-        }
+        assert_eq!(field, "scenario victory rules", "{preset_id}");
+        assert!(reason.contains("VictoryCondition vocabulary"));
+        assert!(
+            reason.contains(preset.original_mission_type().expect("a mission type")),
+            "the rules refusal names the mission type it could not map"
+        );
 
         // Supply rules too: the first actor's faction refuses.
         let rules = VictoryRules::try_new(
@@ -473,36 +461,30 @@ fn accept_f49_d_03_retail_every_unmeasured_dimension_refuses_at_lowering_with_it
             Some(rules),
             false,
         );
-        if wingmen_known {
-            let LowerError::UnknownValue { field, reason, .. } =
-                lower_preset(&with_rules, preset_id).expect_err("factions are unmeasured")
-            else {
-                panic!("expected UnknownValue");
-            };
-            assert_eq!(field, "player slot 0 faction", "{preset_id}");
-            assert_eq!(reason, FACTION_UNMEASURED_REASON);
+        let LowerError::UnknownValue { field, reason, .. } =
+            lower_preset(&with_rules, preset_id).expect_err("factions are unmeasured")
+        else {
+            panic!("expected UnknownValue");
+        };
+        assert_eq!(field, "player slot 0 faction", "{preset_id}");
+        assert_eq!(reason, FACTION_UNMEASURED_REASON);
 
-            // Supply every faction too: the loadout refuses next (the player
-            // airframe is measured, so the airframe does not).
-            let with_factions = rebuilt(
-                retail,
-                preset,
-                Some(synthetic_difficulty(DifficultyTier::Standard)),
-                Some(rules),
-                true,
-            );
-            let LowerError::UnknownValue { field, reason, .. } =
-                lower_preset(&with_factions, preset_id).expect_err("loadouts are unmeasured")
-            else {
-                panic!("expected UnknownValue");
-            };
-            let c2b = preset.id().as_str().starts_with("ia_preset/c2b-");
-            if c2b {
-                unreachable!("c2b is refused on its wingman count above");
-            }
-            assert_eq!(field, "player slot 0 loadout", "{preset_id}");
-            assert_eq!(reason, LOADOUT_UNMEASURED_REASON);
-        }
+        // Supply every faction too: the loadout refuses next (the player
+        // airframe is measured, so the airframe does not).
+        let with_factions = rebuilt(
+            retail,
+            preset,
+            Some(synthetic_difficulty(DifficultyTier::Standard)),
+            Some(rules),
+            true,
+        );
+        let LowerError::UnknownValue { field, reason, .. } =
+            lower_preset(&with_factions, preset_id).expect_err("loadouts are unmeasured")
+        else {
+            panic!("expected UnknownValue");
+        };
+        assert_eq!(field, "player slot 0 loadout", "{preset_id}");
+        assert_eq!(reason, LOADOUT_UNMEASURED_REASON);
     }
 }
 

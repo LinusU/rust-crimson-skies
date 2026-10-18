@@ -3957,16 +3957,55 @@ impl IaOfferedType {
     }
 }
 
-/// The player's aircraft a descriptor names, or why it names none.
+/// The claim the executable's scenario-record defaults are recorded under.
+pub const IA_ENGINE_DEFAULTS_CLAIM: &str = "f49.d.02b.ia-scenario-defaults";
+
+/// The airframe-table index the executable's scenario record holds for
+/// `player_plane` before `ia.zrd` is read (`mov [ebp+4], 5` at `0x459008`,
+/// inside the record initialiser `0x458ff0`): row 5, `Devastator`.
+pub const IA_ENGINE_DEFAULT_PLAYER_PLANE_INDEX: usize = 5;
+
+/// The `num_wingmen` the same initialiser leaves in the record
+/// (`mov [ebp+8], 0` at `0x45900b`).
+pub const IA_ENGINE_DEFAULT_WINGMEN: u32 = 0;
+
+/// The player's aircraft a scenario uses, and where that came from.
+///
+/// The setup routine (`0x459390`) resets its record with `0x458ff0` (via
+/// `0x45a120`, called at `0x45a152` right before `ia.zrd` is opened) and then
+/// overwrites `player_plane` only when the key is present (`test eax, eax; je`
+/// at `0x4593f3`); a present name the airframe table lacks becomes `5` as well
+/// (`0x459409`). So an absent key leaves the initialiser's value.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum IaPlayerPlane {
     /// The descriptor's `player_plane`.
     Declared(String),
-    /// The descriptor declares no `player_plane`. No plane is substituted.
-    Unknown {
-        /// Why the plane is unknown.
-        reason: &'static str,
+    /// The descriptor declares no `player_plane`; the executable's record keeps
+    /// the airframe-table row its initialiser wrote.
+    EngineDefault {
+        /// The airframe-table row index ([`IA_ENGINE_DEFAULT_PLAYER_PLANE_INDEX`]).
+        index: usize,
     },
+}
+
+/// The wingman count a scenario uses, and where that came from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IaWingmen {
+    /// The descriptor's `num_wingmen`.
+    Declared(u32),
+    /// The descriptor declares no `num_wingmen`; the record keeps its
+    /// initialiser's value ([`IA_ENGINE_DEFAULT_WINGMEN`]).
+    EngineDefault(u32),
+}
+
+impl IaWingmen {
+    /// How many wingmen the scenario seats.
+    #[must_use]
+    pub const fn count(self) -> u32 {
+        match self {
+            Self::Declared(count) | Self::EngineDefault(count) => count,
+        }
+    }
 }
 
 /// What one `ZBD/<group>/IA<n>/zrdr.zbd` `ia.zrd` declares.
@@ -4047,14 +4086,23 @@ impl IaDirectory {
         &self.zone_bindings
     }
 
-    /// The player's plane, or the reason it is unknown.
+    /// The player's plane: the descriptor's, else the executable's default.
     #[must_use]
     pub fn player_plane(&self) -> IaPlayerPlane {
         match self.aircraft.player_plane() {
             Some(plane) => IaPlayerPlane::Declared(plane.to_owned()),
-            None => IaPlayerPlane::Unknown {
-                reason: "the descriptor declares no player_plane",
+            None => IaPlayerPlane::EngineDefault {
+                index: IA_ENGINE_DEFAULT_PLAYER_PLANE_INDEX,
             },
+        }
+    }
+
+    /// The wingman count: the descriptor's, else the executable's default.
+    #[must_use]
+    pub fn wingmen(&self) -> IaWingmen {
+        match self.aircraft.wingmen() {
+            Some(count) => IaWingmen::Declared(count),
+            None => IaWingmen::EngineDefault(IA_ENGINE_DEFAULT_WINGMEN),
         }
     }
 
