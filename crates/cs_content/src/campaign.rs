@@ -269,6 +269,13 @@ pub enum CampaignError {
         /// The entry node.
         node: CampaignNodeId,
     },
+    /// The entry node is an ending. Designed engine rule (not measured from
+    /// original data): an ending cannot report an outcome, so a run parked on
+    /// one is finished at tick 0 — a campaign that is over before it starts.
+    EndingEntry {
+        /// The entry node.
+        node: CampaignNodeId,
+    },
     /// An edge names a node that is not declared.
     DanglingEdge {
         /// The edge's source node.
@@ -358,6 +365,9 @@ impl fmt::Display for CampaignError {
             }
             Self::InterludeEntry { node } => {
                 write!(f, "the campaign's entry node {node} is an interlude")
+            }
+            Self::EndingEntry { node } => {
+                write!(f, "the campaign's entry node {node} is an ending")
             }
             Self::DanglingEdge { from, to } => {
                 write!(f, "node {from} edges to undeclared node {to}")
@@ -455,6 +465,9 @@ impl CampaignDefinition {
         }
         if matches!(nodes[&draft.entry].kind, NodeKind::Interlude { .. }) {
             return Err(CampaignError::InterludeEntry { node: draft.entry });
+        }
+        if nodes[&draft.entry].kind == NodeKind::Ending {
+            return Err(CampaignError::EndingEntry { node: draft.entry });
         }
         for node in nodes.values() {
             if let NodeKind::Mission {

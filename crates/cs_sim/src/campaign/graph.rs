@@ -96,6 +96,12 @@ pub enum GraphError {
         /// The entry node.
         node: CampaignNodeKey,
     },
+    /// The entry node is an ending. Designed engine rule (not measured from
+    /// original data): a run parked on an ending is finished at tick 0.
+    EndingEntry {
+        /// The entry node.
+        node: CampaignNodeKey,
+    },
     /// An edge targets an undeclared node.
     DanglingEdge {
         /// The source node.
@@ -164,6 +170,9 @@ impl fmt::Display for GraphError {
             }
             Self::InterludeEntry { node } => {
                 write!(f, "the graph's entry node {node} is an interlude")
+            }
+            Self::EndingEntry { node } => {
+                write!(f, "the graph's entry node {node} is an ending")
             }
             Self::DanglingEdge { from, to } => {
                 write!(f, "node {from} edges to undeclared node {to}")
@@ -238,6 +247,9 @@ impl CampaignGraph {
         }
         if map[&entry].kind == RuntimeNodeKind::Interlude {
             return Err(GraphError::InterludeEntry { node: entry });
+        }
+        if map[&entry].kind == RuntimeNodeKind::Ending {
+            return Err(GraphError::EndingEntry { node: entry });
         }
         for node in map.values() {
             if let RuntimeNodeKind::Mission { mission } = &node.kind
