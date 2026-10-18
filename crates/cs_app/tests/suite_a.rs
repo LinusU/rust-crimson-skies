@@ -13,6 +13,7 @@
 //! count; `cs_xtask test-layout` requires every `.rs` file under `tests/` to
 //! be reached from one target (a shared, test-free helper excepted).
 
+mod eh_frame_gate;
 mod campaign {
     mod accept_m01_b_wake;
     mod common;

@@ -9,6 +9,8 @@
 //! count; `cs_xtask test-layout` requires every `.rs` file under `tests/` to
 //! be reached from one target (a shared, test-free helper excepted).
 
+mod accept_t336_suite_c_image;
+mod eh_frame_gate;
 mod campaign {
     mod common;
     mod vs_m01_geometry_verdict;

@@ -74,7 +74,7 @@ cs_xtask = { path = "../../tools/cs_xtask" }
 [package.metadata.cs_test_layout]
 test_targets = 5
 # `campaign/common.rs` is test-free support that several binaries compile.
-shared_test_sources = ["tests/campaign/common.rs"]
+shared_test_sources = ["tests/campaign/common.rs", "tests/eh_frame_gate.rs"]
 
 [[test]]
 name = "cs_app_tests_a"

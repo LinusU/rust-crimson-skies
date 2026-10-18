@@ -6,6 +6,8 @@
 //!
 //! See `docs/findings/2026-10-17-t1543-cs-app-test-binaries.md`.
 
+mod accept_t336_suite_e_image;
+mod eh_frame_gate;
 mod campaign {
     mod common;
     mod m01_play_world_evidence;
