@@ -1526,6 +1526,7 @@ pub fn open_composed_mission_weapons(world: &mut World) {
         .and_then(|stage| stage.weapon_counts);
     match open_mission_weapons_with(session, rate, generation, counts) {
         Ok(sessions) => {
+            let sessions_player = sessions.mission.player();
             let _ = sessions.install(world);
             let player = world
                 .get_resource::<super::MissionComposition>()
@@ -1533,6 +1534,19 @@ pub fn open_composed_mission_weapons(world: &mut World) {
             match player {
                 Some(player) => {
                     let _ = attach_player_rig(world, player);
+                    let actor = sessions_player;
+                    match super::player_victim::attach_player_victim(
+                        world, player, actor, generation,
+                    ) {
+                        Ok(victim) => world.insert_resource(victim),
+                        Err(reason) => {
+                            if let Some(mut report) =
+                                world.get_resource_mut::<MissionWeaponReport>()
+                            {
+                                report.refused = Some(reason);
+                            }
+                        }
+                    }
                 }
                 None => {
                     if let Some(mut report) = world.get_resource_mut::<MissionWeaponReport>() {
@@ -1669,6 +1683,12 @@ impl Plugin for MissionWeaponsPlugin {
                     .after(avian3d::prelude::PhysicsSystems::StepSimulation)
                     .before(crate::weapons::drive_weapon_session)
                     .before(crate::damage::drive_damage_schedule),
+            )
+            .add_systems(
+                FixedPostUpdate,
+                super::player_victim::compose_player_hull_box
+                    .after(avian3d::prelude::PhysicsSystems::StepSimulation)
+                    .before(crate::weapons::drive_weapon_session),
             )
             .add_systems(
                 FixedPostUpdate,

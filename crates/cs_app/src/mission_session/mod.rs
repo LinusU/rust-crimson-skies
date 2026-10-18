@@ -113,6 +113,7 @@ mod lifecycles;
 mod observation;
 mod original_keys;
 pub(crate) mod parts;
+mod player_victim;
 mod player_visual;
 mod radio;
 mod scenario;
@@ -223,6 +224,11 @@ pub use parts::{
     MissionPartSweep, TurretRecord, classed_part_node, designed_part_node, part_entities,
     part_in_play, part_state_chains, part_state_node, part_sweep_geometry, pattern_matches,
     plan_part_states, read_turret_records, spawn_part_state, turret_part_node, turret_record_for,
+};
+pub use player_victim::{
+    DESIGNED_PLAYER_HALF_EXTENTS_M, DESIGNED_PLAYER_INTEGRITY, M01_PLAYER_DAMAGE_CLAIM,
+    M01_PLAYER_DAMAGE_UNKNOWN_CLAIM, PlayerHullBox, PlayerVictim, attach_player_victim,
+    compose_player_hull_box,
 };
 pub use player_visual::{
     MISSION_PLAYER_AIRCRAFT_ROOT_NAME, MISSION_PLAYER_BLUR_NODE_NAME,
