@@ -714,3 +714,75 @@ va = 0x47b062
 kind = "u32"
 value = 4
 meaning = "imm32 of `mov [edi+0xa4], imm` at 0x47b05c: the mode word a vehicle.zrd record with `mode: wingman` gets; copied to vehicle+0x67c by 0x475abf"
+
+# The player-leader case of the wingman follower (#1571
+# M01-WINGMAN-PLAYER-LEADER, finding
+# docs/findings/2026-10-18-m01-wingman-player-leader.md): the default leader
+# literal, the vehicle-record size fields it relies on and the stick-writer
+# constants the #1563 rows leave unnamed. `kind` is how the value is stored at
+# `va`: f32 / f64 little-endian IEEE, u32 little-endian dword, cstr a
+# NUL-terminated string. Every value is read back from the image by
+# accept_m01_wingman_player_leader_rows_match_the_image. `static` only.
+
+[[ai_player_leader]]
+name = "default_leader_name"
+claim = "OWNER-STATIC-2026-10-18"
+provenance = "static"
+va = 0x628364
+kind = "cstr"
+value = "player"
+meaning = "the literal the vehicle loader stores in vehicle+0x2f8 when a mode-4 (`mode: wingman`) record has no primary target (`push 0x628364` at 0x47c6d4); the post-spawn pass 0x475347 resolves it by name to the player vehicle"
+
+[[ai_player_leader]]
+name = "stick_unit_scale"
+claim = "OWNER-STATIC-2026-10-18"
+provenance = "static"
+va = 0x6032dc
+kind = "f32"
+value = 1.0
+meaning = "numerator of the 1/|(bx,by)| normalisation of the body-frame aim when the goal is ahead on body z (0x41bc48)"
+
+[[ai_player_leader]]
+name = "stick_level_forward_y_max"
+claim = "OWNER-STATIC-2026-10-18"
+provenance = "static"
+va = 0x603500
+kind = "f64"
+value = 0.8999999761581421
+meaning = "wings-level assist: only while |basis[0x19c]| (the y of basis row 2) is below this (0x41bd8b); stored as an 8-byte double (the widened single 0.9)"
+
+[[ai_player_leader]]
+name = "stick_level_gain"
+claim = "OWNER-STATIC-2026-10-18"
+provenance = "static"
+va = 0x6034fc
+kind = "f32"
+value = 0.2
+meaning = "multiplier of the wings-level assist axis written to vehicle+0x100 (0x41bddf)"
+
+[[ai_player_leader]]
+name = "stick_recover_forward_y_max"
+claim = "OWNER-STATIC-2026-10-18"
+provenance = "static"
+va = 0x6034f8
+kind = "f32"
+value = -0.5
+meaning = "recovery: while basis[0x19c] (y of basis row 2) is below this and the speed vehicle+0x934 is below follow_speed_band, the writer sets vehicle+0x108 to +/-1 and the throttle target to follow_throttle_max (0x41bdf5..0x41be41)"
+
+[[ai_player_leader]]
+name = "stick_limit_bonus"
+claim = "OWNER-STATIC-2026-10-18"
+provenance = "static"
+va = 0x6034f4
+kind = "f32"
+value = 0.25
+meaning = "added to each of the three axis limits (vehicle+0x8d4..+0x8d8 or +0x8ec..+0x8f0) when the global byte 0x64ee4c is set (0x41beec..)"
+
+[[ai_player_leader]]
+name = "stick_gain_bonus"
+claim = "OWNER-STATIC-2026-10-18"
+provenance = "static"
+va = 0x6032e0
+kind = "f32"
+value = 0.5
+meaning = "added to each of the three axis gains (vehicle+0x8c4..+0x8d0 or +0x8dc..+0x8e8) when the global byte 0x64ee4c is set (0x41be62..)"
