@@ -137,7 +137,9 @@ mod scene;
 
 // Helpers shared by the retail tests and their evidence reports.
 mod accept_f49_d_01_ia_denominator;
+mod accept_f49_d_02b_engine_defaults;
 mod evidence_report_f49_d_01;
+mod evidence_report_f49_d_02b;
 mod f22_h_support;
 mod f22_j_support;
 mod f27_d_support;
