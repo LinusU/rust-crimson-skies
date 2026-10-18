@@ -282,6 +282,7 @@ mod m01_lc_campaign_airframe_pose_evidence;
 mod m01_lc_fc_b;
 mod m01_lc_player_airframe_source;
 mod m01_lc_player_config;
+mod m01_outcome_attacker;
 mod m01_play_triggers_turret_class;
 mod m01_window_actors;
 mod m01_wingman_formation_a;
