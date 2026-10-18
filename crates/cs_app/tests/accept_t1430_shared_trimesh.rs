@@ -266,10 +266,9 @@ fn scaled_transform(scale: [f64; 3], translation: [f64; 3]) -> CanonicalTransfor
     .expect("a positive diagonal scale with a translation is exact")
 }
 
-/// A world with two objects naming **one** mesh at **different** scales, so the
-/// shared shape and the per-object scaling are both exercised by the production
-/// path.
-fn scaled_world(id: &ContentId) -> WorldDefinition {
+/// A world with two objects naming **one** mesh, each at its own scale, so
+/// sharing and per-object placement are both exercised by the production path.
+fn two_record_world(id: &ContentId, scales: [[f64; 3]; 2], world_key: &str) -> WorldDefinition {
     let sector = SectorId::new("only").expect("the sector key is valid");
     let object_sector = sector.clone();
     let mesh_ref = || known(id.clone(), "mesh");
@@ -288,7 +287,7 @@ fn scaled_world(id: &ContentId) -> WorldDefinition {
     };
 
     WorldDefinition::try_new(
-        WorldId::from_key("test.scaled_world").expect("the world key is valid"),
+        WorldId::from_key(world_key).expect("the world key is valid"),
         Origin::SyntheticFixture,
         known(cs_content::world::WorldBoundary::default(), "boundary"),
         vec![Sector::new(
@@ -296,12 +295,18 @@ fn scaled_world(id: &ContentId) -> WorldDefinition {
             Aabb::try_new([-10.0, -10.0, -10.0], [10.0, 10.0, 10.0]).expect("the bounds are valid"),
         )],
         vec![
-            instance(SMALL_KEY, SCALE_A, -2.0),
-            instance(LARGE_KEY, SCALE_B, 2.0),
+            instance(SMALL_KEY, scales[0], -2.0),
+            instance(LARGE_KEY, scales[1], 2.0),
         ],
         provenance("definition"),
     )
     .expect("the definition is structurally valid: one sector, two objects")
+}
+
+/// The two-record world at two **different** non-uniform scales: the shape must
+/// be shared while each object's own scale stays its own.
+fn scaled_world(id: &ContentId) -> WorldDefinition {
+    two_record_world(id, [SCALE_A, SCALE_B], "test.scaled_world")
 }
 
 /// The stored corners scaled per axis, as sorted bit patterns so the comparison
@@ -433,4 +438,130 @@ fn accept_t1430_a_per_entity_scale_does_not_leak_into_a_shared_shape() {
             "`{key}`'s entity must carry the scale its collider was scaled by"
         );
     }
+}
+
+// --------------------------------------------------------------------------
+// The declared subnormal flush reaches the shared shape.
+// --------------------------------------------------------------------------
+
+/// The corpus's own subnormal bit pattern: `0x0000_0003` is the smallest
+/// positive subnormal, the one parry's binned BVH builder cannot bin when it
+/// divides by a leaf-AABB extent. Authored here as the *stored* value; only the
+/// declared [`SUBNORMAL_POSITION_CLAIM`] rule may change it.
+const STORED_SUBNORMAL_BITS: u32 = 0x0000_0003;
+
+/// The same right triangle as [`TRIANGLE`], with its first corner's `x` a
+/// **stored subnormal**.
+///
+/// A non-degenerate triangle after the flush, so the shape is a real trimesh
+/// whatever the rule does to that component: the premise under test is the bit
+/// pattern, not a collapsed solid.
+fn subnormal_triangle_raw_mesh() -> RawMesh {
+    RawMesh {
+        positions: vec![
+            [f32::from_bits(STORED_SUBNORMAL_BITS), 0.0, 0.0],
+            [4.0, 0.0, 0.0],
+            [0.0, 0.0, 3.0],
+        ],
+        normals: Vec::new(),
+        polygons: vec![RawPolygon {
+            kind: PrimitiveKind::Polygon,
+            raw_flags: 0,
+            material: 0,
+            corners: (0..TRIANGLE.len())
+                .map(|position| RawCorner {
+                    position: position as u32,
+                    normal: None,
+                    uv: None,
+                    color: None,
+                })
+                .collect(),
+        }],
+    }
+}
+
+/// **The declared subnormal flush applies to the shape every record shares, not
+/// just to the first one's copy.**
+///
+/// Task #1430's third acceptance criterion: the upload boundary canonicalises
+/// subnormal position components under
+/// [`SUBNORMAL_POSITION_CLAIM`](cs_app::render::bevy_mesh::SUBNORMAL_POSITION_CLAIM),
+/// and a shape derived once per upload and cloned must therefore carry the
+/// **flushed** corners — a per-object derivation that forgot the rule, or a
+/// cache fed from a different buffer, would hand parry the raw subnormal and
+/// the binned BVH builder would panic on it.
+///
+/// Observable failure when the flush is removed from the derivation: the shared
+/// shape's corner set keeps `0x0000_0003` instead of `+0.0`, so the equality
+/// fails, and the spawn itself may panic inside parry.
+#[test]
+fn accept_t1430_the_declared_subnormal_flush_reaches_the_shared_shape() {
+    let render = RenderMesh::build(&subnormal_triangle_raw_mesh())
+        .expect("the subnormal triangle's single outline decodes through the production gate");
+    // The premise: the reader is faithful and the stored corner really is
+    // subnormal, so a flush that does nothing would be visible below.
+    assert_eq!(
+        render
+            .vertices()
+            .iter()
+            .flat_map(|vertex| vertex.position)
+            .filter(|component| component.is_subnormal())
+            .count(),
+        1,
+        "the authored premise: exactly one stored position component is subnormal"
+    );
+
+    let id = ContentId::from_source(ContentKind::Mesh, "synthetic.t1430_subnormal_triangle")
+        .expect("the mesh id is valid");
+    let mut meshes = WorldMeshes::new();
+    meshes
+        .insert_render_mesh(id.clone(), &render, &[])
+        .expect("a single group with no per-corner attribute uploads");
+    let uploaded = meshes.get(&id).expect("the mesh is registered");
+    assert!(
+        uploaded.subnormal_components() >= 1,
+        "the upload boundary reports the component it flushed, so the premise \
+         survives the production adapter: got {}",
+        uploaded.subnormal_components()
+    );
+
+    let mut app = world_app();
+    let report = spawn_world(
+        &mut app,
+        &two_record_world(&id, [[1.0; 3]; 2], "test.subnormal_shared_world"),
+        &meshes,
+    )
+    .expect("the subnormal world spawns");
+    for _ in 0..MESH_SETTLE_UPDATES {
+        app.update();
+    }
+
+    let small = collider_of(&app, &report, SMALL_KEY);
+    let large = collider_of(&app, &report, LARGE_KEY);
+    assert!(
+        shares_unscaled_shape(&small, &large),
+        "both records name one mesh, so they must share one derived shape before \
+         this test can say anything about what that shape carries"
+    );
+
+    // The shared shape is the **canonicalised** triangle: the subnormal `x` is
+    // the positive signed zero, and nothing else moved.
+    let canonicalised: BTreeSet<[u32; 3]> = [[0.0f32, 0.0, 0.0], [4.0, 0.0, 0.0], [0.0, 0.0, 3.0]]
+        .iter()
+        .map(|corner| corner.map(f32::to_bits))
+        .collect();
+    assert_eq!(
+        unscaled_corners(&small),
+        canonicalised,
+        "the shared shape must carry the corners the declared \
+         SUBNORMAL_POSITION_CLAIM rule flushed, bit for bit: a subnormal left in \
+         the cache would fail here and can panic parry's BVH builder"
+    );
+    assert!(
+        unscaled_corners(&small)
+            .iter()
+            .flatten()
+            .all(|bits| !f32::from_bits(*bits).is_subnormal()),
+        "no shared corner may keep a subnormal component"
+    );
 }

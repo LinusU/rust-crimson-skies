@@ -30,7 +30,8 @@ it returns `false`, the cache is never reached, and every spawned object built
 its own `TriMesh`: its own vertex and index copies and its own BVH. The *upload*
 was still shared (one `Handle<Mesh>`, one `Assets<Mesh>` entry per mesh); only
 the derived shape was duplicated. Measured on the twin harbor world before this
-change: four records over one shell mesh, four independent shapes.
+change: four records name one shell mesh and three of them collide, so three
+independent shapes — the fourth record is presentation-only and never had one.
 
 ## The fix
 
@@ -100,10 +101,18 @@ no original data:
 * `accept_t1430_a_per_entity_scale_does_not_leak_into_a_shared_shape` — two
   records on one mesh at two different non-uniform scales: one unscaled shape,
   two different scaled shapes, each the stored corners times its own scale.
+* `accept_t1430_the_declared_subnormal_flush_reaches_the_shared_shape` — two
+  records on a mesh whose stored corner carries the corpus's subnormal bit
+  pattern: one shared shape, and its corners are the **flushed** ones
+  (`SUBNORMAL_POSITION_CLAIM`), so a per-object or cache-fed derivation that
+  skipped the rule would hand parry the raw subnormal.
 
-Both were **verified to fail** when the sharing is removed (a temporary
+The first two were **verified to fail** when the sharing is removed (a temporary
 `shared_collider` that derived a shape per call): the twin test failed on
-`Arc::ptr_eq`, the scale test on the shared-unscaled-shape assertion.
+`Arc::ptr_eq`, the scale test on the shared-unscaled-shape assertion. The third
+was verified to fail when the canonicalisation is removed from the upload
+boundary (`canonicalise_position_component` returned its input): the shared
+corner kept `0x0000_0003` instead of `+0.0`.
 
 ## Checks on this branch
 
@@ -119,7 +128,7 @@ Both were **verified to fail** when the sharing is removed (a temporary
 | `cargo test --locked -p cs_app --test cs_app_tests_c -- world:: --include-ignored` | 158 passed, 3 failed — all three pre-existing evidence-harness preconditions (see below) |
 | `cargo test --locked -p cs_app --test cs_app_tests_c -- accept_f18_b_ --include-ignored` | 45 passed, 0 failed |
 | `cargo test --locked -p cs_app --test cs_app_tests_a -- accept_t424_ accept_t420_ accept_t1424_ --include-ignored` | 23 passed, 0 failed |
-| `cargo test --locked -p cs_app --test cs_app_tests_a -- accept_t1430_ --include-ignored` | 2 discovered, 2 passed |
+| `cargo test --locked -p cs_app --test cs_app_tests_a -- accept_t1430_ --include-ignored` | 3 discovered, 3 passed |
 | `cargo test --locked -p cs_app --test cs_app_tests_b -- accept_playtest_retail_retail_c1c_area_and_bloodhawk_mesh_spawn_and_capture --include-ignored` | 1 passed (retail, GPU capture; screenshots in `private/`) |
 
 All of it was measured on the final rebased tree; the whole `cs_app` test
