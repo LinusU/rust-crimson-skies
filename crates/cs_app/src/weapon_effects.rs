@@ -479,9 +479,10 @@ fn muzzle_transform(position: WorldPosition) -> Transform {
 // this pass presents in that same tick.
 //
 // What the schedule owns is the ordering and the honest gap: a tick with no
-// installed weapon session, no live scene generation or no audio session is
-// reported by name, and nothing is invented — but an effect is never left
-// undrained for a tick that could not present it either.
+// installed weapon session or no live scene generation presents nothing and
+// names the reason, and a tick with no audio session still presents the visual
+// half — an emitted effect is never left undrained behind a world that could
+// have spawned its muzzle record.
 
 /// An input the scheduled presentation pass needed but the world could not
 /// supply.
