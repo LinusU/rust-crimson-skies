@@ -9,6 +9,29 @@ never run). Implementer: **Devin SWE-2/swe2-max-1** (session of
 2026-10-09T12:40Z). No reviewer yet; an implementer's own run is not
 independent review and no agent review replaces the owner's human approval.
 
+## 2026-10-18 re-pin note (#1617)
+
+The mission labels in the records table below are the pre-correction
+layout's. Under the corrected campaign layout (commit `6df5715b0`,
+`docs/findings/2026-10-17-m01-archive-decision.md`):
+
+- `zbd/c1/m04` is `mission/ch2-m04` — the Northwest chapter's fourth
+  mission — not work order M04, which binds `ZBD/C3/M04/zrdr.zbd`
+  (`mission/ch1-m04`, `script/c3-m04-zrdr`) and whose record spells **no**
+  `ANIM_STATE` key at all;
+- `zbd/c2/m01` is bound to **M12**, not M06 — M06's own record
+  (`zbd/c1c/m01`) spells `ANIM_STATE` only as single-pair sites (see the
+  attribution note in `crates/cs_app/tests/campaign/m06_b.rs`, #1596);
+- `zbd/c2/m02` is not M07 — M07's own record (`zbd/c1/m02`) spells no
+  `ANIM_STATE`, as `m07_b` asserts.
+
+The mechanism this note measured is real and stays lowered: the
+`accept_m06_b_fu1_*` retail pins were re-derived from `zbd/c2/m01` under its
+correct attribution, M04-B's retail pin now asserts the key's absence from
+M04's own record, and the operand-list arms live on in the suites' synthetic
+members. The mechanism findings below — measured against the engine image —
+are unaffected.
+
 ## The measured mechanism, confirmed against the image
 
 The M01-LC directive-C finding

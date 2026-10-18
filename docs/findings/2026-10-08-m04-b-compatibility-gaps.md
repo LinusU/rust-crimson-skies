@@ -48,6 +48,45 @@ mission join remains M04-A's inference, directive *effects* are the stage A–D
 findings' static readings of the original code, and no original executable has
 been run.
 
+## 2026-10-18 re-pin on the corrected campaign layout (#1617)
+
+Every retail fact in the tables and counts below was measured on
+`ZBD/C1/M04/zrdr.zbd`. The corrected campaign layout (commit `6df5715b0`,
+`docs/findings/2026-10-17-m01-archive-decision.md`) positions that archive as
+a different campaign mission — `mission/ch2-m04`, the Northwest chapter's
+fourth — while M04's own binding (`missions/bindings/M04.json`) names
+`mission/ch1-m04` / `script/c3-m04-zrdr` / `ZBD/C3/M04/zrdr.zbd` (34 287
+bytes, SHA-256 `ea5243a2…77c3e`). So the record below is **historical for
+M04** and describes another mission's archive. The acceptance tests now pin
+M04's own record, re-derived through the same production code (the census,
+`read_control_member`, `measure_control_record`, `lower_control_record`,
+`SourceContext::control_program`):
+
+| Fact | Old pin (`ZBD/C1/M04`, now `ch2-m04`'s) | Re-pinned (`ZBD/C3/M04`) |
+| --- | --- | --- |
+| Mission / program id | `mission/ch2-m04` / `script/c1-m04-zrdr` | `mission/ch1-m04` / `script/c3-m04-zrdr` |
+| Archive | 74 692 bytes | 34 287 bytes |
+| Archive members | 15, control member 8th | 13, control member 8th |
+| Control member | `objectives.zrd` (only member with numbered blocks) | `objectives.zrd` (only member with numbered blocks) |
+| Record | 52 blocks, 201 sites, 40 keys | 23 blocks, 126 sites, 29 keys, 0 refusals, no unclassified record key |
+| Dispositions | 2 terminal, 37 measured, 1 unmeasured (`ANIM_STATE`) | 2 terminal, 27 measured, none unmeasured |
+| Success / failure latch | `OBJECTIVE32` (`INSTANTWIN`, napped by 31) / `OBJECTIVE41` (`INSTANTLOSS`, napped by 27) | `OBJECTIVE16` (`INSTANTWIN`, woken by 15) / `OBJECTIVE10` (`INSTANTLOSS`, napped by 9) |
+| Cross-objective addresses | 58 (24 wake, 7 kill, 23 nap, 4 gate), range 1…52 | 20 (10 wake, 10 nap), range 1…23 |
+| `ANIM_STATE` | 3 sites (2- and 18-operand shapes), the suite's one gap → M04-B-FU1 (#806) | not spelled — the operand-list mechanism stays pinned by this suite's synthetic members and by the retail records that spell it (e.g. M06's) |
+| Lowering | 198 of 201 sites bound before FU1; complete after | complete: 126 of 126 sites bind, all 23 conditions lower, `MissionProgram::validate` accepts |
+
+Test changes: the FU1 retail pin described the old archive's `ANIM_STATE`
+sites, so it was renamed
+(`…_the_bound_record_spells_no_anim_state_and_m04s_record_completes`) and
+re-asserted against the corrected record; the four synthetic
+`accept_m04_b_fu1_*` members pin the mechanism and stand. The M04-B and
+M04-B-FU1 evidence reports were regenerated on this layout. Nothing here is
+`verified_original`; the wrong-actor, wrong-session and repeated-event halves
+of the sheet's priorities stay unmeasured runtime observations.
+
+The sections below are the measurement as M04-B originally made it, kept as
+history.
+
 ## What changed
 
 No production code. The census (`cs_app::mission_control`), the directive
