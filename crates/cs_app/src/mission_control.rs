@@ -18,6 +18,14 @@
 //! typed keyed list in one named member, and the member is found by a rule rather
 //! than by name — see [`cs_content::mission_control::control_member`].
 //!
+//! (Correction, 2026-10-14, F13-D #640: that search never could have resolved a
+//! program, because the owner's static analysis of the decrypted executable found
+//! no numeric opcode stream in any of the three program families — mission reader
+//! members are keyword-read typed trees, INTERP bodies a named text-command
+//! language, animation payloads typed event records. The retail census is now
+//! 1452 = 40 directive + 1412 modelled, 0 stopped at `unknown_opcode`. The
+//! sentence above stays as the record of what F13-B reported.)
+//!
 //! This census therefore answers a narrower, checkable question than F13-B's:
 //! **which member is the control program, and what does it declare?** Every
 //! number is re-derived from `$CS_GAME_DIR` on each run, so a stale constant

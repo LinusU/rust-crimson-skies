@@ -263,10 +263,12 @@ fn evidence_report_f38_b_writes_the_acceptance_report() {
              table (which `$$X$$` names which native) is the owner's static analysis of the \
              decrypted executable, not an original run, and it is static code evidence, never \
              verified_original; (3) the mission-language host calls are NOT measured and not \
-             claimed -- F13-D has not run, the mission opcode table is unmeasured and all 1452 \
-             located programs stop at their first counter, so the reader-archive programs \
-             (objectives.zrd, targets.zrd, aiv.zrd and their siblings) are still located only by \
-             name; (4) these programs are the UI script family, not the mission language, and \
+             claimed -- F13-D (#640) has since run and found no numeric opcode stream in the \
+             retail corpus (1452 located programs = 40 directive + 1412 modelled, 0 stopped at \
+             unknown_opcode; the pre-F13-D census had all 1452 stopping at their first counter), \
+             but the reader-archive programs (objectives.zrd, targets.zrd, aiv.zrd and their \
+             siblings) are data read by keyword by native consumers and no host-call table for \
+             them is measured here; (4) these programs are the UI script family, not the mission language, and \
              nothing asserts that a measured dispatch value means the same thing in a mission \
              program or that the two share a VM; (5) cancellation semantics and the repeatability \
              of any measured dispatch value are unknown, and no measured family has one yet; \

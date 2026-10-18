@@ -150,8 +150,9 @@ fn review_method(
          measured and what any declaration DOES is not - no original executable has been run, so \
          nothing here is evidence of behaviour; (2) the mission-language instruction table the \
          F13-C census searched for is not what a mission-scoped reader contains: its control \
-         program is a typed keyed list in one member, and the bytecode mission VM that F13-B/C \
-         reported as 0-of-1452 resolved remains unlocated and unmeasured; (3) lower_program's \
+         program is a typed keyed list in one member, and F13-D (#640, owner's static analysis) \
+         established that there is no bytecode mission VM to locate: F13-B/C's 0-of-1452 \
+         resolved was a search for something the corpus does not contain, not a gap in it; (3) lower_program's \
          requirements are unmet on some archives - {} - and the unmeasured fields it names are {}; \
          {complete_rows} of the {measured_rows} measured archive(s) lower completely today, which \
          says that record's own lowering attempt produced a validated program and nothing more - a \

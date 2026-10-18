@@ -2,6 +2,14 @@
 
 > **Archive attribution note (#1568, after #1565 `M01-ARCHIVE-DECISION`).** The measurements in this document were taken on `ZBD/C1C/M01/zrdr.zbd` under the pre-decision "M01" label. That archive is campaign position `ch2-m01`, work order **M06** "The Red Menace"; M01 "The Lost Treasure" is `ZBD/C3/M01/zrdr.zbd`. The bytes measured are unchanged; read every "M01" attribution below as M06. See `docs/findings/2026-10-17-m01-archive-decision.md`. The text below is the original historical record and is not rewritten.
 
+> **Correction (2026-10-14, F13-D task #640; recorded by #1422).** "1412 are still
+> binary-walked and stop at `unknown_opcode`" below was true when measured and is
+> superseded. F13-D established that none of those 1412 programs is a numeric
+> opcode stream and classified each with its real model: 1452 located programs =
+> 40 directive + 1412 modelled, **0** stopped at `unknown_opcode`. See
+> `docs/findings/2026-10-14-f13-d-every-program-family-has-its-real-model.md`.
+> The measurement text below is kept unchanged as history.
+
 Date: 2026-10-12. Task: **M01-B-OPC** (#1356), re-scoped by the owner on
 2026-10-12 from "measure the opcode signature table" to "classify reader-text
 members as directive programs". Shared contract: `docs/contracts/SCRIPT-MISSION.md`.
