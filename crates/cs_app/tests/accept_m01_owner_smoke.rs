@@ -98,6 +98,8 @@ fn healthy() -> SmokeMeasurements {
             max_live_rounds: 6,
             rounds_drawn: Some(true),
             rounds_examined: 6,
+            flash_frames: 12,
+            flashes_undrawn: 0,
         },
         rocket: RocketMetrics {
             launched: true,
@@ -143,6 +145,7 @@ fn accept_m01_owner_smoke_the_judge_passes_a_mission_the_player_can_see_and_shoo
         "actors_project_and_cover",
         "weapon_guns_fire",
         "weapon_rounds_drawn",
+        "weapon_muzzle_flash_drawn",
         "weapon_rocket_launches",
         "audio_radio_queued",
         "audio_engine_queued",
@@ -233,6 +236,8 @@ fn accept_m01_owner_smoke_the_judge_fails_everything_the_owner_could_not_see() {
             max_live_rounds: 6,
             rounds_drawn: Some(false),
             rounds_examined: 6,
+            flash_frames: 0,
+            flashes_undrawn: 0,
         },
         rocket: RocketMetrics {
             launched: false,
@@ -263,6 +268,7 @@ fn accept_m01_owner_smoke_the_judge_fails_everything_the_owner_could_not_see() {
         "hud_objective_current",
         "actors_project_and_cover",
         "weapon_rounds_drawn",
+        "weapon_muzzle_flash_drawn",
         "weapon_rocket_launches",
     ] {
         assert!(
@@ -544,6 +550,7 @@ fn accept_m01_owner_smoke_the_windowed_launch_runs_the_scripted_smoke() {
         "actors_project_and_cover",
         "weapon_guns_fire",
         "weapon_rounds_drawn",
+        "weapon_muzzle_flash_drawn",
         "weapon_rocket_launches",
         "audio_radio_queued",
         "audio_engine_queued",

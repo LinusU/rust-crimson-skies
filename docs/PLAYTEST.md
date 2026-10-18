@@ -485,6 +485,7 @@ exits **non-zero when any check fails**:
 | `actors_project_and_cover` | any spawned actor is off screen or covers under 8 pixels from its placement (each member with no drawn entity at all is named in the report) |
 | `weapon_guns_fire` | the held second sent under two rounds through the mission's weapon session |
 | `weapon_rounds_drawn` | a live round entity carries no mesh — a shot the player cannot see |
+| `weapon_muzzle_flash_drawn` | no muzzle-effect record was live during the held second, or one carried no drawn flash (a designed stand-in, #1595) |
 | `weapon_rocket_launches` | `Left Ctrl` beside a declared-hostile actor launched no rocket |
 | `audio_radio_queued` | no radio line ever reached the queue or the mixer |
 | `audio_engine_queued` | the engine loop was never bound and running |

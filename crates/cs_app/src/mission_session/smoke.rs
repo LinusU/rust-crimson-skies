@@ -28,6 +28,7 @@
 //! | `actors_project_and_cover` | every spawned actor projects onto the screen and covers more than `MIN_ACTOR_PIXELS` |
 //! | `weapon_guns_fire` | holding `Space` for a second sends more than one round through the mission's weapon session |
 //! | `weapon_rounds_drawn` | every live round entity carries a mesh, i.e. a tracer the player can see |
+//! | `weapon_muzzle_flash_drawn` | every muzzle-effect record seen during the hold carries a drawn flash, and at least one was seen |
 //! | `weapon_rocket_launches` | `Left Ctrl` near a declared-hostile actor launches a rocket |
 //! | `audio_radio_queued` | a radio line reached the audio queue or the mixer |
 //! | `audio_engine_queued` | the player's engine loop is bound and running |
@@ -88,6 +89,7 @@ use crate::render::horizon::{HorizonDome, HorizonSea};
 use crate::render::precipitation::PrecipitationLayer;
 use crate::render::weather::WeatherLayer;
 use crate::ui::hud::{MissionMessages, OBJECTIVE_HUD_CAPTION, ObjectiveHud};
+use crate::weapon_effects::MuzzleEffectSpawn;
 use crate::weapons::{WeaponRoundMirror, WeaponSession};
 use crate::world::WorldResidency;
 use crate::world::contacts::WorldVisual;
@@ -396,6 +398,11 @@ pub struct GunMetrics {
     pub rounds_drawn: Option<bool>,
     /// How many live rounds were examined.
     pub rounds_examined: u32,
+    /// Distinct frames of the hold in which a muzzle-effect record was live
+    /// (F27-C-FX-RENDER #1595).
+    pub flash_frames: u32,
+    /// Muzzle-effect records seen during the hold with no drawn flash child.
+    pub flashes_undrawn: u32,
 }
 
 /// What the rocket tap measured.
@@ -729,6 +736,28 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
             (None, _) => {
                 "no round was live at the firing frame, so nothing could be drawn".to_owned()
             }
+        },
+    });
+    checks.push(Check {
+        id: "weapon_muzzle_flash_drawn".to_owned(),
+        applies: true,
+        passed: m.guns.flash_frames > 0 && m.guns.flashes_undrawn == 0,
+        detail: if m.guns.flash_frames == 0 {
+            "no muzzle-effect record was live during the hold, so no flash was drawn \
+             (F27-C-FX-RENDER #1595)"
+                .to_owned()
+        } else if m.guns.flashes_undrawn > 0 {
+            format!(
+                "{} muzzle-effect records carried no drawn flash (designed stand-in, claim {})",
+                m.guns.flashes_undrawn,
+                super::MUZZLE_FLASH_VISUAL_CLAIM
+            )
+        } else {
+            format!(
+                "a drawn flash was live in {} frames of the hold (designed stand-in, claim {})",
+                m.guns.flash_frames,
+                super::MUZZLE_FLASH_VISUAL_CLAIM
+            )
         },
     });
     checks.push(Check {
@@ -1103,6 +1132,7 @@ fn add_script_systems(app: &mut App) {
             smoke_wingmen,
             smoke_script,
             smoke_rounds,
+            smoke_flashes,
         )
             .chain(),
     );
@@ -1490,6 +1520,28 @@ fn smoke_rounds(
     let guns = &mut data.measurements.guns;
     guns.rounds_examined = guns.rounds_examined.max(live);
     guns.rounds_drawn = Some(guns.rounds_drawn.unwrap_or(true) && drawn);
+}
+
+/// The muzzle-flash census during the gun hold: each frame with a live
+/// muzzle-effect record counts once, and a record without a drawn child is
+/// counted as undrawn.
+fn smoke_flashes(
+    mut data: ResMut<SmokeData>,
+    records: Query<(Option<&bevy::prelude::Children>, &MuzzleEffectSpawn)>,
+    meshes: Query<(), With<Mesh3d>>,
+) {
+    if data.phase != Phase::Guns || records.is_empty() {
+        return;
+    }
+    let undrawn = records
+        .iter()
+        .filter(|(children, _)| {
+            !children.is_some_and(|kids| kids.iter().any(|kid| meshes.get(*kid).is_ok()))
+        })
+        .count() as u32;
+    let guns = &mut data.measurements.guns;
+    guns.flash_frames += 1;
+    guns.flashes_undrawn += undrawn;
 }
 
 /// Samples the live world into the measurements every frame: the audio queue,
@@ -2417,7 +2469,8 @@ fn write_artifacts(
          \"hud\":{{\"model_line\":{model_line},\"drawn_line\":{drawn_line},\
          \"drawn_visible\":{visible},\"region_text_pixels\":{region},\"overlay_hidden\":{overlay_hidden}}},\
          \"guns\":{{\"effects\":{effects},\"max_live_rounds\":{live},\"rounds_drawn\":{drawn},\
-         \"rounds_examined\":{examined}}},\"rocket\":{{\"launched\":{launched},\
+         \"rounds_examined\":{examined},\
+         \"flash_frames\":{flash_frames},\"flashes_undrawn\":{flashes_undrawn}}},\"rocket\":{{\"launched\":{launched},\
          \"max_rockets\":{max_rockets},\"refusals\":[{refusals}]}},\
          \"audio\":{{\"radio_seen\":{radio_seen},\"engine_seen\":{engine_seen},\
          \"engine_bindings\":{bindings},\"active_loops\":{loops},\
@@ -2447,6 +2500,8 @@ fn write_artifacts(
         live = report.measurements.guns.max_live_rounds,
         drawn = json_option_bool(report.measurements.guns.rounds_drawn),
         examined = report.measurements.guns.rounds_examined,
+        flash_frames = report.measurements.guns.flash_frames,
+        flashes_undrawn = report.measurements.guns.flashes_undrawn,
         launched = report.measurements.rocket.launched,
         max_rockets = report.measurements.rocket.max_rockets,
         refusals = report
