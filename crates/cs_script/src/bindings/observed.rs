@@ -185,9 +185,9 @@ impl MeasuredShape {
 /// The family key is [`MeasuredHost`] + dispatch value (F38-D.1), not this
 /// form: every `callback` site's host is its named native or
 /// [`MeasuredHost::Unmeasured`], so keying by form alone would merge five
-/// unrelated native protocols. This type survives for the differential trace
-/// ([`crate::bindings::differential`]) and for reports of how a site is
-/// spelled.
+/// unrelated native protocols. This type survives for reports of how a site is
+/// spelled; the differential trace ([`crate::bindings::differential`])
+/// identifies a step by host and dispatch value too (F38-D.2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum MeasuredForm {
     /// `callback($$handler$$, <call>, <arg>…)`.

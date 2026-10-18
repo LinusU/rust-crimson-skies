@@ -32,14 +32,14 @@
 
 use std::fmt;
 
-use crate::bindings::observed::MeasuredForm;
+use crate::bindings::observed::MeasuredHost;
 use crate::runtime::MissionEvent;
 
 /// One declared host call of a measured original program, in source order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct DeclaredStep {
-    /// The measured dispatch form.
-    pub form: MeasuredForm,
+    /// The measured dispatch host: a native, `mail` or an unmeasured target.
+    pub host: MeasuredHost,
     /// The measured dispatch value.
     pub native_id: i64,
     /// The site's ordinal in the program, from 0.
@@ -52,7 +52,7 @@ pub struct DeclaredStep {
 ///
 /// Normalization drops everything that cannot be compared across the two sides
 /// — program counters, byte offsets, session and tick numbers — and keeps the
-/// dispatch value, the form and the ordering. Two normalized traces that are
+/// dispatch value, the host and the ordering. Two normalized traces that are
 /// equal describe the same host-call ordering.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct NormalizedTrace {
@@ -102,7 +102,7 @@ impl NormalizedStep {
     }
 }
 
-/// The comparable identity of one step: the measured dispatch value it carries.
+/// The comparable identity of one step: the measured (host, dispatch value) it carries.
 ///
 /// [`TraceStepKind::Unattributed`] is a distinct variant rather than a sentinel
 /// id, so an engine event that could not be traced back to a measured call can
@@ -111,7 +111,7 @@ impl NormalizedStep {
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum TraceStepKind {
     /// A measured dispatch value.
-    Measured { form: MeasuredForm, native_id: i64 },
+    Measured { host: MeasuredHost, native_id: i64 },
     /// An emitted event no declared step accounts for.
     Unattributed,
 }
@@ -119,7 +119,7 @@ pub enum TraceStepKind {
 impl fmt::Display for TraceStepKind {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::Measured { form, native_id } => write!(f, "{}#{}", form.label(), native_id),
+            Self::Measured { host, native_id } => write!(f, "{}#{}", host.label(), native_id),
             Self::Unattributed => f.write_str("unattributed"),
         }
     }
@@ -342,7 +342,7 @@ pub fn normalize_declared(
             .iter()
             .map(|d| NormalizedStep {
                 kind: TraceStepKind::Measured {
-                    form: d.form,
+                    host: d.host,
                     native_id: d.native_id,
                 },
                 ordinal: d.ordinal,
@@ -353,13 +353,13 @@ pub fn normalize_declared(
     })
 }
 
-/// Where an emitted event's measured origin is: the dispatch form, the dispatch
+/// Where an emitted event's measured origin is: the dispatch host, the dispatch
 /// value, and the declared step's ordinal in the original program.
 ///
 /// A consumer that lowered the program out of the measurement already knows
 /// this mapping; it is passed in rather than recomputed here, because this
 /// module does not hold the lowering.
-pub type EventOrigin<'a> = dyn Fn(&MissionEvent) -> Option<(MeasuredForm, i64, u32)> + 'a;
+pub type EventOrigin<'a> = dyn Fn(&MissionEvent) -> Option<(MeasuredHost, i64, u32)> + 'a;
 
 /// Normalizes the mission events the recreated engine emitted for that same
 /// scenario.
@@ -382,8 +382,8 @@ pub fn normalize_emitted(
     let mut steps = Vec::with_capacity(events.len());
     for event in events {
         match origin(event) {
-            Some((form, native_id, ordinal)) => steps.push(NormalizedStep {
-                kind: TraceStepKind::Measured { form, native_id },
+            Some((host, native_id, ordinal)) => steps.push(NormalizedStep {
+                kind: TraceStepKind::Measured { host, native_id },
                 ordinal,
                 source: Some(event.key.source.0),
                 sequence: Some(event.key.sequence),

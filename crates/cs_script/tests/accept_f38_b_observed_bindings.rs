@@ -27,9 +27,8 @@ use cs_script::bindings::differential::{
     normalize_emitted,
 };
 use cs_script::bindings::observed::{
-    CoverageError, MeasuredCall, MeasuredCallRow, MeasuredForm, MeasuredHost, MeasuredNative,
-    MeasuredShape, ObservedBindingTable, ObservedDisposition, RowError, UnimplementedReason,
-    register_measured,
+    CoverageError, MeasuredCall, MeasuredCallRow, MeasuredHost, MeasuredNative, MeasuredShape,
+    ObservedBindingTable, ObservedDisposition, RowError, UnimplementedReason, register_measured,
 };
 use cs_script::bindings::{
     ArgDomain, HostBindingRegistry, HostFamily, Lowering, Repeatability, lower_program,
@@ -940,10 +939,7 @@ fn declared_from_scan() -> Vec<DeclaredStep> {
         .iter()
         .enumerate()
         .map(|(ordinal, site)| DeclaredStep {
-            form: match site.form {
-                DispatchForm::Callback => MeasuredForm::Callback,
-                DispatchForm::Mail => MeasuredForm::Mail,
-            },
+            host: MeasuredHost::from_code(site.host().code()).expect("a measured host code"),
             // The unevaluated dispatch expression has no id, so the recreated
             // program cannot declare one either; the differential then reports
             // the divergence instead of hiding it.
@@ -979,13 +975,13 @@ fn accept_f38_b_the_differential_trace_compares_original_and_recreated_order() {
     // One objective completes per tick (lowest declaration index first), so
     // the three steps need three ticks — plus one for the run to be over.
     let events = run(&program, declared.len() as u64 + 1);
-    let map: std::collections::HashMap<(u32, u32), (MeasuredForm, i64, u32)> = declared
+    let map: std::collections::HashMap<(u32, u32), (MeasuredHost, i64, u32)> = declared
         .iter()
         .enumerate()
         .map(|(index, step)| {
             (
                 (10_000 + index as u32, 1),
-                (step.form, step.native_id, step.ordinal),
+                (step.host, step.native_id, step.ordinal),
             )
         })
         .collect();
@@ -1010,7 +1006,7 @@ fn accept_f38_b_the_differential_trace_compares_original_and_recreated_order() {
             .iter()
             .map(ToString::to_string)
             .collect::<Vec<_>>(),
-        vec!["callback#100", "mail#200", "callback#100"],
+        vec!["goscallback#100", "mail#200", "goslocalize#100"],
         "the normalized kinds are the measured dispatch values in source order"
     );
     assert_eq!(
@@ -1084,14 +1080,31 @@ fn accept_f38_b_the_differential_trace_compares_original_and_recreated_order() {
         vec![10_002, 10_001, 10_000],
         "the normalization keeps the emission order; a re-sort by source symbol would flip it"
     );
+    // The emission order is the reverse of the declaration, and the first and
+    // last steps are different hosts spelling one dispatch value (F38-D.2), so
+    // the reversed emission is a divergence from the declared order and an
+    // agreement with the declared order reversed.
+    let reversed_declared: Vec<DeclaredStep> = declared.iter().rev().copied().collect();
+    let reversed_original = normalize_declared(&scenario, &reversed_declared).expect("named");
     let reversed_comparison =
-        compare_traces(&original, &reversed_trace, &scenario, &scenario).expect("same scenario");
+        compare_traces(&reversed_original, &reversed_trace, &scenario, &scenario)
+            .expect("same scenario");
     assert!(
         reversed_comparison.agrees(),
         "declaration order must not change the comparison: {:?}",
         reversed_comparison.first_divergence
     );
     assert_eq!(reversed_comparison.matched, 3);
+    let against_forward =
+        compare_traces(&original, &reversed_trace, &scenario, &scenario).expect("same scenario");
+    assert!(
+        matches!(
+            against_forward.first_divergence,
+            Some(TraceDivergence::Mismatched { index: 0, .. })
+        ),
+        "goscallback#100 and goslocalize#100 are distinct calls: {:?}",
+        against_forward.first_divergence
+    );
 }
 
 /// The comparison is not decoration: each way the recreated side can differ from
@@ -1111,15 +1124,17 @@ fn accept_f38_b_every_divergence_is_reported_at_its_index() {
     swapped.swap(0, 1);
     let reordered = normalize_declared(&scenario, &swapped).expect("named");
     let comparison = compare_traces(&original, &reordered, &scenario, &scenario).expect("same");
-    // The two steps share one dispatch value, so swapping them is invisible to
-    // the normalized comparison — which is correct: normalization is by call
-    // identity, not by position.
+    // Only the lengths are compared here; the order-sensitive comparison is
+    // asserted below and by F38-D.2.
     assert_eq!(comparison.original_len, comparison.recreated_len);
 
     // Recreated: a different call.
     let mut changed = declared.clone();
     changed[2].native_id = 201;
-    assert_eq!(changed[2].form, MeasuredForm::Callback);
+    assert_eq!(
+        changed[2].host,
+        MeasuredHost::Native(MeasuredNative::GosLocalize)
+    );
     let changed = normalize_declared(&scenario, &changed).expect("named");
     let comparison = compare_traces(&original, &changed, &scenario, &scenario).expect("same");
     assert!(!comparison.agrees());
@@ -1128,11 +1143,11 @@ fn accept_f38_b_every_divergence_is_reported_at_its_index() {
         Some(TraceDivergence::Mismatched {
             index: 2,
             declared: cs_script::bindings::differential::TraceStepKind::Measured {
-                form: MeasuredForm::Callback,
+                host: MeasuredHost::Native(MeasuredNative::GosLocalize),
                 native_id: 100,
             },
             emitted: cs_script::bindings::differential::TraceStepKind::Measured {
-                form: MeasuredForm::Callback,
+                host: MeasuredHost::Native(MeasuredNative::GosLocalize),
                 native_id: 201,
             },
         }),
@@ -1147,7 +1162,7 @@ fn accept_f38_b_every_divergence_is_reported_at_its_index() {
         Some(TraceDivergence::Missing {
             index: 2,
             declared: cs_script::bindings::differential::TraceStepKind::Measured {
-                form: MeasuredForm::Callback,
+                host: MeasuredHost::Native(MeasuredNative::GosLocalize),
                 native_id: 100,
             },
         })
@@ -1156,7 +1171,7 @@ fn accept_f38_b_every_divergence_is_reported_at_its_index() {
     // Recreated: longer.
     let mut longer = declared.clone();
     longer.push(DeclaredStep {
-        form: MeasuredForm::Callback,
+        host: MeasuredHost::Native(MeasuredNative::GosCallback),
         native_id: 300,
         ordinal: 3,
         offset: 400,
@@ -1168,7 +1183,7 @@ fn accept_f38_b_every_divergence_is_reported_at_its_index() {
         Some(TraceDivergence::Unexpected {
             index: 3,
             emitted: cs_script::bindings::differential::TraceStepKind::Measured {
-                form: MeasuredForm::Callback,
+                host: MeasuredHost::Native(MeasuredNative::GosCallback),
                 native_id: 300,
             },
         })
@@ -1217,7 +1232,7 @@ fn accept_f38_b_every_divergence_is_reported_at_its_index() {
 #[test]
 fn accept_f38_b_an_unmeasured_dispatch_value_surfaces_as_an_extra_step() {
     let declared = vec![DeclaredStep {
-        form: MeasuredForm::Callback,
+        host: MeasuredHost::Native(MeasuredNative::GosCallback),
         native_id: -1,
         ordinal: 0,
         offset: 0,
@@ -1251,7 +1266,7 @@ fn accept_f38_b_an_unmeasured_dispatch_value_surfaces_as_an_extra_step() {
             assert_eq!(
                 declared,
                 cs_script::bindings::differential::TraceStepKind::Measured {
-                    form: MeasuredForm::Callback,
+                    host: MeasuredHost::Native(MeasuredNative::GosCallback),
                     native_id: -1,
                 },
                 "the declared step keeps its own identity, even an unmeasured one"

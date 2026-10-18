@@ -27,6 +27,7 @@ mod accept_f38_c_located_diagnostics;
 mod accept_f38_c_retail_source_map;
 mod accept_f38_d1_native_rekey;
 mod accept_f38_d1_retail_native_census;
+mod accept_f38_d2_differential_host_identity;
 mod accept_m01_lc_lowering_conditions;
 mod accept_m01_lc_lowering_signatures;
 mod accept_m10_b_fu1_travelers_counting;
