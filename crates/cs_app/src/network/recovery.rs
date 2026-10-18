@@ -76,6 +76,7 @@
 use std::fmt;
 
 use cs_net::compat::PeerAllocator;
+use cs_net::lobby::HostLoss;
 use cs_net::message::{ClientMessage, ClientPayload};
 use cs_net::recovery::{
     DepartureError, DepartureLedger, DepartureRecord, DisconnectCause, RecoveryDecision,
@@ -466,6 +467,38 @@ pub enum HostLossAction {
     /// returns to the menu (`UI-NETWORK`'s `match -> results -> lobby` path).
     /// No seamless recovery is claimed, because none is implemented.
     ReturnToMenu,
+    /// The mode's [`HostLoss::PauseThenEnd`] grace period is running: the
+    /// match-level flow is paused, clients wait, and the match ends unless
+    /// the host returns ([`RecoveryFlow::host_returned`]) before `until`.
+    PauseMatch {
+        /// The first tick at which the grace period has lapsed.
+        until: Tick,
+    },
+}
+
+/// What [`RecoveryFlow::host_returned`] did with a returning host.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum HostReturn {
+    /// The host came back inside the grace period: the pause is lifted and
+    /// the match-level flow runs again.
+    Resumed,
+    /// No pause was running (the host was never lost, or already returned).
+    NotPaused,
+    /// The grace period had lapsed, or the match had ended: the end is
+    /// irrevocable and the host's return changes nothing.
+    TooLate,
+}
+
+/// Where the match-level host-loss flow stands.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum HostState {
+    Running,
+    /// Paused by [`HostLoss::PauseThenEnd`] since `since`, until `until`.
+    Paused {
+        since: Tick,
+        until: Tick,
+    },
+    Ended(DepartureRecord),
 }
 
 /// What the mode's [`DisconnectPolicy`] did to the standings on one departure.
@@ -562,7 +595,8 @@ pub struct SettledInbound {
 pub struct RecoveryFlow {
     receiver: SessionReceiver,
     departures: DepartureLedger,
-    ended: Option<DepartureRecord>,
+    host: HostState,
+    host_loss: HostLoss,
     disconnect: Option<DisconnectPolicy>,
 }
 
@@ -573,9 +607,31 @@ impl RecoveryFlow {
         Self {
             receiver: SessionReceiver::new(session),
             departures: DepartureLedger::new(),
-            ended: None,
+            host: HostState::Running,
+            host_loss: HostLoss::EndSession,
             disconnect: None,
         }
+    }
+
+    /// Applies the mode's [`HostLoss`] policy to [`Self::host_lost`].
+    ///
+    /// A flow built without one behaves as [`HostLoss::EndSession`]: the
+    /// match ends at the first report, which is spec F58 non-negotiable 3.
+    /// [`HostLoss::PauseThenEnd`] pauses the match-level flow for the same
+    /// grace period `cs_net::lobby::Lobby::remove_peer` gives the lobby, so
+    /// the two components agree about one event. No original grace period
+    /// has been measured; the number is the mode's own, never invented here
+    /// (`docs/findings/2026-10-18-f58-c-followup-host-loss-policy.md`).
+    #[must_use]
+    pub const fn with_host_loss_policy(mut self, policy: HostLoss) -> Self {
+        self.host_loss = policy;
+        self
+    }
+
+    /// The host-loss policy this flow applies.
+    #[must_use]
+    pub const fn host_loss_policy(&self) -> HostLoss {
+        self.host_loss
     }
 
     /// Applies the mode's resolved `MatchRules::disconnect()` at every
@@ -624,8 +680,14 @@ impl RecoveryFlow {
 
     /// Whether the host-loss flow has ended the match.
     #[must_use]
-    pub fn is_ended(&self) -> bool {
-        self.ended.is_some()
+    pub const fn is_ended(&self) -> bool {
+        matches!(self.host, HostState::Ended(_))
+    }
+
+    /// Whether a [`HostLoss::PauseThenEnd`] grace period is running.
+    #[must_use]
+    pub const fn is_paused(&self) -> bool {
+        matches!(self.host, HostState::Paused { .. })
     }
 
     /// The departure one received packet asks for, if any — the producer side
@@ -833,37 +895,106 @@ impl RecoveryFlow {
         })
     }
 
-    /// The host is gone: the match ends cleanly and every client returns to
-    /// the menu — **once** (spec F58 non-negotiable 3: host migration is out
-    /// of scope, so the match ends; no seamless recovery is claimed).
+    /// The host is gone. What happens is the mode's [`HostLoss`] policy
+    /// ([`Self::with_host_loss_policy`], default [`HostLoss::EndSession`]).
     ///
-    /// The mission's in-flight interactions (docking, pickup, boarding, plane
-    /// swap) abort with [`AbortReason::Disconnect`] on the first report. A
-    /// later report is [`Settlement::Duplicate`] and aborts nothing — an
-    /// aborted interaction is terminal, so the authoritative state resolves
-    /// exactly once. Pass `None` for a mode that holds no mission
-    /// interactions (a multiplayer match).
+    /// * [`HostLoss::EndSession`]: the match ends cleanly and every client
+    ///   returns to the menu — **once** (spec F58 non-negotiable 3: host
+    ///   migration is out of scope; no seamless recovery is claimed). The
+    ///   mission's in-flight interactions (docking, pickup, boarding, plane
+    ///   swap) abort with [`AbortReason::Disconnect`] on the first report. A
+    ///   later report is [`Settlement::Duplicate`] and aborts nothing — an
+    ///   aborted interaction is terminal, so the authoritative state
+    ///   resolves exactly once.
+    /// * [`HostLoss::PauseThenEnd`]: the first report pauses the flow until
+    ///   `tick + ticks` ([`HostLossAction::PauseMatch`]); interactions stay
+    ///   in flight. A report inside the grace period is a duplicate. The
+    ///   first report at or after the deadline ends the match exactly as
+    ///   `EndSession` does, and that end is irrevocable. A zero grace period
+    ///   ends at once.
     ///
-    /// Each member's own teardown is still its own [`Self::depart`] report:
-    /// the flow holds no roster.
+    /// The deadline is only noticed when someone asks: the host calls
+    /// [`Self::poll_host_loss`] every tick (or reports again).
+    ///
+    /// Pass `None` for a mode that holds no mission interactions (a
+    /// multiplayer match). Each member's own teardown is still its own
+    /// [`Self::depart`] report: the flow holds no roster.
     #[must_use]
     pub fn host_lost(
         &mut self,
         tick: Tick,
         interactions: Option<&mut InteractionSession>,
     ) -> HostLossOutcome {
-        if let Some(record) = self.ended {
-            return HostLossOutcome {
+        match self.host {
+            HostState::Ended(record) => HostLossOutcome {
                 settlement: Settlement::Duplicate { tick: record.tick },
                 aborted: Vec::new(),
                 action: HostLossAction::ReturnToMenu,
-            };
+            },
+            HostState::Paused { since, until } if tick < until => HostLossOutcome {
+                settlement: Settlement::Duplicate { tick: since },
+                aborted: Vec::new(),
+                action: HostLossAction::PauseMatch { until },
+            },
+            HostState::Paused { .. } => self.end_match(tick, interactions),
+            HostState::Running => match self.host_loss {
+                HostLoss::PauseThenEnd { ticks } if ticks > 0 => {
+                    let until = Tick(tick.0.saturating_add(u64::from(ticks)));
+                    self.host = HostState::Paused { since: tick, until };
+                    HostLossOutcome {
+                        settlement: Settlement::Applied { tick },
+                        aborted: Vec::new(),
+                        action: HostLossAction::PauseMatch { until },
+                    }
+                }
+                HostLoss::EndSession | HostLoss::PauseThenEnd { .. } => {
+                    self.end_match(tick, interactions)
+                }
+            },
         }
+    }
+
+    /// Ends a lapsed grace period: `Some` with the end's outcome when the
+    /// flow was paused and `tick` has reached the deadline, `None` otherwise.
+    #[must_use]
+    pub fn poll_host_loss(
+        &mut self,
+        tick: Tick,
+        interactions: Option<&mut InteractionSession>,
+    ) -> Option<HostLossOutcome> {
+        match self.host {
+            HostState::Paused { until, .. } if tick >= until => {
+                Some(self.end_match(tick, interactions))
+            }
+            _ => None,
+        }
+    }
+
+    /// The host came back at `tick`. Inside the grace period the pause is
+    /// lifted; once the period has lapsed the answer is
+    /// [`HostReturn::TooLate`] whether or not [`Self::poll_host_loss`] has
+    /// run yet, and the pause is left for it to end.
+    pub fn host_returned(&mut self, tick: Tick) -> HostReturn {
+        match self.host {
+            HostState::Running => HostReturn::NotPaused,
+            HostState::Paused { until, .. } if tick < until => {
+                self.host = HostState::Running;
+                HostReturn::Resumed
+            }
+            HostState::Paused { .. } | HostState::Ended(_) => HostReturn::TooLate,
+        }
+    }
+
+    fn end_match(
+        &mut self,
+        tick: Tick,
+        interactions: Option<&mut InteractionSession>,
+    ) -> HostLossOutcome {
         let aborted = match interactions {
             Some(session) => session.abort_all(AbortReason::Disconnect),
             None => Vec::new(),
         };
-        self.ended = Some(DepartureRecord {
+        self.host = HostState::Ended(DepartureRecord {
             cause: DisconnectCause::HostLoss,
             tick,
         });
@@ -883,7 +1014,9 @@ impl RecoveryFlow {
     /// departure ledger for good.
     ///
     /// [`RecoveryPolicy::match_running`] is forced false once
-    /// [`Self::host_lost`] has ended the match, so a resume after a host loss
+    /// [`Self::host_lost`] has ended the match (a pause inside the grace
+    /// period has not ended it, so a resume is still decided on its merits;
+    /// poll [`Self::poll_host_loss`] first so a lapsed pause counts), so a resume after a host loss
     /// is refused with `RecoveryRefusal::MatchEnded` instead of resumed into
     /// a match that is over. On a [`RecoveryDecision::Resume`] the boundary
     /// reopens on the fresh epoch — the old gate's membership and replay
