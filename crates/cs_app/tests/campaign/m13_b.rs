@@ -19,9 +19,10 @@
 //!   `dzpath1→dzpath2→dzpath3→dzpath5→dzpath4→dzpath6→dzpath7→dzpath9`
 //!   flythrough with an add/remove target hand-off at each step, each block
 //!   entering the next only through its own `WAKE_OBJECTIVE_WHEN_I_COMPLETE`
-//!   edge (34–37 are the optional timed short-cuts, 38–41 their reciprocal
-//!   timed kills), and the ace chain (blocks 6→27 then 28–33) is a run of
-//!   `DEDG` group depletions whose only terminal edge is the failure latch;
+//!   edge (blocks 34–37 and the timed 38–41 are two branches of one race gate,
+//!   each killing the other), and the ace chain (block 6 → 25 → 26 → 27, then
+//!   blocks 28–33) is a run of `DEDG` group depletions whose completion naps
+//!   the failure latch;
 //! * **allegiance transition** **is** spelled here, unlike the record this
 //!   stage once measured: block 3's `SET_AI_TEAM` assigns the six `hafury_*`
 //!   flight members teams 2/1/2/2/1/2 and block 3's `SET_AI_NET` points each
