@@ -118,6 +118,22 @@ fn accept_wake_repeat_the_wake_ledger_survives_a_save_record() {
     assert_eq!(state.directives(), restored.directives());
 }
 
+/// **A facts row for a block the program does not carry leaves the save
+/// record restorable** — it can wake nothing, so it is not a wake the ledger
+/// owes a count.
+#[test]
+fn accept_wake_repeat_an_unknown_facts_row_still_snapshots_clean() {
+    let p = program();
+    let mut state = MissionState::new(&p, SessionGeneration(1), 0);
+    let mut facts = MissionFacts::default();
+    facts.objectives.insert(0, Awake);
+    facts.objectives.insert(9, Awake); // the program has one block
+    state.step(&p, &facts, Tick(1)).expect("tick steps");
+    let mut restored = MissionState::restore(&p, state.snapshot(&p)).expect("restores");
+    step(&mut restored, &p, 2, Awake);
+    assert_eq!(restored.directives().len(), 1, "no phantom re-wake");
+}
+
 /// **A forged wake ledger is refused**, not trusted.
 #[test]
 fn accept_wake_repeat_a_forged_wake_ledger_is_refused() {

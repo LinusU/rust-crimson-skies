@@ -2318,7 +2318,13 @@ impl MissionState {
         // completion-path emit runs them once.
         let mut now_awake = BTreeSet::new();
         for (index, lifecycle) in &facts.objectives {
-            if *lifecycle == ObjectiveLifecycle::Awake {
+            // A facts row can name a block the program does not carry — the
+            // emit pass below tolerates it, and it must not land in `awake`
+            // either: the save record validates `awake`'s members against the
+            // wake ledger, which only program blocks can hold.
+            if *lifecycle == ObjectiveLifecycle::Awake
+                && program.program().objectives.get(*index as usize).is_some()
+            {
                 now_awake.insert(*index);
             }
         }
