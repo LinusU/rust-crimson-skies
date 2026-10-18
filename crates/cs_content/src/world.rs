@@ -4960,8 +4960,11 @@ pub const PARTITION_GRID_IS_THE_SECTOR_INDEX: &str = "f18-world.partition-grid-i
 /// narrow-phase bit measured clear (task #771) they resolve
 /// [`WorldCollisionRole::None`] under [`FOG_VOLUME_RECORD_NEVER_BLOCKS`], and
 /// a grid-named `fvol*` record storing that bit would resolve under
-/// [`GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED`] instead. A grid-named record that
-/// stores no geometry at all resolves [`GRID_RECORD_STORES_NO_GEOMETRY`].
+/// [`GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED`] instead. A grid-named record whose
+/// store statement is "no mesh" resolves out of that index altogether — no box
+/// at all under [`GRID_RECORD_STORES_NO_GEOMETRY`], a grouping box under
+/// [`GRID_GROUPING_NODE_NEVER_BLOCKS`] — because a record with no geometry of
+/// its own has nothing a collider could be built from.
 pub const INDEXED_RECORD_IS_STATIC: &str = "f18-world.indexed-record-is-static";
 
 /// A record the partition grid names whose name keys the original's fog-volume
@@ -5050,6 +5053,83 @@ pub const INTERSECTION_NARROW_PHASE_FLAG: u32 = 0x40;
 /// Evidence class: `observed_tool` (the store's bytes through the production
 /// readers), never `verified_original`.
 pub const GRID_RECORD_STORES_NO_GEOMETRY: &str = "f18-world.grid-record-stores-no-geometry";
+
+/// The stored word at record offset 112 (`unk112`) that makes a record's own
+/// narrow-phase box the **third** of its three stored boxes (offset `0xa4`,
+/// 164).
+///
+/// **Measured** (task #771, static analysis of the owner-supplied decrypted
+/// image, `observed_tool`): `cls_zbd.c`'s node pass rewrites the word at
+/// `[node+0x70]` per record — `0` → `node+0x74` (box at 116), `1` → `node+0x8c`
+/// (box at 140), `2` → `node+0xa4` (box at 164), anything else left untouched
+/// (`0x4e2a7c`–`0x4e2aa6`) — with the inverse mapping at `0x4e19e6`–`0x4e1a1a`,
+/// and `cls_di.c`'s narrow phase (`0x4cd960`) then copies the 24 bytes at that
+/// address. Over the whole installation the record class this selector names —
+/// `unk112 = 2` — is the one whose box is the union of its children's extent
+/// (task #771's section A table, the `c1` node-2752 example), while `unk112 = 1`
+/// names the record's own box (the one [`stored_extent`] reads) and `unk112 = 0`
+/// names an all-zero box.
+pub const GROUPING_BOX_SELECTOR: u32 = 2;
+
+/// A record the partition grid names that binds no mesh and stores a **grouping
+/// box**: a non-empty box in the third slot (offset 164), selected by the
+/// record's own stored word [`GROUPING_BOX_SELECTOR`], with the other two boxes
+/// empty.
+///
+/// **Measured store state, designed resolution** (task #1578). Two measured
+/// statements fix what such a record is:
+///
+/// * the store binds it **no mesh** (`mesh_index = -1`, the loader's own "no
+///   mesh": it skips the mesh-table base adjustment at `0x4e2aa9`), so the
+///   record draws no geometry of its own — the meshes its children bind are the
+///   geometry it groups;
+/// * the record's box is therefore a **grouping volume**, and the image's
+///   intersection walk never tests it: at `0x4cb635` it reads the record's
+///   flags word and reaches the narrow phase — the only branch that copies a
+///   box through `[node+0x70]` — only with [`INTERSECTION_NARROW_PHASE_FLAG`]
+///   set; with that bit clear it descends into the record's children
+///   (`cmp word [esi+0x56], bx` / `jle`, `0x4cb63c`–`0x4cb642`, the children
+///   this class always has) instead of copying the box. Nothing measured
+///   therefore reports a contact for **the record itself**, so its role
+///   resolves [`WorldCollisionRole::None`] — the same leap tasks #716, #727 and
+///   #771 already made for a record nothing measured reports a contact for —
+///   while its shape stays an explicit unknown here because the geometry a
+///   contact would come from lives one level below it and this flat world
+///   import does not own those child records (the limitation #1553 recorded for
+///   model-instance part hierarchies).
+///
+/// Measured over the original installation, through the production readers, one
+/// per group where it occurs: forty-eight in `c1`, eight in `c1b`, forty-nine
+/// in `c2`, forty-seven in `c3`, forty-three in `c4` and twenty-four in `c5`,
+/// and none in `c1c` or `c2b` — 219 records, the whole complement of
+/// [`WorldImportReport::partition_records_with_mesh`] that
+/// [`GRID_RECORD_STORES_NO_GEOMETRY`] does not already answer. Every one of
+/// them stores [`INTERSECTION_NARROW_PHASE_FLAG`] clear and has at least one
+/// child; a record of this class that **did** store the flag bit would be a live
+/// candidate and keeps [`GRID_GROUPING_NODE_ROLE_UNMEASURED`] instead.
+///
+/// They are counted by
+/// [`WorldImportReport::partition_records_grouping_node`].
+///
+/// Evidence class: `observed_tool` (static analysis of one executable plus the
+/// store's bytes through the production readers), never `verified_original`.
+pub const GRID_GROUPING_NODE_NEVER_BLOCKS: &str = "f18-world.grid-grouping-node-never-blocks";
+
+/// A grid record of the [`GRID_GROUPING_NODE_NEVER_BLOCKS`] store class that
+/// **does** store the intersection narrow-phase bit, whose box the image's walk
+/// would test.
+///
+/// The container states no collision role for such a record — it binds no mesh,
+/// and the only thing that would decide whether the walk tests its box is node
+/// state that can also be written at run time by `SetIntersectSurface` /
+/// `SetIntersectBBOX` (`0x5bbccc`, `0x5bbc90`) — so its role and its shape both
+/// stay explicit unknowns under this claim. No record on the original
+/// installation carries it (each container's retail census pins zero), which is
+/// what keeps [`GRID_GROUPING_NODE_NEVER_BLOCKS`] a keyed measurement rather
+/// than a blanket rule about mesh-less grid records.
+///
+/// Evidence class: `observed_tool`, never `verified_original`.
+pub const GRID_GROUPING_NODE_ROLE_UNMEASURED: &str = "f18-world.grid-grouping-node-role-unmeasured";
 
 /// Which gameplay query consumes `cls_di.c`'s intersection walk — unmeasured.
 ///
@@ -5795,6 +5875,7 @@ pub struct WorldImportReport {
     partition_records_with_mesh: usize,
     partition_records_fog_volume: usize,
     partition_records_stores_no_geometry: usize,
+    partition_records_grouping_node: usize,
     empty_cells: usize,
     objects: usize,
     objects_with_mesh: usize,
@@ -5850,10 +5931,16 @@ impl WorldImportReport {
 
     /// How many of the grid's records bind a mesh.
     ///
-    /// Measured: in every container the grid records that bind **no** mesh are
-    /// exactly the ones whose stored bounding box is all zero, so the two
-    /// statements are the same set and neither is a reading this conversion had
-    /// to invent.
+    /// Measured: in every container the grid records that bind **no** mesh
+    /// store one of exactly two things — no box at all in any of their three
+    /// slots ([`GRID_RECORD_STORES_NO_GEOMETRY`]) or a box only in the third
+    /// slot, the one their own selector word names
+    /// ([`GRID_GROUPING_NODE_NEVER_BLOCKS`]) — so this count's complement is
+    /// partitioned exactly by [`Self::partition_records_stores_no_geometry`] and
+    /// [`Self::partition_records_grouping_node`] and neither statement is a
+    /// reading this conversion had to invent. (Tasks #771 and #1578 measured
+    /// that; a mesh-less record storing a box in any other slot does not occur
+    /// on this installation.)
     #[must_use]
     pub const fn partition_records_with_mesh(&self) -> usize {
         self.partition_records_with_mesh
@@ -5894,15 +5981,44 @@ impl WorldImportReport {
     /// ```text
     /// partition_records() - partition_records_with_mesh()
     ///                     - partition_records_stores_no_geometry()
+    ///                     - partition_records_grouping_node()
     /// ```
     ///
-    /// — grid records that bind no mesh **and** do store a box, which this
-    /// claim does not speak for. Measured over the original installation:
-    /// thirteen in `c1`, eight in `c1b`, one in `c1c`, twenty-three in `c2`,
-    /// one in `c2b`, eighteen in `c3`, four in `c4` and eighty in `c5`.
+    /// — grid records that bind no mesh **and** do store a box `stored_extent`
+    /// does not read, which task #1578 answered separately
+    /// ([`Self::partition_records_grouping_node`]). Measured over the original
+    /// installation: thirteen in `c1`, eight in `c1b`, one in `c1c`,
+    /// twenty-three in `c2`, one in `c2b`, eighteen in `c3`, four in `c4` and
+    /// eighty in `c5`.
     #[must_use]
     pub const fn partition_records_stores_no_geometry(&self) -> usize {
         self.partition_records_stores_no_geometry
+    }
+
+    /// How many of the grid's records store a **grouping box**: no mesh, and a
+    /// non-empty box only in the third slot, the one the record's own stored
+    /// selector word ([`GROUPING_BOX_SELECTOR`]) names
+    /// ([`GRID_GROUPING_NODE_NEVER_BLOCKS`], task #1578).
+    ///
+    /// **A store census, not an open question**, like
+    /// [`Self::partition_records_fog_volume`]: it counts every grid record in
+    /// that store state, each of which binds no mesh of its own and whose box
+    /// the image's intersection walk never tests (the narrow-phase bit is clear
+    /// and the record has children, so the walk descends into them). Those
+    /// records resolve role `None` with their shape an explicit unknown; a
+    /// record of the class that stored the narrow-phase bit would keep
+    /// [`GRID_GROUPING_NODE_ROLE_UNMEASURED`] and be counted by
+    /// [`Self::objects_unresolved_collision`] instead. Measured over the
+    /// original installation: forty-eight in `c1`, eight in `c1b`, forty-nine
+    /// in `c2`, forty-seven in `c3`, forty-three in `c4`, twenty-four in `c5`,
+    /// and none in `c1c` or `c2b`.
+    ///
+    /// Together with [`Self::partition_records_stores_no_geometry`] this is the
+    /// whole answer to "which grid records bind no mesh" — measured, the two
+    /// are exactly `partition_records() - partition_records_with_mesh()`.
+    #[must_use]
+    pub const fn partition_records_grouping_node(&self) -> usize {
+        self.partition_records_grouping_node
     }
 
     /// How many cells name no record.
@@ -5939,15 +6055,18 @@ impl WorldImportReport {
     ///
     /// Equal to [`Self::partition_records`] minus
     /// [`Self::partition_records_fog_volume`] minus
-    /// [`Self::partition_records_stores_no_geometry`]: the role follows the
+    /// [`Self::partition_records_stores_no_geometry`] minus
+    /// [`Self::partition_records_grouping_node`]: the role follows the
     /// spatial index (see [`INDEXED_RECORD_IS_STATIC`]) except for the
     /// grid-named fog volumes, which the original's own consumer takes as fog
     /// ([`FOG_VOLUME_RECORD_NEVER_BLOCKS`], settled by tasks #716/#727/#771),
-    /// and the grid records that store no geometry at all
-    /// ([`GRID_RECORD_STORES_NO_GEOMETRY`]). Subtracting the two measured
-    /// sets from the index is what lets a consumer tell a world's static
-    /// geometry from its fog volumes and its empty records with three numbers
-    /// instead of one.
+    /// the grid records that store no geometry at all
+    /// ([`GRID_RECORD_STORES_NO_GEOMETRY`], task #771) and the grid records
+    /// that store only a grouping box ([`GRID_GROUPING_NODE_NEVER_BLOCKS`],
+    /// task #1578) — the last two both bind no mesh, so no collider can be
+    /// derived from them. Subtracting the measured sets from the index is what
+    /// lets a consumer tell a world's static geometry from its fog volumes, its
+    /// empty records and its grouping nodes with four numbers instead of one.
     #[must_use]
     pub const fn objects_solid(&self) -> usize {
         self.objects_solid
@@ -5960,15 +6079,19 @@ impl WorldImportReport {
     /// fog consumer or the store's own silence — **except** a grid-named
     /// `fvol*` record that stores [`INTERSECTION_NARROW_PHASE_FLAG`], which
     /// stays an explicit unknown under
-    /// [`GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED`] and is counted here too, so
+    /// [`GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED`], and a grid record of the
+    /// [`GRID_GROUPING_NODE_NEVER_BLOCKS`] store class that stores that bit,
+    /// which stays an explicit unknown under
+    /// [`GRID_GROUPING_NODE_ROLE_UNMEASURED`]; both are counted here too, so
     /// this is [`Self::objects_unindexed_unresolved`] **plus** any such
-    /// record. No record on the original installation stores that bit (task
-    /// #771's retail test asserts both facts per container), so the two are
-    /// equal there and this one is `0` for `zbd/c1c`. Either way a report
-    /// where it is zero has no record whose collision behavior this conversion
-    /// had to leave open. A record can still carry an explicit unknown for its
-    /// **shape** (fog volumes and empty records do, on purpose); that is a
-    /// statement about which geometry, not about whether it blocks.
+    /// record. No record on the original installation stores that bit (tasks
+    /// #771 and #1578 assert both facts per container), so the two are equal
+    /// there and this one is `0` for `zbd/c1c` and `zbd/c3`. Either way a
+    /// report where it is zero has no record whose collision behavior this
+    /// conversion had to leave open. A record can still carry an explicit
+    /// unknown for its **shape** (fog volumes, empty records and grouping
+    /// nodes do, on purpose); that is a statement about which geometry, not
+    /// about whether it blocks.
     #[must_use]
     pub const fn objects_unresolved_collision(&self) -> usize {
         self.objects_unresolved_collision
@@ -6303,6 +6426,32 @@ fn stores_no_stored_geometry(record: &RawNode) -> bool {
         })
 }
 
+/// Whether the record stores **a grouping box and nothing else**: its stored
+/// selector word is [`GROUPING_BOX_SELECTOR`] (`unk112 = 2`, the loader's
+/// pointer to the third box), that third box is non-empty, and the first two
+/// are empty.
+///
+/// This is the store state task #1578 measured for the grid-named records that
+/// bind no mesh and hold a box in the slot [`stored_extent`] does not read
+/// ([`GRID_GROUPING_NODE_NEVER_BLOCKS`]). The selector is required, not just
+/// "some box is non-empty": a record that named its own box with a different
+/// selector is a different class and is left to the rest of the role match. A
+/// box this function cannot parse (non-finite or inverted) counts as "not
+/// empty", so the record keeps its container's silence rather than being told
+/// it groups its children.
+fn stores_only_a_grouping_box(record: &RawNode) -> bool {
+    if record.info.unk112 != GROUPING_BOX_SELECTOR {
+        return false;
+    }
+    let parse = |stored: [[f32; 3]; 2]| {
+        StoredVolume::new(stored[0].map(f64::from), stored[1].map(f64::from)).ok()
+    };
+    let non_empty =
+        |stored: [[f32; 3]; 2]| matches!(parse(stored), Some(volume) if !volume.is_empty());
+    let empty = |stored: [[f32; 3]; 2]| matches!(parse(stored), Some(volume) if volume.is_empty());
+    non_empty(record.info.unk164) && empty(record.info.unk116) && empty(record.info.unk140)
+}
+
 /// Converts a stored box into canonical metres through `adapter`.
 fn canonical_bounds(
     volume: &StoredVolume,
@@ -6352,17 +6501,23 @@ fn canonical_bounds(
 ///
 /// An object the grid names becomes the world's static geometry
 /// ([`INDEXED_RECORD_IS_STATIC`]) — a **designed** rule over a measured fact,
-/// not a measurement of how the 2000 engine collided — with two measured
-/// exceptions, both about what the container itself states: a grid-named
+/// not a measurement of how the 2000 engine collided — with three measured
+/// exceptions, all about what the container itself states: a grid-named
 /// record whose name the original's fog-volume consumer keys, and which the
 /// image's intersection walk drops before any box test, resolves role `None`
 /// ([`FOG_VOLUME_RECORD_NEVER_BLOCKS`], the overlap reported by
-/// [`WorldImportReport::partition_records_fog_volume`]); and a grid-named
+/// [`WorldImportReport::partition_records_fog_volume`]); a grid-named
 /// record that stores no mesh and no non-empty box resolves `None` because the
 /// store states no geometry for it ([`GRID_RECORD_STORES_NO_GEOMETRY`],
-/// [`WorldImportReport::partition_records_stores_no_geometry`]). A grid-named
+/// [`WorldImportReport::partition_records_stores_no_geometry`]); and a
+/// grid-named record that binds no mesh and stores a grouping box only in the
+/// slot its own selector word names resolves `None` because the image's walk
+/// descends into its children instead of testing that box
+/// ([`GRID_GROUPING_NODE_NEVER_BLOCKS`],
+/// [`WorldImportReport::partition_records_grouping_node`]). A grid-named
 /// `fvol*` record that stores the narrow-phase bit still resolves role-unknown
-/// ([`GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED`]). An unindexed object
+/// ([`GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED`]), as does a grouping-box record
+/// that stores it ([`GRID_GROUPING_NODE_ROLE_UNMEASURED`]). An unindexed object
 /// that binds no mesh and stores no extent is the store saying this record has
 /// no geometry, so its role resolves to `None`
 /// ([`UNINDEXED_RECORD_STORES_NO_GEOMETRY`]) — measured to be exactly the
@@ -6496,6 +6651,7 @@ pub fn import_world_container(
     let mut partition_records_with_mesh = 0usize;
     let mut partition_records_fog_volume = 0usize;
     let mut partition_records_stores_no_geometry = 0usize;
+    let mut partition_records_grouping_node = 0usize;
     let mut objects_unresolved_collision = 0usize;
     for record in records
         .nodes
@@ -6612,6 +6768,59 @@ pub fn import_world_container(
                     reason,
                 },
             )
+        } else if indexed_record && stores_only_a_grouping_box(record) {
+            // Measured (task #1578): this record binds no mesh and stores its
+            // box only in the third slot, the one its own stored selector word
+            // names — the "grouping node" class #771's section A table
+            // measured. The geometry it groups is the meshes its children
+            // bind, and the image's intersection walk descends into those
+            // children instead of testing this record's own box (the
+            // narrow-phase bit is clear), so nothing measured reports a
+            // contact for the record itself. It is presented and never blocks;
+            // the box it stores keeps stating the group's extent, and its
+            // absent mesh stays an explicit unknown under OBJECT_STORES_NO_MESH.
+            partition_records_grouping_node += 1;
+            if record.flags() & INTERSECTION_NARROW_PHASE_FLAG == 0 {
+                let reason = format!(
+                    "node slot {} is named by the world record's partition grid, binds no mesh, \
+                     and stores its box only in the slot its own stored selector word {} names \
+                     (offset 164): the image's intersection walk reads this record's flags word \
+                     at 0x4cb635 and, with its narrow-phase bit 0x{:08x} clear, never copies that \
+                     box — at 0x4cb63c it descends into the record's {} child records (and drops \
+                     the candidate when there are none) instead of reaching the narrow phase — so \
+                     nothing measured reports a contact for the record itself, and the geometry \
+                     it groups is the meshes its children bind",
+                    record.index,
+                    record.info.unk112,
+                    INTERSECTION_NARROW_PHASE_FLAG,
+                    record.info.children_count,
+                );
+                (
+                    Resolved::Known(Known::new(WorldCollisionRole::None, provenance.clone())),
+                    Resolved::Unknown {
+                        claim_id: claim(GRID_GROUPING_NODE_NEVER_BLOCKS),
+                        reason,
+                    },
+                )
+            } else {
+                let reason = format!(
+                    "node slot {} is named by the world record's partition grid and stores a \
+                     grouping box, but its stored narrow-phase bit 0x{:08x} is set, so the \
+                     image's intersection walk would test that box (0x4cb638, 0x4cb665): the \
+                     container states no collision role for it",
+                    record.index, INTERSECTION_NARROW_PHASE_FLAG,
+                );
+                (
+                    Resolved::Unknown {
+                        claim_id: claim(GRID_GROUPING_NODE_ROLE_UNMEASURED),
+                        reason: reason.clone(),
+                    },
+                    Resolved::Unknown {
+                        claim_id: claim(GRID_GROUPING_NODE_ROLE_UNMEASURED),
+                        reason,
+                    },
+                )
+            }
         } else if indexed_record {
             objects_solid += 1;
             (
@@ -6764,6 +6973,7 @@ pub fn import_world_container(
         partition_records_with_mesh,
         partition_records_fog_volume,
         partition_records_stores_no_geometry,
+        partition_records_grouping_node,
         empty_cells: grid.empty_cells().len(),
         objects: definition.objects().len(),
         objects_with_mesh,

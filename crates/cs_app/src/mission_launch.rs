@@ -34,8 +34,8 @@ use cs_content::scene::BindingMap;
 use cs_content::stunts::decode_zrd;
 use cs_content::textures::WorldTextureLoad;
 use cs_content::world::{
-    GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED, UNINDEXED_ROLE_UNMEASURED,
-    WORLD_AXIS_CONVENTION_MEASURED, WorldImportReport, WorldSceneError,
+    GRID_GROUPING_NODE_ROLE_UNMEASURED, GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED,
+    UNINDEXED_ROLE_UNMEASURED, WORLD_AXIS_CONVENTION_MEASURED, WorldImportReport, WorldSceneError,
     world_scene_graph_from_gamez,
 };
 use cs_formats::gamez::read_gamez_nodes;
@@ -764,7 +764,7 @@ fn measure_geometry(
 /// [`WorldImportReport`] rather than restated.
 ///
 /// The vertex unit, the axis convention and every collision role the
-/// container *states* were measured by #677, #716, #727 and #771, so this
+/// container *states* were measured by #677, #716, #727, #771 and #1578, so this
 /// surface is satisfied exactly when the import applied the measured axis
 /// convention **and** left no record without an answer. Each open term is
 /// one of the report's own counters — never a restated string:
@@ -772,17 +772,20 @@ fn measure_geometry(
 /// * [`WorldImportReport::objects_unresolved_collision`] counts every
 ///   imported object whose collision role is still `Unknown`. Its
 ///   documented identity is [`WorldImportReport::objects_unindexed_unresolved`]
-///   plus any grid-named `fvol*` record that stores the intersection
-///   narrow-phase flag ([`GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED`]), so the
-///   residual below is exactly the grid-named half, and neither counter
-///   double-names a record.
+///   plus any grid-named record that stores the intersection narrow-phase flag
+///   ([`GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED`] for an `fvol*` name,
+///   [`GRID_GROUPING_NODE_ROLE_UNMEASURED`] for a record that binds no mesh and
+///   stores a grouping box), so the residual below is exactly the grid-named
+///   half, and neither counter double-names a record.
 /// * [`WorldImportReport::objects_unindexed_unresolved`] is the
 ///   mesh-bearing unindexed half ([`UNINDEXED_ROLE_UNMEASURED`]).
 /// * A grid record that binds no mesh is open only when it *does* store a
-///   box: [`WorldImportReport::partition_records_stores_no_geometry`] is the
-///   answered half — the store gives those records nothing a collider or a
-///   drawing could come from — so the open count is the arithmetic that
-///   accessor documents.
+///   box `stored_extent` does not read and the class that box makes it is not
+///   answered: [`WorldImportReport::partition_records_stores_no_geometry`] is
+///   the answered half whose store states no geometry at all, and
+///   [`WorldImportReport::partition_records_grouping_node`] the answered half
+///   whose box is a grouping volume the image's walk never tests — so the open
+///   count is the arithmetic those accessors document.
 /// * The axis class must be the installation-backed observation.
 ///
 /// Before #771 landed, this verdict read
@@ -802,7 +805,8 @@ pub fn geometry_verdict(report: &WorldImportReport) -> SurfaceVerdict {
     let meshless = report
         .partition_records()
         .saturating_sub(report.partition_records_with_mesh())
-        .saturating_sub(report.partition_records_stores_no_geometry());
+        .saturating_sub(report.partition_records_stores_no_geometry())
+        .saturating_sub(report.partition_records_grouping_node());
     let axis_measured = matches!(report.axis_class(), ClaimStatus::ObservedTool);
     let mut open: Vec<String> = Vec::new();
     if grid_named > 0 {
@@ -813,8 +817,10 @@ pub fn geometry_verdict(report: &WorldImportReport) -> SurfaceVerdict {
             "that store"
         };
         open.push(format!(
-            "the collision role of the {grid_named} grid-named `fvol*` volume {noun} {that} \
-             the intersection narrow-phase flag ({GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED})"
+            "the collision role of the {grid_named} grid-named {noun} {that} \
+             the intersection narrow-phase flag ({GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED} for a \
+             `fvol*` name, {GRID_GROUPING_NODE_ROLE_UNMEASURED} for a record that binds no mesh \
+             and stores a grouping box)"
         ));
     }
     if unindexed > 0 {
@@ -849,14 +855,15 @@ pub fn geometry_verdict(report: &WorldImportReport) -> SurfaceVerdict {
                 "world::retail::read_world_container + import_world_container ({} partition \
                  cells, {} objects, axis `{}` under {}; objects with an `Unknown` collision \
                  role: {}, unindexed geometry-bearing records unresolved: {}, grid records \
-                 storing no geometry: {})",
+                 storing no geometry: {}, grid grouping records: {})",
                 report.partition_cells(),
                 report.objects(),
                 report.axis_map(),
                 WORLD_AXIS_CONVENTION_MEASURED,
                 unresolved,
                 unindexed,
-                report.partition_records_stores_no_geometry()
+                report.partition_records_stores_no_geometry(),
+                report.partition_records_grouping_node()
             ),
         }
     } else {
@@ -868,6 +875,7 @@ pub fn geometry_verdict(report: &WorldImportReport) -> SurfaceVerdict {
                  (#716, #771); what no stage has answered is {} \
                  (docs/findings/2026-10-07-m01-lc-fvol-roles-and-axis-convention.md, \
                  docs/findings/2026-10-08-m01-lc-world-residual-roles.md, \
+                 docs/findings/2026-10-18-m01-c3-world-residuals.md, \
                  docs/findings/2026-10-07-f18-grid-collision-origin.md)",
                 report.partition_cells(),
                 report.objects(),

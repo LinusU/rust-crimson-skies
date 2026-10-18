@@ -44,8 +44,9 @@ use cs_app::world::{
 use cs_content::coordinates::{CoordinateSource, SourceAdapter};
 use cs_content::textures::WorldTextureLoad;
 use cs_content::world::{
-    FOG_VOLUME_RECORD_NEVER_BLOCKS, GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED,
-    INDEXED_RECORD_IS_STATIC, UNINDEXED_ROLE_UNMEASURED, WorldCollisionRole, WorldObjectId,
+    FOG_VOLUME_RECORD_NEVER_BLOCKS, GRID_GROUPING_NODE_NEVER_BLOCKS,
+    GRID_NAMED_FOG_VOLUME_ROLE_UNMEASURED, GROUPING_BOX_SELECTOR, INDEXED_RECORD_IS_STATIC,
+    UNINDEXED_ROLE_UNMEASURED, WorldCollisionRole, WorldObjectId,
 };
 use cs_formats::gamez::RawNode;
 use cs_types::content::{Origin, Resolved};
@@ -243,6 +244,21 @@ fn stores_no_geometry(record: &RawNode) -> bool {
             .all(|stored| (0..3).all(|axis| stored[0][axis] == stored[1][axis]))
 }
 
+/// A stored record that binds no mesh and stores its box **only in the third
+/// slot**, the one its own selector word names: the grouping-node class task
+/// #1578 answered ([`GRID_GROUPING_NODE_NEVER_BLOCKS`]).
+///
+/// Re-derived here from the record's own bytes rather than read back from the
+/// import's counter, so the test and the implementation cannot fail together.
+fn stores_grouping_box(record: &RawNode) -> bool {
+    let empty = |stored: [[f32; 3]; 2]| (0..3).all(|axis| stored[0][axis] == stored[1][axis]);
+    record.mesh_index() < 0
+        && record.info.unk112 == GROUPING_BOX_SELECTOR
+        && !empty(record.info.unk164)
+        && empty(record.info.unk116)
+        && empty(record.info.unk140)
+}
+
 /// **Over the original installation there are exactly six grid-named `fvol*`
 /// records, each now resolved as the fog volume the image's own walk drops.**
 ///
@@ -285,17 +301,21 @@ fn accept_f18_grid_collision_origin_retail_the_six_grid_named_fog_volumes_are_na
         );
         assert_eq!(
             report.objects_solid(),
-            report.partition_records() - fog_count - report.partition_records_stores_no_geometry(),
-            "{group}: every grid-named record but the fog volumes and the records that \
-             store no geometry resolves `Solid`"
+            report.partition_records()
+                - fog_count
+                - report.partition_records_stores_no_geometry()
+                - report.partition_records_grouping_node(),
+            "{group}: every grid-named record but the fog volumes, the records that \
+             store no geometry and the grouping nodes resolves `Solid`"
         );
         assert_eq!(
             report.partition_records_fog_volume()
                 + report.partition_records_stores_no_geometry()
+                + report.partition_records_grouping_node()
                 + report.objects_solid(),
             report.partition_records(),
-            "{group}: the fog counter, the empty records and the solid count partition \
-             the grid exactly"
+            "{group}: the fog counter, the empty records, the grouping nodes and the \
+             solid count partition the grid exactly"
         );
 
         // Which records they are: node slot and stored name, read from the same
@@ -377,7 +397,8 @@ fn accept_f18_grid_collision_origin_retail_the_six_grid_named_fog_volumes_are_na
 
         // Every grid-named record that is neither a fog volume nor one the
         // store gives no geometry keeps the designed rule, so the carve-outs
-        // are as narrow as the measurement.
+        // are as narrow as the measurement. Task #1578's grouping nodes are a
+        // third carved-out class, re-derived from the same bytes.
         let empty: BTreeSet<u32> = container
             .partition_grid()
             .expect("the container's own grid reads")
@@ -390,6 +411,43 @@ fn accept_f18_grid_collision_origin_retail_the_six_grid_named_fog_volumes_are_na
             report.partition_records_stores_no_geometry(),
             "{group}: the report's empty records are the container's own bytes"
         );
+        let grouping: BTreeSet<u32> = container
+            .partition_grid()
+            .expect("the container's own grid reads")
+            .indexed_slots()
+            .into_iter()
+            .filter(|slot| {
+                container
+                    .nodes()
+                    .get(*slot)
+                    .is_some_and(stores_grouping_box)
+            })
+            .collect();
+        assert_eq!(
+            grouping.len(),
+            report.partition_records_grouping_node(),
+            "{group}: the report's grouping records are the container's own bytes"
+        );
+        for slot in &grouping {
+            let object = imported
+                .definition()
+                .object(&WorldObjectId::new(&format!("node-{slot}")).expect("the key is valid"))
+                .expect("a grid-named grouping record imported");
+            assert_eq!(
+                object.known_collision(),
+                Some(WorldCollisionRole::None),
+                "{group}: node {slot} stores a grouping box whose children hold the \
+                 geometry, so the record itself never blocks"
+            );
+            let Resolved::Unknown { claim_id, .. } = object.shape() else {
+                panic!("{group}: node {slot} builds no collider, so its shape stays open");
+            };
+            assert_eq!(
+                claim_id.as_str(),
+                GRID_GROUPING_NODE_NEVER_BLOCKS,
+                "{group}: node {slot} stores the grouping box the wrap-up task measured"
+            );
+        }
         let indexed = container
             .partition_grid()
             .expect("the container's own grid reads")
@@ -400,7 +458,7 @@ fn accept_f18_grid_collision_origin_retail_the_six_grid_named_fog_volumes_are_na
             "{group}: the report's grid is the container's grid"
         );
         for slot in indexed {
-            if fog_set.contains(&slot) || empty.contains(&slot) {
+            if fog_set.contains(&slot) || empty.contains(&slot) || grouping.contains(&slot) {
                 continue;
             }
             let object = imported

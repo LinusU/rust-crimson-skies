@@ -120,6 +120,15 @@ pub(crate) struct ObjectSpec {
     /// The record's stored node flag word, read back by the production node
     /// reader and tested by `cls_di.c`'s walk (task #771).
     flags: u32,
+    /// The record's stored selector word at offset 112 (`unk112`), which the
+    /// loader turns into a pointer to one of the record's three boxes
+    /// (task #771's measurement; task #1578 names the value that selects the
+    /// third box).
+    selector: u32,
+    /// The record's **third** stored box (`unk164`): the one
+    /// [`cs_content::world::GROUPING_BOX_SELECTOR`] names, and the one neither
+    /// `stored_extent` nor the world-space extent of a grouping record reads.
+    third_box: [[f32; 3]; 2],
 }
 
 impl ObjectSpec {
@@ -138,12 +147,24 @@ impl ObjectSpec {
             has_parent: true,
             unk196: 160,
             flags: Self::DEFAULT_FLAGS,
+            selector: 0,
+            third_box: [[0.0; 3]; 2],
         }
     }
 
     pub(crate) const fn extent(mut self, min: [f32; 3], max: [f32; 3]) -> Self {
         self.box_min = min;
         self.box_max = max;
+        self
+    }
+
+    /// The record's **third** stored box (offset 164), with the selector word
+    /// that names it: the store state task #1578 measured for a grid-named
+    /// record that binds no mesh and groups its children's geometry. The other
+    /// two boxes stay empty, so the record states no extent of its own.
+    pub(crate) const fn grouping_box(mut self, min: [f32; 3], max: [f32; 3]) -> Self {
+        self.selector = cs_content::world::GROUPING_BOX_SELECTOR;
+        self.third_box = [min, max];
         self
     }
 
@@ -304,6 +325,7 @@ pub(crate) fn write_container(fixture: &Fixture) -> Vec<u8> {
         word(&mut bytes, slot + 72, 0);
         half(&mut bytes, slot + 84, u16::from(object.has_parent));
         half(&mut bytes, slot + 86, 0);
+        word(&mut bytes, slot + 112, object.selector);
         word(&mut bytes, slot + 196, object.unk196);
         word(&mut bytes, slot + 208, 0x0200_0000);
 
@@ -320,10 +342,13 @@ pub(crate) fn write_container(fixture: &Fixture) -> Vec<u8> {
         }
         word(&mut bytes, at + 144, WORLD);
         // The record's own stored world-space box: `unk140`'s two `Vec3`s, at
-        // 140 and 152 of the 208-byte info slot.
+        // 140 and 152 of the 208-byte info slot, and the third box (`unk164`)
+        // at 164 and 176.
         for axis in 0..3 {
             float(&mut bytes, slot + 140 + 4 * axis, object.box_min[axis]);
             float(&mut bytes, slot + 152 + 4 * axis, object.box_max[axis]);
+            float(&mut bytes, slot + 164 + 4 * axis, object.third_box[0][axis]);
+            float(&mut bytes, slot + 176 + 4 * axis, object.third_box[1][axis]);
         }
     }
     bytes

@@ -112,6 +112,12 @@ struct Measured {
     /// index and an empty box in each of their three stored slots (task #771).
     /// They resolve `None` from the store's own silence and are never a skip.
     grid_no_geometry: usize,
+    /// How many of the grid's records store **a grouping box**: no mesh index,
+    /// and a non-empty box only in the third slot, the one the record's own
+    /// stored selector word names (task #1578). They resolve `None`: the image's
+    /// intersection walk descends into their children instead of testing the
+    /// box, and the meshes their children bind are the geometry they group.
+    grid_grouping: usize,
     /// How many imported records resolve a mesh reference.
     objects_with_mesh: usize,
     /// How many cells could be given no extent, so their records stay resident.
@@ -168,6 +174,7 @@ const MEASURED: [Measured; 8] = [
         values_with_mesh: 285,
         grid_fog: 0,
         grid_no_geometry: 13,
+        grid_grouping: 48,
         objects_with_mesh: 301,
         cells_without_extent: 0,
         empty_cells: 0,
@@ -194,6 +201,7 @@ const MEASURED: [Measured; 8] = [
         values_with_mesh: 139,
         grid_fog: 0,
         grid_no_geometry: 8,
+        grid_grouping: 8,
         objects_with_mesh: 143,
         // Five cells whose members all store an all-zero box, so they get no
         // sector and their records stay resident.
@@ -219,6 +227,7 @@ const MEASURED: [Measured; 8] = [
         values_with_mesh: 292,
         grid_fog: 4,
         grid_no_geometry: 1,
+        grid_grouping: 0,
         objects_with_mesh: 314,
         cells_without_extent: 0,
         empty_cells: 0,
@@ -242,6 +251,7 @@ const MEASURED: [Measured; 8] = [
         values_with_mesh: 186,
         grid_fog: 0,
         grid_no_geometry: 23,
+        grid_grouping: 49,
         objects_with_mesh: 189,
         cells_without_extent: 0,
         empty_cells: 0,
@@ -265,6 +275,7 @@ const MEASURED: [Measured; 8] = [
         values_with_mesh: 289,
         grid_fog: 0,
         grid_no_geometry: 1,
+        grid_grouping: 0,
         objects_with_mesh: 301,
         cells_without_extent: 0,
         empty_cells: 0,
@@ -288,6 +299,7 @@ const MEASURED: [Measured; 8] = [
         values_with_mesh: 374,
         grid_fog: 0,
         grid_no_geometry: 18,
+        grid_grouping: 47,
         objects_with_mesh: 377,
         // Three cells whose members all store an all-zero box.
         cells_without_extent: 3,
@@ -315,6 +327,7 @@ const MEASURED: [Measured; 8] = [
         values_with_mesh: 303,
         grid_fog: 0,
         grid_no_geometry: 4,
+        grid_grouping: 43,
         objects_with_mesh: 321,
         cells_without_extent: 0,
         empty_cells: 0,
@@ -338,6 +351,7 @@ const MEASURED: [Measured; 8] = [
         values_with_mesh: 367,
         grid_fog: 2,
         grid_no_geometry: 80,
+        grid_grouping: 24,
         objects_with_mesh: 455,
         // Four cells whose members all store an all-zero box.
         cells_without_extent: 4,
@@ -588,9 +602,10 @@ fn accept_f18_world_units_containers_every_world_group_imports_with_the_measured
         );
 
         // The role follows the spatial index, so the solid count is the grid's
-        // minus the two measured sets that resolve some other way: the
-        // grid-named fog volumes the original takes as fog (task #727), and the
-        // grid records that store no geometry at all (task #771).
+        // minus the three measured sets that resolve some other way: the
+        // grid-named fog volumes the original takes as fog (task #727), the
+        // grid records that store no geometry at all (task #771), and the
+        // grid records that store only a grouping box (task #1578).
         assert_eq!(
             report.partition_records_fog_volume(),
             measured.grid_fog,
@@ -605,18 +620,29 @@ fn accept_f18_world_units_containers_every_world_group_imports_with_the_measured
             measured.group
         );
         assert_eq!(
+            report.partition_records_grouping_node(),
+            measured.grid_grouping,
+            "{}: how many grid-named records bind no mesh and store only a grouping box \
+             (task #1578)",
+            measured.group
+        );
+        assert_eq!(
             report.objects_solid(),
-            measured.values - measured.grid_fog - measured.grid_no_geometry,
-            "{}: one solid record per indexed record, except the grid fog volumes and \
-             the empty ones",
+            measured.values
+                - measured.grid_fog
+                - measured.grid_no_geometry
+                - measured.grid_grouping,
+            "{}: one solid record per indexed record, except the grid fog volumes, the \
+             empty ones and the grouping nodes",
             measured.group
         );
         assert_eq!(
             report.partition_records(),
             report.objects_solid()
                 + report.partition_records_fog_volume()
-                + report.partition_records_stores_no_geometry(),
-            "{}: and the three partition the grid exactly",
+                + report.partition_records_stores_no_geometry()
+                + report.partition_records_grouping_node(),
+            "{}: and the four partition the grid exactly",
             measured.group
         );
         // Residency is a **separate** question from the role, and the two come
@@ -988,14 +1014,20 @@ fn accept_f18_world_units_containers_every_world_group_spawns_and_reports_its_ga
                 .get(SkipReason::UnknownMesh.label())
                 .copied()
                 .unwrap_or(0),
-            measured.values - measured.values_with_mesh - measured.grid_no_geometry,
-            "{}: each indexed record the store binds no mesh for reports that, except \
-             the ones that also store no box — the store states no geometry for those, \
-             so they are an answer rather than a gap (task #771)",
+            measured.values
+                - measured.values_with_mesh
+                - measured.grid_no_geometry
+                - measured.grid_grouping,
+            "{}: every indexed record the store binds no mesh for is answered, so none \
+             reports `unknown_mesh`: the ones with no box at all (task #771) and the ones \
+             storing only a grouping box (task #1578) both resolve",
             measured.group
         );
         let open_roles = measured.unresolved_roles;
-        let open_meshes = measured.values - measured.values_with_mesh - measured.grid_no_geometry;
+        let open_meshes = measured.values
+            - measured.values_with_mesh
+            - measured.grid_no_geometry
+            - measured.grid_grouping;
         assert_eq!(
             reasons.len(),
             usize::from(open_roles > 0) + usize::from(open_meshes > 0),
@@ -1003,18 +1035,20 @@ fn accept_f18_world_units_containers_every_world_group_spawns_and_reports_its_ga
             measured.group
         );
         // The anchors (task #677), the fog volumes (task #716), the grid-named
-        // fog volumes and the empty grid records (task #771) are a
-        // *deliberate* `None`: presented, never blocking, and not in the skip
-        // list — a resolved record is not a gap.
+        // fog volumes and the empty grid records (task #771) and the grouping
+        // nodes (task #1578) are a *deliberate* `None`: presented, never
+        // blocking, and not in the skip list — a resolved record is not a gap.
         assert_eq!(
             spawned.non_colliding().len(),
             measured.anchors
                 + measured.fog
                 + measured.environment
                 + measured.grid_fog
-                + measured.grid_no_geometry,
-            "{}: the records that store no geometry, the `fvol*` records and the \
-             environment subtree are presented with no collider by their own answer",
+                + measured.grid_no_geometry
+                + measured.grid_grouping,
+            "{}: the records that store no geometry, the `fvol*` records, the grouping \
+             nodes and the environment subtree are presented with no collider by their \
+             own answer",
             measured.group
         );
         assert_eq!(

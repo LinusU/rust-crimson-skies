@@ -235,7 +235,8 @@ fn accept_m01_lc_fvol_roles_an_unindexed_fvol_record_is_a_fog_volume_and_never_b
         report.objects_solid(),
         report.partition_records()
             - report.partition_records_fog_volume()
-            - report.partition_records_stores_no_geometry(),
+            - report.partition_records_stores_no_geometry()
+            - report.partition_records_grouping_node(),
         "the index rule still resolves every grid-named record but the fog volumes \
          and the records that store no geometry"
     );
@@ -459,10 +460,11 @@ fn accept_m01_lc_fvol_roles_every_container_fog_split_is_measured() {
             report.objects_solid(),
             report.partition_records()
                 - report.partition_records_fog_volume()
-                - report.partition_records_stores_no_geometry(),
-            "{}: the index rule resolves every grid-named record but the fog volumes \
-             and the records that store no geometry (tasks #727 and #771 settle what \
-             this task deferred)",
+                - report.partition_records_stores_no_geometry()
+                - report.partition_records_grouping_node(),
+            "{}: the index rule resolves every grid-named record but the fog volumes, \
+             the records that store no geometry and the grouping nodes (tasks #716/#727/#771 \
+             settle the first two, task #1578 the third)",
             split.group
         );
 

@@ -22,8 +22,12 @@
 //!   unindexed geometry-bearing record nothing answers — and asserts
 //!   `Satisfied` against `Unknown`. It runs in CI, which has no original data.
 //! * the retail member (`#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]`)
-//!   re-plans M01 against the owner's installation and asserts the plan
-//!   reports **zero** gaps and `launchable()` is true.
+//!   re-plans a mission against the owner's installation and asserts the plan
+//!   reports **zero** gaps and `launchable()` is true. Since #1565 M01 resolves
+//!   to `zbd/c3`, so the member re-plans the `M06` label instead — the
+//!   container this suite's fixture shape was pinned against — and the
+//!   `M01`-label regression lives in
+//!   `crates/cs_app/tests/campaign/m01_c3_world_residuals.rs` (task #1578).
 //!
 //! The synthetic member is written so that it fails if the verdict is put back
 //! on the overlap counter or on the un-subtracted mesh-less index: the fixture
@@ -108,7 +112,12 @@ fn report(fixture: &Fixture) -> WorldImportReport {
 ///   `partition_records_fog_volume` reports;
 /// * a grid record that stores no mesh index and no box — resolved `None`
 ///   because the store gives a collider nothing to come from (#771), and
-///   counted by `partition_records_stores_no_geometry`.
+///   counted by `partition_records_stores_no_geometry`;
+/// * a grid record that binds no mesh and stores a **grouping box** only in the
+///   third slot its own selector word names — resolved `None` because the
+///   image's walk never tests that box (#1578), and counted by
+///   `partition_records_grouping_node`. It is what makes this member fail if
+///   the verdict's mesh-less term stops subtracting the grouping class.
 fn with_answered_grid_records(fixture: &mut Fixture) {
     let fog = 1 + u32::try_from(fixture.objects.len()).expect("a fixture slot fits");
     // The stored node flag word the installation's grid-named `fvol*` records
@@ -121,7 +130,11 @@ fn with_answered_grid_records(fixture: &mut Fixture) {
     );
     let empty = 1 + u32::try_from(fixture.objects.len()).expect("a fixture slot fits");
     fixture.objects.push(ObjectSpec::new("empty", -1));
-    fixture.grid[0].extend([fog, empty]);
+    let grouping = 1 + u32::try_from(fixture.objects.len()).expect("a fixture slot fits");
+    fixture
+        .objects
+        .push(ObjectSpec::new("grouping", -1).grouping_box([-4.0, 0.0, -4.0], [-3.0, 1.0, -3.0]));
+    fixture.grid[0].extend([fog, empty, grouping]);
 }
 
 /// The retail shape: no record is left without an answer. The default
@@ -179,6 +192,12 @@ fn accept_vs_m01_geometry_verdict_a_zero_residual_report_is_satisfied_and_a_resi
         answered.partition_records_stores_no_geometry(),
         1,
         "and the grid record that stores no geometry is counted as answered"
+    );
+    assert_eq!(
+        answered.partition_records_grouping_node(),
+        1,
+        "and so is the grid record that binds no mesh and stores only a grouping box \
+         (task #1578)"
     );
     let verdict = geometry_verdict(&answered);
     let SurfaceVerdict::Satisfied { consumer } = &verdict else {

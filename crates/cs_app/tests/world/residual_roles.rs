@@ -146,8 +146,16 @@ fn accept_m01_lc_world_residual_roles_grid_records_resolve_answers_instead_of_ga
         report.partition_records(),
         report.objects_solid()
             + report.partition_records_fog_volume()
-            + report.partition_records_stores_no_geometry(),
-        "the three numbers partition the index exactly"
+            + report.partition_records_stores_no_geometry()
+            + report.partition_records_grouping_node(),
+        "the four numbers partition the index exactly — and this fixture authors no \
+         grouping-box record, so the last term is zero here (task #1578's own suite \
+         exercises that class)"
+    );
+    assert_eq!(
+        report.partition_records_grouping_node(),
+        0,
+        "the fixture holds no mesh-less record that stores a grouping box"
     );
     assert_eq!(
         report.objects_solid(),
@@ -348,8 +356,10 @@ fn accept_m01_lc_world_residual_roles_the_installation_leaves_nothing_unanswered
             report.partition_records(),
             report.objects_solid()
                 + report.partition_records_fog_volume()
-                + report.partition_records_stores_no_geometry(),
-            "{group}: the index partitions into solids, fog volumes and empty records"
+                + report.partition_records_stores_no_geometry()
+                + report.partition_records_grouping_node(),
+            "{group}: the index partitions into solids, fog volumes, empty records and \
+             grouping records (task #1578 added the last term)"
         );
 
         // The six grid-named `fvol*` records resolve the fog claim as role
