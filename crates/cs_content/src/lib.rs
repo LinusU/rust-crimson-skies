@@ -508,6 +508,19 @@
 //! resolved content bytes. F53-C is the selection UI and export tooling,
 //! F53-D the reproducibility evidence.
 //!
+//! [`lobby`] is the F55 host form's scenario menu
+//! (`specs/F55-multiplayer-lobby-host-rules-readiness-and-ux.md`, task #788,
+//! follow-up F55-CU2): [`lobby::scenario_menu`] projects the F56-A
+//! [`multiplayer::SlotCatalog`] into the [`lobby::ScenarioMenu`] the host form
+//! shows — one [`lobby::ScenarioOption`] per slot that has a reader archive,
+//! carrying the stable [`cs_types::content::ContentId`] the dropdown selects
+//! (never a row number), the installation's own `ZBD/<world-group>/MP<n>`
+//! directory spelling for display (no localized scenario name is measured, so
+//! none is invented) and the slot's own [`cs_types::content::Resolved`] mode
+//! family, which stays an explicit unknown rather than being defaulted. An
+//! `MP<n>` directory the installation ships without a reader archive stays
+//! listed as unavailable and is never made into an option.
+//!
 //! [`multiplayer`] is the F56-A original multiplayer catalog
 //! (`specs/F56-original-multiplayer-scenarios-and-mode-rules.md`, stage
 //! `### F56-A`): [`multiplayer::discover_modes`] reads the modes the localized
@@ -582,6 +595,7 @@ pub mod legacy_import;
 pub mod livery;
 pub mod livery_airframes;
 pub mod loading;
+pub mod lobby;
 pub mod localization;
 pub mod mesh;
 pub mod mission_control;
