@@ -59,7 +59,9 @@
 //!   [`runtime::ObjectiveRuntime::submit_directives`] queues them for the
 //!   tick's completion-effect phase, resolving every address through
 //!   [`address::resolve_objective_address`] and reporting a refusal as an
-//!   event.
+//!   event. [`crate::mission::MissionSession::submit_directives`] is the
+//!   running-mission driver: the session supplies the record's block count
+//!   and its own directive log (`M02-B-FU5`).
 //!
 //! # Stage F39-E5 — completion effects, aligned in M01-B-OBJ-1-FU1
 //!

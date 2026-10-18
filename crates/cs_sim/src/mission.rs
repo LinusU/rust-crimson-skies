@@ -74,6 +74,7 @@ use cs_types::Tick;
 use cs_types::content::ContentId;
 
 use crate::damage::LifecycleKind;
+use crate::objectives::runtime::{ObjectiveRuntime, RuntimeError};
 use crate::time::TickRate;
 
 /// Most refused effects a host may hold for a retry. A designed bound on the
@@ -382,6 +383,37 @@ impl MissionSession {
             },
             facts: observed,
         })
+    }
+
+    /// Submits this session's directive log to `runtime` — the family's
+    /// [`ObjectiveRuntime::submit_directives`] executor — the way
+    /// [`Countdown::apply_new`] feeds the timer directives to this
+    /// session's own countdown.
+    ///
+    /// `runtime` stays the caller's: the control program this session
+    /// evaluates and the declared-objective program the runtime tracks
+    /// are different programs, so the session does not own one. What the
+    /// session supplies is exactly what no outside caller can derive —
+    /// the record's block count, the `objectives` bound every
+    /// cross-objective address resolves against
+    /// ([`crate::objectives::address::resolve_objective_address`]), and
+    /// the directive log itself. The two sessions must serve the same
+    /// [`SessionGeneration`]: the runtime refuses a foreign generation's
+    /// emissions as [`RuntimeError::StaleDirective`].
+    ///
+    /// The executor's own ledger consumes each emission's execution key
+    /// once, so the call is safe to repeat and safe to make every tick —
+    /// after `advance` or `step`, beside the other log consumers.
+    ///
+    /// # Errors
+    ///
+    /// [`RuntimeError::StaleDirective`] when an emission's session is not
+    /// the runtime's.
+    pub fn submit_directives(&self, runtime: &mut ObjectiveRuntime) -> Result<usize, RuntimeError> {
+        runtime.submit_directives(
+            self.program.program().objectives.len() as u32,
+            self.state.directives(),
+        )
     }
 
     /// Retries every host effect that was refused and is still outstanding.
