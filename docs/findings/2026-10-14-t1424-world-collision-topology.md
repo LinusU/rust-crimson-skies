@@ -200,4 +200,8 @@ would fail on every record whose two views differ, node-2595 among them.
   `Mesh3d` handle is shared exactly as before — but each spawned object owns
   its own derived shape. Filed as **#1430** rather than fixed here, because a
   shared `Collider` would change the constructor→collider timing every
-  collider-on-body test is written against.
+  collider-on-body test is written against. **#1430 has since landed**
+  (`docs/findings/2026-10-18-t1430-shared-derived-trimesh.md`): the shape is
+  derived once per upload into `WorldMeshAssets` and cloned per colliding
+  object, and the collider-on-body suites were re-run unchanged against the
+  directly-inserted `Collider`.
