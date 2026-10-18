@@ -14,7 +14,7 @@ use cs_app::mission_session::{
 use cs_app::physics::FlightAircraft;
 use cs_app::playtest::headless_app;
 use cs_app::playtest::propeller::{PropellerBlur, propeller_blur_visible};
-use cs_app::playtest::scene::{PlaytestAircraft, PlaytestOriginalFlight};
+use cs_app::playtest::scene::PlaytestAircraft;
 use cs_app::playtest_retail::AircraftPart;
 use cs_sim::flight::EngineState;
 
@@ -75,7 +75,6 @@ fn accept_parity_m01_player_view_b_blur_follows_the_engine_state() {
         .id();
     app.update();
     assert_eq!(visibility_of(&app, stray), Visibility::Hidden);
-    let _ = PlaytestOriginalFlight::engine;
 }
 
 /// **M01's player carries the measured `prop1` blur disc**, translucent from
@@ -150,8 +149,11 @@ fn accept_parity_m01_player_view_b_retail_player_draws_the_measured_blur_disc() 
     for _ in 0..3 {
         app.update();
     }
-    let running = visibility_of(&app, disc);
-    eprintln!("running engine -> {running:?}");
+    assert_eq!(
+        visibility_of(&app, disc),
+        Visibility::Inherited,
+        "the mission starts with the engine running, so the disc shows"
+    );
 
     teardown(&mut app);
 }
