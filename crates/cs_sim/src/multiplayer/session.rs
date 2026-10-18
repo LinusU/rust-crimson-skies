@@ -72,7 +72,7 @@ use super::objective::{
 };
 use super::result::{
     ConfigError, EndReason, LethalEvent, Limits, MatchResolver, Outcome, Roster, ScoreTable, Side,
-    SubmitError, Submitted, VictoryRule,
+    Strike, SubmitError, Submitted, VictoryRule,
 };
 
 /// The most possessable objectives one scenario may declare.
@@ -239,6 +239,7 @@ impl EndOfMatch {
             EndReason::ScoreLimit => "match.end.score_limit",
             EndReason::TimeLimit => "match.end.time_limit",
             EndReason::ScoreAndTimeLimit => "match.end.score_and_time_limit",
+            EndReason::Departure => "match.end.departure",
         }
     }
 
@@ -464,6 +465,40 @@ impl MatchSession {
         let ended = self.resolver.close_tick(judged).is_some();
         self.clock = Some(judged);
         TickClose { rulings, ended }
+    }
+
+    /// Strikes a departed participant's score from the standings
+    /// (`DisconnectPolicy::StrikeScore`); see [`MatchResolver::strike`].
+    ///
+    /// Idempotent: the second strike of one participant is
+    /// [`Strike::Duplicate`], and a sealed match is [`Strike::MatchOver`].
+    pub fn strike_score(&mut self, peer: PeerId) -> Strike {
+        self.resolver.strike(peer)
+    }
+
+    /// Ends the running match because a participant departed
+    /// (`DisconnectPolicy::EndMatch`).
+    ///
+    /// Both halves are closed on the same judged tick, as in
+    /// [`Self::close_tick`], and the result is sealed with
+    /// [`EndReason::Departure`]. Returns `true` when this call ended the
+    /// match and `false` when it was already over, so a second departure
+    /// report ends nothing.
+    pub fn end_on_departure(&mut self, tick: Tick) -> bool {
+        if self.is_over() {
+            return false;
+        }
+        let judged = match self.limits.time_limit {
+            Some(limit) if tick > limit => limit,
+            _ => tick,
+        };
+        let judged = self.clock.map_or(judged, |closed| closed.max(judged));
+        if self.clock.is_none_or(|closed| judged > closed) {
+            self.board.close_tick(judged);
+        }
+        self.resolver.end_on_departure(judged);
+        self.clock = Some(judged);
+        true
     }
 
     /// The end-of-match record a results screen consumes, once the match has

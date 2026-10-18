@@ -299,6 +299,9 @@ pub enum EndReason {
     TimeLimit,
     /// Both held at the same tick; one result is still produced.
     ScoreAndTimeLimit,
+    /// A participant departed and the mode's disconnect policy ends the
+    /// match ([`MatchResolver::end_on_departure`]).
+    Departure,
 }
 
 /// Who won.
@@ -337,8 +340,30 @@ pub struct MatchResolver {
     scores: BTreeMap<Side, i32>,
     seen: BTreeSet<EventId>,
     queued: BTreeMap<EventId, LethalEvent>,
+    /// What each participant has earned so far, so a strike can take back
+    /// exactly their share of a team's score.
+    earned: BTreeMap<PeerId, i32>,
+    /// Participants whose score was struck; they earn nothing afterwards.
+    struck: BTreeSet<PeerId>,
     closed_through: Option<Tick>,
     result: Option<FinalResult>,
+}
+
+/// What [`MatchResolver::strike`] did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Strike {
+    /// The participant's score was struck from the board: `removed` points
+    /// came off their side (the whole side in a free-for-all).
+    Struck {
+        /// The points taken back.
+        removed: i32,
+    },
+    /// This participant had already been struck; nothing changed.
+    Duplicate,
+    /// The result is sealed; nothing may change it.
+    MatchOver,
+    /// The peer is not in the roster.
+    Unknown(PeerId),
 }
 
 impl MatchResolver {
@@ -391,6 +416,8 @@ impl MatchResolver {
             scores,
             seen: BTreeSet::new(),
             queued: BTreeMap::new(),
+            earned: BTreeMap::new(),
+            struck: BTreeSet::new(),
             closed_through: None,
             result: None,
         })
@@ -492,6 +519,75 @@ impl MatchResolver {
         self.result.as_ref()
     }
 
+    /// Strikes a departed participant's score from the board
+    /// (`DisconnectPolicy::StrikeScore`).
+    ///
+    /// In a free-for-all the participant's side leaves the standings; in a
+    /// team match the team keeps the points its other members earned and
+    /// loses exactly this participant's share. Events already queued for the
+    /// participant are credited to nobody. Idempotent: a second strike of
+    /// the same participant is [`Strike::Duplicate`] and changes nothing.
+    pub fn strike(&mut self, peer: PeerId) -> Strike {
+        if self.result.is_some() {
+            return Strike::MatchOver;
+        }
+        let Some(side) = self.roster.side_of(peer) else {
+            return Strike::Unknown(peer);
+        };
+        if !self.struck.insert(peer) {
+            return Strike::Duplicate;
+        }
+        let removed = self.earned.remove(&peer).unwrap_or(0);
+        match side {
+            Side::Participant(_) => {
+                self.scores.remove(&side);
+            }
+            Side::Team(_) => {
+                if let Some(score) = self.scores.get_mut(&side) {
+                    *score -= removed;
+                }
+            }
+        }
+        Strike::Struck { removed }
+    }
+
+    /// Whether `peer`'s score has been struck.
+    pub fn is_struck(&self, peer: PeerId) -> bool {
+        self.struck.contains(&peer)
+    }
+
+    /// Ends the match on a participant's departure
+    /// (`DisconnectPolicy::EndMatch`), sealing the one result on `tick`.
+    ///
+    /// Events queued up to the judged tick are applied first, exactly as
+    /// [`Self::close_tick`] would; a tick past the time limit is judged as
+    /// the limit tick. Returns the sealed result, which on a repeat call is
+    /// the one already sealed — it never ends twice.
+    pub fn end_on_departure(&mut self, tick: Tick) -> &FinalResult {
+        if self.result.is_none() {
+            let judged = match self.limits.time_limit {
+                Some(limit) if tick > limit => limit,
+                _ => tick,
+            };
+            let judged = self.closed_through.map_or(judged, |c| c.max(judged));
+            let due: Vec<EventId> = self
+                .queued
+                .keys()
+                .copied()
+                .take_while(|id| id.tick <= judged)
+                .collect();
+            for id in due {
+                if let Some(event) = self.queued.remove(&id) {
+                    self.apply(&event);
+                }
+            }
+            self.closed_through = Some(judged);
+            self.queued.clear();
+            self.result = Some(self.seal(judged, EndReason::Departure));
+        }
+        self.result.as_ref().expect("sealed above")
+    }
+
     /// A side's current score.
     pub fn score(&self, side: Side) -> Option<i32> {
         self.scores.get(&side).copied()
@@ -515,8 +611,16 @@ impl MatchResolver {
                 )
             }
         };
+        let earner = match event.kind {
+            LethalKind::Crash => event.victim,
+            LethalKind::Kill { killer } => killer,
+        };
+        if self.struck.contains(&earner) {
+            return;
+        }
         if let Some(score) = side.and_then(|side| self.scores.get_mut(&side)) {
             *score += points;
+            *self.earned.entry(earner).or_insert(0) += points;
         }
     }
 
