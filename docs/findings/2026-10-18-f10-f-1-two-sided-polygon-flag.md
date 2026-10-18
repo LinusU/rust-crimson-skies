@@ -121,9 +121,29 @@ both, per archive, and that the reader raised no strip finding).
 
 ## Commands and sources
 
-See the task hand-over for the exact commands and exit codes. Sources:
-`OWNER-STATIC-2026-10-05`;
+All from the repository root on branch
+`rally/1406-read-the-gamez-polygon-two-sided-bit-0x4`, Rust 1.98.1.
+
+| Command | Exit |
+| --- | --- |
+| `cargo fmt --all -- --check` | 0 |
+| `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
+| `cargo test --locked -p cs_formats -p cs_content` | 0 |
+| `cargo test --locked -p cs_app --config 'profile.dev.package."*".debug=false' --no-fail-fast` | 101 — the only failure is the pre-existing macOS `accept_t336_linked_images_keep_eh_frame_under_the_encoding_limit` gate (`cs_app_tests_a` `__eh_frame` 20 296 636 B), which current main fails the same way (measured 20 304 428 B at base `04f41824c`) and which Linux CI never runs; filed as #1621. Every other suite passes: lib unit tests 185, suite b 262, suite c 526, suite d 412, suite e 11. |
+| `cargo test --locked -p cs_content --lib -- accept_f10_f_1_ --include-ignored` | 0 (5 tests; the retail census runs with `CS_GAME_DIR`) |
+| `cargo test --locked -p cs_formats --test cs_formats_tests -- accept_f10_f_1_ --include-ignored` | 0 (1 test) |
+| `cargo test --locked -p cs_app --test cs_app_tests_b -- accept_f10_f_1_ --include-ignored` | 0 (2 tests) |
+
+Mutation check (applied, run, reverted): forcing `RenderTriangle::two_sided`
+to `false` in `cs_content::mesh::resolve` fails
+`accept_f10_f_1_a_stored_two_sided_outline_reaches_its_render_group` and
+`…_a_group_mixing_one_and_two_sided_polygons_records_unknown`; ignoring
+`stored_two_sided` in `render_state_for_group` fails both `cs_app`
+`accept_f10_f_1_` tests.
+
+Sources: `OWNER-STATIC-2026-10-05`;
 `docs/findings/2026-10-14-f10-d-2-front-face-winding-and-culling.md`;
 `specs/F10-gamez-mesh-topology-and-material-records.md`;
 `specs/F17-rendering-material-fidelity-and-scalable-presentation.md`;
 `docs/contracts/IDENTITY-CONTENT.md`.
+
