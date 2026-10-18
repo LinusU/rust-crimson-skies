@@ -120,20 +120,22 @@ corner kept `0x0000_0003` instead of `+0.0`.
 | --- | --- |
 | `cargo fmt --all -- --check` | clean |
 | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | clean |
-| `cargo test --locked -p cs_app --test cs_app_tests_a` | green (225 ignored) |
-| `cargo test --locked -p cs_app --test cs_app_tests_b` | green (63 ignored) |
-| `cargo test --locked -p cs_app --test cs_app_tests_c` | green (64 ignored) |
-| `cargo test --locked -p cs_app --test cs_app_tests_d` | green (403 ignored) |
-| `cargo test --locked -p cs_app --test cs_app_tests_e` | green (11 ignored) |
+| `cargo test --locked -p cs_app --test cs_app_tests_a` | 906 passed, 0 failed (227 ignored) |
+| `cargo test --locked -p cs_app --test cs_app_tests_b` | 287 passed, 0 failed (63 ignored) |
+| `cargo test --locked -p cs_app --test cs_app_tests_c` | 531 passed, 0 failed (65 ignored) |
+| `cargo test --locked -p cs_app --test cs_app_tests_d` | 439 passed, 0 failed (403 ignored) |
+| `cargo test --locked -p cs_app --test cs_app_tests_e` | 12 passed, 0 failed (11 ignored) |
 | `cargo test --locked -p cs_app --test cs_app_tests_c -- world:: --include-ignored` | 158 passed, 3 failed — all three pre-existing evidence-harness preconditions (see below) |
 | `cargo test --locked -p cs_app --test cs_app_tests_c -- accept_f18_b_ --include-ignored` | 45 passed, 0 failed |
 | `cargo test --locked -p cs_app --test cs_app_tests_a -- accept_t424_ accept_t420_ accept_t1424_ --include-ignored` | 23 passed, 0 failed |
 | `cargo test --locked -p cs_app --test cs_app_tests_a -- accept_t1430_ --include-ignored` | 3 discovered, 3 passed |
 | `cargo test --locked -p cs_app --test cs_app_tests_b -- accept_playtest_retail_retail_c1c_area_and_bloodhawk_mesh_spawn_and_capture --include-ignored` | 1 passed (retail, GPU capture; screenshots in `private/`) |
 
-All of it was measured on the final rebased tree; the whole `cs_app` test
-binaries were re-run after the last rebase, which changed no file this task
-touches.
+All of it was measured on the rebased tree at
+`cce04de2b7b070fbd412e203e92d58a4f87f49a7` — the last commit of this task that
+touches code, so the numbers below describe the code this finding ships with.
+The whole `cs_app` test binaries were re-run after that rebase, which changed no
+file this task touches.
 
 The three `world::*` failures under `--include-ignored` are the
 pre-existing `CS_EVIDENCE_DIR is not set` evidence-harness preconditions
