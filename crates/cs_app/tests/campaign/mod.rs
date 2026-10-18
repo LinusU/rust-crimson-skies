@@ -305,3 +305,4 @@ mod m24_b;
 mod objaddr;
 mod owner_facts_table;
 mod record_objectives_sound;
+mod regenerate;

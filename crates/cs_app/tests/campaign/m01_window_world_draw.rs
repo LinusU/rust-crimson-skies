@@ -27,8 +27,8 @@ use cs_app::world::contacts::WorldObjectBinding;
 use cs_content::world::WorldObjectId;
 use cs_types::content::Resolved;
 
-use crate::common::label;
-use crate::vs_m01_rt_window::game_dir;
+use crate::campaign::common::label;
+use crate::campaign::vs_m01_rt_window::game_dir;
 
 /// The far-terrain records of M01's `horizon` subtree that carry a mesh and
 /// must be drawn (`g1155` 792, `h_zone2scroll` 794, `g1164` 796).

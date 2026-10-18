@@ -35,8 +35,8 @@ use cs_content::textures::WorldTextureLoad;
 use cs_content::world::{HORIZON_SUBTREE_RECORD_NEVER_BLOCKS, WorldCollisionRole, WorldObjectId};
 use cs_types::content::{Origin, Resolved};
 
-use crate::common::label;
-use crate::vs_m01_rt_window::game_dir;
+use crate::campaign::common::label;
+use crate::campaign::vs_m01_rt_window::game_dir;
 
 /// The world group M01 is set in.
 const GROUP: &str = "C1C";

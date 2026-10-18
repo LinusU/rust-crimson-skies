@@ -13,7 +13,7 @@ use std::sync::OnceLock;
 
 use cs_content::campaign_bindings::{MissionLabel, SourceContext};
 
-use crate::common::{load_inventory, repo_path};
+use crate::campaign::common::{load_inventory, repo_path};
 
 fn game_dir() -> PathBuf {
     PathBuf::from(std::env::var("CS_GAME_DIR").unwrap_or_else(|_| {
