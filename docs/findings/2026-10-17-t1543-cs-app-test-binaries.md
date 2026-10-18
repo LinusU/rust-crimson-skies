@@ -174,3 +174,22 @@ stale release build that rejects `--smoke-no-teleport`. Their owners should reru
 them on a clean target directory.
 
 Not measured: the old 249-binary layout's compile and test time (see section 2).
+
+## Per-binary `__eh_frame` after the all-binaries gate (task #1618)
+
+`accept_t336` now measures every cs_app test binary (each suite asserts its own
+`current_exe()` through `tests/eh_frame_gate.rs`) plus `cs`. Five binaries still
+suffice once #1615 had put the F40 cinematics set in suite b. Measured
+2026-10-18, macOS aarch64, test profile, `size -m`, against the 16,777,216 B
+limit:
+
+| image | `__eh_frame` (B) |
+| --- | --- |
+| `cs_app_tests_a` | 15,238,400 |
+| `cs_app_tests_b` | 15,108,152 |
+| `cs_app_tests_c` | 15,477,232 |
+| `cs_app_tests_d` | 13,905,172 |
+| `cs_app_tests_e` | 15,517,296 |
+| `cs` | 15,382,824 |
+
+Suites c and e keep about 1.2 MiB of headroom.
