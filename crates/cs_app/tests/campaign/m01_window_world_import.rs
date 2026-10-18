@@ -1,7 +1,7 @@
 //! M01-WINDOW-FARIMPORT (Rally #1553): the world import owns the world node's
-//! `horizon` environment subtree, so M01's far terrain is in its definition.
+//! `horizon` environment subtree, so M06's far terrain is in its definition.
 //!
-//! The owner's windowed M01 draw was only the water/cloud tiles and the `fvol*`
+//! The owner's windowed M06 draw was only the water/cloud tiles and the `fvol*`
 //! boxes: the island the mission is set on hung one level below the world node
 //! (under the `horizon` child), and a direct-children-only import dropped it.
 //! This member drives the production path end to end — `read_world_container` →
@@ -11,13 +11,13 @@
 //!
 //! What it pins:
 //!
-//! * M01's imported definition **contains** the `zone1`/`zone2` records and
+//! * M06's imported definition **contains** the `zone1`/`zone2` records and
 //!   their far-terrain/sky meshes (node slots 790/795 and their children
 //!   791–794, 796), so removing the environment-subtree import fails here;
 //! * every one of those records resolves a **known** collision role of `None`
 //!   ([`HORIZON_SUBTREE_RECORD_NEVER_BLOCKS`]), so removing the role rule makes
 //!   the closure open and fails the launch half;
-//! * `world_geometry` stays `Satisfied` and M01's plan stays `launchable()`.
+//! * `world_geometry` stays `Satisfied` and M06's plan stays `launchable()`.
 //!
 //! It is `#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]`: CI has no
 //! original data, so the implementing and reviewing agents run it with
@@ -38,7 +38,7 @@ use cs_types::content::{Origin, Resolved};
 use crate::campaign::common::label;
 use crate::campaign::vs_m01_rt_window::game_dir;
 
-/// The world group M01 is set in.
+/// The world group M06 is set in.
 const GROUP: &str = "C1C";
 
 /// The catalog id one stored mesh slot of `container` has, through the
@@ -49,7 +49,7 @@ fn catalog_mesh_id(container: &RetailWorldContainer, index: u32) -> cs_types::co
         .expect("a container's own mesh slot is inside the id grammar")
 }
 
-/// The environment subtree records M01's definition must own: the `horizon`
+/// The environment subtree records M06's definition must own: the `horizon`
 /// child's descendants (node slot, stored mesh slot, whether it carries a mesh).
 ///
 /// Node slots are the container's own addresses, which is what
@@ -67,22 +67,22 @@ const ENVIRONMENT: [(u32, Option<u32>); 7] = [
     (796, Some(156)),
 ];
 
-/// Reads and imports M01's world container through the production path.
+/// Reads and imports M06's world container through the production path.
 fn imported() -> (RetailWorldContainer, cs_content::world::ImportedWorld) {
     let root: PathBuf = game_dir();
     let container = read_world_container(&root, GROUP, &WorldTextureLoad::project_default())
-        .expect("M01's world container reads");
+        .expect("M06's world container reads");
     let origin = Origin::Installation {
         source: container.span().clone(),
     };
     let adapter = SourceAdapter::new(CoordinateSource::retail_gamez(container.span().clone()));
     let imported = container
         .definition(origin, &adapter)
-        .expect("M01's world container imports");
+        .expect("M06's world container imports");
     (container, imported)
 }
 
-/// **M01's definition owns the `horizon` environment subtree, its records never
+/// **M06's definition owns the `horizon` environment subtree, its records never
 /// block, and the launch verdict stays satisfied and launchable.**
 #[test]
 #[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
@@ -101,7 +101,7 @@ fn accept_m01_window_world_imports_the_horizon_subtree_and_stays_launchable() {
         let id = WorldObjectId::new(&format!("node-{slot}")).expect("a node slot is a valid id");
         let object = world
             .object(&id)
-            .unwrap_or_else(|| panic!("node-{slot} is imported into M01's definition"));
+            .unwrap_or_else(|| panic!("node-{slot} is imported into M06's definition"));
         match mesh {
             Some(mesh_slot) => {
                 let Resolved::Known(known) = object.mesh() else {
@@ -153,8 +153,8 @@ fn accept_m01_window_world_imports_the_horizon_subtree_and_stays_launchable() {
     );
 
     // And the launch plan, which reads that very verdict, still passes.
-    let plan = plan_mission_launch(&game_dir(), label("M01"), "The Lost Treasure")
-        .expect("M01's launch closure plans");
+    let plan = plan_mission_launch(&game_dir(), label("M06"), "The Red Menace")
+        .expect("M06's launch closure plans");
     let geometry = plan
         .surface(LaunchSurface::WorldGeometry)
         .expect("the world_geometry surface is reported");
@@ -165,7 +165,7 @@ fn accept_m01_window_world_imports_the_horizon_subtree_and_stays_launchable() {
     );
     assert!(
         plan.launchable(),
-        "M01 still launches with the far terrain imported: {}",
+        "M06 still launches with the far terrain imported: {}",
         plan.gaps()
             .map(|gap| format!("{}: {}", gap.surface.label(), gap.verdict.describe()))
             .collect::<Vec<_>>()

@@ -2,13 +2,13 @@
 //! the one world-draw path, and the drawn sea sits at the world's own water.
 //!
 //! The owner saw the sea end at a square: `render::horizon` drew its plane at a
-//! designed `-1000 m` while M01's own water quads are flat tiles at `y = 0`.
+//! designed `-1000 m` while M06's own water quads are flat tiles at `y = 0`.
 //! The sea's altitude is now measured from the world's water geometry
 //! ([`MissionWorldParts::water_level`]) and bound to the horizon spec by
 //! [`bind_sea_to_world_water`].
 //!
 //! * the synthetic member pins the binding rule (CI);
-//! * the retail member measures M01's own water through the production stage,
+//! * the retail member measures M06's own water through the production stage,
 //!   binds a spec, and asserts the far-terrain records got material-bound
 //!   children. `#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]`.
 //!
@@ -31,7 +31,7 @@ use cs_types::content::Resolved;
 use crate::campaign::common::label;
 use crate::campaign::vs_m01_rt_window::game_dir;
 
-/// The far-terrain records of M01's `horizon` subtree that carry a mesh and
+/// The far-terrain records of M06's `horizon` subtree that carry a mesh and
 /// must be drawn (`g1155` 792, `h_zone2scroll` 794, `g1164` 796).
 const FAR_TERRAIN_NODES: [u32; 3] = [792, 794, 796];
 
@@ -81,27 +81,27 @@ fn accept_m01_window_world_water_level_is_the_dominant_flat_altitude() {
     assert!(water_level_of(&[]).is_none());
 }
 
-/// **M01's drawn sea is at the world's own water level, and its far terrain
+/// **M06's drawn sea is at the world's own water level, and its far terrain
 /// is drawn as material-bound children.**
 #[test]
 #[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn accept_m01_window_world_retail_sea_level_and_far_terrain() {
     let root = game_dir();
-    let plan = plan_mission_launch(&root, label("M01"), "The Lost Treasure")
-        .expect("M01's launch closure plans");
-    let stage = stage_for(&root, &plan).expect("M01's stage reads");
-    let mut app = build_headless(&stage).expect("M01's stage composes headlessly");
+    let plan = plan_mission_launch(&root, label("M06"), "The Red Menace")
+        .expect("M06's launch closure plans");
+    let stage = stage_for(&root, &plan).expect("M06's stage reads");
+    let mut app = build_headless(&stage).expect("M06's stage composes headlessly");
     app.update();
 
     let water = app
         .world()
         .resource::<MissionWorldParts>()
         .water_level()
-        .expect("M01's water quads are one flat surface");
+        .expect("M06's water quads are one flat surface");
     assert!(water.vertices >= 144 * 4, "144 quads: {}", water.vertices);
     assert!(
         water.level_m.abs() < 1e-3,
-        "M01's water quads sit at y = 0, measured {}",
+        "M06's water quads sit at y = 0, measured {}",
         water.level_m
     );
 
