@@ -570,10 +570,6 @@ fn designed_frame_node(spelling: &str) -> Result<(ContentId, DamageNode), String
     Ok((subject, node))
 }
 
-/// The session's damage authority: a resolver of this generation's own,
-/// installed or replaced so registration never lands on a torn-down
-/// generation's ledger (a restart installs a new resolver for the new
-/// generation, exactly as the weapons session contract spells).
 /// Admits one damage actor the spawn host just registered to the session's
 /// score ledger (VS-M01-SCORE-ADMIT, #1426).
 ///
@@ -614,6 +610,10 @@ fn admit_spawned(
         .map_err(|error| error.to_string())
 }
 
+/// The session's damage authority: a resolver of this generation's own,
+/// installed or replaced so registration never lands on a torn-down
+/// generation's ledger (a restart installs a new resolver for the new
+/// generation, exactly as the weapons session contract spells).
 fn session_damage(world: &mut World, session: SessionId) -> &mut DamageResolver {
     if world
         .get_resource::<SessionDamageResolver>()
