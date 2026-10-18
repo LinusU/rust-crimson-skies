@@ -51,9 +51,11 @@ as metres, and `OriginalRocketBlast` gained the `RANGE_MINIMUM` pair (below).
 So `+0x678` is the projectile's blast-and-damage scale, and `RANGE_MINIMUM`'s
 second element is the in-window scale, with `0` meaning "suppress the
 detonation". `OriginalRocketBlast::range_minimum` /
-`range_minimum_blast_scale` carry the pair; `cs_sim`'s `ArmingRule` models
-the distance half and the scale semantics are documented where the falloff
-is applied.
+`range_minimum_blast_scale` carry the pair; `cs_sim`'s
+`ArmingRule::AfterTravelMetres` models the distance half (not armed inside
+the window), and `route_detonation_area` leaves the scale to the producer
+the same way it leaves the measured impact exclusion — `cs_sim` has no
+runtime blast-scale field yet.
 
 ## Q3 — object `+0xbc` and global `0xa1d7d4` — measured: exclusion key and re-entrancy guard
 
@@ -166,9 +168,10 @@ query (the query itself calls `0x4cd210` on candidates carrying object flag
 * The gameplay consumers of the `SONIC` (`0x200`), `FLASH` (`0x800`),
   `BEEPER` (`0x4000`) and `BEEPER_SEEKER` (`0x8000`) bits: the flag-word
   stores are pinned but no test site was located in the scanned regions.
-  Claim `t1318.limit.status_consumers`.
+  Claim `t1318.limit.status_consumers`; resolving task Rally #1601.
 * The full domain of the `+0xbc` exclusion key (its writers and which
-  objects share one). Claim `t1318.limit.exclusion_domain`.
+  objects share one). Claim `t1318.limit.exclusion_domain`; resolving task
+  Rally #1602.
 * `step_ordnance_session` still does not call `route_detonation_area` — the
   session owns no actor list. Claim `t1318.limit.session_wiring` (carried
-  over from #548).
+  over from #548); resolving task Rally #1603.

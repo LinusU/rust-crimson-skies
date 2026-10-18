@@ -51,19 +51,19 @@ const LIMITATIONS: [(&str, &str, &str, &str); 3] = [
         "t1318.limit.status_consumers",
         "the gameplay consumers of the SONIC, FLASH, BEEPER and BEEPER_SEEKER record bits: the flag-word stores are pinned, but no code site testing those bits was located",
         "the choke, stall and mark statuses F28 calls non-negotiable",
-        "follow-up task filed with Rally",
+        "Rally #1601",
     ),
     (
         "t1318.limit.exclusion_domain",
         "the domain of the +0xbc exclusion key: the apply loop's compare and the impact path's hit-object argument are pinned, but the field's writers were not fully traced, so which objects share a key is unmeasured",
         "which objects a blast excludes beyond the directly-hit one",
-        "follow-up task filed with Rally",
+        "Rally #1602",
     ),
     (
         "t1318.limit.session_wiring",
         "route_detonation_area is defined and tested in cs_sim but step_ordnance_session does not call it: the session holds no actor list to supply recipients",
         "a blast in a live session still damages only the engagement's target",
-        "follow-up task filed with Rally",
+        "Rally #1603",
     ),
 ];
 
