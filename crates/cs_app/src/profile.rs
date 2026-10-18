@@ -51,6 +51,14 @@
 //!   [`ProfileKind`] is the other half of the marking — a mounted run opens
 //!   [`cs_content::mods::save_population`]'s `Modded` population, so its
 //!   saves land on the modded side of F48's wall.
+//! * [`ProfileSession::open_with_content`] is the read half (F53 AC04): the
+//!   session declares its [`SessionContent`] — announced signature and
+//!   provided ids — and every profile it opens or selects is checked against
+//!   it by `crate::ui::mods::save_reopen_verdict_for`. A save owning content
+//!   the session cannot serve is refused by name
+//!   ([`SessionError::SaveRefused`]) and not selected; a differing mark alone
+//!   is selected with the warning kept in [`ProfileSession::reopen_verdict`];
+//!   a session declaring nothing checks nothing. The check never writes.
 
 use std::collections::BTreeSet;
 use std::fmt;
@@ -63,6 +71,7 @@ use cs_content::save::fs::SlotError;
 use cs_content::save::library::{LibraryError, LoadedProfile, ProfileLibrary};
 use cs_content::save::settings::{CatalogError, SettingCatalog, SettingOutcome, SettingsState};
 use cs_content::save::store::CommitError;
+use cs_types::content::ContentId;
 use cs_types::evidence::ContentHash;
 use cs_types::profile::{
     CampaignState, ExtraField, MAX_DISPLAY_NAME_BYTES, ProfileDocument, ProfileFieldError,
@@ -70,6 +79,7 @@ use cs_types::profile::{
 };
 
 use crate::ui::import::{ConfirmedImport, MigrationVerdict};
+use crate::ui::mods::{SaveReopenVerdict, save_reopen_verdict_for};
 
 /// Who is asking for a profile location.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -333,6 +343,28 @@ pub enum OutcomeRecord {
     AlreadyApplied,
 }
 
+/// The content a session runs, declared once so the mark it writes and the
+/// reopen check it makes cannot disagree (F53 AC04).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SessionContent {
+    signature: ContentHash,
+    provided: BTreeSet<ContentId>,
+}
+
+impl SessionContent {
+    /// The signature the run announces and the ids it can serve — for a
+    /// mounted run `MountedMods::signature` and
+    /// `cs_content::mods::provided_ids`, the same pair `lobby_compatibility`
+    /// announces.
+    #[must_use]
+    pub const fn new(signature: ContentHash, provided: BTreeSet<ContentId>) -> Self {
+        Self {
+            signature,
+            provided,
+        }
+    }
+}
+
 /// Why a session operation failed. Every failure propagates as one of these and
 /// none is reported as success.
 #[derive(Debug)]
@@ -375,6 +407,14 @@ pub enum SessionError {
         /// The id the population's high-water mark would hand out next.
         expected_next: u64,
     },
+    /// The save owns content this session cannot provide, so it was not
+    /// selected (F53 AC04). Nothing was written; `code` is the stable code of
+    /// the host's decision and `lines` are the report's own lines.
+    SaveRefused {
+        profile: ProfileId,
+        code: &'static str,
+        lines: Vec<String>,
+    },
     /// Every attempt hit a moved expected revision.
     Conflict {
         profile: ProfileId,
@@ -416,6 +456,15 @@ impl fmt::Display for SessionError {
                 "the import names profile {offered}, but this population would \
                  allocate {expected_next} next: the offered id was already \
                  issued or the offer is stale, so nothing was written"
+            ),
+            Self::SaveRefused {
+                profile,
+                code,
+                lines,
+            } => write!(
+                f,
+                "profile {profile} was not opened ({code}): {}",
+                lines.join("; ")
             ),
             Self::Conflict {
                 profile,
@@ -515,6 +564,13 @@ pub struct ProfileSession {
     /// produced (F53 non-negotiable 3). `None` when the session announces
     /// nothing, which a save honestly records as *no claim*.
     announced: Option<ContentHash>,
+    /// The content ids this session can serve, declared with the announced
+    /// signature by [`ProfileSession::open_with_content`]. `None` means the
+    /// session makes no reopen check at all.
+    provided: Option<BTreeSet<ContentId>>,
+    /// The newest reopen verdict: the profile it was about and what the host
+    /// decided (F53 AC04). Set only when the session declares its content.
+    reopen: Option<(ProfileId, SaveReopenVerdict)>,
 }
 
 impl ProfileSession {
@@ -532,6 +588,37 @@ impl ProfileSession {
         kind: ProfileKind,
         catalog: &SettingCatalog,
     ) -> Result<Self, SessionError> {
+        Self::open_inner(base, origin, kind, catalog, None)
+    }
+
+    /// [`ProfileSession::open`] for a session that declares the content it
+    /// runs (F53 AC04): the signature it announces and the ids it can serve.
+    ///
+    /// The active profile's newest revision is checked against them as it is
+    /// selected, and so is every later [`ProfileSession::select`]. A save that
+    /// owns content this session cannot serve is **not** selected — the open
+    /// still succeeds, the refusal is named in [`ProfileSession::warnings`]
+    /// and [`ProfileSession::reopen_verdict`] — while a save that only
+    /// differs in its recorded mark is selected and the warning stays
+    /// available. The check reads the document and nothing else: no revision
+    /// is written, nothing is substituted, no recovery runs.
+    pub fn open_with_content(
+        base: &Path,
+        origin: SessionOrigin,
+        kind: ProfileKind,
+        catalog: &SettingCatalog,
+        content: SessionContent,
+    ) -> Result<Self, SessionError> {
+        Self::open_inner(base, origin, kind, catalog, Some(content))
+    }
+
+    fn open_inner(
+        base: &Path,
+        origin: SessionOrigin,
+        kind: ProfileKind,
+        catalog: &SettingCatalog,
+        content: Option<SessionContent>,
+    ) -> Result<Self, SessionError> {
         let library = open_library(base, origin, kind)?;
         let claim = PopulationClaim::acquire(library.base())?;
         let mut session = Self {
@@ -542,7 +629,9 @@ impl ProfileSession {
             settings: None,
             uncommitted_settings: false,
             open_failures: Vec::new(),
-            announced: None,
+            announced: content.as_ref().map(|content| content.signature),
+            provided: content.map(|content| content.provided),
+            reopen: None,
         };
         // The active profile is selected from what is stored, not from the
         // registry alone. A profile whose slot cannot be read — a future
@@ -559,7 +648,7 @@ impl ProfileSession {
         // impossible to open at all, which is exactly when a player most needs
         // to see the pilot they have.
         if let Some(active) = session.library.active() {
-            match session.load_selected(active) {
+            match session.load_checked(active) {
                 Ok(found) => session.install(found),
                 Err(error) => session.open_failures.push(error.to_string()),
             }
@@ -815,12 +904,44 @@ impl ProfileSession {
     /// selecting a profile shows what is stored — including a recovered backup
     /// and its warnings — and never a stale copy this session happened to hold.
     pub fn select(&mut self, id: ProfileId) -> Result<(), SessionError> {
-        let found = self.load_selected(id)?;
+        let found = self.load_checked(id)?;
         // The pointer is written after the read succeeds, so a profile that
         // cannot be loaded is never made active.
         self.library.set_active(id)?;
         self.install(found);
         Ok(())
+    }
+
+    /// The newest reopen verdict, with the profile it was about.
+    ///
+    /// `None` until a session that declared its content
+    /// ([`ProfileSession::open_with_content`]) has opened or selected a
+    /// profile. A refused profile is *not* selected, so this is where its
+    /// refusal is read; a warned profile is selected and its warning is here.
+    pub fn reopen_verdict(&self) -> Option<(ProfileId, &SaveReopenVerdict)> {
+        self.reopen.as_ref().map(|(id, verdict)| (*id, verdict))
+    }
+
+    /// [`Self::load_selected`] followed by the reopen check, when this session
+    /// declared its content. A refusal is recorded and returned by name; the
+    /// selection and the population are not touched either way.
+    fn load_checked(&mut self, id: ProfileId) -> Result<LoadedProfile, SessionError> {
+        let found = self.load_selected(id)?;
+        if let (Some(announced), Some(provided), Some(document)) =
+            (self.announced, &self.provided, &found.document)
+        {
+            let verdict = save_reopen_verdict_for(document, announced, provided);
+            let refusal = (!verdict.proceeds()).then(|| SessionError::SaveRefused {
+                profile: id,
+                code: verdict.decision().code(),
+                lines: verdict.lines().to_vec(),
+            });
+            self.reopen = Some((id, verdict));
+            if let Some(refusal) = refusal {
+                return Err(refusal);
+            }
+        }
+        Ok(found)
     }
 
     /// Reads one profile's newest whole revision and resolves its settings,

@@ -129,6 +129,7 @@
 //! The decision, its reasons and the caller that is still to be wired are in
 //! `docs/findings/2026-10-17-f53-fu6-save-reopen-policy.md`.
 
+use std::collections::BTreeSet;
 use std::fmt;
 
 use cs_content::mission_control::measure_control_record;
@@ -513,12 +514,23 @@ pub fn save_reopen_verdict(
     base_fingerprint: ContentHash,
     mounted: Option<&MountedMods>,
 ) -> SaveReopenVerdict {
-    let report = save_dependency(
+    save_reopen_verdict_for(
         document,
         content_signature(mounted, base_fingerprint),
         &provided_ids(request, mounted),
-    );
-    SaveReopenVerdict::from_report(&report)
+    )
+}
+
+/// [`save_reopen_verdict`] for a session that already holds its announced
+/// signature and provided ids (`ProfileSession::open_with_content`), so the
+/// reopen path and the free function share one check.
+#[must_use]
+pub fn save_reopen_verdict_for(
+    document: &ProfileDocument,
+    announced: ContentHash,
+    provided: &BTreeSet<ContentId>,
+) -> SaveReopenVerdict {
+    SaveReopenVerdict::from_report(&save_dependency(document, announced, provided))
 }
 
 /// One row of the mod screen: a discovered mod and the mount's verdict on

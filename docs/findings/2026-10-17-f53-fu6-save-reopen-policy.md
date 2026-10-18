@@ -88,57 +88,46 @@ incomplete and call it a warning — the exact silent downgrade AC04 forbids.
 
 ## What shipped
 
-- `crates/cs_app/src/ui/mods.rs`: `save_reopen_verdict(document, request,
-  base_fingerprint, mounted)` runs `save_dependency` with
-  `content_signature(mounted, base_fingerprint)` and
-  `provided_ids(request, mounted)` — the *same* triple `lobby_compatibility`
-  announces — and returns the decided `SaveReopenVerdict`.
-  `SaveReopenVerdict::notice()` is the screen projection. Nothing writes.
-- `crates/cs_app/tests/accept_f53_fu6_dependent_save_reopen.rs`: test one is
-  the AC04 scenario — the blueprint mod is mounted through
-  `ui::mods::mount_selection`, a marked save owning `synthetic.zephyr` is
-  written through `ProfileSession::commit_with`, the mod is disabled, the save
-  is reopened through `ProfileSession::open` (which auto-selects it from the
-  active pointer, reads the whole revision and reports no recovery), and the
-  host verdict is `Refuse` naming both folds and the unprovided blueprint,
-  with the population byte-for-byte what the write left and the re-enabled
-  mount reproducing the recorded signature exactly. Test two pins the other
-  two arms: `Differs` with everything provided warns and proceeds; a matching
-  mark opens silently; and a matching mark with an unprovided blueprint still
-  refuses — the check keys on content the session can serve, not on the mark
-  alone.
+Source of the policy: the owner's decision on #768 (Linus / Claude M3,
+2026-10-17 11:15 local) — `save_content_unprovided` refuses,
+`save_content_differs` warns and proceeds, a match opens silently — and the
+owner extended the owner paths by exactly `crates/cs_app/src/profile.rs`,
+sequenced after #767.
 
-## The caller that is not wired (owner-path question), and what blocks
+- `crates/cs_app/src/ui/mods.rs`: `save_reopen_verdict_for(document,
+  announced, provided)` runs `save_dependency` and returns the decided
+  `SaveReopenVerdict`; `save_reopen_verdict(document, request,
+  base_fingerprint, mounted)` computes the same triple `lobby_compatibility`
+  announces and delegates. `SaveReopenVerdict::notice()` is the screen
+  projection. Nothing writes.
+- `crates/cs_app/src/profile.rs`: `SessionContent { signature, provided }` is
+  the one declaration (the seam #767 started with `with_announced_signature`;
+  there is no second parallel configuration). `ProfileSession::
+  open_with_content` takes it, and both `open` (the active profile) and
+  `select` run the verdict through one private `load_checked`. A refused save
+  is not selected: `open` succeeds with nothing selected and names the refusal
+  in `warnings()`; `select` returns `SessionError::SaveRefused { profile,
+  code, lines }` and leaves the selection as it was. A warned save is selected
+  and the verdict stays in `reopen_verdict()`. A session that declares
+  nothing (`open`, `open_sandbox`) behaves exactly as before and
+  `reopen_verdict()` is `None` — the mark stays `Unrecorded`, never forged.
+- `crates/cs_app/tests/accept_f53_fu6_dependent_save_reopen.rs` (in
+  `suite_a`): the AC04 scenario through `ProfileSession::open_with_content`
+  (mod disabled; refusal naming both folds and `synthetic.zephyr`; `select`
+  refuses by name; the population is byte-for-byte what the write left; the
+  re-enabled mount reproduces the signature and opens silently); the warn arm
+  through the session (selected, warning kept, `open` writes nothing, the
+  document is never rewritten); and the free-function arms.
 
-The reopen path itself still does not call the check. F53's owner paths are
-`crates/cs_content/src/mods/`, `crates/cs_assets/src/mods.rs`,
-`crates/cs_app/src/ui/mods.rs` and `tests/` (spec F53 line 5). The host code
-that actually opens a save is:
+## The caller that is still not wired
 
-- `crates/cs_app/src/profile.rs` — `ProfileSession::open` (which selects the
-  active profile through `load_selected`), `ProfileSession::select` and the
-  session's `commit_with`; F48's owner path, not F53's;
-- `crates/cs_app/src/ui/front_end/flow.rs::open_profile`, the only consumer
-  of those, at `FlowSetup`'s declared base/origin/kind; F45's owner path
-  (`crates/cs_app/src/ui/front_end/`), not F53's.
-
-There is no save-reopen/load screen in `crates/cs_app/src/ui/` (the front-end
-`Loading` screen is the mission-load screen and never opens a profile
-document); the mods module opens no save. `ProfileSession` also carries no
-mount or selection today, so wiring it needs a place for the announced
-content configuration as well as the call — a second `profile.rs` change.
-
-The task's owner-path note says to record this and `block_task` for an owner
-path decision rather than editing a caller outside F53's owner paths, so that
-is what the implementing session did (see the task's blocked reason; nothing
-was edited outside the owner paths above). Affected content: a dependent save
-reopened through the shipped game is not yet refused or warned by the reopen
-path itself — the decision and the report are verified at the host-module
-boundary, driven by the real `ProfileSession` reopen. **No fidelity or release
-claim may rest on the reopen path blocking until a caller is wired.** Resolving
-task: F53-FU6 (#768) itself once the owner names the path; the sibling
-F53-FU5-SAVE-MARK (#767) already holds `crates/cs_app/src/profile.rs` for the
-mark half, and the two must be sequenced.
+`FrontEndFlow::open_profile` (`crates/cs_app/src/ui/front_end/flow.rs`, F45)
+still calls `ProfileSession::open` with no content, because `FlowSetup`
+declares no mount. The owner ruled not to edit it here; wiring the declared
+mount into `FlowSetup` is filed as a follow-up. Affected content: a save
+reopened through the shipped front end is not yet checked. **No fidelity or
+release claim may rest on the shipped reopen path refusing until that task
+lands.**
 
 ## Unknowns and limitations
 
@@ -158,17 +147,13 @@ mark half, and the two must be sequenced.
 - `cargo fmt --all -- --check` — exit 0.
 - `cargo clippy --workspace --all-targets --all-features --locked -- -D
   warnings` — exit 0.
-- `cargo test --workspace --locked` — exit 0, 4967 passed, 0 failed, 969
-  ignored.
-- `cargo test --workspace --locked -- accept_f53_fu6_ --include-ignored` —
-  exit 0, 2 tests executed, both passing.
+- `cargo test --locked -p cs_app` — exit 0 (all binaries ok).
+- `cargo test --locked -p cs_app -- accept_f53_fu6_ --include-ignored` —
+  exit 0, 3 tests executed, all passing.
 
-## Sensitivity probes (applied, run and reverted; tree left byte-identical)
+## Sensitivity probe (applied, run and reverted)
 
-- Replacing the body of `save_reopen_verdict` with a fixed
-  `SaveReopenVerdict { Open, no lines }` (the wiring removed, the signatures
-  kept) fails **both** `accept_f53_fu6_*` tests (`Open` where `Refuse` and
-  `OpenMarked` are asserted). The tests are sensitive to the
-  `save_dependency` call itself, not to the types around it.
-- The file was restored with `cp` from a pre-edit copy; `git diff` showed only
-  the intended change afterwards and the selection was rerun green.
+Changing `ProfileSession::open`'s `load_checked` call back to
+`load_selected` (removing the open-time check) fails two of the three
+`accept_f53_fu6_*` tests (the AC04 scenario and the warn arm); the third
+exercises the free function. Restored afterwards.

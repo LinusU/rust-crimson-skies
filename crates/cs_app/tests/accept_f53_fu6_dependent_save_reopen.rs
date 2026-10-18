@@ -19,7 +19,9 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-use cs_app::profile::{ProfileSession, SessionOrigin, population_dir};
+use cs_app::profile::{
+    ProfileSession, SessionContent, SessionError, SessionOrigin, population_dir,
+};
 use cs_app::ui::mods::{ModsNotice, SaveReopenDecision, mount_selection, save_reopen_verdict};
 use cs_content::mods::{
     ContentOverride, ModManifest, ModSelection, content_signature, mark_save_document,
@@ -175,29 +177,44 @@ fn accept_f53_fu6_disabling_a_mod_refuses_the_reopen_through_the_host() {
     assert!(selection.enabled_set().is_empty());
     assert!(!provided_ids(&request, None).contains(&zephyr()));
 
-    // The dependent save is reopened where it lives: the session
-    // auto-selects it from the active pointer, reads the whole revision, and
-    // reports no recovery.
-    let reopened = ProfileSession::open(
+    // The dependent save is reopened where it lives, through the host's own
+    // session declaring the stock content it now runs: the open-time check
+    // names the differing signature and the unprovided blueprint, refuses to
+    // select the save, and reports no recovery. Nothing is repaired or
+    // substituted.
+    let stock_content = SessionContent::new(stock_signature, provided_ids(&request, None));
+    let mut reopened = ProfileSession::open_with_content(
         user_data.path(),
         SessionOrigin::Automated,
         ProfileKind::Modded,
         &catalog,
+        stock_content,
     )
     .expect("the modded population reopens");
-    assert_eq!(reopened.selected(), Some(profile));
+    assert_eq!(
+        reopened.selected(),
+        None,
+        "a save needing absent content is not selected"
+    );
     assert!(
-        reopened.warnings().is_empty(),
+        reopened
+            .warnings()
+            .iter()
+            .all(|line| !line.contains("recover")),
         "no recovery ran: {:?}",
         reopened.warnings()
     );
-    let document = reopened.document().expect("the save is loaded");
-
-    // The host runs the check against its own announcement and provided set:
-    // the save needs content this session cannot serve, so the open is
-    // refused and the report names the differing signature and each
-    // unprovided blueprint. Nothing is repaired or substituted.
-    let verdict = save_reopen_verdict(document, &request, base, None);
+    assert!(
+        reopened
+            .warnings()
+            .iter()
+            .any(|line| line.contains("save_content_unprovided")),
+        "the refusal is named: {:?}",
+        reopened.warnings()
+    );
+    let (refused, verdict) = reopened.reopen_verdict().expect("the open made a verdict");
+    let verdict = verdict.clone();
+    assert_eq!(refused, profile);
     assert_eq!(
         verdict.decision(),
         SaveReopenDecision::Refuse,
@@ -231,12 +248,28 @@ fn accept_f53_fu6_disabling_a_mod_refuses_the_reopen_through_the_host() {
         other => panic!("the reopen verdict is its own notice, got {other:?}"),
     }
 
+    // An explicit select is refused by name too, and leaves the session as it
+    // was.
+    match reopened.select(profile) {
+        Err(SessionError::SaveRefused {
+            profile: named,
+            code,
+            lines,
+        }) => {
+            assert_eq!(named, profile);
+            assert_eq!(code, "save_content_unprovided");
+            assert_eq!(lines.as_slice(), report_lines);
+        }
+        other => panic!("select must refuse by name, got {other:?}"),
+    }
+    assert_eq!(reopened.selected(), None);
+
     // The reopen is read-only: the population is byte-for-byte what the
     // write left — no revision burned, no fallback save, no registry
     // change — and the session ends with nothing to commit.
     let ended = reopened.finish().expect("the reopen ends cleanly");
     assert!(!ended.uncommitted_changes);
-    assert_eq!(ended.revision, Some(Revision(2)));
+    assert_eq!(ended.revision, None, "nothing was selected");
     assert_eq!(
         snapshot(&population),
         on_disk,
@@ -249,19 +282,19 @@ fn accept_f53_fu6_disabling_a_mod_refuses_the_reopen_through_the_host() {
     selection.enable(manifest.id()).expect("re-enabled");
     let remounted = mount_selection(&selection, &request, base).expect("the set remounts");
     assert_eq!(remounted.signature(), modded_signature);
-    let again = ProfileSession::open(
+    let again = ProfileSession::open_with_content(
         user_data.path(),
         SessionOrigin::Automated,
         ProfileKind::Modded,
         &catalog,
+        SessionContent::new(
+            content_signature(Some(&remounted), base),
+            provided_ids(&request, Some(&remounted)),
+        ),
     )
     .expect("reopens under the restored mount");
-    let verdict = save_reopen_verdict(
-        again.document().expect("the save is loaded"),
-        &request,
-        base,
-        Some(&remounted),
-    );
+    assert_eq!(again.selected(), Some(profile));
+    let (_, verdict) = again.reopen_verdict().expect("the open made a verdict");
     assert_eq!(verdict.decision(), SaveReopenDecision::Open);
     assert!(verdict.proceeds());
     assert!(verdict.lines().is_empty());
@@ -344,4 +377,84 @@ fn accept_f53_fu6_a_differing_signature_with_all_content_provided_warns_and_proc
     assert_eq!(verdict.decision(), SaveReopenDecision::Refuse);
     assert_eq!(verdict.lines().len(), 1);
     assert!(verdict.lines()[0].contains(zephyr().as_str()));
+}
+
+/// **The warn arm through the session.** A save marked with another
+/// signature but owning only base content is selected on open and on an
+/// explicit select; the warning stays available and the population is
+/// untouched. A session that declares nothing checks nothing.
+#[test]
+fn accept_f53_fu6_a_differing_mark_is_selected_with_the_warning_kept() {
+    let base = base_fingerprint();
+    let request = synthetic_mount_request();
+    let catalog = SettingCatalog::empty();
+    let user_data = Temp::new("warn");
+    let foreign = ContentHash::from_bytes([0xAB; 32]);
+
+    let mut writer = ProfileSession::open(
+        user_data.path(),
+        SessionOrigin::Automated,
+        ProfileKind::Modded,
+        &catalog,
+    )
+    .expect("opens");
+    let profile = writer.create("Marked pilot").expect("created");
+    writer
+        .commit_with(|document| {
+            mark_save_document(document, foreign);
+            Ok(())
+        })
+        .expect("marked");
+    writer.finish().expect("ends");
+    let population = population_dir(
+        user_data.path(),
+        SessionOrigin::Automated,
+        ProfileKind::Modded,
+    )
+    .expect("directory");
+    let on_disk = snapshot(&population);
+
+    let content = SessionContent::new(content_signature(None, base), provided_ids(&request, None));
+    let mut session = ProfileSession::open_with_content(
+        user_data.path(),
+        SessionOrigin::Automated,
+        ProfileKind::Modded,
+        &catalog,
+        content,
+    )
+    .expect("opens");
+    assert_eq!(session.selected(), Some(profile), "a warning still opens");
+    let (_, verdict) = session.reopen_verdict().expect("verdict");
+    assert_eq!(verdict.decision(), SaveReopenDecision::OpenMarked);
+    assert_eq!(verdict.decision().code(), "save_content_differs");
+    assert_eq!(verdict.lines().len(), 1);
+    assert_eq!(snapshot(&population), on_disk, "the open wrote nothing");
+    // `select` rewrites the active pointer by F48's own rule; the document
+    // is still untouched.
+    session.select(profile).expect("select proceeds too");
+    assert_eq!(
+        session.reopen_verdict().map(|(_, v)| v.decision()),
+        Some(SaveReopenDecision::OpenMarked)
+    );
+    session.finish().expect("ends");
+
+    let plain = ProfileSession::open(
+        user_data.path(),
+        SessionOrigin::Automated,
+        ProfileKind::Modded,
+        &catalog,
+    )
+    .expect("opens");
+    assert_eq!(plain.selected(), Some(profile));
+    assert!(
+        plain.reopen_verdict().is_none(),
+        "nothing declared, nothing checked"
+    );
+    plain.finish().expect("ends");
+    let after = snapshot(&population);
+    assert_eq!(
+        after.get(Path::new("profile-1/profile.sav")),
+        on_disk.get(Path::new("profile-1/profile.sav")),
+        "no reopen rewrote the document"
+    );
 }

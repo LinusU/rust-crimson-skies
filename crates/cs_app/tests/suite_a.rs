@@ -119,6 +119,7 @@ mod accept_f49_d_04_validation_errors;
 mod accept_f53_d_dependent_save;
 mod accept_f53_fu3_mod_wire_vocabulary;
 mod accept_f53_fu5_modded_save;
+mod accept_f53_fu6_dependent_save_reopen;
 mod accept_f54_c_drive;
 mod accept_f55_a_lobby_ui;
 mod accept_f55_bu1_lobby_view_feed;
