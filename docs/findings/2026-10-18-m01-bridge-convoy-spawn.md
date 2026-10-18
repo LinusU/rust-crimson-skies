@@ -82,6 +82,15 @@ names only; no original byte is reproduced):
   layout and are declared targets; their destruction is driven by
   `fueltruck.zrd`'s `chainreaction` calling `destroy_ttruck01..03`, which the
   group archive does not define.
+* **`shipwreck.zrd` is read and states no coupling field.** The task named
+  `shipwreck.zrd` beside `fueltruck.zrd`/`ucamp_dest.zrd`, but its
+  `shipwreck_destroy` definition carries only an `ANIMATION_NAME`, an
+  `ACTIVATION ON_CALL` and object active-state statements over the wreck's
+  `hull` children — no `HEALTH`, `DAMAGE_SEQUENCE`, `PROXIMITY_DAMAGE` or
+  `COPY_NODE_DATA` — so it is not one of the 11 damage members this binding
+  reads. The wreck still binds: `shipwreck` is a declared `targets.zrd`
+  objective site (`MSG_OBJ_SITE3`, `MSG_OBJ_EXAMINE`) and carries its composed
+  position; only its coupling is empty, exactly as the data states.
 * **Composed positions** come from the scene graph's own `world_transform`, so
   a bridge child (`world1.susp_bridge.t_truck01`) and a town child
   (`world1.town_2.u_camp1`) resolve through their whole ancestor chain. The
@@ -143,7 +152,7 @@ a target out of play at all.
 | --- | --- | --- |
 | `accept_m01_bridge_convoy_spawn_declared_targets_resolve` (retail, `#[ignore]`) | the 11 declared rows, the four convoy rows in order, the wreck, every row bound, and the composed positions of the four convoy trucks and the wreck at their measured metres under `ObservedTool` provenance | the reader stops consuming `targets.zrd`, a row is dropped, or a composed position stops coming from the scene graph's `world_transform` |
 | `accept_m01_bridge_convoy_spawn_damage_coupling_is_read` (retail, `#[ignore]`) | the 11 damage members, `bridge_truck01`'s `HEALTH` from `fueltruck.zrd`, the camps' three coupling fields and `healthy`/`destroyed` pair from `ucamp_dest.zrd`, `susp_bridge`'s `HEALTH` from `susp_bridge.zrd`, the gun trucks' destroy layout, and no unmeasured selector | a coupling field or member stops being read, the layout stops being classified, or a selector silently disappears |
-| `accept_m01_bridge_convoy_spawn_composed_targets_are_damageable` (retail, `#[ignore]`) | a headless M01 whose `MissionGroundTargetReport` registers 13 named targets under the composition's session, each read back from `SessionDamageResolver` as a lethal `InternalStructure` node, and `u_camp1`'s entity carrying the authored layout | the composition stops spawning a target, stops registering its damage node, or spawns it under another class |
+| `accept_m01_bridge_convoy_spawn_composed_targets_are_damageable` (retail, `#[ignore]`) | a headless M01 whose `MissionGroundTargetReport` spawns the whole bound set under the composition's session with no refusal, and 13 named targets each read back from `SessionDamageResolver` as a lethal `InternalStructure` node, and `u_camp1`'s entity carrying the authored layout | the composition stops spawning a target, drops one silently, stops registering its damage node, or spawns it under another class |
 | `accept_m01_bridge_convoy_spawn_rows_and_damage_node_are_production` (CI, no installation) | the `targets.zrd` pair shape read from a hand-authored `ZrdValue`, and a bound target's damage node being the lethal designed-pool `InternalStructure` node under `Designed` provenance | the row reader or the damage-node builder stops consuming production code |
 
 The retail legs are `#[ignore = "requires CS_GAME_DIR"]` so CI (which has no

@@ -266,6 +266,18 @@ fn accept_m01_bridge_convoy_spawn_composed_targets_are_damageable() {
         Some(session),
         "the targets registered under the composition's own session"
     );
+    // The whole bound set spawns, not just the named representatives below:
+    // a target the spawn path refused would otherwise be invisible here.
+    assert_eq!(
+        report.targets.len(),
+        stage.host.targets.targets.len(),
+        "every bound target spawned an entity and a damage actor"
+    );
+    assert!(
+        report.refusals.is_empty(),
+        "no bound target was refused: {:?}",
+        report.refusals
+    );
     for node in [
         "t_truck01",
         "t_truck02",
