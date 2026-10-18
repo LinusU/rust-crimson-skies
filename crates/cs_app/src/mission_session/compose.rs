@@ -673,13 +673,14 @@ pub fn stage_for(
 /// the F39 session's declared program and
 /// `ObjectiveRecovery::engine_declarations()` for the measured lifecycle
 /// model. The detail a run reports is **the reader's own message** and not
-/// a summary of it. Today `program()` refuses unconditionally for every
-/// original mission — the 358 fields of 58 blocks are unrecovered and Rally
-/// #1219 owns that measurement
-/// (`docs/findings/2026-10-10-vs-m01-rt-content-objectives-program-refuses-
-/// and-plan-premises.md`) — so the stage carries
-/// [`no_declared_objectives`] and records why, while the engine model needs
-/// only the recovered families and is carried beside it.
+/// a summary of it. `program()` computes its refusal from the record's
+/// census and names the unrecovered field families per mission: for M01, 308
+/// of 358 fields are recovered and the refusal names exactly `ControlDirective`
+/// x45 and `RecordDirective` x5, the world-side directive families
+/// (`docs/findings/2026-10-12-m01-b-obj-integration-family-verdict.md`). Every
+/// original mission whose record still has such families refuses, so the stage
+/// carries [`no_declared_objectives`] and records why, while the engine model
+/// needs only the recovered families and is carried beside it.
 ///
 /// The `Ok` arms are the forward path: when the recovery does lower a
 /// declared program, the stage carries **that** program and raises no
