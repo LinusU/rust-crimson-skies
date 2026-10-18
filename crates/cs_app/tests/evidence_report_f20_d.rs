@@ -8,18 +8,18 @@
 //! exactly as:
 //!
 //! 1. ```sh
-//!    cargo test --workspace --locked -- accept_f20_d_ --include-ignored \
-//!      2>&1 | tee private/evidence/F20-D/cargo-test.log
+//!    cargo test --locked -p cs_app -- accept_f20_d_ --include-ignored \
+//!      --skip evidence_report 2>&1 | tee private/evidence/F20-D/cargo-test.log
 //!    ```
 //!    (record the pipeline's exit status — it is passed to this harness as
 //!    `CS_EVIDENCE_EXIT_CODE`.)
 //! 2. ```sh
 //!    CS_EVIDENCE_DIR=private/evidence/F20-D \
 //!    CS_CANDIDATE_TREE=$(git rev-parse 'HEAD^{tree}') \
-//!    CS_EVIDENCE_ARGV="cargo test --workspace --locked -- accept_f20_d_ --include-ignored" \
+//!    CS_EVIDENCE_ARGV="cargo test --locked -p cs_app -- accept_f20_d_ --include-ignored --skip evidence_report" \
 //!    CS_EVIDENCE_EXIT_CODE=<status from step 1> \
 //!    CS_GAME_DIR=<original installation> \
-//!      cargo test --locked -p cs_app --test evidence_report_f20_d -- --ignored
+//!      cargo test --locked -p cs_app --test cs_app_tests_d -- evidence_report_f20_d --ignored
 //!    ```
 //! 3. ```sh
 //!    python3 tools/validate_evidence.py private/evidence/F20-D/acceptance.json \
@@ -388,32 +388,33 @@ fn capture_artifacts(evidence_dir: &Path) -> Vec<(String, String, String)> {
 
 fn review_identity() -> String {
     String::from(
-        "implementer: devin-1 (Rally claim clm_8z3ovohjd9t0dksr, SWE-2 High, session of \
-         2026-10-02); reviewer: deepseek-1 (Rally claim clm_mjrv4ct0axwqor1j, DeepSeek V4.1 \
-         Flash, session of 2026-10-02, fresh context — a different agent and model from the \
-         implementer). The reviewer found and fixed a captured-pose defect (the pose was \
-         applied as a bare `GlobalTransform` that `Mesh3d`'s required default `Transform` and \
-         Bevy's transform propagation overwrote, so the capture drew the mesh at the origin) \
-         and added a discriminating orientation test; an agent review is not independent \
-         original-reference evidence and no agent review replaces the owner's human approval",
+        "original task F20-D: implementer devin-1 (Rally claim clm_8z3ovohjd9t0dksr, session \
+         of 2026-10-02), reviewer deepseek-1 (Rally claim clm_mjrv4ct0axwqor1j, session of \
+         2026-10-02, fresh context). This report was regenerated under Rally task #1458 by \
+         sonnet-1 (implementer, 2026-10-18) after the animation capture camera was pinned to \
+         the fidelity baseline (one sample per pixel, no tone curve) instead of Bevy's \
+         four-sample default; no independent reviewer has yet reviewed this regeneration, and \
+         an agent review is not independent original-reference evidence — no agent review \
+         replaces the owner's human approval",
     )
 }
 
 fn review_method() -> String {
     String::from(
-        "the acceptance suite run locally with the retail capability and a real GPU adapter \
-         (Apple M3 Pro, Metal on the reviewer's machine; the implementer's original run was on \
-         an Apple M1 Max, Metal): `cargo test --workspace --locked -- accept_f20_d_ \
-         --include-ignored`, every `accept_f20_d_*` test passing — run by the implementer and \
-         re-run by the reviewer on this commit after rebasing onto origin/main and fixing the \
-         capture defect; this harness derives every field from the recorded log, production \
-         discovery of $CS_GAME_DIR, and the production animation-family survey run over that \
-         installation (`cs_app::animation::survey_animation_families`) with the posed GPU \
-         captures the suite wrote on the real adapter \
-         (`cs_app::animation::capture_animated_pose`); validated with \
-         tools/validate_evidence.py --require-pass. The animation container payloads remain \
-         undecoded — the survey validates signatures, versions, layouts, member pairings and \
-         fingerprints only, which is what the findings record",
+        "the acceptance suite run locally on the implementer's machine with the retail \
+         capability and a real GPU adapter, selected as `cargo test --locked -p cs_app -- \
+         accept_f20_d_ --include-ignored --skip evidence_report` (the `--skip` leaves out the \
+         sibling `evidence_report_*` harnesses the prefix also matches, which need their own \
+         environment; the package is selected with `-p` because the local workspace run is too \
+         slow, CI runs the workspace); this harness derives every field from the recorded log, \
+         production discovery of $CS_GAME_DIR, and the production animation-family survey run \
+         over that installation (`cs_app::animation::survey_animation_families`) with the \
+         posed GPU captures the suite wrote on the real adapter \
+         (`cs_app::animation::capture_animated_pose`), which render at one sample per pixel \
+         with no tone curve; validated with tools/validate_evidence.py --require-pass. The \
+         animation container payloads remain undecoded — the survey validates signatures, \
+         versions, layouts, member pairings and fingerprints only, which is what the findings \
+         record. No claim of original-renderer parity",
     )
 }
 
