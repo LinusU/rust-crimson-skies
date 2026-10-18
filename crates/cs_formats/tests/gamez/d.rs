@@ -773,3 +773,49 @@ fn accept_f10_d_retail_every_world_and_airframe_reports_exact_missing_and_invali
         "the airframes are reported"
     );
 }
+
+/// Task #1407 (`F10-F.2`): the mesh type words `(file_ptr, unk04)` select the
+/// meshes the original drew without the back-face test (word0 == 1, word1 in
+/// {0, 1}; `OWNER-STATIC-2026-10-05`). Word1 == 2 keeps the test.
+#[test]
+fn accept_f10_f_2_type_words_select_the_unculled_billboard_meshes() {
+    for (word0, word1, skips) in [
+        (0, 0, false),
+        (0, 1, false),
+        (1, 0, true),
+        (1, 1, true),
+        (1, 2, false),
+    ] {
+        let mut record = info(1);
+        record.file_ptr = word0;
+        record.unk04 = word1;
+        assert_eq!(record.type_words(), (word0, word1));
+        assert_eq!(
+            record.skips_back_face_test(),
+            skips,
+            "mesh type words ({word0}, {word1})"
+        );
+    }
+}
+
+/// The retail census of the type words, against the owner note's numbers:
+/// (0,0) 15 759, (1,0) 396, (1,1) 944, (1,2) 40 — 1 340 unculled billboards.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_f10_f_2_retail_type_word_classes_match_the_owner_note() {
+    let mut classes: BTreeMap<(u32, u32), u64> = BTreeMap::new();
+    let mut skipping = 0u64;
+    for (relative, _) in retail_archives() {
+        let parsed = read_retail(&relative);
+        for mesh in parsed.present() {
+            *classes.entry(mesh.info.type_words()).or_default() += 1;
+            skipping += u64::from(mesh.info.skips_back_face_test());
+        }
+    }
+    println!("F10-F.2 type word classes: {classes:?}, unculled {skipping}");
+    assert_eq!(
+        classes,
+        BTreeMap::from([((0, 0), 15_759), ((1, 0), 396), ((1, 1), 944), ((1, 2), 40)])
+    );
+    assert_eq!(skipping, 396 + 944);
+}

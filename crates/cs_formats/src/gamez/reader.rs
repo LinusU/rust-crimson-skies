@@ -453,6 +453,22 @@ impl RawMeshInfo {
     pub const fn is_present(&self) -> bool {
         self.parent_count > 0
     }
+
+    /// The mesh type words, `(word0, word1)` = (`file_ptr`, `unk04`).
+    pub const fn type_words(&self) -> (u32, u32) {
+        (self.file_ptr, self.unk04)
+    }
+
+    /// The whole mesh is a camera-facing billboard the original drew without
+    /// the back-face test: word0 == 1 and word1 ∈ {0, 1}.
+    ///
+    /// Static evidence `OWNER-STATIC-2026-10-05`
+    /// (`docs/findings/2026-10-14-f10-d-2-front-face-winding-and-culling.md`).
+    /// Word1 == 2 is a billboard that still takes the test, so it is `false`
+    /// here. What word1 means for *facing* is not established and not read.
+    pub const fn skips_back_face_test(&self) -> bool {
+        self.file_ptr == 1 && self.unk04 <= 1
+    }
 }
 
 /// The all-zero mesh record: a stub slot. [`assert_mesh_info_zero`] in the
