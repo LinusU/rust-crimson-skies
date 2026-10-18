@@ -810,6 +810,8 @@ fn accept_m01_lc_lowering_signatures_restore_checks_the_directive_log() {
         // The seed-0 stream's start state: zero draws taken, inside the
         // record's stream domain.
         rng_state: SplitMix64::for_domain(0, MISSION_EVALUATOR_DOMAIN).state(),
+        awake: vec![],
+        wakes: vec![],
     };
     let key = |sequence| EventKey {
         session: SessionGeneration(4),

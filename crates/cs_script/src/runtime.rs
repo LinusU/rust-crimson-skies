@@ -169,7 +169,12 @@ pub const MAX_PENDING_ITEMS: usize = 4096;
 /// ([`MissionStateSnapshot::travelers_totals`]): the original keeps it in the
 /// objective record (`+0x5b8`) across ticks, so a record that dropped it would
 /// restart a half-counted objective from zero.
-pub const SNAPSHOT_VERSION: u32 = 5;
+///
+/// Version 6 carries the wake-transition ledger
+/// ([`MissionStateSnapshot::awake`], [`MissionStateSnapshot::wakes`]): a
+/// block's wake effects repeat on every wake from nap, and which wake a
+/// restored session is on decides which execution key the next one takes.
+pub const SNAPSHOT_VERSION: u32 = 6;
 
 /// Most draws a session may take and still have its save record restored.
 ///
@@ -232,6 +237,19 @@ impl EventKey {
             sequence: self.sequence,
         }
     }
+}
+
+/// The program-sequence number of the wake emission of action `action` on
+/// the block's `occurrence`-th wake (zero-based).
+///
+/// The first wake keeps the completion path's number (`action + 1`); a later
+/// wake carries its occurrence in the high half, so each wake of a block has
+/// its own execution key. `None` when either half would not fit: such a site
+/// is not emitted rather than allowed to collide with another key.
+fn wake_sequence(occurrence: u32, action: usize) -> Option<u32> {
+    let low = u16::try_from(action.checked_add(1)?).ok()?;
+    let high = u16::try_from(occurrence).ok()?;
+    Some(u32::from(high) << 16 | u32::from(low))
 }
 
 /// Exactly-once identity of one event or action.
@@ -1321,6 +1339,14 @@ pub struct MissionStateSnapshot {
     /// state outside the recorded stream's domain is refused
     /// ([`RestoreError::RngStateOutOfDomain`], [`MAX_RNG_STREAM_DRAWS`]).
     pub rng_state: u64,
+    /// The block indexes whose facts row read
+    /// [`ObjectiveLifecycle::Awake`] at the last evaluation, ascending. A
+    /// restored session must not read a still-awake block as a fresh wake.
+    pub awake: Vec<u32>,
+    /// How many wake transitions each block has been through, by block
+    /// index ascending (blocks never woken are absent). It selects the
+    /// execution key of the block's next wake emission.
+    pub wakes: Vec<(u32, u32)>,
 }
 
 impl MissionStateSnapshot {
@@ -1388,6 +1414,10 @@ pub enum RestoreDefect {
     /// session wrote, and restoring it would decide the end screen from data
     /// the tick that ended the mission never selected.
     PresentationMismatch,
+    /// The wake ledger names a block the program does not have, repeats or
+    /// misorders a block, records a zero count, or lists an awake block that
+    /// has no recorded wake — no live session writes one that way.
+    WakeLedger { index: u32 },
 }
 
 /// Why a save record could not be restored.
@@ -1496,6 +1526,9 @@ impl fmt::Display for RestoreError {
                 ),
                 RestoreDefect::ForeignExecutionKey { session } => {
                     write!(f, "execution key belongs to session {}", session.0)
+                }
+                RestoreDefect::WakeLedger { index } => {
+                    write!(f, "wake ledger is inconsistent at block {index}")
                 }
                 RestoreDefect::DirectiveOrder => {
                     write!(
@@ -1648,6 +1681,14 @@ pub struct MissionState {
     /// keys, which the `consumed` guard suppresses, and a block that had not
     /// yet woken still fires its wake effects on the transition.
     awake: BTreeSet<u32>,
+    /// Wake transitions seen per block: the occurrence number a block's next
+    /// wake emission takes in its execution key (see [`wake_sequence`]).
+    /// The original re-runs a record's wake effects on every wake from nap
+    /// or done (`0x469af0`), so the key must differ per wake or `consumed`
+    /// would admit them once per session. Both this and `awake` are in the
+    /// save record, so a restored session neither repeats the wake it was
+    /// on nor skips the next one.
+    wakes: BTreeMap<u32, u32>,
     limits: WorkLimits,
     /// The mission's explicit RNG stream, seeded from the run's root seed so a
     /// replay of one run reproduces every draw bit-for-bit. Its `state` is
@@ -1687,6 +1728,7 @@ impl MissionState {
             presentation: None,
             next_item_ordinal: 0,
             awake: BTreeSet::new(),
+            wakes: BTreeMap::new(),
             limits: WorkLimits::default(),
             rng: SplitMix64::for_domain(seed, MISSION_EVALUATOR_DOMAIN),
             seed,
@@ -1811,6 +1853,8 @@ impl MissionState {
             limits: self.limits,
             seed: self.seed,
             rng_state: self.rng.state(),
+            awake: self.awake.iter().copied().collect(),
+            wakes: self.wakes.iter().map(|(k, v)| (*k, *v)).collect(),
         }
     }
 
@@ -1955,6 +1999,29 @@ impl MissionState {
         // the recorded stream could have held within the bound the format
         // supports — one from another seed or domain lands past it with
         // probability ≈ `1 - 2^-42` — and it is refused rather than trusted.
+        let block_count = program.program().objectives.len() as u32;
+        let mut wakes = BTreeMap::new();
+        let mut previous_wake: Option<u32> = None;
+        for (index, count) in &snapshot.wakes {
+            if *index >= block_count
+                || *count == 0
+                || previous_wake.is_some_and(|before| before >= *index)
+            {
+                return Err(RestoreError::Corrupt {
+                    defect: RestoreDefect::WakeLedger { index: *index },
+                });
+            }
+            previous_wake = Some(*index);
+            wakes.insert(*index, *count);
+        }
+        let mut awake = BTreeSet::new();
+        for index in &snapshot.awake {
+            if !wakes.contains_key(index) || !awake.insert(*index) {
+                return Err(RestoreError::Corrupt {
+                    defect: RestoreDefect::WakeLedger { index: *index },
+                });
+            }
+        }
         let rng = SplitMix64::new(snapshot.rng_state);
         let stream_start = SplitMix64::for_domain(snapshot.seed, MISSION_EVALUATOR_DOMAIN);
         let draws = rng.draws_since(stream_start);
@@ -2074,10 +2141,11 @@ impl MissionState {
             pending,
             pending_len,
             next_item_ordinal: snapshot.next_item_ordinal,
-            // Rebuilt from the next tick's facts; a re-detected awake block
-            // re-derives the same execution keys its wake emission already
-            // consumed, so nothing fires twice (see the field's doc).
-            awake: BTreeSet::new(),
+            // The record's own wake ledger: a still-awake block is not read
+            // as a fresh wake, and a block that wakes again takes its next
+            // occurrence's key.
+            awake,
+            wakes,
             limits,
             rng,
             seed: snapshot.seed,
@@ -2230,20 +2298,24 @@ impl MissionState {
         // Wake-transition effects: a directive operation whose measured role
         // is the block's wake (`DirectiveOperation::fires_on_wake`, the
         // mirror of cs_content's `DirectiveRole::WakeEffect` table) emits on
-        // the tick its block's facts row **first** reads
+        // every tick its block's facts row **newly** reads
         // `ObjectiveLifecycle::Awake` — the transition itself — ahead of
-        // whatever the block's condition later completes on. The emission
-        // takes the very execution key the completion pass would have used
-        // for that action (`source`, `action index + 1`), so the block's own
-        // completion emits nothing twice: the `consumed` guard suppresses
-        // the second emit. The set is recomputed from `facts` each tick, so
-        // a nap re-wake is a new transition (the measured "skipped entirely
-        // when the animation is already in state 5" is then the consumer's
-        // answer), a restored session re-detects under already-consumed
-        // keys, and a facts table that never carries a block leaves its
-        // wake effects unfired until the block completes and the
-        // completion-path emit runs them once — the same answer the session
-        // gave before this phase existed.
+        // whatever the block's condition later completes on. The original
+        // runs the whole wake effect list on each wake call (`0x469af0`),
+        // from dormant, nap or done alike; only `RESET_TIMER`/`HIDE_OBJ` are
+        // dormant-only, and that is the host's answer (the dormant-only
+        // guard is the engine model's, not the emission's).
+        //
+        // The first wake of a block takes the very execution key the
+        // completion pass would have used for that action (`source`, `action
+        // index + 1`), so the block's own completion emits nothing twice:
+        // the `consumed` guard suppresses the second emit. A later wake
+        // (a re-wake after a nap or done) takes the key of its occurrence
+        // ([`wake_sequence`]), so it is admitted once per wake and a retry
+        // or restore of that same wake is still suppressed. The wake ledger
+        // is in the save record. A facts table that never carries a block
+        // leaves its wake effects unfired until the block completes and the
+        // completion-path emit runs them once.
         let mut now_awake = BTreeSet::new();
         for (index, lifecycle) in &facts.objectives {
             if *lifecycle == ObjectiveLifecycle::Awake {
@@ -2258,16 +2330,20 @@ impl MissionState {
             let Some(objective) = program.program().objectives.get(index as usize) else {
                 continue;
             };
+            let occurrence = self.wakes.entry(index).or_insert(0);
+            let this_wake = *occurrence;
+            *occurrence = occurrence.saturating_add(1);
             for (i, action) in objective.actions.iter().enumerate() {
                 if let Action::Directive { operation, args } = action
                     && operation.fires_on_wake()
+                    && let Some(sequence) = wake_sequence(this_wake, i)
                 {
                     self.emit_directive(
                         EventKey {
                             session: self.session,
                             tick,
                             source: objective.id,
-                            sequence: i as u32 + 1,
+                            sequence,
                         },
                         *operation,
                         args,

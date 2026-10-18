@@ -33,6 +33,7 @@ mod accept_m01_lc_lowering_signatures;
 mod accept_m10_b_fu1_travelers_counting;
 mod accept_t583_rng_state_record;
 mod accept_test_bin_rest_script;
+mod accept_wake_repeat;
 mod evidence_report_f38_b;
 mod evidence_report_f38_c;
 mod evidence_report_f38_d1;
