@@ -19,9 +19,10 @@ use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind};
 
 const SESSION: SessionGeneration = SessionGeneration(3);
-/// The record's block count; addresses `1..=BLOCKS` name `SymbolId(0..BLOCKS)`.
-/// The runtime reserves `SymbolId(0)` for actor events, so the first block
-/// (address 1) cannot be registered; the tests register blocks `1..BLOCKS`.
+/// The record's block count; addresses `1..=BLOCKS` name `SymbolId(0..BLOCKS)`
+/// and every one of them registers — the counted-actor source lives at
+/// `SymbolId(u32::MAX)`, so the record's first block is an ordinary
+/// objective (`M02-B-FU5`).
 const BLOCKS: u32 = 5;
 /// The objective whose block spells the directives (address 2).
 const SOURCE: SymbolId = SymbolId(1);
@@ -32,7 +33,7 @@ fn record(initial: ObjectiveState) -> ObjectiveRuntime {
         TerminalPrecedence::SyntheticConservative,
         RuntimeLimits::default(),
     );
-    for index in 1..BLOCKS {
+    for index in 0..BLOCKS {
         runtime
             .add_objective(ObjectiveSpec {
                 id: SymbolId(index),
@@ -75,7 +76,7 @@ fn run(runtime: &mut ObjectiveRuntime, emissions: &[DirectiveEmission]) -> Objec
 }
 
 fn states(runtime: &ObjectiveRuntime) -> Vec<ObjectiveState> {
-    (1..BLOCKS)
+    (0..BLOCKS)
         .map(|i| runtime.objective_state(SymbolId(i)).unwrap())
         .collect()
 }
@@ -105,6 +106,7 @@ fn accept_m02_b_fu4_an_in_range_address_applies_its_effect() {
     assert_eq!(
         states(&runtime),
         [
+            ObjectiveState::Asleep,
             ObjectiveState::Active,
             ObjectiveState::Active,
             ObjectiveState::Asleep,
@@ -150,7 +152,7 @@ fn accept_m02_b_fu4_an_out_of_range_address_refuses_by_name_and_applies_nothing(
             "{operation:?} {args:?}"
         );
         assert_eq!(states(&runtime), before, "{operation:?} applied something");
-        for record in 1..BLOCKS {
+        for record in 0..BLOCKS {
             assert_eq!(runtime.is_present(SymbolId(record)), Some(true));
         }
     }
@@ -172,6 +174,7 @@ fn accept_m02_b_fu4_an_authored_zero_truncates_the_list_without_a_refusal() {
     assert_eq!(
         states(&runtime),
         [
+            ObjectiveState::Asleep,
             ObjectiveState::Active,
             ObjectiveState::Active,
             ObjectiveState::Asleep,
@@ -228,11 +231,12 @@ fn accept_m02_b_fu4_emissions_apply_in_pipeline_order_exactly_once() {
     );
 }
 
-/// Address 1 names `SymbolId(0)`, which the runtime reserves for actor events,
-/// so no objective can be registered there: the wake is reported as an unknown
-/// objective rather than dropped (follow-up filed for the clash).
+/// Address 1 names `SymbolId(0)` — the record's first block — and with the
+/// counted-actor source moved to `SymbolId(u32::MAX)` (`M02-B-FU5`) the
+/// block registers like any other and the wake applies instead of
+/// reporting an unknown objective.
 #[test]
-fn accept_m02_b_fu4_the_first_address_names_the_reserved_symbol_and_is_reported() {
+fn accept_m02_b_fu4_the_first_address_names_the_first_block_and_applies() {
     let mut runtime = record(ObjectiveState::Asleep);
     let tick = run(
         &mut runtime,
@@ -243,11 +247,10 @@ fn accept_m02_b_fu4_the_first_address_names_the_reserved_symbol_and_is_reported(
         )],
     );
     assert_eq!(
-        refusals(&tick),
-        [&RuntimeError::UnknownObjective {
-            objective: SymbolId(0)
-        }]
+        runtime.objective_state(SymbolId(0)),
+        Some(ObjectiveState::Active)
     );
+    assert!(refusals(&tick).is_empty());
 }
 
 /// The three operations with no lifecycle consumer check their addresses and
