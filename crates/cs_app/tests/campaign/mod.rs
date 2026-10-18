@@ -194,10 +194,10 @@
 //! `docs/findings/2026-10-10-m06-b-fu2-passenger-identity-binding.md`.
 //!
 //! `m13_b_fu2.rs` is the M13-B-FU2 follow-up of Rally #1244:
-//! `accept_m13_b_fu2_*` tests that measure where M13's nine startup animation
-//! names resolve through `bind_mission_animation` (eight bind one declaring
-//! member and one carrier record; `cg1zep_engines_stop` is ambiguous). Its
-//! retail members are `#[ignore = "requires CS_GAME_DIR"]`. The findings note is
+//! `accept_m13_b_fu2_*` tests that measure where M13's startup animation rows
+//! resolve through `bind_mission_animation` (three rows across two events, each
+//! binding one declaring member and one carrier record). Its retail members are
+//! `#[ignore = "requires CS_GAME_DIR"]`. The findings note is
 //! `docs/findings/2026-10-18-m13-b-fu2-startup-animation-binding.md`.
 //!
 //! `m07_b.rs` is the M07-B stage: `accept_m07_b_*` tests that measure M07's
