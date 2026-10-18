@@ -164,6 +164,7 @@ pub mod bevy_mesh;
 pub mod bevy_state;
 pub mod capture;
 pub mod detail;
+pub mod elimination;
 pub mod golden;
 /// The drawn horizon — sky dome, sea and fog — of a windowed scene
 /// (task #1434 `M01-PLAY-SKY`): the one production path that paints them,

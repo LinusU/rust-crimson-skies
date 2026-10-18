@@ -49,6 +49,7 @@
 mod adapters;
 mod additive_material;
 mod classification;
+mod elimination;
 mod evidence;
 mod fixture;
 mod frame_capture;
