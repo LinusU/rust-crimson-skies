@@ -44,7 +44,10 @@
 //! decision measured from the original executable
 //! (`OWNER-STATIC-2026-10-05`), with the `accept_f10_d_2_` selection pinning
 //! CCW front faces, the one-sided back-face cull, and the two-sided and
-//! billboard exceptions.
+//! billboard exceptions. It also carries task #1406 (`F10-F.1`): the stored
+//! polygon `0x400` flag read into the render mesh, with the `accept_f10_f_1_`
+//! selection driving a stored two-sided polygon to `CullingClass::TwoSided` and
+//! refusing a group that mixes one- and two-sided polygons.
 
 mod adapters;
 mod additive_material;

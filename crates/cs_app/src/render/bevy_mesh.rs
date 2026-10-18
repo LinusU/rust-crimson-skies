@@ -56,9 +56,11 @@
 //!   on ([`CullingClass`]). The caller still hands in the
 //!   [`MeshPresentationUnknown`] list the content pipeline established
 //!   ([`GroupUpload::unknowns`]) and the adapter carries it through
-//!   untouched: which *stored surfaces* are two-sided is per-polygon data
-//!   (`0x400`) nothing has plumbed yet, so that question stays open on the
-//!   content side even though the rule is measured.
+//!   untouched. Which *stored surfaces* are two-sided is per-polygon data
+//!   (`0x400`); the content pipeline reads it into
+//!   `cs_content::mesh::RenderGroup::two_sided` and the adapter reports it on
+//!   [`GroupUpload::two_sided`], which is a settled fact, not an unknown on
+//!   that list.
 //!
 //! [`GroupUpload::fingerprint`] digests the exact `f32`/`u32` bit patterns
 //! that were handed to Bevy, so a later frame capture can pin *what the GPU
@@ -825,9 +827,9 @@ impl GroupUpload {
     /// The upload settles none of them *in the list*: which way `V` runs is
     /// still unmeasured, and although the winding is now measured
     /// ([`FRONT_FACE`], [`WINDING_EVIDENCE`]), which stored surfaces are
-    /// two-sided (`0x400`) is per-polygon data no content-side reader has
-    /// interpreted yet, so the content pipeline's list still travels as
-    /// established.
+    /// two-sided is the per-polygon `0x400` data the content pipeline reads
+    /// into [`Self::two_sided`] — a fact this upload reports, not an entry on
+    /// this list.
     pub fn unknowns(&self) -> &[MeshPresentationUnknown] {
         &self.unknowns
     }

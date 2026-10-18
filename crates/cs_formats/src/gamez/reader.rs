@@ -58,12 +58,14 @@
 //! The stored polygon record packs its corner count and its flag bits into one
 //! `u32` (`vertex_info`), and this reader splits it exactly as the reference
 //! does: corners are the nine bits `0..9`, flags are the seven bits `9..15`, and
-//! the flag field's low bit is always zero. Only two flag bits
-//! are given a meaning, and only because the layout establishes it:
+//! the flag field's low bit is always zero. Three flag bits are given a meaning,
+//! each because the layout or the measured original establishes it:
 //! [`FLAG_TRIANGLE_STRIP`] selects the corner topology (a strip, decoded by
-//! [`decode_strip`]) and [`FLAG_NORMALS`] says the polygon stores a per-corner
-//! normal index. Every other bit is carried in [`RawPolygon::raw_flags`]
-//! untouched.
+//! [`decode_strip`]), [`FLAG_NORMALS`] says the polygon stores a per-corner
+//! normal index, and [`FLAG_TWO_SIDED`] (the reference's `UNK2`) is the measured
+//! two-sided flag (`OWNER-STATIC-2026-10-05`; reported on a strip rather than
+//! trusted, [`ParseFinding::StripTwoSidedFlag`]). Every other bit is carried in
+//! [`RawPolygon::raw_flags`] untouched.
 //!
 //! A polygon with several stored material groups keeps **all** of them, in
 //! [`GameZMesh::material_groups`] — one entry per stored polygon, in polygon

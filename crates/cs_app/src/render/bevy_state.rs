@@ -90,9 +90,11 @@ use crate::render::material::{ClassifiedMaterial, Coverage, MaterialClass, Textu
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StateError {
     /// Nothing established whether *this* surface is two-sided. The culling
-    /// rule itself is measured (`bevy_mesh::CullingClass`), but the
-    /// per-polygon `0x400` data is unread, so no class can be chosen for an
-    /// undeclared surface.
+    /// rule is measured (`bevy_mesh::CullingClass`), and the stored polygon
+    /// `0x400` data reaches the group it draws ([`render_state_for_group`]),
+    /// but a surface where neither a declaration nor a stored group settles
+    /// it — a material record with no mesh, or a group that mixes one- and
+    /// two-sided polygons — has no class to choose.
     CullFaceUnknown,
     /// Nothing established the texture addressing, so no sampler can be
     /// described.

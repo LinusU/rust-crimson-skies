@@ -35,6 +35,12 @@
 //!   the faces that decoded but whose triangles are all degenerate.
 //!   `invalid` is a subset of `missing`: a broken face is certainly not
 //!   drawn.
+//! * **two-sided** — stored polygons that carry the measured two-sided flag
+//!   `0x400` (`OWNER-STATIC-2026-10-05`): [`FaceCensus::two_sided_outline_faces`]
+//!   for outlines and [`FaceCensus::strip_two_sided_flag_faces`] for strips,
+//!   which are reported rather than trusted. These are stored facts counted
+//!   whatever a face's draw outcome, so they are not part of the
+//!   `decoded + invalid + unsupported + culled == stored` sum.
 //!
 //! Every missing face is listed with its container mesh index, its stored
 //! polygon index and a stable reason code, so the count can always be traced
