@@ -165,6 +165,12 @@ impl ThreatCase {
         }
     }
 
+    /// The threat whose stable [`label`](Self::label) is `label`, if any.
+    #[must_use]
+    pub fn from_label(label: &str) -> Option<Self> {
+        Self::ALL.iter().copied().find(|case| case.label() == label)
+    }
+
     /// What the session does about this threat.
     pub const fn disposition(self) -> ThreatDisposition {
         match self {

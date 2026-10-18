@@ -304,8 +304,10 @@ fn accept_f58_c_an_abusive_packet_settles_a_cut_off_with_a_bounded_reason() {
     );
     assert_eq!(
         departure.cause.wire_reason(),
-        None,
-        "the wire has no abuse arm (#815): the peer is hung up, not mislabelled"
+        Some(cs_net::message::DisconnectReason::Abuse {
+            threat: cs_net::validation::ThreatCase::OversizedMessage
+        }),
+        "the peer is told it was cut off for abuse, not that the session ended"
     );
     assert_eq!(
         departure.actor,

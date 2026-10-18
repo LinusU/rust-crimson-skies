@@ -41,9 +41,8 @@
 //!   a dead link, an abuse cut-off naming the refusal that cut it, or the host
 //!   being gone. [`DisconnectCause::wire_reason`] maps it onto
 //!   [`crate::message::DisconnectReason`] for the consumer that tells the
-//!   client, and deliberately returns `None` for abuse: the wire has no abuse
-//!   arm yet, and naming another reason would be a falsehood (task #815 owns
-//!   that arm).
+//!   client; abuse maps onto `DisconnectReason::Abuse { threat }` (task #815),
+//!   never onto `SessionEnded`.
 //! * [`DepartureLedger`] settles **each peer's departure once**: the first
 //!   report is [`Settlement::Applied`], every later report of the same peer is
 //!   [`Settlement::Duplicate`] and applies nothing. Its records are bounded by
@@ -68,6 +67,8 @@ use cs_types::net::{ActorId, PeerId, SessionId};
 use crate::bounds::MAX_SESSION_PEERS;
 use crate::compat::{PeerAllocError, PeerAllocator};
 use crate::lobby::{HostLoss, LateJoin, TeamId};
+use crate::message::DisconnectReason;
+use crate::validation::ThreatCase;
 
 /// Why a recovery operation could not proceed at the transport-independent
 /// layer.
@@ -623,19 +624,20 @@ impl DisconnectCause {
     /// The reason the client is told on the wire, when the wire can express
     /// it.
     ///
-    /// `None` for [`DisconnectCause::Abusive`]: `message::DisconnectReason`
-    /// is still `Voluntary | Timeout | SessionEnded` and has no abuse arm, so
-    /// the peer is hung up without a reason packet rather than told a
-    /// different one. Task #815 owns that arm; nothing here maps abuse onto
-    /// `SessionEnded`.
+    /// An abuse cut-off maps onto [`DisconnectReason::Abuse`] by its refusal
+    /// label (every disconnecting `SessionViolation`/`IntentRefusal` label is
+    /// a [`ThreatCase`] label). `None` only for a label that names no threat
+    /// class: the peer is then hung up without a reason packet rather than
+    /// told a different one. Nothing maps abuse onto `SessionEnded`.
     #[must_use]
-    pub const fn wire_reason(self) -> Option<crate::message::DisconnectReason> {
-        use crate::message::DisconnectReason;
+    pub fn wire_reason(self) -> Option<DisconnectReason> {
         match self {
             Self::Voluntary => Some(DisconnectReason::Voluntary),
             Self::Timeout => Some(DisconnectReason::Timeout),
             Self::HostLoss => Some(DisconnectReason::SessionEnded),
-            Self::Abusive { .. } => None,
+            Self::Abusive { reason } => {
+                ThreatCase::from_label(reason).map(|threat| DisconnectReason::Abuse { threat })
+            }
         }
     }
 }

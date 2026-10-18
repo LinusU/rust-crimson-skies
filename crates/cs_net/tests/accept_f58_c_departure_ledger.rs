@@ -170,8 +170,11 @@ fn accept_f58_c_a_disconnect_cause_carries_only_a_bounded_reason() {
         DisconnectCause::HostLoss.wire_reason(),
         Some(DisconnectReason::SessionEnded)
     );
-    // …and refuses to lie about the fourth: `DisconnectReason` has no abuse
-    // arm (task #815), so an abusive peer is hung up without a reason packet
-    // rather than told the session merely "ended".
-    assert_eq!(abuse.wire_reason(), None);
+    // …and the fourth is told as abuse (task #815), never as "ended".
+    assert_eq!(
+        abuse.wire_reason(),
+        Some(DisconnectReason::Abuse {
+            threat: cs_net::validation::ThreatCase::ImpossibleRate
+        })
+    );
 }

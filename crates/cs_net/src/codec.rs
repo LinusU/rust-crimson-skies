@@ -46,6 +46,7 @@ use crate::message::{
     LobbyRefusal, MAX_LOBBY_RECORD_BYTES, MessageHeader, ReliableEvent, ServerMessage,
     ServerPayload, SnapshotFrame, WireError,
 };
+use crate::validation::ThreatCase;
 
 /// The widest canonical `namespace/key` text a [`ContentId`] may take on the
 /// wire: the key cap plus the longest namespace label and the separator.
@@ -730,16 +731,52 @@ fn disconnect_reason(
         0 => Ok(DisconnectReason::Voluntary),
         1 => Ok(DisconnectReason::Timeout),
         2 => Ok(DisconnectReason::SessionEnded),
+        3 => Ok(DisconnectReason::Abuse {
+            threat: threat_case(r, "disconnect.threat")?,
+        }),
         tag => Err(CodecError::UnknownTag { field, tag }),
     }
 }
 
 fn put_disconnect_reason(w: &mut Writer, reason: DisconnectReason) {
-    w.u8(match reason {
-        DisconnectReason::Voluntary => 0,
-        DisconnectReason::Timeout => 1,
-        DisconnectReason::SessionEnded => 2,
-    });
+    match reason {
+        DisconnectReason::Voluntary => w.u8(0),
+        DisconnectReason::Timeout => w.u8(1),
+        DisconnectReason::SessionEnded => w.u8(2),
+        DisconnectReason::Abuse { threat } => {
+            w.u8(3);
+            w.u8(threat_tag(threat));
+        }
+    }
+}
+
+/// The wire tag of one threat class. Explicit and append-only: a tag is never
+/// renumbered or reused, so an older decoder meeting a newer class fails
+/// closed with [`CodecError::UnknownTag`].
+const fn threat_tag(threat: ThreatCase) -> u8 {
+    match threat {
+        ThreatCase::StaleSession => 0,
+        ThreatCase::ReplayedRequest => 1,
+        ThreatCase::InvalidOwnership => 2,
+        ThreatCase::ImpossibleRate => 3,
+        ThreatCase::OversizedMessage => 4,
+        ThreatCase::ResourceExhaustion => 5,
+        ThreatCase::ForgedServerAuthority => 6,
+        ThreatCase::ClientAuthoredTruth => 7,
+        ThreatCase::ReplayedReward => 8,
+        ThreatCase::ForeignAircraftBinding => 9,
+        ThreatCase::UnauthenticatedPeer => 10,
+        ThreatCase::MalformedMessage => 11,
+    }
+}
+
+fn threat_case(r: &mut Reader<'_>, field: &'static str) -> Result<ThreatCase, CodecError> {
+    let tag = r.u8(field)?;
+    ThreatCase::ALL
+        .iter()
+        .copied()
+        .find(|threat| threat_tag(*threat) == tag)
+        .ok_or(CodecError::UnknownTag { field, tag })
 }
 
 fn finish_reason(r: &mut Reader<'_>, field: &'static str) -> Result<FinishReason, CodecError> {

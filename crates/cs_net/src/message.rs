@@ -42,6 +42,7 @@ use crate::bounds::{
     MAX_EDGES_PER_FRAME, MAX_INPUT_BATCH_SPAN_TICKS, MAX_INPUT_FRAMES_PER_PACKET, MAX_PACKET_BYTES,
     MAX_SNAPSHOT_BYTES,
 };
+use crate::validation::ThreatCase;
 
 /// Largest lobby record (an encoded `LobbyPacket` or `LobbyEvent`, F55-B) one
 /// session packet may carry. The lobby's own packet cap is
@@ -281,6 +282,14 @@ pub enum DisconnectReason {
     Timeout,
     /// The host ended the whole session.
     SessionEnded,
+    /// The server cut the peer off for abuse. `threat` is the bounded threat
+    /// class (its stable [`ThreatCase::label`]) the refusal belonged to — a
+    /// closed enumeration, so the reason cannot grow with the traffic that
+    /// triggered it.
+    Abuse {
+        /// The threat class that got the peer cut off.
+        threat: ThreatCase,
+    },
 }
 
 impl DisconnectReason {
@@ -290,6 +299,7 @@ impl DisconnectReason {
             Self::Voluntary => "voluntary",
             Self::Timeout => "timeout",
             Self::SessionEnded => "session_ended",
+            Self::Abuse { .. } => "abuse",
         }
     }
 }
