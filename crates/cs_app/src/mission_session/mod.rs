@@ -185,7 +185,8 @@ pub use smoke::{
     MISSION_SMOKE_FRAME_HZ, MissionSmokeHandle, MissionSmokeMode, MissionSmokePlugin,
     MissionSmokeReport, RocketMetrics, SMOKE_KIND, SMOKE_REPORT_FILE, SeaMetrics,
     SmokeMeasurements, TerrainMetrics, WINGMAN_SAMPLE_SECONDS, WingmanSample,
-    evaluate as evaluate_mission_smoke, finish as finish_mission_smoke,
+    evaluate as evaluate_mission_smoke, finish as finish_mission_smoke, near_terrain_luminance,
+    objective_line_of,
 };
 pub use terminal::{MissionExit, MissionTerminal, MissionTerminalSource};
 pub use weapon_present::{

@@ -55,6 +55,7 @@ use std::sync::{Arc, Mutex};
 
 use avian3d::prelude::{AngularVelocity, LinearVelocity, Position, Rotation};
 use bevy::camera::Camera;
+use bevy::camera::visibility::InheritedVisibility;
 use bevy::input::keyboard::KeyCode;
 use bevy::input::{ButtonInput, InputSystems};
 use bevy::prelude::{
@@ -64,7 +65,7 @@ use bevy::prelude::{
 };
 use bevy::render::render_resource::TextureFormat;
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk};
-use bevy::ui::{ComputedNode, Node};
+use bevy::ui::{ComputedNode, Node, UiGlobalTransform};
 use cs_content::world::SurfaceRole;
 
 use super::compose::MissionPlayerBody;
@@ -205,9 +206,10 @@ pub const MIN_TERRAIN_DETAIL_PERMILLE: u32 = 20;
 /// 711 (the fog band's gradient), so this floor alone is never the decider —
 /// [`Self::MIN_TERRAIN_DETAIL_PERMILLE`] is.
 pub const MIN_TERRAIN_DISTINCT_COLOURS: usize = 24;
-/// The least luminance spread **in the near field** (the closest third of the
-/// probe frame, where the fog is negligible) for the terrain to be called
-/// *lit*.
+/// The least luminance spread **in the nearest terrain** (the lowest third of
+/// lowest unbroken run of rows the frame's terrain tiles fill, see
+/// [`near_terrain_luminance`])
+/// for the terrain to be called *lit*.
 ///
 /// Measured basis (same frame): the reported unlit terrain spans **1** there
 /// (82..83) — one flat value as far as the eye can see — while the whole
@@ -342,8 +344,9 @@ pub struct TerrainMetrics {
     pub luminance_min: u8,
     /// The largest luminance among the world's pixels.
     pub luminance_max: u8,
-    /// The smallest luminance in the near field (the closest third of the
-    /// frame), where fog is negligible: what the *lit* check reads.
+    /// The smallest luminance in the nearest terrain (see
+    /// [`near_terrain_luminance`]; 0 with the maximum when the frame shows no
+    /// terrain): what the *lit* check reads.
     pub near_luminance_min: u8,
     /// The largest luminance in the near field.
     pub near_luminance_max: u8,
@@ -555,8 +558,8 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
                 applies: true,
                 passed: spread >= MIN_TERRAIN_LUMINANCE_SPREAD,
                 detail: format!(
-                    "the near field spans luminance {}..{} (spread {}, floor {}); the whole \
-                     frame spans {}..{}, whose spread is the fog band rather than shading",
+                    "the nearest terrain spans luminance {}..{} (spread {}, floor {}; 0..0 means the \
+                     frame shows no terrain); the whole frame spans {}..{}, whose spread is the fog band rather than shading",
                     terrain.near_luminance_min,
                     terrain.near_luminance_max,
                     spread,
@@ -874,10 +877,9 @@ pub struct FrameRecord {
     pub off_luminance_min: u8,
     /// The largest luminance among those pixels.
     pub off_luminance_max: u8,
-    /// The smallest luminance among those pixels in the near field (the
-    /// closest third of the frame), where fog is negligible.
+    /// The smallest luminance in the nearest terrain of this frame.
     pub near_luminance_min: u8,
-    /// The largest luminance among those pixels in the near field.
+    /// The largest luminance in the nearest terrain of this frame.
     pub near_luminance_max: u8,
     /// Yellow-ish objective-text pixels counted inside the objective UI region
     /// (`None` for frames the HUD probe did not measure).
@@ -1246,29 +1248,48 @@ fn current_objective(
     ObjectiveHud::from_engine(engine).current_text(messages.and_then(MissionMessages::catalog))
 }
 
+/// The query the objective probe reads: UI layout lives in `UiGlobalTransform`
+/// (a UI node carries no `GlobalTransform`), and what the player sees is the
+/// *inherited* visibility — the probe's own restore writes `Inherited` onto
+/// every node, so the node's own `Visibility` says nothing about it.
+type ObjectiveNodes<'w, 's> = Query<
+    'w,
+    's,
+    (
+        &'static Text,
+        &'static InheritedVisibility,
+        &'static UiGlobalTransform,
+        &'static ComputedNode,
+    ),
+>;
+
 /// The objective widget's own text on screen and its visibility, when one
 /// carries the caption.
-fn drawn_objective(
-    nodes: &Query<(&Text, &Visibility, &GlobalTransform, &ComputedNode)>,
-) -> Option<(String, bool)> {
+fn drawn_objective(nodes: &ObjectiveNodes<'_, '_>) -> Option<(String, bool)> {
     let (text, visibility, _, _) = nodes
         .iter()
         .find(|(text, ..)| text.0.starts_with(OBJECTIVE_HUD_CAPTION))?;
-    Some((text.0.clone(), matches!(visibility, Visibility::Visible)))
+    Some((objective_line_of(&text.0), visibility.get()))
+}
+
+/// The objective line a widget text carries: the widget draws its designed
+/// caption, a newline, then the line the read model reports, so the caption is
+/// not part of what the two must agree on.
+#[must_use]
+pub fn objective_line_of(widget_text: &str) -> String {
+    let rest = widget_text
+        .strip_prefix(OBJECTIVE_HUD_CAPTION)
+        .unwrap_or(widget_text);
+    rest.strip_prefix('\n').unwrap_or(rest).to_owned()
 }
 
 /// The objective widget's region in framebuffer pixels, from the node's
 /// physical-pixel layout.
-fn objective_region(
-    nodes: &Query<(&Text, &Visibility, &GlobalTransform, &ComputedNode)>,
-) -> Option<[u32; 4]> {
+fn objective_region(nodes: &ObjectiveNodes<'_, '_>) -> Option<[u32; 4]> {
     let (_, _, transform, node) = nodes
         .iter()
         .find(|(text, ..)| text.0.starts_with(OBJECTIVE_HUD_CAPTION))?;
-    let center = {
-        let translation = transform.translation();
-        Vec2::new(translation.x, translation.y)
-    };
+    let center = transform.translation;
     let size = node.size;
     Some([
         (center.x - 0.5 * size.x).max(0.0) as u32,
@@ -1536,7 +1557,7 @@ fn smoke_script(
     mut commands: Commands,
     mut exit: MessageWriter<AppExit>,
     clear: Option<Res<ClearColor>>,
-    objective_nodes: Query<(&Text, &Visibility, &GlobalTransform, &ComputedNode)>,
+    objective_nodes: ObjectiveNodes<'_, '_>,
     player: Query<&Position, With<MissionPlayerBody>>,
     poses: Query<(Option<&Position>, Option<&Transform>)>,
     camera: Query<(&Camera, &GlobalTransform), With<crate::playtest::PlaytestCameraMarker>>,
@@ -1913,6 +1934,9 @@ fn finish_measurements(data: &mut SmokeData, shots: &[FrameRecord]) {
             near_luminance_max: world.near_luminance_max,
         });
     }
+    if let Some(hud) = find("hud") {
+        data.measurements.hud.region_text_pixels = hud.text_pixels;
+    }
     if let (Some(visible), Some(absent)) = (find("sea_visible"), find("sea_absent")) {
         let total = (visible.width as usize) * (visible.height as usize);
         let sea = visible.off_clear.saturating_sub(absent.off_clear);
@@ -1994,12 +2018,11 @@ fn measure(
     let mut off_min = u8::MAX;
     let mut off_max = 0_u8;
     let mut detail = 0_usize;
-    let mut near_min = u8::MAX;
-    let mut near_max = 0_u8;
     let mut text_pixels = 0_usize;
     let width = image.width() as usize;
     let height = image.height() as usize;
-    let near_from = height.saturating_mul(2) / 3;
+    let mut luminances = vec![0_u8; pixels.len()];
+    let mut detail_mask = vec![false; pixels.len()];
     let colour_of = |index: usize| -> [u8; 3] {
         let pixel = pixels[index];
         [pixel[order[0]], pixel[order[1]], pixel[order[2]]]
@@ -2015,16 +2038,13 @@ fn measure(
             ((29 * u32::from(colour[0]) + 150 * u32::from(colour[1]) + 77 * u32::from(colour[2]))
                 >> 8) as u8;
         levels.insert(luminance);
+        luminances[index] = luminance;
         sum += u64::from(luminance);
         let py = index / width;
         if is_off(colour) {
             off_colours.insert(colour);
             off_min = off_min.min(luminance);
             off_max = off_max.max(luminance);
-            if py >= near_from {
-                near_min = near_min.min(luminance);
-                near_max = near_max.max(luminance);
-            }
             // Local detail: a world pixel that differs from a neighbour that
             // is also world geometry. A smooth gradient (fog, sky) has none;
             // a texture has it everywhere.
@@ -2041,6 +2061,7 @@ fn measure(
             };
             if (index % width + 1 < width && differs(right)) || (py + 1 < height && differs(down)) {
                 detail += 1;
+                detail_mask[index] = true;
             }
         }
         if let Some([x, y, w, h]) = region {
@@ -2055,6 +2076,8 @@ fn measure(
             }
         }
     }
+    let (near_min, near_max) =
+        near_terrain_luminance(width, &luminances, &detail_mask).unwrap_or((0, 0));
     let counted = count_world_pixels(data, format, clear_colours);
     let world_pixels = counted.world;
     FrameRecord {
@@ -2075,10 +2098,73 @@ fn measure(
         off_detail_permille: permille(detail, world_pixels),
         off_luminance_min: if off_colours.is_empty() { 0 } else { off_min },
         off_luminance_max: off_max,
-        near_luminance_min: if near_min == u8::MAX { 0 } else { near_min },
+        near_luminance_min: near_min,
         near_luminance_max: near_max,
         text_pixels: region.map(|_| text_pixels),
     }
+}
+
+/// Side of the square tiles [`near_terrain_luminance`] classifies, in pixels.
+const TERRAIN_TILE: usize = 32;
+
+/// A tile is terrain when at least one pixel in this many (10 %) differs from
+/// a neighbouring world pixel. A texture does that everywhere; open water, a
+/// flat fill and a tile only crossed by a coastline's edge (a few per cent)
+/// do not.
+const TERRAIN_TILE_DETAIL_DENOMINATOR: usize = 10;
+
+/// The luminance range of the **nearest terrain** in a probe frame, or
+/// `None` when the frame shows no terrain.
+///
+/// The old probe sampled the frame's bottom third, which at some starts is
+/// open water (C3/M01 starts over the sea: the check measured the sea, spread
+/// 5). Terrain is found from the draw itself instead: the frame is cut into
+/// [`TERRAIN_TILE`] squares, a square is terrain when its world pixels carry
+/// local detail (see [`TERRAIN_TILE_DETAIL_DENOMINATOR`]), and the near field
+/// is the lowest third (at least one row) of the lowest unbroken run of rows
+/// holding such squares — the closest terrain, where fog is least, wherever
+/// the camera points, and not a textured cloud bank further up the frame. The
+/// range is taken over the squares' detail pixels only, so the flat water a
+/// coastline tile also holds does not inflate it.
+///
+/// `luminance` is per pixel row-major and `detail` marks world pixels (off the
+/// clear colour) that differ from a world neighbour.
+#[must_use]
+pub fn near_terrain_luminance(width: usize, luminance: &[u8], detail: &[bool]) -> Option<(u8, u8)> {
+    if width == 0 || luminance.len() != detail.len() {
+        return None;
+    }
+    let height = luminance.len() / width;
+    let tiles_x = width.div_ceil(TERRAIN_TILE);
+    let tiles_y = height.div_ceil(TERRAIN_TILE);
+    let mut counts = vec![0_usize; tiles_x * tiles_y];
+    for (index, &is_detail) in detail.iter().enumerate() {
+        if is_detail {
+            counts[(index / width / TERRAIN_TILE) * tiles_x + (index % width) / TERRAIN_TILE] += 1;
+        }
+    }
+    let is_terrain =
+        |tile: usize| counts[tile] * TERRAIN_TILE_DETAIL_DENOMINATOR >= TERRAIN_TILE * TERRAIN_TILE;
+    let has_terrain = |row: usize| (0..tiles_x).any(|column| is_terrain(row * tiles_x + column));
+    let bottom = (0..tiles_y).rev().find(|&row| has_terrain(row))?;
+    let top = (0..=bottom)
+        .rev()
+        .take_while(|&row| has_terrain(row))
+        .last()
+        .unwrap_or(bottom);
+    let span = bottom - top + 1;
+    let first_near = bottom + 1 - (span / 3).max(1);
+    let mut min = u8::MAX;
+    let mut max = 0_u8;
+    for (index, &level) in luminance.iter().enumerate() {
+        let row = index / width / TERRAIN_TILE;
+        let tile = row * tiles_x + (index % width) / TERRAIN_TILE;
+        if detail[index] && row >= first_near && is_terrain(tile) {
+            min = min.min(level);
+            max = max.max(level);
+        }
+    }
+    (min <= max).then_some((min, max))
 }
 
 /// The channel order the surface's format stores colour in.
