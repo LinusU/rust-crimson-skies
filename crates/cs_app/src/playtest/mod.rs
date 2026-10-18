@@ -54,7 +54,7 @@ use bevy::prelude::{
     Resource, Startup, Time, Transform, Update, Vec3, With, World,
 };
 use bevy::time::{Fixed, Real, TimeUpdateStrategy, Virtual};
-use cs_content::cameras::{AspectRatio, declared_synthetic_camera_modes};
+use cs_content::cameras::{AspectRatio, DeclaredCameraModes, declared_synthetic_camera_modes};
 use cs_sim::collision::CollisionLayer;
 use cs_sim::control::LocalSeatId;
 use cs_sim::damage::ActorId;
@@ -65,6 +65,7 @@ use cs_types::input::{Action, FlightCommand};
 use cs_types::net::SessionId;
 use cs_types::space::{Quaternion, WorldPosition};
 
+use crate::camera::chase_preset::declared_capture_fitted_chase_modes;
 use crate::camera::{CameraPose, CameraRig, RigFrame, RigInputs, ViewRig, lower_camera_modes};
 use crate::input::platform::{BevyInputPlugin, PlatformInput};
 use crate::input::{InputSession, PauseReason, SessionMode};
@@ -290,8 +291,18 @@ impl PlaytestCamera {
     }
 
     pub(crate) fn new() -> Self {
-        let modes = lower_camera_modes(&declared_synthetic_camera_modes())
-            .expect("the synthetic camera modes lower");
+        Self::from_declared(&declared_synthetic_camera_modes())
+    }
+
+    /// The chase camera fitted to the owner's capture of the original
+    /// ([`crate::camera::chase_preset`]), which the mission window flies with.
+    #[must_use]
+    pub fn capture_fitted() -> Self {
+        Self::from_declared(&declared_capture_fitted_chase_modes())
+    }
+
+    fn from_declared(declared: &DeclaredCameraModes) -> Self {
+        let modes = lower_camera_modes(declared).expect("the declared camera modes lower");
         let mut rig = CameraRig::new(modes).expect("the synthetic mode set builds a rig");
         rig.set_rig(ViewRig::Chase)
             .expect("the synthetic mode set declares a chase view");

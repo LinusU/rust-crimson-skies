@@ -893,6 +893,8 @@ fn add_composition(
     visuals: bool,
 ) -> Result<(), MissionCompositionError> {
     app.add_plugins(PlaytestPlugin);
+    // The original mission's chase view, fitted to the owner's capture.
+    app.insert_resource(crate::playtest::PlaytestCamera::capture_fitted());
     if visuals {
         app.add_plugins(crate::playtest::visuals::PlaytestVisualsPlugin);
         // The composed mission draws the sky, the sea and the fog from its

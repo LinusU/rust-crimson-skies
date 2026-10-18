@@ -88,6 +88,7 @@
 //! [`DeclaredCameraModes`]: cs_content::cameras::DeclaredCameraModes
 
 pub mod capture;
+pub mod chase_preset;
 pub mod coverage;
 pub mod eye;
 pub mod horizon;

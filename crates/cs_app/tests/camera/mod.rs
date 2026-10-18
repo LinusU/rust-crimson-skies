@@ -93,6 +93,7 @@
 //! too) and assert against measured installation bytes and a measured frame.
 
 mod capture;
+mod chase_preset;
 mod common;
 mod content;
 mod coverage;
