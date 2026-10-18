@@ -291,6 +291,7 @@ mod m01_window_fire;
 mod m01_window_world_draw;
 mod m01_window_world_import;
 mod m01_wingman_formation_a;
+mod m01_wingman_player_leader;
 mod m02_a;
 mod m02_b;
 mod m02_b_fu2;

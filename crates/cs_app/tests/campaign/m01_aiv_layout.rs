@@ -233,7 +233,11 @@ fn accept_m01_aiv_layout_constants_match_the_committed_table() {
 
 /// The member decode path `recover_retail_start_configuration` walks for a
 /// mission's `aiv.zrd` — the production discovery and decoder.
-fn member_document(root: &Path, container_key: &str, member: &str) -> (ZrdValue, SourceSpan) {
+pub(crate) fn member_document(
+    root: &Path,
+    container_key: &str,
+    member: &str,
+) -> (ZrdValue, SourceSpan) {
     let found = cs_assets::install::discover(root).expect("the installation discovers");
     let record = found
         .manifest
