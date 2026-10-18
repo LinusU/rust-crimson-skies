@@ -18,6 +18,7 @@ mod accept_f54_x7_missing_harness_binary;
 mod accept_f61_a_release_contents;
 mod accept_f61_a_user_data_policy;
 mod accept_t1170_push_guard;
+mod accept_t1265_fleet_target_dirs;
 mod accept_t383_per_worktree_target_dir;
 mod accept_t430_ci_disk_budget;
 mod accept_t433_stale_target_dir;
