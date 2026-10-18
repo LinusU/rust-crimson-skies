@@ -1,0 +1,242 @@
+# F45-C.5: the flight check's option set and the ammunition slot's meaning
+
+Date: 2026-10-18. Task: #1525 / F45-C.5 "Measure the flight check's option set
+and the ammunition slot's meaning" (follow-up of #748 / F45-C.2, recorded in
+`docs/findings/2026-10-17-f45-c-2-wingmate-and-ammunition-consumer.md`). Capability
+used: **`retail`** (read-only `$CS_GAME_DIR`). The original executable was not
+run, so nothing here is `verified_original`. Implementer: `bunny-alpha-2`
+(deepseek-v4.1-flash, Rally implement claim `clm_nvwn2cel5d7iiv4v`); no
+independent review yet.
+
+## One observable failure (listed before editing)
+
+F45-C.2 commits the flight check's `ammunition` slot as the wingmate's briefing
+equipment (`WingmateChoice::loadout`) and explicitly records that projection as
+**project design, not a measured original fact**, because nothing readable said
+what the original's "ammunition" is. With the F45-C.5 work removed:
+
+- the measured producer no longer reaches the flow, so a flight check whose
+  original offers the wingmate slot no equipment control still commits the
+  ammunition as that wingmate's equipment, and
+  `accept_f45_c_5_a_measured_producer_without_a_wingmate_control_refuses_the_equipment`
+  fails at `FlowError::NoWingmateEquipment`; and
+- the production reader no longer measures the controls, slots or selectors, so
+  `accept_f45_c_5_the_reader_measures_the_controls_their_slots_and_their_selectors`
+  fails.
+
+## Where the flight check is defined, and what was read
+
+The original front end is `GOSDATA/ASSETS/crimson.rof` in the installation
+`b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978`. Everything
+below is the decoded text of members of that container, read with
+`cs-inspect rof --member … --export-dir` (private) and through the production
+readers `cs_app::ui::front_end::OriginalLayout` / `FrontEndScreens`:
+
+| member | decoded SHA-256 | what was read |
+| --- | --- | --- |
+| `ASSETS/LAYOUT.CSV` | `b50ea48bbe97ea098d76575115629bfbe6d0f55165fa364c939f9fb089892583` | the `[@FlightCheck@]` section's rows 444–474 and the sections its buttons start (`[@PlaneSelection@]`, `[@OrdinanceLayout@]`) |
+| `ASSETS/SCRIPTS/FLIGHTCHECK.SCRIPT` | `28059e57904606033ad439fa6eafeb42b5ad2bee8eb9f5e52fd840ef2f6f55d6` | the controls it creates and their `gui_mailbox` arms |
+| `ASSETS/SCRIPTS/ORDINANCELAYOUT.SCRIPT` | `856fda0b597a3fdc46de2ac6504c84b3a48da528eed9b9134d717d8c65164930` | what the ammunition screen edits |
+| `ASSETS/SCRIPTS/PLANESELECTION.SCRIPT` | `c3aa69472f3480c5ee6f0b018241e96ad41bcf58c78ad8702f5d7fbb1a321d82` | what the plane screen edits |
+| `ASSETS/SCRIPTS/SHAREDITEMS.SCRIPT` | `2a2f728ea68cf64edf45424d953fdbd3cfa456b663193c507b4fa1c72f2595d5` | how a list control's items are filled |
+| `ASSETS/SCRIPTS/GLOBALS.SCRIPT` | `6c39793a8addba7e9962ce55f7c940eb2112566a0e5daeafb97453de5e75eb53` | the shared `@globals@ZQ` the screen scripts read |
+
+The installation hash is the production `cs_assets::install::fingerprint` of
+the manifest; the members' digests are SHA-256 of their decoded bytes (the
+same digests `cs-inspect rof` reports).
+
+## The flight check itself carries no option list
+
+`[@FlightCheck@]` holds three panes (a background, a pilot-plane icon and a
+wingmate-plane icon), six buttons, twelve text rows and four text-list rows
+(`FC_T_GUNLISTP`, `FC_T_ROCKETLISTP`, `FC_T_GUNLISTW`, `FC_T_ROCKETLISTW`).
+
+- The four buttons that start a screen are `FC_B_CHANGEPLANE` and
+  `FC_B_CHANGEPLANEW` (script `PlaneSelection`) and `FC_B_CHANGEAMMO` and
+  `FC_B_CHANGEAMMOW` (script `OrdinanceLayout`); `FC_B_FLYMISSION` and
+  `FC_B_RETURNBRIEF` start no screen (F45-B.2).
+- The section holds **no dropdown (`D`) row at all**, so it lists no aircraft
+  and no loadout to choose from: its only lists are display lists. The measured
+  absence is reported by the production reader as `FlightCheckSelection::selectors`
+  being empty, and pinned by both the synthetic and the retail acceptance test.
+- The two screens the buttons start do hold dropdowns — `PlaneSelection` has
+  `PS_D_PILOTPLANE` and `PS_D_WINGPLANE`; `OrdinanceLayout` has four
+  `OL_D_AMMO*` rows and eight `OL_D_ROCKETS*` rows — but their contents are
+  filled at run time by the scripting natives, not by the layout:
+  `SHAREDITEMS.SCRIPT`'s list controls fill their item strings from
+  `callback($$E$$, (parent.TJ), BA, BC[BA])`, and the flight check sets
+  `TJ = 2005/2006` (pilot guns/rockets) and `2007/2008` (wingmate), the plane
+  screen `2018` and the ordnance screen `2027/2028`. No table of those native
+  numbers exists in the repository, so **which** aircraft and loadouts the
+  lists contain is unread.
+
+So the original states **no per-mission option list**, and the candidate set is
+produced by the executable. Nothing readable gates it on the campaign roster
+(`CampaignGraph::available_items`, F43-C) or on anything else. A claim about
+what the executable *offers* therefore needs an original run
+(REF-OWNER-FIRST-CAPTURE) and the owner's approval, and is blocked until then.
+
+## The ammunition slot's meaning (measured)
+
+- `FC_B_CHANGEAMMO` / `FC_B_CHANGEAMMOW` start the section `OrdinanceLayout`
+  (the layout row's own `ScriptToExe` column). `FLIGHTCHECK.SCRIPT` creates
+  those two controls and, in `gui_mailbox`, stores `@globals@ZQ = -1` for the
+  first and `-2` for the second.
+- `ORDINANCELAYOUT.SCRIPT` reads `@globals@ZQ` into `ZQ` and edits **that
+  plane's** gun slots (`OL_T_GunName0..3` with the four `OL_D_AMMO*` dropdowns,
+  native `2027`) and rocket slots (the eight `OL_D_ROCKETS*` dropdowns, native
+  `2028`), with an ammunition/rocket description pane beside each.
+- `-1` is the pilot's plane and `-2` the wingmate's: the same script
+  initialises `fc_p_pilotplane` with `callback($$E$$, 2010, -1)` and
+  `fc_p_wingplane` with `-2`, and `PLANESELECTION.SCRIPT` uses the same pair
+  (`callback($$E$$, 2012, -1)`, `2012, -2`).
+
+So the flight check's **"ammunition" is the selected plane's gun and rocket
+ordnance** — the same surface F27-D measured as the "construction /
+multiplayer ammunition screen" (four gun slots, eight rocket slots). It is
+per plane, not one ammunition type and not the whole flight's equipment.
+
+**Consequence for F45-C.2's projection.** The measured surface is the plane's
+*equipment*, which is what `WingmateChoice::loadout` carries, so the direction
+of the F45-C.2 projection is supported by the measurement. It is also the same
+surface as F27-D's, not a second, rival one, which resolves the "which
+ammunition screen is this" half of the divergence the F45-C.2 finding left
+open. The other half — F45-A types the slot `ContentKind::Ammo` while
+`DeclaredWingmate` wants `ContentKind::Loadout` — is **not** changed here: the
+slot's kind is F45-A's declared contract and both kinds remain accepted
+downstream (the briefing boundary is kind-agnostic), so no test is weakened and
+nothing is silently re-typed. What changes is that the projection is no longer
+only design.
+
+## The re-decision: the projection is gated on the measured producer
+
+`crates/cs_app/src/ui/front_end/flow.rs` gains
+`FlowSetup::flight_check_selection(…)`: the measured `FlightCheckSelection` the
+application read. When it is supplied and the committed selection names a
+wingmate, `FlowDomain::briefing_plan` checks the measurement first:
+
+- if the measured original offers the **wingmate** slot a control that starts a
+  screen with selectors (`FlightCheckSelection::edits(Wingmate)`), the
+  ammunition is that wingmate's equipment, as before;
+- otherwise the flow refuses with `FlowError::NoWingmateEquipment` — before the
+  machine moves, so nothing is committed, no load starts and the roster is not
+  opened.
+
+Without the measurement the flow keeps its designed default, exactly as
+F45-C.2 left it; the F45-C.2 tests therefore still pass unchanged. The gate is
+what "gate/validate the projection on the measured producer" means here: on
+this installation the original does offer `FC_B_CHANGEAMMOW`
+(`@globals@ZQ = -2`, destination `OrdinanceLayout`), so the projection stands.
+The measurement carries no invented option values — it reports the controls,
+the slots and the selectors, and nothing else.
+
+## Files and what changed
+
+Owner paths only (`crates/cs_app/src/ui/front_end/`, `crates/cs_app/tests/ui/`);
+no protected path, no `Cargo.toml`/`Cargo.lock` change.
+
+- `crates/cs_app/src/ui/front_end/original.rs` (owner path): the measured
+  reader.
+  - `FlightCheckSlot` (`Player` / `Wingmate`), read from the screen script's
+    own `@globals@ZQ` state.
+  - `FlightCheckControl { id, starts, slot }`, one per `B` row of the
+    `FlightCheck` section that starts a screen.
+  - `FlightCheckSelection { controls, selectors, destinations }` and
+    `FlightCheckSelection::edits(slot)`; `FlightCheckSelectionError::NoSection`.
+  - `OriginalLayout::flight_check_selection(&dyn ScreenScripts)`.
+  - `Row` gains the row's `kind` letter and `Section` keeps its non-pane,
+    non-button rows (`other: Vec<Row>`) so the reader can report a
+    destination's own selector rows; the F45-B.1 `Section` field it replaces
+    (`other_rows: usize`) was its length, and that test's assertion now reads
+    `other.len()` — the same assertion, nothing weakened.
+- `crates/cs_app/src/ui/front_end/flow.rs` (owner path): the consumer.
+  `FlowSetup::flight_check_selection`, the gate in `briefing_plan` and
+  `FlowError::NoWingmateEquipment`.
+- `crates/cs_app/src/ui/front_end/mod.rs` (owner path): re-exports.
+- `crates/cs_app/tests/ui/flight_check_options.rs` (owner path): the four
+  `accept_f45_c_5_*` tests, below.
+- `crates/cs_app/tests/ui/evidence_f45_c_5.rs` (new) and
+  `crates/cs_app/tests/ui/mod.rs` (owner path): the evidence harness and its
+  module declaration.
+- This file and `docs/findings/evidence/F45-C.5.json`.
+
+`cs_sim`, `cs_content`, `cs_app::roster` and F27's ordnance data are unchanged.
+
+## Design decisions a reviewer should check
+
+1. **Measurement, not invention.** Every field of `FlightCheckSelection` is
+   read from the layout's `ScriptToExe` or the script's `@globals@ZQ`; the
+   reader invents no screen name, no slot and no option value. Where the data
+   states nothing (the option list) it reports nothing.
+2. **The `-1` / `-2` mapping is the script's own.** It is read from
+   `FLIGHTCHECK.SCRIPT`'s picture controls, not from a constant table; a
+   different revision that renumbered the slots would be measured differently.
+3. **The gate is pre-commit.** It runs in `briefing_plan`, before any field is
+   written, so a refusal leaves `committed`, `launch` and `roster` untouched —
+   the F45-C property, extended.
+4. **Design default preserved.** Without a measurement the flow behaves exactly
+   as F45-C.2 left it, so no sibling stage's acceptance test changes.
+5. **The reader has a runtime consumer.** `FrontEndScreens::original_screens`
+   feeds the same `ScreenScripts` the reader takes, and `FrontEndScreens`'
+   measurement is what the application hands to `FlowSetup`; the harness and the
+   retail test read the production reader, not a test-only copy.
+
+## Test selection and sensitivity
+
+`cargo test --locked -p cs_app -- accept_f45_c_5_ --include-ignored` discovers
+and runs the four `accept_f45_c_5_*` tests below, all passing, and
+`accept_f45_c_` still passes (29 tests in the `ui` target; the F45-C.2 tests
+unchanged). CI runs the three unignored ones; the retail one is
+`#[ignore = "requires CS_GAME_DIR"]` and fails loudly without the installation.
+
+- `accept_f45_c_5_the_reader_measures_the_controls_their_slots_and_their_selectors`
+  — a synthetic layout and script in the original's format and shape: the
+  controls, the screen each starts, the slot each edits, that the flight
+  check's own section holds no selector, and that the option surfaces live in
+  the sections the buttons start.
+- `accept_f45_c_5_a_measured_producer_with_a_wingmate_control_commits_the_equipment`
+  — with the measurement supplied and a wingmate control present, the
+  committed ammunition is still the wingmate's equipment.
+- `accept_f45_c_5_a_measured_producer_without_a_wingmate_control_refuses_the_equipment`
+  — the gate: a measured original with no wingmate control refuses by name,
+  commits nothing and starts no load.
+- `accept_f45_c_5_retail_the_flight_checks_ammunition_is_the_planes_ordnance_screen`
+  — the installation's own data: the four controls and their destinations and
+  slots, no selector in the flight check's own section, and the twelve
+  `OL_D_AMMO*`/`OL_D_ROCKETS*` selectors of the ordnance screen.
+
+Sensitivity was checked by mutation and then reverted: with the gate disabled
+(`&& false` in `briefing_plan`) the third test fails and the rest pass; with
+the reader's slot or selector reading removed the first test fails. The probes
+were reverted; the committed tree is the green one.
+
+Commands run (all exit 0): `cargo fmt --all -- --check`, `cargo clippy
+--workspace --all-targets --all-features --locked -- -D warnings`, `cargo test
+--locked -p cs_app`, `cargo test --locked -p cs_app -- accept_f45_c_5_
+--include-ignored`.
+
+## What stays unknown
+
+- **The original's per-mission option set is not readable.** The `FlightCheck`
+  section holds no selector row, and the `PlaneSelection` / `OrdinanceLayout`
+  lists are filled by scripting natives whose tables are unresolved. Gates "the
+  flight check offers what the original offers".
+- **The native call numbers are named, not interpreted**
+  (`callback($$E$$, 2010/2011/2012/2013/2018/2019/2020/2027/2028/2030…2037)`,
+  `callback($$A$$, 27)`). Their meaning is unresolved. Gates any claim about
+  which aircraft or loadouts the candidate lists contain.
+- **Whether the campaign roster's unlocks gate the flight check**: nothing
+  readable states it. Gates "unlocks gate the flight check".
+- **The `-1` / `-2` slot mapping** is read from `FLIGHTCHECK.SCRIPT`'s own
+  picture controls, not from a table; a different revision could renumber it.
+- **Which authored wingmate slot a multi-slot mission's flight check fills**
+  stays refused (`AmbiguousWingmateSlot`).
+- **No original executable run**: `retail` is read access only; nothing is
+  `verified_original`.
+
+## Not claimed
+
+No `verified_original`, no `release_approved`, no retail compatibility. What was
+read are files; what the executable *offers* when it runs is not measured. The
+finding awards `implemented`: the measured producer reaches a consumer and the
+failure when either is removed is recorded above.
