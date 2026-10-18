@@ -521,16 +521,15 @@ fn accept_m02_b_the_measured_vocabulary_partitions_and_refuses_no_m02_key() {
         record.key("INSTANTLOSS").is_none(),
         "M02's record spells no INSTANTLOSS"
     );
-    for key in ["INSTANTWIN"] {
-        let spelled = record.key(key).expect("M02 spells its outcome key");
-        assert!(
-            spelled
-                .agreed_shape()
-                .is_some_and(|shape| shape.label() == "bare"),
-            "{key} is spelled bare in M02"
-        );
-        assert!(terminal_outcome_of(key).is_some(), "{key} is an outcome");
-    }
+    let key = "INSTANTWIN";
+    let spelled = record.key(key).expect("M02 spells its outcome key");
+    assert!(
+        spelled
+            .agreed_shape()
+            .is_some_and(|shape| shape.label() == "bare"),
+        "{key} is spelled bare in M02"
+    );
+    assert!(terminal_outcome_of(key).is_some(), "{key} is an outcome");
     assert!(
         record
             .keys()
