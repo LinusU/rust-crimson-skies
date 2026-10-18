@@ -103,8 +103,8 @@ use crate::transport::{
     HostTransport, SendOutcome, TransportError,
 };
 use crate::validation::{
-    Admission, FireRequest, RateBudget, RateLimits, RateViolation, SessionGate, ThreatCase,
-    ThreatDisposition,
+    Admission, ClientIntent, FireRequest, IntentRefusal, IntentValidator, MatchStage, RateBudget,
+    RateLimits, RateViolation, SessionGate, ThreatCase, ThreatDisposition,
 };
 
 /// The `EventId::producer` the host's own lifecycle events carry. The host is
@@ -285,6 +285,18 @@ pub enum ServerNotice {
         /// The per-tick share it had already spent this round.
         cap: u32,
     },
+    /// An admitted input packet failed the host's intent checks
+    /// ([`ServerSession::pump_staged`]): its tick sat outside the acceptance
+    /// window around the host's tick, or the match phase does not take input.
+    /// Nothing was queued. When the refusal's
+    /// [`disposition`](IntentRefusal::disposition) is `Disconnect` a
+    /// [`Self::CutOff`] follows; an absorbed refusal changes nothing else.
+    IntentRefused {
+        /// The peer whose packet was refused.
+        peer: PeerId,
+        /// The bounded reason.
+        reason: IntentRefusal,
+    },
     /// An admitted lobby packet (F55-B) reached the host's lobby and was
     /// accepted. The lobby's events were published to every member; a replay
     /// is reported too (`PacketOutcome::Replayed`) and published nothing.
@@ -355,6 +367,9 @@ impl fmt::Display for ServerNotice {
             }
             Self::LobbyRefused { peer, reject } => {
                 write!(f, "lobby refused a packet from {peer}: {reject}")
+            }
+            Self::IntentRefused { peer, reason } => {
+                write!(f, "refused an input packet from {peer}: {reason}")
             }
             Self::CutOff { peer, threat } => match peer {
                 Some(peer) => write!(f, "hung up on {peer}: {}", threat.label()),
@@ -732,7 +747,42 @@ impl ServerSession {
     /// per-peer rate windows are keyed on and what bounds the per-tick share
     /// counted in `Self::enqueue`. The returned notices are ordered:
     /// membership changes first, then admitted input, then refusals.
+    ///
+    /// This unstaged form judges no intent: input is gated, rate-limited and
+    /// queued, but its tick and the match phase are not checked, because no
+    /// host tick was supplied. A host that runs a simulation calls
+    /// [`Self::pump_staged`] instead.
     pub fn pump(&mut self, elapsed: Duration) -> Vec<ServerNotice> {
+        self.pump_inner(elapsed, None)
+    }
+
+    /// [`Self::pump`] with the host's [`MatchStage`] (its phase, its own
+    /// simulation tick and its banned components).
+    ///
+    /// Every admitted input packet that survives the rate ladder is judged by
+    /// [`IntentValidator::judge`] as a [`ClientIntent::Input`] for the aircraft
+    /// the server bound to the sender, at the packet's *newest* frame tick:
+    /// outside `[server_tick - 64, server_tick + 64]`, or in a phase other than
+    /// `InMatch`, it is refused and absorbed
+    /// ([`ServerNotice::IntentRefused`], nothing queued, connection kept); an
+    /// intent whose refusal says `Disconnect` (an aircraft the peer does not
+    /// own) hangs the peer up with that refusal's threat. The rate budget is
+    /// not charged again here: the ladder in `Self::enqueue` already charged
+    /// the packet, keyed on [`Self::rate_tick`], and adds no new numbers.
+    ///
+    /// The rate windows stay keyed on the session's own pump counter, not on
+    /// `stage.server_tick`, so a host that pumps more often than it ticks
+    /// refills the window faster than 96 per simulated second; see
+    /// `docs/findings/2026-10-18-f58-c-followup-match-stage-in-the-pump.md`.
+    pub fn pump_staged(&mut self, elapsed: Duration, stage: MatchStage<'_>) -> Vec<ServerNotice> {
+        self.pump_inner(elapsed, Some(stage))
+    }
+
+    fn pump_inner(
+        &mut self,
+        elapsed: Duration,
+        stage: Option<MatchStage<'_>>,
+    ) -> Vec<ServerNotice> {
         let mut notices = Vec::new();
 
         // One host tick. Advancing it here — from the host's own clock, never
@@ -795,6 +845,7 @@ impl ServerSession {
                     (Admission::Accepted { .. }, Some(admitted)) => {
                         self.enqueue(
                             PeerInput::from_admitted(peer, admitted, fires),
+                            stage,
                             &mut notices,
                         );
                     }
@@ -869,10 +920,46 @@ impl ServerSession {
     /// `MAX_WORK_PER_PUMP`, so one peer can no longer spend the shared bound
     /// alone — reaching it takes a flood from the whole session, or a consumer
     /// that stopped draining.
-    fn enqueue(&mut self, input: PeerInput, notices: &mut Vec<ServerNotice>) {
+    ///
+    /// With a [`MatchStage`] (see [`Self::pump_staged`]) the packet is then
+    /// judged as an input intent — after the rate steps, before the queue
+    /// bound — so a refused packet never spends the shared queue.
+    fn enqueue(
+        &mut self,
+        input: PeerInput,
+        stage: Option<MatchStage<'_>>,
+        notices: &mut Vec<ServerNotice>,
+    ) {
         let peer = input.peer;
         if !self.charge_rate(peer, notices) {
             return;
+        }
+
+        if let Some(stage) = stage {
+            // The newest frame is the packet's tick (F58-B finding 7); a batch
+            // is never empty once admitted.
+            let tick = input
+                .frames
+                .frames
+                .iter()
+                .map(InputFrame::frame_tick)
+                .max()
+                .unwrap_or(stage.server_tick);
+            let intent = ClientIntent::Input {
+                actor: self.transport.gate().ownership().actor_of(peer),
+                tick,
+            };
+            if let Err(reason) =
+                IntentValidator::judge(peer, &intent, self.transport.gate().ownership(), stage)
+            {
+                let threat = reason.threat();
+                let disconnect = reason.disposition() == ThreatDisposition::Disconnect;
+                notices.push(ServerNotice::IntentRefused { peer, reason });
+                if let (true, Some(threat)) = (disconnect, threat) {
+                    self.cut_off(peer, threat, notices);
+                }
+                return;
+            }
         }
 
         // 3. The shared queue bound: the session-wide backstop.
