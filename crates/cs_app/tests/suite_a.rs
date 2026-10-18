@@ -176,6 +176,7 @@ mod accept_m01_radio_device;
 mod accept_m01_radio_sample;
 mod accept_m01_smoke_no_teleport;
 mod accept_m01_window_hud_pending_objective;
+mod accept_t1222_per_actor_disconnect_abort;
 mod accept_t1424_collision_topology;
 mod accept_t333_mesh_colliders;
 mod accept_t334_fixed_tick_integrations;
