@@ -11,7 +11,7 @@ use super::*;
 /// predicate and evaluate it fail-closed, and M07's census row completes
 /// while the campaign gate stays closed on the rows whose gaps remain.
 const RETAIL_TESTS_M07_B_FU1: &[&str] =
-    &["accept_m07_b_fu1_the_danger_zones_predicate_is_the_measured_flag_count"];
+    &["accept_m07_b_fu1_the_record_spells_no_danger_zones_site_so_no_block_carries_the_predicate"];
 
 /// The synthetic predicate tests M07-B-FU1's report must also record: the
 /// parse's own selection rules — the threshold defaulting to the zone count,
@@ -169,11 +169,12 @@ fn evidence_report_m07_b_fu1_writes_the_acceptance_report() {
              listed zone name and zeroes one flag byte per name, the pass-2 evaluator (0x469ab0) \
              counts the nonzero bytes and fires at count >= threshold with the threshold \
              defaulting to the listed count, and the single runtime writer (0x446990) stores 1 \
-             and never 0 — so M07's three sites (blocks 37, 39, 41) lower to a sticky set-of-zones \
-             count that answers false without recorded flags, true once the block's own zones are \
-             recorded and false for a zone the record never listed, M07's census row completes \
-             and the campaign gate stays closed on the rows whose gaps remain; the M08-B suite's \
-             pins were updated in the same change. NOT CLAIMED: the producer's world test \
+             and never 0 — so a site lowers to a sticky set-of-zones count that answers false without \
+             recorded flags (the synthetic arms pin the lowering; M08-B's retail blocks pin the \
+             evaluation). On the corrected campaign layout M07's own record (`ZBD/C1/M02`) spells \
+             no danger-zones site, and the retail test pins that fact through production lowering: \
+             no lowered condition is a danger-zones evaluator (the three blocks first pinned \
+             belong to another mission's record; Rally #1597). NOT CLAIMED: the producer's world test \
              (0x446930 -> 0x55d6c0 and its two-flagged-entry gate) is untraced and carried as a \
              named residual unknown, no directive is implemented by a measured effect, no \
              mission was played, no original executable was run and nothing is verified_original. \

@@ -8,39 +8,39 @@
 //! pins what is **different** at M07, so the gaps are recorded as measurements
 //! and not discovered later as a silent failure:
 //!
-//! * M07's control program is `objectives.zrd` with 61 numbered blocks and 231
-//!   directive sites, selected by the content rule and not by its name;
-//! * its 29-key vocabulary is **fully disposed** — two terminal outcomes, 27
-//!   measured keys, none refused and no unclassified record key — so every gap
-//!   below is a lowering gap, not a measurement gap;
-//! * the record lowers **completely** and both requirements are met: the
-//!   `ANIM_STATE` half closed with M04-B-FU1 (#806), which generalized the
-//!   list-argument mechanism to the operand list an `ANIM_STATE` evaluator
-//!   reads — all nine sites bind and their two-to-five-record operand lists
-//!   append into each block's one evaluator — and the `DANGER_ZONES_`
-//!   `COMPLETED` half closed with M07-B-FU1 (#813), which measured the flag
-//!   bytes' writer in the engine image and lowers the three sites (blocks 37,
-//!   39 and 41) to the counted-flag predicate, so no condition refuses and
-//!   `MissionProgram::validate` accepts the program
-//!   (`docs/findings/2026-10-09-m07-b-fu1-danger-zones-flag-writer.md`);
-//! * the sheet's three regression priorities are located in the measured
-//!   record: the moving-subject proximity evaluator (`TRAVELERS`), the
-//!   animation gates that name the trailer segments, `got_pickford` and
-//!   `hooked_to_klondike`, and the `PLAYER_INIT` record field — while the
-//!   record spells **no** player-vehicle change and **no** input-ownership
-//!   transfer, which stay in the mission-program members this stage does not
-//!   decode;
-//! * the objective graph is closed: all 102 cross-objective addresses lie in
-//!   `1..=61` (the parser `dec`s them into zero-based indices), both terminal
-//!   blocks start dormant, and their incoming wake/kill/nap edges are pinned.
+//! * M07's control program is `objectives.zrd` of `ZBD/C1/M02/zrdr.zbd` with
+//!   50 numbered blocks and 190 directive sites, selected by the content rule
+//!   and not by its name (the corrected archive layout binds this record to
+//!   M07, Rally #1597; the record this stage first pinned belongs to another
+//!   mission);
+//! * its 36-key vocabulary is **fully disposed** — two terminal outcomes, 34
+//!   measured keys, none refused and no unclassified record key — and the
+//!   record spells all five record-level sound keys, so every gap below is a
+//!   lowering gap, not a measurement gap;
+//! * the record lowers **completely**: it spells no `ANIM_STATE`, no
+//!   `TRAVELERS` and no `DANGER_ZONES_COMPLETED` site, so the list-argument
+//!   mechanism of M04-B-FU1 (#806) and the counted-flag predicate of
+//!   M07-B-FU1 (#813,
+//!   `docs/findings/2026-10-09-m07-b-fu1-danger-zones-flag-writer.md`) are
+//!   pinned by the synthetic tests here and no longer exercised by M07's own
+//!   retail record; no condition refuses and `MissionProgram::validate`
+//!   accepts the program;
+//! * the sheet's three regression priorities are located only as far as the
+//!   record goes: the `PLAYER_INIT` record field exists, while the record
+//!   spells **no** moving-subject proximity evaluator, **no** animation gate,
+//!   **no** player-vehicle change and **no** input-ownership transfer, which
+//!   stay in the mission-program members this stage does not decode;
+//! * the objective graph is closed: all 63 cross-objective addresses lie in
+//!   `1..=50` (the parser `dec`s them into zero-based indices), all three
+//!   terminal blocks start dormant, and their incoming wake/kill/nap edges are
+//!   pinned.
 //!
 //! No behaviour is invented here: the runtime halves of the sheet's priorities
 //! need ordinary-play observation (M07-C), and the campaign gate stays closed
 //! until every measured row lowers — M07's own row does, while the rows whose
 //! gaps are still open keep `campaign_ready()` false
-//! (`docs/findings/2026-10-09-m07-b-compatibility-gaps.md`, superseded on the
-//! danger-zones gap by
-//! `docs/findings/2026-10-09-m07-b-fu1-danger-zones-flag-writer.md`).
+//! (`docs/findings/2026-10-09-m07-b-compatibility-gaps.md`, with the re-pin on
+//! the corrected layout recorded at its end).
 //!
 //! The retail tests are `#[ignore = "requires CS_GAME_DIR"]`; the two synthetic
 //! tests run in CI.
@@ -56,31 +56,28 @@ use cs_app::mission_control::{
 use cs_assets::install::sha256;
 use cs_content::campaign_bindings::{MissionControlBinding, SourceContext};
 use cs_content::mission_control::{
-    AnimList, CallOutcome, ConditionOutcome, ControlRecordField, DirectiveDisposition,
-    DirectiveOperation, TerminalOutcome, measure_control_record,
+    AnimList, CallOutcome, ConditionOutcome, ControlRecordField, ControlRecordSound,
+    DirectiveDisposition, DirectiveOperation, TerminalOutcome, measure_control_record,
 };
 use cs_content::objectives::objective_block_number;
 use cs_content::stunts::{ZrdValue, objective_record, zrd_flat_fields};
 use cs_formats::script_raw::discover_container;
-use cs_script::ir::{
-    AnimationState, Condition, DANGER_ZONE_CROSSING_TEST_UNTRACED, MAX_VALUE_ITEMS,
-};
-use cs_script::runtime::{MissionFacts, MissionState, ObjectiveLifecycle, SessionGeneration};
+use cs_script::ir::{AnimationState, Condition, MAX_VALUE_ITEMS};
 use cs_types::content::{ContentId, ContentKind};
 use cs_types::install::RelativePath;
 
 use crate::campaign::common::{label, load_inventory};
 
-/// The census row label of the mission (`ZBD/C2/M02/zrdr.zbd`, F13-B's
+/// The census row label of the mission (`ZBD/C1/M02/zrdr.zbd`, F13-B's
 /// mission-scope rule).
-const MISSION: &str = "zbd/c2/m02";
+const MISSION: &str = "zbd/c1/m02";
 
 /// The numbered blocks of the control member.
-const BLOCKS: u32 = 61;
+const BLOCKS: u32 = 50;
 /// The directive sites of the control member.
-const SITES: u32 = 231;
+const SITES: u32 = 190;
 /// The distinct directive keys of the control member.
-const KEYS: usize = 29;
+const KEYS: usize = 36;
 
 /// The original installation, as the environment declares it.
 fn game_dir() -> PathBuf {
@@ -266,9 +263,9 @@ fn refused_block(text: &str) -> u32 {
 /// it is the program M07-A bound.**
 ///
 /// The work-order join (`SourceContext::control_program`) and the census
-/// (`zbd/c2/m02`) name one archive — the span and digest
-/// `missions/bindings/M07.json` cites — and one member: of the 19 members of
-/// `ZBD/C2/M02/zrdr.zbd` exactly one declares numbered `OBJECTIVE<N>` blocks.
+/// (`zbd/c1/m02`) name one archive — the span and digest
+/// `missions/bindings/M07.json` cites — and one member: of the 20 members of
+/// `ZBD/C1/M02/zrdr.zbd` exactly one declares numbered `OBJECTIVE<N>` blocks.
 /// A longer member exists and the control member is the archive's eighth, so
 /// neither size nor position is the rule. The member's span lies inside the
 /// archive and its own digest re-derives from its own bytes.
@@ -276,11 +273,11 @@ fn refused_block(text: &str) -> u32 {
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m07_b_the_control_program_is_the_member_that_declares_the_blocks() {
     let binding = control_binding();
-    assert_eq!(binding.mission.as_str(), "mission/ch3-m01");
-    assert_eq!(binding.program_id.as_str(), "script/c2-m02-zrdr");
-    assert_eq!(binding.program_asset, "ZBD/C2/M02/zrdr.zbd");
+    assert_eq!(binding.mission.as_str(), "mission/ch2-m02");
+    assert_eq!(binding.program_id.as_str(), "script/c1-m02-zrdr");
+    assert_eq!(binding.program_asset, "ZBD/C1/M02/zrdr.zbd");
     assert_eq!(
-        binding.program_sha256, "6154e4ea47b0a5261ef047e4a6dd2732973e868858fbba7761ebb5f83f580a5d",
+        binding.program_sha256, "89f272191c20a0905197a2f9c77a492b0a7337068a1f4b1fa104a39b65423ad9",
         "the reader archive is the program M07-A bound"
     );
 
@@ -290,7 +287,7 @@ fn accept_m07_b_the_control_program_is_the_member_that_declares_the_blocks() {
         row.container_sha256, binding.program_sha256,
         "the census and the work-order join read one archive"
     );
-    assert_eq!(row.members.len(), 19);
+    assert_eq!(row.members.len(), 20);
     let with_blocks: Vec<&str> = row
         .members
         .iter()
@@ -308,7 +305,7 @@ fn accept_m07_b_the_control_program_is_the_member_that_declares_the_blocks() {
     assert_eq!(binding.control_member, "objectives.zrd");
     assert_eq!(
         (binding.control_offset, binding.control_length),
-        (18_437, 16_463)
+        (14_413, 12_410)
     );
 
     let longest = row
@@ -384,11 +381,10 @@ fn accept_m07_b_the_control_program_is_the_member_that_declares_the_blocks() {
 /// **Every directive key M07 spells has exactly one disposition and none is
 /// refused.**
 ///
-/// Two keys are terminal outcomes (`INSTANTWIN`, `INSTANTLOSS`, one bare site
-/// each), the other 27 have a measured effect, and the sites are accounted
-/// for: the keys' sites sum to the record's. Unlike M02, M07 spells no
-/// record-level key outside the measured vocabulary, and no block is
-/// unreadable.
+/// Two keys are terminal outcomes (`INSTANTWIN` once, `INSTANTLOSS` twice, all
+/// bare), the other 34 have a measured effect, and the sites are accounted
+/// for: the keys' sites sum to the record's. M07 spells no record-level key
+/// outside the measured vocabulary, and no block is unreadable.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m07_b_the_vocabulary_is_fully_disposed_and_no_m07_key_is_refused() {
@@ -418,7 +414,7 @@ fn accept_m07_b_the_vocabulary_is_fully_disposed_and_no_m07_key_is_refused() {
         refused.is_empty(),
         "M07's whole vocabulary is measured: {refused:?}"
     );
-    assert_eq!(measured, 27);
+    assert_eq!(measured, 34);
     let sites: u32 = record.keys().iter().map(|key| key.sites).sum();
     assert_eq!(sites, SITES, "no site is dropped from the accounting");
     assert!(
@@ -437,39 +433,65 @@ fn accept_m07_b_the_vocabulary_is_fully_disposed_and_no_m07_key_is_refused() {
             (ControlRecordField::AnimList(AnimList::Restore), 1),
             (ControlRecordField::AnimList(AnimList::Execute), 1),
             (ControlRecordField::AnimList(AnimList::Invalidate), 1),
-        ]
+            (
+                ControlRecordField::Sound(ControlRecordSound::PrimaryComplete),
+                1
+            ),
+            (
+                ControlRecordField::Sound(ControlRecordSound::SecondaryComplete),
+                1
+            ),
+            (
+                ControlRecordField::Sound(ControlRecordSound::TertiaryComplete),
+                1
+            ),
+            (ControlRecordField::Sound(ControlRecordSound::MissionWon), 1),
+            (
+                ControlRecordField::Sound(ControlRecordSound::MissionLost),
+                1
+            ),
+        ],
+        "the five shape fields and the five record-level sound keys, once each"
+    );
+    assert_eq!(
+        record.record_sounds(),
+        [
+            (ControlRecordSound::PrimaryComplete, 1),
+            (ControlRecordSound::SecondaryComplete, 1),
+            (ControlRecordSound::TertiaryComplete, 1),
+            (ControlRecordSound::MissionWon, 1),
+            (ControlRecordSound::MissionLost, 1),
+        ],
+        "M07 is the record that spells all five sound keys, in the vocabulary's parse order"
     );
 }
 
-/// **Every block lowers: the nine `ANIM_STATE` sites bind and the three
-/// `DANGER_ZONES_COMPLETED` sites carry their counted-flag predicate.**
+/// **Every block lowers, and the record spells none of the shapes M07-B's
+/// first pins were about.**
 ///
-/// All 231 sites bind — every `ANIM_STATE` site carries its operand list as
-/// one list argument, so the ten-argument shape (five spec records at block
-/// 60) registers like every other measured shape and the whole key is in the
-/// registry. 61 of 61 conditions lower: the five multi-record `ANIM_STATE`
-/// sites (blocks 13, 16, 20, 30 and 60) append every spelled pair with
-/// `required` counting them, and the three `DANGER_ZONES_COMPLETED` sites
-/// (blocks 37, 39 and 41) lower to the flag-count predicate M07-B-FU1 (#813)
-/// measured in the engine image. A program stands, `MissionProgram::validate`
+/// All 190 sites bind and 50 of 50 conditions lower: the record spells no
+/// `ANIM_STATE` site, no `TRAVELERS` site and no `DANGER_ZONES_COMPLETED` site,
+/// so neither the list-argument mechanism of M04-B-FU1 (#806) nor the
+/// counted-flag predicate of M07-B-FU1 (#813) is exercised by this record —
+/// the synthetic tests below keep them pinned, and M08's record is where the
+/// retail danger-zones blocks are. A program stands, `MissionProgram::validate`
 /// accepts it, `objective_condition` and `call_arguments` are met, and the row
 /// is complete — while the campaign gate stays closed on the rows whose gaps
 /// are still open.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m07_b_every_block_lowers_including_the_three_danger_zones_sites() {
+fn accept_m07_b_every_block_lowers_and_the_record_spells_no_animation_or_danger_zones_site() {
     let row = census_row();
     let attempt = row.lowering_attempt().expect("M07 has a lowering attempt");
     let lowered = attempt.attempt();
-    assert_eq!(lowered.mission.as_deref(), Ok("mission/ch3-m01"));
+    assert_eq!(lowered.mission.as_deref(), Ok("mission/ch2-m02"));
     assert_eq!(lowered.objectives, BLOCKS);
     assert_eq!(lowered.calls.len() as u32, SITES);
 
     let (document, _) = control_document();
     let blocks = blocks_of(&document);
 
-    // Calls: no site refuses — the nine ANIM_STATE sites bind like every
-    // other site, each carrying its operand list as the one argument.
+    // Calls: no site refuses.
     let refused_calls: Vec<&str> = lowered
         .calls
         .iter()
@@ -484,33 +506,31 @@ fn accept_m07_b_every_block_lowers_including_the_three_danger_zones_sites() {
     );
     assert!(
         lowered.unbound_keys.is_empty(),
-        "no key fails registration — block 60's ten-operand list is one list \
-         argument, inside the bound: {:?}",
+        "no key fails registration: {:?}",
         lowered.unbound_keys
     );
-    let anim_blocks: Vec<u32> = sites(&blocks, "ANIM_STATE")
-        .iter()
-        .map(|(number, _)| *number)
-        .collect();
-    assert_eq!(anim_blocks.len(), 9, "M07 spells nine ANIM_STATE sites");
+
+    // The shapes the earlier pins were about are not in this record.
+    for key in [
+        "ANIM_STATE",
+        "TRAVELERS",
+        "DANGER_ZONES_COMPLETED",
+        "DANGER_ZONES_COMPLETION_COUNT",
+    ] {
+        assert!(
+            sites(&blocks, key).is_empty(),
+            "M07's record spells no {key} site"
+        );
+    }
     let raw = attempt.raw_program().expect("the program assembled");
-    let anim_calls: Vec<_> = raw
-        .objectives
-        .iter()
-        .flat_map(|objective| objective.calls.iter())
-        .filter(|call| call.name == "ANIM_STATE")
-        .collect();
-    assert_eq!(anim_calls.len(), 9);
     assert!(
-        anim_calls
+        raw.objectives
             .iter()
-            .all(|call| matches!(call.args.as_slice(), [cs_script::ir::Value::List(_)])),
-        "each carries its operand list as the one argument"
+            .all(|objective| objective.calls.iter().all(|call| call.name != "ANIM_STATE")),
+        "no lowered call is an ANIM_STATE call"
     );
 
-    // Conditions: no block refuses. The three danger-zones sites lower to
-    // the counted-flag evaluator, and every ANIM_STATE block still lowers its
-    // appended pairs counted into `required` (block 60's five below).
+    // Conditions: no block refuses and every block was walked.
     let refused_conditions: Vec<&str> = lowered
         .conditions
         .iter()
@@ -521,19 +541,12 @@ fn accept_m07_b_every_block_lowers_including_the_three_danger_zones_sites() {
         .collect();
     assert!(
         refused_conditions.is_empty(),
-        "every block lowers, the three danger-zones sites included: {refused_conditions:?}"
+        "every block lowers: {refused_conditions:?}"
     );
     assert_eq!(
         lowered.conditions.len() as u32,
         BLOCKS,
         "every block was walked"
-    );
-
-    let (required, pairs) = animation_evaluator(&raw.objectives[59].condition);
-    assert_eq!(pairs.len(), 5, "block 60 appends all five descriptors");
-    assert_eq!(
-        required, 5,
-        "no COMPLETION_COUNT: required counts the pairs"
     );
 
     let validation = lowered
@@ -554,24 +567,21 @@ fn accept_m07_b_every_block_lowers_including_the_three_danger_zones_sites() {
     assert!(lowering.complete());
 }
 
-/// **The sheet's three regression priorities, located in the measured record.**
+/// **The sheet's three regression priorities, located (or absent) in the
+/// measured record.**
 ///
-/// *Moving pickup / moving subject:* the record's proximity evaluator is
-/// `TRAVELERS` (blocks 44 and 45): two sites that spell the same shape — a
-/// named subject, the `APPROACHING` polarity, a three-float anchor, a float
-/// radius, a required count of one and `DELETE_ON_SUCCESS` — with distinct
-/// subjects and every other operand equal. The animation gates that surround
-/// the pickup name the trailer segments (`trailer_seg1`…`trailer_seg5`) and
-/// `got_pickford` / `hooked_to_klondike`, all in the `EXECUTED` state, and the
-/// record's per-block spec counts are pinned. The initial player
-/// configuration exists as the `PLAYER_INIT` record field, once.
+/// *Moving pickup / moving subject:* the record spells **no** proximity
+/// evaluator (`TRAVELERS`) and no animation gate (`ANIM_STATE`) — the trailer
+/// segments and the pickup the sheet names are not in the control record, so
+/// where they live is unmeasured here (the members this stage does not
+/// decode). The initial player configuration exists as the `PLAYER_INIT`
+/// record field, once, and the record spells the five record-level sound keys.
 ///
-/// *Forced plane swap and persistent input ownership:* the 29-key vocabulary
+/// *Forced plane swap and persistent input ownership:* the 36-key vocabulary
 /// is pinned below in full, and it contains no player-vehicle change and no
 /// input-ownership directive — those live, if anywhere, in the mission-program
-/// members (`pickford_pickup.zrd`, `car_truck_pickford.zrd`) that declare no
-/// blocks and that this stage does not decode. Their absence from the control
-/// record is a measured fact, not an assumption.
+/// members that declare no blocks and that this stage does not decode. Their
+/// absence from the control record is a measured fact, not an assumption.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m07_b_the_sheet_priorities_resolve_to_measured_operations() {
@@ -586,12 +596,6 @@ fn accept_m07_b_the_sheet_priorities_resolve_to_measured_operations() {
             other => panic!("{key} is not measured: {other:?}"),
         }
     };
-    assert_eq!(operation("TRAVELERS"), DirectiveOperation::Travelers);
-    assert_eq!(operation("ANIM_STATE"), DirectiveOperation::AnimationStates);
-    assert_eq!(
-        operation("DANGER_ZONES_COMPLETED"),
-        DirectiveOperation::DangerZoneFlags
-    );
     assert_eq!(operation("DEDG"), DirectiveOperation::EnemyGroupDepletion);
     assert_eq!(operation("INACTIVE1"), DirectiveOperation::InactiveMembers);
     assert_eq!(
@@ -603,14 +607,17 @@ fn accept_m07_b_the_sheet_priorities_resolve_to_measured_operations() {
         DirectiveOperation::PresentationIdentity
     );
     assert_eq!(operation("BEGIN_DORMANT"), DirectiveOperation::DormantStart);
-    assert_eq!(operation("START_TAXI"), DirectiveOperation::ReleaseTaxi);
-    assert_eq!(operation("SET_AI_TEAM"), DirectiveOperation::AssignTeam);
-    assert_eq!(operation("WAKE_ANIM"), DirectiveOperation::WakeAnimation);
-    assert_eq!(operation("WAKEUP_ENEMIES"), DirectiveOperation::WakeEnemies);
+    assert_eq!(operation("SET_AI_NET"), DirectiveOperation::AssignNet);
     assert_eq!(
-        operation("COMPLETED_STOPPOINT"),
-        DirectiveOperation::AdvanceStopPoint
+        operation("STOP_QUEUED_SOUNDS"),
+        DirectiveOperation::StopQueuedSounds
     );
+    assert_eq!(
+        operation("WAKEUP_GENERATOR"),
+        DirectiveOperation::FeedGenerator
+    );
+    assert_eq!(operation("WAKEUP_TURRETS"), DirectiveOperation::WakeTurrets);
+    assert_eq!(operation("WAKEUP_ENEMIES"), DirectiveOperation::WakeEnemies);
     assert_eq!(
         operation("SET_HELP_LABEL"),
         DirectiveOperation::SetHelpLabel
@@ -673,18 +680,25 @@ fn accept_m07_b_the_sheet_priorities_resolve_to_measured_operations() {
         [
             "ADD_OBJECTIVE_TARGET",
             "ADD_OTHER_TARGET",
-            "ANIM_STATE",
             "BEGIN_DORMANT",
             "COMPLETED_SOUND_GROUP",
-            "COMPLETED_STOPPOINT",
-            "DANGER_ZONES_COMPLETED",
             "DEDG",
             "IDENTITY",
             "INACTIVE1",
+            "INACTIVE10",
+            "INACTIVE11",
+            "INACTIVE12",
+            "INACTIVE13",
+            "INACTIVE14",
+            "INACTIVE15",
             "INACTIVE2",
             "INACTIVE3",
             "INACTIVE4",
             "INACTIVE5",
+            "INACTIVE6",
+            "INACTIVE7",
+            "INACTIVE8",
+            "INACTIVE9",
             "INACTIVE_COMPLETION_COUNT",
             "INSTANTLOSS",
             "INSTANTWIN",
@@ -692,142 +706,43 @@ fn accept_m07_b_the_sheet_priorities_resolve_to_measured_operations() {
             "NAP_OBJECTIVE_WHEN_I_COMPLETE",
             "REMOVE_OBJECTIVE_TARGET",
             "REMOVE_OTHER_TARGET",
-            "SET_AI_TEAM",
+            "SET_AI_NET",
             "SET_HELP_LABEL",
-            "START_TAXI",
-            "TRAVELERS",
+            "STOP_QUEUED_SOUNDS",
             "WAKEUP_ENEMIES",
+            "WAKEUP_GENERATOR",
             "WAKEUP_SOUND_GROUP",
-            "WAKE_ANIM",
+            "WAKEUP_TURRETS",
             "WAKE_OBJECTIVE_WHEN_I_COMPLETE",
         ]
     );
 
-    let (document, members) = control_document();
+    let (document, _) = control_document();
     let blocks = blocks_of(&document);
 
-    // The proximity sites: two, distinct subjects, identical shape and
-    // operands beside the subject. The coordinates are not quoted here — the
-    // equality of the two sites is the assertion.
-    let travelers = sites(&blocks, "TRAVELERS");
-    assert_eq!(travelers.len(), 2);
-    let (first_block, first) = travelers[0];
-    let (second_block, second) = travelers[1];
-    assert_eq!((first_block, second_block), (44, 45));
-    assert_eq!(first.len(), 6);
-    assert_eq!(second.len(), 6);
-    let subject = |args: &[ZrdValue]| match &args[0] {
-        ZrdValue::Text(text) => text.clone(),
-        other => panic!("the subject is text, not {other:?}"),
-    };
-    assert_eq!(subject(first), "secfury_5");
-    assert_eq!(subject(second), "secfury_6");
-    assert_eq!(first[1], ZrdValue::Text("APPROACHING".to_owned()));
-    assert_eq!(second[1], ZrdValue::Text("APPROACHING".to_owned()));
-    assert_eq!(first[2], second[2], "one anchor");
-    assert_eq!(first[3], second[3], "one radius");
-    assert_eq!(first[4], ZrdValue::Int(1));
-    assert_eq!(second[4], ZrdValue::Int(1));
-    assert_eq!(first[5], ZrdValue::Text("DELETE_ON_SUCCESS".to_owned()));
-    assert_eq!(second[5], ZrdValue::Text("DELETE_ON_SUCCESS".to_owned()));
-    assert!(
-        matches!(first[2], ZrdValue::List(ref anchor) if anchor.len() == 3
-            && anchor.iter().all(|v| matches!(v, ZrdValue::Float(_)))),
-        "the anchor is a three-float point"
-    );
-    assert!(
-        matches!(first[3], ZrdValue::Float(_)),
-        "the radius is a float"
-    );
-
-    // The animation gates: which blocks, how many spec records each, and the
-    // names and states the record spells.
-    let anim: Vec<(u32, usize)> = sites(&blocks, "ANIM_STATE")
-        .iter()
-        .map(|(number, args)| (*number, args.len() / 2))
-        .collect();
-    assert_eq!(
-        anim,
-        [
-            (9, 1),
-            (13, 2),
-            (16, 3),
-            (20, 4),
-            (26, 1),
-            (30, 3),
-            (31, 1),
-            (60, 5),
-            (61, 1)
-        ],
-        "M07 is the first measured mission whose ANIM_STATE sites spell up to five records"
-    );
-    let mut names: BTreeMap<String, usize> = BTreeMap::new();
-    for (_, args) in sites(&blocks, "ANIM_STATE") {
-        for spec in args.chunks(2) {
-            assert_eq!(spec[0], ZrdValue::Text("ANIM".to_owned()));
-            let ZrdValue::List(fields) = &spec[1] else {
-                panic!("the spec record is a list");
-            };
-            assert_eq!(fields.len(), 4);
-            assert_eq!(fields[0], ZrdValue::Text("NAME".to_owned()));
-            let ZrdValue::List(name) = &fields[1] else {
-                panic!("the NAME value is a list");
-            };
-            let ZrdValue::Text(text) = &name[0] else {
-                panic!("the NAME value holds text");
-            };
-            *names.entry(text.clone()).or_insert(0) += 1;
-            assert_eq!(fields[2], ZrdValue::Text("STATE".to_owned()));
-            let ZrdValue::List(state) = &fields[3] else {
-                panic!("the STATE value is a list");
-            };
-            assert_eq!(
-                state[0],
-                ZrdValue::Text("EXECUTED".to_owned()),
-                "every gate waits for the EXECUTED state"
-            );
-        }
+    // The sheet's moving-subject and animation-gate evaluators are not
+    // spelled by this record, and neither are the sheet's vehicle-swap or
+    // input-ownership directives.
+    for key in ["TRAVELERS", "ANIM_STATE", "DANGER_ZONES_COMPLETED"] {
+        assert!(
+            sites(&blocks, key).is_empty(),
+            "M07's record spells no {key} site"
+        );
     }
-    assert_eq!(
-        names,
-        BTreeMap::from([
-            ("got_pickford".to_owned(), 1),
-            ("hooked_to_klondike".to_owned(), 1),
-            ("trailer_seg1".to_owned(), 7),
-            ("trailer_seg2".to_owned(), 5),
-            ("trailer_seg3".to_owned(), 4),
-            ("trailer_seg4".to_owned(), 2),
-            ("trailer_seg5".to_owned(), 1),
-        ]),
-        "the gates name five trailer segments (used by up to five sites) plus `got_pickford` \
-         and `hooked_to_klondike` once each"
-    );
-
-    // The members that would carry the pickup and vehicle-swap program
-    // declare no blocks: named here so a later stage knows where to look.
-    let no_blocks = |name: &str| {
-        members
-            .iter()
-            .find(|(member, _, _, _)| member == name)
-            .map(|(_, _, _, blocks)| *blocks)
-            .unwrap_or_else(|| panic!("{name} is in the archive"))
-    };
-    assert_eq!(no_blocks("pickford_pickup.zrd"), 0);
-    assert_eq!(no_blocks("car_truck_pickford.zrd"), 0);
-    assert_eq!(no_blocks("pickups.zrd"), 0);
 }
 
-/// **The objective graph is closed and the two terminal blocks are gated.**
+/// **The objective graph is closed and the terminal blocks are gated.**
 ///
-/// All 102 cross-objective addresses (50 wake, 39 kill, 13 nap) lie in
-/// `1..=61`; the original `dec`s them into zero-based indices at parse
+/// All 63 cross-objective addresses (21 wake, 23 kill, 19 nap) lie in
+/// `1..=50`; the original `dec`s them into zero-based indices at parse
 /// (`docs/findings/2026-10-06-m01-lc-directive-b-…`), so every address names a
-/// block of this record and none points past it. Both terminal blocks start
-/// dormant with no timed wake (`BEGIN_DORMANT -1`), so neither can fire on its
-/// own clock: block 25 (`INSTANTLOSS`) is reached only through block 24's nap,
-/// and block 27 (`INSTANTWIN`) is named by block 24's kill list and block 61's
-/// wake list. The three PRIMARY objectives carry distinct HUD slots and one
-/// SECONDARY objective carries slot 11.
+/// block of this record and none points past it. All three terminal blocks
+/// start dormant with no timed wake (`BEGIN_DORMANT -1`), so none can fire on
+/// its own clock: block 15 (`INSTANTWIN`) is reached only through block 14's
+/// nap, block 24 (`INSTANTLOSS`) through block 3's kill list and block 19's
+/// nap, and block 36 (`INSTANTLOSS`) through block 7's nap. The four PRIMARY
+/// objectives carry distinct HUD slots and one SECONDARY objective carries
+/// slot 11.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m07_b_the_objective_graph_is_closed_and_the_terminal_blocks_are_gated() {
@@ -858,15 +773,15 @@ fn accept_m07_b_the_objective_graph_is_closed_and_the_terminal_blocks_are_gated(
     assert_eq!(
         per_kind,
         BTreeMap::from([
-            ("WAKE_OBJECTIVE_WHEN_I_COMPLETE", 50),
-            ("KILL_OBJECTIVE_WHEN_I_COMPLETE", 39),
-            ("NAP_OBJECTIVE_WHEN_I_COMPLETE", 13),
+            ("WAKE_OBJECTIVE_WHEN_I_COMPLETE", 21),
+            ("KILL_OBJECTIVE_WHEN_I_COMPLETE", 23),
+            ("NAP_OBJECTIVE_WHEN_I_COMPLETE", 19),
         ])
     );
-    assert_eq!(edges, 102);
+    assert_eq!(edges, 63);
     assert!(
         sites(&blocks, "TICK_DEPENDS_ON_OBJ").is_empty(),
-        "unlike M03, M07 spells no dependency gate"
+        "M07 spells no dependency gate"
     );
 
     // The terminal blocks.
@@ -886,7 +801,10 @@ fn accept_m07_b_the_objective_graph_is_closed_and_the_terminal_blocks_are_gated(
             }
         }
     }
-    assert_eq!(terminal, [(25, "INSTANTLOSS"), (27, "INSTANTWIN")]);
+    assert_eq!(
+        terminal,
+        [(15, "INSTANTWIN"), (24, "INSTANTLOSS"), (36, "INSTANTLOSS")]
+    );
     for (number, _) in &terminal {
         let dormant = sites(&blocks, "BEGIN_DORMANT")
             .into_iter()
@@ -913,28 +831,29 @@ fn accept_m07_b_the_objective_graph_is_closed_and_the_terminal_blocks_are_gated(
             .collect()
     };
     assert_eq!(
-        incoming(25),
-        [(24, "NAP_OBJECTIVE_WHEN_I_COMPLETE".to_owned(), vec![25])],
-        "the loss block is reached only through one nap"
+        incoming(15),
+        [(14, "NAP_OBJECTIVE_WHEN_I_COMPLETE".to_owned(), vec![15])],
+        "the win block is reached only through one nap"
     );
     assert_eq!(
-        incoming(27),
+        incoming(24),
         [
             (
-                61,
-                "WAKE_OBJECTIVE_WHEN_I_COMPLETE".to_owned(),
-                vec![24, 27]
-            ),
-            (
-                24,
+                3,
                 "KILL_OBJECTIVE_WHEN_I_COMPLETE".to_owned(),
-                vec![23, 26, 27]
+                vec![19, 20, 21, 22, 23, 24, 32, 33, 34]
             ),
+            (19, "NAP_OBJECTIVE_WHEN_I_COMPLETE".to_owned(), vec![24]),
         ],
-        "the win block is named by one wake list and one kill list"
+        "the first loss block is named by one nine-target kill list and one nap"
+    );
+    assert_eq!(
+        incoming(36),
+        [(7, "NAP_OBJECTIVE_WHEN_I_COMPLETE".to_owned(), vec![36])],
+        "the second loss block is reached only through one nap"
     );
 
-    // The objective classes the HUD reads: three PRIMARY objectives with
+    // The objective classes the HUD reads: four PRIMARY objectives with
     // distinct slots and one SECONDARY.
     let identity: Vec<(u32, String, i64)> = sites(&blocks, "IDENTITY")
         .into_iter()
@@ -952,40 +871,30 @@ fn accept_m07_b_the_objective_graph_is_closed_and_the_terminal_blocks_are_gated(
     assert_eq!(
         identity,
         [
-            (1, "PRIMARY".to_owned(), 1),
-            (26, "PRIMARY".to_owned(), 3),
-            (34, "PRIMARY".to_owned(), 2),
-            (41, "SECONDARY".to_owned(), 11),
+            (3, "PRIMARY".to_owned(), 1),
+            (10, "PRIMARY".to_owned(), 2),
+            (11, "PRIMARY".to_owned(), 3),
+            (14, "PRIMARY".to_owned(), 4),
+            (16, "SECONDARY".to_owned(), 11),
         ]
     );
 
-    // The enemy-group depletion sites: seven, each a group id and a remaining
+    // The enemy-group depletion sites: three, each a group id and a remaining
     // count the record spells.
     let dedg: Vec<(u32, Vec<i64>)> = sites(&blocks, "DEDG")
         .into_iter()
         .map(|(number, args)| (number, addresses(args)))
         .collect();
-    assert_eq!(
-        dedg,
-        [
-            (35, vec![1, 3]),
-            (51, vec![1, 0]),
-            (52, vec![2, 0]),
-            (53, vec![3, 0]),
-            (54, vec![5, 1]),
-            (55, vec![1, 0]),
-            (56, vec![2, 0]),
-        ]
-    );
+    assert_eq!(dedg, [(5, vec![1, 2]), (13, vec![2, 0]), (14, vec![1, 0])]);
 }
 
 /// **M07's row is complete, and the census does not call that campaign-ready.**
 ///
-/// M07-B-FU1 (#813) closed the last gap in M07's own record, so the row's
-/// accounting meets every requirement — while `campaign_ready()` still needs
-/// **every** measured row complete, and rows whose gaps are still open keep
-/// the gate closed. A complete row is a lowering claim, never a launchable
-/// mission: M07's runtime halves stay open for M07-C.
+/// M07's own record lowers with every requirement met — while
+/// `campaign_ready()` still needs **every** measured row complete, and rows
+/// whose gaps are still open keep the gate closed. A complete row is a
+/// lowering claim, never a launchable mission: M07's runtime halves stay open
+/// for M07-C.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m07_b_m07s_row_is_complete_and_the_campaign_gate_stays_closed() {
@@ -1350,129 +1259,57 @@ fn accept_m07_b_a_danger_zones_site_lowers_its_predicate_and_an_unreadable_one_r
 // M07-B-FU1: the danger-zones predicate, lowered from the measured flag
 // ---------------------------------------------------------------------------
 
-/// The block's own lifecycle gate, wherever it sits inside the lowered
-/// condition — the pass-2 admission the original tests before any evaluator
-/// runs (finding B).
-fn carries_awake_gate(condition: &Condition, index: u32) -> bool {
-    match condition {
-        Condition::ObjectiveAwake { index: found } => *found == index,
-        Condition::All(items) | Condition::Any(items) => {
-            items.iter().any(|item| carries_awake_gate(item, index))
-        }
-        _ => false,
-    }
-}
-
-/// **The three danger-zones blocks carry the measured flag-count predicate and
-/// evaluate it fail-closed.**
+/// **M07's record spells no danger-zones site, so none of its blocks carries
+/// the measured flag-count predicate.**
 ///
 /// `docs/findings/2026-10-09-m07-b-fu1-danger-zones-flag-writer.md` measures
-/// the whole mechanism in the engine image: the once-per-block parse (`0x465ec0`)
-/// strdups each listed zone name and zeroes one flag byte per name, the
-/// pass-2 evaluator (`0x469ab0`) counts the nonzero bytes and fires at
-/// `count >= threshold` with the threshold defaulting to the listed count,
-/// and the single runtime writer (`0x446990`) stores `1` and never `0`.
-/// Everything below is derived from the record itself, never repeated from it:
-/// the zone names each block carries, the default threshold, the block's own
-/// lifecycle gate, the named residual unknown of the producer's world test,
-/// and the evaluation — no flags recorded, no completion; the block's own
-/// zones recorded, one per site with a threshold equal to their count, a
-/// completion; a zone the record does not list, never a completion.
+/// the predicate in the engine image (parse `0x465ec0`, evaluator `0x469ab0`,
+/// single writer `0x446990`); the three retail blocks it was first pinned on
+/// belong to a different mission's record on the corrected archive layout
+/// (#1597). This pin derives from the record itself, through production
+/// lowering, that M07 spells neither `DANGER_ZONES_COMPLETED` nor
+/// `DANGER_ZONES_COMPLETION_COUNT` and that no lowered condition carries a
+/// `DangerZoneFlags` evaluator. The predicate's evaluation stays pinned by the
+/// synthetic tests in this file and by M08-B's retail danger-zones blocks.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m07_b_fu1_the_danger_zones_predicate_is_the_measured_flag_count() {
+fn accept_m07_b_fu1_the_record_spells_no_danger_zones_site_so_no_block_carries_the_predicate() {
+    fn carries_flags(condition: &Condition) -> bool {
+        match condition {
+            Condition::DangerZoneFlags { .. } => true,
+            Condition::All(items) | Condition::Any(items) => items.iter().any(carries_flags),
+            _ => false,
+        }
+    }
+
     let row = census_row();
     let lowered = row.lowering_attempt().expect("M07 has a lowering attempt");
     let raw = lowered.raw_program().expect("the program assembled");
-    let program = lowered.program().expect("the program stands");
 
     let (document, _) = control_document();
     let blocks = blocks_of(&document);
-    let danger_sites = sites(&blocks, "DANGER_ZONES_COMPLETED");
-    assert_eq!(danger_sites.len(), 3, "M07 spells three danger-zones sites");
+    for key in ["DANGER_ZONES_COMPLETED", "DANGER_ZONES_COMPLETION_COUNT"] {
+        assert!(sites(&blocks, key).is_empty(), "M07 spells no {key} site");
+    }
     assert!(
-        sites(&blocks, "DANGER_ZONES_COMPLETION_COUNT").is_empty(),
-        "M07 spells no flag count, so every threshold defaults to the listed zone count"
+        control_binding()
+            .record
+            .key("DANGER_ZONES_COMPLETED")
+            .is_none(),
+        "and its measured vocabulary does not list the key"
     );
-
-    let mut carried: Vec<(usize, Vec<String>)> = Vec::new();
-    for (number, args) in &danger_sites {
-        let zones: Vec<String> = args
-            .iter()
-            .map(|value| match value {
-                ZrdValue::Text(name) => name.clone(),
-                other => panic!("block {number} spells {other:?} where a zone name is measured"),
-            })
-            .collect();
-        assert!(!zones.is_empty(), "block {number} lists at least one zone");
-        let index = usize::try_from(*number).expect("a block number fits") - 1;
-        let (required, lowered_zones) = danger_evaluator(&raw.objectives[index].condition);
-        assert_eq!(
-            lowered_zones, &zones,
-            "block {number} carries the zone names exactly as the record spells them, in order"
-        );
-        assert_eq!(
-            required,
-            zones.len() as u32,
-            "block {number}: no spelled count, so the threshold is the zone count"
-        );
-        assert!(
-            carries_awake_gate(&raw.objectives[index].condition, index as u32),
-            "block {number} still carries its own lifecycle gate"
-        );
-        carried.push((index, zones));
-    }
-
-    // What sets a flag is the producer's world test, which is untraced: the
-    // condition carries it as a named residual unknown and never inside the
-    // predicate.
-    let residuals = raw.objectives[carried[0].0].condition.residual_unknowns();
-    assert_eq!(
-        residuals,
-        [DANGER_ZONE_CROSSING_TEST_UNTRACED],
-        "the danger-zones condition carries exactly the named residual unknown"
+    assert_eq!(raw.objectives.len() as u32, BLOCKS);
+    let carrying: Vec<usize> = raw
+        .objectives
+        .iter()
+        .enumerate()
+        .filter(|(_, objective)| carries_flags(&objective.condition))
+        .map(|(index, _)| index + 1)
+        .collect();
+    assert!(
+        carrying.is_empty(),
+        "no lowered condition is a danger-zones evaluator, yet blocks {carrying:?} are"
     );
-
-    // The predicate itself: fail-closed without flags, complete with the
-    // block's own zones, and blind to a zone the record did not list. The
-    // block's own lifecycle gate is admitted in every fact table, so what
-    // separates the four cases below is the flags alone.
-    fn facts_for(index: usize, zones: &[String]) -> MissionFacts {
-        let mut facts = MissionFacts::default();
-        facts
-            .objectives
-            .insert(index as u32, ObjectiveLifecycle::Awake);
-        facts.danger_zones.extend(zones.iter().cloned());
-        facts
-    }
-    let validated = program
-        .clone()
-        .validate()
-        .expect("M07's program validates clean");
-    let state = MissionState::new(&validated, SessionGeneration(1), 1);
-    for (index, zones) in &carried {
-        let condition = &program.objectives[*index].condition;
-        assert!(
-            !state.holds(condition, &facts_for(*index, &[])),
-            "block {} completes on no recorded flag",
-            index + 1
-        );
-        assert!(
-            !state.holds(condition, &facts_for(*index, &["dzpath9".to_owned()])),
-            "block {} completes on a zone it never listed",
-            index + 1
-        );
-        assert!(
-            state.holds(condition, &facts_for(*index, zones)),
-            "block {} completes once every listed zone carries its flag",
-            index + 1
-        );
-        assert!(
-            !state.holds(condition, &facts_for(*index, &zones[..zones.len() - 1])),
-            "block {} needs its whole threshold, not one zone short",
-            index + 1
-        );
-    }
 }
 
 /// **The flag-count threshold defaults to the zone count, and the first site

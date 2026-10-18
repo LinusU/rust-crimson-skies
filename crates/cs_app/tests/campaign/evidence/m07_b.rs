@@ -10,7 +10,7 @@ use super::*;
 const RETAIL_TESTS_M07_B: &[&str] = &[
     "accept_m07_b_the_control_program_is_the_member_that_declares_the_blocks",
     "accept_m07_b_the_vocabulary_is_fully_disposed_and_no_m07_key_is_refused",
-    "accept_m07_b_every_block_lowers_including_the_three_danger_zones_sites",
+    "accept_m07_b_every_block_lowers_and_the_record_spells_no_animation_or_danger_zones_site",
     "accept_m07_b_the_sheet_priorities_resolve_to_measured_operations",
     "accept_m07_b_the_objective_graph_is_closed_and_the_terminal_blocks_are_gated",
     "accept_m07_b_m07s_row_is_complete_and_the_campaign_gate_stays_closed",
@@ -254,10 +254,9 @@ fn evidence_report_m07_b_writes_the_acceptance_report() {
              and program identities equal to the M07-A binding, the control member chosen by \
              the measured rule over the archive's whole member set, the directive accounting \
              of the member it spells). NOT CLAIMED: no directive is implemented by a measured \
-             effect; M07's control record lowers completely — all nine ANIM_STATE sites bind \
-             through M04-B-FU1 #806's shared mechanism and the three DANGER_ZONES_COMPLETED \
-             conditions lower through M07-B-FU1 #813's measured flag predicate, both of which \
-             the suite pins — so M07's row is complete while the campaign gate stays closed on \
+             effect; M07's control record (`ZBD/C1/M02`, the corrected layout's record, \
+             which spells no ANIM_STATE, TRAVELERS or DANGER_ZONES_COMPLETED site) lowers \
+             completely, so M07's row is complete while the campaign gate stays closed on \
              the rows whose gaps remain; the runtime halves of the sheet's priorities (moving \
              pickup, forced plane swap, persistent input ownership) need ordinary-play \
              observation (M07-C); no mission was played, no original executable was run and \
