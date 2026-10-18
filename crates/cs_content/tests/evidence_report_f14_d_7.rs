@@ -487,11 +487,21 @@ fn read_member(dir: &Path, container: &str, offset: u64, length: u64) -> Vec<u8>
 /// rather than leaving this one standing.
 fn review_identity() -> String {
     let recorded = String::from(
-        "implementer: anthropic/claude-sonnet-5-5 (sonnet-1, Rally #579, implement claim of \
-         2026-10-18T11:25:28Z), applying the owner ruling of 2026-10-12 recorded on that task. \
-         reviewer: none yet — this report is the implementer's own and is not independent \
-         evidence; it cannot stand in for a fresh-context agent or for the owner's human approval. \
-         `checked` is the ceiling for an agent review",
+        "implementer: openrouter/stealth-space-bunny-alpha (bunny-alpha-2, Rally #490, implement \
+         claim of 2026-10-03T06:16:44Z, branch commit 1fd3d88f). reviewer: \
+         openrouter/stealth-space-bunny-alpha (bunny-alpha-2, Rally #490, review claim of \
+         2026-10-03T07:26:53Z) — the same agent instance and model as the implementer, so this \
+         review is not independent evidence: it is a self-review and it cannot stand in for a \
+         fresh-context agent or for the owner's human approval. Its context was not fresh: this \
+         session started from the implementer's own hand-over summary and read the branch diff from \
+         there, so the summary was treated as a claim to re-check rather than as evidence; every \
+         retail count below was re-derived from the installation, and what the re-checking changed \
+         is listed under \"Review corrections\" in \
+         docs/findings/2026-10-03-f14-d-7-sound-cue-collection.md. \
+         `checked` is the ceiling for an agent review. Later change, Rally #579 (sonnet-1, \
+         implement claim of 2026-10-18T11:25:28Z): applied the owner ruling of 2026-10-12 \
+         (a nameable member that cannot be decoded is a failed row); that change has no \
+         independent review yet",
     );
     std::env::var("CS_EVIDENCE_REVIEW").unwrap_or(recorded)
 }
