@@ -232,8 +232,10 @@ pub const FRONT_FACE: FrontFace = FrontFace::Ccw;
 /// back-face-culls one-sided polygons, draws the back side of a two-sided
 /// (`0x400`) polygon with the negated normal, and skips the test entirely
 /// for billboard meshes. Which stored surface is two-sided or a billboard is
-/// per-polygon / per-mesh stored data nothing has plumbed into this adapter
-/// yet, so producers declare the class rather than the adapter deriving it.
+/// per-polygon / per-mesh stored data. The mesh type words are plumbed
+/// (`RenderMesh::is_unculled_billboard`, selected by
+/// `bevy_state::render_state_for_mesh`); the per-polygon `0x400` flag is not
+/// (F10-F.1), so a producer still declares two-sidedness.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum CullingClass {
     /// A one-sided surface: the back face is culled. With [`FRONT_FACE`],

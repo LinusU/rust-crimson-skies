@@ -13,7 +13,7 @@
 
 use bevy::render::render_resource::{Face, FrontFace, PrimitiveState, RenderPipelineDescriptor};
 use cs_app::render::bevy_mesh::{CullingClass, FRONT_FACE, WINDING_EVIDENCE};
-use cs_app::render::bevy_state::{StateError, render_state};
+use cs_app::render::bevy_state::{StateError, render_state, render_state_for_mesh};
 use cs_app::render::material::{
     AddressMode, Classification, ClassifiedMaterial, Coverage, DeclaredClass, MaterialClass,
     MaterialFacts, TextureAddress, classify,
@@ -159,4 +159,78 @@ fn accept_f10_d_2_the_render_state_reads_its_culling_from_the_measured_decision(
         "which stored surface carries 0x400 is still unread data: an \
          undeclared surface is refused, never defaulted to a class"
     );
+}
+
+/// Task #1407 (`F10-F.2`): a surface of a mesh flagged as an unculled
+/// billboard draws with no cull face even when its material is one-sided;
+/// without the flag it keeps the back-face cull. Remove the wiring in
+/// `render_state_for_mesh` and the first assertion fails.
+#[test]
+fn accept_f10_f_2_billboard_mesh_surfaces_are_not_culled() {
+    let material = authored(MaterialClass::Opaque, Some(false));
+    assert_eq!(
+        render_state_for_mesh(&material, true).unwrap().cull_face(),
+        None
+    );
+    assert_eq!(
+        render_state_for_mesh(&material, false).unwrap().cull_face(),
+        Some(Face::Back)
+    );
+    assert_eq!(
+        render_state(&material).unwrap().cull_face(),
+        Some(Face::Back)
+    );
+}
+
+/// The type words reach the render mesh: only word0 == 1 with word1 in {0, 1}
+/// flags it, and a mesh never given type words is not a billboard.
+#[test]
+fn accept_f10_f_2_render_mesh_carries_the_type_words() {
+    use cs_content::mesh::RenderMesh;
+    use cs_formats::gamez::reader::RawMeshInfo;
+
+    let mut info: RawMeshInfo = zeroed_info();
+    assert!(!RenderMesh::default().is_unculled_billboard());
+    for (word0, word1, flagged) in [(0, 0, false), (1, 0, true), (1, 1, true), (1, 2, false)] {
+        info.file_ptr = word0;
+        info.unk04 = word1;
+        assert_eq!(
+            RenderMesh::default()
+                .with_type_words(&info)
+                .is_unculled_billboard(),
+            flagged,
+            "({word0}, {word1})"
+        );
+    }
+}
+
+fn zeroed_info() -> cs_formats::gamez::reader::RawMeshInfo {
+    use cs_formats::gamez::reader::RawMeshInfo;
+    RawMeshInfo {
+        file_ptr: 0,
+        unk04: 0,
+        unk08: 0,
+        parent_count: 1,
+        polygon_count: 0,
+        vertex_count: 0,
+        normal_count: 0,
+        morph_count: 0,
+        light_count: 0,
+        unk36: 0,
+        unk40: 0.0,
+        unk44: 0.0,
+        unk48: 0,
+        polygons_ptr: 0,
+        vertices_ptr: 0,
+        normals_ptr: 0,
+        lights_ptr: 0,
+        morphs_ptr: 0,
+        unk72: 0.0,
+        unk76: 0.0,
+        unk80: 0.0,
+        unk84: 0.0,
+        unk88: 0,
+        material_count: 0,
+        materials_ptr: 0,
+    }
 }

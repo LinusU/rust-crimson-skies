@@ -49,7 +49,9 @@ use cs_types::evidence::ContentHash;
 
 use crate::render::bevy_image::{ImageUpload, upload_image};
 use crate::render::bevy_mesh::{GroupUpload, upload_group};
-use crate::render::bevy_state::{DrawableMaterial, MaterialKind, RenderState, render_state};
+use crate::render::bevy_state::{
+    DrawableMaterial, MaterialKind, RenderState, render_state_for_mesh,
+};
 use crate::render::material::{Coverage, RenderPhase};
 use crate::render::plan::{DrawItem, DrawItemKey, DrawPlan, SceneView, SortingLimitation};
 use crate::render::profile::Resolution;
@@ -449,7 +451,10 @@ pub fn upload_surface(surface: &SceneSurface<'_>) -> SceneOutcome {
             None
         }
     };
-    let state = match render_state(surface.item.material()) {
+    let state = match render_state_for_mesh(
+        surface.item.material(),
+        surface.mesh.is_unculled_billboard(),
+    ) {
         Ok(state) => Some(state),
         Err(error) => {
             reasons.push(error.code());

@@ -282,6 +282,23 @@ pub struct RenderState {
 /// [`StateError`] when the classification does not carry the two-sidedness or
 /// the addressing the state needs. Both are refused rather than defaulted.
 pub fn render_state(material: &ClassifiedMaterial) -> Result<RenderState, StateError> {
+    render_state_for_mesh(material, false)
+}
+
+/// [`render_state`] for a surface of a mesh whose stored type words say it is
+/// an unculled billboard (`RenderMesh::is_unculled_billboard`: word0 == 1,
+/// word1 in {0, 1}). Such a mesh draws under [`CullingClass::Billboard`]
+/// whatever its material declares, because the original skipped the back-face
+/// test for the whole mesh. Only the culling exemption is applied; nothing of
+/// the billboard's facing is.
+///
+/// # Errors
+///
+/// As [`render_state`].
+pub fn render_state_for_mesh(
+    material: &ClassifiedMaterial,
+    unculled_billboard: bool,
+) -> Result<RenderState, StateError> {
     let two_sided = material.two_sided().ok_or(StateError::CullFaceUnknown)?;
     let address = material
         .addressing()
@@ -296,7 +313,9 @@ pub fn render_state(material: &ClassifiedMaterial) -> Result<RenderState, StateE
     // and a two-sided (`0x400`) surface is drawn from both faces, so nothing
     // is culled. The declared two-sidedness selects the class; the face
     // itself is the measured decision, not a convention picked here.
-    let culling = if two_sided {
+    let culling = if unculled_billboard {
+        CullingClass::Billboard
+    } else if two_sided {
         CullingClass::TwoSided
     } else {
         CullingClass::OneSided
