@@ -161,10 +161,12 @@ fn evidence_report_m05_b_writes_the_acceptance_report() {
         jstr(
             "acceptance suite run locally with the retail capability; the fields are derived \
              from the recorded log and production discovery of $CS_GAME_DIR. The suite pins \
-             M05's measured control program and its complete lowering (58 blocks, 208 sites, none refused); \
+             M05's measured control program and its complete lowering (68 blocks, 200 sites, none refused) in the archive the corrected layout binds to M05, \
+             ZBD/C3/M05/zrdr.zbd, re-pinned by Rally #1619 after the earlier pins measured M10's ZBD/C1/M05 \
+             and asserted the production binding's mission, program, archive and digests; \
              claim is implemented only; the mission is NOT played: ordinary-play, difficulty, media and presentation rows stay with M05-C and are recorded in docs/findings/2026-10-09-m05-b-control-program.md. \
              The reviewer re-ran the whole acceptance suite with CS_GAME_DIR on the rebased \
-             commit, re-applied the documented 58 → 57 block-count mutation, regenerated this \
+             commit, re-applied the documented block-count mutation, regenerated this \
              report from that run and validated it with \
              tools/validate_evidence.py --require-pass; after the landing conflict of \
              2026-10-09T09:10Z the current reviewer hand-rebased the branch onto main again, \
