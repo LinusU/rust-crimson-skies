@@ -140,7 +140,7 @@ engine played for a given cue.** That stays unknown.
   coverage denominator; all 4951 rows are unreachable unknowns counted in
   `coverage.unreachable_by_kind.sound`.
 
-## The collection contract and this stage's rule pull in opposite directions
+## The collection contract and this stage's rule pulled in opposite directions
 
 `docs/contracts/IDENTITY-CONTENT.md` requires that "collections cannot exclude
 failed entries" and that "an opaque unparsed member is still an inventory row".
@@ -157,12 +157,37 @@ has a non-`RIFF`/`WAVE` header, no member name is non-ASCII, every name ends in
 `.wav`, and the longest composed id key is 69 bytes of the 128 the grammar
 allows.
 
-The gap taxonomy is still the honest place for a member that cannot become a row,
-because such a member has no identity at all — its name is not keyable, its bytes
-are not inside the container, or the container's index declares the same name
-twice with different recordings. Whether those entries should instead be
-inventory rows with `parse_state: failed` is the owner's call; it is recorded
-here and in the evidence report's `review.method` rather than decided here.
+## Owner ruling (Rally #579, 2026-10-12): split by identity
+
+The tension is settled. The owner's note on #579 (Linus / Claude M3, signed off
+via the watch, 2026-10-12) reads: "OPTION 3, split by identity. A member that
+cannot be named stays a gap/diagnostic in Baseline::collection_status. 'Cannot
+be named' means no keyable name, or an ambiguous repeated name. A nameable
+member whose bytes cannot be decoded becomes an inventory row with
+ParseState::Failed, and the reader's error code is the reason. This keeps
+IDENTITY-CONTENT.md's rule that collections cannot exclude failed entries for
+every member that has an identity. It narrows the F14-D.7 (#490) 'unreadable
+members stay diagnostics' wording to the unnameable case only."
+
+What each former gap code became:
+
+| Code | Now | Why |
+| --- | --- | --- |
+| `member_name_not_text`, `member_name_empty`, `member_name_not_keyable` | gap (kept) | The name is the identity and there is none to key. |
+| `ambiguous_member_name` | gap (kept) | Two different recordings under one name: nothing tells the members apart. |
+| `duplicate_member` | counted repeat (kept) | A byte-identical repeat is the same cue, not a second identity. |
+| `member_out_of_bounds` / `extent_overflow` | row, `parse_state: failed`, diagnostic starts with the member-error code | The name is known; there are no bytes, so no fingerprint. |
+| RIFF/WAVE header codes (`not_riff`, ...) | row, `parse_state: failed`, diagnostic starts with `WaveError::code` | The name is known and the bytes exist; the row keeps their digest. |
+
+A failed row carries `UnsupportedReason::ParseFailed` instead of
+`NotNormalized`, still carries the playback unknown, and is still unreachable.
+A repeated name whose members cannot all be shown byte-identical (one has no
+bytes) is the ambiguous gap, never a row. Nothing changes on the owner's
+installation: no member is unreadable, so the retail result is unchanged
+(4951 rows plus 90 repeats). Covered both ways by
+`accept_f14_d_7_a_readable_member_yields_a_sound_row` (failed header row) and
+`accept_f14_d_7_a_member_with_no_identity_is_a_gap_and_a_nameable_one_a_failed_row`
+(gaps for unnameable members, failed row for an out-of-bounds named member).
 
 ## Review corrections
 
@@ -177,7 +202,7 @@ made these changes:
    have cost the installation its whole catalog while the neighbouring cases
    (a name that is not text, a name that is empty) were counted as named gaps.
    It is now `member_name_not_keyable` in `CollectionStatus::gaps`, covered by
-   `accept_f14_d_7_a_member_with_no_readable_bytes_is_a_named_gap`. No retail
+   `accept_f14_d_7_a_member_with_no_identity_is_a_gap_and_a_nameable_one_a_failed_row`. No retail
    member triggers it (the longest retail key is 69 of 128 bytes), so no row
    count moved.
 2. **The retail gap map is asserted whole.** Both
@@ -243,7 +268,7 @@ were applied and reverted, and each failed the named tests:
 The review of 2026-10-03 added one more, which is how the first review finding was
 shown to be a real defect rather than a matter of taste: propagating the member-id
 error instead of naming it a gap (the code as it was handed over) makes
-`accept_f14_d_7_a_member_with_no_readable_bytes_is_a_named_gap` fail with
+`accept_f14_d_7_a_member_with_no_identity_is_a_gap_and_a_nameable_one_a_failed_row` fail with
 
 ```text
 the fixture installation reads: Key { spelling: "____…____",
