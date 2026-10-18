@@ -291,6 +291,18 @@ impl InteractionSession {
         })
     }
 
+    /// Aborts every active interaction that involves `actor`, because its
+    /// peer disconnected while the match continues. Exactly [`Self::actor_destroyed`]'s
+    /// reach — initiator or target — with [`AbortReason::Disconnect`] instead:
+    /// an honest pilot's in-flight interaction with another actor is not
+    /// touched, and control of each surviving initiator returns to it with no
+    /// binding changes.
+    pub fn disconnect(&mut self, actor: ActorId) -> Vec<InteractionAbort> {
+        self.abort_where(AbortReason::Disconnect, |id| {
+            id.initiator == actor || id.target == actor
+        })
+    }
+
     /// Aborts every active interaction (pause, cinematic cancel, disconnect).
     pub fn abort_all(&mut self, reason: AbortReason) -> Vec<InteractionAbort> {
         self.abort_where(reason, |_| true)

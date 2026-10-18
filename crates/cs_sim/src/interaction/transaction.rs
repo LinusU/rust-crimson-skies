@@ -320,7 +320,7 @@ pub struct InteractionOutcome {
 }
 
 /// The record of one aborted interaction. It carries no effects.
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct InteractionAbort {
     /// The interaction that aborted.
     pub id: InteractionId,
