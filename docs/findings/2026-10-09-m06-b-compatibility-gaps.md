@@ -33,6 +33,65 @@ after Rally's landing attempt failed on a rebase conflict and the branch was
 hand-rebased onto main: `candidate_tree` then names that hand-rebased tree and
 `review.identity` records both review rounds and their limits.
 
+## 2026-10-18 re-pin on the corrected campaign layout (#1596)
+
+Every retail fact in the tables below was measured on `ZBD/C2/M01/zrdr.zbd`,
+the archive the pre-correction campaign layout bound to M06. That record
+declares `snd_c3-HW-m2` — Hollywood mission 2 — and the corrected layout
+(commit `6df5715b0`, `docs/findings/2026-10-17-m01-archive-decision.md`)
+binds it to work order **M12** (`mission/ch3-m02`, `script/c2-m01-zrdr`,
+`world/c2`). M06's own reader archive is **`ZBD/C1C/M01/zrdr.zbd`** — the
+Northwest mission-1 archive, bound to M01 when these measurements were
+written — and every pin below is now re-derived from it through the same
+production code (`SourceContext::control_program`,
+`discover_container`, `decode_zrd`, `measure_control_record`,
+`read_control_member`, the census). The numbers in this document's tables
+are **historical for M06** and describe M12's archive.
+
+| Fact | Old pin (`ZBD/C2/M01`, M12's record) | Re-pinned (`ZBD/C1C/M01`, 91 171 bytes, SHA-256 `33b60a40…b22c9f`) |
+| --- | --- | --- |
+| Program / catalog / world | `script/c2-m01-zrdr` / `mission/ch3-m02` / `world/c2` | `script/c1c-m01-zrdr` / `mission/ch2-m01` / `world/c1c` |
+| Control member | `objectives.zrd`, offset 17 166, 18 651 bytes, eighth of 15 members; `barge.zrd` and `goosepath.zrd` longer | `objectives.zrd`, offset 14 708, 24 012 bytes, SHA-256 `edb84d89…8e92`, seventh of 12 members; `wv_tailhook.zrd` — the boarding feature itself — is longer |
+| Record | 82 blocks, 265 sites, 26 keys | 58 blocks, 353 sites, 43 keys, no refusals, no unclassified record-level key |
+| Vocabulary partition | 2 terminal + 24 measured | 2 terminal + 41 measured, none unmeasured |
+| Terminal latches | `INSTANTWIN` block 47 (block 46 nap + block 50 kill); `INSTANTLOSS` block 51 (block 50 nap) | `INSTANTWIN` block 24 — sole edge is block 18's `WAKE [24]`; `INSTANTLOSS` block 40 — sole edge is block 39's `NAP [40]` |
+| Addressing discriminators | block 67 wakes `[68, 71, 82]`; nothing spells `50` although block 50 naps `51` | block 17 wakes `[18, 25, 49, 58]` — the count itself; block 38 naps `39` while block 39 naps `40`, so an index reading reaches the latch a countdown step early |
+| Subsystem disablement | `g_engine1…8 healthy_part` thresholds, `kkgate`, `tugandbarge01…04` | the Workers' Voyage's eighteen `reng*`/`leng*` engines and nine turret parts, the pirate zeppelin's twelve engines (thresholds 2/6/10/12 = the fail countdown), the `DEDG` tallies |
+| Multi-step interaction | `propane` → `sprucegoose` → `tugandbarge*` target flags, 35 naps, 8 `SET_AI_NET` | the tailhook boarding chain: target flags onto `wv_tailhook`/`peoplehook`, `activate_dropoff_node`/`activate_pickup_node` wakeups, 27 nap re-wakes, `SET_AI_NET`, three `TICK_DEPENDS_ON_OBJ` gates |
+| Passenger identity | unbound: `Passenger_hangar` the archive's only passenger-named string, referenced by nothing | bound **by name**: `ANIM_STATE` sites spell the copilot exchange (`wv_drop_copilot`, `wv_pickup_copilot`, `hooked_to_klondike`), `wv_tailhook.zrd` declares the boarding nodes, the startup table fires `call_add_jack` — the crew animation driving `apassengers` (M06-B-FU4); `location.zrd`'s `Passenger_hangar` stays a shared teleport point, the same bytes in every archive measured |
+| `ANIM_STATE` sites | 8: five single-pair + three six-operand `COMPLETION_COUNT` sites (blocks 9, 11, 41) | 3, all single-pair; the six-operand sites are M12's — M06-B-FU1 re-pins them there through M12's own binding |
+| `KILL` sites | 15, up to twelve targets (the `MAX_CALL_ARGS` bound) | 9, up to three targets; the wide-list case stays on M12's record and the synthetic pin |
+| Lowering | complete since M04-B-FU1 (#806) | complete: all 353 sites bind, all 58 conditions lower, `MissionProgram::validate` accepts, the census row is complete |
+
+What moved where:
+
+- **M06-B-FU1**'s three six-operand `ANIM_STATE` sites sit in `zbd/c2/m01` —
+  the corrected layout's **M12** record. The retail pin re-derives them
+  through M12's own control binding (`zbd/c2/m01`, 82 blocks, 265 sites) and
+  asserts M06's own record spells only the single-pair shape, so the gap
+  class has no M06 instance. The synthetic three-site test is unchanged.
+- **M06-B-FU2**'s negative passenger verdict stays where it was measured —
+  M12's record and chapter-two world (`sprucegoose`, `kkgate`, `sghangar`,
+  `MSG_BRF_HWM2_*`). Its `location.zrd` verdict is the one measurement that
+  still speaks for M06: the member is the same bytes in `ZBD/C1C/M01`,
+  `ZBD/C2/M01` and `ZBD/C2/M02`, so "a teleport point, not an actor" is a
+  fact about M06's own archive too — now asserted in the suite. M06's own
+  answer to the passenger question is the opposite of the measured one:
+  `startanims.zrd` fires `call_add_jack` (M06-B-FU4, #1184).
+- **M06-B-FU3**'s `accept_objaddr_` suite keeps the four archives it
+  reconciled — `zbd/c1/m02` (corrected layout: M07), `zbd/c1b/m03` (M08),
+  `zbd/c1/m04` (no declared work order), `zbd/c2/m01` (M12) — and now walks
+  M06's own `zbd/c1c/m01` beside them: block 17 spells the count `58` and
+  the fail countdown's `38 → 39 → 40` nap chain is its second
+  discriminator.
+- **M06-B-FU4** (#1184) was already written on the corrected layout and is
+  unchanged: M12's record names the passenger-identity limitation and
+  M06's does not.
+
+Nothing here is `verified_original`: the work-order ↔ archive joins are the
+content-derived layout's, directive *effects* are static readings of the
+decrypted image, and no original executable has been run.
+
 The stage's minimum acceptance scenario is *"All discovered mission-specific
 behavior uses production engine systems and regression tests."* It holds for
 everything this note measures: M06's discovered mission-specific behavior is
