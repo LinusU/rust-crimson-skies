@@ -177,7 +177,9 @@ pub enum OutcomeRecordError {
     /// left the mission area rather than completing in place — so the record
     /// is refused by name instead of being written as an outcome the run did
     /// not have (AGENTS.md rule 4). The affected content is every extracting
-    /// run of every mission; the resolving task is filed with `create_tasks`.
+    /// run of every mission, recorded as claim
+    /// `f29-c3c.extraction-record-unmeasured` in
+    /// `docs/findings/2026-10-18-f29-c-3c-extraction-outcome.md`.
     Extraction,
 }
 
