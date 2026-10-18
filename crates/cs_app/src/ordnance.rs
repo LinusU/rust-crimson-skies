@@ -53,11 +53,11 @@ use cs_content::ordnance::{
 };
 use cs_sim::damage::{ActorId, DamageNodeKey, NodeKeyError};
 use cs_sim::weapons::{
-    AreaEffect, ArmingRule, CompatibilityVerdict, EquipmentRules, FuseRule, GuidanceRule,
-    GunDefinitionError, HardpointKind, InheritanceRule, LaunchGeometry, LostTargetBehavior,
-    NitroActivationRule, NitroOrdnance, NitroParameters, NitroRefusedRecovery, NitroTradeoffs,
-    OrdnanceComponent, OrdnanceDefinitionError, OrdnanceFamily, OrdnanceId, OrdnanceIdError,
-    OrdnanceMedia, OrdnanceRegistry, OrdnanceRegistryError, OrdnanceStatusEffect,
+    AreaEffect, ArmingRule, BlastRecipient, CompatibilityVerdict, EquipmentRules, FuseRule,
+    GuidanceRule, GunDefinitionError, HardpointKind, InheritanceRule, LaunchGeometry,
+    LostTargetBehavior, NitroActivationRule, NitroOrdnance, NitroParameters, NitroRefusedRecovery,
+    NitroTradeoffs, OrdnanceComponent, OrdnanceDefinitionError, OrdnanceFamily, OrdnanceId,
+    OrdnanceIdError, OrdnanceMedia, OrdnanceRegistry, OrdnanceRegistryError, OrdnanceStatusEffect,
     ProjectileOrdnance, ProximityFuse, StackLoad, StatusEffectKind, WEAPON_DAMAGE_CHANNELS,
     WeaponDamage,
 };
@@ -1165,6 +1165,16 @@ pub struct OrdnanceStep<'a> {
     /// time of impact. The ordnance path consumes them; it does not invent a
     /// collision.
     pub impacts: &'a [SweptHit],
+    /// Every actor node a guidance-loss blast may reach, with where it is this
+    /// tick (the sim holds no actor list). A detonation whose item declares an
+    /// [`AreaEffect`] routes through
+    /// [`OrdnanceRuntime::route_detonation_area`] over these: each recipient
+    /// inside the radius takes the declared channels scaled by the measured
+    /// falloff, and the engagement's single damage target is not consulted.
+    /// `None` is "the producer supplies no recipients": the blast goes to the
+    /// launch engagement's single target, as for an item with no area. `Some`
+    /// of an empty slice is "nobody is there" and delivers no damage.
+    pub blast_recipients: Option<&'a [BlastRecipient]>,
 }
 
 // ------------------------------------------------------------------ session ---
@@ -1883,13 +1893,22 @@ pub fn step_ordnance_session(
                 area: None,
                 area_refused: None,
             };
-            match session.runtime.route_detonation(
-                session.session_id,
-                step.at,
-                detonation,
-                engagement.damage_target,
-                engagement.node.clone(),
-            ) {
+            let routed = match (detonation.area_effect(), step.blast_recipients) {
+                (Some(_), Some(recipients)) => session.runtime.route_detonation_area(
+                    session.session_id,
+                    step.at,
+                    detonation,
+                    recipients,
+                ),
+                _ => session.runtime.route_detonation(
+                    session.session_id,
+                    step.at,
+                    detonation,
+                    engagement.damage_target,
+                    engagement.node.clone(),
+                ),
+            };
+            match routed {
                 Ok(hits) => {
                     blast.hits.clone_from(&hits);
                     match damage.resolve(step.at, &hits) {

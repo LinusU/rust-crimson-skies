@@ -137,6 +137,7 @@ fn run_step(
             guidance: None,
             targets: &[],
             impacts: &[],
+            blast_recipients: None,
         },
     )
 }

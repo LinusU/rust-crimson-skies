@@ -1241,6 +1241,7 @@ pub fn drive_mission_ordnance(world: &mut World) {
             guidance: None,
             targets: &paths,
             impacts: &[],
+            blast_recipients: None,
         },
     );
     // A detonation's resolved batch goes to the same damage consumers the gun
