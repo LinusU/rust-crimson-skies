@@ -2223,6 +2223,17 @@ const MISSION_SCOPED_UNKNOWNS: &[(&str, &[&str])] = &[
              archive it was measured on, M01-ARCHIVE-DECISION); needs a rule for which \
              declaration the original selects, which an original reference run under M03-C \
              would settle",
+            "SET_AI_NET actor `britkestrel_1` (block 25, onto node `M3BritAce`): declared by no \
+             archive of the installation and by no literal of the engine image, so the engine's \
+             SET_AI_NET consumer (0x46a000: vehicle registry, then zeppelin registry) is expected \
+             to log `can't find vehicle or zeppelin` and skip the pair, which would leave the \
+             node unassigned; whether anything else puts that name in either registry at run \
+             time is not decided by static reading (the registry's insert sites and the image's \
+             aircraft-type name table at 0x620d50 were not traced), so no actor, spawn or faction \
+             is invented for it (measured on `zbd/c3/m03` by M13-B-FU1, which bound this archive \
+             under the M13 label before the corrected campaign layout; the entry follows the \
+             archive it was measured on, M01-ARCHIVE-DECISION); needs an original reference run \
+             under M03-C or a trace of the registry inserts",
         ],
     ),
     (

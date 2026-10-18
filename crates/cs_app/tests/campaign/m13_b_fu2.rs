@@ -334,7 +334,12 @@ fn accept_m13_b_fu2_the_ambiguous_startup_name_is_an_unknown_of_m03_alone() {
         "M13's corrected archive binds both startup names uniquely: {m13:?}"
     );
     let m03 = mission_scoped_unknowns(&MissionLabel::new("M03").expect("label"));
-    assert_eq!(m03.len(), 1, "the limitation reached M03's record: {m03:?}");
+    // M13-B-FU1 added the `britkestrel_1` actor limitation after this one.
+    assert_eq!(
+        m03.len(),
+        2,
+        "both limitations reached M03's record: {m03:?}"
+    );
     for needle in [
         "cg1zep_engines_stop",
         "cg1_zep_nacelles.zrd",
