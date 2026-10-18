@@ -1,6 +1,8 @@
 # F58-C follow-up (#1221): the host's MatchStage in the pinned pump
 
-Closes F58-B finding 2 for the input path.
+Closes F58-B finding 2 at the pump: `ServerSession` can now be handed the
+host's `MatchStage`, and the intent checks are live on that path (unlike the
+app-side driver, which still calls the unstaged `pump`).
 
 ## What changed
 
@@ -24,17 +26,24 @@ Closes F58-B finding 2 for the input path.
 
 The rate windows are keyed on the session's pump counter (`rate_tick`), not on
 `stage.server_tick`. The window therefore equals 60 *pump calls*. It equals 60
-simulated ticks only if the host pumps once per tick. Nothing in `cs_app` pumps
-a `ServerSession` yet (no caller outside tests), so this is **unverified**: a
-host that pumps more often than it ticks refills the window faster than
-96 per simulated second and the budget weakens. The tick window is not affected,
+simulated ticks only if the host pumps once per tick. The app-side driver that
+will own the pump, `cs_app::network::session::drive_net_session`, runs in Bevy's
+`FixedPostUpdate` and calls the **unstaged** `pump` exactly once per committed
+fixed tick, so on that path one pump is one tick. But no assembled application
+installs `NetSessionDrivePlugin` yet (only tests do), so nothing ships a host
+that pumps at all, and the app still calls `pump` rather than `pump_staged`. A
+host that pumps more often than it ticks would refill the window faster than
+96 per simulated second and weaken the budget. The tick window is not affected,
 since it is keyed on the host-supplied `server_tick`.
 
 ## Not done
 
 * Loadout asks and `Claim*` intents still have no wire form, so the banned set
   in the stage is carried but not consulted by the pump.
-* Nothing in `cs_app` calls `pump_staged` yet; no host exists to supply the tick.
+* Nothing in `cs_app` calls `pump_staged` yet. The app-side driver does have a
+  committed tick (`PhysicsTickLedger`) but builds no `MatchStage` and passes no
+  phase, so wiring the running app is filed as a follow-up rather than guessed
+  at here.
 * Values remain engine design, not measured (F58-D, `network_real`).
 
 Tests: `accept_f58_c_pump_stage_*` in `crates/cs_net/tests/accept_f58_c_pump_stage.rs`.

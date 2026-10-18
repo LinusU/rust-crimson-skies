@@ -1361,8 +1361,8 @@ impl IntentValidator {
         Self::judge(peer, intent, ownership, stage)
     }
 
-    /// Checks 3 to 6 of [`Self::validate`] — actors, match state, tick window
-    /// and loadout — without charging any budget.
+    /// Checks 1 and 3 to 6 of [`Self::validate`] — server-owned truth, actors,
+    /// match state, tick window and loadout — without charging any budget.
     ///
     /// A host that already charges every offered packet against its own
     /// [`RateBudget`] (the pinned transport pump does, on its session clock)
