@@ -677,3 +677,71 @@ fn rebuild(
         args.max_players,
     )
 }
+
+/// The measured negative behind the unmeasured `loadouts` list (#1575): the
+/// original's Instant Action screen edits a loadout per slot through the
+/// ordinance-layout editor and carries no loadout identity list. The reason the
+/// retail table reports must therefore name those two members.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_f49_d_02_retail_loadouts_are_a_measured_negative_not_an_identity_list() {
+    use cs_content::instant_action::{
+        IA_LOADOUT_EDITOR_MEMBER, IA_LOADOUT_SCREEN_MEMBER, LOADOUT_UNMEASURED_REASON,
+    };
+
+    let root = crate::f27_d_support::game_dir();
+    let find = crate::f27_d_support::find;
+    let screen = crate::f27_d_support::read_member(&root, IA_LOADOUT_SCREEN_MEMBER);
+    let editor = crate::f27_d_support::read_member(&root, IA_LOADOUT_EDITOR_MEMBER);
+
+    // The screen's change-weapons button runs the editor for the player (-1)
+    // or a wingman (-2).
+    for needle in [
+        &b"ia_b_changeweapons"[..],
+        b"@globals@ZQ = -1",
+        b"@globals@ZQ = -2",
+        b"ordinancelayout.script",
+    ] {
+        assert!(
+            find(&screen, needle).is_some(),
+            "{IA_LOADOUT_SCREEN_MEMBER} no longer carries {:?}",
+            String::from_utf8_lossy(needle)
+        );
+    }
+    // The editor selects per slot by index through engine callbacks.
+    for needle in [
+        &b"callback($$E$$, 2030, (ZQ), (BA)"[..],
+        b"callback($$E$$, 2036, (ZQ), (BA)",
+    ] {
+        assert!(
+            find(&editor, needle).is_some(),
+            "{IA_LOADOUT_EDITOR_MEMBER} no longer carries {:?}",
+            String::from_utf8_lossy(needle)
+        );
+    }
+    // Neither member names or enumerates a loadout.
+    for (member, bytes) in [(&screen, "screen"), (&editor, "editor")].map(|(b, m)| (m, b)) {
+        assert!(
+            !bytes
+                .to_ascii_lowercase()
+                .windows(7)
+                .any(|w| w == b"loadout"),
+            "the {member} names a loadout, so an identity list may exist"
+        );
+    }
+
+    // And the production table says exactly that, naming both members.
+    let table = retail_table();
+    match table
+        .evidence(ScenarioOptionDimension::Loadouts)
+        .expect("a named dimension")
+    {
+        OptionListEvidence::Unmeasured { reason, .. } => {
+            assert_eq!(*reason, LOADOUT_UNMEASURED_REASON);
+            assert!(reason.contains("ORDINANCELAYOUT.SCRIPT"));
+            assert!(reason.contains("no loadout identity list"));
+        }
+        other => panic!("loadouts must stay unmeasured, got {}", other.label()),
+    }
+    assert!(table.loadouts().is_empty());
+}

@@ -3026,17 +3026,32 @@ pub const ENVIRONMENT_OPTION_READER: &str =
 pub const DIFFICULTY_OPTION_READER: &str =
     "cs_content::ai::DifficultyTier::measured_step, the measured original option steps (F32-D)";
 
-/// Why the `loadouts` dimension has no measured list.
+/// The Instant Action screen member whose "change weapons" button opens the
+/// original's loadout editor (F49-D.02 follow-up, #1575).
+pub const IA_LOADOUT_SCREEN_MEMBER: &str = "ASSETS/SCRIPTS/INSTANTACTION.SCRIPT";
+
+/// The loadout editor the Instant Action screen runs: it selects per slot.
+pub const IA_LOADOUT_EDITOR_MEMBER: &str = "ASSETS/SCRIPTS/ORDINANCELAYOUT.SCRIPT";
+
+/// Why the `loadouts` dimension has no identity list: a measured negative.
 ///
-/// The F27-D ammunition/ordnance surface measures *counts* and gun groups
-/// (`cs_content::weapons::OriginalGunLoadout`, `cs_content::ordnance::
-/// OriginalOrdnanceSurface`) and the F27-E catalogue imports ammunition into
-/// `ContentKind::Ammo` identities; nothing produces the `ContentKind::Loadout`
-/// identities a custom scenario would select, and a loadout id minted from a
-/// count would be a fabricated retail-looking id.
-pub const LOADOUT_UNMEASURED_REASON: &str = "the F27-D/F27-E measurement produces ammunition types, selectable guns and ordnance \
-     counts, not the ContentKind::Loadout identities a custom scenario selects, so no loadout \
-     option list can be produced without guessing";
+/// Measured in `crimson.rof` (see
+/// `docs/findings/2026-10-18-f49-d-02-fu-loadout-identities.md`):
+/// [`IA_LOADOUT_SCREEN_MEMBER`] has a `ia_b_changeweapons` button that sets the
+/// editor's actor selector to `-1` (the player) or `-2` (a wingman) and runs
+/// [`IA_LOADOUT_EDITOR_MEMBER`], which edits the actor's gun slots, gun
+/// ammunition and rocket slots by integer index through engine callbacks
+/// (`2030`/`2031`/`2036`/`2037`). No member names or enumerates a loadout, so
+/// there is no `ContentKind::Loadout` identity list to read; a loadout id minted
+/// from the slot counts would be a fabricated retail-looking id.
+pub const LOADOUT_UNMEASURED_REASON: &str = "the original offers no loadout identity list: Instant Action's change-weapons button runs \
+     ORDINANCELAYOUT.SCRIPT, which edits the player's or a wingman's gun slots, gun ammunition and \
+     rocket slots by integer index, and no member names or enumerates a loadout, so a \
+     ContentKind::Loadout id would have to be invented";
+
+/// The task that must model the original's per-slot loadout selection.
+pub const LOADOUT_RESOLVING_TASK: &str = "the per-slot loadout selection model (the original selects guns, gun ammunition and rocket \
+     ammunition per slot, not a named loadout)";
 
 /// Why the `pilots` dimension has no measured list.
 pub const PILOT_UNMEASURED_REASON: &str = "the F33-A pilot roster is declared design and the F33-D retail measurement has not run; \
@@ -3438,7 +3453,7 @@ pub fn retail_scenario_options_from_baseline(
                 ScenarioOptionDimension::Loadouts,
                 OptionListEvidence::Unmeasured {
                     reason: LOADOUT_UNMEASURED_REASON,
-                    resolving_task: "the F27 ammunition/ordnance loadout-identity measurement",
+                    resolving_task: LOADOUT_RESOLVING_TASK,
                 },
             ),
             (
