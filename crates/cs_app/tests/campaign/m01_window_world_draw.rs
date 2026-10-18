@@ -19,6 +19,7 @@ use bevy::prelude::{App, ChildOf, Children, Entity, MeshMaterial3d, StandardMate
 use cs_app::mission_launch::plan_mission_launch;
 use cs_app::mission_session::{
     MissionWorldParts, WorldWaterLevel, bind_sea_to_world_water, build_headless, stage_for,
+    water_level_of,
 };
 use cs_app::render::horizon::{
     DESIGNED_LABEL, HorizonField, HorizonOrigin, HorizonSpec, WORLD_WATER_LABEL,
@@ -60,6 +61,24 @@ fn accept_m01_window_world_sea_follows_the_measured_water_level() {
         &HorizonOrigin::Designed(WORLD_WATER_LABEL)
     );
     assert_ne!(WORLD_WATER_LABEL, DESIGNED_LABEL);
+}
+
+/// **A sea with raised pools still has a level: the altitude most water shares.**
+///
+/// `ZBD/C3`'s `wtr00000` binds the sea quads at `y = 0` and also raised pools
+/// and falls up to 13 m above it; demanding every vertex flat found no sea and
+/// left the horizon at its designed -1000 m, whose far edge showed as a grey band.
+#[test]
+fn accept_m01_window_world_water_level_is_the_dominant_flat_altitude() {
+    let mut altitudes = vec![0.0_f32; 4477 - 160];
+    altitudes.extend([13.167; 160]);
+    let water = water_level_of(&altitudes).expect("most water is at one altitude");
+    assert!(water.level_m.abs() < 1e-6);
+    assert_eq!(water.vertices, 4477);
+
+    // No altitude holds a majority, or no water at all: no level is invented.
+    assert!(water_level_of(&[0.0, 5.0, 10.0, 15.0]).is_none());
+    assert!(water_level_of(&[]).is_none());
 }
 
 /// **M01's drawn sea is at the world's own water level, and its far terrain

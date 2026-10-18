@@ -154,14 +154,22 @@ pub struct WorldWaterLevel {
 /// it `water1` and M01's water material 155 spells `water1.tif`.
 pub const WATER_TEXTURE_NAME: &str = "water1";
 
+/// The texture name `ZBD/C3/rtexture12.zbd` gives M01's water: 255 drawn parts
+/// of the `ZBD/C3` world bind `wtr00000` and nothing else in the table reads as
+/// water (measured by the M01-WINDOW-WORLD census, `docs/findings/
+/// 2026-10-18-m01-window-world.md`). Matched like [`WATER_TEXTURE_NAME`].
+pub const C3_WATER_TEXTURE_NAME: &str = "wtr00000";
+
 /// How far apart water vertices may be in altitude and still count as one flat
 /// surface, in metres.
 const WATER_FLATNESS_M: f32 = 0.01;
 
 fn is_water_image(key: &str) -> bool {
     let name = key.rsplit(':').next().unwrap_or(key).to_ascii_lowercase();
-    name.strip_prefix(WATER_TEXTURE_NAME)
-        .is_some_and(|rest| rest.is_empty() || rest.starts_with('.'))
+    [WATER_TEXTURE_NAME, C3_WATER_TEXTURE_NAME]
+        .iter()
+        .filter_map(|water| name.strip_prefix(water))
+        .any(|rest| rest.is_empty() || rest.starts_with('.'))
 }
 
 impl MissionWorldParts {
@@ -320,7 +328,7 @@ fn measure_water_level(
     parts: &BTreeMap<ContentId, Vec<PlaytestPart>>,
 ) -> Option<WorldWaterLevel> {
     let assets = app.world().get_resource::<Assets<Mesh>>()?;
-    let (mut low, mut high, mut vertices) = (f32::INFINITY, f32::NEG_INFINITY, 0_usize);
+    let mut altitudes: Vec<f32> = Vec::new();
     for object in definition.objects() {
         let Resolved::Known(known) = object.mesh() else {
             continue;
@@ -339,17 +347,32 @@ fn measure_water_level(
             else {
                 continue;
             };
-            for position in positions {
-                let y = placement.transform_point3(Vec3::from(*position)).y;
-                low = low.min(y);
-                high = high.max(y);
-                vertices += 1;
-            }
+            altitudes.extend(
+                positions
+                    .iter()
+                    .map(|position| placement.transform_point3(Vec3::from(*position)).y),
+            );
         }
     }
-    (vertices > 0 && high - low <= WATER_FLATNESS_M).then_some(WorldWaterLevel {
+    water_level_of(&altitudes)
+}
+
+/// The sea altitude of a set of water-vertex altitudes: the lowest one, when
+/// more than half of the vertices lie within [`WATER_FLATNESS_M`] of it. `ZBD/C1C`'s
+/// water is all one flat surface; `ZBD/C3`'s `wtr00000` also binds raised
+/// pools and falls (up to ~13 m above the surface in M01), so a rule that
+/// demanded every vertex flat would find no sea there. A set with no majority
+/// at one altitude gives `None` rather than a guessed number.
+#[must_use]
+pub fn water_level_of(altitudes: &[f32]) -> Option<WorldWaterLevel> {
+    let low = altitudes.iter().copied().reduce(f32::min)?;
+    let at_low = altitudes
+        .iter()
+        .filter(|y| **y - low <= WATER_FLATNESS_M)
+        .count();
+    (at_low * 2 > altitudes.len()).then_some(WorldWaterLevel {
         level_m: low,
-        vertices,
+        vertices: altitudes.len(),
     })
 }
 
