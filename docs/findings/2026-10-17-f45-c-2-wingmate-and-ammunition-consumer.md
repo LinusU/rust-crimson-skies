@@ -211,13 +211,24 @@ Commands run (all exit 0): `cargo fmt --all -- --check`, `cargo clippy
   readable source states it (F45-B.1: buttons only, no option rows; F45-D:
   artwork; F27-D: the construction ammunition screen). Resolving task: **#1525**
   (`F45-C.5`). Affected content: every claim that the flight check offers what
-  the original offers.
+  the original offers. **Measured by #1525
+  (`docs/findings/2026-10-18-f45-c-5-flight-check-options-and-ammunition.md`):
+  the `[@FlightCheck@]` section holds no selector row, and the screens its
+  buttons start fill their lists from scripting natives, so the original states
+  no per-mission option list; nothing readable gates it on the campaign
+  roster.**
 - **The meaning of the flight check's `ammunition` slot.** This stage commits
   it as the briefing's equipment (design, above). Whether the original's
   ammunition is a gun ammunition type, a plane loadout subject, or the whole
   flight's equipment is unmeasured. Resolving task: **#1525** (`F45-C.5`).
   Affected content: the `WingmateChoice::loadout` projection and any "the
-  original's ammunition screen is this one" claim.
+  original's ammunition screen is this one" claim. **Measured by #1525
+  (`docs/findings/2026-10-18-f45-c-5-flight-check-options-and-ammunition.md`):
+  the flight check's `FC_B_CHANGEAMMO` / `FC_B_CHANGEAMMOW` start
+  `OrdinanceLayout`, the selected plane's gun and rocket ordnance surface
+  (four gun slots, eight rocket slots, per plane), so the projection onto the
+  plane's *equipment* is supported; the projection is now gated on that
+  measurement.** The `ContentKind::Ammo` typing F45-A declares is unchanged.
 - **Which authored wingmate slot a multi-slot mission's flight check fills.**
   Refused here (`AmbiguousWingmateSlot`) rather than picked; the original's
   rule is unmeasured. Resolving task: **#1525** (`F45-C.5`).
