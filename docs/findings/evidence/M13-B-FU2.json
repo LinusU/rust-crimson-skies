@@ -1,9 +1,9 @@
 {
  "schema_version": 1,
  "task_id": "M13-B-FU2",
- "candidate_tree": "6b73b9e8169cac2ced614d5b4ca39f14e82e418d",
+ "candidate_tree": "bd57e5cefec1fd658d951d96851da0947af986b7",
  "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
- "created_at": "2026-10-18T11:40:57Z",
+ "created_at": "2026-10-18T11:57:44Z",
  "command": {"argv": ["cargo", "test", "--locked", "-p", "cs_app", "--test", "cs_app_tests_d", "--", "accept_m13_b_fu2", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/bunny-alpha-2", "exit_code": 0},
  "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
  "seed": 0,
@@ -12,7 +12,7 @@
  "capabilities": ["retail", "synthetic"],
  "tests": {"discovered": 4, "executed": 4, "passed": 4, "failed": 0, "ignored": 0},
  "assertions": [{"id": "accept_m13_b_fu2_retail_startup_table_and_empty_mis_anim_member", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m13_b_fu2_the_ambiguous_startup_name_is_an_unknown_of_m03_alone", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m13_b_fu2_synthetic_binding_keeps_single_ambiguous_and_unresolved_apart", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_m13_b_fu2_retail_each_startup_name_resolves_or_is_refused_by_name", "status": "pass", "evidence": ["cargo-test.log"]}],
- "artifacts": [{"path": "cargo-test.log", "sha256": "16ec1b97aa2bd7d7b5e85f718a13207715898848f9498e4cc39bb88162886ad3", "kind": "log"}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "61f794530c8b99e9243780783461de0fe3a6c79eb3a08bafb5cb02e0b2f38934", "kind": "log"}],
  "unknowns": [],
  "review": {"identity": "implementer: bunny-alpha-2/bunny-alpha-2 (Rally #1600 implement claim of 2026-10-18, opencode-go/deepseek-v4.1-flash, a fresh session working from the task history and the corrected campaign layout); this is the implementer's hand-over run on the re-pinned branch, not independent review, and no agent review replaces the owner's human approval", "method": "acceptance suite run locally with the retail capability; the fields are derived from the recorded log and production discovery of $CS_GAME_DIR. The suite pins this task's verdict on M13's corrected archive: `bind_mission_animation` over `zbd/c2/m03` binds all three of M13's startup rows (`player_setup` and `pzep_engines_start` on NEW_GAME_START, `player_setup` again on LOAD_GAME_START) to exactly one declaring member and one carrier record each, and refuses none. The archive's own `mis_anim.zrd` declares no definition and only names authoring files. The ambiguous `cg1zep_engines_stop` this task first measured belongs to `ZBD/C3/M03/zrdr.zbd`, which the corrected campaign layout binds to work order M03; its mission-scoped unknown now sits in M03's record (M01-ARCHIVE-DECISION) and is pinned there, so this report records no unknown for M13. NOT CLAIMED: any runtime half; nothing is verified_original and no original executable was run. Claim is implemented only; validated with tools/validate_evidence.py --require-pass. `candidate_tree` is the tree of the commit the suite and this harness ran on; the only later delta is this report's own copy under docs/findings/evidence/, which no acceptance test reads"},
  "claim": "implemented"
