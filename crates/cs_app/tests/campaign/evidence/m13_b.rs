@@ -22,7 +22,7 @@ const RETAIL_TESTS_M13_B: &[&str] = &[
 
 /// The synthetic predicate tests M13-B's report must also record.
 const SYNTHETIC_TESTS_M13_B: &[&str] = &[
-    "accept_m13_b_m13s_travelers_site_lowers_and_a_counting_mode_refuses",
+    "accept_m13_b_m13s_travelers_site_lowers_and_a_counting_mode_lowers_too",
     "accept_m13_b_an_ungrounded_allegiance_directive_is_refused_rather_than_honoured",
     "accept_m13_b_a_nap_delay_is_data_and_an_inactive_threshold_defaults_to_its_list",
 ];

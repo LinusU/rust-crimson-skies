@@ -24,7 +24,7 @@ const RETAIL_TESTS_M18_B: &[&str] = &[
 
 /// The synthetic predicate tests M18-B's report must also record.
 const SYNTHETIC_TESTS_M18_B: &[&str] = &[
-    "accept_m18_b_m18s_travelers_site_lowers_and_a_counting_mode_refuses",
+    "accept_m18_b_m18s_travelers_site_lowers_and_a_counting_mode_lowers_too",
     "accept_m18_b_a_dependency_gate_lowers_as_the_dependency_wake_conjunct",
     "accept_m18_b_an_ungrounded_allegiance_directive_is_refused_rather_than_honoured",
 ];

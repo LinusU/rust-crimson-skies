@@ -10,16 +10,16 @@ use super::*;
 const RETAIL_TESTS_M10_B: &[&str] = &[
     "accept_m10_b_the_control_program_is_the_member_that_declares_the_blocks",
     "accept_m10_b_every_directive_m10_spells_is_measured_or_terminal",
-    "accept_m10_b_the_record_does_not_lower_and_exactly_two_conditions_refuse",
-    "accept_m10_b_the_two_refused_conditions_are_the_travelers_counting_sites",
+    "accept_m10_b_fu1_the_record_lowers_with_the_counting_sites",
+    "accept_m10_b_the_two_counting_travelers_sites_are_blocks_22_and_35",
     "accept_m10_b_the_sheet_priorities_resolve_to_measured_operations",
     "accept_m10_b_the_terminal_blocks_are_gated_and_every_address_is_in_range",
-    "accept_m10_b_the_mission_stays_unready_until_the_counting_mode_is_measured",
+    "accept_m10_b_fu1_m10_lowers_completely_and_the_campaign_stays_unready",
 ];
 
 /// The synthetic predicate tests M10-B's report must also record.
 const SYNTHETIC_TESTS_M10_B: &[&str] = &[
-    "accept_m10_b_a_numeric_travelers_subject_refuses_and_a_named_one_lowers",
+    "accept_m10_b_fu1_a_numeric_travelers_subject_lowers_to_the_counting_mode",
     "accept_m10_b_a_kill_of_a_terminal_block_binds_like_any_other_address",
 ];
 

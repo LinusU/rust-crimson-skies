@@ -488,6 +488,7 @@ fn accept_m01_lc_world_facts_a_chain_that_cannot_be_pinned_stays_fail_closed() {
         .into_iter()
         .collect(),
         groups: [7].into_iter().collect(),
+        group_members: std::collections::BTreeSet::new(),
         generators: ["owed".to_owned()].into_iter().collect(),
         animations: ["some_anim".to_owned()].into_iter().collect(),
         danger_zones: std::collections::BTreeSet::new(),

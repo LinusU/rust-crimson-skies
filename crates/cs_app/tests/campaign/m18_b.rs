@@ -2046,15 +2046,15 @@ fn travelers(subject: ZrdValue) -> ZrdValue {
 }
 
 /// **M18's `TRAVELERS` site lowers as a predicate; the counting-mode spelling
-/// refuses.**
+/// lowers to the counting condition.**
 ///
-/// The same key at two subjects, so the refusal is the counting mode and not
-/// the spelling: a named subject is the side-effect-free inside/outside test
+/// The same key at two subjects, so the lowering differs by mode and not
+/// by the spelling: a named subject is the side-effect-free inside/outside test
 /// M18 block 3 spells and lowers clean, a numeric `child0` arms a counter write
 /// and refuses. This is the failure arm that keeps a "the record lowers" claim
 /// from hiding an unmeasured predicate.
 #[test]
-fn accept_m18_b_m18s_travelers_site_lowers_and_a_counting_mode_refuses() {
+fn accept_m18_b_m18s_travelers_site_lowers_and_a_counting_mode_lowers_too() {
     let named = lower(&travelers(text("player")));
     assert_eq!(
         named.attempt().conditions,
@@ -2073,22 +2073,8 @@ fn accept_m18_b_m18s_travelers_site_lowers_and_a_counting_mode_refuses() {
     );
 
     let counting = lower(&travelers(int(2)));
-    assert!(
-        matches!(
-            counting.attempt().conditions.as_slice(),
-            [ConditionOutcome::Refused(text)] if text.contains("counting mode")
-        ),
-        "{:?}",
-        counting.attempt().conditions
-    );
-    assert!(
-        counting
-            .attempt()
-            .validation
-            .as_ref()
-            .is_some_and(|problems| !problems.is_empty()),
-        "validation reports the unsupported condition"
-    );
+    assert_eq!(counting.attempt().conditions, [ConditionOutcome::Lowered]);
+    assert_eq!(counting.attempt().validation, Some(Vec::new()));
 }
 
 /// **A dependency gate lowers into the gated block as a wake conjunct.**

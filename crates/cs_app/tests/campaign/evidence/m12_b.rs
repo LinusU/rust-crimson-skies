@@ -11,18 +11,18 @@ const RETAIL_TESTS_M12_B: &[&str] = &[
     "accept_m12_b_m12s_control_program_is_bound_to_the_same_identities_as_its_mission_binding",
     "accept_m12_b_the_measured_vocabulary_partitions_and_refuses_no_m12_key",
     "accept_m12_b_the_block_graph_is_closed_under_the_records_own_numbering",
-    "accept_m12_b_m12s_record_does_not_lower_and_exactly_one_condition_refuses",
+    "accept_m12_b_fu1_m12s_record_lowers_with_its_counting_site",
     "accept_m12_b_the_three_sheet_priorities_locate_in_the_measured_record",
-    "accept_m12_b_m12_stays_unready_until_the_counting_mode_is_measured",
+    "accept_m12_b_fu1_m12_lowers_completely_and_the_campaign_stays_unready",
 ];
 
 /// The synthetic predicate tests M12-B's report must also record: they carry
 /// the two mechanisms the retail record leans on — the travelers evaluator's
-/// three shapes (the refused counting mode, the spelled point, the named
+/// three shapes (the counting mode, the spelled point, the named
 /// anchor) and the wildcard turret name under a win-only latch — into CI,
 /// where there is no original data.
 const SYNTHETIC_TESTS_M12_B: &[&str] = &[
-    "accept_m12_b_m12s_travelers_shapes_refuse_or_lower_as_the_record_spells_them",
+    "accept_m12_b_m12s_travelers_shapes_lower_as_the_record_spells_them",
     "accept_m12_b_a_wildcard_turret_name_binds_and_a_win_only_latch_completes",
 ];
 
@@ -312,11 +312,8 @@ fn evidence_report_m12_b_writes_the_acceptance_report() {
              binding `SourceContext::control_program` derives from it (mission and program \
              identities equal to the M12-A binding, the control member chosen by the measured \
              rule over the archive's whole member set, the directive accounting of the member it \
-             spells). NOT CLAIMED: M12's control record does not lower completely — every one of \
-             its 187 host calls binds, but OBJECTIVE36's TRAVELERS spells a numeric subject, the \
-             counting mode whose evaluation writes a counter, so no side-effect-free predicate \
-             carries it (the shared gap M10-B-FU1, #812, tracks) — so M12 stays Unsupported and \
-             the campaign gate stays closed; \
+             spells). NOT CLAIMED: playability — the control record lowers completely (OBJECTIVE36's \
+             counting TRAVELERS lowers since M10-B-FU1, #812) but the campaign gate stays closed; \
              the wrong-actor, wrong-session and repeated-event halves of the sheet's three \
              priorities are runtime observations and stay unmeasured (M12-C); no mission was \
              played, no original executable was run and nothing is verified_original. Claim is \

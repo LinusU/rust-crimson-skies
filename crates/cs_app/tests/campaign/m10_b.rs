@@ -12,19 +12,18 @@
 //!   directive sites, selected by the content rule and not by its name;
 //! * every one of its 36 directive keys is measured or terminal: none is refused
 //!   and every site binds to a host call;
-//! * the record still does **not** lower to a *valid* program: two
-//!   `TRAVELERS` sites (blocks 22 and 35) arm the counting mode, whose
-//!   evaluation writes a counter, so no side-effect-free condition can carry
-//!   them (the program assembles; validation reports them). The mission is not
-//!   ready;
+//! * two `TRAVELERS` sites (blocks 22 and 35) arm the counting mode, whose
+//!   running total is state; M10-B-FU1 (#812) lowers them to
+//!   `Condition::TravelersCount`, so all 49 conditions lower and the program
+//!   validates;
 //! * the sheet's three priorities name no key, so what is pinned is the
 //!   structure they live in: the completion chain to `INSTANTWIN` (block 28) and
 //!   `INSTANTLOSS` (block 12), the group-depletion blocks, the world damage
 //!   state (`INACTIVE<n>`) and the `TRAVELERS` sites.
 //!
-//! No behaviour is invented here: the unmeasured piece is filed as a follow-up
-//! (see `docs/findings/2026-10-09-m10-b-control-program-gaps.md`) and the mission
-//! stays unready until it is measured.
+//! No behaviour is invented here (see
+//! `docs/findings/2026-10-09-m10-b-control-program-gaps.md` and
+//! `docs/findings/2026-10-18-m10-b-fu1-travelers-counting-mode.md`).
 //!
 //! The retail tests are `#[ignore = "requires CS_GAME_DIR"]`; the synthetic ones
 //! run in CI.
@@ -223,18 +222,15 @@ fn accept_m10_b_every_directive_m10_spells_is_measured_or_terminal() {
     assert_eq!(sites, SITES, "no site is dropped from the accounting");
 }
 
-/// **The record does not lower, and the reason is two named blocks.**
+/// **The record lowers: all 49 conditions, all 232 calls, and the program
+/// validates.**
 ///
-/// All 232 sites bind and 47 of 49 conditions lower, yet the two `TRAVELERS`
-/// blocks (22 and 35, 1-based) arm the counting mode (a non-string `child0`),
-/// whose evaluation accumulates a count into the objective: a write, so no
-/// side-effect-free predicate carries it. Because every call binds, a program is
-/// assembled, but its validation reports the unsupported condition instruction,
-/// so `objective_condition` and `call_arguments` are the unmet rows and the
-/// mission is not complete.
+/// Blocks 22 and 35 (1-based) arm `TRAVELERS`' counting mode; M10-B-FU1 lowers
+/// them to a counting condition whose running total the runtime carries per
+/// objective, so nothing is refused any more.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m10_b_the_record_does_not_lower_and_exactly_two_conditions_refuse() {
+fn accept_m10_b_fu1_the_record_lowers_with_the_counting_sites() {
     let row = census().row(MISSION).unwrap();
     let attempt = row.lowering_attempt().unwrap();
     let lowered = attempt.attempt();
@@ -249,65 +245,45 @@ fn accept_m10_b_the_record_does_not_lower_and_exactly_two_conditions_refuse() {
         "every one of the 232 sites binds to a host call"
     );
     assert!(lowered.unbound_keys.is_empty());
-
-    let refused: Vec<(usize, &str)> = lowered
-        .conditions
-        .iter()
-        .enumerate()
-        .filter_map(|(index, condition)| match condition {
-            ConditionOutcome::Lowered => None,
-            ConditionOutcome::Refused(text) => Some((index, text.as_str())),
-            ConditionOutcome::Unreadable(text) => panic!("block {index} is unreadable: {text}"),
-        })
-        .collect();
-    assert_eq!(refused.len(), 2);
+    assert_eq!(lowered.conditions.len() as u32, BLOCKS);
+    assert!(
+        lowered
+            .conditions
+            .iter()
+            .all(|condition| matches!(condition, ConditionOutcome::Lowered)),
+        "{:?}",
+        lowered.conditions
+    );
     assert_eq!(
-        refused.iter().map(|(index, _)| *index).collect::<Vec<_>>(),
-        [21, 34],
-        "zero-based: OBJECTIVE22 and OBJECTIVE35"
+        lowered.validation,
+        Some(Vec::new()),
+        "the assembled program validates"
     );
-    for (index, text) in &refused {
-        assert!(
-            text.contains(&format!("`OBJECTIVE{}` `TRAVELERS`", index + 1))
-                && text.contains("a non-string subject arms TRAVELERS' counting mode")
-                && text.contains("a write, so no side-effect-free predicate can carry it"),
-            "{text}"
-        );
-    }
-
-    let validation = lowered
-        .validation
-        .as_ref()
-        .expect("the program assembled and was validated");
-    assert!(
-        validation.iter().any(|problem| problem
-            .contains("mission/ch3-m05 objective#21 [condition]: unsupported instruction")),
-        "{validation:?}"
-    );
-    assert!(
-        attempt.program().is_some(),
-        "every call bound, so a program is assembled; it is the validation that fails"
-    );
+    assert!(attempt.program().is_some());
 
     let lowering = row.lowering().unwrap();
     let unmet: Vec<String> = lowering.unmet().map(|r| r.kind.code().to_owned()).collect();
-    assert_eq!(unmet, ["objective_condition", "call_arguments"]);
-    assert!(!row.is_complete());
-    assert!(!lowering.complete());
+    assert!(
+        !unmet.iter().any(|code| code == "objective_condition"),
+        "{unmet:?}"
+    );
+    assert!(
+        !unmet.iter().any(|code| code == "call_arguments"),
+        "{unmet:?}"
+    );
 }
 
-/// **The `TRAVELERS` sites that refuse are the two that spell the counting
-/// mode, and they spell the polarity token the findings left unknown.**
+/// **The two counting `TRAVELERS` sites are blocks 22 and 35, and the second
+/// spells `LEAVING`.**
 ///
 /// Both sites spell a numeric `child0` (`2`), a polarity word, the anchor
 /// `cargozep2`, a radius and a trailing `1`. Block 22 spells `APPROACHING`
 /// (radius 200), block 35 spells `LEAVING` (radius 2000) and `DELETE_ON_SUCCESS`.
-/// The measured rule treats every spelling other than `APPROACHING` as the
-/// outside case; whether the original compares the second word with `LEAVING`
-/// is **not** established here, and `LEAVING` is recorded only as spelled.
+/// The measured parse stores `1` for `APPROACHING` and `0` for every other
+/// string, so `LEAVING` is the outside pole (M10-B-FU1).
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m10_b_the_two_refused_conditions_are_the_travelers_counting_sites() {
+fn accept_m10_b_the_two_counting_travelers_sites_are_blocks_22_and_35() {
     let blocks = blocks_of(&control_document());
     let travelers: Vec<(u32, &Vec<ZrdValue>)> = blocks
         .iter()
@@ -527,12 +503,17 @@ fn accept_m10_b_the_terminal_blocks_are_gated_and_every_address_is_in_range() {
     );
 }
 
-/// **M10 is not campaign-ready and the census does not hide it.**
+/// **M10's control-program row is complete; the campaign still is not ready.**
+///
+/// With the counting mode lowered, the census row for M10 has no unmet lowering
+/// requirement. That is the control program only: no playthrough, difficulty or
+/// presentation row is covered (M10-C), and the campaign as a whole stays
+/// unready.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m10_b_the_mission_stays_unready_until_the_counting_mode_is_measured() {
+fn accept_m10_b_fu1_m10_lowers_completely_and_the_campaign_stays_unready() {
     let census = census();
-    assert!(!census.complete_missions().contains(&MISSION));
+    assert!(census.complete_missions().contains(&MISSION));
     assert!(!census.campaign_ready());
     assert!(census.measured_rows().any(|row| row.mission() == MISSION));
 }
@@ -584,42 +565,70 @@ fn travelers(subject: ZrdValue) -> ZrdValue {
     )])
 }
 
-/// **A numeric `TRAVELERS` subject refuses the condition; a named one lowers.**
+/// **A numeric `TRAVELERS` subject lowers to the counting condition and a named
+/// one to the subject test.**
 ///
-/// The same key at two subjects, so the refusal is the counting mode and not
-/// the spelling: a numeric `child0` arms a counter write and the block does not
-/// lower, a named subject is the side-effect-free inside/outside test and does.
+/// The same key at two subjects: both lower and the program validates, and the
+/// two are different conditions (M10-B-FU1).
 #[test]
-fn accept_m10_b_a_numeric_travelers_subject_refuses_and_a_named_one_lowers() {
-    let counting = lower(&travelers(int(2)));
-    assert!(
-        matches!(
-            counting.attempt().conditions.as_slice(),
-            [ConditionOutcome::Refused(text)] if text.contains("counting mode")
-        ),
-        "{:?}",
-        counting.attempt().conditions
+fn accept_m10_b_fu1_a_numeric_travelers_subject_lowers_to_the_counting_mode() {
+    for subject in [int(2), text("player")] {
+        let lowered = lower(&travelers(subject));
+        assert_eq!(lowered.attempt().conditions, [ConditionOutcome::Lowered]);
+        assert_eq!(
+            lowered.attempt().validation,
+            Some(Vec::new()),
+            "and the program validates clean"
+        );
+    }
+}
+
+/// **The counting site's group members and anchor reach the facts.**
+///
+/// The world fact table carries the awake members' positions of the group the
+/// counting `TRAVELERS` names, keyed by the group id the record spells, and
+/// the anchor chain; a group the world did not report carries nothing.
+#[test]
+fn accept_m10_b_fu1_the_counting_sites_group_members_reach_the_facts() {
+    use cs_app::world_facts::{
+        MemberObservation, MemberResolver, WorldFactTable, WorldObservation, WorldOperands,
+        member_chain,
+    };
+
+    let lowered = lower(&travelers(int(2)));
+    let program = lowered.program().expect("the authored record assembles");
+    let operands = WorldOperands::of(program);
+    assert_eq!(
+        operands.group_members.iter().copied().collect::<Vec<_>>(),
+        [2]
     );
-    assert!(
-        counting
-            .attempt()
-            .validation
-            .as_ref()
-            .is_some_and(|problems| !problems.is_empty()),
-        "validation reports the unsupported condition"
+    assert!(operands.members.contains(&member_chain(["cargozep2"])));
+
+    let resolver = MemberResolver::from_hierarchy(vec![
+        ("world1".to_owned(), None),
+        ("cargozep2".to_owned(), Some(0)),
+    ]);
+    let mut table = WorldFactTable::new(resolver);
+    table.observe(
+        WorldObservation::new()
+            .member(
+                member_chain(["cargozep2"]),
+                MemberObservation::held_in_play([0.0, 0.0, 0.0]),
+            )
+            .group_members(2, vec![[10.0, 0.0, 0.0], [0.0, 20.0, 0.0]]),
+    );
+    let facts = table.facts(&operands);
+    assert_eq!(
+        facts.group_members[&2],
+        vec![[10.0, 0.0, 0.0], [0.0, 20.0, 0.0]]
     );
 
-    let named = lower(&travelers(text("player")));
-    assert_eq!(
-        named.attempt().conditions,
-        [ConditionOutcome::Lowered],
-        "a named subject is a predicate"
-    );
-    assert_eq!(
-        named.attempt().validation,
-        Some(Vec::new()),
-        "and the program validates clean"
-    );
+    let mut silent = WorldFactTable::new(MemberResolver::from_hierarchy(vec![(
+        "world1".to_owned(),
+        None,
+    )]));
+    silent.observe(WorldObservation::new());
+    assert!(silent.facts(&operands).group_members.is_empty());
 }
 
 /// **A kill that targets a terminal block is spelled data, not a verdict.**

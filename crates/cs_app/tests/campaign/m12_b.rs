@@ -32,12 +32,11 @@
 //!   only terminal outcome; the record spells no `INSTANTLOSS` block at all.
 //!   Whatever ends the mission short of success is not a spelled latch of
 //!   this member — a fact the escort-survival priority is measured against.
-//! * **One completion condition refuses.** OBJECTIVE36's `TRAVELERS` spells a
-//!   numeric child0 (`[4, APPROACHING, unit03, 700, 1]`), which arms the
-//!   counting mode the M01-LC findings measured as a counter write inside
-//!   evaluation — the same unimplemented gap M10-B-FU1 (#812) tracks for
-//!   M10's two sites. M12's is the first *counting* site that spells
-//!   `APPROACHING`, and the first whose subject mode siblings both lower:
+//! * **One completion condition is a counting site.** OBJECTIVE36's
+//!   `TRAVELERS` spells a numeric child0 (`[4, APPROACHING, unit03, 700, 1]`),
+//!   which arms the counting mode; M10-B-FU1 (#812) lowers it to
+//!   `Condition::TravelersCount`. M12's is the first *counting* site that
+//!   spells `APPROACHING`, and the first whose subject mode siblings both lower:
 //!   OBJECTIVE2 anchors on a spelled point (a shape no earlier mission
 //!   spelled) and OBJECTIVE51 on `piratezep`.
 //! * **The `WAKEUP_TURRETS` wildcard is exercised.** OBJECTIVE40 spells
@@ -864,18 +863,13 @@ fn accept_m12_b_the_block_graph_is_closed_under_the_records_own_numbering() {
     );
 }
 
-/// **M12's record does not lower, and the reason is exactly one named
-/// block.** All 187 sites bind and 51 of 52 conditions lower, yet
-/// OBJECTIVE36's `TRAVELERS` spells a numeric child0 — the counting mode
-/// whose evaluation accumulates a matching-member count into `+0x5b8`: a
-/// write, so no side-effect-free predicate carries it. Because every call
-/// binds, a program is assembled, but its validation reports the unsupported
-/// condition instruction, so `objective_condition` and `call_arguments` are
-/// the unmet rows and the mission is not complete. This is the same
-/// unimplemented gap M10-B-FU1 (#812) tracks for M10's two sites.
+/// **M12's record lowers completely: all 52 conditions, all 187 sites, and
+/// the assembled program validates.** OBJECTIVE36's `TRAVELERS` spells a
+/// numeric child0, the counting mode M10-B-FU1 (#812) lowers to a counting
+/// condition whose running total the runtime carries.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m12_b_m12s_record_does_not_lower_and_exactly_one_condition_refuses() {
+fn accept_m12_b_fu1_m12s_record_lowers_with_its_counting_site() {
     let binding = control_binding();
     let row = census_row();
     let lowered = row
@@ -910,57 +904,34 @@ fn accept_m12_b_m12s_record_does_not_lower_and_exactly_one_condition_refuses() {
         "no key refuses registration: {:?}",
         attempt.unbound_keys
     );
-    assert!(
-        lowered.program().is_some(),
-        "every call bound, so a program is assembled; it is the validation \
-         that fails"
-    );
-
+    assert!(lowered.program().is_some(), "the program is assembled");
     assert_eq!(
         attempt.conditions.len() as u32,
         BLOCKS,
         "every block carries a condition verdict"
     );
-    let refused: Vec<(usize, &str)> = attempt
-        .conditions
-        .iter()
-        .enumerate()
-        .filter_map(|(index, condition)| match condition {
-            ConditionOutcome::Lowered => None,
-            ConditionOutcome::Refused(text) => Some((index, text.as_str())),
-            ConditionOutcome::Unreadable(text) => panic!("block {index} is unreadable: {text}"),
-        })
-        .collect();
-    assert_eq!(
-        refused.iter().map(|(index, _)| *index).collect::<Vec<_>>(),
-        [35],
-        "zero-based: OBJECTIVE36 alone refuses"
-    );
-    for (index, text) in &refused {
-        assert!(
-            text.contains(&format!("`OBJECTIVE{}` `TRAVELERS`", index + 1))
-                && text.contains("a non-string subject arms TRAVELERS' counting mode")
-                && text.contains("a write, so no side-effect-free predicate can carry it"),
-            "{text}"
-        );
-    }
-
-    let validation = attempt
-        .validation
-        .as_ref()
-        .expect("the program assembled and was validated");
     assert!(
-        validation.iter().any(|problem| problem
-            .contains("mission/ch1-m02 objective#35 [condition]: unsupported instruction")),
-        "{validation:?}"
+        attempt
+            .conditions
+            .iter()
+            .all(|condition| matches!(condition, ConditionOutcome::Lowered)),
+        "{:?}",
+        attempt.conditions
+    );
+    assert_eq!(
+        attempt.validation,
+        Some(Vec::new()),
+        "the assembled program validates"
     );
 
     let lowering = record.lowering(attempt);
     let unmet: Vec<String> = lowering.unmet().map(|r| r.kind.code().to_owned()).collect();
-    assert_eq!(unmet, ["objective_condition", "call_arguments"]);
-    assert!(!record.is_complete(attempt));
-    assert!(!lowering.complete());
-    assert!(!row.is_complete());
+    assert!(
+        !unmet
+            .iter()
+            .any(|code| code == "objective_condition" || code == "call_arguments"),
+        "{unmet:?}"
+    );
 }
 
 // ---------------------------------------------------------------------------
@@ -1161,8 +1132,7 @@ fn accept_m12_b_the_three_sheet_priorities_locate_in_the_measured_record() {
             ZrdValue::Int(1),
         ]],
         "OBJECTIVE36's counting mode: a numeric subject, the measured \
-         polarity, the anchor member and the radius — the one site the \
-         lowering refuses"
+         polarity, the anchor member and the radius"
     );
 
     // The `WAKEUP_TURRETS` wildcard: OBJECTIVE40 spells `b_turret*`, the
@@ -1278,27 +1248,18 @@ fn accept_m12_b_the_three_sheet_priorities_locate_in_the_measured_record() {
     );
 }
 
-/// **M12 is not campaign-ready and the census does not hide it.**
+/// **M12's control-program row is complete; the campaign still is not ready.**
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m12_b_m12_stays_unready_until_the_counting_mode_is_measured() {
+fn accept_m12_b_fu1_m12_lowers_completely_and_the_campaign_stays_unready() {
     let census = census();
-    assert!(!census.complete_missions().contains(&MISSION));
+    assert!(census.complete_missions().contains(&MISSION));
     assert!(!census.campaign_ready());
     assert!(census.measured_rows().any(|row| row.mission() == MISSION));
-    let unmet = census.unmet_by_requirement();
-    for requirement in ["objective_condition", "call_arguments"] {
-        assert!(
-            unmet
-                .get(requirement)
-                .is_some_and(|missions| missions.iter().any(|mission| mission == MISSION)),
-            "the census reports M12 under {requirement}: {unmet:?}"
-        );
-    }
 }
 
 // ---------------------------------------------------------------------------
-// Synthetic: the refusal and the spellings the retail record leans on
+// Synthetic: the spellings the retail record leans on
 // ---------------------------------------------------------------------------
 
 /// A `.zrd` int node.
@@ -1389,9 +1350,27 @@ fn travelers_condition(program: &cs_script::ir::MissionProgram, block: usize) ->
     found.pop().expect("one condition")
 }
 
+/// The one `TravelersCount` condition in the block's lowered condition tree.
+fn counting_condition(program: &cs_script::ir::MissionProgram, block: usize) -> Condition {
+    fn find(condition: &Condition, found: &mut Vec<Condition>) {
+        if matches!(condition, Condition::TravelersCount { .. }) {
+            found.push(condition.clone());
+        }
+        if let Condition::All(items) | Condition::Any(items) = condition {
+            for item in items {
+                find(item, found);
+            }
+        }
+    }
+    let mut found = Vec::new();
+    find(&program.objectives[block].condition, &mut found);
+    assert_eq!(found.len(), 1, "exactly one counting condition: {found:?}");
+    found.pop().expect("one condition")
+}
+
 /// **The three `TRAVELERS` shapes M12 spells behave exactly as the measured
-/// rule says: the counting-mode subject refuses, the point anchor and the
-/// named anchor both lower.**
+/// rule says: the counting-mode subject, the point anchor and the named
+/// anchor all lower.**
 ///
 /// The retail test observes that result on the installation; this carries
 /// the mechanism into CI: an authored record spelling each of M12's three
@@ -1401,7 +1380,7 @@ fn travelers_condition(program: &cs_script::ir::MissionProgram, block: usize) ->
 /// the other two. A non-`APPROACHING` polarity refuses too, so a shortcut
 /// that accepts every token fails here.
 #[test]
-fn accept_m12_b_m12s_travelers_shapes_refuse_or_lower_as_the_record_spells_them() {
+fn accept_m12_b_m12s_travelers_shapes_lower_as_the_record_spells_them() {
     let authored = |args: Vec<ZrdValue>| {
         control_record(vec![block(
             1,
@@ -1413,7 +1392,7 @@ fn accept_m12_b_m12s_travelers_shapes_refuse_or_lower_as_the_record_spells_them(
     };
 
     // OBJECTIVE36's shape: a numeric child0 arms the counting mode, which
-    // writes during evaluation — refused by name, as on the installation.
+    // lowers to the counting condition carrying the group id and the total.
     let document = authored(vec![
         zrd_int(4),
         zrd_text("APPROACHING"),
@@ -1422,22 +1401,31 @@ fn accept_m12_b_m12s_travelers_shapes_refuse_or_lower_as_the_record_spells_them(
         zrd_int(1),
     ]);
     let lowered = lower(&document);
-    assert!(
-        matches!(
-            lowered.attempt().conditions.as_slice(),
-            [ConditionOutcome::Refused(text)] if text.contains("counting mode")
-        ),
+    assert_eq!(
+        lowered.attempt().conditions,
+        [ConditionOutcome::Lowered],
         "{:?}",
         lowered.attempt().conditions
     );
-    assert!(
-        lowered
-            .attempt()
-            .validation
-            .as_ref()
-            .is_some_and(|problems| !problems.is_empty()),
-        "validation reports the unsupported condition"
-    );
+    assert_eq!(lowered.attempt().validation, Some(Vec::new()));
+    let program = lowered.program().expect("the authored record assembles");
+    match counting_condition(program, 0) {
+        Condition::TravelersCount {
+            group,
+            anchor,
+            approaching,
+            required,
+            delete_matched,
+            ..
+        } => {
+            assert_eq!(group, 4);
+            assert_eq!(anchor, TravelersAnchor::Object(vec!["unit03".to_owned()]));
+            assert!(approaching);
+            assert_eq!(required, 1);
+            assert!(!delete_matched);
+        }
+        other => panic!("a numeric child0 lowers to the counting mode: {other:?}"),
+    }
 
     // OBJECTIVE2's shape: the anchor is a three-real point — a spelling no
     // earlier measured mission carried — and the predicate holds the
@@ -1515,9 +1503,8 @@ fn accept_m12_b_m12s_travelers_shapes_refuse_or_lower_as_the_record_spells_them(
         other => panic!("a travelers site lowers to a travelers condition: {other:?}"),
     }
 
-    // The other pole is still unmeasured: a polarity token the findings
-    // never recorded refuses by name, so accepting every token is a failure
-    // here — exactly what keeps `LEAVING`-class spellings unknown.
+    // The other pole: the parse stores 1 for `APPROACHING` and 0 for every
+    // other string, so any other token is the outside pole.
     let document = authored(vec![
         zrd_text("player"),
         zrd_text("DEPARTING"),
@@ -1526,14 +1513,16 @@ fn accept_m12_b_m12s_travelers_shapes_refuse_or_lower_as_the_record_spells_them(
         zrd_int(1),
     ]);
     let lowered = lower(&document);
-    assert!(
-        matches!(
-            lowered.attempt().conditions.as_slice(),
-            [ConditionOutcome::Refused(text)] if text.contains("APPROACHING")
-        ),
-        "{:?}",
-        lowered.attempt().conditions
-    );
+    let program = lowered.program().expect("the authored record assembles");
+    match travelers_condition(program, 0) {
+        Condition::Travelers { approaching, .. } => {
+            assert!(
+                !approaching,
+                "any token but APPROACHING is the outside pole"
+            );
+        }
+        other => panic!("a travelers site lowers to a travelers condition: {other:?}"),
+    }
 }
 
 /// **A wildcard turret name binds like any spelled name, and a record that

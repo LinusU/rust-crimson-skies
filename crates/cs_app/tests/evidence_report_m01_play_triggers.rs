@@ -716,6 +716,7 @@ fn condition_kind(condition: &Condition) -> &'static str {
         Condition::InactiveMembers { .. } => "InactiveMembers",
         Condition::EnemyGroupDepletion { .. } => "EnemyGroupDepletion",
         Condition::Travelers { .. } => "Travelers",
+        Condition::TravelersCount { .. } => "TravelersCount",
         Condition::AnimationStates { .. } => "AnimationStates",
         Condition::DangerZoneFlags { .. } => "DangerZoneFlags",
         Condition::Not(_) => "Not",
