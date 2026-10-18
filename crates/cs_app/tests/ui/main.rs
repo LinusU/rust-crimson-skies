@@ -53,6 +53,13 @@
 //! equipment taken from the flight check and the pilot, voice and survivability
 //! left authored. Its prefix is `accept_f45_c_2_` (so `accept_f45_c_` still
 //! selects it).
+//!
+//! Follow-up stage F55-CU1 (#787, `mod lobby`) wires the F55 lobby screen into
+//! the table and `FrontEndFlow`: `Screen::Lobby` reached from the main menu's
+//! `OpenLobby` and left by `Back`, the screen and the link it drives held by
+//! the domain, and the application-supplied inputs (session epoch,
+//! compatibility signature, resolved endpoint, client hello, loadout
+//! validator) the forms submit with. Its prefix is `accept_f55_cu1_`.
 
 mod evidence;
 mod evidence_f45_b_1;
@@ -65,6 +72,7 @@ mod flow;
 mod import_fixture;
 mod instant_action;
 mod layout;
+mod lobby;
 mod original;
 mod scrapbook_dispatch;
 mod screens;

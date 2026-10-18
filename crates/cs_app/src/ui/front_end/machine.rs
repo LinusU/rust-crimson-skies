@@ -207,6 +207,11 @@ pub enum Request {
     FinishInstantAction,
     /// Settle the running session from the snapshot it reported.
     EndInstantAction,
+    /// Enter the lobby (F55-CU1): the domain opens a fresh
+    /// `ui::lobby::LobbyScreen` on the application's supplied inputs.
+    OpenLobby,
+    /// Leave the lobby screen one `LobbyScreen::back` step (F55-CU1).
+    LobbyBack,
 }
 
 /// What a transition does outside the machine.
@@ -868,6 +873,12 @@ impl FrontEnd {
             }
             RequestKind::EndInstantAction => {
                 effects.push(Effect::Request(Request::EndInstantAction));
+            }
+            RequestKind::OpenLobby => {
+                effects.push(Effect::Request(Request::OpenLobby));
+            }
+            RequestKind::LobbyBack => {
+                effects.push(Effect::Request(Request::LobbyBack));
             }
         }
         // The import dialog's own buttons. Neither asks the domain for

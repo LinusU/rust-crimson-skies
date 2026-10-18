@@ -320,6 +320,8 @@ fn request_name(request: RequestKind) -> &'static str {
         RequestKind::RetryInstantAction => "retry_instant_action",
         RequestKind::FinishInstantAction => "finish_instant_action",
         RequestKind::EndInstantAction => "end_instant_action",
+        RequestKind::OpenLobby => "open_lobby",
+        RequestKind::LobbyBack => "lobby_back",
     }
 }
 

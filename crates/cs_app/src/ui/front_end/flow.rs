@@ -79,6 +79,7 @@
 use std::collections::BTreeSet;
 use std::fmt;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 use cs_assets::cache::CacheStore;
 use cs_assets::vfs::ContentSession;
@@ -91,6 +92,8 @@ use cs_content::construction::{
 use cs_content::instant_action::InstantActionCatalog;
 use cs_content::save::settings::SettingCatalog;
 use cs_content::scrapbook::ScrapbookCatalog;
+use cs_net::compat::{ClientHello, SessionParameters};
+use cs_net::lobby::{Departure, LoadoutValidator};
 use cs_sim::allies::{
     AlliesRoster, BriefingError, BriefingPlan, GeometryId, IdentityError, WingmateSlot,
 };
@@ -100,6 +103,7 @@ use cs_sim::campaign::{
     SessionGeneration as IaGeneration,
 };
 use cs_types::content::ContentId;
+use cs_types::net::{PeerId, SessionId};
 use cs_types::profile::{ProfileId, ProfileKind};
 
 use crate::campaign::{CampaignRun, CampaignSaveError, campaign_profile_id};
@@ -113,6 +117,9 @@ use crate::roster::{LoweredRoster, open_roster};
 use crate::text::TextSession;
 use crate::ui::instant_action::{
     IaAction, IaEdit, IaEffect, IaRefusal, IaScreen, InstantActionFlow, ScenarioSnapshot,
+};
+use crate::ui::lobby::{
+    Back as LobbyBack, LobbyLink, LobbyScreen, LobbyUiError, Stage as LobbyStage,
 };
 use crate::ui::scrapbook::{
     LaunchError, PageError, PersistError, Refresh, ReplayLaunch, ScrapbookUi, SelectError, stored,
@@ -174,6 +181,12 @@ pub struct FlowSetup {
     /// application supplied them. Without it `OpenInstantAction` is refused
     /// rather than opening screens with nothing to select.
     pub instant_action: Option<InstantActionInputs>,
+    /// What the lobby screen needs from outside its forms (F55-CU1): the
+    /// session epoch and compatibility signature a host opens under, the
+    /// client hello a join offers, and the shared `LoadoutValidator`
+    /// (#764). Without it `OpenLobby` is refused rather than opening a
+    /// screen that cannot submit.
+    pub lobby: Option<LobbyInputs>,
 }
 
 /// The inputs the Instant Action screens run on (F49-C2): what
@@ -189,6 +202,45 @@ pub struct InstantActionInputs {
     pub catalog: InstantActionCatalog,
     /// The `ia_scenario` id a custom scenario runs under.
     pub custom_subject: ContentId,
+}
+
+/// What the lobby screen needs from outside its forms (F55-CU1), held by
+/// the flow so a submit can be planned before the machine moves.
+///
+/// The session epoch and the compatibility signature belong to the
+/// transport and the mounted content — `LobbyScreen::submit_host`'s own
+/// documentation says so — and the client hello is what
+/// `LobbyScreen::submit_join` offers. The endpoint a join is resolved to
+/// is *not* here: it is supplied per visit through
+/// [`FrontEndFlow::set_lobby_endpoint`], because resolving the join
+/// form's direct address is the application's own step.
+///
+/// `loadout_validator` is a factory because a refused lobby opening
+/// consumes the instance the attempt built, and the host form stays
+/// retryable. No production `LoadoutValidator` exists yet (#764): the
+/// flow injects it rather than assuming a permissive one.
+#[derive(Clone)]
+pub struct LobbyInputs {
+    /// The session epoch a hosted lobby is opened under.
+    pub session: SessionId,
+    /// The compatibility signature every member must match.
+    pub params: SessionParameters,
+    /// The client hello a join offers the resolved endpoint.
+    pub hello: ClientHello,
+    /// Builds the shared `LoadoutValidator` (#764) a `submit_host` hands
+    /// the link.
+    pub loadout_validator: Arc<dyn Fn() -> Box<dyn LoadoutValidator> + Send + Sync>,
+}
+
+impl fmt::Debug for LobbyInputs {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("LobbyInputs")
+            .field("session", &self.session)
+            .field("params", &self.params)
+            .field("hello", &self.hello)
+            .field("loadout_validator", &"<loadout validator factory>")
+            .finish()
+    }
 }
 
 /// The immutable inputs a construction commit is judged by — the same three
@@ -273,6 +325,7 @@ impl FlowSetup {
             construction: None,
             scrapbook: None,
             instant_action: None,
+            lobby: None,
         }
     }
 
@@ -351,6 +404,16 @@ impl FlowSetup {
     #[must_use]
     pub fn scrapbook(mut self, inputs: ScrapbookInputs) -> Self {
         self.scrapbook = Some(inputs);
+        self
+    }
+
+    /// The session epoch, compatibility signature, client hello and
+    /// loadout validator the lobby screen submits with (F55-CU1). Without
+    /// them `OpenLobby` is refused rather than opening a lobby that
+    /// cannot submit.
+    #[must_use]
+    pub fn lobby(mut self, inputs: LobbyInputs) -> Self {
+        self.lobby = Some(inputs);
         self
     }
 }
@@ -991,6 +1054,31 @@ pub enum FlowError {
         /// The Instant Action screen.
         flow: IaScreen,
     },
+    /// The application supplied no lobby inputs (F55-CU1): entering is
+    /// refused rather than opening a lobby that cannot submit.
+    NoLobbyInputs,
+    /// The front end is on the lobby screen but no `LobbyScreen` is open —
+    /// a wiring fault, not a player's mistake.
+    NoLobby,
+    /// The lobby step needs a link the visit never produced: no lobby was
+    /// hosted and no endpoint was resolved (F55-CU1).
+    NoLobbyLink,
+    /// The lobby screen refused the step (F55-CU1); the refusal is the
+    /// screen's own kept one.
+    Lobby(LobbyUiError),
+    /// `Back` reached the domain while the room was still open: the
+    /// lobby's own table leaves the room first
+    /// ([`FrontEndFlow::lobby_back`]), so the front-end row is refused
+    /// rather than dropping a live room behind the screen's back.
+    LobbyRoomStillOpen,
+    /// The front end and the lobby screen are out of step — a wiring
+    /// fault, not a player's mistake.
+    LobbyOutOfStep {
+        /// The front-end screen.
+        screen: Screen,
+        /// Whether the domain holds an open lobby screen.
+        open: bool,
+    },
 }
 
 impl fmt::Display for FlowError {
@@ -1057,6 +1145,18 @@ impl fmt::Display for FlowError {
                     "the front end is on {screen:?} but Instant Action on {flow:?}"
                 )
             }
+            Self::NoLobbyInputs => f.write_str("no lobby inputs were supplied"),
+            Self::NoLobby => f.write_str("no lobby screen is open"),
+            Self::NoLobbyLink => {
+                f.write_str("the lobby visit produced no link: nothing hosted or resolved")
+            }
+            Self::Lobby(error) => write!(f, "lobby: {error}"),
+            Self::LobbyRoomStillOpen => f.write_str("the lobby room is still open: leave it first"),
+            Self::LobbyOutOfStep { screen, open } => write!(
+                f,
+                "the front end is on {screen:?} while the lobby screen is {}",
+                if *open { "open" } else { "closed" }
+            ),
         }
     }
 }
@@ -1078,6 +1178,7 @@ impl std::error::Error for FlowError {
             Self::ScrapbookLaunch(error) => Some(error),
             Self::ScrapbookStored(error) => Some(error),
             Self::InstantAction(error) => Some(error),
+            Self::Lobby(error) => Some(error),
             _ => None,
         }
     }
@@ -1098,6 +1199,12 @@ impl From<ResourceProblem> for FlowError {
 impl From<IaRefusal> for FlowError {
     fn from(error: IaRefusal) -> Self {
         Self::InstantAction(error)
+    }
+}
+
+impl From<LobbyUiError> for FlowError {
+    fn from(error: LobbyUiError) -> Self {
+        Self::Lobby(error)
     }
 }
 
@@ -1205,6 +1312,16 @@ struct FlowDomain {
     /// The Instant Action effects the last accepted request produced, taken by
     /// the ledger once the machine has moved.
     ia_effects: Vec<IaEffect>,
+    /// The lobby screen while the front end is on `Screen::Lobby`
+    /// (F55-CU1): the stage, drafts, focus, notices and refusal a renderer
+    /// reads. It is built fresh by `Request::OpenLobby` — entering resets
+    /// everything transient — and dropped by `Request::LobbyBack`, which
+    /// is the `Back::Exit` teardown's discard.
+    lobby_screen: Option<LobbyScreen>,
+    /// The link the lobby screen drives this visit: the lobby
+    /// `submit_lobby_host` opened, or the endpoint `set_lobby_endpoint`
+    /// resolved the join form's address to. It leaves with the screen.
+    lobby_link: Option<LobbyLink>,
 }
 
 impl FlowDomain {
@@ -1239,6 +1356,8 @@ impl FlowDomain {
             instant_action,
             ia_report: None,
             ia_effects: Vec::new(),
+            lobby_screen: None,
+            lobby_link: None,
         }
     }
 
@@ -1278,6 +1397,8 @@ impl FlowDomain {
             Some(Request::RetryInstantAction) => self.step_instant_action(IaAction::Retry),
             Some(Request::FinishInstantAction) => self.step_instant_action(IaAction::Finish),
             Some(Request::EndInstantAction) => self.end_instant_action(),
+            Some(Request::OpenLobby) => self.open_lobby(),
+            Some(Request::LobbyBack) => self.lobby_back(),
         }
     }
 
@@ -1345,6 +1466,47 @@ impl FlowDomain {
             .ok_or(FlowError::NoInstantActionReport)?;
         let transition = self.instant_action_mut()?.report(generation, snapshot)?;
         self.ia_effects.extend(transition.effects);
+        Ok(())
+    }
+
+    /// Entering the lobby opens a fresh `LobbyScreen` (F55-CU1): stage,
+    /// drafts, focus, notices and refusals all reset — the contract's
+    /// "focus and accessibility state reset sensibly on entry" — and the
+    /// last visit's link goes with the screen it belonged to. The inputs
+    /// a submit needs are the application's, so entering without them is
+    /// refused rather than opening a lobby that can never submit.
+    fn open_lobby(&mut self) -> Result<(), FlowError> {
+        if self.setup.lobby.is_none() {
+            return Err(FlowError::NoLobbyInputs);
+        }
+        self.lobby_screen = Some(LobbyScreen::new());
+        self.lobby_link = None;
+        Ok(())
+    }
+
+    /// `Back` on the lobby screen (F55-CU1) asks the lobby's own stage
+    /// table: on a join or host form `LobbyScreen::back` is `Back::Exit` —
+    /// the draft-discarding leave — and dropping the screen finishes it;
+    /// the resolved or hosted link goes with it. Inside the room `back`
+    /// only tears the room down, which `FrontEndFlow::lobby_back`
+    /// performs first; the request arriving with the room still open is
+    /// refused rather than abandoning a live room behind the screen's
+    /// back.
+    fn lobby_back(&mut self) -> Result<(), FlowError> {
+        let screen = self.lobby_screen.as_mut().ok_or(FlowError::NoLobby)?;
+        if screen.stage() == LobbyStage::Room {
+            return Err(FlowError::LobbyRoomStillOpen);
+        }
+        if let Some(link) = self.lobby_link.as_mut() {
+            match screen.back(link).map_err(FlowError::Lobby)? {
+                LobbyBack::Exit => {}
+                LobbyBack::LeftRoom(_) => {
+                    unreachable!("a form's back never tears a room down")
+                }
+            }
+        }
+        self.lobby_screen = None;
+        self.lobby_link = None;
         Ok(())
     }
 
@@ -2220,6 +2382,194 @@ impl FrontEndFlow {
         self.session.mirror_instant_action_draft(dirty);
     }
 
+    /// The current screen must be `Screen::Lobby` and no discard prompt
+    /// may be open.
+    fn expect_lobby_screen(&self) -> Result<(), FlowError> {
+        let front_end = self.session.front_end();
+        if front_end.pending_discard().is_some() {
+            return Err(Refusal::ConfirmationPending.into());
+        }
+        if front_end.screen() != Screen::Lobby {
+            return Err(Refusal::WrongScreen {
+                expected: Screen::Lobby,
+                actual: front_end.screen(),
+            }
+            .into());
+        }
+        Ok(())
+    }
+
+    /// Edits the open lobby screen — its stage's own typed operations
+    /// (`show_host`, `set_target`, `set_callsign`, `set_scenario`,
+    /// `set_max_members`, `focus_on`, `mute`, `observe`, ...), as
+    /// [`Self::edit_construction`] is the construction screen's.
+    ///
+    /// # Errors
+    ///
+    /// [`FlowError::Screen`] off the lobby screen or while a prompt is
+    /// open, [`FlowError::NoLobby`] when the screen and the front end are
+    /// out of step.
+    pub fn edit_lobby<R>(
+        &mut self,
+        edit: impl FnOnce(&mut LobbyScreen) -> R,
+    ) -> Result<R, FlowError> {
+        self.expect_lobby_screen()?;
+        let screen = self
+            .domain
+            .lobby_screen
+            .as_mut()
+            .ok_or(FlowError::NoLobby)?;
+        Ok(edit(screen))
+    }
+
+    /// Runs a lobby room action — `set_team`, `set_loadout`, `set_ready`,
+    /// `send_chat`, `host_action` — on the screen through the link the
+    /// visit produced (the hosted lobby or the resolved join endpoint).
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::edit_lobby`], plus [`FlowError::NoLobbyLink`] when the
+    /// visit produced no link to drive.
+    pub fn lobby_action<R>(
+        &mut self,
+        op: impl FnOnce(&mut LobbyScreen, &mut LobbyLink) -> R,
+    ) -> Result<R, FlowError> {
+        self.expect_lobby_screen()?;
+        let screen = self
+            .domain
+            .lobby_screen
+            .as_mut()
+            .ok_or(FlowError::NoLobby)?;
+        let link = self
+            .domain
+            .lobby_link
+            .as_mut()
+            .ok_or(FlowError::NoLobbyLink)?;
+        Ok(op(screen, link))
+    }
+
+    /// Supplies the endpoint the join form's direct address resolved to
+    /// (F55-CU1). Resolving the address is the application's own step —
+    /// today it is a lobby in this process (`LobbyLink::host`); the
+    /// session-wire join of #763 is not bound here yet. The endpoint is
+    /// what [`Self::submit_lobby_join`] then offers the form's callsign
+    /// and password to, and it stays for a corrected retry after a
+    /// refusal.
+    ///
+    /// # Errors
+    ///
+    /// [`FlowError::Screen`] off the lobby screen or while a prompt is
+    /// open.
+    pub fn set_lobby_endpoint(&mut self, endpoint: LobbyLink) -> Result<(), FlowError> {
+        self.expect_lobby_screen()?;
+        self.domain.lobby_link = Some(endpoint);
+        Ok(())
+    }
+
+    /// The host form's submit (F55-CU1): `LobbyScreen::submit_host` on the
+    /// application's supplied session epoch, compatibility signature and
+    /// loadout validator. The opened link becomes the one
+    /// [`Self::lobby_action`] drives, and the screen enters the room.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::edit_lobby`], [`FlowError::NoLobbyInputs`] when the
+    /// application supplied none, and [`FlowError::Lobby`] when the screen
+    /// refuses — the form's own kept refusal.
+    pub fn submit_lobby_host(&mut self) -> Result<(), FlowError> {
+        self.expect_lobby_screen()?;
+        let inputs = self
+            .domain
+            .setup
+            .lobby
+            .as_ref()
+            .ok_or(FlowError::NoLobbyInputs)?;
+        let session = inputs.session;
+        let params = inputs.params.clone();
+        let validator = (inputs.loadout_validator)();
+        let screen = self
+            .domain
+            .lobby_screen
+            .as_mut()
+            .ok_or(FlowError::NoLobby)?;
+        let link = screen
+            .submit_host(session, params, validator)
+            .map_err(FlowError::Lobby)?;
+        self.domain.lobby_link = Some(link);
+        Ok(())
+    }
+
+    /// The join form's submit (F55-CU1): `LobbyScreen::submit_join` on the
+    /// resolved endpoint, offering the application's client hello. A
+    /// refusal is the host's distinct reason kept on the form, and the
+    /// endpoint is kept for the retry.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::lobby_action`], plus [`FlowError::Lobby`] when the
+    /// screen or the lobby refuses.
+    pub fn submit_lobby_join(&mut self) -> Result<PeerId, FlowError> {
+        self.expect_lobby_screen()?;
+        let hello = self
+            .domain
+            .setup
+            .lobby
+            .as_ref()
+            .ok_or(FlowError::NoLobbyInputs)?
+            .hello
+            .clone();
+        let screen = self
+            .domain
+            .lobby_screen
+            .as_mut()
+            .ok_or(FlowError::NoLobby)?;
+        let link = self
+            .domain
+            .lobby_link
+            .as_mut()
+            .ok_or(FlowError::NoLobbyLink)?;
+        screen.submit_join(link, &hello).map_err(FlowError::Lobby)
+    }
+
+    /// The lobby screen's `back`, the way the lobby's own stage table
+    /// reads it (F55-CU1): inside the room it tears the room down first —
+    /// returning the departure the application broadcasts — and only on a
+    /// join or host form is it the front-end `Back` row's `Exit`, which
+    /// leaves for the main menu with the drafts discarded.
+    ///
+    /// # Errors
+    ///
+    /// As [`Self::lobby_action`] for the room-leaving step, otherwise as
+    /// [`Self::press`] for the front-end transition.
+    pub fn lobby_back(&mut self) -> Result<LobbyStep, FlowError> {
+        self.expect_lobby_screen()?;
+        if self
+            .domain
+            .lobby_screen
+            .as_ref()
+            .ok_or(FlowError::NoLobby)?
+            .stage()
+            == LobbyStage::Room
+        {
+            let screen = self
+                .domain
+                .lobby_screen
+                .as_mut()
+                .ok_or(FlowError::NoLobby)?;
+            let link = self
+                .domain
+                .lobby_link
+                .as_mut()
+                .ok_or(FlowError::NoLobbyLink)?;
+            let LobbyBack::LeftRoom(departure) = screen.back(link).map_err(FlowError::Lobby)?
+            else {
+                unreachable!("Back inside the room only leaves it")
+            };
+            return Ok(LobbyStep::LeftRoom(departure));
+        }
+        self.press(Action::Back).map(LobbyStep::Exited)
+    }
+
     /// The content session the loading screen's reads resolve through.
     pub fn set_content_session(&mut self, content: ContentSession) {
         self.load.set_content_session(content);
@@ -2297,6 +2647,7 @@ impl FrontEndFlow {
             self.ledger.apply_ia(&effect)?;
         }
         self.check_instant_action_in_step(outcome.to)?;
+        self.check_lobby_in_step(outcome.to)?;
         self.mirror_instant_action_draft();
         // A scrapbook launch's stored replay is taken before the close that
         // leaving the screen runs clears it — it repoints the load about to
@@ -2348,6 +2699,31 @@ impl FrontEndFlow {
         }
         Ok(())
     }
+
+    /// After a transition the front end is on `Screen::Lobby` exactly when
+    /// the domain holds a lobby screen (F55-CU1): the two never drift —
+    /// entering builds the screen and leaving drops it.
+    fn check_lobby_in_step(&self, screen: Screen) -> Result<(), FlowError> {
+        let open = self.domain.lobby_screen.is_some();
+        if (screen == Screen::Lobby) != open {
+            return Err(FlowError::LobbyOutOfStep { screen, open });
+        }
+        Ok(())
+    }
+}
+
+/// What one [`FrontEndFlow::lobby_back`] did (F55-CU1): the front end
+/// either stayed on the lobby screen — the room was torn down first, as
+/// the lobby's own stage table reads `Back` — or left it for the menu.
+#[derive(Debug)]
+pub enum LobbyStep {
+    /// `Back` inside the room left it: still on `Screen::Lobby`, on a
+    /// fresh join form, with the departure the application broadcasts.
+    LeftRoom(Option<Departure>),
+    /// `Back` on a join or host form left the lobby screen — the
+    /// `Back::Exit` teardown, drafts discarded — and the machine moved;
+    /// the transition's outcome.
+    Exited(Outcome),
 }
 
 /// Read-only access to the domain the flow transacts against.
@@ -2445,5 +2821,20 @@ impl FlowDomainView<'_> {
     #[must_use]
     pub fn scrapbook_refresh(&self) -> Option<&Refresh> {
         self.0.scrapbook_refresh.as_ref()
+    }
+
+    /// The lobby screen while the front end is on `Screen::Lobby`
+    /// (F55-CU1): the stage, drafts, focus, notices and refusal a renderer
+    /// reads.
+    #[must_use]
+    pub fn lobby_screen(&self) -> Option<&LobbyScreen> {
+        self.0.lobby_screen.as_ref()
+    }
+
+    /// The link the lobby screen drives this visit — the hosted lobby or
+    /// the resolved join endpoint.
+    #[must_use]
+    pub fn lobby_link(&self) -> Option<&LobbyLink> {
+        self.0.lobby_link.as_ref()
     }
 }

@@ -96,6 +96,7 @@ pub(crate) fn preflight_deck() -> ScreenDeck {
                     "new-profile",
                     "continue-profile",
                     "open-instant-action",
+                    "open-lobby",
                     "open-settings",
                     "quit",
                 ],
@@ -175,6 +176,7 @@ pub(crate) fn instant_action_deck() -> ScreenDeck {
                     "new-profile",
                     "continue-profile",
                     "open-instant-action",
+                    "open-lobby",
                     "open-settings",
                     "quit",
                 ],
@@ -307,7 +309,8 @@ fn accept_f45_b_cancel_at_every_preflight_screen_leaves_state_and_currency_uncha
     let before = campaign.snapshot();
 
     // Every screen a player reaches before flying carries authored art; the
-    // in-flight and results screens are F45-B's later stages.
+    // in-flight and results screens are F45-B's later stages, and the lobby
+    // is F55's own screen — its presentation is `LobbyScreen`, not deck art.
     let deck = preflight_deck();
     let preflight: Vec<Screen> = Screen::ALL
         .into_iter()
@@ -322,6 +325,7 @@ fn accept_f45_b_cancel_at_every_preflight_screen_leaves_state_and_currency_uncha
                     | Screen::IaCustomize
                     | Screen::IaFlight
                     | Screen::IaResults
+                    | Screen::Lobby
             )
         })
         .collect();
@@ -859,6 +863,7 @@ fn accept_f45_b_a_screen_without_authored_assets_is_reported_never_placeholdered
                 "new-profile",
                 "continue-profile",
                 "open-instant-action",
+                "open-lobby",
                 "open-settings",
                 "quit",
             ],

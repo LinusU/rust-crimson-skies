@@ -25,6 +25,15 @@
 //!   `ui::instant_action::IA_TABLE` as front-end screens, entered from the main
 //!   menu and left for it; [`FrontEndFlow`] drives
 //!   `ui::instant_action::InstantActionFlow` behind them.
+//! * The multiplayer lobby (F55-CU1): [`Screen::Lobby`] is reached from the
+//!   main menu's `OpenLobby` and left by `Back`. Its join, host and room
+//!   stages are `ui::lobby::LobbyScreen`'s own stage table;
+//!   [`FrontEndFlow`] holds the screen and the [`crate::ui::lobby::LobbyLink`]
+//!   it drives,
+//!   and supplies what the forms need from outside through
+//!   [`LobbyInputs`]: the session epoch and compatibility signature a
+//!   host opens under, the resolved endpoint and client hello a join
+//!   offers, and the shared `cs_net::lobby::LoadoutValidator`.
 //! * [`FrontEnd`] (in `machine`) — the machine that walks the table.
 //! * [`ScreenSession`] (in `screens`, F45-B) — the front end presented through
 //!   a validated [`ScreenDeck`] of authored artwork and hotspots: pointer
@@ -83,7 +92,8 @@ pub use capture::{
 };
 pub use flow::{
     ConstructionInputs, FlowDomainView, FlowError, FlowSetup, FrontEndFlow, InstantActionInputs,
-    LoadError, LoadFlow, LoadPlan, LoadVerdict, ResourceLedger, ResourceProblem, ScrapbookInputs,
+    LoadError, LoadFlow, LoadPlan, LoadVerdict, LobbyInputs, LobbyStep, ResourceLedger,
+    ResourceProblem, ScrapbookInputs,
 };
 pub use import_dialog::ImportDialog;
 pub use machine::{
@@ -152,11 +162,16 @@ pub enum Screen {
     IaFlight,
     /// Instant Action: the session ended; retry or finish.
     IaResults,
+    /// The F55-C multiplayer lobby (F55-CU1): the join / host / room
+    /// screen the main menu's `OpenLobby` reaches. Its join, host and
+    /// room stages are `ui::lobby::LobbyScreen`'s own table; the front
+    /// end only owns entering and leaving.
+    Lobby,
 }
 
 impl Screen {
     /// Every screen.
-    pub const ALL: [Self; 21] = [
+    pub const ALL: [Self; 22] = [
         Self::InstallSelect,
         Self::ContentDiagnosis,
         Self::MainMenu,
@@ -178,6 +193,7 @@ impl Screen {
         Self::IaCustomize,
         Self::IaFlight,
         Self::IaResults,
+        Self::Lobby,
     ];
 
     /// The screen the application starts on.
@@ -222,6 +238,8 @@ pub enum Action {
     OpenScrapbook,
     /// Open the Instant Action screens from the main menu.
     OpenInstantAction,
+    /// Open the multiplayer lobby from the main menu (F55-CU1).
+    OpenLobby,
     /// Start a custom Instant Action scenario from the selected preset.
     StartCustom,
     /// Record the ended Instant Action session and return to the main menu.
@@ -276,7 +294,7 @@ pub enum Action {
 
 impl Action {
     /// Every action.
-    pub const ALL: [Self; 38] = [
+    pub const ALL: [Self; 39] = [
         Self::InstallVerified,
         Self::InstallRejected,
         Self::ContentMissing,
@@ -290,6 +308,7 @@ impl Action {
         Self::OpenSettings,
         Self::OpenScrapbook,
         Self::OpenInstantAction,
+        Self::OpenLobby,
         Self::StartCustom,
         Self::Finish,
         Self::InstantActionEnded,
@@ -334,6 +353,7 @@ impl Action {
             Self::OpenSettings => "open-settings",
             Self::OpenScrapbook => "open-scrapbook",
             Self::OpenInstantAction => "open-instant-action",
+            Self::OpenLobby => "open-lobby",
             Self::StartCustom => "start-custom",
             Self::Finish => "finish",
             Self::InstantActionEnded => "instant-action-ended",
@@ -452,6 +472,16 @@ pub enum RequestKind {
     FinishInstantAction,
     /// Settle the running session from its reported snapshot.
     EndInstantAction,
+    /// Enter the lobby: it exists only when the application supplied the
+    /// session epoch, compatibility signature, client hello and shared
+    /// `LoadoutValidator` the forms need (`LobbyInputs`, F55-CU1).
+    OpenLobby,
+    /// Leave the lobby screen one `LobbyScreen::back` step — a form's
+    /// `Back::Exit`, which discards the drafts. Inside the room `back`
+    /// only tears the room down, so `FrontEndFlow::lobby_back` performs
+    /// that step first and this request is refused while the room is
+    /// still open.
+    LobbyBack,
 }
 
 /// One row of the transition table.
@@ -542,6 +572,8 @@ pub const TABLE: &[Row] = &[
         G::None,
         R::OpenInstantAction,
     ),
+    // The lobby (F55-CU1): another profile-free branch off the menu.
+    row(S::MainMenu, A::OpenLobby, S::Lobby, G::None, R::OpenLobby),
     row(S::MainMenu, A::OpenSettings, S::Settings, G::None, R::None),
     row(
         S::MainMenu,
@@ -821,6 +853,12 @@ pub const TABLE: &[Row] = &[
         G::None,
         R::FinishInstantAction,
     ),
+    // The lobby's only front-end row (F55-CU1): `Back` on the lobby
+    // screen asks `LobbyScreen::back`, which on a join or host form is
+    // `Back::Exit` — the draft-discarding leave for the menu. Inside the
+    // room `back` only leaves the room, so `FrontEndFlow::lobby_back`
+    // performs that first; this row is refused while the room is open.
+    row(S::Lobby, A::Back, S::MainMenu, G::None, R::LobbyBack),
 ];
 
 /// The row for an action on a screen.
