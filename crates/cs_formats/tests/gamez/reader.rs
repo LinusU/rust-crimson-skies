@@ -926,8 +926,8 @@ fn accept_f10_b_gamez_morph_vectors_are_read_after_the_normals() {
 fn accept_f10_b_gamez_flags_select_strip_and_normals() {
     let spec = HeaderSpec::default();
     // One mesh with two five-corner polygons over three positions: the first an
-    // outline, the second a strip, neither with normals, both with an unnamed
-    // flag bit set.
+    // outline, the second a strip, neither with normals, both carrying the
+    // measured two-sided flag bit (`FLAG_UNK2`, the dword's `0x400`).
     let mut outline = PolygonSpec::triangle().with(5, FLAG_UNK2);
     // Five distinct positions walked once around a convex pentagon, so the
     // outline is simple and non-degenerate and really does triangulate.
@@ -958,7 +958,7 @@ fn accept_f10_b_gamez_flags_select_strip_and_normals() {
     );
     assert_eq!(
         polygon.raw_flags, FLAG_UNK2,
-        "the flag byte is kept raw, unmapped bits included"
+        "the stored flag word is kept raw, bit for bit"
     );
     assert!(
         polygon.corners.iter().all(|corner| corner.normal.is_none()),

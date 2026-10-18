@@ -4980,7 +4980,9 @@ mod tests {
         let with_flags = build(flagged);
         let without = build(plain);
 
-        // Raw flags are not interpreted: only the material index is read.
+        // Every stored flag bit but the measured two-sided one is unread: only
+        // the material index and `0x400` decide, and this stored word clears
+        // `0x400`, so the two meshes build identically.
         assert_eq!(with_flags, without);
         let materials: Vec<u32> = with_flags
             .groups()
