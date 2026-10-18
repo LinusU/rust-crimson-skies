@@ -242,14 +242,23 @@ impl EventKey {
 /// The program-sequence number of the wake emission of action `action` on
 /// the block's `occurrence`-th wake (zero-based).
 ///
-/// The first wake keeps the completion path's number (`action + 1`); a later
-/// wake carries its occurrence in the high half, so each wake of a block has
-/// its own execution key. `None` when either half would not fit: such a site
-/// is not emitted rather than allowed to collide with another key.
+/// The first wake keeps the completion path's number (`action + 1`). A later
+/// wake takes a number on the one lattice a pending item can never reach —
+/// a multiple of [`SEQS_PER_ITEM`]: item sequences are
+/// `(ordinal + 1) * SEQS_PER_ITEM + (action + 1)` with the action term below
+/// `SEQS_PER_ITEM`, so none of them is `0 mod SEQS_PER_ITEM`, while every
+/// multiple is past the completion path's `0..=MAX_ACTIONS_PER_OBJECTIVE`.
+/// `None` when the packed slot no longer fits a `u32`: such a site is not
+/// emitted rather than allowed to collide with another key.
 fn wake_sequence(occurrence: u32, action: usize) -> Option<u32> {
-    let low = u16::try_from(action.checked_add(1)?).ok()?;
-    let high = u16::try_from(occurrence).ok()?;
-    Some(u32::from(high) << 16 | u32::from(low))
+    let action = u32::try_from(action).ok()?.checked_add(1)?;
+    if occurrence == 0 {
+        return Some(action);
+    }
+    SEQS_PER_ITEM
+        .checked_mul(occurrence)?
+        .checked_add(action)?
+        .checked_mul(SEQS_PER_ITEM)
 }
 
 /// Exactly-once identity of one event or action.

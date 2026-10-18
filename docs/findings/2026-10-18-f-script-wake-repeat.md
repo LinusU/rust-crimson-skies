@@ -2,7 +2,9 @@
 
 Date: 2026-10-18. Capabilities: `retail` (read-only `$CS_GAME_DIR`) plus
 build/test. No original run; nothing here is `verified_original`.
-Implementer: `sonnet-2`.
+Implementer: `sonnet-2`, continued by `Devin SWE-2/swe2-max-1`; reviewed by
+`Devin SWE-2/swe2-max-1` in a fresh session (same model — not independent
+evidence).
 
 ## Measurement
 
@@ -40,15 +42,21 @@ site inside a stepped game loop, with an observable effect (a second
 `MissionState` keeps a per-block wake ledger. The first wake of a block takes
 the key the completion path uses (`source`, action index + 1), so a
 completion after it still emits nothing twice. The n-th later wake takes the
-key `(n << 16) | (action index + 1)`, so each wake is admitted once and a
-retry or restore of the same wake is still suppressed by `consumed`. A site
-whose action index or wake count does not fit 16 bits is not emitted (fail
-closed) rather than aliased. `consumed` is not cleared, so the exactly-once
-guarantee for every other effect family is unchanged.
+key `SEQS_PER_ITEM * (SEQS_PER_ITEM * n + action index + 1)` — a multiple of
+65, which no pending-item sequence can be (`(ordinal + 1) * 65 + (action +
+1)` keeps a nonzero residue) and which is always past the completion path's
+`0..=64` — so each wake is admitted once and a retry or restore of the same
+wake is still suppressed by `consumed`. A site whose packed slot does not
+fit a `u32` is not emitted (fail closed) rather than aliased. `consumed` is
+not cleared, so the exactly-once guarantee for every other effect family is
+unchanged.
 
 The ledger (`awake`, `wakes`) is in the save record, which is now
 `SNAPSHOT_VERSION` 6; version 5 records are refused. A restored session
-therefore neither repeats the wake it was on nor loses the next one. The
+therefore neither repeats the wake it was on nor loses the next one. Both
+ledger fields stay inside the program: a facts row naming a block the
+program does not carry is tolerated by the emit pass but never recorded, so
+the record's `awake ⊆ wakes` check is exactly the live invariant. The
 dormant-only pair stays right: those sites only ever follow a first wake in
 M01 (a block loaded Dormant), and the host's engine model owns the
 "prior state was 0" guard.

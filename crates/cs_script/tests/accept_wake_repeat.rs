@@ -9,7 +9,7 @@
 
 use cs_script::ir::{
     Action, Condition, DirectiveOperation, IR_VERSION, MissionProgram, Objective, SymbolId,
-    ValidatedProgram, Value,
+    ValidatedProgram, Value, Variable,
 };
 use cs_script::runtime::{
     MissionFacts, MissionState, ObjectiveLifecycle, RestoreDefect, RestoreError, SessionGeneration,
@@ -116,6 +116,87 @@ fn accept_wake_repeat_the_wake_ledger_survives_a_save_record() {
         step(&mut state, &p, tick, l);
     }
     assert_eq!(state.directives(), restored.directives());
+}
+
+/// **A re-wake's key never aliases a scheduled item's.** Item sequences pack
+/// as `(ordinal + 1) * SEQS_PER_ITEM + (action + 1)` — never a multiple of
+/// `SEQS_PER_ITEM` — while the completion path holds `0..=64`; a re-wake's
+/// occurrence key is a multiple of `SEQS_PER_ITEM` above both, so a session
+/// that keeps rescheduling one block emits the item's effect and the
+/// re-wake's on the same tick. A packing into the same space (the retired
+/// `(occurrence << 16) | (action + 1)`) lets the two meet — the program
+/// below reaches it exactly: the item's 1008th ordinal emits `1008 * 65 +
+/// 17` = 65537 at its action 16, which the second wake's `(1 << 16) | 1`
+/// would have been.
+#[test]
+fn accept_wake_repeat_a_rewake_never_aliases_a_scheduled_items_key() {
+    // The item: sixteen writes, its directive at action 16, then the
+    // `Reschedule` that re-queues the whole list one ordinal further each
+    // tick. The block completes on its first tick and never sleeps.
+    let mut item_actions: Vec<Action> = (0..16)
+        .map(|n| Action::SetVariable {
+            variable: SymbolId(100),
+            value: Value::Int(n),
+        })
+        .collect();
+    item_actions.push(Action::Directive {
+        operation: DirectiveOperation::CompletedSoundGroup,
+        args: vec![],
+    });
+    item_actions.push(Action::Reschedule { delay_ticks: 1 });
+    let p = MissionProgram {
+        version: IR_VERSION,
+        mission: ContentId::from_source(ContentKind::Mission, "synthetic").unwrap(),
+        variables: vec![Variable {
+            id: SymbolId(100),
+            name: "v".into(),
+            initial: Value::Int(0),
+        }],
+        objectives: vec![Objective {
+            id: SymbolId(1),
+            content: ContentId::from_source(ContentKind::Objective, "o1").unwrap(),
+            condition: Condition::Const(true),
+            actions: vec![
+                Action::Directive {
+                    operation: DirectiveOperation::WakeAnimation,
+                    args: vec![Value::Str("anim".into())],
+                },
+                Action::Schedule {
+                    delay_ticks: 1,
+                    actions: item_actions,
+                },
+            ],
+            span: None,
+        }],
+    }
+    .validate()
+    .expect("the synthetic reschedule program validates");
+
+    let mut state = MissionState::new(&p, SessionGeneration(1), 0);
+    // Tick 1 wakes and completes the block — the wake site emits under the
+    // completion path's own key — and arms the item for tick 2.
+    step(&mut state, &p, 1, Awake);
+    // Napping ticks carry the item to its 1008th ordinal.
+    for tick in 2..=1008 {
+        step(&mut state, &p, tick, Napping);
+    }
+    // Tick 1009: the second wake and the item's `1008 * 65 + 17` emission
+    // share the tick; they must not share a key.
+    step(&mut state, &p, 1009, Awake);
+    let emitted_at_1009 = |operation| {
+        state
+            .directives()
+            .iter()
+            .any(|e| e.key.tick == Tick(1009) && e.operation == operation)
+    };
+    assert!(
+        emitted_at_1009(DirectiveOperation::WakeAnimation),
+        "the re-wake emitted"
+    );
+    assert!(
+        emitted_at_1009(DirectiveOperation::CompletedSoundGroup),
+        "the item's own emission was not aliased away"
+    );
 }
 
 /// **A facts row for a block the program does not carry leaves the save
