@@ -50,11 +50,12 @@ render mesh — not the material record — is where it is preserved losslessly:
   which triangles are which, so nothing is lost.
 * `cs_app::render::bevy_mesh::GroupUpload::two_sided()` carries the group's fact
   (or a normal-split part's own subset, computed the same way) to the renderer.
-* `cs_app::render::bevy_state::render_state_for_group(material, stored)` uses it
-  when the classification left the fact open. A material record alone still
-  declares no two-sidedness, so `render_state` is unchanged and still refuses an
-  undeclared surface; the stored group fact closes that gap.
-  `capture::upload_surface` supplies it from the uploaded group.
+* `cs_app::render::bevy_state::render_state_for_mesh(material, unculled_billboard,
+  stored_two_sided)` uses it when the classification left the fact open. A
+  material record alone still declares no two-sidedness, so `render_state` is
+  unchanged and still refuses an undeclared surface; the stored group fact
+  closes that gap. `capture::upload_surface` supplies it from the uploaded
+  group, next to the mesh's unculled-billboard flag (F10-F.2, #1407).
 
 ## Strips are reported, not trusted
 
@@ -129,7 +130,7 @@ All from the repository root on branch
 | `cargo fmt --all -- --check` | 0 |
 | `cargo clippy --workspace --all-targets --all-features --locked -- -D warnings` | 0 |
 | `cargo test --locked -p cs_formats -p cs_content` | 0 |
-| `cargo test --locked -p cs_app --config 'profile.dev.package."*".debug=false' --no-fail-fast` | 101 — the only failure is the pre-existing macOS `accept_t336_linked_images_keep_eh_frame_under_the_encoding_limit` gate (`cs_app_tests_a` `__eh_frame` 20 296 636 B), which current main fails the same way (measured 20 304 428 B at base `04f41824c`) and which Linux CI never runs; filed as #1621. Every other suite passes: lib unit tests 185, suite b 262, suite c 526, suite d 412, suite e 11. |
+| `cargo test --locked -p cs_app --no-fail-fast` | 0 (lib unit tests 185, suite a 897, suite b 281, suite c 526, suite d 438, suite e 11) |
 | `cargo test --locked -p cs_content --lib -- accept_f10_f_1_ --include-ignored` | 0 (5 tests; the retail census runs with `CS_GAME_DIR`) |
 | `cargo test --locked -p cs_formats --test cs_formats_tests -- accept_f10_f_1_ --include-ignored` | 0 (1 test) |
 | `cargo test --locked -p cs_app --test cs_app_tests_b -- accept_f10_f_1_ --include-ignored` | 0 (2 tests) |
@@ -138,7 +139,7 @@ Mutation check (applied, run, reverted): forcing `RenderTriangle::two_sided`
 to `false` in `cs_content::mesh::resolve` fails
 `accept_f10_f_1_a_stored_two_sided_outline_reaches_its_render_group` and
 `…_a_group_mixing_one_and_two_sided_polygons_records_unknown`; ignoring
-`stored_two_sided` in `render_state_for_group` fails both `cs_app`
+`stored_two_sided` in `render_state_for_mesh` fails both `cs_app`
 `accept_f10_f_1_` tests.
 
 Sources: `OWNER-STATIC-2026-10-05`;
