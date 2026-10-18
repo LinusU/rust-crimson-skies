@@ -234,6 +234,10 @@ pub struct MissionGroundTarget {
     pub objective: bool,
     /// Whether the declaring row carried the `other_target` marker.
     pub other_target: bool,
+    /// The declaring row's `description` message name (`MSG_OBJ_SITE1`).
+    pub description: Option<String>,
+    /// The declaring row's `help_label` message name (`MSG_OBJ_EXAMINE`).
+    pub help_label: Option<String>,
     /// The target's targeting roster record (M01-TARGET-ROSTER, #1592): the
     /// faction the engine's node resolver answers for the node's subtree,
     /// and the designed relation the player's flight holds toward it.
@@ -1328,6 +1332,8 @@ fn spawn_mission_actors_under(
                     coupling: target.coupling.fields.clone(),
                     objective: target.objective,
                     other_target: target.other_target,
+                    description: target.description.clone(),
+                    help_label: target.help_label.clone(),
                     roster,
                     allegiance_open,
                 },

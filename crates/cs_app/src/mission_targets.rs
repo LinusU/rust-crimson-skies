@@ -243,6 +243,10 @@ pub struct BoundTarget {
     pub objective: bool,
     /// Whether the declaring row carried the `other_target` marker.
     pub other_target: bool,
+    /// The declaring row's `description` message name (`MSG_OBJ_SITE1`).
+    pub description: Option<String>,
+    /// The declaring row's `help_label` message name (`MSG_OBJ_EXAMINE`).
+    pub help_label: Option<String>,
     /// What the engine's node resolver (`0x4bf080` → `0x4bef90`) answers for
     /// the node's subtree (M01-TARGET-ROSTER, #1592): the measured team int
     /// and the source that settled it, or why none can be claimed.
@@ -675,6 +679,7 @@ fn bind_mission_targets_from(
                         Some(row.index),
                         row.objective,
                         row.other_target,
+                        (row.description.clone(), row.help_label.clone()),
                         coupling,
                     );
                 }
@@ -719,6 +724,7 @@ fn bind_mission_targets_from(
                     None,
                     false,
                     false,
+                    (None, None),
                     coupling,
                 );
             }
@@ -842,6 +848,7 @@ fn merge_target(
     declared: Option<usize>,
     objective: bool,
     other_target: bool,
+    labels: (Option<String>, Option<String>),
     coupling: DamageCoupling,
 ) {
     if let Some(existing) = targets.iter_mut().find(|target| target.node == node.name()) {
@@ -851,6 +858,9 @@ fn merge_target(
         }
         existing.objective |= objective;
         existing.other_target |= other_target;
+        if existing.declared == declared && existing.description.is_none() {
+            (existing.description, existing.help_label) = labels;
+        }
         for member in coupling.members {
             if existing.coupling.members.contains(&member) {
                 continue;
@@ -877,6 +887,8 @@ fn merge_target(
         coupling,
         objective,
         other_target,
+        description: labels.0,
+        help_label: labels.1,
         allegiance: AllegianceBinding::Open(NOT_RESOLVED.to_owned()),
     });
 }

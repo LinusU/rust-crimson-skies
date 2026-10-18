@@ -54,6 +54,8 @@ fn target_with(allegiance: AllegianceBinding, objective: bool) -> BoundTarget {
         coupling: DamageCoupling::default(),
         objective,
         other_target: false,
+        description: None,
+        help_label: None,
         allegiance,
     }
 }

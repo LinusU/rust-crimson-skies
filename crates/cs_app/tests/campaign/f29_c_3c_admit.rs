@@ -58,6 +58,8 @@ fn stage_with_target(scratch: &Scratch) -> MissionStage {
             coupling: DamageCoupling::default(),
             objective: false,
             other_target: false,
+            description: None,
+            help_label: None,
             allegiance: AllegianceBinding::Measured {
                 team: 2,
                 source: AllegianceSource::NoBinding,
