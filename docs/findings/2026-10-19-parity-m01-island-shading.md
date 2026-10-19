@@ -87,6 +87,24 @@ Vertex colour in this Bevy version multiplies `base_color` and the sampled
 texture, so the byte-rule normalization is what keeps the multiplication a
 colour rather than a 200× blow-out.
 
+## Review-found — the sea probe's "hiding the sea leaves clear" assumption
+
+#1698's smoke sea probe measured the water tiles as
+`sea_absent.off_clear − sea_tiles_absent.off_clear`, which only counts the
+tiles when the pixels behind them read as the window's clear colour. The
+world's `horizon` subtree's `g1155` skirt (node 3238, an untextured
+vertex-coloured wall, world Y −5544 … 500 at 3.6–8.7 km radius, anchored to
+the camera every frame) sits behind every below-horizon sea pixel. While
+the dropped colour channel left it reading as the clear tone, hiding the
+tiles exposed it and the differential saw no difference — the reviewed
+branch's re-run measured ~0 tile pixels over a plainly drawn sea (a direct
+PNG diff puts the tiles at ≈1.57 M px, ~426 ‰). `apply_probe`
+(`crates/cs_app/src/mission_session/smoke.rs`) now holds the
+camera-anchored `HorizonRest` records out of all three sea frames the same
+way the dome is already held out of every probe, so the subtraction
+measures sea against the rest of the world; `apply_probe`'s class queries
+also moved into a `ProbeClasses` system param for the extra member.
+
 ## The frames — before, after, original; words only, no pixel-parity claim
 
 - **Before** (baseline binary without the fix):
@@ -95,7 +113,7 @@ colour rather than a 200× blow-out.
   behind the right-hand island and a flat white patch sits where a beach
   texture belongs — the stored shading channel never reached the drawn
   parts, so the designed sun lit whatever normals survived.
-- **After** (this commit's smoke, 21 checks, 0 failed):
+- **After** (the reviewed commit's smoke, 21 checks, 0 failed):
   `private/evidence/PARITY-M01-ISLAND-SHADING/frame_02410_first_control.png` —
   the same tick 4818 / script frame 2410 as #1697's capture. The islands now
   draw green and textured, the stored forest/cliff/sand detail and the
