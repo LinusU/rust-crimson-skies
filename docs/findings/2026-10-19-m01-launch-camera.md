@@ -40,8 +40,8 @@ Pandora entity found and a screenshot taken.
 ## Smoke evidence (2026-10-19, release build, this branch)
 
 `cs --cs-path <retail> --mission M01 --smoke-seconds 45 --capture-dir
-private/evidence/PARITY-M01-LC-CAMERA`: 15 checks, 0 failed, 2873 frames, the
-camera drove 2409 frames, 4 of 4 scenes. Screenshots (private, not committed):
+private/evidence/PARITY-M01-LC-CAMERA`: 19 checks (the run now also passes the Flight Check), 0 failed, 2873 frames, the
+camera drove 2440 frames, 4 of 4 scenes. Screenshots (private, not committed):
 `frame_00061_cinematic_01s.png` (the Pandora from behind with the letterbox bars,
 as the owner's Drydock frame `d1`) and `frame_01261_cinematic_21s.png` (alongside the
 hull and rigs, scene 2).
