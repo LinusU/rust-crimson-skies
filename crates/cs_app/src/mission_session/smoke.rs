@@ -913,8 +913,6 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
     checks
 }
 
-/// The no-teleport checks: the wingmen's distance from a player nothing moved,
-/// and the picture arriving.
 /// The Flight Check checks: the screen the run opens on, judged before the
 /// mission's own checks.
 fn evaluate_flight_check(m: &SmokeMeasurements) -> Vec<Check> {
@@ -1036,6 +1034,8 @@ fn evaluate_flight_check(m: &SmokeMeasurements) -> Vec<Check> {
     checks
 }
 
+/// The no-teleport checks: the wingmen's distance from a player nothing moved,
+/// and the picture arriving.
 fn evaluate_no_teleport(m: &SmokeMeasurements) -> Vec<Check> {
     let rows = m
         .wingmen
