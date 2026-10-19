@@ -124,6 +124,7 @@ mod accept_f49_c1_ia_record_persistence;
 mod accept_f49_c_ia_flow;
 mod accept_f49_d_02_retail_option_table;
 mod accept_f49_d_03_fu_faction;
+mod accept_f49_d_03_fu_rules_end;
 mod accept_f49_d_03_retail_catalog;
 mod accept_f49_d_04_validation_errors;
 mod accept_f53_d_dependent_save;
