@@ -1166,12 +1166,14 @@ pub struct OrdnanceStep<'a> {
     /// time of impact. The ordnance path consumes them; it does not invent a
     /// collision.
     pub impacts: &'a [SweptHit],
-    /// Every actor node a guidance-loss blast may reach, with where it is this
-    /// tick (the sim holds no actor list). A detonation whose item declares an
+    /// Every actor node a blast may reach, with where it is this tick (the sim
+    /// holds no actor list). A guidance-loss, timed, proximity or impact
+    /// detonation whose item declares an
     /// [`AreaEffect`] routes through
     /// [`OrdnanceRuntime::route_detonation_area`] over these: each recipient
     /// inside the radius takes the declared channels scaled by the measured
-    /// falloff, and the engagement's single damage target is not consulted.
+    /// falloff, and the engagement's single damage target is not consulted. On
+    /// the impact path the directly-hit actor is skipped, as in the original.
     /// `None` is "the producer supplies no recipients": the blast goes to the
     /// launch engagement's single target, as for an item with no area. `Some`
     /// of an empty slice is "nobody is there" and delivers no damage.
@@ -2031,13 +2033,26 @@ pub fn step_ordnance_session(
                     area_refused: None,
                 };
 
-                match session.runtime.route_trigger(
-                    session.session_id,
-                    step.at,
-                    &projectile,
-                    engagement.damage_target,
-                    engagement.node.clone(),
-                ) {
+                let declares_area = session
+                    .runtime
+                    .get(&projectile)
+                    .is_some_and(|item| item.definition().area_effect().is_some());
+                let routed = match (declares_area, step.blast_recipients) {
+                    (true, Some(recipients)) => session.runtime.route_trigger_area(
+                        session.session_id,
+                        step.at,
+                        &projectile,
+                        recipients,
+                    ),
+                    _ => session.runtime.route_trigger(
+                        session.session_id,
+                        step.at,
+                        &projectile,
+                        engagement.damage_target,
+                        engagement.node.clone(),
+                    ),
+                };
+                match routed {
                     Ok(hits) => {
                         detonation.hits.clone_from(&hits);
                         match damage.resolve(step.at, &hits) {
@@ -2076,10 +2091,6 @@ pub fn step_ordnance_session(
                             Err(source) => detonation.status_refused = Some(source),
                         }
 
-                        let declares_area = session
-                            .runtime
-                            .get(&projectile)
-                            .is_some_and(|item| item.definition().area_effect().is_some());
                         if declares_area {
                             match session.runtime.open_area(
                                 session.session_id,

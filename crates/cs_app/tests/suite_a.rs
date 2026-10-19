@@ -196,6 +196,7 @@ mod accept_t1222_per_actor_disconnect_abort;
 mod accept_t1317_blast_recipients;
 mod accept_t1424_collision_topology;
 mod accept_t1430_shared_trimesh;
+mod accept_t1603_trigger_blast;
 mod accept_t333_mesh_colliders;
 mod accept_t334_fixed_tick_integrations;
 mod accept_t335_seed;
