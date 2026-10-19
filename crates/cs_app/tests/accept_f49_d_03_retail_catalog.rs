@@ -29,10 +29,10 @@ use cs_app::ui::instant_action::{
 use cs_content::ai::{DeclaredSkillTier, DifficultyTier};
 use cs_content::instant_action::{
     Declared, IaDenominator, InstantActionCatalog, InstantActionPreset, RespawnBudget,
-    ScenarioActorSpec, ScenarioOptions, ScenarioParameters, ScenarioRoster, ScenarioSchemaError,
-    ScenarioSide, TieOutcome, VictoryCondition, VictoryRules, read_ia_descriptor,
-    survey_retail_instant_action, synthetic_difficulty, synthetic_instant_action_catalog,
-    synthetic_provenance, synthetic_scenario_options,
+    ScenarioActorSpec, ScenarioOptionDimension, ScenarioOptions, ScenarioParameters,
+    ScenarioRoster, ScenarioSchemaError, ScenarioSide, TieOutcome, VictoryCondition, VictoryRules,
+    read_ia_descriptor, survey_retail_instant_action, synthetic_difficulty,
+    synthetic_instant_action_catalog, synthetic_provenance, synthetic_scenario_options,
 };
 use cs_content::stunts::decode_zrd;
 use cs_content::world::WorldId;
@@ -524,16 +524,26 @@ fn accept_f49_d_03_retail_nothing_in_the_catalog_comes_from_the_fixture() {
         assert!(!options.worlds().contains(world));
     }
     // The retail table is the measured one, with its unmeasured lists kept
-    // unmeasured rather than filled.
+    // unmeasured rather than filled. The pilots dimension is measured
+    // (F49-D.02-FU-PILOT, wired into this assembly by #1630): exactly the
+    // `ace_name` identities an independent re-survey of the installation
+    // reads, never a fixture or invented id.
     assert!(options.loadouts().is_empty());
-    assert!(options.pilots().is_empty());
+    let aces = retail
+        .denominator
+        .ace_pilot_ids()
+        .expect("the survey's ace labels are valid keys");
+    assert_eq!(aces.len(), 7, "eight directories, seven distinct aces");
+    assert_eq!(options.pilots(), aces.as_slice());
     assert!(!options.worlds().is_empty());
     assert_eq!(options.airframes().len(), 11);
-    assert!(
-        options
-            .unmeasured_dimensions()
-            .iter()
-            .any(|dimension| dimension.label() == "loadouts")
+    assert_eq!(
+        options.unmeasured_dimensions(),
+        [
+            ScenarioOptionDimension::Loadouts,
+            ScenarioOptionDimension::Relations
+        ],
+        "pilots are measured now; loadouts and relations stay unmeasured"
     );
 }
 

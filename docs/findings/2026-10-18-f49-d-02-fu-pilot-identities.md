@@ -55,3 +55,16 @@ is filed. The cs_app acceptance test and evidence harness for F49-D.02 were
 updated only where `retail_scenario_options` now returns pilots
 (`["loadouts"]` instead of `["loadouts", "pilots"]`, and the pilot limitation
 text).
+
+## Wiring landed (#1630, 2026-10-19)
+
+The follow-up task wired the measured pilots into the retail catalog:
+`cs_app::ui::instant_action::retail::assemble_retail_catalog` now calls
+`retail_scenario_options_with_pilots` with the survey's `ace_pilot_ids()`, so
+the assembled `InstantActionCatalog`'s option table offers the seven
+`pilot/<label>` ids and reports only `loadouts` and `relations` unmeasured.
+Pinned by `accept_f49_d_03_retail_nothing_in_the_catalog_comes_from_the_fixture`
+(the catalog's `pilots()` must equal an independent re-survey's
+`ace_pilot_ids()`) and by `standin_catalog` in
+`crates/cs_app/tests/accept_f49_d_04_validation_errors.rs`, which now widens
+the retail table with stand-ins for the two remaining unmeasured lists only.

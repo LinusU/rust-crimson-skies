@@ -354,9 +354,10 @@ fn review_method() -> String {
          subtask reports, rustc and Cargo.lock; validated with tools/validate_evidence.py \
          --require-pass. AC04 is exercised through CustomScenarioDraft::resolve, \
          InstantActionCatalog::validate_custom / require_valid_custom, resolve_custom / \
-         lower_custom and the flow's Launch. The retail option table keeps loadouts, pilots and \
-         relations unmeasured, so the positive control (a request nothing refuses) uses the \
-         retail lists plus declared stand-ins for those three and is labelled so in the test; it \
+         lower_custom and the flow's Launch. The retail option table keeps loadouts and \
+         relations unmeasured (pilots are the measured ia.zrd ace identities since #1630), so \
+         the positive control (a request nothing refuses) uses the retail lists plus declared \
+         stand-ins for those two and is labelled so in the test; it \
          proves refusal is specific, not that the original accepts such a scenario. Implementer \
          mutation probes: truncating the problem list to its first entry and rendering a \
          problem with Debug each fail accept_f49_d_04_synthetic_every_invalid_class_is_reported_in_full. \
@@ -378,10 +379,13 @@ const UNKNOWN_LIMITATIONS: &[&str] = &[
      refuse at lowering (cs_app::ui::instant_action::lower_preset); ZBD/c2b/IA1 additionally \
      lacks a player_plane and a num_wingmen. Affected content: all 30 presets. Resolving tasks: \
      #1582 (factions, survivability), #1583 (victory rules, difficulty, c2b), #1575 (loadouts).",
-    "A custom scenario naming a loadout, a pilot or a faction relation is refused by the pure \
-     retail option table because those three lists are unmeasured (F49-D.02). Affected content: \
-     every custom scenario's loadouts, pilots and hostility checks. Resolving tasks: #1575 \
-     (loadouts); pilots and relations are filed with the F49-D findings.",
+    "A custom scenario naming a loadout or a faction relation is refused by the pure \
+     retail option table because those two lists are unmeasured (F49-D.02); the pilot list is \
+     measured (#1630 wires the ia.zrd ace identities in) but covers only the seven aces the \
+     descriptors name, so a pilot outside it is refused as unsupported. Affected content: \
+     every custom scenario's loadouts and hostility checks, and any pilot the ace survey does \
+     not name. Resolving tasks: #1575 (loadouts); relations and pilot selection are filed with \
+     the F49-D findings.",
     "Whether the original menu offers every (directory, offered mission type) pair, the original \
      preset titles, which declared aircraft each mission type spawns and the seed policy are \
      unmeasured or designed (F49-D.01, F49-D.03). Affected content: the preset list and each \

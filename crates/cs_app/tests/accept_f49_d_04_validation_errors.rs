@@ -13,14 +13,15 @@
 //! executes on CI, which has no original data.
 //!
 //! **What "retail" can and cannot show here.** The retail option table measures
-//! worlds, environments, factions, airframes and difficulty tiers; it keeps
-//! loadouts, pilots and relations *unmeasured* (F49-D.02), so a custom scenario
-//! naming a loadout is refused by the pure retail catalog today, which is the
-//! right answer and is asserted as such
+//! worlds, environments, factions, airframes, pilots (the ia.zrd aces,
+//! F49-D.02-FU-PILOT) and difficulty tiers; it keeps loadouts and relations
+//! *unmeasured* (F49-D.02), so a custom scenario naming a loadout is refused by
+//! the pure retail catalog today, which is the right answer and is asserted as
+//! such
 //! (`accept_f49_d_04_retail_every_measured_selection_is_accepted_and_the_unmeasured_loadout_is_refused`).
 //! A request that *no* problem touches therefore cannot be built from the pure
 //! retail table. The positive control uses the retail lists **plus declared
-//! stand-ins** for the three unmeasured lists (`standin_catalog`): it proves
+//! stand-ins** for the two unmeasured lists (`standin_catalog`): it proves
 //! refusal is specific rather than unconditional, and it claims nothing about
 //! what the original accepts.
 
@@ -76,9 +77,10 @@ fn profile() -> ProfileId {
     ProfileId::new("pilot.nathan").expect("a valid profile id")
 }
 
-/// The retail catalog's own lists with declared stand-ins for the three lists
-/// the installation leaves unmeasured: one loadout, one pilot and two relations
-/// (`factions[0]` hostile to `factions[1]`, friendly to `factions[2]`).
+/// The retail catalog's own lists with declared stand-ins for the two lists
+/// the installation leaves unmeasured: one loadout and two relations
+/// (`factions[0]` hostile to `factions[1]`, friendly to `factions[2]`). The
+/// pilots are the measured ia.zrd ace identities, not a stand-in.
 ///
 /// Every other list, and every preset, is the retail catalog's.
 fn standin_catalog(retail: &InstantActionCatalog) -> InstantActionCatalog {
@@ -87,10 +89,9 @@ fn standin_catalog(retail: &InstantActionCatalog) -> InstantActionCatalog {
         options.unmeasured_dimensions(),
         [
             ScenarioOptionDimension::Loadouts,
-            ScenarioOptionDimension::Pilots,
             ScenarioOptionDimension::Relations
         ],
-        "the retail table keeps exactly loadouts, pilots and relations unmeasured"
+        "the retail table keeps exactly loadouts and relations unmeasured"
     );
     let factions = options.factions().to_vec();
     assert!(factions.len() >= 3, "the retail table measures factions");
@@ -105,7 +106,7 @@ fn standin_catalog(retail: &InstantActionCatalog) -> InstantActionCatalog {
         factions.clone(),
         options.airframes().to_vec(),
         vec![id(ContentKind::Loadout, "synthetic.ac04_standin_loadout")],
-        vec![id(ContentKind::Pilot, "synthetic.ac04_standin_pilot")],
+        options.pilots().to_vec(),
         options.difficulty_tiers().to_vec(),
         options.victory_conditions().to_vec(),
         vec![

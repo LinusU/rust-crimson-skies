@@ -15,8 +15,10 @@
 //! * the world is the directory's world group when the F14-D.3 world rows hold
 //!   it; the environment is the `weather.zrd` the IA archive itself carries,
 //!   read by [`crate::environment::retail::read_mission_weather`];
-//! * the option table is F49-D.02's, validated with its unmeasured dimensions
-//!   kept unmeasured ([`ScenarioOptionTable::validate_partial`]).
+//! * the option table is F49-D.02's, its pilots the ace identities the survey
+//!   measured ([`IaDenominator::ace_pilot_ids`], F49-D.02-FU-PILOT), validated
+//!   with its remaining unmeasured dimensions kept unmeasured
+//!   ([`ScenarioOptionTable::validate_partial`]).
 //!
 //! Everything the descriptors do not say stays explicitly unmeasured with a
 //! claim id and a reason: the actors' factions, loadouts and survivability, the
@@ -42,7 +44,7 @@ use cs_content::instant_action::{
     IA_ENGINE_DEFAULTS_CLAIM, IaDenominator, IaDirectory, IaPlayerPlane, IaSurveyError, IaWingmen,
     InstantActionCatalog, InstantActionPreset, RosterSlot, SCENARIO_SEED_DOMAIN, ScenarioActorSpec,
     ScenarioOptions, ScenarioParameters, ScenarioRoster, ScenarioSchemaError, ScenarioSeed,
-    ScenarioSide, retail_scenario_options_from_baseline, survey_retail_instant_action,
+    ScenarioSide, retail_scenario_options_with_pilots, survey_retail_instant_action,
 };
 use cs_content::world::WorldId;
 use cs_types::asset_id::SourceSpan;
@@ -616,9 +618,15 @@ pub fn assemble_retail_catalog(
     baseline: &Baseline,
     environments: Vec<EnvironmentId>,
 ) -> Result<InstantActionCatalog, RetailCatalogError> {
-    let options = retail_scenario_options_from_baseline(baseline, environments)
-        .validate_partial()
-        .map_err(RetailCatalogError::Options)?;
+    let options = retail_scenario_options_with_pilots(
+        baseline,
+        environments,
+        denominator
+            .ace_pilot_ids()
+            .map_err(RetailCatalogError::Survey)?,
+    )
+    .validate_partial()
+    .map_err(RetailCatalogError::Options)?;
     let install_sha256 = install::fingerprint(&found.manifest);
 
     let mut presets = Vec::new();
