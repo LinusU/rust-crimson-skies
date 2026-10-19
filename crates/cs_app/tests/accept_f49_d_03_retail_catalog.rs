@@ -28,11 +28,12 @@ use cs_app::ui::instant_action::{
 };
 use cs_content::ai::{DeclaredSkillTier, DifficultyTier};
 use cs_content::instant_action::{
-    Declared, IaDenominator, InstantActionCatalog, InstantActionPreset, RespawnBudget,
-    ScenarioActorSpec, ScenarioOptionDimension, ScenarioOptions, ScenarioParameters,
-    ScenarioRoster, ScenarioSchemaError, ScenarioSide, TieOutcome, VictoryCondition, VictoryRules,
-    read_ia_descriptor, survey_retail_instant_action, synthetic_difficulty,
-    synthetic_instant_action_catalog, synthetic_provenance, synthetic_scenario_options,
+    Declared, IaDenominator, InstantActionCatalog, InstantActionPreset, ScenarioActorSpec,
+    ScenarioOptionDimension, ScenarioOptions, ScenarioParameters, ScenarioRoster,
+    ScenarioSchemaError, ScenarioSide, VictoryRules,
+    measured_ia_victory_rules, read_ia_descriptor, survey_retail_instant_action,
+    synthetic_difficulty, synthetic_instant_action_catalog, synthetic_provenance,
+    synthetic_scenario_options,
 };
 use cs_content::stunts::decode_zrd;
 use cs_content::world::WorldId;
@@ -391,7 +392,9 @@ fn accept_f49_d_03_retail_world_and_environment_are_the_measured_bindings() {
 
 /// Every unmeasured dimension refuses at lowering with its own reason; each
 /// refusal is reached by supplying the previous dimension from the fixture, so
-/// the order and the wording of every refusal is checked.
+/// the order and the wording of every refusal is checked. The rules are
+/// measured per mission type, so they are the one dimension that no longer
+/// refuses.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_f49_d_03_retail_every_unmeasured_dimension_refuses_at_lowering_with_its_reason() {
@@ -402,10 +405,16 @@ fn accept_f49_d_03_retail_every_unmeasured_dimension_refuses_at_lowering_with_it
             preset.parameters().difficulty(),
             Declared::Unmeasured { .. }
         ));
-        assert!(matches!(
-            preset.parameters().rules(),
-            Declared::Unmeasured { .. }
-        ));
+        // The rules are the engine-image binding for the preset's measured
+        // mission type, not an unmeasured record.
+        let Declared::Declared(rules) = preset.parameters().rules() else {
+            panic!("{preset_id}: rules are the measured binding");
+        };
+        assert_eq!(
+            Some(*rules),
+            measured_ia_victory_rules(preset.original_mission_type().expect("a mission type")),
+            "{preset_id}"
+        );
         assert!(matches!(preset.title(), Resolved::Unknown { .. }));
 
         let refusal = lower_preset(&retail.catalog, preset_id)
@@ -426,7 +435,8 @@ fn accept_f49_d_03_retail_every_unmeasured_dimension_refuses_at_lowering_with_it
         assert!(sentence.contains("scenario difficulty is unknown"));
         assert!(sentence.contains("F32-D"));
 
-        // Supply difficulty from the fixture: the rules refuse next.
+        // Supply difficulty from the fixture: with the rules measured, the
+        // first actor's faction refuses next.
         let with_difficulty = rebuilt(
             retail,
             preset,
@@ -435,34 +445,7 @@ fn accept_f49_d_03_retail_every_unmeasured_dimension_refuses_at_lowering_with_it
             false,
         );
         let LowerError::UnknownValue { field, reason, .. } =
-            lower_preset(&with_difficulty, preset_id).expect_err("rules still unmeasured")
-        else {
-            panic!("expected UnknownValue");
-        };
-        assert_eq!(field, "scenario victory rules", "{preset_id}");
-        assert!(reason.contains("VictoryCondition vocabulary"));
-        assert!(
-            reason.contains(preset.original_mission_type().expect("a mission type")),
-            "the rules refusal names the mission type it could not map"
-        );
-
-        // Supply rules too: the first actor's faction refuses.
-        let rules = VictoryRules::try_new(
-            VictoryCondition::EliminateEnemies,
-            RespawnBudget::None,
-            None,
-            TieOutcome::Draw,
-        )
-        .expect("fixture rules are valid");
-        let with_rules = rebuilt(
-            retail,
-            preset,
-            Some(synthetic_difficulty(DifficultyTier::Standard)),
-            Some(rules),
-            false,
-        );
-        let LowerError::UnknownValue { field, reason, .. } =
-            lower_preset(&with_rules, preset_id).expect_err("factions are unmeasured")
+            lower_preset(&with_difficulty, preset_id).expect_err("factions are unmeasured")
         else {
             panic!("expected UnknownValue");
         };
@@ -475,7 +458,7 @@ fn accept_f49_d_03_retail_every_unmeasured_dimension_refuses_at_lowering_with_it
             retail,
             preset,
             Some(synthetic_difficulty(DifficultyTier::Standard)),
-            Some(rules),
+            None,
             true,
         );
         let LowerError::UnknownValue { field, reason, .. } =
@@ -644,36 +627,21 @@ fn rebuilt(
         parameters.roster().clone()
     };
     let difficulty = difficulty.expect("a rebuild supplies a difficulty");
+    // Without supplied rules the preset keeps its own — the measured binding
+    // the assembly records for its mission type.
     let rebuilt_parameters = ScenarioParameters::new(
         parameters.world().clone(),
         parameters.environment().clone(),
         roster,
         difficulty,
         rules.unwrap_or_else(|| {
-            VictoryRules::try_new(
-                VictoryCondition::EliminateEnemies,
-                RespawnBudget::None,
-                None,
-                TieOutcome::Draw,
-            )
-            .expect("fixture rules are valid")
+            *parameters
+                .rules()
+                .declared()
+                .expect("the preset's rules are the measured binding")
         }),
         parameters.seed(),
     );
-    // Without supplied rules the preset keeps them unmeasured, with the same
-    // mission-type wording the assembly records.
-    let rebuilt_parameters = if rules.is_none() {
-        rebuilt_parameters.with_unmeasured_rules(
-            ClaimId::new("f49.d.03.unmeasured.rules").expect("a claim id"),
-            &format!(
-                "the original declares mission type `{}`; the designed VictoryCondition \
-                 vocabulary does not cover it",
-                preset.original_mission_type().expect("a mission type")
-            ),
-        )
-    } else {
-        rebuilt_parameters
-    };
     let mut changed = InstantActionPreset::try_new(
         preset.id().clone(),
         preset.scenario().clone(),
@@ -1055,14 +1023,15 @@ fn accept_f49_d_03_an_unmeasured_dimension_cannot_be_defaulted_into_a_launch() {
         Declared::<u8>::unmeasured(ClaimId::new("f49.d.03.test").expect("a claim"), " ").is_err()
     );
 
-    // The preset keeps its difficulty and rules unmeasured, and the lowering
-    // refuses the first one instead of launching a defaulted scenario.
+    // The preset keeps its difficulty unmeasured while its rules carry the
+    // measured mission-type binding; the lowering refuses an unmeasured
+    // dimension instead of launching a defaulted scenario.
     let preset = catalog.preset(&first).expect("held");
     assert!(!preset.parameters().difficulty().is_declared());
-    assert!(!preset.parameters().rules().is_declared());
+    assert!(preset.parameters().rules().is_declared());
     let refusal = lower_preset(&catalog, &first).expect_err("an unmeasured preset does not launch");
     // The synthetic archive has no weather, which is the first thing the
-    // lowering reads; the unmeasured difficulty and rules follow it.
+    // lowering reads; the unmeasured difficulty follows it.
     assert!(
         matches!(&refusal, LowerError::UnknownValue { field, .. } if field == "scenario environment"),
         "{refusal:?}"

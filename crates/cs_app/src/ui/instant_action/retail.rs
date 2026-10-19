@@ -22,9 +22,12 @@
 //!
 //! Everything the descriptors do not say stays explicitly unmeasured with a
 //! claim id and a reason: the actors' factions, loadouts and survivability, the
-//! wingmen's planes, the preset's title,
-//! difficulty and victory rules. The lowering ([`super::lower_preset`])
-//! therefore refuses every retail preset today, naming the first unmeasured
+//! wingmen's planes, the preset's title and difficulty. The victory rules are
+//! **measured**: the engine image's Instant Action end check (`0x45b9d0`)
+//! binds one [`VictoryCondition`] per `mission_type` name
+//! ([`measured_ia_victory_rules`], F49-D.03-FU-RULES-END), so each preset
+//! carries `Declared` rules. The lowering ([`super::lower_preset`])
+//! therefore still refuses every retail preset, naming the first unmeasured
 //! field, and [`super::lower_preset_roster`] exposes the measured part of the
 //! roster. Nothing here picks a designed default for an original preset.
 //!
@@ -44,7 +47,8 @@ use cs_content::instant_action::{
     IA_ENGINE_DEFAULTS_CLAIM, IaDenominator, IaDirectory, IaPlayerPlane, IaSurveyError, IaWingmen,
     InstantActionCatalog, InstantActionPreset, RosterSlot, SCENARIO_SEED_DOMAIN, ScenarioActorSpec,
     ScenarioOptions, ScenarioParameters, ScenarioRoster, ScenarioSchemaError, ScenarioSeed,
-    ScenarioSide, retail_scenario_options_with_pilots, survey_retail_instant_action,
+    ScenarioSide, measured_ia_victory_rules, retail_scenario_options_with_pilots,
+    survey_retail_instant_action,
 };
 use cs_content::world::WorldId;
 use cs_types::asset_id::SourceSpan;
@@ -111,11 +115,17 @@ pub const DIFFICULTY_UNMEASURED_REASON: &str = "the original records no difficul
      difficulty label, IDS_IA_DIFFICULTY, whose binding to a scenario is unmeasured)";
 
 /// Why the rules of a preset with mission type `mission_type` are unmeasured.
+///
+/// Only reachable for a name the engine image's end check does not measure:
+/// every name in the observed vocabulary is bound by
+/// [`measured_ia_victory_rules`], so this stands for a descriptor carrying a
+/// mission type nobody has measured (which the survey already refuses on the
+/// vocabulary — the record stays correct if that ever changes).
 fn rules_unmeasured_reason(mission_type: &str) -> String {
     format!(
-        "the original declares mission type `{mission_type}` for this preset; the designed \
-         VictoryCondition vocabulary does not cover the original's mission types, so how the \
-         type ends the scenario is unmeasured and is not mapped by intuition"
+        "the original declares mission type `{mission_type}` for this preset; the end check \
+         `0x45b9d0` in the engine image measures no branch for that name, so how the type ends \
+         the scenario is unmeasured and is not mapped by intuition"
     )
 }
 
@@ -546,7 +556,7 @@ pub fn directory_presets(
         .zip(directory.offered())
     {
         let mission_type = offered.mission_type();
-        let parameters = ScenarioParameters::new_unmeasured_rules(
+        let mut parameters = ScenarioParameters::new_unmeasured_rules(
             world.clone(),
             environment.clone(),
             roster.clone(),
@@ -560,6 +570,12 @@ pub fn directory_presets(
                 &rules_unmeasured_reason(mission_type),
             ),
         );
+        // The engine image's Instant Action end check (`0x45b9d0`) measures
+        // one end condition per `mission_type` name; a name it does not cover
+        // keeps the unmeasured record above.
+        if let Some(rules) = measured_ia_victory_rules(mission_type) {
+            parameters = parameters.with_measured_rules(rules);
+        }
         let preset = InstantActionPreset::try_new(
             preset_id,
             scenario_id,
