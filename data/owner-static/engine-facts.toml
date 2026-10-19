@@ -1068,3 +1068,48 @@ rocket_4 = 1
 rocket_5 = 1
 rocket_6 = 11
 rocket_7 = 11
+
+# The (gun, ammunition) -> weapon-record map the engine's loadout binder
+# uses (#1628 M01-WINDOW-FIRE-GUN-LOADOUT, finding
+# docs/findings/2026-10-19-m01-window-fire-gun-loadout.md).
+#
+# `bind_va` reads a live plane record's pair-mask byte, gun ids, ammunition
+# kinds and rocket ids (offsets +0x84/+0x88/+0x98/+0xa8, the same layout
+# `[flight_check_layout]` names) and builds each object's weapon set. When
+# `mode_cell_va` reads 1 the pilot's record is `record_array_va` +
+# `pilot_cell_va` * `record_stride` (the pilot's default cell,
+# `[flight_check_layout]`'s `default_cells_va`), the wingman's the same
+# through `wingman_cell_va`. Per gun slot `map_va` answers the weapon index
+# `gun_base_<gun> + ammo`: `gun` above `gun_max` or `ammo` equal to
+# `ammo_none` answers no record, kinds 1..=3 add their value to the base,
+# every other kind adds 0. `name_va` spells the index `wep_%2d`
+# (`format_va`) and resolves the record through `resolve_va` onto a mount
+# emitter when bit (4 + slot) of the pair mask is set; otherwise the index
+# stays in the object's gun list at `gun_index_array_va` and `select_va`
+# stores the first slot `resolve_va` answers as the object's current gun,
+# spelling it through the `wep_??` template at `template_va` with the tens
+# and units digits written at `template_va + 4` and `template_va + 5`.
+[gun_loadout]
+claim = "OWNER-STATIC-2026-10-19"
+provenance = "static"
+bind_va = 0x443de0
+mode_cell_va = 0x71bb80
+pilot_cell_va = 0x64b67c
+wingman_cell_va = 0x64b680
+record_array_va = 0x64b78c
+record_stride = 0xcc
+map_va = 0x443d70
+gun_jump_table_va = 0x443dc4
+gun_max = 4
+ammo_none = 4
+gun_base_0 = 30
+gun_base_1 = 40
+gun_base_2 = 50
+gun_base_3 = 60
+gun_base_4 = 70
+gun_index_array_va = 0x62ae28
+name_va = 0x4aab00
+format_va = 0x629d70
+resolve_va = 0x5abfd0
+select_va = 0x4b2350
+template_va = 0x62ae5c

@@ -121,6 +121,8 @@ pub struct EngineFacts {
     provisionals: Vec<ProvisionalFact>,
     /// The Flight Check's list layout and fresh-campaign defaults (#1670).
     flight_check: FlightCheckFacts,
+    /// The loadout binder's (gun, ammunition) -> weapon-record map (#1628).
+    gun_loadout: GunLoadoutFact,
 }
 
 /// The stored-heading convention: the image's own conversion of a record's
@@ -331,6 +333,7 @@ impl EngineFacts {
             missions: Vec::new(),
             provisionals: provisional_facts(&document)?,
             flight_check: flight_check_facts(&document, image_va_base)?,
+            gun_loadout: gun_loadout_fact(&document, image_va_base)?,
         };
         let missions = mission_facts(&document, &facts, image_va_base)?;
         Ok(Self { missions, ..facts })
@@ -391,6 +394,13 @@ impl EngineFacts {
     #[must_use]
     pub fn flight_check(&self) -> &FlightCheckFacts {
         &self.flight_check
+    }
+
+    /// The loadout binder's (gun, ammunition) -> weapon-record map and the
+    /// sites that consume it (#1628).
+    #[must_use]
+    pub fn gun_loadout(&self) -> &GunLoadoutFact {
+        &self.gun_loadout
     }
 
     /// The per-mission player-airframe rows, in file order.
@@ -895,6 +905,129 @@ fn flight_check_facts(
         }
     }
     Ok(FlightCheckFacts { layout, defaults })
+}
+
+/// The keys of `[gun_loadout]`, every one an integer. The `*_va` keys are
+/// virtual addresses in the image; `gun_base_*`, `gun_max`, `ammo_none` and
+/// `record_stride` are record values and sentinels.
+const GUN_LOADOUT_KEYS: &[&str] = &[
+    "bind_va",
+    "mode_cell_va",
+    "pilot_cell_va",
+    "wingman_cell_va",
+    "record_array_va",
+    "record_stride",
+    "map_va",
+    "gun_jump_table_va",
+    "gun_max",
+    "ammo_none",
+    "gun_base_0",
+    "gun_base_1",
+    "gun_base_2",
+    "gun_base_3",
+    "gun_base_4",
+    "gun_index_array_va",
+    "name_va",
+    "format_va",
+    "resolve_va",
+    "select_va",
+    "template_va",
+];
+
+/// The loadout binder's measured (gun, ammunition) -> weapon-record map
+/// (#1628, `M01-WINDOW-FIRE-GUN-LOADOUT`), committed in
+/// `data/owner-static/engine-facts.toml` `[gun_loadout]`.
+///
+/// The binder at `bind_va` reads a live plane record's gun and ammunition
+/// slots (the same offsets `[flight_check_layout]` names) and answers one
+/// weapon index per slot through `map_va`: `gun_base_<gun> + ammo` for a
+/// `gun` at most `gun_max` and an `ammo` that is not `ammo_none`, so the
+/// index spells the `wep_NN` record the slot carries — the name `select_va`
+/// resolves through the two-digit `wep_??` template.
+#[derive(Clone, Debug)]
+pub struct GunLoadoutFact {
+    /// The claim id the table was recorded under.
+    pub claim: String,
+    values: Vec<(&'static str, u64)>,
+}
+
+impl GunLoadoutFact {
+    /// One layout value by its `[gun_loadout]` key.
+    ///
+    /// # Panics
+    ///
+    /// When `key` is not one of the schema's keys; the parser guarantees
+    /// every schema key is present.
+    #[must_use]
+    pub fn value(&self, key: &str) -> u64 {
+        self.values
+            .iter()
+            .find(|(name, _)| *name == key)
+            .map(|(_, value)| *value)
+            .unwrap_or_else(|| panic!("{key:?} is not a [gun_loadout] key"))
+    }
+
+    /// The measured weapon index for a record's (gun, ammunition) pair:
+    /// `gun_base_<gun> + ammo` when `gun` is at most `gun_max` and `ammo` is
+    /// not `ammo_none`; ammunition kinds 1..=3 add their value, every other
+    /// kind adds 0. `None` is the binder's no-record answer.
+    #[must_use]
+    pub fn weapon_index(&self, gun: u32, ammo: u32) -> Option<u32> {
+        if gun > self.value("gun_max") as u32 || ammo == self.value("ammo_none") as u32 {
+            return None;
+        }
+        let base = self.value(&format!("gun_base_{gun}")) as u32;
+        Some(base + if (1..=3).contains(&ammo) { ammo } else { 0 })
+    }
+
+    /// The `wep_NN` record the index spells, as the selector's two-digit
+    /// template writes it (tens digit, then units digit).
+    #[must_use]
+    pub fn record_name(&self, index: u32) -> String {
+        format!("wep_{}{}", index / 10, index % 10)
+    }
+}
+
+/// `[gun_loadout]`: the measured (gun, ammunition) -> weapon index map.
+fn gun_loadout_fact(
+    document: &subset::Document,
+    image_va_base: u64,
+) -> Result<GunLoadoutFact, EngineFactsError> {
+    let table = single(document, "gun_loadout")?;
+    let mut allowed = vec!["claim", "provenance"];
+    allowed.extend_from_slice(GUN_LOADOUT_KEYS);
+    known_keys(table, &allowed, "gun_loadout")?;
+    let claim = cited(table, "gun_loadout")?;
+    // Every gun id the map can be asked for must carry its base, so a
+    // `gun_max` beyond the declared `gun_base_*` keys is a schema error,
+    // not a panic inside `weapon_index`.
+    let gun_max = scalar_int_in(table, "gun_max")?;
+    for gun in 0..=gun_max.max(0) {
+        if table.get(&format!("gun_base_{gun}")).is_none() {
+            return Err(EngineFactsError::schema(format!(
+                "gun_loadout: no gun_base_{gun} for gun_max {gun_max}"
+            )));
+        }
+    }
+    let mut values = Vec::with_capacity(GUN_LOADOUT_KEYS.len());
+    for key in GUN_LOADOUT_KEYS {
+        let value = if key.ends_with("_va") {
+            scalar_va(table, key, image_va_base)?
+        } else {
+            u64::try_from(scalar_int_in(table, key)?)
+                .map_err(|_| EngineFactsError::schema(format!("gun_loadout: {key} is negative")))?
+        };
+        values.push((*key, value));
+    }
+    let fact = GunLoadoutFact { claim, values };
+    for gun in 0..=fact.value("gun_max") {
+        if fact.weapon_index(gun as u32, 0).is_none() {
+            return Err(EngineFactsError::schema(format!(
+                "gun_loadout: gun {gun} resolves to no base index"
+            )));
+        }
+    }
+    Ok(fact)
 }
 
 /// The `[[airframe]]` rows: exactly [`AIRFRAME_ROWS`], in index order at the
