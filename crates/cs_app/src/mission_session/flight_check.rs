@@ -767,7 +767,9 @@ impl FlightCheckPhase {
 /// (breadth first over the real `apply`).
 fn walk_to_flight_check() -> Option<FrontEnd> {
     let start = FrontEnd::new();
-    let mut seen = vec![start.screen()];
+    // A state is a screen and the profile choice made on it: the profile screen's
+    // New/Continue rows stay on the screen and only set the choice Confirm needs.
+    let mut seen = vec![(start.screen(), start.profile_intent())];
     let mut frontier = vec![start];
     while !frontier.is_empty() {
         let mut next = Vec::new();
@@ -777,8 +779,10 @@ fn walk_to_flight_check() -> Option<FrontEnd> {
             }
             for action in Action::ALL {
                 let mut trial = machine.clone();
-                if trial.apply(action).is_ok() && !seen.contains(&trial.screen()) {
-                    seen.push(trial.screen());
+                if trial.apply(action).is_ok()
+                    && !seen.contains(&(trial.screen(), trial.profile_intent()))
+                {
+                    seen.push((trial.screen(), trial.profile_intent()));
                     next.push(trial);
                 }
             }
