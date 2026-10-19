@@ -129,6 +129,7 @@ mod evidence_report_f56_c;
 mod evidence_report_f64_b;
 mod evidence_report_flight_original;
 mod evidence_report_t1318;
+mod evidence_report_t1601;
 mod evidence_report_t548;
 mod evidence_report_t574;
 mod evidence_report_t582;
