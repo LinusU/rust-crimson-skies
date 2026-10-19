@@ -268,7 +268,7 @@ fn review_method() -> String {
      framebuffer PNGs plus report.json with its scripted checks passing. A second, no-teleport \
      run (`--smoke-no-teleport`) flew the measured start pose continuously — never moving the \
      player (`player_teleported:false`, `placements:[]`) — and wrote the parity frames at the \
-     owner-capture seconds: `frame_1501_flight_25s.png` and `frame_4201_flight_70s.png`, the \
+     owner-capture seconds: `frame_01500_flight_25s.png` and `frame_04200_flight_70s.png`, the \
      frames `orig25.png` and `orig70.png` are compared against at the same simulated time, plus \
      the post-sample `flight` frame the run already took. `cs_xtask parity` aligned the two \
      pairs into `private/parity-m01/sheet/` (sheet.png, report.json, report.md) for side-by-side \
