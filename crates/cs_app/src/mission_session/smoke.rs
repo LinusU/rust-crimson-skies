@@ -311,10 +311,22 @@ const FLIGHT_CHECK_REQUIRED_BUTTON: &str = "FC_B_FLYMISSION";
 /// the full frame and the bare pane.
 const FLIGHT_CHECK_PIXEL_DELTA: u8 = 16;
 
-/// The frame the no-teleport mode takes its one framebuffer: right after the
-/// last wingman sample.
+/// The frame the no-teleport mode takes its `flight` framebuffer: right after
+/// the last wingman sample.
 const NO_TELEPORT_SHOT_FRAME: u32 =
     WINGMAN_SAMPLE_SECONDS[WINGMAN_SAMPLE_SECONDS.len() - 1] * 60 + 1;
+
+/// The owner-capture seconds the no-teleport run also photographs, counted
+/// from Fly Mission like the wingman samples: `PARITY-M01-PLAYER-VIEW` (#1644)
+/// compares `flight_25s` with the owner's `orig25.png` and `flight_70s` with
+/// `orig70.png` at the same simulated time after control starts. The player
+/// is never moved, so each frame is the measured start's own flight at that
+/// second.
+const NO_TELEPORT_PARITY_SHOT_SECONDS: [u32; 2] = [25, 70];
+
+/// The frame the no-teleport run finishes after: its last framebuffer.
+const NO_TELEPORT_END_FRAME: u32 =
+    NO_TELEPORT_PARITY_SHOT_SECONDS[NO_TELEPORT_PARITY_SHOT_SECONDS.len() - 1] * 60 + 1;
 
 /// How far the player is stood from a spawned actor for its probe, metres —
 /// abeam, so the probe never puts the player in the actor's path.
@@ -1607,6 +1619,11 @@ struct SmokeData {
     camera_shots_due: Vec<String>,
     /// The first control frame's screenshot is waiting for the script.
     first_control_due: bool,
+    /// The parity flight shots already requested, an index into
+    /// [`NO_TELEPORT_PARITY_SHOT_SECONDS`].
+    parity_shots: usize,
+    /// The no-teleport run's `flight` screenshot is already requested.
+    flight_shot: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -2394,14 +2411,25 @@ fn smoke_script(
     let at = frame.saturating_sub(data.phase_start);
     match data.phase {
         // The no-teleport script has no phases to walk: the player flies the
-        // measured start, `PendingPlacement` is never filled, and one frame
-        // is taken after the last wingman sample.
+        // measured start, `PendingPlacement` is never filled, and one
+        // framebuffer is taken at each owner-capture second (#1644) and after
+        // the last wingman sample.
         _ if config.mode == MissionSmokeMode::NoTeleport => {
+            while let Some(second) = NO_TELEPORT_PARITY_SHOT_SECONDS.get(data.parity_shots) {
+                if frame < second * 60 {
+                    break;
+                }
+                due.push(format!("flight_{second}s"));
+                data.parity_shots += 1;
+            }
+            if !data.flight_shot && frame >= NO_TELEPORT_SHOT_FRAME {
+                data.flight_shot = true;
+                due.push("flight".to_owned());
+            }
             if data.phase != Phase::Final
                 && data.phase != Phase::Ended
-                && frame >= NO_TELEPORT_SHOT_FRAME
+                && frame >= NO_TELEPORT_END_FRAME
             {
-                due.push("flight".to_owned());
                 data.phase = Phase::Final;
                 data.phase_start = frame + 1;
             }
@@ -4035,7 +4063,7 @@ mod tests {
                 GlobalTransform::from_translation(start),
             ))
             .id();
-        for _ in 0..(NO_TELEPORT_SHOT_FRAME + SHOT_GRACE_FRAMES + 10) {
+        for _ in 0..(NO_TELEPORT_END_FRAME + SHOT_GRACE_FRAMES + 10) {
             app.update();
             if handle.0.lock().is_ok_and(|slot| slot.is_some()) {
                 break;
@@ -4065,6 +4093,78 @@ mod tests {
         let json = std::fs::read_to_string(dir.join(SMOKE_REPORT_FILE)).expect("report.json");
         assert!(json.contains("\"mode\":\"no_teleport\""), "{json}");
         assert!(json.contains("\"player_teleported\":false"), "{json}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **`accept_parity_m01_player_view_` the no-teleport run photographs the
+    /// owner-capture seconds (#1644).**
+    ///
+    /// The production script systems drive the whole no-teleport schedule
+    /// over a stand-in player body: the run asks for `first_control`, then
+    /// `flight_25s` at t+25 s, `flight` after the last wingman sample and
+    /// `flight_70s` at t+70 s — the frames `orig25.png` and `orig70.png` are
+    /// compared against at the same simulated time — and finishes only after
+    /// the last of them.
+    #[test]
+    fn accept_parity_m01_player_view_no_teleport_smoke_photographs_the_capture_seconds() {
+        let dir = std::env::temp_dir().join("accept_parity_m01_player_view_capture_seconds");
+        let request = SmokeRequest {
+            seconds: 45,
+            capture_dir: dir.clone(),
+        };
+        let plugin = MissionSmokePlugin::new(request).with_mode(MissionSmokeMode::NoTeleport);
+        let handle = plugin.handle();
+        let mut app = App::new();
+        app.add_message::<AppExit>()
+            .insert_resource(SmokeConfig {
+                request: plugin.request.clone(),
+                mode: plugin.mode,
+                handle: plugin.handle.clone(),
+            })
+            .init_resource::<SmokeShots>()
+            .init_resource::<FlightCheckFrames>()
+            .init_resource::<SmokeData>()
+            .init_resource::<ProbeState>()
+            .init_resource::<KeyQueue>()
+            .init_resource::<PendingPlacement>()
+            .init_resource::<PlaytestState>()
+            .insert_resource(PlaytestCamera::new())
+            .init_resource::<PhysicsTickLedger>()
+            .add_systems(Update, apply_placement);
+        add_script_systems(&mut app);
+        let start = Vec3::new(120.0, 900.0, -4_000.0);
+        app.world_mut().spawn((
+            MissionPlayerBody,
+            Position(start),
+            Rotation::default(),
+            LinearVelocity::default(),
+            AngularVelocity::default(),
+            GlobalTransform::from_translation(start),
+        ));
+        // The run outlives the last wingman sample: the t+70 s frame is still
+        // ahead at t+45 s.
+        for _ in 0..(45 * 60) {
+            app.update();
+            assert!(handle.0.lock().is_ok_and(|slot| slot.is_none()));
+        }
+        for _ in 0..(NO_TELEPORT_END_FRAME + SHOT_GRACE_FRAMES + 10) {
+            app.update();
+            if handle.0.lock().is_ok_and(|slot| slot.is_some()) {
+                break;
+            }
+        }
+        let report = handle
+            .take()
+            .expect("the run finished after the t+70 s frame")
+            .expect("the report was written");
+        // Nothing is delivered headless, so every requested shot is missing —
+        // in the order the script asked for them.
+        assert_eq!(
+            report.measurements.missing_shots,
+            ["first_control", "flight_25s", "flight", "flight_70s"],
+            "the capture-second frames are on the schedule"
+        );
+        assert!(report.measurements.frames >= NO_TELEPORT_END_FRAME);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
