@@ -105,7 +105,8 @@
 //! **empty** [`crate::objectives::LoweredObjectives`] because the F39
 //! objective declarations cannot be recovered yet — reporting
 //! [`crate::mission_session::MissionHostRefusal::ObjectiveDeclarations`]
-//! instead (the computed refusal of Rally #1355).
+//! instead (the computed refusal of Rally #1355, which superseded the
+//! duplicate #1219).
 //!
 //! Stage `### F20-D` adds the two measured halves of the original-family
 //! validation:
