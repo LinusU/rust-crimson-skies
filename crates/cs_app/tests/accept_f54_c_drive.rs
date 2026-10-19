@@ -56,7 +56,7 @@ use cs_net::fixture::{synthetic_hello, synthetic_parameters};
 use cs_net::lifecycle::{ClientNotice, ClientPhase, ClientSession, ServerNotice, ServerSession};
 use cs_net::message::FinishReason;
 use cs_net::transport::ConnectWindow;
-use cs_sim::net_state::{NetActorState, NetStateError, NetStateLedger};
+use cs_sim::net_state::{NetActorState, NetStateLedger};
 use cs_types::Tick;
 use cs_types::input::FlightCommand;
 use cs_types::net::{ActorId, PeerId, SessionId};
@@ -369,22 +369,10 @@ fn accept_f54_c_drive_the_session_round_trip_binds_every_boundary() {
         consumed.sequence, 0,
         "the first in-session packet is sequence 0"
     );
-    // A discovered cross-layer numbering boundary, recorded rather than
-    // hidden: wire input sequences are zero-based (`next_sequence: 0`), while
-    // the ledger's input book starts `acknowledged` at 0 and refuses
-    // `sequence <= acknowledged` as a replay — so the wire's legitimate first
-    // packet is always booked `StaleInput`. The courtesy and the rule disagree
-    // on sequence zero and the report names both sides: the book refused, the
-    // wire ack still went out, and the packet was still consumed. Which side
-    // owns the numbering decision is a cs_sim/cs_net follow-up, filed
-    // separately — `cs_sim` is outside this task's owner paths.
-    assert_eq!(
-        consumed.book_refusal,
-        Some(NetStateError::StaleInput {
-            presented: 0,
-            acknowledged: 0,
-        }),
-    );
+    // Wire input sequences are zero-based and the ledger's input book accepts
+    // the first sequence whatever its value (#1385), so the legitimate first
+    // packet is not booked as a replay.
+    assert_eq!(consumed.book_refusal, None);
     assert_eq!(
         consumed.acknowledged,
         Ok(()),
@@ -420,7 +408,7 @@ fn accept_f54_c_drive_the_session_round_trip_binds_every_boundary() {
     );
     assert_eq!(
         host.ledger().acknowledged_input(),
-        consumed.sequence,
+        Some(consumed.sequence),
         "the ledger booked the consumed sequence"
     );
 

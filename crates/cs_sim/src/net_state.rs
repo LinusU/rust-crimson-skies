@@ -898,7 +898,9 @@ pub struct NetStateLedger {
     /// What one kill is worth here, with the provenance of that number.
     kill_score: KillScoreValue,
     next_generation: u16,
-    acknowledged: u32,
+    /// The highest input sequence consumed; `None` until the first one, so
+    /// "nothing acknowledged" is not confused with "sequence 0 acknowledged".
+    acknowledged: Option<u32>,
 }
 
 impl NetStateLedger {
@@ -917,7 +919,7 @@ impl NetStateLedger {
             credited_score: BTreeMap::new(),
             kill_score: KillScoreValue::designed(),
             next_generation: 1,
-            acknowledged: 0,
+            acknowledged: None,
         }
     }
 
@@ -1476,7 +1478,9 @@ impl NetStateLedger {
     /// round, spend boost capacity or move an actor, so a client's prediction of
     /// a shot or a boost cannot alter authoritative state (F57 AC02).
     ///
-    /// A sequence at or below the current one is refused as
+    /// The first sequence is accepted whatever its value (the wire is
+    /// zero-based, so 0 is legitimate); after that, a sequence at or below the
+    /// highest acknowledged one is refused as
     /// [`NetStateError::StaleInput`]: transport-level duplicate suppression
     /// (`docs/contracts/UI-NETWORK.md`) is a courtesy, and this is the rule.
     ///
@@ -1484,19 +1488,21 @@ impl NetStateLedger {
     ///
     /// [`NetStateError::StaleInput`] for a replayed or reordered sequence.
     pub fn observe_input(&mut self, sequence: u32, tick: Tick) -> Result<InputAck, NetStateError> {
-        if sequence <= self.acknowledged {
+        if let Some(acknowledged) = self.acknowledged
+            && sequence <= acknowledged
+        {
             return Err(NetStateError::StaleInput {
                 presented: sequence,
-                acknowledged: self.acknowledged,
+                acknowledged,
             });
         }
-        self.acknowledged = sequence;
+        self.acknowledged = Some(sequence);
         Ok(InputAck { sequence, tick })
     }
 
-    /// The highest client input sequence consumed.
+    /// The highest client input sequence consumed, or `None` before the first.
     #[must_use]
-    pub const fn acknowledged_input(&self) -> u32 {
+    pub const fn acknowledged_input(&self) -> Option<u32> {
         self.acknowledged
     }
 

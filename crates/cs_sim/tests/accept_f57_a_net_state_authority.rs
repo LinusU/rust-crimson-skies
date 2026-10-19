@@ -361,6 +361,29 @@ fn accept_f57_a_a_bailout_is_not_turned_into_a_destruction() {
 /// so a client's predicted shot cannot become authoritative (F57 AC02's
 /// authority half).
 #[test]
+fn accept_f57_a_first_input_sequence_zero_is_not_a_replay() {
+    let mut ledger = NetStateLedger::new(SESSION);
+    assert_eq!(ledger.acknowledged_input(), None);
+    assert_eq!(
+        ledger.observe_input(0, Tick(1)),
+        Ok(cs_sim::net_state::InputAck {
+            sequence: 0,
+            tick: Tick(1)
+        })
+    );
+    assert_eq!(ledger.acknowledged_input(), Some(0));
+    // Once sequence 0 is booked, a true replay of it is still refused.
+    assert_eq!(
+        ledger.observe_input(0, Tick(2)),
+        Err(NetStateError::StaleInput {
+            presented: 0,
+            acknowledged: 0
+        })
+    );
+    assert!(ledger.observe_input(1, Tick(3)).is_ok());
+}
+
+#[test]
 fn accept_f57_a_input_acknowledgment_is_monotonic_and_changes_nothing_else() {
     let (mut ledger, actors) = three_actor_ledger();
     let target = actors[0];
@@ -370,7 +393,7 @@ fn accept_f57_a_input_acknowledgment_is_monotonic_and_changes_nothing_else() {
     ledger.publish(state).expect("the owned generation applies");
     let before = *ledger.state(target).expect("the actor is known");
 
-    assert_eq!(ledger.acknowledged_input(), 0);
+    assert_eq!(ledger.acknowledged_input(), None);
     assert_eq!(
         ledger.observe_input(5, Tick(30)),
         Ok(cs_sim::net_state::InputAck {
@@ -378,7 +401,7 @@ fn accept_f57_a_input_acknowledgment_is_monotonic_and_changes_nothing_else() {
             tick: Tick(30)
         })
     );
-    assert_eq!(ledger.acknowledged_input(), 5);
+    assert_eq!(ledger.acknowledged_input(), Some(5));
 
     // A replayed or reordered sequence is refused, whatever its tick.
     for replay in [5_u32, 4, 0] {
@@ -390,7 +413,7 @@ fn accept_f57_a_input_acknowledgment_is_monotonic_and_changes_nothing_else() {
             })
         );
     }
-    assert_eq!(ledger.acknowledged_input(), 5);
+    assert_eq!(ledger.acknowledged_input(), Some(5));
 
     let after = *ledger.state(target).expect("the actor is known");
     assert_eq!(after.weapons.primary_rounds, before.weapons.primary_rounds);

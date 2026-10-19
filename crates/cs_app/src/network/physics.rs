@@ -219,11 +219,28 @@ pub fn publish_snapshot(
     for state in ledger.states() {
         records.push(publish_actor(state, origin)?);
     }
-    let snapshot = Snapshot::new(epoch, ledger.acknowledged_input(), records);
+    let snapshot = Snapshot::new(epoch, wire_input_ack(ledger.acknowledged_input()), records);
     snapshot
         .validate(ledger.session())
         .map_err(PublishError::Snapshot)?;
     Ok(snapshot)
+}
+
+/// The snapshot's `input_ack` for the ledger's acknowledgement.
+///
+/// The ledger says `None` before any input and `Some(0)` once sequence 0 is
+/// consumed. `cs_net::snapshot::Snapshot::input_ack` is a bare `u32`, so the
+/// wire cannot carry the difference and both publish as 0 (see
+/// `docs/findings/2026-10-19-input-ack-none-on-the-wire.md`). Callers that
+/// hold the ledger read the distinction from [`NetStateLedger::acknowledged_input`].
+///
+/// [`NetStateLedger::acknowledged_input`]: cs_sim::net_state::NetStateLedger::acknowledged_input
+#[must_use]
+pub const fn wire_input_ack(acknowledged: Option<u32>) -> u32 {
+    match acknowledged {
+        Some(sequence) => sequence,
+        None => 0,
+    }
 }
 
 /// The wire lifecycle for one authoritative lifecycle.
