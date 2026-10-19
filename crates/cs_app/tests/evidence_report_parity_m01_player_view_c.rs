@@ -223,8 +223,9 @@ fn review_method() -> String {
      owner's own command `cs --cs-path $CS_GAME_DIR --mission M01 --smoke-seconds 45 --capture-dir \
      private/evidence/PARITY-M01-PLAYER-VIEW-C` drove the same windowed composition the owner \
      plays on this machine's GPU — through the launch cinematic, which the smoke watches play out \
-     (`launch_cinematic_plays`: 4818 ticks, handed over, 0.000 m drift) before its scripted checks \
-     — and wrote 19 real framebuffer PNGs plus report.json: 19 checks, 18 pass and 1 skipped \
+     (`launch_cinematic_plays`: 4818 ticks, handed over, 0.000 m drift, its bars and HUD pixels \
+     judged as expected) before its scripted checks — and wrote 26 real framebuffer PNGs plus \
+     report.json: 20 checks, 19 pass and 1 skipped \
      (`world_sea_visible` does not apply — no known water surface record), 0 failures \
      (`passed: true`). The scripted smoke never damages the player — the M01 player actor has no \
      damage graph, so its regions publish `Unknown` and both measured `wing_flare` quads stay \

@@ -60,11 +60,12 @@ fraction stays 0 and the gauge shows intact green — matching `orig25.png`.
 `cs --cs-path $CS_GAME_DIR --mission M01 --smoke-seconds 45 --capture-dir
 private/evidence/PARITY-M01-PLAYER-VIEW-C` on this branch's head: the run
 played the launch cinematic first (`launch_cinematic_plays`: 4818 of 4818
-ticks, handed over, 0.000 m drift), then ran all scripted checks — 19
-checks, 18 pass, `world_sea_visible` skipped (the world's object records
-declare no known water surface), 0 failures (`passed: true`); 19
-framebuffer PNGs plus `report.json` sit under the capture dir, and the
-evidence report is `docs/findings/evidence/PARITY-M01-PLAYER-VIEW-C.json`.
+ticks, handed over, 0.000 m drift, 0.040 deg turn, its bars and HUD pixels
+judged as expected), then ran all scripted checks — 20 checks, 19 pass,
+`world_sea_visible` skipped (the world's object records declare no known
+water surface), 0 failures (`passed: true`); 26 framebuffer PNGs plus
+`report.json` sit under the capture dir, and the evidence report is
+`docs/findings/evidence/PARITY-M01-PLAYER-VIEW-C.json`.
 
 The scripted smoke never damages the player: with no player damage graph
 the regions publish `Unknown`, both `wing_flare` quads stay hidden and the
