@@ -551,8 +551,7 @@ wingmen fly with the player. `--smoke-no-teleport` (valid only with
 `--mission … --smoke-seconds`) flies the measured start for the whole run and
 **never moves the player** (`report.json` carries `"mode":"no_teleport"`,
 `"player_teleported":false` and an empty `placements`). It judges one check
-beside `smoke_shots_delivered` (one framebuffer, taken just after the last
-sample):
+beside `smoke_shots_delivered` (four framebuffers, below):
 
 | check | fails when |
 | --- | --- |
@@ -564,3 +563,25 @@ seconds and written to `report.json` (`wingmen[].distances[]`). The 500 m
 threshold (`MAX_WINGMAN_DISTANCE_M`) is **designed**: the original's formation
 distance is unmeasured. The default smoke is unchanged. Its retail run is in
 `docs/findings/2026-10-18-m01-smoke-no-teleport.md`.
+
+The run also photographs the owner-capture seconds
+(#1644 `PARITY-M01-PLAYER-VIEW`): `frame_01500_flight_25s.png` at t+25 s and
+`frame_04200_flight_70s.png` at t+70 s — the frames the owner's `orig25.png`
+(intact aircraft) and `orig70.png` (wing fire, smoke and damage gauges) are
+compared against at the same simulated time, each of them the measured
+start's own flight at that second because the player is never moved — plus
+`frame_01801_flight.png` just after the last wingman sample, and the run ends
+after the t+70 s frame (about 70 simulated seconds, whatever `--smoke-seconds`
+minimum was given). The side-by-side is produced by `cs_xtask parity`
+(tools/cs_xtask/src/parity.rs), which letterboxes both sides to the original's
+1024×768 and writes `sheet.png`, `report.json` and `report.md` under a
+`private/` path:
+
+```sh
+cargo run --locked -p cs_xtask -- parity \
+  --ref-dir private/ref-drydock/m01 --ours-dir <no-teleport capture dir> \
+  --out private/parity-m01/sheet --tolerance-seconds 1.0
+```
+
+The comparison's numbers are a reading aid; its report always says "visual
+comparison needed" and nothing in it is `verified_original`.
