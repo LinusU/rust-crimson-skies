@@ -1,0 +1,168 @@
+//! Task #1601 against the owner's engine image: the consumers of the
+//! `SONIC`, `FLASH`, `BEEPER` and `BEEPER_SEEKER` weapon-record bits that
+//! task #1318 left unlocated.
+//!
+//! Task test prefix: `accept_t1601_`. Findings:
+//! `docs/findings/2026-10-19-t1601-status-bit-consumers.md`.
+//!
+//! The pins are byte windows of the owner-supplied decrypted executable
+//! (`$CS_ENGINE_IMAGE`, sha-256 `43540fc9…6c37d75`, base `0x400000`). They are
+//! static-analysis evidence, never original-run behaviour; no code is printed
+//! or committed beyond the byte strings below.
+
+/// The image base the executable's virtual addresses are relative to.
+const IMAGE_BASE: u64 = 0x40_0000;
+
+/// `(virtual address, bytes, what the window carries)`.
+const IMAGE_PINS: [(u64, &[u8], &str); 20] = [
+    (
+        0x004b_9d84,
+        &[
+            0x8b, 0x88, 0x10, 0x02, 0x00, 0x00, 0x8b, 0x09, 0xf6, 0xc5, 0x0a, 0x0f, 0x85, 0xcf,
+            0x07, 0x00, 0x00, 0xf6, 0xc5, 0x40, 0x74, 0x53,
+        ],
+        "per-hit routine: loads weapon+0x210 -> flag word, tests ch&0x0a (SONIC|FLASH) then ch&0x40 (BEEPER)",
+    ),
+    (
+        0x004b_9da2,
+        &[0xe8, 0x39, 0xef, 0xff, 0xff],
+        "BEEPER hit: calls the beeper admission gate 0x4b8ce0 on manager 0x71dcc0",
+    ),
+    (
+        0x004b_9dc6,
+        &[
+            0x8b, 0x8a, 0x10, 0x02, 0x00, 0x00, 0xd9, 0x41, 0x18, 0x51, 0xd9, 0x1c, 0x24, 0x56,
+            0x8b, 0xc8, 0xe8, 0xc5, 0xea, 0xff,
+        ],
+        "BEEPER hit: record TIME (+0x18) and the hit actor go to the beeper constructor 0x4b88a0",
+    ),
+    (
+        0x004b_a56e,
+        &[
+            0x8b, 0x82, 0x10, 0x02, 0x00, 0x00, 0x8b, 0x08, 0xc1, 0xe9, 0x0b, 0x80, 0xe1, 0x01,
+            0x33, 0xdb, 0x88, 0x4d, 0x10,
+        ],
+        "SONIC|FLASH path: bit 11 (FLASH) of the flag word becomes the exposure routine's first argument",
+    ),
+    (
+        0x004b_a5c7,
+        &[
+            0x8b, 0x8f, 0x10, 0x02, 0x00, 0x00, 0x8b, 0x01, 0xf6, 0xc4, 0x02, 0xc7, 0x45, 0xdc,
+            0x00, 0x00,
+        ],
+        "player victim: ah&0x02 (SONIC) selects the effect parameters",
+    ),
+    (
+        0x004b_a5db,
+        &[
+            0xc7, 0x45, 0xe0, 0x00, 0x00, 0x00, 0x00, 0xc7, 0x45, 0xe4, 0x00, 0x00, 0x00, 0x00,
+            0x68, 0xd0,
+        ],
+        "SONIC: parameters (1, 0, 0) and the sound name at 0x62b1d0",
+    ),
+    (
+        0x004b_a5f0,
+        &[
+            0xc7, 0x45, 0xe0, 0x00, 0x00, 0x80, 0x3f, 0xc7, 0x45, 0xe4, 0x00, 0x00, 0x80, 0x3f,
+            0x68, 0xdc, 0xb1, 0x62, 0x00,
+        ],
+        "not SONIC (FLASH): parameters (1, 1, 1) and the sound name at 0x62b1dc",
+    ),
+    (
+        0x004b_a627,
+        &[0x8b, 0x55, 0x14, 0x52, 0x8b, 0xce, 0xe8, 0x9e, 0x5a],
+        "non-player victim: the computed duration goes to the AI incapacitation routine 0x4200d0",
+    ),
+    (
+        0x0062_b1d0,
+        b"snd_stun\0",
+        "sound name used by the SONIC effect on the player",
+    ),
+    (
+        0x0062_b1dc,
+        b"snd_nitro\0",
+        "sound name used by the FLASH effect on the player",
+    ),
+    (
+        0x0042_0127,
+        &[0xc7, 0x86, 0x58, 0x03, 0x00, 0x00, 0x04, 0x00, 0x00, 0x00],
+        "0x4200d0: sets the victim's mode word +0x358 to 4",
+    ),
+    (
+        0x0042_0160,
+        &[
+            0xd8, 0x84, 0x24, 0xd4, 0x00, 0x00, 0x00, 0x89, 0x9e, 0x0c, 0x01, 0x00, 0x00, 0x89,
+            0x9e, 0x08,
+        ],
+        "0x4200d0: zeroes control words (+0x100..+0x120) and adds the duration argument to the clock",
+    ),
+    (
+        0x0042_0179,
+        &[0xd9, 0x9e, 0xc0, 0x00, 0x00, 0x00],
+        "0x4200d0: stores clock + duration at victim +0xc0",
+    ),
+    (
+        0x0044_1864,
+        &[
+            0x8b, 0x88, 0x10, 0x02, 0x00, 0x00, 0x8b, 0x11, 0xf6, 0xc6, 0x80, 0x56, 0x57, 0x89,
+            0x6c, 0x24, 0x10, 0x74, 0x0a,
+        ],
+        "projectile setup: dh&0x80 (BEEPER_SEEKER) of the flag word",
+    ),
+    (
+        0x0044_1877,
+        &[0xc7, 0x83, 0x88, 0x06, 0x00, 0x00, 0x80, 0x17, 0x44, 0x00],
+        "BEEPER_SEEKER: projectile callback slot +0x688 = 0x441780 (cleared to 0 otherwise at 0x441852)",
+    ),
+    (
+        0x005a_f745,
+        &[
+            0x8b, 0x86, 0x88, 0x06, 0x00, 0x00, 0x3b, 0xc3, 0xc7, 0x46, 0x20, 0x01, 0x00, 0x00,
+            0x00, 0x74, 0x06, 0x56, 0xff, 0xd0,
+        ],
+        "projectile update loop: calls the +0x688 callback once per live projectile per step",
+    ),
+    (
+        0x004b_8b56,
+        &[0x8b, 0x0d, 0xac, 0xdb, 0x71, 0x00, 0x8b, 0x01],
+        "beeper search 0x4b8b50: walks the beeper list at 0x71dbac",
+    ),
+    (
+        0x004b_8b74,
+        &[
+            0xd9, 0x46, 0x0c, 0xd8, 0x1d, 0xc8, 0x32, 0x60, 0x00, 0xdf, 0xe0, 0xf6, 0xc4, 0x41,
+            0x0f, 0x85, 0xed, 0x00,
+        ],
+        "beeper search: skips a beeper whose remaining time (+0x0c) is <= 0.0",
+    ),
+    (
+        0x004b_89e4,
+        &[0xc7, 0x46, 0x0c, 0x00, 0x00, 0x80, 0xbf],
+        "beeper age 0x4b89c0: for an actor with +0x91d or +0x91f set and 0x4b8960 true, remaining time is forced to -1.0",
+    ),
+    (
+        0x0049_920a,
+        &[0xf6, 0xc5, 0x40, 0x74, 0x49],
+        "second BEEPER site (0x49920a): ch&0x40 gates the same admission + constructor pair",
+    ),
+];
+
+/// The code half: the owner-supplied image carries the byte windows every
+/// measured fact rests on.
+#[test]
+#[ignore = "requires CS_ENGINE_IMAGE"]
+fn accept_t1601_image_pins_the_status_bit_consumers() {
+    let path = std::env::var_os("CS_ENGINE_IMAGE").expect(
+        "CS_ENGINE_IMAGE is not set: this measurement needs the owner-supplied decrypted \
+         executable",
+    );
+    let image = std::fs::read(&path).expect("the engine image reads");
+    for (address, bytes, meaning) in IMAGE_PINS {
+        let offset = usize::try_from(address - IMAGE_BASE).expect("offset");
+        assert_eq!(
+            &image[offset..offset + bytes.len()],
+            bytes,
+            "0x{address:x} no longer carries: {meaning}"
+        );
+    }
+}

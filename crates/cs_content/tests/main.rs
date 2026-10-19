@@ -88,6 +88,7 @@ mod accept_flight_ai_parameter_randomisation;
 mod accept_flight_original_retail;
 mod accept_t1318_retail_blast_unknowns;
 mod accept_t1363_measured_terminal_precedence;
+mod accept_t1601_status_bit_consumers;
 mod accept_t442_shared_damage_key;
 mod accept_t548_retail_blast;
 mod accept_t574_zeppelin_carrier;
