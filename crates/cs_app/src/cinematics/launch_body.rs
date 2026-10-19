@@ -293,6 +293,25 @@ pub fn place_player_at_intro_start(position: [f32; 3], heading_degrees: f32) -> 
     }
 }
 
+/// The stored `aiv.zrd` pose as the body holds it once callback 10 has placed
+/// it (#1652): the heading is unchanged (the Euler triple is
+/// `(0, heading, 0)`) and the position is raised by [`INTRO_RAISE`]. The
+/// speed and the pose after the cinematic state ends stay unknown; see
+/// [`BODY_UNKNOWNS`].
+#[must_use]
+pub fn composed_start_pose(
+    stored: crate::mission_start::StartPose,
+) -> crate::mission_start::StartPose {
+    crate::mission_start::StartPose {
+        position: [
+            stored.position[0],
+            stored.position[1] + INTRO_RAISE,
+            stored.position[2],
+        ],
+        heading: stored.heading,
+    }
+}
+
 /// How often `name` occurs as bytes in a carrier. Used to show that no data
 /// names an animation the chain never calls.
 #[must_use]

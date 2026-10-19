@@ -490,6 +490,13 @@ pub fn stage_for(
             )));
         }
     };
+    // The body the launch cinematic leaves is the stored record raised by
+    // callback 10's 100 m (#1652, `docs/findings/2026-10-19-m01-launch-body-pose.md`).
+    let start = if plan.mission_dir.eq_ignore_ascii_case("zbd/c3/m01") {
+        crate::cinematics::launch_body::composed_start_pose(start)
+    } else {
+        start
+    };
     let world_group = WorldGroup::new(&plan.group_dir).map_err(|error| {
         MissionCompositionError::Identity(format!(
             "the world group {:?} is not a valid spelling: {error}",

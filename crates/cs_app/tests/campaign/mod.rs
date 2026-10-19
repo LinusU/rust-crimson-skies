@@ -334,6 +334,7 @@ mod m24_b_fu1;
 mod objaddr;
 mod owner_facts_table;
 mod parity_m01_atmo_a;
+mod parity_m01_atmo_e;
 mod parity_m01_atmo_e2;
 mod parity_m01_atmo_e3;
 mod parity_m01_atmo_e4;
