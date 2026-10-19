@@ -414,6 +414,7 @@ pub fn build_world_draw(
             NeutralColor(WORLD_NEUTRAL_COLOR),
             stored_slot,
         );
+        stored_shading_materials(app, &mut bound);
         if node_slot_of(object.id().as_str()).is_some_and(|slot| {
             horizon
                 .as_ref()
@@ -429,6 +430,34 @@ pub fn build_world_draw(
         .with_water_level(water)
         .with_water_art(art)
         .with_horizon(horizon)
+}
+
+/// Gives each part whose stored geometry carries per-corner colours its own
+/// unlit copy of its material ([`STORED_SHADING_LABEL`]): the stored vertex
+/// colours are the world's authored shading channel, so a vertex-coloured
+/// part draws `texture × colour` without a second, dynamic lighting term.
+/// A copy keeps every other user of the shared material as it was, and a
+/// part with no stored colours keeps the lit material the binder gave it.
+fn stored_shading_materials(app: &mut App, parts: &mut [PlaytestPart]) {
+    for part in parts {
+        let coloured = app
+            .world()
+            .get_resource::<Assets<Mesh>>()
+            .and_then(|meshes| meshes.get(&part.mesh))
+            .is_some_and(|mesh| mesh.attribute(Mesh::ATTRIBUTE_COLOR).is_some());
+        if !coloured {
+            continue;
+        }
+        let mut materials = app.world_mut().resource_mut::<Assets<StandardMaterial>>();
+        let Some(mut shaded) = materials.get(&part.material).cloned() else {
+            continue;
+        };
+        if shaded.unlit {
+            continue;
+        }
+        shaded.unlit = true;
+        part.material = materials.add(shaded);
+    }
 }
 
 /// Gives each part of a `horizon` record its own unlit, unfogged copy of its
@@ -755,5 +784,99 @@ pub struct MissionWorldDrawPlugin;
 impl Plugin for MissionWorldDrawPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(Update, (attach_world_parts, anchor_horizon_to_camera));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::playtest_textures::neutral_material;
+    use bevy::asset::{Assets, RenderAssetUsages};
+    use bevy::mesh::PrimitiveTopology;
+
+    /// A triangle-mesh part bound to `material`, storing `colors` when given.
+    fn part_with(
+        app: &mut App,
+        material: Handle<StandardMaterial>,
+        colors: Option<Vec<[f32; 4]>>,
+    ) -> PlaytestPart {
+        let mut mesh = Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::default(),
+        );
+        mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, vec![[0.0_f32; 3]; 3]);
+        if let Some(colors) = colors {
+            mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colors);
+        }
+        let mesh = app.world_mut().resource_mut::<Assets<Mesh>>().add(mesh);
+        PlaytestPart {
+            mesh,
+            material,
+            stored_material: 0,
+            triangles: 1,
+            image: None,
+        }
+    }
+
+    /// **PARITY-M01-ISLAND-SHADING (#1706): a vertex-coloured world part draws
+    /// unlit; an uncoloured one keeps the lit material it bound.**
+    ///
+    /// `ZBD/C3`'s world geometry stores a complete per-corner shading channel
+    /// (the terrain tiles colour every corner in) while stored normals are
+    /// partial — the authored colours are the surface's shading input, so the
+    /// drawn material multiplies its texture by the stored colour only. The
+    /// choice is this build's own presentation, not a measured original rule.
+    #[test]
+    fn accept_parity_m01_island_shading_vertex_coloured_world_parts_draw_unlit() {
+        let mut app = App::new();
+        app.insert_resource(Assets::<Mesh>::default());
+        app.insert_resource(Assets::<StandardMaterial>::default());
+        let shared = app
+            .world_mut()
+            .resource_mut::<Assets<StandardMaterial>>()
+            .add(neutral_material(WORLD_NEUTRAL_COLOR));
+
+        let coloured = part_with(
+            &mut app,
+            shared.clone(),
+            Some(vec![[0.6, 0.7, 0.5, 1.0]; 3]),
+        );
+        let plain = part_with(&mut app, shared.clone(), None);
+        let plain_material = plain.material.clone();
+        let mut parts = vec![coloured, plain];
+
+        stored_shading_materials(&mut app, &mut parts);
+
+        let materials = app.world().resource::<Assets<StandardMaterial>>();
+        let unlit = materials
+            .get(&parts[0].material)
+            .expect("the shaded copy exists");
+        assert!(unlit.unlit, "the vertex-coloured part draws unlit");
+        assert!(
+            unlit.fog_enabled,
+            "unlit changes the lighting term, not the weather binding"
+        );
+        assert_ne!(
+            parts[0].material, shared,
+            "the part drew its own copy so other users keep the shared one"
+        );
+        assert_eq!(parts[1].material, plain_material);
+        let lit = materials
+            .get(&parts[1].material)
+            .expect("the uncoloured part's material is unchanged");
+        assert!(!lit.unlit, "a part with no stored colours stays lit");
+
+        // An already-unlit part (a `horizon` subtree part `sky_materials`
+        // prepared) is left exactly as it was.
+        let sky = app
+            .world_mut()
+            .resource_mut::<Assets<StandardMaterial>>()
+            .add(StandardMaterial {
+                unlit: true,
+                ..neutral_material(WORLD_NEUTRAL_COLOR)
+            });
+        let mut parts = vec![part_with(&mut app, sky.clone(), Some(vec![[1.0; 4]; 3]))];
+        stored_shading_materials(&mut app, &mut parts);
+        assert_eq!(parts[0].material, sky);
     }
 }
