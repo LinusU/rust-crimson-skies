@@ -78,6 +78,8 @@ use super::compose::MissionPlayerBody;
 use super::evidence::{CaptureRefusal, clear_colour_encodings, count_world_pixels, same_colour};
 use super::flight_check::{FlightCheckPhase, PhaseResponse, ScreenOverlay};
 use super::host::MissionHost;
+use super::launch_cinematic::LaunchCinematic;
+use super::letterbox::LaunchLetterbox;
 use super::lifecycles::ObjectiveLifecycles;
 use super::weapons::MissionWeaponReport;
 use crate::audio::loops::AudioSession;
@@ -122,6 +124,23 @@ pub const SMOKE_KIND: &str = "mission-smoke-report";
 //
 // Every frame number below is an offset inside its own phase, so a phase
 // always starts at its own frame 0.
+
+/// The first frame of the cinematic phase a screenshot is taken at: the bars
+/// and the held HUD are in place from the first fixed tick.
+const CINEMATIC_FIRST_SHOT_FRAME: u32 = 5;
+/// Fixed ticks before the last one at which the "end" frame is requested, so
+/// the frame the renderer captures still has the bars on.
+const CINEMATIC_END_MARGIN_TICKS: u64 = 16;
+/// Frames after the hand-over at which its screenshot is requested: the HUD
+/// and the control are the player's by then.
+const CINEMATIC_HANDOVER_SHOT_FRAMES: u32 = 6;
+/// Frames past the phase's own length (one frame is at least one tick at the
+/// baseline rate) the run waits before it gives the phase up.
+const CINEMATIC_GRACE_FRAMES: u32 = 600;
+const CINEMATIC_SHOT_START: u8 = 1;
+const CINEMATIC_SHOT_MID: u8 = 2;
+const CINEMATIC_SHOT_END: u8 = 4;
+const CINEMATIC_SHOT_HANDOVER: u8 = 8;
 
 /// Frames the run settles before the first probe.
 const SETTLE_FRAMES: u32 = 30;
@@ -533,6 +552,29 @@ pub struct ApproachMetrics {
     pub objective_woke: bool,
 }
 
+/// What the launch cinematic phase measured (Rally #1702): the smoke runs
+/// through it, then the scripted checks begin at the hand-over.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CinematicMetrics {
+    /// The phase's length in fixed ticks.
+    pub total_ticks: u64,
+    /// Fixed ticks the phase had run when the smoke left it.
+    pub played_ticks: u64,
+    /// The farthest the body stood from where the phase found it, metres.
+    pub max_drift_m: f32,
+    /// The letterbox bars were on in every frame sampled while it played.
+    pub bars_on_while_playing: bool,
+    /// The letterbox bars were off in every frame sampled after it ended.
+    pub bars_off_after: bool,
+    /// The phase reached its last tick and handed the player control.
+    pub handed_over: bool,
+}
+
+/// How far the held body may stand from where the cinematic found it,
+/// metres. **Designed:** the hold zeroes the velocity every tick, so any
+/// drift beyond a numerical hair is the body moving.
+pub const MAX_CINEMATIC_DRIFT_M: f32 = 0.5;
+
 /// How the smoke flies the player.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum MissionSmokeMode {
@@ -590,6 +632,8 @@ pub struct SmokeMeasurements {
     /// The wingman distances, one sample per [`WINGMAN_SAMPLE_SECONDS`] entry
     /// reached (no-teleport mode only).
     pub wingmen: Vec<WingmanSample>,
+    /// The launch cinematic phase, when the run went through it.
+    pub cinematic: Option<CinematicMetrics>,
 }
 
 /// One pass/fail verdict with its evidence.
@@ -894,6 +938,30 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
             m.audio.engine_bindings, m.audio.active_loops
         ),
     });
+
+    // --- the launch cinematic ---------------------------------------------
+    if let Some(c) = &m.cinematic {
+        checks.push(Check {
+            id: "launch_cinematic_plays".to_owned(),
+            applies: true,
+            passed: c.handed_over
+                && c.played_ticks >= c.total_ticks
+                && c.max_drift_m <= MAX_CINEMATIC_DRIFT_M
+                && c.bars_on_while_playing
+                && c.bars_off_after,
+            detail: format!(
+                "{} of {} ticks played, handed over: {}, body drift {:.3} m (ceiling {}), \
+                 bars on while playing: {}, off after: {}",
+                c.played_ticks,
+                c.total_ticks,
+                c.handed_over,
+                c.max_drift_m,
+                MAX_CINEMATIC_DRIFT_M,
+                c.bars_on_while_playing,
+                c.bars_off_after
+            ),
+        });
+    }
 
     // --- the picture arrived ----------------------------------------------
     checks.push(Check {
@@ -1321,12 +1389,21 @@ struct SmokeData {
     effects_at_hold_start: Option<u64>,
     hud_region: Option<[u32; 4]>,
     rounds_probe_pending: bool,
+    /// Where the launch cinematic's first sampled frame found the body.
+    cinematic_start_m: Option<Vec3>,
+    /// The cinematic screenshots already requested.
+    cinematic_shots: u8,
+    /// The frame the sampler saw the cinematic hand over.
+    cinematic_ended_at: Option<u32>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum Phase {
     #[default]
     Settle,
+    /// The launch cinematic's held phase: the run watches it play out and
+    /// takes its screenshots before the scripted checks begin.
+    Cinematic,
     WorldProbe,
     SeaProbe,
     Actors,
@@ -1378,6 +1455,7 @@ fn add_script_systems(app: &mut App) {
             smoke_census,
             smoke_sample,
             smoke_wingmen,
+            smoke_cinematic,
             smoke_script,
             smoke_rounds,
             smoke_flashes,
@@ -1867,7 +1945,11 @@ fn smoke_sample(
             data.measurements.rocket.refusals = report.rocket_refusals.clone();
         }
     }
-    if let Some(line) = current_objective(host.as_deref(), messages.as_deref()) {
+    // The HUD is held back while the cinematic plays; the objective probe is
+    // about what the player sees once control is theirs.
+    if data.phase != Phase::Cinematic
+        && let Some(line) = current_objective(host.as_deref(), messages.as_deref())
+    {
         data.measurements.approach.objective_woke = true;
         if data.measurements.hud.model_line.is_none() {
             data.measurements.hud.model_line = Some(line);
@@ -1914,6 +1996,52 @@ fn smoke_wingmen(
     });
 }
 
+/// Follows the launch cinematic phase into the measurements and moves the
+/// script into it on the first frame (scripted mode only: the no-teleport
+/// mode measures the flight from the first frame and skips the phase).
+fn smoke_cinematic(
+    config: Res<SmokeConfig>,
+    mut data: ResMut<SmokeData>,
+    phase: Option<Res<LaunchCinematic>>,
+    bars: Option<Res<LaunchLetterbox>>,
+    player: Query<&Position, With<MissionPlayerBody>>,
+) {
+    let Some(phase) = phase else { return };
+    if config.mode != MissionSmokeMode::Scripted {
+        return;
+    }
+    if data.frame == 1 {
+        data.phase = Phase::Cinematic;
+        data.phase_start = 0;
+        data.measurements.cinematic = Some(CinematicMetrics {
+            total_ticks: phase.total_ticks(),
+            bars_on_while_playing: true,
+            bars_off_after: true,
+            ..CinematicMetrics::default()
+        });
+    }
+    let Some(mut metrics) = data.measurements.cinematic.take() else {
+        return;
+    };
+    let frame = data.frame;
+    let position = player.single().ok().map(|position| position.0);
+    let bars_on = bars.as_deref().is_some_and(LaunchLetterbox::is_active);
+    if phase.is_playing() {
+        metrics.bars_on_while_playing &= bars_on;
+        if let Some(position) = position {
+            let start = *data.cinematic_start_m.get_or_insert(position);
+            metrics.max_drift_m = metrics.max_drift_m.max(position.distance(start));
+        }
+    } else if data.cinematic_ended_at.is_none() {
+        data.cinematic_ended_at = Some(frame);
+        metrics.handed_over = true;
+    } else if frame > data.cinematic_ended_at.unwrap_or(frame) {
+        metrics.bars_off_after &= !bars_on;
+    }
+    metrics.played_ticks = phase.elapsed_ticks();
+    data.measurements.cinematic = Some(metrics);
+}
+
 #[allow(clippy::too_many_arguments)]
 fn smoke_script(
     config: Res<SmokeConfig>,
@@ -1955,11 +2083,54 @@ fn smoke_script(
                 data.phase_start = frame + 1;
             }
         }
-        Phase::Settle if frame >= SETTLE_FRAMES => {
+        Phase::Settle if at >= SETTLE_FRAMES => {
             data.phase = Phase::WorldProbe;
             data.phase_start = frame + 1;
         }
         Phase::Settle => {}
+        Phase::Cinematic => {
+            let (played, total) = data
+                .measurements
+                .cinematic
+                .as_ref()
+                .map_or((0, 0), |c| (c.played_ticks, c.total_ticks));
+            let ended_for = data
+                .cinematic_ended_at
+                .map(|ended| frame.saturating_sub(ended));
+            let wanted = [
+                (
+                    CINEMATIC_SHOT_START,
+                    "cinematic_start",
+                    at >= CINEMATIC_FIRST_SHOT_FRAME,
+                ),
+                (CINEMATIC_SHOT_MID, "cinematic_mid", played >= total / 2),
+                (
+                    CINEMATIC_SHOT_END,
+                    "cinematic_end",
+                    played + CINEMATIC_END_MARGIN_TICKS >= total,
+                ),
+            ];
+            if ended_for.is_none() {
+                for (bit, label, ready) in wanted {
+                    if ready && data.cinematic_shots & bit == 0 {
+                        data.cinematic_shots |= bit;
+                        due.push(label.to_owned());
+                    }
+                }
+            } else if ended_for.is_some_and(|frames| frames >= CINEMATIC_HANDOVER_SHOT_FRAMES)
+                && data.cinematic_shots & CINEMATIC_SHOT_HANDOVER == 0
+            {
+                data.cinematic_shots |= CINEMATIC_SHOT_HANDOVER;
+                due.push("cinematic_handover".to_owned());
+                data.phase = Phase::Settle;
+                data.phase_start = frame + 1;
+            }
+            // A phase that never ends is a failed check, not a hung run.
+            if at > u32::try_from(total).unwrap_or(u32::MAX) + CINEMATIC_GRACE_FRAMES {
+                data.phase = Phase::Settle;
+                data.phase_start = frame + 1;
+            }
+        }
         Phase::WorldProbe => {
             if at == WORLD_HIDE_OFFSET {
                 probe.0 = ProbeMode::TerrainOnly;
@@ -3019,6 +3190,25 @@ fn write_artifacts(
         .drawn_line
         .as_deref()
         .map_or_else(|| "null".to_owned(), json_string);
+    let cinematic = report.measurements.cinematic.as_ref().map_or_else(
+        || "null".to_owned(),
+        |c| {
+            format!(
+                "{{\"total_ticks\":{},\"played_ticks\":{},\"max_drift_m\":{},\
+                 \"bars_on_while_playing\":{},\"bars_off_after\":{},\"handed_over\":{}}}",
+                c.total_ticks,
+                c.played_ticks,
+                json_option_f64(
+                    c.max_drift_m
+                        .is_finite()
+                        .then_some(f64::from(c.max_drift_m))
+                ),
+                c.bars_on_while_playing,
+                c.bars_off_after,
+                c.handed_over
+            )
+        },
+    );
     let body = format!(
         "{{\"kind\":{kind},\"mission\":{mission},\"human_play\":false,\
          \"mode\":{mode},\"player_teleported\":{teleported},\
@@ -3034,6 +3224,7 @@ fn write_artifacts(
          \"audio\":{{\"radio_seen\":{radio_seen},\"engine_seen\":{engine_seen},\
          \"engine_bindings\":{bindings},\"active_loops\":{loops},\
          \"radio_started\":{radio_started}}},\
+         \"cinematic\":{cinematic},\
          \"approach\":{{\"placed\":{approach_placed},\"anchor\":{anchor},\
          \"frames\":{approach_frames},\"objective_woke\":{woke}}},\
          \"actors\":[{actors}],\"placements\":[{placements}],\"shots\":[{shots}],\
@@ -3077,6 +3268,7 @@ fn write_artifacts(
         bindings = report.measurements.audio.engine_bindings,
         loops = report.measurements.audio.active_loops,
         radio_started = report.measurements.audio.radio_started,
+        cinematic = cinematic,
         approach_placed = report.measurements.approach.placed,
         anchor = report
             .measurements
@@ -3150,6 +3342,59 @@ pub fn finish(
 mod tests {
     use super::*;
     use crate::playtest::SmokeRequest;
+
+    /// **`accept_m01_owner_smoke_cinematic_` the judge reads the phase.**
+    ///
+    /// A run that went through the launch cinematic is judged on it: the
+    /// phase played to its end, handed over, held the body and had the bars on
+    /// and then off. Any one of those failing fails the check; a run without
+    /// the phase has no such check.
+    #[test]
+    fn accept_m01_owner_smoke_cinematic_check_judges_the_phase() {
+        let good = CinematicMetrics {
+            total_ticks: 4818,
+            played_ticks: 4818,
+            max_drift_m: 0.0,
+            bars_on_while_playing: true,
+            bars_off_after: true,
+            handed_over: true,
+        };
+        let verdict = |c: Option<CinematicMetrics>| {
+            evaluate(&SmokeMeasurements {
+                cinematic: c,
+                ..SmokeMeasurements::default()
+            })
+            .into_iter()
+            .find(|check| check.id == "launch_cinematic_plays")
+            .map(|check| check.passed)
+        };
+        assert_eq!(verdict(None), None);
+        assert_eq!(verdict(Some(good.clone())), Some(true));
+        for broken in [
+            CinematicMetrics {
+                handed_over: false,
+                ..good.clone()
+            },
+            CinematicMetrics {
+                played_ticks: 100,
+                ..good.clone()
+            },
+            CinematicMetrics {
+                max_drift_m: 40.0,
+                ..good.clone()
+            },
+            CinematicMetrics {
+                bars_on_while_playing: false,
+                ..good.clone()
+            },
+            CinematicMetrics {
+                bars_off_after: false,
+                ..good.clone()
+            },
+        ] {
+            assert_eq!(verdict(Some(broken.clone())), Some(false), "{broken:?}");
+        }
+    }
 
     /// **`accept_m01_smoke_no_teleport_` the mode never moves the player.**
     ///
