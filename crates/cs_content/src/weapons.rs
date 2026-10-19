@@ -1548,6 +1548,351 @@ pub const ORIGINAL_ROCKET_SLOTS: u32 = 8;
 /// four gun slots.
 pub const ORIGINAL_HARDPOINT_POINTS: u32 = 2;
 
+// ---------------------------------------------------------------------------
+// The per-slot ordnance selection model (F49-D.02-FU-SLOTS, #1629).
+//
+// Everything in this section is read out of the owner-supplied decrypted
+// engine image (sha-256 `43540fc9…6c37d75`, load base `0x400000`), provenance
+// `static` — static analysis of machine code, never an original run. The
+// handlers cited are the engine callbacks `ORDINANCELAYOUT.SCRIPT` invokes
+// through the `$$E$$` dispatcher at `0x4093a0`: `2030`/`2031` read a slot,
+// `2036`/`2037` write a pick, `2034`/`2035` apply and begin the pending edit
+// buffer, and `2027`/`2028` fill the dropdowns. See
+// `docs/findings/2026-10-19-f49-d-02-fu-slots.md`.
+// ---------------------------------------------------------------------------
+
+/// The gun id a record stores for a gun slot the airframe does not have.
+///
+/// **Measured**: callback `2030` (handler `0x4099f2`) reads the gun id at
+/// record `+0x88 + 4*slot`; the screen greys the slot (and its ammunition
+/// dropdown) when the returned id equals this value.
+pub const ORIGINAL_GUN_NONE: u32 = 5;
+
+/// The gun-ammunition kind a record stores for "no ammunition".
+///
+/// **Measured**: `gun_loadout` (`0x41bca0`) treats kind `4` as `ammo_none`
+/// (it answers "no record" for it), and every absent gun slot's template
+/// entry holds it.
+pub const ORIGINAL_AMMO_NONE: u32 = 4;
+
+/// How many ammunition kinds one gun slot's dropdown offers, fixed.
+///
+/// **Measured**: callback `2027` (handler `0x409a5c`) writes the item count
+/// as an immediate (`0x409a65` stores `5`) and labels item `n` with string
+/// `0xd20 + n` (`3360 + n`, the `ammo_short_name` block of
+/// [`ORIGINAL_AMMO_NAME_BLOCKS`]); the item index is the stored kind, so the
+/// five offered kinds are `0..=4` and kind `4` is [`ORIGINAL_AMMO_NONE`].
+pub const ORIGINAL_SLOT_AMMO_KINDS: u32 = 5;
+
+/// The rocket id a record stores for a slot that carries nothing.
+///
+/// **Measured**: every absent or empty rocket slot's template entry is `11`,
+/// which is also the last row of [`ORIGINAL_ROCKET_SELECTOR_ROWS`] and the
+/// selector's "no rocket" item.
+pub const ORIGINAL_ROCKET_NONE: u32 = 11;
+
+/// Where the eight rocket slots split into the two banks a record counts.
+///
+/// **Measured**: callback `2031` (handler `0x409aec`) checks a slot index
+/// against the record's first-bank count (`+0x34`) for slots `0..4` and
+/// against `4 +` the second-bank count (`+0x38`) for slots `4..8`.
+pub const ORIGINAL_ROCKET_BANK_SLOTS: u32 = 4;
+
+/// One row of the rocket selector table at `0x619efc`.
+///
+/// Twelve rows of eight bytes, indexed by rocket id. The engine's selector
+/// helpers (`0x40ff00`, `0x40ff50`, `0x40ffa0`) iterate it:
+///
+/// * `gate` — the row is offered when `gate <= progress + 1`, where
+///   `progress` is the campaign-progress cell at `0x64b678` (the running
+///   maximum of the mission index written through native `2104`, clamped to
+///   `24`); any of the three override flags at `0x647b5c`, `0x647b68` or
+///   `0x647b6c` opens every row. Row [`ORIGINAL_ROCKET_NONE`] has gate `1`,
+///   so "no rocket" is always offered.
+/// * `aux` — the second dword. **Unmeasured**: no reader reached in this
+///   pass, so its meaning is recorded as unknown rather than guessed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OriginalRocketRow {
+    /// The progress gate that decides whether the row is offered.
+    pub gate: u32,
+    /// The row's second dword; its meaning is unmeasured.
+    pub aux: u32,
+}
+
+/// The rocket selector table, in row (= rocket id) order.
+///
+/// **Measured** at `0x619efc` in the engine image.
+pub const ORIGINAL_ROCKET_SELECTOR_ROWS: [OriginalRocketRow; 12] = [
+    OriginalRocketRow { gate: 1, aux: 4 },
+    OriginalRocketRow { gate: 1, aux: 4 },
+    OriginalRocketRow { gate: 2, aux: 2 },
+    OriginalRocketRow { gate: 8, aux: 2 },
+    OriginalRocketRow { gate: 7, aux: 2 },
+    OriginalRocketRow { gate: 12, aux: 2 },
+    OriginalRocketRow { gate: 7, aux: 2 },
+    OriginalRocketRow { gate: 7, aux: 4 },
+    OriginalRocketRow { gate: 17, aux: 4 },
+    OriginalRocketRow { gate: 17, aux: 1 },
+    OriginalRocketRow { gate: 20, aux: 0 },
+    OriginalRocketRow { gate: 1, aux: 0 },
+];
+
+/// The rocket ids the selector offers at one campaign progress.
+///
+/// The measured rule of the row gates: a row is offered when an
+/// unlock-override flag is set (the three globals cited on
+/// [`OriginalRocketRow`]) or when `row.gate <= progress + 1`. Which progress
+/// the Instant Action screen actually sees is the session's campaign cell —
+/// for a caller without one the offered set is this function's result at the
+/// recorded progress.
+#[must_use]
+pub fn original_offered_rockets(progress: u32, override_unlocked: bool) -> Vec<u32> {
+    ORIGINAL_ROCKET_SELECTOR_ROWS
+        .iter()
+        .enumerate()
+        .filter(|(_, row)| override_unlocked || row.gate <= progress + 1)
+        .map(|(id, _)| id as u32)
+        .collect()
+}
+
+/// One airframe's default per-slot loadout: a roster template record.
+///
+/// **Measured**: the engine image's roster template table at `0x619f58`,
+/// thirteen records of `0xcc` bytes. Records `0..=10` are per airframe index
+/// (each record's `+0x2c` plane id equals its index); `11` and `12` are the
+/// fresh-profile player/wingman copies of the Devastator record (F27-M
+/// finding). The ordnance fields are `+0x88` four gun ids, `+0x98` four
+/// ammunition kinds, `+0xa8` eight rocket ids, `+0x34`/`+0x38` the two
+/// rocket-bank counts, and `+0x84` the paired-gun bitmask. Instant Action
+/// copies the template of the selected plane into the actor's record (the
+/// `0x41034a` initializer and plane-change handler `2313`/`2317` at
+/// `0x40c229`), so these are the default slot contents the ordinance editor
+/// opens with.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct OriginalAirframeLoadout {
+    paired_gun_mask: u8,
+    rocket_bank_low: u32,
+    rocket_bank_high: u32,
+    guns: [u32; ORIGINAL_GUN_SLOTS as usize],
+    ammo: [u32; ORIGINAL_GUN_SLOTS as usize],
+    rockets: [u32; ORIGINAL_ROCKET_SLOTS as usize],
+}
+
+impl OriginalAirframeLoadout {
+    /// Assembles one measured template record.
+    #[must_use]
+    pub const fn new(
+        paired_gun_mask: u8,
+        rocket_bank_low: u32,
+        rocket_bank_high: u32,
+        guns: [u32; ORIGINAL_GUN_SLOTS as usize],
+        ammo: [u32; ORIGINAL_GUN_SLOTS as usize],
+        rockets: [u32; ORIGINAL_ROCKET_SLOTS as usize],
+    ) -> Self {
+        Self {
+            paired_gun_mask,
+            rocket_bank_low,
+            rocket_bank_high,
+            guns,
+            ammo,
+            rockets,
+        }
+    }
+
+    /// The paired-gun bitmask (`+0x84`): bit `n` set means gun slot `n`
+    /// fires on both mounts.
+    #[must_use]
+    pub const fn paired_gun_mask(&self) -> u8 {
+        self.paired_gun_mask
+    }
+
+    /// The default gun ids of the four gun slots (`+0x88`);
+    /// [`ORIGINAL_GUN_NONE`] marks a slot the airframe does not have.
+    #[must_use]
+    pub const fn guns(&self) -> &[u32; ORIGINAL_GUN_SLOTS as usize] {
+        &self.guns
+    }
+
+    /// The default ammunition kinds of the four gun slots (`+0x98`);
+    /// [`ORIGINAL_AMMO_NONE`] marks "no ammunition".
+    #[must_use]
+    pub const fn ammo(&self) -> &[u32; ORIGINAL_GUN_SLOTS as usize] {
+        &self.ammo
+    }
+
+    /// The default rocket ids of the eight rocket slots (`+0xa8`);
+    /// [`ORIGINAL_ROCKET_NONE`] marks a slot that carries nothing.
+    #[must_use]
+    pub const fn rockets(&self) -> &[u32; ORIGINAL_ROCKET_SLOTS as usize] {
+        &self.rockets
+    }
+
+    /// The two rocket-bank counts (`+0x34`, `+0x38`): the first bank covers
+    /// slots `0..low`, the second `4..4+high`.
+    #[must_use]
+    pub const fn rocket_banks(&self) -> (u32, u32) {
+        (self.rocket_bank_low, self.rocket_bank_high)
+    }
+
+    /// Whether the airframe has gun slot `slot` — the same test callback
+    /// `2030` applies when it decides whether to grey the slot.
+    #[must_use]
+    pub const fn gun_slot_present(&self, slot: u32) -> bool {
+        self.guns[slot as usize] != ORIGINAL_GUN_NONE
+    }
+
+    /// Whether the airframe has rocket slot `slot` — the same two-bank test
+    /// callback `2031` applies when it answers `-1` for an absent slot.
+    #[must_use]
+    pub const fn rocket_slot_present(&self, slot: u32) -> bool {
+        if slot < ORIGINAL_ROCKET_BANK_SLOTS {
+            slot < self.rocket_bank_low
+        } else {
+            slot - ORIGINAL_ROCKET_BANK_SLOTS < self.rocket_bank_high
+        }
+    }
+}
+
+/// The eleven per-airframe default loadouts, keyed by the airframe table's
+/// `scene_root` (the `airframe/<scene_root>` id's key; the index order is the
+/// airframe table's, `0x620c70` — `data/owner-static/engine-facts.toml`).
+///
+/// **Measured** at `0x619f58`, records `0..=10`; `player_autogyro` is record
+/// `0` through `player_warhawk` record `10`.
+pub const ORIGINAL_AIRFRAME_LOADOUTS: [(&str, OriginalAirframeLoadout); 11] = [
+    (
+        "player_autogyro",
+        OriginalAirframeLoadout::new(
+            0x01,
+            1,
+            1,
+            [0, 5, 5, 5],
+            [0, 4, 4, 4],
+            [1, 11, 11, 11, 1, 11, 11, 11],
+        ),
+    ),
+    (
+        "player_avenger",
+        OriginalAirframeLoadout::new(
+            0x03,
+            2,
+            1,
+            [2, 1, 5, 2],
+            [0, 0, 4, 0],
+            [1, 1, 11, 11, 1, 11, 11, 11],
+        ),
+    ),
+    (
+        "player_balmoral",
+        OriginalAirframeLoadout::new(
+            0x03,
+            4,
+            4,
+            [2, 2, 0, 0],
+            [0, 0, 0, 0],
+            [1, 1, 1, 1, 1, 1, 1, 1],
+        ),
+    ),
+    (
+        "player_bhawk",
+        OriginalAirframeLoadout::new(
+            0x03,
+            2,
+            1,
+            [1, 0, 5, 5],
+            [0, 0, 4, 4],
+            [1, 1, 11, 11, 1, 11, 11, 11],
+        ),
+    ),
+    (
+        "player_brigand",
+        OriginalAirframeLoadout::new(
+            0x0b,
+            2,
+            2,
+            [3, 0, 5, 0],
+            [0, 0, 4, 0],
+            [1, 1, 11, 11, 1, 1, 11, 11],
+        ),
+    ),
+    (
+        "player_pfighter",
+        OriginalAirframeLoadout::new(
+            0x07,
+            2,
+            2,
+            [2, 1, 0, 5],
+            [0, 0, 0, 4],
+            [1, 1, 11, 11, 1, 1, 11, 11],
+        ),
+    ),
+    (
+        "player_fbrand",
+        OriginalAirframeLoadout::new(
+            0x0b,
+            3,
+            3,
+            [4, 0, 5, 0],
+            [0, 0, 4, 0],
+            [1, 1, 1, 11, 1, 1, 1, 11],
+        ),
+    ),
+    (
+        "player_fury",
+        OriginalAirframeLoadout::new(
+            0x03,
+            2,
+            1,
+            [4, 0, 5, 5],
+            [0, 0, 4, 4],
+            [1, 1, 11, 11, 1, 11, 11, 11],
+        ),
+    ),
+    (
+        "player_kestrel",
+        OriginalAirframeLoadout::new(
+            0x0b,
+            3,
+            2,
+            [3, 2, 5, 1],
+            [0, 0, 4, 0],
+            [1, 1, 1, 11, 1, 1, 11, 11],
+        ),
+    ),
+    (
+        "player_peacemaker",
+        OriginalAirframeLoadout::new(
+            0x03,
+            2,
+            1,
+            [2, 1, 5, 5],
+            [0, 0, 4, 4],
+            [1, 1, 11, 11, 1, 11, 11, 11],
+        ),
+    ),
+    (
+        "player_warhawk",
+        OriginalAirframeLoadout::new(
+            0x03,
+            4,
+            4,
+            [4, 2, 5, 5],
+            [0, 0, 4, 4],
+            [1, 1, 1, 1, 1, 1, 1, 1],
+        ),
+    ),
+];
+
+/// The measured default loadout of the airframe whose `scene_root` (the key
+/// of its `airframe/<scene_root>` id) is `scene_root`.
+#[must_use]
+pub fn original_airframe_loadout(scene_root: &str) -> Option<&'static OriginalAirframeLoadout> {
+    ORIGINAL_AIRFRAME_LOADOUTS
+        .iter()
+        .find(|(root, _)| *root == scene_root)
+        .map(|(_, loadout)| loadout)
+}
+
 /// The gun groups no [`DeclaredGunMountKind`] covers, in
 /// [`ORIGINAL_GUN_GROUPS`] order.
 ///
