@@ -119,6 +119,7 @@ fn spawn_bars(mut commands: Commands) {
             GlobalZIndex(1000),
             Visibility::Hidden,
             bar,
+            super::launch_cinematic::CinematicOwnedVisibility,
         ));
     }
 }

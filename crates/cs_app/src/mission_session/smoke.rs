@@ -568,12 +568,79 @@ pub struct CinematicMetrics {
     pub played_ticks: u64,
     /// The farthest the body stood from where the phase found it, metres.
     pub max_drift_m: f32,
+    /// The farthest the body turned from how the phase found it, degrees.
+    pub max_turn_deg: f32,
     /// The letterbox bars were on in every frame sampled while it played.
     pub bars_on_while_playing: bool,
     /// The letterbox bars were off in every frame sampled after it ended.
     pub bars_off_after: bool,
     /// The phase reached its last tick and handed the player control.
     pub handed_over: bool,
+    /// What the phase's framebuffer screenshots show (#1704), by label.
+    pub frames: Vec<CinematicFrame>,
+}
+
+/// What one cinematic screenshot's pixels show of the bars and the HUD.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CinematicFrame {
+    /// The screenshot's label (`cinematic_start` ... `cinematic_handover`).
+    pub label: String,
+    /// Parts per thousand of the letterbox bars' rows that are black.
+    pub bars_black_permille: u32,
+    /// Pixels of the cockpit HUD's own green in the frame.
+    pub hud_green_pixels: usize,
+}
+
+/// The least share of the bar rows that must be black in a frame taken while
+/// the cinematic plays, in parts per thousand. **Designed:** the bars are
+/// opaque black, so anything under this is the picture showing through.
+pub const MIN_BARS_BLACK_PERMILLE: u32 = 990;
+
+/// The most of the bar rows that may be black after hand-over, in parts per
+/// thousand. **Designed:** the picture fills those rows once the bars are off;
+/// a sea-and-sky frame is not black over half its top and bottom rows.
+pub const MAX_BARS_BLACK_AFTER_PERMILLE: u32 = 500;
+
+/// The most HUD-green pixels a frame taken while the HUD is held may hold.
+/// **Designed:** none is drawn; a few world pixels may match by chance.
+pub const MAX_HELD_HUD_GREEN_PIXELS: usize = 20;
+
+/// The least HUD-green pixels the hand-over frame must hold (gauge rings and
+/// the reticle are drawn). **Designed.**
+pub const MIN_HANDOVER_HUD_GREEN_PIXELS: usize = 200;
+
+/// The screenshot labels the pixel judgement needs, in order.
+const CINEMATIC_FRAME_LABELS: [&str; 4] = [
+    "cinematic_start",
+    "cinematic_mid",
+    "cinematic_end",
+    "cinematic_handover",
+];
+
+/// Judges the cinematic's screenshots: bars drawn and HUD absent while it
+/// plays, bars gone and HUD drawn after hand-over. `Err` names the first
+/// frame that disagrees, or the missing one.
+fn judge_cinematic_frames(frames: &[CinematicFrame]) -> Result<(), String> {
+    for label in CINEMATIC_FRAME_LABELS {
+        let Some(frame) = frames.iter().find(|frame| frame.label == label) else {
+            return Err(format!("no `{label}` frame was measured"));
+        };
+        let held = label != "cinematic_handover";
+        let ok = if held {
+            frame.bars_black_permille >= MIN_BARS_BLACK_PERMILLE
+                && frame.hud_green_pixels <= MAX_HELD_HUD_GREEN_PIXELS
+        } else {
+            frame.bars_black_permille <= MAX_BARS_BLACK_AFTER_PERMILLE
+                && frame.hud_green_pixels >= MIN_HANDOVER_HUD_GREEN_PIXELS
+        };
+        if !ok {
+            return Err(format!(
+                "`{label}` shows {} per mille black in the bar rows and {} HUD-green pixels",
+                frame.bars_black_permille, frame.hud_green_pixels
+            ));
+        }
+    }
+    Ok(())
 }
 
 /// What the run saw of the launch cinematic's camera script (#1665).
@@ -589,6 +656,11 @@ pub struct CameraMetrics {
 /// metres. **Designed:** the hold zeroes the velocity every tick, so any
 /// drift beyond a numerical hair is the body moving.
 pub const MAX_CINEMATIC_DRIFT_M: f32 = 0.5;
+
+/// How far the held body may turn from how the cinematic found it, degrees.
+/// **Designed:** the hold keeps the body still; a turn beyond a numerical hair
+/// is the body rotating (#1704).
+pub const MAX_CINEMATIC_TURN_DEG: f32 = 0.5;
 
 /// How the smoke flies the player.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -964,18 +1036,24 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
             passed: c.handed_over
                 && c.played_ticks >= c.total_ticks
                 && c.max_drift_m <= MAX_CINEMATIC_DRIFT_M
+                && c.max_turn_deg <= MAX_CINEMATIC_TURN_DEG
                 && c.bars_on_while_playing
-                && c.bars_off_after,
+                && c.bars_off_after
+                && judge_cinematic_frames(&c.frames).is_ok(),
             detail: format!(
-                "{} of {} ticks played, handed over: {}, body drift {:.3} m (ceiling {}), \
-                 bars on while playing: {}, off after: {}",
+                "{} of {} ticks played, handed over: {}, body drift {:.3} m (ceiling {}), turn {:.3} deg (ceiling {}), \
+                 bars on while playing: {}, off after: {}; pixels: {}",
                 c.played_ticks,
                 c.total_ticks,
                 c.handed_over,
                 c.max_drift_m,
                 MAX_CINEMATIC_DRIFT_M,
+                c.max_turn_deg,
+                MAX_CINEMATIC_TURN_DEG,
                 c.bars_on_while_playing,
-                c.bars_off_after
+                c.bars_off_after,
+                judge_cinematic_frames(&c.frames)
+                    .map_or_else(|why| why, |()| "as expected".to_owned())
             ),
         });
     }
@@ -1248,6 +1326,10 @@ pub struct FrameRecord {
     /// Yellow-ish objective-text pixels counted inside the objective UI region
     /// (`None` for frames the HUD probe did not measure).
     pub text_pixels: Option<usize>,
+    /// Parts per thousand of the letterbox bars' rows that are black.
+    pub bars_black_permille: u32,
+    /// Pixels of the cockpit HUD's own green.
+    pub hud_green_pixels: usize,
 }
 
 /// The finished run, for the caller of [`super::run_windowed`].
@@ -1429,6 +1511,8 @@ struct SmokeData {
     rounds_probe_pending: bool,
     /// Where the launch cinematic's first sampled frame found the body.
     cinematic_start_m: Option<Vec3>,
+    /// Where the launch cinematic's first sampled frame found the body's attitude.
+    cinematic_start_rotation: Option<Quat>,
     /// The cinematic screenshots already requested.
     cinematic_shots: u8,
     /// The frame the sampler saw the cinematic hand over.
@@ -1592,7 +1676,14 @@ fn apply_probe(
     aircraft: Query<Entity, With<ScriptedAircraftActor>>,
     zeppelins: Query<Entity, With<MissionZeppelinActor>>,
     visuals: Query<Entity, With<WorldVisual>>,
-    ui: Query<(Entity, Has<crate::playtest::visuals::DeveloperOverlayNode>), With<Node>>,
+    ui: Query<
+        (
+            Entity,
+            Has<crate::playtest::visuals::DeveloperOverlayNode>,
+            Has<super::launch_cinematic::CinematicOwnedVisibility>,
+        ),
+        With<Node>,
+    >,
     flight_check_overlay: Query<Entity, With<ScreenOverlay>>,
     overlay: Option<Res<crate::playtest::visuals::DeveloperOverlay>>,
     mut fogs: Query<&mut DistanceFog>,
@@ -1650,7 +1741,12 @@ fn apply_probe(
     write_all(&mut visibility, visuals.iter(), world_value);
     // Restoring the UI must not re-show what the developer overlay hides.
     let overlay_on = crate::playtest::visuals::overlay_visible(overlay.as_deref());
-    for (entity, developer) in &ui {
+    for (entity, developer, cinematic_owned) in &ui {
+        // The HUD's safe area and the letterbox bars are shown or hidden by
+        // the launch cinematic; a restore leaves them to it (#1704).
+        if cinematic_owned && matches!(mode, ProbeMode::Restored | ProbeMode::FlightCheckBare) {
+            continue;
+        }
         let value = if mode == ProbeMode::FlightCheckBare {
             // Only the Flight Check's overlay goes; its background pane and
             // the cover behind it stay, and the mission's own UI is under
@@ -2045,7 +2141,7 @@ fn smoke_cinematic(
     mut data: ResMut<SmokeData>,
     phase: Option<Res<LaunchCinematic>>,
     bars: Option<Res<LaunchLetterbox>>,
-    player: Query<&Position, With<MissionPlayerBody>>,
+    player: Query<(&Position, &Rotation), With<MissionPlayerBody>>,
     playback: Option<Res<super::launch_camera::LaunchCameraPlayback>>,
 ) {
     let Some(phase) = phase else { return };
@@ -2066,13 +2162,20 @@ fn smoke_cinematic(
         return;
     };
     let frame = data.frame;
-    let position = player.single().ok().map(|position| position.0);
+    let pose = player
+        .single()
+        .ok()
+        .map(|(position, rotation)| (position.0, rotation.0));
     let bars_on = bars.as_deref().is_some_and(LaunchLetterbox::is_active);
     if phase.is_playing() {
         metrics.bars_on_while_playing &= bars_on;
-        if let Some(position) = position {
+        if let Some((position, rotation)) = pose {
             let start = *data.cinematic_start_m.get_or_insert(position);
             metrics.max_drift_m = metrics.max_drift_m.max(position.distance(start));
+            let first = *data.cinematic_start_rotation.get_or_insert(rotation);
+            metrics.max_turn_deg = metrics
+                .max_turn_deg
+                .max(first.angle_between(rotation).to_degrees());
         }
     } else if data.cinematic_ended_at.is_none() {
         data.cinematic_ended_at = Some(frame);
@@ -2764,6 +2867,17 @@ fn finish_measurements(data: &mut SmokeData, shots: &[FrameRecord]) {
             near_luminance_max: world.near_luminance_max,
         });
     }
+    if let Some(cinematic) = data.measurements.cinematic.as_mut() {
+        cinematic.frames = CINEMATIC_FRAME_LABELS
+            .iter()
+            .filter_map(|label| find(label))
+            .map(|shot| CinematicFrame {
+                label: shot.label.clone(),
+                bars_black_permille: shot.bars_black_permille,
+                hud_green_pixels: shot.hud_green_pixels,
+            })
+            .collect();
+    }
     if let Some(hud) = find("hud") {
         data.measurements.hud.region_text_pixels = hud.text_pixels;
     }
@@ -2942,7 +3056,41 @@ fn measure(
         near_luminance_min: near_min,
         near_luminance_max: near_max,
         text_pixels: region.map(|_| text_pixels),
+        bars_black_permille: bars_black_permille(pixels, order, width, height),
+        hud_green_pixels: pixels
+            .iter()
+            .filter(|pixel| is_hud_green([pixel[order[0]], pixel[order[1]], pixel[order[2]]]))
+            .count(),
     }
+}
+
+/// Parts per thousand of the letterbox bars' rows (where
+/// [`letterbox_bars`](super::letterbox_bars) puts them for this frame's size)
+/// that are black: every channel at most 8.
+fn bars_black_permille(pixels: &[[u8; 4]], order: [usize; 3], width: usize, height: usize) -> u32 {
+    if width == 0 || height == 0 {
+        return 0;
+    }
+    let bars = super::letterbox_bars(width as f32, height as f32);
+    let top = (bars.top.round() as usize).min(height);
+    let bottom_from = height.saturating_sub(bars.bottom.round() as usize);
+    let (mut black, mut total) = (0_usize, 0_usize);
+    for (index, pixel) in pixels.iter().enumerate() {
+        let row = index / width;
+        if row < top || row >= bottom_from {
+            total += 1;
+            if order.iter().all(|&channel| pixel[channel] <= 8) {
+                black += 1;
+            }
+        }
+    }
+    permille(black, total)
+}
+
+/// Whether a framebuffer pixel is the cockpit HUD's own green
+/// (`Color::srgb(0.55, 1.0, 0.55)`, 140/255/140), within a hair.
+fn is_hud_green(colour: [u8; 3]) -> bool {
+    colour[0].abs_diff(140) <= 4 && colour[1] >= 251 && colour[2].abs_diff(140) <= 4
 }
 
 /// Side of the square tiles [`near_terrain_luminance`] classifies, in pixels.
@@ -3157,7 +3305,7 @@ fn write_artifacts(
                  \"distinct_luminance\":{},\"mean_luminance\":{},\"off_clear\":{},\
                  \"near_clear\":{},\"off_distinct_colours\":{},\"off_detail_permille\":{},\
                  \"off_luminance_spread\":{},\"near_luminance_spread\":{},\
-                 \"text_pixels\":{}}}",
+                 \"text_pixels\":{},\"bars_black_permille\":{},\"hud_green_pixels\":{}}}",
                 json_string(&shot.label),
                 json_string(&shot.path.display().to_string()),
                 shot.width,
@@ -3173,6 +3321,8 @@ fn write_artifacts(
                 shot.near_luminance_max
                     .saturating_sub(shot.near_luminance_min),
                 json_option_usize(shot.text_pixels),
+                shot.bars_black_permille,
+                shot.hud_green_pixels,
             )
         })
         .collect::<Vec<_>>()
@@ -3254,13 +3404,18 @@ fn write_artifacts(
         |c| {
             format!(
                 "{{\"total_ticks\":{},\"played_ticks\":{},\"max_drift_m\":{},\
-                 \"bars_on_while_playing\":{},\"bars_off_after\":{},\"handed_over\":{}}}",
+                 \"max_turn_deg\":{},\"bars_on_while_playing\":{},\"bars_off_after\":{},\"handed_over\":{}}}",
                 c.total_ticks,
                 c.played_ticks,
                 json_option_f64(
                     c.max_drift_m
                         .is_finite()
                         .then_some(f64::from(c.max_drift_m))
+                ),
+                json_option_f64(
+                    c.max_turn_deg
+                        .is_finite()
+                        .then_some(f64::from(c.max_turn_deg))
                 ),
                 c.bars_on_while_playing,
                 c.bars_off_after,
@@ -3402,6 +3557,98 @@ mod tests {
     use super::*;
     use crate::playtest::SmokeRequest;
 
+    fn good_frames() -> Vec<CinematicFrame> {
+        CINEMATIC_FRAME_LABELS
+            .iter()
+            .map(|label| {
+                let held = *label != "cinematic_handover";
+                CinematicFrame {
+                    label: (*label).to_owned(),
+                    bars_black_permille: if held { 1000 } else { 0 },
+                    hud_green_pixels: if held { 0 } else { 900 },
+                }
+            })
+            .collect()
+    }
+
+    fn frames_with(label: &str, bars: u32, hud: usize) -> Vec<CinematicFrame> {
+        let mut frames = good_frames();
+        for frame in frames.iter_mut().filter(|frame| frame.label == label) {
+            frame.bars_black_permille = bars;
+            frame.hud_green_pixels = hud;
+        }
+        frames
+    }
+
+    /// **`accept_m01_owner_smoke_cinematic_` the pixel measures read bars and HUD.**
+    ///
+    /// A synthetic 4:3 frame: black over the measured bar rows reads 1000 per
+    /// mille, the same frame with the picture showing through the top bar
+    /// reads less, and the HUD green is counted exactly.
+    #[test]
+    fn accept_m01_owner_smoke_cinematic_pixels_measure_bars_and_hud() {
+        let (w, h) = (64_usize, 48_usize);
+        let bars = crate::mission_session::letterbox_bars(w as f32, h as f32);
+        let (top, bottom_from) = (bars.top.round() as usize, h - bars.bottom.round() as usize);
+        let mut pixels = vec![[90_u8, 120, 200, 255]; w * h];
+        for (index, pixel) in pixels.iter_mut().enumerate() {
+            let row = index / w;
+            if row < top || row >= bottom_from {
+                *pixel = [0, 0, 0, 255];
+            }
+        }
+        let order = [0, 1, 2];
+        assert_eq!(bars_black_permille(&pixels, order, w, h), 1000);
+        assert_eq!(
+            pixels
+                .iter()
+                .filter(|p| is_hud_green([p[0], p[1], p[2]]))
+                .count(),
+            0
+        );
+        for pixel in pixels.iter_mut().take(w * top / 2) {
+            *pixel = [90, 120, 200, 255];
+        }
+        assert!(bars_black_permille(&pixels, order, w, h) < MIN_BARS_BLACK_PERMILLE);
+        assert!(is_hud_green([140, 255, 140]));
+        assert!(!is_hud_green([200, 255, 140]));
+    }
+
+    /// **`accept_m01_owner_smoke_cinematic_` a restore leaves the held UI alone.**
+    ///
+    /// The probe's restore used to write `Visibility::Inherited` onto every UI
+    /// node, which showed the letterbox bars after hand-over and the HUD during
+    /// the phase (#1704). A node marked as cinematic-owned keeps its
+    /// visibility through a restore; an ordinary node is restored.
+    #[test]
+    fn accept_m01_owner_smoke_cinematic_restore_leaves_owned_ui_alone() {
+        use super::super::launch_cinematic::CinematicOwnedVisibility;
+        let mut app = bevy::prelude::App::new();
+        app.insert_resource(ProbeState(ProbeMode::Restored));
+        let owned = app
+            .world_mut()
+            .spawn((
+                Node::default(),
+                Visibility::Hidden,
+                CinematicOwnedVisibility,
+            ))
+            .id();
+        let plain = app
+            .world_mut()
+            .spawn((Node::default(), Visibility::Hidden))
+            .id();
+        app.add_systems(Update, apply_probe);
+        app.update();
+        assert_eq!(
+            app.world().get::<Visibility>(owned),
+            Some(&Visibility::Hidden)
+        );
+        assert_eq!(
+            app.world().get::<Visibility>(plain),
+            Some(&Visibility::Inherited)
+        );
+    }
+
     /// **`accept_m01_owner_smoke_cinematic_` the judge reads the phase.**
     ///
     /// A run that went through the launch cinematic is judged on it: the
@@ -3414,9 +3661,11 @@ mod tests {
             total_ticks: 4818,
             played_ticks: 4818,
             max_drift_m: 0.0,
+            max_turn_deg: 0.0,
             bars_on_while_playing: true,
             bars_off_after: true,
             handed_over: true,
+            frames: good_frames(),
         };
         let verdict = |c: Option<CinematicMetrics>| {
             evaluate(&SmokeMeasurements {
@@ -3443,11 +3692,39 @@ mod tests {
                 ..good.clone()
             },
             CinematicMetrics {
+                max_turn_deg: 30.0,
+                ..good.clone()
+            },
+            CinematicMetrics {
                 bars_on_while_playing: false,
                 ..good.clone()
             },
             CinematicMetrics {
                 bars_off_after: false,
+                ..good.clone()
+            },
+            CinematicMetrics {
+                frames: Vec::new(),
+                ..good.clone()
+            },
+            // The bars not seen while it plays, though the flag says on.
+            CinematicMetrics {
+                frames: frames_with("cinematic_mid", 0, 0),
+                ..good.clone()
+            },
+            // The HUD seen while it plays.
+            CinematicMetrics {
+                frames: frames_with("cinematic_end", 1000, 900),
+                ..good.clone()
+            },
+            // The bars still seen after hand-over.
+            CinematicMetrics {
+                frames: frames_with("cinematic_handover", 1000, 900),
+                ..good.clone()
+            },
+            // No HUD after hand-over.
+            CinematicMetrics {
+                frames: frames_with("cinematic_handover", 0, 0),
                 ..good.clone()
             },
         ] {

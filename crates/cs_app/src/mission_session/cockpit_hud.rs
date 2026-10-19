@@ -410,6 +410,7 @@ fn spawn_cockpit(mut commands: Commands) {
                 ..default()
             },
             SafeArea,
+            super::launch_cinematic::CinematicOwnedVisibility,
         ))
         .with_children(|area| {
             // Compass strip, top centre.

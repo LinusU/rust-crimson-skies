@@ -30,7 +30,7 @@ use std::path::Path;
 use avian3d::prelude::LinearVelocity;
 use bevy::app::{App, FixedFirst, FixedLast, Update};
 use bevy::math::Vec3;
-use bevy::prelude::{Query, ResMut, Resource, With, World};
+use bevy::prelude::{Component, Query, ResMut, Resource, With, World};
 use cs_formats::io::ParseContext;
 use cs_formats::zbd::{ZbdFamily, ZbdProbe, dispatch, family_record, read_animation_index};
 use cs_types::install::RelativePath;
@@ -59,6 +59,14 @@ impl fmt::Display for LaunchCinematicError {
 }
 
 impl std::error::Error for LaunchCinematicError {}
+
+/// Marks a UI node whose visibility its own system owns because the launch
+/// cinematic decides it (the cockpit HUD's safe area, the letterbox bars). The
+/// smoke's probes hide and restore every other node; a restore must leave
+/// these alone, or it shows the bars after hand-over and the HUD during the
+/// phase (#1704).
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct CinematicOwnedVisibility;
 
 /// The measured length of the launch cinematic for one player airframe.
 #[derive(Clone, Debug, PartialEq)]
