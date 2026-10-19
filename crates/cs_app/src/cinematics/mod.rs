@@ -39,6 +39,7 @@ pub mod frame_capture;
 pub mod intro_timeline;
 pub mod launch_attackers;
 pub mod launch_body;
+pub mod launch_camera;
 pub mod launch_end_pose;
 pub mod launch_parent;
 pub mod launch_release;
