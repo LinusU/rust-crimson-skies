@@ -31,12 +31,13 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use cs_app::campaign::{campaign_profile_id, lower_campaign, write_snapshot};
 use cs_app::construction::ConstructionScreen;
 use cs_app::loading::{Criticality, LoadItem, LoadTarget};
-use cs_app::profile::ProfileSession;
+use cs_app::profile::{ProfileSession, SessionContent, SessionError};
 use cs_app::ui::front_end::{
     Action, AudioScope, ConstructionDraft, Effect, FlowError, FlowSetup, FrontEndFlow,
     InputContext, LoadError, LoadPlan, LoadVerdict, Loadout, Resource, ResourceLedger,
     ResourceProblem, Screen, ScreenSessionError,
 };
+use cs_app::ui::mods::{ModsNotice, SaveReopenDecision, mount_selection};
 use cs_assets::cache::{CacheBudget, CacheDirectory, CacheStore};
 use cs_assets::vfs::{ContentSession, MountBuilder, SessionBuilder};
 use cs_content::airframe_roles::{LaunchAssignmentError, declared_synthetic_roles};
@@ -48,6 +49,10 @@ use cs_content::construction::{
     AircraftBlueprint, ArmorFitment, SYNTHETIC_HEAVY_PLATE_KEY, SYNTHETIC_OTHER_AIRFRAME_KEY,
     declared_synthetic_blueprint, declared_synthetic_price_book, synthetic_armor_fitments,
     synthetic_boundary_rules, synthetic_policy,
+};
+use cs_content::mods::{
+    ModSelection, content_signature, mark_save_document, provided_ids, synthetic_blueprint_mod,
+    synthetic_mount_request,
 };
 use cs_content::save::settings::SettingCatalog;
 use cs_sim::campaign::{
@@ -1751,4 +1756,120 @@ fn accept_f43_v3_the_results_screen_writes_the_scrapbook_in_the_campaign_revisio
         before.next().expect("a successor"),
         "campaign and scrapbook are one profile revision"
     );
+}
+
+// --- F53-FU7: the run's mount reaches the profile open --------------------
+
+/// Marks the fixture's seeded profile with `signature` and, when `owning`,
+/// makes it own the blueprint only the synthetic mod provides — the save a run
+/// under that mount would have written.
+fn write_marked_save(fx: &Fixture, signature: ContentHash, owning: Option<ContentId>) {
+    let catalog = SettingCatalog::empty();
+    let mut session = ProfileSession::open_sandbox(&fx.tree.path().join("profiles"), &catalog)
+        .expect("the sandbox opens");
+    session
+        .commit_with(|document| {
+            mark_save_document(document, signature);
+            document.blueprints.extend(owning.clone());
+            Ok(())
+        })
+        .expect("the mark commits as one revision");
+    session.finish().expect("the session ends");
+}
+
+/// **F53 AC04 through the front end.** A save written under a mounted set is
+/// reopened by the flow after the mod is disabled: the flow declared the
+/// stock content, so the profile screen's confirm is refused by name, the
+/// operator is shown the `SaveDependency` notice, and the screen stays where it
+/// was. A flow declaring nothing opens the same save as before, and the
+/// restored mount opens it with nothing to show. Removing the
+/// `open_with_content` wiring in `open_profile` opens the save and fails here.
+#[test]
+fn accept_f53_fu7_a_flow_declaring_stock_content_refuses_a_save_needing_the_disabled_mod() {
+    let base = ContentHash::from_bytes([7u8; 32]);
+    let request = synthetic_mount_request();
+    let manifest = synthetic_blueprint_mod();
+    let zephyr = id(ContentKind::Blueprint, "synthetic.zephyr");
+
+    let mod_root = TempTree::new("fu7-mod");
+    for entry in manifest.overrides() {
+        let path = mod_root.path().join(entry.source().as_str());
+        fs::create_dir_all(path.parent().expect("has a parent")).expect("dirs");
+        let mut bytes = entry.target().as_str().as_bytes().to_vec();
+        bytes.extend_from_slice(b"::synthetic payload");
+        fs::write(path, bytes).expect("bytes are written");
+    }
+    let mut selection = ModSelection::new();
+    selection
+        .offer(manifest.clone(), mod_root.path())
+        .expect("offered");
+    selection.enable(manifest.id()).expect("enabled");
+    let mounted = mount_selection(&selection, &request, base).expect("the mod mounts");
+    let modded = content_signature(Some(&mounted), base);
+
+    let fx = Fixture::new("fu7-refuse", Some(GRANT));
+    write_marked_save(&fx, modded, Some(zephyr));
+
+    // The mod is disabled; the flow declares the stock run.
+    assert!(selection.disable(manifest.id()));
+    let stock = SessionContent::new(content_signature(None, base), provided_ids(&request, None));
+    let mut flow = FrontEndFlow::new(preflight_deck(), fx.setup().content(stock));
+    flow.press(Action::InstallVerified).expect("verified");
+    flow.press(Action::OpenCampaign).expect("campaign");
+    flow.press(Action::ContinueProfile).expect("continue");
+    let refused = flow
+        .press(Action::ConfirmProfile)
+        .expect_err("a save needing an absent blueprint is not opened");
+    match refused {
+        FlowError::Profile(SessionError::SaveRefused { code, lines, .. }) => {
+            assert_eq!(code, "save_content_unprovided");
+            assert!(lines.iter().any(|line| line.contains("synthetic.zephyr")));
+        }
+        other => panic!("wrong refusal: {other}"),
+    }
+    assert_ne!(flow.front_end().screen(), Screen::Cabin);
+    assert!(flow.domain().profile().is_none());
+    match flow.domain().mods_notice().expect("the refusal is shown") {
+        ModsNotice::SaveDependency { decision, lines } => {
+            assert_eq!(*decision, SaveReopenDecision::Refuse);
+            assert!(lines.iter().any(|line| line.contains("synthetic.zephyr")));
+        }
+        other => panic!("wrong notice: {other:?}"),
+    }
+
+    // Declaring nothing behaves as before: the same save opens, no notice.
+    let mut plain = FrontEndFlow::new(preflight_deck(), fx.setup());
+    walk_to_cabin(&mut plain);
+    assert!(plain.domain().mods_notice().is_none());
+    drop(plain);
+
+    // The mod re-enabled and remounted: the same save is satisfied.
+    selection.enable(manifest.id()).expect("re-enabled");
+    let remounted = mount_selection(&selection, &request, base).expect("remounts");
+    let restored = SessionContent::new(
+        content_signature(Some(&remounted), base),
+        provided_ids(&request, Some(&remounted)),
+    );
+    let mut flow = FrontEndFlow::new(preflight_deck(), fx.setup().content(restored));
+    walk_to_cabin(&mut flow);
+    assert!(flow.domain().mods_notice().is_none());
+}
+
+/// A save whose mark alone differs opens, and the flow shows the warning.
+#[test]
+fn accept_f53_fu7_a_differing_mark_opens_the_profile_and_shows_the_warning() {
+    let base = ContentHash::from_bytes([7u8; 32]);
+    let request = synthetic_mount_request();
+    let fx = Fixture::new("fu7-warn", Some(GRANT));
+    write_marked_save(&fx, ContentHash::from_bytes([0xAB; 32]), None);
+
+    let stock = SessionContent::new(content_signature(None, base), provided_ids(&request, None));
+    let mut flow = FrontEndFlow::new(preflight_deck(), fx.setup().content(stock));
+    walk_to_cabin(&mut flow);
+    match flow.domain().mods_notice().expect("the warning is shown") {
+        ModsNotice::SaveDependency { decision, .. } => {
+            assert_eq!(*decision, SaveReopenDecision::OpenMarked);
+        }
+        other => panic!("wrong notice: {other:?}"),
+    }
 }

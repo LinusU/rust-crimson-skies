@@ -138,7 +138,7 @@ use crate::loading::{
     DriverError, LoadItem, LoadRequest, LoadState, LoadTarget, LoadingScreen, LoadingSession,
     SessionIo, TransitionError,
 };
-use crate::profile::{ProfileSession, SessionError, SessionOrigin, TeardownReport};
+use crate::profile::{ProfileSession, SessionContent, SessionError, SessionOrigin, TeardownReport};
 use crate::roster::{LoweredRoster, open_roster};
 use crate::text::TextSession;
 use crate::ui::instant_action::{
@@ -147,6 +147,7 @@ use crate::ui::instant_action::{
 use crate::ui::lobby::{
     Back as LobbyBack, LobbyLink, LobbyScreen, LobbyUiError, Stage as LobbyStage,
 };
+use crate::ui::mods::ModsNotice;
 use crate::ui::scrapbook::{
     LaunchError, PageError, PersistError, Refresh, ReplayLaunch, ScrapbookUi, SelectError, stored,
 };
@@ -218,6 +219,12 @@ pub struct FlowSetup {
     /// (#764). Without it `OpenLobby` is refused rather than opening a
     /// screen that cannot submit.
     pub lobby: Option<LobbyInputs>,
+    /// The content this run mounted (F53-FU7): the signature it announces and
+    /// the ids it provides. When declared, a profile is opened with
+    /// [`ProfileSession::open_with_content`], so a save owning content the
+    /// run cannot serve is refused by name and a differing mark is shown.
+    /// Without it the profile opens exactly as before and nothing is checked.
+    pub content: Option<SessionContent>,
 }
 
 /// The inputs the Instant Action screens run on (F49-C2): what
@@ -358,6 +365,7 @@ impl FlowSetup {
             scrapbook: None,
             instant_action: None,
             lobby: None,
+            content: None,
         }
     }
 
@@ -454,6 +462,16 @@ impl FlowSetup {
     #[must_use]
     pub fn lobby(mut self, inputs: LobbyInputs) -> Self {
         self.lobby = Some(inputs);
+        self
+    }
+
+    /// The content this run mounted: build it with
+    /// [`SessionContent::new`] from `MountedMods::signature` and
+    /// `cs_content::mods::provided_ids`, the pair the lobby announces, so the
+    /// reopen check and the handshake cannot disagree (F53-FU7).
+    #[must_use]
+    pub fn content(mut self, content: SessionContent) -> Self {
+        self.content = Some(content);
         self
     }
 }
@@ -1320,6 +1338,9 @@ fn authored_slot(lowered: &LoweredRoster) -> Result<WingmateSlot, FlowError> {
 struct FlowDomain {
     setup: FlowSetup,
     profile: Option<ProfileSession>,
+    /// The reopen verdict of the profile the last open concerned, as the
+    /// notice the mod screen shows (F53-FU7); kept when the open was refused.
+    mods_notice: Option<ModsNotice>,
     profile_id: Option<ProfileId>,
     run: Option<CampaignRun>,
     construction: Option<ConstructionScreen>,
@@ -1389,6 +1410,7 @@ impl FlowDomain {
         Self {
             setup,
             profile: None,
+            mods_notice: None,
             profile_id: None,
             run: None,
             construction: None,
@@ -1688,10 +1710,19 @@ impl FlowDomain {
         if self.profile.is_some() {
             return Err(FlowError::ProfileAlreadyOpen);
         }
+        self.mods_notice = None;
         let setup = &self.setup;
-        let mut session =
-            ProfileSession::open(&setup.base, setup.origin, setup.kind, &setup.catalog)
-                .map_err(FlowError::Profile)?;
+        let mut session = match &setup.content {
+            Some(content) => ProfileSession::open_with_content(
+                &setup.base,
+                setup.origin,
+                setup.kind,
+                &setup.catalog,
+                content.clone(),
+            ),
+            None => ProfileSession::open(&setup.base, setup.origin, setup.kind, &setup.catalog),
+        }
+        .map_err(FlowError::Profile)?;
         match intent {
             ProfileIntent::New => {
                 session
@@ -1699,10 +1730,32 @@ impl FlowDomain {
                     .map_err(FlowError::Profile)?;
             }
             ProfileIntent::Existing => {
-                if let Some(id) = setup.existing {
-                    session.select(id).map_err(FlowError::Profile)?;
+                if let Some(id) = setup.existing
+                    && let Err(error) = session.select(id)
+                {
+                    // A refused select keeps its verdict for the screen.
+                    self.mods_notice = session
+                        .reopen_verdict()
+                        .and_then(|(_, verdict)| verdict.notice());
+                    return Err(FlowError::Profile(error));
                 }
             }
+        }
+        // The verdict is about the profile it names: a stale one for another
+        // profile (a refused active pointer, then a new profile) is not shown.
+        let verdict = session
+            .reopen_verdict()
+            .filter(|(about, _)| session.selected().is_none_or(|selected| selected == *about));
+        self.mods_notice = verdict.and_then(|(_, verdict)| verdict.notice());
+        if session.selected().is_none()
+            && let Some((profile, verdict)) = verdict
+            && !verdict.proceeds()
+        {
+            return Err(FlowError::Profile(SessionError::SaveRefused {
+                profile,
+                code: verdict.decision().code(),
+                lines: verdict.lines().to_vec(),
+            }));
         }
         let id = session
             .selected()
@@ -1728,6 +1781,7 @@ impl FlowDomain {
     fn close_profile(&mut self) -> Result<(), FlowError> {
         let session = self.profile.take().ok_or(FlowError::NoProfileOpen)?;
         let report = session.finish().map_err(FlowError::Profile)?;
+        self.mods_notice = None;
         self.profile_id = None;
         self.run = None;
         self.construction = None;
@@ -2812,6 +2866,15 @@ pub enum LobbyStep {
 pub struct FlowDomainView<'a>(&'a FlowDomain);
 
 impl FlowDomainView<'_> {
+    /// The notice for the last profile open's reopen verdict (F53-FU7): a
+    /// refusal for a save needing content the run cannot serve, or the
+    /// warning for a save marked with different content. `None` when the run
+    /// declared no content or the save was satisfied.
+    #[must_use]
+    pub fn mods_notice(&self) -> Option<&ModsNotice> {
+        self.0.mods_notice.as_ref()
+    }
+
     /// The open profile session, when a profile is open.
     #[must_use]
     pub fn profile(&self) -> Option<&ProfileSession> {
