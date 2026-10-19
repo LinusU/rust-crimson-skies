@@ -430,7 +430,7 @@ pub struct LaunchRelease {
 
 /// Opens the container and runs `read` on its records (which borrow the
 /// parse context, so they cannot be returned).
-fn with_records<T>(
+pub(super) fn with_records<T>(
     path: &RelativePath,
     bytes: &[u8],
     read: impl FnOnce(&AnimationRecords<'_>) -> Result<T, LaunchEndPoseError>,
