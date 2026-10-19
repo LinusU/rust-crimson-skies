@@ -686,6 +686,14 @@ impl ScenarioRoster {
 // ------------------------------------------------------------------ rules ---
 
 /// How a scenario ends in the player's favour.
+///
+/// The first three variants are F49-B's designed vocabulary. The five that
+/// follow are measured from the engine image's Instant Action end check
+/// (`0x45b9d0`, reached from `CZMission::Update` `0x46a490` at `0x46a5b9` while
+/// the mission state `[+0x700]` is 3 and the player-down byte
+/// `[player+0x91d]` is clear at `0x4a09b6`): each documents the byte predicates
+/// its win actually reads. See
+/// `docs/findings/2026-10-19-f49-d-03-fu-rules-end.md`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum VictoryCondition {
     /// The player's side destroys every enemy actor.
@@ -695,11 +703,70 @@ pub enum VictoryCondition {
     LastSideStanding,
     /// The player's side is still intact at the declared deadline.
     SurviveToDeadline,
+    /// `dogfight_ace` (mission type 0). Every vehicle in the registry list
+    /// `0x71dabc` whose team field `+0x8` exceeds 1 must have its down byte
+    /// `+0x91d` set and its `+0x91f` byte clear (`0x45b9fd`..`0x45ba38`); the
+    /// first opposing vehicle failing the test returns without winning.
+    /// A dormant vehicle (`+0x945` set) is *not* distinguished: the type-0
+    /// branch never reads that byte, so a not-yet-active opponent still
+    /// satisfies the predicate.
+    OppositionDown,
+    /// `dogfight_squadron` (mission type 1). The shared loop `0x45ba3d` counts
+    /// an opposing vehicle settled only when `+0x945` is clear (not asleep),
+    /// `+0x91d` is set and `+0x91f` is clear — so a dormant wave member still
+    /// blocks the win. While every vehicle of the current wave group
+    /// (vehicle `+0x388` == the wave counter `[0x718cd0]`) is settled but later
+    /// groups hold unsettled ones, `0x45ba9a` advances the counter and
+    /// `0x45bb0a` wakes the new group (`0x4b0f40(vehicle, 0)`) at a randomly
+    /// drawn spawn point of the type's `0x718fe0 + type*20` record that is at
+    /// least 500 m from the player. The mission is won when no opposing
+    /// vehicle is left unsettled in any group.
+    WavesCleared,
+    /// `zeppelin_run` (mission type 2). The bound zeppelin object
+    /// `0x718fd0[4 * [0x718f2c]]` ends the mission when it is absent, when its
+    /// component list `[+0x4c, +0x50)` is empty, or when its `+0x06` byte is
+    /// set (`0x45be0a`). The shared loop still runs and still advances the
+    /// wave counter, but for type 2 the advance only writes wave bookkeeping
+    /// into the zeppelin's generator record (`+0x80` group size, `+0x64` wave
+    /// index, `0x45baa6`); the win never consults the actor flag.
+    ZeppelinDown,
+    /// `ground_target` (mission type 3). The bound target object `0x718f50`
+    /// ends the mission when it is absent or when its `vtable+0x14` call
+    /// returns nonzero (`0x45bd83`); for the wrapper class the spawn binds
+    /// (`0x45b1de`, vtable `0x60886c`) that call returns the wrapped vehicle's
+    /// down byte `+0x91d` (`0x4a5a70`). Offered by no retail directory.
+    TargetDown,
+    /// `stunt_flying` (mission type 4). Every gate record in
+    /// `[0x718f78, 0x718f7c)` must be consumed — `+0x48` clear or `+0x40` set
+    /// (`0x45bda9`..`0x45be01`); the scan also clears the parallel marker
+    /// record `[0x718f88][i]`'s `+0x4d` byte for each consumed gate.
+    AllGatesCleared,
 }
 
 impl VictoryCondition {
     /// Every condition, in a stable order.
     pub const ALL: &'static [VictoryCondition] = &[
+        Self::EliminateEnemies,
+        Self::LastSideStanding,
+        Self::SurviveToDeadline,
+        Self::OppositionDown,
+        Self::WavesCleared,
+        Self::ZeppelinDown,
+        Self::TargetDown,
+        Self::AllGatesCleared,
+    ];
+
+    /// The F49-A designed subset — the conditions a custom scenario may offer.
+    ///
+    /// The measured Instant Action variants are bound per `mission_type`
+    /// through [`measured_ia_victory_rules`], not offered: they name objects
+    /// (the bound zeppelin, the ground-target wrapper, the gate list, dormant
+    /// wave members) only that mission type's original spawn creates, so a
+    /// custom scenario picking one would declare a win predicate over objects
+    /// that cannot exist. Keeping them out of the offered list is also what
+    /// keeps the option table's `VictoryConditions` evidence `Designed`
+    /// accurate.
+    pub const DESIGNED: &'static [VictoryCondition] = &[
         Self::EliminateEnemies,
         Self::LastSideStanding,
         Self::SurviveToDeadline,
@@ -713,19 +780,41 @@ impl VictoryCondition {
             Self::EliminateEnemies => "eliminate_enemies",
             Self::LastSideStanding => "last_side_standing",
             Self::SurviveToDeadline => "survive_to_deadline",
+            Self::OppositionDown => "opposition_down",
+            Self::WavesCleared => "waves_cleared",
+            Self::ZeppelinDown => "zeppelin_down",
+            Self::TargetDown => "target_down",
+            Self::AllGatesCleared => "all_gates_cleared",
         }
     }
 
     /// Whether this condition needs a declared deadline.
+    ///
+    /// The measured Instant Action end check `0x45b9d0` reads no clock or
+    /// tick field anywhere: none of its conditions ends on time, so none of
+    /// the measured variants takes a deadline.
     #[must_use]
     pub const fn needs_deadline(self) -> bool {
         matches!(self, Self::SurviveToDeadline)
     }
 
     /// Whether this condition needs at least one enemy actor to be meaningful.
+    ///
+    /// The measured elimination predicates (`0x45b9fd`, `0x45ba3d`) are empty
+    /// over a roster with no opposing-side actor — the registry scan finds
+    /// nothing to unsettle and wins at once — so a catalog offering them
+    /// without enemies offers a scenario that is won before it starts. The
+    /// object-bound conditions (zeppelin, target, gates) do not consult the
+    /// actor list for their win.
     #[must_use]
     pub const fn needs_enemies(self) -> bool {
-        matches!(self, Self::EliminateEnemies | Self::LastSideStanding)
+        matches!(
+            self,
+            Self::EliminateEnemies
+                | Self::LastSideStanding
+                | Self::OppositionDown
+                | Self::WavesCleared
+        )
     }
 }
 
@@ -1068,6 +1157,14 @@ impl ScenarioParameters {
             claim_id,
             reason: reason.to_owned(),
         };
+        self
+    }
+
+    /// Binds the preset's original victory rules to a measured value —
+    /// [`measured_ia_victory_rules`] for the mission type the preset selects.
+    #[must_use]
+    pub fn with_measured_rules(mut self, rules: VictoryRules) -> Self {
+        self.rules = Declared::Declared(rules);
         self
     }
 
@@ -1992,7 +2089,11 @@ impl ScenarioOptions {
             }
         }
         for condition in &victory_conditions {
-            if !VictoryCondition::ALL.contains(condition) {
+            // `DESIGNED`, not `ALL`: the measured Instant Action conditions are
+            // bound per mission_type, never offered to a custom scenario —
+            // they name objects only that mission type's original spawn
+            // creates (see `VictoryCondition::DESIGNED`).
+            if !VictoryCondition::DESIGNED.contains(condition) {
                 return Err(ScenarioSchemaError::UnknownVictoryCondition {
                     condition: *condition,
                 });
@@ -3707,7 +3808,7 @@ pub fn retail_scenario_options_with_pilots(
         .copied()
         .filter(|tier| tier.measured_step().is_some())
         .collect();
-    let victory_conditions = VictoryCondition::ALL.to_vec();
+    let victory_conditions = VictoryCondition::DESIGNED.to_vec();
     let environment_evidence = if environments.is_empty() {
         OptionListEvidence::Unmeasured {
             reason: "no environment id was measured; the producing weather reader \
@@ -4278,6 +4379,66 @@ pub const IA_ENGINE_DEFAULT_PLAYER_PLANE_INDEX: usize = 5;
 /// The `num_wingmen` the same initialiser leaves in the record
 /// (`mov [ebp+8], 0` at `0x45900b`).
 pub const IA_ENGINE_DEFAULT_WINGMEN: u32 = 0;
+
+/// The claim the per-mission-type victory-rule measurement is recorded under
+/// (the Instant Action end check `0x45b9d0` of the owner-supplied decrypted
+/// image; `docs/findings/2026-10-19-f49-d-03-fu-rules-end.md`).
+pub const IA_RULES_END_CLAIM: &str = "f49.d.03.ia-rules-end";
+
+/// The victory rules the engine image measures for one Instant Action mission
+/// type — the value the end check `0x45b9d0` dispatches on through the global
+/// `[0x718cd8]`.
+///
+/// The type names are the `ia.zrd` `mission_type` strings the parser
+/// `0x458c20` maps to indices 0-4 (unrecognised names return the sentinel 5
+/// and leave the record's initialised 0 — `dogfight_ace` — at `0x4593d7`). The
+/// bound condition for each is the byte predicate its branch of `0x45b9d0`
+/// evaluates; see the [`VictoryCondition`] variants for the measured
+/// semantics per name.
+///
+/// Three more dimensions are measured negatives inside `0x45b9d0`, uniform
+/// across the five types:
+///
+/// * `respawns` is [`RespawnBudget::None`]: the check never replaces a
+///   destroyed actor. The only reactivation it performs is wave *activation*
+///   of declared-but-dormant group members (`+0x388` == the wave counter
+///   `[0x718cd0]`, woken by `0x4b0f40(vehicle, 0)` at a spawn point), which is
+///   part of `WavesCleared`'s documented semantics, not a per-side
+///   replacement budget.
+/// * `deadline_ticks` is `None`: `0x45b9d0` reads no clock, tick or timer
+///   field anywhere; no mission type ends on time.
+/// * `tie_outcome` is [`TieOutcome::OppositionFavour`]: the win predicate
+///   never reads the player's state, but the check cannot run at all while
+///   the player-down byte `[player+0x91d]` is set — `CZMission::Update`
+///   (`0x46a490`, which calls `0x45b9d0` at `0x46a5b9`) is skipped at
+///   `0x4a09b6`, and the flight frame runs the world/damage update before the
+///   mission update (F37-D-FU2). A tick on which the player is down before the
+///   update therefore cannot award the win, so a mutual wipe resolves against
+///   the player.
+///
+/// `None` for a name outside the measured vocabulary — the survey refuses
+/// those already (`IA_MISSION_TYPE_VOCABULARY`), so this cannot silently
+/// produce rules for a mode nobody measured.
+#[must_use]
+pub fn measured_ia_victory_rules(mission_type: &str) -> Option<VictoryRules> {
+    let condition = match mission_type {
+        "dogfight_ace" => VictoryCondition::OppositionDown,
+        "dogfight_squadron" => VictoryCondition::WavesCleared,
+        "zeppelin_run" => VictoryCondition::ZeppelinDown,
+        "ground_target" => VictoryCondition::TargetDown,
+        "stunt_flying" => VictoryCondition::AllGatesCleared,
+        _ => return None,
+    };
+    Some(
+        VictoryRules::try_new(
+            condition,
+            RespawnBudget::None,
+            None,
+            TieOutcome::OppositionFavour,
+        )
+        .expect("a measured Instant Action condition takes no deadline"),
+    )
+}
 
 /// The player's aircraft a scenario uses, and where that came from.
 ///

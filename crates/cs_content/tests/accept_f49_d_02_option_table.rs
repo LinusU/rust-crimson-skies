@@ -508,8 +508,10 @@ fn accept_f49_d_02_retail_every_measured_list_is_rederived_from_the_installation
         }
     );
 
-    // The declared victory vocabulary is the sheet's, and it is offered.
-    assert_eq!(table.victory_conditions(), VictoryCondition::ALL);
+    // The declared victory vocabulary is the sheet's designed subset — the
+    // measured Instant Action conditions are bound per mission_type through
+    // `measured_ia_victory_rules`, never offered to a custom scenario.
+    assert_eq!(table.victory_conditions(), VictoryCondition::DESIGNED);
     assert_eq!(table.max_players(), MAX_SCENARIO_PLAYERS);
 
     // Every measured id is a real installation row, so the fixture can never
