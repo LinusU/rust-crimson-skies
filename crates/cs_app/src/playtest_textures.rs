@@ -12,7 +12,7 @@
 //! | --- | --- | --- |
 //! | archive | the highest-numbered `rtexture<N>.zbd` tier of the world group, else `texture.zbd` | [`PLAYTEST_TEXTURE_ARCHIVE_IS_DESIGNED`] |
 //! | name reading | the stored name up to its first `.`, ASCII lower case ([`NAME_READING`]) | [`PLAYTEST_TEXTURE_NAME_READING_IS_DESIGNED`] |
-//! | presentation | a plain lit `StandardMaterial`, sRGB, repeat addressing, keyed coverage as a 0.5 mask, no vertex colour | [`PLAYTEST_TEXTURE_PRESENTATION_IS_PROVISIONAL`] |
+//! | presentation | a plain lit `StandardMaterial`, sRGB, repeat addressing, keyed coverage as a 0.5 mask, stored corner colours normalized by [`stored_colour_channel`] | [`PLAYTEST_TEXTURE_PRESENTATION_IS_PROVISIONAL`] |
 //! | decal rule | a part whose bound texture **carries keyed coverage** is drawn with its vertices offset [`DECAL_OFFSET_M`] along their normals; nothing in the stored records marks a decal, so this is a designed rule over the alpha-plane bit | [`PLAYTEST_DECAL_OFFSET_IS_DESIGNED`] |
 //!
 //! # The decal rule (#794)
@@ -96,7 +96,8 @@ pub const PLAYTEST_TEXTURE_ARCHIVE_IS_DESIGNED: &str =
 pub const PLAYTEST_TEXTURE_NAME_READING_IS_DESIGNED: &str =
     "playtest-textures.name-reading-is-designed";
 
-/// Lighting, blending, colour space, addressing and vertex colour are provisional.
+/// Lighting, blending, colour space, addressing and how vertex colour is
+/// applied are provisional; the stored colours' byte scale is measured.
 pub const PLAYTEST_TEXTURE_PRESENTATION_IS_PROVISIONAL: &str =
     "playtest-textures.presentation-is-provisional";
 
@@ -775,6 +776,7 @@ impl<'a> TextureBinder<'a> {
                         Binding::Neutral
                     };
                     let mut mesh = mesh;
+                    normalize_corner_colours(&mut mesh);
                     if let Binding::Textured {
                         keyed: true,
                         texture,
@@ -814,10 +816,9 @@ impl<'a> TextureBinder<'a> {
             }
             None => {
                 let triangles = world_mesh.triangles();
-                let mesh = app
-                    .world_mut()
-                    .resource_mut::<Assets<Mesh>>()
-                    .add(world_mesh.mesh().clone());
+                let mut mesh = world_mesh.mesh().clone();
+                normalize_corner_colours(&mut mesh);
+                let mesh = app.world_mut().resource_mut::<Assets<Mesh>>().add(mesh);
                 parts.push(self.part(
                     app,
                     container,
@@ -908,6 +909,44 @@ impl<'a> TextureBinder<'a> {
 /// Whether the image carries keyed coverage a mask must honour.
 fn keyed(image: &DecodedImage) -> bool {
     CoverageSource::from_source(image.alpha_source()).is_ok_and(CoverageSource::carries_coverage)
+}
+
+/// The one normalization the original's own colour readers apply to a
+/// stored colour triple: a channel above `1.0` is byte-scaled by `1/255`,
+/// at or below `1.0` it is already a unit colour channel (the `zrdr` triple
+/// reader `0x4bc350`, `data/owner-static/engine-facts.toml`
+/// `colour_byte_scale`; the same rule `crate::render::horizon`'s
+/// `zone_colour` applies to the weather records). `ZBD/C3`'s stored
+/// per-corner colours ride the byte scale — the terrain tiles' means sit
+/// between about `120` and `255` — so a drawn buffer that may multiply a
+/// material by a vertex colour has to see a colour, not raw bytes. How the
+/// original *applied* the result — modulate, replace or ignore — stays
+/// `MaterialUnknown::VertexColorMeaning`.
+fn stored_colour_channel(value: f32) -> f32 {
+    if value > 1.0 { value / 255.0 } else { value }
+}
+
+/// Applies [`stored_colour_channel`] to every corner colour of `mesh`, when
+/// it stores any. The upload adapter keeps the stored bytes verbatim; the
+/// drawn part is where the byte scale becomes the colour the material
+/// multiplies.
+fn normalize_corner_colours(mesh: &mut Mesh) {
+    let Some(VertexAttributeValues::Float32x4(values)) = mesh.attribute(Mesh::ATTRIBUTE_COLOR)
+    else {
+        return;
+    };
+    let normalized: Vec<[f32; 4]> = values
+        .iter()
+        .map(|&[r, g, b, a]| {
+            [
+                stored_colour_channel(r),
+                stored_colour_channel(g),
+                stored_colour_channel(b),
+                a,
+            ]
+        })
+        .collect();
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, normalized);
 }
 
 /// The neutral development material of #648.
@@ -1079,6 +1118,10 @@ fn slice_groups(world_mesh: &WorldMesh) -> Option<Vec<(u32, Mesh)>> {
         Some(VertexAttributeValues::Float32x2(values)) => Some(values),
         _ => None,
     };
+    let colors = match mesh.attribute(Mesh::ATTRIBUTE_COLOR) {
+        Some(VertexAttributeValues::Float32x4(values)) => Some(values),
+        _ => None,
+    };
     let indices: Vec<u32> = match mesh.indices()? {
         Indices::U32(values) => values.clone(),
         Indices::U16(values) => values.iter().map(|i| u32::from(*i)).collect(),
@@ -1118,6 +1161,12 @@ fn slice_groups(world_mesh: &WorldMesh) -> Option<Vec<(u32, Mesh)>> {
         if let Some(uvs) = uvs {
             part.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs[vertex_base..vertex_end].to_vec());
         }
+        if let Some(colors) = colors {
+            part.insert_attribute(
+                Mesh::ATTRIBUTE_COLOR,
+                colors[vertex_base..vertex_end].to_vec(),
+            );
+        }
         part.insert_indices(Indices::U32(local));
         out.push((group.material(), part));
         vertex_base = vertex_end;
@@ -1127,4 +1176,148 @@ fn slice_groups(world_mesh: &WorldMesh) -> Option<Vec<(u32, Mesh)>> {
         return None;
     }
     Some(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::render::bevy_mesh::upload_groups;
+    use crate::world::WorldMesh;
+    use cs_content::mesh::RenderMesh;
+    use cs_formats::gamez::{PrimitiveKind, RawCorner, RawMaterialGroup, RawMesh, RawPolygon};
+
+    /// One triangle of `material` whose three corners store `colors` — the
+    /// stored byte scale a retail corner colour arrives on.
+    fn colored_triangle(material: u32, colors: [[f32; 3]; 3]) -> RawPolygon {
+        RawPolygon {
+            kind: PrimitiveKind::Polygon,
+            raw_flags: 0,
+            material,
+            corners: (0u32..3)
+                .map(|corner| RawCorner {
+                    position: corner,
+                    normal: None,
+                    uv: Some([0.25 + corner as f32, 0.5]),
+                    color: Some(colors[corner as usize]),
+                })
+                .collect(),
+        }
+    }
+
+    /// One stored material group of `material` with a UV per corner, the
+    /// shape `GameZMesh::material_groups` delivers.
+    fn stored_group(material: u32) -> Vec<RawMaterialGroup> {
+        vec![RawMaterialGroup {
+            material,
+            uvs: vec![[0.25; 2], [0.5; 2], [0.75; 2]],
+        }]
+    }
+
+    /// **PARITY-M01-ISLAND-SHADING (#1706): a drawn part keeps its group's
+    /// stored corner colours.**
+    ///
+    /// `slice_groups` cut a merged world mesh back into per-group parts but
+    /// carried every attribute except the colours, so `ZBD/C3`'s complete
+    /// per-corner shading channel never reached the drawn geometry. Each
+    /// group's own slice of the stored colour buffer rides along now.
+    #[test]
+    fn accept_parity_m01_island_shading_slice_groups_carry_the_stored_corner_colours() {
+        let greens: [[f32; 3]; 3] = [
+            [170.0, 200.0, 120.0],
+            [180.0, 190.0, 130.0],
+            [160.0, 210.0, 140.0],
+        ];
+        let browns: [[f32; 3]; 3] = [
+            [200.0, 170.0, 120.0],
+            [190.0, 160.0, 110.0],
+            [210.0, 180.0, 130.0],
+        ];
+        let mesh = RawMesh {
+            positions: vec![[1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [3.0, 3.0, 0.0]],
+            normals: Vec::new(),
+            polygons: vec![colored_triangle(3, greens), colored_triangle(7, browns)],
+        };
+        let render = RenderMesh::from_stored_groups(&mesh, &[stored_group(3), stored_group(7)])
+            .expect("the authored triangles decode");
+        let uploads = upload_groups(&render, &[]).expect("each material group uploads");
+        let world = WorldMesh::from_group_uploads(uploads).expect("the groups merge");
+
+        let parts = slice_groups(&world).expect("the merged mesh slices back");
+        assert_eq!(parts.len(), 2);
+        // The upload compacts vertices in triangle-walk order rather than
+        // corner order, so a drawn vertex is identified by its position —
+        // `x` runs 1, 2, 3 over each triangle's corners — and its colour
+        // must be the stored one of *that* stored vertex.
+        for ((material, part), (want_material, stored)) in
+            parts.iter().zip([(3u32, greens), (7u32, browns)])
+        {
+            assert_eq!(*material, want_material);
+            let Some(VertexAttributeValues::Float32x3(positions)) =
+                part.attribute(Mesh::ATTRIBUTE_POSITION)
+            else {
+                panic!("the part carries positions");
+            };
+            let Some(VertexAttributeValues::Float32x4(colours)) =
+                part.attribute(Mesh::ATTRIBUTE_COLOR)
+            else {
+                panic!("material {want_material}'s part carries the stored corner colours");
+            };
+            assert_eq!(colours.len(), positions.len());
+            for (position, drawn) in positions.iter().zip(colours.iter()) {
+                let corner = (position[0].round() as usize) - 1;
+                assert_eq!(
+                    drawn[..3],
+                    stored[corner],
+                    "vertex {position:?} keeps the stored bytes of its own stored vertex"
+                );
+                assert_eq!(drawn[3], 1.0);
+            }
+        }
+    }
+
+    /// **PARITY-M01-ISLAND-SHADING: the drawn colour is the stored triple
+    /// under the engine's own `>1 → ×1/255` rule, not the raw bytes.**
+    ///
+    /// A channel at or below `1.0` is already a unit colour channel and a
+    /// byte-scale channel is scaled (`0x4bc350`, the rule `render::horizon`'s
+    /// `zone_colour` applies to the weather records); the alpha the upload
+    /// wrote rides unchanged.
+    #[test]
+    fn accept_parity_m01_island_shading_corner_colours_normalize_on_the_measured_byte_rule() {
+        let mut mesh = Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::default(),
+        );
+        mesh.insert_attribute(
+            Mesh::ATTRIBUTE_COLOR,
+            vec![
+                [255.0_f32, 128.0, 64.0, 1.0],
+                [0.5, 0.25, 0.125, 1.0],
+                [1.0, 0.0, 200.0, 0.75],
+            ],
+        );
+        normalize_corner_colours(&mut mesh);
+        let Some(VertexAttributeValues::Float32x4(colours)) = mesh.attribute(Mesh::ATTRIBUTE_COLOR)
+        else {
+            panic!("the colours stay Float32x4");
+        };
+        let expected = [
+            [1.0, 128.0 / 255.0, 64.0 / 255.0, 1.0],
+            [0.5, 0.25, 0.125, 1.0],
+            [1.0, 0.0, 200.0 / 255.0, 0.75],
+        ];
+        for (drawn, expected) in colours.iter().zip(expected.iter()) {
+            for (channel, expected) in drawn.iter().zip(expected.iter()) {
+                assert!((channel - expected).abs() < 1e-6, "{channel} == {expected}");
+            }
+        }
+
+        // A mesh with no stored colours gains none.
+        let mut bare = Mesh::new(
+            PrimitiveTopology::TriangleList,
+            RenderAssetUsages::default(),
+        );
+        normalize_corner_colours(&mut bare);
+        assert!(bare.attribute(Mesh::ATTRIBUTE_COLOR).is_none());
+    }
 }
