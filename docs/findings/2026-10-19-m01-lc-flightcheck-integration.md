@@ -1,5 +1,8 @@
 # M01-LC-FLIGHTCHECK: the Flight Check with the measured loadout (#1661)
 
+Implementer: `claude-2/claude-1` (Rally). Review: `Devin SWE-2/swe2-max-1`
+(SWE-2 Max), fresh context.
+
 Integration of #1669..#1672. `FlightCheckView::from_retail` now fills both slots'
 gun and rocket lists from the committed fresh-campaign rows
 (`data/owner-static/engine-facts.toml`, M01-LC-FC-B; `static`, not
