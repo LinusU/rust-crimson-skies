@@ -178,11 +178,14 @@ pub enum Screen {
     /// room stages are `ui::lobby::LobbyScreen`'s own table; the front
     /// end only owns entering and leaving.
     Lobby,
+    /// The credits, opened from the main menu's Credits button. The original's
+    /// content for it is unread; the screen only owns entering and leaving.
+    Credits,
 }
 
 impl Screen {
     /// Every screen.
-    pub const ALL: [Self; 22] = [
+    pub const ALL: [Self; 23] = [
         Self::InstallSelect,
         Self::ContentDiagnosis,
         Self::MainMenu,
@@ -205,6 +208,7 @@ impl Screen {
         Self::IaFlight,
         Self::IaResults,
         Self::Lobby,
+        Self::Credits,
     ];
 
     /// The screen the application starts on.
@@ -233,6 +237,11 @@ pub enum Action {
     ChooseAnotherInstall,
     /// Leave the application.
     Quit,
+    /// Open the campaign (profile list) from the main menu: the original's
+    /// Campaign button.
+    OpenCampaign,
+    /// Open the credits from the main menu: the original's Credits button.
+    OpenCredits,
     /// Start a new profile.
     NewProfile,
     /// Continue an existing profile.
@@ -305,12 +314,14 @@ pub enum Action {
 
 impl Action {
     /// Every action.
-    pub const ALL: [Self; 39] = [
+    pub const ALL: [Self; 41] = [
         Self::InstallVerified,
         Self::InstallRejected,
         Self::ContentMissing,
         Self::ChooseAnotherInstall,
         Self::Quit,
+        Self::OpenCampaign,
+        Self::OpenCredits,
         Self::NewProfile,
         Self::ContinueProfile,
         Self::ConfirmProfile,
@@ -356,6 +367,8 @@ impl Action {
             Self::ContentMissing => "content-missing",
             Self::ChooseAnotherInstall => "choose-another-install",
             Self::Quit => "quit",
+            Self::OpenCampaign => "open-campaign",
+            Self::OpenCredits => "open-credits",
             Self::NewProfile => "new-profile",
             Self::ContinueProfile => "continue-profile",
             Self::ConfirmProfile => "confirm-profile",
@@ -562,16 +575,16 @@ pub const TABLE: &[Row] = &[
         G::None,
         R::None,
     ),
+    // The main menu carries the original's six buttons (Campaign, Instant
+    // Action, Multiplayer, Preferences, Credits, Quit; `MainMenu` in
+    // `ASSETS/LAYOUT.CSV`), in that order. The original's focus order is
+    // unread, so this order is a design choice. Campaign opens the profile
+    // screen, where the new/continue choice is made: the original's profile
+    // list screen is unread, so carrying that choice there is a stated design
+    // choice (docs/findings/2026-10-19-f45-a-1-original-screen-set.md).
     row(
         S::MainMenu,
-        A::NewProfile,
-        S::ProfileSelect,
-        G::None,
-        R::None,
-    ),
-    row(
-        S::MainMenu,
-        A::ContinueProfile,
+        A::OpenCampaign,
         S::ProfileSelect,
         G::None,
         R::None,
@@ -586,6 +599,7 @@ pub const TABLE: &[Row] = &[
     // The lobby (F55-CU1): another profile-free branch off the menu.
     row(S::MainMenu, A::OpenLobby, S::Lobby, G::None, R::OpenLobby),
     row(S::MainMenu, A::OpenSettings, S::Settings, G::None, R::None),
+    row(S::MainMenu, A::OpenCredits, S::Credits, G::None, R::None),
     row(
         S::MainMenu,
         A::ContentMissing,
@@ -594,6 +608,21 @@ pub const TABLE: &[Row] = &[
         R::None,
     ),
     row(S::MainMenu, A::Quit, S::MainMenu, G::None, R::None),
+    // The profile choice is made on the profile screen itself.
+    row(
+        S::ProfileSelect,
+        A::NewProfile,
+        S::ProfileSelect,
+        G::None,
+        R::None,
+    ),
+    row(
+        S::ProfileSelect,
+        A::ContinueProfile,
+        S::ProfileSelect,
+        G::None,
+        R::None,
+    ),
     row(
         S::ProfileSelect,
         A::ConfirmProfile,
@@ -870,6 +899,7 @@ pub const TABLE: &[Row] = &[
     // room `back` only leaves the room, so `FrontEndFlow::lobby_back`
     // performs that first; this row is refused while the room is open.
     row(S::Lobby, A::Back, S::MainMenu, G::None, R::LobbyBack),
+    row(S::Credits, A::Back, S::MainMenu, G::None, R::None),
 ];
 
 /// The row for an action on a screen.

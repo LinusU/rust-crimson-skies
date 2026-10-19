@@ -386,6 +386,8 @@ fn pilotable() -> &'static str {
 fn to_flight_check(flow: &mut FrontEndFlow, choice: &Loadout) {
     flow.press(Action::InstallVerified)
         .expect("the install verifies");
+    flow.press(Action::OpenCampaign)
+        .expect("the campaign opens");
     flow.press(Action::ContinueProfile)
         .expect("the profile continues");
     flow.press(Action::ConfirmProfile)
@@ -402,6 +404,8 @@ fn to_flight_check(flow: &mut FrontEndFlow, choice: &Loadout) {
 fn walk_to_cabin(flow: &mut FrontEndFlow) {
     flow.press(Action::InstallVerified)
         .expect("the install verifies");
+    flow.press(Action::OpenCampaign)
+        .expect("the campaign opens");
     flow.press(Action::ContinueProfile)
         .expect("the profile continues");
     flow.press(Action::ConfirmProfile)
@@ -627,6 +631,8 @@ fn accept_f45_c_a_construction_commit_reaches_the_economy_and_the_profile_save()
     flow.press(Action::Back).expect("the cabin is left");
     assert_eq!(flow.front_end().screen(), Screen::MainMenu);
     assert!(flow.domain().profile().is_none(), "the session ended");
+    flow.press(Action::OpenCampaign)
+        .expect("the campaign opens");
     flow.press(Action::ContinueProfile)
         .expect("the profile continues");
     flow.press(Action::ConfirmProfile)
@@ -1210,6 +1216,8 @@ fn accept_f45_c_the_return_flow_saves_the_outcome_and_reopens_the_profile_withou
     );
     assert!(flow.domain().profile().is_none());
 
+    flow.press(Action::OpenCampaign)
+        .expect("the campaign opens");
     flow.press(Action::ContinueProfile)
         .expect("the profile continues");
     flow.press(Action::ConfirmProfile)
@@ -1299,6 +1307,8 @@ fn accept_f45_c_3_the_flows_campaign_identity_is_stable_across_a_reopen() {
     // Leave the cabin (the profile closes) and continue the same profile:
     // the reopened run must name the same campaign identity.
     flow.press(Action::Back).expect("the cabin is left");
+    flow.press(Action::OpenCampaign)
+        .expect("the campaign opens");
     flow.press(Action::ContinueProfile)
         .expect("the profile continues");
     flow.press(Action::ConfirmProfile)
@@ -1412,6 +1422,8 @@ fn accept_f45_c_4_a_construction_commit_and_an_outcome_commit_share_the_runs_rev
     flow.press(Action::ReturnToCabin)
         .expect("back to the cabin");
     flow.press(Action::Back).expect("the cabin is left");
+    flow.press(Action::OpenCampaign)
+        .expect("the campaign opens");
     flow.press(Action::ContinueProfile)
         .expect("the profile continues");
     flow.press(Action::ConfirmProfile)

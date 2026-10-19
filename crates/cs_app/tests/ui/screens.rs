@@ -93,11 +93,11 @@ pub(crate) fn preflight_deck() -> ScreenDeck {
             authored(
                 "art-main-menu",
                 &[
-                    "new-profile",
-                    "continue-profile",
+                    "open-campaign",
                     "open-instant-action",
                     "open-lobby",
                     "open-settings",
+                    "open-credits",
                     "quit",
                 ],
             ),
@@ -106,7 +106,13 @@ pub(crate) fn preflight_deck() -> ScreenDeck {
             Screen::ProfileSelect,
             authored(
                 "art-profile-select",
-                &["confirm-profile", "open-import-dialog", "back"],
+                &[
+                    "new-profile",
+                    "continue-profile",
+                    "confirm-profile",
+                    "open-import-dialog",
+                    "back",
+                ],
             ),
         ),
         (
@@ -114,6 +120,7 @@ pub(crate) fn preflight_deck() -> ScreenDeck {
             authored("art-import-dialog", &["confirm-import", "retry", "cancel"]),
         ),
         (Screen::Settings, authored("art-settings", &["back"])),
+        (Screen::Credits, authored("art-credits", &["back"])),
         (
             Screen::Cabin,
             authored(
@@ -173,11 +180,11 @@ pub(crate) fn instant_action_deck() -> ScreenDeck {
             authored(
                 "art-main-menu",
                 &[
-                    "new-profile",
-                    "continue-profile",
+                    "open-campaign",
                     "open-instant-action",
                     "open-lobby",
                     "open-settings",
+                    "open-credits",
                     "quit",
                 ],
             ),
@@ -288,6 +295,7 @@ fn good_loadout() -> Loadout {
 
 fn to_cabin(session: &mut ScreenSession) -> Vec<Request> {
     let mut made = requests(&press(session, Action::InstallVerified));
+    made.extend(requests(&click(session, Action::OpenCampaign)));
     made.extend(requests(&click(session, Action::NewProfile)));
     made.extend(requests(&click(session, Action::ConfirmProfile)));
     assert_eq!(session.front_end().screen(), Screen::Cabin);
@@ -340,7 +348,8 @@ fn accept_f45_b_cancel_at_every_preflight_screen_leaves_state_and_currency_uncha
 
     // The menu screens: reaching them and backing out is not a transaction.
     for (open, screen) in [
-        (Action::NewProfile, Screen::ProfileSelect),
+        (Action::OpenCampaign, Screen::ProfileSelect),
+        (Action::OpenCredits, Screen::Credits),
         (Action::OpenSettings, Screen::Settings),
     ] {
         let mut session = ScreenSession::new(deck.clone());
@@ -366,7 +375,7 @@ fn accept_f45_b_cancel_at_every_preflight_screen_leaves_state_and_currency_uncha
     // attempt down and asks the domain for nothing.
     let mut session = ScreenSession::new(deck.clone());
     press(&mut session, Action::InstallVerified);
-    assert_eq!(requests(&click(&mut session, Action::NewProfile)), vec![]);
+    assert_eq!(requests(&click(&mut session, Action::OpenCampaign)), vec![]);
     assert_eq!(session.front_end().screen(), Screen::ProfileSelect);
     let enter = click(&mut session, Action::OpenImportDialog);
     assert_eq!(session.front_end().screen(), Screen::ImportDialog);
@@ -713,7 +722,7 @@ fn accept_f45_b_a_click_off_the_authored_art_or_between_buttons_hits_nothing() {
     // that is (330, 90). (100, 100) is where it would be *without* the fit's
     // 240px offset, so it sits in the left bar and must hit nothing.
     let first = &view.buttons[0];
-    assert_eq!(first.action, Action::NewProfile);
+    assert_eq!(first.action, Action::OpenCampaign);
     assert_eq!(first.rect, rect(330, 90, 1260, 112));
     for (x, y) in [(100, 100), (1900, 10), (10, 1000)] {
         assert_eq!(
@@ -729,7 +738,7 @@ fn accept_f45_b_a_click_off_the_authored_art_or_between_buttons_hits_nothing() {
     );
     // A hitless click changes nothing.
     assert_eq!(session.front_end().screen(), Screen::MainMenu);
-    assert_eq!(session.front_end().focus(), Some(Action::NewProfile));
+    assert_eq!(session.front_end().focus(), Some(Action::OpenCampaign));
 
     // The real button still works through the same transform.
     let (x, y) = button_point(&session, Action::OpenSettings);
@@ -860,11 +869,11 @@ fn accept_f45_b_a_screen_without_authored_assets_is_reported_never_placeholdered
         authored(
             "art-main-menu",
             &[
-                "new-profile",
-                "continue-profile",
+                "open-campaign",
                 "open-instant-action",
                 "open-lobby",
                 "open-settings",
+                "open-credits",
                 "quit",
             ],
         ),
@@ -897,7 +906,7 @@ fn accept_f45_b_a_screen_without_authored_assets_is_reported_never_placeholdered
     let outcome = session.press(Action::Back).expect("leave");
     assert_eq!(outcome.to, Screen::MainMenu);
     // Back on the authored menu, focus follows the authored order again.
-    assert_eq!(session.front_end().focus(), Some(Action::NewProfile));
+    assert_eq!(session.front_end().focus(), Some(Action::OpenCampaign));
 }
 
 /// Non-negotiable 2 through the authored screens: replaying the briefing and

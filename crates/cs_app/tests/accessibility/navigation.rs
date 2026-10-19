@@ -62,9 +62,14 @@ fn boot_to_launch(keys: &Keys) {
     fe.apply(Action::InstallVerified).expect("install");
     assert_eq!(fe.screen(), Screen::MainMenu);
 
-    // Main menu: New profile is first.
+    // Main menu: Campaign is first; the profile screen's New profile is first
+    // there and Confirm is the third button.
     step(&nav, &mut fe, keys.confirm);
     assert_eq!(fe.screen(), Screen::ProfileSelect);
+    step(&nav, &mut fe, keys.confirm);
+    assert_eq!(fe.screen(), Screen::ProfileSelect);
+    step(&nav, &mut fe, keys.down);
+    step(&nav, &mut fe, keys.down);
     step(&nav, &mut fe, keys.confirm);
     assert_eq!(fe.screen(), Screen::Cabin);
     step(&nav, &mut fe, keys.confirm);
@@ -161,6 +166,7 @@ fn accept_f52_a_a_discard_prompt_is_answered_from_the_same_device() {
     let nav = Navigator::new(keys.device, navigation_map()).expect("navigator");
     let mut fe = FrontEnd::new();
     fe.apply(Action::InstallVerified).expect("install");
+    fe.apply(Action::OpenCampaign).expect("the campaign opens");
     fe.apply(Action::NewProfile).expect("profile");
     fe.apply(Action::ConfirmProfile).expect("cabin");
     fe.apply(Action::OpenConstruction).expect("construction");

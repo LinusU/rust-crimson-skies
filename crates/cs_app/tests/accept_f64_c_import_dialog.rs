@@ -62,6 +62,9 @@ fn front_end_on_the_import_dialog() -> FrontEnd {
         .apply(Action::InstallVerified)
         .expect("the installation verifies");
     front_end
+        .apply(Action::OpenCampaign)
+        .expect("the campaign opens");
+    front_end
         .apply(Action::NewProfile)
         .expect("a new profile is asked for");
     front_end
@@ -665,6 +668,9 @@ fn accept_f64_c_import_dialog_is_the_same_screen_the_presentation_drives() {
     let deck = ScreenDeck::new(Vec::new()).expect("an empty deck is a valid deck");
     let mut session = ScreenSession::new(deck);
     session.press(Action::InstallVerified).expect("install");
+    session
+        .press(Action::OpenCampaign)
+        .expect("the campaign opens");
     session.press(Action::NewProfile).expect("new profile");
     session
         .press(Action::OpenImportDialog)
@@ -716,6 +722,8 @@ fn accept_f64_c_import_dialog_the_flow_refuses_a_confirm_it_cannot_persist() {
     let mut flow = FrontEndFlow::new(deck, setup);
 
     flow.press(Action::InstallVerified).expect("install");
+    flow.press(Action::OpenCampaign)
+        .expect("the campaign opens");
     flow.press(Action::NewProfile).expect("new profile");
     flow.press(Action::OpenImportDialog)
         .expect("open the dialog");

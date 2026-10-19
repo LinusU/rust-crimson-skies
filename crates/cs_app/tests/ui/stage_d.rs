@@ -471,7 +471,16 @@ fn accept_f45_d_the_navigation_review_classifies_every_row_and_names_every_scree
         ),
         // new profile -> cabin -> briefing -> flight check -> loading ->
         // mission -> success -> scrapbook
-        (Screen::MainMenu, Action::NewProfile, Screen::ProfileSelect),
+        (
+            Screen::MainMenu,
+            Action::OpenCampaign,
+            Screen::ProfileSelect,
+        ),
+        (
+            Screen::ProfileSelect,
+            Action::NewProfile,
+            Screen::ProfileSelect,
+        ),
         (Screen::ProfileSelect, Action::ConfirmProfile, Screen::Cabin),
         (Screen::Cabin, Action::OpenBriefing, Screen::Briefing),
         (

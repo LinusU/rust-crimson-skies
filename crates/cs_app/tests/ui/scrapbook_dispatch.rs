@@ -403,6 +403,8 @@ fn load_plan() -> LoadPlan {
 fn to_scrapbook(flow: &mut FrontEndFlow) {
     flow.press(Action::InstallVerified)
         .expect("the install verifies");
+    flow.press(Action::OpenCampaign)
+        .expect("the campaign opens");
     flow.press(Action::ContinueProfile)
         .expect("the profile continues");
     flow.press(Action::ConfirmProfile)
@@ -731,6 +733,8 @@ fn accept_f47_c1_an_unreadable_stored_scrapbook_is_the_screens_reason_not_its_en
     let mut flow = fixture.flow();
     flow.press(Action::InstallVerified)
         .expect("the install verifies");
+    flow.press(Action::OpenCampaign)
+        .expect("the campaign opens");
     flow.press(Action::ContinueProfile)
         .expect("the profile continues");
     flow.press(Action::ConfirmProfile)
@@ -767,6 +771,8 @@ fn accept_f47_c1_an_unreadable_stored_scrapbook_is_the_screens_reason_not_its_en
         .expect("the corrupt field is removed");
     session.finish().expect("the repaired profile is written");
 
+    flow.press(Action::OpenCampaign)
+        .expect("the campaign opens");
     flow.press(Action::ContinueProfile)
         .expect("the profile continues");
     flow.press(Action::ConfirmProfile)
@@ -795,6 +801,8 @@ fn accept_f47_c1_opening_and_launching_refuse_when_the_declaration_is_missing() 
     flow.set_load_plan(load_plan());
     flow.press(Action::InstallVerified)
         .expect("the install verifies");
+    flow.press(Action::OpenCampaign)
+        .expect("the campaign opens");
     flow.press(Action::ContinueProfile)
         .expect("the profile continues");
     flow.press(Action::ConfirmProfile)
@@ -816,6 +824,8 @@ fn accept_f47_c1_opening_and_launching_refuse_when_the_declaration_is_missing() 
     flow.set_text_session(session("en-us", TextCatalog::new()));
     flow.press(Action::InstallVerified)
         .expect("the install verifies");
+    flow.press(Action::OpenCampaign)
+        .expect("the campaign opens");
     flow.press(Action::ContinueProfile)
         .expect("the profile continues");
     flow.press(Action::ConfirmProfile)

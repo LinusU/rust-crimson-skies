@@ -428,6 +428,12 @@ impl FrontEnd {
         self.import.as_ref()
     }
 
+    /// The profile choice made on the profile screen, if any.
+    #[must_use]
+    pub fn profile_intent(&self) -> Option<ProfileIntent> {
+        self.intent
+    }
+
     /// The last mission outcome, until the cabin or menu is reached.
     #[must_use]
     pub fn outcome(&self) -> Option<MissionOutcome> {

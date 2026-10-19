@@ -34,6 +34,7 @@ fn good_loadout() -> Loadout {
 /// Fresh install selection to the flight check, buttons only.
 fn to_flight_check(front_end: &mut FrontEnd) {
     press(front_end, Action::InstallVerified);
+    press(front_end, Action::OpenCampaign);
     press(front_end, Action::NewProfile);
     press(front_end, Action::ConfirmProfile);
     press(front_end, Action::OpenBriefing);
@@ -49,6 +50,7 @@ fn accept_f45_a_fresh_profile_to_first_flight_and_back_by_buttons_only() {
 
     press(&mut front_end, Action::InstallVerified);
     assert_eq!(front_end.screen(), Screen::MainMenu);
+    press(&mut front_end, Action::OpenCampaign);
     press(&mut front_end, Action::NewProfile);
     let effects = press(&mut front_end, Action::ConfirmProfile);
     assert_eq!(
@@ -182,6 +184,7 @@ fn accept_f45_a_cancel_at_every_preflight_screen_requests_nothing_from_the_domai
     for (path, screen, leave) in walks {
         let mut front_end = FrontEnd::new();
         press(&mut front_end, Action::InstallVerified);
+        press(&mut front_end, Action::OpenCampaign);
         press(&mut front_end, Action::ContinueProfile);
         press(&mut front_end, Action::ConfirmProfile);
         let mut effects = Vec::new();
@@ -217,6 +220,7 @@ fn accept_f45_a_back_from_a_dirty_draft_asks_and_keep_editing_loses_nothing() {
     let part = id(ContentKind::HardpointEquipment, "gun-mount");
     let mut front_end = FrontEnd::new();
     press(&mut front_end, Action::InstallVerified);
+    press(&mut front_end, Action::OpenCampaign);
     press(&mut front_end, Action::NewProfile);
     press(&mut front_end, Action::ConfirmProfile);
     press(&mut front_end, Action::OpenConstruction);
@@ -263,6 +267,7 @@ fn accept_f45_a_commit_construction_requests_the_blueprint_and_does_not_prompt()
     let part = id(ContentKind::HardpointEquipment, "gun-mount");
     let mut front_end = FrontEnd::new();
     press(&mut front_end, Action::InstallVerified);
+    press(&mut front_end, Action::OpenCampaign);
     press(&mut front_end, Action::NewProfile);
     press(&mut front_end, Action::ConfirmProfile);
     press(&mut front_end, Action::OpenConstruction);
@@ -431,20 +436,23 @@ fn accept_f45_a_focus_resets_on_entry_wraps_and_activates_a_working_button() {
     assert_eq!(
         visible,
         vec![
-            Action::NewProfile,
-            Action::ContinueProfile,
+            Action::OpenCampaign,
             Action::OpenInstantAction,
             Action::OpenLobby,
             Action::OpenSettings,
+            Action::OpenCredits,
             Action::Quit
         ]
     );
-    assert_eq!(front_end.focus(), Some(Action::NewProfile));
+    assert_eq!(front_end.focus(), Some(Action::OpenCampaign));
     front_end.move_focus(false);
     assert_eq!(front_end.focus(), Some(Action::Quit), "wraps backward");
     front_end.move_focus(true);
-    assert_eq!(front_end.focus(), Some(Action::NewProfile), "wraps forward");
-    front_end.move_focus(true);
+    assert_eq!(
+        front_end.focus(),
+        Some(Action::OpenCampaign),
+        "wraps forward"
+    );
     front_end.move_focus(true);
     front_end.move_focus(true);
     front_end.move_focus(true);
@@ -470,4 +478,53 @@ fn accept_f45_a_every_visible_button_has_a_transition_on_its_screen() {
             .collect();
         assert!(!buttons.is_empty(), "{screen:?} shows no button");
     }
+}
+
+/// #1457: the main menu carries the original's six buttons, and the profile
+/// choice is made on the profile screen the Campaign button opens.
+#[test]
+fn accept_f45_a_main_menu_mirrors_the_original_buttons_and_profile_choice_follows_campaign() {
+    let mut front_end = FrontEnd::new();
+    press(&mut front_end, Action::InstallVerified);
+    assert_eq!(
+        front_end.visible_actions(),
+        vec![
+            Action::OpenCampaign,
+            Action::OpenInstantAction,
+            Action::OpenLobby,
+            Action::OpenSettings,
+            Action::OpenCredits,
+            Action::Quit,
+        ]
+    );
+    // The profile choice is not a main-menu button any more.
+    assert!(front_end.clone().apply(Action::NewProfile).is_err());
+    assert!(front_end.clone().apply(Action::ContinueProfile).is_err());
+
+    // Credits is left by Back.
+    let mut credits = front_end.clone();
+    press(&mut credits, Action::OpenCredits);
+    assert_eq!(credits.screen(), Screen::Credits);
+    press(&mut credits, Action::Back);
+    assert_eq!(credits.screen(), Screen::MainMenu);
+
+    // Campaign opens the profile screen; confirming needs a choice made there.
+    press(&mut front_end, Action::OpenCampaign);
+    assert_eq!(front_end.screen(), Screen::ProfileSelect);
+    assert!(front_end.clone().apply(Action::ConfirmProfile).is_err());
+    press(&mut front_end, Action::ContinueProfile);
+    assert_eq!(front_end.screen(), Screen::ProfileSelect);
+    assert_eq!(
+        front_end.profile_intent(),
+        Some(ProfileIntent::Existing),
+        "the choice is held"
+    );
+    let effects = press(&mut front_end, Action::ConfirmProfile);
+    assert!(
+        effects.contains(&Effect::Request(Request::OpenProfile(
+            ProfileIntent::Existing
+        ))),
+        "{effects:?}"
+    );
+    assert_eq!(front_end.screen(), Screen::Cabin);
 }

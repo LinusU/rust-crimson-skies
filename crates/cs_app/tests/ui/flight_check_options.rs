@@ -278,6 +278,8 @@ fn loadout() -> Loadout {
 fn to_flight_check(flow: &mut FrontEndFlow, choice: &Loadout) {
     flow.press(Action::InstallVerified)
         .expect("the install verifies");
+    flow.press(Action::OpenCampaign)
+        .expect("the campaign opens");
     flow.press(Action::NewProfile)
         .expect("a profile is created");
     flow.press(Action::ConfirmProfile)

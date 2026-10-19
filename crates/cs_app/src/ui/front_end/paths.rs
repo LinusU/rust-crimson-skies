@@ -536,9 +536,10 @@ pub fn review_navigation_with(start: Screen, inputs: &NavigationInputs) -> PathR
 /// Everything the table's guards read, as the identity of one explored state.
 fn signature(machine: &FrontEnd) -> String {
     format!(
-        "{:?}|{:?}|loadout_empty={}|draft={}|import={}|prompt={}|failure={}|choice={}",
+        "{:?}|{:?}|{:?}|loadout_empty={}|draft={}|import={}|prompt={}|failure={}|choice={}",
         machine.screen(),
         machine.outcome(),
+        machine.profile_intent(),
         machine.loadout().is_empty(),
         machine.construction().is_some(),
         machine.import_dialog().is_some(),

@@ -110,11 +110,11 @@ fn lobby_deck() -> ScreenDeck {
             authored(
                 "art-main-menu",
                 &[
-                    "new-profile",
-                    "continue-profile",
+                    "open-campaign",
                     "open-instant-action",
                     "open-lobby",
                     "open-settings",
+                    "open-credits",
                     "quit",
                 ],
             ),
