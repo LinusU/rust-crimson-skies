@@ -216,16 +216,16 @@ pub use scenario::{
 };
 pub use smoke::{
     ActorMetrics, ApproachMetrics, AudioMetrics, CINEMATIC_SHOT_SECONDS, CameraMetrics, Check,
-    CinematicMetrics, DEFAULT_MISSION_CAPTURE_DIR, FlightCheckButtonMetrics, FlightCheckMetrics,
-    FlightCheckTextMetrics, GunMetrics, HudMetrics, MAX_WINGMAN_DISTANCE_M, MIN_ACTOR_PIXELS,
-    MIN_FLIGHT_CHECK_BUTTON_PIXELS, MIN_FLIGHT_CHECK_DRAWN_PERMILLE, MIN_FLIGHT_CHECK_TEXT_PIXELS,
-    MIN_GUN_ROUNDS, MIN_MISSION_SMOKE_SECONDS, MIN_OBJECTIVE_TEXT_PIXELS,
-    MIN_SEA_COVERAGE_PERMILLE, MIN_TERRAIN_DETAIL_PERMILLE, MIN_TERRAIN_DISTINCT_COLOURS,
-    MIN_TERRAIN_LUMINANCE_SPREAD, MISSION_SMOKE_FRAME_HZ, MissionSmokeHandle, MissionSmokeMode,
-    MissionSmokePlugin, MissionSmokeReport, RocketMetrics, SMOKE_KIND, SMOKE_REPORT_FILE,
-    SeaMetrics, SmokeMeasurements, TerrainMetrics, WINGMAN_SAMPLE_SECONDS, WingmanSample,
-    evaluate as evaluate_mission_smoke, finish as finish_mission_smoke, near_terrain_luminance,
-    objective_line_of, region_difference,
+    CinematicMetrics, DEFAULT_MISSION_CAPTURE_DIR, FirstControlMetrics, FlightCheckButtonMetrics,
+    FlightCheckMetrics, FlightCheckTextMetrics, GunMetrics, HudMetrics, MAX_WINGMAN_DISTANCE_M,
+    MIN_ACTOR_PIXELS, MIN_FLIGHT_CHECK_BUTTON_PIXELS, MIN_FLIGHT_CHECK_DRAWN_PERMILLE,
+    MIN_FLIGHT_CHECK_TEXT_PIXELS, MIN_GUN_ROUNDS, MIN_MISSION_SMOKE_SECONDS,
+    MIN_OBJECTIVE_TEXT_PIXELS, MIN_SEA_COVERAGE_PERMILLE, MIN_TERRAIN_DETAIL_PERMILLE,
+    MIN_TERRAIN_DISTINCT_COLOURS, MIN_TERRAIN_LUMINANCE_SPREAD, MISSION_SMOKE_FRAME_HZ,
+    MissionSmokeHandle, MissionSmokeMode, MissionSmokePlugin, MissionSmokeReport, RocketMetrics,
+    SMOKE_KIND, SMOKE_REPORT_FILE, SeaMetrics, SmokeMeasurements, TerrainMetrics,
+    WINGMAN_SAMPLE_SECONDS, WingmanSample, evaluate as evaluate_mission_smoke,
+    finish as finish_mission_smoke, near_terrain_luminance, objective_line_of, region_difference,
 };
 pub use terminal::{MissionExit, MissionTerminal, MissionTerminalSource};
 pub use weapon_present::{

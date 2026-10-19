@@ -120,6 +120,13 @@ fn healthy() -> SmokeMeasurements {
             objective_woke: true,
         },
         missing_shots: vec![],
+        first_control: Some(cs_app::mission_session::FirstControlMetrics {
+            tick: 4_818,
+            frame: 2_410,
+            position_m: [-1426.0, 250.0, -1813.0],
+            yaw_deg: 40.0,
+            ..cs_app::mission_session::FirstControlMetrics::default()
+        }),
         flight_check: Some(cs_app::mission_session::FlightCheckMetrics {
             frames_delivered: true,
             frame_size: (2560, 1440),

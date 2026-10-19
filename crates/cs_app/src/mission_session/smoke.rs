@@ -643,6 +643,32 @@ fn judge_cinematic_frames(frames: &[CinematicFrame]) -> Result<(), String> {
     Ok(())
 }
 
+/// The player's pose in the first control frame (#1697): the first fixed tick
+/// after the player gains control — after the launch cinematic's hand-over, or
+/// right after Fly Mission when the run has no cinematic — before any scripted
+/// move or teleport. Bevy world axes, metres and degrees; nothing here is a
+/// measurement of the original.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FirstControlMetrics {
+    /// Fixed simulation ticks the physics ledger had counted.
+    pub tick: u64,
+    /// The script frame the pose was read in.
+    pub frame: u32,
+    /// The body's position.
+    pub position_m: [f64; 3],
+    /// The body's yaw, degrees, about world `+Y` (Bevy `YXZ` Euler order).
+    pub yaw_deg: f32,
+    /// The body's pitch, degrees (Bevy `YXZ` Euler order).
+    pub pitch_deg: f32,
+    /// The body's roll, degrees (Bevy `YXZ` Euler order).
+    pub roll_deg: f32,
+    /// The body's nose direction (local `-Z`) in world axes.
+    pub forward: [f32; 3],
+    /// Placements the script had made or queued by then; zero for a frame
+    /// taken before any scripted move.
+    pub moves_before: usize,
+}
+
 /// What the run saw of the launch cinematic's camera script (#1665).
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct CameraMetrics {
@@ -723,6 +749,8 @@ pub struct SmokeMeasurements {
     pub cinematic: Option<CinematicMetrics>,
     /// The launch cinematic's camera script, when the run played it.
     pub camera: Option<CameraMetrics>,
+    /// The player's pose at the first control frame (#1697).
+    pub first_control: Option<FirstControlMetrics>,
 }
 
 /// One pass/fail verdict with its evidence.
@@ -1078,6 +1106,33 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
             ),
         });
     }
+
+    // --- the first control frame ------------------------------------------
+    checks.push(Check {
+        id: "first_control_frame".to_owned(),
+        applies: true,
+        passed: m.first_control.as_ref().is_some_and(|f| {
+            f.moves_before == 0
+                && f.position_m.iter().all(|v| v.is_finite())
+                && f.yaw_deg.is_finite()
+        }) && !m.missing_shots.iter().any(|shot| shot == "first_control"),
+        detail: m.first_control.as_ref().map_or_else(
+            || "the player never gained control: no first control pose".to_owned(),
+            |f| {
+                format!(
+                    "tick {} (frame {}): position ({:.1}, {:.1}, {:.1}) m, yaw {:.1} deg, \
+                     {} scripted moves before the frame",
+                    f.tick,
+                    f.frame,
+                    f.position_m[0],
+                    f.position_m[1],
+                    f.position_m[2],
+                    f.yaw_deg,
+                    f.moves_before
+                )
+            },
+        ),
+    });
 
     // --- the picture arrived ----------------------------------------------
     checks.push(Check {
@@ -1520,6 +1575,8 @@ struct SmokeData {
     /// Scene screenshots requested so far, and the ones waiting for the script.
     camera_shots: usize,
     camera_shots_due: Vec<String>,
+    /// The first control frame's screenshot is waiting for the script.
+    first_control_due: bool,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1581,6 +1638,7 @@ fn add_script_systems(app: &mut App) {
             smoke_sample,
             smoke_wingmen,
             smoke_cinematic,
+            smoke_first_control,
             smoke_script,
             smoke_rounds,
             smoke_flashes,
@@ -2203,6 +2261,45 @@ fn smoke_cinematic(
     }
 }
 
+/// Reads the player's pose at the first control frame (#1697) and asks the
+/// script for its framebuffer. It runs before the script in the same frame, and
+/// the script makes no move before `Phase::Settle` ends, so the pose is the
+/// player's own.
+fn smoke_first_control(
+    mut data: ResMut<SmokeData>,
+    phase: Option<Res<LaunchCinematic>>,
+    ledger: Res<PhysicsTickLedger>,
+    pending: Res<PendingPlacement>,
+    player: Query<(&Position, &Rotation), With<MissionPlayerBody>>,
+) {
+    if data.measurements.first_control.is_some()
+        || data.frame == 0
+        || phase.is_some_and(|phase| phase.is_playing())
+    {
+        return;
+    }
+    let Ok((position, rotation)) = player.single() else {
+        return;
+    };
+    let (yaw, pitch, roll) = rotation.0.to_euler(bevy::math::EulerRot::YXZ);
+    let forward = rotation.0 * Vec3::NEG_Z;
+    data.measurements.first_control = Some(FirstControlMetrics {
+        tick: ledger.ticks,
+        frame: data.frame,
+        position_m: [
+            f64::from(position.0.x),
+            f64::from(position.0.y),
+            f64::from(position.0.z),
+        ],
+        yaw_deg: yaw.to_degrees(),
+        pitch_deg: pitch.to_degrees(),
+        roll_deg: roll.to_degrees(),
+        forward: forward.to_array(),
+        moves_before: data.placements.len() + usize::from(pending.0.is_some()),
+    });
+    data.first_control_due = true;
+}
+
 #[allow(clippy::too_many_arguments)]
 fn smoke_script(
     config: Res<SmokeConfig>,
@@ -2229,6 +2326,9 @@ fn smoke_script(
 
     // --- the script --------------------------------------------------------
     let mut due: Vec<String> = Vec::new();
+    if std::mem::take(&mut data.first_control_due) {
+        due.push("first_control".to_owned());
+    }
     let at = frame.saturating_sub(data.phase_start);
     match data.phase {
         // The no-teleport script has no phases to walk: the player flies the
@@ -3423,6 +3523,29 @@ fn write_artifacts(
             )
         },
     );
+    let first_control = report.measurements.first_control.as_ref().map_or_else(
+        || "null".to_owned(),
+        |f| {
+            format!(
+                "{{\"tick\":{},\"frame\":{},\"pose\":{{\"position_m\":[{},{},{}]}},\
+                 \"heading\":{{\"yaw_deg\":{},\"pitch_deg\":{},\"roll_deg\":{},\
+                 \"forward\":[{},{},{}]}},\"moves_before\":{},\
+                 \"framebuffer\":\"first_control\"}}",
+                f.tick,
+                f.frame,
+                f.position_m[0],
+                f.position_m[1],
+                f.position_m[2],
+                f.yaw_deg,
+                f.pitch_deg,
+                f.roll_deg,
+                f.forward[0],
+                f.forward[1],
+                f.forward[2],
+                f.moves_before
+            )
+        },
+    );
     let body = format!(
         "{{\"kind\":{kind},\"mission\":{mission},\"human_play\":false,\
          \"mode\":{mode},\"player_teleported\":{teleported},\
@@ -3438,7 +3561,7 @@ fn write_artifacts(
          \"audio\":{{\"radio_seen\":{radio_seen},\"engine_seen\":{engine_seen},\
          \"engine_bindings\":{bindings},\"active_loops\":{loops},\
          \"radio_started\":{radio_started}}},\
-         \"cinematic\":{cinematic},\
+         \"cinematic\":{cinematic},\"first_control\":{first_control},\
          \"approach\":{{\"placed\":{approach_placed},\"anchor\":{anchor},\
          \"frames\":{approach_frames},\"objective_woke\":{woke}}},\
          \"actors\":[{actors}],\"placements\":[{placements}],\"shots\":[{shots}],\
@@ -3483,6 +3606,7 @@ fn write_artifacts(
         loops = report.measurements.audio.active_loops,
         radio_started = report.measurements.audio.radio_started,
         cinematic = cinematic,
+        first_control = first_control,
         approach_placed = report.measurements.approach.placed,
         anchor = report
             .measurements
@@ -3808,6 +3932,145 @@ mod tests {
         assert!(json.contains("\"mode\":\"no_teleport\""), "{json}");
         assert!(json.contains("\"player_teleported\":false"), "{json}");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **`accept_m01_smoke_first_control_` the frame comes at the hand-over.**
+    ///
+    /// The production script systems run over a stand-in player body under a
+    /// launch cinematic phase. While the phase plays there is no first control
+    /// pose and no framebuffer requested; on the first frame after the
+    /// hand-over the pose is read, `first_control` is the first framebuffer the
+    /// script asks for, and a later move of the body does not change it.
+    #[test]
+    fn accept_m01_smoke_first_control_is_taken_at_the_handover_before_any_move() {
+        let dir = std::env::temp_dir().join("accept_m01_smoke_first_control_handover");
+        let plugin = MissionSmokePlugin::new(SmokeRequest {
+            seconds: 45,
+            capture_dir: dir.clone(),
+        });
+        let mut app = App::new();
+        app.add_message::<AppExit>()
+            .insert_resource(SmokeConfig {
+                request: plugin.request.clone(),
+                mode: plugin.mode,
+                handle: plugin.handle.clone(),
+            })
+            .init_resource::<SmokeShots>()
+            .init_resource::<FlightCheckFrames>()
+            .init_resource::<SmokeData>()
+            .init_resource::<ProbeState>()
+            .init_resource::<KeyQueue>()
+            .init_resource::<PendingPlacement>()
+            .init_resource::<PlaytestState>()
+            .insert_resource(PlaytestCamera::new())
+            .init_resource::<PhysicsTickLedger>()
+            .insert_resource(LaunchCinematic::new(5).expect("a phase"));
+        add_script_systems(&mut app);
+        let start = Vec3::new(-1426.0, 250.0, -1813.0);
+        let rotation = Quat::from_rotation_y(40.0_f32.to_radians());
+        let body = app
+            .world_mut()
+            .spawn((
+                MissionPlayerBody,
+                Position(start),
+                Rotation(rotation),
+                LinearVelocity::default(),
+                AngularVelocity::default(),
+                GlobalTransform::from_translation(start),
+            ))
+            .id();
+        for _ in 0..5 {
+            app.update();
+            assert!(
+                app.world()
+                    .resource::<SmokeData>()
+                    .measurements
+                    .first_control
+                    .is_none()
+            );
+            assert!(
+                !app.world()
+                    .resource::<SmokeData>()
+                    .requested
+                    .contains(&"first_control".to_owned())
+            );
+            app.world_mut()
+                .resource_mut::<LaunchCinematic>()
+                .complete_tick();
+        }
+        app.update();
+        // A scripted move after the frame must not reach the recorded pose.
+        app.world_mut().get_mut::<Position>(body).expect("body").0 = Vec3::new(9.0, 9.0, 9.0);
+        for _ in 0..40 {
+            app.update();
+        }
+        let data = app.world().resource::<SmokeData>();
+        let first = data
+            .measurements
+            .first_control
+            .clone()
+            .expect("a first control pose");
+        assert_eq!(first.position_m, [-1426.0, 250.0, -1813.0]);
+        assert!((first.yaw_deg - 40.0).abs() < 1e-3, "{first:?}");
+        assert_eq!(first.moves_before, 0);
+        // Only the cinematic's own held-phase shots may precede it.
+        let at = data
+            .requested
+            .iter()
+            .position(|l| l == "first_control")
+            .expect("the frame was requested");
+        assert!(
+            data.requested[..at]
+                .iter()
+                .all(|l| l.starts_with("cinematic_") && l != "cinematic_handover"),
+            "{:?}",
+            data.requested
+        );
+        assert_eq!(
+            data.requested
+                .iter()
+                .filter(|l| *l == "first_control")
+                .count(),
+            1
+        );
+        let verdict = evaluate(&data.measurements)
+            .into_iter()
+            .find(|check| check.id == "first_control_frame")
+            .expect("the check exists");
+        assert!(verdict.passed, "{}", verdict.detail);
+        let moved = FirstControlMetrics {
+            moves_before: 1,
+            ..first
+        };
+        let verdict = evaluate(&SmokeMeasurements {
+            first_control: Some(moved),
+            ..SmokeMeasurements::default()
+        })
+        .into_iter()
+        .find(|check| check.id == "first_control_frame")
+        .expect("the check exists");
+        assert!(!verdict.passed);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **`accept_m01_smoke_first_control_` a run without the pose fails by name.**
+    #[test]
+    fn accept_m01_smoke_first_control_missing_frame_fails() {
+        let verdict = evaluate(&SmokeMeasurements::default())
+            .into_iter()
+            .find(|check| check.id == "first_control_frame")
+            .expect("the check exists");
+        assert!(verdict.applies && !verdict.passed, "{}", verdict.detail);
+        let with_pose = SmokeMeasurements {
+            first_control: Some(FirstControlMetrics::default()),
+            missing_shots: vec!["first_control".to_owned()],
+            ..SmokeMeasurements::default()
+        };
+        let verdict = evaluate(&with_pose)
+            .into_iter()
+            .find(|check| check.id == "first_control_frame")
+            .expect("the check exists");
+        assert!(!verdict.passed, "a pose without its framebuffer passes");
     }
 
     /// A flight check in the original's row format, names and numbers invented

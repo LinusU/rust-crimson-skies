@@ -518,6 +518,24 @@ no-teleport mode below also passes through it and records what it saw, but
 judges only the wingmen. The retail run is cited in
 `docs/findings/2026-10-19-m01-lc-fc-d-flight-check-smoke.md`.
 
+#### The first control frame (#1697 `M01-SMOKE-FIRST-CONTROL-FRAME`)
+
+Every scripted and no-teleport run takes one framebuffer, `first_control`
+(`frame_NNNNN_first_control.png`), at the first script frame after the player
+gains control: the frame after the launch cinematic's hand-over, or the first
+frame after Fly Mission when the world has no cinematic. It is requested before
+the script makes any move, so it shows the start pose as the player first has
+it. `report.json` carries a `first_control` object (`null` when the player never
+gained control): `tick` (the physics ledger's fixed tick), `frame`,
+`pose.position_m`, `heading` (`yaw_deg`, `pitch_deg`, `roll_deg` in Bevy `YXZ`
+order about world axes, and the nose `forward` vector), `moves_before` (scripted
+placements made or queued by then, zero) and the `framebuffer` label. The check
+`first_control_frame` fails when the pose is missing, a move preceded it, or the
+framebuffer never arrived. The frame is for comparing the start view with an
+owner capture by eye; it claims no pixel parity and nothing in it is
+`verified_original`. The retail run and its comparison with `orig25.png` are in
+`docs/findings/2026-10-19-m01-smoke-first-control-frame.md`.
+
 #### The no-teleport mode (#1572 `M01-SMOKE-NO-TELEPORT`)
 
 ```sh
