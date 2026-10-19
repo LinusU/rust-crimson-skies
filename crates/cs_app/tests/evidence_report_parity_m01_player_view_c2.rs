@@ -41,8 +41,12 @@
 //! 4. ```sh
 //!    python3 tools/validate_evidence.py \
 //!      private/evidence/PARITY-M01-PLAYER-VIEW-C2/acceptance.json \
-//!      --artifact-root private/evidence/PARITY-M01-PLAYER-VIEW-C2 --require-pass
+//!      --artifact-root private/evidence/PARITY-M01-PLAYER-VIEW-C2
 //!    ```
+//!    (`--require-pass` reports `Unresolved issues`: the report keeps its three
+//!    recorded follow-up unknowns — the owner directive forbids emptying them
+//!    to pass the validator. The structural check and artifact hashes still
+//!    validate, exit 0.)
 //! 5. Commit a copy of `acceptance.json` as
 //!    `docs/findings/evidence/PARITY-M01-PLAYER-VIEW-C2.json`.
 //!
@@ -231,7 +235,9 @@ fn review_method() -> String {
      are designed with their measured basis documented beside their constants, the sprite trail \
      and gauge rules are follow-ups (#1700/#1701), and the original renderer's own effect \
      behaviour stays unmeasured where the finding records it unknown. Validated with \
-     tools/validate_evidence.py --require-pass."
+     tools/validate_evidence.py (structure and artifact hashes, exit 0); --require-pass reports \
+     the three recorded follow-up unknowns as unresolved issues, which stand as this slice's \
+     honest limitations rather than being emptied to pass the gate."
         .to_owned()
 }
 
