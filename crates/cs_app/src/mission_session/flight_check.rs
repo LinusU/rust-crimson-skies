@@ -9,9 +9,10 @@
 //!   `ASSETS/LAYOUT.CSV` ([`OriginalLayout`], F45-B.1) and the
 //!   [`FlightCheckView`] (M01-LC-FC-A) into what is drawn: the background
 //!   pane, the six buttons at their stated positions, and the text rows with
-//!   the title, the objectives and the plane names the view reads from the
-//!   mission's own data. Every value the data does not state — the gun and
-//!   rocket lists, the wingman's plane — is drawn as `unknown` and listed in
+//!   the title, the objectives, the plane names and the measured loadout
+//!   lists the view reads from the mission's own data. Every value the data
+//!   does not state — the wingman's plane, a list the measured defaults
+//!   cannot fill — is drawn as `unknown` and listed in
 //!   [`FlightCheckScene::unknowns`], never as a designed stand-in.
 //! * [`FlightCheckPhase`] holds the real [`FrontEnd`] machine on
 //!   [`Screen::FlightCheck`]. **Fly Mission** (a click on the

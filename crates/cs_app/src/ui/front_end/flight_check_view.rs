@@ -21,11 +21,18 @@
 //!   for the pilot; the wingman's binding as
 //!   [`crate::mission_start::MissionStartConfiguration::wingmate_airframes`] states it, which is
 //!   unknown until measured).
-//! * **Gun and rocket lists** — [`Entry::Unknown`] with the reason and the
-//!   resolving task. The original fills them through scripting natives whose
-//!   tables are not readable
-//!   (`docs/findings/2026-10-18-f45-c-5-flight-check-options-and-ammunition.md`);
-//!   the *designed* loadout is never presented here as the original's.
+//! * **Gun and rocket lists** — the live plane records' contents as the
+//!   `$$E$$` natives answer them
+//!   (`docs/findings/2026-10-18-f45-c-5-flight-check-options-and-ammunition.md`,
+//!   `docs/findings/2026-10-19-m01-lc-fc-b-flight-check-gun-and-rocket-lists.md`):
+//!   [`FlightCheckView::from_retail`] fills each slot's list with the committed
+//!   fresh-campaign defaults (`data/owner-static`, M01-LC-FC-B), labelled
+//!   through the installation's string table
+//!   ([`FlightCheckView::read_default_loadout`]). A list whose rows do not
+//!   read — and any view [`FlightCheckView::build`] produced without them —
+//!   stays [`Entry::Unknown`] with the reason; whether anything rewrites the
+//!   live records before the screen opens is unmeasured, and the *designed*
+//!   loadout is never presented here as the original's.
 //! * **Buttons** — keyed by the original layout's `FC_B_*` hotspot ids
 //!   ([`FlightCheckButton::hotspot`]); a test pins each against the retail
 //!   `[FlightCheck]` section.
@@ -44,16 +51,26 @@ use crate::engine_facts::FlightCheckPlaneSlot;
 use crate::mission_start::AIRFRAME_TABLE;
 use crate::ui::hud::ObjectiveHud;
 
-/// The task that resolves the gun and rocket lists: the measurement of the
-/// Flight Check loadout the original builds with its scripting natives.
-pub const LOADOUT_RESOLVING_TASK: &str =
-    "the Flight Check loadout measurement task (follow-up of #1661, `PARITY-M01-LC-FLIGHTCHECK`)";
+/// The task that resolves what the lists still do not state: whether anything
+/// rewrites the live plane records before the Flight Check opens (the
+/// M01-LC-FC-B finding names it).
+pub const LOADOUT_RESOLVING_TASK: &str = "tracing the writers that rewrite the live plane records before the Flight Check opens, or \
+     an original run (REF-OWNER-FIRST-CAPTURE)";
 
-/// Why the loadout lists are unknown.
-pub const LOADOUT_UNKNOWN_REASON: &str = "the original fills the Flight Check's gun and rocket \
-     lists with scripting natives (`callback($$E$$, 2018/2019/2020, ...)`) whose tables are not \
-     readable, and the layout's own FlightCheck section holds no selector row; the designed \
-     loadout is not the original's and is not shown in its place";
+/// Why a view built without [`FlightCheckView::read_default_loadout`] leaves
+/// the loadout lists unknown.
+pub const LOADOUT_UNKNOWN_REASON: &str = "the Flight Check's gun and rocket lists show the live \
+     plane records (`callback($$E$$, 2005..2008, ...)`); this view was built without the \
+     measured fresh-campaign defaults, and whether anything rewrites the live records before \
+     the screen opens is unmeasured; the designed loadout is not the original's and is not \
+     shown in its place";
+
+/// What resolves a list the committed engine facts cannot fill.
+const FACTS_RESOLVING_TASK: &str =
+    "the committed engine-facts table (`data/owner-static/engine-facts.toml`)";
+
+/// What resolves a list a string-table row cannot fill.
+const STRING_RESOLVING_TASK: &str = "the installation's string table (`langui.dll`)";
 
 /// A value read from the mission's data, or the reason it is not known.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -310,8 +327,8 @@ impl FlightCheckView {
             Err(error) => {
                 for view in [&mut self.pilot, &mut self.wingman] {
                     let reason = format!("the committed engine facts do not read: {error}");
-                    view.guns = Entry::unknown(reason.clone(), LOADOUT_RESOLVING_TASK);
-                    view.rockets = Entry::unknown(reason, LOADOUT_RESOLVING_TASK);
+                    view.guns = Entry::unknown(reason.clone(), FACTS_RESOLVING_TASK);
+                    view.rockets = Entry::unknown(reason, FACTS_RESOLVING_TASK);
                 }
             }
         }
@@ -440,7 +457,7 @@ fn loadout_lines(
     string: &dyn Fn(u32) -> Option<String>,
 ) -> Entry<Vec<String>> {
     let unknown = |reason: String| {
-        Entry::unknown(format!("the {what} list: {reason}"), LOADOUT_RESOLVING_TASK)
+        Entry::unknown(format!("the {what} list: {reason}"), STRING_RESOLVING_TASK)
     };
     let template = match string_or_missing(string, facts.layout().value("item_number_string")) {
         Ok(template) => template,
