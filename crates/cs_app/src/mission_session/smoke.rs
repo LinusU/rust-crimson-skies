@@ -62,6 +62,7 @@ use avian3d::prelude::{AngularVelocity, LinearVelocity, Position, Rotation};
 use bevy::camera::Camera;
 use bevy::camera::visibility::InheritedVisibility;
 use bevy::ecs::query::Has;
+use bevy::ecs::system::SystemParam;
 use bevy::input::keyboard::KeyCode;
 use bevy::input::{ButtonInput, InputSystems};
 use bevy::prelude::{
@@ -82,7 +83,7 @@ use super::launch_cinematic::LaunchCinematic;
 use super::letterbox::LaunchLetterbox;
 use super::lifecycles::ObjectiveLifecycles;
 use super::weapons::MissionWeaponReport;
-use super::world_draw::WorldWaterPart;
+use super::world_draw::{HorizonRest, WorldWaterPart};
 use crate::audio::loops::AudioSession;
 use crate::audio::mixer::AudioMixReport;
 use crate::audio::spawn::{AudioBindLog, AudioEmitterRole};
@@ -1516,8 +1517,9 @@ enum ProbeMode {
     /// Hide the horizon, the weather, the precipitation, the player and the
     /// UI: the frame's off-clear pixels are the world's own geometry.
     TerrainOnly,
-    /// Hide the horizon's dome, the weather, the precipitation, the player and
-    /// the UI: the frame holds the sea plane and the world.
+    /// Hide the horizon — dome and the world's own camera-anchored `horizon`
+    /// records — the weather, the precipitation, the player and the UI: the
+    /// frame holds the sea plane and the world.
     SeaVisible,
     /// [`Self::SeaVisible`] minus the sea plane: the world's water tiles remain.
     SeaAbsent,
@@ -1745,25 +1747,23 @@ fn apply_placement(
     ));
 }
 
-/// Applies the probe's hide mode to every entity class it covers. A value is
-/// written only when it changes, so the renderer is not re-extracted every
-/// frame. An actor probe then restores exactly the one entity it keeps — the
-/// player's own body for the player's segment, the residency's visual for a
-/// zeppelin's.
-#[allow(clippy::too_many_arguments)]
-fn apply_probe(
-    mode: Res<ProbeState>,
-    mut visibility: Query<&mut Visibility>,
-    domes: Query<Entity, With<HorizonDome>>,
-    seas: Query<Entity, With<HorizonSea>>,
-    water_tiles: Query<Entity, With<WorldWaterPart>>,
-    weather: Query<Entity, With<WeatherLayer>>,
-    precip: Query<Entity, With<PrecipitationLayer>>,
-    players: Query<Entity, With<PlaytestAircraft>>,
-    aircraft: Query<Entity, With<ScriptedAircraftActor>>,
-    zeppelins: Query<Entity, With<MissionZeppelinActor>>,
-    visuals: Query<Entity, With<WorldVisual>>,
+/// The entity classes a probe writes its hide value onto, grouped so the
+/// system's parameter list stays inside Bevy's arity limit.
+#[derive(SystemParam)]
+struct ProbeClasses<'w, 's> {
+    domes: Query<'w, 's, Entity, With<HorizonDome>>,
+    seas: Query<'w, 's, Entity, With<HorizonSea>>,
+    water_tiles: Query<'w, 's, Entity, With<WorldWaterPart>>,
+    sky_records: Query<'w, 's, Entity, With<HorizonRest>>,
+    weather: Query<'w, 's, Entity, With<WeatherLayer>>,
+    precip: Query<'w, 's, Entity, With<PrecipitationLayer>>,
+    players: Query<'w, 's, Entity, With<PlaytestAircraft>>,
+    aircraft: Query<'w, 's, Entity, With<ScriptedAircraftActor>>,
+    zeppelins: Query<'w, 's, Entity, With<MissionZeppelinActor>>,
+    visuals: Query<'w, 's, Entity, With<WorldVisual>>,
     ui: Query<
+        'w,
+        's,
         (
             Entity,
             Has<crate::playtest::visuals::DeveloperOverlayNode>,
@@ -1771,7 +1771,18 @@ fn apply_probe(
         ),
         With<Node>,
     >,
-    flight_check_overlay: Query<Entity, With<ScreenOverlay>>,
+    flight_check_overlay: Query<'w, 's, Entity, With<ScreenOverlay>>,
+}
+
+/// Applies the probe's hide mode to every entity class it covers. A value is
+/// written only when it changes, so the renderer is not re-extracted every
+/// frame. An actor probe then restores exactly the one entity it keeps — the
+/// player's own body for the player's segment, the residency's visual for a
+/// zeppelin's.
+fn apply_probe(
+    mode: Res<ProbeState>,
+    mut visibility: Query<&mut Visibility>,
+    classes: ProbeClasses,
     overlay: Option<Res<crate::playtest::visuals::DeveloperOverlay>>,
     mut fogs: Query<&mut DistanceFog>,
     mut kept_fog: Local<Option<FogFalloff>>,
@@ -1818,10 +1829,10 @@ fn apply_probe(
             fog.falloff = falloff;
         }
     }
-    write_all(&mut visibility, domes.iter(), hidden);
-    write_all(&mut visibility, weather.iter(), hidden);
-    write_all(&mut visibility, precip.iter(), hidden);
-    write_all(&mut visibility, seas.iter(), sea_value);
+    write_all(&mut visibility, classes.domes.iter(), hidden);
+    write_all(&mut visibility, classes.weather.iter(), hidden);
+    write_all(&mut visibility, classes.precip.iter(), hidden);
+    write_all(&mut visibility, classes.seas.iter(), sea_value);
     // The world's own water tiles are world geometry, so only the probe that
     // measures them hides them; the actor probe hides the whole world anyway.
     let tile_value = if mode == ProbeMode::SeaTilesAbsent {
@@ -1829,14 +1840,27 @@ fn apply_probe(
     } else {
         shown
     };
-    write_all(&mut visibility, water_tiles.iter(), tile_value);
-    write_all(&mut visibility, players.iter(), body_value);
-    write_all(&mut visibility, aircraft.iter(), body_value);
-    write_all(&mut visibility, zeppelins.iter(), body_value);
-    write_all(&mut visibility, visuals.iter(), world_value);
+    write_all(&mut visibility, classes.water_tiles.iter(), tile_value);
+    write_all(&mut visibility, classes.players.iter(), body_value);
+    write_all(&mut visibility, classes.aircraft.iter(), body_value);
+    write_all(&mut visibility, classes.zeppelins.iter(), body_value);
+    write_all(&mut visibility, classes.visuals.iter(), world_value);
+    // The world's `horizon` records — the sky band, the haze wall under it and
+    // the cloud quads — are anchored to the camera like the dome is, so a sea
+    // frame that hides only the water still finds them drawn behind it and the
+    // off-clear subtraction sees no difference where the sea was. The probe
+    // measures the sea against the rest of the world, so the camera-anchored
+    // sky goes with the dome: out of all three sea frames (the actor probe
+    // already hides them with the rest of the world).
+    if matches!(
+        mode,
+        ProbeMode::SeaVisible | ProbeMode::SeaAbsent | ProbeMode::SeaTilesAbsent
+    ) {
+        write_all(&mut visibility, classes.sky_records.iter(), hidden);
+    }
     // Restoring the UI must not re-show what the developer overlay hides.
     let overlay_on = crate::playtest::visuals::overlay_visible(overlay.as_deref());
-    for (entity, developer, cinematic_owned) in &ui {
+    for (entity, developer, cinematic_owned) in &classes.ui {
         // The HUD's safe area and the letterbox bars are shown or hidden by
         // the launch cinematic; a restore leaves them to it (#1704).
         if cinematic_owned && matches!(mode, ProbeMode::Restored | ProbeMode::FlightCheckBare) {
@@ -1846,7 +1870,7 @@ fn apply_probe(
             // Only the Flight Check's overlay goes; its background pane and
             // the cover behind it stay, and the mission's own UI is under
             // that cover.
-            if flight_check_overlay.contains(entity) {
+            if classes.flight_check_overlay.contains(entity) {
                 hidden
             } else {
                 shown
@@ -3822,6 +3846,65 @@ mod tests {
             app.world().get::<Visibility>(plain),
             Some(&Visibility::Inherited)
         );
+    }
+
+    /// **`accept_m01_owner_smoke_` the sea frames drop the camera-anchored
+    /// sky records.**
+    ///
+    /// The world's `horizon` records follow the camera like the dome: their
+    /// haze wall fills every pixel the water tiles could hide, so a sea frame
+    /// that left them drawn found a drawn surface behind the sea and counted
+    /// no sea (#1706's rebase found the probe reading zero tile pixels over a
+    /// plainly drawn sea). All three sea frames hide them; a restored frame
+    /// and the terrain probe leave them alone.
+    #[test]
+    fn accept_m01_owner_smoke_sea_probe_drops_the_camera_anchored_sky() {
+        use crate::mission_session::HorizonRest;
+        for mode in [
+            ProbeMode::SeaVisible,
+            ProbeMode::SeaAbsent,
+            ProbeMode::SeaTilesAbsent,
+        ] {
+            let mut app = bevy::prelude::App::new();
+            app.insert_resource(ProbeState(mode));
+            // A production horizon record sits in the world's visual set too:
+            // it must stay hidden after the world write, not just lack it.
+            let sky = app
+                .world_mut()
+                .spawn((Visibility::Inherited, WorldVisual, HorizonRest(Vec3::ZERO)))
+                .id();
+            let terrain = app
+                .world_mut()
+                .spawn((Visibility::Inherited, WorldVisual))
+                .id();
+            app.add_systems(Update, apply_probe);
+            app.update();
+            assert_eq!(
+                app.world().get::<Visibility>(sky),
+                Some(&Visibility::Hidden),
+                "{mode:?} hides the horizon subtree's records"
+            );
+            assert_eq!(
+                app.world().get::<Visibility>(terrain),
+                Some(&Visibility::Inherited),
+                "{mode:?} keeps the rest of the world"
+            );
+        }
+        for mode in [ProbeMode::Restored, ProbeMode::TerrainOnly] {
+            let mut app = bevy::prelude::App::new();
+            app.insert_resource(ProbeState(mode));
+            let sky = app
+                .world_mut()
+                .spawn((Visibility::Inherited, HorizonRest(Vec3::ZERO)))
+                .id();
+            app.add_systems(Update, apply_probe);
+            app.update();
+            assert_eq!(
+                app.world().get::<Visibility>(sky),
+                Some(&Visibility::Inherited),
+                "{mode:?} leaves the horizon records alone"
+            );
+        }
     }
 
     /// **`accept_m01_owner_smoke_cinematic_` the judge reads the phase.**
