@@ -181,9 +181,14 @@ fn accept_vs_m01_runtime_evidence_audio_the_launch_plays_the_engine_loop_through
         .installed
         .clone()
         .expect("the load installed an audio session");
+    // The population pass decodes every audio member the stage delivers
+    // through the launch's staged container: the engine member and, since
+    // #1628's measured loadout, the player's selected gun member beside it.
+    // The count is the stage's delivered set, not a fixed number.
+    let delivered_audio = 1 + usize::from(stage.gun_sound.is_some());
     assert_eq!(
-        install.samples, 1,
-        "the member was decoded into the library: {handoff:?}"
+        install.samples, delivered_audio,
+        "every delivered audio member was decoded into the library: {handoff:?}"
     );
     assert!(played, "the output stream pulled nothing: {handoff:?}");
 
@@ -192,6 +197,12 @@ fn accept_vs_m01_runtime_evidence_audio_the_launch_plays_the_engine_loop_through
         .library
         .pcm(&launch.content)
         .expect("the library holds the member");
+    if let Some(gun) = &stage.gun_sound {
+        assert!(
+            probe.library.pcm(&gun.content).is_some(),
+            "the delivered gun member was not decoded into the library"
+        );
+    }
     let bound = app
         .world()
         .resource::<AudioSession>()
