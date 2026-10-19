@@ -4491,6 +4491,17 @@ struct AreaOrigin {
     declared: Option<AreaEffect>,
 }
 
+/// One area blast to route: the item, who fired it, where it goes off, its
+/// declared area and channels, and the actor the impact path already damaged.
+struct AreaBlast {
+    projectile: ProjectileId,
+    attacker: ActorId,
+    centre: WorldPosition,
+    area: AreaEffect,
+    damage: WeaponDamage,
+    excluded: Option<ActorId>,
+}
+
 /// The per-session runtime of live ordnance.
 ///
 /// This is the production path F28-A left unowned: [`launch`](Self::launch)
@@ -5142,34 +5153,116 @@ impl OrdnanceRuntime {
                 projectile: detonation.projectile,
             });
         };
-        let centre = detonation.position;
+        self.route_area_blast(
+            tick,
+            AreaBlast {
+                projectile: detonation.projectile,
+                attacker: detonation.shooter,
+                centre: detonation.position,
+                area,
+                damage: *detonation.definition.channels(),
+                excluded: None,
+            },
+            recipients,
+        )
+    }
+
+    /// Routes one **triggered** item's declared damage to every recipient
+    /// inside its declared area, each scaled by the measured falloff.
+    ///
+    /// The trigger counterpart of
+    /// [`route_detonation_area`](Self::route_detonation_area), for timed,
+    /// proximity and impact detonations: the blast centre is the item's
+    /// current position and the attacker is its shooter. On the impact path the
+    /// directly-hit actor is skipped — it already took its impact damage — and
+    /// a timed or proximity detonation excludes nobody (the original passes a
+    /// zero exclusion key there). The measured key is the hit object's
+    /// damage-group; this layer treats an [`ActorId`] as one group, because the
+    /// key's domain is unmeasured (`t1318.limit.exclusion_domain`).
+    ///
+    /// # Errors
+    ///
+    /// [`OrdnanceRuntimeError::NoAreaEffect`] when the item declares no area
+    /// (nothing is latched), plus every error of
+    /// [`route_trigger`](Self::route_trigger) and
+    /// [`route_detonation_area`](Self::route_detonation_area).
+    pub fn route_trigger_area(
+        &mut self,
+        session: SessionId,
+        tick: Tick,
+        projectile: &ProjectileId,
+        recipients: &[BlastRecipient],
+    ) -> Result<Vec<HitEvent>, OrdnanceRuntimeError> {
+        if session != self.session {
+            return Err(OrdnanceRuntimeError::ForeignSession {
+                expected: self.session.get(),
+                found: session.get(),
+            });
+        }
+        let Some(live) = self.live.get(projectile) else {
+            return Err(OrdnanceRuntimeError::UnknownProjectile {
+                projectile: *projectile,
+            });
+        };
+        let Some(trigger) = live.state.triggered() else {
+            return Err(OrdnanceRuntimeError::NotTriggered {
+                projectile: *projectile,
+            });
+        };
+        let Some(area) = live.definition.area_effect() else {
+            return Err(OrdnanceRuntimeError::NoAreaEffect {
+                projectile: *projectile,
+            });
+        };
+        let excluded = match trigger {
+            FuseTrigger::Impact { target, .. } => Some(target),
+            FuseTrigger::Proximity { .. } | FuseTrigger::Timed { .. } => None,
+        };
+        let blast = AreaBlast {
+            projectile: *projectile,
+            attacker: live.shooter,
+            centre: live.current(),
+            area,
+            damage: *live.definition.channels(),
+            excluded,
+        };
+        self.route_area_blast(tick, blast, recipients)
+    }
+
+    /// The shared area routing: validates every distance, latches the item
+    /// once, then emits one hit per recipient and non-zero channel.
+    fn route_area_blast(
+        &mut self,
+        tick: Tick,
+        blast: AreaBlast,
+        recipients: &[BlastRecipient],
+    ) -> Result<Vec<HitEvent>, OrdnanceRuntimeError> {
+        let centre = blast.centre;
         let mut fractions = Vec::with_capacity(recipients.len());
         for recipient in recipients {
             let dx = recipient.position.x() - centre.x();
             let dy = recipient.position.y() - centre.y();
             let dz = recipient.position.z() - centre.z();
             let distance = (dx * dx + dy * dy + dz * dz).sqrt();
-            let Some(fraction) = area.blast_fraction(distance) else {
+            let Some(fraction) = blast.area.blast_fraction(distance) else {
                 return Err(OrdnanceRuntimeError::NonFiniteRecipient {
                     target: recipient.target,
                 });
             };
             fractions.push(fraction);
         }
-        if !self.routed.insert(detonation.projectile) {
+        if !self.routed.insert(blast.projectile) {
             return Err(OrdnanceRuntimeError::AlreadyRouted {
-                projectile: detonation.projectile,
+                projectile: blast.projectile,
             });
         }
-        let attacker = detonation.shooter;
-        let damage = *detonation.definition.channels();
         let mut hits = Vec::new();
         for (recipient, fraction) in recipients.iter().zip(fractions) {
-            if fraction == 0.0 {
+            if fraction == 0.0 || blast.excluded == Some(recipient.target) {
                 continue;
             }
             for channel in WEAPON_DAMAGE_CHANNELS {
-                let amount = damage.amount_on(channel) * fraction;
+                let amount = blast.damage.amount_on(channel) * fraction;
                 if amount == 0.0 {
                     continue;
                 }
@@ -5177,7 +5270,7 @@ impl OrdnanceRuntime {
                 hits.push(
                     HitEvent::try_new(
                         id,
-                        Some(attacker),
+                        Some(blast.attacker),
                         recipient.target,
                         recipient.node.clone(),
                         channel,
