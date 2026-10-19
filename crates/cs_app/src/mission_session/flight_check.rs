@@ -981,6 +981,11 @@ fn spawn_screen(
     // Above the HUD, the letterbox and every other overlay: while the phase
     // is pending nothing else of the mission is shown.
     let z = GlobalZIndex(2000);
+    // Three layers, because roots of one global index are stacked in no
+    // stated order (the cover, the pane and the overlay live in different
+    // archetypes): the overlay must be above the pane it is drawn on.
+    let pane = GlobalZIndex(2001);
+    let above = GlobalZIndex(2002);
     let full = Node {
         position_type: PositionType::Absolute,
         left: Val::Px(0.0),
@@ -1003,7 +1008,7 @@ fn spawn_screen(
                 width: scene.size.0,
                 height: scene.size.1,
             }),
-            z,
+            pane,
             ScreenPart,
         ));
     }
@@ -1028,7 +1033,7 @@ fn spawn_screen(
             },
             node,
             Logical(button.rect),
-            z,
+            above,
             ScreenPart,
             ScreenOverlay {
                 row: Some(button.hotspot.clone()),
@@ -1048,7 +1053,7 @@ fn spawn_screen(
                 TextColor(Color::WHITE),
                 Logical(button.rect),
                 LogicalFont(14.0),
-                z,
+                above,
                 ScreenPart,
                 ScreenOverlay { row: None },
             ));
@@ -1069,7 +1074,7 @@ fn spawn_screen(
             TextColor(argb(text.color)),
             Logical(text.rect),
             LogicalFont(size),
-            z,
+            above,
             ScreenPart,
             ScreenOverlay {
                 row: Some(text.id.clone()),
@@ -1089,7 +1094,7 @@ fn spawn_screen(
             ..default()
         },
         TextColor(Color::srgb(1.0, 0.85, 0.2)),
-        z,
+        above,
         NoticeLine,
         ScreenPart,
         ScreenOverlay { row: None },
