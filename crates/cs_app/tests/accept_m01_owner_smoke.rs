@@ -79,7 +79,10 @@ fn healthy() -> SmokeMeasurements {
             sea_pixels: 1_180_000,
             total_pixels: 3_686_400,
             covered_permille: 320,
-            water_objects: 1,
+            tile_pixels: 1_000_000,
+            tile_permille: 271,
+            water_objects: 0,
+            water_tile_parts: 251,
         }),
         hud: HudMetrics {
             model_line: Some("Find the lost treasure".to_owned()),
@@ -191,6 +194,7 @@ fn accept_m01_owner_smoke_the_judge_passes_a_mission_the_player_can_see_and_shoo
     let mut dry = healthy();
     if let Some(sea) = dry.sea.as_mut() {
         sea.water_objects = 0;
+        sea.water_tile_parts = 0;
     }
     let checks = evaluate_mission_smoke(&dry);
     let sea = check(&checks, "world_sea_visible");
@@ -235,7 +239,10 @@ fn accept_m01_owner_smoke_the_judge_fails_everything_the_owner_could_not_see() {
             sea_pixels: 0,
             total_pixels: 3_686_400,
             covered_permille: 0,
+            tile_pixels: 0,
+            tile_permille: 0,
             water_objects: 0,
+            water_tile_parts: 0,
         }),
         hud: HudMetrics::default(),
         actors: vec![
@@ -368,6 +375,17 @@ fn accept_m01_owner_smoke_the_judge_fails_everything_the_owner_could_not_see() {
     assert!(
         failures(&evaluate_mission_smoke(&barely)).contains(&"world_sea_visible"),
         "one per mille under the sea floor fails"
+    );
+    // Water tiles that draw nothing are not the sea, whatever else covers the
+    // frame.
+    let mut tiles_gone = healthy();
+    if let Some(sea) = tiles_gone.sea.as_mut() {
+        sea.tile_pixels = 0;
+        sea.tile_permille = 0;
+    }
+    assert!(
+        failures(&evaluate_mission_smoke(&tiles_gone)).contains(&"world_sea_visible"),
+        "a sea the world's own tiles do not draw fails"
     );
     let mut barely = healthy();
     barely.actors[1].pixels = MIN_ACTOR_PIXELS - 1;

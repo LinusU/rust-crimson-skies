@@ -26,7 +26,7 @@
 //! | `world_terrain_drawn` | the frame around the spawn holds world pixels off the window's clear colour |
 //! | `world_terrain_textured` | those pixels hold more than one flat grey (distinct colours) |
 //! | `world_terrain_lit` | those pixels carry a luminance spread (shading, not a flat fill) |
-//! | `world_sea_visible` | the sea plane covers pixels in a differential probe, when the world's records declare water |
+//! | `world_sea_visible` | the world's own water tiles (the drawn sea) cover pixels in a differential probe, when the world declares or draws water |
 //! | `hud_objective_current` | the recovered lifecycle model marks a current objective during the run |
 //! | `hud_objective_matches` | the drawn line equals the read model's current line, and its pixels are on screen |
 //! | `actors_project_and_cover` | every spawned actor projects onto the screen and covers more than `MIN_ACTOR_PIXELS` |
@@ -82,6 +82,7 @@ use super::launch_cinematic::LaunchCinematic;
 use super::letterbox::LaunchLetterbox;
 use super::lifecycles::ObjectiveLifecycles;
 use super::weapons::MissionWeaponReport;
+use super::world_draw::WorldWaterPart;
 use crate::audio::loops::AudioSession;
 use crate::audio::mixer::AudioMixReport;
 use crate::audio::spawn::{AudioBindLog, AudioEmitterRole};
@@ -168,10 +169,16 @@ const SEA_HIDE_OFFSET: u32 = 6;
 /// Frames into the sea phase at which the *sea absent* screenshot is
 /// requested.
 const SEA_ABSENT_SHOT_OFFSET: u32 = 8;
+/// Frames into the sea phase at which the world's own water tiles are hidden
+/// too (the plane is already hidden).
+const SEA_TILES_HIDE_OFFSET: u32 = 10;
+/// Frames into the sea phase at which the *no sea at all* screenshot is
+/// requested.
+const SEA_TILES_ABSENT_SHOT_OFFSET: u32 = 12;
 /// Frames into the sea phase at which everything is restored.
-const SEA_RESTORE_OFFSET: u32 = 10;
+const SEA_RESTORE_OFFSET: u32 = 14;
 /// Frames into the sea phase at which the session resumes.
-const SEA_RESUME_OFFSET: u32 = 12;
+const SEA_RESUME_OFFSET: u32 = 16;
 
 /// Simulated frames one actor segment takes.
 const ACTOR_SEGMENT_FRAMES: u32 = 24;
@@ -423,8 +430,16 @@ pub struct SeaMetrics {
     pub total_pixels: usize,
     /// The sea's coverage, in parts per thousand.
     pub covered_permille: u32,
+    /// The world's own water tiles' pixels: the frame without the plane minus
+    /// the frame without the plane and without the tiles.
+    pub tile_pixels: usize,
+    /// [`Self::tile_pixels`] as parts per thousand of the frame.
+    pub tile_permille: u32,
     /// How many of the world's object records declare a known water surface.
     pub water_objects: usize,
+    /// How many drawn parts of the world bind the water texture
+    /// (`WorldWaterPart` children): the tiles this probe hides.
+    pub water_tile_parts: usize,
 }
 
 /// What the HUD probe measured.
@@ -851,26 +866,36 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
         }
     }
     match &m.sea {
-        Some(sea) if sea.water_objects == 0 => checks.push(Check {
+        Some(sea) if sea.water_objects == 0 && sea.water_tile_parts == 0 => checks.push(Check {
             id: "world_sea_visible".to_owned(),
             applies: false,
             passed: false,
-            detail: "the world's object records declare no known water surface, so no sea is \
-                     required here (the drawn sea plane is the horizon plugin's designed one)"
+            detail: "the world declares no water: no object record with a known water surface and \
+                     no drawn part bound to the water texture, so no sea is required here"
                 .to_owned(),
         }),
         Some(sea) => checks.push(Check {
             id: "world_sea_visible".to_owned(),
             applies: true,
-            passed: sea.covered_permille >= MIN_SEA_COVERAGE_PERMILLE,
+            // The drawn sea is the world's own water tiles; the horizon plane
+            // only continues them. Tiles that draw nothing are not the sea.
+            passed: sea.water_tile_parts > 0
+                && sea.tile_permille >= MIN_SEA_COVERAGE_PERMILLE
+                && sea.covered_permille >= MIN_SEA_COVERAGE_PERMILLE,
             detail: format!(
-                "the sea plane covers {} of {} pixels ({} per mille, floor {}); {} of the \
-                 world's objects declare water",
+                "the sea covers {} of {} pixels ({} per mille, floor {}); the world's own water \
+                 tiles ({} drawn parts, {} of the world's objects declare water) draw {} of \
+                 them ({} per mille, floor {}), the horizon plane the other {}",
                 sea.sea_pixels,
                 sea.total_pixels,
                 sea.covered_permille,
                 MIN_SEA_COVERAGE_PERMILLE,
-                sea.water_objects
+                sea.water_tile_parts,
+                sea.water_objects,
+                sea.tile_pixels,
+                sea.tile_permille,
+                MIN_SEA_COVERAGE_PERMILLE,
+                sea.sea_pixels.saturating_sub(sea.tile_pixels),
             ),
         }),
         None => checks.push(Check {
@@ -1494,8 +1519,10 @@ enum ProbeMode {
     /// Hide the horizon's dome, the weather, the precipitation, the player and
     /// the UI: the frame holds the sea plane and the world.
     SeaVisible,
-    /// [`Self::SeaVisible`] plus the sea plane.
+    /// [`Self::SeaVisible`] minus the sea plane: the world's water tiles remain.
     SeaAbsent,
+    /// [`Self::SeaAbsent`] minus the world's own water tiles: no sea at all.
+    SeaTilesAbsent,
     /// Hide everything drawn except this entity (`None`: the player only).
     Actor(Option<Entity>),
     /// Hide the Flight Check's overlay (buttons, labels, text rows, notice)
@@ -1556,6 +1583,7 @@ struct SmokeData {
     measured_start_m: Option<[f32; 3]>,
     anchor_position_m: Option<Vec3>,
     water_objects: usize,
+    water_tile_parts: usize,
     speed_m_s: f32,
     measurements: SmokeMeasurements,
     placements: Vec<String>,
@@ -1728,6 +1756,7 @@ fn apply_probe(
     mut visibility: Query<&mut Visibility>,
     domes: Query<Entity, With<HorizonDome>>,
     seas: Query<Entity, With<HorizonSea>>,
+    water_tiles: Query<Entity, With<WorldWaterPart>>,
     weather: Query<Entity, With<WeatherLayer>>,
     precip: Query<Entity, With<PrecipitationLayer>>,
     players: Query<Entity, With<PlaytestAircraft>>,
@@ -1793,6 +1822,14 @@ fn apply_probe(
     write_all(&mut visibility, weather.iter(), hidden);
     write_all(&mut visibility, precip.iter(), hidden);
     write_all(&mut visibility, seas.iter(), sea_value);
+    // The world's own water tiles are world geometry, so only the probe that
+    // measures them hides them; the actor probe hides the whole world anyway.
+    let tile_value = if mode == ProbeMode::SeaTilesAbsent {
+        hidden
+    } else {
+        shown
+    };
+    write_all(&mut visibility, water_tiles.iter(), tile_value);
     write_all(&mut visibility, players.iter(), body_value);
     write_all(&mut visibility, aircraft.iter(), body_value);
     write_all(&mut visibility, zeppelins.iter(), body_value);
@@ -2316,6 +2353,7 @@ fn smoke_script(
     player: Query<&Position, With<MissionPlayerBody>>,
     poses: Query<(Option<&Position>, Option<&Transform>)>,
     camera: Query<(&Camera, &GlobalTransform), With<crate::playtest::PlaytestCameraMarker>>,
+    water_tiles: Query<(), With<WorldWaterPart>>,
 ) {
     let frame = data.frame;
     if frame == 1 {
@@ -2406,6 +2444,7 @@ fn smoke_script(
         }
         Phase::SeaProbe => {
             if at == SEA_PAUSE_OFFSET {
+                data.water_tile_parts = water_tiles.iter().count();
                 queue.0.push(KeyOp::Pause);
                 probe.0 = ProbeMode::SeaVisible;
             } else if at == SEA_VISIBLE_SHOT_OFFSET {
@@ -2414,6 +2453,10 @@ fn smoke_script(
                 probe.0 = ProbeMode::SeaAbsent;
             } else if at == SEA_ABSENT_SHOT_OFFSET {
                 due.push("sea_absent".to_owned());
+            } else if at == SEA_TILES_HIDE_OFFSET {
+                probe.0 = ProbeMode::SeaTilesAbsent;
+            } else if at == SEA_TILES_ABSENT_SHOT_OFFSET {
+                due.push("sea_tiles_absent".to_owned());
             } else if at == SEA_RESTORE_OFFSET {
                 probe.0 = ProbeMode::Restored;
             } else if at == SEA_RESUME_OFFSET {
@@ -2981,14 +3024,22 @@ fn finish_measurements(data: &mut SmokeData, shots: &[FrameRecord]) {
     if let Some(hud) = find("hud") {
         data.measurements.hud.region_text_pixels = hud.text_pixels;
     }
-    if let (Some(visible), Some(absent)) = (find("sea_visible"), find("sea_absent")) {
+    if let (Some(visible), Some(plane_off), Some(bare)) = (
+        find("sea_visible"),
+        find("sea_absent"),
+        find("sea_tiles_absent"),
+    ) {
         let total = (visible.width as usize) * (visible.height as usize);
-        let sea = visible.off_clear.saturating_sub(absent.off_clear);
+        let sea = visible.off_clear.saturating_sub(bare.off_clear);
+        let tiles = plane_off.off_clear.saturating_sub(bare.off_clear);
         data.measurements.sea = Some(SeaMetrics {
             sea_pixels: sea,
             total_pixels: total,
             covered_permille: permille(sea, total),
+            tile_pixels: tiles,
+            tile_permille: permille(tiles, total),
             water_objects: data.water_objects,
+            water_tile_parts: data.water_tile_parts,
         });
     }
     for shot in shots {

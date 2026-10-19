@@ -251,5 +251,5 @@ pub use weapons::{
 pub use world_draw::{
     HORIZON_SUBTREE_LABEL, HorizonRest, HorizonSubtree, MissionWorldDrawPlugin, MissionWorldParts,
     WORLD_NEUTRAL_COLOR, WorldDrawReport, WorldDrawSource, WorldWaterArt, WorldWaterLevel,
-    bind_sea_to_world_water, build_world_draw, water_level_of,
+    WorldWaterPart, bind_sea_to_world_water, build_world_draw, water_level_of,
 };

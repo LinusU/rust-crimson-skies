@@ -724,15 +724,27 @@ fn attach_world_parts(
         // is exactly what a node with drawn children is.
         commands.entity(entity).insert(Visibility::Inherited);
         for part in drawn {
-            commands.spawn((
-                Mesh3d(part.mesh.clone()),
-                MeshMaterial3d(part.material.clone()),
-                Transform::IDENTITY,
-                ChildOf(entity),
-            ));
+            let child = commands
+                .spawn((
+                    Mesh3d(part.mesh.clone()),
+                    MeshMaterial3d(part.material.clone()),
+                    Transform::IDENTITY,
+                    ChildOf(entity),
+                ))
+                .id();
+            if part.image.as_deref().is_some_and(is_water_image) {
+                commands.entity(child).insert(WorldWaterPart);
+            }
         }
     }
 }
+
+/// Marks a drawn child whose material binds the world's water texture
+/// ([`WATER_TEXTURE_NAME`] or [`C3_WATER_TEXTURE_NAME`]): the world's own sea
+/// tiles. The owner-command smoke hides exactly these to measure how much of
+/// the drawn sea they are.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct WorldWaterPart;
 
 /// Installs [`attach_world_parts`]. Added once by
 /// [`super::compose::add_composition`], so every composition (windowed and
