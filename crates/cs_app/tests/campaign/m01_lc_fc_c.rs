@@ -313,14 +313,19 @@ fn accept_m01_lc_fc_c_retail_m01_screen_is_built_from_the_original_layout() {
     // The title the view reads is drawn in the mission-name row.
     let mission = text(&scene, "FC_T_MISSION");
     assert_eq!(Some(&mission.text), view.title.known());
-    // The lists are unknown: they are shown as such and named.
+    // The lists are the measured defaults, drawn as text, not as unknowns.
     for id in [
         "FC_T_GUNLISTP",
         "FC_T_ROCKETLISTP",
         "FC_T_GUNLISTW",
         "FC_T_ROCKETLISTW",
     ] {
-        assert!(scene.unknowns.iter().any(|unknown| unknown.row == id));
+        assert!(
+            !scene.unknowns.iter().any(|unknown| unknown.row == id),
+            "{:?}",
+            scene.unknowns
+        );
+        assert!(!text(&scene, id).text.is_empty(), "{id} carries its lines");
     }
     // Every art file the scene draws decodes from the container.
     let artwork = cs_app::mission_session::FlightCheckArtwork::read(&screens, &scene)

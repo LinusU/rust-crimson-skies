@@ -40,6 +40,7 @@ use cs_content::objectives_engine::EngineObjectives;
 use cs_types::content::{ContentId, ContentKind, Resolved};
 
 use super::FlightCheckSlot;
+use crate::engine_facts::FlightCheckPlaneSlot;
 use crate::mission_start::AIRFRAME_TABLE;
 use crate::ui::hud::ObjectiveHud;
 
@@ -246,13 +247,74 @@ impl FlightCheckView {
             Some(catalog) => catalog_text(catalog, key),
             None => Err(messages.missing().unwrap_or("no catalog").to_owned()),
         };
-        Ok(Self::build(
+        let mut view = Self::build(
             title,
             &keys,
             resolve,
             start.airframe(),
             start.wingmate_airframes(),
-        ))
+        );
+        view.read_default_loadout(&|id| {
+            context
+                .string_rows()
+                .iter()
+                .find(|row| row.id == id)
+                .and_then(|row| row.text.clone())
+        });
+        Ok(view)
+    }
+
+    /// Fills both slots' gun and rocket lists with the fresh-campaign
+    /// defaults measured in the engine image (`data/owner-static`,
+    /// M01-LC-FC-B). `string` maps a string-table id to its text.
+    ///
+    /// A list stays unknown when the committed rows do not read or a label
+    /// string is missing; whether anything rewrites the live plane records
+    /// before the Flight Check opens is unmeasured (the finding names it).
+    pub fn read_default_loadout(&mut self, string: &dyn Fn(u32) -> Option<String>) {
+        match crate::engine_facts::engine_facts() {
+            Ok(facts) => {
+                let facts = facts.flight_check();
+                for (slot, view) in [
+                    (FlightCheckPlaneSlot::Pilot, &mut self.pilot),
+                    (FlightCheckPlaneSlot::Wingman, &mut self.wingman),
+                ] {
+                    let layout = facts.layout();
+                    let label = |base: &str, offset: u32| {
+                        string_or_missing(string, layout.value(base) + u64::from(offset))
+                    };
+                    view.guns = loadout_lines(
+                        "gun",
+                        facts.gun_list(slot).iter().flatten().map(|line| {
+                            let text = label("gun_label_base", line.gun).and_then(|gun| {
+                                label("ammo_label_base", line.ammo)
+                                    .map(|ammo| format!("{gun} {ammo}"))
+                            });
+                            (line.number, text)
+                        }),
+                        facts,
+                        string,
+                    );
+                    view.rockets = loadout_lines(
+                        "rocket",
+                        facts
+                            .rocket_list(slot)
+                            .iter()
+                            .flatten()
+                            .map(|line| (line.number, label("rocket_label_base", line.rocket))),
+                        facts,
+                        string,
+                    );
+                }
+            }
+            Err(error) => {
+                for view in [&mut self.pilot, &mut self.wingman] {
+                    let reason = format!("the committed engine facts do not read: {error}");
+                    view.guns = Entry::unknown(reason.clone(), LOADOUT_RESOLVING_TASK);
+                    view.rockets = Entry::unknown(reason, LOADOUT_RESOLVING_TASK);
+                }
+            }
+        }
     }
 }
 
@@ -359,6 +421,58 @@ fn strip_font_tag(text: &str) -> &str {
     text.strip_prefix('[')
         .and_then(|rest| rest.find(']').map(|end| &rest[end + 1..]))
         .map_or(text, str::trim_start)
+}
+
+fn string_or_missing(string: &dyn Fn(u32) -> Option<String>, id: u64) -> Result<String, String> {
+    u32::try_from(id)
+        .ok()
+        .and_then(string)
+        .ok_or_else(|| format!("string row {id} is missing or does not decode"))
+}
+
+/// One list: each item's `number` is formatted into the item-number string
+/// and followed by its label.
+fn loadout_lines(
+    what: &str,
+    items: impl Iterator<Item = (u32, Result<String, String>)>,
+    facts: &crate::engine_facts::FlightCheckFacts,
+    string: &dyn Fn(u32) -> Option<String>,
+) -> Entry<Vec<String>> {
+    let unknown = |reason: String| {
+        Entry::unknown(format!("the {what} list: {reason}"), LOADOUT_RESOLVING_TASK)
+    };
+    let template = match string_or_missing(string, facts.layout().value("item_number_string")) {
+        Ok(template) => template,
+        Err(reason) => return unknown(reason),
+    };
+    let mut lines = Vec::new();
+    for (number, label) in items {
+        let label = match label {
+            Ok(label) => label,
+            Err(reason) => return unknown(reason),
+        };
+        let Some(prefix) = format_item_number(&template, number) else {
+            return unknown(format!(
+                "the item-number string {template:?} has no `%1!d!` to format",
+            ));
+        };
+        // The original joins number and label with a space (unmeasured).
+        lines.push(format!("{prefix} {label}"));
+    }
+    Entry::Known(lines)
+}
+
+/// Formats the item number into the string-table template, which uses the
+/// resource compiler's `%1!d!` insertion (a plain `%d` is accepted too).
+fn format_item_number(template: &str, number: u32) -> Option<String> {
+    let (at, len) = ["%1!d!", "%d"]
+        .iter()
+        .find_map(|marker| template.find(marker).map(|at| (at, marker.len())))?;
+    Some(format!(
+        "{}{number}{}",
+        &template[..at],
+        &template[at + len..]
+    ))
 }
 
 fn slot_view(slot: FlightCheckSlot, airframe: Option<&Resolved<ContentId>>) -> SlotView {

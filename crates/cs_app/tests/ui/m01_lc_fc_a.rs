@@ -110,7 +110,7 @@ fn accept_m01_lc_fc_a_fixture_other_strings_give_other_text() {
 }
 
 #[test]
-fn accept_m01_lc_fc_a_fixture_loadout_is_unknown_with_reason_and_task() {
+fn accept_m01_lc_fc_a_fixture_build_leaves_the_loadout_unknown_with_reason_and_task() {
     let v = view(
         "T",
         &[("PRIMARY", 1, Some("MSG_A"))],
@@ -189,7 +189,21 @@ fn accept_m01_lc_fc_a_retail_m01_title_objectives_and_hotspots() {
                 .to_owned()
         )
     );
-    assert!(matches!(v.pilot.guns, Entry::Unknown { .. }));
+    // The lists are the measured fresh-campaign defaults (M01-LC-FC-B): the
+    // Devastator record's six gun lines and four rocket lines, the same for
+    // the wingman, every line numbered and labelled from the string table.
+    for slot in [&v.pilot, &v.wingman] {
+        let guns = slot.guns.known().expect("the gun list reads");
+        let rockets = slot.rockets.known().expect("the rocket list reads");
+        assert_eq!(guns.len(), 6, "{guns:?}");
+        assert_eq!(rockets.len(), 4, "{rockets:?}");
+        for (index, line) in guns.iter().enumerate() {
+            assert!(line.contains(&(index + 1).to_string()), "{line}");
+            assert!(!line.contains('%'), "{line}");
+        }
+        assert!(rockets[2].contains('5'), "{:?}", rockets[2]);
+    }
+    assert_eq!(v.pilot.guns, v.wingman.guns);
 
     // Every button's hotspot is a row of the original FlightCheck section.
     let screens = FrontEndScreens::open(&root).expect("the screen container opens");
