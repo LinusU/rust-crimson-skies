@@ -72,6 +72,10 @@ struct FixtureNode {
     /// `docs/findings/2026-10-02-gamez-node-array-layout.md`), so the fixture
     /// writes both and, for one node, makes them disagree on purpose.
     children: Vec<u32>,
+    /// The `node_index` word to store, or `None` for `NODE_INDEX_TOP | slot`.
+    /// Two same-named siblings storing one word are the case the identity
+    /// derivation refuses.
+    word: Option<u32>,
 }
 
 /// A node whose record is 144 bytes and whose fields the layout pins.
@@ -81,6 +85,7 @@ fn object(name: &str, mesh_index: i32, parent: Option<u32>) -> FixtureNode {
         mesh_index,
         parent,
         children: Vec::new(),
+        word: None,
     }
 }
 
@@ -240,7 +245,11 @@ fn write_container(nodes: &[FixtureNode], mesh_slots: u32, present_meshes: u32) 
         bytes[at + 86..at + 88].copy_from_slice(&(node.children.len() as u16).to_le_bytes());
         // `unk196` is the layout's `160` for an object record.
         word(&mut bytes, at + 196, 160);
-        word(&mut bytes, at + 208, NODE_INDEX_TOP | index as u32);
+        word(
+            &mut bytes,
+            at + 208,
+            node.word.unwrap_or(NODE_INDEX_TOP | index as u32),
+        );
 
         let record = record_offsets[index] as usize;
         // The object record: an identity transform, which the layout pins to
@@ -673,110 +682,66 @@ fn accept_f14_d_4_a_gamez_container_yields_one_node_row_per_node_and_one_mesh_ro
     );
 }
 
-/// A name path the store spells for two nodes is not a semantic key, so those
-/// nodes are **not** merged and **not** dropped: each is a row of its own, keyed
-/// by its own record's address, carrying the one unknown that says the store does
-/// not distinguish it.
+/// Two siblings the store gives one name are told apart by the stored
+/// `node_index` word the scene derivation reads, so each is a row of its own
+/// under the id `cs_content::scene` publishes — not merged, not dropped and not
+/// keyed by a position (owner ruling on task #560).
 #[test]
-fn accept_f14_d_4_a_node_whose_name_path_is_shared_is_a_row_with_an_explicit_unknown() {
+fn accept_f14_d_4_siblings_sharing_a_name_take_the_scene_derivations_disambiguator() {
     let temp = tree("ambiguous", fixture_nodes(), fixture_nodes());
     let baseline = retail_baseline(&temp.0).expect("the fixture installation reads");
+    let world_key = container_key("ZBD/C1/gamez.zbd");
 
-    // Seven stored nodes per container and one row each: the two `twig` nodes
+    // Eight stored nodes per container and one row each: the two `twig` nodes
     // are neither merged into one row nor dropped.
     assert_eq!(
         rows_of(&baseline, ContentKind::SceneNode).len(),
         FIXTURE_CONTAINERS * FIXTURE_NODES
     );
+    assert!(
+        rows_of(&baseline, ContentKind::SceneNode)
+            .iter()
+            .all(|element| !element.id.key().contains(GAMEZ_CONTAINER_RECORD)),
+        "no node of this fixture is refused, so none is keyed by its record address"
+    );
 
-    let keyed_by_address: Vec<&CatalogElement> = rows_of(&baseline, ContentKind::SceneNode)
-        .into_iter()
-        .filter(|element| element.id.key().contains(GAMEZ_CONTAINER_RECORD))
-        .collect();
-    assert_eq!(
-        keyed_by_address.len(),
-        FIXTURE_CONTAINERS * 3,
-        "two `twig` nodes and one `brigturret ` node per container, and nothing else"
-    );
-    let twigs: Vec<&&CatalogElement> = keyed_by_address
-        .iter()
-        .filter(|element| element.display_name.as_deref() == Some("twig"))
-        .collect();
-    assert_eq!(
-        twigs.len(),
-        FIXTURE_CONTAINERS * 2,
-        "two `twig` nodes per container"
-    );
-    for element in keyed_by_address
-        .iter()
-        .filter(|element| element.display_name.as_deref() == Some("twig"))
-    {
+    // The fixture stores `NODE_INDEX_TOP | slot`, so the twigs at slots 4 and 5
+    // take `-i4` and `-i5`: every member of the set, none privileged.
+    for suffix in ["4", "5"] {
+        let id = cid(
+            ContentKind::SceneNode,
+            &format!("{world_key}.main.twig-i{suffix}"),
+        );
+        let element = row(&baseline, &id);
+        assert_eq!(element.display_name.as_deref(), Some("twig"));
         assert_eq!(
             unknown_claims(element),
-            vec!["f14.d.4.baseline.node_path_ambiguous"],
-            "the shared name path is this baseline's own claim, not a borrowed one"
-        );
-        let reason = element
-            .unsupported_reasons
-            .iter()
-            .find_map(|reason| match reason {
-                UnsupportedReason::Unknown { reason, .. } => Some(reason.as_str()),
-                _ => None,
-            })
-            .expect("the row says what could not be derived");
-        assert!(reason.contains("main.twig"), "{reason}");
-        assert!(reason.contains("another node"), "{reason}");
-        // Every address-keyed row still names the container it was read from, so
-        // three containers that store the same names never share one identity.
-        let own = install_file_key(
-            element
-                .origin
-                .source()
-                .expect("an installation span")
-                .container_path(),
-        );
-        assert!(
-            element.id.key().starts_with(&format!("{own}.")),
-            "the identity is still the container's own: {}",
-            element.id
-        );
-        // The row is located by its own record, so it is still a checked span
-        // inside the container the row's own identity names.
-        let span = element.origin.source().expect("an installation span");
-        assert!(span.offset() > 0 && span.length() > 0);
-        let size = fs::metadata(temp.0.join(span.container_path()))
-            .expect("the container is a file")
-            .len();
-        assert!(
-            span.offset() + span.length() <= size,
-            "the record's own extent fits inside {}: {} bytes",
-            span.container_path(),
-            size
+            Vec::<&str>::new(),
+            "a disambiguated node has a derived identity and nothing unknown about it"
         );
     }
-    // Two distinct records, so two distinct keys: the address is the node's own,
-    // and it is unique **within** its container (the fixture containers happen to
-    // be byte-identical, so the same offset recurs in more than one of them).
-    let addresses: BTreeSet<(String, u64)> = keyed_by_address
-        .iter()
-        .map(|element| {
-            let span = element.origin.source().expect("an installation span");
-            (span.container_path().to_owned(), span.offset())
-        })
-        .collect();
-    assert_eq!(addresses.len(), keyed_by_address.len());
+    assert!(
+        baseline
+            .catalog
+            .get(&cid(
+                ContentKind::SceneNode,
+                &format!("{world_key}.main.twig")
+            ))
+            .is_none(),
+        "the plain, shared path names neither twig"
+    );
 
-    // The per-container record says how many nodes each way round, and the
-    // collection's own gap counts agree with the rows.
+    // The per-container record and the collection's own gap agree with the rows.
     let world = baseline
         .geometry_containers
         .iter()
         .find(|report| report.spelling == "ZBD/C1/gamez.zbd")
         .expect("the world container is reported");
     assert_eq!(world.nodes, FIXTURE_NODES);
-    assert_eq!(world.ambiguous, 2);
-    assert_eq!(world.unspellable, 1);
-    assert_eq!(world.named, 5);
+    assert_eq!(world.named, FIXTURE_NODES);
+    assert_eq!(world.disambiguated, 2);
+    assert_eq!(world.digested, 0);
+    assert_eq!(world.refused, 0);
     assert_eq!(
         world.paths, 7,
         "seven distinct paths for eight stored nodes"
@@ -788,14 +753,7 @@ fn accept_f14_d_4_a_node_whose_name_path_is_shared_is_a_row_with_an_explicit_unk
 
     let status = status_of(&baseline, ContentKind::SceneNode);
     assert_eq!(status.rows, FIXTURE_CONTAINERS * FIXTURE_NODES);
-    assert_eq!(
-        status.gaps.get("ambiguous_name_path"),
-        Some(&(FIXTURE_CONTAINERS * 2))
-    );
-    assert_eq!(
-        status.gaps.get("unspellable_name_path"),
-        Some(&FIXTURE_CONTAINERS)
-    );
+    assert_eq!(status.gaps.get("refused_node_identity"), Some(&0));
     assert_eq!(
         status.gaps.get("container_visited"),
         Some(&FIXTURE_CONTAINERS)
@@ -805,11 +763,119 @@ fn accept_f14_d_4_a_node_whose_name_path_is_shared_is_a_row_with_an_explicit_unk
     assert_eq!(status.diagnostic, None);
 }
 
-/// A stored name carrying bytes the id grammar refuses is never transliterated
-/// and never dropped: the row is keyed by the record's own address and the
-/// unknown names the exact stored path.
+/// Siblings that share a name **and** the stored word the derivation tells them
+/// apart by cannot be told apart at all. The scene module refuses them
+/// (`DuplicateNodeId`); the catalog keeps both as rows keyed by their record
+/// address, marked as a refused identity with the reason, and every other node of
+/// the container keeps the id the scene module gives it.
 #[test]
-fn accept_f14_d_4_a_node_whose_name_carries_unspellable_bytes_is_a_row_with_an_explicit_unknown() {
+fn accept_f14_d_4_nodes_the_scene_derivation_refuses_keep_a_marked_row() {
+    let mut nodes = fixture_nodes();
+    for twin in [4, 5] {
+        nodes[twin].word = Some(NODE_INDEX_TOP | 0x77);
+    }
+    let temp = tree("duplicate", fixture_nodes(), nodes);
+    let baseline = retail_baseline(&temp.0).expect("the fixture installation reads");
+    let world_key = container_key("ZBD/C1/gamez.zbd");
+
+    let world_rows: Vec<&CatalogElement> = rows_of(&baseline, ContentKind::SceneNode)
+        .into_iter()
+        .filter(|element| element.id.key().starts_with(&format!("{world_key}.")))
+        .collect();
+    assert_eq!(
+        world_rows.len(),
+        FIXTURE_NODES,
+        "a refused node is not dropped"
+    );
+    let refused: Vec<&&CatalogElement> = world_rows
+        .iter()
+        .filter(|element| element.id.key().contains(GAMEZ_CONTAINER_RECORD))
+        .collect();
+    assert_eq!(refused.len(), 2);
+    for element in refused {
+        assert_eq!(element.display_name.as_deref(), Some("twig"));
+        assert_eq!(
+            unknown_claims(element),
+            vec!["f14.d.4.baseline.node_identity_refused"]
+        );
+        let reason = element
+            .unsupported_reasons
+            .iter()
+            .find_map(|reason| match reason {
+                UnsupportedReason::Unknown { reason, .. } => Some(reason.as_str()),
+                _ => None,
+            })
+            .expect("the row says why it is refused");
+        assert!(reason.contains("main.twig"), "{reason}");
+        assert!(reason.contains("DuplicateNodeId"), "{reason}");
+    }
+    // The rest of the container still has the derived ids.
+    row(
+        &baseline,
+        &cid(ContentKind::SceneNode, &format!("{world_key}.main.wing")),
+    );
+    let report = baseline
+        .geometry_containers
+        .iter()
+        .find(|report| report.spelling == "ZBD/C1/gamez.zbd")
+        .expect("the world container is reported");
+    assert_eq!((report.named, report.refused), (FIXTURE_NODES - 2, 2));
+    // The untouched planes container has no refusal.
+    assert_eq!(
+        status_of(&baseline, ContentKind::SceneNode)
+            .gaps
+            .get("refused_node_identity"),
+        Some(&4),
+        "two nodes in each of the two world containers"
+    );
+}
+
+/// The catalog and the scene graph name every node alike: the ids the catalog
+/// holds are the ids `world_scene_graph_from_gamez` derives from the same bytes.
+#[test]
+fn accept_f14_d_4_catalog_ids_equal_the_scene_graphs_ids() {
+    let temp = tree("same-ids", fixture_nodes(), fixture_nodes());
+    let baseline = retail_baseline(&temp.0).expect("the fixture installation reads");
+    for spelling in ["ZBD/C1/gamez.zbd", "ZBD/planes.zbd"] {
+        let bytes = fs::read(temp.0.join(spelling)).expect("the container reads");
+        let mut context = cs_formats::ParseContext::with_defaults(spelling);
+        let records = cs_formats::gamez::read_gamez_nodes(&mut context, &bytes)
+            .expect("the production reader reads the fixture");
+        let container = cid(ContentKind::InstallFile, &container_key(spelling));
+        let adapter = cs_content::coordinates::SourceAdapter::declared()
+            .into_iter()
+            .find(|adapter| adapter.source().label() == "canonical")
+            .expect("the canonical source is declared");
+        let graph = cs_content::world::world_scene_graph_from_gamez(
+            &container,
+            &records,
+            &[],
+            &adapter,
+            &cs_content::scene::BindingMap::default(),
+        )
+        .expect("the fixture hierarchy converts");
+        let from_graph: BTreeSet<ContentId> = graph
+            .graph()
+            .nodes()
+            .iter()
+            .map(|node| node.id().as_content_id().clone())
+            .collect();
+        let prefix = format!("{}.", container_key(spelling));
+        let from_catalog: BTreeSet<ContentId> = rows_of(&baseline, ContentKind::SceneNode)
+            .into_iter()
+            .filter(|element| element.id.key().starts_with(&prefix))
+            .map(|element| element.id.clone())
+            .collect();
+        assert_eq!(from_catalog, from_graph, "{spelling}");
+        assert_eq!(from_graph.len(), FIXTURE_NODES, "{spelling}");
+    }
+}
+
+/// A stored name carrying bytes the id grammar refuses is written the way the
+/// scene module escapes it (`-20` for a trailing space), never transliterated and
+/// never dropped, and the id reads back to the exact stored name.
+#[test]
+fn accept_f14_d_4_a_node_whose_name_carries_unspellable_bytes_is_escaped_like_the_scene_module() {
     let temp = tree("unspellable", fixture_nodes(), fixture_nodes());
     let baseline = retail_baseline(&temp.0).expect("the fixture installation reads");
     let world_key = container_key("ZBD/C1/gamez.zbd");
@@ -825,25 +891,19 @@ fn accept_f14_d_4_a_node_whose_name_carries_unspellable_bytes_is_a_row_with_an_e
         .into_iter()
         .find(|element| element.display_name.as_deref() == Some("brigturret "))
         .expect("the node whose stored name ends in a space is a row of its own");
-    assert!(
-        element.id.key().contains(GAMEZ_CONTAINER_RECORD),
-        "a name the grammar refuses is never transliterated into an identity: {}",
-        element.id
+    assert_eq!(
+        element.id,
+        cid(
+            ContentKind::SceneNode,
+            &format!("{world_key}.main.wing.brigturret-20")
+        ),
+        "the trailing space is escaped by cs_content::scene::escape_scene_node_name"
     );
     assert_eq!(
         unknown_claims(element),
-        vec!["f14.d.4.baseline.node_path_unspellable"],
-        "the refused spelling is this baseline's own claim"
+        Vec::<&str>::new(),
+        "an escaped name is a derived identity, with nothing unknown about it"
     );
-    let reason = element
-        .unsupported_reasons
-        .iter()
-        .find_map(|reason| match reason {
-            UnsupportedReason::Unknown { reason, .. } => Some(reason.as_str()),
-            _ => None,
-        })
-        .expect("the row says what could not be derived");
-    assert!(reason.contains("main.wing.brigturret "), "{reason}");
 
     // The name is never repaired: nothing carries the trimmed spelling as an
     // identity, and no row anywhere holds a key with a space in it.
@@ -879,8 +939,8 @@ fn accept_f14_d_4_a_node_whose_name_carries_unspellable_bytes_is_a_row_with_an_e
         .iter()
         .find(|report| report.spelling == "ZBD/planes.zbd")
         .expect("the shared container is reported");
-    assert_eq!(planes.unspellable, 1);
-    assert_eq!(planes.ambiguous, 2);
+    assert_eq!(planes.refused, 0);
+    assert_eq!(planes.disambiguated, 2);
 }
 
 /// The two walks meet at exactly one boundary and it is the container's own
@@ -928,11 +988,11 @@ fn accept_f14_d_4_the_two_walks_meet_at_the_headers_own_node_offset() {
     assert_eq!(nodes.data_offset, nodes.info_end);
 }
 
-/// A stored node whose parent slots form a **cycle** has no name path at all: the
-/// walk can only bound the loop, never end it, so the row is keyed by its record
-/// address, carries an explicit unknown naming the reason, and is counted in the
-/// collection's own record — instead of being published under a path made of the
-/// part of the loop that fitted.
+/// A container whose parent slots form a **cycle** has no hierarchy the scene
+/// module converts, so it derives no id for any of its nodes: every row is keyed
+/// by its record address, carries an explicit unknown naming the refusal, and is
+/// counted in the collection's own record — instead of being published under a
+/// path made of the part of the loop that fitted.
 #[test]
 fn accept_f14_d_4_a_node_whose_parent_chain_never_ends_is_a_row_with_an_explicit_unknown() {
     let temp = TempInstall::new("parent-cycle");
@@ -987,47 +1047,43 @@ fn accept_f14_d_4_a_node_whose_parent_chain_never_ends_is_a_row_with_an_explicit
         );
         assert_eq!(
             unknown_claims(element),
-            vec!["f14.d.4.baseline.node_path_unterminated"],
+            vec!["f14.d.4.baseline.node_identity_refused"],
             "the reason is named, not guessed"
         );
-        // The other container's rows are unaffected: the row still names the
-        // bytes it was read from.
-        assert!(
-            baseline
-                .catalog
-                .get(&cid(ContentKind::InstallFile, &world_key))
-                .is_some()
-        );
     }
-    // The node that terminates its chain is still a semantic path.
-    let free = row(
-        &baseline,
-        &cid(ContentKind::SceneNode, &format!("{world_key}.free")),
+    // The scene module converts none of the container, so `free` is refused too
+    // rather than silently keeping an id the graph would never have given it.
+    let free = world_rows
+        .iter()
+        .copied()
+        .find(|element| element.display_name.as_deref() == Some("free"))
+        .expect("the node outside the loop is a row too");
+    assert!(
+        free.id.key().contains(GAMEZ_CONTAINER_RECORD),
+        "{}",
+        free.id
     );
-    assert_eq!(free.display_name.as_deref(), Some("free"));
-    assert_eq!(unknown_claims(free), Vec::<&str>::new());
+    assert_eq!(
+        unknown_claims(free),
+        vec!["f14.d.4.baseline.node_identity_refused"]
+    );
 
-    // The per-container record and the collection's own gap count the two nodes
-    // whose chain never ends, per container.
+    // The per-container record and the collection's own gap count the refused
+    // nodes, per container.
     for spelling in ["ZBD/C1/gamez.zbd", "ZBD/C1C/gamez.zbd"] {
         let report = baseline
             .geometry_containers
             .iter()
             .find(|report| report.spelling == spelling)
             .expect("the container is reported");
-        assert_eq!(report.unterminated, 2, "{spelling}");
-        assert_eq!(
-            report.named + report.ambiguous + report.unspellable + report.unterminated,
-            report.nodes,
-            "{spelling}: every node is named, ambiguous, unspellable or unterminated"
-        );
+        assert_eq!((report.named, report.refused), (0, 3), "{spelling}");
     }
     assert_eq!(
         status_of(&baseline, ContentKind::SceneNode)
             .gaps
-            .get("unterminated_parent_chain"),
-        Some(&4),
-        "two nodes in each of the two world containers"
+            .get("refused_node_identity"),
+        Some(&6),
+        "three nodes in each of the two world containers"
     );
     assert_eq!(
         baseline
@@ -1035,9 +1091,9 @@ fn accept_f14_d_4_a_node_whose_parent_chain_never_ends_is_a_row_with_an_explicit
             .iter()
             .find(|report| report.spelling == "ZBD/planes.zbd")
             .expect("the shared container is reported")
-            .unterminated,
+            .refused,
         0,
-        "a container whose chains terminate counts none"
+        "a container whose chains terminate refuses none"
     );
 }
 
@@ -1101,8 +1157,7 @@ fn accept_f14_d_4_a_chain_as_long_as_the_node_array_is_not_a_cycle() {
             .collect::<Vec<_>>()
     );
 
-    // Nothing anywhere is counted as unterminated, and every node is one of the
-    // four classifications.
+    // Nothing anywhere is refused, and every node is named.
     for spelling in ["ZBD/C1/gamez.zbd", "ZBD/C1C/gamez.zbd", "ZBD/planes.zbd"] {
         let report = baseline
             .geometry_containers
@@ -1110,19 +1165,18 @@ fn accept_f14_d_4_a_chain_as_long_as_the_node_array_is_not_a_cycle() {
             .find(|report| report.spelling == spelling)
             .unwrap_or_else(|| panic!("{spelling} is reported"));
         assert_eq!(
-            report.unterminated, 0,
+            report.refused, 0,
             "{spelling}: every stored parent chain terminates"
         );
         assert_eq!(
-            report.named + report.ambiguous + report.unspellable + report.unterminated,
-            report.nodes,
-            "{spelling}: every node is named, ambiguous, unspellable or unterminated"
+            report.named, report.nodes,
+            "{spelling}: every node is named"
         );
     }
     assert_eq!(
         status_of(&baseline, ContentKind::SceneNode)
             .gaps
-            .get("unterminated_parent_chain"),
+            .get("refused_node_identity"),
         Some(&0),
         "no container in the tree holds a loop"
     );
@@ -1362,9 +1416,9 @@ fn accept_f14_d_4_an_index_past_the_mesh_array_is_out_of_range_not_absent() {
     let rendered = baseline_report_json(&baseline);
     assert!(
         rendered.contains(
-            "\"container\":\"ZBD/C1/gamez.zbd\",\"nodes\":5,\"named\":5,\"ambiguous\":0,\
-             \"unspellable\":0,\"paths\":5,\"roots\":1,\"named_meshes\":4,\"mesh_rows\":2,\
-             \"absent_meshes\":1,\"out_of_range_meshes\":1,\"unterminated\":0,\"materials\":0,\
+            "\"container\":\"ZBD/C1/gamez.zbd\",\"nodes\":5,\"named\":5,\"disambiguated\":0,\
+             \"digested\":0,\"refused\":0,\"paths\":5,\"roots\":1,\"named_meshes\":4,\"mesh_rows\":2,\
+             \"absent_meshes\":1,\"out_of_range_meshes\":1,\"materials\":0,\
              \"material_textures_unresolved\":0,\"material_references_without_record\":0,\
              \"images\":0,\"images_unresolved\":0}"
         ),
@@ -1532,9 +1586,9 @@ fn accept_f14_d_4_the_report_renders_both_collections_and_the_per_container_coun
     );
     assert!(
         report.contains(
-            "\"container\":\"ZBD/C1/gamez.zbd\",\"nodes\":8,\"named\":5,\"ambiguous\":2,\
-             \"unspellable\":1,\"paths\":7,\"roots\":1,\"named_meshes\":3,\"mesh_rows\":2,\
-             \"absent_meshes\":1,\"out_of_range_meshes\":0,\"unterminated\":0,\"materials\":0,\
+            "\"container\":\"ZBD/C1/gamez.zbd\",\"nodes\":8,\"named\":8,\"disambiguated\":2,\
+             \"digested\":0,\"refused\":0,\"paths\":7,\"roots\":1,\"named_meshes\":3,\"mesh_rows\":2,\
+             \"absent_meshes\":1,\"out_of_range_meshes\":0,\"materials\":0,\
              \"material_textures_unresolved\":0,\"material_references_without_record\":0,\
              \"images\":0,\"images_unresolved\":0}"
         ),
@@ -1613,6 +1667,92 @@ fn game_dir() -> PathBuf {
 /// every stored node and every mesh slot their node arrays name, every row is
 /// located by a checked span inside its own container, and the denominator did
 /// not move.
+/// On the real installation the catalog and the scene graph name every node of
+/// all nine containers alike (owner ruling on task #560): the ids of the rows are
+/// exactly the ids `world_scene_graph_from_gamez` derives from the same bytes,
+/// the names the escaping rewrites (a `.` or a `-` inside one name) agree, and
+/// the former record-address fallback rows convert.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_f14_d_4_retail_catalog_ids_equal_the_scene_graphs_ids() {
+    let dir = game_dir();
+    let baseline = retail_baseline(&dir).expect("the original installation reads");
+    let adapter = cs_content::coordinates::SourceAdapter::declared()
+        .into_iter()
+        .find(|adapter| adapter.source().label() == "canonical")
+        .expect("the canonical source is declared");
+    let (mut total, mut disambiguated, mut escaped_names, mut dotted_roots) = (0usize, 0, 0, 0);
+    for report in &baseline.geometry_containers {
+        let bytes = fs::read(dir.join(&report.spelling)).expect("the container reads");
+        let mut context = cs_formats::ParseContext::with_defaults(&report.spelling);
+        let records = cs_formats::gamez::read_gamez_nodes(&mut context, &bytes)
+            .expect("the production reader reads the container");
+        let key = container_key(&report.spelling);
+        let container = cid(ContentKind::InstallFile, &key);
+        let graph = cs_content::world::world_scene_graph_from_gamez(
+            &container,
+            &records,
+            &[],
+            &adapter,
+            &cs_content::scene::BindingMap::default(),
+        )
+        .unwrap_or_else(|error| panic!("{}: the scene module refuses: {error}", report.spelling));
+        let from_graph: BTreeSet<ContentId> = graph
+            .graph()
+            .nodes()
+            .iter()
+            .map(|node| node.id().as_content_id().clone())
+            .collect();
+        let prefix = format!("{key}.");
+        let from_catalog: BTreeSet<ContentId> = rows_of(&baseline, ContentKind::SceneNode)
+            .into_iter()
+            .filter(|element| element.id.key().starts_with(&prefix))
+            .map(|element| element.id.clone())
+            .collect();
+        assert_eq!(
+            from_catalog, from_graph,
+            "{}: the catalog and the scene graph disagree about what a node is called",
+            report.spelling
+        );
+        assert_eq!(from_graph.len(), report.nodes, "{}", report.spelling);
+        total += from_graph.len();
+        disambiguated += report.disambiguated;
+        for node in graph.graph().nodes() {
+            if node.name().contains(['.', '-']) {
+                escaped_names += 1;
+                dotted_roots += usize::from(node.parent().is_none());
+                let names = node
+                    .id()
+                    .authored_names(&container)
+                    .unwrap_or_else(|| panic!("{} reads back", node.id()));
+                assert_eq!(
+                    names.last().map(String::as_str),
+                    Some(node.name()),
+                    "{}: the id reads back to the stored name",
+                    node.id()
+                );
+            }
+        }
+    }
+    assert_eq!(total, 56_620);
+    // The 1 599 names holding one `.` and the 2 holding a `-`, measured by F11-E1.
+    assert_eq!(escaped_names, 1_601, "names the escaping rewrites");
+    assert_eq!(
+        dotted_roots, 247,
+        "of which roots (245 dotted, 2 hyphenated)"
+    );
+    // Measured on the installation: the sibling rule applies to 10 345 rows (every
+    // member of a same-named set, and every descendant spelled under one), and the
+    // digest rule to the 3 460 rows whose escaped path passes the key bound.
+    assert_eq!(disambiguated, 10_345);
+    let digested: usize = baseline
+        .geometry_containers
+        .iter()
+        .map(|report| report.digested)
+        .sum();
+    assert_eq!(digested, 3_460);
+}
+
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_f14_d_4_retail_every_gamez_container_yields_its_nodes_and_named_meshes() {
@@ -1659,9 +1799,9 @@ fn accept_f14_d_4_retail_every_gamez_container_yields_its_nodes_and_named_meshes
     // which is what makes the corpus totals below comparable with F11-A's: no node
     // is its own ancestor, so every name path names a real hierarchy.
     assert_eq!(
-        node_status.gaps.get("unterminated_parent_chain"),
+        node_status.gaps.get("refused_node_identity"),
         Some(&0),
-        "no stored parent-slot chain loops in any of the nine containers"
+        "the scene derivation refuses no node of the nine containers"
     );
     assert_eq!(
         node_status.gaps.get("container_visited").copied(),
@@ -1714,14 +1854,13 @@ fn accept_f14_d_4_retail_every_gamez_container_yields_its_nodes_and_named_meshes
             report.spelling
         );
         assert_eq!(
-            report.unterminated, 0,
-            "{}: every chain terminates",
+            report.refused, 0,
+            "{}: the scene derivation refuses no node",
             report.spelling
         );
         assert_eq!(
-            report.named + report.ambiguous + report.unspellable + report.unterminated,
-            report.nodes,
-            "{}: every node is named, ambiguous, unspellable or unterminated",
+            report.named, report.nodes,
+            "{}: every node carries the scene module's id",
             report.spelling
         );
         assert_eq!(

@@ -280,7 +280,7 @@ use cs_assets::zbd::{ContainerVerdict, audit_containers};
 use cs_formats::LANG_ENGLISH_US;
 use cs_formats::gamez::{
     GameZMaterials, GameZMeshes, GameZNodes, MeshSlotIssue, NodeMeshBindings, NodeMeshFinding,
-    RawMaterial, read_gamez_materials, read_gamez_meshes, read_gamez_nodes,
+    RawMaterial, RawNode, read_gamez_materials, read_gamez_meshes, read_gamez_nodes,
 };
 use cs_formats::interp::DecodedInterp;
 use cs_formats::script_raw::{DispatchForm, UiScriptLimits, discover_container, scan_ui_program};
@@ -798,20 +798,10 @@ const CLAIM_ABSENT_NODE_MESH: &str = "f14.d.4.baseline.node_mesh_slot_absent";
 /// (an inside-the-array slot the container really has and stores nothing in).
 const CLAIM_OUT_OF_RANGE_NODE_MESH: &str = "f14.d.4.baseline.node_mesh_slot_out_of_range";
 
-/// The claim id behind the observation that several stored nodes of one
-/// container spell the same authored name path, so the semantic key a
-/// `scene_node` identity is built from cannot tell them apart.
-const CLAIM_AMBIGUOUS_NODE_PATH: &str = "f14.d.4.baseline.node_path_ambiguous";
-
-/// The claim id behind the observation that a stored node's authored name path
-/// carries bytes the `ContentId` key grammar refuses, so the same key cannot
-/// be built from it.
-const CLAIM_UNSPELLABLE_NODE_PATH: &str = "f14.d.4.baseline.node_path_unspellable";
-
-/// The claim id behind the observation that a stored node's parent-slot chain
-/// does not terminate inside the node array, so the authored name path derived
-/// from it names no hierarchy and cannot be an identity.
-const CLAIM_UNTERMINATED_NODE_PATH: &str = "f14.d.4.baseline.node_path_unterminated";
+/// The claim id behind the observation that the `scene_node` derivation
+/// [`crate::scene`] publishes refused a stored node, so its row keeps the
+/// [`GAMEZ_CONTAINER_RECORD`] address as identity and says why.
+const CLAIM_REFUSED_NODE_IDENTITY: &str = "f14.d.4.baseline.node_identity_refused";
 
 /// The claim id behind the observation that a container's material section
 /// holds a present material record at a slot, and that the record's own bytes
@@ -1941,15 +1931,19 @@ pub struct GeometryContainerReport {
     pub spelling: String,
     /// How many stored nodes its node array holds.
     pub nodes: usize,
-    /// How many of those rows carry an identity derived from an authored name
-    /// path.
+    /// How many of those rows carry the identity [`crate::scene`] derives for
+    /// the node, so the catalog and the scene graph name it alike.
     pub named: usize,
+    /// How many of the `named` rows carry a sibling disambiguator
+    /// (`-i<hex>` of the node's stored `node_index` word) in their path,
+    /// because the store spells the same name for several siblings.
+    pub disambiguated: usize,
+    /// How many of the `named` rows are spelled as a digest (`-h<32 hex>`)
+    /// because their escaped name path does not fit the key bound.
+    pub digested: usize,
     /// How many rows are located by their record's own address because the
-    /// store spells that name path for another node too.
-    pub ambiguous: usize,
-    /// How many rows are located by their record's own address because the name
-    /// path carries bytes the id grammar refuses.
-    pub unspellable: usize,
+    /// scene derivation refused the node. Zero over the measured installation.
+    pub refused: usize,
     /// How many distinct authored name paths the container stores.
     pub paths: usize,
     /// How many stored nodes declare no parent.
@@ -1969,10 +1963,6 @@ pub struct GeometryContainerReport {
     /// (`cs_formats::gamez::MeshSlotIssue`) — and zero over the measured
     /// installation.
     pub out_of_range_meshes: usize,
-    /// How many stored nodes whose parent-slot chain does not terminate inside
-    /// the array, so their name path is the part of the loop that fits the walk
-    /// and nothing more.
-    pub unterminated: usize,
     /// How many present material records the container's material section
     /// holds, which is how many `material` rows exist. Zero when the section
     /// could not be read.
@@ -2008,11 +1998,8 @@ struct ContainerGeometry {
     bindings: NodeMeshBindings,
     /// The authored name path of every stored node, by array slot.
     paths: BTreeMap<u32, String>,
-    /// The paths more than one stored node spells.
-    ambiguous: BTreeSet<String>,
-    /// The nodes whose parent-slot chain did not terminate inside the array, so
-    /// their authored name path is meaningless.
-    unterminated: BTreeSet<u32>,
+    /// The identity of every stored node, by array slot.
+    identities: BTreeMap<u32, NodeIdentity>,
     /// The texture-name table and material records, or [`None`] when the
     /// material reader refused the section. The nodes and meshes are still
     /// rows: one unreadable section must not hide the others.
@@ -2124,15 +2111,15 @@ fn gamez_geometry_rows(
                     spelling: spelling.to_owned(),
                     nodes: 0,
                     named: 0,
-                    ambiguous: 0,
-                    unspellable: 0,
+                    disambiguated: 0,
+                    digested: 0,
+                    refused: 0,
                     paths: 0,
                     roots: 0,
                     named_meshes: 0,
                     mesh_rows: 0,
                     absent_meshes: 0,
                     out_of_range_meshes: 0,
-                    unterminated: 0,
                     materials: 0,
                     material_textures_unresolved: 0,
                     material_references_without_record: 0,
@@ -2210,16 +2197,8 @@ fn gamez_geometry_rows(
         status.gaps.insert("unreadable_container", unread);
     }
     node_status.gaps.insert(
-        "ambiguous_name_path",
-        reports.iter().map(|report| report.ambiguous).sum(),
-    );
-    node_status.gaps.insert(
-        "unspellable_name_path",
-        reports.iter().map(|report| report.unspellable).sum(),
-    );
-    node_status.gaps.insert(
-        "unterminated_parent_chain",
-        reports.iter().map(|report| report.unterminated).sum(),
+        "refused_node_identity",
+        reports.iter().map(|report| report.refused).sum(),
     );
     // Two gaps for the two facts the format-level check keeps apart: a named
     // slot the array really has and stores an all-zero stub in, and a named
@@ -2398,31 +2377,24 @@ fn read_geometry_container(
         Err(error) => (None, Some(error.to_string())),
     };
 
-    let (paths, unterminated) = node_name_paths(&nodes);
-    let mut counts: BTreeMap<&str, usize> = BTreeMap::new();
-    for path in paths.values() {
-        *counts.entry(path.as_str()).or_default() += 1;
-    }
-    let distinct_paths = counts.len();
-    let ambiguous: BTreeSet<String> = counts
-        .into_iter()
-        .filter(|(_, count)| *count > 1)
-        .map(|(path, _)| path.to_owned())
-        .collect();
+    let paths = node_name_paths(&nodes);
+    let distinct_paths = paths.values().collect::<BTreeSet<_>>().len();
 
-    let mut named = 0usize;
-    let mut ambiguous_nodes = 0usize;
-    let mut unspellable = 0usize;
-    let mut unterminated_nodes = 0usize;
     let key = install_file_key(spelling);
-    for (index, path) in &paths {
-        match NodeIdentity::of(&key, path, &ambiguous, unterminated.contains(index)) {
-            NodeIdentity::Path => named += 1,
-            NodeIdentity::Ambiguous => ambiguous_nodes += 1,
-            NodeIdentity::Unspellable => unspellable += 1,
-            NodeIdentity::Unterminated => unterminated_nodes += 1,
-        }
-    }
+    let identities = node_identities(&key, &nodes)?;
+    let refused = identities
+        .values()
+        .filter(|identity| identity.refusal.is_some())
+        .count();
+    let named = identities.len() - refused;
+    let disambiguated = identities
+        .values()
+        .filter(|identity| identity.form == IdentityForm::Disambiguated)
+        .count();
+    let digested = identities
+        .values()
+        .filter(|identity| identity.form == IdentityForm::Digested)
+        .count();
 
     // Distinct slots, because that is what the collection has a row for: two
     // nodes naming slot 12 name one mesh, not two. A node naming no mesh stores
@@ -2468,18 +2440,15 @@ fn read_geometry_container(
             spelling: spelling.to_owned(),
             nodes: nodes.nodes.len(),
             named,
-            ambiguous: ambiguous_nodes,
-            unspellable,
+            disambiguated,
+            digested,
+            refused,
             paths: distinct_paths,
             roots: nodes.roots().count(),
             named_meshes: named_slots.len(),
             mesh_rows,
             absent_meshes,
             out_of_range_meshes,
-            // The measured walk and the per-row classification have to agree, so
-            // the report carries the counted value rather than the length of the
-            // set the rows are keyed from.
-            unterminated: unterminated_nodes,
             materials: material_count,
             material_textures_unresolved: textures_unresolved,
             material_references_without_record: references_without_record,
@@ -2492,8 +2461,7 @@ fn read_geometry_container(
         meshes,
         bindings,
         paths,
-        ambiguous,
-        unterminated,
+        identities,
     })
 }
 
@@ -2514,52 +2482,168 @@ fn unresolved_slots(bindings: &NodeMeshBindings) -> BTreeMap<u32, MeshSlotIssue>
         .collect()
 }
 
-/// How one stored node's identity is derived, and why.
+/// The identity one stored node's row carries, and whether the scene derivation
+/// gave it.
 ///
 /// Stated once, because the per-container counts and the rows themselves have to
 /// agree about it: a count that classified a node one way and a row that keyed it
 /// another would make the report lie about its own collection.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum NodeIdentity {
-    /// The authored name path is a usable semantic key: the store spells it for
-    /// this node alone and the id grammar accepts it.
-    Path,
-    /// Another node of the same container spells the same path, so the semantic
-    /// key cannot tell them apart.
-    Ambiguous,
-    /// The path carries bytes the id grammar refuses, **or** the key the
-    /// container prefix and the path together form is longer than the grammar
-    /// allows. Both are the same fact for this purpose — the store's own naming
-    /// does not fit an identity — and neither is repaired here.
-    Unspellable,
-    /// The node's own parent-slot chain does not terminate inside the array, so
-    /// the stored names form a loop and the name path names no hierarchy at all.
-    /// Kept apart from [`Self::Unspellable`] because the reason, and what a
-    /// later stage would have to do about it, are different.
-    Unterminated,
+struct NodeIdentity {
+    /// The row's id: [`cs_content::scene`]'s id for the node, or, where
+    /// `refusal` is set, the [`GAMEZ_CONTAINER_RECORD`] address fallback.
+    id: ContentId,
+    /// Why the scene derivation refused this node, when it did.
+    refusal: Option<String>,
+    /// How the id is spelled, for the report's counts.
+    form: IdentityForm,
 }
 
-impl NodeIdentity {
-    /// How one node of `paths` is classified, given the container's key, the
-    /// paths more than one node spells, and whether this node's own parent-slot
-    /// chain terminated.
-    fn of(
-        container_key: &str,
-        path: &str,
-        ambiguous: &BTreeSet<String>,
-        unterminated: bool,
-    ) -> Self {
-        if unterminated {
-            return Self::Unterminated;
+/// How a derived `scene_node` id is spelled.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum IdentityForm {
+    /// The escaped authored name path, nothing more.
+    Plain,
+    /// The path carries at least one sibling disambiguator (`-i<hex>`).
+    Disambiguated,
+    /// The path did not fit the key bound and is spelled as a digest (`-h<hex>`).
+    Digested,
+    /// The scene derivation refused the node; the id is its record address.
+    Refused,
+}
+
+/// The identity of every node of one container, under the derivation
+/// [`crate::scene`] publishes (owner ruling on task #560).
+///
+/// The derivation is **called**, never repeated: the reconciled child lists the
+/// world graph is built from (`world_hierarchy_from_gamez`, the same
+/// reconciliation `world_scene_graph_from_gamez` applies) feed
+/// [`crate::scene::derive_node_identities`], which is the function
+/// `SceneGraph::build` runs. So the escaping, the `-i<hex>` sibling rule over
+/// the stored `node_index` word and the `-h<hex>` digest rule are the scene
+/// module's own.
+///
+/// A node the derivation refuses is still a row. Two things refuse: the
+/// hierarchy as a whole (a cycle, a dangling or contradictory link, a container
+/// id that cannot be spelled), which refuses **every** node of the container
+/// because the scene module converts none of them, and a derived id that two
+/// nodes share (`SceneError::DuplicateNodeId`), which refuses exactly the nodes
+/// that share it. The refused row is keyed by its record address and carries the
+/// refusal reason, so it stays visible rather than silently renamed.
+fn node_identities(
+    container_key: &str,
+    nodes: &GameZNodes,
+) -> Result<BTreeMap<u32, NodeIdentity>, String> {
+    let fallback = |node: &RawNode| -> Result<ContentId, String> {
+        ContentId::from_source(
+            ContentKind::SceneNode,
+            &format!(
+                "{container_key}.{GAMEZ_CONTAINER_RECORD}{}",
+                node.data_offset
+            ),
+        )
+        .map_err(|error| error.to_string())
+    };
+    let refuse = |nodes: &GameZNodes, reason: &str, only: &dyn Fn(usize) -> bool| {
+        let mut identities = BTreeMap::new();
+        for (position, node) in nodes.nodes.iter().enumerate() {
+            if only(position) {
+                identities.insert(
+                    node.index,
+                    NodeIdentity {
+                        id: fallback(node)?,
+                        refusal: Some(reason.to_owned()),
+                        form: IdentityForm::Refused,
+                    },
+                );
+            }
         }
-        if ambiguous.contains(path) {
-            return Self::Ambiguous;
+        Ok::<_, String>(identities)
+    };
+
+    let container = match ContentId::from_source(ContentKind::InstallFile, container_key) {
+        Ok(container) => container,
+        Err(error) => {
+            return refuse(
+                nodes,
+                &format!("the container id cannot be spelled: {error}"),
+                &|_| true,
+            );
         }
-        if scene_node_key(container_key, path).is_none() {
-            return Self::Unspellable;
+    };
+    let hierarchy = match crate::world::world_hierarchy_from_gamez(nodes, &[]) {
+        Ok(hierarchy) => hierarchy,
+        Err(error) => {
+            return refuse(
+                nodes,
+                &format!("the stored hierarchy does not reconcile: {error}"),
+                &|_| true,
+            );
         }
-        Self::Path
+    };
+    let derived = match crate::scene::derive_node_identities(&container, hierarchy.nodes()) {
+        Ok(derived) => derived,
+        Err(error) => {
+            return refuse(
+                nodes,
+                &format!("the scene derivation refuses the container's hierarchy: {error}"),
+                &|_| true,
+            );
+        }
+    };
+    // `parsed_nodes_from_gamez` keeps the record order, so position `i` of the
+    // derivation is position `i` of the array.
+    debug_assert_eq!(derived.ids.len(), nodes.nodes.len());
+    let mut shared: BTreeMap<&ContentId, usize> = BTreeMap::new();
+    for id in &derived.ids {
+        *shared.entry(id.as_content_id()).or_default() += 1;
     }
+    let mut identities = refuse(
+        nodes,
+        "the scene derivation gives this node an id another node of the container derives as          well (SceneError::DuplicateNodeId)",
+        &|position| shared[derived.ids[position].as_content_id()] > 1,
+    )?;
+    for (position, node) in nodes.nodes.iter().enumerate() {
+        if identities.contains_key(&node.index) {
+            continue;
+        }
+        let id = derived.ids[position].as_content_id().clone();
+        let tail = id
+            .key()
+            .strip_prefix(&format!("{}.", container.key()))
+            .unwrap_or_default();
+        let form = if tail.starts_with("-h") {
+            IdentityForm::Digested
+        } else if id
+            .key()
+            .eq_ignore_ascii_case(&plain_node_key(&container, nodes, node))
+        {
+            IdentityForm::Plain
+        } else {
+            IdentityForm::Disambiguated
+        };
+        identities.insert(
+            node.index,
+            NodeIdentity {
+                id,
+                refusal: None,
+                form,
+            },
+        );
+    }
+    Ok(identities)
+}
+
+/// The key the escaped authored name path alone would give a node: what the
+/// derivation yields when no sibling shares a name and the path fits the bound.
+fn plain_node_key(container: &ContentId, nodes: &GameZNodes, node: &RawNode) -> String {
+    let mut names = Vec::new();
+    let mut cursor = Some(node.index);
+    while let Some(record) = cursor.and_then(|index| nodes.get(index)) {
+        names.push(crate::scene::escape_scene_node_name(&record.name));
+        cursor = record.parent;
+    }
+    names.reverse();
+    format!("{}.{}", container.key(), names.join("."))
 }
 
 /// One `scene_node` row per stored node, in container then stored order.
@@ -2571,19 +2655,18 @@ impl NodeIdentity {
 ///   `RawNode::data_bytes` are the record's address and size inside the
 ///   container, and the reader checks that address against the pointer the
 ///   record itself stores, so the span is the record and not the whole file.
-/// * **The identity is the authored name path** F11-A published, prefixed by the
-///   container's own inventory key — the same `<container>.<path>` shape
-///   `cs_content::scene::SceneNodeId` derives, so a row here and a scene-graph
-///   node can never disagree about what a node is called.
-/// * **A node whose name path is not a usable key is still a row.** Where
-///   several nodes spell the same path, or where the path carries bytes the id
-///   grammar refuses, the row is keyed by
-///   [`GAMEZ_CONTAINER_RECORD`].<record offset> instead and carries an explicit
-///   [`UnsupportedReason::Unknown`] naming which of the two happened and quoting
-///   the stored path. Inventing a suffix, transliterating a name or dropping the
-///   node are all refused: F11-A's rule is that a name is never silently
-///   transliterated, and a collection may not exclude an entry it failed to
-///   complete.
+/// * **The identity is the scene module's own.** The row's id is the one
+///   [`crate::scene::SceneNodeId`] derives for the node — the container's
+///   inventory key plus the escaped authored name path, a `-i<hex>` of the stored
+///   `node_index` word on every member of a set of same-named siblings, a
+///   `-h<hex>` digest past the key bound — because [`node_identities`] calls that
+///   derivation rather than repeating it, so a row here and a scene-graph node
+///   can never disagree about what a node is called (owner ruling on task #560).
+/// * **A node the derivation refuses is still a row.** It is keyed by
+///   [`GAMEZ_CONTAINER_RECORD`].<record offset> and carries an explicit
+///   [`UnsupportedReason::Unknown`] quoting the stored path and the refusal.
+///   Dropping the node is refused: a collection may not exclude an entry it
+///   failed to complete.
 fn geometry_node_rows(
     install_hash: ContentHash,
     spelling: &str,
@@ -2605,47 +2688,28 @@ fn geometry_node_rows(
             .get(&node.index)
             .map(String::as_str)
             .unwrap_or_default();
-        // The path is a usable key only when it is this node's own alone, its parent
-        // chain terminated and the id grammar accepts the key it forms; every one
-        // of those facts is needed and none is guessed.
-        let identity = NodeIdentity::of(
-            &key,
-            path,
-            &geometry.ambiguous,
-            geometry.unterminated.contains(&node.index),
-        );
-        let use_path = identity == NodeIdentity::Path;
+        let identity =
+            geometry
+                .identities
+                .get(&node.index)
+                .ok_or_else(|| BaselineError::Identity {
+                    identity: format!("{key}.{path}"),
+                    reason: "a stored node has no derived identity".to_owned(),
+                })?;
 
         // The file that holds the bytes, then the ownership edge the record
-        // itself states. A parent whose own key is refused contributes no edge
-        // rather than an edge to an id nothing carries: the row above states the
-        // same unknown, so the hierarchy is not silently wrong.
+        // itself states.
         let mut dependencies = vec![Dependency {
             target: file_id.clone(),
             kind: DependencyKind::Static,
             provenance: observed(CLAIM_GEOMETRY_CONTAINER, &span)?,
         }];
         if let Some(parent) = node.parent {
-            let parent_path = geometry
-                .paths
-                .get(&parent)
-                .map(String::as_str)
-                .unwrap_or_default();
-            // The parent's own key is derived exactly as its own row derives it,
-            // so an edge can only ever point at an id that row really carries.
-            let parent_use_path = NodeIdentity::of(
-                &key,
-                parent_path,
-                &geometry.ambiguous,
-                geometry.unterminated.contains(&parent),
-            ) == NodeIdentity::Path;
-            let address = geometry
-                .nodes
-                .get(parent)
-                .map_or(0, |record| u64::from(record.data_offset));
-            if let Some(target) = scene_node_id(&key, parent_path, parent_use_path, address) {
+            // The parent's id is the one its own row carries, read from the same
+            // map, so an edge can only ever point at an id that row really has.
+            if let Some(target) = geometry.identities.get(&parent) {
                 dependencies.push(Dependency {
-                    target,
+                    target: target.id.clone(),
                     kind: DependencyKind::Static,
                     provenance: observed(CLAIM_NODE_PARENTAGE, &span)?,
                 });
@@ -2684,43 +2748,15 @@ fn geometry_node_rows(
         if let Some(finding) = finding {
             unsupported_reasons.push(node_mesh_issue_unknown(node.index, finding)?);
         }
-        match identity {
-            NodeIdentity::Path => {}
-            NodeIdentity::Ambiguous => {
-                unsupported_reasons.push(node_key_unknown(
-                    CLAIM_AMBIGUOUS_NODE_PATH,
-                    node.index,
-                    path,
-                    "the same container spells this authored name path for another node as well",
-                )?);
-            }
-            NodeIdentity::Unspellable => {
-                unsupported_reasons.push(node_key_unknown(
-                    CLAIM_UNSPELLABLE_NODE_PATH,
-                    node.index,
-                    path,
-                    "the content-id key this path forms is refused: it carries bytes the key \
-                     grammar does not accept, or it is longer than the key length limit",
-                )?);
-            }
-            NodeIdentity::Unterminated => {
-                unsupported_reasons.push(node_key_unknown(
-                    CLAIM_UNTERMINATED_NODE_PATH,
-                    node.index,
-                    path,
-                    "its stored parent slots do not terminate inside the node array, so the names \
-                     above are the part of that loop which fitted the walk and this row's path \
-                     names no hierarchy at all",
-                )?);
-            }
+        if let Some(refusal) = &identity.refusal {
+            unsupported_reasons.push(node_key_unknown(
+                CLAIM_REFUSED_NODE_IDENTITY,
+                node.index,
+                path,
+                refusal,
+            )?);
         }
-        let id =
-            scene_node_id(&key, path, use_path, u64::from(node.data_offset)).ok_or_else(|| {
-                BaselineError::Identity {
-                    identity: format!("{key}.{path}"),
-                    reason: "a node identity the grammar refused could not be rebuilt".to_owned(),
-                }
-            })?;
+        let id = identity.id.clone();
         rows.push(CatalogElement {
             kind: ContentKind::SceneNode,
             display_name: Some(node.name.clone()),
@@ -2758,8 +2794,8 @@ fn node_key_unknown(
         claim_id,
         reason: format!(
             "node {node} of this container stores the authored name path {path:?}, and {why}, so \
-             this row is keyed by its own record's address inside the container instead; nothing \
-             the container states says which of the nodes sharing this name is meant"
+             this row is keyed by its own record's address inside the container instead of the \
+             id the scene derivation publishes"
         ),
     })
 }
@@ -3328,8 +3364,7 @@ fn container_span(
     })
 }
 
-/// The authored name path of every stored node, keyed by its array slot, and the
-/// nodes whose parent-slot chain did not terminate.
+/// The authored name path of every stored node, keyed by its array slot.
 ///
 /// The path is the stored names joined by `.` from the root down, which is the
 /// name path F11-A publishes and `SceneGraph::build` derives. It is walked
@@ -3340,29 +3375,22 @@ fn container_span(
 /// record does not state is not walked, and the record's own array slot is never
 /// used, so identity never depends on enumeration order.
 ///
-/// A chain can only fail to terminate if the stored parent slots form a **cycle**
-/// — a node that is its own ancestor. A cycle-free chain visits each stored node
-/// at most once, so it can never hold **more** names than the array holds nodes:
-/// a walk that runs out of nodes to visit before the cursor reaches a root has
-/// found a cycle. The bound therefore counts the names a chain has consumed and
-/// stops when a chain would need one more than the array holds, which lets a
-/// chain that ends on the array's last node be a chain that ends. A node in a
-/// cycle has a name path made of the part of the loop that fitted, so its path
-/// means nothing: it is **counted** here, reported in
-/// [`GeometryContainerReport::unterminated`] and in the collection's
-/// `unterminated_parent_chain` record, and keyed by its record address with an
-/// explicit unknown, never published as a semantic path.
-fn node_name_paths(nodes: &GameZNodes) -> (BTreeMap<u32, String>, BTreeSet<u32>) {
+/// A chain can only fail to terminate if the stored parent slots form a **cycle**.
+/// The walk stops after one name per node of the array, so it ends; a node in a
+/// cycle then has a name path made of the part of the loop that fitted, which
+/// means nothing, and [`node_identities`] refuses the container's hierarchy as a
+/// whole (the scene derivation reports the cycle) instead of publishing it.
+fn node_name_paths(nodes: &GameZNodes) -> BTreeMap<u32, String> {
     let mut paths: BTreeMap<u32, String> = BTreeMap::new();
-    let mut unterminated: BTreeSet<u32> = BTreeSet::new();
     let longest = nodes.nodes.len();
     for node in &nodes.nodes {
         let mut names: Vec<&str> = Vec::new();
         let mut cursor = Some(node.index);
-        let mut loops = false;
         while let Some(current) = cursor {
+            // A chain in a cycle stops after one name per node, so the walk
+            // terminates; the container is then refused whole by
+            // [`node_identities`].
             if names.len() == longest {
-                loops = true;
                 break;
             }
             // Unreachable for a container the reader accepted: a parent slot
@@ -3373,54 +3401,10 @@ fn node_name_paths(nodes: &GameZNodes) -> (BTreeMap<u32, String>, BTreeSet<u32>)
             names.push(&record.name);
             cursor = record.parent;
         }
-        if loops {
-            unterminated.insert(node.index);
-        }
         names.reverse();
         paths.insert(node.index, names.join("."));
     }
-    (paths, unterminated)
-}
-
-/// The identity of one `scene_node`.
-///
-/// `use_path` says whether the authored name path is a usable semantic key for
-/// this node: it is only so when no other node of the same container spells it
-/// **and** the id grammar accepts it. Otherwise the identity is
-/// [`GAMEZ_CONTAINER_RECORD`].<address> instead — the node's own record address
-/// inside its container, which the reader checks against the pointer the record
-/// stores — and the caller has already attached the unknown that says so.
-fn scene_node_id(
-    container_key: &str,
-    path: &str,
-    use_path: bool,
-    address: u64,
-) -> Option<ContentId> {
-    if use_path && let Some(id) = scene_node_key(container_key, path) {
-        return Some(id);
-    }
-    ContentId::from_source(
-        ContentKind::SceneNode,
-        &format!("{container_key}.{GAMEZ_CONTAINER_RECORD}{address}"),
-    )
-    .ok()
-}
-
-/// The identity F11-A's scheme gives a name path: `<container key>.<path>`.
-///
-/// `container_key` is empty in the one caller that only asks whether a path can
-/// form a key at all; the key is then the path alone, which is the shortest form
-/// the grammar can ever be asked to accept. Nothing here shortens a path that
-/// the joined key refuses: a key over [`cs_types::content::MAX_CONTENT_KEY_LEN`]
-/// is refused here exactly as a path with a byte the grammar rejects is, because
-/// both are the store's naming not fitting an identity.
-fn scene_node_key(container_key: &str, path: &str) -> Option<ContentId> {
-    let key = if container_key.is_empty() {
-        path.to_owned()
-    } else {
-        format!("{container_key}.{path}")
-    };
-    ContentId::from_source(ContentKind::SceneNode, &key).ok()
+    paths
 }
 
 /// The identity of one `mesh`: the container's key plus the stored mesh-array
@@ -6702,10 +6686,11 @@ pub fn baseline_report_json(baseline: &Baseline) -> String {
 /// section gave the two collections, and the numbers that say what could not
 /// be derived from it.
 ///
-/// Those numbers are the point of the record. `ambiguous` and `unspellable`
-/// count nodes that **are** rows and carry an explicit unknown, so a reader of
-/// the report can tell "the store spells this name for several nodes" apart
-/// from "this node was dropped"; `absent_meshes` and `out_of_range_meshes`
+/// Those numbers are the point of the record. `refused` counts nodes that
+/// **are** rows and carry an explicit unknown, so a reader of the report can
+/// tell "the scene derivation refused this node" apart from "this node was
+/// dropped"; `disambiguated` and `digested` count the rows whose id carries a
+/// sibling disambiguator or is a digest; `absent_meshes` and `out_of_range_meshes`
 /// count the two kinds of named mesh slot no `mesh` row exists for — a stub at
 /// a position the container has, and a position it never had — as two numbers,
 /// because they are two facts about the container. Together with `mesh_rows`
@@ -6713,23 +6698,23 @@ pub fn baseline_report_json(baseline: &Baseline) -> String {
 fn geometry_container_json(container: &GeometryContainerReport, out: &mut String) {
     let _ = write!(
         out,
-        "{{\"container\":{},\"nodes\":{},\"named\":{},\"ambiguous\":{},\"unspellable\":{},\
-         \"paths\":{},\"roots\":{},\"named_meshes\":{},\"mesh_rows\":{},\"absent_meshes\":{},\
+        "{{\"container\":{},\"nodes\":{},\"named\":{},\"disambiguated\":{},\"digested\":{},\
+         \"refused\":{},\"paths\":{},\"roots\":{},\"named_meshes\":{},\"mesh_rows\":{},\"absent_meshes\":{},\
          \"out_of_range_meshes\":{},\
-         \"unterminated\":{},\"materials\":{},\"material_textures_unresolved\":{},\
+         \"materials\":{},\"material_textures_unresolved\":{},\
          \"material_references_without_record\":{},\"images\":{},\"images_unresolved\":{}}}",
         json_string(&container.spelling),
         container.nodes,
         container.named,
-        container.ambiguous,
-        container.unspellable,
+        container.disambiguated,
+        container.digested,
+        container.refused,
         container.paths,
         container.roots,
         container.named_meshes,
         container.mesh_rows,
         container.absent_meshes,
         container.out_of_range_meshes,
-        container.unterminated,
         container.materials,
         container.material_textures_unresolved,
         container.material_references_without_record,

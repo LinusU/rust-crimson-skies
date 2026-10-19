@@ -205,15 +205,15 @@ fn evidence_report_f14_d_4_writes_the_acceptance_report() {
         reported, containers,
         "one record per geometry container the installation's own diagnosis names"
     );
-    // Every parent-slot chain of all nine containers terminates inside its node
-    // array, so every name path this collection published names a real hierarchy
-    // rather than the part of a loop that fitted the walk.
+    // The scene derivation accepts the hierarchy of all nine containers, so every
+    // row carries the id the scene module gives its node and none is keyed by
+    // its record address (owner ruling on task #560).
     assert!(
         baseline
             .geometry_containers
             .iter()
-            .all(|report| report.unterminated == 0),
-        "no stored parent-slot chain loops in any of the nine containers"
+            .all(|report| report.refused == 0),
+        "the scene derivation refuses no node of the nine containers"
     );
     assert!(
         baseline
