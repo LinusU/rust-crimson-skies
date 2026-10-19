@@ -371,6 +371,158 @@ fn fit_key_bound(container: &ContentId, escaped_path: &str) -> String {
     format!("{SCENE_NODE_DIGEST_MARK}{}", &digest[..32])
 }
 
+/// What [`derive_node_identities`] works out about one node array.
+pub(crate) struct NodeIdentities {
+    /// Stored slot to position in the node array.
+    pub(crate) position_of: BTreeMap<u32, usize>,
+    /// Positions in depth-first preorder from each root, parents first.
+    pub(crate) order: Vec<usize>,
+    /// The authored name path of each position, `.`-joined and unescaped.
+    pub(crate) paths: Vec<Option<String>>,
+    /// The derived id of each position. Two positions may hold one id: that is
+    /// [`SceneError::DuplicateNodeId`], reported by [`SceneGraph::build`] and
+    /// left to the caller here, so a caller that must keep every node (the
+    /// catalog) can name exactly the nodes involved.
+    pub(crate) ids: Vec<SceneNodeId>,
+}
+
+/// Validates a node array's hierarchy and derives every node's [`SceneNodeId`].
+///
+/// This is the one implementation of the `scene_node` identity scheme:
+/// [`SceneGraph::build`] calls it, and so does the catalog's `scene_node`
+/// collection, so a row and a graph node cannot disagree about what a node is
+/// called (owner ruling on task #560).
+///
+/// # Errors
+///
+/// [`SceneError::DuplicateIndex`], [`SceneError::DanglingParent`],
+/// [`SceneError::DanglingChild`], [`SceneError::InconsistentParentage`],
+/// [`SceneError::NoRoots`], [`SceneError::Cycle`] and [`SceneError::NodeId`].
+pub(crate) fn derive_node_identities(
+    container: &ContentId,
+    nodes: &[ParsedNode],
+) -> Result<NodeIdentities, SceneError> {
+    // Stored slots must be unique before any link is trusted; they wire
+    // the hierarchy but never enter identity.
+    let mut position_of: BTreeMap<u32, usize> = BTreeMap::new();
+    for (position, node) in nodes.iter().enumerate() {
+        if position_of.insert(node.index, position).is_some() {
+            return Err(SceneError::DuplicateIndex { index: node.index });
+        }
+    }
+
+    // Link ranges, then both directions of parent↔child consistency: a
+    // node that names a parent must appear in that parent's children,
+    // and a listed child must name this node as its parent.
+    for node in nodes {
+        if let Some(parent) = node.parent {
+            let Some(&parent_position) = position_of.get(&parent) else {
+                return Err(SceneError::DanglingParent {
+                    node: node.index,
+                    parent,
+                });
+            };
+            if !nodes[parent_position].children.contains(&node.index) {
+                return Err(SceneError::InconsistentParentage {
+                    node: node.index,
+                    parent,
+                });
+            }
+        }
+        for &child in &node.children {
+            let Some(&child_position) = position_of.get(&child) else {
+                return Err(SceneError::DanglingChild {
+                    node: node.index,
+                    child,
+                });
+            };
+            if nodes[child_position].parent != Some(node.index) {
+                return Err(SceneError::InconsistentParentage {
+                    node: child,
+                    parent: node.index,
+                });
+            }
+        }
+    }
+
+    let roots: Vec<usize> = nodes
+        .iter()
+        .enumerate()
+        .filter_map(|(position, node)| node.parent.is_none().then_some(position))
+        .collect();
+    if roots.is_empty() {
+        return Err(SceneError::NoRoots);
+    }
+
+    // Depth-first from each root in stored order, keeping stored child
+    // order: assign the authored name-path and remember each node's
+    // parent position. A node is reachable at most once — consistency
+    // above forces a single parent — so a revisited node is an ownership
+    // cycle (IDENTITY-CONTENT: invalid in parent hierarchies).
+    //
+    // Two paths are carried per node: the authored one, which binding rules
+    // match on and which [`SceneNode::path`] exposes, and the escaped one,
+    // which is what an id spells. They differ only where a stored name holds
+    // a character the key grammar cannot write, and the authored name
+    // itself is never rewritten.
+    let components = sibling_components(nodes, &position_of, &roots);
+    let mut order: Vec<usize> = Vec::with_capacity(nodes.len());
+    let mut paths: Vec<Option<String>> = vec![None; nodes.len()];
+    let mut escaped: Vec<Option<String>> = vec![None; nodes.len()];
+    let mut visited = vec![false; nodes.len()];
+    for &root in &roots {
+        let mut stack: Vec<(usize, String, String)> = vec![(root, String::new(), String::new())];
+        while let Some((position, prefix, escaped_prefix)) = stack.pop() {
+            if visited[position] {
+                return Err(SceneError::Cycle {
+                    node: nodes[position].index,
+                });
+            }
+            visited[position] = true;
+            let name = &nodes[position].name;
+            let (path, key) = if prefix.is_empty() {
+                (name.clone(), components[position].clone())
+            } else {
+                (
+                    format!("{prefix}.{name}"),
+                    format!("{escaped_prefix}.{}", components[position]),
+                )
+            };
+            paths[position] = Some(path.clone());
+            escaped[position] = Some(key.clone());
+            order.push(position);
+            for &child in nodes[position].children.iter().rev() {
+                stack.push((position_of[&child], path.clone(), key.clone()));
+            }
+        }
+    }
+    // A node no root reaches has a parent chain that can only loop —
+    // every link was validated consistent — so it sits on a detached
+    // ownership cycle.
+    for (position, node) in nodes.iter().enumerate() {
+        if !visited[position] {
+            return Err(SceneError::Cycle { node: node.index });
+        }
+    }
+
+    let mut ids: Vec<SceneNodeId> = Vec::with_capacity(nodes.len());
+    for (position, key) in escaped.iter().enumerate() {
+        let id = SceneNodeId::for_escaped_path(
+            container,
+            &fit_key_bound(container, key.as_ref().expect("every node was reached")),
+            nodes[position].index,
+        )?;
+        ids.push(id);
+    }
+
+    Ok(NodeIdentities {
+        position_of,
+        order,
+        paths,
+        ids,
+    })
+}
+
 /// The stable identity of one scene node.
 ///
 /// Wraps a [`ContentId`] in the `scene_node` namespace. The key is the
@@ -1297,122 +1449,17 @@ impl SceneGraph {
             return Err(SceneError::EmptyScene);
         }
 
-        // Stored slots must be unique before any link is trusted; they wire
-        // the hierarchy but never enter identity.
-        let mut position_of: BTreeMap<u32, usize> = BTreeMap::new();
-        for (position, node) in nodes.iter().enumerate() {
-            if position_of.insert(node.index, position).is_some() {
-                return Err(SceneError::DuplicateIndex { index: node.index });
+        let NodeIdentities {
+            position_of,
+            order,
+            paths,
+            ids,
+        } = derive_node_identities(container, nodes)?;
+        let mut seen_ids: HashSet<&SceneNodeId> = HashSet::new();
+        for id in &ids {
+            if !seen_ids.insert(id) {
+                return Err(SceneError::DuplicateNodeId { id: id.clone() });
             }
-        }
-
-        // Link ranges, then both directions of parent↔child consistency: a
-        // node that names a parent must appear in that parent's children,
-        // and a listed child must name this node as its parent.
-        for node in nodes {
-            if let Some(parent) = node.parent {
-                let Some(&parent_position) = position_of.get(&parent) else {
-                    return Err(SceneError::DanglingParent {
-                        node: node.index,
-                        parent,
-                    });
-                };
-                if !nodes[parent_position].children.contains(&node.index) {
-                    return Err(SceneError::InconsistentParentage {
-                        node: node.index,
-                        parent,
-                    });
-                }
-            }
-            for &child in &node.children {
-                let Some(&child_position) = position_of.get(&child) else {
-                    return Err(SceneError::DanglingChild {
-                        node: node.index,
-                        child,
-                    });
-                };
-                if nodes[child_position].parent != Some(node.index) {
-                    return Err(SceneError::InconsistentParentage {
-                        node: child,
-                        parent: node.index,
-                    });
-                }
-            }
-        }
-
-        let roots: Vec<usize> = nodes
-            .iter()
-            .enumerate()
-            .filter_map(|(position, node)| node.parent.is_none().then_some(position))
-            .collect();
-        if roots.is_empty() {
-            return Err(SceneError::NoRoots);
-        }
-
-        // Depth-first from each root in stored order, keeping stored child
-        // order: assign the authored name-path and remember each node's
-        // parent position. A node is reachable at most once — consistency
-        // above forces a single parent — so a revisited node is an ownership
-        // cycle (IDENTITY-CONTENT: invalid in parent hierarchies).
-        //
-        // Two paths are carried per node: the authored one, which binding rules
-        // match on and which [`SceneNode::path`] exposes, and the escaped one,
-        // which is what an id spells. They differ only where a stored name holds
-        // a character the key grammar cannot write, and the authored name
-        // itself is never rewritten.
-        let components = sibling_components(nodes, &position_of, &roots);
-        let mut order: Vec<usize> = Vec::with_capacity(nodes.len());
-        let mut paths: Vec<Option<String>> = vec![None; nodes.len()];
-        let mut escaped: Vec<Option<String>> = vec![None; nodes.len()];
-        let mut visited = vec![false; nodes.len()];
-        for &root in &roots {
-            let mut stack: Vec<(usize, String, String)> =
-                vec![(root, String::new(), String::new())];
-            while let Some((position, prefix, escaped_prefix)) = stack.pop() {
-                if visited[position] {
-                    return Err(SceneError::Cycle {
-                        node: nodes[position].index,
-                    });
-                }
-                visited[position] = true;
-                let name = &nodes[position].name;
-                let (path, key) = if prefix.is_empty() {
-                    (name.clone(), components[position].clone())
-                } else {
-                    (
-                        format!("{prefix}.{name}"),
-                        format!("{escaped_prefix}.{}", components[position]),
-                    )
-                };
-                paths[position] = Some(path.clone());
-                escaped[position] = Some(key.clone());
-                order.push(position);
-                for &child in nodes[position].children.iter().rev() {
-                    stack.push((position_of[&child], path.clone(), key.clone()));
-                }
-            }
-        }
-        // A node no root reaches has a parent chain that can only loop —
-        // every link was validated consistent — so it sits on a detached
-        // ownership cycle.
-        for (position, node) in nodes.iter().enumerate() {
-            if !visited[position] {
-                return Err(SceneError::Cycle { node: node.index });
-            }
-        }
-
-        let mut ids: Vec<SceneNodeId> = Vec::with_capacity(nodes.len());
-        let mut seen_ids: HashSet<SceneNodeId> = HashSet::new();
-        for (position, key) in escaped.iter().enumerate() {
-            let id = SceneNodeId::for_escaped_path(
-                container,
-                &fit_key_bound(container, key.as_ref().expect("every node was reached")),
-                nodes[position].index,
-            )?;
-            if !seen_ids.insert(id.clone()) {
-                return Err(SceneError::DuplicateNodeId { id });
-            }
-            ids.push(id);
         }
 
         // The node records themselves, in DFS preorder (parents before
