@@ -142,6 +142,12 @@ const CINEMATIC_SHOT_MID: u8 = 2;
 const CINEMATIC_SHOT_END: u8 = 4;
 const CINEMATIC_SHOT_HANDOVER: u8 = 8;
 
+/// The cinematic seconds at which the run also takes a framebuffer screenshot
+/// of the camera script: the first scene's opening and middle, its end, the
+/// Pandora's doors opening (20.9 s), the second scene, the first-person shot
+/// and the drop (`docs/findings/2026-10-18-parity-m01-lc-cinematic-timeline.md`).
+pub const CINEMATIC_SHOT_SECONDS: [u32; 7] = [1, 8, 15, 21, 27, 33, 39];
+
 /// Frames the run settles before the first probe.
 const SETTLE_FRAMES: u32 = 30;
 /// Frames into the world phase at which the probe hides everything but the
@@ -570,6 +576,15 @@ pub struct CinematicMetrics {
     pub handed_over: bool,
 }
 
+/// What the run saw of the launch cinematic's camera script (#1665).
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct CameraMetrics {
+    /// The camera playback's own counters.
+    pub camera: super::launch_camera::LaunchCameraStats,
+    /// Scene screenshots taken at [`CINEMATIC_SHOT_SECONDS`].
+    pub shots: usize,
+}
+
 /// How far the held body may stand from where the cinematic found it,
 /// metres. **Designed:** the hold zeroes the velocity every tick, so any
 /// drift beyond a numerical hair is the body moving.
@@ -634,6 +649,8 @@ pub struct SmokeMeasurements {
     pub wingmen: Vec<WingmanSample>,
     /// The launch cinematic phase, when the run went through it.
     pub cinematic: Option<CinematicMetrics>,
+    /// The launch cinematic's camera script, when the run played it.
+    pub camera: Option<CameraMetrics>,
 }
 
 /// One pass/fail verdict with its evidence.
@@ -959,6 +976,27 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
                 MAX_CINEMATIC_DRIFT_M,
                 c.bars_on_while_playing,
                 c.bars_off_after
+            ),
+        });
+    }
+
+    if let Some(c) = &m.camera {
+        let camera = &c.camera;
+        checks.push(Check {
+            id: "launch_cinematic_camera_played".to_owned(),
+            applies: true,
+            passed: camera.frames_driven > 0
+                && camera.frames_without_frame_node == 0
+                && camera.scenes_seen == camera.scenes_total
+                && c.shots > 0,
+            detail: format!(
+                "the measured camera script drove {} frames, {} of {} scenes were on screen, \
+                 {} frames had no Pandora entity to put the pose into, {} scene screenshots",
+                camera.frames_driven,
+                camera.scenes_seen,
+                camera.scenes_total,
+                camera.frames_without_frame_node,
+                c.shots
             ),
         });
     }
@@ -1395,6 +1433,9 @@ struct SmokeData {
     cinematic_shots: u8,
     /// The frame the sampler saw the cinematic hand over.
     cinematic_ended_at: Option<u32>,
+    /// Scene screenshots requested so far, and the ones waiting for the script.
+    camera_shots: usize,
+    camera_shots_due: Vec<String>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -2005,6 +2046,7 @@ fn smoke_cinematic(
     phase: Option<Res<LaunchCinematic>>,
     bars: Option<Res<LaunchLetterbox>>,
     player: Query<&Position, With<MissionPlayerBody>>,
+    playback: Option<Res<super::launch_camera::LaunchCameraPlayback>>,
 ) {
     let Some(phase) = phase else { return };
     if config.mode != MissionSmokeMode::Scripted {
@@ -2040,6 +2082,22 @@ fn smoke_cinematic(
     }
     metrics.played_ticks = phase.elapsed_ticks();
     data.measurements.cinematic = Some(metrics);
+    // The camera script: the scene screenshots wait for the script's own
+    // seconds, counted in the phase's fixed ticks.
+    if let Some(playback) = playback.as_deref() {
+        let hz = u64::from(crate::physics::BASELINE_FIXED_HZ);
+        while let Some(seconds) = CINEMATIC_SHOT_SECONDS.get(data.camera_shots) {
+            if !phase.is_playing() || phase.elapsed_ticks() < u64::from(*seconds) * hz {
+                break;
+            }
+            data.camera_shots_due.push(format!("scene_{seconds:02}s"));
+            data.camera_shots += 1;
+        }
+        data.measurements.camera = Some(CameraMetrics {
+            camera: playback.stats(),
+            shots: data.camera_shots,
+        });
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2110,6 +2168,7 @@ fn smoke_script(
                     played + CINEMATIC_END_MARGIN_TICKS >= total,
                 ),
             ];
+            due.append(&mut data.camera_shots_due);
             if ended_for.is_none() {
                 for (bit, label, ready) in wanted {
                     if ready && data.cinematic_shots & bit == 0 {

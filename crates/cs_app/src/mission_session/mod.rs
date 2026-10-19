@@ -216,8 +216,7 @@ pub use scenario::{
 };
 pub use smoke::{
     ActorMetrics, ApproachMetrics, AudioMetrics, CINEMATIC_SHOT_SECONDS, CameraMetrics, Check,
-    CinematicMetrics,
-    DEFAULT_MISSION_CAPTURE_DIR, FlightCheckButtonMetrics, FlightCheckMetrics,
+    CinematicMetrics, DEFAULT_MISSION_CAPTURE_DIR, FlightCheckButtonMetrics, FlightCheckMetrics,
     FlightCheckTextMetrics, GunMetrics, HudMetrics, MAX_WINGMAN_DISTANCE_M, MIN_ACTOR_PIXELS,
     MIN_FLIGHT_CHECK_BUTTON_PIXELS, MIN_FLIGHT_CHECK_DRAWN_PERMILLE, MIN_FLIGHT_CHECK_TEXT_PIXELS,
     MIN_GUN_ROUNDS, MIN_MISSION_SMOKE_SECONDS, MIN_OBJECTIVE_TEXT_PIXELS,
