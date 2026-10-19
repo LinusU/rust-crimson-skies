@@ -30,10 +30,9 @@ use cs_content::ai::{DeclaredSkillTier, DifficultyTier};
 use cs_content::instant_action::{
     Declared, IaDenominator, InstantActionCatalog, InstantActionPreset, ScenarioActorSpec,
     ScenarioOptionDimension, ScenarioOptions, ScenarioParameters, ScenarioRoster,
-    ScenarioSchemaError, ScenarioSide, VictoryRules,
-    measured_ia_victory_rules, read_ia_descriptor, survey_retail_instant_action,
-    synthetic_difficulty, synthetic_instant_action_catalog, synthetic_provenance,
-    synthetic_scenario_options,
+    ScenarioSchemaError, ScenarioSide, VictoryRules, measured_ia_victory_rules, read_ia_descriptor,
+    survey_retail_instant_action, synthetic_difficulty, synthetic_instant_action_catalog,
+    synthetic_provenance, synthetic_scenario_options,
 };
 use cs_content::stunts::decode_zrd;
 use cs_content::world::WorldId;

@@ -772,7 +772,10 @@ fn lowered(condition: VictoryCondition) -> cs_app::ui::instant_action::LoweredSc
 fn snapshot(scenario: &cs_app::ui::instant_action::LoweredScenario, tick: u64) -> ScenarioSnapshot {
     ScenarioSnapshot::new(
         tick,
-        scenario.actors().iter().map(|actor| (actor.side, actor.slot)),
+        scenario
+            .actors()
+            .iter()
+            .map(|actor| (actor.side, actor.slot)),
     )
 }
 
