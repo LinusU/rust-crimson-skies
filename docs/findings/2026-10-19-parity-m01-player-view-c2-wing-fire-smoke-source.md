@@ -115,3 +115,18 @@ session `DamageResolver`, and shows the quad exactly while the published
 anim-driven sprite trail itself (`fire_lt` anchor, `dense_firetrail`
 emitter, `smokepuffer`/`firepuffer` cycles) is follow-up work: its records
 are measured above, its runtime is not yet implemented.
+
+## Owner-command smoke — what it showed
+
+`cs --cs-path $CS_GAME_DIR --mission M01 --smoke-seconds 45 --capture-dir
+private/evidence/PARITY-M01-PLAYER-VIEW-C2` on this branch's reviewed commit:
+all 14 checks pass (`passed: true`), 13 framebuffer PNGs and `report.json`
+under the capture dir. The scripted smoke **never damages
+the player** — the M01 player actor registers no damage graph, so its regions
+publish `Unknown` and both flare quads stay hidden for the whole run. That is
+the correct intact presentation (orig25.png shows no flares on a healthy
+airframe); it also means the smoke cannot yet exercise the damaged path the
+gate draws. The damage graph the smoke needs is follow-up
+PARITY-M01-PLAYER-DAMAGE-GRAPH; the sprite trail is
+PARITY-M01-PLAYER-DAMAGE-TRAIL; the gauge's texture-cycle rule is
+PARITY-M01-PLAYER-DAMAGE-GAUGE.
