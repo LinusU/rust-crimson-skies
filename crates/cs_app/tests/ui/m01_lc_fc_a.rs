@@ -139,6 +139,83 @@ fn accept_m01_lc_fc_a_fixture_build_leaves_the_loadout_unknown_with_reason_and_t
     );
 }
 
+/// `read_default_loadout` fills the committed fresh-campaign defaults
+/// through a string table the caller supplies. The ids below are invented;
+/// the layout's own bases and the committed Devastator rows decide the lines.
+#[test]
+fn accept_m01_lc_fc_a_fixture_read_default_loadout_fills_and_unknowns() {
+    let layout = cs_app::engine_facts::engine_facts()
+        .expect("the committed facts read")
+        .flight_check()
+        .layout();
+    let base = |key: &str| u32::try_from(layout.value(key)).expect("fits");
+    let label_bases = [
+        (base("gun_label_base"), "gun"),
+        (base("ammo_label_base"), "ammo"),
+        (base("rocket_label_base"), "rocket"),
+    ];
+    // A font tag on the number row is stripped, as on the title row.
+    let strings = |id: u32| -> Option<String> {
+        if id == base("item_number_string") {
+            return Some("[COUR9]%1!d!)".to_owned());
+        }
+        label_bases
+            .iter()
+            .find(|(row_base, _)| id >= *row_base && id < *row_base + 16)
+            .map(|(row_base, tag)| format!("{tag}{}", id - *row_base))
+    };
+
+    let mut v = view(
+        "T",
+        &[("PRIMARY", 1, Some("MSG_A"))],
+        &[],
+        "player_kestrel",
+        airframe("player_fury"),
+    );
+    v.read_default_loadout(&strings);
+    for slot in [&v.pilot, &v.wingman] {
+        // The committed defaults: gun slots 2, 1, 0 paired, slot 3 empty;
+        // rockets 1, 1, -, -, 1, 1, -, -, all on ammunition kind 0.
+        assert_eq!(
+            slot.guns.known().expect("the gun list reads"),
+            &[
+                "1) gun2 ammo0",
+                "2) gun2 ammo0",
+                "3) gun1 ammo0",
+                "4) gun1 ammo0",
+                "5) gun0 ammo0",
+                "6) gun0 ammo0",
+            ]
+        );
+        assert_eq!(
+            slot.rockets.known().expect("the rocket list reads"),
+            &["1) rocket1", "2) rocket1", "5) rocket1", "6) rocket1"]
+        );
+    }
+
+    // A row the string table lacks leaves only that list unknown, named.
+    let mut missing = view(
+        "T",
+        &[("PRIMARY", 1, Some("MSG_A"))],
+        &[],
+        "player_kestrel",
+        airframe("player_fury"),
+    );
+    missing.read_default_loadout(&|id| {
+        if id == base("gun_label_base") {
+            None
+        } else {
+            strings(id)
+        }
+    });
+    let Entry::Unknown { reason, .. } = &missing.pilot.guns else {
+        panic!("a label that does not read leaves the gun list unknown")
+    };
+    assert!(reason.contains("gun list"), "{reason}");
+    assert!(missing.pilot.rockets.known().is_some());
+    assert!(missing.wingman.guns.known().is_none());
+}
+
 #[test]
 fn accept_m01_lc_fc_a_fixture_unbound_wingman_is_unknown() {
     let wingman = Resolved::unknown(
@@ -191,17 +268,18 @@ fn accept_m01_lc_fc_a_retail_m01_title_objectives_and_hotspots() {
     );
     // The lists are the measured fresh-campaign defaults (M01-LC-FC-B): the
     // Devastator record's six gun lines and four rocket lines, the same for
-    // the wingman, every line numbered and labelled from the string table.
+    // the wingman, every line prefixed with the item-number string (`%1!d!)`)
+    // and labelled from the string table.
     for slot in [&v.pilot, &v.wingman] {
         let guns = slot.guns.known().expect("the gun list reads");
         let rockets = slot.rockets.known().expect("the rocket list reads");
         assert_eq!(guns.len(), 6, "{guns:?}");
         assert_eq!(rockets.len(), 4, "{rockets:?}");
         for (index, line) in guns.iter().enumerate() {
-            assert!(line.contains(&(index + 1).to_string()), "{line}");
+            assert!(line.starts_with(&format!("{})", index + 1)), "{line}");
             assert!(!line.contains('%'), "{line}");
         }
-        assert!(rockets[2].contains('5'), "{:?}", rockets[2]);
+        assert!(rockets[2].starts_with("5)"), "{:?}", rockets[2]);
     }
     assert_eq!(v.pilot.guns, v.wingman.guns);
 
