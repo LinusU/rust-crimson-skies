@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "T1601",
+ "candidate_tree": "f5ab740348c9a9019506673f0f466f4d7c67841d",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-10-19T00:04:58Z",
+ "command": {"argv": ["cargo", "test", "--locked", "-p", "cs_content", "--", "accept_t1601_", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/sonnet-2", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 1, "executed": 1, "passed": 1, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_t1601_status_bit_consumers::accept_t1601_image_pins_the_status_bit_consumers", "status": "pass", "evidence": ["cargo-test.log", "status-consumers.json"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "99a015b09487240e3ef64f6f96ac9103ff39a87eab4e5a88641eb7e893d961b1", "kind": "log"}, {"path": "status-consumers.json", "sha256": "4ae915a05ed757da5b8ddf74b02aeeafe9066d70fe04d128e38bcf89138ebe12", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "sonnet-2 (Claude Sonnet 5.5, implementer; not independent)", "method": "Acceptance suite run locally with the retail capability (CS_ENGINE_IMAGE set); this report is derived from the recorded log plus a second record, status-consumers.json, holding the engine image digest and the resolutions. MEASURED by static analysis of the owner-supplied decrypted executable (byte windows pinned in the acceptance test): SONIC and FLASH share one per-hit exposure effect (flag-word high-byte test 0x0a at 0x4b9d8c; FLASH is bit 11 passed to the exposure routine 0x42e840; the player gets parameters and the snd_stun or snd_nitro sound, any other actor is incapacitated by 0x4200d0 - controls zeroed, mode word 4, until clock plus duration); BEEPER (0x40 of the flag-word high byte at 0x4b9d95 and 0x49920a) places a timed beeper object on the hit actor, TIME from record +0x18, behind the admission gate 0x4b8ce0; BEEPER_SEEKER (0x80 at 0x441864) installs a per-step projectile callback 0x441780 that homes on the live beepers via the search 0x4b8b50. STILL UNMEASURED (none claimed): see the limitations array of status-consumers.json - the exposure formula and screen effect, the BEEPER-specific routine 0x499110, and the seeker's steering law. The claim is implemented: this awards nothing above that, and no agent review replaces the owner's human approval. Validated with tools/validate_evidence.py --require-pass."},
+ "claim": "implemented"
+}
