@@ -457,7 +457,13 @@ own budget) and the capture directory defaults to `private/mission-smoke`.
 Every frame is exactly 1/60 s of simulated time. **A scripted run is never
 `human_play`,** and nothing it measures is `verified_original`.
 
-What the script does, in order: it probes the **world** (hiding the horizon,
+What the script does, in order: it **opens on the Flight Check** the window
+holds the mission behind (#1672 `M01-LC-FC-D`) — it photographs the screen,
+hides the screen's overlay (buttons, labels, text rows) and photographs the bare
+pane, judges the two against the scene the `FlightCheckView` built, then
+delivers Fly Mission through the front-end machine (`FlightCheckPhase`). The
+mission does not tick before that, and the script's clock — so the 45 s budget
+and every frame number below — starts at Fly Mission. Then it probes the **world** (hiding the horizon,
 the weather, the precipitation, the player and the UI so the frame's off-clear
 pixels are the terrain's own), probes the **sea** differentially (one frame
 with it, one without, with the session paused so nothing moves between them),
@@ -476,6 +482,10 @@ exits **non-zero when any check fails**:
 
 | check | fails when |
 | --- | --- |
+| `flight_check_screen_drawn` | the Flight Check framebuffer is under 300 per mille off black, or the two framebuffers never arrived |
+| `flight_check_text_matches` | a text row of the scene (the mission title row `FC_T_MISSION` and the objectives row `FC_T_OBJECTIVES` must be among them) is not drawn with the text the view states, is not visible, or adds under 24 pixels in its own region between the full frame and the bare pane |
+| `flight_check_buttons_drawn` | a button of the scene (`FC_B_FLYMISSION` must be among them) is not drawn or adds under 32 pixels in its own region |
+| `flight_check_fly_mission` | the front-end machine refused Fly Mission, so the mission was never released |
 | `world_terrain_drawn` | the frame holds no world pixels off the clear colour |
 | `world_terrain_textured` | under 20 per mille of the world's pixels differ from a neighbour (local detail a texture has and a fog gradient does not), or under 24 distinct colours |
 | `world_terrain_lit` | the nearest terrain — the detail pixels of the lowest third of the lowest unbroken run of 32 px tiles that hold texture (#1591; not the frame's bottom third, which at C3's start is open water) — spans under 24 luminance levels, or the frame shows no terrain at all (a flat fill has no detail pixels); the whole-frame spread is fog, not shading |
@@ -499,6 +509,14 @@ with `CS_MISSION_BIN`):
 `cargo test -p cs_app --locked --test accept_m01_owner_smoke -- --include-ignored`.
 Its acceptance and the owner's ruling of 2026-10-17 are in
 `docs/findings/2026-10-17-m01-owner-smoke.md`.
+
+The Flight Check's regions are the drawn nodes' own layout (framebuffer
+pixels, `report.json` `flight_check.texts[].region` and `buttons[].region`); the
+three floors are **designed**. The developer capture scenario
+(`CS_MISSION_START_M`) still skips the Flight Check and says so; the
+no-teleport mode below also passes through it and records what it saw, but
+judges only the wingmen. The retail run is cited in
+`docs/findings/2026-10-19-m01-lc-fc-d-flight-check-smoke.md`.
 
 #### The no-teleport mode (#1572 `M01-SMOKE-NO-TELEPORT`)
 
