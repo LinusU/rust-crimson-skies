@@ -349,10 +349,15 @@ fn update_contacts(
     brackets: Query<Entity, With<ContactBracket>>,
     overlay: Option<Res<crate::playtest::visuals::DeveloperOverlay>>,
     windows: Query<&bevy::prelude::Window>,
+    phase: Option<Res<super::launch_cinematic::LaunchCinematic>>,
 ) {
     let overlay_on = crate::playtest::visuals::overlay_visible(overlay.as_deref());
     for entity in &brackets {
         commands.entity(entity).despawn();
+    }
+    // The launch cinematic holds the HUD back, its markers with it (#1704).
+    if phase.is_some_and(|phase| phase.is_playing()) {
+        return;
     }
     let Ok(player) = players.single() else { return };
     let rows = rows_of(
