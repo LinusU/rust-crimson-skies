@@ -29,6 +29,22 @@ authored shading — grass tops brighter, cliff bases darker.
 the one complete per-corner field: it is the surface's authored shading
 input, not a decoration.
 
+**The water tiles carry the same channel** (the owner note's question,
+measured in review). All 347 stored `ZBD/C3` meshes whose material group
+binds `wtr00000` — the sea tiles #1698 confirmed as the drawn sea (255 of
+them drawn in M01's residency) — colour all 9 225 of their corners (mean ≈
+(183, 193, 209), bluish-grey); all 2 845 non-water stored material groups
+colour theirs too. The `slice_groups` drop was therefore the sea's defect
+as much as the islands': the pre-fix "hard-edged dark-navy and pale-teal
+polygons" were the water texture lit by the designed sun with its authored
+shading thrown away. The same fix covers both, so this task cites the
+smoke's sea probe frames beside `first_control` — while the sea's
+*remaining* mismatch (still-edged polygon tiles where the original is a
+smooth mottled sheet,
+`docs/findings/2026-10-19-m01-sea-source-reconcile.md`) is the tile
+geometry/mapping and the unplayed `wtr00000…15` cycle, not a missing
+channel.
+
 ## Measured — the original engine's stored-colour rule
 
 `0x4bc350`, `data/owner-static/engine-facts.toml` `colour_byte_scale`
@@ -117,6 +133,9 @@ an elapsed-time/position difference, not a binding claim.
   difference is fog, FOV, or flight position is unmeasured.
 - Sky and sea differences from the #1697 comparison (pale grey sky, flat
   teal sea) are separate bindings — atmo tasks own them; this task changed
-  no horizon, fog, sunlight or sea code.
+  no horizon, fog, sunlight or sea-specific code. The sea tiles do draw
+  their stored corner colours now (shared channel, measured above); what
+  stays unmatched is the tile look itself, tracked by the sea-source
+  finding.
 
 Nothing here is `verified_original`.
