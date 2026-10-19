@@ -71,6 +71,38 @@ Required task-test prefix: `accept_f45_d_`. Minimum scenario: Capture and review
 
 Before editing, list the specific functions/files and one observable failure. If the slice exceeds one format variant, one focused system behavior or one bounded UI path, follow TASK-SPLITTING.md rather than producing a giant change. Preserve all parent acceptance criteria.
 
+## Front-end screen set and state table (owner decision, 2026-10-18, #1457)
+
+The front end mirrors the original's screen set rather than the earlier designed
+`NewProfile` / `ContinueProfile` / `OpenSettings` / `Quit` menu. The original
+`MainMenu` (`ASSETS/LAYOUT.CSV`) has six buttons, and the state table's main menu
+has one row for each, in this order (the original focus order is unread, so the
+order is a design choice):
+
+| Original button | Action | Leads to |
+| --- | --- | --- |
+| Campaign | `OpenCampaign` | `ProfileSelect` (the profile list) |
+| Instant Action | `OpenInstantAction` | `IaSelect` |
+| Multiplayer | `OpenLobby` | `Lobby` |
+| Preferences | `OpenSettings` | `Settings` |
+| Credits | `OpenCredits` | `Credits` (new; `Back` returns to the menu) |
+| Quit | `Quit` | exits |
+
+The new/continue profile choice is no longer a main-menu button. It is made on
+`ProfileSelect` (`NewProfile` / `ContinueProfile`, which stay on that screen and
+set the intent `ConfirmProfile` needs), because the original Campaign button leads
+to a profile list. What that original screen contains is unread, so carrying the
+choice there is a stated design choice, not an original fact.
+
+A transition is bound to an original button only where the screen script measures
+it. Today that is `terminate` -> `Quit` and the buttons that start a paired screen
+script. Every other original button (anything whose handler goes through
+`callback($$X$$, n)` or `mail(...)`) stays an unbound transition with its verbatim
+handler statement. Focus order, movie backdrops and the original screens with no
+counterpart yet (Save/Load, Momento selection, Plane name/selection, Ordinance
+layout) stay recorded unknowns; see
+`docs/findings/2026-10-19-f45-a-1-original-screen-set.md`.
+
 ## Evidence and completion
 
 Record the actual input fingerprint and consumer trace. Synthetic fixtures alone cannot certify original-data behavior.
