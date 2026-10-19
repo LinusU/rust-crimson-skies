@@ -2599,7 +2599,7 @@ fn node_identities(
     }
     let mut identities = refuse(
         nodes,
-        "the scene derivation gives this node an id another node of the container derives as          well (SceneError::DuplicateNodeId)",
+        "the scene derivation gives this node an id another node of the container derives as well (SceneError::DuplicateNodeId)",
         &|position| shared[derived.ids[position].as_content_id()] > 1,
     )?;
     for (position, node) in nodes.nodes.iter().enumerate() {
