@@ -1,7 +1,8 @@
 # #1698 M01-SEA-SOURCE-RECONCILE: what draws M01's sea
 
-Date: 2026-10-19. Implementer: `claude-2`; no independent review yet. Nothing
-here is `verified_original`; the original executable did not run.
+Date: 2026-10-19. Implementer: `claude-2`; reviewed by `swe2-max-1` (SWE-2
+Max, fresh context) with `retail,gpu,audio`. Nothing here is
+`verified_original`; the original executable did not run.
 
 ## Measured
 
@@ -35,12 +36,15 @@ plane minus frame without plane and tiles) and the whole sea does too.
 
 ## Not matched to the original (unmet)
 
-The captured sea frame does not look like `private/ref-drydock/m01/orig25.png`
-(only `orig25.png` exists in that directory; there is no `orig70.png`): the
-tiles read as hard-edged dark-navy and pale-teal polygons, where the original
-is one continuous mid-teal sea with a soft shading. The probe frame parks the
-fog and hides the dome, so it is not a player's frame; the player's frame
-(`frame_00300_hud.png` in the same directory) was not compared pixel for pixel.
+The captured sea frame does not look like `private/ref-drydock/m01/orig25.png`:
+the tiles read as hard-edged dark-navy and pale-teal polygons, where the
+original is one continuous mid-teal sea with a soft shading. Review correction:
+`orig70.png` **does** exist in that directory (the implementer's machine
+lacked it); it shows the original's sea from above as a soft mottled
+light-blue sheet — same verdict, ours is still hard-edged two-tone polygons.
+The probe frame parks the fog and hides the dome, so it is not a player's
+frame; the player's frame (`frame_00300_hud.png` in the same directory) was
+not compared pixel for pixel.
 Cause of the two tones is **unknown** (candidates: per-tile lighting or normals,
 tiles at differing altitudes, the 16-frame cycle not played). Follow-up needed.
 

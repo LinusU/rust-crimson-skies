@@ -466,7 +466,9 @@ mission does not tick before that, and the script's clock — so the 45 s budget
 and every frame number below — starts at Fly Mission. Then it probes the **world** (hiding the horizon,
 the weather, the precipitation, the player and the UI so the frame's off-clear
 pixels are the terrain's own), probes the **sea** differentially (one frame
-with it, one without, with the session paused so nothing moves between them),
+with everything, one without the horizon plane so only the world's own water
+tiles remain, one without either, with the session paused so nothing moves
+between them),
 **places the player near every spawned actor** in turn (a test placement, the
 same way `CS_MISSION_START_M` overrides a capture's start — the F24 law
 re-seeds from the body every fixed tick, so the write is the pose the next tick
