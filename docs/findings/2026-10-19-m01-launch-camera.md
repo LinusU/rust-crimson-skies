@@ -21,9 +21,8 @@ entity (scale dropped). The chase rig keeps resolving underneath, so control ret
 without a swing. `compose` installs it with the phase; a capture scenario and the
 no-teleport smoke still start flying directly.
 
-The scripted owner-command smoke now **sits through the cinematic** (control is
-held, nothing is probed), screenshots it at 1, 8, 15, 21, 27, 33 and 39 s, then
-runs its old script after 30 settle frames. A new check
+The scripted owner-command smoke sits through the cinematic (#1702's phase). This
+task adds screenshots `scene_<s>s` at 1, 8, 15, 21, 27, 33 and 39 s of it. A new check
 `launch_cinematic_camera_played` needs frames driven, every scene seen, the
 Pandora entity found and a screenshot taken.
 
@@ -40,10 +39,10 @@ Pandora entity found and a screenshot taken.
 ## Smoke evidence (2026-10-19, release build, this branch)
 
 `cs --cs-path <retail> --mission M01 --smoke-seconds 45 --capture-dir
-private/evidence/PARITY-M01-LC-CAMERA`: 19 checks (the run now also passes the Flight Check), 0 failed, 2873 frames, the
-camera drove 2440 frames, 4 of 4 scenes. Screenshots (private, not committed):
-`frame_00061_cinematic_01s.png` (the Pandora from behind with the letterbox bars,
-as the owner's Drydock frame `d1`) and `frame_01261_cinematic_21s.png` (alongside the
+private/evidence/PARITY-M01-LC-CAMERA`: 20 checks (the run also passes the Flight Check and #1702's phase check), 0 failed,
+2882 frames, the camera drove 2441 frames, 4 of 4 scenes. Screenshots (private, not committed):
+`frame_00062_scene_01s.png` (the Pandora from behind with the letterbox bars,
+as the owner's Drydock frame `d1`) and `frame_01262_scene_21s.png` (alongside the
 hull and rigs, scene 2).
 
 ## Not covered, and why
