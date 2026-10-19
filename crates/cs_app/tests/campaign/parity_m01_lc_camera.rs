@@ -10,7 +10,7 @@ use cs_app::cinematics::launch_camera::{
     LaunchCameraScript, VariantDraw, measure_launch_camera, pick_variant,
 };
 use cs_app::mission_session::{
-    CinematicMetrics, LaunchCameraStats, SmokeMeasurements, camera_in_world,
+    CameraMetrics, LaunchCameraStats, SmokeMeasurements, camera_in_world,
     evaluate_mission_smoke as evaluate,
 };
 use cs_types::install::RelativePath;
@@ -114,7 +114,7 @@ fn accept_parity_m01_lc_camera_smoke_judges_the_cinematic_only_when_it_ran() {
             false,
         ),
     ] {
-        m.cinematic = Some(CinematicMetrics { camera, shots });
+        m.camera = Some(CameraMetrics { camera, shots });
         let checks = evaluate(&m);
         let check = checks
             .iter()
