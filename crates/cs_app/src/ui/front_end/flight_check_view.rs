@@ -427,6 +427,7 @@ fn string_or_missing(string: &dyn Fn(u32) -> Option<String>, id: u64) -> Result<
     u32::try_from(id)
         .ok()
         .and_then(string)
+        .map(|text| strip_font_tag(&text).to_owned())
         .ok_or_else(|| format!("string row {id} is missing or does not decode"))
 }
 
