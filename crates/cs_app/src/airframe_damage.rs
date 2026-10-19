@@ -27,6 +27,7 @@ use bevy::prelude::{Entity, Visibility, World};
 use cs_sim::damage::{ActorId, DamageNodeKey, DamageResolver, PartState};
 
 use crate::scene::SceneGeneration;
+use crate::weapons::SessionDamageResolver;
 
 /// One of the airframe's four measured damage regions.
 ///
@@ -173,13 +174,17 @@ pub fn apply_region_damage_state(
 /// (PARITY-M01-PLAYER-VIEW-C2).
 ///
 /// `planes.zbd` stores one single-quad mesh per wingtip — the player's
-/// `wing_flare1` (slot 208, mesh 105) and `wing_flare2` (slot 209, mesh 106),
-/// both textured `oil_liteflare.tif` — under `healthy > dontmove`
-/// (`docs/findings/2026-10-19-parity-m01-player-view-c2-wing-fire-smoke-source.md`).
-/// The owner capture `orig25.png` shows no flare on the intact aircraft and
-/// `orig70.png` shows the fire anchored at the damaged left wingtip, so the
-/// quads are damage-gated in the original. The particle trail behind them
-/// (rate, lifetime, size, smoke puffs) is unmeasured and recorded unknown.
+/// `wing_flare1` (slot 208, mesh 105, port tip) and `wing_flare2` (slot 209,
+/// mesh 106, starboard tip; handedness measured against the `l_aileron*`/
+/// `r_aileron*` translations) — both textured `oil_liteflare.tif` under
+/// `healthy > dontmove`. The vehicle record's `injure_anims` bind the quads
+/// to the original's `*_firetrail`/`fuel_trail` anim effects
+/// (`docs/findings/2026-10-19-parity-m01-player-view-c2-wing-fire-smoke-source.md`),
+/// the owner capture `orig25.png` shows no flare on the intact aircraft and
+/// `orig70.png` shows the fire at the damaged port wingtip, so the quads are
+/// damage-gated in the original. The anim-driven sprite trail itself is
+/// follow-up work; its emitter parameters are unmeasured and recorded
+/// unknown.
 ///
 /// The marker rides on the entity that draws the quad and carries the
 /// measured region it answers to; [`update_wing_flares`] declares the
@@ -203,32 +208,19 @@ pub struct WingFlare {
 /// many flares changed visibility.
 #[must_use]
 pub fn update_wing_flares(world: &mut World) -> u32 {
-    let session = world
-        .get_resource::<crate::mission_session::MissionWeapons>()
-        .map(|weapons| (weapons.player(), weapons.generation()));
-    let flares: Vec<(Entity, AirframeDamageRegion, PartState)> = world
+    declare_wing_flare_bindings(world);
+    let flares: Vec<(Entity, PartState)> = world
         .iter_entities()
         .filter_map(|entity| {
-            let flare = entity.get::<WingFlare>()?;
+            entity.get::<WingFlare>()?;
             let state = entity
                 .get::<RegionDamagePresentation>()
                 .map_or(PartState::Unknown, |record| record.state);
-            Some((entity.id(), flare.region, state))
+            Some((entity.id(), state))
         })
         .collect();
     let mut changed = 0;
-    for (entity, region, state) in flares {
-        if let Some((actor, generation)) = session
-            && world.get::<RegionDamageBinding>(entity).is_none()
-            && let Ok(node) = DamageNodeKey::new(region.node_name())
-        {
-            world.entity_mut(entity).insert(RegionDamageBinding {
-                actor,
-                region,
-                node,
-                generation,
-            });
-        }
+    for (entity, state) in flares {
         let wanted = match state {
             PartState::Damaged | PartState::Destroyed => Visibility::Inherited,
             PartState::Unknown | PartState::Intact => Visibility::Hidden,
@@ -239,6 +231,72 @@ pub fn update_wing_flares(world: &mut World) -> u32 {
         }
     }
     changed
+}
+
+/// Declares the [`RegionDamageBinding`] of every [`WingFlare`] that lacks one.
+///
+/// The flare entities spawn with the player body, before `MissionWeapons`
+/// names the session's player actor and generation, so the spawn path cannot
+/// stamp the binding itself. The first pass that can read the marker declares
+/// it — the measured region's node name on the player actor of the current
+/// generation, never a name or a position derived at runtime.
+fn declare_wing_flare_bindings(world: &mut World) {
+    let Some((actor, generation)) = world
+        .get_resource::<crate::mission_session::MissionWeapons>()
+        .map(|weapons| (weapons.player(), weapons.generation()))
+    else {
+        return;
+    };
+    let unbound: Vec<(Entity, AirframeDamageRegion)> = world
+        .iter_entities()
+        .filter_map(|entity| {
+            let flare = entity.get::<WingFlare>()?;
+            entity
+                .get::<RegionDamageBinding>()
+                .is_none()
+                .then_some((entity.id(), flare.region))
+        })
+        .collect();
+    for (entity, region) in unbound {
+        if let Ok(node) = DamageNodeKey::new(region.node_name()) {
+            world.entity_mut(entity).insert(RegionDamageBinding {
+                actor,
+                region,
+                node,
+                generation,
+            });
+        }
+    }
+}
+
+/// The scheduled driver of the airframe damage visual (PARITY-M01-PLAYER-VIEW-C2).
+///
+/// One scheduled step declares every flare's [`RegionDamageBinding`], then
+/// publishes every bound actor's [`RegionDamagePresentation`] through
+/// [`apply_region_damage_state`] against the session's own
+/// [`SessionDamageResolver`], then lets [`update_wing_flares`] gate each
+/// measured quad on the record that names it — declare, publish, gate, so a
+/// fresh binding meets its record in the same pass. Both passes are
+/// idempotent and convergent, so a frame in which the authority published
+/// nothing new changes nothing; with no session resolver installed — the
+/// synthetic playtest — the publish is skipped and the gate still keeps a
+/// declared binding's visibility in step with its existing record.
+pub fn drive_airframe_damage_visuals(world: &mut World) {
+    declare_wing_flare_bindings(world);
+    let mut actors: Vec<ActorId> = world
+        .iter_entities()
+        .filter_map(|entity| entity.get::<RegionDamageBinding>().map(|b| b.actor))
+        .collect();
+    actors.sort_unstable();
+    actors.dedup();
+    if !actors.is_empty() && world.contains_resource::<SessionDamageResolver>() {
+        world.resource_scope(|world, damage: bevy::prelude::Mut<SessionDamageResolver>| {
+            for actor in actors {
+                let _ = apply_region_damage_state(world, damage.resolver(), actor);
+            }
+        });
+    }
+    let _ = update_wing_flares(world);
 }
 
 /// Drops every presentation record of `actor` and reports how many went.

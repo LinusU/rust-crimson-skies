@@ -16,10 +16,11 @@ use std::path::PathBuf;
 use bevy::prelude::{Entity, Visibility, World};
 use cs_app::airframe_damage::{
     AirframeDamageRegion, RegionDamageBinding, RegionDamagePresentation, WingFlare,
-    apply_region_damage_state, update_wing_flares,
+    apply_region_damage_state, drive_airframe_damage_visuals, update_wing_flares,
 };
 use cs_app::damage::{lower_graph, lower_policy};
 use cs_app::scene::SceneGeneration;
+use cs_app::weapons::SessionDamageResolver;
 use cs_content::damage::declared_synthetic_airframe_damage;
 use cs_sim::damage::{
     ActorId, DamageChannel, DamageNodeKey, DamageResolver, HitEvent, HitEventId, PartState,
@@ -57,7 +58,7 @@ fn registered() -> DamageResolver {
     resolver
 }
 
-fn hit(resolver: &mut DamageResolver, node: &DamageNodeKey, damage: f64) {
+fn hit(resolver: &mut DamageResolver, target: ActorId, node: &DamageNodeKey, damage: f64) {
     let event = HitEvent::try_new(
         HitEventId {
             session: session(),
@@ -66,7 +67,7 @@ fn hit(resolver: &mut DamageResolver, node: &DamageNodeKey, damage: f64) {
             sequence: 0,
         },
         None,
-        actor(),
+        target,
         node.clone(),
         DamageChannel::Internal,
         damage,
@@ -118,6 +119,7 @@ fn accept_parity_m01_player_view_c2_flare_shows_only_when_damaged_or_destroyed()
 
     hit(
         &mut resolver,
+        actor(),
         &key(SYNTHETIC_ENGINE_NODE),
         SYNTHETIC_ENGINE_INTEGRITY / 4.0,
     );
@@ -132,6 +134,7 @@ fn accept_parity_m01_player_view_c2_flare_shows_only_when_damaged_or_destroyed()
 
     hit(
         &mut resolver,
+        actor(),
         &key(SYNTHETIC_ENGINE_NODE),
         SYNTHETIC_ENGINE_INTEGRITY,
     );
@@ -185,6 +188,111 @@ fn accept_parity_m01_player_view_c2_unpublished_flare_stays_hidden() {
     assert_eq!(visibility(&world, quad), Visibility::Hidden);
 }
 
+/// The scheduled driver — the production Update pass — declares the binding
+/// the spawn path could not, publishes the C1 record from the session's own
+/// resolver, and gates the quad, all inside one pass and with no test-side
+/// publish in between.
+#[test]
+fn accept_parity_m01_player_view_c2_scheduled_driver_declares_publishes_and_gates() {
+    use cs_app::mission_session::open_mission_weapons;
+    use cs_sim::time::TickRate;
+
+    let mut world = World::new();
+    let generation = SceneGeneration::default().next();
+    let sessions = open_mission_weapons(
+        session(),
+        TickRate::new(60).expect("a nonzero tick rate"),
+        generation,
+    )
+    .expect("the mission weapon session opens");
+    let player = sessions.mission.player();
+    sessions.install(&mut world).expect("the sessions install");
+
+    // The session resolver serves the player against the synthetic graph.
+    let declared = declared_synthetic_airframe_damage();
+    let graph = lower_graph(&declared).expect("the declared graph lowers");
+    let policy = lower_policy(&declared).expect("the declared policy lowers");
+    world
+        .resource_mut::<SessionDamageResolver>()
+        .resolver_mut()
+        .register_actor(player, graph, policy)
+        .expect("the player registers");
+
+    // One flare arrives the way the player body spawns it: marked `WingFlare`,
+    // hidden, with no binding yet. Its region names `leftwingdamage`, which
+    // the synthetic graph does not describe — the record must publish
+    // `Unknown` and the quad must stay hidden, never guessed `Intact`.
+    let unbound = world
+        .spawn((
+            WingFlare {
+                region: AirframeDamageRegion::LeftWing,
+            },
+            Visibility::Hidden,
+        ))
+        .id();
+    // A second flare carries the binding the spawn path declares when one is
+    // known, aimed at the graph's engine node.
+    let bound = world
+        .spawn((
+            WingFlare {
+                region: AirframeDamageRegion::RightWing,
+            },
+            Visibility::Hidden,
+            RegionDamageBinding {
+                actor: player,
+                region: AirframeDamageRegion::RightWing,
+                node: key(SYNTHETIC_ENGINE_NODE),
+                generation,
+            },
+        ))
+        .id();
+
+    drive_airframe_damage_visuals(&mut world);
+    let binding = world
+        .get::<RegionDamageBinding>(unbound)
+        .expect("the driver declared the binding");
+    assert_eq!(binding.actor, player);
+    assert_eq!(binding.node, key("leftwingdamage"));
+    assert_eq!(binding.generation, generation);
+    assert_eq!(
+        world
+            .get::<RegionDamagePresentation>(unbound)
+            .map(|r| r.state),
+        Some(PartState::Unknown),
+        "an undescribed node publishes Unknown"
+    );
+    assert_eq!(visibility(&world, unbound), Visibility::Hidden);
+    assert_eq!(
+        world
+            .get::<RegionDamagePresentation>(bound)
+            .map(|r| r.state),
+        Some(PartState::Intact)
+    );
+    assert_eq!(visibility(&world, bound), Visibility::Hidden);
+
+    // Damage the graph reports flips the quad on the next scheduled pass —
+    // the whole loop inside the driver, no test-side publish between.
+    hit(
+        world.resource_mut::<SessionDamageResolver>().resolver_mut(),
+        player,
+        &key(SYNTHETIC_ENGINE_NODE),
+        SYNTHETIC_ENGINE_INTEGRITY / 4.0,
+    );
+    drive_airframe_damage_visuals(&mut world);
+    assert_eq!(
+        world
+            .get::<RegionDamagePresentation>(bound)
+            .map(|r| r.state),
+        Some(PartState::Damaged)
+    );
+    assert_eq!(
+        visibility(&world, bound),
+        Visibility::Inherited,
+        "the scheduled pass shows the damaged quad"
+    );
+    assert_eq!(visibility(&world, unbound), Visibility::Hidden);
+}
+
 /// **M01's player carries the two measured fire quads**, hidden until their
 /// regions' C1 records report damage — measured `wing_flare1`/`wing_flare2`
 /// under `dontmove`, textured `oil_liteflare.tif`.
@@ -210,34 +318,44 @@ fn accept_parity_m01_player_view_c2_retail_player_carries_the_measured_flare_qua
         .world()
         .resource::<cs_app::mission_session::MissionWeapons>()
         .player();
-    let resolver = app
-        .world()
-        .resource::<cs_app::weapons::SessionDamageResolver>()
-        .resolver()
-        .clone();
     let world = app.world_mut();
-    // The player body spawns before `MissionWeapons` is installed, so the
-    // flare pass declares each quad's region binding on its first run.
-    let _ = update_wing_flares(world);
+    // `app.update()` above already ran the scheduled driver: each quad's
+    // binding was declared and its C1 record published before this test reads
+    // a thing — no pass runs here by hand.
     let body = world
         .query_filtered::<Entity, bevy::prelude::With<MissionPlayerBody>>()
         .single(world)
         .expect("one player body");
-    let mut flares: Vec<(Entity, u32, AirframeDamageRegion, Visibility)> = world
+    let mut flares: Vec<(
+        Entity,
+        u32,
+        AirframeDamageRegion,
+        Visibility,
+        PartState,
+        ActorId,
+    )> = world
         .query_filtered::<(
             Entity,
             &AircraftPart,
             &RegionDamageBinding,
+            &RegionDamagePresentation,
             &Visibility,
             &bevy::prelude::ChildOf,
         ), bevy::prelude::With<WingFlare>>()
         .iter(world)
-        .filter(|(_, _, _, _, child)| child.parent() == body)
-        .map(|(entity, part, binding, visibility, _)| {
-            (entity, part.node_slot, binding.region, *visibility)
+        .filter(|(_, _, _, _, _, child)| child.parent() == body)
+        .map(|(entity, part, binding, record, visibility, _)| {
+            (
+                entity,
+                part.node_slot,
+                binding.region,
+                *visibility,
+                record.state,
+                binding.actor,
+            )
         })
         .collect();
-    flares.sort_by_key(|(_, slot, _, _)| *slot);
+    flares.sort_by_key(|(_, slot, _, _, _, _)| *slot);
     assert_eq!(flares.len(), 2, "exactly the two measured fire quads");
     assert_eq!(
         flares[0].1, MISSION_PLAYER_FLARE_LEFT_NODE_SLOT,
@@ -249,11 +367,18 @@ fn accept_parity_m01_player_view_c2_retail_player_carries_the_measured_flare_qua
         "slot 209 is wing_flare2"
     );
     assert_eq!(flares[1].2, AirframeDamageRegion::RightWing);
-    for (_, _, _, visibility) in &flares {
+    for (_, _, _, visibility, state, bound_actor) in &flares {
+        assert_eq!(bound_actor, &player, "the quad binds the player actor");
+        assert_eq!(
+            *state,
+            PartState::Unknown,
+            "the player actor has no damage graph yet, so the scheduled pass \
+             published Unknown — never a guessed Intact"
+        );
         assert_eq!(
             *visibility,
             Visibility::Hidden,
-            "the player starts intact; no fire quad draws"
+            "the player starts undamaged; no fire quad draws"
         );
     }
     // The measured node names are the bindings' damage nodes.
@@ -261,19 +386,52 @@ fn accept_parity_m01_player_view_c2_retail_player_carries_the_measured_flare_qua
         assert!(
             flares
                 .iter()
-                .any(|(_, _, region, _)| region.node_name() == expected),
+                .any(|(_, _, region, _, _, _)| region.node_name() == expected),
             "a flare binds {expected}"
         );
     }
 
-    // The C1 pass over the real session resolver publishes Unknown for the
-    // player (its actor has no damage graph yet), so the flares stay hidden —
-    // the same presentation orig25.png captures.
-    let _ = apply_region_damage_state(world, &resolver, player);
-    assert_eq!(update_wing_flares(world), 0);
-    for (_, _, _, visibility) in &flares {
-        assert_eq!(*visibility, Visibility::Hidden);
+    // A second scheduled frame changes nothing: the driver is convergent, so
+    // the flare pass reports no visibility changes.
+    app.update();
+    assert_eq!(
+        update_wing_flares(app.world_mut()),
+        0,
+        "the scheduled driver already settled the quads"
+    );
+
+    // The anchor measurement the finding records: the airframe's `l_aileron*`
+    // parts sit at negative x and its `r_aileron*` at positive x, so the port
+    // wingtip is −x. `wing_flare1` (slot 208) is the port quad and
+    // `wing_flare2` (slot 209) the starboard one.
+    let report = app
+        .world()
+        .resource::<cs_app::mission_session::MissionPlayerVisual>()
+        .report();
+    let at = |name: &str| {
+        report
+            .parts
+            .iter()
+            .find(|part| part.node_name == name)
+            .unwrap_or_else(|| panic!("{name} is a drawn part"))
+            .composed_translation_m
+    };
+    for port in ["l_aileron1", "l_aileron2", "l_elevator1"] {
+        assert!(
+            at(port)[0] < 0.0,
+            "{port} sits on the port side (x < 0), got {:?}",
+            at(port)
+        );
     }
+    for starboard in ["r_aileron1", "r_aileron2", "r_elevator1"] {
+        assert!(
+            at(starboard)[0] > 0.0,
+            "{starboard} sits on the starboard side (x > 0), got {:?}",
+            at(starboard)
+        );
+    }
+    assert_eq!(at("wing_flare1")[0].signum(), -1.0, "slot 208 is port");
+    assert_eq!(at("wing_flare2")[0].signum(), 1.0, "slot 209 is starboard");
 
     teardown(&mut app);
 }
