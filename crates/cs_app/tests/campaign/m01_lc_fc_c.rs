@@ -110,7 +110,7 @@ fn loadout() -> Loadout {
     }
 }
 
-fn phase(title: &str) -> FlightCheckPhase {
+pub(crate) fn phase(title: &str) -> FlightCheckPhase {
     FlightCheckPhase::open(scene(title), loadout()).expect("the phase opens")
 }
 

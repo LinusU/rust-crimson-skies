@@ -53,6 +53,7 @@ mod campaign {
     mod parity_m01_atmo_c;
     mod parity_m01_clouds;
     mod parity_m01_island_shading;
+    mod parity_m01_launch_cinematic;
     mod parity_m01_sea_source;
     mod vs_m01_rt_evidence_audio;
     mod vs_m01_rt_host;
