@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "F49-D.02-FU-SLOTS",
+ "candidate_tree": "d3e01d0f7b678574e44c98719fe9daba1e0101be",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.19.1", "avian": "0.7.0"},
+ "created_at": "2026-10-19T15:23:36Z",
+ "command": {"argv": ["cargo", "test", "--locked", "-p", "cs_content", "--", "accept_f49_d_02_slot", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/swe2-max-1", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d", "engine_image_sha256": "43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75", "engine_image_len": 2580480},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 6, "executed": 6, "passed": 6, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_f49_d_02_fu_slots::accept_f49_d_02_slot_domains_are_the_measured_ones", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f49_d_02_fu_slots::accept_f49_d_02_slot_selection_conflicts_with_a_named_loadout", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f49_d_02_fu_slots::accept_f49_d_02_slot_selection_replaces_the_named_loadout", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f49_d_02_fu_slots::accept_f49_d_02_slots_on_an_unmeasured_airframe_are_refused", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f49_d_02_fu_slots::accept_f49_d_02_slots_the_airframe_lacks_are_refused", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f49_d_02_fu_slots::accept_f49_d_02_slot_surface_is_remeasured_against_retail", "status": "pass", "evidence": ["cargo-test.log"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "04c88854d69a0d3a1ef20ccab7233cd1b74454062dd5f61bc1e4a746b92dff21", "kind": "log"}, {"path": "slot-surface.json", "sha256": "32b621c2a68d1b3fef648b32bc73576d6a03d92a061872989114ef89543c65e2", "kind": "json"}],
+ "unknowns": [],
+ "review": {"identity": "pending: written by the implementing agent swe2-max-1. The reviewing agent regenerates this report on the reviewed commit and records their identity (CS_EVIDENCE_REVIEW); no agent review awards more than `checked`.", "method": "acceptance suite run locally with the retail capability and the owner-supplied decrypted engine image; every field is derived from the recorded log, production discovery of $CS_GAME_DIR, the production engine-image loader, rustc and Cargo.lock. The measured per-slot surface (record layout, callback semantics, selector table, per-airframe defaults) is static image analysis — provenance static, never verified_original; no original executable ran. LIMITATIONS: the selector rows' aux dword, the three unlock-override globals' names, and which campaign-progress value an Instant Action session sees are unmeasured (recorded in docs/findings/2026-10-19-f49-d-02-fu-slots.md); no consumer lowers SlotOrdnance into a spawned scenario yet (LOADOUT_RESOLVING_TASK). Validated with tools/validate_evidence.py --require-pass."},
+ "claim": "implemented"
+}
