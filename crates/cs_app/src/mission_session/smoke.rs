@@ -19,6 +19,10 @@
 //!
 //! | check id | what it measures |
 //! | --- | --- |
+//! | `flight_check_screen_drawn` | the framebuffer taken while the Flight Check holds the mission shows the screen (#1672) |
+//! | `flight_check_text_matches` | every text row of the Flight Check, the mission title and the objectives among them, is drawn as the `FlightCheckView` states it and adds pixels in its own region |
+//! | `flight_check_buttons_drawn` | every button of the Flight Check, Fly Mission among them, adds pixels in its own region |
+//! | `flight_check_fly_mission` | Fly Mission, delivered through the front-end machine, released the mission |
 //! | `world_terrain_drawn` | the frame around the spawn holds world pixels off the window's clear colour |
 //! | `world_terrain_textured` | those pixels hold more than one flat grey (distinct colours) |
 //! | `world_terrain_lit` | those pixels carry a luminance spread (shading, not a flat fill) |
@@ -72,6 +76,7 @@ use cs_content::world::SurfaceRole;
 
 use super::compose::MissionPlayerBody;
 use super::evidence::{CaptureRefusal, clear_colour_encodings, count_world_pixels, same_colour};
+use super::flight_check::{FlightCheckPhase, PhaseResponse, ScreenOverlay};
 use super::host::MissionHost;
 use super::lifecycles::ObjectiveLifecycles;
 use super::weapons::MissionWeaponReport;
@@ -245,6 +250,34 @@ pub const WINGMAN_SAMPLE_SECONDS: [u32; 5] = [1, 5, 10, 20, 30];
 /// every measured distance so the value can be re-judged.
 pub const MAX_WINGMAN_DISTANCE_M: f64 = 500.0;
 
+/// Frames the Flight Check is up before its first framebuffer is taken: the
+/// screen is spawned at startup and laid out over the first frames.
+const FLIGHT_CHECK_SHOT_OFFSET: u32 = 20;
+/// The frame the overlay (buttons, labels, text rows) is hidden for the bare
+/// pane.
+const FLIGHT_CHECK_BARE_OFFSET: u32 = 24;
+/// The frame the bare pane's framebuffer is taken.
+const FLIGHT_CHECK_BARE_SHOT_OFFSET: u32 = 28;
+/// The least share of the Flight Check frame that must be off black, in parts
+/// per thousand. **Designed:** the 800x600 pane is aspect-fitted into the
+/// window, so a 16:9 window leaves the pillarbox black — three quarters of the
+/// frame is the pane itself, and a held black cover is nowhere near it.
+pub const MIN_FLIGHT_CHECK_DRAWN_PERMILLE: u32 = 300;
+/// The least pixels a text row must add inside its own region for the row to
+/// count as drawn (**designed**: a row of two letters at the smallest drawn
+/// size covers several times this).
+pub const MIN_FLIGHT_CHECK_TEXT_PIXELS: usize = 24;
+/// The least pixels a button must add inside its own region (**designed**).
+pub const MIN_FLIGHT_CHECK_BUTTON_PIXELS: usize = 32;
+/// The text rows the screen must draw for the check to be about the right
+/// screen: the mission title row and the objectives row of the layout.
+const FLIGHT_CHECK_REQUIRED_TEXTS: [&str; 2] = ["FC_T_MISSION", "FC_T_OBJECTIVES"];
+/// The button the screen must draw.
+const FLIGHT_CHECK_REQUIRED_BUTTON: &str = "FC_B_FLYMISSION";
+/// A colour channel difference above which a pixel counts as changed between
+/// the full frame and the bare pane.
+const FLIGHT_CHECK_PIXEL_DELTA: u8 = 16;
+
 /// The frame the no-teleport mode takes its one framebuffer: right after the
 /// last wingman sample.
 const NO_TELEPORT_SHOT_FRAME: u32 =
@@ -386,6 +419,60 @@ pub struct HudMetrics {
     pub overlay_hidden: bool,
 }
 
+/// One text row of the Flight Check, judged against the scene the
+/// `FlightCheckView` built.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FlightCheckTextMetrics {
+    /// The layout row, e.g. `FC_T_OBJECTIVES`.
+    pub row: String,
+    /// The text the scene (the view's data) states for the row.
+    pub expected: String,
+    /// The text the screen's node carried, `None` when no node was drawn for
+    /// the row.
+    pub drawn: Option<String>,
+    /// Whether the node was visible.
+    pub visible: bool,
+    /// The node's region in framebuffer pixels: `[x, y, width, height]`.
+    pub region: [u32; 4],
+    /// Pixels inside the region that differ between the full frame and the
+    /// bare pane (the frame with the overlay hidden).
+    pub pixels: usize,
+}
+
+/// One button of the Flight Check.
+#[derive(Clone, Debug, PartialEq)]
+pub struct FlightCheckButtonMetrics {
+    /// The hotspot, e.g. `FC_B_FLYMISSION`.
+    pub hotspot: String,
+    /// Whether a node was drawn for it.
+    pub drawn: bool,
+    /// The node's region in framebuffer pixels.
+    pub region: [u32; 4],
+    /// Pixels inside the region that differ between the full frame and the
+    /// bare pane.
+    pub pixels: usize,
+}
+
+/// What the Flight Check frames measured, and what Fly Mission did.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct FlightCheckMetrics {
+    /// Whether both framebuffers arrived (the full frame and the bare pane).
+    pub frames_delivered: bool,
+    /// The frame's pixel size.
+    pub frame_size: (u32, u32),
+    /// The share of the full frame that is off black, in parts per thousand.
+    pub drawn_permille: u32,
+    /// Every text row of the scene with text, in scene order.
+    pub texts: Vec<FlightCheckTextMetrics>,
+    /// Every button of the scene, in scene order.
+    pub buttons: Vec<FlightCheckButtonMetrics>,
+    /// Fly Mission was delivered through the front-end machine and the machine
+    /// accepted it.
+    pub launched: bool,
+    /// The machine's refusal, when it refused.
+    pub refusal: Option<String>,
+}
+
 /// What the gun hold measured.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct GunMetrics {
@@ -483,6 +570,9 @@ pub struct SmokeMeasurements {
     pub sea: Option<SeaMetrics>,
     /// The HUD probe.
     pub hud: HudMetrics,
+    /// The Flight Check frames and Fly Mission (`None`: the run never reached
+    /// a Flight Check).
+    pub flight_check: Option<FlightCheckMetrics>,
     /// The actor probes, in census order.
     pub actors: Vec<ActorMetrics>,
     /// The gun hold.
@@ -525,9 +615,11 @@ pub struct Check {
 #[must_use]
 pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
     if m.no_teleport {
+        // The no-teleport run passes through the Flight Check to release the
+        // mission and records what it saw, but judges only the wingmen.
         return evaluate_no_teleport(m);
     }
-    let mut checks = Vec::new();
+    let mut checks = evaluate_flight_check(m);
 
     // --- world -------------------------------------------------------------
     match &m.terrain {
@@ -823,6 +915,127 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
 
 /// The no-teleport checks: the wingmen's distance from a player nothing moved,
 /// and the picture arriving.
+/// The Flight Check checks: the screen the run opens on, judged before the
+/// mission's own checks.
+fn evaluate_flight_check(m: &SmokeMeasurements) -> Vec<Check> {
+    let missing = |id: &str| Check {
+        id: id.to_owned(),
+        applies: true,
+        passed: false,
+        detail: "the run never reached a Flight Check, so nothing was measured".to_owned(),
+    };
+    let ids = [
+        "flight_check_screen_drawn",
+        "flight_check_text_matches",
+        "flight_check_buttons_drawn",
+        "flight_check_fly_mission",
+    ];
+    let Some(fc) = &m.flight_check else {
+        return ids.iter().map(|id| missing(id)).collect();
+    };
+    let mut checks = Vec::new();
+    checks.push(Check {
+        id: ids[0].to_owned(),
+        applies: true,
+        passed: fc.frames_delivered && fc.drawn_permille >= MIN_FLIGHT_CHECK_DRAWN_PERMILLE,
+        detail: if fc.frames_delivered {
+            format!(
+                "{} per mille of the {}x{} Flight Check frame is off black (floor {})",
+                fc.drawn_permille,
+                fc.frame_size.0,
+                fc.frame_size.1,
+                MIN_FLIGHT_CHECK_DRAWN_PERMILLE
+            )
+        } else {
+            "the Flight Check framebuffers never arrived".to_owned()
+        },
+    });
+    let bad_texts: Vec<String> = fc
+        .texts
+        .iter()
+        .filter(|text| {
+            text.drawn.as_deref() != Some(text.expected.as_str())
+                || !text.visible
+                || text.pixels < MIN_FLIGHT_CHECK_TEXT_PIXELS
+        })
+        .map(|text| {
+            format!(
+                "{} (expected {:?}, drawn {:?}, visible {}, {} px)",
+                text.row, text.expected, text.drawn, text.visible, text.pixels
+            )
+        })
+        .collect();
+    let absent: Vec<&str> = FLIGHT_CHECK_REQUIRED_TEXTS
+        .iter()
+        .copied()
+        .filter(|row| !fc.texts.iter().any(|text| text.row == *row))
+        .collect();
+    checks.push(Check {
+        id: ids[1].to_owned(),
+        applies: true,
+        passed: fc.frames_delivered && bad_texts.is_empty() && absent.is_empty(),
+        detail: if !fc.frames_delivered {
+            "the Flight Check framebuffers never arrived".to_owned()
+        } else if !absent.is_empty() {
+            format!("the scene has no text row {absent:?}")
+        } else if bad_texts.is_empty() {
+            format!(
+                "all {} text rows are drawn as the view states them, each adding at least \
+                 {MIN_FLIGHT_CHECK_TEXT_PIXELS} pixels in its own region",
+                fc.texts.len()
+            )
+        } else {
+            format!("text rows not drawn as the view states them: {bad_texts:?}")
+        },
+    });
+    let bad_buttons: Vec<String> = fc
+        .buttons
+        .iter()
+        .filter(|button| !button.drawn || button.pixels < MIN_FLIGHT_CHECK_BUTTON_PIXELS)
+        .map(|button| {
+            format!(
+                "{} (drawn {}, {} px)",
+                button.hotspot, button.drawn, button.pixels
+            )
+        })
+        .collect();
+    let no_fly = !fc
+        .buttons
+        .iter()
+        .any(|button| button.hotspot == FLIGHT_CHECK_REQUIRED_BUTTON);
+    checks.push(Check {
+        id: ids[2].to_owned(),
+        applies: true,
+        passed: fc.frames_delivered && bad_buttons.is_empty() && !no_fly,
+        detail: if !fc.frames_delivered {
+            "the Flight Check framebuffers never arrived".to_owned()
+        } else if no_fly {
+            format!("the scene has no {FLIGHT_CHECK_REQUIRED_BUTTON} button")
+        } else if bad_buttons.is_empty() {
+            format!(
+                "all {} buttons add at least {MIN_FLIGHT_CHECK_BUTTON_PIXELS} pixels in their \
+                 own regions",
+                fc.buttons.len()
+            )
+        } else {
+            format!("buttons not drawn: {bad_buttons:?}")
+        },
+    });
+    checks.push(Check {
+        id: ids[3].to_owned(),
+        applies: true,
+        passed: fc.launched,
+        detail: match (&fc.refusal, fc.launched) {
+            (_, true) => {
+                "Fly Mission went through the front-end machine and released the mission".to_owned()
+            }
+            (Some(reason), false) => format!("the machine refused Fly Mission: {reason}"),
+            (None, false) => "Fly Mission was never delivered".to_owned(),
+        },
+    });
+    checks
+}
+
 fn evaluate_no_teleport(m: &SmokeMeasurements) -> Vec<Check> {
     let rows = m
         .wingmen
@@ -956,6 +1169,29 @@ pub struct MissionSmokeReport {
 #[derive(Resource, Clone, Default)]
 struct SmokeShots(Arc<Mutex<Vec<FrameRecord>>>);
 
+/// One delivered framebuffer's raw pixels, kept for the Flight Check's
+/// full-frame / bare-pane comparison.
+#[derive(Clone, Debug)]
+struct RawFrame {
+    label: String,
+    width: u32,
+    height: u32,
+    data: Vec<u8>,
+}
+
+/// The raw Flight Check framebuffers the observers fill.
+#[derive(Resource, Clone, Default)]
+struct FlightCheckFrames(Arc<Mutex<Vec<RawFrame>>>);
+
+/// What one overlay node of the Flight Check showed at the full frame.
+#[derive(Clone, Debug, PartialEq)]
+struct DrawnRow {
+    row: String,
+    text: Option<String>,
+    visible: bool,
+    region: [u32; 4],
+}
+
 /// The shared slot the finished run lands in.
 #[derive(Clone, Default)]
 pub struct MissionSmokeHandle(Arc<Mutex<Option<Result<MissionSmokeReport, String>>>>);
@@ -1019,6 +1255,10 @@ enum ProbeMode {
     SeaAbsent,
     /// Hide everything drawn except this entity (`None`: the player only).
     Actor(Option<Entity>),
+    /// Hide the Flight Check's overlay (buttons, labels, text rows, notice)
+    /// and keep its background pane: the bare pane the full frame is compared
+    /// with.
+    FlightCheckBare,
 }
 
 #[derive(Resource, Clone, Copy, Debug, Default)]
@@ -1060,7 +1300,13 @@ struct SmokeConfig {
 /// The run's own state, filled by [`smoke_step`].
 #[derive(Resource, Default)]
 struct SmokeData {
+    /// Frames since Fly Mission: the script's clock, which does not run while
+    /// the Flight Check holds the mission.
     frame: u32,
+    /// Frames the Flight Check has been up.
+    flight_check_frame: u32,
+    /// The overlay nodes read at the Flight Check's full frame.
+    flight_check_rows: Vec<DrawnRow>,
     phase: Phase,
     phase_start: u32,
     census: Vec<CensusEntry>,
@@ -1100,6 +1346,7 @@ impl Plugin for MissionSmokePlugin {
             handle: self.handle.clone(),
         })
         .init_resource::<SmokeShots>()
+        .init_resource::<FlightCheckFrames>()
         .init_resource::<SmokeData>()
         .init_resource::<ProbeState>()
         .init_resource::<KeyQueue>()
@@ -1127,6 +1374,7 @@ fn add_script_systems(app: &mut App) {
     app.add_systems(
         Last,
         (
+            smoke_flight_check,
             smoke_census,
             smoke_sample,
             smoke_wingmen,
@@ -1226,6 +1474,7 @@ fn apply_probe(
     zeppelins: Query<Entity, With<MissionZeppelinActor>>,
     visuals: Query<Entity, With<WorldVisual>>,
     ui: Query<(Entity, Has<crate::playtest::visuals::DeveloperOverlayNode>), With<Node>>,
+    flight_check_overlay: Query<Entity, With<ScreenOverlay>>,
     overlay: Option<Res<crate::playtest::visuals::DeveloperOverlay>>,
     mut fogs: Query<&mut DistanceFog>,
     mut kept_fog: Local<Option<FogFalloff>>,
@@ -1283,7 +1532,16 @@ fn apply_probe(
     // Restoring the UI must not re-show what the developer overlay hides.
     let overlay_on = crate::playtest::visuals::overlay_visible(overlay.as_deref());
     for (entity, developer) in &ui {
-        let value = if developer && !overlay_on {
+        let value = if mode == ProbeMode::FlightCheckBare {
+            // Only the Flight Check's overlay goes; its background pane and
+            // the cover behind it stay, and the mission's own UI is under
+            // that cover.
+            if flight_check_overlay.contains(entity) {
+                hidden
+            } else {
+                shown
+            }
+        } else if developer && !overlay_on {
             hidden
         } else {
             body_value
@@ -1455,7 +1713,13 @@ fn smoke_census(
     zeppelins: Query<(&MissionZeppelinActor, &WorldActorBinding, &Transform)>,
     player: Query<Entity, With<MissionPlayerBody>>,
     residency: Option<Res<WorldResidency>>,
+    phase: Option<Res<FlightCheckPhase>>,
 ) {
+    // The script's clock starts at Fly Mission: the 45 s budget is the
+    // mission's, not the screen's.
+    if phase.is_some_and(|phase| phase.is_pending()) {
+        return;
+    }
     data.frame += 1;
     let frame = data.frame;
     if frame != 1 {
@@ -1843,6 +2107,7 @@ fn smoke_script(
             label.clone(),
             clear_colours,
             measured,
+            None,
         );
     }
 
@@ -1851,28 +2116,256 @@ fn smoke_script(
     let grace_over = data.phase == Phase::Final && frame >= data.phase_start + SHOT_GRACE_FRAMES;
     let script_done = data.phase == Phase::Final && delivered >= data.shots_requested;
     if (script_done || grace_over) && frame > data.phase_start {
-        let delivered: Vec<FrameRecord> = shots
-            .0
-            .lock()
-            .map(|shots| shots.clone())
-            .unwrap_or_default();
-        data.measurements.missing_shots = data
-            .requested
-            .iter()
-            .filter(|label| !delivered.iter().any(|shot| &shot.label == *label))
-            .cloned()
-            .collect();
-        data.measurements.frames = frame;
-        finish_measurements(&mut data, &delivered);
-        let outcome = write_artifacts(&config.request.capture_dir, &data, &delivered)
-            .map(|()| build_report(&data, delivered))
-            .map_err(|(path, error)| format!("cannot write {}: {error}", path.display()));
-        if let Ok(mut slot) = config.handle.0.lock() {
-            *slot = Some(outcome);
-        }
-        data.phase = Phase::Ended;
-        exit.write(AppExit::Success);
+        end_run(&config, &mut data, &shots, &mut exit, frame);
     }
+}
+
+/// Ends the run: the report and the PNGs are written, the outcome lands in the
+/// handle and the app exits.
+fn end_run(
+    config: &SmokeConfig,
+    data: &mut SmokeData,
+    shots: &SmokeShots,
+    exit: &mut MessageWriter<AppExit>,
+    frame: u32,
+) {
+    let delivered: Vec<FrameRecord> = shots
+        .0
+        .lock()
+        .map(|shots| shots.clone())
+        .unwrap_or_default();
+    data.measurements.missing_shots = data
+        .requested
+        .iter()
+        .filter(|label| !delivered.iter().any(|shot| &shot.label == *label))
+        .cloned()
+        .collect();
+    data.measurements.frames = frame;
+    finish_measurements(data, &delivered);
+    let outcome = write_artifacts(&config.request.capture_dir, data, &delivered)
+        .map(|()| build_report(data, delivered))
+        .map_err(|(path, error)| format!("cannot write {}: {error}", path.display()));
+    if let Ok(mut slot) = config.handle.0.lock() {
+        *slot = Some(outcome);
+    }
+    data.phase = Phase::Ended;
+    exit.write(AppExit::Success);
+}
+
+/// The Flight Check stage of the run (#1672): while the phase holds the
+/// mission this system lets the screen settle, takes the full framebuffer,
+/// hides the overlay and takes the bare pane, judges both against the scene the
+/// `FlightCheckView` built, then delivers Fly Mission through the phase. The
+/// script's own clock (`SmokeData::frame`) starts when the phase releases.
+#[allow(clippy::too_many_arguments)]
+fn smoke_flight_check(
+    config: Res<SmokeConfig>,
+    mut data: ResMut<SmokeData>,
+    phase: Option<ResMut<FlightCheckPhase>>,
+    mut probe: ResMut<ProbeState>,
+    shots: Res<SmokeShots>,
+    frames: Res<FlightCheckFrames>,
+    mut commands: Commands,
+    mut exit: MessageWriter<AppExit>,
+    clear: Option<Res<ClearColor>>,
+    overlay_nodes: Query<(
+        &ScreenOverlay,
+        Option<&Text>,
+        &InheritedVisibility,
+        &UiGlobalTransform,
+        &ComputedNode,
+    )>,
+) {
+    let Some(mut phase) = phase else { return };
+    if !phase.is_pending() {
+        return;
+    }
+    data.flight_check_frame += 1;
+    let at = data.flight_check_frame;
+    if at == 1 {
+        let _ = std::fs::create_dir_all(&config.request.capture_dir);
+    }
+    let clear_colours = clear.as_deref().map(clear_colour_encodings);
+    let mut request = |label: &str, data: &mut SmokeData| {
+        data.shots_requested += 1;
+        data.requested.push(label.to_owned());
+        request_screenshot(
+            &mut commands,
+            shots.clone(),
+            config
+                .request
+                .capture_dir
+                .join(format!("frame_fc{at:05}_{label}.png")),
+            label.to_owned(),
+            clear_colours,
+            None,
+            Some(frames.clone()),
+        );
+    };
+    if at == FLIGHT_CHECK_SHOT_OFFSET {
+        data.flight_check_rows = overlay_nodes
+            .iter()
+            .filter_map(|(overlay, text, visible, transform, node)| {
+                let center = transform.translation;
+                let size = node.size;
+                Some(DrawnRow {
+                    row: overlay.row.clone()?,
+                    text: text.map(|text| text.0.clone()),
+                    visible: visible.get(),
+                    region: [
+                        (center.x - 0.5 * size.x).max(0.0) as u32,
+                        (center.y - 0.5 * size.y).max(0.0) as u32,
+                        size.x.max(1.0) as u32,
+                        size.y.max(1.0) as u32,
+                    ],
+                })
+            })
+            .collect();
+        request("flight_check", &mut data);
+    } else if at == FLIGHT_CHECK_BARE_OFFSET {
+        probe.0 = ProbeMode::FlightCheckBare;
+    } else if at == FLIGHT_CHECK_BARE_SHOT_OFFSET {
+        request("flight_check_bare", &mut data);
+    }
+    if at <= FLIGHT_CHECK_BARE_SHOT_OFFSET {
+        return;
+    }
+    let arrived = frames.0.lock().map_or(0, |frames| frames.len());
+    if arrived < 2 && at < FLIGHT_CHECK_BARE_SHOT_OFFSET + SHOT_GRACE_FRAMES {
+        return;
+    }
+    probe.0 = ProbeMode::Restored;
+    let raw = frames
+        .0
+        .lock()
+        .map(|frames| frames.clone())
+        .unwrap_or_default();
+    let mut metrics = flight_check_metrics(
+        &phase,
+        &data.flight_check_rows,
+        raw.iter().find(|frame| frame.label == "flight_check"),
+        raw.iter().find(|frame| frame.label == "flight_check_bare"),
+    );
+    match phase.press_enter() {
+        PhaseResponse::Launched => metrics.launched = true,
+        PhaseResponse::Refused(reason) => metrics.refusal = Some(reason),
+        other => metrics.refusal = Some(format!("{other:?}")),
+    }
+    let refused = !metrics.launched;
+    data.measurements.flight_check = Some(metrics);
+    if refused {
+        // The mission stays held, so the script would never start: the run
+        // ends here with the failing check.
+        end_run(&config, &mut data, &shots, &mut exit, 0);
+    }
+}
+
+/// Judges the Flight Check frames against the scene (pure; the system above
+/// supplies the frames and the nodes it read).
+fn flight_check_metrics(
+    phase: &FlightCheckPhase,
+    rows: &[DrawnRow],
+    full: Option<&RawFrame>,
+    bare: Option<&RawFrame>,
+) -> FlightCheckMetrics {
+    let scene = phase.scene();
+    let pair = full.zip(bare).filter(|(full, bare)| {
+        full.width == bare.width
+            && full.height == bare.height
+            && full.data.len() == bare.data.len()
+            && !full.data.is_empty()
+    });
+    let pixels = |region: [u32; 4]| {
+        pair.map_or(0, |(full, bare)| {
+            region_difference(&full.data, &bare.data, full.width, full.height, region)
+        })
+    };
+    let find = |row: &str| {
+        rows.iter()
+            .find(|drawn| drawn.row.eq_ignore_ascii_case(row))
+    };
+    FlightCheckMetrics {
+        frames_delivered: pair.is_some(),
+        frame_size: full.map_or((0, 0), |frame| (frame.width, frame.height)),
+        drawn_permille: full.map_or(0, |frame| {
+            non_black_permille(&frame.data, frame.width, frame.height)
+        }),
+        texts: scene
+            .texts
+            .iter()
+            .filter(|text| !text.text.is_empty())
+            .map(|text| {
+                let drawn = find(&text.id);
+                let region = drawn.map_or([0; 4], |drawn| drawn.region);
+                FlightCheckTextMetrics {
+                    row: text.id.clone(),
+                    expected: text.text.clone(),
+                    drawn: drawn.and_then(|drawn| drawn.text.clone()),
+                    visible: drawn.is_some_and(|drawn| drawn.visible),
+                    region,
+                    pixels: pixels(region),
+                }
+            })
+            .collect(),
+        buttons: scene
+            .buttons
+            .iter()
+            .map(|button| {
+                let drawn = find(&button.hotspot);
+                let region = drawn.map_or([0; 4], |drawn| drawn.region);
+                FlightCheckButtonMetrics {
+                    hotspot: button.hotspot.clone(),
+                    drawn: drawn.is_some_and(|drawn| drawn.visible),
+                    region,
+                    pixels: pixels(region),
+                }
+            })
+            .collect(),
+        launched: false,
+        refusal: None,
+    }
+}
+
+/// Pixels inside `region` (`[x, y, width, height]`, clamped to the frame) that
+/// differ between two same-sized RGBA frames by more than a few levels in any
+/// colour channel. The alpha channel is ignored.
+#[must_use]
+pub fn region_difference(a: &[u8], b: &[u8], width: u32, height: u32, region: [u32; 4]) -> usize {
+    let [x, y, w, h] = region;
+    let x_end = x.saturating_add(w).min(width);
+    let y_end = y.saturating_add(h).min(height);
+    let mut count = 0;
+    for row in y.min(height)..y_end {
+        for column in x.min(width)..x_end {
+            let at = (row as usize * width as usize + column as usize) * 4;
+            let (Some(p), Some(q)) = (a.get(at..at + 3), b.get(at..at + 3)) else {
+                continue;
+            };
+            if p.iter()
+                .zip(q)
+                .any(|(p, q)| p.abs_diff(*q) > FLIGHT_CHECK_PIXEL_DELTA)
+            {
+                count += 1;
+            }
+        }
+    }
+    count
+}
+
+/// The share of an RGBA frame that is off black, in parts per thousand.
+fn non_black_permille(data: &[u8], width: u32, height: u32) -> u32 {
+    let total = width as usize * height as usize;
+    let lit = data
+        .as_chunks::<4>()
+        .0
+        .iter()
+        .filter(|pixel| {
+            pixel[..3]
+                .iter()
+                .any(|channel| *channel > FLIGHT_CHECK_PIXEL_DELTA)
+        })
+        .count();
+    permille(lit, total)
 }
 
 /// Places the player `PLACEMENT_OFFSET_M` abeam a census member, heading at
@@ -2086,9 +2579,20 @@ fn request_screenshot(
     label: String,
     clear_colours: Option<[[u8; 3]; 2]>,
     region: Option<[u32; 4]>,
+    raw: Option<FlightCheckFrames>,
 ) {
     commands.spawn(Screenshot::primary_window()).observe(
         move |captured: On<ScreenshotCaptured>| {
+            if let (Some(raw), Some(data)) = (&raw, captured.image.data.as_ref())
+                && let Ok(mut frames) = raw.0.lock()
+            {
+                frames.push(RawFrame {
+                    label: label.clone(),
+                    width: captured.image.width(),
+                    height: captured.image.height(),
+                    data: data.clone(),
+                });
+            }
             let record = measure(
                 &captured.image,
                 label.clone(),
@@ -2309,6 +2813,60 @@ fn build_report(data: &SmokeData, shots: Vec<FrameRecord>) -> MissionSmokeReport
     }
 }
 
+/// The Flight Check measurements as a JSON object (`null` when the run never
+/// reached one).
+fn flight_check_json(metrics: Option<&FlightCheckMetrics>) -> String {
+    let Some(fc) = metrics else {
+        return "null".to_owned();
+    };
+    let texts = fc
+        .texts
+        .iter()
+        .map(|text| {
+            format!(
+                "{{\"row\":{},\"expected\":{},\"drawn\":{},\"visible\":{},\
+                 \"region\":{:?},\"pixels\":{}}}",
+                json_string(&text.row),
+                json_string(&text.expected),
+                text.drawn
+                    .as_deref()
+                    .map_or_else(|| "null".to_owned(), json_string),
+                text.visible,
+                text.region,
+                text.pixels
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let buttons = fc
+        .buttons
+        .iter()
+        .map(|button| {
+            format!(
+                "{{\"hotspot\":{},\"drawn\":{},\"region\":{:?},\"pixels\":{}}}",
+                json_string(&button.hotspot),
+                button.drawn,
+                button.region,
+                button.pixels
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    format!(
+        "{{\"frames_delivered\":{},\"frame_width\":{},\"frame_height\":{},\
+         \"drawn_permille\":{},\"launched\":{},\"refusal\":{},\"texts\":[{texts}],\
+         \"buttons\":[{buttons}]}}",
+        fc.frames_delivered,
+        fc.frame_size.0,
+        fc.frame_size.1,
+        fc.drawn_permille,
+        fc.launched,
+        fc.refusal
+            .as_deref()
+            .map_or_else(|| "null".to_owned(), json_string),
+    )
+}
+
 fn json_string(text: &str) -> String {
     let mut out = String::from("\"");
     for character in text.chars() {
@@ -2468,6 +3026,7 @@ fn write_artifacts(
          \"verified_original\":false,\"frames\":{frames},\"ticks\":{ticks},\
          \"hud\":{{\"model_line\":{model_line},\"drawn_line\":{drawn_line},\
          \"drawn_visible\":{visible},\"region_text_pixels\":{region},\"overlay_hidden\":{overlay_hidden}}},\
+         \"flight_check\":{flight_check},\
          \"guns\":{{\"effects\":{effects},\"max_live_rounds\":{live},\"rounds_drawn\":{drawn},\
          \"rounds_examined\":{examined},\
          \"flash_frames\":{flash_frames},\"flashes_undrawn\":{flashes_undrawn}}},\"rocket\":{{\"launched\":{launched},\
@@ -2496,6 +3055,7 @@ fn write_artifacts(
         visible = report.measurements.hud.drawn_visible,
         overlay_hidden = report.measurements.hud.overlay_hidden,
         region = json_option_usize(report.measurements.hud.region_text_pixels),
+        flight_check = flight_check_json(report.measurements.flight_check.as_ref()),
         effects = report.measurements.guns.effects,
         live = report.measurements.guns.max_live_rounds,
         drawn = json_option_bool(report.measurements.guns.rounds_drawn),
@@ -2614,6 +3174,7 @@ mod tests {
                 handle: plugin.handle.clone(),
             })
             .init_resource::<SmokeShots>()
+            .init_resource::<FlightCheckFrames>()
             .init_resource::<SmokeData>()
             .init_resource::<ProbeState>()
             .init_resource::<KeyQueue>()
@@ -2665,6 +3226,238 @@ mod tests {
         let json = std::fs::read_to_string(dir.join(SMOKE_REPORT_FILE)).expect("report.json");
         assert!(json.contains("\"mode\":\"no_teleport\""), "{json}");
         assert!(json.contains("\"player_teleported\":false"), "{json}");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// A flight check in the original's row format, names and numbers invented
+    /// (the same shape the `m01_lc_fc_c` acceptance tests use).
+    const FC_LAYOUT: &str = "\
+[@FlightCheck@]
+V1=GX,400
+V5=V5,0xFF112233
+
+FC_BACKGROUND\t=P,Back.jpg,0,0,1,1,0,0,0
+FC_B_FLYMISSION\t=B,Fly.png,50,<GX>,0,0,,,,
+FC_B_RETURNBRIEF=B,Ret.png,30,<GX>,0,0,,0x1000,1
+FC_T_TITLE\t=T,IDS_FC_TITLE,10,10,0,190,24,<V5>,1
+FC_T_MISSION    =T,,10,40,0,400,0,0xFF2D3843,0
+FC_T_OBJECTIVES =T,,10,60,0,200,360000,0xFF2D3843,0
+";
+
+    fn fc_scene() -> super::super::flight_check::FlightCheckScene {
+        use crate::mission_start::AIRFRAME_TABLE;
+        use crate::ui::front_end::{Entry, FlightCheckView, OriginalLayout};
+        use cs_types::content::{ContentId, ContentKind, Known, Provenance, Resolved};
+        use cs_types::evidence::ClaimId;
+        let extents = |art: &str| match art {
+            "Back.jpg" => Some((640, 480)),
+            "Fly.png" | "Ret.png" => Some((80, 80)),
+            _ => None,
+        };
+        let strings = |id: &str| (id == "IDS_FC_TITLE").then(|| "Flight Check".to_owned());
+        let airframe = Resolved::Known(Known::new(
+            ContentId::from_source(ContentKind::Airframe, AIRFRAME_TABLE[0].scene_root)
+                .expect("valid id"),
+            Provenance::designed(ClaimId::new("m01lcfcd.test").expect("valid claim")),
+        ));
+        let view = FlightCheckView::build(
+            Entry::Known("Alpha - One".to_owned()),
+            &["MSG_ONE".to_owned()],
+            |_| Ok("first objective".to_owned()),
+            &airframe,
+            &[],
+        );
+        let layout = OriginalLayout::parse(FC_LAYOUT).expect("the layout parses");
+        super::super::flight_check::FlightCheckScene::build(&layout, &view, &extents, &strings)
+            .expect("the scene builds")
+    }
+
+    /// The headless smoke app on a held Flight Check, with the overlay nodes
+    /// laid out as the window would lay them out: every text row and button of
+    /// the scene at a 100-pixel-wide cell of a 400x200 frame.
+    fn held_app(dir: &Path, bare_differs: bool) -> (App, MissionSmokeHandle) {
+        use bevy::math::Affine2;
+        let plugin = MissionSmokePlugin::new(SmokeRequest {
+            seconds: 45,
+            capture_dir: dir.to_path_buf(),
+        });
+        let handle = plugin.handle();
+        let mut app = App::new();
+        app.add_plugins(bevy::time::TimePlugin)
+            .add_message::<AppExit>()
+            .insert_resource(SmokeConfig {
+                request: plugin.request.clone(),
+                mode: plugin.mode,
+                handle: plugin.handle.clone(),
+            })
+            .init_resource::<SmokeShots>()
+            .init_resource::<FlightCheckFrames>()
+            .init_resource::<SmokeData>()
+            .init_resource::<ProbeState>()
+            .init_resource::<KeyQueue>()
+            .init_resource::<PendingPlacement>()
+            .init_resource::<PlaytestState>()
+            .insert_resource(PlaytestCamera::new())
+            .init_resource::<PhysicsTickLedger>();
+        let loadout = crate::ui::front_end::Loadout {
+            player: Some(
+                cs_types::content::ContentId::from_source(
+                    cs_types::content::ContentKind::Airframe,
+                    crate::mission_start::AIRFRAME_TABLE[0].scene_root,
+                )
+                .expect("valid id"),
+            ),
+            wingmate: None,
+            ammunition: Some(super::super::mission_ammunition_id()),
+        };
+        let scene = fc_scene();
+        let mut full = vec![0x40_u8; 400 * 200 * 4];
+        let bare = full.clone();
+        let mut cell = 0_u32;
+        let mut rows: Vec<(String, Option<String>)> = Vec::new();
+        for text in scene.texts.iter().filter(|text| !text.text.is_empty()) {
+            rows.push((text.id.clone(), Some(text.text.clone())));
+        }
+        for button in &scene.buttons {
+            rows.push((button.hotspot.clone(), None));
+        }
+        for (row, text) in rows {
+            let region = [cell * 12, 20, 10, 10];
+            cell += 1;
+            if bare_differs {
+                for y in region[1]..region[1] + region[3] {
+                    for x in region[0]..region[0] + region[2] {
+                        let at = (y as usize * 400 + x as usize) * 4;
+                        full[at] = 0xF0;
+                    }
+                }
+            }
+            let mut entity = app.world_mut().spawn((
+                ScreenOverlay { row: Some(row) },
+                InheritedVisibility::VISIBLE,
+                UiGlobalTransform::from(Affine2::from_translation(Vec2::new(
+                    region[0] as f32 + 5.0,
+                    region[1] as f32 + 5.0,
+                ))),
+                ComputedNode {
+                    size: Vec2::new(10.0, 10.0),
+                    ..Default::default()
+                },
+            ));
+            if let Some(text) = text {
+                entity.insert(Text::new(text));
+            }
+        }
+        {
+            let frames = app.world().resource::<FlightCheckFrames>();
+            let mut frames = frames.0.lock().expect("lock");
+            for (label, data) in [("flight_check", full), ("flight_check_bare", bare)] {
+                frames.push(RawFrame {
+                    label: label.to_owned(),
+                    width: 400,
+                    height: 200,
+                    data,
+                });
+            }
+        }
+        super::super::flight_check::install_flight_check(
+            &mut app,
+            FlightCheckPhase::open(scene, loadout).expect("the phase opens"),
+        );
+        add_script_systems(&mut app);
+        (app, handle)
+    }
+
+    /// **`accept_m01_lc_fc_d_` the smoke passes through the Flight Check.**
+    ///
+    /// The production smoke systems run over a held phase whose overlay nodes
+    /// and framebuffers are laid out by hand: the script's clock does not run
+    /// while the screen is up, the screen is judged against the scene, Fly
+    /// Mission is delivered through the front-end machine, and the clock then
+    /// starts from zero.
+    #[test]
+    fn accept_m01_lc_fc_d_the_smoke_judges_the_screen_then_delivers_fly_mission() {
+        let dir = std::env::temp_dir().join("accept_m01_lc_fc_d_judges");
+        let (mut app, _handle) = held_app(&dir, true);
+        for _ in 0..FLIGHT_CHECK_BARE_SHOT_OFFSET {
+            app.update();
+        }
+        assert!(
+            app.world().resource::<FlightCheckPhase>().is_pending(),
+            "the screen is up until the shots are taken"
+        );
+        assert_eq!(
+            app.world().resource::<SmokeData>().frame,
+            0,
+            "the script's clock has not started"
+        );
+        app.update();
+        let phase = app.world().resource::<FlightCheckPhase>();
+        assert!(!phase.is_pending(), "Fly Mission was delivered");
+        assert_eq!(
+            phase.front_end().screen(),
+            crate::ui::front_end::Screen::Flight
+        );
+        for _ in 0..10 {
+            app.update();
+        }
+        assert_eq!(
+            app.world().resource::<SmokeData>().frame,
+            11,
+            "the script's clock starts at Fly Mission: the releasing frame is its first"
+        );
+        let metrics = app
+            .world()
+            .resource::<SmokeData>()
+            .measurements
+            .flight_check
+            .clone()
+            .expect("the screen was measured");
+        assert!(metrics.launched, "{metrics:?}");
+        assert!(metrics.frames_delivered);
+        assert!(metrics.drawn_permille >= MIN_FLIGHT_CHECK_DRAWN_PERMILLE);
+        let rows: Vec<&str> = metrics.texts.iter().map(|text| text.row.as_str()).collect();
+        assert!(rows.contains(&"FC_T_MISSION") && rows.contains(&"FC_T_OBJECTIVES"));
+        assert!(
+            metrics
+                .texts
+                .iter()
+                .all(|text| text.drawn.as_deref() == Some(text.expected.as_str())
+                    && text.pixels == 100),
+            "{metrics:?}"
+        );
+        assert!(metrics.buttons.iter().all(|button| button.pixels == 100));
+        let checks = evaluate_flight_check(&app.world().resource::<SmokeData>().measurements);
+        assert!(
+            checks.iter().all(|check| check.passed),
+            "every Flight Check check passes: {checks:?}"
+        );
+        assert_eq!(checks.len(), 4);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **`accept_m01_lc_fc_d_` a screen that adds nothing to the frame fails.**
+    ///
+    /// The full frame equals the bare pane, so no text row or button added a
+    /// pixel: the smoke still delivers Fly Mission (the mission must run) and
+    /// the report names the checks that failed.
+    #[test]
+    fn accept_m01_lc_fc_d_a_screen_that_draws_nothing_fails_by_name() {
+        let dir = std::env::temp_dir().join("accept_m01_lc_fc_d_blank");
+        let (mut app, _handle) = held_app(&dir, false);
+        for _ in 0..(FLIGHT_CHECK_BARE_SHOT_OFFSET + 3) {
+            app.update();
+        }
+        let measurements = app.world().resource::<SmokeData>().measurements.clone();
+        let failed: Vec<String> = evaluate_flight_check(&measurements)
+            .into_iter()
+            .filter(|check| !check.passed)
+            .map(|check| check.id)
+            .collect();
+        assert_eq!(
+            failed,
+            ["flight_check_text_matches", "flight_check_buttons_drawn"]
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }

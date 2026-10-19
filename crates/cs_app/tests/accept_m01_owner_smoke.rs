@@ -120,6 +120,30 @@ fn healthy() -> SmokeMeasurements {
             objective_woke: true,
         },
         missing_shots: vec![],
+        flight_check: Some(cs_app::mission_session::FlightCheckMetrics {
+            frames_delivered: true,
+            frame_size: (2560, 1440),
+            drawn_permille: 750,
+            texts: ["FC_T_MISSION", "FC_T_OBJECTIVES"]
+                .iter()
+                .map(|row| cs_app::mission_session::FlightCheckTextMetrics {
+                    row: (*row).to_owned(),
+                    expected: "text".to_owned(),
+                    drawn: Some("text".to_owned()),
+                    visible: true,
+                    region: [10, 40, 300, 30],
+                    pixels: 400,
+                })
+                .collect(),
+            buttons: vec![cs_app::mission_session::FlightCheckButtonMetrics {
+                hotspot: "FC_B_FLYMISSION".to_owned(),
+                drawn: true,
+                region: [500, 500, 80, 20],
+                pixels: 900,
+            }],
+            launched: true,
+            refusal: None,
+        }),
         ..SmokeMeasurements::default()
     }
 }

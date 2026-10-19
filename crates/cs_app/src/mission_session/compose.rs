@@ -1553,9 +1553,10 @@ pub fn run_windowed(
     }
     let mut app = build_windowed(&stage)?;
     // The Flight Check holds the mission until Fly Mission. A capture scenario
-    // (the developer shortcuts) and a smoke run start the mission directly and
-    // say so.
-    if capture.is_some() || smoke.is_some() {
+    // (the developer shortcuts) starts the mission directly and says so; the
+    // owner-command smoke goes through the Flight Check like the owner does
+    // and delivers Fly Mission itself (#1672).
+    if capture.is_some() {
         println!("{}", super::flight_check::SKIP_NOTICE);
     } else {
         let (phase, artwork) = super::flight_check::FlightCheckPhase::from_retail(

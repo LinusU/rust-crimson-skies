@@ -42,8 +42,10 @@
 //!   text uses the engine's default font; the button rollover frames are not
 //!   drawn because the state order of the sheet is unread. All of it is
 //!   labelled designed.
-//! * Developer shortcuts (`CS_MISSION_START_M` and the capture scenario) and
-//!   the smoke run skip the phase and say so ([`SKIP_NOTICE`]).
+//! * Developer shortcuts (`CS_MISSION_START_M` and the capture scenario) skip
+//!   the phase and say so ([`SKIP_NOTICE`]). The owner-command smoke does not:
+//!   it photographs the screen, checks it against the scene and delivers Fly
+//!   Mission itself (#1672 `M01-LC-FC-D`).
 //!
 //! Nothing here is `verified_original`.
 
@@ -69,8 +71,7 @@ use crate::ui::front_end::{
 
 /// What a run prints when the phase is skipped.
 pub const SKIP_NOTICE: &str = "mission flight check: skipped — a developer shortcut (capture \
-     scenario or smoke run) starts the mission directly; the smoke passing through the Flight \
-     Check is #1672 `M01-LC-FC-D`";
+     scenario) starts the mission directly";
 
 /// Why Return to Briefing does nothing yet.
 pub const RETURN_TO_BRIEFING_UNAVAILABLE: &str = "Return to Briefing is unavailable: the briefing \
@@ -928,6 +929,16 @@ impl Plugin for FlightCheckScreenPlugin {
 #[derive(Component)]
 struct ScreenPart;
 
+/// Everything the screen draws over its background pane: the buttons, their
+/// labels, the text rows and the notice line. `row` names the layout row a
+/// button (its hotspot) or a text row (its id) is drawn for. The owner-command
+/// smoke hides exactly these to measure what they add to the frame.
+#[derive(Component, Clone, Debug, PartialEq, Eq)]
+pub(super) struct ScreenOverlay {
+    /// The layout row, `None` for a button label and the notice line.
+    pub(super) row: Option<String>,
+}
+
 /// A part's region in the logical screen.
 #[derive(Component)]
 struct Logical(Rect);
@@ -1019,6 +1030,9 @@ fn spawn_screen(
             Logical(button.rect),
             z,
             ScreenPart,
+            ScreenOverlay {
+                row: Some(button.hotspot.clone()),
+            },
         ));
         if let Some(label) = &button.label {
             commands.spawn((
@@ -1036,6 +1050,7 @@ fn spawn_screen(
                 LogicalFont(14.0),
                 z,
                 ScreenPart,
+                ScreenOverlay { row: None },
             ));
         }
     }
@@ -1056,6 +1071,9 @@ fn spawn_screen(
             LogicalFont(size),
             z,
             ScreenPart,
+            ScreenOverlay {
+                row: Some(text.id.clone()),
+            },
         ));
     }
     commands.spawn((
@@ -1074,6 +1092,7 @@ fn spawn_screen(
         z,
         NoticeLine,
         ScreenPart,
+        ScreenOverlay { row: None },
     ));
 }
 
