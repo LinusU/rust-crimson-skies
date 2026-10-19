@@ -537,3 +537,195 @@ mod gun_sound {
         );
     }
 }
+
+// ---------------------------------------------------------------------------
+// Which of those records the player's M01 guns carry (#1628): the committed
+// (gun, ammunition) map, the measured member's delivery, and the loadout's
+// shot sound naming it.
+// ---------------------------------------------------------------------------
+
+mod gun_loadout {
+    use std::path::PathBuf;
+
+    use bevy::prelude::With;
+    use cs_app::audio::{AudioHandoffLog, AudioSession, DeclaredAudioCatalog};
+    use cs_app::engine_facts::{FlightCheckPlaneSlot, engine_facts};
+    use cs_app::loading::LoadedItemBinding;
+    use cs_app::mission_launch::plan_mission_launch;
+    use cs_app::mission_session::{
+        GunSound, MEASURED_GUN_MEMBER, MissionStage, build_headless, designed_loadout,
+        measured_gun_sound_id, stage_for,
+    };
+    use cs_types::content::Resolved;
+    use cs_types::evidence::{ClaimStatus, ContentHash};
+
+    use crate::campaign::common::label;
+
+    /// The record names one stage's measured slots resolve to, in slot order.
+    fn slot_records(stage_records: &[cs_app::mission_session::WeaponSound]) -> Vec<String> {
+        stage_records
+            .iter()
+            .map(|sound| sound.weapon.clone())
+            .collect()
+    }
+
+    /// **The committed (gun, ammunition) map reproduces the measured M01
+    /// loadout: the pilot's and the wingman's fresh-campaign records carry
+    /// `wep_50`, `wep_40`, `wep_30` and one empty slot.**
+    ///
+    /// Removing the `[gun_loadout]` table or its map fails the facts parse;
+    /// wrong bases or sentinel fail the names.
+    #[test]
+    fn accept_m01_window_fire_gun_loadout_the_engine_map_resolves_the_player_records() {
+        let facts = engine_facts().expect("the committed engine facts parse");
+        let loadout = facts.gun_loadout();
+        for slot in [FlightCheckPlaneSlot::Pilot, FlightCheckPlaneSlot::Wingman] {
+            let default = facts.flight_check().default_for(slot);
+            let records: Vec<Option<String>> = default
+                .guns
+                .iter()
+                .zip(default.ammo.iter())
+                .map(|(&gun, &ammo)| {
+                    loadout
+                        .weapon_index(gun, ammo)
+                        .map(|index| loadout.record_name(index))
+                })
+                .collect();
+            assert_eq!(
+                records,
+                [
+                    Some("wep_50".to_owned()),
+                    Some("wep_40".to_owned()),
+                    Some("wep_30".to_owned()),
+                    None,
+                ],
+                "{slot:?}'s gun slots resolve to the measured records"
+            );
+        }
+    }
+
+    /// **Every designed gun's shot sound names the member the composition
+    /// delivers — never the retired designed id.**
+    ///
+    /// Reverting the binding to a designed spelling fails here.
+    #[test]
+    fn accept_m01_window_fire_gun_loadout_the_shot_sound_names_the_delivered_member() {
+        let delivered = measured_gun_sound_id();
+        for gun in &designed_loadout().guns {
+            let Resolved::Known(known) = gun.sound() else {
+                panic!("the designed gun's shot sound is declared");
+            };
+            assert_eq!(
+                &known.value, &delivered,
+                "every designed gun names the measured member"
+            );
+        }
+    }
+
+    /// **The declared record for the delivered member is a `Weapons`-bus
+    /// loop — the bus authored, the loop measured — and says so.**
+    ///
+    /// A one-shot declaration, a wrong bus or a claim class inflated to
+    /// `verified_original` all fail here.
+    #[test]
+    fn accept_m01_window_fire_gun_loadout_the_declared_record_is_a_weapons_loop() {
+        let gun = GunSound {
+            weapons: Vec::new(),
+            container: "ZBD/soundsh.zbd".to_owned(),
+            container_sha256: ContentHash::from_bytes([0; 32]),
+            host: PathBuf::new(),
+            content: measured_gun_sound_id(),
+            bytes: 0,
+        };
+        let record = gun.record().expect("the declared record builds");
+        let Resolved::Known(bus) = &record.playback().bus else {
+            panic!("the bus is declared");
+        };
+        assert_eq!(bus.value, cs_content::audio::AudioBus::Weapons);
+        assert_eq!(
+            bus.provenance.class,
+            ClaimStatus::Designed,
+            "the bus is the project's own routing choice"
+        );
+        let Resolved::Known(mode) = &record.playback().mode else {
+            panic!("the mode is declared");
+        };
+        assert_eq!(mode.value, cs_content::audio::PlaybackMode::Loop);
+        assert_eq!(
+            mode.provenance.class,
+            ClaimStatus::ObservedTool,
+            "the LOOPED flag is measured installation evidence, never verified_original"
+        );
+    }
+
+    /// **The production composition measures the records, delivers the
+    /// selected member beside the launch sound, and lowers the looped
+    /// `Weapons` spec the shot id names.**
+    ///
+    /// Removing the stage's measurement, the second load item or the catalog
+    /// record each fails a different assertion here.
+    #[test]
+    #[ignore = "requires CS_GAME_DIR"]
+    fn accept_m01_window_fire_gun_loadout_retail_the_member_is_delivered_and_lowered() {
+        let root = PathBuf::from(std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR must be set"));
+        let plan = plan_mission_launch(&root, label("M01"), "The Lost Treasure")
+            .expect("M01's launch closure plans");
+        let stage: MissionStage =
+            stage_for(&root, &plan).expect("M01's stage reads through the production readers");
+        let gun = stage
+            .gun_sound
+            .as_ref()
+            .expect("the stage measured the player's gun loadout");
+        assert_eq!(
+            slot_records(&gun.weapons),
+            ["wep_50", "wep_40", "wep_30"],
+            "the pilot record's gun slots resolve in slot order"
+        );
+        assert!(
+            gun.weapons.iter().all(|sound| sound.looped),
+            "every resolved group is flagged LOOPED"
+        );
+        assert_eq!(gun.weapons[0].group, "snd_50cal");
+        assert_eq!(gun.weapons[0].member, MEASURED_GUN_MEMBER);
+        assert_eq!(gun.content, measured_gun_sound_id());
+
+        let mut app = build_headless(&stage).expect("the retail stage composes");
+        app.update();
+
+        // The member was delivered through the announced load: a binding
+        // carrying exactly the measured member's id.
+        let mut query = app
+            .world_mut()
+            .query_filtered::<&LoadedItemBinding, With<LoadedItemBinding>>();
+        let delivered = query
+            .iter(app.world())
+            .filter(|binding| binding.content == gun.content)
+            .count();
+        assert_eq!(delivered, 1, "the gun member is a delivered binding");
+
+        // The declared catalog holds the record, and the handoff lowered it
+        // into the session's spec.
+        let catalog = app.world().resource::<DeclaredAudioCatalog>();
+        assert!(
+            catalog.catalog().get(&gun.content).is_some(),
+            "the declared catalog holds the measured member"
+        );
+        let handoff = app.world().resource::<AudioHandoffLog>();
+        let install = handoff
+            .installed
+            .as_ref()
+            .expect("the load installed an audio session");
+        assert!(
+            install.samples >= 2,
+            "the launch and gun members are both decoded: {install:?}"
+        );
+        let session = app.world().resource::<AudioSession>();
+        let spec = session
+            .spec(&gun.content)
+            .expect("the delivered member lowered into a spec");
+        assert_eq!(spec.bus(), cs_sim::audio_events::AudioBus::Weapons);
+        assert_eq!(spec.mode(), cs_sim::audio_events::PlaybackMode::Loop);
+
+        cs_app::mission_session::teardown(&mut app);
+    }
+}

@@ -9,14 +9,19 @@
 //!
 //! # The loadout is designed, and says so
 //!
-//! The original's Devastator guns, ammunition and rocket loadout were not
+//! The original's Devastator ammunition and rocket ordnance were not
 //! recovered: there is no production reader that returns M01's declared
-//! guns, ammunition or ordnance ([`crate::mission_launch`]'s
+//! ammunition or ordnance ([`crate::mission_launch`]'s
 //! `player_configuration` surface binds the airframe and the start pose and
-//! nothing else). Every record here is therefore [`Origin::Designed`] with a
-//! designed [`Provenance`] claim (`m01-play-weapons.designed-loadout`): a
-//! playable loadout that is **never** presented as original. When F27-E/F28-D
-//! measure the original's loadout, these records are what gets replaced.
+//! nothing else). Which weapon *records* the fresh-campaign Devastator's gun
+//! slots carry **is** measured — `wep_50`, `wep_40`, `wep_30`
+//! (`[gun_loadout]` in `data/owner-static/engine-facts.toml`, #1628) — and
+//! the guns' shot sound now names the member the selected record's measured
+//! `LOOPED_SOUND_NAME` chain answers. Every other value here is
+//! [`Origin::Designed`] with a designed [`Provenance`] claim
+//! (`m01-play-weapons.designed-loadout`): a playable loadout that is
+//! **never** presented as original. When F27-E/F28-D measure the rest of the
+//! original's loadout, these records are what gets replaced.
 //!
 //! # What this module owns, and what it does not
 //!
@@ -201,10 +206,12 @@ fn designed_gun(mount: &str, kind: DeclaredGunMountKind, key: &str) -> DeclaredG
             ContentId::from_source(ContentKind::HardpointEquipment, MISSION_MUZZLE_EFFECT)
                 .expect("the effect id is valid"),
         ),
-        known(
-            ContentId::from_source(ContentKind::Sound, MISSION_SHOT_SOUND)
-                .expect("the sound id is valid"),
-        ),
+        // The measured member the player's selected M01 gun record loops
+        // (#1628): `gun_sound` measures and delivers exactly this id beside
+        // the launch sound. The designed wrapper's provenance stays honest —
+        // which member the guns *name* is our binding; what the member *is*
+        // is measured.
+        known(super::gun_sound::measured_gun_sound_id()),
         designed_interaction_rules(),
         Provenance::designed(claim()),
     )
@@ -1412,7 +1419,6 @@ const MISSION_LOADOUT_KEY: &str = "m01-play-weapons.designed-loadout";
 const MISSION_STARTING_ROUNDS: u64 = 250;
 const MISSION_TARGET_RULES_SUBJECT: &str = "m01-play-weapons.designed-target-rules";
 const MISSION_MUZZLE_EFFECT: &str = "m01-play-weapons.designed-muzzle";
-const MISSION_SHOT_SOUND: &str = "m01-play-weapons.designed-shot";
 const MISSION_ROCKET_KEY: &str = "m01-play-weapons.designed-rocket";
 const MISSION_ROCKET_VISUAL: &str = "m01-play-weapons.designed-rocket-visual";
 const MISSION_ROCKET_SOUND: &str = "m01-play-weapons.designed-rocket-sound";

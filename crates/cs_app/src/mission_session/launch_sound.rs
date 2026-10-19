@@ -318,7 +318,8 @@ pub fn stage_container(
     Ok(root)
 }
 
-/// Installs the audio stack for the launch: the declared one-record catalog,
+/// Installs the audio stack for the launch: the declared catalog — the
+/// launch record plus every `extra` record the caller delivers beside it —
 /// the audible device (or the named refusal) with a probe attached before any
 /// voice starts, the sample library the load fills, and the scene generation
 /// the handoff reads.
@@ -335,6 +336,7 @@ pub fn stage_container(
 pub fn install_launch_audio(
     app: &mut App,
     launch: &LaunchSound,
+    extra: &[AudioAssetRecord],
     start_m: [f32; 3],
     declaration: &CapabilityDeclaration,
 ) -> Result<(), LaunchSoundError> {
@@ -359,9 +361,14 @@ pub fn install_launch_audio(
         .map_err(|e| refuse(e.to_string()))?;
     let listener = Listener::try_new(start_m.map(f64::from), [1.0, 0.0, 0.0])
         .map_err(|e| refuse(e.to_string()))?;
+    let mut catalog = launch.catalog()?;
+    for record in extra {
+        catalog
+            .insert(record.clone())
+            .map_err(|e| refuse(e.to_string()))?;
+    }
     app.add_plugins(
-        AudioPlugin::new(launch.catalog()?, AudioSpatial::new(policy, listener))
-            .with_device(device),
+        AudioPlugin::new(catalog, AudioSpatial::new(policy, listener)).with_device(device),
     );
     // The plugin records a stand-in for a caller-given device and publishes no
     // library for it; this device is the audible one (or the named refusal),

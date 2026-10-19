@@ -56,6 +56,7 @@ fn accept_vs_m01_runtime_evidence_audio_a_machine_without_audio_is_refused_with_
     cs_app::mission_session::install_launch_audio(
         &mut app,
         &launch,
+        &[],
         [0.0; 3],
         &CapabilityDeclaration {
             declared: DeclaredCapabilities::of([CapabilityClass::Retail]),

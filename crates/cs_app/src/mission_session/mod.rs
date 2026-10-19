@@ -150,8 +150,8 @@ pub use flight_check::{
     mission_is_held, mission_is_released,
 };
 pub use gun_sound::{
-    WeaponSound, WeaponSoundError, measure_weapon_sound, sound_like_keys,
-    weapon_sound_from_documents,
+    GunSound, GunSoundError, MEASURED_GUN_MEMBER, WeaponSound, WeaponSoundError, measure_gun_sound,
+    measure_weapon_sound, measured_gun_sound_id, sound_like_keys, weapon_sound_from_documents,
 };
 pub use host::{
     MissionHost, MissionHostLaunchError, MissionHostRefusal, MissionHostReport,

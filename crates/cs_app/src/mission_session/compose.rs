@@ -89,6 +89,7 @@ use bevy::app::{App, AppExit};
 use bevy::prelude::{Entity, Or, Quat, Resource, Transform, Vec3, Visibility, With, World};
 use cs_assets::cache::{CacheBudget, CacheDirectory, CacheStore};
 use cs_assets::vfs::{ContentSession, MountBuilder, SessionBuilder};
+use cs_content::audio::AudioAssetRecord;
 use cs_content::objectives_engine::{EngineObjective, EngineObjectives};
 use cs_content::world::{WorldDefinition, WorldInstance};
 use cs_sim::flight::original::FORCE_TO_ACCEL;
@@ -103,6 +104,7 @@ use cs_types::space::Quaternion;
 
 use super::actor_census::MissionActorAidPlugin;
 use super::actor_visual::build_actor_visuals;
+use super::gun_sound::{GunSound, GunSoundError, measure_gun_sound};
 use super::landings::{MissionLandings, read_landings};
 use super::launch_sound::{LaunchSound, LaunchSoundError, measure_launch_sound};
 use super::player_visual::{
@@ -259,6 +261,14 @@ pub struct MissionStage {
     /// measured from the original data (VS-M01-RT-EVIDENCE-B, #1313). The
     /// synthetic acceptance stages set `None` and install no audio.
     pub launch_sound: Option<LaunchSound>,
+    /// The player's measured M01 gun sound — the fresh-campaign pilot
+    /// record's selected weapon record's `LOOPED_SOUND_NAME` chain
+    /// (M01-WINDOW-FIRE-GUN-LOADOUT, #1628) — delivered beside the launch
+    /// sound from the same staged container. It is `Some` only for M01's
+    /// retail stage: the measurement is the fresh-campaign loadout and a
+    /// saved campaign's persisted loadout is unmeasured. The synthetic
+    /// acceptance stages set `None`.
+    pub gun_sound: Option<GunSound>,
     /// The measured length of the launch cinematic that holds the player's
     /// control after Fly Mission (#1663). `None` for a stage with no launch
     /// cinematic: every synthetic stage and every mission but M01.
@@ -359,6 +369,10 @@ pub enum MissionCompositionError {
     Capture(crate::mission_session::CaptureRefusal),
     /// The launch sound could not be measured from the original data.
     LaunchSound(LaunchSoundError),
+    /// The player's measured M01 gun sound could not be measured or its
+    /// declared record could not be built (M01-WINDOW-FIRE-GUN-LOADOUT,
+    /// #1628).
+    GunSound(GunSoundError),
     /// The mission's sound-group table or a member it names could not be read
     /// for the radio dialogue ([`super::radio`]).
     Radio(super::radio::RadioError),
@@ -402,6 +416,7 @@ impl fmt::Display for MissionCompositionError {
             Self::Host(error) => write!(f, "the mission host refuses: {error}"),
             Self::Capture(refusal) => write!(f, "{refusal}"),
             Self::LaunchSound(error) => write!(f, "{error}"),
+            Self::GunSound(error) => write!(f, "{error}"),
             Self::Audio(error) if error.code == crate::audio::CODE_CAPABILITY_ABSENT => write!(
                 f,
                 "add audio to CS_CAPABILITIES, e.g. CS_CAPABILITIES=retail,gpu,audio\n  \
@@ -532,6 +547,20 @@ pub fn stage_for(
     // scene root (#1663); only M01's launch is measured.
     let launch_cinematic = if plan.mission_dir.eq_ignore_ascii_case("zbd/c3/m01") {
         Some(measure_stage_cinematic(install_root, &content)?)
+    } else {
+        None
+    };
+    // The player's gun sound is measured for M01's fresh-campaign loadout
+    // (#1628) only: a saved campaign's persisted loadout is unmeasured, so
+    // binding the fresh defaults to another mission would overstate what was
+    // measured. Its member rides the launch sound's staged container, so it
+    // is measured only where that sound is (this block, not the synthetic
+    // stages).
+    let gun_sound = if plan.mission_dir.eq_ignore_ascii_case("zbd/c3/m01") {
+        Some(
+            measure_gun_sound(install_root, &content.sound_archives)
+                .map_err(MissionCompositionError::GunSound)?,
+        )
     } else {
         None
     };
@@ -705,6 +734,7 @@ pub fn stage_for(
             )
             .map_err(MissionCompositionError::LaunchSound)?,
         ),
+        gun_sound,
         launch_cinematic,
         label: MISSION_COMPOSITION_LABEL.to_owned(),
         cache_root: Path::new(DEFAULT_MISSION_CACHE_DIR).to_path_buf(),
@@ -1019,9 +1049,18 @@ fn add_composition(
         None => None,
     };
     if let Some(launch) = &stage.launch_sound {
+        // The measured gun sound is declared beside the launch record (#1628):
+        // one catalog, one device, one population pass.
+        let extra: Vec<AudioAssetRecord> = stage
+            .gun_sound
+            .iter()
+            .map(|gun| gun.record())
+            .collect::<Result<_, _>>()
+            .map_err(MissionCompositionError::GunSound)?;
         super::launch_sound::install_launch_audio(
             app,
             launch,
+            &extra,
             stage.start.position,
             &crate::audio::CapabilityDeclaration::from_environment(),
         )
@@ -1342,16 +1381,33 @@ fn load_items(stage: &MissionStage) -> Result<Vec<LoadItem>, MissionCompositionE
             })?;
         items.push(
             LoadItem::new(
-                key,
+                key.clone(),
                 launch.content.clone(),
                 Criticality::GameplayCritical,
                 launch.bytes,
             )
             .map_err(|error| MissionCompositionError::Item {
-                key: spelling,
+                key: spelling.clone(),
                 reason: error.to_string(),
             })?,
         );
+        // The measured gun member is a second binding of the same staged
+        // container (#1628): one file read per item, one container opened
+        // per decode pass, each member named by its own content id.
+        if let Some(gun) = &stage.gun_sound {
+            items.push(
+                LoadItem::new(
+                    key.clone(),
+                    gun.content.clone(),
+                    Criticality::GameplayCritical,
+                    gun.bytes,
+                )
+                .map_err(|error| MissionCompositionError::Item {
+                    key: spelling.clone(),
+                    reason: error.to_string(),
+                })?,
+            );
+        }
     }
     Ok(items)
 }
