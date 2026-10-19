@@ -63,6 +63,10 @@ use crate::catalog::baseline::{Baseline, BaselineError, retail_baseline};
 use crate::environment::EnvironmentId;
 use crate::pilots::DeclaredSurvivability;
 use crate::target_rules::{DeclaredAllegiance, DeclaredRelation};
+use crate::weapons::{
+    ORIGINAL_AMMO_NONE, ORIGINAL_GUN_SLOTS, ORIGINAL_ROCKET_NONE, ORIGINAL_ROCKET_SLOTS,
+    ORIGINAL_SLOT_AMMO_KINDS, OriginalAirframeLoadout, original_airframe_loadout,
+};
 use crate::world::WorldId;
 
 /// The domain separator of the Instant Action scenario seed stream.
@@ -167,6 +171,163 @@ impl fmt::Display for RosterSlot {
     }
 }
 
+// --------------------------------------------------------- slot ordnance ---
+
+/// One actor's ordnance in the original's own terms: an ammunition kind per
+/// gun slot and a rocket id per rocket slot (F49-D.02-FU-SLOTS, #1629).
+///
+/// The original's Instant Action "change weapons" button runs
+/// `ORDINANCELAYOUT.SCRIPT`, which has no loadout identity list at all: it
+/// edits the actor's record one slot at a time through the `$$E$$` callbacks
+/// (`2036` stores the picked ammunition kind at `+0x98 + 4*slot`, `2037`
+/// stores the picked rocket id at `+0xa8 + 4*slot`). A custom scenario that
+/// wants to declare ordnance therefore declares these two arrays, and
+/// validation checks them against the measured per-airframe slot surface
+/// ([`crate::weapons::original_airframe_loadout`]) instead of looking a
+/// `ContentKind::Loadout` id up in the option table — which stays empty
+/// because no such list exists in the original.
+///
+/// The measured value domains: each `gun_ammo` entry is a kind in
+/// `0..`[`ORIGINAL_SLOT_AMMO_KINDS`] (`4` = [`ORIGINAL_AMMO_NONE`]) and each
+/// `rockets` entry is an id in `0..=`[`ORIGINAL_ROCKET_NONE`]. Which slots
+/// exist is a property of the actor's airframe, checked in validation: a
+/// pick that puts anything but the none value into a slot the airframe does
+/// not have is a [`ScenarioProblemCode::ImpossibleSlotChoice`]. The ids are
+/// the original's integer kinds — they are not content ids, and no content
+/// id is minted from them.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SlotOrdnance {
+    gun_ammo: [u32; ORIGINAL_GUN_SLOTS as usize],
+    rockets: [u32; ORIGINAL_ROCKET_SLOTS as usize],
+}
+
+/// Why a [`SlotOrdnance`] was refused at the boundary.
+///
+/// A kind or id outside the measured domain is refused here; a kind or id
+/// *inside* the domain but on a slot the actor's airframe does not have is a
+/// validation problem ([`ScenarioProblemCode::ImpossibleSlotChoice`]), which
+/// is where the airframe is known.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SlotOrdnanceError {
+    /// A gun slot was given an ammunition kind the original's dropdown does
+    /// not offer.
+    AmmoKindOutOfRange {
+        /// The gun slot (`0..4`).
+        slot: u32,
+        /// The refused kind.
+        kind: u32,
+    },
+    /// A rocket slot was given an id outside the measured selector table.
+    RocketOutOfRange {
+        /// The rocket slot (`0..8`).
+        slot: u32,
+        /// The refused id.
+        id: u32,
+    },
+}
+
+impl fmt::Display for SlotOrdnanceError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::AmmoKindOutOfRange { slot, kind } => write!(
+                f,
+                "gun slot {slot} takes an ammunition kind in 0..{ORIGINAL_SLOT_AMMO_KINDS}, got {kind}"
+            ),
+            Self::RocketOutOfRange { slot, id } => write!(
+                f,
+                "rocket slot {slot} takes a rocket id in 0..={ORIGINAL_ROCKET_NONE}, got {id}"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for SlotOrdnanceError {}
+
+impl SlotOrdnance {
+    /// Assembles a per-slot ordnance selection, refusing kinds and ids
+    /// outside the measured domains.
+    ///
+    /// # Errors
+    ///
+    /// [`SlotOrdnanceError::AmmoKindOutOfRange`] when a `gun_ammo` entry is
+    /// not a kind the original's dropdown offers, and
+    /// [`SlotOrdnanceError::RocketOutOfRange`] when a `rockets` entry is not
+    /// a row of the measured selector table.
+    pub const fn try_new(
+        gun_ammo: [u32; ORIGINAL_GUN_SLOTS as usize],
+        rockets: [u32; ORIGINAL_ROCKET_SLOTS as usize],
+    ) -> Result<Self, SlotOrdnanceError> {
+        let mut slot = 0;
+        while slot < ORIGINAL_GUN_SLOTS as usize {
+            if gun_ammo[slot] >= ORIGINAL_SLOT_AMMO_KINDS {
+                return Err(SlotOrdnanceError::AmmoKindOutOfRange {
+                    slot: slot as u32,
+                    kind: gun_ammo[slot],
+                });
+            }
+            slot += 1;
+        }
+        let mut slot = 0;
+        while slot < ORIGINAL_ROCKET_SLOTS as usize {
+            if rockets[slot] > ORIGINAL_ROCKET_NONE {
+                return Err(SlotOrdnanceError::RocketOutOfRange {
+                    slot: slot as u32,
+                    id: rockets[slot],
+                });
+            }
+            slot += 1;
+        }
+        Ok(Self { gun_ammo, rockets })
+    }
+
+    /// The measured default ordnance of one airframe template — the contents
+    /// the original's editor opens with for that airframe.
+    #[must_use]
+    pub fn of_airframe(template: &OriginalAirframeLoadout) -> Self {
+        Self {
+            gun_ammo: *template.ammo(),
+            rockets: *template.rockets(),
+        }
+    }
+
+    /// The picked ammunition kind of each of the four gun slots.
+    #[must_use]
+    pub const fn gun_ammo(&self) -> &[u32; ORIGINAL_GUN_SLOTS as usize] {
+        &self.gun_ammo
+    }
+
+    /// The picked rocket id of each of the eight rocket slots.
+    #[must_use]
+    pub const fn rockets(&self) -> &[u32; ORIGINAL_ROCKET_SLOTS as usize] {
+        &self.rockets
+    }
+
+    /// Whether a pick can be made in every slot the airframe has — picks in
+    /// slots the airframe lacks must hold the none value, the only state the
+    /// original's greyed-out dropdown can be left in.
+    #[must_use]
+    pub fn fits(&self, template: &OriginalAirframeLoadout) -> bool {
+        self.offending_slot(template).is_none()
+    }
+
+    /// The first pick a slot the airframe does not have carries, when there
+    /// is one: `(is_gun_slot, slot)`.
+    #[must_use]
+    pub fn offending_slot(&self, template: &OriginalAirframeLoadout) -> Option<(bool, u32)> {
+        for (slot, kind) in self.gun_ammo.iter().enumerate() {
+            if !template.gun_slot_present(slot as u32) && *kind != ORIGINAL_AMMO_NONE {
+                return Some((true, slot as u32));
+            }
+        }
+        for (slot, id) in self.rockets.iter().enumerate() {
+            if !template.rocket_slot_present(slot as u32) && *id != ORIGINAL_ROCKET_NONE {
+                return Some((false, slot as u32));
+            }
+        }
+        None
+    }
+}
+
 // ------------------------------------------------------------------ roster ---
 
 /// One authored actor of a scenario: who flies what, on which side.
@@ -181,6 +342,7 @@ pub struct ScenarioActorSpec {
     faction: Resolved<ContentId>,
     airframe: Resolved<ContentId>,
     loadout: Resolved<ContentId>,
+    slot_ordnance: Option<SlotOrdnance>,
     pilot: Option<ContentId>,
     survivability: Resolved<DeclaredSurvivability>,
     skill: Option<DeclaredSkillTier>,
@@ -273,6 +435,7 @@ impl ScenarioActorSpec {
             faction,
             airframe,
             loadout,
+            slot_ordnance: None,
             pilot,
             survivability,
             skill: None,
@@ -334,6 +497,21 @@ impl ScenarioActorSpec {
         self
     }
 
+    /// Selects this actor's ordnance the way the original's editor does: per
+    /// slot, not by a named loadout (F49-D.02-FU-SLOTS, #1629).
+    ///
+    /// When a [`SlotOrdnance`] is attached it *is* the actor's ordnance
+    /// declaration — validation checks each pick against the measured
+    /// per-airframe slot surface, and the named-loadout dimension is replaced
+    /// by it: a `Resolved::Unknown` `loadout` then reports no unmeasured
+    /// field, and a `Known` one is a second, contradictory ordnance claim
+    /// ([`ScenarioProblemCode::ConflictingOrdnance`]).
+    #[must_use]
+    pub const fn with_slot_ordnance(mut self, ordnance: SlotOrdnance) -> Self {
+        self.slot_ordnance = Some(ordnance);
+        self
+    }
+
     /// The side this actor is spawned on.
     #[must_use]
     pub const fn side(&self) -> ScenarioSide {
@@ -389,6 +567,12 @@ impl ScenarioActorSpec {
     #[must_use]
     pub const fn loadout(&self) -> &Resolved<ContentId> {
         &self.loadout
+    }
+
+    /// This actor's per-slot ordnance selection, when one is authored.
+    #[must_use]
+    pub const fn slot_ordnance(&self) -> Option<&SlotOrdnance> {
+        self.slot_ordnance.as_ref()
     }
 
     /// The pilot that flies this actor, when one is authored.
@@ -1421,6 +1605,11 @@ pub enum ScenarioProblemCode {
     UnsupportedAirframe,
     /// An actor's loadout is not in the supported option table.
     UnsupportedLoadout,
+    /// An actor's per-slot ordnance puts a pick into a slot its airframe
+    /// does not have, or the airframe has no measured slot template.
+    ImpossibleSlotChoice,
+    /// An actor declares a named loadout *and* per-slot ordnance.
+    ConflictingOrdnance,
     /// An actor's pilot is not in the supported option table.
     UnsupportedPilot,
     /// An actor's airframe or loadout is `Resolved::Unknown`.
@@ -1451,6 +1640,8 @@ impl ScenarioProblemCode {
             Self::UnsupportedEnvironment => "unsupported_environment",
             Self::UnsupportedAirframe => "unsupported_airframe",
             Self::UnsupportedLoadout => "unsupported_loadout",
+            Self::ImpossibleSlotChoice => "impossible_slot_choice",
+            Self::ConflictingOrdnance => "conflicting_ordnance",
             Self::UnsupportedPilot => "unsupported_pilot",
             Self::UnmeasuredActorField => "unmeasured_actor_field",
             Self::UnmeasuredSurvivability => "unmeasured_survivability",
@@ -1474,6 +1665,8 @@ impl ScenarioProblemCode {
             | Self::UnmeasuredSurvivability
             | Self::UnsupportedAirframe
             | Self::UnsupportedLoadout
+            | Self::ImpossibleSlotChoice
+            | Self::ConflictingOrdnance
             | Self::UnsupportedPilot
             | Self::ImpossibleFaction
             | Self::MissingSide => "roster",
@@ -2294,26 +2487,80 @@ impl InstantActionCatalog {
                     }
                 }
             }
-            match actor.loadout() {
-                Resolved::Unknown { claim_id, reason } => found.push(ScenarioProblem::unknown(
-                    ScenarioProblemCode::UnmeasuredActorField,
-                    "roster",
-                    claim_id.clone(),
-                    reason,
-                )),
-                Resolved::Known(Known { value, .. }) => {
-                    if !self.options.loadouts().contains(value) {
+            match actor.slot_ordnance() {
+                Some(ordnance) => {
+                    // A per-slot selection *is* the ordnance declaration; a
+                    // named loadout beside it is a second, contradictory one.
+                    if let Resolved::Known(Known { value, .. }) = actor.loadout() {
                         found.push(ScenarioProblem::about(
-                            ScenarioProblemCode::UnsupportedLoadout,
+                            ScenarioProblemCode::ConflictingOrdnance,
                             value.clone(),
                             format!(
-                                "{} slot {} carries ordnance this catalog does not support",
+                                "{} slot {} names a loadout while its ordnance is selected per slot",
                                 actor.side(),
                                 actor.slot().index()
                             ),
                         ));
                     }
+                    if let Resolved::Known(Known { value, .. }) = actor.airframe() {
+                        match original_airframe_loadout(value.key()) {
+                            Some(template) => {
+                                if let Some((gun_slot, slot)) = ordnance.offending_slot(template) {
+                                    let (slot_kind, held) = if gun_slot {
+                                        ("gun", "ammunition")
+                                    } else {
+                                        ("rocket", "a rocket")
+                                    };
+                                    found.push(ScenarioProblem::about(
+                                        ScenarioProblemCode::ImpossibleSlotChoice,
+                                        value.clone(),
+                                        format!(
+                                            "{} slot {} loads {held} into {slot_kind} slot {slot}, \
+                                             which {} does not have",
+                                            actor.side(),
+                                            actor.slot().index(),
+                                            value.key(),
+                                        ),
+                                    ));
+                                }
+                            }
+                            None => found.push(ScenarioProblem::about(
+                                ScenarioProblemCode::ImpossibleSlotChoice,
+                                value.clone(),
+                                format!(
+                                    "{} slot {} selects per-slot ordnance on {}, which has no \
+                                     measured slot template",
+                                    actor.side(),
+                                    actor.slot().index(),
+                                    value.key(),
+                                ),
+                            )),
+                        }
+                    }
                 }
+                None => match actor.loadout() {
+                    Resolved::Unknown { claim_id, reason } => {
+                        found.push(ScenarioProblem::unknown(
+                            ScenarioProblemCode::UnmeasuredActorField,
+                            "roster",
+                            claim_id.clone(),
+                            reason,
+                        ));
+                    }
+                    Resolved::Known(Known { value, .. }) => {
+                        if !self.options.loadouts().contains(value) {
+                            found.push(ScenarioProblem::about(
+                                ScenarioProblemCode::UnsupportedLoadout,
+                                value.clone(),
+                                format!(
+                                    "{} slot {} carries ordnance this catalog does not support",
+                                    actor.side(),
+                                    actor.slot().index()
+                                ),
+                            ));
+                        }
+                    }
+                },
             }
             if let Resolved::Unknown { claim_id, reason } = actor.survivability() {
                 found.push(ScenarioProblem::unknown(
@@ -3049,9 +3296,13 @@ pub const LOADOUT_UNMEASURED_REASON: &str = "the original offers no loadout iden
      rocket slots by integer index, and no member names or enumerates a loadout, so a \
      ContentKind::Loadout id would have to be invented";
 
-/// The task that must model the original's per-slot loadout selection.
-pub const LOADOUT_RESOLVING_TASK: &str = "the per-slot loadout selection model (the original selects guns, gun ammunition and rocket \
-     ammunition per slot, not a named loadout)";
+/// What remains after the per-slot selection model landed (F49-D.02-FU-SLOTS,
+/// #1629): [`SlotOrdnance`] models the original's per-slot selection and
+/// `validate_custom` checks it against [`crate::weapons::original_airframe_loadout`],
+/// but no production consumer yet lowers the picks into a spawned scenario —
+/// the roster lowering still wants a `ContentKind::Loadout` id.
+pub const LOADOUT_RESOLVING_TASK: &str = "lowering an actor's SlotOrdnance into the spawned scenario (the per-slot selection model \
+     exists — cs_content::instant_action::SlotOrdnance, #1629 — but no production consumer lowers it yet)";
 
 /// The reader that produced the `pilots` option list (F49-D.02-FU-PILOT).
 ///
