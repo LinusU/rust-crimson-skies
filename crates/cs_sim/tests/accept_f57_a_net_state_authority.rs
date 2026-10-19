@@ -356,10 +356,7 @@ fn accept_f57_a_a_bailout_is_not_turned_into_a_destruction() {
     );
 }
 
-/// Input acknowledgment is monotonic and is the *only* thing a client input
-/// touches: rounds, boost capacity and pose are unchanged by an accepted input,
-/// so a client's predicted shot cannot become authoritative (F57 AC02's
-/// authority half).
+/// The wire is zero-based, so the first input (sequence 0) is not a replay.
 #[test]
 fn accept_f57_a_first_input_sequence_zero_is_not_a_replay() {
     let mut ledger = NetStateLedger::new(SESSION);
@@ -383,6 +380,10 @@ fn accept_f57_a_first_input_sequence_zero_is_not_a_replay() {
     assert!(ledger.observe_input(1, Tick(3)).is_ok());
 }
 
+/// Input acknowledgment is monotonic and is the *only* thing a client input
+/// touches: rounds, boost capacity and pose are unchanged by an accepted input,
+/// so a client's predicted shot cannot become authoritative (F57 AC02's
+/// authority half).
 #[test]
 fn accept_f57_a_input_acknowledgment_is_monotonic_and_changes_nothing_else() {
     let (mut ledger, actors) = three_actor_ledger();
