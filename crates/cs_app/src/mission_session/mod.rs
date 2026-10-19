@@ -101,6 +101,7 @@ mod flight_check;
 mod gun_sound;
 mod host;
 mod landings;
+pub(crate) mod launch_camera;
 pub(crate) mod launch_cinematic;
 mod launch_sound;
 mod letterbox;
@@ -167,6 +168,10 @@ pub use landings::{
     landing_node_entries, landing_reached, parse_landings, read_landings, step_landings,
     window_satisfied,
 };
+pub use launch_camera::{
+    CAMERA_FRAME_NODE, LaunchCameraPlayback, LaunchCameraStats, camera_in_world,
+    install_launch_camera,
+};
 pub use launch_cinematic::{
     LAUNCH_CAMERA_CARRIER, LaunchCinematic, LaunchCinematicError, LaunchCinematicLength,
     install_launch_cinematic, launch_cinematic_playing, measure_launch_cinematic,
@@ -210,7 +215,8 @@ pub use scenario::{
     WATCH_MAX_FRAMES_ENV,
 };
 pub use smoke::{
-    ActorMetrics, ApproachMetrics, AudioMetrics, Check, CinematicMetrics,
+    ActorMetrics, ApproachMetrics, AudioMetrics, CINEMATIC_SHOT_SECONDS, CameraMetrics, Check,
+    CinematicMetrics,
     DEFAULT_MISSION_CAPTURE_DIR, FlightCheckButtonMetrics, FlightCheckMetrics,
     FlightCheckTextMetrics, GunMetrics, HudMetrics, MAX_WINGMAN_DISTANCE_M, MIN_ACTOR_PIXELS,
     MIN_FLIGHT_CHECK_BUTTON_PIXELS, MIN_FLIGHT_CHECK_DRAWN_PERMILLE, MIN_FLIGHT_CHECK_TEXT_PIXELS,

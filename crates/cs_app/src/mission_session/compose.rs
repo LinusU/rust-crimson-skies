@@ -1512,6 +1512,7 @@ pub fn teardown(app: &mut App) {
     world.remove_resource::<MissionStage>();
     world.remove_resource::<super::flight_check::FlightCheckPhase>();
     world.remove_resource::<super::launch_cinematic::LaunchCinematic>();
+    world.remove_resource::<super::launch_camera::LaunchCameraPlayback>();
     world.remove_resource::<super::flight_check::FlightCheckArtwork>();
     world.remove_resource::<MissionHost>();
     world.remove_resource::<crate::mission_session::MissionHostReport>();
@@ -1570,21 +1571,52 @@ pub fn run_windowed(
         }
         super::flight_check::install_flight_check(&mut app, phase);
         super::flight_check::install_flight_check_screen(&mut app, artwork);
-        // After Fly Mission the launch cinematic holds the player's control
-        // and the HUD for its measured length (#1663).
-        if let Some(length) = &stage.launch_cinematic {
-            let ticks = length.ticks(crate::physics::BASELINE_FIXED_HZ);
-            super::launch_cinematic::install_launch_cinematic(&mut app, ticks)
-                .map_err(MissionCompositionError::LaunchCinematic)?;
-            println!(
-                "mission launch cinematic: {:.2} s for {} = {} ticks at {} Hz, \
-                 control and HUD held, verified_original=false",
-                length.seconds,
-                length.scene_root,
-                ticks,
-                crate::physics::BASELINE_FIXED_HZ
-            );
-        }
+    }
+    // After Fly Mission the launch cinematic holds the player's control and
+    // the HUD for its measured length (#1663) and plays the measured camera
+    // script (#1665). A capture scenario and the no-teleport smoke fly the
+    // start directly; the scripted smoke sits through the cinematic and
+    // screenshots it.
+    let flies_directly = capture.is_some()
+        || (smoke.is_some() && smoke_mode == crate::mission_session::MissionSmokeMode::NoTeleport);
+    if !flies_directly && let Some(length) = &stage.launch_cinematic {
+        let ticks = length.ticks(crate::physics::BASELINE_FIXED_HZ);
+        super::launch_cinematic::install_launch_cinematic(&mut app, ticks)
+            .map_err(MissionCompositionError::LaunchCinematic)?;
+        println!(
+            "mission launch cinematic: {:.2} s for {} = {} ticks at {} Hz, \
+             control and HUD held, verified_original=false",
+            length.seconds,
+            length.scene_root,
+            ticks,
+            crate::physics::BASELINE_FIXED_HZ
+        );
+        // The original draws the camera variants from a `rand()` table seeded
+        // with the clock; this run says which seed it drew with.
+        let seed = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_or(0, |elapsed| elapsed.as_nanos() as u64);
+        let script = crate::cinematics::launch_camera::read_launch_camera(
+            install_root,
+            &length.scene_root,
+            seed,
+        )
+        .map_err(|error| {
+            MissionCompositionError::LaunchCinematic(super::launch_cinematic::LaunchCinematicError(
+                error.to_string(),
+            ))
+        })?;
+        println!(
+            "mission launch camera: tracks {} (seed {seed}), pose source cam_anim.zbd tails, \
+             field of view unmeasured, verified_original=false",
+            script
+                .scenes()
+                .iter()
+                .map(|scene| format!("{}={}", scene.animation, scene.track.block))
+                .collect::<Vec<_>>()
+                .join(" ")
+        );
+        super::launch_camera::install_launch_camera(&mut app, script);
     }
     if dev_overlay {
         app.insert_resource(crate::playtest::visuals::DeveloperOverlay(true));
