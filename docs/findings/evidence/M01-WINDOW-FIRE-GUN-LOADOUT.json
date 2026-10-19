@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "task_id": "M01-WINDOW-FIRE-GUN-LOADOUT",
+  "candidate_tree": "696cbb903d83788254a94640340d589b5fdcf5fb",
+  "engine": {
+    "rust": "rustc 1.98.1 (48a229cea 2026-09-01)",
+    "bevy": "0.19.1",
+    "avian": "0.7.0"
+  },
+  "created_at": "2026-10-19T13:44:30.997004+00:00",
+  "command": {
+    "argv": [
+      "cargo",
+      "test",
+      "--locked",
+      "-p",
+      "cs_app",
+      "--test",
+      "cs_app_tests_a",
+      "--",
+      "accept_m01_window_fire_gun_loadout",
+      "--include-ignored"
+    ],
+    "cwd": "/Users/linus/coding/rust-crimson-skies/swe2-max-1",
+    "exit_code": 0
+  },
+  "source": {
+    "install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978",
+    "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d"
+  },
+  "seed": 0,
+  "ticks": {
+    "start": 0,
+    "end": 0
+  },
+  "overrides": [],
+  "capabilities": [
+    "retail",
+    "audio"
+  ],
+  "tests": {
+    "discovered": 4,
+    "executed": 4,
+    "passed": 4,
+    "failed": 0,
+    "ignored": 0
+  },
+  "assertions": [
+    {
+      "id": "records: the committed (gun, ammunition) map resolves the pilot's and wingman's fresh-campaign gun slots to wep_50, wep_40, wep_30 (the fourth slot's gun_none/ammo_none pair resolves to no record)",
+      "status": "pass",
+      "evidence": [
+        "cargo-test.log"
+      ]
+    },
+    {
+      "id": "binding: every designed M01 gun's shot sound names the delivered member's content id (ZBD/soundsh.zbd/50cal_gun.wav), never the retired designed spelling",
+      "status": "pass",
+      "evidence": [
+        "cargo-test.log"
+      ]
+    },
+    {
+      "id": "record: the delivered member's declared catalog record is a Weapons-bus loop; the bus and level carry Designed provenance and the PlaybackMode::Loop carries ObservedTool provenance, never verified_original",
+      "status": "pass",
+      "evidence": [
+        "cargo-test.log"
+      ]
+    },
+    {
+      "id": "retail: stage_for on $CS_GAME_DIR measures wep_50/wep_40/wep_30 with every group LOOPED, delivers 50cal_gun.wav as an announced load binding beside the launch member, declares it in the installed catalog and lowers a Weapons/Loop spec in the audio session",
+      "status": "pass",
+      "evidence": [
+        "cargo-test.log",
+        "inventory.json"
+      ]
+    }
+  ],
+  "artifacts": [
+    {
+      "path": "cargo-test.log",
+      "sha256": "b757d465faca21bce36ea30da22aa9361f0e120cfa9c777022dd6b8cdaee4bea",
+      "kind": "log"
+    },
+    {
+      "path": "inventory.json",
+      "sha256": "cfa55a3c3ea1b88952eebf647b09df5fd58a9fc1ac9501dc80f2220e85af493d",
+      "kind": "manifest"
+    }
+  ],
+  "unknowns": [],
+  "review": {
+    "identity": "implementer: swe2-max-1 (Devin SWE-2, Rally #1628 implement claim clm_21xcoc36nb5bxifz); reviewer: recorded by the Rally review claim that follows. An agent review is `checked` at best and never replaces the owner's human approval.",
+    "method": "the task's acceptance selection ran locally with CS_GAME_DIR, CS_ENGINE_IMAGE and CS_CAPABILITIES=retail,gpu,audio and was recorded verbatim in cargo-test.log; this harness derives every field from that log, from a fresh cs-inspect inventory of the read-only installation, from `git rev-parse HEAD^{tree}`, from rustc and from Cargo.lock. The measurement itself is static engine-image analysis (claim OWNER-STATIC-2026-10-19, provenance static) plus record reads through the production readers: no original executable ran and the looped member was decoded into the session's sample library, not listened to, so nothing here is verified_original. Which of soundsl.zbd/soundsh.zbd the original opens is unmeasured (F14-D.7); the launch container is the labelled choice the finding records. Structure checked with tools/validate_evidence.py --require-pass."
+  },
+  "claim": "implemented"
+}
