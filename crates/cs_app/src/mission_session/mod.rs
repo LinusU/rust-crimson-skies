@@ -101,6 +101,7 @@ mod flight_check;
 mod gun_sound;
 mod host;
 mod landings;
+pub(crate) mod launch_cinematic;
 mod launch_sound;
 mod letterbox;
 mod lifecycles;
@@ -165,6 +166,11 @@ pub use landings::{
     LandingReadError, LandingRefusal, LandingRow, LandingTick, MissionLandings,
     landing_node_entries, landing_reached, parse_landings, read_landings, step_landings,
     window_satisfied,
+};
+pub use launch_cinematic::{
+    LAUNCH_CAMERA_CARRIER, LaunchCinematic, LaunchCinematicError, LaunchCinematicLength,
+    install_launch_cinematic, launch_cinematic_playing, measure_launch_cinematic,
+    player_has_control, read_launch_cinematic, ticks_for,
 };
 pub use launch_sound::{
     LAUNCH_SOUND_CONTAINER, LaunchAudioProbe, LaunchSound, LaunchSoundError, backend_refusal,

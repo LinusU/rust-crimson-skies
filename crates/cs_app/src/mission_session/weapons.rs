@@ -921,8 +921,14 @@ pub fn publish_mission_weapon_input(world: &mut World) {
     // enforces. A press edge always fires at once; the cadence only decides
     // the repeats, so a player who taps faster than the gun fires gets the
     // F27's own named cooldown refusal rather than a hidden queue.
+    // The launch cinematic leaves the player no control (#1663): whatever the
+    // keys did during it fires nothing.
+    let controlled = !super::launch_cinematic::launch_cinematic_playing(world);
+    if !controlled {
+        actions.clear();
+    }
     let pressed = actions.iter().copied().any(is_fire_guns);
-    if !pressed && guns_key_held(world) && gun_hold_due(world, at) {
+    if controlled && !pressed && guns_key_held(world) && gun_hold_due(world, at) {
         actions.push(Action::Flight(FlightCommand::FirePrimary));
     }
     if actions.iter().copied().any(is_fire_guns) {

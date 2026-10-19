@@ -507,10 +507,21 @@ fn row_value(
 
 /// Sizes the safe-area root to the largest 4:3 rectangle in the window,
 /// centred.
-fn fit_safe_area(windows: Query<&Window>, mut areas: Query<&mut Node, With<SafeArea>>) {
+fn fit_safe_area(
+    windows: Query<&Window>,
+    phase: Option<bevy::prelude::Res<super::launch_cinematic::LaunchCinematic>>,
+    mut areas: Query<(&mut Node, &mut bevy::prelude::Visibility), With<SafeArea>>,
+) {
     let Ok(window) = windows.single() else { return };
     let (w, h) = safe_area(window.width(), window.height());
-    for mut node in &mut areas {
+    // The launch cinematic holds the HUD back until it hands over (#1663).
+    let held = phase.is_some_and(|phase| phase.is_playing());
+    for (mut node, mut visibility) in &mut areas {
+        *visibility = if held {
+            bevy::prelude::Visibility::Hidden
+        } else {
+            bevy::prelude::Visibility::Inherited
+        };
         node.left = Val::Px((window.width() - w) / 2.0);
         node.top = Val::Px((window.height() - h) / 2.0);
         node.width = Val::Px(w);

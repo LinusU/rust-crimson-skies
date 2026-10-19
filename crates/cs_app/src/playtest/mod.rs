@@ -353,7 +353,11 @@ impl Plugin for PlaytestPlugin {
             .add_systems(Startup, setup_scene)
             // The retail scene's original law runs on the fixed tick, before
             // the F23 adapter drains this tick's force requests.
-            .add_systems(FixedUpdate, drive_original_flight)
+            .add_systems(
+                FixedUpdate,
+                // The launch cinematic leaves the law unstepped (#1663).
+                drive_original_flight.run_if(crate::mission_session::player_has_control),
+            )
             .add_systems(
                 RunFixedMainLoop,
                 apply_flight_command.in_set(RunFixedMainLoopSystems::BeforeFixedMainLoop),

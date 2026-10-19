@@ -259,6 +259,10 @@ pub struct MissionStage {
     /// measured from the original data (VS-M01-RT-EVIDENCE-B, #1313). The
     /// synthetic acceptance stages set `None` and install no audio.
     pub launch_sound: Option<LaunchSound>,
+    /// The measured length of the launch cinematic that holds the player's
+    /// control after Fly Mission (#1663). `None` for a stage with no launch
+    /// cinematic: every synthetic stage and every mission but M01.
+    pub launch_cinematic: Option<super::launch_cinematic::LaunchCinematicLength>,
     /// The label every surface shows.
     pub label: String,
     /// The private cache root, outside the installation.
@@ -364,6 +368,8 @@ pub enum MissionCompositionError {
     Audio(cs_sim::audio_events::DeviceError),
     /// The Flight Check phase could not be read or built.
     FlightCheck(super::flight_check::FlightCheckPhaseError),
+    /// The launch cinematic's length could not be measured (#1663).
+    LaunchCinematic(super::launch_cinematic::LaunchCinematicError),
     /// The app exited with an error.
     Exit(String),
 }
@@ -404,6 +410,7 @@ impl fmt::Display for MissionCompositionError {
             Self::Radio(error) => write!(f, "the mission's radio dialogue refuses: {error}"),
             Self::Audio(error) => write!(f, "the mission audio refuses: {error}"),
             Self::FlightCheck(error) => write!(f, "{error}"),
+            Self::LaunchCinematic(error) => write!(f, "{error}"),
             Self::Exit(reason) => write!(f, "the mission window exited with an error: {reason}"),
         }
     }
@@ -461,6 +468,30 @@ pub struct MissionComposition {
     pub player: Entity,
 }
 
+/// The launch cinematic's length for the airframe the content's start binds.
+fn measure_stage_cinematic(
+    install_root: &Path,
+    content: &super::MissionContent,
+) -> Result<super::launch_cinematic::LaunchCinematicLength, MissionCompositionError> {
+    let refuse = |what: String| {
+        MissionCompositionError::LaunchCinematic(super::launch_cinematic::LaunchCinematicError(
+            what,
+        ))
+    };
+    let Resolved::Known(airframe) = content.start.airframe() else {
+        return Err(refuse("the player airframe is unknown".to_owned()));
+    };
+    let row = crate::mission_start::AIRFRAME_TABLE
+        .iter()
+        .find(|row| {
+            ContentId::from_source(ContentKind::Airframe, row.scene_root)
+                .is_ok_and(|id| id == airframe.value)
+        })
+        .ok_or_else(|| refuse(format!("{} names no airframe-table row", airframe.value)))?;
+    super::launch_cinematic::read_launch_cinematic(install_root, row.scene_root)
+        .map_err(MissionCompositionError::LaunchCinematic)
+}
+
 /// Derives the retail stage from a satisfied launch plan and the
 /// installation.
 ///
@@ -496,6 +527,13 @@ pub fn stage_for(
         crate::cinematics::launch_body::composed_start_pose(start)
     } else {
         start
+    };
+    // The cinematic that precedes control is measured for the player's own
+    // scene root (#1663); only M01's launch is measured.
+    let launch_cinematic = if plan.mission_dir.eq_ignore_ascii_case("zbd/c3/m01") {
+        Some(measure_stage_cinematic(install_root, &content)?)
+    } else {
+        None
     };
     let world_group = WorldGroup::new(&plan.group_dir).map_err(|error| {
         MissionCompositionError::Identity(format!(
@@ -667,6 +705,7 @@ pub fn stage_for(
             )
             .map_err(MissionCompositionError::LaunchSound)?,
         ),
+        launch_cinematic,
         label: MISSION_COMPOSITION_LABEL.to_owned(),
         cache_root: Path::new(DEFAULT_MISSION_CACHE_DIR).to_path_buf(),
         installation,
@@ -1472,6 +1511,7 @@ pub fn teardown(app: &mut App) {
     world.remove_resource::<ExpectedLoad>();
     world.remove_resource::<MissionStage>();
     world.remove_resource::<super::flight_check::FlightCheckPhase>();
+    world.remove_resource::<super::launch_cinematic::LaunchCinematic>();
     world.remove_resource::<super::flight_check::FlightCheckArtwork>();
     world.remove_resource::<MissionHost>();
     world.remove_resource::<crate::mission_session::MissionHostReport>();
@@ -1529,6 +1569,21 @@ pub fn run_windowed(
         }
         super::flight_check::install_flight_check(&mut app, phase);
         super::flight_check::install_flight_check_screen(&mut app, artwork);
+        // After Fly Mission the launch cinematic holds the player's control
+        // and the HUD for its measured length (#1663).
+        if let Some(length) = &stage.launch_cinematic {
+            let ticks = length.ticks(crate::physics::BASELINE_FIXED_HZ);
+            super::launch_cinematic::install_launch_cinematic(&mut app, ticks)
+                .map_err(MissionCompositionError::LaunchCinematic)?;
+            println!(
+                "mission launch cinematic: {:.2} s for {} = {} ticks at {} Hz, \
+                 control and HUD held, verified_original=false",
+                length.seconds,
+                length.scene_root,
+                ticks,
+                crate::physics::BASELINE_FIXED_HZ
+            );
+        }
     }
     if dev_overlay {
         app.insert_resource(crate::playtest::visuals::DeveloperOverlay(true));

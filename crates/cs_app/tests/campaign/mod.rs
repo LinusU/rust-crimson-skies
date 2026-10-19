@@ -341,5 +341,6 @@ mod parity_m01_atmo_e4;
 mod parity_m01_atmo_e5;
 mod parity_m01_lc_measure_cam_frame;
 mod parity_m01_lc_measure_cam_timeline;
+mod parity_m01_lc_phase;
 mod record_objectives_sound;
 mod regenerate;
