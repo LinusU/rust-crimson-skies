@@ -65,7 +65,8 @@ fn accept_parity_m01_player_view_retail_m01_composes_the_integrated_player_view(
     // The first resolve teleports the rig onto the declared offset, so the
     // eye is the body's own frame applied to (0, up, astern) — no smoothing
     // lag is in play yet.
-    let expected = position + rotation * Vec3::new(0.0, CHASE_ABOVE_M as f32, CHASE_ASTERN_M as f32);
+    let expected =
+        position + rotation * Vec3::new(0.0, CHASE_ABOVE_M as f32, CHASE_ASTERN_M as f32);
     let actual = Vec3::new(eye.x() as f32, eye.y() as f32, eye.z() as f32);
     assert!(
         actual.distance(expected) < 0.01,
@@ -122,7 +123,12 @@ fn accept_parity_m01_player_view_retail_m01_composes_the_integrated_player_view(
         .iter(world)
         .filter(|(_, binding, _, _, child)| child.parent() == body && binding.actor == player)
         .map(|(flare, binding, record, visibility, _)| {
-            (flare.region, binding.node.clone(), record.state, *visibility)
+            (
+                flare.region,
+                binding.node.clone(),
+                record.state,
+                *visibility,
+            )
         })
         .collect();
     flares.sort_by_key(|flare| flare.0);
@@ -149,5 +155,6 @@ fn accept_parity_m01_player_view_retail_m01_composes_the_integrated_player_view(
 }
 
 fn region_key(region: &AirframeDamageRegion) -> cs_sim::damage::DamageNodeKey {
-    cs_sim::damage::DamageNodeKey::new(region.node_name()).expect("the measured node names are valid")
+    cs_sim::damage::DamageNodeKey::new(region.node_name())
+        .expect("the measured node names are valid")
 }

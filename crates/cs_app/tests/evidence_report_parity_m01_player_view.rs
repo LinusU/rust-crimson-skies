@@ -135,12 +135,8 @@ fn evidence_report_parity_m01_player_view_writes_the_acceptance_report() {
     // The no-teleport run's own report: it must record the parity frames the
     // owner captures are compared against.
     let no_teleport_path = evidence_dir.join("no-teleport").join("report.json");
-    let no_teleport = fs::read_to_string(&no_teleport_path).unwrap_or_else(|error| {
-        panic!(
-            "cannot read {}: {error}",
-            no_teleport_path.display()
-        )
-    });
+    let no_teleport = fs::read_to_string(&no_teleport_path)
+        .unwrap_or_else(|error| panic!("cannot read {}: {error}", no_teleport_path.display()));
     assert!(
         no_teleport.contains("\"mode\":\"no_teleport\""),
         "{} is the no-teleport run's own report",
@@ -187,7 +183,9 @@ fn evidence_report_parity_m01_player_view_writes_the_acceptance_report() {
         "no-teleport/frame_04200_flight_70s.png",
     ] {
         assert!(
-            artifacts.iter().any(|(name, _, kind)| name == parity && kind == "png"),
+            artifacts
+                .iter()
+                .any(|(name, _, kind)| name == parity && kind == "png"),
             "the {parity} parity frame the owner capture is compared against must be an artifact"
         );
     }
