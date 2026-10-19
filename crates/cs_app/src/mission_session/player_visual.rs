@@ -29,6 +29,7 @@ use bevy::asset::{AssetApp, Assets};
 use bevy::image::Image;
 use bevy::prelude::{AlphaMode, Entity, Quat, Resource, StandardMaterial, Visibility, World};
 
+use crate::airframe_damage::{AirframeDamageRegion, WingFlare};
 use crate::playtest::propeller::{PropellerBlur, PropellerSpin};
 use crate::playtest_retail::{
     AircraftPartAsset, AircraftSources, PlaytestAircraftReport, PlaytestConfig, PropellerBlurSpec,
@@ -70,6 +71,19 @@ pub const MISSION_PLAYER_BLUR_NODE_SLOT: u32 = 211;
 
 /// The authored name the pinned blur node stores.
 pub const MISSION_PLAYER_BLUR_NODE_NAME: &str = "prop1";
+
+/// The stored slot of the left wing's fire quad: `wing_flare1` under
+/// `dontmove`, bound to mesh #105 whose material is `oil_liteflare.tif`, at
+/// a measured translation of `x ≈ -5.375` — the damaged-wing fire's drawn
+/// anchor (PARITY-M01-PLAYER-VIEW-C2).
+pub const MISSION_PLAYER_FLARE_LEFT_NODE_SLOT: u32 = 208;
+
+/// The stored slot of the right wing's fire quad: `wing_flare2`, mesh #106,
+/// `x ≈ +5.320`.
+pub const MISSION_PLAYER_FLARE_RIGHT_NODE_SLOT: u32 = 209;
+
+/// The authored names the pinned flare nodes store.
+pub const MISSION_PLAYER_FLARE_NODE_NAMES: [&str; 2] = ["wing_flare1", "wing_flare2"];
 
 /// The viewer distance the player airframe's LOD band is selected at: the
 /// playtest's own designed value — the original's LOD rule is unmeasured. It
@@ -199,6 +213,16 @@ pub fn build_player_visual(
             MISSION_PLAYER_BLUR_NODE_SLOT,
             MISSION_PLAYER_BLUR_NODE_NAME.to_owned(),
         )),
+        aircraft_flare_nodes: vec![
+            (
+                MISSION_PLAYER_FLARE_LEFT_NODE_SLOT,
+                MISSION_PLAYER_FLARE_NODE_NAMES[0].to_owned(),
+            ),
+            (
+                MISSION_PLAYER_FLARE_RIGHT_NODE_SLOT,
+                MISSION_PLAYER_FLARE_NODE_NAMES[1].to_owned(),
+            ),
+        ],
         aircraft_lod_distance_m: MISSION_PLAYER_LOD_DISTANCE_M,
         ..PlaytestConfig::documented()
     };
@@ -261,6 +285,20 @@ pub fn spawn_player_visual(world: &mut World, body: Entity) {
                 .entity_mut(entity)
                 .insert((PropellerBlur, Visibility::Hidden));
             blend_pieces(world, part);
+        }
+        // The wingtip fire quads are damage-gated in the original: orig25.png
+        // shows none on the intact aircraft, orig70.png shows the fire at the
+        // damaged left wingtip. Each carries the region binding whose C1
+        // presentation record drives it, and spawns hidden.
+        let flare_region = match part.node_slot {
+            MISSION_PLAYER_FLARE_LEFT_NODE_SLOT => Some(AirframeDamageRegion::LeftWing),
+            MISSION_PLAYER_FLARE_RIGHT_NODE_SLOT => Some(AirframeDamageRegion::RightWing),
+            _ => None,
+        };
+        if let Some(region) = flare_region {
+            world
+                .entity_mut(entity)
+                .insert((WingFlare { region }, Visibility::Hidden));
         }
     }
     world.insert_resource(visual);

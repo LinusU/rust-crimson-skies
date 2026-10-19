@@ -2222,6 +2222,11 @@ fn select_aircraft_parts<'g>(
         .as_ref()
         .map(|(slot, name)| pinned(*slot, name, "aircraft propeller blur node"))
         .transpose()?;
+    let flares: Vec<&SceneNode> = config
+        .aircraft_flare_nodes
+        .iter()
+        .map(|(slot, name)| pinned(*slot, name, "aircraft wing fire node"))
+        .collect::<Result<_, _>>()?;
 
     let intact_members: BTreeSet<u32> = planes
         .subtree(intact.id())
@@ -2266,6 +2271,7 @@ fn select_aircraft_parts<'g>(
         airframe_bindings += 1;
         let reason = if node.index() == prop.index()
             || blur.is_some_and(|blur| blur.index() == node.index())
+            || flares.iter().any(|flare| flare.index() == node.index())
         {
             None
         } else if !intact_members.contains(&node.index()) {
@@ -2386,6 +2392,12 @@ pub struct PlaytestConfig {
     /// draw in addition to the propeller (`prop1` under `dontmove`:
     /// `rotorblur.tif`). `None` draws none, as the playtest always has.
     pub aircraft_blur_node: Option<(u32, String)>,
+    /// The stored slots and authored names of the wingtip **fire quad** nodes
+    /// to draw (the player's `wing_flare1`/`wing_flare2` under `dontmove`:
+    /// `oil_liteflare.tif`, PARITY-M01-PLAYER-VIEW-C2). The mission draws them
+    /// hidden until the region's damage record says otherwise; the playtest's
+    /// documented value is empty, drawing none, as it always has.
+    pub aircraft_flare_nodes: Vec<(u32, String)>,
     /// The viewer distance the aircraft's LOD band is selected at, in metres.
     pub aircraft_lod_distance_m: f64,
     /// The viewer distance the area's LOD bands are selected at, in metres.
@@ -2432,6 +2444,7 @@ impl PlaytestConfig {
             aircraft_prop_node_slot: PLAYTEST_AIRCRAFT_PROP_NODE_SLOT,
             aircraft_prop_node_name: PLAYTEST_AIRCRAFT_PROP_NODE_NAME.to_owned(),
             aircraft_blur_node: None,
+            aircraft_flare_nodes: Vec::new(),
             aircraft_lod_distance_m: PLAYTEST_AIRCRAFT_LOD_DISTANCE_M,
             area_lod_distance_m: PLAYTEST_AREA_LOD_DISTANCE_M,
             select_area_variants: true,

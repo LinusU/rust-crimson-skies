@@ -23,7 +23,7 @@
 //!   every record of an actor for repair, reload and scene release.
 
 use bevy::ecs::component::Component;
-use bevy::prelude::{Entity, World};
+use bevy::prelude::{Entity, Visibility, World};
 use cs_sim::damage::{ActorId, DamageNodeKey, DamageResolver, PartState};
 
 use crate::scene::SceneGeneration;
@@ -167,6 +167,78 @@ pub fn apply_region_damage_state(
         }
     }
     outcome
+}
+
+/// Component: the airframe's measured `wing_flare` fire quad
+/// (PARITY-M01-PLAYER-VIEW-C2).
+///
+/// `planes.zbd` stores one single-quad mesh per wingtip — the player's
+/// `wing_flare1` (slot 208, mesh 105) and `wing_flare2` (slot 209, mesh 106),
+/// both textured `oil_liteflare.tif` — under `healthy > dontmove`
+/// (`docs/findings/2026-10-19-parity-m01-player-view-c2-wing-fire-smoke-source.md`).
+/// The owner capture `orig25.png` shows no flare on the intact aircraft and
+/// `orig70.png` shows the fire anchored at the damaged left wingtip, so the
+/// quads are damage-gated in the original. The particle trail behind them
+/// (rate, lifetime, size, smoke puffs) is unmeasured and recorded unknown.
+///
+/// The marker rides on the entity that draws the quad and carries the
+/// measured region it answers to; [`update_wing_flares`] declares the
+/// [`RegionDamageBinding`] once the session exists (the player body spawns
+/// before `MissionWeapons` is installed) and is the only writer of the
+/// quad's visibility.
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WingFlare {
+    /// The damage region this quad anchors.
+    pub region: AirframeDamageRegion,
+}
+
+/// Shows every [`WingFlare`] exactly while its entity's published
+/// [`RegionDamagePresentation`] is `Damaged` or `Destroyed` — the gate the
+/// task names. `Intact`, `Unknown` and a flare with no published record yet
+/// all keep the quad hidden.
+///
+/// A flare whose spawn ran before the session's weapons marker existed gets
+/// its [`RegionDamageBinding`] declared here, on the first pass that can read
+/// one — binding the measured region name, never a derived one. Returns how
+/// many flares changed visibility.
+#[must_use]
+pub fn update_wing_flares(world: &mut World) -> u32 {
+    let session = world
+        .get_resource::<crate::mission_session::MissionWeapons>()
+        .map(|weapons| (weapons.player(), weapons.generation()));
+    let flares: Vec<(Entity, AirframeDamageRegion, PartState)> = world
+        .iter_entities()
+        .filter_map(|entity| {
+            let flare = entity.get::<WingFlare>()?;
+            let state = entity
+                .get::<RegionDamagePresentation>()
+                .map_or(PartState::Unknown, |record| record.state);
+            Some((entity.id(), flare.region, state))
+        })
+        .collect();
+    let mut changed = 0;
+    for (entity, region, state) in flares {
+        if let Some((actor, generation)) = session
+            && world.get::<RegionDamageBinding>(entity).is_none()
+            && let Ok(node) = DamageNodeKey::new(region.node_name())
+        {
+            world.entity_mut(entity).insert(RegionDamageBinding {
+                actor,
+                region,
+                node,
+                generation,
+            });
+        }
+        let wanted = match state {
+            PartState::Damaged | PartState::Destroyed => Visibility::Inherited,
+            PartState::Unknown | PartState::Intact => Visibility::Hidden,
+        };
+        if world.get::<Visibility>(entity) != Some(&wanted) {
+            world.entity_mut(entity).insert(wanted);
+            changed += 1;
+        }
+    }
+    changed
 }
 
 /// Drops every presentation record of `actor` and reports how many went.
