@@ -31,8 +31,9 @@
 //!    measured control/directive lowering of item 8 (owner amendment of
 //!    2026-10-10): it must lower **completely** before content exists. The
 //!    separate [`crate::objectives`] recovery (→ `DeclaredObjectiveProgram` →
-//!    `lower_program`) stays in that module, measured by Rally #1219; it
-//!    refuses for every original mission today and is not consulted here.
+//!    `lower_program`) stays in that module, whose measurement is Rally
+//!    #1355; its `program()` is a computed per-record refusal for every
+//!    original mission today and is not consulted here.
 //! 8. **Script host** — [`crate::mission_control::survey_mission_control_programs`]
 //!    → the mission's row → its lowering → the lowered program.
 //! 9. **Audio** — the sound-family archives in the mission's scope, classified

@@ -48,8 +48,9 @@
 //! # Absences are named, never filled in
 //!
 //! * The F39 objective declarations cannot be recovered for any original
-//!   mission (`ObjectiveRecovery::program()` refuses unconditionally; Rally
-//!   #1219 owns that measurement), so the seed carries the **empty**
+//!   mission (`ObjectiveRecovery::program()` is a computed refusal naming the
+//!   record's unrecovered field families, or the declared schema gap when none
+//!   remain; Rally #1355), so the seed carries the **empty**
 //!   [`LoweredObjectives`] plus [`MissionHostRefusal::ObjectiveDeclarations`]
 //!   quoting the reader's own message. No `ObjectiveSpec`, `CountCondition`,
 //!   `MissionTimer`, `SweptTrigger` or spawn group is ever constructed here

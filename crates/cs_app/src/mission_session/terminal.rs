@@ -12,7 +12,7 @@
 //! * the **declared control program**'s own terminal state — for M01 the only
 //!   reachable one, since its measured `INSTANTWIN`/`INSTANTLOSS` directives
 //!   lower to `Finish` actions and no original mission yields an F39 program
-//!   today (Rally #1219).
+//!   today (`ObjectiveRecovery::program()` refuses per record, Rally #1355).
 //!
 //! Whichever settles **first** ends the run, and the report line says which.
 //! The funnel never *raises* an outcome of its own: the designed conservative

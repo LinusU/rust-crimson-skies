@@ -6148,8 +6148,11 @@ impl ObjectiveRecovery {
     /// mapping (M01-B-OBJ integration,
     /// `docs/findings/2026-10-12-m01-b-obj-integration-family-verdict.md`).
     ///
-    /// For M01 (`zbd/c1c/m01`) the refusal names exactly the two directive
-    /// families its four measuring stages left unrecovered: `ControlDirective`
+    /// For the census taken on `zbd/c1c/m01` (campaign position ch2-m01, work
+    /// order M06 "The Red Menace" — not mission M01 "The Lost Treasure", which
+    /// is `ZBD/C3/M01`; `docs/findings/2026-10-17-m01-archive-decision.md`) the
+    /// refusal names exactly the two directive families its four measuring
+    /// stages left unrecovered: `ControlDirective`
     /// (45 block-level directive sites) and `RecordDirective` (5 record-level
     /// fields), whose measured effects are world-side operations the control
     /// lowering owns, not declared-objective fields (M01-B-OBJ-4).

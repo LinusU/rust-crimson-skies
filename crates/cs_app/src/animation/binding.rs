@@ -56,7 +56,7 @@
 //! [`crate::objectives::LoweredObjectives`] because the F39 objective
 //! declarations cannot be recovered yet — reporting
 //! [`crate::mission_session::MissionHostRefusal::ObjectiveDeclarations`]
-//! instead (that measurement is Rally #1219).
+//! instead (the computed refusal of Rally #1355).
 
 use std::fmt;
 
