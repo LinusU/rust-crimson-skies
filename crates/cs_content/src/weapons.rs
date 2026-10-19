@@ -1735,21 +1735,25 @@ impl OriginalAirframeLoadout {
     }
 
     /// Whether the airframe has gun slot `slot` — the same test callback
-    /// `2030` applies when it decides whether to grey the slot.
+    /// `2030` applies when it decides whether to grey the slot. A slot index
+    /// outside the four the record carries is one the airframe does not have.
     #[must_use]
     pub const fn gun_slot_present(&self, slot: u32) -> bool {
-        self.guns[slot as usize] != ORIGINAL_GUN_NONE
+        slot < ORIGINAL_GUN_SLOTS && self.guns[slot as usize] != ORIGINAL_GUN_NONE
     }
 
     /// Whether the airframe has rocket slot `slot` — the same two-bank test
-    /// callback `2031` applies when it answers `-1` for an absent slot.
+    /// callback `2031` applies when it answers `-1` for an absent slot. A slot
+    /// index outside the eight the record carries is one the airframe does
+    /// not have.
     #[must_use]
     pub const fn rocket_slot_present(&self, slot: u32) -> bool {
-        if slot < ORIGINAL_ROCKET_BANK_SLOTS {
-            slot < self.rocket_bank_low
-        } else {
-            slot - ORIGINAL_ROCKET_BANK_SLOTS < self.rocket_bank_high
-        }
+        slot < ORIGINAL_ROCKET_SLOTS
+            && if slot < ORIGINAL_ROCKET_BANK_SLOTS {
+                slot < self.rocket_bank_low
+            } else {
+                slot - ORIGINAL_ROCKET_BANK_SLOTS < self.rocket_bank_high
+            }
     }
 }
 
