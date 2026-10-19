@@ -215,13 +215,16 @@ fn review_method() -> String {
     "Acceptance suite run locally with `retail,gpu,audio` (CS_GAME_DIR, CS_ENGINE_IMAGE): the \
      owner's own command `cs --cs-path $CS_GAME_DIR --mission M01 --smoke-seconds 45 --capture-dir \
      private/evidence/PARITY-M01-PLAYER-VIEW-C2` drove the same windowed composition the owner \
-     plays on this machine's GPU and wrote 13 real framebuffer PNGs plus report.json — all 14 \
-     checks pass (`passed: true`). The scripted smoke never damages the player — the M01 player \
-     actor has no damage graph, so its regions publish `Unknown` and both measured `wing_flare` \
-     quads stay `Hidden` for the whole run, which is the correct intact presentation (orig25.png \
-     shows no flares on a healthy aircraft); the damaged path the gate draws is exercised by the \
-     accept_ tests against the real `DamageResolver`, not by this smoke (resolving task #1699). \
-     The retail test composes M01 and asserts the two quads bind `leftwingdamage`/`rightwingdamage` \
+     plays on this machine's GPU — through the launch cinematic, which the smoke watches play out \
+     (`launch_cinematic_plays`: 4818 ticks, handed over, 0.000 m drift) before its scripted checks \
+     — and wrote 19 real framebuffer PNGs plus report.json: 19 checks, 18 pass and 1 skipped \
+     (`world_sea_visible` does not apply — no known water surface record), 0 failures \
+     (`passed: true`). The scripted smoke never damages the player — the M01 player actor has no \
+     damage graph, so its regions publish `Unknown` and both measured `wing_flare` quads stay \
+     `Hidden` for the whole run, which is the correct intact presentation (orig25.png shows no \
+     flares on a healthy aircraft); the damaged path the gate draws is exercised by the accept_ \
+     tests against the real `DamageResolver`, not by this smoke (resolving task #1699). The \
+     retail test composes M01 and asserts the two quads bind `leftwingdamage`/`rightwingdamage` \
      on the player actor. The run is automated, never `human_play`, and no original executable \
      ran. This harness derives every field from the recorded log, production discovery of \
      $CS_GAME_DIR, the smoke's report and the hashes of those artifacts. LIMITS: the smoke floors \

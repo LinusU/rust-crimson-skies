@@ -120,7 +120,10 @@ are measured above, its runtime is not yet implemented.
 
 `cs --cs-path $CS_GAME_DIR --mission M01 --smoke-seconds 45 --capture-dir
 private/evidence/PARITY-M01-PLAYER-VIEW-C2` on this branch's reviewed commit:
-all 14 checks pass (`passed: true`), 13 framebuffer PNGs and `report.json`
+the run plays through the launch cinematic first (`launch_cinematic_plays`,
+4818 ticks, 0.000 m drift, handed over), then all scripted checks — 19 checks,
+18 pass and `world_sea_visible` skipped (no water record), 0 failures
+(`passed: true`); 19 framebuffer PNGs and `report.json`
 under the capture dir. The scripted smoke **never damages
 the player** — the M01 player actor registers no damage graph, so its regions
 publish `Unknown` and both flare quads stay hidden for the whole run. That is
