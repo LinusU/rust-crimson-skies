@@ -167,9 +167,9 @@ fn accept_parity_m01_launch_cinematic_retail_stage_binds_the_measured_launch() {
     assert_eq!(length.scene_root, "player_pfighter");
     assert!((length.seconds - 40.15).abs() < 1e-3, "{}", length.seconds);
     assert_eq!(length.ticks(BASELINE_FIXED_HZ), 4818);
-    // The composed start the hand-over lands at (#1668): the stored pose
-    // raised 100 m.
-    assert_eq!(stage.start.position, [-1426.0, 250.0, -1813.0]);
+    // The composed start the hand-over lands at: the stored pose itself, as
+    // the original run measured it (#1746).
+    assert_eq!(stage.start.position, [-1426.0, 150.0, -1813.0]);
     assert!((stage.start.heading - 40.0_f32.to_radians()).abs() < 1e-5);
 
     // The check `run_windowed` opens first: pending on the real screen, with

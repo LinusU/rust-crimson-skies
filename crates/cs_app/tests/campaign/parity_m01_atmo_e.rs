@@ -47,16 +47,17 @@ fn accept_parity_m01_atmo_e_retail_composed_player_spawns_at_the_placed_body() {
     let plan = plan_mission_launch(&root, label("M01"), "The Lost Treasure")
         .expect("M01's launch closure plans");
     let stage = stage_for(&root, &plan).expect("M01's stage reads");
-    // The stored record is (-1426, 150, -1813), heading 40.
-    assert_eq!(stage.start.position, [-1426.0, 250.0, -1813.0]);
+    // The stored record is (-1426, 150, -1813), heading 40; the original run
+    // hands control over on it, not on callback 10's raised body (#1746).
+    assert_eq!(stage.start.position, [-1426.0, 150.0, -1813.0]);
     let placed = place_player_at_intro_start([-1426.0, 150.0, -1813.0], 40.0);
-    assert_eq!(stage.start.position, placed.position);
+    assert_eq!(placed.position[1], 150.0 + INTRO_RAISE);
     assert!((stage.start.heading - placed.euler[1]).abs() < 1e-5);
 
     let mut app = build_headless(&stage).expect("M01's stage composes headlessly");
     app.update();
     let recipe = app.world().resource::<MissionPlayerStart>().clone();
-    assert_eq!(recipe.position_m, placed.position);
+    assert_eq!(recipe.position_m, stage.start.position);
     let world = app.world_mut();
     let bodies = world
         .query_filtered::<&bevy::prelude::Transform, With<MissionPlayerBody>>()
@@ -69,8 +70,8 @@ fn accept_parity_m01_atmo_e_retail_composed_player_spawns_at_the_placed_body() {
         .expect("the player body")
         .translation;
     assert!(
-        (at.y - 250.0).abs() < 1.0,
-        "the body starts at the raised y"
+        (at.y - 150.0).abs() < 1.0,
+        "the body starts at the stored y"
     );
     teardown(&mut app);
 }

@@ -548,13 +548,11 @@ pub fn stage_for(
             )));
         }
     };
-    // The body the launch cinematic leaves is the stored record raised by
-    // callback 10's 100 m (#1652, `docs/findings/2026-10-19-m01-launch-body-pose.md`).
-    let start = if plan.mission_dir.eq_ignore_ascii_case("zbd/c3/m01") {
-        crate::cinematics::launch_body::composed_start_pose(start)
-    } else {
-        start
-    };
+    // The player vehicle first exists at the hand-over, and the original run
+    // measured it on the stored record itself: (-1426, 150, -1813), yaw 40
+    // (#1746, `docs/findings/2026-10-21-m01-hand-over-pose.md`). Callback 10's
+    // +100 m raise (`launch_body::INTRO_RAISE`) is on the cinematic's body,
+    // not on the pose control starts from.
     // The cinematic that precedes control is measured for the player's own
     // scene root (#1663); only M01's launch is measured.
     let launch_cinematic = if plan.mission_dir.eq_ignore_ascii_case("zbd/c3/m01") {

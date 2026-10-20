@@ -4652,7 +4652,7 @@ mod tests {
             .init_resource::<PhysicsTickLedger>()
             .insert_resource(LaunchCinematic::new(5).expect("a phase"));
         add_script_systems(&mut app);
-        let start = Vec3::new(-1426.0, 250.0, -1813.0);
+        let start = Vec3::new(-1426.0, 150.0, -1813.0);
         let rotation = Quat::from_rotation_y(40.0_f32.to_radians());
         let body = app
             .world_mut()
@@ -4696,7 +4696,7 @@ mod tests {
             .first_control
             .clone()
             .expect("a first control pose");
-        assert_eq!(first.position_m, [-1426.0, 250.0, -1813.0]);
+        assert_eq!(first.position_m, [-1426.0, 150.0, -1813.0]);
         assert!((first.yaw_deg - 40.0).abs() < 1e-3, "{first:?}");
         assert_eq!(first.moves_before, 0);
         // Only the cinematic's own held-phase shots may precede it.

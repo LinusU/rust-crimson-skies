@@ -293,8 +293,10 @@ pub fn place_player_at_intro_start(position: [f32; 3], heading_degrees: f32) -> 
     }
 }
 
-/// The stored `aiv.zrd` pose as the body holds it once callback 10 has placed
-/// it (#1652): the heading is unchanged (the Euler triple is
+/// The stored `aiv.zrd` pose as the cinematic's body holds it once callback 10
+/// has placed it (#1652). It is **not** the hand-over pose: the original run
+/// hands control over on the stored pose itself (#1746), so `stage_for` does
+/// not use this. the heading is unchanged (the Euler triple is
 /// `(0, heading, 0)`) and the position is raised by [`INTRO_RAISE`]. The
 /// speed and the pose after the cinematic state ends stay unknown; see
 /// [`BODY_UNKNOWNS`].
