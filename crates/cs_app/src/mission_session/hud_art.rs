@@ -746,6 +746,11 @@ pub fn spawn_hud_art(world: &mut World, art: &HudArt) -> Entity {
         }),
         layer.clone(),
         HudArtCamera,
+        // Not the scene's eye: the world-follow systems
+        // (`render::horizon`, `render::weather`, `render::precipitation`,
+        // `world_draw`'s horizon anchor, `actor_census`) keep reading the one
+        // camera that carries [`crate::playtest::PlaytestCameraMarker`].
+        crate::render::OverlayCamera,
         ChildOf(root),
     ));
     for part in &art.parts {

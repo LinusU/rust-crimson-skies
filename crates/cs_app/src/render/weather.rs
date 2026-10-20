@@ -758,7 +758,7 @@ fn spawn_weather(
 /// rotate a layer through this system.
 fn place_weather_around_camera(
     spec: Res<WeatherSpec>,
-    cameras: Query<&GlobalTransform, With<Camera3d>>,
+    cameras: Query<&GlobalTransform, (With<Camera3d>, Without<crate::render::OverlayCamera>)>,
     mut layers: Query<(&WeatherLayer, &mut Transform), Without<Camera3d>>,
 ) {
     let Ok(camera) = cameras.single() else {

@@ -194,3 +194,11 @@ pub use weather::WeatherPlugin;
 /// [`weather`].
 pub mod precipitation;
 pub use precipitation::PrecipitationPlugin;
+
+/// Marks a `Camera3d` that draws *over* the scene — the mission HUD's gauge
+/// cluster pass — rather than the scene itself. The world-follow systems
+/// (`horizon`, `weather`, `precipitation`, the mission world's `horizon`
+/// anchor, the actor-census projections) all read **the** scene camera's
+/// transform; an overlay `Camera3d` must not be mistaken for it.
+#[derive(bevy::prelude::Component, Clone, Copy, Debug, Default)]
+pub struct OverlayCamera;

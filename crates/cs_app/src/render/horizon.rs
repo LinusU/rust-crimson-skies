@@ -877,7 +877,7 @@ type SeaTransforms<'w, 's> =
 
 fn place_around_camera(
     spec: Res<HorizonSpec>,
-    cameras: Query<&GlobalTransform, With<Camera3d>>,
+    cameras: Query<&GlobalTransform, (With<Camera3d>, Without<super::OverlayCamera>)>,
     mut domes: DomeTransforms<'_, '_>,
     mut seas: SeaTransforms<'_, '_>,
 ) {

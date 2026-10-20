@@ -18,7 +18,7 @@
 use bevy::prelude::{
     App, BackgroundColor, Camera, Camera3d, Color, Commands, Component, DetectChanges, Entity,
     FontSize, GlobalTransform, IntoScheduleConfigs, Local, Node, Plugin, PositionType, Query, Res,
-    Text, TextColor, TextFont, UiRect, Update, Val, Vec3, Visibility, With, default,
+    Text, TextColor, TextFont, UiRect, Update, Val, Vec3, Visibility, With, Without, default,
 };
 use cs_sim::targeting::Allegiance;
 
@@ -335,14 +335,17 @@ fn spawn_contact_list(mut commands: Commands) {
     ));
 }
 
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn update_contacts(
     mut commands: Commands,
     stage: Option<Res<MissionStage>>,
     players: Query<&GlobalTransform, With<MissionPlayerBody>>,
     aircraft: AircraftQuery,
     zeppelins: ZeppelinQuery,
-    cameras: Query<(&Camera, &GlobalTransform), With<Camera3d>>,
+    cameras: Query<
+        (&Camera, &GlobalTransform),
+        (With<Camera3d>, Without<crate::render::OverlayCamera>),
+    >,
     mut lists: Query<&mut Text, With<ContactList>>,
     ground_targets: Query<&MissionGroundTarget>,
     messages: Option<Res<MissionMessages>>,

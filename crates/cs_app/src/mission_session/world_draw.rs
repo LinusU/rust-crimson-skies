@@ -52,7 +52,7 @@ use bevy::mesh::VertexAttributeValues;
 use bevy::prelude::{
     Added, App, Camera3d, ChildOf, Color, Commands, Component, Entity, GlobalTransform, Local,
     Mesh, Mesh3d, MeshMaterial3d, Plugin, Query, Res, Resource, StandardMaterial, Transform,
-    Update, Vec3, Visibility, With,
+    Update, Vec3, Visibility, With, Without,
 };
 use cs_content::world::WorldDefinition;
 use cs_formats::gamez::GameZMaterials;
@@ -504,7 +504,7 @@ fn anchor_horizon_to_camera(
     mut commands: Commands,
     mut home: Local<Option<Vec3>>,
     parts: Res<MissionWorldParts>,
-    cameras: Query<&GlobalTransform, With<Camera3d>>,
+    cameras: Query<&GlobalTransform, (With<Camera3d>, Without<crate::render::OverlayCamera>)>,
     mut records: Query<(
         Entity,
         &WorldObjectBinding,

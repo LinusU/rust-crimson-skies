@@ -403,7 +403,7 @@ fn spawn_precipitation(
 fn place_precipitation_around_camera(
     spec: Res<PrecipitationSpec>,
     time: Res<Time>,
-    cameras: Query<&GlobalTransform, With<Camera3d>>,
+    cameras: Query<&GlobalTransform, (With<Camera3d>, Without<crate::render::OverlayCamera>)>,
     mut layers: Query<&mut Transform, (With<PrecipitationLayer>, Without<Camera3d>)>,
 ) {
     let (Ok(camera), Some(fall)) = (cameras.single(), spec.fall_speed_m_s()) else {
