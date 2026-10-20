@@ -1114,8 +1114,11 @@ pub fn update_hud_art(
             PipGauge::Missile => (rockets, rocket_capacity, 8u64),
             PipGauge::Gun => (rounds, gun_capacity, 4),
         };
-        // Designed rule: pips fill in index order over the capacity.
-        let lit = capacity > 0 && remaining.div_ceil(capacity / count) > pip.index as u64;
+        // Designed rule: pips fill in index order over the capacity — pip i
+        // is lit while remaining/capacity > i/count, compared without the
+        // division a capacity under `count` would make zero.
+        let lit = capacity > 0
+            && remaining.saturating_mul(count) > (pip.index as u64).saturating_mul(capacity);
         let wanted = if lit {
             Visibility::Inherited
         } else {
