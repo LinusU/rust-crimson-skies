@@ -290,7 +290,7 @@ pub const CTL_SCRIPT_KEY_CONSTANTS: [&str; 10] = [
 /// `observed`, citing that command's own label. Six of those labels are also
 /// cited by the broader `target_next`/`target_prev` rows; the partition
 /// dedupes the cited set, so a label two project commands share counts once.
-pub const COMPARISON: [(&str, &str, &[&str]); 37] = [
+pub const COMPARISON: [(&str, &str, &[&str]); 44] = [
     ("pitch", "observed", &["MSG_NOSE_UP", "MSG_NOSE_DOWN"]),
     ("roll", "observed", &["MSG_ROLL_LEFT", "MSG_ROLL_RIGHT"]),
     ("yaw", "observed", &["MSG_RUDDER_LEFT", "MSG_RUDDER_RIGHT"]),
@@ -402,6 +402,16 @@ pub const COMPARISON: [(&str, &str, &[&str]); 37] = [
     ("throttle_step_down", "observed", &["MSG_DEC_THROTTLE"]),
     ("throttle_idle", "observed", &["MSG_THROTTLE_0"]),
     ("throttle_full", "observed", &["MSG_THROTTLE_8"]),
+    // PARITY2-ORIGINAL-KEYBINDINGS (#1733): the seven direct throttle levels
+    // are each the measured original command they are named for, citing
+    // labels the broader `throttle` row already cites (the partition dedupes).
+    ("throttle_level_1", "observed", &["MSG_THROTTLE_1"]),
+    ("throttle_level_2", "observed", &["MSG_THROTTLE_2"]),
+    ("throttle_level_3", "observed", &["MSG_THROTTLE_3"]),
+    ("throttle_level_4", "observed", &["MSG_THROTTLE_4"]),
+    ("throttle_level_5", "observed", &["MSG_THROTTLE_5"]),
+    ("throttle_level_6", "observed", &["MSG_THROTTLE_6"]),
+    ("throttle_level_7", "observed", &["MSG_THROTTLE_7"]),
     // The original's Level-Off assist (command 47) ships the named command
     // label `MSG_LEVEL_TOG` (11061), so the new slot is `observed` rather
     // than absent; `MSG_LEVEL_TOG` leaves `ORIGINAL_ONLY_COMMANDS` for the

@@ -472,6 +472,15 @@ const RECORDED_COMPARISON: &[(&str, &str)] = &[
     ("throttle_step_down", "different"),
     ("throttle_idle", "same"),
     ("throttle_full", "different"),
+    // PARITY2-ORIGINAL-KEYBINDINGS (#1733): the seven direct throttle levels
+    // cite original rows (command ids 10-16) the developer map binds nothing.
+    ("throttle_level_1", "original_only"),
+    ("throttle_level_2", "original_only"),
+    ("throttle_level_3", "original_only"),
+    ("throttle_level_4", "original_only"),
+    ("throttle_level_5", "original_only"),
+    ("throttle_level_6", "original_only"),
+    ("throttle_level_7", "original_only"),
     ("level_off", "different"),
     ("confirm", "runtime_only"),
     ("cancel", "runtime_only"),
