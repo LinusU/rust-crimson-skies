@@ -321,11 +321,13 @@ fn probe_dump_hud_art() {
         }
     }
     // texture names in the world-group texture.zbd archives
+    let wanted_group =
+        std::env::var("PROBE_GROUP").unwrap_or_else(|_| "zbd/c3".to_owned());
     let group = found
         .diagnosis
         .world_groups
         .iter()
-        .find(|g| g.as_str().eq_ignore_ascii_case("zbd/c3"))
+        .find(|g| g.as_str().eq_ignore_ascii_case(&wanted_group))
         .unwrap_or_else(|| {
             panic!(
                 "worlds: {:?}",
