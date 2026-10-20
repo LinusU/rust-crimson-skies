@@ -719,6 +719,39 @@ pub enum FlightCommand {
     TargetNext,
     /// Select the previous target.
     TargetPrev,
+    /// The original's command 36 (`MSG_CMD_TARGET_NEXT_ENEMY`, `E`): cycle to
+    /// the next enemy or objective target.
+    TargetNextEnemy,
+    /// The original's command 37 (`MSG_CMD_TARGET_PREVIOUS_ENEMY`, `Shift+E`):
+    /// cycle to the previous enemy or objective target.
+    TargetPrevEnemy,
+    /// The original's command 38 (`MSG_CMD_TARGET_NEAREST_ENEMY`, `Ctrl+E`):
+    /// select the nearest enemy or objective target.
+    TargetNearestEnemy,
+    /// The original's command 39 (`MSG_CMD_TARGET_NEXT_ALLY`, `W`): cycle to
+    /// the next allied target.
+    TargetNextAlly,
+    /// The original's command 40 (`MSG_CMD_TARGET_PREVIOUS_ALLY`, `Shift+W`):
+    /// cycle to the previous allied target.
+    TargetPrevAlly,
+    /// The original's command 41 (`MSG_CMD_TARGET_NEAREST_ALLY`, `Ctrl+W`):
+    /// select the nearest allied target.
+    TargetNearestAlly,
+    /// The original's command 42 (`MSG_CMD_TARGET_NEXT_GROUND`, `R`): cycle to
+    /// the next non-aircraft target.
+    TargetNextGround,
+    /// The original's command 43 (`MSG_CMD_TARGET_PREVIOUS_GROUND`,
+    /// `Shift+R`): cycle to the previous non-aircraft target.
+    TargetPrevGround,
+    /// The original's command 44 (`MSG_CMD_TARGET_NEAREST_GROUND`, `Ctrl+R`):
+    /// select the nearest non-aircraft target.
+    TargetNearestGround,
+    /// The original's command 45 (`MSG_CMD_TARGET_UNDER_RETICULE`, `Q`):
+    /// select the target nearest the crosshairs.
+    TargetUnderReticule,
+    /// The original's command 46 (`MSG_CMD_TARGET_NOTHING`, `T`): drop the
+    /// current selection.
+    TargetNothing,
     /// Release a countermeasure.
     Countermeasure,
     /// Step the keyboard throttle up.
@@ -751,6 +784,17 @@ impl FlightCommand {
         Self::FlapStep,
         Self::TargetNext,
         Self::TargetPrev,
+        Self::TargetNextEnemy,
+        Self::TargetPrevEnemy,
+        Self::TargetNearestEnemy,
+        Self::TargetNextAlly,
+        Self::TargetPrevAlly,
+        Self::TargetNearestAlly,
+        Self::TargetNextGround,
+        Self::TargetPrevGround,
+        Self::TargetNearestGround,
+        Self::TargetUnderReticule,
+        Self::TargetNothing,
         Self::Countermeasure,
         Self::ThrottleStepUp,
         Self::ThrottleStepDown,
@@ -762,6 +806,28 @@ impl FlightCommand {
     /// The continuous axes, in a stable order.
     pub const CONTINUOUS: &'static [FlightCommand] =
         &[Self::Pitch, Self::Roll, Self::Yaw, Self::Throttle];
+
+    /// The original's targeting commands (command ids 36–46).
+    ///
+    /// The mission session delivers these from the raw key-plus-modifier
+    /// state: `Shift+E`/`Ctrl+E`-style chords are not expressible as one
+    /// [`BindingSource`], so [`ActionMap::designed_default`] binds no source
+    /// for them on purpose (PARITY2-M01-TARGET-INDICATORS, #1727). Their
+    /// reach into the simulation is the mission's measured key-table mint,
+    /// not this boundary's bindings.
+    pub const ORIGINAL_TARGETING: &'static [FlightCommand] = &[
+        Self::TargetNextEnemy,
+        Self::TargetPrevEnemy,
+        Self::TargetNearestEnemy,
+        Self::TargetNextAlly,
+        Self::TargetPrevAlly,
+        Self::TargetNearestAlly,
+        Self::TargetNextGround,
+        Self::TargetPrevGround,
+        Self::TargetNearestGround,
+        Self::TargetUnderReticule,
+        Self::TargetNothing,
+    ];
 
     /// Whether this command is a continuous axis rather than an edge.
     pub const fn is_continuous(self) -> bool {
@@ -784,6 +850,17 @@ impl FlightCommand {
             Self::FlapStep => "flap_step",
             Self::TargetNext => "target_next",
             Self::TargetPrev => "target_prev",
+            Self::TargetNextEnemy => "target_next_enemy",
+            Self::TargetPrevEnemy => "target_prev_enemy",
+            Self::TargetNearestEnemy => "target_nearest_enemy",
+            Self::TargetNextAlly => "target_next_ally",
+            Self::TargetPrevAlly => "target_prev_ally",
+            Self::TargetNearestAlly => "target_nearest_ally",
+            Self::TargetNextGround => "target_next_ground",
+            Self::TargetPrevGround => "target_prev_ground",
+            Self::TargetNearestGround => "target_nearest_ground",
+            Self::TargetUnderReticule => "target_under_reticule",
+            Self::TargetNothing => "target_nothing",
             Self::Countermeasure => "countermeasure",
             Self::ThrottleStepUp => "throttle_step_up",
             Self::ThrottleStepDown => "throttle_step_down",
@@ -3046,6 +3123,17 @@ pub fn original_command_ids(command: FlightCommand) -> &'static [u16] {
         FlightCommand::FlapStep => &[],
         FlightCommand::TargetNext => &[36, 39, 42],
         FlightCommand::TargetPrev => &[37, 40, 43],
+        FlightCommand::TargetNextEnemy => &[36],
+        FlightCommand::TargetPrevEnemy => &[37],
+        FlightCommand::TargetNearestEnemy => &[38],
+        FlightCommand::TargetNextAlly => &[39],
+        FlightCommand::TargetPrevAlly => &[40],
+        FlightCommand::TargetNearestAlly => &[41],
+        FlightCommand::TargetNextGround => &[42],
+        FlightCommand::TargetPrevGround => &[43],
+        FlightCommand::TargetNearestGround => &[44],
+        FlightCommand::TargetUnderReticule => &[45],
+        FlightCommand::TargetNothing => &[46],
         FlightCommand::Countermeasure => &[],
         FlightCommand::ThrottleStepUp => &[7],
         FlightCommand::ThrottleStepDown => &[8],
@@ -4061,6 +4149,28 @@ mod tests {
     fn accept_f22_d_the_designed_map_reaches_every_declared_command_and_family() {
         let map = ActionMap::designed_default();
 
+        // The commands with no map source must be exactly the eleven
+        // original targeting commands the mission mints from raw
+        // key-plus-modifier state (#1727): a chord is not a
+        // [`BindingSource`]. Any further unbound command — or a targeting
+        // command gaining a map source — is a coverage change this
+        // assertion makes visible rather than silently widening.
+        let unbound: Vec<FlightCommand> = FlightCommand::ALL
+            .iter()
+            .copied()
+            .filter(|command| {
+                map.bindings()
+                    .iter()
+                    .all(|binding| binding.target.action() != Action::Flight(*command))
+            })
+            .collect();
+        assert_eq!(
+            unbound,
+            FlightCommand::ORIGINAL_TARGETING,
+            "the only declared commands without a map source are the mission-minted \
+             targeting commands; {unbound:?}"
+        );
+
         for command in FlightCommand::ALL {
             let action = Action::Flight(*command);
             let sources: Vec<BindingSource> = map
@@ -4069,11 +4179,6 @@ mod tests {
                 .filter(|binding| binding.target.action() == action)
                 .map(|binding| binding.source)
                 .collect();
-            assert!(
-                !sources.is_empty(),
-                "the declared command {command} has no source in the designed \
-                 default map, so no device can produce it"
-            );
             for source in sources {
                 assert_eq!(
                     map.resolve(InputContext::Flight, source),
