@@ -54,7 +54,7 @@ use bevy::camera::{Camera, ClearColorConfig, PerspectiveProjection, Projection, 
 use bevy::prelude::{
     App, Assets, Camera3d, ChildOf, Children, Component, Entity, Handle, Image, Mat4, Mesh, Mesh3d,
     MeshMaterial3d, Plugin, Quat, Query, Res, ResMut, Resource, StandardMaterial, Transform, UVec2,
-    Update, Val, Vec3, Visibility, Window, With, World, default,
+    Update, Val, Vec3, Visibility, Window, With, Without, World, default,
 };
 use bevy::ui::widget::ImageNode;
 use bevy::ui::{Node, PositionType, UiRect};
