@@ -367,6 +367,19 @@ pub enum TargetFilter {
     NotClass(TargetClass),
     /// Only actors mission rules flagged as objective targets.
     Objective,
+    /// Actors hostile to the observer **or** flagged as objective targets —
+    /// the original's `next/previous/nearest enemy` class (commands
+    /// 36–38, `MSG_CMD_TARGET_*_ENEMY`), whose controls-screen label reads
+    /// "enemy/objective" and which the owner observed cycling M01's
+    /// objective sites (PARITY2-M01-TARGET-INDICATORS, static measurement
+    /// `docs/findings/2026-10-20-m01-target-indicators.md`).
+    HostileOrObjective,
+    /// Actors on the observer's own side — the observer's faction or a
+    /// declared Friendly/Neutral relation — that are aircraft: the
+    /// original's `next/previous/nearest ally` class (commands 39–41,
+    /// `MSG_CMD_TARGET_*_ALLY`), whose measured eligibility flag admits
+    /// only friendly or neutral aircraft-kind records.
+    Allied,
 }
 
 impl TargetFilter {
@@ -379,6 +392,8 @@ impl TargetFilter {
             Self::Class(class) => class.label().to_owned(),
             Self::NotClass(class) => format!("not_{}", class.label()),
             Self::Objective => "objective".to_owned(),
+            Self::HostileOrObjective => "hostile_or_objective".to_owned(),
+            Self::Allied => "allied".to_owned(),
         }
     }
 }
@@ -1548,6 +1563,19 @@ impl TargetStore {
             TargetFilter::Class(class) => record.class == *class,
             TargetFilter::NotClass(class) => record.class != *class,
             TargetFilter::Objective => record.objective,
+            TargetFilter::HostileOrObjective => {
+                record.objective
+                    || self.allegiance.get(observer_faction, &record.faction)
+                        == Some(Allegiance::Hostile)
+            }
+            TargetFilter::Allied => {
+                record.class == TargetClass::Aircraft
+                    && (record.faction == *observer_faction
+                        || matches!(
+                            self.allegiance.get(observer_faction, &record.faction),
+                            Some(Allegiance::Friendly | Allegiance::Neutral)
+                        ))
+            }
         }
     }
 
