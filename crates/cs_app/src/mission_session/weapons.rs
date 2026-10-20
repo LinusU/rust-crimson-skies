@@ -59,7 +59,7 @@ use cs_content::weapons::{
     DeclaredSelfHitRule, DeclaredSpreadCone, DeclaredWeaponDamage, InteractionRules,
 };
 use cs_sim::damage::{ActorId, DamageResolver, SystemKind};
-use cs_sim::targeting::{Allegiance, SelectionBinding, TargetClass, TargetRecord};
+use cs_sim::targeting::{Allegiance, TargetClass, TargetRecord};
 use cs_sim::time::TickRate;
 use cs_sim::weapons::{GunBank, OrdnanceId, OrdnanceRegistry, StatusEffectTarget, TargetPath};
 use cs_types::Tick;
@@ -373,8 +373,10 @@ pub fn designed_rocket() -> DeclaredOrdnance {
 ///
 /// Two factions, one directed hostile relation each way and a neutral pair:
 /// project design, because M01's own relations are not recovered. The
-/// selection table is deliberately empty — this task binds no cockpit target
-/// cycle, so nothing here invents the original's selection commands.
+/// selection table the session binds is the **measured** one — the original's
+/// `Q`/`W`/`E`/`R`/`T` command set in
+/// [`super::targeting_input::mission_selection_binding`]
+/// (PARITY2-M01-TARGET-INDICATORS, #1727).
 #[must_use]
 pub fn designed_target_rules() -> DeclaredTargetRules {
     let player = designed_faction(MISSION_FACTION_PLAYER);
@@ -548,7 +550,7 @@ pub fn open_mission_weapons(
     let mut targeting = TargetingSession::new(
         session,
         lowered,
-        SelectionBinding::new(),
+        super::targeting_input::mission_selection_binding(),
         rules.subject().clone(),
         generation,
     );
@@ -802,6 +804,10 @@ pub struct MissionWeaponReport {
     /// notice counts from this, so a second refusal of the same kind is shown
     /// again once the first line has expired (M01-WINDOW-FIRE, #1536).
     pub rocket_refusal_events: u64,
+    /// The selection pass's last refusal — an unregistered observer, or an
+    /// under-reticule edge in a frame with no crosshair ray — by name, when
+    /// one happened (PARITY2-M01-TARGET-INDICATORS, #1727).
+    pub targeting_refusal: Option<String>,
     /// Why the publisher could not run at all.
     pub refused: Option<String>,
 }
@@ -813,6 +819,7 @@ impl MissionWeaponReport {
         self.wind = None;
         self.designed_calm_air = false;
         self.actions.clear();
+        self.targeting_refusal = None;
         // `rocket_refusals` deliberately accumulates: a refusal is a fact
         // about the world (no hostile target) that repeats every tick it
         // holds, and a report that cleared it would make the reason
@@ -933,6 +940,30 @@ pub fn publish_mission_weapon_input(world: &mut World) {
     let controlled = !super::launch_cinematic::launch_cinematic_playing(world);
     if !controlled {
         actions.clear();
+    }
+    // PARITY2-M01-TARGET-INDICATORS (#1727): the frame's measured target
+    // commands act on the one selected target through the session's own
+    // command-edge table. They run on the tick this publisher serves, with
+    // the camera's crosshair ray for the under-reticule select — and on a
+    // cleared action list (no control, the launch cinematic) they change no
+    // selection, exactly like the weapons they share the queue with.
+    if controlled {
+        // The records the selection reads are the roster's own; the
+        // roster passes stamp them at their bind poses, so the tick's live
+        // poses are written first (PARITY2-M01-TARGET-INDICATORS, #1727).
+        super::targeting_input::sync_mission_target_poses(world);
+        let crosshair = super::targeting_input::mission_crosshair(world);
+        if let Err(error) = crate::targeting::apply_selection_edges(
+            world,
+            mission.player,
+            &actions,
+            cs_sim::targeting::SelectionFrame {
+                now: at,
+                crosshair: crosshair.as_ref(),
+            },
+        ) {
+            report.targeting_refusal = Some(format!("{error}"));
+        }
     }
     let pressed = actions.iter().copied().any(is_fire_guns);
     if controlled && !pressed && guns_key_held(world) && gun_hold_due(world, at) {
@@ -1490,6 +1521,14 @@ impl Plugin for MissionWeaponsPlugin {
                 // than left to the executor's tie-break (M01-WINDOW-FIRE,
                 // #1536).
                 collect_mission_cockpit_actions.after(crate::input::platform::pump_platform_input),
+            )
+            .add_systems(
+                PreUpdate,
+                // The measured targeting keys (PARITY2-M01-TARGET-INDICATORS,
+                // #1727) mint their edges behind the delivered ones, in the
+                // same frame the pump read.
+                super::targeting_input::mint_mission_target_keys
+                    .after(collect_mission_cockpit_actions),
             )
             .add_systems(
                 FixedPostUpdate,
