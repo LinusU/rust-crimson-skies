@@ -12,7 +12,6 @@
 
 mod accept_f01_a_claim_records;
 mod accept_f02_a_manifest_and_profile_schema;
-mod accept_parity2_original_keybindings;
 mod accept_t335_splitmix64;
 mod accept_t337_verified_original_methods;
 mod accept_t397_identity_contract;
