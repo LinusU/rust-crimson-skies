@@ -14,7 +14,7 @@ use bevy::prelude::{ButtonInput, KeyCode};
 
 use cs_app::input::{DeviceEvent, FrameInput, InputSession, SessionMode};
 use cs_app::mission_session::{
-    MissionControls, MissionCockpitActions, controls_screen_text, mint_original_chord_keys,
+    MissionCockpitActions, MissionControls, controls_screen_text, mint_original_chord_keys,
     original_mission_action_map,
 };
 use cs_sim::control::LocalSeatId;
@@ -85,13 +85,23 @@ fn accept_parity2_original_keybindings_arrows_and_rudder_keys_deflect_the_axes()
     let mut session = session(&controls);
     press(&mut session, &[Key::ArrowDown, Key::ArrowLeft, Key::Period]);
     let axis = |session: &InputSession, command| session.controls().axis(command).unwrap_or(0.0);
-    assert!(axis(&session, FlightCommand::Pitch) > 0.0, "Down is nose up");
+    assert!(
+        axis(&session, FlightCommand::Pitch) > 0.0,
+        "Down is nose up"
+    );
     assert!(axis(&session, FlightCommand::Roll) < 0.0, "Left rolls left");
-    assert!(axis(&session, FlightCommand::Yaw) > 0.0, "Period is rudder right");
+    assert!(
+        axis(&session, FlightCommand::Yaw) > 0.0,
+        "Period is rudder right"
+    );
     // The developer keys carry nothing in the original layout.
     let mut developer = self::session(&controls);
     press(&mut developer, &[Key::W, Key::A, Key::D, Key::F]);
-    for command in [FlightCommand::Pitch, FlightCommand::Roll, FlightCommand::Yaw] {
+    for command in [
+        FlightCommand::Pitch,
+        FlightCommand::Roll,
+        FlightCommand::Yaw,
+    ] {
         assert_eq!(axis(&developer, command), 0.0, "{command:?}");
     }
 }
@@ -195,7 +205,10 @@ fn accept_parity2_original_keybindings_help_and_pause_screens_show_the_real_bind
     }
     let pause = controls_screen_text(&controls, true, false);
     assert!(pause.starts_with("PAUSED"), "{pause}");
-    assert!(pause.contains("Esc") && pause.contains("Pause Esc"), "{pause}");
+    assert!(
+        pause.contains("Esc") && pause.contains("Pause Esc"),
+        "{pause}"
+    );
 }
 
 #[test]
@@ -203,13 +216,20 @@ fn accept_parity2_original_keybindings_committed_facts_match_the_recorded_table(
     let facts = cs_app::engine_facts::engine_facts().expect("the committed table parses");
     let rows = facts.control_bindings();
     assert_eq!(rows.len(), 64, "one committed row per command");
-    for (fact, recorded) in rows
-        .iter()
-        .zip(cs_types::input::ORIGINAL_DEFAULT_BINDINGS)
-    {
+    for (fact, recorded) in rows.iter().zip(cs_types::input::ORIGINAL_DEFAULT_BINDINGS) {
         assert_eq!(fact.command, recorded.command_id);
-        assert_eq!(fact.key_a, recorded.key_a.code(), "command {}", fact.command);
-        assert_eq!(fact.key_b, recorded.key_b.code(), "command {}", fact.command);
+        assert_eq!(
+            fact.key_a,
+            recorded.key_a.code(),
+            "command {}",
+            fact.command
+        );
+        assert_eq!(
+            fact.key_b,
+            recorded.key_b.code(),
+            "command {}",
+            fact.command
+        );
         assert_eq!(fact.joystick, recorded.joystick_button);
         assert_eq!(fact.mouse, recorded.mouse_button);
         assert_eq!(fact.va, u64::from(recorded.registration_va));

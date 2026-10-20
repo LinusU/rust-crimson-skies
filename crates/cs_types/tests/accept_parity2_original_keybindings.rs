@@ -228,7 +228,11 @@ fn accept_parity2_original_keybindings_slot_uniqueness() {
     assert!(cleared.is_empty());
     // Joystick button 1 moves from Fire Guns to Fire Rockets.
     let cleared = map
-        .assign(20, ControlSlot::JoystickButton, ControlInput::JoystickButton(1))
+        .assign(
+            20,
+            ControlSlot::JoystickButton,
+            ControlInput::JoystickButton(1),
+        )
         .expect("assigns");
     assert_eq!(cleared, vec![19]);
     assert_eq!(map.row(19).expect("row").joystick_button, 0);
@@ -243,7 +247,11 @@ fn accept_parity2_original_keybindings_slot_uniqueness() {
     // Refusals change nothing.
     let before = map.clone();
     assert_eq!(
-        map.assign(999, ControlSlot::KeyA, ControlInput::Key(OriginalKeyCode::NONE)),
+        map.assign(
+            999,
+            ControlSlot::KeyA,
+            ControlInput::Key(OriginalKeyCode::NONE)
+        ),
         Err(ControlsError::UnknownCommand { command_id: 999 })
     );
     assert_eq!(
@@ -251,7 +259,11 @@ fn accept_parity2_original_keybindings_slot_uniqueness() {
         Err(ControlsError::WrongSlot)
     );
     assert_eq!(
-        map.assign(19, ControlSlot::JoystickButton, ControlInput::JoystickButton(11)),
+        map.assign(
+            19,
+            ControlSlot::JoystickButton,
+            ControlInput::JoystickButton(11)
+        ),
         Err(ControlsError::ButtonOutOfRange)
     );
     assert_eq!(map, before);

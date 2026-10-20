@@ -1558,7 +1558,9 @@ impl Plugin for MissionWeaponsPlugin {
                 // same frame the pump read.
                 super::targeting_input::mint_mission_target_keys
                     .after(collect_mission_cockpit_actions)
-                    .run_if(not(resource_exists::<super::original_keys::MissionControls>)),
+                    .run_if(not(
+                        resource_exists::<super::original_keys::MissionControls>,
+                    )),
             )
             .add_systems(
                 PreUpdate,

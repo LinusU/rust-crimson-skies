@@ -1942,22 +1942,23 @@ struct ProbeClasses<'w, 's> {
     aircraft: Query<'w, 's, Entity, With<ScriptedAircraftActor>>,
     zeppelins: Query<'w, 's, Entity, With<MissionZeppelinActor>>,
     visuals: Query<'w, 's, Entity, With<WorldVisual>>,
-    ui: Query<
-        'w,
-        's,
-        (
-            Entity,
-            Has<crate::playtest::visuals::DeveloperOverlayNode>,
-            Has<super::launch_cinematic::CinematicOwnedVisibility>,
-        ),
-        With<Node>,
-    >,
+    ui: Query<'w, 's, UiProbeRow, With<Node>>,
     flight_check_overlay: Query<'w, 's, Entity, With<ScreenOverlay>>,
     /// The mesh HUD cluster's root (#1726): it carries no `Node`, so the UI
     /// class never reaches it — it hides with the actor bodies on every probe
     /// and comes back on restore.
     hud_art: Query<'w, 's, Entity, With<super::hud_art::HudArtRoot>>,
 }
+
+/// One UI node as the probe sees it: the entity, whether the developer
+/// overlay owns it, whether the launch cinematic owns its visibility and
+/// whether it is the help/pause panel.
+type UiProbeRow = (
+    Entity,
+    Has<crate::playtest::visuals::DeveloperOverlayNode>,
+    Has<super::launch_cinematic::CinematicOwnedVisibility>,
+    Has<super::original_keys::ControlsHelpPanel>,
+);
 
 /// Applies the probe's hide mode to every entity class it covers. A value is
 /// written only when it changes, so the renderer is not re-extracted every
@@ -2048,7 +2049,12 @@ fn apply_probe(
     }
     // Restoring the UI must not re-show what the developer overlay hides.
     let overlay_on = crate::playtest::visuals::overlay_visible(overlay.as_deref());
-    for (entity, developer, cinematic_owned) in &classes.ui {
+    for (entity, developer, cinematic_owned, help_panel) in &classes.ui {
+        // The help/pause panel shows itself while the session is paused or F1
+        // is open (#1733); a restore leaves it to its own system.
+        if help_panel && mode == ProbeMode::Restored {
+            continue;
+        }
         // The HUD's safe area and the letterbox bars are shown or hidden by
         // the launch cinematic; a restore leaves them to it (#1704).
         if cinematic_owned && matches!(mode, ProbeMode::Restored | ProbeMode::FlightCheckBare) {
@@ -2756,6 +2762,13 @@ fn smoke_script(
                     data.target_placement = Some(placement.clone());
                     pending.0 = Some(placement);
                 }
+            } else if at == 4 {
+                // The original's throttle keys are the digits (`1` idle ...
+                // `9` full, PARITY2-ORIGINAL-KEYBINDINGS #1733): full
+                // throttle goes through the real input path.
+                queue.0.push(KeyOp::Press(KeyCode::Digit9));
+            } else if at == 6 {
+                queue.0.push(KeyOp::Release(KeyCode::Digit9));
             } else if at == TARGET_KEY_OFFSET {
                 queue.0.push(KeyOp::Press(KeyCode::KeyQ));
             } else if at == TARGET_KEY_OFFSET + 2 {

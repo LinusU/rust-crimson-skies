@@ -476,7 +476,7 @@ flies) and counts each actor's own pixels, **flies into the proximity trigger**
 of the declared-hostile cargo zeppelin so an objective wakes, checks the
 **objective widget** against the read model and its own UI region, **holds
 `Space` for a second** and counts the rounds the weapon session accepted and
-the meshes they carry, then **taps `Left Ctrl`** beside the hostile and looks
+the meshes they carry, then **taps `X`** (the original's rocket key) beside the hostile and looks
 for the rocket.
 
 It writes real window framebuffer PNGs (`frame_*.png`) and `report.json`, and
@@ -498,7 +498,7 @@ exits **non-zero when any check fails**:
 | `weapon_guns_fire` | the held second sent under two rounds through the mission's weapon session |
 | `weapon_rounds_drawn` | a live round entity carries no mesh — a shot the player cannot see |
 | `weapon_muzzle_flash_drawn` | no muzzle-effect record was live during the held second, or one carried no drawn flash (a designed stand-in, #1595) |
-| `weapon_rocket_launches` | `Left Ctrl` beside a declared-hostile actor launched no rocket |
+| `weapon_rocket_launches` | `X` beside a declared-hostile actor launched no rocket |
 | `audio_radio_queued` | no radio line ever reached the queue or the mixer |
 | `audio_engine_queued` | the engine loop was never bound and running |
 | `smoke_shots_delivered` | a requested screenshot never arrived |

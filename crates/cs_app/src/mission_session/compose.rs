@@ -1009,7 +1009,9 @@ fn add_composition(
             .session_mut()
             .collector_mut()
             .bindings_mut()
-            .set_map(super::original_keys::original_mission_action_map(&controls.0));
+            .set_map(super::original_keys::original_mission_action_map(
+                &controls.0,
+            ));
     }
     app.insert_resource(controls);
     app.insert_resource(crate::playtest::PlaytestDevKeys(false));

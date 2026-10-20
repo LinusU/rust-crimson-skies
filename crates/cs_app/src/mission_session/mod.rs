@@ -203,6 +203,11 @@ pub use lifecycles::{LifecycleAdvance, ObjectiveLifecycleTick, ObjectiveLifecycl
 pub use observation::{
     PLAYER_MEMBER, mission_world_observation, subject_node_name, world_actor_in_play,
 };
+pub use original_keys::{
+    ControlsHelpOpen, ControlsHelpPanel, HELP_COMMAND_ID, MissionControls,
+    MissionControlsHelpPlugin, controls_screen_text, held_modifiers, mint_original_chord_keys,
+    original_mission_action_map, toggle_controls_help,
+};
 pub use parts::{
     BoundPart, DESIGNED_PART_HALF_EXTENTS_M, DESIGNED_PART_INTEGRITY, M01_PART_GEOMETRY_CLAIM,
     M01_PART_GEOMETRY_UNKNOWN_CLAIM, M01_PART_STATE_CLAIM, MissionPartReport, MissionPartState,
@@ -245,11 +250,6 @@ pub use smoke::{
 pub use spyglass::{
     FALLBACK_RADIUS_M, SPYGLASS_TEXTURE_PX, SpyglassCamera, SpyglassPlugin, SpyglassState,
     spyglass_fov, window_diameter_px, window_scale,
-};
-pub use original_keys::{
-    ControlsHelpOpen, ControlsHelpPanel, HELP_COMMAND_ID, MissionControls,
-    MissionControlsHelpPlugin, controls_screen_text, held_modifiers, mint_original_chord_keys,
-    original_mission_action_map, toggle_controls_help,
 };
 pub use targeting_input::{
     mint_mission_target_keys, mission_action_map, mission_crosshair, mission_selection_binding,

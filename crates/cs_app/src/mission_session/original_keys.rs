@@ -146,11 +146,7 @@ pub fn toggle_controls_help(
 #[must_use]
 pub fn controls_screen_text(controls: &ControlsMap, paused: bool, help_open: bool) -> String {
     let header = if help_open { "HELP" } else { "PAUSED" };
-    let hint = if paused {
-        "Esc resumes"
-    } else {
-        "F1 closes"
-    };
+    let hint = if paused { "Esc resumes" } else { "F1 closes" };
     let mut text = format!("{header} - controls as bound ({hint})\n");
     text.push_str(&controls.help_lines().join("\n"));
     text

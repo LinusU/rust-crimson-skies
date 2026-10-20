@@ -27,9 +27,9 @@
 //! constants, the analog calibration and the original's rebind screen itself.
 
 use crate::input::{
-    Action, ActionMap, Binding, BindingSource, BindingTarget, FlightCommand, Key,
-    MouseButton, ORIGINAL_DEFAULT_BINDINGS, ORIGINAL_KEY_ALT, ORIGINAL_KEY_CTRL,
-    ORIGINAL_KEY_SHIFT, OriginalControlCategory, OriginalKeyCode, UiAction, original_scancode,
+    Action, ActionMap, Binding, BindingSource, BindingTarget, FlightCommand, Key, MouseButton,
+    ORIGINAL_DEFAULT_BINDINGS, ORIGINAL_KEY_ALT, ORIGINAL_KEY_CTRL, ORIGINAL_KEY_SHIFT,
+    OriginalControlCategory, OriginalKeyCode, UiAction, original_scancode,
 };
 
 /// The Alt, Ctrl and Shift state held while a key goes down.
@@ -402,8 +402,9 @@ fn slot_value(row: &ControlRow, slot: ControlSlot) -> Option<ControlInput> {
     match slot {
         ControlSlot::KeyA => (!row.key_a.is_none()).then_some(ControlInput::Key(row.key_a)),
         ControlSlot::KeyB => (!row.key_b.is_none()).then_some(ControlInput::Key(row.key_b)),
-        ControlSlot::JoystickButton => (row.joystick_button != 0)
-            .then_some(ControlInput::JoystickButton(row.joystick_button)),
+        ControlSlot::JoystickButton => {
+            (row.joystick_button != 0).then_some(ControlInput::JoystickButton(row.joystick_button))
+        }
         ControlSlot::MouseButton => {
             (row.mouse_button != 0).then_some(ControlInput::MouseButton(row.mouse_button))
         }
