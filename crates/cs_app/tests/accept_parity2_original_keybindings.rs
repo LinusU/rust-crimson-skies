@@ -160,6 +160,24 @@ fn accept_parity2_original_keybindings_chords_follow_the_exact_modifier_rule() {
 }
 
 #[test]
+fn accept_parity2_original_keybindings_the_spyglass_key_stays_visible_to_its_raw_reader() {
+    // The spyglass reads `Shift+S` from the raw keyboard; the minter must not
+    // clear that edge, while it still consumes the keys it mints itself.
+    let mut world = World::new();
+    let mut keys = ButtonInput::<KeyCode>::default();
+    keys.press(KeyCode::ShiftLeft);
+    keys.clear_just_pressed(KeyCode::ShiftLeft);
+    keys.press(KeyCode::KeyS);
+    keys.press(KeyCode::KeyE);
+    world.insert_resource(keys);
+    world.insert_resource(MissionControls(ControlsMap::original_default()));
+    mint_original_chord_keys(&mut world);
+    let keys = world.resource::<ButtonInput<KeyCode>>();
+    assert!(keys.just_pressed(KeyCode::KeyS));
+    assert!(!keys.just_pressed(KeyCode::KeyE));
+}
+
+#[test]
 fn accept_parity2_original_keybindings_a_rebinding_reaches_the_live_inputs() {
     // Move Fire Rockets to `Z` (no chord anywhere): the session now delivers
     // it from the mapped key, and `X` falls back to bail-out only.

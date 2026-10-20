@@ -60,6 +60,9 @@ pub fn held_modifiers(keys: &ButtonInput<KeyCode>) -> Modifiers {
     }
 }
 
+/// The original's `Toggle Spyglass` command id (`MSG_CAM2_TOG`).
+const SPYGLASS_COMMAND_ID: u16 = 48;
+
 /// The keys held at the end of the last [`mint_original_chord_keys`] run, so a
 /// press is an edge against the last frame the minter saw rather than against
 /// Bevy's per-frame `just_pressed` flag (which a press injected before the
@@ -100,14 +103,17 @@ pub fn mint_original_chord_keys(world: &mut World) {
         if !controls.0.has_modifier_variants(scancode) {
             continue;
         }
-        consumed.push(*code);
+        let commands = controls.0.commands_for_key(scancode, held);
+        // The spyglass reads its own key (`Shift+S` with the exact-modifier
+        // rule) from the raw input, so its edge is left standing.
+        if !commands.contains(&SPYGLASS_COMMAND_ID) {
+            consumed.push(*code);
+        }
         if paused {
             continue;
         }
         minted.extend(
-            controls
-                .0
-                .commands_for_key(scancode, held)
+            commands
                 .into_iter()
                 .filter_map(original_edge_action)
                 .filter(|action| matches!(action, Action::Flight(_))),
