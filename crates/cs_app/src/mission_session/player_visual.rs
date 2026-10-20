@@ -30,7 +30,7 @@ use bevy::image::Image;
 use bevy::prelude::{AlphaMode, Entity, Quat, Resource, StandardMaterial, Visibility, World};
 
 use crate::airframe_damage::{AirframeDamageRegion, WingFlare};
-use crate::playtest::propeller::{PropellerBlur, PropellerSpin};
+use crate::playtest::propeller::{PropellerBlur, PropellerSpin, StaticPropellerBlades};
 use crate::playtest_retail::{
     AircraftPartAsset, AircraftSources, PlaytestAircraftReport, PlaytestConfig, PropellerBlurSpec,
     PropellerSpinSpec, STORED_AIRCRAFT_NOSE_AXIS, build_aircraft_visual, nose_mapping,
@@ -84,6 +84,15 @@ pub const MISSION_PLAYER_FLARE_RIGHT_NODE_SLOT: u32 = 209;
 
 /// The authored names the pinned flare nodes store.
 pub const MISSION_PLAYER_FLARE_NODE_NAMES: [&str; 2] = ["wing_flare1", "wing_flare2"];
+
+/// The stored slots of the five `pirate_hook` meshes (`r_arm3`, `l_arm3`,
+/// `door_db`, `r_door`, `l_door`) that hang under `healthy` outside every LOD
+/// band: the boarding hook arms with their `spar.tif`/`oildock1.tif` cables and
+/// the doors that close over them. The owner capture of the flying M01 player
+/// shows no wires or arms, so they spawn hidden; the boarding state that would
+/// show them is the dock-and-board stage's (F36) and is not wired here
+/// (`docs/findings/2026-10-20-parity2-m01-chase-camera.md`).
+pub const MISSION_PLAYER_PIRATE_HOOK_NODE_SLOTS: [u32; 5] = [2360, 2336, 3005, 2511, 2330];
 
 /// The viewer distance the player airframe's LOD band is selected at: the
 /// playtest's own designed value — the original's LOD rule is unmeasured. It
@@ -282,9 +291,10 @@ pub fn spawn_player_visual(world: &mut World, body: Entity) {
         if let Some(spec) = visual.propeller()
             && spec.node_slot == part.node_slot
         {
-            world
-                .entity_mut(entity)
-                .insert(PropellerSpin::from_hub(&spec.hub, base));
+            world.entity_mut(entity).insert((
+                PropellerSpin::from_hub(&spec.hub, base),
+                StaticPropellerBlades,
+            ));
         }
         if let Some(blur) = visual.blur()
             && blur.node_slot == part.node_slot
@@ -295,6 +305,9 @@ pub fn spawn_player_visual(world: &mut World, body: Entity) {
                 .entity_mut(entity)
                 .insert((PropellerBlur, Visibility::Hidden));
             blend_pieces(world, part);
+        }
+        if MISSION_PLAYER_PIRATE_HOOK_NODE_SLOTS.contains(&part.node_slot) {
+            world.entity_mut(entity).insert(Visibility::Hidden);
         }
         // The wingtip fire quads are damage-gated in the original: orig25.png
         // shows none on the intact aircraft, orig70.png shows the fire at the

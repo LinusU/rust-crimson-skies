@@ -259,6 +259,14 @@ pub fn spin_propellers(
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PropellerBlur;
 
+/// Marks the static propeller blades (`staticprop1`) of an airframe that also
+/// carries a [`PropellerBlur`] disc: they draw while the engine is stopped and
+/// give way to the blur disc while it runs, as the owner capture of the
+/// running M01 player shows a blur disc and no opaque blades
+/// (`docs/findings/2026-10-20-parity2-m01-chase-camera.md`).
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StaticPropellerBlades;
+
 /// Whether the blur disc shows for one engine state: the engine is running.
 #[must_use]
 pub const fn propeller_blur_visible(engine: EngineState) -> bool {
@@ -285,6 +293,33 @@ pub fn update_propeller_blur(
             Visibility::Inherited
         } else {
             Visibility::Hidden
+        };
+        if *visibility != wanted {
+            *visibility = wanted;
+        }
+    }
+}
+
+/// Hides every [`StaticPropellerBlades`] while its body's engine shows the
+/// blur disc ([`propeller_blur_visible`]), and shows it otherwise. Writes only
+/// the blades' own [`Visibility`].
+pub fn update_static_propeller_blades(
+    engines: Query<(Option<&FlightAircraft>, Option<&PlaytestOriginalFlight>)>,
+    mut blades: Query<(&ChildOf, &mut Visibility), With<StaticPropellerBlades>>,
+) {
+    for (child, mut visibility) in &mut blades {
+        let Ok((aircraft, original)) = engines.get(child.parent()) else {
+            continue;
+        };
+        let engine = match (aircraft, original) {
+            (Some(record), _) => record.engine(),
+            (_, Some(record)) => record.engine(),
+            (None, None) => continue,
+        };
+        let wanted = if propeller_blur_visible(engine) {
+            Visibility::Hidden
+        } else {
+            Visibility::Inherited
         };
         if *visibility != wanted {
             *visibility = wanted;

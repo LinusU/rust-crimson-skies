@@ -373,6 +373,7 @@ impl Plugin for PlaytestPlugin {
                     // freezes the drawn propeller in that same frame.
                     propeller::spin_propellers,
                     propeller::update_propeller_blur,
+                    propeller::update_static_propeller_blades,
                     // The airframe damage visual gates its quads on the damage
                     // authority's published record (PARITY-M01-PLAYER-VIEW-C2).
                     crate::airframe_damage::drive_airframe_damage_visuals,

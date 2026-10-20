@@ -10,6 +10,7 @@ mod accept_t336_suite_e_image;
 mod eh_frame_gate;
 mod campaign {
     mod common;
+    mod m01_chase_view_parity;
     mod m01_play_world_evidence;
     mod m01_player_prop_blur;
     mod vs_m01_rt_content;
