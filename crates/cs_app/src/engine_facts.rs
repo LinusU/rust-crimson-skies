@@ -123,6 +123,26 @@ pub struct EngineFacts {
     flight_check: FlightCheckFacts,
     /// The loadout binder's (gun, ammunition) -> weapon-record map (#1628).
     gun_loadout: GunLoadoutFact,
+    /// The original's default control bindings (#1733), in table order.
+    control_bindings: Vec<ControlBindingFact>,
+}
+
+/// One row of the original's default control table: a command id and the
+/// packed inputs it starts bound to (static evidence, ids and codes only).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ControlBindingFact {
+    /// The virtual address of the registering `call` in the image.
+    pub va: u64,
+    /// The original's command id.
+    pub command: u16,
+    /// The primary packed key code (`0` unbound).
+    pub key_a: u16,
+    /// The secondary packed key code (`0` unbound).
+    pub key_b: u16,
+    /// The 1-based joystick button (`0` none).
+    pub joystick: u8,
+    /// The mouse button (`0` none).
+    pub mouse: u8,
 }
 
 /// The stored-heading convention: the image's own conversion of a record's
@@ -334,9 +354,17 @@ impl EngineFacts {
             provisionals: provisional_facts(&document)?,
             flight_check: flight_check_facts(&document, image_va_base)?,
             gun_loadout: gun_loadout_fact(&document, image_va_base)?,
+            control_bindings: control_binding_facts(&document, image_va_base)?,
         };
         let missions = mission_facts(&document, &facts, image_va_base)?;
         Ok(Self { missions, ..facts })
+    }
+
+    /// The original's default control bindings, one row per command id in the
+    /// controls screen's order (#1733).
+    #[must_use]
+    pub fn control_bindings(&self) -> &[ControlBindingFact] {
+        &self.control_bindings
     }
 
     /// The image file name the table cites.
@@ -1238,6 +1266,57 @@ fn provisional_facts(
         });
     }
     Ok(provisionals)
+}
+
+/// The `[[control_binding]]` rows: `command` unique, every code within the
+/// original's 11-bit key range, `va` above the image base.
+fn control_binding_facts(
+    document: &subset::Document,
+    image_va_base: u64,
+) -> Result<Vec<ControlBindingFact>, EngineFactsError> {
+    let mut rows: Vec<ControlBindingFact> = Vec::new();
+    for (position, table) in array(document, "control_binding")?.iter().enumerate() {
+        let section = format!("control_binding[{position}]");
+        known_keys(
+            table,
+            &[
+                "claim",
+                "provenance",
+                "va",
+                "command",
+                "key_a",
+                "key_b",
+                "joystick",
+                "mouse",
+            ],
+            &section,
+        )?;
+        cited(table, &section)?;
+        let ranged = |key: &str, max: i64| -> Result<i64, EngineFactsError> {
+            let value = scalar_int_in(table, key)?;
+            if !(0..=max).contains(&value) {
+                return Err(EngineFactsError::schema(format!(
+                    "{section}: {key} {value} is outside 0..={max}"
+                )));
+            }
+            Ok(value)
+        };
+        let command = ranged("command", i64::from(u16::MAX))? as u16;
+        if rows.iter().any(|row| row.command == command) {
+            return Err(EngineFactsError::schema(format!(
+                "{section}: command {command} repeats an earlier row"
+            )));
+        }
+        rows.push(ControlBindingFact {
+            va: scalar_va(table, "va", image_va_base)?,
+            command,
+            key_a: ranged("key_a", 0x7ff)? as u16,
+            key_b: ranged("key_b", 0x7ff)? as u16,
+            joystick: ranged("joystick", 10)? as u8,
+            mouse: ranged("mouse", 3)? as u8,
+        });
+    }
+    Ok(rows)
 }
 
 /// The single `[name]` table a section must hold exactly once.

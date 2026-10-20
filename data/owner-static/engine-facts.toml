@@ -1113,3 +1113,654 @@ format_va = 0x629d70
 resolve_va = 0x5abfd0
 select_va = 0x4b2350
 template_va = 0x62ae5c
+
+# The original game's default control bindings (task #1733
+# PARITY2-ORIGINAL-KEYBINDINGS; table recorded by F22-J #505). One row per
+# command id, in the controls screen's order: `va` is the `call` of the
+# registration function 0x493630 inside the table builder 0x4936c0-0x493d00
+# that registers the row. `key_a`/`key_b` are packed key codes (DirectInput
+# scancode in bits 0-7, +0x100 Alt, +0x200 Ctrl, +0x400 Shift); `joystick` is
+# the 1-based joystick button and `mouse` the mouse button (0 none). Static
+# analysis of the image, never `verified_original`; ids and codes only, no
+# display text. The modifier rule (0x535ba0) and slot uniqueness are code in
+# crates/cs_types/src/keymap.rs.
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493718
+command = 1
+key_a = 0x0c8
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x0049372f
+command = 2
+key_a = 0x0d0
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493746
+command = 3
+key_a = 0x0cb
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493760
+command = 4
+key_a = 0x0cd
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493774
+command = 5
+key_a = 0x033
+key_b = 0x052
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493788
+command = 6
+key_a = 0x034
+key_b = 0x053
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x004937a2
+command = 47
+key_a = 0x426
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x004937cb
+command = 7
+key_a = 0x00d
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x004937df
+command = 8
+key_a = 0x00c
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x004937f6
+command = 9
+key_a = 0x002
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x0049380a
+command = 10
+key_a = 0x003
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x0049381e
+command = 11
+key_a = 0x004
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493835
+command = 12
+key_a = 0x005
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493849
+command = 13
+key_a = 0x006
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x0049385d
+command = 14
+key_a = 0x007
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493874
+command = 15
+key_a = 0x008
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493888
+command = 16
+key_a = 0x009
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x0049389c
+command = 17
+key_a = 0x00a
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x004938c8
+command = 19
+key_a = 0x039
+key_b = 0x000
+joystick = 1
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x004938dc
+command = 20
+key_a = 0x02d
+key_b = 0x000
+joystick = 2
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x004938f0
+command = 25
+key_a = 0x03d
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493907
+command = 26
+key_a = 0x03e
+key_b = 0x000
+joystick = 7
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x0049391b
+command = 32
+key_a = 0x03f
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x0049392f
+command = 33
+key_a = 0x040
+key_b = 0x000
+joystick = 8
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x0049395b
+command = 36
+key_a = 0x012
+key_b = 0x000
+joystick = 3
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493972
+command = 37
+key_a = 0x412
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493989
+command = 38
+key_a = 0x212
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x004939a0
+command = 39
+key_a = 0x011
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x004939b7
+command = 40
+key_a = 0x411
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x004939ce
+command = 41
+key_a = 0x211
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x004939e5
+command = 42
+key_a = 0x013
+key_b = 0x000
+joystick = 6
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x004939fc
+command = 43
+key_a = 0x413
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493a13
+command = 44
+key_a = 0x213
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493a2a
+command = 45
+key_a = 0x010
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493a3e
+command = 46
+key_a = 0x014
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493a6a
+command = 48
+key_a = 0x41f
+key_b = 0x000
+joystick = 5
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493a81
+command = 49
+key_a = 0x042
+key_b = 0x000
+joystick = 4
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493a95
+command = 50
+key_a = 0x043
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493aa9
+command = 51
+key_a = 0x044
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493ac0
+command = 52
+key_a = 0x057
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493ad4
+command = 53
+key_a = 0x058
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493ae8
+command = 54
+key_a = 0x041
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493aff
+command = 55
+key_a = 0x025
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493b13
+command = 57
+key_a = 0x024
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493b27
+command = 56
+key_a = 0x026
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493b53
+command = 58
+key_a = 0x04f
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493b67
+command = 59
+key_a = 0x050
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493b7b
+command = 60
+key_a = 0x051
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493b92
+command = 61
+key_a = 0x04b
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493ba6
+command = 62
+key_a = 0x04c
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493bba
+command = 63
+key_a = 0x04d
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493bd1
+command = 64
+key_a = 0x047
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493be5
+command = 65
+key_a = 0x048
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493bf9
+command = 66
+key_a = 0x049
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493c10
+command = 68
+key_a = 0x04a
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493c24
+command = 67
+key_a = 0x04e
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493c4d
+command = 106
+key_a = 0x01e
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493c64
+command = 18
+key_a = 0x031
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493c7b
+command = 34
+key_a = 0x22d
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493c8f
+command = 69
+key_a = 0x001
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493ca6
+command = 35
+key_a = 0x00f
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493cba
+command = 109
+key_a = 0x029
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493cd1
+command = 110
+key_a = 0x429
+key_b = 0x000
+joystick = 0
+mouse = 0
+
+[[control_binding]]
+claim = "OWNER-STATIC-2026-10-05"
+provenance = "static"
+va = 0x00493ce8
+command = 111
+key_a = 0x03b
+key_b = 0x000
+joystick = 0
+mouse = 0
