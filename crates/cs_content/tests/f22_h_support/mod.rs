@@ -284,7 +284,13 @@ pub const CTL_SCRIPT_KEY_CONSTANTS: [&str; 10] = [
 /// without classifying it against the original, and the evidence column is
 /// asserted to partition [`COMMAND_LABELS`] together with
 /// [`ORIGINAL_ONLY_COMMANDS`].
-pub const COMPARISON: [(&str, &str, &[&str]); 26] = [
+///
+/// The eleven `target_*` commands added by PARITY2-M01-TARGET-INDICATORS
+/// (#1727) are each the measured original command they are named for —
+/// `observed`, citing that command's own label. Six of those labels are also
+/// cited by the broader `target_next`/`target_prev` rows; the partition
+/// dedupes the cited set, so a label two project commands share counts once.
+pub const COMPARISON: [(&str, &str, &[&str]); 37] = [
     ("pitch", "observed", &["MSG_NOSE_UP", "MSG_NOSE_DOWN"]),
     ("roll", "observed", &["MSG_ROLL_LEFT", "MSG_ROLL_RIGHT"]),
     ("yaw", "observed", &["MSG_RUDDER_LEFT", "MSG_RUDDER_RIGHT"]),
@@ -340,6 +346,57 @@ pub const COMPARISON: [(&str, &str, &[&str]); 26] = [
             "MSG_CMD_TARGET_PREVIOUS_GROUND",
         ],
     ),
+    (
+        "target_next_enemy",
+        "observed",
+        &["MSG_CMD_TARGET_NEXT_ENEMY"],
+    ),
+    (
+        "target_prev_enemy",
+        "observed",
+        &["MSG_CMD_TARGET_PREVIOUS_ENEMY"],
+    ),
+    (
+        "target_nearest_enemy",
+        "observed",
+        &["MSG_CMD_TARGET_NEAREST_ENEMY"],
+    ),
+    (
+        "target_next_ally",
+        "observed",
+        &["MSG_CMD_TARGET_NEXT_ALLY"],
+    ),
+    (
+        "target_prev_ally",
+        "observed",
+        &["MSG_CMD_TARGET_PREVIOUS_ALLY"],
+    ),
+    (
+        "target_nearest_ally",
+        "observed",
+        &["MSG_CMD_TARGET_NEAREST_ALLY"],
+    ),
+    (
+        "target_next_ground",
+        "observed",
+        &["MSG_CMD_TARGET_NEXT_GROUND"],
+    ),
+    (
+        "target_prev_ground",
+        "observed",
+        &["MSG_CMD_TARGET_PREVIOUS_GROUND"],
+    ),
+    (
+        "target_nearest_ground",
+        "observed",
+        &["MSG_CMD_TARGET_NEAREST_GROUND"],
+    ),
+    (
+        "target_under_reticule",
+        "observed",
+        &["MSG_CMD_TARGET_UNDER_RETICULE"],
+    ),
+    ("target_nothing", "observed", &["MSG_CMD_TARGET_NOTHING"]),
     ("countermeasure", "absent", &[]),
     ("throttle_step_up", "observed", &["MSG_INC_THROTTLE"]),
     ("throttle_step_down", "observed", &["MSG_DEC_THROTTLE"]),
@@ -360,18 +417,15 @@ pub const COMPARISON: [(&str, &str, &[&str]); 26] = [
 ];
 
 /// The named original command labels with no counterpart in the project's
-/// declared vocabulary. This is the other half of the measured set: 32 of the
+/// declared vocabulary. This is the other half of the measured set: 27 of the
 /// 65 command labels are original-only (`MSG_LEVEL_TOG` left this set when
-/// task #1134 gave the vocabulary a `level_off` slot).
-pub const ORIGINAL_ONLY_COMMANDS: [&str; 32] = [
+/// task #1134 gave the vocabulary a `level_off` slot; the three nearest-target
+/// labels and the reticule/clear pair left it when #1727 named the eleven
+/// measured selection commands).
+pub const ORIGINAL_ONLY_COMMANDS: [&str; 27] = [
     "MSG_CMD_CYCLE_MODE",
     "MSG_CMD_INTERP",
-    "MSG_CMD_TARGET_NOTHING",
-    "MSG_CMD_TARGET_UNDER_RETICULE",
     "MSG_CMD_NITROUS",
-    "MSG_CMD_TARGET_NEAREST_ENEMY",
-    "MSG_CMD_TARGET_NEAREST_ALLY",
-    "MSG_CMD_TARGET_NEAREST_GROUND",
     "MSG_CMD_KEYMAP_DISP",
     "MSG_LOOK_DOWN",
     "MSG_LOOK_BACK",
