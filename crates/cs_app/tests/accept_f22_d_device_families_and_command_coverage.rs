@@ -400,6 +400,13 @@ fn accept_f22_d_every_declared_flight_command_reaches_the_consumer() {
 
     for command in FlightCommand::ALL {
         let Some(binding) = binding_for(&map, *command) else {
+            // PARITY2-ORIGINAL-KEYBINDINGS (#1733): the seven direct throttle
+            // levels exist only in the original-keys map; the acceptance tests
+            // of that task drive them through the session
+            // (`accept_parity2_original_keybindings_*`).
+            if FlightCommand::ORIGINAL_THROTTLE_LEVELS.contains(command) {
+                continue;
+            }
             assert!(
                 mission_minted.contains(command),
                 "the declared command {command} has no source in the designed default map and \

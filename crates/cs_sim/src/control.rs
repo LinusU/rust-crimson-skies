@@ -215,7 +215,7 @@ pub enum ThrottleError {
 ///   render frame that covered five ticks and delivered one press moves the
 ///   throttle exactly as five frames that delivered the same press each do;
 /// * a direct setting ([`FlightCommand::ThrottleIdle`] /
-///   [`FlightCommand::ThrottleFull`]) is applied after the steps of its own
+///   [`FlightCommand::ThrottleFull`] or one of the seven eighths in between) is applied after the steps of its own
 ///   tick, so one tick containing both a step and a direct setting ends at the
 ///   direct setting whatever order the edges arrived in.
 ///
@@ -328,6 +328,11 @@ impl ThrottleSteps {
                 Action::Flight(FlightCommand::ThrottleFull) => {
                     direct = Some((FlightCommand::ThrottleFull, Self::FULL));
                 }
+                Action::Flight(command) => {
+                    if let Some(position) = Self::level_position(*command) {
+                        direct = Some((*command, position));
+                    }
+                }
                 _ => {}
             }
         }
@@ -341,6 +346,22 @@ impl ThrottleSteps {
             });
         }
         changes
+    }
+
+    /// The position a direct level command (`ThrottleLevel1`–`ThrottleLevel7`)
+    /// sets: its number of eighths of the range.
+    fn level_position(command: FlightCommand) -> Option<f32> {
+        let eighths = match command {
+            FlightCommand::ThrottleLevel1 => 1.0,
+            FlightCommand::ThrottleLevel2 => 2.0,
+            FlightCommand::ThrottleLevel3 => 3.0,
+            FlightCommand::ThrottleLevel4 => 4.0,
+            FlightCommand::ThrottleLevel5 => 5.0,
+            FlightCommand::ThrottleLevel6 => 6.0,
+            FlightCommand::ThrottleLevel7 => 7.0,
+            _ => return None,
+        };
+        Some(eighths / 8.0)
     }
 
     /// Moves the throttle by `delta`, saturating at the ends, and reports the

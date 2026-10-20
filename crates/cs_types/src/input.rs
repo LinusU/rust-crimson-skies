@@ -317,6 +317,28 @@ pub enum Key {
     Digit3,
     /// `4`.
     Digit4,
+    /// The comma key.
+    Comma,
+    /// The period key.
+    Period,
+    /// The equals key.
+    Equal,
+    /// The minus key.
+    Minus,
+    /// The keypad `0`.
+    Numpad0,
+    /// The keypad decimal point.
+    NumpadDecimal,
+    /// The `5`.
+    Digit5,
+    /// The `6`.
+    Digit6,
+    /// The `7`.
+    Digit7,
+    /// The `8`.
+    Digit8,
+    /// The `9`.
+    Digit9,
 }
 
 impl Key {
@@ -353,6 +375,17 @@ impl Key {
         Self::Digit2,
         Self::Digit3,
         Self::Digit4,
+        Self::Comma,
+        Self::Period,
+        Self::Equal,
+        Self::Minus,
+        Self::Numpad0,
+        Self::NumpadDecimal,
+        Self::Digit5,
+        Self::Digit6,
+        Self::Digit7,
+        Self::Digit8,
+        Self::Digit9,
     ];
 
     /// The stable label used in persisted bindings and reports.
@@ -389,6 +422,17 @@ impl Key {
             Self::Digit2 => "digit2",
             Self::Digit3 => "digit3",
             Self::Digit4 => "digit4",
+            Self::Comma => "comma",
+            Self::Period => "period",
+            Self::Equal => "equal",
+            Self::Minus => "minus",
+            Self::Numpad0 => "numpad0",
+            Self::NumpadDecimal => "numpad_decimal",
+            Self::Digit5 => "digit5",
+            Self::Digit6 => "digit6",
+            Self::Digit7 => "digit7",
+            Self::Digit8 => "digit8",
+            Self::Digit9 => "digit9",
         }
     }
 
@@ -762,6 +806,20 @@ pub enum FlightCommand {
     ThrottleIdle,
     /// Set throttle to full.
     ThrottleFull,
+    /// Set the throttle to 1/8: the original's command 10, bound to key `2`.
+    ThrottleLevel1,
+    /// Set the throttle to 2/8: the original's command 11, bound to key `3`.
+    ThrottleLevel2,
+    /// Set the throttle to 3/8: the original's command 12, bound to key `4`.
+    ThrottleLevel3,
+    /// Set the throttle to 4/8: the original's command 13, bound to key `5`.
+    ThrottleLevel4,
+    /// Set the throttle to 5/8: the original's command 14, bound to key `6`.
+    ThrottleLevel5,
+    /// Set the throttle to 6/8: the original's command 15, bound to key `7`.
+    ThrottleLevel6,
+    /// Set the throttle to 7/8: the original's command 16, bound to key `8`.
+    ThrottleLevel7,
     /// Toggle the Level-Off assist: the original's command 47, whose original
     /// binding is Shift+L. A toggle, not a hold — the assist levels the wings
     /// while the stick is hands-off (`cs_sim::flight::original`).
@@ -800,6 +858,13 @@ impl FlightCommand {
         Self::ThrottleStepDown,
         Self::ThrottleIdle,
         Self::ThrottleFull,
+        Self::ThrottleLevel1,
+        Self::ThrottleLevel2,
+        Self::ThrottleLevel3,
+        Self::ThrottleLevel4,
+        Self::ThrottleLevel5,
+        Self::ThrottleLevel6,
+        Self::ThrottleLevel7,
         Self::LevelOff,
     ];
 
@@ -827,6 +892,21 @@ impl FlightCommand {
         Self::TargetNearestGround,
         Self::TargetUnderReticule,
         Self::TargetNothing,
+    ];
+
+    /// The seven direct throttle settings between idle and full (the
+    /// original's commands 10–16, keys `2`–`8`, PARITY2-ORIGINAL-KEYBINDINGS,
+    /// #1733). [`ActionMap::designed_default`] binds none of them: the
+    /// developer layout only has idle and full; the original-keys map
+    /// ([`crate::keymap::ControlsMap::to_action_map`]) binds all of them.
+    pub const ORIGINAL_THROTTLE_LEVELS: &'static [FlightCommand] = &[
+        Self::ThrottleLevel1,
+        Self::ThrottleLevel2,
+        Self::ThrottleLevel3,
+        Self::ThrottleLevel4,
+        Self::ThrottleLevel5,
+        Self::ThrottleLevel6,
+        Self::ThrottleLevel7,
     ];
 
     /// Whether this command is a continuous axis rather than an edge.
@@ -866,6 +946,13 @@ impl FlightCommand {
             Self::ThrottleStepDown => "throttle_step_down",
             Self::ThrottleIdle => "throttle_idle",
             Self::ThrottleFull => "throttle_full",
+            Self::ThrottleLevel1 => "throttle_level_1",
+            Self::ThrottleLevel2 => "throttle_level_2",
+            Self::ThrottleLevel3 => "throttle_level_3",
+            Self::ThrottleLevel4 => "throttle_level_4",
+            Self::ThrottleLevel5 => "throttle_level_5",
+            Self::ThrottleLevel6 => "throttle_level_6",
+            Self::ThrottleLevel7 => "throttle_level_7",
             Self::LevelOff => "level_off",
         }
     }
@@ -3097,6 +3184,17 @@ pub fn original_scancode(key: Key) -> Option<u16> {
         Key::Digit2 => Some(0x03),
         Key::Digit3 => Some(0x04),
         Key::Digit4 => Some(0x05),
+        Key::Comma => Some(0x33),
+        Key::Period => Some(0x34),
+        Key::Equal => Some(0x0d),
+        Key::Minus => Some(0x0c),
+        Key::Numpad0 => Some(0x52),
+        Key::NumpadDecimal => Some(0x53),
+        Key::Digit5 => Some(0x06),
+        Key::Digit6 => Some(0x07),
+        Key::Digit7 => Some(0x08),
+        Key::Digit8 => Some(0x09),
+        Key::Digit9 => Some(0x0a),
     }
 }
 
@@ -3139,6 +3237,13 @@ pub fn original_command_ids(command: FlightCommand) -> &'static [u16] {
         FlightCommand::ThrottleStepDown => &[8],
         FlightCommand::ThrottleIdle => &[9],
         FlightCommand::ThrottleFull => &[17],
+        FlightCommand::ThrottleLevel1 => &[10],
+        FlightCommand::ThrottleLevel2 => &[11],
+        FlightCommand::ThrottleLevel3 => &[12],
+        FlightCommand::ThrottleLevel4 => &[13],
+        FlightCommand::ThrottleLevel5 => &[14],
+        FlightCommand::ThrottleLevel6 => &[15],
+        FlightCommand::ThrottleLevel7 => &[16],
         FlightCommand::LevelOff => &[47],
     }
 }
@@ -4164,11 +4269,16 @@ mod tests {
                     .all(|binding| binding.target.action() != Action::Flight(*command))
             })
             .collect();
+        let expected: Vec<FlightCommand> = FlightCommand::ORIGINAL_TARGETING
+            .iter()
+            .chain(FlightCommand::ORIGINAL_THROTTLE_LEVELS)
+            .copied()
+            .collect();
         assert_eq!(
-            unbound,
-            FlightCommand::ORIGINAL_TARGETING,
-            "the only declared commands without a map source are the mission-minted \
-             targeting commands; {unbound:?}"
+            unbound, expected,
+            "the only declared commands without a developer-map source are the \
+             mission-minted targeting commands and the original-only throttle \
+             levels; {unbound:?}"
         );
 
         for command in FlightCommand::ALL {
