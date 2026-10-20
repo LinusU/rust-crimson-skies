@@ -146,13 +146,15 @@ pub fn original_target_command(key: Key, shift: bool, ctrl: bool) -> Option<Flig
 /// the publisher's own control gate — the original's table is only the
 /// mapping, not a second authority.
 ///
-/// A letter whose press minted a command is **consumed**: its
+/// Every press of the five letters is **consumed** — minted or not: the
 /// `just_pressed` edge is cleared so no raw-key consumer runs the press a
 /// second time. The playtest's own meta layer reads `R` from the keyboard
 /// state directly (`crate::playtest`'s `meta_controls` → reset →
 /// [`PlaytestState::resets`], which [`mission_host_restart`] watches) — an
 /// uncleared `R` would select the next non-aircraft target *and* restart
-/// the mission on one press.
+/// the mission on one press, and an unminted chord like `Shift+Ctrl+R`
+/// (exact matching gives it no row, so it mints nothing) would restart it
+/// without selecting anything.
 ///
 /// [`collect_mission_cockpit_actions`]: super::weapons::collect_mission_cockpit_actions
 /// [`PlaytestState::resets`]: crate::playtest::PlaytestState::resets
@@ -175,21 +177,20 @@ pub fn mint_mission_target_keys(world: &mut World) {
         if !keys.just_pressed(code) {
             continue;
         }
+        consumed.push(code);
         let Some(key) = key_from_bevy(code) else {
             continue;
         };
         if let Some(command) = original_target_command(key, shift, ctrl) {
             minted.push(Action::Flight(command));
-            consumed.push(code);
         }
     }
-    if minted.is_empty() {
-        return;
+    if !minted.is_empty() {
+        world
+            .get_resource_or_insert_with(MissionCockpitActions::default)
+            .actions
+            .extend(minted);
     }
-    world
-        .get_resource_or_insert_with(MissionCockpitActions::default)
-        .actions
-        .extend(minted);
     if let Some(mut keys) = world.get_resource_mut::<ButtonInput<KeyCode>>() {
         for code in consumed {
             keys.clear_just_pressed(code);
@@ -218,8 +219,9 @@ pub fn mint_mission_target_keys(world: &mut World) {
 ///   [`mint_mission_target_keys`] with the measured modifier matching, which
 ///   a [`BindingSource`] cannot express.
 ///
-/// Everything else — `A`/`D` yaw, `F` throttle down, `Space` guns, digits,
-/// the UI keys — is the playtest's designed map, disclosed as designed.
+/// Everything else — `S` pitch (the evidence run's scripted pitch-up reads
+/// it), `A`/`D` yaw, `F` throttle down, `Space` guns, digits, the UI keys —
+/// is the playtest's designed map, disclosed as designed.
 ///
 /// # Panics
 ///

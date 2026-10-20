@@ -262,6 +262,27 @@ fn accept_parity2_m01_target_indicators_key_minter() {
     // The exact-modifier rule: a chord with no table row mints nothing.
     assert!(mint(KeyCode::KeyQ, &[KeyCode::ShiftLeft]).is_empty());
     assert!(mint(KeyCode::KeyE, &[KeyCode::ShiftLeft, KeyCode::ControlLeft]).is_empty());
+    // ...and the letter is claimed either way: an unconsumed press would
+    // fall through to the playtest's raw `R` reset, which the mission map
+    // no longer owns.
+    let pressed = |press: KeyCode, held: &[KeyCode]| {
+        let mut world = World::new();
+        let mut keys = ButtonInput::<KeyCode>::default();
+        for key in held {
+            keys.press(*key);
+            keys.clear_just_pressed(*key);
+        }
+        keys.press(press);
+        world.insert_resource(keys);
+        mint_mission_target_keys(&mut world);
+        world.resource::<ButtonInput<KeyCode>>().just_pressed(press)
+    };
+    assert!(!pressed(KeyCode::KeyR, &[]), "the minted press is consumed");
+    assert!(
+        !pressed(KeyCode::KeyR, &[KeyCode::ShiftLeft, KeyCode::ControlLeft]),
+        "the unminted chord is consumed too"
+    );
+    assert!(!pressed(KeyCode::KeyQ, &[KeyCode::ShiftLeft]));
 }
 
 /// A world with the session under the measured binding and a roster of a
