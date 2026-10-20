@@ -33,9 +33,10 @@
 //!
 //! **Measured vs designed.** Placements, needle rates, units and the 4:3 fit
 //! come from the finding's measured rows. The `instruments.zrd` units→HUD
-//! scale (`3.0` units per dial radius), altimeter needle rates, the compass
-//! tape period, the pip fill rule and the damage state→colour mapping are
-//! **designed** and recorded as such in the finding. The `horiz` attitude
+//! scale (`DIAL_RADIUS_UNITS` of 0.9 per measured face radius), the altimeter
+//! needle rates, the compass tape period, the pip fill rule and the damage
+//! state→colour mapping are **designed** and recorded as such in the finding.
+//! The `horiz` attitude
 //! indicator is not listed in `instruments.zrd` and stays out of the HUD
 //! pass; `lowalt_on`/`stallwarning_on`/`mgarrow`/`ggarrow` and the nitro
 //! needles have no measured driver yet, so they keep their authored state
@@ -373,7 +374,7 @@ pub fn build_hud_art(
     let mut placements = Vec::new();
 
     // The authored→HUD scale: measured once from the speedometer face's own
-    // extent so the dials land at the finding's radius-≈3 fit whatever the
+    // extent so the dials land at the finding's radius-≈0.9 fit whatever the
     // authored units are. When the face cannot be measured the parts draw at
     // authored scale and the record says so.
     let scale = face_radius(&planes, aircraft, gauges)
