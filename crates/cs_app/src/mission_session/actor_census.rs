@@ -558,19 +558,21 @@ fn selected_indicator_name(
     None
 }
 
-/// The window-space point the edge arrow anchors to: the target's projected
-/// position clamped onto the inset window border — toward the target's own
-/// bearing when it is behind the camera, where no projection exists.
+/// The window-space point the edge arrow anchors to and the unit direction
+/// the arrow points in — outward, toward the target's own bearing.
 ///
-/// A dead-astern target resolves to the top edge: its bearing vector is
-/// zero-length and the original's 6-o'clock capture shows the arrow there.
+/// The point is the target's projected position clamped onto the inset
+/// window border — toward the target's own bearing when it is behind the
+/// camera, where no projection exists. A dead-astern target resolves to the
+/// top edge: its bearing vector is zero-length and the original's 6-o'clock
+/// capture shows the arrow there.
 #[must_use]
 fn edge_clamped_point(
     position: Vec3,
     camera: &Camera,
     camera_transform: &GlobalTransform,
     window: (f32, f32),
-) -> Vec2 {
+) -> (Vec2, Vec2) {
     let center = Vec2::new(window.0 / 2.0, window.1 / 2.0);
     let toward = position - camera_transform.translation();
     let mut direction = if toward.dot(*camera_transform.forward()) > 0.0 {
@@ -590,11 +592,12 @@ fn edge_clamped_point(
     if direction.length_squared() < 1.0e-4 {
         direction = Vec2::new(0.0, -1.0);
     }
+    let outward = direction.normalize();
     let half = Vec2::new(center.x - TARGET_EDGE_MARGIN, center.y - TARGET_EDGE_MARGIN);
     let scale = (direction.x.abs() / half.x)
         .max(direction.y.abs() / half.y)
         .max(f32::EPSILON);
-    center + direction / scale
+    (center + direction / scale, outward)
 }
 
 /// Draws the selected target's indicator in the measured form.
@@ -648,7 +651,7 @@ fn spawn_target_indicator(
     }
     let hour = super::cockpit_hud::clock_hour(relative_deg);
     let label = super::cockpit_hud::marker_text(name, Some(hour));
-    let edge = edge_clamped_point(position, camera, camera_transform, window);
+    let (edge, outward) = edge_clamped_point(position, camera, camera_transform, window);
     let (near, far) = projection_planes(projection);
     let in_range = reticle.distance.0 <= spyglass_window_threshold(near, far, *ring_open);
     *ring_open = in_range;
@@ -668,8 +671,28 @@ fn spawn_target_indicator(
             ContactBracket,
         ));
     }
+    // The arrow leaves the ring toward the target's edge, as the original
+    // draws it — the text stand-in takes the dominant outward direction,
+    // clamped inside the window so the glyph never clips the border. With
+    // no ring it sits at the edge point itself.
+    let glyph = if outward.x.abs() >= outward.y.abs() {
+        if outward.x > 0.0 { "->" } else { "<-" }
+    } else if outward.y > 0.0 {
+        "v"
+    } else {
+        "^"
+    };
+    let at = if in_range {
+        let pushed = edge + outward * (TARGET_RING_RADIUS + 6.0);
+        Vec2::new(
+            pushed.x.clamp(10.0, window.0 - 10.0),
+            pushed.y.clamp(12.0, window.1 - 10.0),
+        )
+    } else {
+        edge
+    };
     commands.spawn((
-        Text::new("->"),
+        Text::new(glyph),
         TextFont {
             font_size: FontSize::Px(20.0),
             ..default()
@@ -677,8 +700,8 @@ fn spawn_target_indicator(
         TextColor(color),
         Node {
             position_type: PositionType::Absolute,
-            left: Val::Px(edge.x - 10.0),
-            top: Val::Px(edge.y - 12.0),
+            left: Val::Px(at.x - 10.0),
+            top: Val::Px(at.y - 12.0),
             ..default()
         },
         ContactBracket,
