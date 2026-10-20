@@ -476,6 +476,9 @@ fn sky_materials(app: &mut App, stored: &GameZMaterials, parts: &mut Vec<Playtes
                 .material(part.stored_material)
                 .is_some_and(|material| stored.names_a_texture(material))
     });
+    for part in parts.iter_mut() {
+        display_value_corner_colours(app, part);
+    }
     let mut materials = app.world_mut().resource_mut::<Assets<StandardMaterial>>();
     for part in parts {
         let Some(mut sky) = materials.get(&part.material).cloned() else {
@@ -488,6 +491,40 @@ fn sky_materials(app: &mut App, stored: &GameZMaterials, parts: &mut Vec<Playtes
         }
         part.material = materials.add(sky);
     }
+}
+
+/// Re-reads a sky part's stored corner colours as display values.
+///
+/// The stored per-corner colours ride the byte scale and, drawn as linear
+/// light (what a vertex-colour attribute is to the renderer), give M01's sky
+/// the pale, desaturated cast of the frames before this change. The original's
+/// launch frame instead shows the zenith cap's stored `(176, 209, 242)` as
+/// itself: Drydock's top row averages `(179, 210, 245)`
+/// (`docs/findings/2026-10-20-parity2-m01-sky-colour.md`). The fixed-function
+/// era multiplied texture and corner colour in display space, so the sky
+/// parts convert each stored channel from sRGB to linear and the renderer's
+/// own output encoding gives the stored byte back. Only `horizon` parts take
+/// this: the other records' colour space stays as `normalize_corner_colours`
+/// left it.
+fn display_value_corner_colours(app: &mut App, part: &mut PlaytestPart) {
+    let mut meshes = app.world_mut().resource_mut::<Assets<Mesh>>();
+    let Some(mut mesh) = meshes.get(&part.mesh).cloned() else {
+        return;
+    };
+    let Some(VertexAttributeValues::Float32x4(values)) = mesh.attribute(Mesh::ATTRIBUTE_COLOR)
+    else {
+        return;
+    };
+    let linear: Vec<[f32; 4]> = values
+        .iter()
+        .map(|&[r, g, b, a]| {
+            let to_linear =
+                |c: f32| bevy::color::LinearRgba::from(bevy::color::Srgba::new(c, c, c, 1.0)).red;
+            [to_linear(r), to_linear(g), to_linear(b), a]
+        })
+        .collect();
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, linear);
+    part.mesh = meshes.add(mesh);
 }
 
 /// A `horizon` record's offset from the `horizon` record, kept so the subtree

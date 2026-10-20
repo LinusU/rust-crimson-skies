@@ -139,3 +139,50 @@ fn accept_parity_m01_clouds_g1155_is_drawn_and_follows_the_camera() {
         "g1155's stored offset is small: it is centred on the camera"
     );
 }
+
+/// **The sky's stored corner colours are drawn as display values**
+/// (`docs/findings/2026-10-20-parity2-m01-sky-colour.md`): the zenith cap's
+/// stored `(176, 209, 242)` reaches the shader as the linear light whose
+/// sRGB encoding is those bytes, not as `0.69, 0.82, 0.95` linear.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_parity2_m01_sky_colour_cap_corner_colours_encode_to_their_stored_bytes() {
+    use bevy::color::{LinearRgba, Srgba};
+    use bevy::prelude::Mesh;
+    use bevy::render::mesh::VertexAttributeValues;
+
+    let root = game_dir();
+    let plan = plan_mission_launch(&root, label("M01"), "The Lost Treasure")
+        .expect("M01's launch closure plans");
+    let stage = stage_for(&root, &plan).expect("M01's stage reads");
+    let mut app = build_headless(&stage).expect("M01's stage composes headlessly");
+    app.update();
+    let parts = app.world().resource::<MissionWorldParts>().clone();
+    let id = WorldObjectId::new(&format!("node-{G1155}")).expect("a node id");
+    let Resolved::Known(mesh) = stage.world.object(&id).expect("object").mesh() else {
+        panic!("g1155 names a mesh");
+    };
+    let meshes = app.world().resource::<Assets<Mesh>>();
+    let mut cap_corners = 0;
+    for part in parts.for_mesh(&mesh.value).expect("parts") {
+        let mesh = meshes.get(&part.mesh).expect("mesh");
+        let Some(VertexAttributeValues::Float32x4(colours)) = mesh.attribute(Mesh::ATTRIBUTE_COLOR)
+        else {
+            continue;
+        };
+        for colour in colours {
+            let shown = Srgba::from(LinearRgba::new(colour[0], colour[1], colour[2], 1.0));
+            let bytes = [shown.red, shown.green, shown.blue].map(|c| (c * 255.0).round() as i32);
+            if (bytes[0] - 176).abs() <= 1
+                && (bytes[1] - 209).abs() <= 1
+                && (bytes[2] - 242).abs() <= 1
+            {
+                cap_corners += 1;
+            }
+        }
+    }
+    assert!(
+        cap_corners >= 3,
+        "the cap's corners encode to (176, 209, 242): {cap_corners}"
+    );
+}
