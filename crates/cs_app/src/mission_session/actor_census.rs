@@ -466,17 +466,21 @@ fn update_contacts(
     }
 }
 
-/// The measured marker colors (`0x4a5f40`, static): an objective-node target
-/// is blue `(0,0,255)`, a hostile red `(200,0,0)`, anything else green.
+/// The measured marker colors (`0x4a5f40`, static): a target with a vehicle
+/// node is red `(200,0,0)` when its node type is one of the four measured
+/// classes and blue `(0,0,255)` otherwise — which is why the objective sites
+/// and their arrows are blue. The four node ids are unmeasured, so the
+/// reticle's declared-hostile flag stands in for the set. A target with no
+/// vehicle node compares sides instead — green same or neutral side, red
+/// different — a branch no rostered class reaches: every registerable kind
+/// (aircraft, world object, capital ship) is a vehicle node.
 #[must_use]
 pub fn target_indicator_color(reticle: &Reticle) -> Color {
-    if reticle.objective {
-        let (r, g, b) = super::cockpit_hud::OBJECTIVE_BLUE;
-        Color::srgb(r, g, b)
-    } else if reticle.hostile {
+    if reticle.hostile {
         Color::srgb(200.0 / 255.0, 0.0, 0.0)
     } else {
-        Color::srgb(0.0, 1.0, 0.0)
+        let (r, g, b) = super::cockpit_hud::OBJECTIVE_BLUE;
+        Color::srgb(r, g, b)
     }
 }
 

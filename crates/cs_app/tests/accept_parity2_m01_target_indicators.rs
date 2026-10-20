@@ -427,8 +427,9 @@ fn accept_parity2_m01_target_indicators_spyglass_gate_constants() {
     );
 }
 
-/// The measured marker colours (`0x4a5f40`, static): objective blue,
-/// hostile red `(200,0,0)`, otherwise green.
+/// The measured marker colours (`0x4a5f40`, static): a vehicle-node target
+/// is hostile red `(200,0,0)` or blue — every rostered class is a vehicle
+/// node, so the measured node-less side-compare (green) never answers here.
 #[test]
 fn accept_parity2_m01_target_indicators_marker_colours() {
     let reticle = |hostile: bool, objective: bool| cs_sim::targeting::Reticle {
@@ -452,10 +453,10 @@ fn accept_parity2_m01_target_indicators_marker_colours() {
         target_indicator_color(&reticle(true, false)),
         bevy::prelude::Color::srgb(200.0 / 255.0, 0.0, 0.0)
     );
-    assert_eq!(
-        target_indicator_color(&reticle(false, false)),
-        bevy::prelude::Color::srgb(0.0, 1.0, 0.0)
-    );
+    // A non-hostile node target — an ally, a neutral ship — draws blue, like
+    // the objective sites: the measured rule's green is the node-less
+    // side-compare branch the roster cannot reach.
+    assert_eq!(target_indicator_color(&reticle(false, false)), blue);
 }
 
 /// The pose sync keeps the store's records on the live entity poses: the

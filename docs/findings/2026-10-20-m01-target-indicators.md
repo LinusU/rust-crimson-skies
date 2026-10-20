@@ -101,9 +101,15 @@ PARITY2-M01-SPYGLASS (#1734), which reads the same predicate.
 `verified_original`: none. `measured/static`: the table above, the colour
 rule, the clock formula, the gate constants, the state split (marker-only
 in view; arrow + label + optional ring off view). `designed`: the arrow's
-drawn glyph and exact label offsets, the ring's pixel border width, the
-crosshair cone (`π/18`, the mission's declared value — the original's
-acceptance angle is unmeasured) and the name fallback chain (airframe table
-→ record name → subject tail → node). `unknown`: the original's
-under-reticule cone, the arrow triangle's exact pixel geometry, and which
-targets receive `help_label` verbs outside `targets.zrd` rows.
+drawn glyph (a directional text stand-in for the original's triangle, aimed
+outward along the edge it anchors to) and exact label offsets, the ring's
+pixel border width, the crosshair cone (`π/18`, the mission's declared
+value — the original's acceptance angle is unmeasured) and the name
+fallback chain (airframe table → record name → subject tail → node). The
+colour rule's red set is four node ids whose classes are unmeasured, so the
+build lets the reticle's declared-hostile flag stand in for it, and the
+measured node-less green side-compare branch has no expression: every
+registerable roster class is a vehicle node. `unknown`: the original's
+under-reticule cone, the arrow triangle's exact pixel geometry, which
+classes the four red-set node ids name, and which targets receive
+`help_label` verbs outside `targets.zrd` rows.
