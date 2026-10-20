@@ -628,12 +628,15 @@ pub struct HudZone {
 
 /// Which material role one piece of a zone quad plays (the zone meshes bind a
 /// `*hilite` tint and a `*_hatchptrn` pattern together).
-#[derive(Component, Clone, Copy, Debug)]
+#[derive(Component, Clone, Debug)]
 pub struct HudZonePiece {
     /// The zone it belongs to.
     pub region: AirframeDamageRegion,
     /// `*hilite` tint or `*_hatchptrn` pattern.
     pub role: ZonePieceRole,
+    /// The material the piece spawned with — the green `*hilite`/`*_hatchptrn`
+    /// pair the intact state draws and a damaged zone returns to.
+    pub authored: Handle<StandardMaterial>,
 }
 
 /// The two material roles a zone mesh binds.
@@ -888,9 +891,11 @@ fn tag_zone_pieces(
         } else {
             ZonePieceRole::Hilite
         };
-        world
-            .entity_mut(*child)
-            .insert(HudZonePiece { region, role });
+        world.entity_mut(*child).insert(HudZonePiece {
+            region,
+            role,
+            authored: piece.material.clone(),
+        });
     }
 }
 
@@ -1188,13 +1193,9 @@ pub fn update_hud_art(
                 DamageNodeKey::new(piece.region.node_name()).is_ok_and(|key| key == zone.node)
             })
             .map_or(PartState::Unknown, |zone| zone.state);
-        if let Some(handle) = zone_material(
-            &mut hud,
-            &mut materials,
-            material.0.clone(),
-            piece.role,
-            state,
-        ) && material.0 != handle
+        if let Some(handle) =
+            zone_material(&mut hud, &mut materials, &piece.authored, piece.role, state)
+            && material.0 != handle
         {
             material.0 = handle;
         }
@@ -1249,13 +1250,15 @@ fn glyph_material(
 
 /// `(role, state)` → the zone material: the authored `*hilite`+`*_hatchptrn`
 /// pair recoloured green/yellow/red by `PartState` (the designed mapping —
-/// `Damaged` → yellow, `Destroyed` → red). `Intact` and `Unknown` keep the
+/// `Damaged` → yellow, `Destroyed` → red). `Intact` and `Unknown` draw the
 /// authored green: the gauge always shows some zone colour and the intact
-/// capture is the documented default.
+/// capture is the documented default. `base` is the piece's authored
+/// material, so a state returning to green restores it rather than keeping
+/// the last variant.
 fn zone_material(
     hud: &mut MissionHudArt,
     materials: &mut Assets<StandardMaterial>,
-    base: Handle<StandardMaterial>,
+    base: &Handle<StandardMaterial>,
     role: ZonePieceRole,
     state: PartState,
 ) -> Option<Handle<StandardMaterial>> {
@@ -1265,7 +1268,7 @@ fn zone_material(
         PartState::Destroyed => 2,
     };
     if colour == 0 {
-        return Some(base);
+        return Some(base.clone());
     }
     let key = (
         match role {
@@ -1284,7 +1287,7 @@ fn zone_material(
         (ZonePieceRole::Hatch, _) => "red_hatchptrn",
     };
     let image = hud.images.get(name)?.clone();
-    let mut variant = materials.get(&base)?.clone();
+    let mut variant = materials.get(base)?.clone();
     variant.base_color_texture = Some(image);
     let handle = materials.add(variant);
     hud.zone_materials.insert(key, handle.clone());
