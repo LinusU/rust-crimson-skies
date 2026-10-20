@@ -60,9 +60,16 @@ pub fn held_modifiers(keys: &ButtonInput<KeyCode>) -> Modifiers {
     }
 }
 
+/// The keys held at the end of the last [`mint_original_chord_keys`] run, so a
+/// press is an edge against the last frame the minter saw rather than against
+/// Bevy's per-frame `just_pressed` flag (which a press injected before the
+/// input systems run never carries).
+#[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
+pub struct ChordKeyMemory(pub std::collections::BTreeSet<KeyCode>);
+
 /// Mints the frame's modifier-sensitive key presses into the cockpit queue.
 ///
-/// Every just-pressed key whose scancode has a modifier combination bound is
+/// Every newly pressed key whose scancode has a modifier combination bound is
 /// **consumed** (its `just_pressed` edge is cleared so no raw-key reader runs
 /// it a second time) and resolved with the original's exact-modifier rule;
 /// each command with a project action joins [`MissionCockpitActions`]. A
@@ -79,9 +86,14 @@ pub fn mint_original_chord_keys(world: &mut World) {
         return;
     };
     let held = held_modifiers(keys);
+    let now: std::collections::BTreeSet<KeyCode> = keys.get_pressed().copied().collect();
+    let before = world
+        .get_resource::<ChordKeyMemory>()
+        .map(|memory| memory.0.clone())
+        .unwrap_or_default();
     let mut minted: Vec<Action> = Vec::new();
     let mut consumed: Vec<KeyCode> = Vec::new();
-    for code in keys.get_just_pressed() {
+    for code in now.difference(&before) {
         let Some(scancode) = scancode_from_bevy(*code) else {
             continue;
         };
@@ -101,6 +113,7 @@ pub fn mint_original_chord_keys(world: &mut World) {
                 .filter(|action| matches!(action, Action::Flight(_))),
         );
     }
+    world.insert_resource(ChordKeyMemory(now));
     if !minted.is_empty() {
         world
             .get_resource_or_insert_with(MissionCockpitActions::default)
