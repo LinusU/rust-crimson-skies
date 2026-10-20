@@ -419,6 +419,7 @@ fn update_contacts(
             stage.as_deref(),
             catalog,
         ) else {
+            *ring_open = false;
             return;
         };
         spawn_target_indicator(
