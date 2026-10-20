@@ -533,16 +533,28 @@ fn drive_original_flight(
     }
 }
 
+/// Whether the playtest's developer meta keys (`R` reset, `F10` quit) are on.
+///
+/// Absent means on (the synthetic and free-flight playtests). The composed
+/// mission inserts `false` for the original game's default layout, where `R`
+/// is the next-non-aircraft target key and `F10` an external camera, and
+/// `true` under `--dev-keys` (PARITY2-ORIGINAL-KEYBINDINGS, #1733). `Esc`
+/// pause is the original's own key and always works.
+#[derive(bevy::prelude::Resource, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlaytestDevKeys(pub bool);
+
 /// The meta keys: `R` reset, `Esc` pause/resume, `F10` quit. They are read
 /// from Bevy's keyboard state directly because they are not flight actions.
 fn meta_controls(
+    dev_keys: Option<Res<PlaytestDevKeys>>,
     keys: Res<ButtonInput<KeyCode>>,
     mut platform: ResMut<PlatformInput>,
     mut requests: ResMut<PlaytestRequests>,
     mut state: ResMut<PlaytestState>,
     mut exit: bevy::prelude::MessageWriter<AppExit>,
 ) {
-    if keys.just_pressed(KeyCode::KeyR) {
+    let dev_keys = dev_keys.is_none_or(|flag| flag.0);
+    if dev_keys && keys.just_pressed(KeyCode::KeyR) {
         requests.reset = true;
     }
     if keys.just_pressed(KeyCode::Escape) {
@@ -553,7 +565,7 @@ fn meta_controls(
             session.pause(PauseReason::PlayerRequest);
         }
     }
-    if keys.just_pressed(KeyCode::F10) {
+    if dev_keys && keys.just_pressed(KeyCode::F10) {
         state.quit_requested = true;
         exit.write(AppExit::Success);
     }

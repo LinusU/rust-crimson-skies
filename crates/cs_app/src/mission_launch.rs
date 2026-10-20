@@ -603,6 +603,7 @@ pub fn launch_mission(request: &crate::cli::MissionRequest) -> Result<(), Missio
             crate::mission_session::MissionSmokeMode::Scripted
         },
         request.dev_overlay,
+        request.dev_keys,
     )
     .map_err(MissionLaunchError::Composition)
 }

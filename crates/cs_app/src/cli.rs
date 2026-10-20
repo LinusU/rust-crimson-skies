@@ -50,6 +50,10 @@ pub struct MissionRequest {
     /// contact list, designed-layout captions) on top of the cockpit HUD
     /// (Rally #1641 `PARITY-M01-HUD`).
     pub dev_overlay: bool,
+    /// `--dev-keys`: fly with the developer key layout instead of the
+    /// original game's default controls (Rally #1733
+    /// `PARITY2-ORIGINAL-KEYBINDINGS`).
+    pub dev_keys: bool,
 }
 
 /// What the caller asked the binary to do.
@@ -125,6 +129,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
     let mut mission: Option<String> = None;
     let mut smoke_no_teleport = false;
     let mut dev_overlay = false;
+    let mut dev_keys = false;
     let mut unknown = false;
 
     let mut index = 0;
@@ -137,6 +142,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
             "--playtest" => playtest = true,
             "--smoke-no-teleport" => smoke_no_teleport = true,
             "--dev-overlay" => dev_overlay = true,
+            "--dev-keys" => dev_keys = true,
             "--smoke-seconds" => {
                 let Some(value) = args.get(index + 1).cloned() else {
                     return CliRequest::Unsupported { args };
@@ -228,6 +234,11 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
             reason: "--dev-overlay is a flag of --cs-path <dir> --mission <id>".to_string(),
         };
     }
+    if dev_keys && mission.is_none() {
+        return CliRequest::Invalid {
+            reason: "--dev-keys is a flag of --cs-path <dir> --mission <id>".to_string(),
+        };
+    }
     if smoke_no_teleport && (mission.is_none() || smoke_seconds.is_none()) {
         return CliRequest::Invalid {
             reason: "--smoke-no-teleport is a mode of --cs-path <dir> --mission <id> \
@@ -280,6 +291,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
             smoke,
             smoke_no_teleport,
             dev_overlay,
+            dev_keys,
         });
     }
     if playtest {
@@ -458,13 +470,17 @@ WINDOWED PLAYTEST (development, not original)
         airframe and start pose come from the committed owner-static table
         data/owner-static/engine-facts.toml. Startup takes about a minute.
         M01 shows the original world, sky and weather, its actors and AI,
-        weapons (Space fires the guns, Left Ctrl a rocket), radio dialogue and
+        weapons (Space fires the guns, X a rocket; the original's default keys, F1 lists them), radio dialogue and
         music, the objective HUD and the mission triggers. See
         docs/PLAYTEST.md, section 'Original mission M01'
     --mission <id> --dev-overlay
         Also draw the developer overlay (telemetry, key help, hostile list,
         designed-layout captions). Off by default: the mission shows only the
         original-style cockpit HUD.
+    --mission <id> --dev-keys
+        Fly with the developer key layout (W/S Q/E A/D, Left Shift / F
+        throttle, R reset, F10 quit) instead of the original game's default
+        controls.
     --mission <id> --smoke-seconds <n> [--smoke-no-teleport] [--capture-dir <dir>]
         The same windowed launch driven as a scripted smoke (n >= 45
         simulated seconds): it injects keys through the real input path,

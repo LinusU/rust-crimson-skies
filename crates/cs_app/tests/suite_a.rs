@@ -196,6 +196,7 @@ mod accept_m01_smoke_c3_probes;
 mod accept_m01_smoke_no_teleport;
 mod accept_m01_window_hud_pending_objective;
 mod accept_parity2_m01_target_indicators;
+mod accept_parity2_original_keybindings;
 mod accept_parity_m01_lc_letterbox;
 mod accept_parity_m01_player_view;
 mod accept_parity_m01_player_view_c;

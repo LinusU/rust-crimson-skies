@@ -483,10 +483,10 @@ fn drive_input(capture: Res<CaptureHandle>, mut keys: ResMut<ButtonInput<KeyCode
     }
     let frame = capture.frame;
     if frame == INPUT_FROM_FRAME {
-        keys.press(KeyCode::KeyS);
+        keys.press(KeyCode::ArrowDown);
     }
     if frame == INPUT_TO_FRAME {
-        keys.release(KeyCode::KeyS);
+        keys.release(KeyCode::ArrowDown);
     }
 }
 

@@ -995,12 +995,12 @@ fn add_composition(
     visuals: bool,
 ) -> Result<(), MissionCompositionError> {
     app.add_plugins(PlaytestPlugin);
-    // PARITY2-M01-TARGET-INDICATORS (#1727): the session the playtest plugin
-    // built runs the playtest's designed map, which binds the original's
-    // measured targeting letters (Q/W/E/R/T) to flight axes. The mission
-    // composes its own map — flight on the original's arrow keys, the
-    // targeting letters left for `mint_mission_target_keys` — before the
-    // first frame, through the bindings' own swap.
+    // PARITY2-ORIGINAL-KEYBINDINGS (#1733): the session the playtest plugin
+    // built runs the playtest's developer map. The mission flies on the
+    // original game's default control table instead, swapped in before the
+    // first frame through the bindings' own swap; `--dev-keys` puts the
+    // developer layout back (`apply_developer_keys`).
+    let controls = super::original_keys::MissionControls::default();
     if let Some(mut platform) = app
         .world_mut()
         .get_resource_mut::<crate::input::platform::PlatformInput>()
@@ -1009,12 +1009,17 @@ fn add_composition(
             .session_mut()
             .collector_mut()
             .bindings_mut()
-            .set_map(super::targeting_input::mission_action_map());
+            .set_map(super::original_keys::original_mission_action_map(&controls.0));
     }
+    app.insert_resource(controls);
+    app.insert_resource(crate::playtest::PlaytestDevKeys(false));
     // The original mission's chase view, fitted to the owner's capture.
     app.insert_resource(crate::playtest::PlaytestCamera::capture_fitted());
     if visuals {
         app.add_plugins(crate::playtest::visuals::PlaytestVisualsPlugin);
+        // The F1 help screen and the pause screen list the table's real
+        // bindings (PARITY2-ORIGINAL-KEYBINDINGS, #1733).
+        app.add_plugins(super::original_keys::MissionControlsHelpPlugin);
         // The composed mission draws the sky, the sea and the fog from its
         // own environment record (#1434 `M01-PLAY-SKY`): the spec reads
         // `weather.zrd`'s bind through the stage's `EnvironmentSession`, and
@@ -1657,6 +1662,26 @@ pub fn teardown(app: &mut App) {
     world.remove_resource::<crate::mission_session::host::MissionHostRestartWatch>();
 }
 
+/// Puts the developer key layout back (`--dev-keys`): the playtest's
+/// `W/S`/`Q/E`/`A/D` flight keys, `Left Shift`/`F` throttle, the old targeting
+/// letters and the playtest's `R` reset and `F10` quit. The original layout is
+/// the default; this is the explicit opt-out.
+pub fn apply_developer_keys(app: &mut App) {
+    app.world_mut()
+        .remove_resource::<super::original_keys::MissionControls>();
+    app.insert_resource(crate::playtest::PlaytestDevKeys(true));
+    if let Some(mut platform) = app
+        .world_mut()
+        .get_resource_mut::<crate::input::platform::PlatformInput>()
+    {
+        platform
+            .session_mut()
+            .collector_mut()
+            .bindings_mut()
+            .set_map(super::targeting_input::mission_action_map());
+    }
+}
+
 /// Runs `cs --mission`: composes the window over the satisfied plan and
 /// blocks until it closes. On exit the composition is torn down, so a
 /// process that returns here leaves nothing loaded.
@@ -1679,6 +1704,7 @@ pub fn run_windowed(
     smoke: Option<&crate::playtest::SmokeRequest>,
     smoke_mode: crate::mission_session::MissionSmokeMode,
     dev_overlay: bool,
+    dev_keys: bool,
 ) -> Result<(), MissionCompositionError> {
     // A requested capture is judged before any content is read.
     let capture = crate::mission_session::CaptureSettings::from_env()
@@ -1688,6 +1714,9 @@ pub fn run_windowed(
         settings.scenario.apply(&mut stage.start);
     }
     let mut app = build_windowed(&stage)?;
+    if dev_keys {
+        apply_developer_keys(&mut app);
+    }
     // The Flight Check holds the mission until Fly Mission. A capture scenario
     // (the developer shortcuts) starts the mission directly and says so; the
     // owner-command smoke goes through the Flight Check like the owner does

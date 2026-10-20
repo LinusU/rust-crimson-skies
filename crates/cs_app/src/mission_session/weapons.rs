@@ -1557,7 +1557,16 @@ impl Plugin for MissionWeaponsPlugin {
                 // #1727) mint their edges behind the delivered ones, in the
                 // same frame the pump read.
                 super::targeting_input::mint_mission_target_keys
-                    .after(collect_mission_cockpit_actions),
+                    .after(collect_mission_cockpit_actions)
+                    .run_if(not(resource_exists::<super::original_keys::MissionControls>)),
+            )
+            .add_systems(
+                PreUpdate,
+                // The original layout (PARITY2-ORIGINAL-KEYBINDINGS, #1733)
+                // mints every modifier-sensitive key of its table instead.
+                super::original_keys::mint_original_chord_keys
+                    .after(collect_mission_cockpit_actions)
+                    .run_if(resource_exists::<super::original_keys::MissionControls>),
             )
             .add_systems(
                 FixedPostUpdate,

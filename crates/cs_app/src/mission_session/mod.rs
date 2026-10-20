@@ -108,6 +108,7 @@ mod launch_sound;
 mod letterbox;
 mod lifecycles;
 mod observation;
+mod original_keys;
 pub(crate) mod parts;
 mod player_visual;
 mod radio;
@@ -244,6 +245,11 @@ pub use smoke::{
 pub use spyglass::{
     FALLBACK_RADIUS_M, SPYGLASS_TEXTURE_PX, SpyglassCamera, SpyglassPlugin, SpyglassState,
     spyglass_fov, window_diameter_px, window_scale,
+};
+pub use original_keys::{
+    ControlsHelpOpen, ControlsHelpPanel, HELP_COMMAND_ID, MissionControls,
+    MissionControlsHelpPlugin, controls_screen_text, held_modifiers, mint_original_chord_keys,
+    original_mission_action_map, toggle_controls_help,
 };
 pub use targeting_input::{
     mint_mission_target_keys, mission_action_map, mission_crosshair, mission_selection_binding,
