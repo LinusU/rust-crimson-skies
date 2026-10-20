@@ -980,6 +980,22 @@ fn add_composition(
     visuals: bool,
 ) -> Result<(), MissionCompositionError> {
     app.add_plugins(PlaytestPlugin);
+    // PARITY2-M01-TARGET-INDICATORS (#1727): the session the playtest plugin
+    // built runs the playtest's designed map, which binds the original's
+    // measured targeting letters (Q/W/E/R/T) to flight axes. The mission
+    // composes its own map — flight on the original's arrow keys, the
+    // targeting letters left for `mint_mission_target_keys` — before the
+    // first frame, through the bindings' own swap.
+    if let Some(mut platform) = app
+        .world_mut()
+        .get_resource_mut::<crate::input::platform::PlatformInput>()
+    {
+        platform
+            .session_mut()
+            .collector_mut()
+            .bindings_mut()
+            .set_map(super::targeting_input::mission_action_map());
+    }
     // The original mission's chase view, fitted to the owner's capture.
     app.insert_resource(crate::playtest::PlaytestCamera::capture_fitted());
     if visuals {

@@ -89,6 +89,19 @@ impl InputBindings {
         &self.map
     }
 
+    /// Replaces the active action map.
+    ///
+    /// The swap takes effect on the next resolved source: held-axis devices
+    /// re-state what they drive from the new map on their next report (the
+    /// device adapters are level-triggered), and the input context is
+    /// unchanged. A composition installs its own map through this before the
+    /// first frame, never mid-press — the mission session swaps in its
+    /// original-layout map when the playtest's map it was built with binds
+    /// the measured targeting keys to flight axes (PARITY2-M01-TARGET-INDICATORS).
+    pub fn set_map(&mut self, map: ActionMap) {
+        self.map = map;
+    }
+
     /// The current input context.
     #[must_use]
     pub const fn context(&self) -> InputContext {

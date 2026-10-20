@@ -113,6 +113,7 @@ mod player_visual;
 mod radio;
 mod scenario;
 pub(crate) mod smoke;
+mod targeting_input;
 mod terminal;
 mod weapon_present;
 mod weapons;
@@ -120,14 +121,15 @@ mod world_draw;
 
 pub use actor_census::{
     CensusRow, MAX_CONTACTS, MissionActorAidPlugin, contact_list_text, nearest_hostiles,
+    spyglass_window_threshold, target_indicator_color,
 };
 pub use actor_visual::{
     ACTOR_MODEL_CLAIM, ActorVisualDrawn, MissionActorVisuals, attach_actor_visuals,
     build_actor_visuals,
 };
 pub use cockpit_hud::{
-    MissionCockpitHudPlugin, clock_hour, compass_strip, damage_fraction, damage_tint, marker_text,
-    safe_area,
+    MissionCockpitHudPlugin, OBJECTIVE_BLUE, clock_hour, compass_strip, damage_fraction,
+    damage_tint, marker_text, safe_area,
 };
 pub use compose::{
     MissionComposition, MissionCompositionError, MissionPlayerBody, MissionPlayerStart,
@@ -232,9 +234,13 @@ pub use smoke::{
     MIN_OBJECTIVE_TEXT_PIXELS, MIN_SEA_COVERAGE_PERMILLE, MIN_TERRAIN_DETAIL_PERMILLE,
     MIN_TERRAIN_DISTINCT_COLOURS, MIN_TERRAIN_LUMINANCE_SPREAD, MISSION_SMOKE_FRAME_HZ,
     MissionSmokeHandle, MissionSmokeMode, MissionSmokePlugin, MissionSmokeReport, RocketMetrics,
-    SMOKE_KIND, SMOKE_REPORT_FILE, SeaMetrics, SmokeMeasurements, TerrainMetrics,
+    SMOKE_KIND, SMOKE_REPORT_FILE, SeaMetrics, SmokeMeasurements, TargetingMetrics, TerrainMetrics,
     WINGMAN_SAMPLE_SECONDS, WingmanSample, evaluate as evaluate_mission_smoke,
     finish as finish_mission_smoke, near_terrain_luminance, objective_line_of, region_difference,
+};
+pub use targeting_input::{
+    mint_mission_target_keys, mission_action_map, mission_crosshair, mission_selection_binding,
+    original_target_command, sync_mission_target_poses,
 };
 pub use terminal::{MissionExit, MissionTerminal, MissionTerminalSource};
 pub use weapon_present::{
