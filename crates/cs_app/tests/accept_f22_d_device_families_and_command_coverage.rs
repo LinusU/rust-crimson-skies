@@ -381,15 +381,33 @@ fn accept_f22_d_every_declared_device_family_drives_the_simulation() {
 #[test]
 fn accept_f22_d_every_declared_flight_command_reaches_the_consumer() {
     let map = ActionMap::designed_default();
+    // PARITY2-M01-TARGET-INDICATORS (#1727): the original's eleven targeting
+    // commands carry `Shift`/`Ctrl` chords a `BindingSource` cannot express,
+    // so the mission session mints their edges from the raw keyboard state
+    // (`mint_mission_target_keys`) rather than binding a source. The set the
+    // mint serves is the production `mission_selection_binding`'s own, so a
+    // command dropped from that binding is a coverage hole again.
+    let mission_minted: Vec<FlightCommand> = cs_app::mission_session::mission_selection_binding()
+        .bindings()
+        .map(|(command, _)| command)
+        .collect();
+    assert_eq!(
+        mission_minted,
+        FlightCommand::ORIGINAL_TARGETING,
+        "the mission's mint covers exactly the declared original targeting commands"
+    );
     let mut exercised: Vec<FlightCommand> = Vec::new();
 
     for command in FlightCommand::ALL {
-        let binding = binding_for(&map, *command).unwrap_or_else(|| {
-            panic!(
-                "the declared command {command} has no source in the designed default \
-                 map, so nothing can reach the consumer with it"
-            )
-        });
+        let Some(binding) = binding_for(&map, *command) else {
+            assert!(
+                mission_minted.contains(command),
+                "the declared command {command} has no source in the designed default map and \
+                 the mission's measured target mint binds no row for it, so nothing can reach \
+                 the consumer with it"
+            );
+            continue;
+        };
         let source = binding.source;
         let mut session = session();
 
@@ -467,8 +485,13 @@ fn accept_f22_d_every_declared_flight_command_reaches_the_consumer() {
 
     assert_eq!(
         exercised,
-        FlightCommand::ALL,
-        "every declared flight command was exercised, in the vocabulary's own order"
+        FlightCommand::ALL
+            .iter()
+            .copied()
+            .filter(|command| binding_for(&map, *command).is_some())
+            .collect::<Vec<_>>(),
+        "every command the designed map sources was exercised, in the vocabulary's own order; \
+         the mission-minted targeting commands reach the consumer through #1727's raw-key seam"
     );
 }
 
