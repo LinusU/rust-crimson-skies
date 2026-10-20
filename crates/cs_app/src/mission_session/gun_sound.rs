@@ -40,9 +40,9 @@ use super::launch_sound::{LAUNCH_SOUND_CONTAINER, member_content_id, reader_memb
 use crate::engine_facts::{EngineFactsError, FlightCheckPlaneSlot, engine_facts};
 
 /// The reader archive holding `weapons.zrd` and `sounds.zrd`.
-const READER_ARCHIVE: &str = "ZBD/zrdr.zbd";
+pub(super) const READER_ARCHIVE: &str = "ZBD/zrdr.zbd";
 /// The member holding the ballistics records.
-const WEAPONS_MEMBER: &str = "weapons.zrd";
+pub(super) const WEAPONS_MEMBER: &str = "weapons.zrd";
 /// The member mapping sound groups to archive members.
 const SOUNDS_MEMBER: &str = "sounds.zrd";
 /// The weapon-record field naming the gun's sound group.
@@ -82,7 +82,7 @@ impl fmt::Display for WeaponSoundError {
 impl std::error::Error for WeaponSoundError {}
 
 /// The value following `key` in the first list that holds it as a key.
-fn value_of<'a>(node: &'a ZrdValue, key: &str) -> Option<&'a ZrdValue> {
+pub(super) fn value_of<'a>(node: &'a ZrdValue, key: &str) -> Option<&'a ZrdValue> {
     let children = node.as_list()?;
     for (index, child) in children.iter().enumerate() {
         if child.as_text() == Some(key)

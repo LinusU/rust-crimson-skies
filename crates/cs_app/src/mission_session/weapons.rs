@@ -69,6 +69,7 @@ use cs_types::input::{Action, FlightCommand};
 use cs_types::net::SessionId;
 use cs_types::space::{Radians, WorldPosition};
 
+use super::weapon_counts::OriginalWeaponCounts;
 use crate::damage::{DamageActorBinding, PendingDamageEvents};
 use crate::input::platform::PlatformInput;
 use crate::ordnance::{
@@ -322,6 +323,13 @@ pub fn rocket_content_id() -> ContentId {
 /// original's.
 #[must_use]
 pub fn designed_rocket() -> DeclaredOrdnance {
+    designed_rocket_with_capacity(MISSION_ROCKET_CAPACITY)
+}
+
+/// [`designed_rocket`] with its stack capacity replaced, for the capacity the
+/// original's data states (PARITY2-M01-HUD-VALUES, #1732).
+#[must_use]
+pub fn designed_rocket_with_capacity(capacity_units: u64) -> DeclaredOrdnance {
     let projectile = DeclaredProjectile {
         launch: DeclaredLaunchGeometry {
             mount: DamageNodeKey::new(MISSION_ROCKET_MOUNT)
@@ -332,7 +340,7 @@ pub fn designed_rocket() -> DeclaredOrdnance {
             release_delay_ticks: known(0),
         },
         stack: DeclaredStackLoad {
-            capacity_units: known(MISSION_ROCKET_CAPACITY),
+            capacity_units: known(capacity_units),
             unit_mass_kg: known(MISSION_ROCKET_MASS_KG),
         },
         arming: DeclaredArmingRule::AfterTicks(known(MISSION_ROCKET_ARM_TICKS)),
@@ -504,6 +512,23 @@ pub fn open_mission_weapons(
     rate: TickRate,
     generation: SceneGeneration,
 ) -> Result<MissionWeaponSessions, MissionWeaponError> {
+    open_mission_weapons_with(session, rate, generation, None)
+}
+
+/// [`open_mission_weapons`] with the starting counts the original's data
+/// states: every gun starts with `gun_rounds` (the selected record's
+/// `AMMO_LIMIT`) and the rocket stack holds `rocket_stack`. `None` keeps the
+/// designed counts.
+///
+/// # Errors
+///
+/// As [`open_mission_weapons`].
+pub fn open_mission_weapons_with(
+    session: SessionId,
+    rate: TickRate,
+    generation: SceneGeneration,
+    counts: Option<OriginalWeaponCounts>,
+) -> Result<MissionWeaponSessions, MissionWeaponError> {
     let loadout = designed_loadout();
     let player = ActorId {
         session,
@@ -516,14 +541,15 @@ pub fn open_mission_weapons(
             player,
             &loadout.guns,
             loadout.bank.clone(),
-            MISSION_STARTING_ROUNDS,
+            counts.map_or(MISSION_STARTING_ROUNDS, |c| c.gun_rounds),
         )
         .map_err(|error| MissionWeaponError::Weapons(error.to_string()))?;
 
     // The rocket path: the designed component is lowered into the supported
     // catalogue and registered for the player, exactly as a measured one
     // would be.
-    let rocket = designed_rocket();
+    let rocket =
+        designed_rocket_with_capacity(counts.map_or(MISSION_ROCKET_CAPACITY, |c| c.rocket_stack));
     let mut catalogue = OrdnanceRegistry::new();
     let component =
         lower_ordnance(&rocket).map_err(|error| MissionWeaponError::Weapons(error.to_string()))?;
@@ -1403,7 +1429,10 @@ pub fn open_composed_mission_weapons(world: &mut World) {
         .unwrap_or(SceneGeneration(1));
     let rate = TickRate::new(crate::mission_world_actors::SESSION_TICKS_PER_SECOND)
         .expect("the composition's tick rate is nonzero");
-    match open_mission_weapons(session, rate, generation) {
+    let counts = world
+        .get_resource::<super::MissionStage>()
+        .and_then(|stage| stage.weapon_counts);
+    match open_mission_weapons_with(session, rate, generation, counts) {
         Ok(sessions) => {
             let _ = sessions.install(world);
             let player = world

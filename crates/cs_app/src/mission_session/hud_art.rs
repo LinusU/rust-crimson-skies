@@ -1119,14 +1119,15 @@ pub fn update_hud_art(
     let rocket_capacity: u64 = rows
         .as_deref()
         .map_or(0, |rows| rows.iter().map(|row| row.capacity_units).sum());
-    let rounds = gauge.as_ref().map_or(0, |gauge| gauge.selected_rounds);
+    let rounds = gauge
+        .as_ref()
+        .map_or(0, super::cockpit_hud::current_gun_rounds);
     let gun_capacity: u64 = gauge.as_ref().map_or(0, |gauge| {
         gauge
             .guns
             .iter()
-            .filter(|gun| gun.selected)
-            .map(|gun| gun.rounds.max(1))
-            .sum()
+            .find(|gun| gun.selected)
+            .map_or(0, |gun| gun.rounds.max(1))
     });
     let ordnance_name = rows
         .as_deref()

@@ -114,6 +114,7 @@ use super::player_visual::{
     MissionPlayerVisual, PlayerAirframeSource, build_player_visual, spawn_player_visual,
 };
 use super::radio::{MissionRadio, declared_sound_groups};
+use super::weapon_counts::{OriginalWeaponCounts, WeaponCountsError, measure_weapon_counts};
 use super::world_draw::{
     MissionWorldDrawPlugin, MissionWorldParts, WorldDrawSource, bind_sea_to_world_water,
     build_world_draw,
@@ -272,6 +273,11 @@ pub struct MissionStage {
     /// saved campaign's persisted loadout is unmeasured. The synthetic
     /// acceptance stages set `None`.
     pub gun_sound: Option<GunSound>,
+    /// The starting gun rounds and rocket stack the original's HUD shows
+    /// (PARITY2-M01-HUD-VALUES, #1732), read from `weapons.zrd`. `Some` only
+    /// for M01's retail stage, like [`Self::gun_sound`]: it is the
+    /// fresh-campaign loadout's. `None` keeps the designed counts.
+    pub weapon_counts: Option<OriginalWeaponCounts>,
     /// The measured length of the launch cinematic that holds the player's
     /// control after Fly Mission (#1663). `None` for a stage with no launch
     /// cinematic: every synthetic stage and every mission but M01.
@@ -376,6 +382,8 @@ pub enum MissionCompositionError {
     /// declared record could not be built (M01-WINDOW-FIRE-GUN-LOADOUT,
     /// #1628).
     GunSound(GunSoundError),
+    /// `weapons.zrd` did not state the starting weapon counts.
+    WeaponCounts(WeaponCountsError),
     /// The mission's sound-group table or a member it names could not be read
     /// for the radio dialogue ([`super::radio`]).
     Radio(super::radio::RadioError),
@@ -420,6 +428,7 @@ impl fmt::Display for MissionCompositionError {
             Self::Capture(refusal) => write!(f, "{refusal}"),
             Self::LaunchSound(error) => write!(f, "{error}"),
             Self::GunSound(error) => write!(f, "{error}"),
+            Self::WeaponCounts(error) => write!(f, "{error}"),
             Self::Audio(error) if error.code == crate::audio::CODE_CAPABILITY_ABSENT => write!(
                 f,
                 "add audio to CS_CAPABILITIES, e.g. CS_CAPABILITIES=retail,gpu,audio\n  \
@@ -564,6 +573,11 @@ pub fn stage_for(
             measure_gun_sound(install_root, &content.sound_archives)
                 .map_err(MissionCompositionError::GunSound)?,
         )
+    } else {
+        None
+    };
+    let weapon_counts = if plan.mission_dir.eq_ignore_ascii_case("zbd/c3/m01") {
+        Some(measure_weapon_counts(install_root).map_err(MissionCompositionError::WeaponCounts)?)
     } else {
         None
     };
@@ -738,6 +752,7 @@ pub fn stage_for(
             .map_err(MissionCompositionError::LaunchSound)?,
         ),
         gun_sound,
+        weapon_counts,
         launch_cinematic,
         label: MISSION_COMPOSITION_LABEL.to_owned(),
         cache_root: Path::new(DEFAULT_MISSION_CACHE_DIR).to_path_buf(),

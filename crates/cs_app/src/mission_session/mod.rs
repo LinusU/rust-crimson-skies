@@ -115,6 +115,7 @@ mod scenario;
 pub(crate) mod smoke;
 mod targeting_input;
 mod terminal;
+mod weapon_counts;
 mod weapon_present;
 mod weapons;
 mod world_draw;
@@ -243,6 +244,10 @@ pub use targeting_input::{
     original_target_command, sync_mission_target_poses,
 };
 pub use terminal::{MissionExit, MissionTerminal, MissionTerminalSource};
+pub use weapon_counts::{
+    OriginalWeaponCounts, SELECTED_GUN_RECORD, SELECTED_ROCKET_RECORD, WeaponCountsError,
+    counts_from_document, measure_weapon_counts,
+};
 pub use weapon_present::{
     MISSION_WEAPON_VISUAL_CLAIM, MUZZLE_FLASH_LIFETIME_TICKS, MUZZLE_FLASH_VISUAL_CLAIM,
     MissionHudNotice, MissionNoticeHudPlugin, MissionNoticeLine, MissionWeaponPresentationPlugin,
@@ -258,10 +263,11 @@ pub use weapons::{
     MissionWeaponReport, MissionWeaponSessions, MissionWeapons, MissionWeaponsPlugin, MissionWind,
     admit_actor, attach_gun_rig, attach_player_rig, collect_mission_cockpit_actions,
     compose_mission_mount_poses, designed_ammunition, designed_interaction_rules, designed_loadout,
-    designed_rocket, designed_target_rules, drive_mission_ordnance, ensure_mission_weapons,
-    gun_hold_due, guns_key_held, is_fire_guns, is_fire_rockets, mission_ammunition,
-    mission_ammunition_id, mission_tick_input, mission_wind, open_composed_mission_weapons,
-    open_mission_weapons, publish_mission_weapon_input, rocket_content_id,
+    designed_rocket, designed_rocket_with_capacity, designed_target_rules, drive_mission_ordnance,
+    ensure_mission_weapons, gun_hold_due, guns_key_held, is_fire_guns, is_fire_rockets,
+    mission_ammunition, mission_ammunition_id, mission_tick_input, mission_wind,
+    open_composed_mission_weapons, open_mission_weapons, open_mission_weapons_with,
+    publish_mission_weapon_input, rocket_content_id,
 };
 pub use world_draw::{
     HORIZON_SUBTREE_LABEL, HorizonRest, HorizonSubtree, MissionWorldDrawPlugin, MissionWorldParts,

@@ -300,6 +300,7 @@ pub(crate) fn synthetic_stage(scratch: &Path) -> MissionStage {
         // No installation, no sound archive: the synthetic stage installs no audio.
         launch_sound: None,
         gun_sound: None,
+        weapon_counts: None,
         launch_cinematic: None,
         label: "SYNTHETIC MISSION COMPOSITION".to_owned(),
         cache_root: scratch.join("cache"),

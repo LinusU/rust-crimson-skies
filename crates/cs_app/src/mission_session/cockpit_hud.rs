@@ -268,6 +268,21 @@ pub struct CockpitValues {
     pub damage: f32,
 }
 
+/// The rounds of the current gun: the first selected mount, in registration
+/// order (the nose gun, `wep_50`).
+///
+/// The original's GUNS count at first control is 2000, one `wep_50`
+/// `AMMO_LIMIT` (PARITY2-M01-HUD-VALUES, #1732), not the sum over the three
+/// guns [`WeaponGauge::selected_rounds`] adds up. How the original shares or
+/// splits ammunition between the guns is unmeasured.
+pub(crate) fn current_gun_rounds(gauge: &crate::ui::hud::WeaponGauge) -> u64 {
+    gauge
+        .guns
+        .iter()
+        .find(|gun| gun.selected)
+        .map_or(0, |gun| gun.rounds)
+}
+
 /// Reads the values from the session authorities and the telemetry.
 fn read_values(
     state: &PlaytestState,
@@ -291,7 +306,7 @@ fn read_values(
     // A foreign-generation authority is refused by the gather; the gauge then
     // shows no count rather than another session's.
     if let Ok(Some(gauge)) = weapon_gauge(weapons, session, actor) {
-        values.rounds = Some(gauge.selected_rounds);
+        values.rounds = Some(current_gun_rounds(&gauge));
     }
     if let Ok(Some(rows)) = ordnance_rows(ordnance.map(|o| &o.0), session, actor) {
         values.rockets = Some(rows.iter().map(|row| row.remaining_units).sum());
