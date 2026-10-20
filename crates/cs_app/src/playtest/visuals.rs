@@ -188,6 +188,11 @@ fn window_camera() -> impl Bundle {
             ..PerspectiveProjection::default()
         }),
         WINDOW_MSAA,
+        // Overlay passes (the mission HUD art camera, order 1) would otherwise
+        // become Bevy's default UI camera — the highest-order camera on the
+        // primary window — and take the letterbox bars, the flight-check panel
+        // and the HUD text down with them whenever the pass is held.
+        bevy::ui::IsDefaultUiCamera,
     )
 }
 
