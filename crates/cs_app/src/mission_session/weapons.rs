@@ -64,12 +64,12 @@ use cs_sim::time::TickRate;
 use cs_sim::weapons::{GunBank, OrdnanceId, OrdnanceRegistry, StatusEffectTarget, TargetPath};
 use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind, Known, Origin, Provenance, Resolved};
-use cs_types::evidence::ClaimId;
+use cs_types::evidence::{ClaimId, ClaimStatus};
 use cs_types::input::{Action, FlightCommand};
 use cs_types::net::SessionId;
 use cs_types::space::{Radians, WorldPosition};
 
-use super::weapon_counts::OriginalWeaponCounts;
+use super::weapon_counts::{OriginalGunRecord, OriginalWeaponCounts};
 use crate::damage::{DamageActorBinding, PendingDamageEvents};
 use crate::input::platform::PlatformInput;
 use crate::ordnance::{
@@ -88,6 +88,10 @@ use crate::weapons::{
 /// The claim every designed M01 weapon record carries: the loadout is project
 /// design, not a measurement of the original.
 pub const MISSION_WEAPON_CLAIM: &str = "m01-play-weapons.designed-loadout";
+
+/// The claim the numbers read from the selected gun's `weapons.zrd` record
+/// bind under (Rally #1742).
+pub const MISSION_GUN_RECORD_CLAIM: &str = "m01-guns-and-rockets.selected-gun-record";
 
 /// The claim the designed calm-air fallback binds under, when the mission's
 /// authored wind is an explicit unknown.
@@ -182,6 +186,66 @@ pub struct MissionLoadout {
 
 /// Builds the designed gun for `mount` of `kind`.
 fn designed_gun(mount: &str, kind: DeclaredGunMountKind, key: &str) -> DeclaredGunDefinition {
+    gun_with(mount, kind, key, &GunNumbers::designed())
+}
+
+/// The numbers one declared gun carries, and how they are labelled.
+struct GunNumbers {
+    ticks_between_shots: u32,
+    muzzle_velocity_mps: f64,
+    lifetime_ticks: u64,
+    armor: f64,
+    internal: f64,
+    /// Whether the numbers were read from the installation's gun record.
+    measured: bool,
+}
+
+impl GunNumbers {
+    const fn designed() -> Self {
+        Self {
+            ticks_between_shots: MISSION_TICKS_BETWEEN_SHOTS,
+            muzzle_velocity_mps: MISSION_MUZZLE_VELOCITY_MPS,
+            lifetime_ticks: MISSION_LIFETIME_TICKS,
+            armor: MISSION_ARMOR_DAMAGE,
+            internal: MISSION_INTERNAL_DAMAGE,
+            measured: false,
+        }
+    }
+
+    /// The selected gun's record, at `ticks_per_second` fixed ticks a second.
+    fn from_record(record: &OriginalGunRecord, ticks_per_second: u32) -> Self {
+        let hz = f64::from(ticks_per_second);
+        Self {
+            ticks_between_shots: ((hz / record.fire_rate_per_s).round() as u32).max(1),
+            muzzle_velocity_mps: record.velocity_mps,
+            lifetime_ticks: ((record.range_m / record.velocity_mps * hz).ceil() as u64).max(1),
+            armor: record.armor_damage,
+            internal: record.health_damage,
+            measured: true,
+        }
+    }
+
+    /// A value of this gun, labelled by where it came from.
+    fn value<T>(&self, value: T) -> Resolved<T> {
+        if !self.measured {
+            return known(value);
+        }
+        let provenance = Provenance::new(
+            ClaimId::new(MISSION_GUN_RECORD_CLAIM).expect("the claim id is valid"),
+            ClaimStatus::ObservedTool,
+            None,
+        )
+        .expect("an observed-tool provenance needs no source");
+        Resolved::Known(Known::new(value, provenance))
+    }
+}
+
+fn gun_with(
+    mount: &str,
+    kind: DeclaredGunMountKind,
+    key: &str,
+    numbers: &GunNumbers,
+) -> DeclaredGunDefinition {
     DeclaredGunDefinition::try_new(
         ContentId::from_source(ContentKind::Weapon, key).expect("the gun id is valid"),
         Origin::Designed,
@@ -190,17 +254,17 @@ fn designed_gun(mount: &str, kind: DeclaredGunMountKind, key: &str) -> DeclaredG
         None,
         known(DeclaredCaliber::try_new(MISSION_CALIBER).expect("the caliber text is valid")),
         known(mission_ammunition()),
-        known(DeclaredGunRate {
-            ticks_between_shots: MISSION_TICKS_BETWEEN_SHOTS,
+        numbers.value(DeclaredGunRate {
+            ticks_between_shots: numbers.ticks_between_shots,
         }),
-        known(MISSION_MUZZLE_VELOCITY_MPS),
-        known(MISSION_LIFETIME_TICKS),
+        numbers.value(numbers.muzzle_velocity_mps),
+        numbers.value(numbers.lifetime_ticks),
         DeclaredSpreadCone {
             half_angle: known(Radians(MISSION_SPREAD_HALF_ANGLE_RAD)),
         },
         DeclaredWeaponDamage {
-            armor: known(MISSION_ARMOR_DAMAGE),
-            internal: known(MISSION_INTERNAL_DAMAGE),
+            armor: numbers.value(numbers.armor),
+            internal: numbers.value(numbers.internal),
         },
         known(DeclaredInheritanceRule::Full),
         known(
@@ -304,6 +368,30 @@ pub fn designed_loadout() -> MissionLoadout {
             loadout: ContentId::from_source(ContentKind::Loadout, MISSION_LOADOUT_KEY)
                 .expect("the loadout id is valid"),
         },
+    }
+}
+
+/// The player's M01 gun loadout when the selected gun's record is read
+/// (Rally #1742): **one** gun — the engine's current-gun selector keeps the
+/// first slot, `wep_50` — firing at that record's own rate, speed, range and
+/// damage. The original's HUD counts one gun's `AMMO_LIMIT` down (2000 to 1980
+/// over a short hold in the owner's capture), so the two wing guns the
+/// designed loadout adds are not part of it. The mount, the caliber text and
+/// the spread stay designed.
+#[must_use]
+pub fn selected_gun_loadout(record: &OriginalGunRecord, ticks_per_second: u32) -> MissionLoadout {
+    let numbers = GunNumbers::from_record(record, ticks_per_second);
+    let designed = designed_loadout();
+    let mount = DamageNodeKey::new(MISSION_GUN_MOUNT_NOSE).expect("the nose mount key is valid");
+    MissionLoadout {
+        guns: vec![gun_with(
+            MISSION_GUN_MOUNT_NOSE,
+            DeclaredGunMountKind::Nose,
+            MISSION_GUN_NOSE_KEY,
+            &numbers,
+        )],
+        bank: GunBank::try_new([mount]).expect("the bank names its mount"),
+        ids: designed.ids,
     }
 }
 
@@ -422,8 +510,9 @@ pub fn designed_target_rules() -> DeclaredTargetRules {
 /// The player's live weapon session: the generation, the actor, the scene
 /// generation the rig's mounts are stamped with, and the rocket the launcher
 /// fires.
-#[derive(Resource, Clone, Debug, PartialEq, Eq)]
+#[derive(Resource, Clone, Debug, PartialEq)]
 pub struct MissionWeapons {
+    loadout: MissionLoadout,
     session: SessionId,
     player: ActorId,
     generation: SceneGeneration,
@@ -529,7 +618,9 @@ pub fn open_mission_weapons_with(
     generation: SceneGeneration,
     counts: Option<OriginalWeaponCounts>,
 ) -> Result<MissionWeaponSessions, MissionWeaponError> {
-    let loadout = designed_loadout();
+    let loadout = counts.map_or_else(designed_loadout, |c| {
+        selected_gun_loadout(&c.gun, rate.ticks_per_second())
+    });
     let player = ActorId {
         session,
         serial: MISSION_PLAYER_SERIAL,
@@ -596,6 +687,7 @@ pub fn open_mission_weapons_with(
 
     Ok(MissionWeaponSessions {
         mission: MissionWeapons {
+            loadout,
             session,
             player,
             generation,
@@ -719,7 +811,7 @@ pub fn attach_player_rig(world: &mut World, player: Entity) -> Result<usize, Mis
         .get_resource::<MissionWeapons>()
         .cloned()
         .ok_or(MissionWeaponError::NotInstalled)?;
-    let loadout = designed_loadout();
+    let loadout = mission.loadout.clone();
     if world.get_entity(player).is_err() {
         return Err(MissionWeaponError::NoPlayer);
     }

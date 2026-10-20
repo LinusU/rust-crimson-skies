@@ -259,8 +259,8 @@ pub use targeting_input::{
 };
 pub use terminal::{MissionExit, MissionTerminal, MissionTerminalSource};
 pub use weapon_counts::{
-    OriginalWeaponCounts, SELECTED_GUN_RECORD, SELECTED_ROCKET_RECORD, WeaponCountsError,
-    counts_from_document, measure_weapon_counts,
+    OriginalGunRecord, OriginalWeaponCounts, SELECTED_GUN_RECORD, SELECTED_ROCKET_RECORD,
+    WeaponCountsError, counts_from_document, measure_weapon_counts,
 };
 pub use weapon_present::{
     MISSION_WEAPON_VISUAL_CLAIM, MUZZLE_FLASH_LIFETIME_TICKS, MUZZLE_FLASH_VISUAL_CLAIM,
@@ -281,7 +281,7 @@ pub use weapons::{
     ensure_mission_weapons, gun_hold_due, guns_key_held, is_fire_guns, is_fire_rockets,
     mission_ammunition, mission_ammunition_id, mission_tick_input, mission_wind,
     open_composed_mission_weapons, open_mission_weapons, open_mission_weapons_with,
-    publish_mission_weapon_input, rocket_content_id,
+    publish_mission_weapon_input, rocket_content_id, selected_gun_loadout,
 };
 pub use world_draw::{
     HORIZON_SUBTREE_LABEL, HorizonRest, HorizonSubtree, MissionWorldDrawPlugin, MissionWorldParts,

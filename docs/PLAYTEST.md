@@ -395,15 +395,13 @@ the input session and stops firing too.
   (`mission_session::weapon_present`, designed layout) instead of the mission
   silently doing nothing.
 
-**What firing draws (#1536).** A round's ECS mirror now carries a drawn child:
-a bright unlit streak spanning the segment the round actually flew since the
-last drawn frame, so a held trigger reads as a stream of tracers. A launched
-rocket's mirror carries a drawn body oriented along its own flight path. Both
-are **designed** visuals (`m01-window-fire.designed-visuals`): the original's
-sprites, sizes and colours were not recovered, and the mirror carries no
-measured orientation. The pose is not invented — every streak comes from the
-authoritative runtime position, and a mirror the schedule despawns takes its
-drawing with it.
+**What firing draws (#1536, #1742).** A round's ECS mirror carries **no**
+drawn child: the owner's capture of the original shows no tracer streaks for a
+held trigger (#1742), so slugs are not drawn. A launched rocket's mirror
+carries a drawn body oriented along its own flight path, a **designed** visual
+(`m01-window-fire.designed-visuals`): the original's sprites, sizes and colours
+were not recovered, and the mirror carries no measured orientation. A mirror
+the schedule despawns takes its drawing with it.
 
 **Firing is still silent.** A shot's sound id (`m01-play-weapons.designed-shot`)
 has no declared record and no measured binding to any sound member, so the
@@ -497,7 +495,7 @@ exits **non-zero when any check fails**:
 | `hud_objective_matches` | the drawn line differs from the read model's, or its own region holds under 64 text pixels |
 | `actors_project_and_cover` | any spawned actor is off screen or covers under 8 pixels from its placement (each member with no drawn entity at all is named in the report) |
 | `weapon_guns_fire` | the held second sent under two rounds through the mission's weapon session |
-| `weapon_rounds_drawn` | a live round entity carries no mesh — a shot the player cannot see |
+| `weapon_rounds_not_drawn` | a live round entity carries a mesh — a tracer the original's capture does not show (#1742) |
 | `weapon_muzzle_flash_drawn` | no muzzle-effect record was live during the held second, or one carried no drawn flash (a designed stand-in, #1595) |
 | `weapon_rocket_launches` | `X` beside a declared-hostile actor launched no rocket |
 | `audio_radio_queued` | no radio line ever reached the queue or the mixer |

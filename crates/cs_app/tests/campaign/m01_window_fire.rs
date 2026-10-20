@@ -28,13 +28,13 @@
 
 use bevy::input::ButtonInput;
 use bevy::input::keyboard::KeyCode;
-use bevy::prelude::{App, ChildOf, Entity, Mesh3d, MeshMaterial3d, StandardMaterial, Transform};
+use bevy::prelude::{App, ChildOf, Children, Entity, Mesh3d};
 
 use cs_app::input::platform::PlatformInput;
 use cs_app::mission_session::{
     MissionCockpitActions, MissionComposition, MissionGunHold, MissionHudNotice,
-    MissionWeaponReport, MissionWeapons, WeaponVisual, WeaponVisualKind, WeaponVisualSample,
-    build_headless, is_fire_guns, teardown,
+    MissionWeaponReport, MissionWeapons, WeaponVisual, WeaponVisualKind, build_headless,
+    is_fire_guns, teardown,
 };
 use cs_app::ordnance::OrdnanceItemMirror;
 use cs_app::weapons::WeaponRoundMirror;
@@ -77,11 +77,6 @@ fn rounds(app: &App) -> usize {
         .iter_entities()
         .filter(|entity| entity.contains::<WeaponRoundMirror>())
         .count()
-}
-
-/// Every drawn tracer entity in the world.
-fn tracers(app: &App) -> Vec<Entity> {
-    visuals(app, WeaponVisualKind::RoundTracer)
 }
 
 /// Every drawn rocket body in the world.
@@ -228,17 +223,10 @@ fn accept_m01_window_fire_holding_the_guns_key_fires_at_the_declared_rate() {
     teardown(&mut app);
 }
 
-/// **Every live round is drawn: each round mirror carries one tracer streak,
-/// and the streak spans the distance the round actually travelled.**
-///
-/// Before this task nothing read [`WeaponRoundMirror`] for presentation, so a
-/// fired round was an entity nobody drew — the owner's "no tracers, no
-/// projectiles". The streak is a designed visual (its colour, width and
-/// length bounds are project design under `m01-window-fire.designed-visuals`),
-/// but its pose is not invented: it spans the segment the authoritative
-/// runtime flew since the last drawn frame.
+/// **A live round is not drawn: the owner's capture of the original shows no
+/// tracer streaks for a held trigger, so a round's mirror carries no mesh.**
 #[test]
-fn accept_m01_window_fire_every_live_round_draws_a_tracer_streak() {
+fn accept_m01_window_fire_a_live_round_draws_no_tracer() {
     let (_scratch, mut app) = composed("m01-window-fire-tracers");
 
     press(&mut app, KeyCode::Space);
@@ -249,52 +237,23 @@ fn accept_m01_window_fire_every_live_round_draws_a_tracer_streak() {
     app.update();
 
     let live = rounds(&app);
-    assert!(live >= 2, "the held key left live rounds to draw: {live}");
-    let drawn = tracers(&app);
-    assert_eq!(
-        drawn.len(),
-        live,
-        "every live round carries exactly one tracer (rounds={live}, tracers={})",
-        drawn.len()
-    );
-
+    assert!(live >= 1, "the held key left live rounds to check: {live}");
     let world = app.world();
-    for tracer in &drawn {
-        let parent = world
-            .get::<ChildOf>(*tracer)
-            .map(|child_of| child_of.0)
-            .expect("the tracer is parented to its round");
+    for entity in world
+        .iter_entities()
+        .filter(|entity| entity.contains::<WeaponRoundMirror>())
+    {
         assert!(
-            world.get::<WeaponRoundMirror>(parent).is_some(),
-            "the tracer is drawn under the round it draws"
+            entity.get::<Mesh3d>().is_none(),
+            "a round mirror carries no mesh itself"
         );
         assert!(
-            world.get::<Mesh3d>(*tracer).is_some(),
-            "the tracer carries drawable geometry"
-        );
-        assert!(
-            world
-                .get::<MeshMaterial3d<StandardMaterial>>(*tracer)
-                .is_some(),
-            "the tracer carries a material"
-        );
-        assert!(
-            world.get::<WeaponVisualSample>(parent).is_some(),
-            "the round samples its own motion for the streak's direction"
+            entity.get::<Children>().is_none_or(|children| children
+                .iter()
+                .all(|child| world.get::<Mesh3d>(*child).is_none())),
+            "a round mirror owns no drawn child"
         );
     }
-
-    // After more than one drawn frame the streak spans measured travel, so it
-    // reads as a tracer and not as a dot parked in the sky.
-    let streaked = drawn.iter().any(|tracer| {
-        world
-            .get::<Transform>(*tracer)
-            .is_some_and(|transform| transform.scale.z > 1.0)
-    });
-    assert!(
-        streaked,
-        "a tracer spans the round's travelled segment: {drawn:?}"
-    );
     teardown(&mut app);
 }
 

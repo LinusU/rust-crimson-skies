@@ -32,7 +32,7 @@
 //! | `hud_objective_matches` | the drawn line equals the read model's current line, and its pixels are on screen |
 //! | `actors_project_and_cover` | every spawned actor projects onto the screen and covers more than `MIN_ACTOR_PIXELS` |
 //! | `weapon_guns_fire` | holding `Space` for a second sends more than one round through the mission's weapon session |
-//! | `weapon_rounds_drawn` | every live round entity carries a mesh, i.e. a tracer the player can see |
+//! | `weapon_rounds_not_drawn` | no live round entity carries a mesh: the original's capture shows no tracer streaks |
 //! | `weapon_muzzle_flash_drawn` | every muzzle-effect record seen during the hold carries a drawn flash, and at least one was seen |
 //! | `weapon_rocket_launches` | `X` — the original's secondary-fire row — near a declared-hostile actor launches a rocket |
 //! | `audio_radio_queued` | a radio line reached the audio queue or the mixer |
@@ -1123,17 +1123,19 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
         ),
     });
     checks.push(Check {
-        id: "weapon_rounds_drawn".to_owned(),
+        id: "weapon_rounds_not_drawn".to_owned(),
         applies: true,
-        passed: m.guns.rounds_drawn == Some(true),
+        passed: m.guns.rounds_drawn == Some(false),
         detail: match (m.guns.rounds_drawn, m.guns.rounds_examined) {
-            (Some(true), examined) => format!("all {examined} live rounds carry a mesh"),
             (Some(false), examined) => format!(
-                "{examined} live round entities carry no mesh, so a shot draws no tracer the \
-                 player can see (F27-C-FX-SCHED #1304)"
+                "{examined} live round entities carry no mesh, as the original's capture shows \
+                 no tracer streaks for the guns (#1742)"
             ),
+            (Some(true), _) => "a live round carries a mesh, so a shot draws a tracer the \
+                 original's capture does not show (#1742)"
+                .to_owned(),
             (None, _) => {
-                "no round was live at the firing frame, so nothing could be drawn".to_owned()
+                "no round was live at the firing frame, so nothing could be checked".to_owned()
             }
         },
     });

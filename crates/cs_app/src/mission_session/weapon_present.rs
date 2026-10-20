@@ -9,9 +9,11 @@
 //! produced nothing a player could see. This module is the missing
 //! presentation half:
 //!
-//! * one drawn child per live round — a bright streak placed over the segment
-//!   the round actually travelled since the last drawn frame, so a held
-//!   trigger reads as a continuous stream of tracers;
+//! * **no** drawn child per live round (Rally #1742): the owner's capture of
+//!   the original shows no tracer streaks for a held trigger, and the
+//!   original's `FLYOUT` model for a slug (`slug.flt`) is not shown to be
+//!   drawn, so a round stays an undrawn mirror until a measurement says
+//!   otherwise;
 //! * one drawn child per live rocket — a body oriented along the rocket's own
 //!   flight path;
 //! * one drawn flash per accepted shot — a child of the shot's
@@ -27,13 +29,11 @@
 //! The mirror carries a position and nothing else: no orientation, no mesh and
 //! no asset reference is measured for a round or a rocket in the original data
 //! ([`cs_app::weapons`] and [`cs_app::ordnance`] both state that boundary on
-//! their own `*_transform` functions). The streak's colour, width and length
-//! bounds, the rocket's body and the HUD line's layout are therefore **project
+//! their own `*_transform` functions). The rocket's body and the HUD line's layout are therefore **project
 //! design** under [`MISSION_WEAPON_VISUAL_CLAIM`], never a claim about the
 //! original's sprites. What is *not* design is where they are drawn: every
 //! pose comes from the authoritative runtime position the mirror already
-//! carries, and the tracer's streak is the segment the round flew, not an
-//! invented trajectory.
+//! carries.
 //!
 //! The presentation is a child of the mirror, so a mirror the schedule
 //! despawns (a retired round, a spent rocket, a restart's teardown) takes its
@@ -57,7 +57,6 @@ use super::weapons::MissionWeaponReport;
 use crate::ordnance::OrdnanceItemMirror;
 use crate::physics::PhysicsTickLedger;
 use crate::weapon_effects::{MuzzleEffectSpawn, drive_weapon_effect_presentation};
-use crate::weapons::WeaponRoundMirror;
 
 /// The claim the mission's weapon visuals and its HUD notice line are filed
 /// under: they are project design, not a measurement of the original's
@@ -87,15 +86,6 @@ pub const MUZZLE_FLASH_LIFETIME_TICKS: u64 = 6;
 /// The flash cube's edge, in metres. Designed.
 const MUZZLE_FLASH_SIZE_M: f32 = 0.55;
 
-/// The drawn streak's width, in metres. Designed.
-const TRACER_WIDTH_M: f32 = 0.14;
-/// The shortest streak that still reads on screen, in metres. A round's first
-/// drawn frame has no travel to span yet, and a streak shorter than this
-/// would be a dot. Designed.
-const TRACER_MIN_LENGTH_M: f32 = 0.8;
-/// The longest streak, in metres: a low frame rate must not turn one round
-/// into a wall. Designed.
-const TRACER_MAX_LENGTH_M: f32 = 24.0;
 /// The rocket body's width, in metres. Designed.
 const ROCKET_WIDTH_M: f32 = 0.34;
 /// The rocket body's length, in metres. Designed.
@@ -114,8 +104,6 @@ pub struct WeaponVisual {
 /// What one [`WeaponVisual`] child draws.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WeaponVisualKind {
-    /// The tracer streak of a live round.
-    RoundTracer,
     /// The body of a live rocket.
     Rocket,
     /// The flash at an accepted shot's muzzle.
@@ -189,20 +177,6 @@ impl WeaponVisualSample {
     }
 }
 
-/// The tracer streak's [`Transform`] for one frame's travelled segment.
-///
-/// The parent mirror is already at the round's *current* position, so the
-/// streak's origin is pulled back by half its length: the drawn box spans
-/// `[previous, current]` exactly — what the round flew this frame — and is
-/// scaled along its own long axis. A travel longer than the designed maximum
-/// is clamped, never extrapolated.
-fn streak_transform(direction: Vec3, travelled: f32) -> Transform {
-    let length = travelled.clamp(TRACER_MIN_LENGTH_M, TRACER_MAX_LENGTH_M);
-    Transform::from_translation(-direction * (length * 0.5))
-        .with_rotation(Quat::from_rotation_arc(Vec3::Z, direction))
-        .with_scale(Vec3::new(1.0, 1.0, length))
-}
-
 /// The drawn mesh + material pair one weapon visual is built from.
 #[derive(Clone, Debug)]
 struct VisualPair {
@@ -217,30 +191,11 @@ struct VisualPair {
 /// readable against night, terrain and sea alike.
 #[derive(Resource, Default)]
 struct WeaponVisualAssets {
-    tracer: Option<VisualPair>,
     rocket: Option<VisualPair>,
     flash: Option<VisualPair>,
 }
 
 impl WeaponVisualAssets {
-    /// The tracer pair, built on first use.
-    fn tracer(
-        &mut self,
-        meshes: &mut Assets<Mesh>,
-        materials: &mut Assets<StandardMaterial>,
-    ) -> VisualPair {
-        self.tracer
-            .get_or_insert_with(|| VisualPair {
-                mesh: meshes.add(Cuboid::new(TRACER_WIDTH_M, TRACER_WIDTH_M, 1.0)),
-                material: materials.add(StandardMaterial {
-                    base_color: Color::srgb(1.0, 0.88, 0.25),
-                    unlit: true,
-                    ..default()
-                }),
-            })
-            .clone()
-    }
-
     /// The muzzle flash pair, built on first use.
     fn flash(
         &mut self,
@@ -279,41 +234,6 @@ impl WeaponVisualAssets {
                 }),
             })
             .clone()
-    }
-}
-
-/// Parents one drawn streak to every round mirror that has none yet.
-///
-/// The mirror becomes a visibility node the same way the mission's world
-/// objects do: a parent that draws only through its children states
-/// [`Visibility::Inherited`] rather than inheriting Bevy's B0004 default.
-fn attach_round_tracers(
-    mut commands: Commands,
-    mut assets: ResMut<WeaponVisualAssets>,
-    mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<StandardMaterial>>,
-    rounds: Query<(Entity, &Transform), Added<WeaponRoundMirror>>,
-) {
-    if rounds.is_empty() {
-        return;
-    }
-    let drawn = assets.tracer(&mut meshes, &mut materials);
-    for (entity, transform) in &rounds {
-        commands.entity(entity).insert((
-            Visibility::Inherited,
-            WeaponVisualSample {
-                last: Some(transform.translation),
-            },
-        ));
-        commands.spawn((
-            WeaponVisual {
-                kind: WeaponVisualKind::RoundTracer,
-            },
-            Mesh3d(drawn.mesh.clone()),
-            MeshMaterial3d(drawn.material.clone()),
-            Transform::IDENTITY,
-            ChildOf(entity),
-        ));
     }
 }
 
@@ -407,16 +327,15 @@ fn expire_muzzle_flashes(
 
 /// Orients every drawn weapon visual along the way its projectile flew.
 ///
-/// A tracer spans the frame's travelled segment; a rocket body points along
-/// the same direction and stays centred on its mirror, because a rocket is an
-/// object and a tracer is a path. Neither ever invents a direction: a frame
+/// A rocket body points along the direction it flew and stays centred on its
+/// mirror. It never invents a direction: a frame
 /// that produced no measurable travel keeps the previous pose.
 fn orient_weapon_visuals(
     mut mirrors: Query<(&Transform, &mut WeaponVisualSample, &Children)>,
     mut drawn: Query<(&mut Transform, &WeaponVisual), Without<WeaponVisualSample>>,
 ) {
     for (parent, mut sample, children) in &mut mirrors {
-        let Some((direction, travelled)) = sample.sample(parent.translation) else {
+        let Some((direction, _travelled)) = sample.sample(parent.translation) else {
             continue;
         };
         for child in children.iter() {
@@ -424,9 +343,6 @@ fn orient_weapon_visuals(
                 continue;
             };
             match visual.kind {
-                WeaponVisualKind::RoundTracer => {
-                    *transform = streak_transform(direction, travelled);
-                }
                 WeaponVisualKind::Rocket => {
                     transform.rotation = Quat::from_rotation_arc(Vec3::Z, direction);
                 }
@@ -602,12 +518,7 @@ impl Plugin for MissionWeaponPresentationPlugin {
             .init_resource::<WeaponVisualAssets>()
             .add_systems(
                 Update,
-                (
-                    attach_round_tracers,
-                    attach_rocket_visuals,
-                    orient_weapon_visuals,
-                )
-                    .chain(),
+                (attach_rocket_visuals, orient_weapon_visuals).chain(),
             )
             .add_systems(
                 FixedPostUpdate,
