@@ -117,7 +117,7 @@ use super::radio::{MissionRadio, declared_sound_groups};
 use super::weapon_counts::{OriginalWeaponCounts, WeaponCountsError, measure_weapon_counts};
 use super::world_draw::{
     MissionWorldDrawPlugin, MissionWorldParts, WorldDrawSource, bind_sea_to_world_water,
-    build_world_draw,
+    build_scenery, build_world_draw,
 };
 use crate::loading::{
     Criticality, ExpectedLoad, LoadItem, LoadRequest, LoadState, LoadTarget, LoadedItemBinding,
@@ -1182,7 +1182,26 @@ fn add_composition(
     //     is derived from it — and the material-bound children are the only
     //     drawn geometry, exactly as the playtest scene draws its area.
     let world_parts = match &stage.world_draw {
-        Some(source) => build_world_draw(app, source, &stage.world, &stage.meshes),
+        Some(source) => {
+            // The world record's descendants (#1735): the island's terrain
+            // groups and scenery hang below grouping nodes the flat
+            // definition cannot hold. World actors draw their own nodes.
+            let actor_nodes: std::collections::BTreeSet<String> = stage
+                .host
+                .world_actors
+                .as_ref()
+                .map(|actors| {
+                    actors
+                        .subjects
+                        .values()
+                        .filter_map(|subject| subject.key().rsplit('.').next())
+                        .map(str::to_owned)
+                        .collect()
+                })
+                .unwrap_or_default();
+            let scenery = build_scenery(app, source, &actor_nodes)?;
+            build_world_draw(app, source, &stage.world, &stage.meshes).with_scenery(Some(scenery))
+        }
         // A stage with no installation to read materials from draws nothing;
         // the attach system is still installed, so a composition never lacks
         // the drawing path.
@@ -1608,6 +1627,8 @@ pub fn teardown(app: &mut App) {
                 // The HUD gauge cluster (#1726): its root carries no actor
                 // marker, so it is named on its own.
                 With<super::hud_art::HudArtRoot>,
+                // The drawn scenery root (#1735).
+                With<super::world_draw::WorldSceneryRoot>,
             )>,
         )>();
         query.iter(world).collect()
@@ -1849,6 +1870,19 @@ pub fn run_windowed(
             parts.part_count(),
             parts.report().textured_parts,
         );
+        if let Some(scenery) = parts.scenery() {
+            println!(
+                "mission world scenery: {} nodes drawn from {} groups ({} meshes), {} mesh \
+                 bindings left undrawn by the intact-variant rule, {} unbuildable, {} groups \
+                 left to other paths, verified_original=false",
+                scenery.placements.len(),
+                scenery.roots_drawn.len(),
+                scenery.meshes.len(),
+                scenery.undrawn_bindings,
+                scenery.unbuildable_bindings,
+                scenery.roots_skipped.len(),
+            );
+        }
     }
     let exit = app.run();
     let smoked: Result<(), MissionCompositionError> = match (&smoke_handle, smoke) {

@@ -3549,6 +3549,152 @@ pub fn build_world_node_visual(
     Ok(parts)
 }
 
+/// One drawn scenery node: where the world places it and which uploaded mesh it
+/// draws.
+#[derive(Clone, Debug)]
+pub struct WorldSceneryPlacement {
+    /// The stored slot of the node.
+    pub node_slot: u32,
+    /// The authored name the node stores.
+    pub node_name: String,
+    /// The mesh reference the node binds, the key into [`WorldScenery::meshes`].
+    pub mesh: ContentId,
+    /// The node's composed transform from the world record down.
+    pub global: Transform,
+}
+
+/// The authored scenery the flat mission world definition does not own
+/// (#1735): the descendants of the world record's direct children, one intact
+/// variant of every part, with every mesh uploaded and bound once.
+#[derive(Clone, Debug, Default)]
+pub struct WorldScenery {
+    /// The drawn pieces of each distinct mesh, keyed by mesh reference.
+    pub meshes: std::collections::BTreeMap<ContentId, Vec<PlaytestPart>>,
+    /// The drawn nodes, in stored order of their roots.
+    pub placements: Vec<WorldSceneryPlacement>,
+    /// Every direct child of the world record whose subtree was walked.
+    pub roots_drawn: Vec<(u32, String)>,
+    /// Every direct child that was left alone, with the reason.
+    pub roots_skipped: Vec<(u32, String, String)>,
+    /// Mesh bindings under the walked roots the selection decided not to draw.
+    pub undrawn_bindings: usize,
+    /// Mesh bindings the container stores no usable geometry for.
+    pub unbuildable_bindings: usize,
+}
+
+/// Draws the authored scenery below the world record's direct children
+/// (#1735): everything the world draw's one-transform-per-object definition
+/// cannot hold, because those records hang below a grouping node
+/// (`docs/findings/2026-10-17-m01-window-farimport.md`).
+///
+/// A direct child is walked unless `skip` names why not: the caller passes the
+/// roots another path owns (the `horizon` the world draw already imports, the
+/// nodes world actors draw, the load-removed `dzpath` records). The direct
+/// child's **own** mesh is the world draw's and is not drawn here. Every walked
+/// subtree is cut out through [`area_graph`] and selected by the area's own rule
+/// ([`select_area_parts`] at `lod_distance_m`: one LOD band, the intact
+/// variant, no flat-colour cards).
+///
+/// # Errors
+///
+/// The scene, selection and transform refusals of the nodes it walks.
+pub fn build_world_scenery(
+    app: &mut App,
+    sources: &WorldSources,
+    skip: &dyn Fn(&cs_formats::gamez::nodes::RawNode) -> Option<String>,
+    lod_distance_m: f64,
+    config: &PlaytestConfig,
+) -> Result<WorldScenery, PlaytestError> {
+    let container = sources.world();
+    let nodes = container.nodes();
+    let world_slot = world_node_slot(nodes).ok_or(PlaytestError::AreaNode {
+        slot: 0,
+        found: None,
+    })?;
+    let adapter = playtest_adapter()?;
+    let mut binder = TextureBinder::new(sources.textures(), config.textured, config.decal_offset);
+    let mut out = WorldScenery::default();
+    let mut meshes = WorldMeshes::new();
+    let mut roots: Vec<&cs_formats::gamez::nodes::RawNode> = nodes
+        .nodes
+        .iter()
+        .filter(|node| node.parent == Some(world_slot) && node.index != world_slot)
+        .collect();
+    roots.sort_by_key(|node| node.index);
+    for root in roots {
+        if let Some(reason) = skip(root) {
+            out.roots_skipped
+                .push((root.index, root.name.clone(), reason));
+            continue;
+        }
+        let (graph, root_id) = area_graph(container, root.index, &adapter)?;
+        let selection = select_area_parts(
+            &graph,
+            &root_id,
+            lod_distance_m,
+            config.select_area_variants,
+            config.hide_flat_colour_cards,
+            container,
+        )?;
+        out.undrawn_bindings += selection.undrawn.len();
+        for node in &selection.draw {
+            // The direct child's own mesh is an object of the world definition.
+            if node.index() == root.index {
+                continue;
+            }
+            let Some(binding) = node.mesh() else {
+                continue;
+            };
+            let Resolved::Known(known) = &binding.mesh else {
+                continue;
+            };
+            let Some(index) = container.mesh_index_of(&known.value) else {
+                out.unbuildable_bindings += 1;
+                continue;
+            };
+            if !out.meshes.contains_key(&known.value) {
+                let Ok(render) = render_of(container, index) else {
+                    out.unbuildable_bindings += 1;
+                    continue;
+                };
+                let unknowns = stored_presentation_unknowns(&render);
+                if meshes
+                    .insert_render_mesh(known.value.clone(), &render, &unknowns)
+                    .is_err()
+                {
+                    out.unbuildable_bindings += 1;
+                    continue;
+                }
+                let Some(uploaded) = meshes.get(&known.value) else {
+                    continue;
+                };
+                let pieces = binder.parts(
+                    app,
+                    container,
+                    uploaded,
+                    NeutralColor(WORLD_MATERIAL_COLOR),
+                    index,
+                );
+                out.meshes.insert(known.value.clone(), pieces);
+            }
+            let global = crate::scene::NodeVisualTransform::from_canonical(node.visual_transform())
+                .map_err(|error| PlaytestError::World {
+                    reason: format!("world node {} would not convert: {error}", node.index()),
+                })?
+                .global();
+            out.placements.push(WorldSceneryPlacement {
+                node_slot: node.index(),
+                node_name: node.name().to_owned(),
+                mesh: known.value.clone(),
+                global: Transform::from_matrix(bevy::math::Mat4::from(global.affine())),
+            });
+        }
+        out.roots_drawn.push((root.index, root.name.clone()));
+    }
+    let _textures = binder.finish();
+    Ok(out)
+}
+
 /// Steps 1–3 of [`spawn_playtest_scene`] and the aircraft mesh upload, without
 /// the aircraft entity, the camera or the lights: the original area spawned
 /// into `app` as world records with mesh-derived colliders, and the aircraft's

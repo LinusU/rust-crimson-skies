@@ -491,6 +491,7 @@ exits **non-zero when any check fails**:
 | `world_terrain_drawn` | the frame holds no world pixels off the clear colour |
 | `world_terrain_textured` | under 20 per mille of the world's pixels differ from a neighbour (local detail a texture has and a fog gradient does not), or under 24 distinct colours |
 | `world_terrain_lit` | the nearest terrain — the detail pixels of the lowest third of the lowest unbroken run of 32 px tiles that hold texture (#1591; not the frame's bottom third, which at C3's start is open water) — spans under 24 luminance levels, or the frame shows no terrain at all (a flat fill has no detail pixels); the whole-frame spread is fog, not shading |
+| `world_terrain_closed` | in the `sea_absent` frame (only the world's terrain and water tiles drawn) the clear colour shows more than 400 pixels below the row the water tiles end at: a hole in the world (#1735; skipped by name when no row is shared by enough columns) |
 | `world_sea_visible` | the world declares or draws water (records, or parts bound to `wtr00000`) but its own water tiles cover under 100 per mille of the frame (skipped by name when it has none) |
 | `hud_objective_current` | no objective woke during the run |
 | `hud_objective_matches` | the drawn line differs from the read model's, or its own region holds under 64 text pixels |

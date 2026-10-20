@@ -26,6 +26,7 @@
 //! | `world_terrain_drawn` | the frame around the spawn holds world pixels off the window's clear colour |
 //! | `world_terrain_textured` | those pixels hold more than one flat grey (distinct colours) |
 //! | `world_terrain_lit` | those pixels carry a luminance spread (shading, not a flat fill) |
+//! | `world_terrain_closed` | the probe shows the clear colour below the sea horizon: a hole in the world (#1735) |
 //! | `world_sea_visible` | the world's own water tiles (the drawn sea) cover pixels in a differential probe, when the world declares or draws water |
 //! | `hud_objective_current` | the recovered lifecycle model marks a current objective during the run |
 //! | `hud_objective_matches` | the drawn line equals the read model's current line, and its pixels are on screen |
@@ -280,6 +281,12 @@ pub const MIN_TERRAIN_DISTINCT_COLOURS: usize = 24;
 /// frame's 120 spread is the fog band, which is why the near field is what
 /// the check reads. A lit surface's facet shading starts at tens.
 pub const MIN_TERRAIN_LUMINANCE_SPREAD: u8 = 24;
+
+/// The most clear-colour pixels the world probe may show below the sea horizon
+/// ([`sky_below_horizon`]) before the world has a hole. Designed: far under the
+/// ~20 000 the missing island middle showed, over the few ragged-edge pixels a
+/// closed world can have.
+pub const MAX_SKY_BELOW_HORIZON_PIXELS: usize = 400;
 /// The least screen pixels a spawned actor must cover to count as *seen*.
 ///
 /// Basis (designed): the pinned window renders 1440 physical pixels tall at a
@@ -454,6 +461,13 @@ pub struct TerrainMetrics {
     pub near_luminance_min: u8,
     /// The largest luminance in the near field.
     pub near_luminance_max: u8,
+    /// The row the clear colour ends at in the sea columns of the `sea_absent` frame (see
+    /// [`sky_below_horizon`]); `None` when no row was shared by enough
+    /// columns to be called the horizon.
+    pub horizon_row: Option<usize>,
+    /// Clear-colour pixels below [`Self::horizon_row`]: the clear colour seen
+    /// through the world where terrain or water should be (#1735).
+    pub sky_below_horizon: usize,
 }
 
 /// What the sea probe measured.
@@ -911,6 +925,26 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
                     MIN_TERRAIN_DISTINCT_COLOURS
                 ),
             });
+            checks.push(match terrain.horizon_row {
+                Some(row) => Check {
+                    id: "world_terrain_closed".to_owned(),
+                    applies: true,
+                    passed: terrain.sky_below_horizon <= MAX_SKY_BELOW_HORIZON_PIXELS,
+                    detail: format!(
+                        "{} clear-colour pixels lie below the sea horizon at row {row} (ceiling {}): \
+                         the clear colour seen through the world where terrain or water should be",
+                        terrain.sky_below_horizon, MAX_SKY_BELOW_HORIZON_PIXELS
+                    ),
+                },
+                None => Check {
+                    id: "world_terrain_closed".to_owned(),
+                    applies: false,
+                    passed: false,
+                    detail: "no row ends the clear-colour band of a twentieth of the columns, so \
+                             the probe frame shows no sea horizon to measure holes against"
+                        .to_owned(),
+                },
+            });
             let spread = terrain
                 .near_luminance_max
                 .saturating_sub(terrain.near_luminance_min);
@@ -932,6 +966,7 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
         }
         None => {
             for id in [
+                "world_terrain_closed",
                 "world_terrain_drawn",
                 "world_terrain_textured",
                 "world_terrain_lit",
@@ -1558,6 +1593,10 @@ pub struct FrameRecord {
     pub near_luminance_min: u8,
     /// The largest luminance in the nearest terrain of this frame.
     pub near_luminance_max: u8,
+    /// The frame's sea horizon row, see [`sky_below_horizon`].
+    pub horizon_row: Option<usize>,
+    /// Clear-colour pixels below the horizon row.
+    pub sky_below_horizon: usize,
     /// Yellow-ish objective-text pixels counted inside the objective UI region
     /// (`None` for frames the HUD probe did not measure).
     pub text_pixels: Option<usize>,
@@ -3350,6 +3389,12 @@ fn finish_measurements(data: &mut SmokeData, shots: &[FrameRecord]) {
             luminance_max: world.off_luminance_max,
             near_luminance_min: world.near_luminance_min,
             near_luminance_max: world.near_luminance_max,
+            // The holes are read off the sea probe's `sea_absent` frame: the
+            // horizon, its sky records and the sea plane are hidden, so the
+            // clear colour shows wherever the world's own terrain and water
+            // draw nothing.
+            horizon_row: find("sea_absent").and_then(|shot| shot.horizon_row),
+            sky_below_horizon: find("sea_absent").map_or(0, |shot| shot.sky_below_horizon),
         });
     }
     if let Some(cinematic) = data.measurements.cinematic.as_mut() {
@@ -3526,6 +3571,12 @@ fn measure(
     }
     let (near_min, near_max) =
         near_terrain_luminance(width, &luminances, &detail_mask).unwrap_or((0, 0));
+    let world_mask: Vec<bool> = (0..pixels.len()).map(|i| is_off(colour_of(i))).collect();
+    let horizon = if clear_colours.is_some() {
+        sky_below_horizon(width, &world_mask)
+    } else {
+        (None, 0)
+    };
     let counted = count_world_pixels(data, format, clear_colours);
     let world_pixels = counted.world;
     FrameRecord {
@@ -3548,6 +3599,8 @@ fn measure(
         off_luminance_max: off_max,
         near_luminance_min: near_min,
         near_luminance_max: near_max,
+        horizon_row: horizon.0,
+        sky_below_horizon: horizon.1,
         text_pixels: region.map(|_| text_pixels),
         bars_black_permille: bars_black_permille(pixels, order, width, height),
         hud_green_pixels: pixels
@@ -3647,6 +3700,59 @@ pub fn near_terrain_luminance(width: usize, luminance: &[u8], detail: &[bool]) -
         }
     }
     (min <= max).then_some((min, max))
+}
+
+/// Share of the frame's columns that must end their clear-colour band at one
+/// row for that row to be called the sea horizon (5 %).
+const HORIZON_COLUMN_DENOMINATOR: usize = 20;
+
+/// Rows below the horizon that are still allowed to show the clear colour: the
+/// water edge's anti-aliasing and the far tile's ragged cut.
+const HORIZON_MARGIN_ROWS: usize = 4;
+
+/// Clear colour seen through the world below the sea horizon (#1735).
+///
+/// `world` marks the pixels off the clear colour, row-major, in the sea
+/// probe's `sea_absent` frame, where only the world's own terrain and water
+/// tiles are drawn. Everything above the far edge of the water tiles is the
+/// clear colour, and so is any pixel the world draws nothing on. The horizon
+/// row is the row the clear colour ends at in the most columns (the lowest
+/// clear pixel of a column that has one, the ties going to the lower row): the
+/// sea columns share the water tiles' far edge, terrain columns end it higher,
+/// on the terrain's skyline. A clear pixel more than
+/// [`HORIZON_MARGIN_ROWS`] below that row is a hole: nothing stands between
+/// the camera and the clear colour although the sea is below the horizon
+/// everywhere. The island of M01 had one for want of its terrain groups (a flat
+/// gap between two hills, whose lower edge was a straight cut at the waterline).
+///
+/// Returns the horizon row, `None` when fewer than a twentieth of the columns
+/// agree on one (or no column holds the clear colour), and the hole pixel count
+/// (0 then).
+#[must_use]
+pub fn sky_below_horizon(width: usize, world: &[bool]) -> (Option<usize>, usize) {
+    if width == 0 || world.is_empty() {
+        return (None, 0);
+    }
+    let height = world.len() / width;
+    let mut band_ends = vec![0_usize; height];
+    for column in 0..width {
+        if let Some(last) = (0..height).rev().find(|&row| !world[row * width + column]) {
+            band_ends[last] += 1;
+        }
+    }
+    let (row, count) = band_ends
+        .iter()
+        .enumerate()
+        .max_by_key(|&(row, &count)| (count, row))
+        .map(|(row, &count)| (row, count))
+        .unwrap_or((0, 0));
+    if count * HORIZON_COLUMN_DENOMINATOR < width {
+        return (None, 0);
+    }
+    let holes = (row + 1 + HORIZON_MARGIN_ROWS..height)
+        .map(|y| (0..width).filter(|&x| !world[y * width + x]).count())
+        .sum();
+    (Some(row), holes)
 }
 
 /// The channel order the surface's format stores colour in.

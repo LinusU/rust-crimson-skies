@@ -74,6 +74,8 @@ fn healthy() -> SmokeMeasurements {
             luminance_max: 210,
             near_luminance_min: 40,
             near_luminance_max: 200,
+            horizon_row: Some(610),
+            sky_below_horizon: 0,
         }),
         sea: Some(SeaMetrics {
             sea_pixels: 1_180_000,
@@ -189,6 +191,7 @@ fn accept_m01_owner_smoke_the_judge_passes_a_mission_the_player_can_see_and_shoo
         "world_terrain_drawn",
         "world_terrain_textured",
         "world_terrain_lit",
+        "world_terrain_closed",
         "world_sea_visible",
         "hud_objective_current",
         "hud_objective_matches",
@@ -250,6 +253,8 @@ fn accept_m01_owner_smoke_the_judge_fails_everything_the_owner_could_not_see() {
             luminance_max: 202,
             near_luminance_min: 82,
             near_luminance_max: 83,
+            horizon_row: Some(610),
+            sky_below_horizon: 0,
         }),
         sea: Some(SeaMetrics {
             sea_pixels: 0,
@@ -609,6 +614,7 @@ fn accept_m01_owner_smoke_the_windowed_launch_runs_the_scripted_smoke() {
         "world_terrain_drawn",
         "world_terrain_textured",
         "world_terrain_lit",
+        "world_terrain_closed",
         "world_sea_visible",
         "hud_objective_current",
         "hud_objective_matches",

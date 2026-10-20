@@ -58,7 +58,9 @@ use cs_content::world::WorldDefinition;
 use cs_formats::gamez::GameZMaterials;
 use cs_types::content::{ContentId, Resolved};
 
-use crate::playtest_retail::{WorldSources, read_world_sources};
+use crate::playtest_retail::{
+    PlaytestConfig, WorldScenery, WorldSources, build_world_scenery, read_world_sources,
+};
 use crate::playtest_textures::{NeutralColor, PlaytestPart, TextureBinder};
 use crate::render::horizon::HorizonSpec;
 use crate::render::matrix::HORIZON_ANCHOR;
@@ -137,6 +139,7 @@ pub struct MissionWorldParts {
     water: Option<WorldWaterLevel>,
     water_art: Option<WorldWaterArt>,
     horizon: Option<HorizonSubtree>,
+    scenery: Option<Arc<WorldScenery>>,
 }
 
 /// The label the world's `horizon` subtree carries (PARITY-M01-ATMO-D, Rally
@@ -287,7 +290,22 @@ impl MissionWorldParts {
             water: None,
             water_art: None,
             horizon: None,
+            scenery: None,
         }
+    }
+
+    /// The authored scenery below the world record's direct children, when
+    /// the world draw built any (#1735).
+    #[must_use]
+    pub fn scenery(&self) -> Option<&WorldScenery> {
+        self.scenery.as_deref()
+    }
+
+    /// This resource with the scenery recorded.
+    #[must_use]
+    pub fn with_scenery(mut self, scenery: Option<WorldScenery>) -> Self {
+        self.scenery = scenery.map(Arc::new);
+        self
     }
 
     /// The world's `horizon` record and its descendants, when the container
@@ -434,6 +452,79 @@ pub fn build_world_draw(
         .with_water_level(water)
         .with_water_art(art)
         .with_horizon(horizon)
+}
+
+/// The viewer distance the scenery's LOD bands are chosen at: the player's own
+/// designed one, the same the world actors' nodes are drawn at.
+const SCENERY_LOD_DISTANCE_M: f64 = super::player_visual::MISSION_PLAYER_LOD_DISTANCE_M;
+
+/// The world record's multiplayer-named children (zeppelins, capture-the-flag
+/// markers and flags): content whose role in a single-player mission nothing
+/// measured states, so it is left undrawn and recorded
+/// (`docs/findings/2026-10-21-m01-missing-terrain.md`).
+const MULTIPLAYER_ROOT_PREFIXES: [&str; 3] = ["multiplayer", "ctf_", "cs_flag"];
+
+/// Builds the authored scenery the definition's flat objects cannot hold
+/// (#1735): the descendants of the world record's direct children, one intact
+/// variant of every part at its composed transform.
+///
+/// `actor_nodes` are the authored names of the nodes world actors draw
+/// themselves; those subtrees are left to the actors. The `horizon` child is
+/// the definition's own and the `dzpath` records are destroyed at load
+/// (`GameZNodes::removed_at_load`).
+///
+/// # Errors
+///
+/// [`MissionCompositionError::WorldVisual`] when a walked subtree will not
+/// convert.
+pub fn build_scenery(
+    app: &mut App,
+    source: &WorldDrawSource,
+    actor_nodes: &BTreeSet<String>,
+) -> Result<WorldScenery, MissionCompositionError> {
+    if !app.world().contains_resource::<Assets<StandardMaterial>>() {
+        app.init_asset::<StandardMaterial>();
+    }
+    if !app.world().contains_resource::<Assets<Image>>() {
+        app.init_asset::<Image>();
+    }
+    let skip = |node: &cs_formats::gamez::nodes::RawNode| -> Option<String> {
+        if node.name == "horizon" {
+            Some("the world definition imports the horizon subtree itself".to_owned())
+        } else if node
+            .name
+            .starts_with(cs_formats::gamez::nodes::LOAD_REMOVED_NODE_PREFIX)
+        {
+            Some("destroyed at world load".to_owned())
+        } else if MULTIPLAYER_ROOT_PREFIXES
+            .iter()
+            .any(|prefix| node.name.starts_with(prefix))
+        {
+            Some(
+                "multiplayer-mode content: its role in the single-player mission is unknown \
+                 (rule 4), so it is not drawn"
+                    .to_owned(),
+            )
+        } else if actor_nodes.contains(&node.name) {
+            Some("a world actor draws this node".to_owned())
+        } else {
+            None
+        }
+    };
+    let mut scenery = build_world_scenery(
+        app,
+        source.sources(),
+        &skip,
+        SCENERY_LOD_DISTANCE_M,
+        &PlaytestConfig::documented(),
+    )
+    .map_err(|error| {
+        MissionCompositionError::WorldVisual(format!("the world's scenery would not draw: {error}"))
+    })?;
+    for parts in scenery.meshes.values_mut() {
+        stored_shading_materials(app, parts);
+    }
+    Ok(scenery)
 }
 
 /// Gives each part whose stored geometry carries per-corner colours its own
@@ -829,6 +920,51 @@ fn attach_world_parts(
     }
 }
 
+/// The root entity of the drawn scenery ([`MissionWorldParts::scenery`]).
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct WorldSceneryRoot;
+
+/// Spawns the scenery once the world's first object is present, under one root
+/// entity at the world origin; each node's composed transform is the child's
+/// own.
+fn attach_world_scenery(
+    mut commands: Commands,
+    parts: Res<MissionWorldParts>,
+    loaded: Query<(), Added<WorldVisual>>,
+    existing: Query<(), With<WorldSceneryRoot>>,
+) {
+    if loaded.is_empty() || !existing.is_empty() {
+        return;
+    }
+    let Some(scenery) = parts.scenery() else {
+        return;
+    };
+    let root = commands
+        .spawn((WorldSceneryRoot, Transform::IDENTITY, Visibility::Inherited))
+        .id();
+    for placement in &scenery.placements {
+        let Some(pieces) = scenery.meshes.get(&placement.mesh) else {
+            continue;
+        };
+        let node = commands
+            .spawn((placement.global, Visibility::Inherited, ChildOf(root)))
+            .id();
+        for part in pieces {
+            let child = commands
+                .spawn((
+                    Mesh3d(part.mesh.clone()),
+                    MeshMaterial3d(part.material.clone()),
+                    Transform::IDENTITY,
+                    ChildOf(node),
+                ))
+                .id();
+            if part.image.as_deref().is_some_and(is_water_image) {
+                commands.entity(child).insert(WorldWaterPart);
+            }
+        }
+    }
+}
+
 /// Marks a drawn child whose material binds the world's water texture
 /// ([`WATER_TEXTURE_NAME`] or [`C3_WATER_TEXTURE_NAME`]): the world's own sea
 /// tiles. The owner-command smoke hides exactly these to measure how much of
@@ -844,7 +980,14 @@ pub struct MissionWorldDrawPlugin;
 
 impl Plugin for MissionWorldDrawPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Update, (attach_world_parts, anchor_horizon_to_camera));
+        app.add_systems(
+            Update,
+            (
+                attach_world_parts,
+                attach_world_scenery,
+                anchor_horizon_to_camera,
+            ),
+        );
     }
 }
 

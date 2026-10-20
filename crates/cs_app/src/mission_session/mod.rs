@@ -237,15 +237,16 @@ pub use scenario::{
 pub use smoke::{
     ActorMetrics, ApproachMetrics, AudioMetrics, CINEMATIC_SHOT_SECONDS, CameraMetrics, Check,
     CinematicMetrics, DEFAULT_MISSION_CAPTURE_DIR, FirstControlMetrics, FlightCheckButtonMetrics,
-    FlightCheckMetrics, FlightCheckTextMetrics, GunMetrics, HudMetrics, MAX_WINGMAN_DISTANCE_M,
-    MIN_ACTOR_PIXELS, MIN_FLIGHT_CHECK_BUTTON_PIXELS, MIN_FLIGHT_CHECK_DRAWN_PERMILLE,
-    MIN_FLIGHT_CHECK_TEXT_PIXELS, MIN_GUN_ROUNDS, MIN_MISSION_SMOKE_SECONDS,
-    MIN_OBJECTIVE_TEXT_PIXELS, MIN_SEA_COVERAGE_PERMILLE, MIN_TERRAIN_DETAIL_PERMILLE,
-    MIN_TERRAIN_DISTINCT_COLOURS, MIN_TERRAIN_LUMINANCE_SPREAD, MISSION_SMOKE_FRAME_HZ,
-    MissionSmokeHandle, MissionSmokeMode, MissionSmokePlugin, MissionSmokeReport, RocketMetrics,
-    SMOKE_KIND, SMOKE_REPORT_FILE, SeaMetrics, SmokeMeasurements, TargetingMetrics, TerrainMetrics,
-    WINGMAN_SAMPLE_SECONDS, WingmanSample, evaluate as evaluate_mission_smoke,
-    finish as finish_mission_smoke, near_terrain_luminance, objective_line_of, region_difference,
+    FlightCheckMetrics, FlightCheckTextMetrics, GunMetrics, HudMetrics,
+    MAX_SKY_BELOW_HORIZON_PIXELS, MAX_WINGMAN_DISTANCE_M, MIN_ACTOR_PIXELS,
+    MIN_FLIGHT_CHECK_BUTTON_PIXELS, MIN_FLIGHT_CHECK_DRAWN_PERMILLE, MIN_FLIGHT_CHECK_TEXT_PIXELS,
+    MIN_GUN_ROUNDS, MIN_MISSION_SMOKE_SECONDS, MIN_OBJECTIVE_TEXT_PIXELS,
+    MIN_SEA_COVERAGE_PERMILLE, MIN_TERRAIN_DETAIL_PERMILLE, MIN_TERRAIN_DISTINCT_COLOURS,
+    MIN_TERRAIN_LUMINANCE_SPREAD, MISSION_SMOKE_FRAME_HZ, MissionSmokeHandle, MissionSmokeMode,
+    MissionSmokePlugin, MissionSmokeReport, RocketMetrics, SMOKE_KIND, SMOKE_REPORT_FILE,
+    SeaMetrics, SmokeMeasurements, TargetingMetrics, TerrainMetrics, WINGMAN_SAMPLE_SECONDS,
+    WingmanSample, evaluate as evaluate_mission_smoke, finish as finish_mission_smoke,
+    near_terrain_luminance, objective_line_of, region_difference, sky_below_horizon,
 };
 pub use spyglass::{
     FALLBACK_RADIUS_M, SPYGLASS_TEXTURE_PX, SpyglassCamera, SpyglassPlugin, SpyglassState,
@@ -283,6 +284,7 @@ pub use weapons::{
 };
 pub use world_draw::{
     HORIZON_SUBTREE_LABEL, HorizonRest, HorizonSubtree, MissionWorldDrawPlugin, MissionWorldParts,
-    WORLD_NEUTRAL_COLOR, WorldDrawReport, WorldDrawSource, WorldWaterArt, WorldWaterLevel,
-    WorldWaterPart, bind_sea_to_world_water, build_world_draw, water_level_of,
+    WORLD_NEUTRAL_COLOR, WorldDrawReport, WorldDrawSource, WorldSceneryRoot, WorldWaterArt,
+    WorldWaterLevel, WorldWaterPart, bind_sea_to_world_water, build_scenery, build_world_draw,
+    water_level_of,
 };
