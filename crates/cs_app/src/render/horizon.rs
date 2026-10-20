@@ -840,10 +840,21 @@ fn spawn_horizon(
     ));
 }
 
-/// Puts the scene's fog on every camera that does not carry one yet.
+/// Puts the scene's fog on every scene camera that does not carry one yet —
+/// never on an overlay pass (`super::OverlayCamera`, the mission HUD's
+/// cluster at ~17.5 units), whose draw is not world geometry and must not
+/// be fogged by a record that starts fog inside the instrument space.
+#[allow(clippy::type_complexity)]
 fn place_fog(
     spec: Res<HorizonSpec>,
-    cameras: Query<Entity, (With<Camera3d>, Without<DistanceFog>)>,
+    cameras: Query<
+        Entity,
+        (
+            With<Camera3d>,
+            Without<DistanceFog>,
+            Without<super::OverlayCamera>,
+        ),
+    >,
     mut commands: Commands,
 ) {
     for entity in &cameras {
