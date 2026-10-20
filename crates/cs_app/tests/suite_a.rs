@@ -260,6 +260,7 @@ mod evidence_report_m01_play_triggers_windowed;
 mod evidence_report_m01_play_weather;
 mod evidence_report_m01_radio_sample;
 mod evidence_report_m01_wingman_formation;
+mod evidence_report_parity2_m01_hud_art;
 mod evidence_report_parity_m01_island_shading;
 mod evidence_report_parity_m01_launch_cinematic;
 mod evidence_report_parity_m01_player_view;
