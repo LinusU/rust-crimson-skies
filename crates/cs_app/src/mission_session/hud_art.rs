@@ -1009,27 +1009,38 @@ pub fn spawn_reticle(parent: &mut bevy::prelude::ChildSpawnerCommands, image: Ha
 
 /// Recomputes the HUD camera's viewport so it matches the 4:3 safe area —
 /// the 16:9 rule: keep the original proportions inside the centred 4:3 rect.
+/// The launch cinematic holds the cluster back until it hands over — the
+/// same hold `fit_safe_area` makes for the text layer (#1663), here by
+/// switching the pass itself off so nothing lands in the letterbox bars.
 pub fn fit_hud_viewport(
     windows: Query<&Window, With<PrimaryWindow>>,
+    phase: Option<Res<super::launch_cinematic::LaunchCinematic>>,
     mut cameras: Query<&mut Camera, With<HudArtCamera>>,
 ) {
-    let Ok(window) = windows.single() else {
-        return;
-    };
-    let (w, h) = safe_area(window.width(), window.height());
-    if w <= 0.0 || h <= 0.0 {
-        return;
-    }
-    let scale = window.resolution.scale_factor();
-    let (w, h) = (w * scale, h * scale);
-    let x = ((window.physical_width() as f32 - w) / 2.0).max(0.0);
-    let y = ((window.physical_height() as f32 - h) / 2.0).max(0.0);
+    let held = phase.is_some_and(|phase| phase.is_playing());
+    let rect = windows.single().ok().and_then(|window| {
+        let (w, h) = safe_area(window.width(), window.height());
+        if w <= 0.0 || h <= 0.0 {
+            return None;
+        }
+        let scale = window.resolution.scale_factor();
+        let (w, h) = (w * scale, h * scale);
+        Some((
+            ((window.physical_width() as f32 - w) / 2.0).max(0.0) as u32,
+            ((window.physical_height() as f32 - h) / 2.0).max(0.0) as u32,
+            w as u32,
+            h as u32,
+        ))
+    });
     for mut camera in &mut cameras {
-        camera.viewport = Some(Viewport {
-            physical_position: UVec2::new(x as u32, y as u32),
-            physical_size: UVec2::new(w as u32, h as u32),
-            ..default()
-        });
+        camera.is_active = !held;
+        if let Some((x, y, w, h)) = rect {
+            camera.viewport = Some(Viewport {
+                physical_position: UVec2::new(x, y),
+                physical_size: UVec2::new(w, h),
+                ..default()
+            });
+        }
     }
 }
 
