@@ -310,9 +310,9 @@ fn accept_m01_window_fire_rockets_are_drawn_and_a_refusal_is_published() {
 
     let mut launched = false;
     for _ in 0..MAX_FRAMES {
-        press(&mut app, KeyCode::ControlLeft);
+        press(&mut app, KeyCode::KeyX);
         app.update();
-        release(&mut app, KeyCode::ControlLeft);
+        release(&mut app, KeyCode::KeyX);
         if !rocket_bodies(&app).is_empty() {
             launched = true;
             break;
@@ -341,7 +341,7 @@ fn accept_m01_window_fire_rockets_are_drawn_and_a_refusal_is_published() {
     // by name — and that refusal is published for the HUD rather than
     // swallowed, so the player is told instead of left guessing.
     let (_scratch, mut refused) = composed("m01-window-fire-notice");
-    press(&mut refused, KeyCode::ControlLeft);
+    press(&mut refused, KeyCode::KeyX);
     refused.update();
     let notice = refused
         .world()
@@ -372,9 +372,9 @@ fn accept_m01_window_fire_rockets_are_drawn_and_a_refusal_is_published() {
     );
     // Pressing again is a new refusal: it is shown again (refreshed), not
     // swallowed because the same reason was recorded before.
-    release(&mut refused, KeyCode::ControlLeft);
+    release(&mut refused, KeyCode::KeyX);
     refused.update();
-    press(&mut refused, KeyCode::ControlLeft);
+    press(&mut refused, KeyCode::KeyX);
     refused.update();
     assert_eq!(
         refused.world().resource::<MissionHudNotice>().published(),
