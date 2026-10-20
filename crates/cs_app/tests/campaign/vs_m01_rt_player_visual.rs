@@ -308,21 +308,45 @@ fn probe_dump_hud_art() {
         .expect("the retail sources read");
     let mats = sources.aircraft().materials();
     for index in 0..1024u32 {
-        let Some(material) = mats.material(index) else { continue };
+        let Some(material) = mats.material(index) else {
+            continue;
+        };
         let Some(texture) = mats.texture_of(material) else {
             continue;
         };
         let name = &texture.name;
-        if ["hilite", "hatch", "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "missile", "tracer", "tip", "arrow", "indicator", "lowalt", "stall", "bezel", "rcircle", "guage"]
-            .iter()
-            .any(|k| name.to_ascii_lowercase().contains(k))
+        if [
+            "hilite",
+            "hatch",
+            "zero",
+            "one",
+            "two",
+            "three",
+            "four",
+            "five",
+            "six",
+            "seven",
+            "eight",
+            "nine",
+            "missile",
+            "tracer",
+            "tip",
+            "arrow",
+            "indicator",
+            "lowalt",
+            "stall",
+            "bezel",
+            "rcircle",
+            "guage",
+        ]
+        .iter()
+        .any(|k| name.to_ascii_lowercase().contains(k))
         {
             eprintln!("mat {index}: {name}");
         }
     }
     // texture names in the world-group texture.zbd archives
-    let wanted_group =
-        std::env::var("PROBE_GROUP").unwrap_or_else(|_| "zbd/c3".to_owned());
+    let wanted_group = std::env::var("PROBE_GROUP").unwrap_or_else(|_| "zbd/c3".to_owned());
     let group = found
         .diagnosis
         .world_groups
@@ -340,10 +364,9 @@ fn probe_dump_hud_art() {
             )
         })
         .clone();
-    let context = cs_types::asset_id::ResolveContext::new(cs_assets::install::fingerprint(
-        &found.manifest,
-    ))
-    .with_world_group(cs_types::asset_id::WorldGroup::from_relative(group));
+    let context =
+        cs_types::asset_id::ResolveContext::new(cs_assets::install::fingerprint(&found.manifest))
+            .with_world_group(cs_types::asset_id::WorldGroup::from_relative(group));
     let mut builder = cs_assets::vfs::SessionBuilder::new(context);
     builder
         .mount_installation(&root, &found.diagnosis)

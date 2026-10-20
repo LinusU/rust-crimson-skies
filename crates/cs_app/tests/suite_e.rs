@@ -16,6 +16,7 @@ mod campaign {
     mod vs_m01_rt_evidence_capture;
     mod vs_m01_rt_evidence_report;
     mod vs_m01_rt_host_cadence;
+    mod vs_m01_rt_hud_art;
     mod vs_m01_rt_player_visual;
     mod vs_m01_runtime;
 }

@@ -105,6 +105,9 @@ use cs_types::space::Quaternion;
 use super::actor_census::MissionActorAidPlugin;
 use super::actor_visual::build_actor_visuals;
 use super::gun_sound::{GunSound, GunSoundError, measure_gun_sound};
+use super::hud_art::{
+    MissionHudArt, build_hud_art, read_instrument_table, read_reticle_image, spawn_hud_art,
+};
 use super::landings::{MissionLandings, read_landings};
 use super::launch_sound::{LaunchSound, LaunchSoundError, measure_launch_sound};
 use super::player_visual::{
@@ -1029,6 +1032,9 @@ fn add_composition(
         // overlay, which is hidden unless `--dev-overlay` asks for it.
         app.insert_resource(crate::playtest::visuals::DeveloperOverlay(false));
         app.add_plugins(crate::mission_session::MissionCockpitHudPlugin);
+        // The original mesh/texture gauge cluster (#1726), drawn on a second
+        // pass when the airframe source supplies it.
+        app.add_plugins(crate::mission_session::MissionHudArtPlugin);
         // The launch cinematic's letterbox bars (#1664), drawn only while the
         // `LaunchLetterbox` flag is on.
         app.add_plugins(crate::mission_session::MissionLetterboxPlugin);
@@ -1179,6 +1185,44 @@ fn add_composition(
                 .unwrap_or_default(),
         );
         app.insert_resource(actor_visuals);
+
+        // The original HUD gauge art (PARITY2-M01-HUD-ART): measured
+        // `instruments.zrd` placements + the `gauges` subtree of the same
+        // `planes.zbd`, drawn on a second pass. An `instruments.zrd` that
+        // cannot be read is a recorded refusal and the text layer stands
+        // alone; a measured placement whose meshes refuse fails the
+        // composition by name. The cluster is spawned in both paths — the
+        // entities are inert headless and the camera pass only renders in a
+        // windowed composition; the reticle texture and the drive systems
+        // are the windowed plugin's.
+        let table = read_instrument_table(source.install_root());
+        let mut hud = MissionHudArt::default();
+        if let Some(reason) = &table.refusal {
+            hud.unknowns.push(reason.clone());
+        }
+        if !table.placements.is_empty() {
+            let art = build_hud_art(app, source, &table)?;
+            hud.placements = art.placements.clone();
+            hud.scale = art.scale;
+            hud.unknowns.clone_from(&art.unknowns);
+            hud.images = art.images.clone();
+            if visuals {
+                match read_reticle_image(
+                    source.install_root(),
+                    &mut app
+                        .world_mut()
+                        .resource_mut::<bevy::prelude::Assets<bevy::prelude::Image>>(),
+                ) {
+                    Ok(image) => {
+                        hud.reticle = Some("rcircle".to_owned());
+                        hud.reticle_image = Some(image);
+                    }
+                    Err(reason) => hud.unknowns.push(format!("reticle: {reason}")),
+                }
+            }
+            spawn_hud_art(app.world_mut(), &art);
+        }
+        app.insert_resource(hud);
     }
     app.add_plugins(MissionActorAidPlugin { windowed: visuals });
 
@@ -1523,6 +1567,9 @@ pub fn teardown(app: &mut App) {
                 // (M01-PLAY-TRIGGERS-PARTS, #1481): a part entity belongs to
                 // the composition exactly as its owning actor does.
                 With<crate::mission_session::MissionPartState>,
+                // The HUD gauge cluster (#1726): its root carries no actor
+                // marker, so it is named on its own.
+                With<super::hud_art::HudArtRoot>,
             )>,
         )>();
         query.iter(world).collect()
@@ -1551,6 +1598,7 @@ pub fn teardown(app: &mut App) {
     world.remove_resource::<crate::mission_ai::MissionAiFireOrders>();
     world.remove_resource::<MissionPlayerStart>();
     world.remove_resource::<MissionPlayerVisual>();
+    world.remove_resource::<super::hud_art::MissionHudArt>();
     world.remove_resource::<super::world_draw::MissionWorldParts>();
     world.remove_resource::<AircraftSpawner>();
     world.remove_resource::<crate::score::SessionScoreLedger>();

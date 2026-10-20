@@ -100,6 +100,7 @@ mod evidence;
 mod flight_check;
 mod gun_sound;
 mod host;
+mod hud_art;
 mod landings;
 pub(crate) mod launch_camera;
 pub(crate) mod launch_cinematic;
@@ -159,6 +160,14 @@ pub use host::{
     MissionHostRestartRequest, MissionHostSeed, MissionHostStepError, MissionHostTick,
     MissionWorldObservation, host_session_id, install_mission_host, mint_host_generation,
     mission_host_restart, mission_host_tick, no_declared_objectives,
+};
+pub use hud_art::{
+    GlyphRow, HUD_ASPECT, HUD_CAMERA_LAYER, HUD_FOV, HUD_HALF_HEIGHT, HUD_HALF_WIDTH,
+    HUD_PLANE_DEPTH, HudArrow, HudArt, HudArtCamera, HudArtRoot, HudCompassTape, HudFlag,
+    HudGlyphCell, HudNeedle, HudNitroNeedle, HudPip, HudReticle, HudZone, HudZonePiece,
+    InstrumentPlacement, InstrumentTable, MissionHudArt, MissionHudArtPlugin, NeedleRole, PipGauge,
+    ZonePieceRole, build_hud_art, fit_hud_viewport, read_instrument_table, read_reticle_image,
+    spawn_hud_art, spawn_reticle, update_hud_art,
 };
 pub use landings::{
     LANDING_CALL_CHAIN_CLAIM, LANDING_DETECTION_CLAIM, LANDING_NODE_POSITION_CLAIM,

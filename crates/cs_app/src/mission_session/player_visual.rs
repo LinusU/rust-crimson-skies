@@ -23,7 +23,7 @@
 //! picks are labelled on the composition's banner and in the finding, exactly
 //! as the playtest labels its own.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use bevy::asset::{AssetApp, Assets};
 use bevy::image::Image;
@@ -102,6 +102,7 @@ pub const MISSION_PLAYER_LOD_DISTANCE_M: f64 =
 #[derive(Clone, Debug)]
 pub struct PlayerAirframeSource {
     sources: AircraftSources,
+    install_root: PathBuf,
 }
 
 impl PlayerAirframeSource {
@@ -109,6 +110,12 @@ impl PlayerAirframeSource {
     /// the scripted aircraft's models read the same `planes.zbd`.
     pub(super) const fn sources(&self) -> &AircraftSources {
         &self.sources
+    }
+
+    /// The installation the sources were read from — the HUD art's
+    /// `instruments.zrd`/`rimage.zbd` reads take it read-only.
+    pub(super) fn install_root(&self) -> &Path {
+        &self.install_root
     }
 
     /// Reads the airframe container and the texture archive for
@@ -125,7 +132,10 @@ impl PlayerAirframeSource {
                 "the player airframe's sources refuse: {error}"
             ))
         })?;
-        Ok(Self { sources })
+        Ok(Self {
+            sources,
+            install_root: install_root.to_path_buf(),
+        })
     }
 }
 

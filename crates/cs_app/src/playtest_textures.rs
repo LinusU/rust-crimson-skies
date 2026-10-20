@@ -316,7 +316,10 @@ impl PlaytestTextureArchive {
 
     /// Resolves and decodes the texture a stored name reaches under
     /// [`NAME_READING`].
-    fn fetch(&self, stored: &str) -> Result<(TextureId, DecodedImage), (String, &'static str)> {
+    pub(crate) fn fetch(
+        &self,
+        stored: &str,
+    ) -> Result<(TextureId, DecodedImage), (String, &'static str)> {
         let projected = NAME_READING.project(stored);
         let reference = TextureRef::new(self.key.clone(), &projected);
         let resolved = self
@@ -980,7 +983,7 @@ fn textured_material(image: Handle<Image>, masked: bool) -> StandardMaterial {
 
 /// Converts one decoded image to an sRGB RGBA8 engine image through the F17-B
 /// expansion and coverage policies, under the provisional presentation.
-fn to_bevy_image(decoded: &DecodedImage) -> (Image, u32, Option<&'static str>) {
+pub(crate) fn to_bevy_image(decoded: &DecodedImage) -> (Image, u32, Option<&'static str>) {
     let (coverage, note) = match CoverageSource::from_source(decoded.alpha_source()) {
         Ok(source) => (source, None),
         // The stored coverage plane is unknown: treated as opaque and said so.

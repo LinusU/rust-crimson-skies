@@ -32,6 +32,7 @@ use cs_content::config::{MessageCatalog, MessageLookup};
 use cs_sim::damage::PartState;
 use cs_types::net::{ActorId, SessionId};
 
+use super::hud_art::MissionHudArt;
 use super::weapons::{MissionOrdnanceSession, MissionWeapons};
 use crate::mission_actors::MissionGroundTarget;
 use crate::playtest::PlaytestState;
@@ -368,23 +369,37 @@ fn text(size: f32, value: &str, marker: impl Component) -> impl bevy::prelude::B
     )
 }
 
-/// One round gauge: a ring with a caption row and a value row inside.
-fn gauge(parent: &mut bevy::prelude::ChildSpawnerCommands, caption: &str) -> Entity {
+/// One round gauge: a ring with a caption row and a value row inside. With
+/// `ring` false the caption and value still draw — the mesh HUD art
+/// (`super::hud_art`, #1726) draws the dials themselves, so the CSS ring
+/// stands down and only the text layer remains.
+fn gauge(parent: &mut bevy::prelude::ChildSpawnerCommands, caption: &str, ring: bool) -> Entity {
+    let mut node = Node {
+        width: Val::Percent(30.0),
+        aspect_ratio: Some(1.0),
+        border: UiRect::all(Val::Px(3.0)),
+        border_radius: BorderRadius::MAX,
+        flex_direction: FlexDirection::Column,
+        justify_content: JustifyContent::Center,
+        align_items: AlignItems::Center,
+        ..default()
+    };
+    if !ring {
+        node.border = UiRect::all(Val::Px(0.0));
+        node.border_radius = BorderRadius::ZERO;
+    }
+    let border = if ring {
+        BorderColor::all(HUD_GREEN)
+    } else {
+        BorderColor::all(Color::NONE)
+    };
+    let fill = if ring {
+        BackgroundColor(GAUGE_FILL)
+    } else {
+        BackgroundColor(Color::NONE)
+    };
     parent
-        .spawn((
-            Node {
-                width: Val::Percent(30.0),
-                aspect_ratio: Some(1.0),
-                border: UiRect::all(Val::Px(3.0)),
-                border_radius: BorderRadius::MAX,
-                flex_direction: FlexDirection::Column,
-                justify_content: JustifyContent::Center,
-                align_items: AlignItems::Center,
-                ..default()
-            },
-            BorderColor::all(HUD_GREEN),
-            BackgroundColor(GAUGE_FILL),
-        ))
+        .spawn((node, border, fill))
         .with_children(|ring| {
             ring.spawn((
                 Text::new(caption),
@@ -398,7 +413,13 @@ fn gauge(parent: &mut bevy::prelude::ChildSpawnerCommands, caption: &str) -> Ent
         .id()
 }
 
-fn spawn_cockpit(mut commands: Commands) {
+fn spawn_cockpit(mut commands: Commands, hud: Option<Res<MissionHudArt>>) {
+    // The mesh HUD art (#1726) replaces the CSS stand-ins it draws over: the
+    // ring borders and fills, the plain reticle bars, the flat silhouette and
+    // the text compass stand down — the live text readouts stay, they are
+    // the HUD's own `hudSWGauges` text layer.
+    let art = hud.as_ref().is_some_and(|hud| !hud.placements.is_empty());
+    let reticle = hud.as_ref().and_then(|hud| hud.reticle_image.clone());
     commands
         .spawn((
             Node {
@@ -413,37 +434,46 @@ fn spawn_cockpit(mut commands: Commands) {
             super::launch_cinematic::CinematicOwnedVisibility,
         ))
         .with_children(|area| {
-            // Compass strip, top centre.
-            area.spawn(Node {
-                position_type: PositionType::Absolute,
-                top: Val::Percent(1.5),
-                width: Val::Percent(100.0),
-                flex_direction: FlexDirection::Column,
-                align_items: AlignItems::Center,
-                ..default()
-            })
-            .with_children(|strip| {
-                strip.spawn(text(16.0, "", CompassStrip));
-                strip.spawn(text(14.0, "", CompassPointer));
-            });
-            // Reticle, screen centre.
-            for (w, h) in [(18.0, 2.0), (2.0, 18.0)] {
-                area.spawn((
-                    Node {
-                        position_type: PositionType::Absolute,
-                        left: Val::Percent(50.0),
-                        top: Val::Percent(50.0),
-                        width: Val::Px(w),
-                        height: Val::Px(h),
-                        margin: UiRect {
-                            left: Val::Px(-w / 2.0),
-                            top: Val::Px(-h / 2.0),
-                            ..default()
-                        },
-                        ..default()
-                    },
-                    BackgroundColor(HUD_GREEN),
-                ));
+            // Compass strip, top centre — the `comp` mesh draws it instead
+            // when the HUD art is up.
+            if !art {
+                area.spawn(Node {
+                    position_type: PositionType::Absolute,
+                    top: Val::Percent(1.5),
+                    width: Val::Percent(100.0),
+                    flex_direction: FlexDirection::Column,
+                    align_items: AlignItems::Center,
+                    ..default()
+                })
+                .with_children(|strip| {
+                    strip.spawn(text(16.0, "", CompassStrip));
+                    strip.spawn(text(14.0, "", CompassPointer));
+                });
+            }
+            // Reticle, screen centre: the `rcircle` texture when the art
+            // decoded it, the designed bars otherwise.
+            match reticle {
+                Some(image) if art => super::hud_art::spawn_reticle(area, image),
+                _ => {
+                    for (w, h) in [(18.0, 2.0), (2.0, 18.0)] {
+                        area.spawn((
+                            Node {
+                                position_type: PositionType::Absolute,
+                                left: Val::Percent(50.0),
+                                top: Val::Percent(50.0),
+                                width: Val::Px(w),
+                                height: Val::Px(h),
+                                margin: UiRect {
+                                    left: Val::Px(-w / 2.0),
+                                    top: Val::Px(-h / 2.0),
+                                    ..default()
+                                },
+                                ..default()
+                            },
+                            BackgroundColor(HUD_GREEN),
+                        ));
+                    }
+                }
             }
             // Bottom-left cluster: ROCKETS, ALT, damage silhouette.
             area.spawn(Node {
@@ -455,27 +485,30 @@ fn spawn_cockpit(mut commands: Commands) {
                 ..default()
             })
             .with_children(|row| {
-                let rockets = gauge(row, ROCKETS_LABEL);
-                let alt = gauge(row, "ALT");
-                let hull = gauge(row, "");
+                let rockets = gauge(row, ROCKETS_LABEL, !art);
+                let alt = gauge(row, "ALT", !art);
+                let hull = gauge(row, "", !art);
                 row_value(row, rockets, text(20.0, "", RocketsValue));
                 row_value(row, alt, text(18.0, "", AltValue));
-                // Plane silhouette: fuselage, wing and tail bars.
-                for (w, h, dy) in [(8.0, 40.0, 0.0), (44.0, 8.0, -4.0), (20.0, 6.0, 14.0)] {
-                    let part = row
-                        .spawn((
-                            Node {
-                                position_type: PositionType::Absolute,
-                                width: Val::Px(w),
-                                height: Val::Px(h),
-                                margin: UiRect::top(Val::Px(dy)),
-                                ..default()
-                            },
-                            BackgroundColor(Color::srgb(0.15, 0.9, 0.1)),
-                            DamagePart,
-                        ))
-                        .id();
-                    row.commands().entity(hull).add_child(part);
+                // Plane silhouette: fuselage, wing and tail bars — the
+                // `damageindicator` mesh draws it instead when the art is up.
+                if !art {
+                    for (w, h, dy) in [(8.0, 40.0, 0.0), (44.0, 8.0, -4.0), (20.0, 6.0, 14.0)] {
+                        let part = row
+                            .spawn((
+                                Node {
+                                    position_type: PositionType::Absolute,
+                                    width: Val::Px(w),
+                                    height: Val::Px(h),
+                                    margin: UiRect::top(Val::Px(dy)),
+                                    ..default()
+                                },
+                                BackgroundColor(Color::srgb(0.15, 0.9, 0.1)),
+                                DamagePart,
+                            ))
+                            .id();
+                        row.commands().entity(hull).add_child(part);
+                    }
                 }
             });
             // Bottom-right cluster: GUNS, MPH.
@@ -488,8 +521,8 @@ fn spawn_cockpit(mut commands: Commands) {
                 ..default()
             })
             .with_children(|row| {
-                let guns = gauge(row, GUNS_LABEL);
-                let mph = gauge(row, "MPH");
+                let guns = gauge(row, GUNS_LABEL, !art);
+                let mph = gauge(row, "MPH", !art);
                 row_value(row, guns, text(20.0, "", GunsValue));
                 row_value(row, mph, text(18.0, "", MphValue));
             });
