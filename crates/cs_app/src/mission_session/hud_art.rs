@@ -103,11 +103,13 @@ pub const HUD_FOV: f32 = 0.810_731_4;
 /// The cluster's aspect: the original's 4:3 instrument space.
 pub const HUD_ASPECT: f32 = 4.0 / 3.0;
 
-/// Dial-face radius in HUD units — the measured placements put the faces at
-/// y ≈ −4 with radius ≈ 3 so the cluster anchors in the screen corners. The
-/// exact radius the original drew is not in `instruments.zrd`; `3.0` is the
-/// finding's fit and is designed, not measured.
-const DIAL_RADIUS_UNITS: f32 = 3.0;
+/// Dial-face radius in HUD units, fitted to the owner's 1024×768 captures:
+/// the dials measure ~92 px across — 92/768·15 ≈ 1.8 units of diameter —
+/// and the stack's centres land exactly on the `instruments.zrd` rows
+/// (missilegauge −2.1, altimeter −4.05, damage −6.0). The stored face's own
+/// radius measures ≈1.0, so the drawn scale comes out ≈0.9; the value itself
+/// is **designed** (the original's radius is a capture fit, not a stored row).
+const DIAL_RADIUS_UNITS: f32 = 0.9;
 
 /// `hud_v2.zrd`'s measured `LIGHT_HUD_NORM` (14,196,8) — the neutral colour a
 /// HUD mesh falls back to when its stored material names no texture.

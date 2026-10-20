@@ -88,10 +88,24 @@ to the instrument node**.
 The instrument space fits a camera at the origin looking down −Z with
 half-extents ≈ **10.0 wide × 7.5 high at |z| = 17.5** (4:3), i.e. a vertical
 fov of `2·atan(7.5/17.5) ≈ 46.4°`: `comp` at y=7 lands at the top edge and
-the dials at y≈−4 with radius ≈3 land at the bottom corners exactly as the
-owner captures show. The fit itself is designed; the placements are
-measured. `nitrogauge` at z=−23.5 lands mostly below the safe area — the
-original shows only its top sliver bottom-right.
+the dial groups anchor in the bottom corners exactly as the owner captures
+show. The fit itself is designed; the placements are measured.
+`nitrogauge` at z=−23.5 projects to the bottom-right corner — the original
+shows only its top sliver there (capture: ~120×7 px at x≈900–1024,
+y≈630–637).
+
+**Dial radius fit (2026-10-20, second session).** In the owner's 1024×768
+frame the round gauges measure ~92–95 px across: the left stack sits at
+x≈9–104 (centre −8.9 in HUD units) with rows y≈447–537 / 544–636 / 642–735,
+whose centres land on `missilegauge` −2.1, `altimeter` −4.05 and
+`damageindicator` −6.0 to within 0.1 unit, and the right column mirrors it
+at x≈921–1016 (+8.9). That is a dial radius of ≈**0.9** HUD units, not the
+first checkpoint's ≈3 guess — the speedometer `g784` face's stored radius
+measures ≈1.0 in instrument space, so the drawn scale is ≈0.9. The compass
+strip measures 140×20 px centred at top (x 442–582, y 19–39 ≈ 2.7 units
+wide at the tape's own scale); `comp`'s second stored triple `(21, 0, 0)`
+stays unmeasured — it is not a per-instrument scale (the comp subtree is
+authored in the same unit space as the dials).
 
 ## Measured engine constants (already committed)
 
