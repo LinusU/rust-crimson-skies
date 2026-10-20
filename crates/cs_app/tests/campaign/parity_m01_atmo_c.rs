@@ -147,3 +147,29 @@ fn accept_parity_m01_atmo_c_retail_water_art_is_wtr_with_a_measured_mapping() {
         Ok(&HorizonOrigin::Designed(WORLD_WATER_ART_LABEL))
     );
 }
+
+/// PARITY2-M01-SEA-SHADING (Rally #1730): **the sea plane carries the tiles'
+/// mean stored corner colour**, so it does not read as a lighter patch where
+/// the tiles (drawn `texture × corner colour`) leave a gap.
+#[test]
+fn accept_parity2_m01_sea_shading_plane_carries_the_tiles_corner_colour() {
+    let shade = [170.0 / 255.0, 170.0 / 255.0, 170.0 / 255.0];
+    // Unbound art: nothing to shade, the plane is unchanged.
+    let mut plain = HorizonSpec::designed();
+    plain.bind_world_water_shade(shade);
+    assert_eq!(plain.water_corner_shade(), None);
+    assert!(plain.sea_mesh().attribute(Mesh::ATTRIBUTE_COLOR).is_none());
+
+    let mut spec = art_spec();
+    assert_eq!(spec.water_corner_shade(), Some([1.0; 3]));
+    spec.bind_world_water_shade(shade);
+    let mesh = spec.sea_mesh();
+    let Some(VertexAttributeValues::Float32x4(colours)) = mesh.attribute(Mesh::ATTRIBUTE_COLOR)
+    else {
+        panic!("sea corner colours");
+    };
+    assert!(!colours.is_empty());
+    for c in colours {
+        assert_eq!(*c, [shade[0], shade[1], shade[2], 1.0]);
+    }
+}

@@ -210,6 +210,10 @@ struct SeaArt {
     material: Handle<StandardMaterial>,
     image: String,
     uv_from_xz: [[f32; 2]; 2],
+    /// The mean stored corner colour of the world's water tiles (white until
+    /// measured), carried on the sea's corners so the plane shades like the
+    /// tiles it continues.
+    corner_shade: [f32; 3],
 }
 
 impl HorizonSpec {
@@ -318,11 +322,28 @@ impl HorizonSpec {
             material,
             image: image.to_owned(),
             uv_from_xz,
+            corner_shade: [1.0; 3],
         });
         self.set_origin(
             HorizonField::SeaColour,
             HorizonOrigin::Designed(WORLD_WATER_ART_LABEL),
         );
+    }
+
+    /// Binds the mean stored corner colour of the world's water tiles: the
+    /// tiles are drawn through those corner colours (most of M01's carry
+    /// 170/255), so a sea plane without them reads as a lighter patch wherever
+    /// the tiles leave a gap. Without bound art it changes nothing.
+    pub fn bind_world_water_shade(&mut self, shade: [f32; 3]) {
+        if let Some(art) = &mut self.water_art {
+            art.corner_shade = shade;
+        }
+    }
+
+    /// The corner colour the sea plane carries, when drawn with the world's art.
+    #[must_use]
+    pub fn water_corner_shade(&self) -> Option<[f32; 3]> {
+        self.water_art.as_ref().map(|art| art.corner_shade)
     }
 
     /// The key of the original water texture the sea is drawn with, when bound.
@@ -610,6 +631,13 @@ impl HorizonSpec {
                 .filter_map(|p| self.sea_uv_at(p[0], p[2]))
                 .collect();
             mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, uvs);
+        }
+        if let Some([r, g, b]) = self.water_corner_shade()
+            && let Some(VertexAttributeValues::Float32x3(positions)) =
+                mesh.attribute(Mesh::ATTRIBUTE_POSITION)
+        {
+            let colours = vec![[r, g, b, 1.0]; positions.len()];
+            mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, colours);
         }
         mesh
     }

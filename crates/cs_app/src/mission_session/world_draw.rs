@@ -221,6 +221,10 @@ pub struct WorldWaterArt {
     /// The tile's texture mapping, measured from its largest triangle:
     /// `[u, v] = uv_from_xz * [x, z]`, in repeats per metre.
     pub uv_from_xz: [[f32; 2]; 2],
+    /// The mean stored corner colour over every vertex of every water part
+    /// (the tiles are drawn `texture × corner colour`), `None` when no water
+    /// part carries corner colours.
+    pub corner_shade: Option<[f32; 3]>,
 }
 
 /// The altitude of the world's own water, measured from its drawn geometry
@@ -597,6 +601,9 @@ pub fn bind_sea_to_world_water(app: &mut App, parts: &MissionWorldParts) -> bool
     spec.bind_world_water_level(water.level_m);
     if let Some(art) = parts.water_art() {
         spec.bind_world_water_art(art.material.clone(), art.uv_from_xz, &art.image);
+        if let Some(shade) = art.corner_shade {
+            spec.bind_world_water_shade(shade);
+        }
     }
     true
 }
@@ -612,6 +619,8 @@ fn measure_water_art(
 ) -> Option<WorldWaterArt> {
     let assets = app.world().get_resource::<Assets<Mesh>>()?;
     let mut best: Option<(usize, WorldWaterArt)> = None;
+    let mut shade_sum = [0.0_f64; 3];
+    let mut shade_count = 0_u64;
     for object in definition.objects() {
         let Resolved::Known(known) = object.mesh() else {
             continue;
@@ -624,12 +633,22 @@ fn measure_water_art(
             let Some(image) = part.image.as_deref().filter(|key| is_water_image(key)) else {
                 continue;
             };
-            if best.as_ref().is_some_and(|(n, _)| *n >= part.triangles) {
-                continue;
-            }
             let Some(mesh) = assets.get(&part.mesh) else {
                 continue;
             };
+            if let Some(VertexAttributeValues::Float32x4(colours)) =
+                mesh.attribute(Mesh::ATTRIBUTE_COLOR)
+            {
+                for colour in colours {
+                    for (sum, channel) in shade_sum.iter_mut().zip(colour) {
+                        *sum += f64::from(*channel);
+                    }
+                    shade_count += 1;
+                }
+            }
+            if best.as_ref().is_some_and(|(n, _)| *n >= part.triangles) {
+                continue;
+            }
             let Some(uv_from_xz) = texture_mapping(mesh, &placement) else {
                 continue;
             };
@@ -639,11 +658,16 @@ fn measure_water_art(
                     material: part.material.clone(),
                     image: image.to_owned(),
                     uv_from_xz,
+                    corner_shade: None,
                 },
             ));
         }
     }
-    best.map(|(_, art)| art)
+    let shade = (shade_count > 0).then(|| shade_sum.map(|sum| (sum / shade_count as f64) as f32));
+    best.map(|(_, art)| WorldWaterArt {
+        corner_shade: shade,
+        ..art
+    })
 }
 
 /// The linear map from world `[x, z]` to `[u, v]` of the largest triangle of
