@@ -33,7 +33,7 @@
 //! | `weapon_guns_fire` | holding `Space` for a second sends more than one round through the mission's weapon session |
 //! | `weapon_rounds_drawn` | every live round entity carries a mesh, i.e. a tracer the player can see |
 //! | `weapon_muzzle_flash_drawn` | every muzzle-effect record seen during the hold carries a drawn flash, and at least one was seen |
-//! | `weapon_rocket_launches` | `Left Ctrl` near a declared-hostile actor launches a rocket |
+//! | `weapon_rocket_launches` | `X` — the original's secondary-fire row — near a declared-hostile actor launches a rocket |
 //! | `audio_radio_queued` | a radio line reached the audio queue or the mixer |
 //! | `audio_engine_queued` | the player's engine loop is bound and running |
 //! | `smoke_shots_delivered` | every screenshot the run asked for arrived |
@@ -215,6 +215,21 @@ const GUNS_SHOT_OFFSET: u32 = 50;
 const ROCKET_WAIT_FRAMES: u32 = 90;
 /// Frames into the rocket phase at which its screenshot is requested.
 const ROCKET_SHOT_OFFSET: u32 = 80;
+
+/// Frames into `Phase::Target` the under-reticule key is pressed.
+const TARGET_KEY_OFFSET: u32 = 14;
+/// Frames into `Phase::Target` the in-view marker screenshot is taken.
+const TARGET_IN_VIEW_OFFSET: u32 = 34;
+/// Frames into `Phase::Target` the player turns away from the held target.
+const TARGET_FLIP_OFFSET: u32 = 38;
+/// Frames into `Phase::Target` the off-view arrow screenshot is taken.
+const TARGET_OFF_VIEW_OFFSET: u32 = 58;
+/// Frames into `Phase::Target` the non-aircraft key is pressed.
+const TARGET_OBJECTIVE_KEY_OFFSET: u32 = 62;
+/// Frames into `Phase::Target` the objective screenshot is taken.
+const TARGET_OBJECTIVE_OFFSET: u32 = 82;
+/// Frames into `Phase::Target` the phase ends.
+const TARGET_END_OFFSET: u32 = 84;
 /// Frames after the last scripted frame the run waits for outstanding
 /// screenshots.
 const SHOT_GRACE_FRAMES: u32 = 600;
@@ -739,6 +754,40 @@ pub struct WingmanSample {
 }
 
 /// Everything the run measured, as [`evaluate`] consumes it.
+/// What the target-indicator phase measured (PARITY2-M01-TARGET-INDICATORS,
+/// #1727): the script faces a hostile census member, presses `Q` — the
+/// measured under-reticule select — and photographs the marker, then turns
+/// away and photographs the edge arrow and clock label, then presses `R`
+/// for the non-aircraft class.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TargetingMetrics {
+    /// The reticle's selected actor at the in-view frame (debug id).
+    pub selected: Option<String>,
+    /// The reticle held a selection at the in-view frame.
+    pub in_view_selected: bool,
+    /// The reticle's selected actor was declared hostile at the in-view
+    /// frame (the marker's measured red).
+    pub in_view_hostile: Option<bool>,
+    /// The selected target projected on screen at the in-view frame.
+    pub in_view_on_screen: bool,
+    /// Indicator nodes the in-view frame drew — the marker alone is one.
+    pub in_view_nodes: usize,
+    /// The held target was off screen at the off-view frame.
+    pub off_view_off_screen: bool,
+    /// Indicator nodes at the off-view frame — arrow and label, ring when
+    /// the measured window gate was open.
+    pub off_view_nodes: usize,
+    /// Distance to the held target at the off-view frame.
+    pub off_view_distance_m: Option<f64>,
+    /// The reticle's class at the non-aircraft frame
+    /// ([`cs_sim::targeting::TargetClass::label`]) — the measured `R` select
+    /// must land on a non-aircraft.
+    pub objective_class: Option<String>,
+    /// The non-aircraft select's record is flagged objective.
+    pub objective_selected: Option<bool>,
+}
+
+/// Everything the run measured, as [`evaluate`] consumes it.
 #[derive(Clone, Debug, Default)]
 pub struct SmokeMeasurements {
     /// The mission label, e.g. `M01`.
@@ -779,6 +828,8 @@ pub struct SmokeMeasurements {
     pub camera: Option<CameraMetrics>,
     /// The player's pose at the first control frame (#1697).
     pub first_control: Option<FirstControlMetrics>,
+    /// The target-indicator phase (PARITY2-M01-TARGET-INDICATORS, #1727).
+    pub targeting: TargetingMetrics,
 }
 
 /// One pass/fail verdict with its evidence.
@@ -1057,7 +1108,8 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
         passed: m.rocket.launched,
         detail: if m.rocket.launched {
             format!(
-                "Left Ctrl near a declared-hostile actor launched a rocket ({} live)",
+                "`X`, the original's secondary-fire row, near a declared-hostile actor launched \
+                 a rocket ({} live)",
                 m.rocket.max_rockets
             )
         } else {
@@ -1171,6 +1223,56 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
             },
         ),
     });
+
+    // --- the selected-target indicator (#1727) -----------------------------
+    {
+        let targeting = &m.targeting;
+        checks.push(Check {
+            id: "target_selected".to_owned(),
+            applies: true,
+            passed: targeting.in_view_selected,
+            detail: format!(
+                "the reticle after the measured `Q`: {}",
+                targeting.selected.as_deref().unwrap_or("nothing selected")
+            ),
+        });
+        checks.push(Check {
+            id: "target_in_view_marker".to_owned(),
+            applies: true,
+            passed: targeting.in_view_selected
+                && targeting.in_view_on_screen
+                && targeting.in_view_nodes == 1,
+            detail: format!(
+                "{} indicator node(s), target on screen: {} (the original draws the \
+                 marker alone in view)",
+                targeting.in_view_nodes, targeting.in_view_on_screen
+            ),
+        });
+        checks.push(Check {
+            id: "target_off_view_arrow".to_owned(),
+            applies: true,
+            passed: targeting.in_view_selected
+                && targeting.off_view_off_screen
+                && targeting.off_view_nodes >= 2,
+            detail: format!(
+                "{} indicator node(s) (arrow, label, ring while the gate is open), target \
+                 off screen: {}",
+                targeting.off_view_nodes, targeting.off_view_off_screen
+            ),
+        });
+        checks.push(Check {
+            id: "target_non_aircraft_class".to_owned(),
+            applies: true,
+            passed: targeting
+                .objective_class
+                .as_deref()
+                .is_some_and(|class| class != "aircraft"),
+            detail: format!(
+                "the non-aircraft `R` select held a {:?} target (objective flag: {:?})",
+                targeting.objective_class, targeting.objective_selected
+            ),
+        });
+    }
 
     // --- the picture arrived ----------------------------------------------
     checks.push(Check {
@@ -1562,6 +1664,7 @@ enum KeyOp {
 struct KeyQueue(Vec<KeyOp>);
 
 /// The pose a placement wants written onto the production player body.
+#[derive(Clone)]
 struct Placement {
     /// The census member the placement is for (`None`: the trigger approach).
     name: String,
@@ -1624,6 +1727,9 @@ struct SmokeData {
     parity_shots: usize,
     /// The no-teleport run's `flight` screenshot is already requested.
     flight_shot: bool,
+    /// The placement that faced the target-indicator demo actor, so the
+    /// phase can turn the player away from the held selection (#1727).
+    target_placement: Option<Placement>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -1637,6 +1743,9 @@ enum Phase {
     SeaProbe,
     Actors,
     Approach,
+    /// The selected-target indicator: face a hostile, `Q` it, photograph;
+    /// turn away, photograph; `R` to the non-aircraft class (#1727).
+    Target,
     Hud,
     Guns,
     Rocket,
@@ -1762,6 +1871,17 @@ fn apply_placement(
         placement.yaw,
         placement.speed_m_s,
     ));
+}
+
+/// The target-indicator reads `smoke_script` makes at its shots: the
+/// session's reticle and the indicator nodes the frame drew, grouped so the
+/// system's parameter list stays inside Bevy's arity limit (#1727).
+#[derive(SystemParam)]
+struct TargetingParams<'w, 's> {
+    /// The session's targeting authority; `None` before the weapons open.
+    session: Option<Res<'w, crate::targeting::TargetingSession>>,
+    /// The indicator nodes the contact aid spawned this frame.
+    brackets: Query<'w, 's, (), With<super::actor_census::ContactBracket>>,
 }
 
 /// The entity classes a probe writes its hide value onto, grouped so the
@@ -2402,6 +2522,7 @@ fn smoke_script(
     poses: Query<(Option<&Position>, Option<&Transform>)>,
     camera: Query<(&Camera, &GlobalTransform), With<crate::playtest::PlaytestCameraMarker>>,
     water_tiles: Query<(), With<WorldWaterPart>>,
+    targeting: TargetingParams<'_, '_>,
 ) {
     let frame = data.frame;
     if frame == 1 {
@@ -2573,6 +2694,58 @@ fn smoke_script(
                 || (data.measurements.approach.objective_woke && at > APPROACH_MIN_FRAMES)
             {
                 data.measurements.approach.frames = at;
+                data.phase = Phase::Target;
+                data.phase_start = frame + 1;
+            }
+        }
+        // PARITY2-M01-TARGET-INDICATORS (#1727): face the first
+        // declared-hostile census member, select it with the measured `Q`
+        // (under reticule), photograph the in-view marker; then turn away
+        // and photograph the edge arrow and clock label the held selection
+        // draws; then press `R` — the measured next non-aircraft — for the
+        // objective-class frame.
+        Phase::Target => {
+            if at == 0 {
+                if let Some(index) = data.census.iter().position(|entry| entry.hostile)
+                    && let Some(placement) = place_near_actor(&data, index, &player, &poses)
+                {
+                    data.target_placement = Some(placement.clone());
+                    pending.0 = Some(placement);
+                }
+            } else if at == TARGET_KEY_OFFSET {
+                queue.0.push(KeyOp::Press(KeyCode::KeyQ));
+            } else if at == TARGET_KEY_OFFSET + 2 {
+                queue.0.push(KeyOp::Release(KeyCode::KeyQ));
+            } else if at == TARGET_IN_VIEW_OFFSET {
+                record_targeting(&mut data, targeting.session.as_deref(), &camera, true);
+                data.measurements.targeting.in_view_nodes = targeting.brackets.iter().count();
+                due.push("target_in_view".to_owned());
+            } else if at == TARGET_FLIP_OFFSET {
+                if let Some(mut flip) = data.target_placement.clone() {
+                    flip.yaw += std::f32::consts::PI;
+                    flip.name = "target off-view".to_owned();
+                    pending.0 = Some(flip);
+                }
+            } else if at == TARGET_OFF_VIEW_OFFSET {
+                record_targeting(&mut data, targeting.session.as_deref(), &camera, false);
+                data.measurements.targeting.off_view_nodes = targeting.brackets.iter().count();
+                due.push("target_off_view".to_owned());
+            } else if at == TARGET_OBJECTIVE_KEY_OFFSET {
+                queue.0.push(KeyOp::Press(KeyCode::KeyR));
+            } else if at == TARGET_OBJECTIVE_KEY_OFFSET + 2 {
+                queue.0.push(KeyOp::Release(KeyCode::KeyR));
+            } else if at == TARGET_OBJECTIVE_OFFSET {
+                let reticle = targeting
+                    .session
+                    .as_deref()
+                    .and_then(crate::targeting::TargetingSession::last_phase)
+                    .and_then(|phase| phase.reticle.as_ref());
+                data.measurements.targeting.objective_class =
+                    reticle.map(|reticle| reticle.class.label().to_owned());
+                data.measurements.targeting.objective_selected =
+                    reticle.map(|reticle| reticle.objective);
+                due.push("target_objective".to_owned());
+            } else if at >= TARGET_END_OFFSET {
                 data.phase = Phase::Hud;
                 data.phase_start = frame + 1;
             }
@@ -2607,12 +2780,12 @@ fn smoke_script(
                 queue.0.push(KeyOp::Release(KeyCode::Space));
                 data.phase = Phase::Rocket;
                 data.phase_start = frame + 1;
-                queue.0.push(KeyOp::Press(KeyCode::ControlLeft));
+                queue.0.push(KeyOp::Press(KeyCode::KeyX));
             }
         }
         Phase::Rocket => {
             if at == 8 {
-                queue.0.push(KeyOp::Release(KeyCode::ControlLeft));
+                queue.0.push(KeyOp::Release(KeyCode::KeyX));
             } else if at == ROCKET_SHOT_OFFSET {
                 due.push("rocket".to_owned());
             } else if at == ROCKET_WAIT_FRAMES {
@@ -2969,6 +3142,42 @@ fn live_position(
     position
         .map(|position| position.0)
         .or_else(|| transform.map(|transform| transform.translation))
+}
+
+/// Records the reticle's state at a target-indicator shot: what is
+/// selected, and whether the camera can see it (PARITY2-M01-TARGET-INDICATORS).
+fn record_targeting(
+    data: &mut SmokeData,
+    targeting: Option<&crate::targeting::TargetingSession>,
+    camera: &Query<(&Camera, &GlobalTransform), With<crate::playtest::PlaytestCameraMarker>>,
+    in_view: bool,
+) {
+    let reticle = targeting
+        .and_then(crate::targeting::TargetingSession::last_phase)
+        .and_then(|phase| phase.reticle.clone());
+    let on_screen = reticle
+        .as_ref()
+        .map(|reticle| {
+            Vec3::new(
+                reticle.position.x() as f32,
+                reticle.position.y() as f32,
+                reticle.position.z() as f32,
+            )
+        })
+        .and_then(|position| project_onto_screen(position, camera))
+        .is_some();
+    let metrics = &mut data.measurements.targeting;
+    if in_view {
+        metrics.selected = reticle
+            .as_ref()
+            .map(|reticle| format!("{:?}", reticle.target));
+        metrics.in_view_selected = reticle.is_some();
+        metrics.in_view_hostile = reticle.as_ref().map(|reticle| reticle.hostile);
+        metrics.in_view_on_screen = on_screen;
+    } else {
+        metrics.off_view_off_screen = !on_screen;
+        metrics.off_view_distance_m = reticle.as_ref().map(|reticle| reticle.distance.0);
+    }
 }
 
 /// Where a world position lands in the viewport, when the camera can say —
@@ -3674,6 +3883,11 @@ fn write_artifacts(
          \"cinematic\":{cinematic},\"first_control\":{first_control},\
          \"approach\":{{\"placed\":{approach_placed},\"anchor\":{anchor},\
          \"frames\":{approach_frames},\"objective_woke\":{woke}}},\
+         \"targeting\":{{\"selected\":{t_selected},\"in_view_selected\":{t_in_sel},\
+         \"in_view_hostile\":{t_in_hostile},\"in_view_on_screen\":{t_in_screen},\
+         \"in_view_nodes\":{t_in_nodes},\"off_view_off_screen\":{t_off_screen},\
+         \"off_view_nodes\":{t_off_nodes},\"off_view_distance_m\":{t_off_dist},\
+         \"objective_class\":{t_objective_class},\"objective_selected\":{t_objective}}},\
          \"actors\":[{actors}],\"placements\":[{placements}],\"shots\":[{shots}],\
          \"checks\":[{checks}],\"failures\":[{failures}],\"passed\":{passed}}}\n",
         kind = json_string(SMOKE_KIND),
@@ -3726,6 +3940,30 @@ fn write_artifacts(
             .map_or_else(|| "null".to_owned(), json_string),
         approach_frames = report.measurements.approach.frames,
         woke = report.measurements.approach.objective_woke,
+        t_selected = report
+            .measurements
+            .targeting
+            .selected
+            .as_deref()
+            .map_or_else(|| "null".to_owned(), json_string),
+        t_in_sel = report.measurements.targeting.in_view_selected,
+        t_in_hostile = json_option_bool(report.measurements.targeting.in_view_hostile),
+        t_in_screen = report.measurements.targeting.in_view_on_screen,
+        t_in_nodes = report.measurements.targeting.in_view_nodes,
+        t_off_screen = report.measurements.targeting.off_view_off_screen,
+        t_off_nodes = report.measurements.targeting.off_view_nodes,
+        t_off_dist = report
+            .measurements
+            .targeting
+            .off_view_distance_m
+            .map_or_else(|| "null".to_owned(), |value| format!("{value}")),
+        t_objective_class = report
+            .measurements
+            .targeting
+            .objective_class
+            .as_deref()
+            .map_or_else(|| "null".to_owned(), json_string),
+        t_objective = json_option_bool(report.measurements.targeting.objective_selected),
         actors = actors,
         placements = placements,
         shots = shots,

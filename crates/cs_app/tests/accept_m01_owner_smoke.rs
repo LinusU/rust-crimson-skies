@@ -18,8 +18,8 @@ use cs_app::mission_session::{
     ActorMetrics, AudioMetrics, Check, GunMetrics, HudMetrics, MIN_ACTOR_PIXELS, MIN_GUN_ROUNDS,
     MIN_MISSION_SMOKE_SECONDS, MIN_OBJECTIVE_TEXT_PIXELS, MIN_SEA_COVERAGE_PERMILLE,
     MIN_TERRAIN_DETAIL_PERMILLE, MIN_TERRAIN_DISTINCT_COLOURS, MIN_TERRAIN_LUMINANCE_SPREAD,
-    RocketMetrics, SMOKE_KIND, SMOKE_REPORT_FILE, SeaMetrics, SmokeMeasurements, TerrainMetrics,
-    evaluate_mission_smoke,
+    RocketMetrics, SMOKE_KIND, SMOKE_REPORT_FILE, SeaMetrics, SmokeMeasurements, TargetingMetrics,
+    TerrainMetrics, evaluate_mission_smoke,
 };
 use cs_app::playtest::SmokeRequest;
 
@@ -154,6 +154,18 @@ fn healthy() -> SmokeMeasurements {
             launched: true,
             refusal: None,
         }),
+        targeting: TargetingMetrics {
+            selected: Some("workersvoyagezep".to_owned()),
+            in_view_selected: true,
+            in_view_hostile: Some(true),
+            in_view_on_screen: true,
+            in_view_nodes: 1,
+            off_view_off_screen: true,
+            off_view_nodes: 3,
+            off_view_distance_m: Some(680.0),
+            objective_class: Some("capital_ship".to_owned()),
+            objective_selected: Some(true),
+        },
         ..SmokeMeasurements::default()
     }
 }
