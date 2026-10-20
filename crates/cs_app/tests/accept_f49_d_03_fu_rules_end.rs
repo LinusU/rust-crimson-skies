@@ -19,8 +19,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use cs_app::ui::instant_action::{
-    DirectoryInputs, ScenarioResult, ScenarioSnapshot, directory_presets, evaluate_outcome,
-    lower_preset, retail_instant_action_catalog,
+    DirectoryInputs, IaAction, InstantActionFlow, ScenarioResult, ScenarioSnapshot,
+    directory_presets, evaluate_outcome, lower_preset, retail_instant_action_catalog,
 };
 use cs_content::ai::DifficultyTier;
 use cs_content::instant_action::{
@@ -32,7 +32,8 @@ use cs_content::instant_action::{
 };
 use cs_content::stunts::decode_zrd;
 use cs_content::world::WorldId;
-use cs_types::content::ContentId;
+use cs_sim::campaign::ProfileId;
+use cs_types::content::{ContentId, ContentKind};
 
 const FINDING: &str = "docs/findings/2026-10-19-f49-d-03-fu-rules-end.md";
 
@@ -924,6 +925,60 @@ fn accept_f49_d_03_fu_rules_end_measured_conditions_are_never_offered() {
             "{condition} is bound per mission_type, never offered"
         );
     }
+}
+
+/// A custom draft opened from a preset whose rules bind a measured condition
+/// leaves its rules unset: those conditions are bound per `mission_type` and
+/// never offered, so inheriting one would plant a pick `validate_custom` must
+/// refuse. A designed condition the table offers is still inherited.
+#[test]
+fn accept_f49_d_03_fu_rules_end_a_custom_draft_inherits_only_an_offered_condition() {
+    let open_draft = |catalog: &InstantActionCatalog, id: &ContentId| {
+        let mut flow = InstantActionFlow::new(
+            ProfileId::new("pilot.rules-end").expect("a valid profile id"),
+            catalog.clone(),
+        );
+        flow.select_preset(id).expect("select accepts a preset");
+        flow.apply(IaAction::StartCustom {
+            subject: ContentId::from_source(ContentKind::IaScenario, "rules-end-custom")
+                .expect("a custom subject"),
+        })
+        .expect("a custom draft opens");
+        flow.draft().expect("a draft is open").clone()
+    };
+
+    for condition in [
+        VictoryCondition::OppositionDown,
+        VictoryCondition::WavesCleared,
+        VictoryCondition::ZeppelinDown,
+        VictoryCondition::TargetDown,
+        VictoryCondition::AllGatesCleared,
+    ] {
+        let (catalog, id) = measured_scenario(condition);
+        let draft = open_draft(&catalog, &id);
+        assert!(
+            draft.rules().is_none(),
+            "{condition}: the unofferable measured rules are not inherited"
+        );
+        assert!(
+            draft.unset_dimensions().contains(&"rules"),
+            "{condition}: the unset rules are named for the player"
+        );
+    }
+
+    let designed = VictoryRules::try_new(
+        VictoryCondition::EliminateEnemies,
+        RespawnBudget::None,
+        None,
+        TieOutcome::Draw,
+    )
+    .expect("designed rules are valid");
+    let (catalog, id) = catalog_with_rules(designed);
+    assert_eq!(
+        open_draft(&catalog, &id).rules().copied(),
+        Some(designed),
+        "a condition the option table offers is inherited"
+    );
 }
 
 /// The finding the claim names exists and states the measurement.

@@ -84,8 +84,8 @@ fn evidence_report_f49_d_03_fu_rules_end_writes_the_acceptance_report() {
         assert_eq!(line.1, "pass", "the capability test {needed} must pass");
     }
     assert!(
-        suite.assertions.len() >= 9,
-        "nine rules-end tests were recorded, got {:?}",
+        suite.assertions.len() >= 10,
+        "ten rules-end tests were recorded, got {:?}",
         suite.assertions
     );
 

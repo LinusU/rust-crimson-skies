@@ -549,7 +549,10 @@ fn accept_f49_d_03_retail_every_preset_has_an_explicit_deterministic_seed() {
 }
 
 /// Customizing a retail preset does not inherit a guess: the unmeasured
-/// difficulty and rules are left unset on the draft, and the player picks them.
+/// difficulty is left unset on the draft, and so are the rules — they are
+/// measured per `mission_type`, but those conditions name objects only that
+/// type's original spawn creates and are never offered to a custom scenario,
+/// so the draft cannot inherit them and the player picks them.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_f49_d_03_retail_customizing_a_preset_leaves_unmeasured_dimensions_unset() {

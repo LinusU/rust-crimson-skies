@@ -1193,7 +1193,20 @@ impl InstantActionFlow {
         if let Some(difficulty) = parameters.difficulty().declared() {
             draft = draft.with_difficulty(difficulty.clone());
         }
-        if let Some(rules) = parameters.rules().declared() {
+        // The preset's rules are copied only when the custom option table
+        // offers their condition: the measured Instant Action conditions are
+        // bound per `mission_type` (`VictoryCondition::DESIGNED`, not `ALL`)
+        // because they name objects only that mission type's original spawn
+        // creates. Inheriting one would seed the draft with a condition the
+        // player cannot pick and `validate_custom` must refuse — the draft
+        // leaves it unset instead, exactly like an unmeasured dimension.
+        if let Some(rules) = parameters.rules().declared()
+            && self
+                .catalog
+                .options()
+                .victory_conditions()
+                .contains(&rules.condition())
+        {
             draft = draft.with_rules(*rules);
         }
         Ok(draft)
