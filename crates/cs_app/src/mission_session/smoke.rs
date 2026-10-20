@@ -1789,6 +1789,10 @@ struct ProbeClasses<'w, 's> {
         With<Node>,
     >,
     flight_check_overlay: Query<'w, 's, Entity, With<ScreenOverlay>>,
+    /// The mesh HUD cluster's root (#1726): it carries no `Node`, so the UI
+    /// class never reaches it — it hides with the actor bodies on every probe
+    /// and comes back on restore.
+    hud_art: Query<'w, 's, Entity, With<super::hud_art::HudArtRoot>>,
 }
 
 /// Applies the probe's hide mode to every entity class it covers. A value is
@@ -1861,6 +1865,9 @@ fn apply_probe(
     write_all(&mut visibility, classes.players.iter(), body_value);
     write_all(&mut visibility, classes.aircraft.iter(), body_value);
     write_all(&mut visibility, classes.zeppelins.iter(), body_value);
+    // The mesh HUD cluster is an overlay, not world geometry: out of every
+    // probe frame like the UI nodes, back on restore.
+    write_all(&mut visibility, classes.hud_art.iter(), body_value);
     write_all(&mut visibility, classes.visuals.iter(), world_value);
     // The world's `horizon` records — the sky band, the haze wall under it and
     // the cloud quads — are anchored to the camera like the dome is, so a sea
