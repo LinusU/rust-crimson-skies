@@ -208,6 +208,158 @@ fn accept_vs_m01_runtime_player_visual_restart_and_teardown_leave_one() {
 }
 
 #[test]
+#[ignore = "probe"]
+fn probe_dump_hud_art_transforms() {
+    let root = game_dir();
+    let sources = cs_app::playtest_retail::read_aircraft_sources(&root, "C3")
+        .expect("the retail sources read");
+    let adapter = cs_app::playtest_retail::playtest_adapter().expect("the adapter builds");
+    let planes = cs_app::playtest_retail::aircraft_graph(sources.aircraft(), &adapter)
+        .expect("planes.zbd builds a graph");
+    let gauges = planes
+        .nodes()
+        .iter()
+        .find(|n| n.index() == 56)
+        .expect("gauges slot 56");
+    for node in planes.subtree(gauges.id()) {
+        let local = node.local_transform();
+        let world = node.world_transform();
+        let mesh = node
+            .mesh()
+            .map(|b| format!("mesh#{}", b.index))
+            .unwrap_or_default();
+        eprintln!(
+            "slot {:>4} {:<18} {:<10} local t={:?} l={:?}\n      world t={:?} l={:?}",
+            node.index(),
+            node.name(),
+            mesh,
+            local.translation(),
+            local.linear(),
+            world.translation(),
+            world.linear(),
+        );
+        // mesh vertex bounds for pivot questions
+        if let Some(binding) = node.mesh()
+            && let Some(stored) = sources.aircraft().meshes().get(binding.index)
+        {
+            let mut min = [f32::INFINITY; 3];
+            let mut max = [f32::NEG_INFINITY; 3];
+            for v in &stored.mesh.positions {
+                for i in 0..3 {
+                    min[i] = min[i].min(v[i]);
+                    max[i] = max[i].max(v[i]);
+                }
+            }
+            let mats: Vec<String> = stored
+                .material_groups
+                .iter()
+                .flat_map(|g| g.iter())
+                .map(|g| {
+                    sources
+                        .aircraft()
+                        .materials()
+                        .material(g.material)
+                        .and_then(|m| sources.aircraft().materials().texture_of(m))
+                        .map(|t| t.name.clone())
+                        .unwrap_or_else(|| "<none>".into())
+                })
+                .collect();
+            eprintln!(
+                "      mesh#{} verts min={:?} max={:?} groups={:?}",
+                binding.index, min, max, mats
+            );
+        }
+    }
+}
+
+#[test]
+#[ignore = "probe"]
+fn probe_dump_hud_art() {
+    let root = game_dir();
+    let found = cs_assets::install::discover(&root).expect("discovery");
+    // instruments.zrd / hud_v2.zrd from zbd/zrdr.zbd
+    for wanted in ["instruments.zrd", "hud_v2.zrd"] {
+        let record = found
+            .manifest
+            .files
+            .iter()
+            .find(|r| r.relative_spelling.logical_key() == "zbd/zrdr.zbd")
+            .expect("zrdr");
+        let bytes = std::fs::read(root.join(record.relative_spelling.as_str())).unwrap();
+        let discovery = cs_formats::script_raw::discover_container(
+            "zbd/zrdr.zbd",
+            &record.relative_spelling,
+            &bytes,
+        );
+        let program = discovery
+            .programs()
+            .iter()
+            .find(|p| {
+                p.locator()
+                    .member()
+                    .is_some_and(|m| m.eq_ignore_ascii_case(wanted))
+            })
+            .unwrap_or_else(|| panic!("no {wanted}"));
+        let decoded = cs_content::stunts::decode_zrd(program.bytes()).expect("decode");
+        eprintln!("== {wanted} ==\n{decoded:#?}");
+    }
+    // planes.zbd material table: damage-swap and glyph materials
+    let sources = cs_app::playtest_retail::read_playtest_sources(&root, "C3")
+        .expect("the retail sources read");
+    let mats = sources.aircraft().materials();
+    for index in 0..1024u32 {
+        let Some(material) = mats.material(index) else { continue };
+        let Some(texture) = mats.texture_of(material) else {
+            continue;
+        };
+        let name = &texture.name;
+        if ["hilite", "hatch", "zero", "one", "two", "three", "four", "five", "six", "seven", "eight", "nine", "missile", "tracer", "tip", "arrow", "indicator", "lowalt", "stall", "bezel", "rcircle", "guage"]
+            .iter()
+            .any(|k| name.to_ascii_lowercase().contains(k))
+        {
+            eprintln!("mat {index}: {name}");
+        }
+    }
+    // texture names in the world-group texture.zbd archives
+    let group = found
+        .diagnosis
+        .world_groups
+        .iter()
+        .find(|g| g.as_str().eq_ignore_ascii_case("zbd/c3"))
+        .unwrap_or_else(|| {
+            panic!(
+                "worlds: {:?}",
+                found
+                    .diagnosis
+                    .world_groups
+                    .iter()
+                    .map(|g| g.as_str())
+                    .collect::<Vec<_>>()
+            )
+        })
+        .clone();
+    let context = cs_types::asset_id::ResolveContext::new(cs_assets::install::fingerprint(
+        &found.manifest,
+    ))
+    .with_world_group(cs_types::asset_id::WorldGroup::from_relative(group));
+    let mut builder = cs_assets::vfs::SessionBuilder::new(context);
+    builder
+        .mount_installation(&root, &found.diagnosis)
+        .expect("mount");
+    let session = builder.open();
+    let key = cs_types::asset_id::AssetKey::from_spelling("world", "texture.zbd", "default")
+        .expect("key");
+    let catalog = cs_content::textures::TextureCatalog::open(&session, std::slice::from_ref(&key));
+    for archive in catalog.archives() {
+        let names: Vec<String> = archive.ids().map(|id| id.name.clone()).collect();
+        eprintln!("== {:?} ({} textures) ==", archive.path(), names.len());
+        for n in names {
+            eprintln!("  {n}");
+        }
+    }
+}
+
+#[test]
 #[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
 fn probe_dump_player_airframe_subtrees() {
     let root = game_dir();
