@@ -14,7 +14,8 @@
 //!   `Shift+L` level-off, ...) from the raw keyboard state, by the original's
 //!   exact-modifier rule ([`ControlsMap::commands_for_key`]).
 //! * [`MissionControlsHelpPlugin`] draws the table's real bindings on the
-//!   `F1` help screen and the `Esc` pause screen.
+//!   `F1` keymap overlay ([`super::keymap_overlay`]) and the `Esc` pause
+//!   screen.
 //!
 //! The old developer layout (`W/S` pitch, `Left Shift`/`F` throttle, ...)
 //! survives only behind `--dev-keys` ([`super::targeting_input::mission_action_map`]).
@@ -141,6 +142,10 @@ pub struct ControlsHelpOpen(pub bool);
 #[derive(Component, Clone, Copy, Debug, Default)]
 pub struct ControlsHelpPanel;
 
+/// Marks the pause screen's text panel (the `F1` help is the keymap overlay).
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct PauseControlsPanel;
+
 /// Toggles the help screen on the table's own "View Help" key.
 pub fn toggle_controls_help(
     keys: Res<ButtonInput<KeyCode>>,
@@ -190,6 +195,7 @@ fn spawn_controls_panel(mut commands: Commands) {
         },
         Visibility::Hidden,
         ControlsHelpPanel,
+        PauseControlsPanel,
     ));
 }
 
@@ -197,10 +203,12 @@ fn update_controls_panel(
     controls: Res<MissionControls>,
     open: Res<ControlsHelpOpen>,
     platform: Option<Res<PlatformInput>>,
-    mut panels: Query<(&mut Text, &mut Visibility), With<ControlsHelpPanel>>,
+    mut panels: Query<(&mut Text, &mut Visibility), With<PauseControlsPanel>>,
 ) {
     let paused = platform.is_some_and(|platform| platform.session().is_paused());
-    let shown = paused || open.0;
+    // The F1 help is the keymap overlay (#1739); this text panel is the pause
+    // screen's.
+    let shown = paused && !open.0;
     for (mut text, mut visibility) in &mut panels {
         let wanted = if shown {
             Visibility::Visible
@@ -226,10 +234,21 @@ pub struct MissionControlsHelpPlugin;
 impl Plugin for MissionControlsHelpPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<ControlsHelpOpen>()
-            .add_systems(Startup, spawn_controls_panel)
+            .add_systems(
+                Startup,
+                (
+                    spawn_controls_panel,
+                    super::keymap_overlay::spawn_keymap_overlay,
+                ),
+            )
             .add_systems(
                 Update,
-                (toggle_controls_help, update_controls_panel).chain(),
+                (
+                    toggle_controls_help,
+                    update_controls_panel,
+                    super::keymap_overlay::update_keymap_overlay,
+                )
+                    .chain(),
             );
     }
 }

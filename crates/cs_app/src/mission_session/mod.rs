@@ -101,6 +101,7 @@ mod flight_check;
 mod gun_sound;
 mod host;
 mod hud_art;
+mod keymap_overlay;
 mod landings;
 pub(crate) mod launch_camera;
 pub(crate) mod launch_cinematic;

@@ -214,6 +214,10 @@ const GUNS_HOLD_FRAMES: u32 = 60;
 const GUNS_SHOT_OFFSET: u32 = 50;
 /// Frames the rocket wait gives the ordnance session to launch.
 const ROCKET_WAIT_FRAMES: u32 = 90;
+/// Frames into the help phase at which the open keymap overlay is photographed.
+const HELP_SHOT_OFFSET: u32 = 10;
+/// Frames into the help phase at which `F1` is pressed again to close it.
+const HELP_CLOSE_OFFSET: u32 = 14;
 /// Frames into the rocket phase at which its screenshot is requested.
 const ROCKET_SHOT_OFFSET: u32 = 80;
 
@@ -1828,6 +1832,9 @@ enum Phase {
     Hud,
     Guns,
     Rocket,
+    /// The `F1` keymap overlay: open it over the flight view, photograph it,
+    /// close it (#1739).
+    Help,
     Final,
     Ended,
 }
@@ -2902,6 +2909,18 @@ fn smoke_script(
             } else if at == ROCKET_SHOT_OFFSET {
                 due.push("rocket".to_owned());
             } else if at == ROCKET_WAIT_FRAMES {
+                data.phase = Phase::Help;
+                data.phase_start = frame + 1;
+            }
+        }
+        Phase::Help => {
+            if at == 0 || at == HELP_CLOSE_OFFSET {
+                queue.0.push(KeyOp::Press(KeyCode::F1));
+            } else if at == 2 || at == HELP_CLOSE_OFFSET + 2 {
+                queue.0.push(KeyOp::Release(KeyCode::F1));
+            } else if at == HELP_SHOT_OFFSET {
+                due.push("keymap_help".to_owned());
+            } else if at == HELP_CLOSE_OFFSET + 6 {
                 data.phase = Phase::Final;
                 data.phase_start = frame + 1;
             }
