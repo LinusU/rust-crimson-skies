@@ -113,6 +113,7 @@ mod player_visual;
 mod radio;
 mod scenario;
 pub(crate) mod smoke;
+mod spyglass;
 mod targeting_input;
 mod terminal;
 mod weapon_counts;
@@ -239,6 +240,10 @@ pub use smoke::{
     SMOKE_KIND, SMOKE_REPORT_FILE, SeaMetrics, SmokeMeasurements, TargetingMetrics, TerrainMetrics,
     WINGMAN_SAMPLE_SECONDS, WingmanSample, evaluate as evaluate_mission_smoke,
     finish as finish_mission_smoke, near_terrain_luminance, objective_line_of, region_difference,
+};
+pub use spyglass::{
+    FALLBACK_RADIUS_M, SPYGLASS_TEXTURE_PX, SpyglassCamera, SpyglassPlugin, SpyglassState,
+    spyglass_fov, window_diameter_px, window_scale,
 };
 pub use targeting_input::{
     mint_mission_target_keys, mission_action_map, mission_crosshair, mission_selection_binding,

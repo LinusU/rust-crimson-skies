@@ -19,7 +19,8 @@ use bevy::camera::Projection;
 use bevy::prelude::{
     App, BackgroundColor, Camera, Camera3d, Color, Commands, Component, DetectChanges, Entity,
     FontSize, GlobalTransform, IntoScheduleConfigs, Local, Node, Plugin, PositionType, Query, Res,
-    Text, TextColor, TextFont, UiRect, Update, Val, Vec2, Vec3, Visibility, With, Without, default,
+    ResMut, Text, TextColor, TextFont, UiRect, Update, Val, Vec2, Vec3, Visibility, With, Without,
+    default,
 };
 use cs_sim::damage::ActorId;
 use cs_sim::targeting::{Allegiance, Reticle};
@@ -361,6 +362,7 @@ fn update_contacts(
     phase: Option<Res<super::launch_cinematic::LaunchCinematic>>,
     targeting: Option<Res<TargetingSession>>,
     mut ring_open: Local<bool>,
+    mut spyglass: Option<ResMut<super::spyglass::SpyglassState>>,
 ) {
     let overlay_on = crate::playtest::visuals::overlay_visible(overlay.as_deref());
     for entity in &brackets {
@@ -408,6 +410,7 @@ fn update_contacts(
             .and_then(|phase| phase.reticle.clone())
         else {
             *ring_open = false;
+            close_window(spyglass.as_deref_mut());
             return;
         };
         let catalog = messages.as_deref().and_then(MissionMessages::catalog);
@@ -420,6 +423,7 @@ fn update_contacts(
             catalog,
         ) else {
             *ring_open = false;
+            close_window(spyglass.as_deref_mut());
             return;
         };
         spawn_target_indicator(
@@ -432,6 +436,7 @@ fn update_contacts(
             window_size,
             &mut ring_open,
             &mut placed,
+            spyglass.as_deref_mut(),
         );
         return;
     }
@@ -498,6 +503,13 @@ pub fn spyglass_window_threshold(near: f64, far: f64, was_open: bool) -> f64 {
     if was_open { base } else { base * 0.875 }
 }
 
+/// Closes the spyglass window: no target, or the target is in view.
+fn close_window(state: Option<&mut super::spyglass::SpyglassState>) {
+    if let Some(state) = state {
+        state.window_open = false;
+    }
+}
+
 /// The (near, far) plane distances of a camera projection, in metres.
 fn projection_planes(projection: Option<&Projection>) -> (f64, f64) {
     match projection {
@@ -506,11 +518,6 @@ fn projection_planes(projection: Option<&Projection>) -> (f64, f64) {
         _ => (0.1, 1000.0),
     }
 }
-
-/// Radius of the edge ring, pixels — the measured `0.5 + 15` viewport units
-/// of the spyglass window border, approximately 15.5 px at the captured
-/// window size.
-const TARGET_RING_RADIUS: f32 = 15.5;
 
 /// How far the edge arrow/ring sit inside the window border, pixels
 /// (designed; the original clamps in NDC, not pixels).
@@ -577,6 +584,7 @@ fn edge_clamped_point(
     camera: &Camera,
     camera_transform: &GlobalTransform,
     window: (f32, f32),
+    margin: f32,
 ) -> (Vec2, Vec2) {
     let center = Vec2::new(window.0 / 2.0, window.1 / 2.0);
     let toward = position - camera_transform.translation();
@@ -598,7 +606,7 @@ fn edge_clamped_point(
         direction = Vec2::new(0.0, -1.0);
     }
     let outward = direction.normalize();
-    let half = Vec2::new(center.x - TARGET_EDGE_MARGIN, center.y - TARGET_EDGE_MARGIN);
+    let half = Vec2::new(center.x - margin, center.y - margin);
     let scale = (direction.x.abs() / half.x)
         .max(direction.y.abs() / half.y)
         .max(f32::EPSILON);
@@ -623,6 +631,7 @@ fn spawn_target_indicator(
     window: (f32, f32),
     ring_open: &mut bool,
     placed: &mut Vec<super::cockpit_hud::LabelRect>,
+    mut spyglass: Option<&mut super::spyglass::SpyglassState>,
 ) {
     let color = target_indicator_color(reticle);
     let position = Vec3::new(
@@ -633,6 +642,7 @@ fn spawn_target_indicator(
     let (relative_deg, on_screen) = screen_bearing(position, camera, camera_transform, window);
     if let Some(at) = on_screen {
         *ring_open = false;
+        close_window(spyglass.as_deref_mut());
         let label = super::cockpit_hud::marker_text(name, None);
         let width = super::cockpit_hud::label_width(label.chars().count());
         let (left, top) =
@@ -656,22 +666,48 @@ fn spawn_target_indicator(
     }
     let hour = super::cockpit_hud::clock_hour(relative_deg);
     let label = super::cockpit_hud::marker_text(name, Some(hour));
-    let (edge, outward) = edge_clamped_point(position, camera, camera_transform, window);
     let (near, far) = projection_planes(projection);
     let in_range = reticle.distance.0 <= spyglass_window_threshold(near, far, *ring_open);
     *ring_open = in_range;
-    if in_range {
+    // The window exists while the target is off screen and in range; the
+    // `Shift+S` toggle hides it without touching the arrow and label.
+    let window_radius = match spyglass {
+        Some(state) => {
+            state.window_open = in_range;
+            if state.shown() {
+                Some((
+                    super::spyglass::window_diameter_px(state.scale(), window.1) / 2.0,
+                    state.image.clone(),
+                ))
+            } else {
+                None
+            }
+        }
+        None => None,
+    };
+    let ring_radius = window_radius.as_ref().map_or(0.0, |(radius, _)| *radius);
+    let (edge, outward) = edge_clamped_point(
+        position,
+        camera,
+        camera_transform,
+        window,
+        TARGET_EDGE_MARGIN.max(ring_radius + 6.0),
+    );
+    if let Some((radius, image)) = window_radius {
+        // The second camera's picture in a round window with the target's
+        // coloured ring.
         commands.spawn((
             Node {
                 position_type: PositionType::Absolute,
-                left: Val::Px(edge.x - TARGET_RING_RADIUS),
-                top: Val::Px(edge.y - TARGET_RING_RADIUS),
-                width: Val::Px(TARGET_RING_RADIUS * 2.0),
-                height: Val::Px(TARGET_RING_RADIUS * 2.0),
+                left: Val::Px(edge.x - radius),
+                top: Val::Px(edge.y - radius),
+                width: Val::Px(radius * 2.0),
+                height: Val::Px(radius * 2.0),
                 border: UiRect::all(Val::Px(2.0)),
                 border_radius: bevy::prelude::BorderRadius::MAX,
                 ..default()
             },
+            bevy::prelude::ImageNode::new(image),
             bevy::prelude::BorderColor::all(color),
             ContactBracket,
         ));
@@ -687,8 +723,8 @@ fn spawn_target_indicator(
     } else {
         "^"
     };
-    let at = if in_range {
-        let pushed = edge + outward * (TARGET_RING_RADIUS + 6.0);
+    let at = if ring_radius > 0.0 {
+        let pushed = edge + outward * (ring_radius + 6.0);
         Vec2::new(
             pushed.x.clamp(10.0, window.0 - 10.0),
             pushed.y.clamp(12.0, window.1 - 10.0),
@@ -713,9 +749,9 @@ fn spawn_target_indicator(
     ));
     let width = super::cockpit_hud::label_width(label.chars().count());
     let wanted = if edge.y < window.1 / 2.0 {
-        (edge.x - width / 2.0, edge.y + TARGET_RING_RADIUS + 8.0)
+        (edge.x - width / 2.0, edge.y + ring_radius + 8.0)
     } else {
-        (edge.x - width / 2.0, edge.y - TARGET_RING_RADIUS - 28.0)
+        (edge.x - width / 2.0, edge.y - ring_radius - 28.0)
     };
     let (left, top) = super::cockpit_hud::place_label(wanted, width, window, placed);
     commands.spawn((
@@ -774,7 +810,8 @@ impl Plugin for MissionActorAidPlugin {
             (attach_actor_visuals, print_census, print_wingmen).chain(),
         );
         if self.windowed {
-            app.add_systems(bevy::prelude::Startup, spawn_contact_list)
+            app.add_plugins(super::spyglass::SpyglassPlugin)
+                .add_systems(bevy::prelude::Startup, spawn_contact_list)
                 .add_systems(Update, update_contacts);
         }
     }

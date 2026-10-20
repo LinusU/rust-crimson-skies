@@ -224,12 +224,20 @@ const TARGET_IN_VIEW_OFFSET: u32 = 34;
 const TARGET_FLIP_OFFSET: u32 = 38;
 /// Frames into `Phase::Target` the off-view arrow screenshot is taken.
 const TARGET_OFF_VIEW_OFFSET: u32 = 58;
+/// Frames into `Phase::Target` `Shift+S` hides the spyglass window
+/// (PARITY2-M01-SPYGLASS, #1734).
+const TARGET_TOGGLE_OFFSET: u32 = 59;
+/// Frames into `Phase::Target` the window-hidden (arrow and label only)
+/// screenshot is taken.
+const TARGET_HIDDEN_OFFSET: u32 = 66;
+/// Frames into `Phase::Target` `Shift+S` shows the window again.
+const TARGET_RESTORE_OFFSET: u32 = 68;
 /// Frames into `Phase::Target` the non-aircraft key is pressed.
-const TARGET_OBJECTIVE_KEY_OFFSET: u32 = 62;
+const TARGET_OBJECTIVE_KEY_OFFSET: u32 = 76;
 /// Frames into `Phase::Target` the objective screenshot is taken.
-const TARGET_OBJECTIVE_OFFSET: u32 = 82;
+const TARGET_OBJECTIVE_OFFSET: u32 = 96;
 /// Frames into `Phase::Target` the phase ends.
-const TARGET_END_OFFSET: u32 = 84;
+const TARGET_END_OFFSET: u32 = 98;
 /// Frames after the last scripted frame the run waits for outstanding
 /// screenshots.
 const SHOT_GRACE_FRAMES: u32 = 600;
@@ -779,6 +787,16 @@ pub struct TargetingMetrics {
     pub off_view_nodes: usize,
     /// Distance to the held target at the off-view frame.
     pub off_view_distance_m: Option<f64>,
+    /// The spyglass window was shown (target off screen, in range, toggle on)
+    /// at the off-view frame.
+    pub window_shown: bool,
+    /// The spyglass camera was active at the off-view frame.
+    pub window_camera_active: bool,
+    /// The spyglass window was shown at the frame after `Shift+S` — it must
+    /// not be.
+    pub hidden_window_shown: bool,
+    /// Indicator nodes at the window-hidden frame — arrow and label.
+    pub hidden_nodes: usize,
     /// The reticle's class at the non-aircraft frame
     /// ([`cs_sim::targeting::TargetClass::label`]) — the measured `R` select
     /// must land on a non-aircraft.
@@ -1258,6 +1276,28 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
                 "{} indicator node(s) (arrow, label, ring while the gate is open), target \
                  off screen: {}",
                 targeting.off_view_nodes, targeting.off_view_off_screen
+            ),
+        });
+        checks.push(Check {
+            id: "target_spyglass_window".to_owned(),
+            applies: true,
+            passed: targeting.window_shown
+                && targeting.window_camera_active
+                && targeting.off_view_nodes >= 3,
+            detail: format!(
+                "window shown: {}, second camera active: {}, {} indicator node(s) (ring \
+                 window, arrow, label)",
+                targeting.window_shown, targeting.window_camera_active, targeting.off_view_nodes
+            ),
+        });
+        checks.push(Check {
+            id: "target_spyglass_toggle".to_owned(),
+            applies: true,
+            passed: !targeting.hidden_window_shown && targeting.hidden_nodes == 2,
+            detail: format!(
+                "after `Shift+S` the window is shown: {}, {} indicator node(s) (arrow and \
+                 label only)",
+                targeting.hidden_window_shown, targeting.hidden_nodes
             ),
         });
         checks.push(Check {
@@ -1882,6 +1922,10 @@ struct TargetingParams<'w, 's> {
     session: Option<Res<'w, crate::targeting::TargetingSession>>,
     /// The indicator nodes the contact aid spawned this frame.
     brackets: Query<'w, 's, (), With<super::actor_census::ContactBracket>>,
+    /// The spyglass object, once the windowed composition installed it.
+    spyglass: Option<Res<'w, super::spyglass::SpyglassState>>,
+    /// The spyglass's second camera.
+    spyglass_camera: Query<'w, 's, &'static Camera, With<super::spyglass::SpyglassCamera>>,
 }
 
 /// The entity classes a probe writes its hide value onto, grouped so the
@@ -2729,7 +2773,24 @@ fn smoke_script(
             } else if at == TARGET_OFF_VIEW_OFFSET {
                 record_targeting(&mut data, targeting.session.as_deref(), &camera, false);
                 data.measurements.targeting.off_view_nodes = targeting.brackets.iter().count();
+                data.measurements.targeting.window_shown =
+                    targeting.spyglass.as_deref().is_some_and(|s| s.shown());
+                data.measurements.targeting.window_camera_active = targeting
+                    .spyglass_camera
+                    .iter()
+                    .any(|camera| camera.is_active);
                 due.push("target_off_view".to_owned());
+            } else if at == TARGET_TOGGLE_OFFSET || at == TARGET_RESTORE_OFFSET {
+                queue.0.push(KeyOp::Press(KeyCode::ShiftLeft));
+                queue.0.push(KeyOp::Press(KeyCode::KeyS));
+            } else if at == TARGET_TOGGLE_OFFSET + 1 || at == TARGET_RESTORE_OFFSET + 1 {
+                queue.0.push(KeyOp::Release(KeyCode::KeyS));
+                queue.0.push(KeyOp::Release(KeyCode::ShiftLeft));
+            } else if at == TARGET_HIDDEN_OFFSET {
+                data.measurements.targeting.hidden_nodes = targeting.brackets.iter().count();
+                data.measurements.targeting.hidden_window_shown =
+                    targeting.spyglass.as_deref().is_some_and(|s| s.shown());
+                due.push("target_spyglass_hidden".to_owned());
             } else if at == TARGET_OBJECTIVE_KEY_OFFSET {
                 queue.0.push(KeyOp::Press(KeyCode::KeyR));
             } else if at == TARGET_OBJECTIVE_KEY_OFFSET + 2 {
@@ -3887,6 +3948,8 @@ fn write_artifacts(
          \"in_view_hostile\":{t_in_hostile},\"in_view_on_screen\":{t_in_screen},\
          \"in_view_nodes\":{t_in_nodes},\"off_view_off_screen\":{t_off_screen},\
          \"off_view_nodes\":{t_off_nodes},\"off_view_distance_m\":{t_off_dist},\
+         \"window_shown\":{t_win},\"window_camera_active\":{t_win_cam},\
+         \"hidden_window_shown\":{t_hid_win},\"hidden_nodes\":{t_hid_nodes},\
          \"objective_class\":{t_objective_class},\"objective_selected\":{t_objective}}},\
          \"actors\":[{actors}],\"placements\":[{placements}],\"shots\":[{shots}],\
          \"checks\":[{checks}],\"failures\":[{failures}],\"passed\":{passed}}}\n",
@@ -3952,6 +4015,10 @@ fn write_artifacts(
         t_in_nodes = report.measurements.targeting.in_view_nodes,
         t_off_screen = report.measurements.targeting.off_view_off_screen,
         t_off_nodes = report.measurements.targeting.off_view_nodes,
+        t_win = report.measurements.targeting.window_shown,
+        t_win_cam = report.measurements.targeting.window_camera_active,
+        t_hid_win = report.measurements.targeting.hidden_window_shown,
+        t_hid_nodes = report.measurements.targeting.hidden_nodes,
         t_off_dist = report
             .measurements
             .targeting
