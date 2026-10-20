@@ -1018,12 +1018,18 @@ pub fn spawn_reticle(parent: &mut bevy::prelude::ChildSpawnerCommands, image: Ha
 /// The launch cinematic holds the cluster back until it hands over — the
 /// same hold `fit_safe_area` makes for the text layer (#1663), here by
 /// switching the pass itself off so nothing lands in the letterbox bars.
+/// The Flight Check holds it too: its black cover is a UI node, and a UI
+/// node cannot cover what a second `Camera3d` draws over the window — a run
+/// with no cinematic installed (the no-teleport smoke, a mission without a
+/// launch record) would otherwise draw the cluster over the check screen.
 pub fn fit_hud_viewport(
     windows: Query<&Window, With<PrimaryWindow>>,
     phase: Option<Res<super::launch_cinematic::LaunchCinematic>>,
+    check: Option<Res<super::flight_check::FlightCheckPhase>>,
     mut cameras: Query<&mut Camera, With<HudArtCamera>>,
 ) {
-    let held = phase.is_some_and(|phase| phase.is_playing());
+    let held = phase.is_some_and(|phase| phase.is_playing())
+        || check.is_some_and(|phase| phase.is_pending());
     let rect = windows.single().ok().and_then(|window| {
         let (w, h) = safe_area(window.width(), window.height());
         if w <= 0.0 || h <= 0.0 {
