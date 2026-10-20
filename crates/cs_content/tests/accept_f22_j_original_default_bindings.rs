@@ -450,6 +450,23 @@ const RECORDED_COMPARISON: &[(&str, &str)] = &[
     ("flap_step", "project_only"),
     ("target_next", "different"),
     ("target_prev", "different"),
+    // PARITY2-M01-TARGET-INDICATORS (#1727): the eleven measured selection
+    // commands cite real original rows (command ids 36–46) but the designed
+    // default binds them nothing — a `Shift`/`Ctrl` chord is not a
+    // `BindingSource`; the mission mints their edges from raw key state
+    // (`mint_mission_target_keys`). A declared subject with original rows
+    // and no designed source records `original_only`.
+    ("target_next_enemy", "original_only"),
+    ("target_prev_enemy", "original_only"),
+    ("target_nearest_enemy", "original_only"),
+    ("target_next_ally", "original_only"),
+    ("target_prev_ally", "original_only"),
+    ("target_nearest_ally", "original_only"),
+    ("target_next_ground", "original_only"),
+    ("target_prev_ground", "original_only"),
+    ("target_nearest_ground", "original_only"),
+    ("target_under_reticule", "original_only"),
+    ("target_nothing", "original_only"),
     ("countermeasure", "project_only"),
     ("throttle_step_up", "different"),
     ("throttle_step_down", "different"),
@@ -503,7 +520,7 @@ fn accept_f22_j_the_designed_default_comparison_is_recorded() {
         "every declared command and UI action is compared exactly once"
     );
     assert_eq!(
-        original_only.len() + 32,
+        original_only.len() + 37,
         ORIGINAL_DEFAULT_BINDINGS.len(),
         "every original command is either compared with a declared command or \
          recorded as original-only"
@@ -524,6 +541,7 @@ fn accept_f22_j_the_designed_default_comparison_is_recorded() {
             "partial" => DefaultAgreement::Partial,
             "different" => DefaultAgreement::Different,
             "project_only" => DefaultAgreement::ProjectOnly,
+            "original_only" => DefaultAgreement::OriginalOnly,
             "runtime_only" => DefaultAgreement::RuntimeOnly,
             other => panic!("the recorded comparison names an unknown status {other}"),
         };
@@ -590,8 +608,8 @@ fn accept_f22_j_the_designed_default_comparison_is_recorded() {
     );
 
     // The original-only set is exactly the commands no declared command cites:
-    // the crosswalk's complement, including the three NEAREST target classes
-    // and the padlock/look/chat rows the project declares nothing for.
+    // the crosswalk's complement — the padlock/look/chat rows and the other
+    // commands the project declares nothing for.
     let mut cited: Vec<u16> = FlightCommand::ALL
         .iter()
         .flat_map(|command| original_command_ids(*command).iter().copied())
@@ -618,10 +636,10 @@ fn accept_f22_j_the_designed_default_comparison_is_recorded() {
     assert_eq!(
         sorted_rows,
         vec![
-            18, 35, 38, 41, 44, 45, 46, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62,
-            63, 64, 65, 66, 67, 68, 106, 109, 110, 111
+            18, 35, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63, 64, 65, 66, 67,
+            68, 106, 109, 110, 111
         ],
-        "the 32 original-only commands, by id"
+        "the 27 original-only commands, by id"
     );
 
     // The project default stays designed: the comparison changed nothing, and
