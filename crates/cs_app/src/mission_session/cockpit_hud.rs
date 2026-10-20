@@ -99,26 +99,6 @@ const LABEL_GAP: f32 = 4.0;
 /// circle; the exact value is estimated from the screenshot, not measured).
 pub const OBJECTIVE_BLUE: (f32, f32, f32) = (0.15, 0.15, 1.0);
 
-/// The mission's objective site the marker points at: of the bound ground
-/// targets whose `targets.zrd` row carries the `objective` marker and a
-/// `description`, the one declared first.
-///
-/// **Designed selection.** M01 declares three such rows (`MSG_OBJ_SITE1..3`)
-/// and the capture shows Site #1 first; which site the original shows when is
-/// unmeasured (`ADD_OBJECTIVE_TARGET` never names a site in M01), so this
-/// takes the first declared row and never retires it.
-#[must_use]
-pub fn objective_site<'a>(
-    targets: impl IntoIterator<Item = &'a MissionGroundTarget>,
-) -> Option<&'a MissionGroundTarget> {
-    targets
-        .into_iter()
-        .filter(|target| target.objective && target.description.is_some())
-        .filter_map(|target| Some((target.declared?, target)))
-        .min_by_key(|(declared, _)| *declared)
-        .map(|(_, target)| target)
-}
-
 /// The installation's text for a message name, or the name itself when no
 /// catalog or no single string answers.
 #[must_use]
@@ -708,21 +688,15 @@ mod tests {
     }
 
     #[test]
-    fn accept_parity_m01_hud_objective_marker_picks_first_declared_site() {
-        let rows = [
-            site(Some(9), true, Some("MSG_OBJ_SITE3")),
-            site(Some(7), true, Some("MSG_OBJ_SITE1")),
-            site(Some(1), false, Some("MSG_OBJ_DESTROY")),
-            site(None, true, Some("MSG_OBJ_SITE2")),
-        ];
-        let picked = objective_site(&rows).expect("a site");
-        assert_eq!(picked.description.as_deref(), Some("MSG_OBJ_SITE1"));
-        assert!(objective_site(&rows[2..3]).is_none());
+    fn accept_parity_m01_hud_objective_marker_name_is_verb_then_title() {
+        let named = site(Some(7), true, Some("MSG_OBJ_SITE1"));
         // Without a catalog the marker names the messages instead of text.
         assert_eq!(
-            objective_marker_name(picked, None).as_deref(),
+            objective_marker_name(&named, None).as_deref(),
             Some("[MSG_OBJ_EXAMINE] - MSG_OBJ_SITE1")
         );
+        // A row with no description draws no objective name at all.
+        assert!(objective_marker_name(&site(Some(1), true, None), None).is_none());
     }
 
     #[test]

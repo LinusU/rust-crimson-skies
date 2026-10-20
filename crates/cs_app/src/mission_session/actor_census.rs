@@ -15,12 +15,16 @@
 //! world actor is hostile when its roster carries
 //! [`Allegiance::Hostile`] toward the player.
 
+use bevy::camera::Projection;
 use bevy::prelude::{
     App, BackgroundColor, Camera, Camera3d, Color, Commands, Component, DetectChanges, Entity,
     FontSize, GlobalTransform, IntoScheduleConfigs, Local, Node, Plugin, PositionType, Query, Res,
-    Text, TextColor, TextFont, UiRect, Update, Val, Vec3, Visibility, With, Without, default,
+    Text, TextColor, TextFont, UiRect, Update, Val, Vec2, Vec3, Visibility, With, Without, default,
 };
-use cs_sim::targeting::Allegiance;
+use cs_sim::damage::ActorId;
+use cs_sim::targeting::{Allegiance, Reticle};
+
+use crate::targeting::TargetingSession;
 
 use super::actor_visual::{ActorVisualDrawn, MissionActorVisuals, attach_actor_visuals};
 use super::compose::{MissionPlayerBody, MissionStage};
@@ -309,9 +313,11 @@ fn print_wingmen(
 #[derive(Component)]
 struct ContactList;
 
-/// One bracket drawn over a hostile.
+/// One node of the selected-target indicator — the marker, the edge arrow,
+/// its label or the ring. `pub(crate)` so the smoke can count what a frame
+/// drew.
 #[derive(Component)]
-struct ContactBracket;
+pub(crate) struct ContactBracket;
 
 fn spawn_contact_list(mut commands: Commands) {
     commands.spawn((
@@ -343,7 +349,7 @@ fn update_contacts(
     aircraft: AircraftQuery,
     zeppelins: ZeppelinQuery,
     cameras: Query<
-        (&Camera, &GlobalTransform),
+        (&Camera, &GlobalTransform, Option<&Projection>),
         (With<Camera3d>, Without<crate::render::OverlayCamera>),
     >,
     mut lists: Query<&mut Text, With<ContactList>>,
@@ -353,6 +359,8 @@ fn update_contacts(
     overlay: Option<Res<crate::playtest::visuals::DeveloperOverlay>>,
     windows: Query<&bevy::prelude::Window>,
     phase: Option<Res<super::launch_cinematic::LaunchCinematic>>,
+    targeting: Option<Res<TargetingSession>>,
+    mut ring_open: Local<bool>,
 ) {
     let overlay_on = crate::playtest::visuals::overlay_visible(overlay.as_deref());
     for entity in &brackets {
@@ -375,46 +383,55 @@ fn update_contacts(
             list.0.clone_from(&text);
         }
     }
-    let Some((camera, camera_transform)) = cameras.iter().next() else {
+    let Some((camera, camera_transform, projection)) = cameras.iter().next() else {
         return;
     };
     let marked = nearest_hostiles(&rows, MAX_CONTACTS)
         .into_iter()
         .chain(rows.iter().filter(|row| row.ally));
     if !overlay_on {
-        // The original-style markers: the bare name on screen, `Name 7
-        // o'clock` clamped to the screen edge when off screen (#1641).
+        // PARITY2-M01-TARGET-INDICATORS (#1727): the original draws one
+        // selected target — the targeting session's reticle — never the
+        // whole hostile list. In view it is the bracketed marker alone; off
+        // screen it is the edge arrow, the `Name N o'clock` label and, while
+        // the measured spyglass gate says the window would be open, the
+        // edge ring.
         let Ok(window) = windows.single() else { return };
         let window_size = (window.width(), window.height());
         let mut placed = vec![super::cockpit_hud::reticle_keep_out(
             window_size.0,
             window_size.1,
         )];
-        for row in marked.filter(|row| !row.ally) {
-            spawn_original_marker(
-                &mut commands,
-                row,
-                camera,
-                camera_transform,
-                window_size,
-                &mut placed,
-            );
-        }
-        if let Some(site) = super::cockpit_hud::objective_site(ground_targets) {
-            let catalog = messages.as_deref().and_then(MissionMessages::catalog);
-            if let Some(name) = super::cockpit_hud::objective_marker_name(site, catalog) {
-                let [x, y, z] = site.position_m;
-                spawn_objective_marker(
-                    &mut commands,
-                    &name,
-                    Vec3::new(x as f32, y as f32, z as f32),
-                    camera,
-                    camera_transform,
-                    window_size,
-                    &mut placed,
-                );
-            }
-        }
+        let Some(reticle) = targeting
+            .as_deref()
+            .and_then(TargetingSession::last_phase)
+            .and_then(|phase| phase.reticle.clone())
+        else {
+            *ring_open = false;
+            return;
+        };
+        let catalog = messages.as_deref().and_then(MissionMessages::catalog);
+        let Some(name) = selected_indicator_name(
+            reticle.target,
+            &aircraft,
+            &zeppelins,
+            &ground_targets,
+            stage.as_deref(),
+            catalog,
+        ) else {
+            return;
+        };
+        spawn_target_indicator(
+            &mut commands,
+            &name,
+            &reticle,
+            camera,
+            camera_transform,
+            projection,
+            window_size,
+            &mut ring_open,
+            &mut placed,
+        );
         return;
     }
     for row in marked {
@@ -448,45 +465,230 @@ fn update_contacts(
     }
 }
 
-/// Draws one hostile marker in the original form: red, the contact's name, and
-/// when the contact is off screen an arrow at the screen edge and the clock
-/// bearing from the camera's heading.
-fn spawn_original_marker(
-    commands: &mut Commands,
-    row: &CensusRow,
+/// The measured marker colors (`0x4a5f40`, static): an objective-node target
+/// is blue `(0,0,255)`, a hostile red `(200,0,0)`, anything else green.
+#[must_use]
+pub fn target_indicator_color(reticle: &Reticle) -> Color {
+    if reticle.objective {
+        let (r, g, b) = super::cockpit_hud::OBJECTIVE_BLUE;
+        Color::srgb(r, g, b)
+    } else if reticle.hostile {
+        Color::srgb(200.0 / 255.0, 0.0, 0.0)
+    } else {
+        Color::srgb(0.0, 1.0, 0.0)
+    }
+}
+
+/// The measured spyglass/window distance gate (`0x49d940`, static):
+/// `min(2000 m, near + 0.8 * (far - near))`, multiplied by `0.875` while no
+/// window currently exists — the hysteresis that keeps the ring from
+/// flickering at the boundary.
+///
+/// The render-to-texture window itself is PARITY2-M01-SPYGLASS (#1734); this
+/// is only the shared, measured visibility predicate its ring and its camera
+/// both read.
+#[must_use]
+pub fn spyglass_window_threshold(near: f64, far: f64, was_open: bool) -> f64 {
+    let base = (near + 0.8 * (far - near)).min(2000.0);
+    if was_open { base } else { base * 0.875 }
+}
+
+/// The (near, far) plane distances of a camera projection, in metres.
+fn projection_planes(projection: Option<&Projection>) -> (f64, f64) {
+    match projection {
+        Some(Projection::Perspective(p)) => (f64::from(p.near), f64::from(p.far)),
+        Some(Projection::Orthographic(p)) => (f64::from(p.near), f64::from(p.far)),
+        _ => (0.1, 1000.0),
+    }
+}
+
+/// Radius of the edge ring, pixels — the measured `0.5 + 15` viewport units
+/// of the spyglass window border, approximately 15.5 px at the captured
+/// window size.
+const TARGET_RING_RADIUS: f32 = 15.5;
+
+/// How far the edge arrow/ring sit inside the window border, pixels
+/// (designed; the original clamps in NDC, not pixels).
+const TARGET_EDGE_MARGIN: f32 = 28.0;
+
+/// Resolves the selected actor's indicator name: the measured airframe
+/// display name for an aircraft (`Kestrel`), the objective marker form
+/// `[Examine] - Site #1` for a ground target, the subject tail for a world
+/// actor.
+fn selected_indicator_name(
+    target: ActorId,
+    aircraft: &AircraftQuery,
+    zeppelins: &ZeppelinQuery,
+    ground_targets: &Query<&MissionGroundTarget>,
+    stage: Option<&MissionStage>,
+    catalog: Option<&cs_content::config::MessageCatalog>,
+) -> Option<String> {
+    for (actor, _, _) in aircraft.iter() {
+        if actor.damage_actor == target {
+            return Some(
+                stage
+                    .and_then(|stage| stage.ai_airframes.models.get(&actor.vehicle_record))
+                    .and_then(|airframe| airframe_display_name(&airframe.inheritance_chain))
+                    .unwrap_or(&actor.record.name)
+                    .to_owned(),
+            );
+        }
+    }
+    for (actor, binding, _, _) in zeppelins.iter() {
+        if actor.damage_actor == target {
+            return Some(
+                binding
+                    .subject
+                    .key()
+                    .rsplit('.')
+                    .next()
+                    .unwrap_or_default()
+                    .to_owned(),
+            );
+        }
+    }
+    for ground in ground_targets.iter() {
+        if ground.damage_actor == target {
+            return Some(
+                super::cockpit_hud::objective_marker_name(ground, catalog)
+                    .unwrap_or_else(|| ground.node.clone()),
+            );
+        }
+    }
+    None
+}
+
+/// The window-space point the edge arrow anchors to: the target's projected
+/// position clamped onto the inset window border — toward the target's own
+/// bearing when it is behind the camera, where no projection exists.
+///
+/// A dead-astern target resolves to the top edge: its bearing vector is
+/// zero-length and the original's 6-o'clock capture shows the arrow there.
+#[must_use]
+fn edge_clamped_point(
+    position: Vec3,
     camera: &Camera,
     camera_transform: &GlobalTransform,
     window: (f32, f32),
+) -> Vec2 {
+    let center = Vec2::new(window.0 / 2.0, window.1 / 2.0);
+    let toward = position - camera_transform.translation();
+    let mut direction = if toward.dot(*camera_transform.forward()) > 0.0 {
+        camera
+            .world_to_viewport(camera_transform, position)
+            .ok()
+            .map(|at| at - center)
+    } else {
+        None
+    }
+    .unwrap_or_else(|| {
+        Vec2::new(
+            toward.dot(*camera_transform.right()),
+            -toward.dot(*camera_transform.up()),
+        )
+    });
+    if direction.length_squared() < 1.0e-4 {
+        direction = Vec2::new(0.0, -1.0);
+    }
+    let half = Vec2::new(center.x - TARGET_EDGE_MARGIN, center.y - TARGET_EDGE_MARGIN);
+    let scale = (direction.x.abs() / half.x)
+        .max(direction.y.abs() / half.y)
+        .max(f32::EPSILON);
+    center + direction / scale
+}
+
+/// Draws the selected target's indicator in the measured form.
+///
+/// In view (`0x49d940`'s on-screen arm): the bracketed marker alone — no
+/// arrow, no clock label, no ring. Off screen: the arrow clamped to the
+/// window edge toward the target, the `Name N o'clock` label beside it and,
+/// while [`spyglass_window_threshold`] says the magnifying window would be
+/// open, the edge ring the window anchors to.
+#[allow(clippy::too_many_arguments)]
+fn spawn_target_indicator(
+    commands: &mut Commands,
+    name: &str,
+    reticle: &Reticle,
+    camera: &Camera,
+    camera_transform: &GlobalTransform,
+    projection: Option<&Projection>,
+    window: (f32, f32),
+    ring_open: &mut bool,
     placed: &mut Vec<super::cockpit_hud::LabelRect>,
 ) {
-    let (relative_deg, on_screen) =
-        screen_bearing(row.position_m, camera, camera_transform, window);
-    let name = row.marker_name();
-    // The wanted spot: beside the contact on screen, else on the edge toward
-    // its bearing. `place_label` then keeps it clear of the reticle, the
-    // window border and every label placed before it.
-    let (wanted, label) = match on_screen {
-        Some(at) => (
-            (at.x + 14.0, at.y - 8.0),
-            super::cockpit_hud::marker_text(name, None),
-        ),
-        None => {
-            let hour = super::cockpit_hud::clock_hour(relative_deg);
-            let (arrow, right) = if relative_deg.rem_euclid(360.0) < 180.0 {
-                ("->", true)
-            } else {
-                ("<-", false)
-            };
-            let label = format!(
-                "{arrow} {}",
-                super::cockpit_hud::marker_text(name, Some(hour))
-            );
-            let width = super::cockpit_hud::label_width(label.chars().count());
-            let x = if right { window.0 - width - 10.0 } else { 10.0 };
-            ((x, window.1 * 0.4), label)
-        }
-    };
+    let color = target_indicator_color(reticle);
+    let position = Vec3::new(
+        reticle.position.x() as f32,
+        reticle.position.y() as f32,
+        reticle.position.z() as f32,
+    );
+    let (relative_deg, on_screen) = screen_bearing(position, camera, camera_transform, window);
+    if let Some(at) = on_screen {
+        *ring_open = false;
+        let label = super::cockpit_hud::marker_text(name, None);
+        let width = super::cockpit_hud::label_width(label.chars().count());
+        let (left, top) =
+            super::cockpit_hud::place_label((at.x - 40.0, at.y - 8.0), width, window, placed);
+        commands.spawn((
+            Text::new(label),
+            TextFont {
+                font_size: FontSize::Px(16.0),
+                ..default()
+            },
+            TextColor(color),
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(left),
+                top: Val::Px(top),
+                ..default()
+            },
+            ContactBracket,
+        ));
+        return;
+    }
+    let hour = super::cockpit_hud::clock_hour(relative_deg);
+    let label = super::cockpit_hud::marker_text(name, Some(hour));
+    let edge = edge_clamped_point(position, camera, camera_transform, window);
+    let (near, far) = projection_planes(projection);
+    let in_range = reticle.distance.0 <= spyglass_window_threshold(near, far, *ring_open);
+    *ring_open = in_range;
+    if in_range {
+        commands.spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                left: Val::Px(edge.x - TARGET_RING_RADIUS),
+                top: Val::Px(edge.y - TARGET_RING_RADIUS),
+                width: Val::Px(TARGET_RING_RADIUS * 2.0),
+                height: Val::Px(TARGET_RING_RADIUS * 2.0),
+                border: UiRect::all(Val::Px(2.0)),
+                border_radius: bevy::prelude::BorderRadius::MAX,
+                ..default()
+            },
+            bevy::prelude::BorderColor::all(color),
+            ContactBracket,
+        ));
+    }
+    commands.spawn((
+        Text::new("->"),
+        TextFont {
+            font_size: FontSize::Px(20.0),
+            ..default()
+        },
+        TextColor(color),
+        Node {
+            position_type: PositionType::Absolute,
+            left: Val::Px(edge.x - 10.0),
+            top: Val::Px(edge.y - 12.0),
+            ..default()
+        },
+        ContactBracket,
+    ));
     let width = super::cockpit_hud::label_width(label.chars().count());
+    let wanted = if edge.y < window.1 / 2.0 {
+        (edge.x - width / 2.0, edge.y + TARGET_RING_RADIUS + 8.0)
+    } else {
+        (edge.x - width / 2.0, edge.y - TARGET_RING_RADIUS - 28.0)
+    };
     let (left, top) = super::cockpit_hud::place_label(wanted, width, window, placed);
     commands.spawn((
         Text::new(label),
@@ -494,7 +696,7 @@ fn spawn_original_marker(
             font_size: FontSize::Px(16.0),
             ..default()
         },
-        TextColor(Color::srgb(1.0, 0.2, 0.2)),
+        TextColor(color),
         Node {
             position_type: PositionType::Absolute,
             left: Val::Px(left),
@@ -527,95 +729,6 @@ fn screen_bearing(
         None
     };
     (relative_deg, on_screen)
-}
-
-/// Diameter of the off-screen objective circle, pixels (estimated from the
-/// capture, not measured).
-const OBJECTIVE_CIRCLE: f32 = 96.0;
-
-/// Draws the blue objective marker: on screen, its name beside the site; off
-/// screen, a circle at the screen edge toward the site, an arrow beside it
-/// pointing the way and the name with its clock bearing under it.
-///
-/// The target image inside the original's circle is unmeasured and not drawn.
-fn spawn_objective_marker(
-    commands: &mut Commands,
-    name: &str,
-    position: Vec3,
-    camera: &Camera,
-    camera_transform: &GlobalTransform,
-    window: (f32, f32),
-    placed: &mut Vec<super::cockpit_hud::LabelRect>,
-) {
-    let (blue_r, blue_g, blue_b) = super::cockpit_hud::OBJECTIVE_BLUE;
-    let blue = Color::srgb(blue_r, blue_g, blue_b);
-    let (relative_deg, on_screen) = screen_bearing(position, camera, camera_transform, window);
-    let (wanted, label) = match on_screen {
-        Some(at) => (
-            (at.x - 40.0, at.y - 8.0),
-            super::cockpit_hud::marker_text(name, None),
-        ),
-        None => {
-            let hour = super::cockpit_hud::clock_hour(relative_deg);
-            let right = relative_deg.rem_euclid(360.0) < 180.0;
-            let label = super::cockpit_hud::marker_text(name, Some(hour));
-            let width = super::cockpit_hud::label_width(label.chars().count());
-            let x = if right { window.0 - width - 10.0 } else { 10.0 };
-            let circle_left = if right {
-                window.0 - OBJECTIVE_CIRCLE - 24.0
-            } else {
-                24.0
-            };
-            let circle_top = window.1 * 0.25;
-            commands.spawn((
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: Val::Px(circle_left),
-                    top: Val::Px(circle_top),
-                    width: Val::Px(OBJECTIVE_CIRCLE),
-                    height: Val::Px(OBJECTIVE_CIRCLE),
-                    border: UiRect::all(Val::Px(2.0)),
-                    border_radius: bevy::prelude::BorderRadius::MAX,
-                    ..default()
-                },
-                bevy::prelude::BorderColor::all(blue),
-                ContactBracket,
-            ));
-            commands.spawn((
-                Text::new(if right { "->" } else { "<-" }),
-                TextFont {
-                    font_size: FontSize::Px(20.0),
-                    ..default()
-                },
-                TextColor(blue),
-                Node {
-                    position_type: PositionType::Absolute,
-                    left: Val::Px(if right { window.0 - 22.0 } else { 2.0 }),
-                    top: Val::Px(circle_top + OBJECTIVE_CIRCLE / 2.0 - 12.0),
-                    ..default()
-                },
-                ContactBracket,
-            ));
-            ((x, circle_top + OBJECTIVE_CIRCLE + 6.0), label)
-        }
-    };
-    let width = super::cockpit_hud::label_width(label.chars().count());
-    let (left, top) = super::cockpit_hud::place_label(wanted, width, window, placed);
-    commands.spawn((
-        Text::new(label),
-        TextFont {
-            font_size: FontSize::Px(16.0),
-            ..default()
-        },
-        TextColor(blue),
-        Node {
-            position_type: PositionType::Absolute,
-            left: Val::Px(left),
-            top: Val::Px(top),
-            ..default()
-        },
-        ContactBracket,
-    ));
 }
 
 /// Installs the visual attach pass, the census and (windowed compositions
