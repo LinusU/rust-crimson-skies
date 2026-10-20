@@ -33,6 +33,7 @@ pub mod content;
 pub mod evidence;
 pub mod input;
 pub mod install;
+pub mod keymap;
 pub mod net;
 pub mod profile;
 pub mod random;
