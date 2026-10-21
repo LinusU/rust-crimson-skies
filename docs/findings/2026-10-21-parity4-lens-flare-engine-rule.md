@@ -13,7 +13,7 @@ this order, four commands before `LightMapTexture lightmap`:
 | --- | --- | --- |
 | `LensFlareTexture` | `0` | `lflare1` |
 | `LensFlareTexture` | `1` | `lflare2` |
-| `LensFlareTexture` | `2` (stored as the string `"2"` in the script's value list; the digits read `0`, `1`, `3` in the C-string view only because the list interleaves) | `lflare3` |
+| `LensFlareTexture` | `2` (inferred: the byte dump shows indices `0`, `1`, `3` for `lflare1`, `lflare2`, `lflare4`; the `lflare3` line was not dumped) | `lflare3` |
 | `LensFlareTexture` | `3` | `lflare4` |
 
 The four textures are stored in the `C4` archive (`ZBD/C4/gamez.zbd`,
