@@ -455,7 +455,10 @@ own budget) and the capture directory defaults to `private/mission-smoke`.
 Every frame is exactly 1/60 s of simulated time. **A scripted run is never
 `human_play`,** and nothing it measures is `verified_original`.
 
-What the script does, in order: it **opens on the Flight Check** the window
+What the script does, in order: it **opens on the briefing map** (#1750; eight
+`briefing_*` checks, frames `frame_brNN_*.png`; see
+`docs/findings/2026-10-21-parity5-briefing-map.md`), presses Replay Briefing,
+goes to the Flight Check, back and forward again, and then **on the Flight Check** the window
 holds the mission behind (#1672 `M01-LC-FC-D`) — it photographs the screen,
 hides the screen's overlay (buttons, labels, text rows) and photographs the bare
 pane, judges the two against the scene the `FlightCheckView` built, then

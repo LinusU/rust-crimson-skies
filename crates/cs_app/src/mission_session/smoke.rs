@@ -19,6 +19,14 @@
 //!
 //! | check id | what it measures |
 //! | --- | --- |
+//! | `briefing_screen_drawn` | every briefing-map frame the run takes shows the screen (#1750) |
+//! | `briefing_elements_match_script` | at each clock time the plan seeks to, the screen shows exactly the elements the compiled `Briefing.zrd` script draws |
+//! | `briefing_animates` | each step of the plan changes pixels against the frame before it |
+//! | `briefing_buttons_drawn` | Replay Briefing, Return to Cabin and Go to Flight Check are drawn in brass |
+//! | `briefing_voice_plays` | the voice-over started and the output stream pulled it (skipped by name without the `audio` capability) |
+//! | `briefing_replay_restarts` | Replay Briefing restarted the clock and the voice-over and stayed on the briefing |
+//! | `briefing_return_trip` | Return to Briefing from the Flight Check came back to the briefing |
+//! | `briefing_go_to_flight_check` | Go to Flight Check opened the Flight Check |
 //! | `flight_check_screen_drawn` | the framebuffer taken while the Flight Check holds the mission shows the screen (#1672) |
 //! | `flight_check_text_matches` | every text row of the Flight Check, the mission title and the objectives among them, is drawn as the `FlightCheckView` states it and adds pixels in its own region |
 //! | `flight_check_buttons_drawn` | every button of the Flight Check, Fly Mission among them, adds pixels in its own region |
@@ -104,6 +112,14 @@ use crate::weapons::{WeaponRoundMirror, WeaponSession};
 use crate::world::WorldResidency;
 use crate::world::contacts::WorldVisual;
 use crate::world_actors::WorldActorBinding;
+
+mod briefing;
+
+pub use briefing::{
+    BriefingButtonMetrics, BriefingMetrics, BriefingReplayMetrics, BriefingShotMetrics,
+    BriefingVoiceMetrics, MIN_BRIEFING_CHANGE_PIXELS, MIN_BRIEFING_DRAWN_PERMILLE,
+    MIN_BUTTON_WARM_PERMILLE,
+};
 
 /// Rendered frames per simulated second, the playtest smoke's own rate.
 pub const MISSION_SMOKE_FRAME_HZ: f64 = 60.0;
@@ -838,6 +854,9 @@ pub struct SmokeMeasurements {
     pub sea: Option<SeaMetrics>,
     /// The HUD probe.
     pub hud: HudMetrics,
+    /// The briefing map screen's frames, buttons and voice-over (`None`: the
+    /// run had no briefing before its Flight Check, #1750).
+    pub briefing: Option<BriefingMetrics>,
     /// The Flight Check frames and Fly Mission (`None`: the run never reached
     /// a Flight Check).
     pub flight_check: Option<FlightCheckMetrics>,
@@ -895,7 +914,8 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
         // mission and records what it saw, but judges only the wingmen.
         return evaluate_no_teleport(m);
     }
-    let mut checks = evaluate_flight_check(m);
+    let mut checks = briefing::evaluate_briefing(m);
+    checks.extend(evaluate_flight_check(m));
 
     // --- world -------------------------------------------------------------
     match &m.terrain {
@@ -1777,6 +1797,8 @@ struct SmokeData {
     frame: u32,
     /// Frames the Flight Check has been up.
     flight_check_frame: u32,
+    /// The briefing stage's progress (#1750).
+    briefing: briefing::BriefingRun,
     /// The overlay nodes read at the Flight Check's full frame.
     flight_check_rows: Vec<DrawnRow>,
     phase: Phase,
@@ -1877,6 +1899,7 @@ fn add_script_systems(app: &mut App) {
     app.add_systems(
         Last,
         (
+            briefing::smoke_briefing,
             smoke_flight_check,
             smoke_census,
             smoke_sample,
@@ -3019,10 +3042,16 @@ fn smoke_flight_check(
     )>,
 ) {
     let Some(mut phase) = phase else { return };
-    if !phase.is_pending() {
+    if phase.stage() != super::flight_check::PreMissionStage::FlightCheck {
         return;
     }
     data.flight_check_frame += 1;
+    // With a briefing before it, the first frames of the Flight Check go back
+    // to the briefing once, which proves Return to Briefing; the run then comes
+    // through Go to Flight Check again.
+    if briefing::round_trip_from_flight_check(&mut phase, &mut data) {
+        return;
+    }
     let at = data.flight_check_frame;
     if at == 1 {
         let _ = std::fs::create_dir_all(&config.request.capture_dir);
@@ -3072,7 +3101,12 @@ fn smoke_flight_check(
     if at <= FLIGHT_CHECK_BARE_SHOT_OFFSET {
         return;
     }
-    let arrived = frames.0.lock().map_or(0, |frames| frames.len());
+    let arrived = frames.0.lock().map_or(0, |frames| {
+        frames
+            .iter()
+            .filter(|frame| frame.label.starts_with("flight_check"))
+            .count()
+    });
     if arrived < 2 && at < FLIGHT_CHECK_BARE_SHOT_OFFSET + SHOT_GRACE_FRAMES {
         return;
     }
@@ -4073,6 +4107,7 @@ fn write_artifacts(
          \"verified_original\":false,\"frames\":{frames},\"ticks\":{ticks},\
          \"hud\":{{\"model_line\":{model_line},\"drawn_line\":{drawn_line},\
          \"drawn_visible\":{visible},\"region_text_pixels\":{region},\"overlay_hidden\":{overlay_hidden}}},\
+         \"briefing\":{briefing},\
          \"flight_check\":{flight_check},\
          \"guns\":{{\"effects\":{effects},\"max_live_rounds\":{live},\"rounds_drawn\":{drawn},\
          \"rounds_examined\":{examined},\
@@ -4110,6 +4145,7 @@ fn write_artifacts(
         visible = report.measurements.hud.drawn_visible,
         overlay_hidden = report.measurements.hud.overlay_hidden,
         region = json_option_usize(report.measurements.hud.region_text_pixels),
+        briefing = briefing::briefing_json(report.measurements.briefing.as_ref()),
         flight_check = flight_check_json(report.measurements.flight_check.as_ref()),
         effects = report.measurements.guns.effects,
         live = report.measurements.guns.max_live_rounds,
