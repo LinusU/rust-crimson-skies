@@ -203,6 +203,7 @@ mod accept_parity2_m01_missing_terrain;
 mod accept_parity2_m01_target_indicators;
 mod accept_parity2_original_keybindings;
 mod accept_parity3_cockpit_view_01;
+mod accept_parity3_cockpit_view_02;
 mod accept_parity_m01_lc_letterbox;
 mod accept_parity_m01_player_view;
 mod accept_parity_m01_player_view_c;

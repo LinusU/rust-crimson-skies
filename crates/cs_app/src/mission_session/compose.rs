@@ -1015,6 +1015,8 @@ fn add_composition(
     app.insert_resource(crate::playtest::PlaytestDevKeys(false));
     // The original mission's chase view, fitted to the owner's capture.
     app.insert_resource(crate::playtest::PlaytestCamera::capture_fitted());
+    // The cockpit views (F8, #1810) take the camera from the chase rig.
+    super::cockpit_camera::install_cockpit_camera(app);
     if visuals {
         app.add_plugins(crate::playtest::visuals::PlaytestVisualsPlugin);
         // The F1 help screen and the pause screen list the table's real
@@ -1224,6 +1226,8 @@ fn add_composition(
     if let Some(source) = &stage.player_aircraft {
         let visual = build_player_visual(app, source)?;
         app.insert_resource(visual);
+        // The pilot's eye (#1810): the airframe's own `cockpit_camera` node.
+        app.insert_resource(super::cockpit_camera::resolve_player_cockpit_eye(source)?);
         // 2c. The scripted aircraft's drawn models (M01-WINDOW-ACTORS, #1538),
         //     built from the same `planes.zbd` source. A prefix that cannot be
         //     drawn is a recorded refusal, not a failed composition.
@@ -1655,6 +1659,8 @@ pub fn teardown(app: &mut App) {
     world.remove_resource::<crate::mission_ai::MissionAiFireOrders>();
     world.remove_resource::<MissionPlayerStart>();
     world.remove_resource::<MissionPlayerVisual>();
+    world.remove_resource::<super::cockpit_camera::MissionCockpitEye>();
+    world.remove_resource::<super::view_cycle::MissionViewMode>();
     world.remove_resource::<super::hud_art::MissionHudArt>();
     world.remove_resource::<super::world_draw::MissionWorldParts>();
     world.remove_resource::<AircraftSpawner>();

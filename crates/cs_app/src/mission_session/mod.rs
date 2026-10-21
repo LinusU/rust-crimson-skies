@@ -94,6 +94,7 @@
 mod actor_census;
 mod actor_visual;
 mod briefing_screen;
+mod cockpit_camera;
 mod cockpit_hud;
 mod compose;
 mod content;
@@ -139,6 +140,10 @@ pub use actor_visual::{
 pub use briefing_screen::{
     BriefingArtwork, BriefingDriver, BriefingReadError, BriefingScreenPlugin, BriefingSource,
     BriefingVoice, BriefingVoiceAsset, VOICE_CONTAINER, install_briefing_screen, read_briefing,
+};
+pub use cockpit_camera::{
+    COCKPIT_EYE_NODE_NAME, MissionCockpitEye, drive_cockpit_camera, find_cockpit_eye,
+    install_cockpit_camera, resolve_player_cockpit_eye,
 };
 pub use cockpit_hud::{
     MissionCockpitHudPlugin, OBJECTIVE_BLUE, clock_hour, compass_strip, damage_fraction,
