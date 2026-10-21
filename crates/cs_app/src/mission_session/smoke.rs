@@ -117,11 +117,16 @@ use crate::world::contacts::WorldVisual;
 use crate::world_actors::WorldActorBinding;
 
 mod briefing;
+mod camera_modes;
 
 pub use briefing::{
     BriefingButtonMetrics, BriefingMetrics, BriefingReplayMetrics, BriefingShotMetrics,
     BriefingVoiceMetrics, MIN_BRIEFING_CHANGE_PIXELS, MIN_BRIEFING_DRAWN_PERMILLE,
     MIN_BUTTON_WARM_PERMILLE,
+};
+pub use camera_modes::{
+    CameraModeMetrics, CameraModeSample, MIN_CAMERA_FRAME_LUMINANCE_LEVELS, MIN_LOOK_ANGLE_RAD,
+    MIN_VIEW_SEPARATION_M, MIN_ZOOM_DISTANCE_M,
 };
 
 /// Rendered frames per simulated second, the playtest smoke's own rate.
@@ -1009,6 +1014,8 @@ pub struct SmokeMeasurements {
     pub examine: ExamineMetrics,
     /// The cockpit-view phase (PARITY3-COCKPIT-VIEW.05, #1813).
     pub cockpit: CockpitViewMetrics,
+    /// The camera-mode stage (PARITY3-CAMERA-MODES.04, #1826).
+    pub camera_modes: CameraModeMetrics,
     /// The idle player's hull ([`MissionSmokeMode::Engagement`] only).
     pub engagement: Option<EngagementMetrics>,
 }
@@ -1535,6 +1542,8 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
 
     // --- the cockpit views (PARITY3-COCKPIT-VIEW.05, #1813) -----------------
     evaluate_cockpit(&m.cockpit, &mut checks);
+    // --- the camera modes (PARITY3-CAMERA-MODES.04, #1826) ------------------
+    checks.extend(camera_modes::evaluate(m));
 
     // --- the picture arrived ----------------------------------------------
     checks.push(Check {
@@ -2202,6 +2211,9 @@ enum Phase {
     /// The cockpit views: `F8` three times, a frame and a reading at each
     /// stop, 0 -> 7 -> 6 -> 0 (PARITY3-COCKPIT-VIEW.05, #1813).
     Cockpit,
+    /// The camera keys: `F7`, `F9`-`F12`, zoom, `K`/`J`/`L` and the numpad
+    /// look, each photographed (#1826).
+    Cameras,
     Final,
     Ended,
 }
@@ -2251,6 +2263,7 @@ fn add_script_systems(app: &mut App) {
             smoke_first_control,
             smoke_hull,
             smoke_cockpit,
+            camera_modes::smoke_camera_modes,
             smoke_script,
             smoke_rounds,
             smoke_flashes,
@@ -3529,11 +3542,12 @@ fn smoke_script(
                     due.push(label.to_owned());
                 }
             } else if at >= 3 * COCKPIT_STOP_FRAMES {
-                data.phase = Phase::Final;
+                data.phase = Phase::Cameras;
                 data.phase_start = frame + 1;
             }
         }
-        Phase::Final | Phase::Ended => {}
+        // `smoke_camera_modes` runs the camera stage and hands over to `Final`.
+        Phase::Cameras | Phase::Final | Phase::Ended => {}
     }
 
     for label in &due {
@@ -4089,6 +4103,7 @@ fn finish_measurements(data: &mut SmokeData, shots: &[FrameRecord]) {
             })
             .collect();
     }
+    camera_modes::attach_frames(&mut data.measurements.camera_modes, shots);
     if let Some(hud) = find("hud") {
         data.measurements.hud.region_text_pixels = hud.text_pixels;
     }

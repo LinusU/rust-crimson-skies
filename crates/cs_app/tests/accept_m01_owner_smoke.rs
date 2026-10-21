@@ -186,6 +186,7 @@ fn healthy() -> SmokeMeasurements {
             after_node: Some("grasshut2".to_owned()),
             after_flagged: false,
         },
+        camera_modes: crate::accept_parity3_camera_modes_04::healthy_camera_modes(),
         ..SmokeMeasurements::default()
     }
 }
