@@ -69,6 +69,7 @@ use cs_types::input::{Action, FlightCommand};
 use cs_types::net::SessionId;
 use cs_types::space::{Radians, WorldPosition};
 
+use super::burst_puffs::{OrdnanceBurst, PendingOrdnanceBursts};
 use super::weapon_counts::{OriginalGunRecord, OriginalWeaponCounts};
 use crate::damage::{DamageActorBinding, PendingDamageEvents};
 use crate::input::platform::PlatformInput;
@@ -1418,6 +1419,33 @@ pub fn drive_mission_ordnance(world: &mut World) {
                 pending.push(detonation.hits.clone(), resolution.events.clone());
             }
         }
+    }
+    // The burst puffs' source events (PARITY2-DMG-FX-B, #1806): every item
+    // that detonated, at the position the runtime recorded for it.
+    {
+        let mut bursts: Vec<OrdnanceBurst> = tick
+            .detonations
+            .iter()
+            .filter_map(|detonation| {
+                session
+                    .runtime()
+                    .get(&detonation.projectile)
+                    .map(|item| item.current())
+            })
+            .chain(tick.guidance_blasts.iter().map(|blast| blast.position))
+            .map(|position| {
+                let [x, y, z] = position.to_array();
+                OrdnanceBurst {
+                    at: tick.at,
+                    position: bevy::prelude::Vec3::new(x as f32, y as f32, z as f32),
+                }
+            })
+            .collect();
+        world.init_resource::<PendingOrdnanceBursts>();
+        world
+            .resource_mut::<PendingOrdnanceBursts>()
+            .0
+            .append(&mut bursts);
     }
     world.insert_resource(MissionOrdnanceSession(session));
     world.insert_resource(damage);

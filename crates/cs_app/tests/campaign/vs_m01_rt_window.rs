@@ -304,6 +304,7 @@ pub(crate) fn synthetic_stage(scratch: &Path) -> MissionStage {
         gun_sound: None,
         flak_sound: None,
         weapon_counts: None,
+        burst_puffs: None,
         launch_cinematic: None,
         label: "SYNTHETIC MISSION COMPOSITION".to_owned(),
         cache_root: scratch.join("cache"),

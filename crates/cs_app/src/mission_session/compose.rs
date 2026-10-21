@@ -284,6 +284,10 @@ pub struct MissionStage {
     /// for M01's retail stage, like [`Self::gun_sound`]: it is the
     /// fresh-campaign loadout's. `None` keeps the designed counts.
     pub weapon_counts: Option<OriginalWeaponCounts>,
+    /// The measured smoke puffs an ordnance burst leaves (PARITY2-DMG-FX-B,
+    /// #1806): the `large_black_smokeball` emitter and its decoded textures.
+    /// `Some` only for M01's retail stage; `None` draws no burst puffs.
+    pub burst_puffs: Option<super::burst_puffs::BurstPuffSource>,
     /// The measured length of the launch cinematic that holds the player's
     /// control after Fly Mission (#1663). `None` for a stage with no launch
     /// cinematic: every synthetic stage and every mission but M01.
@@ -392,6 +396,8 @@ pub enum MissionCompositionError {
     FlakSound(FlakSoundError),
     /// `weapons.zrd` did not state the starting weapon counts.
     WeaponCounts(WeaponCountsError),
+    /// The burst puff emitter or its textures could not be measured.
+    BurstPuffs(super::burst_puffs::BurstPuffError),
     /// The mission's sound-group table or a member it names could not be read
     /// for the radio dialogue ([`super::radio`]).
     Radio(super::radio::RadioError),
@@ -440,6 +446,7 @@ impl fmt::Display for MissionCompositionError {
             Self::GunSound(error) => write!(f, "{error}"),
             Self::FlakSound(error) => write!(f, "{error}"),
             Self::WeaponCounts(error) => write!(f, "{error}"),
+            Self::BurstPuffs(error) => write!(f, "{error}"),
             Self::Audio(error) if error.code == crate::audio::CODE_CAPABILITY_ABSENT => write!(
                 f,
                 "add audio to CS_CAPABILITIES, e.g. CS_CAPABILITIES=retail,gpu,audio\n  \
@@ -598,6 +605,14 @@ pub fn stage_for(
     };
     let weapon_counts = if plan.mission_dir.eq_ignore_ascii_case("zbd/c3/m01") {
         Some(measure_weapon_counts(install_root).map_err(MissionCompositionError::WeaponCounts)?)
+    } else {
+        None
+    };
+    let burst_puffs = if plan.mission_dir.eq_ignore_ascii_case("zbd/c3/m01") {
+        Some(
+            super::burst_puffs::measure_burst_puffs(install_root, "c3")
+                .map_err(MissionCompositionError::BurstPuffs)?,
+        )
     } else {
         None
     };
@@ -785,6 +800,7 @@ pub fn stage_for(
         gun_sound,
         flak_sound,
         weapon_counts,
+        burst_puffs,
         launch_cinematic,
         label: MISSION_COMPOSITION_LABEL.to_owned(),
         cache_root: Path::new(DEFAULT_MISSION_CACHE_DIR).to_path_buf(),
@@ -1288,6 +1304,13 @@ fn add_composition(
     // the visuals gate: the headless composition presents its weapons the
     // same way, which is what its acceptance tests read.
     app.add_plugins(crate::mission_session::MissionWeaponPresentationPlugin);
+    // PARITY2-DMG-FX-B (#1806): the smoke puffs of an ordnance burst.
+    if let Some(puffs) = &stage.burst_puffs {
+        app.insert_resource(crate::mission_session::BurstPuffSourceResource(
+            puffs.clone(),
+        ));
+    }
+    app.add_plugins(crate::mission_session::MissionBurstPuffPlugin);
 
     // 2b. The player airframe's drawn visual, when the stage carries its
     //     source: the measured intact selection built through the same

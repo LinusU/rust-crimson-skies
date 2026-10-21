@@ -54,6 +54,7 @@ mod campaign {
     mod m01_window_world_draw;
     mod m01_window_world_import;
     mod m01_wingman_formation;
+    mod parity2_dmg_fx_b;
     mod parity5_briefing_map;
     mod parity_m01_atmo_c;
     mod parity_m01_clouds;
