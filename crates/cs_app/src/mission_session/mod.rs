@@ -98,6 +98,7 @@ mod cockpit_hud;
 mod compose;
 mod content;
 mod evidence;
+mod examine;
 mod flight_check;
 mod gun_sound;
 mod host;
@@ -154,6 +155,7 @@ pub use evidence::{
     EVIDENCE_DIR_ENV, MIN_CLEAR_COVERAGE_PERMILLE, MIN_WORLD_COVERAGE_PERMILLE,
     MissionCapturePlugin, PLAYBACK_FILE, TRACE_FILE, finish as finish_capture, write_playback,
 };
+pub use examine::{TargetFlagChange, TargetFlagLedger};
 pub use flight_check::{
     BriefingStage, ButtonRole, CHANGE_AMMO_UNAVAILABLE, CHANGE_PLANE_UNAVAILABLE,
     FlightCheckArtwork, FlightCheckPhase, FlightCheckPhaseError, FlightCheckScene,
@@ -244,9 +246,9 @@ pub use scenario::{
 pub use smoke::{
     ActorMetrics, ApproachMetrics, AudioMetrics, BriefingButtonMetrics, BriefingMetrics,
     BriefingReplayMetrics, BriefingShotMetrics, BriefingVoiceMetrics, CINEMATIC_SHOT_SECONDS,
-    CameraMetrics, Check, CinematicMetrics, DEFAULT_MISSION_CAPTURE_DIR, FirstControlMetrics,
-    FlightCheckButtonMetrics, FlightCheckMetrics, FlightCheckTextMetrics, GunMetrics, HudMetrics,
-    MAX_SKY_BELOW_HORIZON_PIXELS, MAX_WINGMAN_DISTANCE_M, MIN_ACTOR_PIXELS,
+    CameraMetrics, Check, CinematicMetrics, DEFAULT_MISSION_CAPTURE_DIR, ExamineMetrics,
+    FirstControlMetrics, FlightCheckButtonMetrics, FlightCheckMetrics, FlightCheckTextMetrics,
+    GunMetrics, HudMetrics, MAX_SKY_BELOW_HORIZON_PIXELS, MAX_WINGMAN_DISTANCE_M, MIN_ACTOR_PIXELS,
     MIN_BRIEFING_CHANGE_PIXELS, MIN_BRIEFING_DRAWN_PERMILLE, MIN_BUTTON_WARM_PERMILLE,
     MIN_FLIGHT_CHECK_BUTTON_PIXELS, MIN_FLIGHT_CHECK_DRAWN_PERMILLE, MIN_FLIGHT_CHECK_TEXT_PIXELS,
     MIN_GUN_ROUNDS, MIN_MISSION_SMOKE_SECONDS, MIN_OBJECTIVE_TEXT_PIXELS,

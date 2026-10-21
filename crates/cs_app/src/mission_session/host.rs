@@ -161,6 +161,7 @@ use cs_types::content::ContentId;
 use cs_types::net::SessionId;
 
 use super::compose::{MissionPlayerBody, MissionStage, spawn_player};
+use super::examine::TargetFlagLedger;
 use super::landings::{LandingLedger, LandingTick, MissionLandings, step_landings};
 use super::terminal::{MissionTerminal, MissionTerminalSource};
 use crate::animation::mission::{AnimationNameIndex, MissionAnimationBinding, StartupAnimation};
@@ -759,6 +760,8 @@ pub struct MissionHost {
     /// which directive keys were applied, which sleeping scripted aircraft
     /// they released, and every name that woke nothing and why.
     enemies: WakeEnemiesLedger,
+    /// The objective-target flag consumer (M01-EXAMINE-OBJECTIVE, #1754).
+    target_flags: TargetFlagLedger,
     armed: Vec<ArmedNode>,
     /// The landing path's own record of one generation (M01-PLAY-TRIGGERS-
     /// ANIMS-LAND, #1498): which rows a landing has already attempted, what
@@ -849,6 +852,7 @@ impl MissionHost {
             wake: WakeAnimationLedger::default(),
             calls: CallAnimationLedger::default(),
             enemies: WakeEnemiesLedger::default(),
+            target_flags: TargetFlagLedger::default(),
             armed: Vec::new(),
             landings: LandingLedger::default(),
             markers,
@@ -975,6 +979,7 @@ impl MissionHost {
         self.wake = WakeAnimationLedger::default();
         self.calls = CallAnimationLedger::default();
         self.enemies = WakeEnemiesLedger::default();
+        self.target_flags = TargetFlagLedger::default();
         self.armed.clear();
         self.landings = LandingLedger::default();
         // `markers.retry(served)` above already released the old ledger and
@@ -1239,6 +1244,10 @@ impl MissionHost {
         //     next fixed tick's arm/decide pass then flies it, so a release
         //     made on this tick is visible to the AI on the following one.
         let _woken_enemies = self.enemies.consume(world, self.script.state(), tick);
+        // 6c2. Objective-target flags: every `ADD`/`REMOVE_OBJECTIVE_TARGET`
+        //      emission this host has not applied yet flips its ground target's
+        //      flag, and the selection follows (M01-EXAMINE-OBJECTIVE, #1754).
+        self.target_flags.consume(world, self.script.state(), tick);
         // 6d. Landings (M01-PLAY-TRIGGERS-ANIMS-LAND, #1498): the designed
         //     landing path reads this tick's stage-4 observation — the sole
         //     authority for the player's pose and for each node's composed
@@ -1468,6 +1477,13 @@ impl MissionHost {
     #[must_use]
     pub const fn wake_enemies(&self) -> &WakeEnemiesLedger {
         &self.enemies
+    }
+
+    /// The objective-target flag consumer's ledger (M01-EXAMINE-OBJECTIVE,
+    /// #1754): every flag change applied to a declared ground target.
+    #[must_use]
+    pub const fn target_flags(&self) -> &TargetFlagLedger {
+        &self.target_flags
     }
 
     /// The `CALL_ANIMATION` consumer's ledger: every spelled call target a

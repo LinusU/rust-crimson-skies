@@ -97,8 +97,11 @@ fn accept_m01_objective_target_points_e_cycles_the_sites_in_order() {
     }
     assert_eq!(sites.len(), 3);
 
+    // The mission opens with Site #1 selected (M01-EXAMINE-OBJECTIVE, #1754),
+    // so the walk starts one entry in; the loop is long enough to wrap the
+    // roster once more than the sites need.
     let mut seen: Vec<&str> = Vec::new();
-    for step in 0..40u64 {
+    for step in 0..120u64 {
         let frame = SelectionFrame::at(Tick(100 + step));
         let edges = [Action::Flight(FlightCommand::TargetNextEnemy)];
         apply_selection_edges(world, player, &edges, frame).expect("the player is registered");
