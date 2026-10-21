@@ -67,6 +67,7 @@ pub mod loops;
 pub mod lower;
 pub mod mixer;
 pub mod music;
+pub mod pcm_size;
 pub mod plugin;
 pub mod samples;
 pub mod spawn;
