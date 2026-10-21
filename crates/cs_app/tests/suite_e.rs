@@ -5,7 +5,8 @@
 //! so much engine code that it adds ~5 MB of `__eh_frame` to any binary it joins.
 //! `m01_chase_view_parity`, `m01_player_prop_blur` and `vs_m01_rt_player_visual` moved to
 //! `campaign/mod.rs` (so `cs_app_tests_d`) during #1811's review: the binary was 4 KB past
-//! the 16 MiB `__eh_frame` gate.
+//! the 16 MiB `__eh_frame` gate. `vs_m01_rt_hud_art` and `vs_m01_rt_host_cadence` followed
+//! during #1812's review for the same reason (~3.5 KB past).
 //!
 //! See `docs/findings/2026-10-17-t1543-cs-app-test-binaries.md`.
 
@@ -17,7 +18,5 @@ mod campaign {
     mod vs_m01_rt_content;
     mod vs_m01_rt_evidence_capture;
     mod vs_m01_rt_evidence_report;
-    mod vs_m01_rt_host_cadence;
-    mod vs_m01_rt_hud_art;
     mod vs_m01_runtime;
 }

@@ -349,4 +349,6 @@ mod parity_m01_lc_measure_cam_timeline;
 mod parity_m01_lc_phase;
 mod record_objectives_sound;
 mod regenerate;
+mod vs_m01_rt_host_cadence;
+mod vs_m01_rt_hud_art;
 mod vs_m01_rt_player_visual;
