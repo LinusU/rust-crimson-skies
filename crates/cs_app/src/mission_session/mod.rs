@@ -175,10 +175,10 @@ pub use examine::{TargetFlagChange, TargetFlagLedger};
 pub use flight_check::{
     BriefingStage, ButtonRole, CHANGE_AMMO_UNAVAILABLE, CHANGE_PLANE_UNAVAILABLE,
     FlightCheckArtwork, FlightCheckPhase, FlightCheckPhaseError, FlightCheckScene,
-    FlightCheckSceneError, FlightCheckScreenPlugin, PhaseResponse, PreMissionStage,
-    RETURN_TO_BRIEFING_UNAVAILABLE, RETURN_TO_CABIN_UNAVAILABLE, SKIP_NOTICE, SceneButton,
-    SceneText, SceneUnknown, install_flight_check, install_flight_check_screen, mission_is_held,
-    mission_is_released,
+    FlightCheckSceneError, FlightCheckScreenPlugin, FlightCheckStrings, PhaseResponse,
+    PreMissionStage, RETURN_TO_BRIEFING_UNAVAILABLE, RETURN_TO_CABIN_UNAVAILABLE, SKIP_NOTICE,
+    SceneButton, ScenePane, SceneText, SceneUnknown, install_flight_check,
+    install_flight_check_screen, mission_is_held, mission_is_released,
 };
 pub use gun_sound::{
     GunSound, GunSoundError, MEASURED_GUN_MEMBER, WeaponSound, WeaponSoundError, measure_gun_sound,

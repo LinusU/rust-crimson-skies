@@ -20,7 +20,16 @@
 //!   start configuration binds ([`crate::mission_start::CAMPAIGN_AIRFRAME_ROW`]
 //!   for the pilot; the wingman's binding as
 //!   [`crate::mission_start::MissionStartConfiguration::wingmate_airframes`] states it, which is
-//!   unknown until measured).
+//!   unknown until measured). The name *line* the screen draws is the live
+//!   roster record's: native `2011` writes `<record nickname> (<long plane
+//!   name>)` and native `2010` answers the record's plane id as the
+//!   `FC_PlaneIcons.Png` frame — [`FlightCheckView::read_default_loadout`]
+//!   fills both from the committed defaults
+//!   (`docs/findings/2026-10-21-flight-check-page.md`).
+//! * **Change Plane** — the original shows the pills only when native
+//!   `2018` answers three or more selectable planes
+//!   ([`FlightCheckView::plane_choice_count`]); the count's source is
+//!   unmeasured and the M01 Flight Check shows neither pill.
 //! * **Gun and rocket lists** — the live plane records' contents as the
 //!   `$$E$$` natives answer them
 //!   (`docs/findings/2026-10-18-f45-c-5-flight-check-options-and-ammunition.md`,
@@ -72,6 +81,29 @@ const FACTS_RESOLVING_TASK: &str =
 /// What resolves a list a string-table row cannot fill.
 const STRING_RESOLVING_TASK: &str = "the installation's string table (`langui.dll`)";
 
+/// Why a view built without [`FlightCheckView::read_default_loadout`] leaves
+/// the name line and the plane frame unknown.
+pub const RECORD_UNKNOWN_REASON: &str = "the Flight Check's name line and plane silhouette show the \
+     live plane records (`callback($$E$$,2011,…)` and `callback($$E$$,2010,…)`); this view was \
+     built without the measured fresh-campaign defaults, and whether anything rewrites the live \
+     records before the screen opens is unmeasured";
+
+/// The string-table row a fresh campaign's roster record carries as its
+/// `+0x04` nickname for each slot — `]Gypsy Magic` for the pilot, `]The
+/// Knave` for the wingman, both seen on the owner capture of the M01 Flight
+/// Check (`docs/findings/2026-10-21-flight-check-page.md`). Which writer
+/// installs them is unmeasured.
+const PILOT_NICKNAME_STRING: u32 = 511;
+const WINGMAN_NICKNAME_STRING: u32 = 512;
+
+/// The nickname string id a slot's record carries on a fresh campaign.
+const fn nickname_string(slot: FlightCheckPlaneSlot) -> u32 {
+    match slot {
+        FlightCheckPlaneSlot::Pilot => PILOT_NICKNAME_STRING,
+        FlightCheckPlaneSlot::Wingman => WINGMAN_NICKNAME_STRING,
+    }
+}
+
 /// A value read from the mission's data, or the reason it is not known.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Entry<T> {
@@ -120,6 +152,17 @@ pub struct SlotView {
     pub slot: FlightCheckSlot,
     /// The plane's display name.
     pub plane: Entry<String>,
+    /// The name line the screen's `FC_T_PILOTPLANE` / `FC_T_WINGMANPLANE` row
+    /// draws — what native `2011` writes into the row: the roster record's
+    /// nickname, then the plane's long name in parentheses
+    /// (`Gypsy Magic (Hughes P21-J MKIII Devastator)`; the finding of
+    /// `docs/findings/2026-10-21-flight-check-page.md` cites handler
+    /// `0x409443` and the owner capture).
+    pub name: Entry<String>,
+    /// The `FC_PlaneIcons.Png` frame the plane pane shows: native `2010`
+    /// answers the live roster record's `plane_id` (+0x2c), which is the
+    /// index into the strip's 12 frames.
+    pub icon_frame: Entry<u32>,
     /// The guns on offer.
     pub guns: Entry<Vec<String>>,
     /// The rockets on offer.
@@ -183,6 +226,12 @@ pub struct FlightCheckView {
     pub pilot: SlotView,
     /// The wingman's plane and equipment.
     pub wingman: SlotView,
+    /// How many planes the plane-choice list offers — native `2018`'s `JQ`,
+    /// against which the script tests `3 > JQ` before showing the Change
+    /// Plane pills. `None`: the count's source (`0x40fd10`) is unmeasured,
+    /// and on the owner capture of the M01 Flight Check no Change Plane pill
+    /// is drawn, so `None` keeps them hidden.
+    pub plane_choice_count: Option<u32>,
 }
 
 impl FlightCheckView {
@@ -223,6 +272,7 @@ impl FlightCheckView {
             objectives,
             pilot: slot_view(FlightCheckSlot::Player, Some(pilot)),
             wingman: slot_view(FlightCheckSlot::Wingmate, wingmates.first()),
+            plane_choice_count: None,
         }
     }
 
@@ -297,18 +347,27 @@ impl FlightCheckView {
                     (FlightCheckPlaneSlot::Wingman, &mut self.wingman),
                 ] {
                     let layout = facts.layout();
+                    let plane_id = facts.default_for(slot).plane_id;
+                    view.icon_frame = Entry::Known(plane_id);
+                    view.name = name_line(slot, plane_id, layout, string);
                     let label = |base: &str, offset: u32| {
                         string_or_missing(string, layout.value(base) + u64::from(offset))
                     };
                     view.guns = loadout_lines(
                         "gun",
-                        facts.gun_list(slot).iter().flatten().map(|line| {
-                            let text = label("gun_label_base", line.gun).and_then(|gun| {
-                                label("ammo_label_base", line.ammo)
-                                    .map(|ammo| format!("{gun} {ammo}"))
-                            });
-                            (line.number, text)
-                        }),
+                        facts
+                            .gun_list(slot)
+                            .into_iter()
+                            .enumerate()
+                            .map(|(item, line)| {
+                                let text = line.map(|line| {
+                                    label("gun_label_base", line.gun).and_then(|gun| {
+                                        label("ammo_label_base", line.ammo)
+                                            .map(|ammo| format!("{gun} {ammo}"))
+                                    })
+                                });
+                                (item as u32 + 1, text)
+                            }),
                         facts,
                         string,
                     );
@@ -316,9 +375,14 @@ impl FlightCheckView {
                         "rocket",
                         facts
                             .rocket_list(slot)
-                            .iter()
-                            .flatten()
-                            .map(|line| (line.number, label("rocket_label_base", line.rocket))),
+                            .into_iter()
+                            .enumerate()
+                            .map(|(item, line)| {
+                                (
+                                    item as u32 + 1,
+                                    line.map(|line| label("rocket_label_base", line.rocket)),
+                                )
+                            }),
                         facts,
                         string,
                     );
@@ -327,6 +391,8 @@ impl FlightCheckView {
             Err(error) => {
                 for view in [&mut self.pilot, &mut self.wingman] {
                     let reason = format!("the committed engine facts do not read: {error}");
+                    view.name = Entry::unknown(reason.clone(), FACTS_RESOLVING_TASK);
+                    view.icon_frame = Entry::unknown(reason.clone(), FACTS_RESOLVING_TASK);
                     view.guns = Entry::unknown(reason.clone(), FACTS_RESOLVING_TASK);
                     view.rockets = Entry::unknown(reason, FACTS_RESOLVING_TASK);
                 }
@@ -434,10 +500,40 @@ fn retail_title(context: &SourceContext, mission: &str) -> Entry<String> {
 
 /// Drops a leading presentation tag such as `[AB14I] ` from a localized
 /// string.
-fn strip_font_tag(text: &str) -> &str {
+pub(crate) fn strip_font_tag(text: &str) -> &str {
     text.strip_prefix('[')
         .and_then(|rest| rest.find(']').map(|end| &rest[end + 1..]))
         .map_or(text, str::trim_start)
+}
+
+/// The name line native `2011` writes for a slot: the record's nickname,
+/// then the plane's long name in parentheses
+/// (`Gypsy Magic (Hughes P21-J MKIII Devastator)`).
+fn name_line(
+    slot: FlightCheckPlaneSlot,
+    plane_id: u32,
+    layout: &crate::engine_facts::FlightCheckLayoutFact,
+    string: &dyn Fn(u32) -> Option<String>,
+) -> Entry<String> {
+    let nickname = string_or_missing(string, u64::from(nickname_string(slot)));
+    let long = string_or_missing(
+        string,
+        layout.value("name_label_base") + u64::from(plane_id),
+    );
+    match (nickname, long) {
+        (Ok(nickname), Ok(long)) => {
+            Entry::Known(format!("{} ({long})", strip_cell_marker(&nickname)))
+        }
+        (Err(reason), _) | (_, Err(reason)) => {
+            Entry::unknown(format!("the name line: {reason}"), STRING_RESOLVING_TASK)
+        }
+    }
+}
+
+/// Drops the `]` marker the nickname rows carry (`]Gypsy Magic`); the marker
+/// is a table cell convention the capture does not render.
+fn strip_cell_marker(text: &str) -> &str {
+    text.strip_prefix(']').unwrap_or(text).trim_start()
 }
 
 fn string_or_missing(string: &dyn Fn(u32) -> Option<String>, id: u64) -> Result<String, String> {
@@ -452,7 +548,7 @@ fn string_or_missing(string: &dyn Fn(u32) -> Option<String>, id: u64) -> Result<
 /// and followed by its label.
 fn loadout_lines(
     what: &str,
-    items: impl Iterator<Item = (u32, Result<String, String>)>,
+    items: impl Iterator<Item = (u32, Option<Result<String, String>>)>,
     facts: &crate::engine_facts::FlightCheckFacts,
     string: &dyn Fn(u32) -> Option<String>,
 ) -> Entry<Vec<String>> {
@@ -465,17 +561,18 @@ fn loadout_lines(
     };
     let mut lines = Vec::new();
     for (number, label) in items {
-        let label = match label {
-            Ok(label) => label,
-            Err(reason) => return unknown(reason),
-        };
         let Some(prefix) = format_item_number(&template, number) else {
             return unknown(format!(
                 "the item-number string {template:?} has no `%1!d!` to format",
             ));
         };
-        // The original joins number and label with a space (unmeasured).
-        lines.push(format!("{prefix} {label}"));
+        match label {
+            // The original joins number and label with a space (unmeasured).
+            Some(Ok(label)) => lines.push(format!("{prefix} {label}")),
+            Some(Err(reason)) => return unknown(reason),
+            // An empty slot draws the bare item number.
+            None => lines.push(prefix),
+        }
     }
     Entry::Known(lines)
 }
@@ -525,6 +622,8 @@ fn slot_view(slot: FlightCheckSlot, airframe: Option<&Resolved<ContentId>>) -> S
     SlotView {
         slot,
         plane,
+        name: Entry::unknown(RECORD_UNKNOWN_REASON, LOADOUT_RESOLVING_TASK),
+        icon_frame: Entry::unknown(RECORD_UNKNOWN_REASON, LOADOUT_RESOLVING_TASK),
         guns: Entry::unknown(LOADOUT_UNKNOWN_REASON, LOADOUT_RESOLVING_TASK),
         rockets: Entry::unknown(LOADOUT_UNKNOWN_REASON, LOADOUT_RESOLVING_TASK),
     }

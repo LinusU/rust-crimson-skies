@@ -102,6 +102,7 @@ pub use capture::{
     Artwork, CapturedButton, SCREEN_CAPTURE_HEIGHT, SCREEN_CAPTURE_SURFACE, SCREEN_CAPTURE_WIDTH,
     ScreenCapture, ScreenCaptureError, capture_artwork, capture_screen,
 };
+pub(crate) use flight_check_view::strip_font_tag;
 pub use flight_check_view::{
     Entry, FlightCheckButton, FlightCheckView, FlightCheckViewError, LOADOUT_RESOLVING_TASK,
     LOADOUT_UNKNOWN_REASON, ObjectiveRow, SlotView, objective_keys,

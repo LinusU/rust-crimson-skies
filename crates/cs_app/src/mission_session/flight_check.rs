@@ -35,14 +35,20 @@
 //!   (`docs/findings/2026-10-18-f45-c-5-flight-check-options-and-ammunition.md`).
 //! * **Return to Briefing** is drawn and reports as unavailable: the briefing
 //!   screen is the briefing slice of #1642, which does not exist yet.
-//! * The **Change Ammo** and **Change Plane** buttons are drawn and report
-//!   that their screens (`OrdinanceLayout`, `PlaneSelection`) are out of
-//!   scope.
-//! * The plane pictures (`FC_PlaneIcons.Png`) are not drawn: which frame
-//!   belongs to which airframe is unread. The original font is unread, so
-//!   text uses the engine's default font; the button rollover frames are not
+//! * The **Change Ammo** button is drawn and reports that its screen
+//!   (`OrdinanceLayout`) is out of scope; so do the **Change Plane** pills
+//!   when the plane choice offers enough planes to show them
+//!   (`PlaneSelection` is likewise out of scope).
+//! * The plane pictures (`FC_P_PILOTPLANE` / `FC_P_WINGPLANE`) draw the frame
+//!   of `FC_PlaneIcons.Png` the live record's `plane_id` selects — native
+//!   `2010`'s answer (`docs/findings/2026-10-21-flight-check-page.md`). The
+//!   original's Windows fonts are not bundled (licensing undecided), so text
+//!   uses the engine's default font; the button rollover frames are not
 //!   drawn because the state order of the sheet is unread. All of it is
 //!   labelled designed.
+//! * The **Change Plane** pills stay hidden while the plane-choice count is
+//!   unmeasured: the script deactivates them when native `2018` answers under
+//!   three, and the M01 Flight Check draws neither.
 //! * Developer shortcuts (`CS_MISSION_START_M` and the capture scenario) skip
 //!   the phase and say so ([`SKIP_NOTICE`]). The owner-command smoke does not:
 //!   it photographs the screen, checks it against the scene and delivers Fly
@@ -104,6 +110,10 @@ const SECTION: &str = "FlightCheck";
 /// The designed text height of a row whose layout height is an unresolved
 /// placeholder, in logical pixels.
 const DESIGNED_TEXT_HEIGHT: u32 = 16;
+
+/// The script's Change Plane gate (`if (3 > JQ) deactivate`): the pills show
+/// only when the plane choice offers at least this many planes.
+const CHANGE_PLANE_MIN_CHOICES: u32 = 3;
 
 /// What a hotspot of the screen does.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -192,6 +202,23 @@ pub struct SceneText {
     pub unknown: bool,
 }
 
+/// One drawn plane pane: the layout row's strip art at its stated position,
+/// showing the frame the live record's plane id selects (native `2010`;
+/// `docs/findings/2026-10-21-flight-check-page.md`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ScenePane {
+    /// The layout row id (`FC_P_PILOTPLANE`).
+    pub id: String,
+    /// The art's file name as the layout spells it (`FC_PlaneIcons.Png`).
+    pub art: String,
+    /// The region in logical screen pixels: one frame of the strip.
+    pub rect: Rect,
+    /// The number of frames the strip holds (`NUMFRAMES`).
+    pub frames: u32,
+    /// The frame shown: the slot's `plane_id`.
+    pub frame: u32,
+}
+
 /// A value the screen shows as unknown.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SceneUnknown {
@@ -260,6 +287,8 @@ pub struct FlightCheckScene {
     pub background: String,
     /// The background's extent, the logical screen size.
     pub size: (u32, u32),
+    /// The plane panes (`FC_P_PILOTPLANE`, `FC_P_WINGPLANE`), in layout order.
+    pub panes: Vec<ScenePane>,
     /// The buttons, in layout order.
     pub buttons: Vec<SceneButton>,
     /// The text rows, in layout order.
@@ -315,11 +344,88 @@ impl FlightCheckScene {
                 art: background.clone(),
             })?;
 
+        let mut unknowns = Vec::new();
+        let mut panes = Vec::new();
+        for row in &section.panes {
+            if row.id == "FC_BACKGROUND" {
+                continue;
+            }
+            let Some(slot) = (match row.id.as_str() {
+                "FC_P_PILOTPLANE" => Some(&view.pilot),
+                "FC_P_WINGPLANE" => Some(&view.wingman),
+                _ => None,
+            }) else {
+                continue;
+            };
+            let art = field(row, 0).to_owned();
+            let (Some(x), Some(y)) = (number(row, 1), number(row, 2)) else {
+                continue;
+            };
+            let frames = number(row, 4).unwrap_or(1).max(1);
+            let (width, height) =
+                extents
+                    .extent(&art)
+                    .ok_or_else(|| FlightCheckSceneError::ArtUnread {
+                        row: row.id.clone(),
+                        art: art.clone(),
+                    })?;
+            let Entry::Known(frame) = slot.icon_frame else {
+                let Entry::Unknown {
+                    reason,
+                    resolving_task,
+                } = &slot.icon_frame
+                else {
+                    unreachable!("matched Known above")
+                };
+                unknowns.push(SceneUnknown {
+                    row: row.id.clone(),
+                    reason: reason.clone(),
+                    resolving_task: resolving_task.clone(),
+                });
+                continue;
+            };
+            panes.push(ScenePane {
+                id: row.id.clone(),
+                art,
+                rect: Rect {
+                    x,
+                    y,
+                    width,
+                    height: height / frames,
+                },
+                frames,
+                frame,
+            });
+        }
+
+        // The script's `if (3 > JQ) deactivate(OP/AQ)`: with the choice count
+        // unmeasured the pills stay hidden, which is what the M01 Flight Check
+        // shows.
+        let change_plane_offered = view
+            .plane_choice_count
+            .is_some_and(|count| count >= CHANGE_PLANE_MIN_CHOICES);
         let mut buttons = Vec::new();
         for row in &section.buttons {
             let Some(role) = ButtonRole::of(&row.id) else {
                 continue;
             };
+            if matches!(role, ButtonRole::ChangePlane(_)) && !change_plane_offered {
+                unknowns.push(SceneUnknown {
+                    row: row.id.clone(),
+                    reason: format!(
+                        "the script deactivates {id} when `callback($$E$$,2018)` answers under \
+                         {CHANGE_PLANE_MIN_CHOICES} selectable planes; the count's source is \
+                         unmeasured and the owner capture of the M01 Flight Check draws no \
+                         Change Plane pill",
+                        id = row.id
+                    ),
+                    resolving_task:
+                        "the plane-choice count native 2018 answers (the `0x40fd10` routine of \
+                         `docs/findings/2026-10-21-flight-check-page.md`)"
+                            .to_owned(),
+                });
+                continue;
+            }
             let art = field(row, 0).to_owned();
             let (Some(x), Some(y)) = (number(row, 1), number(row, 2)) else {
                 return Err(FlightCheckSceneError::PositionUnread {
@@ -363,7 +469,6 @@ impl FlightCheckScene {
         }
 
         let mut texts = Vec::new();
-        let mut unknowns = Vec::new();
         let mut unknown_text = |row: &Row, rect: Rect, reason: &str, task: &str| {
             unknowns.push(SceneUnknown {
                 row: row.id.clone(),
@@ -395,8 +500,8 @@ impl FlightCheckScene {
                     let color = color_of(field(row, 6)).unwrap_or(0xFF00_0000);
                     let entry = match row.id.as_str() {
                         "FC_T_MISSION" => Some(view.title.clone()),
-                        "FC_T_PILOTPLANE" => Some(view.pilot.plane.clone()),
-                        "FC_T_WINGMANPLANE" => Some(view.wingman.plane.clone()),
+                        "FC_T_PILOTPLANE" => Some(view.pilot.name.clone()),
+                        "FC_T_WINGMANPLANE" => Some(view.wingman.name.clone()),
                         "FC_T_OBJECTIVES" => Some(objectives_text(view)),
                         _ => None,
                     };
@@ -471,6 +576,7 @@ impl FlightCheckScene {
         Ok(Self {
             background,
             size,
+            panes,
             buttons,
             texts,
             unknowns,
@@ -479,8 +585,8 @@ impl FlightCheckScene {
 
     /// Reads the scene for one retail mission.
     ///
-    /// `strings` resolves the layout's string ids; production passes the
-    /// stage's message catalog.
+    /// `strings` resolves the layout's `IDS_*` string names; production
+    /// passes [`FlightCheckStrings`].
     ///
     /// # Errors
     ///
@@ -502,6 +608,14 @@ impl FlightCheckScene {
     #[must_use]
     pub fn art_names(&self) -> Vec<&str> {
         let mut names = vec![self.background.as_str()];
+        for pane in &self.panes {
+            if !names
+                .iter()
+                .any(|name| name.eq_ignore_ascii_case(&pane.art))
+            {
+                names.push(&pane.art);
+            }
+        }
         for button in &self.buttons {
             if !names
                 .iter()
@@ -1104,6 +1218,122 @@ fn stage_string(stage: &MissionStage, id: &str) -> Option<String> {
     }
 }
 
+/// The shipped resource headers inside the screen container whose `#define`s
+/// pair the layout's `IDS_*` names with the UI string image's ids.
+const UI_STRING_HEADERS: [&str; 2] = ["ASSETS/SCRIPTS/RESOURCE.H", "ASSETS/SCRIPTS/RESRC1.H"];
+
+/// The UI string image the header ids address.
+const UI_STRING_IMAGE: &str = "GOSDATA/ASSETS/BINARIES/langui.dll";
+
+/// A layout row's `IDS_*` name resolved to the installation's own text: a
+/// `#define` of the shipped resource headers pairs the name with a
+/// string-table id, and the UI string image (`langui.dll`) answers the id —
+/// the same pairing the original's own `GetString` calls make
+/// (`docs/findings/2026-10-21-flight-check-page.md`).
+///
+/// A name no single `#define` spells, an id the image answers with nothing or
+/// with two rows, and a row whose units do not decode all answer `None` —
+/// never a guess.
+pub struct FlightCheckStrings {
+    /// `IDS_*` name → string id; names the headers contradict each other on
+    /// are absent rather than chosen between.
+    defines: BTreeMap<String, u32>,
+    /// The UI string image's rows.
+    catalog: cs_content::config::StringCatalog,
+}
+
+impl FlightCheckStrings {
+    /// Reads both headers out of the screen container and the UI string
+    /// image out of the installation.
+    ///
+    /// # Errors
+    ///
+    /// [`FlightCheckPhaseError::Read`] when a header member or its text, or
+    /// the string image, cannot be read.
+    pub fn read(
+        install_root: &Path,
+        screens: &FrontEndScreens,
+    ) -> Result<Self, FlightCheckPhaseError> {
+        let read = |reason: String| FlightCheckPhaseError::Read(reason);
+        let mut defines = BTreeMap::<String, Option<u32>>::new();
+        for member in UI_STRING_HEADERS {
+            let key = cs_types::asset_id::AssetKey::from_spelling(
+                screens.screens_container().namespace().as_str(),
+                member,
+                cs_content::textures::TEXTURE_ARCHIVE_VARIANT,
+            )
+            .map_err(|error| read(format!("{member}: {error}")))?;
+            let bytes = screens
+                .screens_container()
+                .read(&key)
+                .map_err(|error| read(format!("{member}: {error}")))?
+                .data;
+            let header = cs_formats::text::read_resource_header(
+                &mut cs_formats::ParseContext::with_defaults(member),
+                &bytes,
+            )
+            .map_err(|error| read(format!("{member}: {error}")))?;
+            for define in header.defines() {
+                let Ok(name) = std::str::from_utf8(define.name) else {
+                    continue;
+                };
+                defines
+                    .entry(name.to_owned())
+                    .and_modify(|slot| {
+                        if *slot != define.resource_id() {
+                            // A second spelling of the name with a different
+                            // id is ambiguous: keep it unanswered.
+                            *slot = None;
+                        }
+                    })
+                    .or_insert_with(|| define.resource_id());
+            }
+        }
+        let defines = defines
+            .into_iter()
+            .filter_map(|(name, id)| id.map(|id| (name, id)))
+            .collect();
+
+        let path = install_root.join(UI_STRING_IMAGE);
+        let bytes =
+            std::fs::read(&path).map_err(|error| read(format!("{}: {error}", path.display())))?;
+        let install = cs_types::evidence::ContentHash::from_hex(screens.install_sha256())
+            .map_err(|error| read(format!("the installation fingerprint: {error}")))?;
+        let source = cs_types::asset_id::SourceSpan::new(
+            install,
+            UI_STRING_IMAGE,
+            None,
+            0,
+            bytes.len() as u64,
+            None,
+        )
+        .map_err(|error| read(format!("{UI_STRING_IMAGE}: {error}")))?;
+        let catalog = cs_content::config::StringCatalog::read(
+            &mut cs_formats::ParseContext::with_defaults(UI_STRING_IMAGE),
+            source,
+            &bytes,
+        )
+        .map_err(|error| read(format!("{UI_STRING_IMAGE}: {error}")))?;
+
+        Ok(Self { defines, catalog })
+    }
+
+    /// The text `name` names — its `[FONT]` tag stripped, the way the screen
+    /// draws it — or `None`.
+    #[must_use]
+    pub fn resolve(&self, name: &str) -> Option<String> {
+        let id = self.defines.get(name)?;
+        match self.catalog.resolve(*id, None) {
+            cs_content::config::StringLookup::Found(row) => row
+                .text
+                .as_deref()
+                .map(crate::ui::front_end::strip_font_tag)
+                .map(str::to_owned),
+            _ => None,
+        }
+    }
+}
+
 /// What both retail openings read.
 struct RetailParts {
     view: FlightCheckView,
@@ -1124,7 +1354,8 @@ impl RetailParts {
             .map_err(|error| read(error.to_string()))?;
         let screens =
             FrontEndScreens::open(install_root).map_err(|error| read(error.to_string()))?;
-        let strings = |id: &str| stage_string(stage, id);
+        let ui = FlightCheckStrings::read(install_root, &screens)?;
+        let strings = |id: &str| ui.resolve(id).or_else(|| stage_string(stage, id));
         let scene = FlightCheckScene::from_retail(&screens, &view, &strings)?;
         let artwork = FlightCheckArtwork::read(&screens, &scene)?;
         let airframe = designed_player_airframe(install_root, mission)?;
@@ -1405,6 +1636,34 @@ fn spawn_screen(
             }),
             pane,
             ScreenPart,
+        ));
+    }
+    for plane in &scene.panes {
+        let Some(art) = artwork.get(&plane.art) else {
+            continue;
+        };
+        let frames = plane.frames.max(1);
+        let frame_height = art.height() / frames;
+        let top = plane.frame.min(frames - 1) * frame_height;
+        let mut node = ImageNode::new(images.add(to_image(art)));
+        node.rect = Some(bevy::math::Rect::new(
+            0.0,
+            top as f32,
+            art.width() as f32,
+            (top + frame_height) as f32,
+        ));
+        commands.spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                ..default()
+            },
+            node,
+            Logical(plane.rect),
+            above,
+            ScreenPart,
+            ScreenOverlay {
+                row: Some(plane.id.clone()),
+            },
         ));
     }
     for button in &scene.buttons {
