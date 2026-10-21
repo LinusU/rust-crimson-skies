@@ -360,24 +360,19 @@ fn accept_f18_b_a_mesh_trigger_volume_reports_a_swept_body_where_a_sample_lands(
 
 /// **The layout that was rejected, measured through the same production spawn.**
 ///
-/// One `RigidBody::Static` on the trigger volume — all it takes to get the old
-/// behaviour back — and a 400 m/s body flying the mesh volume loses 11.08 m over
-/// fifteen ticks, four of which it is held in: the swept clamp truncates the
-/// crossing tick, and the discrete phase then walks the body along the volume's
-/// surface (the same creep task #420 measured against a wall).
+/// One `RigidBody::Static` on the trigger volume. On avian3d 0.7 that layout
+/// held a 400 m/s body flying the mesh volume for four ticks (11.08 m lost over
+/// fifteen), because the swept clamp truncated the crossing tick and the
+/// discrete phase then walked the body along the volume's surface; the clamp
+/// was also what made the crossing reportable at that speed.
 ///
-/// What the clamp buys is stated rather than left out: at this speed the crossing
-/// **is** reported, because holding the body at the surface is what gives the
-/// narrow phase something to see. That is the trade this task made, measured on
-/// both sides — the neighbouring test records what a body-less volume does not
-/// report — and the flight it costs is the reason the trade was taken.
-///
-/// The test exists so the decision stays a decision, and it is also the
-/// re-measure signal: when a future avian release teaches the swept CCD to skip
-/// sensors, this arm fails, and the finding is re-read — at that point the body
-/// could go back on the trigger and this test be inverted.
+/// On avian3d 0.8 the swept CCD skips sensors (`ColliderTreeProxy::is_sensor`
+/// in `solve_continuous`), which is the re-measure signal this test was written
+/// to give: the body flies the volume at the free-flight distance and the
+/// discrete log is silent. The trigger report for a fast body is the world's
+/// swept crossing pass, not the contact log.
 #[test]
-fn accept_f18_b_a_body_bearing_trigger_volume_holds_a_swept_body_in_four_ticks() {
+fn accept_f18_b_a_body_bearing_trigger_volume_no_longer_holds_a_swept_body() {
     let (mut fixture, probe) = harbor_swept(TUNNELLING_SPEED_M_S);
     let report = fixture.spawned().clone();
     let trigger = collider_of(&report, HARBOR_OBJECT_SENSOR);
@@ -420,29 +415,25 @@ fn accept_f18_b_a_body_bearing_trigger_volume_holds_a_swept_body_in_four_ticks()
     let held = travel.iter().filter(|step| **step < free * 0.5).count();
     let free_end = free_flight(start, TUNNELLING_SPEED_M_S, TUNNELLING_TICKS, dt);
     assert!(
-        end.x < free_end.x - 2.0 * free,
-        "a body-bearing trigger volume must cost the body real distance: this flight \
-         lost {lost} m of {free} m per tick over {travel:?}, ending at {end:?} instead \
-         of {free_end:?}. If every tick is now free, a future avian release may have \
-         taught the swept CCD to skip sensors: re-measure and re-decide rather than \
-         relaxing this test"
+        (end.x - free_end.x).abs() < 0.01,
+        "on avian3d 0.8 swept CCD skips sensors, so a body-bearing trigger volume \
+         no longer costs the body distance: this flight lost {lost} m of {free} m \
+         per tick over {travel:?}, ending at {end:?} instead of {free_end:?}"
     );
-    assert!(
-        held >= 3,
-        "and the loss must come from ticks the body was held in, not from many small \
-         ones: {held} of {} ticks were under half a free tick, over {travel:?}",
+    assert_eq!(
+        held,
+        0,
+        "and no tick is held: {held} of {} ticks were under half a free tick, \
+         over {travel:?}",
         travel.len()
     );
-    // The cost this layout bought, stated rather than left out: with a body on
-    // the volume the crossing *is* reported at this speed, because the clamp puts
-    // the body onto the volume's surface. The decision trades that report for the
-    // body's flight, and the neighbouring test states the other side of it.
+    // What the clamp used to buy is gone with it: nothing puts the body on the
+    // volume's surface any more, so the narrow phase sees nothing at this speed
+    // and the world's own swept crossing pass is what reports it.
     assert_eq!(
         contacts_for(&fixture, HARBOR_OBJECT_SENSOR).len(),
-        1,
-        "and the crossing is reported here, where the body-less layout reports \
-         nothing at this speed: that is the one thing the clamp buys, paid for with \
-         the distance above. {:?}",
+        0,
+        "and the discrete contact log reports nothing here either: {:?}",
         fixture
             .contacts()
             .iter()
