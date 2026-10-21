@@ -63,12 +63,12 @@ const POLL: Duration = Duration::from_millis(4);
 /// The output position stops short of the audio's end by up to a buffer; a
 /// position within `1/END_TAIL_DIVISOR` s of the end that stops advancing for
 /// [`END_STALL`] is the end of the audio.
-const END_TAIL_DIVISOR: u32 = 20;
-const END_STALL: Duration = Duration::from_millis(250);
+pub(super) const END_TAIL_DIVISOR: u32 = 20;
+pub(super) const END_STALL: Duration = Duration::from_millis(250);
 
 /// How long past the audio length the device may take before the run is a
 /// failure (an output that stopped pulling is not a completion).
-const DEVICE_SLACK: Duration = Duration::from_secs(10);
+pub(super) const DEVICE_SLACK: Duration = Duration::from_secs(10);
 
 /// Why a frame could not be composed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -261,14 +261,14 @@ pub struct DevicePlaybackReport {
     pub wall: Duration,
 }
 
-type SharedFrames = Arc<Mutex<VecDeque<(u64, Vec<u8>)>>>;
+pub(super) type SharedFrames = Arc<Mutex<VecDeque<(u64, Vec<u8>)>>>;
 
 /// A [`FrameSource`] that keeps the pixels of the frames it has delivered, so
 /// the pixels of the *shown* frame are still available when the decoder has
 /// already looked one frame ahead.
-struct TeeSource<R> {
-    inner: MpegVideoSource<R>,
-    frames: SharedFrames,
+pub(super) struct TeeSource<R> {
+    pub(super) inner: MpegVideoSource<R>,
+    pub(super) frames: SharedFrames,
 }
 
 impl<R: std::io::Read> FrameSource for TeeSource<R> {
@@ -477,6 +477,6 @@ pub fn play_on_device(
     })
 }
 
-fn frames_of(position: Duration, rate: u32) -> u64 {
+pub(super) fn frames_of(position: Duration, rate: u32) -> u64 {
     u64::try_from(position.as_micros() * u128::from(rate) / 1_000_000).unwrap_or(u64::MAX)
 }

@@ -43,6 +43,7 @@ pub mod launch_camera;
 pub mod launch_end_pose;
 pub mod launch_parent;
 pub mod launch_release;
+pub mod movie_player;
 pub mod mpeg;
 pub mod playback;
 pub mod session;
