@@ -175,7 +175,8 @@ fn accept_m01_lc_fc_a_fixture_read_default_loadout_fills_and_unknowns() {
     v.read_default_loadout(&strings);
     for slot in [&v.pilot, &v.wingman] {
         // The committed defaults: gun slots 2, 1, 0 paired, slot 3 empty;
-        // rockets 1, 1, -, -, 1, 1, -, -, all on ammunition kind 0.
+        // rockets 1, 1, -, -, 1, 1, -, -, all on ammunition kind 0. Every
+        // item draws; an empty slot is the bare item number.
         assert_eq!(
             slot.guns.known().expect("the gun list reads"),
             &[
@@ -185,11 +186,22 @@ fn accept_m01_lc_fc_a_fixture_read_default_loadout_fills_and_unknowns() {
                 "4) gun1 ammo0",
                 "5) gun0 ammo0",
                 "6) gun0 ammo0",
+                "7)",
+                "8)",
             ]
         );
         assert_eq!(
             slot.rockets.known().expect("the rocket list reads"),
-            &["1) rocket1", "2) rocket1", "5) rocket1", "6) rocket1"]
+            &[
+                "1) rocket1",
+                "2) rocket1",
+                "3)",
+                "4)",
+                "5) rocket1",
+                "6) rocket1",
+                "7)",
+                "8)",
+            ]
         );
     }
 
@@ -267,19 +279,20 @@ fn accept_m01_lc_fc_a_retail_m01_title_objectives_and_hotspots() {
         )
     );
     // The lists are the measured fresh-campaign defaults (M01-LC-FC-B): the
-    // Devastator record's six gun lines and four rocket lines, the same for
-    // the wingman, every line prefixed with the item-number string (`%1!d!)`)
-    // and labelled from the string table.
+    // Devastator record's eight numbered gun and rocket rows, the same for
+    // the wingman, every line prefixed with the item-number string (`%1!d!)`),
+    // filled slots labelled from the string table and empty slots bare.
     for slot in [&v.pilot, &v.wingman] {
         let guns = slot.guns.known().expect("the gun list reads");
         let rockets = slot.rockets.known().expect("the rocket list reads");
-        assert_eq!(guns.len(), 6, "{guns:?}");
-        assert_eq!(rockets.len(), 4, "{rockets:?}");
+        assert_eq!(guns.len(), 8, "{guns:?}");
+        assert_eq!(rockets.len(), 8, "{rockets:?}");
         for (index, line) in guns.iter().enumerate() {
             assert!(line.starts_with(&format!("{})", index + 1)), "{line}");
             assert!(!line.contains('%'), "{line}");
         }
-        assert!(rockets[2].starts_with("5)"), "{:?}", rockets[2]);
+        assert_eq!(rockets[2], "3)", "{:?}", rockets);
+        assert!(rockets[4].starts_with("5)"), "{:?}", rockets[4]);
     }
     assert_eq!(v.pilot.guns, v.wingman.guns);
 

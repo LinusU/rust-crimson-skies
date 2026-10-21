@@ -134,10 +134,9 @@ fn accept_m01_lc_fc_c_the_scene_is_the_layouts_and_the_views_with_unknowns_named
         text(&one, "FC_T_OBJECTIVES").text,
         "first objective\nunknown (MSG_TWO)"
     );
-    assert_eq!(
-        text(&one, "FC_T_PILOTPLANE").text,
-        AIRFRAME_TABLE[0].display_name
-    );
+    // The name row draws the record's name line; this fixture view was built
+    // without the measured defaults, so it is drawn as unknown.
+    assert!(text(&one, "FC_T_PILOTPLANE").unknown);
 
     // The buttons sit where the layout states, one state frame tall.
     let fly = one
@@ -154,7 +153,14 @@ fn accept_m01_lc_fc_c_the_scene_is_the_layouts_and_the_views_with_unknowns_named
             height: 20
         }
     );
-    assert_eq!(one.buttons.len(), 5, "the layout's five buttons");
+    // Four drawn buttons: the Change Plane pill is hidden while the
+    // plane-choice count (native 2018's JQ) is unmeasured — the script's own
+    // `3 > JQ` gate keeps it off the M01 Flight Check.
+    assert_eq!(
+        one.buttons.len(),
+        4,
+        "the layout's buttons minus Change Plane"
+    );
     assert_eq!(
         one.buttons
             .iter()
@@ -163,8 +169,9 @@ fn accept_m01_lc_fc_c_the_scene_is_the_layouts_and_the_views_with_unknowns_named
         Some("Change Ammo")
     );
 
-    // What the data does not state is shown as unknown and listed: the wingman's
-    // plane and every gun and rocket list. Nothing designed stands in.
+    // What the data does not state is shown as unknown and listed: the hidden
+    // Change Plane pill, both name lines and every gun and rocket list.
+    // Nothing designed stands in.
     let rows: Vec<_> = one
         .unknowns
         .iter()
@@ -172,7 +179,13 @@ fn accept_m01_lc_fc_c_the_scene_is_the_layouts_and_the_views_with_unknowns_named
         .collect();
     assert_eq!(
         rows,
-        ["FC_T_WINGMANPLANE", "FC_T_GUNLISTP", "FC_T_ROCKETLISTW"]
+        [
+            "FC_B_CHANGEPLANE",
+            "FC_T_PILOTPLANE",
+            "FC_T_WINGMANPLANE",
+            "FC_T_GUNLISTP",
+            "FC_T_ROCKETLISTW"
+        ]
     );
     assert!(text(&one, "FC_T_GUNLISTP").unknown);
     assert_eq!(text(&one, "FC_T_GUNLISTP").text, "unknown");
@@ -302,12 +315,23 @@ fn accept_m01_lc_fc_c_retail_m01_screen_is_built_from_the_original_layout() {
         "FC_B_RETURNBRIEF",
         "FC_B_CHANGEAMMO",
         "FC_B_CHANGEAMMOW",
-        "FC_B_CHANGEPLANE",
-        "FC_B_CHANGEPLANEW",
     ] {
         assert!(
             scene.buttons.iter().any(|button| button.hotspot == id),
             "{id} is drawn"
+        );
+    }
+    // The script's `3 > JQ` gate: with the plane-choice count unmeasured the
+    // Change Plane pills stay hidden, as on the owner capture, and are named
+    // as unknowns instead.
+    for id in ["FC_B_CHANGEPLANE", "FC_B_CHANGEPLANEW"] {
+        assert!(
+            !scene.buttons.iter().any(|button| button.hotspot == id),
+            "{id} is hidden while the choice count is unmeasured"
+        );
+        assert!(
+            scene.unknowns.iter().any(|unknown| unknown.row == id),
+            "{id} is listed among the scene's unknowns"
         );
     }
     // The title the view reads is drawn in the mission-name row.
