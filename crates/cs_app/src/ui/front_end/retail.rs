@@ -753,6 +753,29 @@ impl FrontEndScreens {
         Some((width, height))
     }
 
+    /// The container graphic the layout names `art` (matched ASCII
+    /// case-insensitively under `ASSETS/GRAPHICS/`), decoded to RGBA8
+    /// [`Artwork`], or `None` when there is no such member or it will not
+    /// decode — the pixels half of [`Self::art_extent`], for the windowed
+    /// shell (FE-MENU-1).
+    #[must_use]
+    pub fn graphic_artwork(&self, art: &str) -> Option<Artwork> {
+        let wanted = format!("{GRAPHICS_PREFIX}{art}");
+        let member = self
+            .rof
+            .members()
+            .find(|member| member.spelling.eq_ignore_ascii_case(&wanted))?;
+        let key = AssetKey::from_spelling(
+            self.rof.namespace().as_str(),
+            &member.spelling,
+            TEXTURE_ARCHIVE_VARIANT,
+        )
+        .ok()?;
+        let read = self.rof.read(&key).ok()?;
+        let (_, width, height, rgba) = decode_image(&member.spelling, &read.data).ok()?;
+        Artwork::new(width, height, rgba).ok()
+    }
+
     /// Reads every paired screen from the original layout over this
     /// installation's own art.
     ///

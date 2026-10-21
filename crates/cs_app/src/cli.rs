@@ -21,6 +21,9 @@ use crate::mission_session::{DEFAULT_MISSION_CAPTURE_DIR, MIN_MISSION_SMOKE_SECO
 use crate::playtest::smoke::MIN_SMOKE_SECONDS;
 use crate::playtest::{DEFAULT_CAPTURE_DIR, PlaytestRequest, RetailRequest, SmokeRequest};
 use crate::run::SyntheticRequest;
+use crate::ui::front_end::{
+    DEFAULT_FRONT_END_CAPTURE_DIR, FrontEndRequest, MIN_SHELL_SMOKE_SECONDS,
+};
 
 /// Exit code for invalid input or unsupported content (CLI-EVIDENCE contract).
 pub const EXIT_INVALID_INPUT: u8 = 2;
@@ -84,6 +87,10 @@ pub enum CliRequest {
     /// launch closure is not satisfied exits nonzero with its source
     /// diagnostics.
     Mission(MissionRequest),
+    /// `--cs-path <dir> --front-end [--smoke-seconds <n> [--capture-dir
+    /// <dir>]]`: open the windowed front end presenting the original
+    /// `ASSETS/LAYOUT.CSV` sections (FE-MENU-1, task #1833).
+    FrontEnd(FrontEndRequest),
     /// No arguments at all: invalid input, reported on stderr and exit 2.
     MissingInput,
     /// Arguments that name no supported run mode: reported on stderr and
@@ -136,6 +143,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
     let mut dev_overlay = false;
     let mut dev_keys = false;
     let mut smoke_engagement = false;
+    let mut front_end = false;
     let mut unknown = false;
 
     let mut index = 0;
@@ -150,6 +158,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
             "--dev-overlay" => dev_overlay = true,
             "--dev-keys" => dev_keys = true,
             "--smoke-engagement" => smoke_engagement = true,
+            "--front-end" => front_end = true,
             "--smoke-seconds" => {
                 let Some(value) = args.get(index + 1).cloned() else {
                     return CliRequest::Unsupported { args };
@@ -259,6 +268,56 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
  --smoke-seconds <n> and does not combine with --smoke-no-teleport"
                 .to_string(),
         };
+    }
+    if front_end {
+        if playtest
+            || synthetic
+            || headless
+            || mission.is_some()
+            || world.is_some()
+            || aircraft.is_some()
+            || ticks.is_some()
+            || trace.is_some()
+            || seed.is_some()
+        {
+            return CliRequest::Invalid {
+                reason: "--front-end is the windowed original front end; it does not \
+ combine with --playtest, --synthetic, --headless, --mission, --world, --aircraft, \
+ --ticks, --trace or --seed"
+                    .to_string(),
+            };
+        }
+        let Some(cs_path) = cs_path else {
+            return CliRequest::Invalid {
+                reason: "--front-end needs --cs-path <dir>: it presents the original \
+ installation's own LAYOUT.CSV sections, and there is no synthetic stand-in"
+                    .to_string(),
+            };
+        };
+        if capture_dir.is_some() && smoke_seconds.is_none() {
+            return CliRequest::Invalid {
+                reason: "--capture-dir is where --front-end --smoke-seconds <n> writes \
+ its artifacts; the interactive front end writes none"
+                    .to_string(),
+            };
+        }
+        let smoke = match smoke_seconds {
+            Some(seconds) if seconds < MIN_SHELL_SMOKE_SECONDS => {
+                return CliRequest::Invalid {
+                    reason: format!(
+                        "--smoke-seconds must be at least {MIN_SHELL_SMOKE_SECONDS}: \
+ the scripted front-end pass needs that long to hover, press, navigate, return and quit"
+                    ),
+                };
+            }
+            Some(seconds) => Some(SmokeRequest {
+                seconds,
+                capture_dir: capture_dir
+                    .unwrap_or_else(|| PathBuf::from(DEFAULT_FRONT_END_CAPTURE_DIR)),
+            }),
+            None => None,
+        };
+        return CliRequest::FrontEnd(FrontEndRequest { cs_path, smoke });
     }
     if let Some(mission) = mission {
         if playtest || synthetic || headless || world.is_some() || aircraft.is_some() {
@@ -510,6 +569,25 @@ WINDOWED PLAYTEST (development, not original)
         whole --smoke-seconds budget, never moves the player and judges only
         hostiles_damage_idle_player: whether the mission's hostile aircraft
         lowered the player's hull
+
+ORIGINAL FRONT END (windowed)
+    --cs-path <dir> --front-end
+        Open the original front end's own layout sections (ASSETS/LAYOUT.CSV
+        of crimson.rof) in a window: the section's panes and 4-state buttons
+        drawn from the original graphics at their authored places on the
+        800x600 surface, aspect-fit. Up/Down moves button focus, Enter
+        presses it, Esc steps back or quits; the pointer hovers and presses.
+        A button does only what the original data states (its ScriptToExe
+        section, terminate, or its screen script's activate arm); anything
+        else is drawn and its press recorded, never guessed. The entry
+        section is MainMenu; Campaign and the other reachable sections use
+        the same presenter
+    --cs-path <dir> --front-end --smoke-seconds <n> [--capture-dir <dir>]
+        The same windowed front end driven as a scripted smoke (n >= 8
+        simulated seconds): hover and press Campaign, Esc back, focus-walk
+        to Quit, press it. Framebuffer PNGs and report.json go to <dir>
+        (default private/front-end); the run fails when a framebuffer is
+        empty or a step did not happen. A scripted run is never human_play
 
 `--help` and `--version` read no environment variable, open no installation
 and start no asset discovery: they succeed without a GPU and without a retail

@@ -48,6 +48,13 @@ fn main() -> ExitCode {
                 ExitCode::from(error.exit_code())
             }
         },
+        CliRequest::FrontEnd(request) => match cs_app::ui::front_end::run_front_end(&request) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("cs: {error}");
+                ExitCode::from(cli::EXIT_RUNTIME_FAILURE)
+            }
+        },
         CliRequest::MissingInput => {
             eprintln!("{}", cli::missing_input_message());
             ExitCode::from(cli::EXIT_INVALID_INPUT)

@@ -90,6 +90,7 @@ mod paths;
 mod retail;
 mod screens;
 mod shell;
+mod window;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -141,6 +142,11 @@ pub use shell::{
     ButtonEffect, ButtonVisual, CURSOR_CANDIDATES, MenuShell, SECTION_SURFACE, START_SECTION,
     ShellButton, ShellButtonView, ShellError, ShellOutcome, ShellPane, ShellPaneView, ShellRect,
     ShellSection, ShellView, SkippedReason, SkippedRow, UnhandledEffect,
+};
+pub use window::{
+    DEFAULT_FRONT_END_CAPTURE_DIR, FrontEndError, FrontEndRequest, FrontEndShellPlugin,
+    MIN_SHELL_SMOKE_SECONDS, ShellResource, ShellShotRecord, ShellSmokeHandle, ShellSmokePlugin,
+    ShellSmokeReport, run_front_end, shell_app,
 };
 
 /// A front-end screen.
