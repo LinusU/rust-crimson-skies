@@ -870,7 +870,18 @@ fn accept_fe_menu_1_the_windowed_launch_runs_the_scripted_smoke() {
         |_| std::env::temp_dir().join("fe-menu-1-smoke"),
         PathBuf::from,
     );
-    let _ = std::fs::remove_dir_all(&dir);
+    // Stale artifacts of an earlier smoke go, nothing else: the evidence
+    // run points this at $CS_EVIDENCE_DIR itself, where cargo-test.log and
+    // front-end-shell.json sit — a remove_dir_all there would unlink the
+    // log tee still has open.
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name == "report.json" || name.ends_with(".png") {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
     std::fs::create_dir_all(&dir).expect("the capture directory is created");
     let output = std::process::Command::new(front_end_bin())
         .args(["--cs-path", &game_dir, "--front-end"])

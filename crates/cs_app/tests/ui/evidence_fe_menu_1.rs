@@ -7,8 +7,8 @@
 //!
 //! 1. The acceptance run (the same command AGENTS.md names for a task's
 //!    selection). The ignored retail test writes `front-end-shell.json` and
-//!    the ignored windowed test wipes and rewrites the smoke's capture
-//!    directory, both under `CS_EVIDENCE_DIR`:
+//!    the ignored windowed test clears the smoke's own artifacts (`*.png`,
+//!    `report.json`) and rewrites them, all under `CS_EVIDENCE_DIR`:
 //!    ```sh
 //!    mkdir -p private/evidence/FE-MENU-1
 //!    CS_EVIDENCE_DIR=$PWD/private/evidence/FE-MENU-1 \
