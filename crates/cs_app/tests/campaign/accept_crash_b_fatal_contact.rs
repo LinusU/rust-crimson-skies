@@ -7,7 +7,7 @@ use avian3d::prelude::{AngularVelocity, LinearVelocity, Position, RigidBody};
 use bevy::prelude::{App, Entity, Messages, Vec3, With};
 use cs_app::mission_session::{MISSION_TARGET_NODE, PlayerVictim, attach_player_victim};
 use cs_app::playtest::fatal_contact::{
-    FailureCause, FatalContactRule, MISSION_CRASH_PRODUCER, PlayerCrash, PlayerCrashed,
+    FailureCause, FatalContactRule, MISSION_CRASH_PRODUCER, PlayerCrashed,
 };
 use cs_app::playtest::scene::PlaytestAircraft;
 use cs_app::playtest::{PlaytestState, headless_app};
@@ -35,9 +35,7 @@ fn dive_app(prior_damage: f64) -> (App, Entity, ActorId) {
     app.world_mut().insert_resource(victim);
     app.world_mut()
         .entity_mut(aircraft)
-        .insert(FatalContactRule {
-            health_damage_range: RETAIL_RANGE,
-        });
+        .insert(FatalContactRule::new(RETAIL_RANGE));
     if prior_damage > 0.0 {
         let hit = HitEvent::try_new(
             EventId {
@@ -67,6 +65,12 @@ fn dive_app(prior_damage: f64) -> (App, Entity, ActorId) {
     (app, aircraft, actor)
 }
 
+fn rule_of(app: &App, aircraft: Entity) -> FatalContactRule {
+    *app.world()
+        .get::<FatalContactRule>(aircraft)
+        .expect("the rule")
+}
+
 fn remaining(app: &App, actor: ActorId) -> f64 {
     app.world()
         .resource::<SessionDamageResolver>()
@@ -93,7 +97,7 @@ fn accept_crash_b_survivable_contact_keeps_flying() {
             .resolver()
             .is_destroyed(&actor)
     );
-    assert!(app.world().get::<PlayerCrash>(aircraft).is_none());
+    assert!(rule_of(&app, aircraft).crash.is_none());
     assert_ne!(
         app.world().get::<RigidBody>(aircraft),
         Some(&RigidBody::Static)
@@ -118,9 +122,8 @@ fn accept_crash_b_fatal_contact_stops_the_flight_and_records_the_cause() {
                 .copied(),
         );
     }
-    let crash = *app
-        .world()
-        .get::<PlayerCrash>(aircraft)
+    let crash = rule_of(&app, aircraft)
+        .crash
         .expect("the fatal contact stamped the aircraft");
     assert!(crash.tick > ticks_before);
     assert!(crash.position_m[1] < 10.0, "crashed at the slab");
@@ -190,7 +193,7 @@ fn accept_crash_b_m01_player_carries_the_retail_rule() {
         .get::<FatalContactRule>(player)
         .expect("the retail rule");
     assert_eq!(rule.health_damage_range, RETAIL_RANGE);
-    assert!(app.world().get::<PlayerCrash>(player).is_none());
+    assert!(rule.crash.is_none());
     assert!(app.world().get_resource::<PlayerVictim>().is_some());
     teardown(&mut app);
 }

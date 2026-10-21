@@ -52,7 +52,7 @@ use bevy::input::ButtonInput;
 use bevy::input::keyboard::KeyCode;
 use bevy::prelude::{
     App, Entity, FixedLast, FixedUpdate, IntoScheduleConfigs, Or, Plugin, Quat, Query, Res, ResMut,
-    Resource, Startup, Time, Transform, Update, Vec3, With, Without, World,
+    Resource, Startup, Time, Transform, Update, Vec3, With, World,
 };
 use bevy::time::{Fixed, Real, TimeUpdateStrategy, Virtual};
 use cs_content::cameras::{AspectRatio, DeclaredCameraModes, declared_synthetic_camera_modes};
@@ -483,6 +483,7 @@ type FlyingRecord = (
     &'static mut Rotation,
     &'static LinearVelocity,
     &'static mut AngularVelocity,
+    Option<&'static fatal_contact::FatalContactRule>,
 );
 
 /// One fixed tick of the original law that flies the retail playtest (task
@@ -511,10 +512,13 @@ fn drive_original_flight(
     time: Res<Time<Fixed>>,
     mut requests: ResMut<ForceRequests>,
     mut state: ResMut<PlaytestState>,
-    mut aircraft: Query<FlyingRecord, Without<fatal_contact::PlayerCrash>>,
+    mut aircraft: Query<FlyingRecord>,
 ) {
     let dt_s = time.timestep().as_secs_f64();
-    for (entity, mut flight, position, mut rotation, velocity, mut angular) in &mut aircraft {
+    for (entity, mut flight, position, mut rotation, velocity, mut angular, rule) in &mut aircraft {
+        if rule.is_some_and(|rule| rule.crash.is_some()) {
+            continue;
+        }
         flight.state.position_m = [
             f64::from(position.0.x),
             f64::from(position.0.y),

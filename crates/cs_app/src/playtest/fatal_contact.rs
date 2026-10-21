@@ -18,7 +18,7 @@
 //!   `health_damage_range` pair is applied as that pool's damage; the armor pair
 //!   has no consumer.
 //! * **Stops the simulation.** A fatal contact stamps the aircraft with a
-//!   [`PlayerCrash`] record (tick, position, cause), writes one [`PlayerCrashed`]
+//!   [`PlayerCrash`] record (tick, position, cause) in [`FatalContactRule::crash`], writes one [`PlayerCrashed`]
 //!   message, zeroes the body's velocities and makes it static; the original
 //!   flight law no longer steps that record. The pose stays owned by the one
 //!   physics body.
@@ -46,18 +46,35 @@ use crate::weapons::SessionDamageResolver;
 /// The producer serial of the crash hits (the mission's 201..=205 are taken).
 pub const MISSION_CRASH_PRODUCER: u32 = 206;
 
-/// Component: the `crash` record's `health_damage_range`, the aircraft's
-/// terrain-contact damage rule. Only a body that carries it can crash.
+/// Component: the aircraft's terrain-contact state. Only a body that carries it
+/// can crash; a reset despawns the aircraft and with it the state.
+///
+/// One component rather than three keeps the code the generic ECS machinery
+/// instantiates small: the linked image is held under the unwind-table limit
+/// (`accept_t336_`).
 #[derive(Component, Clone, Copy, Debug, PartialEq)]
 pub struct FatalContactRule {
-    /// `health_damage_range`: `[floor, scale]` of `max(scale * s^3, floor)`.
+    /// The `crash` record's `health_damage_range`: `[floor, scale]` of
+    /// `max(scale * s^3, floor)`.
     pub health_damage_range: [f64; 2],
+    /// The velocity the aircraft had at the end of the previous tick, the
+    /// approach velocity of a contact the solver has already answered.
+    pub approach: Vec3,
+    /// Set from the fatal tick on.
+    pub crash: Option<PlayerCrash>,
 }
 
-/// Component: the velocity the aircraft had at the end of the previous tick,
-/// the approach velocity of a contact the solver has already answered.
-#[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
-pub struct ContactApproach(pub Vec3);
+impl FatalContactRule {
+    /// A rule with the given `health_damage_range`, not crashed.
+    #[must_use]
+    pub const fn new(health_damage_range: [f64; 2]) -> Self {
+        Self {
+            health_damage_range,
+            approach: Vec3::ZERO,
+            crash: None,
+        }
+    }
+}
 
 /// Why the player's flight ended.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -73,9 +90,8 @@ pub enum FailureCause {
     },
 }
 
-/// Component: the aircraft crashed. Present on the aircraft entity from the
-/// fatal tick on; a reset despawns the aircraft and with it the record.
-#[derive(Component, Clone, Copy, Debug, PartialEq)]
+/// The record of a crash, kept in [`FatalContactRule::crash`].
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PlayerCrash {
     /// The fixed tick of the fatal contact.
     pub tick: u64,
@@ -123,11 +139,11 @@ pub fn judge_terrain_contacts(
         (
             Entity,
             &Position,
-            &LinearVelocity,
-            &mut ContactApproach,
-            Option<&FatalContactRule>,
+            &mut LinearVelocity,
+            &mut AngularVelocity,
+            &mut FatalContactRule,
         ),
-        (With<PlaytestAircraft>, bevy::prelude::Without<PlayerCrash>),
+        With<PlaytestAircraft>,
     >,
     victim: Option<Res<PlayerVictim>>,
     damage: Option<ResMut<SessionDamageResolver>>,
@@ -135,15 +151,17 @@ pub fn judge_terrain_contacts(
     mut crashed: MessageWriter<PlayerCrashed>,
 ) {
     let (Some(victim), Some(mut damage)) = (victim, damage) else {
-        for (_, _, velocity, mut approach, _) in &mut aircraft {
-            approach.0 = velocity.0;
+        for (_, _, velocity, _, mut rule) in &mut aircraft {
+            rule.approach = velocity.0;
         }
         return;
     };
-    for (entity, position, velocity, mut approach, rule) in &mut aircraft {
-        let before = approach.0;
-        approach.0 = velocity.0;
-        let Some(rule) = rule else { continue };
+    for (entity, position, mut velocity, mut angular, mut rule) in &mut aircraft {
+        let before = rule.approach;
+        rule.approach = velocity.0;
+        if rule.crash.is_some() {
+            continue;
+        }
         let session = damage.resolver().session();
         let node = DamageNodeKey::new(MISSION_TARGET_NODE).expect("the hull key is valid");
         let mut sequence = 0_u32;
@@ -204,12 +222,10 @@ pub fn judge_terrain_contacts(
                     damage: hit_damage,
                 },
             };
-            commands.entity(entity).insert((
-                crash,
-                LinearVelocity::ZERO,
-                AngularVelocity::ZERO,
-                RigidBody::Static,
-            ));
+            velocity.0 = Vec3::ZERO;
+            angular.0 = Vec3::ZERO;
+            rule.crash = Some(crash);
+            commands.entity(entity).insert(RigidBody::Static);
             crashed.write(PlayerCrashed {
                 aircraft: entity,
                 crash,

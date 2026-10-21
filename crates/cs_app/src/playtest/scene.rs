@@ -299,9 +299,9 @@ pub fn spawn_aircraft(world: &mut World) -> Result<Entity, SceneError> {
                 spawn_original_flight_body(world, &flight, bounce_factor, position, half_extents)?;
             world
                 .entity_mut(entity)
-                .insert(super::fatal_contact::FatalContactRule {
+                .insert(super::fatal_contact::FatalContactRule::new(
                     health_damage_range,
-                });
+                ));
             entity
         }
         None => spawn_synthetic_flight_body(world, position, half_extents)?,
@@ -311,11 +311,9 @@ pub fn spawn_aircraft(world: &mut World) -> Result<Entity, SceneError> {
     // is set here, on the playtest's own flight body, rather than in
     // `spawn_body`, because only this body is a render parent: collision-only
     // bodies stay free of render components.
-    world.entity_mut(entity).insert((
-        PlaytestAircraft,
-        Visibility::Inherited,
-        super::fatal_contact::ContactApproach::default(),
-    ));
+    world
+        .entity_mut(entity)
+        .insert((PlaytestAircraft, Visibility::Inherited));
     spawn_retail_parts(world, entity);
     debug_assert!(world.get::<Rotation>(entity).is_some());
     Ok(entity)

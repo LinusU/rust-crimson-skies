@@ -1639,11 +1639,12 @@ pub fn spawn_player(world: &mut World) -> Result<Entity, SceneError> {
         PlaytestAircraft,
         MissionPlayerBody,
         Visibility::Inherited,
-        crate::playtest::fatal_contact::FatalContactRule {
-            health_damage_range: start.crash_health_damage_range,
-        },
-        crate::playtest::fatal_contact::ContactApproach::default(),
     ));
+    world
+        .entity_mut(entity)
+        .insert(crate::playtest::fatal_contact::FatalContactRule::new(
+            start.crash_health_damage_range,
+        ));
     // The measured airframe visual travels on the body: one child entity per
     // drawn binding, so `R` restart and teardown take it with the body and
     // never leave a second copy. A stage that carried no airframe source
