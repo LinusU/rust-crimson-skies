@@ -313,10 +313,12 @@ fn accept_t424_a_collider_on_the_body_is_what_a_swept_body_stops_against() {
     let (child_app, child_probe) = sweep(|app| wall_on_child(app).0, 20);
     let tunnelled = end_x(&child_app, child_probe);
     assert!(
-        tunnelled > STOPPED_BEFORE_X,
-        "the same wall with its collider on a child node must still be invisible \
-         to a sweep on the pinned engine, or the discriminant this rule is \
-         built on is not placement; the body ended at x = {tunnelled}"
+        tunnelled < STOPPED_BEFORE_X,
+        "on avian3d 0.8 `solve_continuous` iterates `RigidBodyColliders`, so the \
+         same wall with its collider on a child node is stopped too; the body \
+         ended at x = {tunnelled}. (On 0.7 this tunnelled: the placement \
+         discriminant the collider-on-body rule was built on is gone, see \
+         docs/findings/2026-10-21-bevy-0-20-avian-0-8-upgrade.md)"
     );
 }
 

@@ -310,7 +310,7 @@ fn precondition(app: &App) {
 /// This test fails the day the pinned engine learns to sweep against
 /// collider-hierarchy bodies — the re-measure signal, not a bug.
 #[test]
-fn accept_t420_a_mesh_collider_on_a_child_node_is_invisible_to_swept_ccd() {
+fn accept_t420_a_mesh_collider_on_a_child_node_is_stopped_by_swept_ccd() {
     let (app, wall, probe) = sweep(
         1,
         |app| {
@@ -332,10 +332,10 @@ fn accept_t420_a_mesh_collider_on_a_child_node_is_invisible_to_swept_ccd() {
     );
     let end = end_position(&app, probe);
     assert!(
-        end.x > WALL_THICKNESS_M as f32,
-        "on the pinned pair a child-node collider is invisible to swept CCD; \
-         this body ended at {end:?}. When it is stopped, re-measure the \
-         limitation in the t420 finding before changing anything else"
+        end.x < 0.0,
+        "on avian3d 0.8 swept CCD iterates `RigidBodyColliders`, so a \
+         child-node collider stops the probe (on 0.7 it tunnelled); it ended \
+         at {end:?}"
     );
 }
 
@@ -385,7 +385,7 @@ fn accept_t420_a_child_node_collider_still_stops_a_discrete_body() {
 /// lives on a child node. This is the measurement that proves the recorded
 /// "parry has no `TriMesh` case" attribution wrong.
 #[test]
-fn accept_t420_a_cuboid_on_a_child_node_is_ignored_the_same_way() {
+fn accept_t420_a_cuboid_on_a_child_node_is_stopped_the_same_way() {
     let (app, wall, probe) = sweep(1, wall_cuboid_on_child, 14);
     precondition(&app);
     assert!(
@@ -394,9 +394,10 @@ fn accept_t420_a_cuboid_on_a_child_node_is_ignored_the_same_way() {
     );
     let end = end_position(&app, probe);
     assert!(
-        end.x > WALL_THICKNESS_M as f32,
-        "a cuboid on a child node tunnels too, so the miss is about collider \
-         placement rather than parry shape support; it ended at {end:?}"
+        end.x < 0.0,
+        "on avian3d 0.8 a cuboid on a child node is stopped like the trimesh, \
+         so neither shape nor placement is a swept-CCD limitation any more; it \
+         ended at {end:?}"
     );
 }
 
@@ -470,7 +471,7 @@ fn accept_t420_a_cuboid_on_the_body_entity_stops_the_same_probe() {
 /// the solver, not detection, so a skipped pair stays skipped at any rate.
 /// This pins the "more substeps" alternative as measured-and-rejected.
 #[test]
-fn accept_t420_substeps_do_not_make_a_child_node_collider_visible() {
+fn accept_t420_substeps_keep_a_child_node_collider_stopping_the_probe() {
     for substeps in [2, 4, 8] {
         let (app, wall, probe) = sweep(substeps, wall_cuboid_on_child, 14);
         assert!(
@@ -479,9 +480,9 @@ fn accept_t420_substeps_do_not_make_a_child_node_collider_visible() {
         );
         let end = end_position(&app, probe);
         assert!(
-            end.x > WALL_THICKNESS_M as f32,
-            "even at {substeps} substeps a child-node collider is skipped by \
-             swept CCD; it ended at {end:?}"
+            end.x < 0.0,
+            "at {substeps} substeps a child-node collider must stop the swept \
+             probe on avian3d 0.8; it ended at {end:?}"
         );
     }
 }
