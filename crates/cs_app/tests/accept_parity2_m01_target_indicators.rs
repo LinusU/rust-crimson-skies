@@ -547,6 +547,7 @@ fn accept_parity2_m01_target_indicators_pose_sync_updates_records() {
         damage_actor: actor(4),
         generation,
         position_m: [400.0, 2.0, 900.0],
+        target_point_m: [400.0, 2.0, 900.0],
         healthy: None,
         destroyed: None,
         coupling: Vec::new(),

@@ -222,6 +222,8 @@ pub struct MissionGroundTarget {
     pub generation: crate::scene::SceneGeneration,
     /// The composed world position in metres.
     pub position_m: [f64; 3],
+    /// The point the targeting record holds ([`crate::mission_targets::BoundTarget::target_point_m`]).
+    pub target_point_m: [f64; 3],
     /// The node's authored `healthy` child, when it has one.
     pub healthy: Option<String>,
     /// The node's authored `destroyed` child, when it has one.
@@ -1327,6 +1329,7 @@ fn spawn_mission_actors_under(
                     damage_actor: actor,
                     generation,
                     position_m: target.position_m,
+                    target_point_m: target.target_point_m,
                     healthy: target.healthy.clone(),
                     destroyed: target.destroyed.clone(),
                     coupling: target.coupling.fields.clone(),
@@ -1587,7 +1590,7 @@ pub fn roster_mission_ground_targets(world: &mut World) {
             }
             match &target.roster {
                 Some(roster) => {
-                    candidates.push((target.damage_actor, roster.clone(), target.position_m));
+                    candidates.push((target.damage_actor, roster.clone(), target.target_point_m));
                 }
                 None => unresolved.push(format!(
                     "ground target {}: {}",

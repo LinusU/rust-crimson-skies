@@ -25,6 +25,7 @@ mod campaign {
     mod m01_bridge_convoy_spawn;
     mod m01_lc_fc_c;
     mod m01_lc_fc_d;
+    mod m01_objective_target_points;
     mod m01_play_actors;
     mod m01_play_ai;
     mod m01_play_ai_arm_order;

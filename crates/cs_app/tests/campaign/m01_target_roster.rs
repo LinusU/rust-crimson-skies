@@ -49,6 +49,7 @@ fn target_with(allegiance: AllegianceBinding, objective: bool) -> BoundTarget {
         index: 1,
         path: "world1.t_truck01".to_owned(),
         position_m: [1.0, 2.0, 3.0],
+        target_point_m: [1.0, 2.0, 3.0],
         healthy: None,
         destroyed: None,
         coupling: DamageCoupling::default(),

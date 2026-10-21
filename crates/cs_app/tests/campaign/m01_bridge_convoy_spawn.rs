@@ -348,6 +348,7 @@ fn accept_m01_bridge_convoy_spawn_rows_and_damage_node_are_production() {
         index: 3029,
         path: "world1.susp_bridge.t_truck01".to_owned(),
         position_m: [-5459.328, 118.62919, -5339.184],
+        target_point_m: [-5459.328, 118.62919, -5339.184],
         healthy: Some("healthy".to_owned()),
         destroyed: Some("destroyed".to_owned()),
         coupling: DamageCoupling {

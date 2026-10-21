@@ -233,6 +233,12 @@ pub struct BoundTarget {
     /// The composed world position in metres: the scene graph's own
     /// `world_transform` translation (`root ∘ … ∘ local`).
     pub position_m: [f64; 3],
+    /// The point the engine's target record holds for the node (`record+0x68`
+    /// of the selected target): the composed world transform applied to the
+    /// centre of the node's stored bounding box. Equal to
+    /// [`Self::position_m`] when the node stores no box. See
+    /// `docs/findings/2026-10-21-m01-objective-target-points.md`.
+    pub target_point_m: [f64; 3],
     /// The node's child named `healthy`, when it has one.
     pub healthy: Option<String>,
     /// The node's child named `destroyed`, when it has one.
@@ -731,6 +737,17 @@ fn bind_mission_targets_from(
         }
     }
 
+    for target in &mut targets {
+        if let Some(node) = graph
+            .nodes()
+            .iter()
+            .find(|node| node.index() == target.index)
+            && let Some(raw) = nodes.get(target.index)
+        {
+            target.target_point_m = target_point(node, raw);
+        }
+    }
+
     let names_bound: Vec<&str> = targets.iter().map(|target| target.node.as_str()).collect();
     let resolved =
         resolve_world_node_allegiance(install_root, found, mission_dir, group_dir, &names_bound);
@@ -742,6 +759,27 @@ fn bind_mission_targets_from(
         targets,
         declared,
         refusals,
+    }
+}
+
+/// The target record's point for one node: its composed transform applied to
+/// the centre of its stored bounding box.
+///
+/// The record stores up to three boxes (`unk116`, `unk140`, `unk164`) and the
+/// measured sites each fill exactly one of them; the first non-empty one is
+/// used, and a node with none keeps its origin. Which box the engine reads
+/// for a node holding several is unmeasured.
+fn target_point(node: &SceneNode, raw: &cs_formats::gamez::RawNode) -> [f64; 3] {
+    let info = &raw.info;
+    let centre = [info.unk116, info.unk140, info.unk164]
+        .into_iter()
+        .find(|bounds| bounds.iter().flatten().any(|value| *value != 0.0))
+        .map(|[min, max]| {
+            std::array::from_fn(|axis| (f64::from(min[axis]) + f64::from(max[axis])) / 2.0)
+        });
+    match centre {
+        Some(centre) => node.world_transform().apply(centre),
+        None => node.world_transform().translation(),
     }
 }
 
@@ -882,6 +920,7 @@ fn merge_target(
         index: node.index(),
         path: node.path().to_owned(),
         position_m: node.world_transform().translation(),
+        target_point_m: node.world_transform().translation(),
         healthy,
         destroyed,
         coupling,

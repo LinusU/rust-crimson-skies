@@ -53,6 +53,7 @@ fn stage_with_target(scratch: &Scratch) -> MissionStage {
             index: 1,
             path: "world1.t_truck01".to_owned(),
             position_m: TARGET_POSITION_M,
+            target_point_m: TARGET_POSITION_M,
             healthy: None,
             destroyed: None,
             coupling: DamageCoupling::default(),

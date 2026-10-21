@@ -341,7 +341,7 @@ pub fn sync_mission_target_poses(world: &mut World) {
         let mut grounds = world.query::<&MissionGroundTarget>();
         for target in grounds.iter(world) {
             if target.generation == generation
-                && let Ok(position) = WorldPosition::try_new(target.position_m)
+                && let Ok(position) = WorldPosition::try_new(target.target_point_m)
             {
                 poses.push((target.damage_actor, position));
             }
