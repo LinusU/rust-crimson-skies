@@ -89,6 +89,7 @@ mod original;
 mod paths;
 mod retail;
 mod screens;
+mod shell;
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -135,6 +136,11 @@ pub use retail::{
 pub use screens::{
     Button, ButtonView, DeckError, ScreenAssetError, ScreenAssets, ScreenDeck, ScreenSession,
     ScreenSessionError, ScreenView,
+};
+pub use shell::{
+    ButtonEffect, ButtonVisual, CURSOR_CANDIDATES, MenuShell, SECTION_SURFACE, START_SECTION,
+    ShellButton, ShellButtonView, ShellError, ShellOutcome, ShellPane, ShellPaneView, ShellRect,
+    ShellSection, ShellView, SkippedReason, SkippedRow, UnhandledEffect,
 };
 
 /// A front-end screen.

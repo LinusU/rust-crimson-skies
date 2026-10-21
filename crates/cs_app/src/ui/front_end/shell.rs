@@ -1,0 +1,1023 @@
+//! The front-end shell: one `LAYOUT.CSV` section presented as it is written
+//! (FE-MENU-1, task #1833).
+//!
+//! Spec context: `specs/F45-main-menu-pandora-cabin-briefing-and-flight-check.md`
+//! and `docs/findings/2026-10-15-f45-b-1-original-layout.md`. Shared contract:
+//! `docs/contracts/UI-NETWORK.md` ("Authored images are aspect-fit with logical
+//! hotspot coordinates transformed by the same scale/offset as the image").
+//!
+//! # What this is, and what it is not
+//!
+//! The designed front end ([`super::ScreenSession`]) presents screens a
+//! validated [`super::ScreenDeck`] carries, and on this installation the deck
+//! carries none: the state table's coverage rules refuse every original
+//! section. The **shell** is the windowed presenter `cs --cs-path <retail>
+//! --front-end` runs: it draws one `[@Name@]` section of the original
+//! `ASSETS/LAYOUT.CSV` — every `P` row as a pane at its authored `X,Y` and
+//! every `B` row as a button whose art is the F45-B.1-measured vertical
+//! strip of [`super::BUTTON_STATE_FRAMES`] state frames — over the logical
+//! 800x600 surface the front end is authored for, aspect-fit to the window.
+//!
+//! It is **generic over sections**: nothing here knows `MainMenu` from
+//! `Campaign`. Pressing a button applies the destination the original data
+//! itself states:
+//!
+//! * a non-empty `ScriptToExe` column navigates to that section when the
+//!   layout holds one of the same name (`MM_B_CAMPAIGN` → `Campaign`);
+//! * a button that starts no script looks its `case` arm up in the section's
+//!   own screen script through [`super::ScreenHandlers`]: exactly
+//!   `terminate` ends the run (`MM_B_QUIT`), and `activate(@name@)` followed
+//!   only by `script_end "<this>.script"` navigates to `name` — the two
+//!   statements `CAMPAIGN.SCRIPT` states for `CM_B_CANCEL`;
+//! * everything else is [`ButtonEffect::Unhandled`]: the press is drawn and
+//!   **recorded** with its verbatim handler, never guessed into a transition.
+//!
+//! # What stays unknown (recorded per rule 4, never hidden)
+//!
+//! * The original focus/tab order — no `LAYOUT.CSV` column carries it; focus
+//!   is the declaration order, as F45-B.1 recorded.
+//! * Which member is the original's front-end cursor — the Esc screen's own
+//!   script names `daglove`/`dafinger` (in `ZBD/rimage.zbd`, unreachable from
+//!   this member list) and the `ASSETS/GRAPHICS` pointer PNGs' consumer was
+//!   never examined
+//!   (`docs/findings/2026-10-21-pause-map-screen-data.md`, "not decided").
+//!   `CURSOR_CANDIDATES` tries the named pointer art in order; the first
+//!   that decodes is drawn **and recorded** — never asserted as the
+//!   original's choice.
+//! * When the original draws a button **disabled** — the enabled state is a
+//!   runtime script effect (`mail(10000, …)`/`mail(10018, …)` in
+//!   `CAMPAIGN.SCRIPT`), unread statically; every presented button is enabled,
+//!   and the disabled frame is reachable only through
+//!   [`MenuShell::set_enabled`], a designed affordance.
+//! * `M` movie rows, `T`/`E`/`L`/`D`/`S`/`W`/`Z` controls — counted on the
+//!   section ([`ShellSection::other_rows`]), never drawn or faked.
+//! * A `P` row's `NUMFRAMES` other than 1 — the shell draws frame 0 of the
+//!   strip and keeps the count on [`ShellPane::frames`].
+//! * `AlphaType=2` (colour-key) — which texel the original keys out is
+//!   unread; the pane is drawn with its stored alpha and [`ShellPane::color_keyed`]
+//!   records the claim that needs checking.
+//! * `Z`-order other than declaration order — the `Z` column's draw order is
+//!   unread; panes draw in declaration order.
+
+use std::collections::BTreeMap;
+use std::fmt;
+
+use cs_content::ui_layout::{AspectFit, Rect};
+
+use super::original::{ArtExtents, OriginalLayout, Row, ScreenScripts};
+use super::{BUTTON_STATE_FRAMES, ScreenHandlers};
+
+/// The logical surface every `LAYOUT.CSV` section is authored for: the
+/// front-end's own 800x600 (F45-B.1, F45-D measured).
+pub const SECTION_SURFACE: (u32, u32) = (800, 600);
+
+/// The section the shell opens on: the original's entry screen.
+pub const START_SECTION: &str = "MainMenu";
+
+/// The graphics members tried as the pointer's cursor art, in order. Which
+/// member the original front end maps onto the pointer is unread (see the
+/// module docs); the first that decodes is drawn, and [`MenuShell::cursor`]/
+/// the smoke report name which it was — or that none was found.
+pub const CURSOR_CANDIDATES: &[&str] = &["PASSIVEPOINTERZ.PNG", "ACTIVEPOINTERZ.PNG"];
+
+/// A signed rectangle: `LAYOUT.CSV` coordinates can be negative (a pane hung
+/// off the surface's edge, `SB_P_GRIME` at `-1,-1`), which the unsigned
+/// [`Rect`] cannot hold.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ShellRect {
+    /// Left edge in logical pixels (may be negative).
+    pub x: i32,
+    /// Top edge in logical pixels (may be negative).
+    pub y: i32,
+    /// Width in pixels.
+    pub width: u32,
+    /// Height in pixels.
+    pub height: u32,
+}
+
+impl ShellRect {
+    /// Whether the logical point lies inside (right/bottom exclusive).
+    #[must_use]
+    pub fn contains(self, x: i32, y: i32) -> bool {
+        x >= self.x
+            && y >= self.y
+            && i64::from(x) < i64::from(self.x) + i64::from(self.width)
+            && i64::from(y) < i64::from(self.y) + i64::from(self.height)
+    }
+
+    /// The part of this rect inside a `surface` (an unsigned rect at the
+    /// origin), and how many texels of the source the clipping cut off the
+    /// left and top. `None` when nothing is visible.
+    #[must_use]
+    pub fn clip(&self, surface: (u32, u32)) -> Option<(Rect, (u32, u32))> {
+        let left = self.x.max(0);
+        let top = self.y.max(0);
+        let right = (self.x + i32::try_from(self.width).unwrap_or(i32::MAX))
+            .min(i32::try_from(surface.0).unwrap_or(i32::MAX));
+        let bottom = (self.y + i32::try_from(self.height).unwrap_or(i32::MAX))
+            .min(i32::try_from(surface.1).unwrap_or(i32::MAX));
+        if right <= left || bottom <= top {
+            return None;
+        }
+        let cut = (
+            u32::try_from(left - self.x).unwrap_or(0),
+            u32::try_from(top - self.y).unwrap_or(0),
+        );
+        Some((
+            Rect {
+                x: u32::try_from(left).unwrap_or(0),
+                y: u32::try_from(top).unwrap_or(0),
+                width: u32::try_from(right - left).unwrap_or(0),
+                height: u32::try_from(bottom - top).unwrap_or(0),
+            },
+            cut,
+        ))
+    }
+}
+
+/// Which of the strip's frames a button is drawn with — the four colour sets
+/// `[GLOBALVARS]` names (`DISABLED`, `ACTIVE`, `ROLLOVER`, `DEPRESSED`), in
+/// the art's own top-to-bottom order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ButtonVisual {
+    /// Frame 0: the button cannot be pressed.
+    Disabled,
+    /// Frame 1: the button's resting state.
+    Active,
+    /// Frame 2: the pointer or focus is on the button.
+    Rollover,
+    /// Frame 3: the button is held down.
+    Depressed,
+}
+
+impl ButtonVisual {
+    /// The frame index in the art's strip.
+    #[must_use]
+    pub const fn frame(self) -> u32 {
+        match self {
+            Self::Disabled => 0,
+            Self::Active => 1,
+            Self::Rollover => 2,
+            Self::Depressed => 3,
+        }
+    }
+}
+
+/// What pressing a button does, read from the layout row and the section's
+/// own screen script — never assigned.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ButtonEffect {
+    /// Navigate to the named section (the `ScriptToExe` column, or an
+    /// `activate(@name@)` + `script_end` handler). The name is the section's
+    /// as written.
+    Navigate(String),
+    /// End the run: the handler is exactly `terminate`.
+    Terminate,
+    /// The press has no effect the shell knows; recorded, never guessed.
+    Unhandled(UnhandledEffect),
+}
+
+/// Why a button's press is unhandled.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum UnhandledEffect {
+    /// `ScriptToExe` names a script the layout has no section for. The script
+    /// itself may exist (`MULTIPLAYERMAIN.SCRIPT` does); its layout does not.
+    ScriptNotPresent {
+        /// The name as the row writes it.
+        script: String,
+    },
+    /// No `ScriptToExe` and no `case` arm in the section's script (or the
+    /// script could not be read).
+    NoHandler,
+    /// A handler the shell does not run — native callbacks, `mail`, screen
+    /// state. The statements verbatim, in order.
+    HandlerNotShell {
+        /// The arm's statements.
+        statements: Vec<String>,
+    },
+}
+
+/// One `P` row to draw: the row's art's first frame at its `X,Y`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShellPane {
+    /// The row id as written, upper-cased.
+    pub id: String,
+    /// The art name as the row writes it.
+    pub art: String,
+    /// One frame's extent at the row's position.
+    pub rect: ShellRect,
+    /// The row's `NUMFRAMES` column (1 for a still pane; the shell draws
+    /// frame 0 and records any other count).
+    pub frames: u32,
+    /// The row's `IsRegion?` column — kept for the record; the shell does
+    /// not hit-test panes.
+    pub is_region: bool,
+    /// `AlphaType` is `2` (colour-key): the keyed texel is unread, so the
+    /// pane draws with its stored alpha and this flags the record.
+    pub color_keyed: bool,
+}
+
+/// One `B` row to draw: a button whose art is a vertical strip of
+/// [`BUTTON_STATE_FRAMES`] equal state frames.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShellButton {
+    /// The row id as written, upper-cased.
+    pub id: String,
+    /// The art name as the row writes it.
+    pub art: String,
+    /// One frame's extent at the row's position.
+    pub rect: ShellRect,
+    /// The effect pressing it takes.
+    pub effect: ButtonEffect,
+    /// Whether it can be pressed. Always `true` when built from the layout —
+    /// the original's enable state is a runtime script effect, unread; see
+    /// the module docs and [`MenuShell::set_enabled`].
+    pub enabled: bool,
+}
+
+/// Why a `P`/`B` row is not drawn.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SkippedReason {
+    /// The row names no art.
+    EmptyArt,
+    /// A field the row needs holds a placeholder no variable defines.
+    UnresolvedPlaceholder {
+        /// The placeholder name.
+        name: String,
+    },
+    /// `X` or `Y` is not a (signed) number.
+    PositionUnread,
+    /// The art's extent could not be read.
+    ArtUnread {
+        /// The art name.
+        art: String,
+    },
+    /// A button's art is not a [`BUTTON_STATE_FRAMES`]-frame strip, or a
+    /// pane's `NUMFRAMES` is zero — never guessed.
+    FrameCountUnknown {
+        /// The measured height (buttons) or the declared count (panes).
+        height: u32,
+    },
+}
+
+/// A row the shell does not draw, with the reason.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct SkippedRow {
+    /// The row id as written.
+    pub id: String,
+    /// `P` or `B`.
+    pub kind: String,
+    /// Why it is not drawn.
+    pub reason: SkippedReason,
+}
+
+/// One `LAYOUT.CSV` section as the shell presents it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShellSection {
+    /// The section name as written.
+    pub name: String,
+    /// The `P` rows in declaration (draw) order.
+    pub panes: Vec<ShellPane>,
+    /// The `B` rows in declaration (focus) order.
+    pub buttons: Vec<ShellButton>,
+    /// The `P`/`B` rows not drawn, in declaration order with reasons.
+    pub skipped: Vec<SkippedRow>,
+    /// The row kinds present besides `P`/`B` (`T`, `E`, `M`, `A`, `D`, `L`,
+    /// `S`, `W`, `Z`, …), counted and never drawn.
+    pub other_rows: Vec<String>,
+}
+
+/// The outcome one applied input produced.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ShellOutcome {
+    /// Nothing changed (a press on dead space, an up with nothing held).
+    Nothing,
+    /// A button's press had no effect the shell knows; recorded on the shell's
+    /// [`MenuShell::unhandled`] log.
+    Unhandled {
+        /// The button's row id.
+        id: String,
+        /// Why the press is unhandled.
+        effect: UnhandledEffect,
+    },
+    /// Moved to another section.
+    Entered {
+        /// The section now on top.
+        section: String,
+    },
+    /// Esc stepped back to the previous section.
+    Back {
+        /// The section now on top.
+        section: String,
+    },
+    /// The run should end: a `terminate` button or Esc on the root section.
+    Quit,
+}
+
+/// Why the shell itself cannot do something.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ShellError {
+    /// The layout holds no section of this name.
+    NoSuchSection {
+        /// The asked-for name.
+        name: String,
+    },
+}
+
+impl fmt::Display for ShellError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::NoSuchSection { name } => write!(f, "the layout has no {name} section"),
+        }
+    }
+}
+
+impl std::error::Error for ShellError {}
+
+/// What holds a button down.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PressKind {
+    /// The pointer's left button.
+    Pointer,
+    /// The activate key (Enter).
+    Keyboard,
+}
+
+/// A drawn button in surface pixels.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShellButtonView {
+    /// The button's index in the section's declaration order.
+    pub index: usize,
+    /// The row id.
+    pub id: String,
+    /// The art name as the row writes it.
+    pub art: String,
+    /// Its visible region in logical pixels (clipped to the surface).
+    pub logical: Rect,
+    /// Its region in surface pixels.
+    pub rect: Rect,
+    /// Where inside the art the visible region starts, in texels: the state
+    /// frame's offset plus whatever an off-surface edge clipped.
+    pub texel_offset: (u32, u32),
+    /// The strip frame it draws.
+    pub visual: ButtonVisual,
+    /// Whether it holds keyboard focus.
+    pub focused: bool,
+}
+
+/// A drawn pane in surface pixels.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShellPaneView {
+    /// The pane's index in the section's declaration order.
+    pub index: usize,
+    /// The row id.
+    pub id: String,
+    /// The art name as the row writes it.
+    pub art: String,
+    /// Its visible region in logical pixels (clipped to the surface).
+    pub logical: Rect,
+    /// Its visible region in surface pixels.
+    pub rect: Rect,
+    /// Where inside the art's frame-0 the visible region starts, in texels:
+    /// whatever an off-surface edge clipped.
+    pub texel_offset: (u32, u32),
+}
+
+/// The presented frame: the current section fitted to a surface.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShellView {
+    /// The section name.
+    pub section: String,
+    /// The aspect-fit the mapping used.
+    pub fit: AspectFit,
+    /// The visible panes in declaration order.
+    pub panes: Vec<ShellPaneView>,
+    /// The visible buttons in declaration order.
+    pub buttons: Vec<ShellButtonView>,
+    /// The pointer's logical position, when it is over the surface.
+    pub pointer: Option<(i32, i32)>,
+}
+
+/// The shell: every section of a parsed `LAYOUT.CSV` presented, a navigation
+/// stack and the focus/pointer state the presenter animates.
+///
+/// [`Self::build`] measures every section up front — panes and buttons and
+/// the rows it cannot draw — so the whole layout's record exists, not just
+/// the screens a session happens to reach.
+#[derive(Clone, Debug)]
+pub struct MenuShell {
+    sections: BTreeMap<String, ShellSection>,
+    /// The navigation stack of section names as written; the last is current.
+    stack: Vec<String>,
+    /// Focus index into the current section's buttons (the first enabled one
+    /// on entry, matching the designed screens' entry rule).
+    focus: Option<usize>,
+    /// The hovered button index.
+    hover: Option<usize>,
+    /// The held button and what holds it.
+    pressed: Option<(usize, PressKind)>,
+    /// The last logical pointer position.
+    pointer: Option<(i32, i32)>,
+    /// The cursor art that was found, `(member name, extent)`.
+    cursor: Option<(String, (u32, u32))>,
+    /// Presses that had no known effect, in order: `(section, id, effect)`.
+    unhandled: Vec<(String, String, UnhandledEffect)>,
+}
+
+impl MenuShell {
+    /// Presents every section of `layout`, measuring art through `extents`
+    /// and reading screen scripts through `scripts`.
+    ///
+    /// The shell starts on no screen: [`Self::open`] names the section the
+    /// window first shows.
+    #[must_use]
+    pub fn build(
+        layout: &OriginalLayout,
+        extents: &dyn ArtExtents,
+        scripts: &dyn ScreenScripts,
+    ) -> Self {
+        let mut measured: BTreeMap<String, Option<(u32, u32)>> = BTreeMap::new();
+        let mut measure = |art: &str| -> Option<(u32, u32)> {
+            let key = art.to_ascii_lowercase();
+            *measured.entry(key).or_insert_with(|| extents.extent(art))
+        };
+        let sections = layout
+            .sections()
+            .iter()
+            .map(|section| {
+                let handlers = scripts
+                    .script(&section.name)
+                    .map(|text| ScreenHandlers::parse(&text));
+                (
+                    section.name.to_ascii_uppercase(),
+                    present_section(layout, section, &mut measure, handlers.as_ref()),
+                )
+            })
+            .collect();
+        let cursor = CURSOR_CANDIDATES
+            .iter()
+            .find_map(|name| measure(name).map(|extent| ((*name).to_owned(), extent)));
+        Self {
+            sections,
+            stack: Vec::new(),
+            focus: None,
+            hover: None,
+            pressed: None,
+            pointer: None,
+            cursor,
+            unhandled: Vec::new(),
+        }
+    }
+
+    /// Opens `section` as the shell's root: the navigation stack restarts
+    /// there, focus lands on its first enabled button and the pointer state
+    /// clears.
+    ///
+    /// # Errors
+    ///
+    /// [`ShellError::NoSuchSection`] for a name the layout does not hold.
+    pub fn open(&mut self, section: &str) -> Result<(), ShellError> {
+        let Some(found) = self
+            .sections
+            .values()
+            .find(|present| present.name.eq_ignore_ascii_case(section))
+        else {
+            return Err(ShellError::NoSuchSection {
+                name: section.to_owned(),
+            });
+        };
+        self.stack = vec![found.name.clone()];
+        self.entered();
+        Ok(())
+    }
+
+    /// The current section.
+    #[must_use]
+    pub fn section(&self) -> Option<&ShellSection> {
+        self.stack
+            .last()
+            .and_then(|name| self.sections.get(&name.to_ascii_uppercase()))
+    }
+
+    /// The current section's name.
+    #[must_use]
+    pub fn section_name(&self) -> Option<&str> {
+        self.stack.last().map(String::as_str)
+    }
+
+    /// Every section the layout holds, keyed by its upper-cased name.
+    #[must_use]
+    pub fn sections(&self) -> &BTreeMap<String, ShellSection> {
+        &self.sections
+    }
+
+    /// The navigation stack depth (1 is the root).
+    #[must_use]
+    pub fn depth(&self) -> usize {
+        self.stack.len()
+    }
+
+    /// The focused button index.
+    #[must_use]
+    pub fn focus(&self) -> Option<usize> {
+        self.focus
+    }
+
+    /// The hovered button index.
+    #[must_use]
+    pub fn hover(&self) -> Option<usize> {
+        self.hover
+    }
+
+    /// The cursor art found, `(member name, extent)`, or `None` — the
+    /// recorded unknown the window falls back from.
+    #[must_use]
+    pub fn cursor(&self) -> Option<&(String, (u32, u32))> {
+        self.cursor.as_ref()
+    }
+
+    /// Presses that had no known effect, `(section, button id, effect)`.
+    #[must_use]
+    pub fn unhandled(&self) -> &[(String, String, UnhandledEffect)] {
+        &self.unhandled
+    }
+
+    /// Marks a button of the current section enabled or disabled: a designed
+    /// affordance — the original's enable state is a runtime script effect,
+    /// unread (see the module docs). `false` draws the strip's disabled
+    /// frame and removes the button from focus and pointer hits.
+    #[must_use]
+    pub fn set_enabled(&mut self, id: &str, enabled: bool) -> bool {
+        let Some(name) = self.stack.last().cloned() else {
+            return false;
+        };
+        let Some(section) = self.sections.get_mut(&name.to_ascii_uppercase()) else {
+            return false;
+        };
+        let Some(index) = section
+            .buttons
+            .iter()
+            .position(|button| button.id.eq_ignore_ascii_case(id))
+        else {
+            return false;
+        };
+        section.buttons[index].enabled = enabled;
+        if !enabled {
+            if self.focus == Some(index) {
+                self.focus = section.buttons.iter().position(|button| button.enabled);
+            }
+            if self.hover == Some(index) {
+                self.hover = None;
+            }
+            if self.pressed.is_some_and(|(held, _)| held == index) {
+                self.pressed = None;
+            }
+        }
+        true
+    }
+
+    /// Moves focus to the next (or previous) enabled button, wrapping in
+    /// declaration order — the order focus visits, the original's tab order
+    /// being unread.
+    pub fn move_focus(&mut self, forward: bool) {
+        let Some(section) = self.section() else {
+            return;
+        };
+        let enabled: Vec<usize> = section
+            .buttons
+            .iter()
+            .enumerate()
+            .filter(|(_, button)| button.enabled)
+            .map(|(index, _)| index)
+            .collect();
+        if enabled.is_empty() {
+            self.focus = None;
+            return;
+        }
+        let at = self
+            .focus
+            .and_then(|focus| enabled.iter().position(|index| *index == focus));
+        let next = match (at, forward) {
+            (None, true) => 0,
+            (None, false) => enabled.len() - 1,
+            (Some(at), true) => (at + 1) % enabled.len(),
+            (Some(at), false) => (at + enabled.len() - 1) % enabled.len(),
+        };
+        self.focus = Some(enabled[next]);
+    }
+
+    /// Moves the pointer to a logical point and updates the hover.
+    pub fn pointer_move(&mut self, x: i32, y: i32) {
+        self.pointer = Some((x, y));
+        self.hover = self.button_at(x, y);
+    }
+
+    /// The pointer left the surface.
+    pub fn pointer_leave(&mut self) {
+        self.pointer = None;
+        self.hover = None;
+    }
+
+    /// The pointer's button went down: the hovered button becomes held.
+    pub fn pointer_down(&mut self) {
+        if let Some(index) = self.hover
+            && self
+                .section()
+                .is_some_and(|section| section.buttons[index].enabled)
+        {
+            self.pressed = Some((index, PressKind::Pointer));
+        }
+    }
+
+    /// The pointer's button came up: a held button still hovered applies.
+    pub fn pointer_up(&mut self) -> ShellOutcome {
+        match self.pressed.take() {
+            Some((index, PressKind::Pointer)) if self.hover == Some(index) => self.apply(index),
+            _ => ShellOutcome::Nothing,
+        }
+    }
+
+    /// The activate key went down on the focused button.
+    pub fn activate_down(&mut self) {
+        if let Some(index) = self.focus
+            && self
+                .section()
+                .is_some_and(|section| section.buttons[index].enabled)
+        {
+            self.pressed = Some((index, PressKind::Keyboard));
+        }
+    }
+
+    /// The activate key came up: a button the key still holds applies.
+    pub fn activate_up(&mut self) -> ShellOutcome {
+        match self.pressed.take() {
+            Some((index, PressKind::Keyboard)) => self.apply(index),
+            _ => ShellOutcome::Nothing,
+        }
+    }
+
+    /// Esc: drops a held button, steps one section back, or ends the run on
+    /// the root section.
+    pub fn escape(&mut self) -> ShellOutcome {
+        if self.pressed.take().is_some() {
+            return ShellOutcome::Nothing;
+        }
+        if self.stack.len() > 1 {
+            self.stack.pop();
+            self.entered();
+            return ShellOutcome::Back {
+                section: self.stack.last().expect("a root stays").clone(),
+            };
+        }
+        ShellOutcome::Quit
+    }
+
+    /// The frame to draw: the current section's panes and buttons fitted to
+    /// `surface`, with every button's strip state resolved.
+    ///
+    /// The fit is the contract's own [`AspectFit`]: the logical 800x600
+    /// surface scaled and centred, hotspots mapped with the same transform.
+    #[must_use]
+    pub fn view(&self, surface: (u32, u32)) -> Option<ShellView> {
+        let section = self.section()?;
+        let fit = AspectFit::new(SECTION_SURFACE, surface)?;
+        let mut panes = Vec::new();
+        for (index, pane) in section.panes.iter().enumerate() {
+            let Some((visible, texel_offset)) = pane.rect.clip(SECTION_SURFACE) else {
+                continue;
+            };
+            panes.push(ShellPaneView {
+                index,
+                id: pane.id.clone(),
+                art: pane.art.clone(),
+                logical: visible,
+                rect: fit.map_rect(visible),
+                texel_offset,
+            });
+        }
+        let buttons = section
+            .buttons
+            .iter()
+            .enumerate()
+            .filter_map(|(index, button)| {
+                let (visible, cut) = button.rect.clip(SECTION_SURFACE)?;
+                let visual = self.visual(index);
+                Some(ShellButtonView {
+                    index,
+                    id: button.id.clone(),
+                    art: button.art.clone(),
+                    logical: visible,
+                    rect: fit.map_rect(visible),
+                    texel_offset: (cut.0, cut.1 + visual.frame() * button.rect.height),
+                    visual,
+                    focused: self.focus == Some(index),
+                })
+            })
+            .collect();
+        Some(ShellView {
+            section: section.name.clone(),
+            fit,
+            panes,
+            buttons,
+            pointer: self.pointer,
+        })
+    }
+
+    /// Maps a surface point back to logical pixels (the inverse of
+    /// [`AspectFit::map_rect`]'s integer transform), for pointer input.
+    /// `None` outside the fitted image or on a degenerate surface.
+    #[must_use]
+    pub fn unmap_point(surface: (u32, u32), x: u32, y: u32) -> Option<(i32, i32)> {
+        let fit = AspectFit::new(SECTION_SURFACE, surface)?;
+        let image = fit.image_rect();
+        if !image.contains(x, y) {
+            return None;
+        }
+        let logical = |surface_at: u32, base: u32, fitted: u32, span: u32| {
+            let value = u64::from(surface_at - base) * u64::from(span) / u64::from(fitted.max(1));
+            i32::try_from(value).unwrap_or(i32::MAX)
+        };
+        Some((
+            logical(x, image.x, image.width, SECTION_SURFACE.0),
+            logical(y, image.y, image.height, SECTION_SURFACE.1),
+        ))
+    }
+
+    /// The strip state a button draws right now.
+    #[must_use]
+    pub fn visual(&self, index: usize) -> ButtonVisual {
+        let enabled = self
+            .section()
+            .is_some_and(|section| section.buttons[index].enabled);
+        if !enabled {
+            return ButtonVisual::Disabled;
+        }
+        if self.pressed.is_some_and(|(held, _)| held == index) {
+            return ButtonVisual::Depressed;
+        }
+        if self.hover == Some(index) || self.focus == Some(index) {
+            return ButtonVisual::Rollover;
+        }
+        ButtonVisual::Active
+    }
+
+    /// The button under a logical point: the later declaration wins an
+    /// overlap, matching [`cs_content::ui_layout::ScreenLayout::hit_test`].
+    #[must_use]
+    fn button_at(&self, x: i32, y: i32) -> Option<usize> {
+        self.section().and_then(|section| {
+            section
+                .buttons
+                .iter()
+                .enumerate()
+                .rev()
+                .find(|(_, button)| button.enabled && button.rect.contains(x, y))
+                .map(|(index, _)| index)
+        })
+    }
+
+    /// Applies one button's effect.
+    fn apply(&mut self, index: usize) -> ShellOutcome {
+        let Some(section) = self.section().cloned() else {
+            return ShellOutcome::Nothing;
+        };
+        let Some(button) = section.buttons.get(index) else {
+            return ShellOutcome::Nothing;
+        };
+        match &button.effect {
+            ButtonEffect::Navigate(name) => {
+                let name = self
+                    .sections
+                    .get(&name.to_ascii_uppercase())
+                    .map_or_else(|| name.clone(), |section| section.name.clone());
+                self.stack.push(name.clone());
+                self.entered();
+                ShellOutcome::Entered { section: name }
+            }
+            ButtonEffect::Terminate => ShellOutcome::Quit,
+            ButtonEffect::Unhandled(effect) => {
+                let effect = effect.clone();
+                self.unhandled
+                    .push((section.name.clone(), button.id.clone(), effect.clone()));
+                ShellOutcome::Unhandled {
+                    id: button.id.clone(),
+                    effect,
+                }
+            }
+        }
+    }
+
+    /// Resets the per-screen input state on entry: focus to the first
+    /// enabled button, hover and held released, pointer kept.
+    fn entered(&mut self) {
+        self.focus = self
+            .section()
+            .and_then(|section| section.buttons.iter().position(|button| button.enabled));
+        self.hover = None;
+        self.pressed = None;
+    }
+}
+
+/// Presents one section: its `P` rows into panes and its `B` rows into
+/// buttons, every row it cannot draw kept in `skipped` with the reason.
+fn present_section(
+    layout: &OriginalLayout,
+    section: &super::original::Section,
+    measure: &mut dyn FnMut(&str) -> Option<(u32, u32)>,
+    handlers: Option<&ScreenHandlers>,
+) -> ShellSection {
+    let mut panes = Vec::new();
+    let mut buttons = Vec::new();
+    let mut skipped = Vec::new();
+    for pane in &section.panes {
+        match present_pane(pane, measure) {
+            Ok(present) => panes.push(present),
+            Err(reason) => skipped.push(SkippedRow {
+                id: pane.id.clone(),
+                kind: pane.kind.clone(),
+                reason,
+            }),
+        }
+    }
+    for button in &section.buttons {
+        match present_button(layout, section, button, measure, handlers) {
+            Ok(present) => buttons.push(present),
+            Err(reason) => skipped.push(SkippedRow {
+                id: button.id.clone(),
+                kind: button.kind.clone(),
+                reason,
+            }),
+        }
+    }
+    let mut other_rows: Vec<String> = section.other.iter().map(|row| row.kind.clone()).collect();
+    other_rows.sort();
+    other_rows.dedup();
+    ShellSection {
+        name: section.name.clone(),
+        panes,
+        buttons,
+        skipped,
+        other_rows,
+    }
+}
+
+/// The numeric fields a row carries: `X` and `Y` as *signed* numbers —
+/// negative positions are real data (a pane hung off an edge), not a parse
+/// failure — while `Z`/`NUMFRAMES`/flags stay unsigned as the file writes
+/// them.
+fn signed(row: &Row, index: usize) -> Option<i32> {
+    row.fields.get(index)?.trim().parse().ok()
+}
+
+/// Presents one `P` row: `ID=P,art,X,Y,Z,NUMFRAMES,IsRegion?,AlphaType,…`.
+fn present_pane(
+    row: &Row,
+    measure: &mut dyn FnMut(&str) -> Option<(u32, u32)>,
+) -> Result<ShellPane, SkippedReason> {
+    if let Some(name) = row.unresolved.first() {
+        return Err(SkippedReason::UnresolvedPlaceholder { name: name.clone() });
+    }
+    let art = row.fields.first().map_or("", String::as_str);
+    if art.is_empty() {
+        return Err(SkippedReason::EmptyArt);
+    }
+    let (Some(x), Some(y)) = (signed(row, 1), signed(row, 2)) else {
+        return Err(SkippedReason::PositionUnread);
+    };
+    let frames = row
+        .fields
+        .get(4)
+        .and_then(|field| field.trim().parse::<u32>().ok());
+    let (width, height) = measure(art).ok_or_else(|| SkippedReason::ArtUnread {
+        art: art.to_owned(),
+    })?;
+    let frames = match frames {
+        Some(0) | None => {
+            return Err(SkippedReason::FrameCountUnknown {
+                height: frames.unwrap_or(0),
+            });
+        }
+        Some(frames) => frames,
+    };
+    if height % frames != 0 || width == 0 {
+        return Err(SkippedReason::FrameCountUnknown { height });
+    }
+    Ok(ShellPane {
+        id: row.id.clone(),
+        art: art.to_owned(),
+        rect: ShellRect {
+            x,
+            y,
+            width,
+            height: height / frames,
+        },
+        frames,
+        is_region: row.fields.get(5).is_some_and(|field| field.trim() == "1"),
+        color_keyed: row.fields.get(6).is_some_and(|field| field.trim() == "2"),
+    })
+}
+
+/// Presents one `B` row: `ID=B,art,X,Y,Z,ResID,ScriptToExe,…` — its region is
+/// the art's own extent divided by [`BUTTON_STATE_FRAMES`], its effect the
+/// destination the data states (see the module docs).
+fn present_button(
+    layout: &OriginalLayout,
+    section: &super::original::Section,
+    row: &Row,
+    measure: &mut dyn FnMut(&str) -> Option<(u32, u32)>,
+    handlers: Option<&ScreenHandlers>,
+) -> Result<ShellButton, SkippedReason> {
+    if let Some(name) = row.unresolved.first() {
+        return Err(SkippedReason::UnresolvedPlaceholder { name: name.clone() });
+    }
+    let art = row.fields.first().map_or("", String::as_str);
+    if art.is_empty() {
+        return Err(SkippedReason::EmptyArt);
+    }
+    let (Some(x), Some(y)) = (signed(row, 1), signed(row, 2)) else {
+        return Err(SkippedReason::PositionUnread);
+    };
+    let (width, height) = measure(art).ok_or_else(|| SkippedReason::ArtUnread {
+        art: art.to_owned(),
+    })?;
+    if height == 0
+        || height % BUTTON_STATE_FRAMES != 0
+        || width == 0
+        || art
+            .rsplit_once('.')
+            .map_or(art, |(stem, _)| stem)
+            .to_ascii_lowercase()
+            .contains("8states")
+    {
+        return Err(SkippedReason::FrameCountUnknown { height });
+    }
+    let script = row.fields.get(5).map_or("", String::as_str);
+    let effect = if !script.is_empty() {
+        ButtonEffect::Navigate(script.to_owned())
+    } else {
+        handler_effect(&section.name, row, handlers)
+    };
+    let effect = match effect {
+        ButtonEffect::Navigate(name) if layout.section(&name).is_none() => {
+            ButtonEffect::Unhandled(UnhandledEffect::ScriptNotPresent { script: name })
+        }
+        other => other,
+    };
+    Ok(ShellButton {
+        id: row.id.clone(),
+        art: art.to_owned(),
+        rect: ShellRect {
+            x,
+            y,
+            width,
+            height: height / BUTTON_STATE_FRAMES,
+        },
+        effect,
+        enabled: true,
+    })
+}
+
+/// The effect of a button that starts no screen script, from the `case` arm
+/// its own section's script states:
+///
+/// * exactly `terminate` — ends the run;
+/// * `activate(@name@)` followed only by `script_end "<this>.script"` — the
+///   section hands over to `name` and ends itself, the pair `CAMPAIGN.SCRIPT`
+///   states for `CM_B_CANCEL`;
+/// * anything else stays unhandled, verbatim.
+fn handler_effect(section: &str, row: &Row, handlers: Option<&ScreenHandlers>) -> ButtonEffect {
+    let Some(handlers) = handlers else {
+        return ButtonEffect::Unhandled(UnhandledEffect::NoHandler);
+    };
+    let Some(statements) = handlers.handler(&row.id) else {
+        return ButtonEffect::Unhandled(UnhandledEffect::NoHandler);
+    };
+    if statements == ["terminate"] {
+        return ButtonEffect::Terminate;
+    }
+    if let Some(destination) = statements
+        .first()
+        .and_then(|statement| activate_target(statement))
+    {
+        let self_end = format!("script_end \"{}.script\"", section.to_ascii_lowercase());
+        if statements[1..]
+            .iter()
+            .all(|statement| statement.eq_ignore_ascii_case(&self_end))
+            && !statements[1..].is_empty()
+        {
+            return ButtonEffect::Navigate(destination);
+        }
+    }
+    ButtonEffect::Unhandled(UnhandledEffect::HandlerNotShell {
+        statements: statements.to_vec(),
+    })
+}
+
+/// The `name` of `activate(@name@)`, exactly as written.
+fn activate_target(statement: &str) -> Option<String> {
+    let inner = statement
+        .trim()
+        .strip_prefix("activate(@")?
+        .strip_suffix("@)")?;
+    Some(inner.to_owned())
+}
