@@ -209,7 +209,7 @@ impl HorizonSubtree {
 }
 
 /// The stored node slot an imported object id (`node-<slot>`) names.
-fn node_slot_of(id: &str) -> Option<u32> {
+pub(super) fn node_slot_of(id: &str) -> Option<u32> {
     id.strip_prefix("node-")?.parse().ok()
 }
 

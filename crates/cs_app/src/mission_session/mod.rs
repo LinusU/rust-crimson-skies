@@ -113,6 +113,7 @@ mod landings;
 pub(crate) mod launch_camera;
 pub(crate) mod launch_cinematic;
 mod launch_sound;
+mod lens_flare;
 mod letterbox;
 mod lifecycles;
 mod look_view;
@@ -230,6 +231,10 @@ pub use launch_cinematic::{
 pub use launch_sound::{
     LAUNCH_SOUND_CONTAINER, LaunchAudioProbe, LaunchSound, LaunchSoundError, backend_refusal,
     install_launch_audio, measure_launch_sound, member_content_id, stage_container,
+};
+pub use lens_flare::{
+    FLARE_ALPHA, FLARE_TEXTURES, FlareQuadNode, FlareSource, LensFlareSources, MissionLensFlare,
+    MissionLensFlarePlugin, read_flare_images,
 };
 pub use letterbox::{
     LaunchLetterbox, LetterboxBars, MissionLetterboxPlugin, PICTURE_END, PICTURE_TOP, REF_HEIGHT,

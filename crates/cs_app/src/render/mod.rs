@@ -175,6 +175,8 @@ pub mod golden;
 /// installed by the original-assets playtest and by a composed mission.
 pub mod horizon;
 pub use horizon::HorizonPlugin;
+/// The lens flare's pure placement and fade rule (PARITY4-LENS-FLARE-B, #1859).
+pub mod lens_flare;
 pub mod material;
 pub mod matrix;
 pub mod paint;

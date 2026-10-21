@@ -1217,6 +1217,28 @@ fn add_composition(
     // The drawn sea sits at the world's own water (M01-WINDOW-FARDRAW,
     // #1554); the spec is read at `Startup`, after this.
     bind_sea_to_world_water(app, &world_parts);
+    // The sun's lens flare (PARITY4-LENS-FLARE-B, #1859): the flagged mesh
+    // light of the horizon's `sun` node and the world group's `lflare1..4`.
+    // Windowed only; when any of the four textures does not resolve nothing
+    // is drawn, as the engine enables flares only with all four loaded.
+    if visuals && let Some(source) = &stage.world_draw {
+        let sources = super::lens_flare::LensFlareSources::from_container(
+            source.sources().world(),
+            world_parts.horizon(),
+        );
+        if !sources.drawn.is_empty() {
+            let images = super::lens_flare::read_flare_images(
+                source.sources().textures(),
+                &mut app
+                    .world_mut()
+                    .resource_mut::<bevy::prelude::Assets<bevy::prelude::Image>>(),
+            );
+            if let Ok(images) = images {
+                app.insert_resource(super::lens_flare::MissionLensFlare::new(sources, images));
+                app.add_plugins(super::lens_flare::MissionLensFlarePlugin);
+            }
+        }
+    }
     app.insert_resource(world_parts);
     app.add_plugins(MissionWorldDrawPlugin);
     // M01-WINDOW-FIRE (#1536): what the mission draws for its own weapons —
