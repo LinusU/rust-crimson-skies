@@ -9,6 +9,7 @@
 //! `docs/findings/2026-10-21-m01-hand-over-pose.md` with one task per cause.
 use std::path::PathBuf;
 
+use cs_app::mission_actors::MissionAircraftRoster;
 use cs_app::mission_launch::plan_mission_launch;
 use cs_app::mission_session::stage_for;
 use cs_sim::flight::original::{OriginalInput, OriginalState};
@@ -138,4 +139,80 @@ fn accept_parity4_m01_free_flight_against_the_measured_trajectory() {
         last.position_m[1] < 0.0,
         "ours falls below the sea, the original is at 35 m"
     );
+}
+
+/// The other airplane objects at the hand-over, read from the original run by
+/// the owner's tool (#1753): the wingman, then the three Kestrels (names are
+/// inferred from the roster; the run read positions only).
+const WINGMAN_AT_HAND_OVER: [f64; 3] = [-1378.0, 150.0, -1706.0];
+const KESTRELS_AT_HAND_OVER: [[f64; 3]; 3] = [
+    [-5615.0, 300.0, -8134.0],
+    [-5548.0, 300.0, -8296.0],
+    [-5680.0, 300.0, -8246.0],
+];
+/// The measured positions are whole metres.
+const POSITION_TOLERANCE_M: f64 = 1.0;
+
+/// At hand-over the composed roster is exactly the four airplanes the original
+/// run lists besides the player, at the measured positions: the wingman 117 m
+/// from the player, the three Kestrels 7.6-7.7 km away and asleep.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_parity4_m01_actor_placement_at_hand_over_is_the_measured_one() {
+    let root = PathBuf::from(std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR"));
+    let plan = plan_mission_launch(&root, label("M01"), "The Lost Treasure").expect("plan");
+    let stage = stage_for(&root, &plan).expect("stage");
+    let player = stage.start.position.map(f64::from);
+    let roster = MissionAircraftRoster::from_records(&stage.aircraft).0;
+    assert_eq!(
+        roster.len(),
+        4,
+        "the original run lists four other airplanes"
+    );
+    let position_of = |record: &cs_app::mission_start::ScriptedAircraft| {
+        record
+            .stored_pose
+            .expect("a stored pose")
+            .position_metres()
+            .map(f64::from)
+    };
+    let wingman = roster
+        .iter()
+        .find(|record| record.name == "wingman_1")
+        .expect("wingman_1");
+    assert!(distance(position_of(wingman), WINGMAN_AT_HAND_OVER) < POSITION_TOLERANCE_M);
+    let gap = distance(position_of(wingman), player);
+    assert!(
+        (gap - 117.0).abs() < 1.0,
+        "wingman is {gap} m from the player"
+    );
+    assert_ne!(wingman.starts_asleep, Some(true));
+
+    let kestrels: Vec<_> = roster
+        .iter()
+        .filter(|record| record.name.starts_with("medkestrel_"))
+        .collect();
+    assert_eq!(kestrels.len(), 3);
+    for measured in KESTRELS_AT_HAND_OVER {
+        assert!(
+            kestrels
+                .iter()
+                .any(|record| distance(position_of(record), measured) < POSITION_TOLERANCE_M),
+            "no Kestrel record at {measured:?}"
+        );
+    }
+    for record in kestrels {
+        let gap = distance(position_of(record), player);
+        assert!(
+            (7500.0..7800.0).contains(&gap),
+            "{} is {gap} m away",
+            record.name
+        );
+        assert_eq!(
+            record.starts_asleep,
+            Some(true),
+            "{} is dormant",
+            record.name
+        );
+    }
 }
