@@ -1806,3 +1806,694 @@ provenance = "static"
 va = 0x00489378
 from = 6
 to = 0
+
+# The turret update law (FLAK-A-TURRET-UPDATE-LAW, #1819, finding
+# docs/findings/2026-10-21-flak-a-turret-update-law.md). One row per cited
+# instruction in the engine image: `va` is the instruction, `bytes` its
+# machine code as hex (re-read by the ignored image test), `fact` what the
+# instruction decides. The TURRET record parser is 0x4a9d00..0x4aa8a0, the
+# per-turret update is 0x4aabb0..0x4ab53b, the aim step 0x4ab550..0x4abe2c,
+# the target search 0x41f9c0 with the scorer 0x4ac720, the generic weapon fire
+# 0x5aef40 and the rocket update around 0x5afd50..0x5b0770. Provenance
+# `static`; nothing here is `verified_original`.
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "field.live"
+va = 0x004aa7bb
+bytes = "88436e"
+fact = "entry+0x6e: ACTIVATED != 0 (default 1 at 0x4a9b14)"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "field.ammo"
+va = 0x004aa2f6
+bytes = "898b64010000"
+fact = "entry+0x164: AMMO int (default 50 at 0x4a9bed); no read inside 0x4aabb0..0x4ab53b"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "field.detection_range"
+va = 0x004aa314
+bytes = "898368010000"
+fact = "entry+0x168: DETECTION_RANGE f32 metres (default 200.0 = 0x43480000 at 0x4a9bf7)"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "field.fire_limits_a"
+va = 0x004aa332
+bytes = "8993b0010000"
+fact = "entry+0x1b0: FIRE_LIMITS first value"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "field.fire_limits_b"
+va = 0x004aa33e
+bytes = "898bb4010000"
+fact = "entry+0x1b4: FIRE_LIMITS second value"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "field.fire_rate_min"
+va = 0x004aa35c
+bytes = "d993a0010000"
+fact = "entry+0x1a0: FIRE_RATE first value (second value to +0x1a4, equal when only one is stated)"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "field.attack_interval_min"
+va = 0x004aa628
+bytes = "d993b8010000"
+fact = "entry+0x1b8: ATTACK_INTERVAL first value (second to +0x1bc)"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "field.bored_interval_min"
+va = 0x004aa68d
+bytes = "d993c0010000"
+fact = "entry+0x1c0: BORED_INTERVAL first value (second to +0x1c4)"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "field.inaccuracy"
+va = 0x004aa70e
+bytes = "d99bd4010000"
+fact = "entry+0x1d4: INACCURACY degrees times the f64 at 0x6040e8 (radians)"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "field.pitch_min"
+va = 0x004aa732
+bytes = "d99bd8010000"
+fact = "entry+0x1d8: PITCH first value in radians (second to +0x1dc at 0x4aa744)"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "field.yaw_min"
+va = 0x004aa761
+bytes = "8dbbe0010000"
+fact = "entry+0x1e0: YAW first value in radians (second to +0x1e4)"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "field.shoot_up_only"
+va = 0x004aa7db
+bytes = "8893e8010000"
+fact = "entry+0x1e8: SHOOT_UP_ONLY != 0"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "field.other_target"
+va = 0x004aa65b
+bytes = "c6434c01"
+fact = "entry+0x4c: OTHER_TARGET present"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "field.objective"
+va = 0x004aa671
+bytes = "c6434d01"
+fact = "entry+0x4d: OBJECTIVE present"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "field.team_default"
+va = 0x004aa5f4
+bytes = "e8671cfbff"
+fact = "TEAM absent: 0x45c260(out, 0) writes 0+2 = team 2, set through vtable+8 (0x441b80 stores entry+8)"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "field.team_stated"
+va = 0x004aa5d4
+bytes = "e86791faff"
+fact = "TEAM stated: 0x453740 copies the integer, set through vtable+8"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "field.weapon"
+va = 0x004aa2d8
+bytes = "898360010000"
+fact = "entry+0x160: WEAPON NAME resolved by 0x5abfd0"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "field.effect"
+va = 0x004aa1ac
+bytes = "898354010000"
+fact = "entry+0x154: EFFECT node (duration to +0x158 at 0x4aa1b8)"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "registry.callback"
+va = 0x004a9625
+bytes = "6870c64a00"
+fact = "push 0x4ac670: the per-frame callback registered on the node by 0x4ccd30"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "registry.loop"
+va = 0x004ac67f
+bytes = "e82ce5ffff"
+fact = "call 0x4aabb0 for every turret on the list at 0x71d914"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "gate.latch"
+va = 0x004aabd1
+bytes = "8a466c"
+fact = "mov al,[esi+0x6c]: the activation latch; clear needs mount node 0x70, node 0xc and the DEACTIVATE node 0xb4 all with mask 4 set at +0x24, then sets it"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "gate.live_byte"
+va = 0x004aac16
+bytes = "8a466e"
+fact = "mov al,[esi+0x6e]; je 0x4ab53b: asleep turrets return"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "gate.no_weapon"
+va = 0x004aac21
+bytes = "39be60010000"
+fact = "cmp [esi+0x160],0; je 0x4ab53b: no weapon returns"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "gate.player_flag"
+va = 0x004aac32
+bytes = "8a881d090000"
+fact = "mov cl,[[0x71c298]+0x91d]; non-zero skips the whole engage step"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "timer.freeze_flag"
+va = 0x004aad40
+bytes = "a06ef66400"
+fact = "mov al,[0x64f66e]: non-zero skips the attack/bored timer step"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "timer.attack_end"
+va = 0x004aadb7
+bytes = "89bed0010000"
+fact = "state != 0 and now > entry+0x1c8: state = 0 then +0x1cc = now + ATTACK_INTERVAL draw"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "timer.bored_end"
+va = 0x004aad70
+bytes = "c786d001000001000000"
+fact = "state == 0 and now > entry+0x1cc: state = 1 then +0x1c8 = now + BORED_INTERVAL draw"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "timer.bored_clears_engaged"
+va = 0x004ab0dd
+bytes = "c6866c01000000"
+fact = "state == 1 clears entry+0x16c"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "timer.initial_state"
+va = 0x004a9c6f
+bytes = "8986d0010000"
+fact = "constructor: state entry+0x1d0 = 1"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "timer.initial_bored_end"
+va = 0x004aa6f0
+bytes = "d99bc8010000"
+fact = "parser: entry+0x1c8 = rand01 * (ATTACK_INTERVAL draw)"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "velocity.cap"
+va = 0x004aaf12
+bytes = "d81d54886000"
+fact = "fcomp [0x608854] = 199844.73 (447.04 m/s squared): faster velocity is replaced by zero"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "target.filter_ctor"
+va = 0x004aaf5c
+bytes = "e8ef78f7ff"
+fact = "call 0x422850: filter {origin = entry+0x74, team = *(entry+8), shoot_up_only}"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "target.filter_range"
+va = 0x004aaf64
+bytes = "894d98"
+fact = "filter+0x18 = entry+0x168 DETECTION_RANGE (stored through [ebp-0x68])"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "target.search"
+va = 0x004aaf9b
+bytes = "e8204af7ff"
+fact = "call 0x41f9c0(filter, 0, 0, include_structs)"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "target.include_structs"
+va = 0x004aaf8d
+bytes = "b801000000"
+fact = "include_structs = 1 when [0x629c20] != 0 or the turret team != the player's team"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "target.keep_handle"
+va = 0x004aafb6
+bytes = "3b4804"
+fact = "a new handle for the same object is dropped and the old one kept"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "target.accept_vehicle"
+va = 0x004a5b20
+bytes = "8b4104"
+fact = "TargetVehicle: [obj+0x91d] == 0 and [obj+0x944] != 0 and teams differ and both non-zero"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "target.accept_struct"
+va = 0x004a5b90
+bytes = "8b4104"
+fact = "TargetStruct: [obj+0x8c] != 0 and [obj+0x90] != 0 and teams differ and both non-zero"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "target.accept_turret"
+va = 0x004a5bd0
+bytes = "8b4104"
+fact = "TargetTurret: [obj+0x6c] != 0 and [obj+0x6d] != 0 and teams differ and both non-zero"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "target.accept_projectile"
+va = 0x004a5c10
+bytes = "8b4104"
+fact = "TargetProjectile: teams differ and both non-zero"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "target.score_range"
+va = 0x004ac73e
+bytes = "d85f18"
+fact = "dist > filter+0x18 (DETECTION_RANGE) scores 1e21 (rejected)"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "target.score_player_weight"
+va = 0x004ac76a
+bytes = "c7442410cdcc4c3f"
+fact = "candidate object == [0x71c298] (the local player vehicle): weight 0.8 (0x3f4ccccd) in place of the default 1.0 stored at 0x4ac760"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "target.score_projectile_weight"
+va = 0x004ac799
+bytes = "c74424109a99193f"
+fact = "filter+0x1c set and candidate is a TargetProjectile: weight 0.6 (0x3f19999a)"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "target.score_turret_penalty"
+va = 0x004ac7c2
+bytes = "d8056c8b6000"
+fact = "candidate is a TargetTurret: distance += 37.5 (0x608b6c)"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "target.score_vehicle_class4"
+va = 0x004ac7f5
+bytes = "c74424103333b33f"
+fact = "TargetVehicle with [obj+0x67c] == 4: weight 1.4 (0x3fb33333)"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "target.score_final"
+va = 0x004ac812
+bytes = "d80d34356000"
+fact = "score = weight * 1200 (0x603534) + distance; a true vtable+0x1c subtracts 0.5 from the weight (that slot is always false for the four wrappers)"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "target.priority_projectile"
+va = 0x0041fceb
+bytes = "8b442414"
+fact = "a projectile candidate wins outright"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "target.priority_struct"
+va = 0x0041fd30
+bytes = "8b442418"
+fact = "else the best struct"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "target.priority_turret"
+va = 0x0041fd75
+bytes = "8b44241c"
+fact = "else the best turret"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "target.priority_vehicle"
+va = 0x0041fdb6
+bytes = "8b442420"
+fact = "else the best vehicle"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "los.player_only"
+va = 0x004aaff5
+bytes = "3b0d98c27100"
+fact = "cmp target object,[0x71c298]; jne 0x4ab0a0: the cached ray test runs only for the player"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "los.interval"
+va = 0x004ab06f
+bytes = "d95e68"
+fact = "entry+0x68 = now + 1.0 + rand01 (next test)"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "los.ray"
+va = 0x004ab081
+bytes = "e8aa40f7ff"
+fact = "call 0x41f130(node, pos with y + 0.2): ray cast, result in entry+0x64"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "los.result_gate"
+va = 0x004ab08c
+bytes = "8a4664"
+fact = "entry+0x64 clear: no engagement (0x4ab23c clears entry+0x16c)"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "aim.call"
+va = 0x004ab0c9
+bytes = "e882040000"
+fact = "call 0x4ab550 once per frame while a target is held"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "aim.pitch_limited"
+va = 0x004ab8de
+bytes = "d986d8010000"
+fact = "PITCH limits are applied only when entry+0x1d8 != entry+0x1dc"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "aim.yaw_limited"
+va = 0x004ab925
+bytes = "d986e0010000"
+fact = "YAW limits are applied only when entry+0x1e0 != entry+0x1e4; 2*pi wrap uses the f64 at 0x603d58"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "aim.aligned_cos"
+va = 0x004aba51
+bytes = "dc1d708b6000"
+fact = "engaged only when dot(barrel, target direction) > 0.965926 (cos 15 degrees, f64 at 0x608b70)"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "aim.engaged_store"
+va = 0x004aba67
+bytes = "88866c010000"
+fact = "entry+0x16c = the alignment result"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "aim.intercept_solver"
+va = 0x004ab700
+bytes = "e82b57fbff"
+fact = "weapon flag 0x40: call 0x460e30 with weapon+0x2c (VELOCITY), target position and velocity"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "aim.dir_solver"
+va = 0x004abd60
+bytes = "e808280900"
+fact = "weapon flag 0x40: call 0x53e56d for the fire direction, else target minus muzzle"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "aim.inaccuracy"
+va = 0x004abdee
+bytes = "e84d4bfbff"
+fact = "call 0x460940(direction, INACCURACY): random cone around the direction (two rand01 draws)"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "aim.firepoint"
+va = 0x004abc09
+bytes = "8d540804"
+fact = "muzzle = firepoint[entry+0x14c] (16-byte rows starting at entry+0x140 vector)"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "fire.next_time_gate"
+va = 0x004ab0f8
+bytes = "d89ea8010000"
+fact = "engaged and now >= entry+0x1a8 before a shot"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "fire.effect_windup"
+va = 0x004ab215
+bytes = "d90570c47100"
+fact = "EFFECT node inactive: switch it on, entry+0x1a8 = now + entry+0x158, no shot this pass"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "fire.effect_off"
+va = 0x004ab24e
+bytes = "e8dd170200"
+fact = "EFFECT node active: switch it off, then fire"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "fire.weapon_fire"
+va = 0x004ab3cc
+bytes = "e86f3b1000"
+fact = "call 0x5aef40: the generic weapon fire, same function as 0x4b6e7b 0x4b7289 0x4b7559 0x4c01e0 0x4c0d59"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "fire.post"
+va = 0x004ab3e4
+bytes = "e84764f9ff"
+fact = "call 0x441830(&entry+8, weapon, spawned entity): purpose not traced"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "fire.rate_draw"
+va = 0x004ab49b
+bytes = "d99ea8010000"
+fact = "entry+0x1a8 = now + FIRE_RATE.min + rand01 * (max - min) when FIRE_LIMITS first value is 0"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "fire.limits"
+va = 0x004ab435
+bytes = "d996ac010000"
+fact = "FIRE_LIMITS first value > 0: entry+0x1ac -= dt each shot; at <= 0 reload it, clear engaged, entry+0x1a8 = now + second value"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "fire.limits_recharge"
+va = 0x004ab50c
+bytes = "d996ac010000"
+fact = "not engaged: entry+0x1ac += dt up to the first value"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "fire.firepoint_next"
+va = 0x004ab4a7
+bytes = "47"
+fact = "entry+0x14c advances after every pass, wrapping at the firepoint count"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "weapon.detonation_distance"
+va = 0x005adbb9
+bytes = "d95b44"
+fact = "weapon+0x44 = DETONATION_DISTANCE squared"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "weapon.impact_proximity_raw"
+va = 0x005add6a
+bytes = "894b3c"
+fact = "weapon+0x3c = IMPACT_PROXIMITY"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "weapon.impact_proximity_sq"
+va = 0x005add77
+bytes = "d95b40"
+fact = "weapon+0x40 = IMPACT_PROXIMITY squared"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "rocket.homing_stop"
+va = 0x005afe7e
+bytes = "d80d14356000"
+fact = "fmul [0x603514] = 4.0: homing steering stops when squared distance to the target < 4 * DETONATION_DISTANCE squared (and below 400 at 0x5afe96)"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "rocket.range_test"
+va = 0x005b01ec
+bytes = "d85f1c"
+fact = "fcomp [weapon+0x1c] RANGE against the travelled distance rocket+0x664: below RANGE takes the 0x5b0216 branch"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "rocket.proximity_burst"
+va = 0x005b023c
+bytes = "d85f44"
+fact = "below RANGE, weapon flag 0x8000 (LOCK_ON) and a held target rocket+0x70: squared distance <= DETONATION_DISTANCE squared bursts at the rocket position (0x5b0249..0x5b0298 store it, 0x5b030e)"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "rocket.lock_on_flag"
+va = 0x005addd5
+bytes = "0d00800000"
+fact = "LOCK_ON sets weapon flag 0x8000 and weapon+0x58 = its value"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "rocket.time_burst"
+va = 0x005b02b0
+bytes = "d85f48"
+fact = "DETONATION_TIME (weapon+0x48) > 0 and rocket age rocket+0x668 > it bursts (0x5b02ba)"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "rocket.range_end"
+va = 0x005b0206
+bytes = "a900000002"
+fact = "at travelled >= RANGE a rocket bursts only with DETONATE_AT_RANGE (weapon flag 0x2000000) unless the LOCK_ON branch at 0x5b01f9 decides first"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "rocket.impact_call"
+va = 0x005b0713
+bytes = "e888c0ffff"
+fact = "call 0x5ac7a0 (impact select and effects) at the burst"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "rocket.splash_radius"
+va = 0x005aca65
+bytes = "d8483c"
+fact = "sphere query radius = entity+0x678 * weapon+0x3c (IMPACT_PROXIMITY) at the burst position, via 0x4cb420"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "rocket.splash_gate"
+va = 0x005b0718
+bytes = "d9473c"
+fact = "IMPACT_PROXIMITY > 0 runs the sphere query 0x5aca30 and the hit handler 0x5acac0"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "fire.lock_target_gate"
+va = 0x004ab2c3
+bytes = "f60240"
+fact = "only a weapon whose descriptor flag 0x40 is set builds the lock-on record for the shot (the 0x538880 test at 0x4ab2d0..0x4ab370)"
+
