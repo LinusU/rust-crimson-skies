@@ -1019,6 +1019,8 @@ fn add_composition(
     super::cockpit_camera::install_cockpit_camera(app);
     // The external views (F9-F12, F7) and the zoom (#1824).
     super::external_view::install_external_view(app);
+    // Snap/smooth look, track target and the numpad look (#1825).
+    super::look_view::install_look_view(app);
     super::cockpit_interior::install_cockpit_interior(app);
     // The panel dials (#1812) follow the same pilot-eye visibility rule.
     super::cockpit_dials::install_cockpit_dials(app);

@@ -28,6 +28,8 @@
 
 use bevy::prelude::Resource;
 
+use super::look_view::MissionLook;
+
 /// The original's `Cockpit views` command id (`MSG_LOOK_FORWARD`).
 pub const VIEW_CYCLE_COMMAND_ID: u16 = 49;
 
@@ -237,12 +239,14 @@ impl MissionZoom {
     }
 }
 
-/// Applies one view key: sets the mode, remembers a cycle mode and clears the
-/// zoom on entering the chase view. Returns whether the mode changed.
+/// Applies one view key: sets the mode, remembers a cycle mode, clears the
+/// zoom and the look on entering the chase view and the look on entering a
+/// pilot-eye view. Returns whether the mode changed.
 pub fn select_view(
     view: &mut MissionViewMode,
     memory: &mut CycleMemory,
     zoom: &mut MissionZoom,
+    look: &mut MissionLook,
     to: MissionViewMode,
 ) -> bool {
     let changed = *view != to;
@@ -251,6 +255,9 @@ pub fn select_view(
     }
     if to == MissionViewMode::Chase {
         zoom.clear();
+    }
+    if to == MissionViewMode::Chase || to.at_pilot_eye() {
+        look.clear();
     }
     *view = to;
     changed

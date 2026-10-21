@@ -33,6 +33,10 @@ use cs_types::keymap::{ControlsMap, Modifiers, original_edge_action};
 use crate::input::platform::{PlatformInput, scancode_from_bevy};
 use crate::playtest::command::KEY_DEFLECTION;
 
+use super::look_view::{
+    LOOK_MIDDLE_COMMAND_ID, MissionLook, SMOOTH_LOOK_COMMAND_ID, SNAP_LOOK_COMMAND_ID,
+    TRACK_TARGET_COMMAND_ID, look_direction,
+};
 use super::view_cycle::{
     CycleMemory, MissionViewMode, MissionZoom, VIEW_CYCLE_COMMAND_ID, ZOOM_IN_COMMAND_ID,
     ZOOM_OUT_COMMAND_ID, select_view,
@@ -103,6 +107,8 @@ pub fn mint_original_chord_keys(world: &mut World) {
     let mut consumed: Vec<KeyCode> = Vec::new();
     // The view keys pressed this frame, in order: `Cockpit views` is `None`.
     let mut view_presses: Vec<Option<MissionViewMode>> = Vec::new();
+    // The look-mode keys (`K`, `J`, `L`) pressed this frame, in order.
+    let mut look_presses: Vec<u16> = Vec::new();
     for code in now.difference(&before) {
         let Some(scancode) = scancode_from_bevy(*code) else {
             continue;
@@ -116,6 +122,11 @@ pub fn mint_original_chord_keys(world: &mut World) {
                     view_presses.push(None);
                 } else if let Some(target) = MissionViewMode::for_command(*command) {
                     view_presses.push(Some(target));
+                } else if matches!(
+                    *command,
+                    SNAP_LOOK_COMMAND_ID | SMOOTH_LOOK_COMMAND_ID | TRACK_TARGET_COMMAND_ID
+                ) {
+                    look_presses.push(*command);
                 }
             }
         }
@@ -139,6 +150,8 @@ pub fn mint_original_chord_keys(world: &mut World) {
     }
     // The zoom keys are polled while held, not edge-triggered.
     let (mut zoom_in, mut zoom_out) = (false, false);
+    // The look directions are polled the same way.
+    let (mut look_held, mut centre_held) = ((0i8, 0i8), false);
     if !paused {
         for code in &now {
             let Some(scancode) = scancode_from_bevy(*code) else {
@@ -147,6 +160,12 @@ pub fn mint_original_chord_keys(world: &mut World) {
             let commands = controls.0.commands_for_key(scancode, held);
             zoom_in |= commands.contains(&ZOOM_IN_COMMAND_ID);
             zoom_out |= commands.contains(&ZOOM_OUT_COMMAND_ID);
+            for command in &commands {
+                if let Some((x, y)) = look_direction(*command) {
+                    look_held = (look_held.0 + x, look_held.1 + y);
+                    centre_held |= *command == LOOK_MIDDLE_COMMAND_ID;
+                }
+            }
         }
     }
     world.insert_resource(ChordKeyMemory(now));
@@ -155,7 +174,16 @@ pub fn mint_original_chord_keys(world: &mut World) {
         zoom.in_held = zoom_in;
         zoom.out_held = zoom_out;
     }
+    {
+        let mut look = world.get_resource_or_insert_with(MissionLook::default);
+        look.held = look_held;
+        look.centre_held = centre_held;
+        for command in look_presses {
+            look.press(command);
+        }
+    }
     if !view_presses.is_empty() {
+        let mut look = world.remove_resource::<MissionLook>().unwrap_or_default();
         let mut view = world
             .remove_resource::<MissionViewMode>()
             .unwrap_or_default();
@@ -163,11 +191,12 @@ pub fn mint_original_chord_keys(world: &mut World) {
         let mut zoom = world.remove_resource::<MissionZoom>().unwrap_or_default();
         for press in view_presses {
             let target = press.unwrap_or_else(|| view.next_from(memory.0));
-            select_view(&mut view, &mut memory, &mut zoom, target);
+            select_view(&mut view, &mut memory, &mut zoom, &mut look, target);
         }
         world.insert_resource(view);
         world.insert_resource(memory);
         world.insert_resource(zoom);
+        world.insert_resource(look);
     }
     if !minted.is_empty() {
         world

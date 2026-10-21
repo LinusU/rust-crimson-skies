@@ -115,6 +115,7 @@ pub(crate) mod launch_cinematic;
 mod launch_sound;
 mod letterbox;
 mod lifecycles;
+mod look_view;
 mod observation;
 mod original_keys;
 pub(crate) mod parts;
@@ -235,6 +236,12 @@ pub use letterbox::{
     REF_WIDTH, letterbox_bars,
 };
 pub use lifecycles::{LifecycleAdvance, ObjectiveLifecycleTick, ObjectiveLifecycles};
+pub use look_view::{
+    LOOK_FIRST_COMMAND_ID, LOOK_LAST_COMMAND_ID, LOOK_MIDDLE_COMMAND_ID, LookMode, LookTarget,
+    MissionLook, PITCH_SMOOTH_RATE, SMOOTH_LOOK_COMMAND_ID, SNAP_LOOK_COMMAND_ID,
+    TRACK_TARGET_COMMAND_ID, YAW_SMOOTH_RATE, apply_look, install_look_view, look_direction,
+    selected_target_in_body_frame, step_look,
+};
 pub use observation::{
     PLAYER_MEMBER, mission_world_observation, subject_node_name, world_actor_in_play,
 };
