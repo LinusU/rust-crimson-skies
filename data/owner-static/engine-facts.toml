@@ -3342,3 +3342,147 @@ name = "param.flyby_max_switch_dist"
 va = 0x0042fa5a
 bytes = "6830186200"
 fact = "camparam key `flyby_max_switch_dist` (string 0x621830) is stored at record offset 0x7c"
+
+[[crash_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "death.health_test"
+va = 0x0048d78b
+bytes = "d986d0020000d81dc8326000"
+fact = "after the contact damage the vehicle's health fraction V+0x2d0 is compared with 0.0f (0x6032c8): `<= 0` jumps to 0x48d7c6, which calls the removal path 0x48b920; otherwise the damage state is refreshed (0x4b3800, 0x4b1790)"
+
+[[crash_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "death.call_removal"
+va = 0x0048d7c6
+bytes = "8b4508508bcee8"
+fact = "the call to the removal path 0x48b920(V, info) reached when V+0x2d0 <= 0"
+
+[[crash_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "msg.fatal_crash_id"
+va = 0x0048b9db
+bytes = "68a2000000"
+fact = "push of string id 0xa2 (162, `Fatal Crash!` in strings.dll block 11 index 2) for the string loader 0x59ce40, in the removal path 0x48b920 when V is the player"
+
+[[crash_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "msg.fatal_crash_duration"
+va = 0x0048b9d6
+bytes = "680000a040"
+fact = "push of 5.0f, the second argument of the message call 0x4588e0(text, 5.0f, [0x6eba64], [0x6eba64]) after the string id is loaded; the unit and role of the argument are not decoded"
+
+[[crash_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "msg.fatal_crash_call"
+va = 0x0048b9e9
+bytes = "e8f2cefcff"
+fact = "call of 0x4588e0, the text-line function, with the loaded string; the hud call 0x455800(0) follows"
+
+[[crash_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "msg.hud_call"
+va = 0x0048b9ee
+bytes = "53e80c9efcff"
+fact = "push ebx (zero: ebx was cleared at 0x48b942) then call 0x455800 right after the Fatal Crash message; 0x455800 stores its argument in [0x6541ec] and byte +4 of two HUD objects (0x71d244, 0x64eef0) and shows or hides HUD objects with it; that the zero hides the HUD is inferred, not measured"
+
+[[crash_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "msg.was_shot_down_id"
+va = 0x004b8552
+bytes = "68a9000000"
+fact = "push of string id 0xa9 (169, `was shot down`) for 0x59ce40: the sibling death message uses the same 0x4588e0 call with 5.0f"
+
+[[crash_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "msg.shot_down_duration"
+va = 0x004b8602
+bytes = "680000a040"
+fact = "push of 5.0f for the `was shot down` message call 0x4588e0 at 0x4b8608 (same second argument as Fatal Crash!)"
+
+[[crash_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "msg.other_call_duration"
+va = 0x004974fb
+bytes = "680000803f"
+fact = "push of 1.0f for a different caller of 0x4588e0 (0x497501): the second argument varies by caller"
+
+[[crash_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "timer.stop_single_player"
+va = 0x0048b9c5
+bytes = "b968b47100e8f10bfeff"
+fact = "when the multiplayer flag [[0x64f750]] (0x440ad0) is 0, the removal path calls 0x46c5c0 on the object at 0x71b468, which folds the elapsed time (0x46c610) and clears the running byte at +0x10; which clock the debrief Run Time reads is not decoded here"
+
+[[crash_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "camera.set_mode5"
+va = 0x0048ba21
+bytes = "3bb15001000075076a05e850"
+fact = "if the camera's target ([0x64ef78]+0x150) is V, the removal path calls the camera mode setter 0x42c280 with mode 5"
+
+[[crash_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "camera.mode5_init_call"
+va = 0x0042ce12
+bytes = "741056e87611000083"
+fact = "camera mode 5's per-frame routine 0x42ce00 calls the init 0x42df90 once when the init flag [0x64ef2c] is set, then clears it"
+
+[[crash_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "camera.anchor_copy"
+va = 0x0042df9a
+bytes = "8d86040200008b08890d08ef64008b500489150cef64008b4008"
+fact = "init 0x42df90 copies the vehicle position V+0x204..0x20c to the fixed camera anchor 0x64ef08..0x64ef10"
+
+[[crash_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "camera.crash_horiz_x"
+va = 0x0042e00e
+bytes = "d94508d84844d80508ef"
+fact = "anchor x += sin(heading) * crash_horiz (record offset 0x44) where heading is 0x53def0(V+0x180)"
+
+[[crash_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "camera.crash_horiz_z"
+va = 0x0042e020
+bytes = "d945fcd84844d80510ef"
+fact = "anchor z += cos(heading) * crash_horiz"
+
+[[crash_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "camera.crash_y"
+va = 0x0042e032
+bytes = "d9050cef6400d84048"
+fact = "anchor y += crash_y (record offset 0x48)"
+
+[[crash_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "camera.chord_clamp"
+va = 0x0042e041
+bytes = "8b48508b504c51526808ef6400e8"
+fact = "0x42c580(anchor, crash_chord_y, crash_min_elev) calls 0x42c390, which issues a vertical one-segment world query 0x4c8f70 (0x42c41b) with the constant 1000.0f (0x603464) as one bound, and adds its result to the anchor y (0x42c595); the roles of the two parameters are not fully decoded"
+
+[[crash_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "camera.mode5_look_at_vehicle"
+va = 0x0042ce3a
+bytes = "8d45e481c604020000890d24"
+fact = "each frame the camera is placed at the anchor and aimed at V+0x204 (add esi,0x204), the vehicle position, via 0x4d2710/0x4d2490: the anchor does not move after init, only the aim follows the vehicle"
