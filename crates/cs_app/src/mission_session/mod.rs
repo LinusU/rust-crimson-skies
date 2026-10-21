@@ -122,6 +122,7 @@ pub(crate) mod smoke;
 mod spyglass;
 mod targeting_input;
 mod terminal;
+mod view_cycle;
 mod weapon_counts;
 mod weapon_present;
 mod weapons;
@@ -277,6 +278,7 @@ pub use targeting_input::{
     original_target_command, sync_mission_target_poses,
 };
 pub use terminal::{MissionExit, MissionTerminal, MissionTerminalSource};
+pub use view_cycle::{MissionViewMode, VIEW_CYCLE_COMMAND_ID};
 pub use weapon_counts::{
     OriginalGunRecord, OriginalWeaponCounts, SELECTED_GUN_RECORD, SELECTED_ROCKET_RECORD,
     WeaponCountsError, counts_from_document, measure_weapon_counts,

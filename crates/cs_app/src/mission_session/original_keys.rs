@@ -33,6 +33,7 @@ use cs_types::keymap::{ControlsMap, Modifiers, original_edge_action};
 use crate::input::platform::{PlatformInput, scancode_from_bevy};
 use crate::playtest::command::KEY_DEFLECTION;
 
+use super::view_cycle::{MissionViewMode, VIEW_CYCLE_COMMAND_ID};
 use super::weapons::MissionCockpitActions;
 
 /// The command id of the original's "View Help" row.
@@ -97,14 +98,20 @@ pub fn mint_original_chord_keys(world: &mut World) {
         .unwrap_or_default();
     let mut minted: Vec<Action> = Vec::new();
     let mut consumed: Vec<KeyCode> = Vec::new();
+    let mut view_presses = 0_usize;
     for code in now.difference(&before) {
         let Some(scancode) = scancode_from_bevy(*code) else {
             continue;
         };
+        let commands = controls.0.commands_for_key(scancode, held);
+        // `Cockpit views` (F8) has no modifier combination, so it is read
+        // here, ahead of the modifier filter, and left standing.
+        if !paused && commands.contains(&VIEW_CYCLE_COMMAND_ID) {
+            view_presses += 1;
+        }
         if !controls.0.has_modifier_variants(scancode) {
             continue;
         }
-        let commands = controls.0.commands_for_key(scancode, held);
         // The spyglass reads its own key (`Shift+S` with the exact-modifier
         // rule) from the raw input, so its edge is left standing.
         if !commands.contains(&SPYGLASS_COMMAND_ID) {
@@ -121,6 +128,12 @@ pub fn mint_original_chord_keys(world: &mut World) {
         );
     }
     world.insert_resource(ChordKeyMemory(now));
+    if view_presses > 0 {
+        let mut view = world.get_resource_or_insert_with(MissionViewMode::default);
+        for _ in 0..view_presses {
+            *view = view.next();
+        }
+    }
     if !minted.is_empty() {
         world
             .get_resource_or_insert_with(MissionCockpitActions::default)
