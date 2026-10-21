@@ -165,7 +165,8 @@ fn damage_decal_reason(node: &SceneNode, planes: &cs_content::scene::SceneGraph)
         });
     if under_bullets || node.name().starts_with("pcdp") {
         return Some(
-            "cockpit damage decal (bullet hole / damage1 quad): shown by an unmeasured              damage state, so the intact interior leaves it undrawn"
+            "cockpit damage decal (bullet hole / damage1 quad): shown by an unmeasured \
+             damage state, so the intact interior leaves it undrawn"
                 .to_owned(),
         );
     }
@@ -212,22 +213,20 @@ pub fn build_cockpit_interior(
     let subtree = planes.subtree(cockpit.id());
     let gauges: Vec<u32> = subtree
         .iter()
-        .find(|node| node.name() == COCKPIT_GAUGES_NODE_NAME)
-        .map(|gauges| planes.subtree(gauges.id()))
-        .unwrap_or_default()
-        .iter()
+        .filter(|node| node.name() == COCKPIT_GAUGES_NODE_NAME)
+        .flat_map(|gauges| planes.subtree(gauges.id()))
         .map(|node| node.index())
         .collect();
 
     let depth_of = |node: &SceneNode| {
         let mut depth = 0;
-        let mut cursor = node.parent().and_then(|id| planes.node(id));
-        while let Some(parent) = cursor {
-            if parent.index() == cockpit.index() {
+        let mut cursor = Some(node);
+        while let Some(current) = cursor {
+            if current.index() == cockpit.index() {
                 break;
             }
             depth += 1;
-            cursor = parent.parent().and_then(|id| planes.node(id));
+            cursor = current.parent().and_then(|id| planes.node(id));
         }
         depth
     };
@@ -298,6 +297,9 @@ pub fn build_cockpit_interior(
             continue;
         }
         let Some(uploaded) = meshes.get(&id) else {
+            report
+                .undrawn
+                .push(undrawn("the uploaded mesh is not registered".to_owned()));
             continue;
         };
         let handle: Handle<Mesh> = app
@@ -384,6 +386,7 @@ pub fn spawn_cockpit_interior(world: &mut World, body: Entity) {
 
 /// Installs [`drive_cockpit_interior`] before transform propagation.
 pub fn install_cockpit_interior(app: &mut App) {
+    app.init_resource::<MissionViewMode>();
     app.add_systems(
         PostUpdate,
         drive_cockpit_interior.before(bevy::transform::TransformSystems::Propagate),
