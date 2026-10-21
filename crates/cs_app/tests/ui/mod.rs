@@ -75,6 +75,7 @@ mod layout;
 mod lobby;
 mod m01_lc_fc_a;
 mod original;
+mod pause_map;
 mod scrapbook_dispatch;
 mod screens;
 mod stage_d;
