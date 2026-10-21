@@ -157,3 +157,88 @@ fn accept_parity_m01_player_view_b_retail_player_draws_the_measured_blur_disc() 
 
     teardown(&mut app);
 }
+
+/// **The blur texture's own ring**: the drawn `rotorblur.tif` is a 64x64
+/// translucent disc whose coverage falls from the centre outwards and whose
+/// red channel peaks in an annulus at about 0.6 of the radius. That annulus is
+/// the "ring detail" (`docs/findings/2026-10-21-parity2-dmg-fx-c-propeller-blur-profile.md`);
+/// it is texture content, not a record, and nothing here invents a ring count.
+#[test]
+#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
+fn accept_parity2_dmg_fx_c_retail_blur_texture_is_translucent_with_a_ring() {
+    let root = PathBuf::from(std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR must be set"));
+    let plan = plan_mission_launch(&root, label("M06"), "The Red Menace").expect("plan");
+    let stage = stage_for(&root, &plan).expect("stage");
+    let mut app = build_headless(&stage).expect("compose");
+    app.update();
+    let world = app.world_mut();
+    let disc = world
+        .query_filtered::<Entity, With<PropellerBlur>>()
+        .single(world)
+        .expect("disc");
+    let pieces: Vec<Entity> = world
+        .get::<Children>(disc)
+        .unwrap()
+        .iter()
+        .copied()
+        .collect();
+    assert!(!pieces.is_empty());
+    for piece in pieces {
+        let handle = world
+            .get::<MeshMaterial3d<StandardMaterial>>(piece)
+            .unwrap()
+            .0
+            .clone();
+        let tex = world
+            .resource::<Assets<StandardMaterial>>()
+            .get(&handle)
+            .unwrap()
+            .base_color_texture
+            .clone()
+            .expect("rotorblur texture");
+        let image = world
+            .resource::<Assets<bevy::prelude::Image>>()
+            .get(&tex)
+            .unwrap();
+        let (w, h) = (image.width() as usize, image.height() as usize);
+        assert_eq!((w, h), (64, 64));
+        let data = image.data.as_ref().unwrap();
+        let bins = 16usize;
+        let mut red = vec![0f32; bins];
+        let mut alpha = vec![0f32; bins];
+        let mut n = vec![0f32; bins];
+        for y in 0..h {
+            for x in 0..w {
+                let r = ((x as f32 + 0.5 - 32.0).powi(2) + (y as f32 + 0.5 - 32.0).powi(2)).sqrt()
+                    / 32.0;
+                let b = (r * bins as f32) as usize;
+                if b < bins {
+                    let i = (y * w + x) * 4;
+                    red[b] += f32::from(data[i]);
+                    alpha[b] += f32::from(data[i + 3]);
+                    n[b] += 1.0;
+                }
+            }
+        }
+        for b in 0..bins {
+            red[b] /= n[b];
+            alpha[b] /= n[b];
+        }
+        assert!(
+            alpha.iter().all(|a| *a < 128.0),
+            "translucent everywhere: {alpha:?}"
+        );
+        assert!(
+            alpha[0] > alpha[bins - 1] * 4.0,
+            "coverage falls outwards: {alpha:?}"
+        );
+        let peak = (0..bins)
+            .max_by(|a, b| red[*a].total_cmp(&red[*b]))
+            .unwrap();
+        assert!(
+            (8..=11).contains(&peak) && red[peak] > red[0] + 10.0,
+            "red annulus near 0.6 of the radius: peak bin {peak}, {red:?}"
+        );
+    }
+    teardown(&mut app);
+}
