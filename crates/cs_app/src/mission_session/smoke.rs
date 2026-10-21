@@ -29,6 +29,7 @@
 //! | `briefing_go_to_flight_check` | Go to Flight Check opened the Flight Check |
 //! | `flight_check_screen_drawn` | the framebuffer taken while the Flight Check holds the mission shows the screen (#1672) |
 //! | `flight_check_text_matches` | every text row of the Flight Check, the mission title and the objectives among them, is drawn as the `FlightCheckView` states it and adds pixels in its own region |
+//! | `flight_check_panes_drawn` | every plane pane of the Flight Check draws its strip frame and adds pixels in its own region (#1728) |
 //! | `flight_check_buttons_drawn` | every button of the Flight Check, Fly Mission among them, adds pixels in its own region |
 //! | `flight_check_fly_mission` | Fly Mission, delivered through the front-end machine, released the mission |
 //! | `world_terrain_drawn` | the frame around the spawn holds world pixels off the window's clear colour |
@@ -593,6 +594,8 @@ pub struct FlightCheckMetrics {
     pub drawn_permille: u32,
     /// Every text row of the scene with text, in scene order.
     pub texts: Vec<FlightCheckTextMetrics>,
+    /// Every plane pane of the scene, in scene order (named by its row id).
+    pub panes: Vec<FlightCheckButtonMetrics>,
     /// Every button of the scene, in scene order.
     pub buttons: Vec<FlightCheckButtonMetrics>,
     /// Fly Mission was delivered through the front-end machine and the machine
@@ -1507,6 +1510,7 @@ fn evaluate_flight_check(m: &SmokeMeasurements) -> Vec<Check> {
     let ids = [
         "flight_check_screen_drawn",
         "flight_check_text_matches",
+        "flight_check_panes_drawn",
         "flight_check_buttons_drawn",
         "flight_check_fly_mission",
     ];
@@ -1568,6 +1572,35 @@ fn evaluate_flight_check(m: &SmokeMeasurements) -> Vec<Check> {
             format!("text rows not drawn as the view states them: {bad_texts:?}")
         },
     });
+    let bad_panes: Vec<String> = fc
+        .panes
+        .iter()
+        .filter(|pane| !pane.drawn || pane.pixels < MIN_FLIGHT_CHECK_BUTTON_PIXELS)
+        .map(|pane| {
+            format!(
+                "{} (drawn {}, {} px)",
+                pane.hotspot, pane.drawn, pane.pixels
+            )
+        })
+        .collect();
+    checks.push(Check {
+        id: ids[2].to_owned(),
+        applies: true,
+        passed: fc.frames_delivered && !fc.panes.is_empty() && bad_panes.is_empty(),
+        detail: if !fc.frames_delivered {
+            "the Flight Check framebuffers never arrived".to_owned()
+        } else if fc.panes.is_empty() {
+            "the scene draws no plane pane".to_owned()
+        } else if bad_panes.is_empty() {
+            format!(
+                "all {} plane panes draw a frame of the icon strip, each adding at least \
+                 {MIN_FLIGHT_CHECK_BUTTON_PIXELS} pixels in its own region",
+                fc.panes.len()
+            )
+        } else {
+            format!("plane panes not drawn: {bad_panes:?}")
+        },
+    });
     let bad_buttons: Vec<String> = fc
         .buttons
         .iter()
@@ -1584,7 +1617,7 @@ fn evaluate_flight_check(m: &SmokeMeasurements) -> Vec<Check> {
         .iter()
         .any(|button| button.hotspot == FLIGHT_CHECK_REQUIRED_BUTTON);
     checks.push(Check {
-        id: ids[2].to_owned(),
+        id: ids[3].to_owned(),
         applies: true,
         passed: fc.frames_delivered && bad_buttons.is_empty() && !no_fly,
         detail: if !fc.frames_delivered {
@@ -1602,7 +1635,7 @@ fn evaluate_flight_check(m: &SmokeMeasurements) -> Vec<Check> {
         },
     });
     checks.push(Check {
-        id: ids[3].to_owned(),
+        id: ids[4].to_owned(),
         applies: true,
         passed: fc.launched,
         detail: match (&fc.refusal, fc.launched) {
@@ -3460,6 +3493,20 @@ fn flight_check_metrics(
                 }
             })
             .collect(),
+        panes: scene
+            .panes
+            .iter()
+            .map(|pane| {
+                let drawn = find(&pane.id);
+                let region = drawn.map_or([0; 4], |drawn| drawn.region);
+                FlightCheckButtonMetrics {
+                    hotspot: pane.id.clone(),
+                    drawn: drawn.is_some_and(|drawn| drawn.visible),
+                    region,
+                    pixels: pixels(region),
+                }
+            })
+            .collect(),
         buttons: scene
             .buttons
             .iter()
@@ -5142,6 +5189,7 @@ V1=GX,400
 V5=V5,0xFF112233
 
 FC_BACKGROUND\t=P,Back.jpg,0,0,1,1,0,0,0
+FC_P_PILOTPLANE\t=P,Icons.Png,20,60,0,12,0,1,1
 FC_B_FLYMISSION\t=B,Fly.png,50,<GX>,0,0,,,,
 FC_B_RETURNBRIEF=B,Ret.png,30,<GX>,0,0,,0x1000,1
 FC_T_TITLE\t=T,IDS_FC_TITLE,10,10,0,190,24,<V5>,1
@@ -5157,21 +5205,35 @@ FC_T_OBJECTIVES =T,,10,60,0,200,360000,0xFF2D3843,0
         let extents = |art: &str| match art {
             "Back.jpg" => Some((640, 480)),
             "Fly.png" | "Ret.png" => Some((80, 80)),
+            "Icons.Png" => Some((80, 960)),
             _ => None,
         };
         let strings = |id: &str| (id == "IDS_FC_TITLE").then(|| "Flight Check".to_owned());
+        // The measured defaults need their string rows: the nickname ids, the
+        // plane long-name block, the item-number template and the label rows.
+        let fixture_strings = |id: u32| -> Option<String> {
+            Some(match id {
+                511 => "]Ace".to_owned(),
+                512 => "]Wing".to_owned(),
+                519 => "%1!d!)".to_owned(),
+                3000..=3010 => format!("Fixture Plane {id}"),
+                3320..=3325 | 3365..=3369 | 3395..=3406 => format!("Label {id}"),
+                _ => return None,
+            })
+        };
         let airframe = Resolved::Known(Known::new(
             ContentId::from_source(ContentKind::Airframe, AIRFRAME_TABLE[0].scene_root)
                 .expect("valid id"),
             Provenance::designed(ClaimId::new("m01lcfcd.test").expect("valid claim")),
         ));
-        let view = FlightCheckView::build(
+        let mut view = FlightCheckView::build(
             Entry::Known("Alpha - One".to_owned()),
             &["MSG_ONE".to_owned()],
             |_| Ok("first objective".to_owned()),
             &airframe,
             &[],
         );
+        view.read_default_loadout(&fixture_strings);
         let layout = OriginalLayout::parse(FC_LAYOUT).expect("the layout parses");
         super::super::flight_check::FlightCheckScene::build(&layout, &view, &extents, &strings)
             .expect("the scene builds")
@@ -5222,6 +5284,9 @@ FC_T_OBJECTIVES =T,,10,60,0,200,360000,0xFF2D3843,0
         let mut rows: Vec<(String, Option<String>)> = Vec::new();
         for text in scene.texts.iter().filter(|text| !text.text.is_empty()) {
             rows.push((text.id.clone(), Some(text.text.clone())));
+        }
+        for pane in &scene.panes {
+            rows.push((pane.id.clone(), None));
         }
         for button in &scene.buttons {
             rows.push((button.hotspot.clone(), None));
@@ -5332,12 +5397,13 @@ FC_T_OBJECTIVES =T,,10,60,0,200,360000,0xFF2D3843,0
             "{metrics:?}"
         );
         assert!(metrics.buttons.iter().all(|button| button.pixels == 100));
+        assert!(metrics.panes.iter().all(|pane| pane.pixels == 100));
         let checks = evaluate_flight_check(&app.world().resource::<SmokeData>().measurements);
         assert!(
             checks.iter().all(|check| check.passed),
             "every Flight Check check passes: {checks:?}"
         );
-        assert_eq!(checks.len(), 4);
+        assert_eq!(checks.len(), 5);
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -5361,7 +5427,11 @@ FC_T_OBJECTIVES =T,,10,60,0,200,360000,0xFF2D3843,0
             .collect();
         assert_eq!(
             failed,
-            ["flight_check_text_matches", "flight_check_buttons_drawn"]
+            [
+                "flight_check_text_matches",
+                "flight_check_panes_drawn",
+                "flight_check_buttons_drawn"
+            ]
         );
         let _ = std::fs::remove_dir_all(&dir);
     }

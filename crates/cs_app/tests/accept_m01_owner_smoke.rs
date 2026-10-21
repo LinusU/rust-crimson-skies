@@ -147,6 +147,12 @@ fn healthy() -> SmokeMeasurements {
                     pixels: 400,
                 })
                 .collect(),
+            panes: vec![cs_app::mission_session::FlightCheckButtonMetrics {
+                hotspot: "FC_P_PILOTPLANE".to_owned(),
+                drawn: true,
+                region: [140, 180, 80, 80],
+                pixels: 900,
+            }],
             buttons: vec![cs_app::mission_session::FlightCheckButtonMetrics {
                 hotspot: "FC_B_FLYMISSION".to_owned(),
                 drawn: true,

@@ -36,6 +36,10 @@ fn healthy() -> FlightCheckMetrics {
         frame_size: (2560, 1440),
         drawn_permille: 760,
         texts: vec![text("FC_T_MISSION", 300), text("FC_T_OBJECTIVES", 900)],
+        panes: vec![
+            button("FC_P_PILOTPLANE", 700),
+            button("FC_P_WINGPLANE", 650),
+        ],
         buttons: vec![
             button("FC_B_FLYMISSION", 700),
             button("FC_B_RETURNBRIEF", 650),
@@ -65,7 +69,7 @@ fn failed(checks: &[Check]) -> Vec<&str> {
 }
 
 #[test]
-fn accept_m01_lc_fc_d_a_drawn_flight_check_passes_all_four_checks() {
+fn accept_m01_lc_fc_d_a_drawn_flight_check_passes_all_five_checks() {
     let checks = flight_check_verdicts(Some(healthy()));
     let ids: Vec<&str> = checks.iter().map(|check| check.id.as_str()).collect();
     assert_eq!(
@@ -73,6 +77,7 @@ fn accept_m01_lc_fc_d_a_drawn_flight_check_passes_all_four_checks() {
         [
             "flight_check_screen_drawn",
             "flight_check_text_matches",
+            "flight_check_panes_drawn",
             "flight_check_buttons_drawn",
             "flight_check_fly_mission"
         ]
@@ -82,8 +87,8 @@ fn accept_m01_lc_fc_d_a_drawn_flight_check_passes_all_four_checks() {
 
 #[test]
 fn accept_m01_lc_fc_d_each_way_the_screen_can_be_wrong_fails_its_own_check() {
-    // A run that never reached the screen is four failures, never a skip.
-    assert_eq!(failed(&flight_check_verdicts(None)).len(), 4);
+    // A run that never reached the screen is five failures, never a skip.
+    assert_eq!(failed(&flight_check_verdicts(None)).len(), 5);
 
     let mut black = healthy();
     black.drawn_permille = MIN_FLIGHT_CHECK_DRAWN_PERMILLE - 1;
@@ -116,6 +121,22 @@ fn accept_m01_lc_fc_d_each_way_the_screen_can_be_wrong_fails_its_own_check() {
         ["flight_check_text_matches"]
     );
 
+    // A plane pane adds no pixels.
+    let mut blank_pane = healthy();
+    blank_pane.panes[0].pixels = MIN_FLIGHT_CHECK_BUTTON_PIXELS - 1;
+    assert_eq!(
+        failed(&flight_check_verdicts(Some(blank_pane))),
+        ["flight_check_panes_drawn"]
+    );
+
+    // The scene draws no plane pane at all.
+    let mut no_panes = healthy();
+    no_panes.panes.clear();
+    assert_eq!(
+        failed(&flight_check_verdicts(Some(no_panes))),
+        ["flight_check_panes_drawn"]
+    );
+
     let mut flat = healthy();
     flat.buttons[1].pixels = MIN_FLIGHT_CHECK_BUTTON_PIXELS - 1;
     assert_eq!(
@@ -128,7 +149,7 @@ fn accept_m01_lc_fc_d_each_way_the_screen_can_be_wrong_fails_its_own_check() {
     refused.refusal = Some("no loadout".to_owned());
     let checks = flight_check_verdicts(Some(refused));
     assert_eq!(failed(&checks), ["flight_check_fly_mission"]);
-    assert!(checks[3].detail.contains("no loadout"));
+    assert!(checks[4].detail.contains("no loadout"));
 
     let mut lost = healthy();
     lost.frames_delivered = false;
@@ -137,6 +158,7 @@ fn accept_m01_lc_fc_d_each_way_the_screen_can_be_wrong_fails_its_own_check() {
         [
             "flight_check_screen_drawn",
             "flight_check_text_matches",
+            "flight_check_panes_drawn",
             "flight_check_buttons_drawn"
         ]
     );
