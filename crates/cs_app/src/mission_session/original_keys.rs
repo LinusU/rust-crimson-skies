@@ -33,7 +33,10 @@ use cs_types::keymap::{ControlsMap, Modifiers, original_edge_action};
 use crate::input::platform::{PlatformInput, scancode_from_bevy};
 use crate::playtest::command::KEY_DEFLECTION;
 
-use super::view_cycle::{MissionViewMode, VIEW_CYCLE_COMMAND_ID};
+use super::view_cycle::{
+    CycleMemory, MissionViewMode, MissionZoom, VIEW_CYCLE_COMMAND_ID, ZOOM_IN_COMMAND_ID,
+    ZOOM_OUT_COMMAND_ID, select_view,
+};
 use super::weapons::MissionCockpitActions;
 
 /// The command id of the original's "View Help" row.
@@ -98,7 +101,8 @@ pub fn mint_original_chord_keys(world: &mut World) {
         .unwrap_or_default();
     let mut minted: Vec<Action> = Vec::new();
     let mut consumed: Vec<KeyCode> = Vec::new();
-    let mut view_presses = 0_usize;
+    // The view keys pressed this frame, in order: `Cockpit views` is `None`.
+    let mut view_presses: Vec<Option<MissionViewMode>> = Vec::new();
     for code in now.difference(&before) {
         let Some(scancode) = scancode_from_bevy(*code) else {
             continue;
@@ -106,8 +110,14 @@ pub fn mint_original_chord_keys(world: &mut World) {
         let commands = controls.0.commands_for_key(scancode, held);
         // `Cockpit views` (F8) has no modifier combination, so it is read
         // here, ahead of the modifier filter, and left standing.
-        if !paused && commands.contains(&VIEW_CYCLE_COMMAND_ID) {
-            view_presses += 1;
+        if !paused {
+            for command in &commands {
+                if *command == VIEW_CYCLE_COMMAND_ID {
+                    view_presses.push(None);
+                } else if let Some(target) = MissionViewMode::for_command(*command) {
+                    view_presses.push(Some(target));
+                }
+            }
         }
         if !controls.0.has_modifier_variants(scancode) {
             continue;
@@ -127,12 +137,37 @@ pub fn mint_original_chord_keys(world: &mut World) {
                 .filter(|action| matches!(action, Action::Flight(_))),
         );
     }
-    world.insert_resource(ChordKeyMemory(now));
-    if view_presses > 0 {
-        let mut view = world.get_resource_or_insert_with(MissionViewMode::default);
-        for _ in 0..view_presses {
-            *view = view.next();
+    // The zoom keys are polled while held, not edge-triggered.
+    let (mut zoom_in, mut zoom_out) = (false, false);
+    if !paused {
+        for code in &now {
+            let Some(scancode) = scancode_from_bevy(*code) else {
+                continue;
+            };
+            let commands = controls.0.commands_for_key(scancode, held);
+            zoom_in |= commands.contains(&ZOOM_IN_COMMAND_ID);
+            zoom_out |= commands.contains(&ZOOM_OUT_COMMAND_ID);
         }
+    }
+    world.insert_resource(ChordKeyMemory(now));
+    {
+        let mut zoom = world.get_resource_or_insert_with(MissionZoom::default);
+        zoom.in_held = zoom_in;
+        zoom.out_held = zoom_out;
+    }
+    if !view_presses.is_empty() {
+        let mut view = world
+            .remove_resource::<MissionViewMode>()
+            .unwrap_or_default();
+        let mut memory = world.remove_resource::<CycleMemory>().unwrap_or_default();
+        let mut zoom = world.remove_resource::<MissionZoom>().unwrap_or_default();
+        for press in view_presses {
+            let target = press.unwrap_or_else(|| view.next_from(memory.0));
+            select_view(&mut view, &mut memory, &mut zoom, target);
+        }
+        world.insert_resource(view);
+        world.insert_resource(memory);
+        world.insert_resource(zoom);
     }
     if !minted.is_empty() {
         world

@@ -50,7 +50,6 @@ fn accept_parity3_cockpit_view_01_f8_cycles_the_view_through_the_minting_path() 
 #[test]
 fn accept_parity3_cockpit_view_01_other_keys_and_held_keys_do_not_cycle() {
     let mut world = world();
-    tap(&mut world, KeyCode::F7);
     tap(&mut world, KeyCode::KeyA);
     assert_eq!(view(&world), MissionViewMode::Chase);
     // A held key is one edge, not one press per frame.

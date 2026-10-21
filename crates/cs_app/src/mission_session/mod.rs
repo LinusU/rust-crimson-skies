@@ -103,6 +103,7 @@ mod content;
 mod debrief;
 mod evidence;
 mod examine;
+mod external_view;
 mod flight_check;
 mod gun_sound;
 mod host;
@@ -177,6 +178,10 @@ pub use evidence::{
     MissionCapturePlugin, PLAYBACK_FILE, TRACE_FILE, finish as finish_capture, write_playback,
 };
 pub use examine::{TargetFlagChange, TargetFlagLedger};
+pub use external_view::{
+    BACK_DISTANCE_M, DOWN_ASTERN_M, DOWN_HEIGHT_M, EXTERNAL_DISTANCE_M, HeldPoint,
+    drive_external_camera, external_eye, install_external_view, step_zoom,
+};
 pub use flight_check::{
     BriefingStage, ButtonRole, CHANGE_AMMO_UNAVAILABLE, CHANGE_PLANE_UNAVAILABLE,
     FlightCheckArtwork, FlightCheckPhase, FlightCheckPhaseError, FlightCheckScene,
@@ -295,7 +300,11 @@ pub use targeting_input::{
     original_target_command, sync_mission_target_poses,
 };
 pub use terminal::{MissionExit, MissionTerminal, MissionTerminalSource};
-pub use view_cycle::{MissionViewMode, VIEW_CYCLE_COMMAND_ID};
+pub use view_cycle::{
+    CAMERA_BACK_COMMAND_ID, CAMERA_DOWN_COMMAND_ID, CAMERA_LEFT_COMMAND_ID,
+    CAMERA_RIGHT_COMMAND_ID, CHASE_VIEW_COMMAND_ID, CycleMemory, MissionViewMode, MissionZoom,
+    VIEW_CYCLE_COMMAND_ID, ZOOM_IN_COMMAND_ID, ZOOM_OUT_COMMAND_ID, select_view,
+};
 pub use weapon_counts::{
     OriginalGunRecord, OriginalWeaponCounts, SELECTED_GUN_RECORD, SELECTED_ROCKET_RECORD,
     WeaponCountsError, counts_from_document, measure_weapon_counts,

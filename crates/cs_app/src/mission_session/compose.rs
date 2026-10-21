@@ -1017,6 +1017,8 @@ fn add_composition(
     app.insert_resource(crate::playtest::PlaytestCamera::capture_fitted());
     // The cockpit views (F8, #1810) take the camera from the chase rig.
     super::cockpit_camera::install_cockpit_camera(app);
+    // The external views (F9-F12, F7) and the zoom (#1824).
+    super::external_view::install_external_view(app);
     super::cockpit_interior::install_cockpit_interior(app);
     // The panel dials (#1812) follow the same pilot-eye visibility rule.
     super::cockpit_dials::install_cockpit_dials(app);
