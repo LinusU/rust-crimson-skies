@@ -190,6 +190,19 @@ pub const RESTING_STILL_TICKS: u32 = 4;
 /// simulated time at 120 Hz.
 pub const RESTING_RELEASE_TICKS: u32 = 24;
 
+/// How many ticks after its last touching contact a body's unchanged velocity
+/// still counts as that contact's residual.
+///
+/// Re-measured on avian3d 0.8, where the contact's push-out sends a body struck
+/// at 100 m/s away from the wall at ~4 m/s with a settled velocity within six
+/// ticks of the impact: the body is clear of the contact band (3 cm) before
+/// [`RESTING_STILL_TICKS`] touching ticks have passed, so a rule that only
+/// looked at touching ticks never retired it and the residual drifted forever.
+/// A body whose velocity has been constant for [`RESTING_STILL_TICKS`] ticks
+/// within this window of its last touch is retired the same way (velocity only,
+/// without a [`RestingContact`] mark, because nothing is touching it).
+pub const RESTING_CONTACT_MEMORY_TICKS: u32 = 12;
+
 /// This dynamic body is at rest: the resting rule retired the velocity its
 /// contact left behind, and nothing has moved it since.
 ///
@@ -267,6 +280,9 @@ struct BodyState {
     reference: Vec3,
     /// Whether the body currently carries [`RestingContact`].
     marked: bool,
+    /// Ticks since the body last touched immovable geometry, saturating at
+    /// [`RESTING_CONTACT_MEMORY_TICKS`]. See that constant.
+    since_touch: u32,
 }
 
 /// Per-body bookkeeping, so the rule can compare a body against its own
@@ -449,7 +465,6 @@ fn retire_contact_residual(
         // or when something starts driving it.
         if let Some(entry) = state.bodies.get_mut(&entity).filter(|e| e.marked) {
             if !touching_now {
-                eprintln!("DEBUG release-on-contact-loss");
                 // Nothing is touching it, so nothing is holding it there either.
                 // The mark goes and the rule never touches the body again until
                 // it is in contact and settles afresh.
@@ -457,6 +472,7 @@ fn retire_contact_residual(
                 entry.still_ticks = 0;
                 entry.moving_ticks = 0;
                 entry.reference = linear.0;
+                entry.since_touch = RESTING_CONTACT_MEMORY_TICKS;
                 reports.released += 1;
                 reports.resting = reports.resting.saturating_sub(1);
                 commands.entity(entity).remove::<RestingContact>();
@@ -473,14 +489,19 @@ fn retire_contact_residual(
             // bias and does not change tick to tick, while anything driving the
             // body changes it every tick. See [`RESTING_RELEASE_TICKS`].
             let change = (linear.0 - entry.reference).length();
-            if change > RESTING_STILL_EPSILON_M_S {
+            // On avian3d 0.8 the contact leaves no bias on a body that is held
+            // at zero (measured: a resting body's post-step speed is ~1e-11 m/s),
+            // while a constant force produces the *same* `a·dt` every tick, so
+            // its velocity never "changes" and the change test alone would
+            // never release it. A post-step speed above the still epsilon is
+            // therefore a driver as well.
+            if change > RESTING_STILL_EPSILON_M_S || linear.0.length() > RESTING_STILL_EPSILON_M_S {
                 entry.moving_ticks += 1;
             } else {
                 entry.moving_ticks = 0;
             }
             entry.reference = linear.0;
             if entry.moving_ticks >= RESTING_RELEASE_TICKS {
-                eprintln!("DEBUG release-on-drive moving_ticks={}", entry.moving_ticks);
                 entry.marked = false;
                 entry.still_ticks = 0;
                 entry.moving_ticks = 0;
@@ -505,10 +526,38 @@ fn retire_contact_residual(
             continue;
         }
 
-        // A body nobody is touching cannot be resting against anything, and a
-        // sleeping one the rule has never marked has no residual of its own to
-        // retire — the engine got there first.
-        if !touching_now || asleep {
+        // A body that touched geometry recently may still be carrying that
+        // contact's residual out of the contact band; a body that did not has no
+        // residual of its own to retire. A sleeping one the rule has never marked
+        // has none either — the engine got there first.
+        if asleep {
+            continue;
+        }
+        if !touching_now {
+            let Some(entry) = state.bodies.get_mut(&entity) else {
+                continue;
+            };
+            if entry.since_touch >= RESTING_CONTACT_MEMORY_TICKS {
+                entry.still_ticks = 0;
+                continue;
+            }
+            entry.since_touch += 1;
+            if (linear.0 - entry.reference).length() <= RESTING_STILL_EPSILON_M_S {
+                entry.still_ticks += 1;
+            } else {
+                entry.still_ticks = 0;
+                entry.reference = linear.0;
+            }
+            if entry.still_ticks >= RESTING_STILL_TICKS {
+                if linear.0 != Vec3::ZERO || angular.0 != Vec3::ZERO {
+                    reports.retired += 1;
+                }
+                linear.0 = Vec3::ZERO;
+                angular.0 = Vec3::ZERO;
+                entry.still_ticks = 0;
+                entry.since_touch = RESTING_CONTACT_MEMORY_TICKS;
+                entry.reference = Vec3::ZERO;
+            }
             continue;
         }
 
@@ -517,7 +566,9 @@ fn retire_contact_residual(
             moving_ticks: 0,
             reference: linear.0,
             marked: false,
+            since_touch: 0,
         });
+        entry.since_touch = 0;
         if (linear.0 - entry.reference).length() <= RESTING_STILL_EPSILON_M_S {
             entry.still_ticks += 1;
         } else {
