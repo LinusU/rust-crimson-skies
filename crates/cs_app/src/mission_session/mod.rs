@@ -252,9 +252,10 @@ pub use scenario::{
 pub use smoke::{
     ActorMetrics, ApproachMetrics, AudioMetrics, BriefingButtonMetrics, BriefingMetrics,
     BriefingReplayMetrics, BriefingShotMetrics, BriefingVoiceMetrics, CINEMATIC_SHOT_SECONDS,
-    CameraMetrics, Check, CinematicMetrics, DEFAULT_MISSION_CAPTURE_DIR, ENGAGEMENT_SAMPLE_EVERY_S, EngagementMetrics, ExamineMetrics,
-    FirstControlMetrics, FlightCheckButtonMetrics, FlightCheckMetrics, FlightCheckTextMetrics,
-    GunMetrics, HudMetrics, MAX_SKY_BELOW_HORIZON_PIXELS, MAX_WINGMAN_DISTANCE_M, MIN_ACTOR_PIXELS,
+    CameraMetrics, Check, CinematicMetrics, DEFAULT_MISSION_CAPTURE_DIR, ENGAGEMENT_SAMPLE_EVERY_S,
+    EngagementMetrics, ExamineMetrics, FirstControlMetrics, FlightCheckButtonMetrics,
+    FlightCheckMetrics, FlightCheckTextMetrics, GunMetrics, HudMetrics,
+    MAX_SKY_BELOW_HORIZON_PIXELS, MAX_WINGMAN_DISTANCE_M, MIN_ACTOR_PIXELS,
     MIN_BRIEFING_CHANGE_PIXELS, MIN_BRIEFING_DRAWN_PERMILLE, MIN_BUTTON_WARM_PERMILLE,
     MIN_FLIGHT_CHECK_BUTTON_PIXELS, MIN_FLIGHT_CHECK_DRAWN_PERMILLE, MIN_FLIGHT_CHECK_TEXT_PIXELS,
     MIN_GUN_ROUNDS, MIN_MISSION_SMOKE_SECONDS, MIN_OBJECTIVE_TEXT_PIXELS,
