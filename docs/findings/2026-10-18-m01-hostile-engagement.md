@@ -31,12 +31,6 @@ The task is blocked on the owner for what the original's idle player actually me
    is 0, no Kestrel ever carries a `MissionAircraftAi`, the player's hull is
    untouched. The windowed `--smoke-engagement --smoke-seconds 120` run says the same
    (below).
-4. **The path itself works when hostiles are awake.** On the archive whose hostile
-   records start awake (`ZBD/C1C/M01`, work order M06),
-   `accept_m01_outcome_a_awake_hostiles_from_ai_data_damage_an_idle_player` shows the
-   designed pursuit-and-fire law closing on an idle player and its rounds lowering
-   the hull (first hit at 51 s of simulated time in the local run; the time is the
-   designed law's, not a measurement, and was **not** tuned toward the capture's 1:37).
 
 ## What was built
 

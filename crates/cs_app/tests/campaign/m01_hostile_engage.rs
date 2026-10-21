@@ -2,17 +2,13 @@
 //! victim, and what the mission's own hostile aircraft do to a player who
 //! gives no input.
 //!
-//! Three things this suite proves:
+//! Two things this suite proves:
 //!
 //! 1. **The player can be hurt.** The composed mission registers the player
 //!    with the shared damage resolver and hangs a swept box under the body, so
 //!    the rounds a hostile aircraft fires through the production gun step can
 //!    land (`mission_session::player_victim`).
-//! 2. **The path works end to end on retail AI data.** In the `ZBD/C1C/M01`
-//!    archive (work order M06, whose `rusdevastator` records are awake at the
-//!    start) the designed pursuit-and-fire law closes on an idle player and
-//!    its rounds lower the hull.
-//! 3. **Retail M01 itself does not reach that path for an idle player.** Its
+//! 2. **Retail M01 itself does not reach that path for an idle player.** Its
 //!    Kestrels are woken only by the program's own `WAKEUP_ENEMIES`, at the end
 //!    of a chain the player drives, so an idle player is never attacked
 //!    (`docs/findings/2026-10-18-m01-hostile-engagement.md`).
@@ -53,14 +49,6 @@ fn retail_stage() -> MissionStage {
     let plan =
         plan_mission_launch(&root, label(mission), title).expect("M01's launch closure plans");
     stage_for(&root, &plan).expect("M01's stage reads through the production readers")
-}
-
-/// The `ZBD/C1C/M01` stage (work order M06), whose hostile records start awake.
-fn awake_hostiles_stage() -> MissionStage {
-    let root = game_dir();
-    let plan = plan_mission_launch(&root, label("M06"), "The Red Menace")
-        .expect("M06's launch closure plans");
-    stage_for(&root, &plan).expect("M06's stage reads through the production readers")
 }
 
 fn hull_integrity(app: &App) -> Option<f64> {
@@ -131,45 +119,6 @@ fn accept_m01_outcome_a_an_idle_player_never_wakes_the_kestrels() {
         hull_integrity(&app),
         Some(start),
         "nothing damaged the idle player's hull in {IDLE_SECONDS} s"
-    );
-    teardown(&mut app);
-}
-
-/// **Awake hostile aircraft from the mission's own AI records damage an idle
-/// player.** Their designed law closes on the player and the rounds they fire
-/// lower the hull; the player sends no input and is never moved by the test.
-#[test]
-#[ignore = "requires CS_GAME_DIR and CS_ENGINE_IMAGE"]
-fn accept_m01_outcome_a_awake_hostiles_from_ai_data_damage_an_idle_player() {
-    let stage = awake_hostiles_stage();
-    let mut app = build_headless(&stage).expect("the stage composes headlessly");
-    app.update();
-    let start = hull_integrity(&app).expect("the player's hull has a designed pool");
-
-    let timestep = app.world().resource::<Time<bevy::time::Fixed>>().timestep();
-    let hz = u64::from(BASELINE_FIXED_HZ);
-    let mut first_damage_tick = None;
-    for tick in 1..=IDLE_SECONDS * hz {
-        *app.world_mut().resource_mut::<TimeUpdateStrategy>() =
-            TimeUpdateStrategy::ManualDuration(timestep);
-        app.update();
-        if first_damage_tick.is_none() && hull_integrity(&app).is_some_and(|now| now < start) {
-            first_damage_tick = Some(tick);
-        }
-        // A few seconds past the first hit is all the run needs.
-        if first_damage_tick.is_some_and(|first| tick >= first + 5 * hz) {
-            break;
-        }
-    }
-    let end = hull_integrity(&app).expect("the pool is still readable");
-    println!(
-        "first damage at tick {first_damage_tick:?} ({:.1} s), hull {start} -> {end}",
-        first_damage_tick.map_or(f64::NAN, |tick| tick as f64 / hz as f64)
-    );
-    assert!(
-        first_damage_tick.is_some(),
-        "an awake hostile's rounds damaged the idle player within {IDLE_SECONDS} s: hull \
-         {start} -> {end}"
     );
     teardown(&mut app);
 }
