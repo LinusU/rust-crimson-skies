@@ -248,7 +248,7 @@ fn accept_fe_menu_1_the_four_strip_states_are_driven_by_input() {
 
     // The state frame's texel offset is frame index x one frame's height.
     assert_eq!(view.buttons[0].texel_offset.1, 2 * 10);
-    assert_eq!(view.buttons[1].texel_offset.1, 1 * 10);
+    assert_eq!(view.buttons[1].texel_offset.1, 10);
 
     // Pointer hover → Rollover; press → Depressed; release inside → effect.
     shell.pointer_move(140, 105);
