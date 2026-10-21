@@ -233,6 +233,10 @@ const GUNS_HOLD_FRAMES: u32 = 60;
 const GUNS_SHOT_OFFSET: u32 = 50;
 /// Frames the rocket wait gives the ordnance session to launch.
 const ROCKET_WAIT_FRAMES: u32 = 90;
+/// Frames each cockpit-phase stop (one `F8` press) lasts.
+const COCKPIT_STOP_FRAMES: u32 = 16;
+/// Frames into a cockpit stop at which the view is read and photographed.
+const COCKPIT_SHOT_OFFSET: u32 = 10;
 /// Frames into the help phase at which the open keymap overlay is photographed.
 const HELP_SHOT_OFFSET: u32 = 10;
 /// Frames into the help phase at which `F1` is pressed again to close it.
@@ -908,6 +912,53 @@ pub struct ExamineMetrics {
     pub after_flagged: bool,
 }
 
+/// One reading of the view at a cockpit-phase frame (PARITY3-COCKPIT-VIEW.05,
+/// #1813): which original camera mode the session was in and what the frame's
+/// scene held.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CockpitViewSample {
+    /// The original camera-mode index of [`super::MissionViewMode`].
+    pub original_mode: u32,
+    /// Distance from the main camera to the cockpit eye's pose for the
+    /// player body, metres. Zero when the camera stands exactly at the eye.
+    pub camera_from_eye_m: f32,
+    /// The player body is hidden (the pilot sits inside it).
+    pub body_hidden: bool,
+    /// Panel-dial meshes drawn (inherited visibility) at the frame.
+    pub dials_drawn: usize,
+    /// Panel-dial meshes the drive shows at rest (parts it hides itself, such
+    /// as warning flags, are not counted).
+    pub dials_total: usize,
+    /// Cockpit-interior meshes drawn at the frame.
+    pub interior_drawn: usize,
+    /// Cockpit-interior meshes the airframe binds and the view shows.
+    pub interior_total: usize,
+}
+
+/// The cockpit-view phase (PARITY3-COCKPIT-VIEW.05, #1813): `F8` pressed
+/// through the production key path three times, 0 → 7 → 6 → 0, with a frame
+/// and a reading at each stop.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct CockpitViewMetrics {
+    /// The phase ran its key presses.
+    pub ran: bool,
+    /// After the first press (original mode 7).
+    pub cockpit: Option<CockpitViewSample>,
+    /// After the second press (original mode 6).
+    pub second_eye: Option<CockpitViewSample>,
+    /// After the third press: back in the chase view.
+    pub chase_after: Option<CockpitViewSample>,
+}
+
+/// How far the camera may stand from the cockpit eye's pose in a pilot-eye
+/// view, metres. **Designed:** the camera is written at the pose itself; the
+/// slack is floating-point only.
+pub const MAX_COCKPIT_EYE_ERROR_M: f32 = 0.05;
+
+/// How far the chase camera must stand from the cockpit eye, metres.
+/// **Designed:** any chase rig stands clear of the pilot's head.
+pub const MIN_CHASE_FROM_EYE_M: f32 = 1.0;
+
 /// Everything the run measured, as [`evaluate`] consumes it.
 #[derive(Clone, Debug, Default)]
 pub struct SmokeMeasurements {
@@ -956,6 +1007,8 @@ pub struct SmokeMeasurements {
     pub targeting: TargetingMetrics,
     /// The examine hand-off phase (M01-EXAMINE-OBJECTIVE, #1754).
     pub examine: ExamineMetrics,
+    /// The cockpit-view phase (PARITY3-COCKPIT-VIEW.05, #1813).
+    pub cockpit: CockpitViewMetrics,
     /// The idle player's hull ([`MissionSmokeMode::Engagement`] only).
     pub engagement: Option<EngagementMetrics>,
 }
@@ -1480,6 +1533,9 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
         });
     }
 
+    // --- the cockpit views (PARITY3-COCKPIT-VIEW.05, #1813) -----------------
+    evaluate_cockpit(&m.cockpit, &mut checks);
+
     // --- the picture arrived ----------------------------------------------
     checks.push(Check {
         id: "smoke_shots_delivered".to_owned(),
@@ -1500,6 +1556,95 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
 
 /// The Flight Check checks: the screen the run opens on, judged before the
 /// mission's own checks.
+/// The cockpit-view checks: the `F8` cycle's modes, the eye placement and the
+/// panel and interior drawn at the pilot eye and gone in the chase view.
+fn evaluate_cockpit(cockpit: &CockpitViewMetrics, checks: &mut Vec<Check>) {
+    let stops = [
+        ("cockpit", cockpit.cockpit.as_ref(), 7),
+        ("second eye", cockpit.second_eye.as_ref(), 6),
+        ("chase", cockpit.chase_after.as_ref(), 0),
+    ];
+    let modes: Vec<Option<u32>> = stops
+        .iter()
+        .map(|(_, sample, _)| sample.map(|s| s.original_mode))
+        .collect();
+    checks.push(Check {
+        id: "cockpit_view_cycles".to_owned(),
+        applies: true,
+        passed: cockpit.ran
+            && stops
+                .iter()
+                .all(|(_, sample, mode)| sample.is_some_and(|s| s.original_mode == *mode)),
+        detail: format!(
+            "modes after three `F8` presses: {modes:?} (the original cycles 0 -> 7 -> 6 -> 0)"
+        ),
+    });
+    let eye_ok = |sample: Option<&CockpitViewSample>, pilot: bool| {
+        sample.is_some_and(|s| {
+            if pilot {
+                s.camera_from_eye_m <= MAX_COCKPIT_EYE_ERROR_M && s.body_hidden
+            } else {
+                s.camera_from_eye_m >= MIN_CHASE_FROM_EYE_M && !s.body_hidden
+            }
+        })
+    };
+    checks.push(Check {
+        id: "cockpit_eye_placement".to_owned(),
+        applies: true,
+        passed: cockpit.ran
+            && eye_ok(stops[0].1, true)
+            && eye_ok(stops[1].1, true)
+            && eye_ok(stops[2].1, false),
+        detail: format!(
+            "camera from the eye (m) at cockpit / second eye / chase: {:?} / {:?} / {:?};              body hidden: {:?} / {:?} / {:?}",
+            stops[0].1.map(|s| s.camera_from_eye_m),
+            stops[1].1.map(|s| s.camera_from_eye_m),
+            stops[2].1.map(|s| s.camera_from_eye_m),
+            stops[0].1.map(|s| s.body_hidden),
+            stops[1].1.map(|s| s.body_hidden),
+            stops[2].1.map(|s| s.body_hidden),
+        ),
+    });
+    let drawn = |sample: Option<&CockpitViewSample>, pilot: bool, dials: bool| {
+        sample.is_some_and(|s| {
+            let (drawn, total) = if dials {
+                (s.dials_drawn, s.dials_total)
+            } else {
+                (s.interior_drawn, s.interior_total)
+            };
+            if pilot {
+                total > 0 && drawn == total
+            } else {
+                drawn == 0
+            }
+        })
+    };
+    for (id, dials) in [
+        ("cockpit_dials_drawn", true),
+        ("cockpit_interior_drawn", false),
+    ] {
+        checks.push(Check {
+            id: id.to_owned(),
+            applies: true,
+            passed: cockpit.ran
+                && drawn(stops[0].1, true, dials)
+                && drawn(stops[1].1, true, dials)
+                && drawn(stops[2].1, false, dials),
+            detail: format!(
+                "meshes drawn / bound at cockpit, second eye, chase: {:?}",
+                stops
+                    .iter()
+                    .map(|(_, sample, _)| sample.map(|s| if dials {
+                        (s.dials_drawn, s.dials_total)
+                    } else {
+                        (s.interior_drawn, s.interior_total)
+                    }))
+                    .collect::<Vec<_>>()
+            ),
+        });
+    }
+}
+
 fn evaluate_flight_check(m: &SmokeMeasurements) -> Vec<Check> {
     let missing = |id: &str| Check {
         id: id.to_owned(),
@@ -2006,6 +2151,8 @@ struct SmokeData {
     effects_at_hold_start: Option<u64>,
     hud_region: Option<[u32; 4]>,
     rounds_probe_pending: bool,
+    /// This frame's reading of the view (`smoke_cockpit`).
+    cockpit_sample: CockpitViewSample,
     /// Where the launch cinematic's first sampled frame found the body.
     cinematic_start_m: Option<Vec3>,
     /// Where the launch cinematic's first sampled frame found the body's attitude.
@@ -2052,6 +2199,9 @@ enum Phase {
     /// The `F1` keymap overlay: open it over the flight view, photograph it,
     /// close it (#1739).
     Help,
+    /// The cockpit views: `F8` three times, a frame and a reading at each
+    /// stop, 0 -> 7 -> 6 -> 0 (PARITY3-COCKPIT-VIEW.05, #1813).
+    Cockpit,
     Final,
     Ended,
 }
@@ -2100,6 +2250,7 @@ fn add_script_systems(app: &mut App) {
             smoke_cinematic,
             smoke_first_control,
             smoke_hull,
+            smoke_cockpit,
             smoke_script,
             smoke_rounds,
             smoke_flashes,
@@ -2868,6 +3019,96 @@ fn smoke_first_control(
     data.first_control_due = true;
 }
 
+/// The cockpit-view reads `smoke_cockpit` makes: grouped so the system's
+/// parameter list stays inside Bevy's arity limit.
+#[derive(SystemParam)]
+struct CockpitParams<'w, 's> {
+    view: Option<Res<'w, super::view_cycle::MissionViewMode>>,
+    eye: Option<Res<'w, super::cockpit_camera::MissionCockpitEye>>,
+    bodies: Query<
+        'w,
+        's,
+        (&'static Position, &'static Rotation, &'static Visibility),
+        With<MissionPlayerBody>,
+    >,
+    camera: Query<'w, 's, &'static GlobalTransform, With<crate::playtest::PlaytestCameraMarker>>,
+    dial_roots: Query<'w, 's, Entity, With<super::cockpit_dials::CockpitDialsRoot>>,
+    interior_roots: Query<'w, 's, Entity, With<super::cockpit_interior::CockpitInteriorRoot>>,
+    children: Query<'w, 's, &'static bevy::prelude::Children>,
+    nodes: Query<
+        'w,
+        's,
+        (
+            &'static Visibility,
+            &'static InheritedVisibility,
+            Has<Mesh3d>,
+        ),
+    >,
+}
+
+impl CockpitParams<'_, '_> {
+    /// `(drawn, bound)` mesh counts under `roots`. A part the drive itself
+    /// hides (a warning flag or an unlit pip at rest) takes its subtree out of
+    /// the count; a hidden root does not, so a hidden panel counts as undrawn.
+    fn mesh_counts(
+        &self,
+        roots: &Query<Entity, impl bevy::ecs::query::QueryFilter>,
+    ) -> (usize, usize) {
+        let (mut drawn, mut total) = (0, 0);
+        for root in roots {
+            let mut stack: Vec<Entity> = self
+                .children
+                .get(root)
+                .map(|children| children.iter().copied().collect())
+                .unwrap_or_default();
+            while let Some(entity) = stack.pop() {
+                let Ok((own, visible, is_mesh)) = self.nodes.get(entity) else {
+                    continue;
+                };
+                if *own == Visibility::Hidden {
+                    continue;
+                }
+                if is_mesh {
+                    total += 1;
+                    drawn += usize::from(visible.get());
+                }
+                if let Ok(children) = self.children.get(entity) {
+                    stack.extend(children.iter().copied());
+                }
+            }
+        }
+        (drawn, total)
+    }
+}
+
+/// Reads the view every frame so the script's cockpit phase can record the
+/// frame it photographs (after transform and visibility propagation).
+fn smoke_cockpit(mut data: ResMut<SmokeData>, params: CockpitParams<'_, '_>) {
+    let Some(view) = params.view.as_deref() else {
+        return;
+    };
+    let (dials_drawn, dials_total) = params.mesh_counts(&params.dial_roots);
+    let (interior_drawn, interior_total) = params.mesh_counts(&params.interior_roots);
+    let mut sample = CockpitViewSample {
+        original_mode: view.original_mode(),
+        dials_drawn,
+        dials_total,
+        interior_drawn,
+        interior_total,
+        ..CockpitViewSample::default()
+    };
+    if let (Ok((position, rotation, visibility)), Some(eye), Ok(camera)) = (
+        params.bodies.single(),
+        params.eye.as_deref(),
+        params.camera.single(),
+    ) {
+        let pose = eye.pose(position.0, rotation.0);
+        sample.camera_from_eye_m = camera.translation().distance(pose.translation);
+        sample.body_hidden = *visibility == Visibility::Hidden;
+    }
+    data.cockpit_sample = sample;
+}
+
 #[allow(clippy::too_many_arguments)]
 fn smoke_script(
     config: Res<SmokeConfig>,
@@ -3256,6 +3497,38 @@ fn smoke_script(
             } else if at == HELP_SHOT_OFFSET {
                 due.push("keymap_help".to_owned());
             } else if at == HELP_CLOSE_OFFSET + 6 {
+                data.phase = Phase::Cockpit;
+                data.phase_start = frame + 1;
+            }
+        }
+        Phase::Cockpit => {
+            // One `F8` press per stop, released two frames later; the stop's
+            // frame and reading follow once the view has settled.
+            let stop = at / COCKPIT_STOP_FRAMES;
+            let into = at % COCKPIT_STOP_FRAMES;
+            if stop < 3 {
+                if into == 0 {
+                    data.measurements.cockpit.ran = true;
+                    queue.0.push(KeyOp::Press(KeyCode::F8));
+                } else if into == 2 {
+                    queue.0.push(KeyOp::Release(KeyCode::F8));
+                } else if into == COCKPIT_SHOT_OFFSET {
+                    let sample = Some(data.cockpit_sample.clone());
+                    let (slot, label) = match stop {
+                        0 => (&mut data.measurements.cockpit.cockpit, "cockpit_view"),
+                        1 => (
+                            &mut data.measurements.cockpit.second_eye,
+                            "cockpit_view_second_eye",
+                        ),
+                        _ => (
+                            &mut data.measurements.cockpit.chase_after,
+                            "chase_after_cockpit",
+                        ),
+                    };
+                    *slot = sample;
+                    due.push(label.to_owned());
+                }
+            } else if at >= 3 * COCKPIT_STOP_FRAMES {
                 data.phase = Phase::Final;
                 data.phase_start = frame + 1;
             }
@@ -4504,6 +4777,7 @@ fn write_artifacts(
          \"objective_class\":{t_objective_class},\"objective_selected\":{t_objective}}},\
          \"examine\":{{\"ran\":{x_ran},\"before_node\":{x_before},\"before_flagged\":{x_bf},\
          \"after_node\":{x_after},\"after_flagged\":{x_af}}},\
+         \"cockpit\":{cockpit},\
          \"actors\":[{actors}],\"placements\":[{placements}],\"shots\":[{shots}],\
          \"checks\":[{checks}],\"failures\":[{failures}],\"passed\":{passed}}}\n",
         kind = json_string(SMOKE_KIND),
@@ -4593,6 +4867,7 @@ fn write_artifacts(
         x_bf = report.measurements.examine.before_flagged,
         x_after = json_option_str(report.measurements.examine.after_node.as_deref()),
         x_af = report.measurements.examine.after_flagged,
+        cockpit = cockpit_json(&report.measurements.cockpit),
         actors = actors,
         placements = placements,
         shots = shots,
@@ -4602,6 +4877,36 @@ fn write_artifacts(
     );
     let path = dir.join(SMOKE_REPORT_FILE);
     std::fs::write(&path, body).map_err(|error| (path, error))
+}
+
+/// The cockpit phase as a JSON object.
+fn cockpit_json(cockpit: &CockpitViewMetrics) -> String {
+    let sample = |sample: &Option<CockpitViewSample>| {
+        sample.as_ref().map_or_else(
+            || "null".to_owned(),
+            |s| {
+                format!(
+                    "{{\"original_mode\":{},\"camera_from_eye_m\":{},\"body_hidden\":{},\
+                     \"dials_drawn\":{},\"dials_total\":{},\"interior_drawn\":{},\
+                     \"interior_total\":{}}}",
+                    s.original_mode,
+                    s.camera_from_eye_m,
+                    s.body_hidden,
+                    s.dials_drawn,
+                    s.dials_total,
+                    s.interior_drawn,
+                    s.interior_total
+                )
+            },
+        )
+    };
+    format!(
+        "{{\"ran\":{},\"cockpit\":{},\"second_eye\":{},\"chase_after\":{}}}",
+        cockpit.ran,
+        sample(&cockpit.cockpit),
+        sample(&cockpit.second_eye),
+        sample(&cockpit.chase_after)
+    )
 }
 
 /// Turns the finished run into the process result: the report and the PNGs

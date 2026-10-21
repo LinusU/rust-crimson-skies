@@ -178,6 +178,7 @@ fn healthy() -> SmokeMeasurements {
             objective_class: Some("capital_ship".to_owned()),
             objective_selected: Some(true),
         },
+        cockpit: crate::accept_parity3_cockpit_view_05::healthy_cockpit(),
         examine: cs_app::mission_session::ExamineMetrics {
             ran: true,
             before_node: Some("t_chamber".to_owned()),
