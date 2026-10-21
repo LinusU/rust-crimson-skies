@@ -94,6 +94,10 @@ pub fn mint_original_chord_keys(world: &mut World) {
     let paused = world
         .get_resource::<PlatformInput>()
         .is_some_and(|platform| platform.session().is_paused());
+    // After a fatal crash the camera is held at its crash point: the view and
+    // look keys are inert (the original's guard `V+0x91d`, finding
+    // `2026-10-22-crash-a-fatal-contact-and-crash-camera.md`).
+    let crashed = world.contains_resource::<crate::playtest::fatal_contact::CrashSequence>();
     let Some(keys) = world.get_resource::<ButtonInput<KeyCode>>() else {
         return;
     };
@@ -116,7 +120,7 @@ pub fn mint_original_chord_keys(world: &mut World) {
         let commands = controls.0.commands_for_key(scancode, held);
         // `Cockpit views` (F8) has no modifier combination, so it is read
         // here, ahead of the modifier filter, and left standing.
-        if !paused {
+        if !paused && !crashed {
             for command in &commands {
                 if *command == VIEW_CYCLE_COMMAND_ID {
                     view_presses.push(None);
