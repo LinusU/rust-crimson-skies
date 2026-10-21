@@ -310,8 +310,10 @@ fn accept_f18_a_water_is_a_bounded_patch_and_a_rotated_instance_lands_where_auth
         half_size.x < 5.5 && half_size.y < 0.2 && half_size.z < 5.5,
         "water must stay a bounded patch, its bound half-size is {half_size:?}"
     );
+    // avian3d 0.8 pads the collider AABB by 2 cm on every axis (0.7: none), so
+    // the rotated width is the authored 5.464 m plus that padding.
     assert!(
-        (half_size.x - 5.464).abs() < 0.01,
+        (half_size.x - 5.464 - 0.02).abs() < 0.01,
         "a rotated patch must grow to the rotated width, got {half_size:?}"
     );
 
