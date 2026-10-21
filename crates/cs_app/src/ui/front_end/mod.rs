@@ -146,7 +146,7 @@ pub use shell::{
 pub use window::{
     DEFAULT_FRONT_END_CAPTURE_DIR, FrontEndError, FrontEndRequest, FrontEndShellPlugin,
     MIN_SHELL_SMOKE_SECONDS, ShellResource, ShellShotRecord, ShellSmokeHandle, ShellSmokePlugin,
-    ShellSmokeReport, run_front_end, shell_app,
+    ShellSmokeReport, headless_app, run_front_end, shell_app,
 };
 
 /// A front-end screen.

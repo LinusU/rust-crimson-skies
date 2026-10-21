@@ -30,9 +30,9 @@ use bevy::window::{CursorMoved, PrimaryWindow};
 use cs_app::cli::{self, CliRequest};
 use cs_app::playtest::SmokeRequest;
 use cs_app::ui::front_end::{
-    ButtonEffect, ButtonVisual, FrontEndRequest, FrontEndScreens, FrontEndShellPlugin,
-    MIN_SHELL_SMOKE_SECONDS, MenuShell, OriginalLayout, SECTION_SURFACE, START_SECTION,
-    ShellOutcome, ShellResource, SkippedReason, UnhandledEffect, script_member,
+    ButtonEffect, ButtonVisual, FrontEndRequest, FrontEndScreens, MIN_SHELL_SMOKE_SECONDS,
+    MenuShell, OriginalLayout, SECTION_SURFACE, START_SECTION, ShellOutcome, ShellResource,
+    SkippedReason, UnhandledEffect, script_member,
 };
 
 /// Art sizes of the invented fixture: an 80x40 strip of four 10-pixel
@@ -451,8 +451,7 @@ fn inject(
 
 /// The headless presenter: `App` + the shell plugin, no renderer.
 fn headless(shell: MenuShell) -> App {
-    let mut app = App::new();
-    app.add_plugins(FrontEndShellPlugin::headless(shell));
+    let mut app = cs_app::ui::front_end::headless_app(shell);
     app.init_resource::<TestInput>();
     app.add_systems(PreUpdate, inject.after(InputSystems));
     app
@@ -478,7 +477,7 @@ fn accept_fe_menu_1_the_windowed_input_path_drives_the_model() {
     });
     drive(&mut app, |queue| queue.mouse.push(false));
     {
-        let shell = &app.world().resource::<ShellResource>().0;
+        let shell = &app.world().resource::<ShellResource>().shell;
         assert_eq!(
             shell.section_name(),
             Some("Sub"),
@@ -495,7 +494,7 @@ fn accept_fe_menu_1_the_windowed_input_path_drives_the_model() {
         queue.keys.push((KeyCode::Escape, false));
     });
     {
-        let shell = &app.world().resource::<ShellResource>().0;
+        let shell = &app.world().resource::<ShellResource>().shell;
         assert_eq!(shell.section_name(), Some("Menu"));
         assert_eq!(shell.depth(), 1);
     }
@@ -504,7 +503,7 @@ fn accept_fe_menu_1_the_windowed_input_path_drives_the_model() {
         queue.keys.push((KeyCode::ArrowDown, false));
     });
     {
-        let shell = &app.world().resource::<ShellResource>().0;
+        let shell = &app.world().resource::<ShellResource>().shell;
         assert_eq!(shell.focus(), Some(1), "Down landed on B_QUIT");
     }
     drive(&mut app, |queue| {

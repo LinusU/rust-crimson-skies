@@ -1,6 +1,13 @@
 //! The windowed front-end presenter: `cs --cs-path <retail> --front-end`
 //! (FE-MENU-1, task #1833).
 //!
+//! Its app systems are `fn(&mut World)` exclusive systems on purpose: every
+//! `Res<T>`/`Query<..>`/message param on a scheduled system is monomorphized
+//! into `cs`, whose `__eh_frame` sits ~1 KiB under the 16 MiB compact-unwind
+//! ceiling with this presenter included (task #336's gate,
+//! `accept_t336_linked_images_*`). Exclusive systems cost one fn item each
+//! instead of a param-machinery instantiation per system.
+//!
 //! Spec context: `specs/F45-main-menu-pandora-cabin-briefing-and-flight-check.md`;
 //! shared contract `docs/contracts/UI-NETWORK.md` (aspect-fit + shared
 //! transform) and `docs/contracts/CLI-EVIDENCE.md` (a scripted smoke run is
@@ -47,17 +54,15 @@ use std::sync::{Arc, Mutex};
 
 use bevy::app::AppExit;
 use bevy::asset::{Assets, Handle, RenderAssetUsages};
-use bevy::ecs::message::Messages;
+use bevy::ecs::message::{MessageCursor, Messages};
 use bevy::image::{Image, ImageSampler};
 use bevy::input::ButtonInput;
-use bevy::input::InputSystems;
 use bevy::input::keyboard::KeyCode;
 use bevy::input::mouse::MouseButton;
 use bevy::prelude::{
-    App, Camera, Camera2d, ClearColorConfig, Color, Commands, Component, DefaultPlugins, Entity,
-    IntoScheduleConfigs, Last, MessageReader, MessageWriter, On, Plugin, PluginGroup, PreUpdate,
-    Query, Res, ResMut, Resource, Sprite, Startup, Transform, Update, Vec2, Visibility, Window,
-    WindowPlugin, With, Without, default,
+    App, Camera, Camera2d, ClearColorConfig, Color, DefaultPlugins, Entity, On, Plugin,
+    PluginGroup, Resource, Sprite, Startup, Transform, Update, Vec2, Visibility, Window,
+    WindowPlugin, World, default,
 };
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk};
@@ -131,27 +136,39 @@ impl std::error::Error for FrontEndError {}
 
 // ----------------------------------------------------------------- model ---
 
-/// The live [`MenuShell`] the presenter drives. Public so a headless drive
-/// (the `accept_fe_menu_1_` tests) can read the model the real input path
-/// produced; the windowed run treats it as its own.
+/// The live presenter state: the [`MenuShell`] the run drives plus the
+/// surface, input and observation record the systems mutate. Public so a
+/// headless drive (the `accept_fe_menu_1_` tests) can read the model the
+/// real input path produced; the windowed run treats it as its own.
 #[derive(Resource)]
-pub struct ShellResource(pub MenuShell);
+pub struct ShellResource {
+    /// The shell model.
+    pub shell: MenuShell,
+    /// The window's logical size this frame — the surface the view fits
+    /// into; `(800, 600)` when there is no window (a headless drive).
+    surface: (u32, u32),
+    /// The frame's collected input edges plus the pointer position.
+    input: ShellInput,
+    /// What the run observed, for the smoke's checks and the record.
+    run: ShellRun,
+    /// The decoded art: lower-cased art name → the whole image (a button's
+    /// 4-frame strip among them); the cursor is kept apart so its absence is
+    /// a visible record, not a missing map entry.
+    art: ShellArt,
+    /// The entities the presenter spawned.
+    scene: ShellScene,
+    /// The section's sprites are stale: respawn them.
+    redraw: bool,
+}
 
-/// The decoded art: lower-cased art name → the whole image (a button's
-/// 4-frame strip among them); the cursor is kept apart so its absence is a
-/// visible record, not a missing map entry.
-#[derive(Resource, Default)]
+/// The decoded art.
+#[derive(Default)]
 struct ShellArt {
     /// Strip/pane textures by lower-cased layout art name.
     images: BTreeMap<String, Handle<Image>>,
     /// The cursor texture found, and its native extent.
     cursor: Option<(Handle<Image>, (u32, u32))>,
 }
-
-/// The window's logical size this frame — the surface the view fits into.
-/// `(800, 600)` when there is no window (a headless drive).
-#[derive(Resource)]
-struct ShellSurface((u32, u32));
 
 /// One edge-triggered input for the shell.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -172,17 +189,19 @@ enum ShellEvent {
     Escape,
 }
 
-/// The input the frame applies: the latest pointer position plus the edges.
-#[derive(Resource, Default)]
+/// The input the frame applies: the latest pointer position plus the edges,
+/// and the `CursorMoved` reader that survives between frames.
 struct ShellInput {
     /// Latest window-space pointer position (logical px, top-left origin).
     cursor: Option<Vec2>,
     /// The input edges this frame, in order.
     events: Vec<ShellEvent>,
+    /// The persistent `CursorMoved` reader.
+    cursor_events: MessageCursor<CursorMoved>,
 }
 
 /// What the run observed, for the smoke's checks and the record.
-#[derive(Resource, Default)]
+#[derive(Default)]
 struct ShellRun {
     /// Sections visited in order, starting with the root.
     visited: Vec<String>,
@@ -200,33 +219,29 @@ struct ShellRun {
     cursor: Option<String>,
 }
 
-/// A section's sprites are stale: respawn them.
-#[derive(Resource)]
-struct RedrawShell(bool);
-
-/// Marks every entity drawn for the current section (pane, button, cursor).
-#[derive(Component)]
-struct ShellElement;
-
-/// A pane sprite; `index` is the pane's declaration index in the section and
-/// `z` its draw layer (declaration order under the buttons).
-#[derive(Component)]
-struct PaneSprite {
-    index: usize,
-    z: f32,
+/// The live scene: every entity the presenter spawned, so `sync_shell` can
+/// touch them with `World::get_mut` — each `query_filtered::<D, F>`
+/// instantiation is a `QueryState` + fetch monomorphization `cs`'s
+/// `__eh_frame` budget cannot afford.
+#[derive(Default)]
+struct ShellScene {
+    /// The primary window, when one exists.
+    window: Option<Entity>,
+    /// The section's pane sprites.
+    panes: Vec<DrawnSprite>,
+    /// The section's button sprites.
+    buttons: Vec<DrawnSprite>,
+    /// The cursor sprite, once spawned.
+    cursor: Option<Entity>,
 }
 
-/// A button sprite; `index` is the button's declaration index in the section
-/// and `z` its draw layer (declaration order above the panes).
-#[derive(Component)]
-struct ButtonSprite {
+/// One sprite the presenter owns: the view index it answers to, its draw
+/// layer and its entity.
+struct DrawnSprite {
     index: usize,
     z: f32,
+    entity: Entity,
 }
-
-/// The cursor sprite.
-#[derive(Component)]
-struct CursorSprite;
 
 // --------------------------------------------------------------- plugin ---
 
@@ -236,7 +251,7 @@ struct CursorSprite;
 /// [`Self::headless`], which skips sprite spawning so the input/model path
 /// runs under `MinimalPlugins` with no renderer.
 pub struct FrontEndShellPlugin {
-    shell: MenuShell,
+    shell: Mutex<Option<MenuShell>>,
     art: BTreeMap<String, Artwork>,
     cursor: Option<(String, Artwork)>,
     visuals: bool,
@@ -246,13 +261,14 @@ impl FrontEndShellPlugin {
     /// The windowed presenter: sprites draw from `art` (lower-cased art name
     /// → decoded strip/pane) and `cursor`.
     #[must_use]
+    #[inline(always)]
     pub fn windowed(
         shell: MenuShell,
         art: BTreeMap<String, Artwork>,
         cursor: Option<(String, Artwork)>,
     ) -> Self {
         Self {
-            shell,
+            shell: Mutex::new(Some(shell)),
             art,
             cursor,
             visuals: true,
@@ -262,9 +278,10 @@ impl FrontEndShellPlugin {
     /// The model-only presenter for a headless drive: no sprites, no image
     /// assets needed.
     #[must_use]
+    #[inline(always)]
     pub fn headless(shell: MenuShell) -> Self {
         Self {
-            shell,
+            shell: Mutex::new(Some(shell)),
             art: BTreeMap::new(),
             cursor: None,
             visuals: false,
@@ -274,32 +291,23 @@ impl FrontEndShellPlugin {
 
 impl Plugin for FrontEndShellPlugin {
     fn build(&self, app: &mut App) {
-        if !app.is_plugin_added::<bevy::input::InputPlugin>() {
-            app.add_plugins(bevy::input::InputPlugin);
-        }
-        if !app.world().contains_resource::<Messages<CursorMoved>>() {
-            app.add_message::<CursorMoved>();
-        }
-        if !app.world().contains_resource::<Messages<AppExit>>() {
-            app.add_message::<AppExit>();
-        }
-        app.init_resource::<ButtonInput<KeyCode>>();
-        app.init_resource::<ButtonInput<MouseButton>>();
-        app.init_resource::<ShellInput>();
-        app.init_resource::<ShellRun>();
+        // `take`, not `clone`: the recursive `Clone` impl on `MenuShell`'s
+        // section tree costs `cs` several KiB of `__eh_frame` for a call a
+        // plugin build makes exactly once.
+        let shell = self
+            .shell
+            .lock()
+            .map(|mut slot| slot.take())
+            .unwrap_or_default()
+            .expect("a plugin builds once");
         let run = ShellRun {
-            cursor: self.shell.cursor().map(|(name, _)| name.clone()),
-            visited: self
-                .shell
+            cursor: shell.cursor().map(|(name, _)| name.clone()),
+            visited: shell
                 .section_name()
                 .map(|name| vec![name.to_owned()])
                 .unwrap_or_default(),
             ..ShellRun::default()
         };
-        app.insert_resource(ShellResource(self.shell.clone()));
-        app.insert_resource(ShellSurface(SECTION_SURFACE));
-        app.insert_resource(RedrawShell(true));
-        app.insert_resource(run);
         let mut art = ShellArt::default();
         if self.visuals {
             let mut images = app.world_mut().resource_mut::<Assets<Image>>();
@@ -314,117 +322,157 @@ impl Plugin for FrontEndShellPlugin {
                 ));
             }
         }
-        app.insert_resource(art);
+        app.insert_resource(ShellResource {
+            shell,
+            surface: SECTION_SURFACE,
+            input: ShellInput {
+                cursor: None,
+                events: Vec::new(),
+                cursor_events: MessageCursor::default(),
+            },
+            run,
+            art,
+            scene: ShellScene::default(),
+            redraw: true,
+        });
         if self.visuals {
-            app.add_systems(Startup, (spawn_shell_camera, hide_os_cursor).chain());
-            app.add_systems(
-                Update,
-                (
-                    gather_input,
-                    measure_surface,
-                    drive_shell,
-                    sync_sprites,
-                    follow_cursor,
-                )
-                    .chain(),
-            );
-        } else {
-            app.add_systems(Update, (gather_input, measure_surface, drive_shell).chain());
+            app.add_systems(Startup, startup_shell);
         }
+        app.add_systems(Update, frame_shell);
     }
 }
 
-/// The 2D camera the whole surface draws through.
-fn spawn_shell_camera(mut commands: Commands) {
-    commands.spawn((
+/// A model-only drive for tests: the input resources and messages the
+/// windowed app already carries, no renderer. Kept out of the plugin so
+/// `cs`'s linker drops the headless-only glue (`add_message`,
+/// `init_resource`, `add_plugins::<InputPlugin>`) the production run never
+/// calls.
+pub fn headless_app(shell: MenuShell) -> App {
+    let mut app = App::new();
+    app.add_plugins(bevy::input::InputPlugin);
+    app.add_message::<CursorMoved>();
+    app.init_resource::<ButtonInput<KeyCode>>();
+    app.init_resource::<ButtonInput<MouseButton>>();
+    app.add_plugins(FrontEndShellPlugin::headless(shell));
+    app
+}
+
+/// The primary window's entity, when the world has one.
+#[inline(always)]
+fn primary_window(world: &World) -> Option<Entity> {
+    world
+        .iter_entities()
+        .find(|entity| entity.get::<PrimaryWindow>().is_some())
+        .map(|entity| entity.id())
+}
+
+/// Startup: the 2D camera the whole surface draws through, the window entity
+/// remembered, the OS cursor hidden only when cursor art drew — a missing
+/// texture leaves the pointer visible, the recorded unknown it is — and the
+/// smoke's capture directory created up front so a bad path fails before the
+/// window even renders.
+fn startup_shell(world: &mut World) {
+    world.spawn((
         Camera2d,
         Camera {
             clear_color: ClearColorConfig::Custom(Color::BLACK),
             ..default()
         },
     ));
-}
-
-/// The OS cursor hides only when the art drew: no cursor texture, no hidden
-/// pointer — the recorded unknown stays visible.
-fn hide_os_cursor(art: Res<ShellArt>, mut windows: Query<&mut CursorOptions, With<PrimaryWindow>>) {
-    if art.cursor.is_none() {
-        return;
-    }
-    if let Ok(mut cursor) = windows.single_mut() {
+    let window = primary_window(world);
+    let has_cursor = world
+        .get_resource_mut::<ShellResource>()
+        .map(|mut state| {
+            state.scene.window = window;
+            state.art.cursor.is_some()
+        })
+        .unwrap_or(false);
+    if has_cursor
+        && let Some(mut cursor) = window.and_then(|entity| world.get_mut::<CursorOptions>(entity))
+    {
         cursor.visible = false;
     }
-}
-
-/// Collects Bevy input into [`ShellInput`] edges: the same resource real
-/// input writes, so a scripted run goes through the same path as a human's.
-fn gather_input(
-    keys: Res<ButtonInput<KeyCode>>,
-    mouse: Res<ButtonInput<MouseButton>>,
-    mut cursor_events: MessageReader<CursorMoved>,
-    mut input: ResMut<ShellInput>,
-) {
-    input.events.clear();
-    for event in cursor_events.read() {
-        input.cursor = Some(event.position);
-    }
-    if keys.just_pressed(KeyCode::ArrowDown) {
-        input.events.push(ShellEvent::FocusNext);
-    }
-    if keys.just_pressed(KeyCode::ArrowUp) {
-        input.events.push(ShellEvent::FocusPrev);
-    }
-    if keys.just_pressed(KeyCode::Enter) {
-        input.events.push(ShellEvent::ActivateDown);
-    }
-    if keys.just_released(KeyCode::Enter) {
-        input.events.push(ShellEvent::ActivateUp);
-    }
-    if keys.just_pressed(KeyCode::Escape) {
-        input.events.push(ShellEvent::Escape);
-    }
-    if mouse.just_pressed(MouseButton::Left) {
-        input.events.push(ShellEvent::PointerDown);
-    }
-    if mouse.just_released(MouseButton::Left) {
-        input.events.push(ShellEvent::PointerUp);
+    if let Some(mut smoke) = world.get_resource_mut::<ShellSmoke>()
+        && let Err(error) = std::fs::create_dir_all(&smoke.request.capture_dir)
+    {
+        smoke.io_error = Some(format!(
+            "cannot create {}: {error}",
+            smoke.request.capture_dir.display()
+        ));
     }
 }
 
-/// Tracks the window's logical size as the fitting surface.
-fn measure_surface(
-    windows: Query<&Window, With<PrimaryWindow>>,
-    mut surface: ResMut<ShellSurface>,
-) {
-    if let Ok(window) = windows.single() {
-        surface.0 = (window.width() as u32, window.height() as u32);
+/// The frame's whole update, one exclusive system: injects a smoke's
+/// scripted input into the real `ButtonInput`/`CursorMoved` path (the same
+/// resources real input writes, so a scripted run goes through the same path
+/// as a human's), collects it into [`ShellInput`] edges, tracks the window's
+/// logical size as the fitting surface, applies the input to the
+/// [`MenuShell`], rebuilds and refreshes the section's sprites, draws the
+/// cursor art at the pointer, and finishes the smoke run when its script has
+/// run out.
+fn frame_shell(world: &mut World) {
+    let Some(mut state) = world.remove_resource::<ShellResource>() else {
+        return;
+    };
+    if world.contains_resource::<ShellSmoke>() {
+        inject_smoke_input(world, &mut state);
     }
-}
-
-/// Applies the frame's input to the [`MenuShell`] and turns its outcomes
-/// into the run's record — or `AppExit` for `Quit` outside a smoke run.
-fn drive_shell(
-    mut shell: ResMut<ShellResource>,
-    mut input: ResMut<ShellInput>,
-    surface: Res<ShellSurface>,
-    mut run: ResMut<ShellRun>,
-    mut redraw: ResMut<RedrawShell>,
-    smoke: Option<Res<ShellSmokeData>>,
-    mut exit: MessageWriter<AppExit>,
-) {
-    let shell = &mut shell.0;
-    if let Some(position) = input.cursor {
+    let mut events = std::mem::take(&mut state.input.events);
+    {
+        let keys = world.resource::<ButtonInput<KeyCode>>();
+        if keys.just_pressed(KeyCode::ArrowDown) {
+            events.push(ShellEvent::FocusNext);
+        }
+        if keys.just_pressed(KeyCode::ArrowUp) {
+            events.push(ShellEvent::FocusPrev);
+        }
+        if keys.just_pressed(KeyCode::Enter) {
+            events.push(ShellEvent::ActivateDown);
+        }
+        if keys.just_released(KeyCode::Enter) {
+            events.push(ShellEvent::ActivateUp);
+        }
+        if keys.just_pressed(KeyCode::Escape) {
+            events.push(ShellEvent::Escape);
+        }
+        let mouse = world.resource::<ButtonInput<MouseButton>>();
+        if mouse.just_pressed(MouseButton::Left) {
+            events.push(ShellEvent::PointerDown);
+        }
+        if mouse.just_released(MouseButton::Left) {
+            events.push(ShellEvent::PointerUp);
+        }
+    }
+    {
+        let messages = world.resource::<Messages<CursorMoved>>();
+        for event in state.input.cursor_events.read(messages) {
+            state.input.cursor = Some(event.position);
+        }
+    }
+    if state.scene.window.is_none() {
+        state.scene.window = primary_window(world);
+    }
+    if let Some(window) = state
+        .scene
+        .window
+        .and_then(|entity| world.get::<Window>(entity))
+    {
+        state.surface = (window.width() as u32, window.height() as u32);
+    }
+    let in_smoke = world.contains_resource::<ShellSmoke>();
+    let shell = &mut state.shell;
+    if let Some(position) = state.input.cursor {
         if position.x < 0.0 || position.y < 0.0 {
             shell.pointer_leave();
         } else if let Some((x, y)) =
-            MenuShell::unmap_point(surface.0, position.x as u32, position.y as u32)
+            MenuShell::unmap_point(state.surface, position.x as u32, position.y as u32)
         {
             shell.pointer_move(x, y);
         } else {
             shell.pointer_leave();
         }
     }
-    for event in input.events.drain(..) {
+    for event in events.drain(..) {
         let outcome = match event {
             ShellEvent::PointerDown => {
                 shell.pointer_down();
@@ -433,12 +481,12 @@ fn drive_shell(
             ShellEvent::PointerUp => shell.pointer_up(),
             ShellEvent::FocusNext => {
                 shell.move_focus(true);
-                run.focus_moves += 1;
+                state.run.focus_moves += 1;
                 ShellOutcome::Nothing
             }
             ShellEvent::FocusPrev => {
                 shell.move_focus(false);
-                run.focus_moves += 1;
+                state.run.focus_moves += 1;
                 ShellOutcome::Nothing
             }
             ShellEvent::ActivateDown => {
@@ -450,15 +498,17 @@ fn drive_shell(
         };
         match outcome {
             ShellOutcome::Entered { section } | ShellOutcome::Back { section } => {
-                run.visited.push(section);
-                redraw.0 = true;
+                state.run.visited.push(section);
+                state.redraw = true;
             }
-            ShellOutcome::Unhandled { .. } => run.unhandled += 1,
+            ShellOutcome::Unhandled { .. } => state.run.unhandled += 1,
             ShellOutcome::Quit => {
-                if smoke.is_some() {
-                    run.quit_seen = true;
+                if in_smoke {
+                    state.run.quit_seen = true;
                 } else {
-                    exit.write(AppExit::Success);
+                    world
+                        .resource_mut::<Messages<AppExit>>()
+                        .write(AppExit::Success);
                 }
             }
             ShellOutcome::Nothing => {}
@@ -469,7 +519,7 @@ fn drive_shell(
         if let Some(index) = shell.hover()
             && let Some(button) = section.buttons.get(index)
         {
-            run.hovered.insert(button.id.clone());
+            state.run.hovered.insert(button.id.clone());
         }
         let depressed = section
             .buttons
@@ -477,152 +527,175 @@ fn drive_shell(
             .enumerate()
             .any(|(index, _)| shell.visual(index) == ButtonVisual::Depressed);
         if depressed {
-            run.depressed_seen = true;
+            state.run.depressed_seen = true;
         }
     }
-}
-
-/// Rebuilds the current section's sprites after a navigation, and refreshes
-/// every sprite's frame crop/placement each frame — hover, focus, press and
-/// window resize all land here.
-#[allow(clippy::too_many_arguments)]
-fn sync_sprites(
-    mut commands: Commands,
-    shell: Res<ShellResource>,
-    art: Res<ShellArt>,
-    surface: Res<ShellSurface>,
-    mut redraw: ResMut<RedrawShell>,
-    elements: Query<Entity, With<ShellElement>>,
-    mut panes: Query<(&PaneSprite, &mut Sprite, &mut Transform), Without<ButtonSprite>>,
-    mut buttons: Query<(&ButtonSprite, &mut Sprite, &mut Transform), Without<PaneSprite>>,
-) {
-    let Some(view) = shell.0.view(surface.0) else {
-        return;
-    };
-    if redraw.0 {
-        redraw.0 = false;
-        for entity in &elements {
-            commands.entity(entity).despawn();
+    let cursor_extent = state.art.cursor.as_ref().map(|(_, extent)| *extent);
+    if let Some(view) = state.shell.view(state.surface) {
+        if state.redraw {
+            state.redraw = false;
+            for entity in state
+                .scene
+                .panes
+                .drain(..)
+                .chain(state.scene.buttons.drain(..))
+                .map(|drawn| drawn.entity)
+            {
+                let _ = world.despawn(entity);
+            }
+            let art = std::mem::take(&mut state.art);
+            spawn_section(world, &art, state.surface, &view, &mut state.scene);
+            state.art = art;
         }
-        spawn_section(&mut commands, &art, surface.0, &view);
-    }
-    for (tag, mut sprite, mut transform) in &mut panes {
-        if let Some(pane) = view.panes.iter().find(|pane| pane.index == tag.index) {
-            place(
-                &mut sprite,
-                &mut transform,
-                pane.texel_offset,
-                pane.logical,
-                pane.rect,
-                surface.0,
-                tag.z,
-            );
+        for drawn in &state.scene.panes {
+            if let Some(pane) = view.panes.iter().find(|pane| pane.index == drawn.index) {
+                place(
+                    world,
+                    drawn,
+                    pane.texel_offset,
+                    pane.logical,
+                    pane.rect,
+                    state.surface,
+                );
+            }
         }
-    }
-    for (tag, mut sprite, mut transform) in &mut buttons {
-        if let Some(button) = view.buttons.iter().find(|button| button.index == tag.index) {
-            place(
-                &mut sprite,
-                &mut transform,
-                button.texel_offset,
-                button.logical,
-                button.rect,
-                surface.0,
-                tag.z,
-            );
+        for drawn in &state.scene.buttons {
+            if let Some(button) = view
+                .buttons
+                .iter()
+                .find(|button| button.index == drawn.index)
+            {
+                place(
+                    world,
+                    drawn,
+                    button.texel_offset,
+                    button.logical,
+                    button.rect,
+                    state.surface,
+                );
+            }
         }
     }
-}
-
-/// Draws the cursor art at the pointer, scaled like the content; hidden when
-/// the pointer is off the surface. The cursor sprite exists only when cursor
-/// art decoded, so a missing texture is the recorded unknown, not a guess.
-fn follow_cursor(
-    input: Res<ShellInput>,
-    art: Res<ShellArt>,
-    surface: Res<ShellSurface>,
-    mut cursor: Query<(&mut Transform, &mut Sprite, &mut Visibility), With<CursorSprite>>,
-) {
-    let Ok((mut transform, mut sprite, mut visibility)) = cursor.single_mut() else {
-        return;
-    };
-    let (Some(position), Some((_, extent))) = (input.cursor, &art.cursor) else {
-        *visibility = Visibility::Hidden;
-        return;
-    };
-    let scale = fit_scale(surface.0);
-    *visibility = Visibility::Visible;
-    sprite.custom_size = Some(Vec2::new(extent.0 as f32 * scale, extent.1 as f32 * scale));
-    transform.translation.x = position.x - surface.0.0 as f32 * 0.5;
-    transform.translation.y = surface.0.1 as f32 * 0.5 - position.y;
+    if let Some(cursor) = state.scene.cursor
+        && let Ok(mut entity) = world.get_entity_mut(cursor)
+    {
+        match (state.input.cursor, cursor_extent) {
+            (Some(position), Some(extent)) => {
+                let scale = fit_scale(state.surface);
+                if let Some(mut visibility) = entity.get_mut::<Visibility>() {
+                    *visibility = Visibility::Visible;
+                }
+                if let Some(mut sprite) = entity.get_mut::<Sprite>() {
+                    sprite.custom_size =
+                        Some(Vec2::new(extent.0 as f32 * scale, extent.1 as f32 * scale));
+                }
+                if let Some(mut transform) = entity.get_mut::<Transform>() {
+                    transform.translation.x = position.x - state.surface.0 as f32 * 0.5;
+                    transform.translation.y = state.surface.1 as f32 * 0.5 - position.y;
+                }
+            }
+            _ => {
+                if let Some(mut visibility) = entity.get_mut::<Visibility>() {
+                    *visibility = Visibility::Hidden;
+                }
+            }
+        }
+    }
+    if let Some(mut smoke) = world.remove_resource::<ShellSmoke>() {
+        step_smoke(world, &state, &mut smoke);
+        world.insert_resource(smoke);
+    }
+    world.insert_resource(state);
 }
 
 /// The scale the aspect-fit applies: fitted width over logical width.
+#[inline(always)]
 fn fit_scale(surface: (u32, u32)) -> f32 {
     cs_content::ui_layout::AspectFit::new(SECTION_SURFACE, surface)
         .map(|fit| fit.image_rect().width as f32 / SECTION_SURFACE.0 as f32)
         .unwrap_or(1.0)
 }
 
-/// Spawns the sprites of one section frame (panes under buttons, the cursor
-/// last) and the cursor sprite — which lives outside the section's entity
-/// list so navigation never respawns it.
-fn spawn_section(commands: &mut Commands, art: &ShellArt, surface: (u32, u32), view: &ShellView) {
+/// Spawns the sprites of one section frame (panes under buttons), records
+/// them in `scene`, and spawns the cursor sprite once — it lives outside the
+/// section's lists so navigation never respawns it.
+#[inline(always)]
+fn spawn_section(
+    world: &mut World,
+    art: &ShellArt,
+    surface: (u32, u32),
+    view: &ShellView,
+    scene: &mut ShellScene,
+) {
     for (order, pane) in view.panes.iter().enumerate() {
         let Some(image) = art.images.get(&pane.art.to_ascii_lowercase()) else {
             continue;
         };
         let z = 1.0 + order as f32 * 0.01;
-        commands.spawn((
-            ShellElement,
-            PaneSprite {
-                index: pane.index,
-                z,
-            },
-            Sprite {
-                image: image.clone(),
-                rect: Some(texel_rect(pane.texel_offset, pane.logical)),
-                custom_size: Some(rect_size(pane.rect)),
-                ..default()
-            },
-            Transform::from_translation(centre(pane.rect, surface, z)),
-        ));
+        let entity = world
+            .spawn((
+                Sprite {
+                    image: image.clone(),
+                    rect: Some(texel_rect(pane.texel_offset, pane.logical)),
+                    custom_size: Some(rect_size(pane.rect)),
+                    ..default()
+                },
+                Transform::from_translation(centre(pane.rect, surface, z)),
+            ))
+            .id();
+        scene.panes.push(DrawnSprite {
+            index: pane.index,
+            z,
+            entity,
+        });
     }
     for button in &view.buttons {
         let Some(image) = art.images.get(&button.art.to_ascii_lowercase()) else {
             continue;
         };
         let z = 10.0 + button.index as f32 * 0.01;
-        commands.spawn((
-            ShellElement,
-            ButtonSprite {
-                index: button.index,
-                z,
-            },
-            Sprite {
-                image: image.clone(),
-                rect: Some(texel_rect(button.texel_offset, button.logical)),
-                custom_size: Some(rect_size(button.rect)),
-                ..default()
-            },
-            Transform::from_translation(centre(button.rect, surface, z)),
-        ));
+        let entity = world
+            .spawn((
+                Sprite {
+                    image: image.clone(),
+                    rect: Some(texel_rect(button.texel_offset, button.logical)),
+                    custom_size: Some(rect_size(button.rect)),
+                    ..default()
+                },
+                Transform::from_translation(centre(button.rect, surface, z)),
+            ))
+            .id();
+        scene.buttons.push(DrawnSprite {
+            index: button.index,
+            z,
+            entity,
+        });
     }
-    if let Some((image, _)) = &art.cursor {
-        commands.spawn((
-            CursorSprite,
-            Sprite {
-                image: image.clone(),
-                ..default()
-            },
-            Transform::from_xyz(0.0, 0.0, 100.0),
-            Visibility::Hidden,
-        ));
+    if scene.cursor.is_none()
+        && let Some((image, _)) = &art.cursor
+    {
+        // `(Sprite, Transform)` like the panes and buttons — `Visibility`
+        // arrives as a required component — so one bundle type serves every
+        // sprite the presenter spawns.
+        let cursor = world
+            .spawn((
+                Sprite {
+                    image: image.clone(),
+                    ..default()
+                },
+                Transform::from_xyz(0.0, 0.0, 100.0),
+            ))
+            .id();
+        if let Some(mut visibility) = world.get_mut::<Visibility>(cursor) {
+            *visibility = Visibility::Hidden;
+        }
+        scene.cursor = Some(cursor);
     }
 }
 
 /// The texture sub-rect a drawn element shows: `texel_offset` in the art plus
 /// the element's own (clipped) logical size.
+#[inline(always)]
 fn texel_rect(offset: (u32, u32), logical: cs_content::ui_layout::Rect) -> bevy::math::Rect {
     bevy::math::Rect::new(
         offset.0 as f32,
@@ -633,12 +706,14 @@ fn texel_rect(offset: (u32, u32), logical: cs_content::ui_layout::Rect) -> bevy:
 }
 
 /// A surface rect's size as a sprite size.
+#[inline(always)]
 fn rect_size(rect: cs_content::ui_layout::Rect) -> Vec2 {
     Vec2::new(rect.width as f32, rect.height as f32)
 }
 
 /// A surface rect's centre in world space: the surface is centred on the
 /// camera, y up.
+#[inline(always)]
 fn centre(rect: cs_content::ui_layout::Rect, surface: (u32, u32), z: f32) -> bevy::math::Vec3 {
     bevy::math::Vec3::new(
         rect.x as f32 + rect.width as f32 * 0.5 - surface.0 as f32 * 0.5,
@@ -648,22 +723,30 @@ fn centre(rect: cs_content::ui_layout::Rect, surface: (u32, u32), z: f32) -> bev
 }
 
 /// Refreshes one sprite's frame crop, size and placement from the view.
+#[inline(always)]
 fn place(
-    sprite: &mut Sprite,
-    transform: &mut Transform,
+    world: &mut World,
+    drawn: &DrawnSprite,
     texel_offset: (u32, u32),
     logical: cs_content::ui_layout::Rect,
     rect: cs_content::ui_layout::Rect,
     surface: (u32, u32),
-    z: f32,
 ) {
-    sprite.rect = Some(texel_rect(texel_offset, logical));
-    sprite.custom_size = Some(rect_size(rect));
-    transform.translation = centre(rect, surface, z);
+    let Ok(mut entity) = world.get_entity_mut(drawn.entity) else {
+        return;
+    };
+    if let Some(mut sprite) = entity.get_mut::<Sprite>() {
+        sprite.rect = Some(texel_rect(texel_offset, logical));
+        sprite.custom_size = Some(rect_size(rect));
+    }
+    if let Some(mut transform) = entity.get_mut::<Transform>() {
+        transform.translation = centre(rect, surface, drawn.z);
+    }
 }
 
 /// The artwork as a Bevy texture (the same orientation
 /// [`super::capture::artwork_image`] uses: row-major from the top).
+#[inline(always)]
 fn artwork_image(artwork: &Artwork) -> Image {
     let mut image = Image::new(
         Extent3d {
@@ -683,15 +766,26 @@ fn artwork_image(artwork: &Artwork) -> Image {
 
 // ----------------------------------------------------------------- smoke ---
 
-/// The run's collected data.
-#[derive(Resource, Default)]
-struct ShellSmokeData {
+/// The smoke run, one resource: the collected data, the delivered shots,
+/// the remaining script and the static config.
+#[derive(Resource)]
+struct ShellSmoke {
     /// Rendered frames so far.
     frames: u32,
     /// Screenshots requested.
     shots_requested: usize,
     /// An artifact write failed.
     io_error: Option<String>,
+    /// Screenshots delivered by the renderer, shared with the observer.
+    shots: Arc<Mutex<Vec<ShellShotRecord>>>,
+    /// The scripted steps.
+    steps: Vec<(u32, Step)>,
+    /// Steps already applied.
+    step: usize,
+    /// The run's parameters.
+    request: SmokeRequest,
+    /// The slot the outcome is reported through.
+    handle: ShellSmokeHandle,
 }
 
 /// Shared slot the smoke fills when the run ends.
@@ -700,14 +794,11 @@ pub struct ShellSmokeHandle(Arc<Mutex<Option<Result<ShellSmokeReport, String>>>>
 
 impl ShellSmokeHandle {
     /// The outcome once the run has ended.
+    #[inline(always)]
     pub fn take(&self) -> Option<Result<ShellSmokeReport, String>> {
         self.0.lock().ok().and_then(|mut slot| slot.take())
     }
 }
-
-/// Screenshots delivered by the renderer, shared with the observers.
-#[derive(Resource, Clone, Default)]
-struct ShellShots(Arc<Mutex<Vec<ShellShotRecord>>>);
 
 /// What one captured screenshot measured.
 #[derive(Clone, Debug, PartialEq)]
@@ -752,7 +843,7 @@ pub struct ShellSmokeReport {
 }
 
 /// One scripted input.
-#[derive(Clone, Debug)]
+#[derive(Clone)]
 enum Step {
     /// Move the pointer to the centre of the named button (resolved at run
     /// time from the model, so the same step works at any surface size).
@@ -771,6 +862,7 @@ enum Step {
 /// (depressed frame) → land on `Campaign` → screenshot → `Esc` back →
 /// `Down` five times to `MM_B_QUIT` (the focused/rollover frame) → `Enter`
 /// (depressed, then the `terminate` the script states).
+#[inline(always)]
 fn script() -> Vec<(u32, Step)> {
     let at = |seconds: f64| (seconds * SMOKE_FRAME_HZ) as u32;
     let mut steps = vec![
@@ -812,6 +904,7 @@ pub struct ShellSmokePlugin {
 impl ShellSmokePlugin {
     /// A windowed smoke for `request`.
     #[must_use]
+    #[inline(always)]
     pub fn windowed(request: SmokeRequest) -> Self {
         Self {
             request,
@@ -822,6 +915,7 @@ impl ShellSmokePlugin {
 
     /// The handle the caller takes the outcome from.
     #[must_use]
+    #[inline(always)]
     pub fn handle(&self) -> ShellSmokeHandle {
         self.handle.clone()
     }
@@ -829,80 +923,63 @@ impl ShellSmokePlugin {
 
 impl Plugin for ShellSmokePlugin {
     fn build(&self, app: &mut App) {
-        app.insert_resource(ShellSmokeData::default());
-        app.init_resource::<ShellShots>();
-        app.insert_resource(SmokeSteps(self.steps.clone(), 0));
-        app.insert_resource(SmokeConfig {
+        app.insert_resource(ShellSmoke {
+            frames: 0,
+            shots_requested: 0,
+            io_error: None,
+            shots: Arc::new(Mutex::new(Vec::new())),
+            steps: self.steps.clone(),
+            step: 0,
             request: self.request.clone(),
             handle: self.handle.clone(),
         });
-        app.add_systems(PreUpdate, smoke_input.after(InputSystems));
-        app.add_systems(Last, smoke_step);
-        // The capture directory is real output; create it up front so a bad
-        // path fails before the window even renders.
-        app.add_systems(
-            Startup,
-            |config: Res<SmokeConfig>, mut data: ResMut<ShellSmokeData>| {
-                if let Err(error) = std::fs::create_dir_all(&config.request.capture_dir) {
-                    data.io_error = Some(format!(
-                        "cannot create {}: {error}",
-                        config.request.capture_dir.display()
-                    ));
-                }
-            },
-        );
     }
 }
 
-/// The remaining scripted steps.
-#[derive(Resource)]
-struct SmokeSteps(Vec<(u32, Step)>, usize);
-
-/// The smoke's static config.
-#[derive(Resource)]
-struct SmokeConfig {
-    request: SmokeRequest,
-    handle: ShellSmokeHandle,
-}
-
 /// Injects the frame's scripted input into the real `ButtonInput`/`CursorMoved`
-/// path — after the input system's own per-frame clear.
-#[allow(clippy::too_many_arguments)]
-fn smoke_input(
-    config: Res<SmokeConfig>,
-    mut keys: ResMut<ButtonInput<KeyCode>>,
-    mut mouse: ResMut<ButtonInput<MouseButton>>,
-    mut cursor: MessageWriter<CursorMoved>,
-    shell: Res<ShellResource>,
-    surface: Res<ShellSurface>,
-    mut steps: ResMut<SmokeSteps>,
-    mut data: ResMut<ShellSmokeData>,
-    mut commands: Commands,
-    windows: Query<Entity, With<PrimaryWindow>>,
-) {
-    // The scripted edge must survive this frame only: real input is not
-    // suppressed, but a stale just_* edge is.
-    keys.clear();
-    mouse.clear();
-    let frame = data.frames;
-    while steps.0.get(steps.1).is_some_and(|(at, _)| *at <= frame) {
-        let (_, step) = &steps.0[steps.1];
-        match step {
+/// path — the input systems' own per-frame clear already ran in `PreUpdate`,
+/// so scripted `just_*` edges survive exactly one frame like real ones.
+#[inline(always)]
+fn inject_smoke_input(world: &mut World, state: &mut ShellResource) {
+    let Some(mut smoke) = world.remove_resource::<ShellSmoke>() else {
+        return;
+    };
+    world.resource_mut::<ButtonInput<KeyCode>>().clear();
+    world.resource_mut::<ButtonInput<MouseButton>>().clear();
+    let frame = smoke.frames;
+    while smoke
+        .steps
+        .get(smoke.step)
+        .is_some_and(|(at, _)| *at <= frame)
+    {
+        match &smoke.steps[smoke.step].1 {
             Step::HoverButton(id) => {
-                if let Some(view) = shell.0.view(surface.0)
-                    && let Some(button) = view.buttons.iter().find(|button| button.id == *id)
-                {
-                    cursor.write(CursorMoved {
-                        window: windows.single().unwrap_or(Entity::PLACEHOLDER),
-                        position: Vec2::new(
-                            button.rect.x as f32 + button.rect.width as f32 * 0.5,
-                            button.rect.y as f32 + button.rect.height as f32 * 0.5,
-                        ),
-                        delta: None,
-                    });
+                // The centre of the named button's surface rect this frame —
+                // `None` when the section shows no such button (the step then
+                // does nothing, and the run's own checks fail it).
+                let position = state.shell.view(state.surface).and_then(|view| {
+                    view.buttons
+                        .iter()
+                        .find(|button| button.id == *id)
+                        .map(|button| {
+                            Vec2::new(
+                                button.rect.x as f32 + button.rect.width as f32 * 0.5,
+                                button.rect.y as f32 + button.rect.height as f32 * 0.5,
+                            )
+                        })
+                });
+                if let Some(position) = position {
+                    world
+                        .resource_mut::<Messages<CursorMoved>>()
+                        .write(CursorMoved {
+                            window: state.scene.window.unwrap_or(Entity::PLACEHOLDER),
+                            position,
+                            delta: None,
+                        });
                 }
             }
             Step::Mouse(down) => {
+                let mut mouse = world.resource_mut::<ButtonInput<MouseButton>>();
                 if *down {
                     mouse.press(MouseButton::Left);
                 } else {
@@ -910,6 +987,7 @@ fn smoke_input(
                 }
             }
             Step::Key(key, down) => {
+                let mut keys = world.resource_mut::<ButtonInput<KeyCode>>();
                 if *down {
                     keys.press(*key);
                 } else {
@@ -917,65 +995,74 @@ fn smoke_input(
                 }
             }
             Step::Shot(label) => {
-                data.shots_requested += 1;
-                screenshot(&mut commands, &config.request.capture_dir, label);
+                smoke.shots_requested += 1;
+                let dir = smoke.request.capture_dir.clone();
+                let shots = smoke.shots.clone();
+                screenshot(world, &dir, label, &shots);
             }
         }
-        steps.1 += 1;
+        smoke.step += 1;
     }
+    world.insert_resource(smoke);
 }
 
-/// Evaluates and finishes the run at `end_frame`.
-#[allow(clippy::too_many_arguments)]
-fn smoke_step(
-    config: Res<SmokeConfig>,
-    run: Res<ShellRun>,
-    shots: Res<ShellShots>,
-    mut data: ResMut<ShellSmokeData>,
-    mut commands: Commands,
-    mut exit: MessageWriter<AppExit>,
-) {
-    let frame = data.frames;
-    let end_frame = config.request.seconds * SMOKE_FRAME_HZ as u32;
+/// Counts the frame and finishes the run once the script has played out:
+/// writes the artifacts, posts the outcome and asks the app to exit.
+#[inline(always)]
+fn step_smoke(world: &mut World, state: &ShellResource, smoke: &mut ShellSmoke) {
+    let frame = smoke.frames;
+    let end_frame = smoke.request.seconds * SMOKE_FRAME_HZ as u32;
     // The final framebuffer arrives a little before the run ends.
     if frame == end_frame.saturating_sub(12) {
-        data.shots_requested += 1;
-        screenshot(&mut commands, &config.request.capture_dir, "final");
+        smoke.shots_requested += 1;
+        let dir = smoke.request.capture_dir.clone();
+        let shots = smoke.shots.clone();
+        screenshot(world, &dir, "final", &shots);
     }
-    let delivered = shots.0.lock().map_or(0, |shots| shots.len());
-    let finished = delivered >= data.shots_requested;
+    let delivered = smoke.shots.lock().map_or(0, |shots| shots.len());
+    let finished = delivered >= smoke.shots_requested;
     if frame >= end_frame && (finished || frame >= end_frame + SCREENSHOT_GRACE_FRAMES) {
-        let report = evaluate(&data, &run, &shots);
-        let outcome = write_artifacts(&config.request.capture_dir, &run, &report)
+        let report = evaluate(smoke, &state.run);
+        let outcome = write_artifacts(&smoke.request.capture_dir, &report)
             .map(|()| report.clone())
             .map_err(|(path, error)| format!("cannot write {}: {error}", path.display()));
-        if let Ok(mut slot) = config.handle.0.lock() {
+        if let Ok(mut slot) = smoke.handle.0.lock() {
             *slot = Some(outcome);
         }
-        exit.write(AppExit::Success);
+        world
+            .resource_mut::<Messages<AppExit>>()
+            .write(AppExit::Success);
         return;
     }
-    data.frames += 1;
+    smoke.frames += 1;
 }
 
 /// The screenshot spawn shared by the script and the final frame.
-fn screenshot(commands: &mut Commands, dir: &Path, label: &'static str) {
+#[inline(always)]
+fn screenshot(
+    world: &mut World,
+    dir: &Path,
+    label: &'static str,
+    shots: &Arc<Mutex<Vec<ShellShotRecord>>>,
+) {
     let path = dir.join(format!("{label}.png"));
     let saved = path.clone();
     let label = label.to_owned();
-    commands.spawn(Screenshot::primary_window()).observe(
-        move |captured: On<ScreenshotCaptured>, shots: Res<ShellShots>| {
+    let shots = shots.clone();
+    world
+        .spawn(Screenshot::primary_window())
+        .observe(move |captured: On<ScreenshotCaptured>| {
             let record = measure_shot(&captured.image, label.clone(), saved.clone());
             let delivered = captured.image.data.is_some();
             save_to_disk(saved.clone())(captured);
-            if delivered && let Ok(mut shots) = shots.0.lock() {
+            if delivered && let Ok(mut shots) = shots.lock() {
                 shots.push(record);
             }
-        },
-    );
+        });
 }
 
 /// The luminance facts of one captured frame.
+#[inline(always)]
 fn measure_shot(image: &Image, label: String, path: PathBuf) -> ShellShotRecord {
     let mut levels = BTreeSet::new();
     let mut sum = 0_u64;
@@ -1005,21 +1092,22 @@ fn measure_shot(image: &Image, label: String, path: PathBuf) -> ShellShotRecord 
 }
 
 /// The pass/fail checks of a finished run.
-fn evaluate(data: &ShellSmokeData, run: &ShellRun, shots: &ShellShots) -> ShellSmokeReport {
-    let shots = shots
-        .0
+#[inline(always)]
+fn evaluate(smoke: &ShellSmoke, run: &ShellRun) -> ShellSmokeReport {
+    let shots = smoke
+        .shots
         .lock()
         .map(|shots| shots.clone())
         .unwrap_or_default();
     let mut failures = Vec::new();
-    if let Some(error) = &data.io_error {
+    if let Some(error) = &smoke.io_error {
         failures.push(error.clone());
     }
-    if shots.len() < data.shots_requested || shots.is_empty() {
+    if shots.len() < smoke.shots_requested || shots.is_empty() {
         failures.push(format!(
             "only {} of {} requested framebuffer screenshots arrived",
             shots.len(),
-            data.shots_requested
+            smoke.shots_requested
         ));
     }
     for shot in &shots {
@@ -1061,7 +1149,7 @@ fn evaluate(data: &ShellSmokeData, run: &ShellRun, shots: &ShellShots) -> ShellS
         ));
     }
     ShellSmokeReport {
-        frames: data.frames,
+        frames: smoke.frames,
         visited: run.visited.clone(),
         focus_moves: run.focus_moves,
         hovered: run.hovered.iter().cloned().collect(),
@@ -1076,11 +1164,8 @@ fn evaluate(data: &ShellSmokeData, run: &ShellRun, shots: &ShellShots) -> ShellS
 
 /// Writes `report.json` (the trace is the visited/hover record the report
 /// already carries; the framebuffers are the PNGs themselves).
-fn write_artifacts(
-    dir: &Path,
-    _run: &ShellRun,
-    report: &ShellSmokeReport,
-) -> Result<(), (PathBuf, std::io::Error)> {
+#[inline(always)]
+fn write_artifacts(dir: &Path, report: &ShellSmokeReport) -> Result<(), (PathBuf, std::io::Error)> {
     std::fs::create_dir_all(dir).map_err(|error| (dir.to_path_buf(), error))?;
     let shots = report
         .shots
@@ -1137,6 +1222,7 @@ fn write_artifacts(
     std::fs::write(&report_path, body).map_err(|error| (report_path, error))
 }
 
+#[inline(always)]
 fn json_string(text: &str) -> String {
     let mut out = String::from("\"");
     for character in text.chars() {
@@ -1154,6 +1240,7 @@ fn json_string(text: &str) -> String {
     out
 }
 
+#[inline(always)]
 fn json_f32(value: f32) -> String {
     if value.is_finite() {
         value.to_string()
@@ -1238,6 +1325,7 @@ pub fn shell_app(
 ///
 /// [`FrontEndError::SmokeFailed`] when any check failed,
 /// [`FrontEndError::Exit`] when the run produced no report.
+#[inline(always)]
 fn finish(
     handle: &ShellSmokeHandle,
     request: &SmokeRequest,
