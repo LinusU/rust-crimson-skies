@@ -359,7 +359,10 @@ fn update_contacts(
     brackets: Query<Entity, With<ContactBracket>>,
     overlay: Option<Res<crate::playtest::visuals::DeveloperOverlay>>,
     windows: Query<&bevy::prelude::Window>,
-    phase: Option<Res<super::launch_cinematic::LaunchCinematic>>,
+    (phase, crash): (
+        Option<Res<super::launch_cinematic::LaunchCinematic>>,
+        Option<Res<crate::playtest::fatal_contact::CrashSequence>>,
+    ),
     targeting: Option<Res<TargetingSession>>,
     mut ring_open: Local<bool>,
     mut spyglass: Option<ResMut<super::spyglass::SpyglassState>>,
@@ -369,7 +372,8 @@ fn update_contacts(
         commands.entity(entity).despawn();
     }
     // The launch cinematic holds the HUD back, its markers with it (#1704).
-    if phase.is_some_and(|phase| phase.is_playing()) {
+    // The crash hides the HUD with them.
+    if phase.is_some_and(|phase| phase.is_playing()) || crash.is_some() {
         return;
     }
     let Ok(player) = players.single() else { return };

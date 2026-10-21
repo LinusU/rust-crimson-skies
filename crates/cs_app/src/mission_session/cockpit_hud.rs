@@ -540,6 +540,7 @@ fn fit_safe_area(
     windows: Query<&Window>,
     phase: Option<bevy::prelude::Res<super::launch_cinematic::LaunchCinematic>>,
     view: Option<bevy::prelude::Res<super::view_cycle::MissionViewMode>>,
+    crash: Option<bevy::prelude::Res<crate::playtest::fatal_contact::CrashSequence>>,
     mut areas: Query<(&mut Node, &mut bevy::prelude::Visibility), With<SafeArea>>,
 ) {
     let Ok(window) = windows.single() else { return };
@@ -549,7 +550,8 @@ fn fit_safe_area(
     // corner clusters are the panel's own meshes, so the text layer stands
     // down. The spyglass window is not under SafeArea and still draws.
     let held = phase.is_some_and(|phase| phase.is_playing())
-        || view.is_some_and(|view| view.at_pilot_eye());
+        || view.is_some_and(|view| view.at_pilot_eye())
+        || crash.is_some();
     for (mut node, mut visibility) in &mut areas {
         *visibility = if held {
             bevy::prelude::Visibility::Hidden
