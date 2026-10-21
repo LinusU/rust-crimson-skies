@@ -25,6 +25,7 @@ mod accept_f03_d_fuzz_nested_range_and_string;
 mod accept_f03_d_truncation_corpus;
 mod accept_f12_f_reader_absolute_offset_window;
 mod accept_f64_a_legacy_profile_contracts;
+mod accept_parity4_lens_flare_a;
 mod accept_test_bin_rest_formats;
 mod bm;
 mod common;
