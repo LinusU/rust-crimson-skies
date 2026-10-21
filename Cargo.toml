@@ -21,7 +21,7 @@ license = "MIT"
 publish = false
 
 [workspace.dependencies]
-# Intended baseline (docs/research/SOURCES.md, S01/S11): Bevy 0.19 + Avian3d 0.7.
+# Intended baseline (docs/research/SOURCES.md, S01/S11): Bevy 0.20 + Avian3d 0.8.
 # The caret ranges cannot drift to a different minor; the exact patch is pinned
 # in Cargo.lock and every downstream gate runs with --locked.
 #
@@ -40,10 +40,9 @@ publish = false
 # dodge that, and do not satisfy the readers with a bare `Assets<Mesh>`: the
 # coupling is the contract, and a bare resource would hide it. The measurement
 # and its resolution are recorded in docs/findings/ (task #333).
-avian3d = { version = "0.7", default-features = false, features = [
+avian3d = { version = "0.8", default-features = false, features = [
     "3d",
     "collider-from-mesh",
-    "f32",
     "parry-f32",
     "debug-plugin",
     "xpbd_joints",
@@ -51,7 +50,7 @@ avian3d = { version = "0.7", default-features = false, features = [
     "bevy_scene",
     "bevy_picking",
 ] }
-bevy = "0.19"
+bevy = "0.20"
 
 cs_app = { path = "crates/cs_app" }
 cs_assets = { path = "crates/cs_assets" }
