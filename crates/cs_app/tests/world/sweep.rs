@@ -83,7 +83,7 @@ fn accept_f18_a_swept_body_flies_through_the_narrow_arch_at_high_speed() {
 /// The start position is chosen so that two consecutive tick samples straddle
 /// the 1 m thick leg with a gap larger than probe-plus-wall: a discrete test
 /// would step straight over it. The probe also carries
-/// `SpeculativeMargin::ZERO` (see `cs_app::world::fixture::spawn_swept_probe`),
+/// `SpeculativeCcd::ZERO` (see `cs_app::world::fixture::spawn_swept_probe`),
 /// so nothing but the swept sweep can stop it.
 ///
 /// Observable failure if `SweptCcd` is not wired into the spawned probe, if

@@ -103,7 +103,7 @@ use super::body::BodyLayer;
 
 /// The overlap a clamped spawn keeps, in meters.
 ///
-/// The swept layers run with `SpeculativeMargin::ZERO` (F23-B: an unbounded
+/// The swept layers run with `SpeculativeCcd::ZERO` (F23-B: an unbounded
 /// speculative margin stops a fast body metres in front of an obstacle, which
 /// is the hitbox inflation the spec forbids), and a zero margin means a pair
 /// that only *touches* generates no contact. A spawn stopped exactly at the

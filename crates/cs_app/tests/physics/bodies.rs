@@ -9,7 +9,7 @@
 
 use avian3d::prelude::{
     CollisionEventsEnabled, CollisionLayers as AvianCollisionLayers, LinearVelocity, Mass,
-    Position, RigidBody, Sensor, SpeculativeMargin, SweptCcd,
+    Position, RigidBody, Sensor, SpeculativeCcd, SweptCcd,
 };
 use bevy::prelude::Entity;
 use cs_app::physics::{
@@ -82,10 +82,10 @@ fn accept_f23_b_body_creation_binds_layer_shape_sweep_and_events() {
             layer.requires_continuous_detection(),
             "fast layers must opt into the sweep, slow layers must not pay for it"
         );
-        let margin = body.get::<SpeculativeMargin>();
+        let margin = body.get::<SpeculativeCcd>();
         if layer.requires_continuous_detection() {
             assert_eq!(
-                margin.map(|margin| margin.0),
+                margin.map(|margin| margin.max_distance),
                 Some(0.0),
                 "a swept body must keep a tight speculative margin instead of an inflated hitbox"
             );

@@ -281,10 +281,10 @@ fn accept_f18_b_a_swept_body_crosses_a_world_trigger_volume_untouched() {
 /// property of the role and not a claim about the original. Avian's narrow phase
 /// asks parry for a manifold within `max_contact_distance`
 /// (`collision/narrow_phase/system_param.rs`), which is `dt · |v₂ − v₁|` after
-/// each side's velocity is clamped to its own `SpeculativeMargin / dt`; a swept
-/// body carries `SpeculativeMargin::ZERO`, so that distance collapses to the
+/// each side's velocity is clamped to its own `SpeculativeCcd / dt`; a swept
+/// body carries `SpeculativeCcd::ZERO`, so that distance collapses to the
 /// contact tolerance, and a margin on the *volume* cannot widen it (measured:
-/// `SpeculativeMargin(4.0)` on the trigger still reports nothing). A triangle
+/// `SpeculativeCcd(4.0)` on the trigger still reports nothing). A triangle
 /// mesh only reports contacts near a triangle, so a body that lands deep inside
 /// a mesh volume with no triangle within reach is never reported. A cuboid pair
 /// has no such gap — parry's EPA produces a deep-penetration contact, which is

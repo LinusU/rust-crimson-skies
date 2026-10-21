@@ -14,7 +14,7 @@
 //!
 //! * the engine's own state — Avian's [`ColliderDisabled`] marker on the node's
 //!   entity, which is what takes its collider out of the broad-phase tree
-//!   (`On<Add, ColliderDisabled>` / `On<Remove, ColliderDisabled>` in
+//!   (`On<Add<ColliderDisabled>>` / `On<Remove<ColliderDisabled>>` in
 //!   `avian3d-0.7.0/src/collider_tree/update.rs`);
 //! * the **contact reports** the production contact reporter classifies out of
 //!   Avian's collision events ([`ContactReports`], one entry per contact
@@ -232,12 +232,12 @@ fn world_with_the_real_loop() -> App {
 fn count_marker_writes(world: &mut World) {
     world.init_resource::<MarkerWrites>();
     world.add_observer(
-        |_insert: On<Insert, ColliderDisabled>, mut writes: ResMut<MarkerWrites>| {
+        |_insert: On<Insert<ColliderDisabled>>, mut writes: ResMut<MarkerWrites>| {
             writes.disabled_inserted += 1;
         },
     );
     world.add_observer(
-        |_remove: On<Remove, ColliderDisabled>, mut writes: ResMut<MarkerWrites>| {
+        |_remove: On<Remove<ColliderDisabled>>, mut writes: ResMut<MarkerWrites>| {
             writes.disabled_removed += 1;
         },
     );

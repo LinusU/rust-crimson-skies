@@ -291,7 +291,7 @@ fn accept_f23_d_a_single_solver_step_tunnels_where_the_declared_policy_does_not(
 /// observable failure (both measured, both recorded in the finding):
 ///
 /// * the declared `SPAWN_CONTACT_OVERLAP_M` on the clamp. The swept layers run
-///   with `SpeculativeMargin::ZERO`, so a body stopped exactly at the time of
+///   with `SpeculativeCcd::ZERO`, so a body stopped exactly at the time of
 ///   impact only *touches* and generates no contact: with the overlap removed,
 ///   9 of the 12 probed rate/speed combinations sail through the wall
 ///   (`x = +2.9` to `+29.9`) and report nothing at all;

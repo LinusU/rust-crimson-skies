@@ -37,7 +37,7 @@
 use avian3d::parry::shape::{ConvexPolyhedron, Cuboid, SharedShape, TriMesh};
 use avian3d::prelude::{
     Collider, CollisionLayers as AvianCollisionLayers, Gravity, LinearVelocity, Mass, Position,
-    RigidBody, Rotation, Sensor, SpeculativeMargin, SweptCcd,
+    RigidBody, Rotation, Sensor, SpeculativeCcd, SweptCcd,
 };
 use bevy::prelude::{App, Entity, GlobalTransform, Mat3, Transform, Vec3, World};
 use cs_app::world::{
@@ -623,7 +623,7 @@ fn spawn_probe(app: &mut App, at: Vec3, velocity: Vec3) -> Entity {
             Rotation::default(),
             Gravity::ZERO,
             LinearVelocity(velocity),
-            SpeculativeMargin::ZERO,
+            SpeculativeCcd::ZERO,
             SweptCcd::default(),
             cs_app::world::fixture::probe_layers(),
         ))

@@ -25,7 +25,7 @@
 //!   stored triangle, and swept CCD sees it.
 //! * `SubstepCount` is *not* a fix: substeps subdivide the solver, not the
 //!   detection pipeline; measured at 2/4/8 substeps the probe still tunnels.
-//! * A nonzero `SpeculativeMargin` *would* stop the miss — the speculative
+//! * A nonzero `SpeculativeCcd` *would* stop the miss — the speculative
 //!   narrow phase has a `TriMesh` case — but only once the margin is large
 //!   enough to matter, and only by predicting contacts ahead of the body. It is
 //!   pinned here as a rejected alternative, so the cost the decision record
@@ -34,7 +34,7 @@
 //! Everything below runs the production composition: the
 //! `cs_app::asset_stack` headless world, the `cs_app::physics` fixed-rate
 //! adapter, `cs_app::world::spawn_swept_probe` (the same `SweptCcd` +
-//! `SpeculativeMargin::ZERO` body F18-A/B measure with), and
+//! `SpeculativeCcd::ZERO` body F18-A/B measure with), and
 //! `cs_app::asset_stack::spawn_static_mesh_collider` for the
 //! collider-on-child arm and `spawn_static_mesh_collider_on_body` — the
 //! helper `world/spawn` itself calls — for the decided-layout arm. No
@@ -49,7 +49,7 @@
 use std::time::Duration;
 
 use avian3d::prelude::{
-    Collider, ColliderAabb, Gravity, Position, RigidBody, SpeculativeMargin, SubstepCount, SweptCcd,
+    Collider, ColliderAabb, Gravity, Position, RigidBody, SpeculativeCcd, SubstepCount, SweptCcd,
 };
 use bevy::asset::RenderAssetUsages;
 use bevy::math::Vec3;
@@ -488,7 +488,7 @@ fn accept_t420_substeps_do_not_make_a_child_node_collider_visible() {
 
 /// **The margin workaround really works, which is why it was rejected on cost
 /// and not on effect.** The same child-node trimesh that tunnels above is
-/// stopped when the probe is given a large `SpeculativeMargin`, because the
+/// stopped when the probe is given a large `SpeculativeCcd`, because the
 /// speculative narrow phase *does* have a `TriMesh` case — it is the swept
 /// query that skips the pair, not the narrow phase.
 ///
@@ -523,7 +523,7 @@ fn accept_t420_a_speculative_margin_stops_what_the_swept_query_skips() {
     // one arm deliberately reverses that to price the alternative.
     app.world_mut()
         .entity_mut(probe)
-        .insert(SpeculativeMargin(10.0));
+        .insert(SpeculativeCcd::new(10.0));
     for _ in 0..14 {
         app.update();
     }

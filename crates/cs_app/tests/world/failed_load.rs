@@ -119,7 +119,7 @@ fn vanish_on_stamp(app: &mut App, target: &str) {
         spawned_before: None,
     });
     world.add_observer(
-        |add: On<Add, WorldObjectBinding>,
+        |add: On<Add<WorldObjectBinding>>,
          bindings: Query<&WorldObjectBinding>,
          mut vanish: ResMut<Vanish>| {
             if let Ok(binding) = bindings.get(add.entity)
@@ -131,7 +131,7 @@ fn vanish_on_stamp(app: &mut App, target: &str) {
         },
     );
     world.add_observer(
-        |add: On<Add, ObjectCondition>,
+        |add: On<Add<ObjectCondition>>,
          bindings: Query<(Entity, &WorldObjectBinding)>,
          mut vanish: ResMut<Vanish>,
          mut commands: Commands| {

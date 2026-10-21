@@ -147,7 +147,7 @@ struct VisibilityWrites(u32);
 /// insert is counted too.
 fn count_visibility_writes(world: &mut World) {
     world.add_observer(
-        |_insert: On<Insert, NodeAnimatedVisibility>, mut writes: ResMut<VisibilityWrites>| {
+        |_insert: On<Insert<NodeAnimatedVisibility>>, mut writes: ResMut<VisibilityWrites>| {
             writes.0 += 1;
         },
     );

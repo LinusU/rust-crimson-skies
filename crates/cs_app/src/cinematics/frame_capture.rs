@@ -200,7 +200,7 @@ pub fn capture_surface(
     let adapter = app
         .world()
         .get_resource::<bevy::render::renderer::RenderAdapterInfo>()
-        .map(|info| format!("{} ({:?})", info.0.name, info.0.backend))
+        .map(|info| format!("{} ({:?})", info.name, info.backend))
         .unwrap_or_else(|| "no adapter reported".to_owned());
 
     let mut mismatched = 0;

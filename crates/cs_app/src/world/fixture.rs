@@ -83,7 +83,7 @@ use std::time::Duration;
 
 use avian3d::prelude::{
     AngularVelocity, Collider, CollisionEventsEnabled, CollisionLayers as AvianCollisionLayers,
-    Gravity, LinearVelocity, Mass, Position, RigidBody, Rotation, SpeculativeMargin, SubstepCount,
+    Gravity, LinearVelocity, Mass, Position, RigidBody, Rotation, SpeculativeCcd, SubstepCount,
     SweptCcd,
 };
 use bevy::prelude::{App, Entity, Transform, Vec3};
@@ -1419,7 +1419,7 @@ impl ProbeSpec {
 /// Spawns a dynamic, swept-CCD body on the aircraft collision layer.
 ///
 /// The probe opts in to [`SweptCcd`] because the acceptance scenario *is* a
-/// high-speed sweep, and it sets [`SpeculativeMargin::ZERO`] so that sweep is
+/// high-speed sweep, and it sets [`SpeculativeCcd::ZERO`] so that sweep is
 /// what the test measures. Measured on the pinned pair (`avian 0.7.0`,
 /// `bevy 0.19.1`, `SubstepCount(1)`): with Avian's *default* speculative
 /// margin the probe stops at the leg even with `SweptCcd` removed, so a test
@@ -1459,7 +1459,7 @@ pub fn spawn_swept_probe(app: &mut App, spec: &ProbeSpec) -> Result<Entity, Prob
 /// and is a limitation for F18-B/C trigger volumes, not a claim about the
 /// original.
 ///
-/// [`SpeculativeMargin::ZERO`] is kept on this body too, so the *discrete
+/// [`SpeculativeCcd::ZERO`] is kept on this body too, so the *discrete
 /// overlap* is what is measured, never a predicted contact.
 ///
 /// # Errors
@@ -1494,7 +1494,7 @@ fn spawn_probe(app: &mut App, spec: &ProbeSpec, swept: bool) -> Result<Entity, P
         Rotation::default(),
         LinearVelocity(velocity),
         AngularVelocity(Vec3::ZERO),
-        SpeculativeMargin::ZERO,
+        SpeculativeCcd::ZERO,
         CollisionEventsEnabled,
         avian_layers(CollisionLayers::from(CollisionLayer::Aircraft)),
     ));

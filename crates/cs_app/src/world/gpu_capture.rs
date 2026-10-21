@@ -852,7 +852,7 @@ pub(super) fn adapter_name(app: &App) -> String {
     app.world()
         .get_resource::<bevy::render::renderer::RenderAdapterInfo>()
         .map(|info| {
-            let info = &*info.0;
+            let info = &**info;
             format!("{} ({:?})", info.name, info.backend)
         })
         .unwrap_or_else(|| "no adapter reported".to_owned())

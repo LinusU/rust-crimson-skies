@@ -18,7 +18,7 @@
 //!   trigger a reported overlap instead of a solid obstacle;
 //! * layers that [`requires_continuous_detection`](CollisionLayer::requires_continuous_detection)
 //!   (fast projectiles and narrow triggers) get [`SweptCcd`] *and* a zero
-//!   [`SpeculativeMargin`]. The sweep is the tunneling fix; bounding the
+//!   [`SpeculativeCcd`]. The sweep is the tunneling fix; bounding the
 //!   speculative margin is what keeps that fix from inflating the body's
 //!   effective hitbox — with the default unbounded margin a fast body predicts
 //!   contacts metres ahead of itself, which is exactly the "globally inflated
@@ -44,7 +44,7 @@ use std::fmt;
 
 use avian3d::prelude::{
     AngularVelocity, Collider, CollisionEventsEnabled, CollisionLayers as AvianCollisionLayers,
-    LinearVelocity, Mass, Position, RigidBody, Rotation, Sensor, Sleeping, SpeculativeMargin,
+    LinearVelocity, Mass, Position, RigidBody, Rotation, Sensor, Sleeping, SpeculativeCcd,
     SweptCcd, TransformInterpolation,
 };
 use bevy::prelude::{Component, Entity, Transform, Vec3, World};
@@ -245,7 +245,7 @@ pub fn spawn_body(world: &mut World, spec: &BodySpec) -> Result<Entity, BodyErro
         entity.insert(CollisionEventsEnabled);
     }
     if layer.requires_continuous_detection() {
-        entity.insert((SweptCcd::default(), SpeculativeMargin::ZERO));
+        entity.insert((SweptCcd::default(), SpeculativeCcd::ZERO));
     }
     if spec.mode.is_simulated() {
         // Presentation eases the render transform between fixed ticks

@@ -73,13 +73,13 @@
 //! presentation over original content, and no original executable ran.
 
 use bevy::asset::{Assets, Handle};
-use bevy::math::primitives::{Plane3d, Sphere};
 use bevy::mesh::{Mesh, Mesh3d, VertexAttributeValues};
 use bevy::prelude::{
     App, Camera3d, ClearColor, Color, Commands, Component, DistanceFog, Entity, FogFalloff,
     GlobalAmbientLight, GlobalTransform, MeshMaterial3d, Plugin, Quat, Query, Res, ResMut,
     Resource, StandardMaterial, Startup, Transform, Update, Vec2, Vec3, Visibility, With, Without,
 };
+use bevy::shape::{Plane3d, Sphere};
 use cs_content::environment::EnvironmentDefinition;
 use cs_types::content::{Provenance, Resolved};
 use cs_types::evidence::{ClaimId, ClaimStatus};
