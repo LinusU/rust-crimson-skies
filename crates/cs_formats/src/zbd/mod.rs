@@ -85,10 +85,12 @@ pub mod anim_tracks;
 pub mod archive;
 pub mod detection_zones;
 pub mod dispatch;
+pub mod effect_defs;
 pub mod family;
 pub mod header;
 pub mod placezeps;
 pub mod reader_archive;
+pub mod reader_tokens;
 pub mod role;
 pub mod si_script;
 pub mod sound_archive;
@@ -124,6 +126,11 @@ pub use archive::{
 pub use dispatch::{
     DispatchBasis, HeaderStatus, RoleStatus, ZbdDispatch, ZbdDispatchError, ZbdProbe, dispatch,
 };
+pub use effect_defs::{
+    AtNode, CallAnimation, DestroyablePart, EffectAnimation, EffectDefError, EffectEvent,
+    EffectSequence, InjureAnim, LightState, PufferState, VehicleRecord, read_animation_definitions,
+    read_vehicle_records,
+};
 pub use family::{ZBD_FAMILY_INVENTORY, ZbdFamily, ZbdFamilyRecord, ZbdReaderId, family_record};
 pub use header::{
     ANIMATION_SIGNATURE, ANIMATION_SIGNATURE_OFFSET, ANIMATION_VERSION, ANIMATION_VERSION_OFFSET,
@@ -133,6 +140,9 @@ pub use header::{
 };
 pub use reader_archive::{
     EncodingEvidence, ReaderArchive, ReaderEntry, ReaderError, read_reader_archive,
+};
+pub use reader_tokens::{
+    MAX_READER_DEPTH, ReaderNode, ReaderTokenError, read_reader_node, read_reader_nodes,
 };
 pub use role::{
     CONTENT_ROOT, OUTSIDE_CONTENT_ROOT, RoleLevel, RolePattern, RoleRule, UNOBSERVED_NAME, ZbdRole,
