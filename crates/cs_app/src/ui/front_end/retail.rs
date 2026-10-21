@@ -309,6 +309,17 @@ impl fmt::Display for RetailError {
 
 impl std::error::Error for RetailError {}
 
+/// One sound-archive member as [`FrontEndScreens::sound_member`] read it.
+#[derive(Clone, Debug)]
+pub struct SoundMember {
+    /// The member's name as the archive spells it.
+    pub name: String,
+    /// The stored RIFF/WAVE bytes.
+    pub bytes: Vec<u8>,
+    /// The decoded samples.
+    pub pcm: crate::audio::PcmAudio,
+}
+
 /// The original front-end screen artwork, opened once over the installation.
 pub struct FrontEndScreens {
     install_root: PathBuf,
@@ -603,6 +614,81 @@ impl FrontEndScreens {
                 })
             }
         }
+    }
+
+    /// The decoded UI-archive texture a script names, matched ASCII
+    /// case-insensitively (`Briefing.zrd` spells `HA-m1MAP` where the archive
+    /// stores `ha-m1map`).
+    ///
+    /// # Errors
+    ///
+    /// [`RetailError::Texture`] when the archive lists no such texture, and
+    /// the errors of [`Self::artwork`].
+    pub fn ui_artwork(&self, name: &str) -> Result<Artwork, RetailError> {
+        let stored = self
+            .catalog
+            .archives()
+            .flat_map(|archive| archive.ids())
+            .find(|id| id.name.eq_ignore_ascii_case(name))
+            .map(|id| id.name.clone())
+            .ok_or_else(|| RetailError::Texture {
+                name: name.to_owned(),
+                reason: "the UI archive lists no texture of this name".to_owned(),
+            })?;
+        self.artwork(&OriginalImage {
+            source: ImageSource::UiArchive,
+            name: stored,
+            format: String::new(),
+            width: 0,
+            height: 0,
+            bytes: 0,
+            sha256: String::new(),
+            decodable: true,
+            refusal: String::new(),
+        })
+    }
+
+    /// One member of a ZBD sound archive of the installation: its stored
+    /// bytes (the RIFF/WAVE file, cue points included) and the samples the
+    /// production decoder makes of them.
+    ///
+    /// `container` is the archive's installation spelling
+    /// (`ZBD/soundsh.zbd`), `member` the member name, matched ASCII
+    /// case-insensitively.
+    ///
+    /// # Errors
+    ///
+    /// [`RetailError::Member`] when the archive does not open, index or list
+    /// the member, or when the member does not decode.
+    pub fn sound_member(&self, container: &str, member: &str) -> Result<SoundMember, RetailError> {
+        let fail = |reason: String| RetailError::Member {
+            name: format!("{container}#{member}"),
+            reason,
+        };
+        let key = AssetKey::from_spelling(INSTALL_NAMESPACE, container, "default")
+            .map_err(|error| fail(error.to_string()))?;
+        let archive = cs_assets::zbd::ZbdContainer::open(&self.session, &key)
+            .map_err(|error| fail(error.to_string()))?;
+        let mut parse = cs_formats::ParseContext::with_defaults(archive.label());
+        let index = archive
+            .index(&mut parse)
+            .map_err(|error| fail(error.to_string()))?;
+        let table = index.member_table();
+        let assets = archive
+            .sound_assets(&mut parse, &index, &table)
+            .map_err(|error| fail(error.to_string()))?;
+        let asset = assets
+            .entries()
+            .iter()
+            .find(|asset| String::from_utf8_lossy(asset.name()).eq_ignore_ascii_case(member))
+            .ok_or_else(|| fail("the archive lists no such member".to_owned()))?;
+        let pcm = crate::audio::sound_member_pcm(asset, &mut parse)
+            .map_err(|error| fail(format!("{}: {}", error.code, error.detail)))?;
+        Ok(SoundMember {
+            name: String::from_utf8_lossy(asset.name()).into_owned(),
+            bytes: asset.content().to_vec(),
+            pcm,
+        })
     }
 
     /// Reads and parses the original `ASSETS/LAYOUT.CSV`.

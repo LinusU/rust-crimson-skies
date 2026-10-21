@@ -37,6 +37,9 @@
 //! * [`FlightCheckView`] (in `flight_check_view`, M01-LC-FC-A) — the Flight
 //!   Check screen's view model read from the mission's own data, with the
 //!   gun and rocket lists unknown until the loadout is measured.
+//! * [`BriefingScene`] (in `briefing`, #1750) — the original briefing map
+//!   screen: `Briefing.zrd`'s script compiled into a [`Timeline`] against the
+//!   voice-over's cue points, the objectives panel and the three buttons.
 //! * [`FrontEnd`] (in `machine`) — the machine that walks the table.
 //! * [`ScreenSession`] (in `screens`, F45-B) — the front end presented through
 //!   a validated [`ScreenDeck`] of authored artwork and hotspots: pointer
@@ -76,6 +79,7 @@
 //! unknowns and `docs/findings/2026-10-07-f45-d-front-end-screen-capture.md`
 //! for F45-D's.
 
+mod briefing;
 mod capture;
 mod flight_check_view;
 mod flow;
@@ -90,6 +94,10 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use cs_content::ui_layout::ScreenLayout;
 
+pub use briefing::{
+    BriefingButton, BriefingPlayback, BriefingScene, BriefingSceneError, DESIGNED_LINE_HEIGHT,
+    DrawnElement, ElementKind, PANEL_ELEMENT, SceneUnknown, Timeline, TimelineError, Track,
+};
 pub use capture::{
     Artwork, CapturedButton, SCREEN_CAPTURE_HEIGHT, SCREEN_CAPTURE_SURFACE, SCREEN_CAPTURE_WIDTH,
     ScreenCapture, ScreenCaptureError, capture_artwork, capture_screen,
@@ -121,7 +129,7 @@ pub use paths::{
 };
 pub use retail::{
     FrontEndInventory, FrontEndScreens, GRAPHICS_PREFIX, ImageSource, MINIMUM_SCREEN_EXTENT,
-    OriginalImage, SCREEN_CONTAINER, UI_IMAGE_CONTAINER,
+    OriginalImage, SCREEN_CONTAINER, SoundMember, UI_IMAGE_CONTAINER,
 };
 pub use screens::{
     Button, ButtonView, DeckError, ScreenAssetError, ScreenAssets, ScreenDeck, ScreenSession,
