@@ -10,8 +10,8 @@ scripted run is never `human_play`.
 ## What the stage does
 
 After the keymap overlay the scripted run presses, through the real keyboard
-path, one stage per 50 frames: `F7`, `F9`, `F10`, `F11`, `F12`, `F8` (to the
-remembered eye, then back to chase), numpad `-` (zoom out), numpad `+` (zoom
+path, one stage per 50 frames: `F7`, `F9`, `F10`, `F11`, `F12`, `F8` (back to the
+remembered view, chase after the cockpit phase), numpad `-` (zoom out), numpad `+` (zoom
 in), `K` + numpad 8, numpad 4, `J` + numpad 6, `L`, and in the cockpit eye `K`
 + numpad 4. At frame 40 of each stage it reads the view, look and zoom state
 and the camera's offset from the aircraft (body frame), and takes a
@@ -24,7 +24,7 @@ apart (designed).
 
 `CS_CAPABILITIES=retail,gpu,audio target/release/cs --cs-path $CS_GAME_DIR
 --mission M01 --smoke-seconds 60 --capture-dir private/camera-smoke`: exit 0,
-3790 frames, 55 checks, no failures; the 15 frames are in
+3790 frames, 55 checks, no failures; the 14 frames are in
 `private/camera-smoke/` (ignored by Git). Measured camera offsets from the
 aircraft: chase 18.6 m, F7 91.2 m (point held where it was, aircraft flew on),
 F9 9.6 m above/behind, F10 12.0 m behind, F11/F12 10.1 m left/right, eye 0.8 m;

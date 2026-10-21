@@ -85,7 +85,8 @@ struct Stage {
 }
 
 /// The walk, in order. `F8` from an external view returns to the remembered
-/// cycle mode (initially the second eye), and from there to the chase view.
+/// cycle mode: the cockpit phase before this stage ends the cycle on the chase
+/// view, so that is where it lands; the last stage's `F8` then enters the eye.
 const STAGES: &[Stage] = &[
     Stage {
         label: "chase",
@@ -136,15 +137,7 @@ const STAGES: &[Stage] = &[
         zoom: ZoomExpect::Untouched,
     },
     Stage {
-        label: "f8_remembered_eye",
-        press: &[KeyCode::F8],
-        hold: 3,
-        view: MissionViewMode::SecondEye,
-        look: LookExpect::Any,
-        zoom: ZoomExpect::Untouched,
-    },
-    Stage {
-        label: "f8_back_to_chase",
+        label: "f8_remembered_view",
         press: &[KeyCode::F8],
         hold: 3,
         view: MissionViewMode::Chase,
