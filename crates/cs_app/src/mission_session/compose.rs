@@ -1018,6 +1018,8 @@ fn add_composition(
     // The cockpit views (F8, #1810) take the camera from the chase rig.
     super::cockpit_camera::install_cockpit_camera(app);
     super::cockpit_interior::install_cockpit_interior(app);
+    // The panel dials (#1812) follow the same pilot-eye visibility rule.
+    super::cockpit_dials::install_cockpit_dials(app);
     if visuals {
         app.add_plugins(crate::playtest::visuals::PlaytestVisualsPlugin);
         // The F1 help screen and the pause screen list the table's real
@@ -1232,6 +1234,12 @@ fn add_composition(
         // The cockpit1 interior (#1811), shown only in the pilot-eye views.
         let interior = super::cockpit_interior::build_cockpit_interior(app, source)?;
         app.insert_resource(interior);
+        // The panel's live dials (#1812): the same `gauges` subtree the HUD
+        // cluster draws, but at its stored dash transforms under the body —
+        // `horiz`/`pfhorizon` included. The shared glyph/zone drive images
+        // are loaded with it when the HUD pass did not already preload them.
+        let dials = super::cockpit_dials::build_cockpit_dials(app, source)?;
+        app.insert_resource(dials);
         // 2c. The scripted aircraft's drawn models (M01-WINDOW-ACTORS, #1538),
         //     built from the same `planes.zbd` source. A prefix that cannot be
         //     drawn is a recorded refusal, not a failed composition.
@@ -1284,6 +1292,15 @@ fn add_composition(
                 }
             }
             spawn_hud_art(app.world_mut(), &art);
+        }
+        // The panel dials' glyph cells and zone pieces read the same drive
+        // caches; when the placement table was absent the HUD pass never
+        // preloaded them, so the dials' own share is loaded here.
+        if hud.images.is_empty() {
+            let (images, texture_unknowns) =
+                super::hud_art::preload_drive_images(app, source.sources().textures());
+            hud.images = images;
+            hud.unknowns.extend(texture_unknowns);
         }
         app.insert_resource(hud);
     }
@@ -1600,6 +1617,7 @@ pub fn spawn_player(world: &mut World) -> Result<Entity, SceneError> {
     // spawns the body alone.
     spawn_player_visual(world, entity);
     super::cockpit_interior::spawn_cockpit_interior(world, entity);
+    super::cockpit_dials::spawn_cockpit_dials(world, entity);
     if let Ok(mut composition) = world.query::<&mut MissionComposition>().single_mut(world) {
         composition.player = entity;
     }
@@ -1666,6 +1684,7 @@ pub fn teardown(app: &mut App) {
     world.remove_resource::<MissionPlayerVisual>();
     world.remove_resource::<super::cockpit_camera::MissionCockpitEye>();
     world.remove_resource::<super::cockpit_interior::MissionCockpitInterior>();
+    world.remove_resource::<super::cockpit_dials::MissionCockpitDials>();
     world.remove_resource::<super::view_cycle::MissionViewMode>();
     world.remove_resource::<super::hud_art::MissionHudArt>();
     world.remove_resource::<super::world_draw::MissionWorldParts>();

@@ -95,6 +95,7 @@ mod actor_census;
 mod actor_visual;
 mod briefing_screen;
 mod cockpit_camera;
+mod cockpit_dials;
 mod cockpit_hud;
 mod cockpit_interior;
 mod compose;
@@ -146,6 +147,10 @@ pub use cockpit_camera::{
     COCKPIT_EYE_NODE_NAME, MissionCockpitEye, drive_cockpit_camera, find_cockpit_eye,
     install_cockpit_camera, resolve_player_cockpit_eye,
 };
+pub use cockpit_dials::{
+    CockpitDialNode, CockpitDialsReport, CockpitDialsRoot, MissionCockpitDials,
+    build_cockpit_dials, drive_cockpit_dials, install_cockpit_dials, spawn_cockpit_dials,
+};
 pub use cockpit_hud::{
     MissionCockpitHudPlugin, OBJECTIVE_BLUE, clock_hour, compass_strip, damage_fraction,
     damage_tint, marker_text, safe_area,
@@ -193,8 +198,8 @@ pub use host::{
 };
 pub use hud_art::{
     GlyphRow, HUD_ASPECT, HUD_CAMERA_LAYER, HUD_FOV, HUD_HALF_HEIGHT, HUD_HALF_WIDTH,
-    HUD_PLANE_DEPTH, HudArrow, HudArt, HudArtCamera, HudArtRoot, HudCompassTape, HudFlag,
-    HudGlyphCell, HudNeedle, HudNitroNeedle, HudPip, HudReticle, HudZone, HudZonePiece,
+    HUD_PLANE_DEPTH, HudArrow, HudArt, HudArtCamera, HudArtRoot, HudAttitudeBall, HudCompassTape,
+    HudFlag, HudGlyphCell, HudNeedle, HudNitroNeedle, HudPip, HudReticle, HudZone, HudZonePiece,
     InstrumentPlacement, InstrumentTable, MissionHudArt, MissionHudArtPlugin, NeedleRole, PipGauge,
     ZonePieceRole, build_hud_art, fit_hud_viewport, read_instrument_table, read_reticle_image,
     spawn_hud_art, spawn_reticle, update_hud_art,
