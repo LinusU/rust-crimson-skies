@@ -30,13 +30,18 @@
 //! game turned into damage, and how it deduplicated them, is **unknown** until
 //! F23-D measures it; this is declared project behavior.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 
-use avian3d::prelude::{CollisionEnd, CollisionStart, PhysicsSystems, Sensor};
+use avian3d::prelude::{
+    Collider, CollisionEnd, CollisionLayers as AvianCollisionLayers, CollisionStart,
+    PhysicsSystems, Position, RigidBody, Rotation, Sensor, ShapeCastConfig, SpatialQuery,
+    SpatialQueryFilter, SweptCcd,
+};
 use bevy::{
     ecs::schedule::IntoScheduleConfigs,
     prelude::{
-        App, Entity, FixedPostUpdate, MessageReader, Plugin, Query, Res, ResMut, Resource, With,
+        App, Dir3, Entity, FixedPostUpdate, MessageReader, Plugin, Query, Res, ResMut, Resource,
+        Vec3, With,
     },
 };
 use cs_sim::collision::{CollisionLayer, ContactKind, ShapeClass, classify_contact};
@@ -70,6 +75,9 @@ impl ContactReport {
 pub struct ContactReports {
     reports: Vec<ContactReport>,
     active: HashSet<[Entity; 2]>,
+    /// Pairs a swept crossing already reported whose engine `CollisionStart`
+    /// has not arrived yet: that start is the same contact, not a duplicate.
+    swept: HashSet<[Entity; 2]>,
     tick: u64,
     total: u64,
     suppressed: u64,
@@ -123,6 +131,7 @@ impl ContactReports {
     pub fn clear(&mut self) {
         self.reports.clear();
         self.active.clear();
+        self.swept.clear();
         self.tick = 0;
         self.total = 0;
         self.suppressed = 0;
@@ -139,6 +148,7 @@ impl ContactReports {
 
     fn end(&mut self, pair: [Entity; 2]) {
         self.active.remove(&pair);
+        self.swept.remove(&pair);
     }
 
     fn record(
@@ -194,27 +204,181 @@ fn record_contact_reports(
     }
 
     for event in starts.read() {
-        let (a, b) = (event.collider1, event.collider2);
-        let (Ok(layer_a), Ok(layer_b)) = (layers.get(a), layers.get(b)) else {
-            reports.unclassified += 1;
+        if reports
+            .swept
+            .remove(&pair_of(event.collider1, event.collider2))
+        {
+            continue;
+        }
+        report_start(
+            &mut reports,
+            event.collider1,
+            event.collider2,
+            &layers,
+            &sensors,
+            tick,
+        );
+    }
+}
+
+/// Classifies one contact start between `a` and `b` and records it.
+///
+/// Shared by the engine's `CollisionStart` events and the swept sensor
+/// crossings below, so a crossing the narrow phase could not sample is
+/// classified, counted and deduplicated exactly like one it could.
+fn report_start(
+    reports: &mut ContactReports,
+    a: Entity,
+    b: Entity,
+    layers: &Query<&BodyLayer>,
+    sensors: &Query<(), With<Sensor>>,
+    tick: u64,
+) {
+    let (Ok(layer_a), Ok(layer_b)) = (layers.get(a), layers.get(b)) else {
+        reports.unclassified += 1;
+        return;
+    };
+    let shape = |entity: Entity| {
+        if sensors.contains(entity) {
+            ShapeClass::Sensor
+        } else {
+            ShapeClass::Solid
+        }
+    };
+    let kind = classify_contact(layer_a.0, layer_b.0, shape(a), shape(b));
+    let pair = pair_of(a, b);
+    let layers = if pair[0] == a {
+        [layer_a.0, layer_b.0]
+    } else {
+        [layer_b.0, layer_a.0]
+    };
+    reports.record(pair, layers, kind, tick);
+}
+
+/// Where a swept body ended the previous tick and which sensor colliders its
+/// own collider ended that tick overlapping.
+#[derive(Debug)]
+struct SweepTrack {
+    position: Vec3,
+    inside: HashSet<Entity>,
+}
+
+/// The swept sensor crossing pass's per-body state.
+#[derive(Resource, Debug, Default)]
+struct SweepTracks {
+    bodies: HashMap<Entity, SweepTrack>,
+}
+
+/// Reports a fast body's crossing of a sensor volume its tick outran.
+///
+/// Avian 0.8's swept CCD deliberately skips sensors, and the narrow phase only
+/// emits `CollisionStart` for a sample that lands inside the volume, so a
+/// `SweptCcd` body that covers more than a trigger's thickness in one tick
+/// produces no event at all (measured in `accept_f23_b_*`: the 2 cm trigger and
+/// the 1 m/tick projectile). Where 0.7 got the report by clamping the body at
+/// the sensor, this pass decides it from the body's own motion: its collider is
+/// cast along the segment from the previous end-of-tick `Position` to this
+/// one, and every sensor it meets that it was not already inside is reported
+/// as a contact start through the same classifier as an engine event.
+///
+/// It is a read of the body: nothing here stops, delays or nudges it, so a
+/// sensor stays a reported overlap and never an obstacle.
+///
+/// A pair stays active when the body ends the tick inside the volume (the
+/// engine's own `CollisionStart` follows on the next tick and is deduplicated
+/// against it, its `CollisionEnd` closes the episode) and is closed at once
+/// when the body ends outside, so a later crossing is a new episode.
+fn report_swept_sensor_crossings(
+    spatial: SpatialQuery,
+    mut tracks: ResMut<SweepTracks>,
+    mut reports: ResMut<ContactReports>,
+    bodies: Query<(
+        Entity,
+        &Collider,
+        &Position,
+        &Rotation,
+        &RigidBody,
+        &AvianCollisionLayers,
+        &SweptCcd,
+    )>,
+    layers: Query<&BodyLayer>,
+    sensors: Query<(), With<Sensor>>,
+    ledger: Option<Res<PhysicsTickLedger>>,
+) {
+    let tick = ledger.map_or(0, |ledger| ledger.ticks);
+    let mut seen = HashSet::new();
+    for (entity, collider, position, rotation, kind, avian_layers, _swept) in &bodies {
+        if !kind.is_dynamic() {
+            continue;
+        }
+        seen.insert(entity);
+        let filter =
+            SpatialQueryFilter::from_mask(avian_layers.filters).with_excluded_entities([entity]);
+        let body_is_sensor = sensors.contains(entity);
+        let mut ends = HashSet::new();
+        spatial.shape_intersections_callback(collider, position.0, rotation.0, &filter, |hit| {
+            if body_is_sensor || sensors.contains(hit) {
+                ends.insert(hit);
+            }
+            true
+        });
+
+        let Some(track) = tracks.bodies.get_mut(&entity) else {
+            // First sight: no previous sample, so no segment to sweep.
+            tracks.bodies.insert(
+                entity,
+                SweepTrack {
+                    position: position.0,
+                    inside: ends,
+                },
+            );
             continue;
         };
-        let shape = |entity: Entity| {
-            if sensors.contains(entity) {
-                ShapeClass::Sensor
-            } else {
-                ShapeClass::Solid
+
+        let segment = position.0 - track.position;
+        let mut touched = Vec::new();
+        if let Ok(direction) = Dir3::new(segment) {
+            let config = ShapeCastConfig::from_max_distance(segment.length());
+            spatial.shape_hits_callback(
+                collider,
+                track.position,
+                rotation.0,
+                direction,
+                &config,
+                &filter,
+                |hit| {
+                    if (body_is_sensor || sensors.contains(hit.entity))
+                        && !track.inside.contains(&hit.entity)
+                    {
+                        touched.push(hit.entity);
+                    }
+                    true
+                },
+            );
+        }
+        touched.sort_unstable();
+        touched.dedup();
+        for other in touched {
+            let pair = pair_of(entity, other);
+            if reports.active.contains(&pair) {
+                // The engine already reported this episode; only a body that
+                // left it again needs the episode closed.
+                if !ends.contains(&other) {
+                    reports.end(pair);
+                }
+                continue;
             }
-        };
-        let kind = classify_contact(layer_a.0, layer_b.0, shape(a), shape(b));
-        let pair = pair_of(a, b);
-        let layers = if pair[0] == a {
-            [layer_a.0, layer_b.0]
-        } else {
-            [layer_b.0, layer_a.0]
-        };
-        reports.record(pair, layers, kind, tick);
+            report_start(&mut reports, entity, other, &layers, &sensors, tick);
+            if ends.contains(&other) && reports.active.contains(&pair) {
+                reports.swept.insert(pair);
+            } else {
+                reports.end(pair);
+            }
+        }
+        track.position = position.0;
+        track.inside = ends;
     }
+    tracks.bodies.retain(|entity, _| seen.contains(entity));
 }
 
 /// The F23-B runtime: contact reporting on top of the F23-A adapter.
@@ -228,10 +392,13 @@ pub struct PhysicsBodiesPlugin;
 
 impl Plugin for PhysicsBodiesPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<ContactReports>();
+        app.init_resource::<ContactReports>()
+            .init_resource::<SweepTracks>();
         app.add_systems(
             FixedPostUpdate,
-            record_contact_reports.after(PhysicsSystems::StepSimulation),
+            (record_contact_reports, report_swept_sensor_crossings)
+                .chain()
+                .after(PhysicsSystems::StepSimulation),
         );
         // The spawn-side half of the bodies runtime: first-tick swept
         // preflight for the CCD layers (F23-C).
