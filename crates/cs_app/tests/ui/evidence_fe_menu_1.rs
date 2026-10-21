@@ -420,9 +420,12 @@ fn parse_suite(log: &str) -> Suite {
         if !carries_prefix(name) {
             continue;
         }
+        // The report's assertion id is the bare test name, the convention
+        // the other evidence reports use — the module path stays in the log.
+        let leaf = name.rsplit("::").next().unwrap_or(name).to_owned();
         match finished(tail.trim()) {
-            Some(status) => suite.assertions.push((name.to_owned(), status)),
-            None => pending.push_back(name.to_owned()),
+            Some(status) => suite.assertions.push((leaf, status)),
+            None => pending.push_back(leaf),
         }
     }
     suite.passed = count(&suite, "pass");
@@ -525,8 +528,8 @@ fn assertion_array(assertions: &[(String, &'static str)]) -> String {
         .iter()
         .map(|(name, status)| {
             let evidence: &[&str] = match name.as_str() {
-                name if name == RETAIL_TEST => &["cargo-test.log", "front-end-shell.json"],
-                name if name == WINDOWED_TEST => &["cargo-test.log", "report.json"],
+                RETAIL_TEST => &["cargo-test.log", "front-end-shell.json"],
+                WINDOWED_TEST => &["cargo-test.log", "report.json"],
                 _ => &["cargo-test.log"],
             };
             let evidence = evidence
