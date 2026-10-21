@@ -708,6 +708,7 @@ const FLIGHT_CHECK_LAYOUT_KEYS: &[&str] = &[
     "ammo_label_base",
     "rocket_label_base",
     "item_number_string",
+    "name_label_base",
 ];
 
 /// The Flight Check's two plane slots: the script's `-1` and `-2`.

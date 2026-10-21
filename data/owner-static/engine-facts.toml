@@ -1019,6 +1019,7 @@ rocket_none = 11
 gun_label_base = 3320
 ammo_label_base = 3365
 rocket_label_base = 3395
+name_label_base = 3000
 item_number_string = 519
 
 [[flight_check_default]]
