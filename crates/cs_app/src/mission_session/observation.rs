@@ -114,8 +114,8 @@ use super::compose::MissionPlayerBody;
 use super::host::{MissionHost, MissionWorldObservation};
 use super::landings::MissionLandings;
 use crate::mission_actors::{
-    MissionActorSpawnReport, MissionAircraftRoster, MissionSkippedAircraft, MissionZeppelinActor,
-    ScriptedAircraftActor,
+    MissionActorSpawnReport, MissionAircraftRoster, MissionGroundTarget, MissionSkippedAircraft,
+    MissionZeppelinActor, ScriptedAircraftActor,
 };
 use crate::weapons::SessionDamageResolver;
 use crate::world_actors::{WorldActorBinding, WorldActorSession};
@@ -349,6 +349,31 @@ pub fn mission_world_observation(world: &mut World) {
                 None => {}
             }
         }
+    }
+
+    // 2c. Every ground target the mission declares, at its node's composed
+    //     origin (M01-EXAMINE-OBJECTIVE, #1754): `TRAVELERS` anchors on a
+    //     named world node, and the original reads that node's world
+    //     position through `0x4cf200`, the translation of the node's
+    //     composed transform — the origin, not the targeting record's
+    //     bounding-box centre (`docs/findings/2026-10-21-m01-examine-
+    //     objective.md`). A name a bound world actor already answered keeps
+    //     that row.
+    let grounds: Vec<(String, [f64; 3])> = {
+        let mut query = world.query::<&MissionGroundTarget>();
+        query
+            .iter(world)
+            .map(|target| (target.node.clone(), target.position_m))
+            .collect()
+    };
+    for (name, position) in grounds {
+        if anchors.contains_key(&name) {
+            continue;
+        }
+        observation = observation.member(
+            member_chain([name.as_str()]),
+            MemberObservation::held_in_play(position),
+        );
     }
 
     // 3. Groups: which ids the composition actually spawned members for, and
