@@ -41,6 +41,8 @@ use cs_script::runtime::SessionGeneration;
 use cs_sim::objectives::terminal::TerminalOutcome;
 use cs_types::Tick;
 
+use super::debrief::MissionDebrief;
+
 /// Which runtime reported the terminal outcome this run ended on.
 ///
 /// The label is the one the report line prints, so a reader of the line never
@@ -53,6 +55,11 @@ pub enum MissionTerminalSource {
     /// `MissionTick::terminal` and the `EventKind::TerminalRequested` event
     /// that carried it.
     ControlProgram,
+    /// The player's own aircraft was destroyed: the session's damage
+    /// authority recorded `Destroyed` for the player's actor
+    /// (PARITY-M01-OUTCOME-B, #1654). Always a failure, and only consulted
+    /// when neither of the mission's own conditions has settled the run.
+    PlayerDestroyed,
 }
 
 impl MissionTerminalSource {
@@ -62,6 +69,7 @@ impl MissionTerminalSource {
         match self {
             Self::Objectives => "objectives",
             Self::ControlProgram => "control_program",
+            Self::PlayerDestroyed => "player_destroyed",
         }
     }
 }
@@ -163,6 +171,10 @@ pub struct MissionTerminal {
     /// [`crate::score::mission_outcome`] and [`crate::score::mission_result`]
     /// hand to the campaign's and the scrapbook's outcome records.
     pub score: i64,
+    /// The debrief fields (Run Time, Gun Hit Ratio, Cash Earned, Planes
+    /// Downed), once the settling host has read them; [`Self::new`] leaves it
+    /// empty and [`Self::with_debrief`] fills it.
+    pub debrief: Option<MissionDebrief>,
     /// The exit this outcome maps to.
     pub exit: MissionExit,
     /// The one line this run writes when it ends.
@@ -211,8 +223,18 @@ impl MissionTerminal {
             undrained_cues,
             audio_loops_bound,
             score,
+            debrief: None,
             exit,
             report_line,
         }
+    }
+
+    /// The same terminal carrying the run's debrief, whose fields are
+    /// appended to the report line.
+    #[must_use]
+    pub fn with_debrief(mut self, debrief: MissionDebrief) -> Self {
+        self.report_line = format!("{} {}", self.report_line, debrief.report_fragment());
+        self.debrief = Some(debrief);
+        self
     }
 }

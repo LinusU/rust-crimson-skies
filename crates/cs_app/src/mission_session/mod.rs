@@ -97,6 +97,7 @@ mod briefing_screen;
 mod cockpit_hud;
 mod compose;
 mod content;
+mod debrief;
 mod evidence;
 mod examine;
 mod flight_check;
@@ -151,6 +152,7 @@ pub use content::{
     MissionContent, MissionFlight, MissionSessionError, SoundArchive, prepare_mission_content,
     root_seed_from,
 };
+pub use debrief::{M01_CASH_EARNED_UNKNOWN_CLAIM, MissionDebrief, MissionTally, tally_player_gun};
 pub use evidence::{
     CAPABILITIES_ENV, CAPTURE_ENV, CaptureHandle, CaptureRefusal, CaptureSettings,
     EVIDENCE_DIR_ENV, MIN_CLEAR_COVERAGE_PERMILLE, MIN_WORLD_COVERAGE_PERMILLE,

@@ -556,12 +556,25 @@ fn capture_step(
     {
         capture.terminal = Some(format!(
             "{{\"kind\":\"terminal\",\"settled\":true,\"outcome\":{},\"source\":{},\
-             \"tick\":{},\"session\":{},\"exit_code\":{},\"report_line\":{}}}",
+             \"tick\":{},\"session\":{},\"exit_code\":{},\"debrief\":{},\"report_line\":{}}}",
             json_string(terminal.outcome.label()),
             json_string(terminal.source.label()),
             terminal.tick.0,
             terminal.session.0,
             terminal.exit.code(),
+            terminal.debrief.as_ref().map_or_else(
+                || "null".to_owned(),
+                |debrief| {
+                    format!(
+                        "{{\"run_time\":{},\"shots\":{},\"hits\":{},\"cash_earned\":null,\
+                         \"planes_downed\":{}}}",
+                        json_string(&debrief.run_time()),
+                        debrief.shots,
+                        debrief.hits,
+                        debrief.planes_downed,
+                    )
+                },
+            ),
             json_string(&terminal.report_line),
         ));
     }

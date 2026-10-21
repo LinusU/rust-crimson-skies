@@ -161,6 +161,7 @@ use cs_types::content::ContentId;
 use cs_types::net::SessionId;
 
 use super::compose::{MissionPlayerBody, MissionStage, spawn_player};
+use super::debrief::MissionDebrief;
 use super::examine::TargetFlagLedger;
 use super::landings::{LandingLedger, LandingTick, MissionLandings, step_landings};
 use super::terminal::{MissionTerminal, MissionTerminalSource};
@@ -1347,7 +1348,16 @@ impl MissionHost {
                 }),
             )
         } else if produced.script.terminal == TerminalState::Running {
-            return None;
+            // Neither of the mission's own conditions has settled: the
+            // player's own destruction still ends the run, as a failure.
+            if !player_destroyed(world, self.served) {
+                return None;
+            }
+            (
+                TerminalOutcome::Failure,
+                MissionTerminalSource::PlayerDestroyed,
+                None,
+            )
         } else {
             (
                 outcome_of(produced.script.terminal),
@@ -1414,7 +1424,8 @@ impl MissionHost {
             undrained_cues,
             audio_loops_bound,
             score,
-        );
+        )
+        .with_debrief(MissionDebrief::read(world, self.served, produced.tick.0));
         println!("{}", terminal.report_line);
         self.settled = Some(terminal.clone());
         Some(terminal)
@@ -1919,4 +1930,19 @@ pub fn install_mission_host(app: &mut App) {
         .get_resource::<PlaytestState>()
         .map_or(0, |state| state.resets);
     app.insert_resource(MissionHostRestartWatch { resets });
+}
+
+/// Whether the damage authority of `session` has recorded the player's actor
+/// as destroyed.
+///
+/// A resolver of another generation, or a world with no player victim, never
+/// answers yes: a torn-down generation's wreck cannot end the next run.
+fn player_destroyed(world: &World, session: SessionId) -> bool {
+    let (Some(victim), Some(damage)) = (
+        world.get_resource::<super::player_victim::PlayerVictim>(),
+        world.get_resource::<crate::weapons::SessionDamageResolver>(),
+    ) else {
+        return false;
+    };
+    damage.resolver().session() == session && damage.resolver().is_destroyed(&victim.actor)
 }

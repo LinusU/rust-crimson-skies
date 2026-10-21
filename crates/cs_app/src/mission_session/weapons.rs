@@ -1698,6 +1698,12 @@ impl Plugin for MissionWeaponsPlugin {
             )
             .add_systems(
                 FixedPostUpdate,
+                super::debrief::tally_player_gun
+                    .after(crate::weapons::drive_weapon_session)
+                    .before(crate::damage::drive_damage_schedule),
+            )
+            .add_systems(
+                FixedPostUpdate,
                 drive_mission_ordnance
                     .after(crate::weapons::drive_weapon_session)
                     .before(crate::damage::drive_damage_schedule),
