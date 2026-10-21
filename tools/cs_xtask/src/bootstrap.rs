@@ -18,7 +18,7 @@
 //! ship a `[package]` manifest, and then composes the two existing guards so
 //! one command freezes the whole bootstrap:
 //!
-//! * [`crate::pins`] — `Cargo.lock` still pins the Bevy 0.19 / Avian3d 0.7
+//! * [`crate::pins`] — `Cargo.lock` still pins the Bevy 0.20 / Avian3d 0.8
 //!   pair and `rust-toolchain.toml` pins an exact patch at or above the
 //!   declared MSRV (F00-B),
 //! * [`crate::ci`] — the owner-maintained workflow still runs fmt, clippy

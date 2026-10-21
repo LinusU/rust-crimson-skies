@@ -94,7 +94,7 @@ COMMANDS
         Check the whole platform bootstrap: every workspace member required
         by the F00 deliverable is listed in [workspace] members with a real
         [package] manifest, Cargo.lock and rust-toolchain.toml still freeze
-        the Bevy 0.19 / Avian3d 0.7 pair and an exact toolchain, and the CI
+        the Bevy 0.20 / Avian3d 0.8 pair and an exact toolchain, and the CI
         workflow keeps its gates.
     verify-ci-budget [--workspace-root <dir>]
         Check that the profiles CI builds under (dev, test, bench) do not

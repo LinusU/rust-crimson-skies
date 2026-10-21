@@ -1,6 +1,6 @@
 //! Guards for the pinned dependency baseline and Rust toolchain.
 //!
-//! The intended baseline is Bevy 0.19 + Avian3d 0.7, matching the inspected
+//! The intended baseline is Bevy 0.20 + Avian3d 0.8, matching the inspected
 //! MM2 repository (`specs/F00-workspace-toolchain-and-first-executable.md`,
 //! references S01/S11). `Cargo.toml` uses caret ranges that cannot cross a
 //! minor boundary; the exact patches are pinned by the committed
@@ -16,8 +16,8 @@ use crate::transient;
 /// The baseline the workspace promises to hold (major.minor of the pair, the
 /// declared MSRV of the workspace).
 pub const INTENDED_BASELINE: Baseline = Baseline {
-    bevy: "0.19",
-    avian3d: "0.7",
+    bevy: "0.20",
+    avian3d: "0.8",
     rust_version: "1.98",
 };
 

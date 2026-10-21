@@ -22,8 +22,8 @@ fn pins() -> Pins {
         .expect("the workspace must ship Cargo.lock and rust-toolchain.toml")
 }
 
-/// The workspace pins the exact patches of the intended Bevy 0.19 / Avian3d
-/// 0.7 pair and an exact-patch toolchain that satisfies the declared MSRV.
+/// The workspace pins the exact patches of the intended Bevy 0.20 / Avian3d
+/// 0.8 pair and an exact-patch toolchain that satisfies the declared MSRV.
 ///
 /// Observable failure if the pin is removed: a `cargo update` that moves the
 /// pair to another minor (or deletes the toolchain pin) makes `verify` return
@@ -38,8 +38,8 @@ fn accept_f00_b_workspace_pins_the_intended_baseline() {
     // Exact patches, as the spec requires them pinned in Cargo.lock: bumping
     // either one must be a deliberate edit of the lockfile and this
     // expectation together.
-    assert_eq!(pins.bevy, "0.19.1", "unexpected bevy patch pin");
-    assert_eq!(pins.avian3d, "0.7.0", "unexpected avian3d patch pin");
+    assert_eq!(pins.bevy, "0.20.0", "unexpected bevy patch pin");
+    assert_eq!(pins.avian3d, "0.8.0", "unexpected avian3d patch pin");
     assert_eq!(
         pins.rust_version, INTENDED_BASELINE.rust_version,
         "the workspace MSRV must stay on the intended series"
@@ -55,27 +55,27 @@ fn accept_f00_b_workspace_pins_the_intended_baseline() {
 #[test]
 fn accept_f00_b_dependency_series_drift_is_rejected() {
     let drifted = Pins {
-        bevy: "0.20.3".to_string(),
+        bevy: "0.21.3".to_string(),
         ..pins()
     };
     let error = drifted
         .verify(&INTENDED_BASELINE)
         .expect_err("a bevy minor bump must not pass the pin guard");
     assert!(
-        matches!(&error, PinError::Mismatch { what, found, .. } if what == "bevy" && found == "0.20.3"),
+        matches!(&error, PinError::Mismatch { what, found, .. } if what == "bevy" && found == "0.21.3"),
         "the rejection must name bevy and the found version, got {error:?}"
     );
     assert!(error.to_string().contains("bevy"), "got {error}");
 
     let drifted = Pins {
-        avian3d: "0.8.1".to_string(),
+        avian3d: "0.9.1".to_string(),
         ..pins()
     };
     let error = drifted
         .verify(&INTENDED_BASELINE)
         .expect_err("an avian minor bump must not pass the pin guard");
     assert!(
-        matches!(&error, PinError::Mismatch { what, found, .. } if what == "avian3d" && found == "0.8.1"),
+        matches!(&error, PinError::Mismatch { what, found, .. } if what == "avian3d" && found == "0.9.1"),
         "the rejection must name avian3d and the found version, got {error:?}"
     );
 }

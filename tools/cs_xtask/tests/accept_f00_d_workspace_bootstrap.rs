@@ -94,7 +94,7 @@ fn fixture(name: &str) -> PathBuf {
         .collect();
     fs::write(root.join("Cargo.toml"), workspace_manifest(&members))
         .expect("the fixture manifest must be writable");
-    fs::write(root.join("Cargo.lock"), lockfile("0.19.1", "0.7.0"))
+    fs::write(root.join("Cargo.lock"), lockfile("0.20.0", "0.8.0"))
         .expect("the fixture lockfile must be writable");
     fs::write(
         root.join("rust-toolchain.toml"),
@@ -282,7 +282,7 @@ fn accept_f00_d_missing_or_incomplete_member_manifest_is_reported() {
 }
 
 /// The composed half of F00-D — the bootstrap stays *frozen*: a missing or
-/// rolling toolchain file, a lockfile that left the Bevy 0.19 / Avian3d 0.7
+/// rolling toolchain file, a lockfile that left the Bevy 0.20 / Avian3d 0.8
 /// pair, and a workflow that lost a CI gate each fail this one gate too.
 ///
 /// Observable failure if composition is removed: the mutated fixtures still
@@ -300,7 +300,7 @@ fn accept_f00_d_unfrozen_pins_or_a_lost_ci_gate_fail_the_gate() {
     );
 
     let root = fixture("lockfile-drifted");
-    fs::write(root.join("Cargo.lock"), lockfile("0.20.0", "0.7.0"))
+    fs::write(root.join("Cargo.lock"), lockfile("0.21.0", "0.8.0"))
         .expect("the fixture lockfile must be writable");
     let error = bootstrap::verify_workspace(&root)
         .expect_err("a lockfile on another bevy minor must fail the gate");
@@ -308,7 +308,7 @@ fn accept_f00_d_unfrozen_pins_or_a_lost_ci_gate_fail_the_gate() {
         matches!(
             &error,
             BootstrapError::Pin(PinError::Mismatch { what, found, .. })
-                if what == "bevy" && found == "0.20.0"
+                if what == "bevy" && found == "0.21.0"
         ),
         "the rejection must name bevy and the drifted version, got {error:?}"
     );
