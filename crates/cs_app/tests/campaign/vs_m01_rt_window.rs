@@ -145,6 +145,7 @@ fn synthetic_flight() -> MissionFlight {
         record: "synthetic".to_owned(),
         wingman_record: "synthetic-wingman".to_owned(),
         fuel: 1.0,
+        crash_health_damage_range: [50.0, 300.0],
         inheritance_chain: Vec::new(),
         provenance: PROVENANCE_LABEL,
     }

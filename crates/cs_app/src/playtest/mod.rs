@@ -35,6 +35,7 @@
 //! deterministic run. [`run_playtest`] is what `cs --playtest` calls.
 
 pub mod command;
+pub mod fatal_contact;
 pub mod propeller;
 pub mod retail;
 pub mod scene;
@@ -51,7 +52,7 @@ use bevy::input::ButtonInput;
 use bevy::input::keyboard::KeyCode;
 use bevy::prelude::{
     App, Entity, FixedLast, FixedUpdate, IntoScheduleConfigs, Or, Plugin, Quat, Query, Res, ResMut,
-    Resource, Startup, Time, Transform, Update, Vec3, With, World,
+    Resource, Startup, Time, Transform, Update, Vec3, With, Without, World,
 };
 use bevy::time::{Fixed, Real, TimeUpdateStrategy, Virtual};
 use cs_content::cameras::{AspectRatio, DeclaredCameraModes, declared_synthetic_camera_modes};
@@ -364,7 +365,11 @@ impl Plugin for PlaytestPlugin {
                 RunFixedMainLoop,
                 apply_flight_command.in_set(RunFixedMainLoopSystems::BeforeFixedMainLoop),
             )
-            .add_systems(FixedLast, record_collisions)
+            .add_message::<fatal_contact::PlayerCrashed>()
+            .add_systems(
+                FixedLast,
+                (record_collisions, fatal_contact::judge_terrain_contacts),
+            )
             .add_systems(
                 Update,
                 (
@@ -469,6 +474,17 @@ fn apply_flight_command(
     }
 }
 
+/// The pose and law of one aircraft the original flight law steps. A crashed
+/// aircraft's flight is over (PARITY4-CRASH-B), so the query excludes it.
+type FlyingRecord = (
+    Entity,
+    &'static mut PlaytestOriginalFlight,
+    &'static Position,
+    &'static mut Rotation,
+    &'static LinearVelocity,
+    &'static mut AngularVelocity,
+);
+
 /// One fixed tick of the original law that flies the retail playtest (task
 /// #797).
 ///
@@ -495,14 +511,7 @@ fn drive_original_flight(
     time: Res<Time<Fixed>>,
     mut requests: ResMut<ForceRequests>,
     mut state: ResMut<PlaytestState>,
-    mut aircraft: Query<(
-        Entity,
-        &mut PlaytestOriginalFlight,
-        &Position,
-        &mut Rotation,
-        &LinearVelocity,
-        &mut AngularVelocity,
-    )>,
+    mut aircraft: Query<FlyingRecord, Without<fatal_contact::PlayerCrash>>,
 ) {
     let dt_s = time.timestep().as_secs_f64();
     for (entity, mut flight, position, mut rotation, velocity, mut angular) in &mut aircraft {

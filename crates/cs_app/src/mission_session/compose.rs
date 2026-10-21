@@ -462,6 +462,8 @@ pub struct MissionPlayerStart {
     pub flight: OriginalFlightModel,
     /// The imported fuel load, in the law's own units.
     pub fuel: f64,
+    /// The `crash` record's `health_damage_range`, the terrain-contact rule.
+    pub crash_health_damage_range: [f64; 2],
     /// The measured start position, metres.
     pub position_m: [f32; 3],
     /// The measured start orientation: the heading composed through the
@@ -1340,6 +1342,7 @@ fn add_composition(
     app.insert_resource(MissionPlayerStart {
         flight: stage.flight.model.clone(),
         fuel: stage.flight.fuel,
+        crash_health_damage_range: stage.flight.crash_health_damage_range,
         position_m: stage.start.position,
         orientation,
         velocity_m_s: nose.to_array(),
@@ -1636,6 +1639,10 @@ pub fn spawn_player(world: &mut World) -> Result<Entity, SceneError> {
         PlaytestAircraft,
         MissionPlayerBody,
         Visibility::Inherited,
+        crate::playtest::fatal_contact::FatalContactRule {
+            health_damage_range: start.crash_health_damage_range,
+        },
+        crate::playtest::fatal_contact::ContactApproach::default(),
     ));
     // The measured airframe visual travels on the body: one child entity per
     // drawn binding, so `R` restart and teardown take it with the body and

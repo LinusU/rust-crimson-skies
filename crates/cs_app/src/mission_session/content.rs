@@ -8,7 +8,9 @@ use std::path::{Path, PathBuf};
 
 use cs_assets::install::{self, Discovery};
 use cs_content::coordinates::{CoordinateSource, SourceAdapter};
-use cs_content::original_airframe::{import_retail_airframe, import_retail_globals};
+use cs_content::original_airframe::{
+    import_retail_airframe, import_retail_crash, import_retail_globals,
+};
 use cs_content::textures::WorldTextureLoad;
 use cs_content::world::{ImportedWorld, WorldId, WorldInstance, WorldPopulation};
 use cs_formats::zbd::{ZbdProbe, dispatch};
@@ -115,6 +117,9 @@ pub struct MissionFlight {
     pub wingman_record: String,
     /// The imported player fuel load, in the law's own fuel units.
     pub fuel: f64,
+    /// The `player.zrd` `crash` record's `health_damage_range`: the player's
+    /// terrain-contact damage rule (PARITY4-CRASH-B).
+    pub crash_health_damage_range: [f64; 2],
     /// The record's `kind_of` chain, ancestor first.
     pub inheritance_chain: Vec<String>,
     /// The provenance label of the law and of every parameter it consumes.
@@ -634,6 +639,8 @@ fn prepare_flight(
         .map_err(|error| refused(format!("the parameters were refused: {error}")))?;
     let globals = OriginalGlobals::from_values(&law.law_values())
         .map_err(|error| refused(format!("the flight globals were refused: {error}")))?;
+    let crash = import_retail_crash(install_root)
+        .map_err(|error| refused(format!("the crash record could not be imported: {error}")))?;
     let fuel = match &parameters.initial_fuel {
         Resolved::Known(known) => known.value,
         Resolved::Unknown { reason, .. } => {
@@ -648,6 +655,7 @@ fn prepare_flight(
         record,
         wingman_record,
         fuel,
+        crash_health_damage_range: crash.health_damage_range,
         inheritance_chain: parameters.inheritance_chain.clone(),
         provenance: PROVENANCE_LABEL,
     })
