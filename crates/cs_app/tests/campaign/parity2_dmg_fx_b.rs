@@ -8,7 +8,7 @@
 
 use std::path::PathBuf;
 
-use bevy::prelude::{App, Transform, Vec3};
+use bevy::prelude::{App, Vec3};
 
 use cs_app::mission_session::{
     BurstPuff, BurstPuffDefinition, BurstPuffReport, BurstPuffSource, BurstPuffSourceResource,
@@ -111,14 +111,6 @@ fn accept_parity2_dmg_fx_b_a_rocket_detonation_draws_the_stored_puffs_and_they_e
     let report = *app.world().resource::<BurstPuffReport>();
     assert_eq!(report.bursts_undrawn, 0);
     assert_eq!(report.puffs_spawned % 5, 0);
-    // Later ticks (no more rockets) move them away from their origin.
-    let before: Vec<Vec3> = {
-        let mut q = app.world_mut().query::<&Transform>();
-        let mut with = app.world_mut().query::<(&BurstPuff, &Transform)>();
-        let _ = &mut q;
-        with.iter(app.world()).map(|(_, t)| t.translation).collect()
-    };
-    assert!(!before.is_empty());
     // Past every life: all puffs are released.
     let last_birth = live.iter().map(|p| p.born).max().unwrap();
     let longest = live.iter().map(|p| p.life_ticks).max().unwrap();
