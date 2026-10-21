@@ -117,12 +117,17 @@ pub fn install_external_view(app: &mut App) {
     app.add_systems(Update, step_zoom);
     app.add_systems(
         PostUpdate,
-        drive_external_camera.before(TransformSystems::Propagate),
+        drive_external_camera
+            .before(TransformSystems::Propagate)
+            // The crash camera overrides a pilot-eye pose set in the frame
+            // the crash happens.
+            .after(super::cockpit_camera::drive_cockpit_camera),
     );
 }
 
 /// Places the camera for the external views and pulls the chase view out by
-/// the zoom. The chase rig (`follow_camera`) has already written the camera
+/// the zoom; after a fatal crash it holds the detached crash camera
+/// (`CrashSequence`). The chase rig (`follow_camera`) has already written the camera
 /// for the frame; the zoom scales that frame's offset from the aircraft, so it
 /// never accumulates. With no player body (destroyed, being swapped) nothing
 /// is touched.
@@ -130,6 +135,7 @@ pub fn drive_external_camera(
     view: Res<MissionViewMode>,
     zoom: Res<MissionZoom>,
     cinematic: Option<Res<LaunchCinematic>>,
+    crash: Option<Res<crate::playtest::fatal_contact::CrashSequence>>,
     mut held: ResMut<HeldPoint>,
     bodies: Query<(&Position, &Rotation), With<MissionPlayerBody>>,
     mut cameras: Query<&mut Transform, With<PlaytestCameraMarker>>,
@@ -145,6 +151,12 @@ pub fn drive_external_camera(
     };
     let (position, rotation) = (position.0, rotation.0);
     for mut transform in &mut cameras {
+        // The crash camera is held at one point and looks at the wreck; the
+        // view keys are inert from the crash on.
+        if let Some(crash) = crash.as_deref() {
+            *transform = look_at(crash.camera_m, position);
+            continue;
+        }
         match *view {
             MissionViewMode::Chase => {
                 let extra = zoom.extra_distance_m();

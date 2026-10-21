@@ -27,9 +27,11 @@
 //!   body had at the end of the previous tick, because the solver has already
 //!   answered the contact when the reports are read.
 
-use avian3d::prelude::{AngularVelocity, Collisions, LinearVelocity, Position, RigidBody};
+use avian3d::prelude::{
+    AngularVelocity, Collisions, LinearVelocity, Position, RigidBody, Rotation,
+};
 use bevy::prelude::{
-    Component, Entity, Message, MessageWriter, Or, Query, Res, ResMut, Vec3, With,
+    Component, Entity, Message, MessageWriter, Or, Quat, Query, Res, ResMut, Resource, Vec3, With,
 };
 use cs_sim::collision::CollisionLayer;
 use cs_sim::contact_response::crash_damage;
@@ -101,6 +103,65 @@ pub struct PlayerCrash {
     pub cause: FailureCause,
 }
 
+/// How far along the aircraft's heading the detached crash camera sits from
+/// the impact point, world units (`camparam.zrd` `crash_horiz`, default
+/// record; `OWNER-STATIC`, finding `2026-10-22-crash-a-fatal-contact-and-crash-camera.md`).
+pub const CRASH_CAMERA_HORIZONTAL: f32 = 30.0;
+
+/// How far above the impact point the detached crash camera sits
+/// (`camparam.zrd` `crash_y`; the terrain clamp the original applies to the
+/// anchor, `0x42c580`, is not decoded and not modelled).
+pub const CRASH_CAMERA_HEIGHT: f32 = 45.0;
+
+/// Where the target marker points after the crash: the owner's observation of
+/// the original's placeholder target. Nothing in the engine image was found
+/// that writes it (finding, section 4), so the point is an observation only.
+pub const CRASH_PLACEHOLDER_TARGET: Vec3 = Vec3::new(1.0, 20.0, 0.0);
+
+/// The string-table name of the `Fatal Crash!` message (id 162).
+pub const FATAL_CRASH_MESSAGE: &str = "MSG_CRASH";
+
+/// Resource: the sequence that follows a fatal crash. It holds the HUD and the
+/// chase camera back, keeps the run open until a key is pressed and then
+/// lets the mission host hand the run over to its debrief.
+///
+/// Inserted by [`judge_terrain_contacts`] on the fatal tick; a restart or a
+/// teardown removes it.
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub struct CrashSequence {
+    /// The crash this sequence follows.
+    pub crash: PlayerCrash,
+    /// The fixed point the detached camera is held at.
+    pub camera_m: Vec3,
+    /// The placeholder target the marker points at.
+    pub target_m: Vec3,
+    /// A key was pressed: the run may settle.
+    pub released: bool,
+}
+
+impl CrashSequence {
+    /// The sequence of a crash of an aircraft turned by `rotation`.
+    #[must_use]
+    pub fn begin(crash: PlayerCrash, rotation: Quat) -> Self {
+        Self {
+            crash,
+            camera_m: crash_camera_point(Vec3::from_array(crash.position_m), rotation),
+            target_m: CRASH_PLACEHOLDER_TARGET,
+            released: false,
+        }
+    }
+}
+
+/// The detached camera's point for a crash at `position` of an aircraft turned
+/// by `rotation`: up by [`CRASH_CAMERA_HEIGHT`] and [`CRASH_CAMERA_HORIZONTAL`]
+/// along the heading's horizontal direction.
+#[must_use]
+pub fn crash_camera_point(position: Vec3, rotation: Quat) -> Vec3 {
+    let forward = rotation * Vec3::NEG_Z;
+    let flat = Vec3::new(forward.x, 0.0, forward.z).normalize_or(Vec3::NEG_Z);
+    position + flat * CRASH_CAMERA_HORIZONTAL + Vec3::Y * CRASH_CAMERA_HEIGHT
+}
+
 /// Message: the player crashed. One per fatal contact.
 #[derive(Message, Clone, Copy, Debug, PartialEq)]
 pub struct PlayerCrashed {
@@ -139,6 +200,7 @@ pub fn judge_terrain_contacts(
         (
             Entity,
             &Position,
+            &Rotation,
             &mut LinearVelocity,
             &mut AngularVelocity,
             &mut FatalContactRule,
@@ -151,12 +213,12 @@ pub fn judge_terrain_contacts(
     mut crashed: MessageWriter<PlayerCrashed>,
 ) {
     let (Some(victim), Some(mut damage)) = (victim, damage) else {
-        for (_, _, velocity, _, mut rule) in &mut aircraft {
+        for (_, _, _, velocity, _, mut rule) in &mut aircraft {
             rule.approach = velocity.0;
         }
         return;
     };
-    for (entity, position, mut velocity, mut angular, mut rule) in &mut aircraft {
+    for (entity, position, rotation, mut velocity, mut angular, mut rule) in &mut aircraft {
         let before = rule.approach;
         rule.approach = velocity.0;
         if rule.crash.is_some() {
@@ -226,6 +288,7 @@ pub fn judge_terrain_contacts(
             angular.0 = Vec3::ZERO;
             rule.crash = Some(crash);
             commands.entity(entity).insert(RigidBody::Static);
+            commands.insert_resource(CrashSequence::begin(crash, rotation.0));
             crashed.write(PlayerCrashed {
                 aircraft: entity,
                 crash,
