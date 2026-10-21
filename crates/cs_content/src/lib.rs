@@ -192,6 +192,10 @@
 //! other field it leaves unbound, because the original's world-unit scale and
 //! angle conventions are unmeasured.
 //!
+//! [`briefing`] is the original `Briefing.zrd` reader (task #1750): the briefing
+//! dialog record, one typed command script per mission and the voice-over's
+//! `cue ` points, which are the markers the script waits for.
+//!
 //! [`animation`] is the F20-A declared animation IR
 //! (`specs/F20-object-animation-and-authored-destruction-states.md`, stage
 //! `### F20-A`): the provenance-carrying [`animation::AnimationClip`] record
@@ -575,6 +579,7 @@ pub mod ai;
 pub mod airframe_roles;
 pub mod animation;
 pub mod audio;
+pub mod briefing;
 pub mod cameras;
 pub mod campaign;
 pub mod campaign_bindings;
