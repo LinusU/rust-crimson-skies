@@ -77,6 +77,10 @@ mod decal;
 #[path = "playtest_retail/decal_evidence.rs"]
 mod decal_evidence;
 
+// #1849 (`accept_parity4_m01_contact_`): same binary, same reason.
+#[path = "playtest_retail/contact_response.rs"]
+mod contact_response;
+
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 

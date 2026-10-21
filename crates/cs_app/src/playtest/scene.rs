@@ -9,7 +9,7 @@
 //! designed synthetic airframe below. Both enter the world through
 //! [`crate::physics::spawn_body`], and both are marked [`PlaytestAircraft`].
 
-use avian3d::prelude::{NoAutoMass, Rotation};
+use avian3d::prelude::{CoefficientCombine, Friction, NoAutoMass, Restitution, Rotation};
 use bevy::prelude::{Component, Entity, Visibility, World};
 use cs_sim::collision::CollisionLayer;
 use cs_sim::flight::{
@@ -281,11 +281,16 @@ pub fn spawn_aircraft(world: &mut World) -> Result<Entity, SceneError> {
         .map_or((SPAWN_POSITION_M, AIRCRAFT_HALF_EXTENTS_M), |retail| {
             (retail.spawn_m, retail.half_extents_m)
         });
-    let original = world
-        .get_resource::<RetailFlight>()
-        .map(|retail| PlaytestOriginalFlight::new(retail, position));
+    let original = world.get_resource::<RetailFlight>().map(|retail| {
+        (
+            PlaytestOriginalFlight::new(retail, position),
+            retail.crash.bounce_factor,
+        )
+    });
     let entity = match original {
-        Some(flight) => spawn_original_flight_body(world, &flight, position, half_extents)?,
+        Some((flight, bounce_factor)) => {
+            spawn_original_flight_body(world, &flight, bounce_factor, position, half_extents)?
+        }
         None => spawn_synthetic_flight_body(world, position, half_extents)?,
     };
     // The aircraft is the render parent of its drawn parts; a parent without
@@ -335,6 +340,7 @@ fn spawn_synthetic_flight_body(
 fn spawn_original_flight_body(
     world: &mut World,
     flight: &PlaytestOriginalFlight,
+    bounce_factor: f64,
     position: [f32; 3],
     half_extents: [f32; 3],
 ) -> Result<Entity, SceneError> {
@@ -357,10 +363,28 @@ fn spawn_original_flight_body(
         ],
     };
     let entity = spawn_body(world, &spec).map_err(SceneError::Body)?;
-    world
-        .entity_mut(entity)
-        .insert((NoAutoMass, flight.clone()));
+    world.entity_mut(entity).insert((
+        NoAutoMass,
+        flight.clone(),
+        contact_coefficients(bounce_factor),
+    ));
     Ok(entity)
+}
+
+/// The contact coefficients of the original's response (`0x48d7f0`): the
+/// `crash` record's `bounce_factor` as restitution and no friction, because
+/// the response changes only the normal component. `Max`/`Min` make them win
+/// against whatever the other body carries, so the world's defaults cannot
+/// average them away.
+///
+/// This is the point-mass case of `cs_sim::contact_response::respond` (its
+/// angular share needs the vehicle's collision-point list, which is not
+/// imported yet, so the contact acts at the body's centre).
+pub fn contact_coefficients(bounce_factor: f64) -> (Restitution, Friction) {
+    (
+        Restitution::new(bounce_factor as f32).with_combine_rule(CoefficientCombine::Max),
+        Friction::ZERO.with_combine_rule(CoefficientCombine::Min),
+    )
 }
 
 /// Puts every drawn original mesh of the airframe under the flight body, one child

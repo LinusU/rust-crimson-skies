@@ -374,6 +374,7 @@ pub mod campaign;
 pub mod capital;
 pub mod cinematic_state;
 pub mod collision;
+pub mod contact_response;
 pub mod control;
 pub mod damage;
 pub mod economy;

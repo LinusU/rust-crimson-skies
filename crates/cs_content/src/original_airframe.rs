@@ -867,6 +867,25 @@ impl OriginalGlobalParameters {
     }
 }
 
+/// The `crash` record of the first `player.zrd` entry (contact response).
+///
+/// Each damage range is `[first, second]` as the record lists it; the image
+/// uses the first as the floor and the second as the `severity^3` scale
+/// (`0x48d4c1..0x48d510`). Static reading, never `verified_original`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct OriginalCrashParameters {
+    /// `bounce_factor`: the restitution of the contact response.
+    pub bounce_factor: f64,
+    /// `armor_damage_range`.
+    pub armor_damage_range: [f64; 2],
+    /// `health_damage_range`.
+    pub health_damage_range: [f64; 2],
+    /// Where `bounce_factor` was read from.
+    pub bounce_provenance: Provenance,
+    /// Where `armor_damage_range[0]` was read from.
+    pub damage_provenance: Provenance,
+}
+
 // --------------------------------------------------------------- importer ---
 
 /// The three members the flight law reads, decoded once with their spans.
@@ -1259,6 +1278,73 @@ impl OriginalDocuments {
         Ok(OriginalGlobalParameters { values, unused })
     }
 
+    /// Imports the `crash` record of the first `player.zrd` entry: the contact
+    /// bounce factor and the two damage ranges the contact response reads
+    /// (claim ids under `parity4.crash`; the key names and the consumer at
+    /// `0x48d2c0` / `0x48d7f0` are `OWNER-STATIC`, see
+    /// `docs/findings/2026-10-21-m01-collision-response.md`).
+    ///
+    /// # Errors
+    ///
+    /// [`OriginalImportError`] for a missing `crash` record, a missing key or a
+    /// non-finite number. The image defaults are never substituted.
+    pub fn crash(&self) -> Result<OriginalCrashParameters, OriginalImportError> {
+        let document = self
+            .player
+            .root()
+            .as_list()
+            .and_then(|outer| outer.first())
+            .ok_or_else(|| OriginalImportError::Shape {
+                detail: "player.zrd does not open with a list".to_owned(),
+            })?;
+        let crash =
+            document
+                .value_of_key("crash")
+                .ok_or_else(|| OriginalImportError::KeyMissing {
+                    record: PLAYER_MEMBER.to_owned(),
+                    key: "crash".to_owned(),
+                })?;
+        let number = |field: &'static str, key: &str, index: usize| {
+            let missing = || OriginalImportError::KeyMissing {
+                record: PLAYER_MEMBER.to_owned(),
+                key: format!("crash.{key}"),
+            };
+            let node = crash.value_of_key(key).ok_or_else(missing)?;
+            let element = if node.as_list().is_some() {
+                node.element(index).ok_or_else(missing)?
+            } else if index == 0 {
+                node
+            } else {
+                return Err(missing());
+            };
+            let value = element
+                .as_scalar_f64()
+                .filter(|value| value.is_finite())
+                .ok_or_else(|| OriginalImportError::NotFinite {
+                    record: PLAYER_MEMBER.to_owned(),
+                    key: format!("crash.{key}[{index}]"),
+                })?;
+            let provenance = self
+                .player
+                .provenance(element, &format!("parity4.crash.{field}"))
+                .expect("the member span is valid for its own nodes");
+            Ok::<_, OriginalImportError>((value, provenance))
+        };
+        let (bounce_factor, bounce_provenance) = number("bounce_factor", "bounce_factor", 0)?;
+        let (armor_floor, armor_floor_provenance) =
+            number("armor_damage_floor", "armor_damage_range", 0)?;
+        let (armor_scale, _) = number("armor_damage_scale", "armor_damage_range", 1)?;
+        let (health_floor, _) = number("health_damage_floor", "health_damage_range", 0)?;
+        let (health_scale, _) = number("health_damage_scale", "health_damage_range", 1)?;
+        Ok(OriginalCrashParameters {
+            bounce_factor,
+            armor_damage_range: [armor_floor, armor_scale],
+            health_damage_range: [health_floor, health_scale],
+            bounce_provenance,
+            damage_provenance: armor_floor_provenance,
+        })
+    }
+
     fn global_scalar(
         &self,
         document: &SpannedValue,
@@ -1410,6 +1496,18 @@ pub fn import_retail_globals(
     install_root: &Path,
 ) -> Result<OriginalGlobalParameters, OriginalImportError> {
     OriginalDocuments::read(install_root)?.globals()
+}
+
+/// Reads the `crash` record straight from `install_root`.
+///
+/// # Errors
+///
+/// [`OriginalImportError`]; see [`OriginalDocuments::read`] and
+/// [`OriginalDocuments::crash`].
+pub fn import_retail_crash(
+    install_root: &Path,
+) -> Result<OriginalCrashParameters, OriginalImportError> {
+    OriginalDocuments::read(install_root)?.crash()
 }
 
 // ------------------------------------------------ AI parameter randomisation ---

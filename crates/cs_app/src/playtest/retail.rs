@@ -29,7 +29,9 @@ use avian3d::prelude::Collider;
 use bevy::asset::{AssetApp, Assets};
 use bevy::image::Image;
 use bevy::prelude::{App, Component, Entity, Quat, Resource, StandardMaterial};
-use cs_content::original_airframe::{import_retail_airframe, import_retail_globals};
+use cs_content::original_airframe::{
+    OriginalCrashParameters, import_retail_airframe, import_retail_crash, import_retail_globals,
+};
 use cs_sim::flight::original::PROVENANCE_LABEL;
 use cs_sim::flight::{OriginalAirframe, OriginalFlightModel, OriginalGlobals};
 use cs_types::content::Resolved;
@@ -228,6 +230,11 @@ pub struct RetailFlight {
     pub fd_speed_m_s: f64,
     /// The imported player fuel load, in the law's own fuel units.
     pub fuel: f64,
+    /// The `player.zrd` `crash` record: `bounce_factor` is the aircraft's
+    /// contact restitution, the damage ranges feed
+    /// `cs_sim::contact_response::crash_damage` (their consumer, what the
+    /// damage is subtracted from, is not established).
+    pub crash: OriginalCrashParameters,
     /// The provenance label of the law and of every parameter it consumes.
     pub provenance: &'static str,
 }
@@ -320,6 +327,8 @@ pub fn read_flight(request: &RetailRequest) -> Result<RetailFlight, PlaytestErro
     })?;
     let globals = import_retail_globals(&request.cs_path)
         .map_err(|error| refused(format!("the flight globals could not be imported: {error}")))?;
+    let crash = import_retail_crash(&request.cs_path)
+        .map_err(|error| refused(format!("the crash record could not be imported: {error}")))?;
     let airframe = OriginalAirframe::from_values(&parameters.field_values())
         .map_err(|error| refused(format!("the {record} parameters were refused: {error}")))?;
     let globals = OriginalGlobals::from_values(&globals.law_values())
@@ -353,6 +362,7 @@ pub fn read_flight(request: &RetailRequest) -> Result<RetailFlight, PlaytestErro
         ),
         fd_speed_m_s,
         fuel,
+        crash,
         provenance: PROVENANCE_LABEL,
     })
 }
