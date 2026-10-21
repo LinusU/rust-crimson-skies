@@ -96,3 +96,14 @@ debug = "line-tables-only"
 # slow to run interactively.
 [profile.dev.package."*"]
 opt-level = 3
+
+# The same compact-unwind budget applies to the workspace's own code: the
+# windowed front-end presenter (#1833) plus main's own growth pushed `cs`'s
+# `__eh_frame` to ~16.79 MiB — the `"*"` override above only shrinks
+# dependencies, so it could no longer absorb app code. Optimizing `cs_app`
+# itself (lib, `cs` bin and its test targets) keeps `cs` ~2.5 MiB under the
+# limit (16,791,960 → 14,284,648 measured, macOS aarch64) and gives every
+# `cs_app_tests_*` binary the same headroom; `opt-level = 1` recovers the
+# budget without the build-time and step-debugging cost of `3`.
+[profile.dev.package.cs_app]
+opt-level = 1
