@@ -1554,8 +1554,6 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
     checks
 }
 
-/// The Flight Check checks: the screen the run opens on, judged before the
-/// mission's own checks.
 /// The cockpit-view checks: the `F8` cycle's modes, the eye placement and the
 /// panel and interior drawn at the pilot eye and gone in the chase view.
 fn evaluate_cockpit(cockpit: &CockpitViewMetrics, checks: &mut Vec<Check>) {
@@ -1645,6 +1643,8 @@ fn evaluate_cockpit(cockpit: &CockpitViewMetrics, checks: &mut Vec<Check>) {
     }
 }
 
+/// The Flight Check checks: the screen the run opens on, judged before the
+/// mission's own checks.
 fn evaluate_flight_check(m: &SmokeMeasurements) -> Vec<Check> {
     let missing = |id: &str| Check {
         id: id.to_owned(),
