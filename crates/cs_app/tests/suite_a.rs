@@ -152,6 +152,7 @@ mod accept_f58_c_followup_host_loss_policy;
 mod accept_f58_c_full_ledger_refuses_before_teardown;
 mod accept_f58_c_host_loss_ends_the_match_once;
 mod accept_f59_b_replay_capture;
+mod accept_flak_a_turret_update_law;
 mod accept_m01_b_obj_1_completion_effects;
 mod accept_m01_b_obj_2_objective_semantics;
 mod accept_m01_b_obj_3_stage_conditions;
