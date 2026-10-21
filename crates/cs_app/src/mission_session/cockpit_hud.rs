@@ -539,12 +539,17 @@ fn row_value(
 fn fit_safe_area(
     windows: Query<&Window>,
     phase: Option<bevy::prelude::Res<super::launch_cinematic::LaunchCinematic>>,
+    view: Option<bevy::prelude::Res<super::view_cycle::MissionViewMode>>,
     mut areas: Query<(&mut Node, &mut bevy::prelude::Visibility), With<SafeArea>>,
 ) {
     let Ok(window) = windows.single() else { return };
     let (w, h) = safe_area(window.width(), window.height());
-    // The launch cinematic holds the HUD back until it hands over (#1663).
-    let held = phase.is_some_and(|phase| phase.is_playing());
+    // The launch cinematic holds the HUD back until it hands over (#1663);
+    // the pilot-eye views hold it too (PARITY3-COCKPIT-VIEW.04): there the
+    // corner clusters are the panel's own meshes, so the text layer stands
+    // down. The spyglass window is not under SafeArea and still draws.
+    let held = phase.is_some_and(|phase| phase.is_playing())
+        || view.is_some_and(|view| view.at_pilot_eye());
     for (mut node, mut visibility) in &mut areas {
         *visibility = if held {
             bevy::prelude::Visibility::Hidden
