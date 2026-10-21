@@ -76,6 +76,7 @@ mod lobby;
 mod m01_lc_fc_a;
 mod original;
 mod parity2_flight_check_page;
+mod parity5_cabin_intro_01;
 mod pause_map;
 mod scrapbook_dispatch;
 mod screens;
