@@ -1021,6 +1021,8 @@ fn add_composition(
     super::cockpit_camera::install_cockpit_camera(app);
     // The external views (F9-F12, F7) and the zoom (#1824).
     super::external_view::install_external_view(app);
+    // The crash sequence's view hold and its release key (#1855).
+    super::crash_flow::install_crash_flow(app);
     // Snap/smooth look, track target and the numpad look (#1825).
     super::look_view::install_look_view(app);
     super::cockpit_interior::install_cockpit_interior(app);
@@ -1075,6 +1077,8 @@ fn add_composition(
         // every other widget; the notice itself is published by the
         // presentation plugin, which every composition runs.
         app.add_plugins(crate::mission_session::MissionNoticeHudPlugin);
+        // `Fatal Crash!` after a terrain crash (#1855).
+        app.add_plugins(crate::mission_session::MissionCrashMessagePlugin);
         // The original-style cockpit HUD (#1641) replaces the developer
         // overlay, which is hidden unless `--dev-overlay` asks for it.
         app.insert_resource(crate::playtest::visuals::DeveloperOverlay(false));
@@ -1720,6 +1724,7 @@ pub fn teardown(app: &mut App) {
     world.remove_resource::<super::cockpit_interior::MissionCockpitInterior>();
     world.remove_resource::<super::cockpit_dials::MissionCockpitDials>();
     world.remove_resource::<super::view_cycle::MissionViewMode>();
+    world.remove_resource::<crate::playtest::fatal_contact::CrashSequence>();
     world.remove_resource::<super::hud_art::MissionHudArt>();
     world.remove_resource::<super::world_draw::MissionWorldParts>();
     world.remove_resource::<AircraftSpawner>();

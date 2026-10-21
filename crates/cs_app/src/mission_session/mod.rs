@@ -100,6 +100,7 @@ mod cockpit_hud;
 mod cockpit_interior;
 mod compose;
 mod content;
+mod crash_flow;
 mod debrief;
 mod evidence;
 mod examine;
@@ -173,6 +174,7 @@ pub use content::{
     MissionContent, MissionFlight, MissionSessionError, SoundArchive, prepare_mission_content,
     root_seed_from,
 };
+pub use crash_flow::{MissionCrashMessagePlugin, install_crash_flow, step_crash_sequence};
 pub use debrief::{M01_CASH_EARNED_UNKNOWN_CLAIM, MissionDebrief, MissionTally, tally_player_gun};
 pub use evidence::{
     CAPABILITIES_ENV, CAPTURE_ENV, CaptureHandle, CaptureRefusal, CaptureSettings,

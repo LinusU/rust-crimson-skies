@@ -183,6 +183,7 @@ use crate::objectives::{
 };
 use crate::physics::{BASELINE_FIXED_HZ, PhysicsTickLedger};
 use crate::playtest::PlaytestState;
+use crate::playtest::fatal_contact::CrashSequence;
 use crate::playtest::scene::SceneError;
 use crate::score::SessionScoreLedger;
 use crate::world::residency::{load_world, unload_world};
@@ -1353,6 +1354,14 @@ impl MissionHost {
             if !player_destroyed(world, self.served) {
                 return None;
             }
+            // A terrain crash holds the run open until its sequence is
+            // released by a key (#1855).
+            if world
+                .get_resource::<CrashSequence>()
+                .is_some_and(|sequence| !sequence.released)
+            {
+                return None;
+            }
             (
                 TerminalOutcome::Failure,
                 MissionTerminalSource::PlayerDestroyed,
@@ -1425,7 +1434,14 @@ impl MissionHost {
             audio_loops_bound,
             score,
         )
-        .with_debrief(MissionDebrief::read(world, self.served, produced.tick.0));
+        .with_debrief(MissionDebrief::read(
+            world,
+            self.served,
+            // The clock stopped at the crash, not at the key press.
+            world
+                .get_resource::<CrashSequence>()
+                .map_or(produced.tick.0, |sequence| sequence.crash.tick),
+        ));
         println!("{}", terminal.report_line);
         self.settled = Some(terminal.clone());
         Some(terminal)
@@ -1852,6 +1868,7 @@ pub fn mission_host_restart(world: &mut World) {
     if !(requested || reset) {
         return;
     }
+    world.remove_resource::<CrashSequence>();
     let Some(mut host) = world.remove_resource::<MissionHost>() else {
         return;
     };
