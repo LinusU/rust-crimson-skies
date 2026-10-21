@@ -172,6 +172,13 @@ fn healthy() -> SmokeMeasurements {
             objective_class: Some("capital_ship".to_owned()),
             objective_selected: Some(true),
         },
+        examine: cs_app::mission_session::ExamineMetrics {
+            ran: true,
+            before_node: Some("t_chamber".to_owned()),
+            before_flagged: true,
+            after_node: Some("grasshut2".to_owned()),
+            after_flagged: false,
+        },
         ..SmokeMeasurements::default()
     }
 }

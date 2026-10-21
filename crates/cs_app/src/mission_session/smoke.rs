@@ -98,7 +98,9 @@ use crate::audio::mixer::AudioMixReport;
 use crate::audio::spawn::{AudioBindLog, AudioEmitterRole};
 use crate::input::platform::PlatformInput;
 use crate::input::session::PauseReason;
-use crate::mission_actors::{MissionActorSpawnReport, MissionZeppelinActor, ScriptedAircraftActor};
+use crate::mission_actors::{
+    MissionActorSpawnReport, MissionGroundTarget, MissionZeppelinActor, ScriptedAircraftActor,
+};
 use crate::ordnance::OrdnanceItemMirror;
 use crate::physics::PhysicsTickLedger;
 use crate::playtest::scene::PlaytestAircraft;
@@ -259,6 +261,23 @@ const TARGET_OBJECTIVE_KEY_OFFSET: u32 = 76;
 const TARGET_OBJECTIVE_OFFSET: u32 = 96;
 /// Frames into `Phase::Target` the phase ends.
 const TARGET_END_OFFSET: u32 = 98;
+/// Frames into `Phase::Examine` the nearest-objective key is pressed
+/// (`Ctrl+E`, the measured nearest select).
+const EXAMINE_KEY_OFFSET: u32 = 4;
+/// Frames into `Phase::Examine` the Site #1 frame is taken.
+const EXAMINE_BEFORE_OFFSET: u32 = 16;
+/// Frames into `Phase::Examine` the player is flown inside Site #1's radius.
+const EXAMINE_INSIDE_OFFSET: u32 = 18;
+/// Frames into `Phase::Examine` the hand-off frame is taken.
+const EXAMINE_AFTER_OFFSET: u32 = 30;
+/// Frames into `Phase::Examine` the phase ends.
+const EXAMINE_END_OFFSET: u32 = 32;
+/// How far outside Site #1 (3D, along +X and up 40 m) the pass starts.
+const EXAMINE_OUTSIDE_M: Vec3 = Vec3::new(300.0, 40.0, 0.0);
+/// The owner's measured trigger offset: 126 m horizontal, 126 m vertical.
+const EXAMINE_INSIDE_M: Vec3 = Vec3::new(126.0, 126.0, 0.0);
+/// The node the first examine objective watches (`OBJECTIVE2`).
+const EXAMINE_SITE: &str = "t_chamber";
 /// Frames after the last scripted frame the run waits for outstanding
 /// screenshots.
 const SHOT_GRACE_FRAMES: u32 = 600;
@@ -839,6 +858,22 @@ pub struct TargetingMetrics {
     pub objective_selected: Option<bool>,
 }
 
+/// The examine hand-off phase (M01-EXAMINE-OBJECTIVE, #1754): fly a pass at
+/// Site #1 and watch the selected target move on to Site #2 by itself.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ExamineMetrics {
+    /// The phase ran its placements.
+    pub ran: bool,
+    /// The container node the reticle held before the pass.
+    pub before_node: Option<String>,
+    /// Site #1's objective flag before the pass.
+    pub before_flagged: bool,
+    /// The container node the reticle held after the pass.
+    pub after_node: Option<String>,
+    /// Site #1's objective flag after the pass.
+    pub after_flagged: bool,
+}
+
 /// Everything the run measured, as [`evaluate`] consumes it.
 #[derive(Clone, Debug, Default)]
 pub struct SmokeMeasurements {
@@ -885,6 +920,8 @@ pub struct SmokeMeasurements {
     pub first_control: Option<FirstControlMetrics>,
     /// The target-indicator phase (PARITY2-M01-TARGET-INDICATORS, #1727).
     pub targeting: TargetingMetrics,
+    /// The examine hand-off phase (M01-EXAMINE-OBJECTIVE, #1754).
+    pub examine: ExamineMetrics,
 }
 
 /// One pass/fail verdict with its evidence.
@@ -1375,6 +1412,35 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
         });
     }
 
+    // --- the examine hand-off (M01-EXAMINE-OBJECTIVE, #1754) ----------------
+    {
+        let examine = &m.examine;
+        checks.push(Check {
+            id: "examine_site_one_selected".to_owned(),
+            applies: true,
+            passed: examine.ran
+                && examine.before_node.as_deref() == Some(EXAMINE_SITE)
+                && examine.before_flagged,
+            detail: format!(
+                "before the pass the reticle held {:?} (flagged: {})",
+                examine.before_node, examine.before_flagged
+            ),
+        });
+        checks.push(Check {
+            id: "examine_hands_off_to_site_two".to_owned(),
+            applies: true,
+            passed: examine.ran
+                && examine.after_node.as_deref() == Some("grasshut2")
+                && !examine.after_flagged,
+            detail: format!(
+                "after the pass inside {} m the reticle held {:?}; Site #1 still flagged: {}",
+                EXAMINE_INSIDE_M.length(),
+                examine.after_node,
+                examine.after_flagged
+            ),
+        });
+    }
+
     // --- the picture arrived ----------------------------------------------
     checks.push(Check {
         id: "smoke_shots_delivered".to_owned(),
@@ -1853,6 +1919,9 @@ enum Phase {
     /// The selected-target indicator: face a hostile, `Q` it, photograph;
     /// turn away, photograph; `R` to the non-aircraft class (#1727).
     Target,
+    /// The examine hand-off: select Site #1, fly inside its radius, watch the
+    /// selected target move to Site #2 (M01-EXAMINE-OBJECTIVE, #1754).
+    Examine,
     Hud,
     Guns,
     Rocket,
@@ -1997,6 +2066,8 @@ struct TargetingParams<'w, 's> {
     spyglass: Option<Res<'w, super::spyglass::SpyglassState>>,
     /// The spyglass's second camera.
     spyglass_camera: Query<'w, 's, &'static Camera, With<super::spyglass::SpyglassCamera>>,
+    /// The declared ground targets (the objective sites).
+    grounds: Query<'w, 's, &'static MissionGroundTarget>,
 }
 
 /// The entity classes a probe writes its hide value onto, grouped so the
@@ -2891,6 +2962,55 @@ fn smoke_script(
                     reticle.map(|reticle| reticle.objective);
                 due.push("target_objective".to_owned());
             } else if at >= TARGET_END_OFFSET {
+                data.phase = Phase::Examine;
+                data.phase_start = frame + 1;
+            }
+        }
+        Phase::Examine => {
+            let site = targeting
+                .grounds
+                .iter()
+                .find(|ground| ground.node == EXAMINE_SITE)
+                .map(|ground| Vec3::from_array(ground.position_m.map(|v| v as f32)));
+            if at == 0
+                && let Some(site) = site
+            {
+                data.measurements.examine.ran = true;
+                pending.0 = Some(examine_placement(
+                    &data,
+                    site,
+                    EXAMINE_OUTSIDE_M,
+                    "examine outside",
+                ));
+            } else if at == EXAMINE_KEY_OFFSET {
+                queue.0.push(KeyOp::Press(KeyCode::ControlLeft));
+                queue.0.push(KeyOp::Press(KeyCode::KeyE));
+            } else if at == EXAMINE_KEY_OFFSET + 2 {
+                queue.0.push(KeyOp::Release(KeyCode::KeyE));
+                queue.0.push(KeyOp::Release(KeyCode::ControlLeft));
+            } else if at == EXAMINE_BEFORE_OFFSET {
+                let (node, flagged) = selected_site(&targeting);
+                data.measurements.examine.before_node = node;
+                data.measurements.examine.before_flagged = flagged;
+                due.push("examine_before".to_owned());
+            } else if at == EXAMINE_INSIDE_OFFSET
+                && let Some(site) = site
+            {
+                pending.0 = Some(examine_placement(
+                    &data,
+                    site,
+                    EXAMINE_INSIDE_M,
+                    "examine inside",
+                ));
+            } else if at == EXAMINE_AFTER_OFFSET {
+                let (node, _) = selected_site(&targeting);
+                data.measurements.examine.after_node = node;
+                data.measurements.examine.after_flagged = targeting
+                    .grounds
+                    .iter()
+                    .any(|ground| ground.node == EXAMINE_SITE && ground.objective);
+                due.push("examine_after".to_owned());
+            } else if at >= EXAMINE_END_OFFSET {
                 data.phase = Phase::Hud;
                 data.phase_start = frame + 1;
             }
@@ -3263,6 +3383,35 @@ fn place_near_actor(
         speed_m_s: data.speed_m_s,
         distance_m: f64::from(PLACEMENT_OFFSET_M),
     })
+}
+
+/// The player placed `offset` from the examine site, heading at it.
+fn examine_placement(data: &SmokeData, site: Vec3, offset: Vec3, name: &str) -> Placement {
+    Placement {
+        name: name.to_owned(),
+        position_m: (site + offset).to_array(),
+        yaw: yaw_toward(-offset),
+        speed_m_s: data.speed_m_s,
+        distance_m: f64::from(offset.length()),
+    }
+}
+
+/// The container node of the ground target the reticle holds and whether
+/// that target is still flagged as an objective site.
+fn selected_site(targeting: &TargetingParams<'_, '_>) -> (Option<String>, bool) {
+    let target = targeting
+        .session
+        .as_deref()
+        .and_then(crate::targeting::TargetingSession::last_phase)
+        .and_then(|phase| phase.reticle.as_ref())
+        .map(|reticle| reticle.target);
+    targeting
+        .grounds
+        .iter()
+        .find(|ground| Some(ground.damage_actor) == target)
+        .map_or((None, false), |ground| {
+            (Some(ground.node.clone()), ground.objective)
+        })
 }
 
 /// Places the player `APPROACH_M` from the declared-hostile cargo zeppelin on
@@ -3924,6 +4073,10 @@ fn json_option_bool(value: Option<bool>) -> String {
     value.map_or_else(|| "null".to_owned(), |value| value.to_string())
 }
 
+fn json_option_str(value: Option<&str>) -> String {
+    value.map_or_else(|| "null".to_owned(), json_string)
+}
+
 fn json_option_usize(value: Option<usize>) -> String {
     value.map_or_else(|| "null".to_owned(), |value| value.to_string())
 }
@@ -4126,6 +4279,8 @@ fn write_artifacts(
          \"window_shown\":{t_win},\"window_camera_active\":{t_win_cam},\
          \"hidden_window_shown\":{t_hid_win},\"hidden_nodes\":{t_hid_nodes},\
          \"objective_class\":{t_objective_class},\"objective_selected\":{t_objective}}},\
+         \"examine\":{{\"ran\":{x_ran},\"before_node\":{x_before},\"before_flagged\":{x_bf},\
+         \"after_node\":{x_after},\"after_flagged\":{x_af}}},\
          \"actors\":[{actors}],\"placements\":[{placements}],\"shots\":[{shots}],\
          \"checks\":[{checks}],\"failures\":[{failures}],\"passed\":{passed}}}\n",
         kind = json_string(SMOKE_KIND),
@@ -4207,6 +4362,11 @@ fn write_artifacts(
             .as_deref()
             .map_or_else(|| "null".to_owned(), json_string),
         t_objective = json_option_bool(report.measurements.targeting.objective_selected),
+        x_ran = report.measurements.examine.ran,
+        x_before = json_option_str(report.measurements.examine.before_node.as_deref()),
+        x_bf = report.measurements.examine.before_flagged,
+        x_after = json_option_str(report.measurements.examine.after_node.as_deref()),
+        x_af = report.measurements.examine.after_flagged,
         actors = actors,
         placements = placements,
         shots = shots,
