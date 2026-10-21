@@ -3,6 +3,9 @@
 //! The `vs_m01_*` runtime-host suites of the campaign tree and the M01 world evidence
 //! that shares their report module. They are kept alone because `vs_m01_runtime` reaches
 //! so much engine code that it adds ~5 MB of `__eh_frame` to any binary it joins.
+//! `m01_chase_view_parity`, `m01_player_prop_blur` and `vs_m01_rt_player_visual` moved to
+//! `campaign/mod.rs` (so `cs_app_tests_d`) during #1811's review: the binary was 4 KB past
+//! the 16 MiB `__eh_frame` gate.
 //!
 //! See `docs/findings/2026-10-17-t1543-cs-app-test-binaries.md`.
 
@@ -10,14 +13,11 @@ mod accept_t336_suite_e_image;
 mod eh_frame_gate;
 mod campaign {
     mod common;
-    mod m01_chase_view_parity;
     mod m01_play_world_evidence;
-    mod m01_player_prop_blur;
     mod vs_m01_rt_content;
     mod vs_m01_rt_evidence_capture;
     mod vs_m01_rt_evidence_report;
     mod vs_m01_rt_host_cadence;
     mod vs_m01_rt_hud_art;
-    mod vs_m01_rt_player_visual;
     mod vs_m01_runtime;
 }
