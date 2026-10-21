@@ -2497,3 +2497,847 @@ va = 0x004ab2c3
 bytes = "f60240"
 fact = "only a weapon whose descriptor flag 0x40 is set builds the lock-on record for the shot (the 0x538880 test at 0x4ab2d0..0x4ab370)"
 
+
+# The external camera, look, track-target and zoom parameters (CAMERA-MODES-01,
+# #1823, finding docs/findings/2026-10-21-parity3-camera-modes-01-measured.md).
+# One row per cited instruction or table in the engine image: `va` is the
+# instruction (or data start), `bytes` its content as hex (re-read by the
+# ignored image test), `fact` what it decides. The camera object is
+# [0x64ef78] (mode at +0x14c), the per-frame dispatch is 0x42c5c0, the mode
+# setter 0x42c280, the snap/smooth/track look reader 0x42d010, the eye view
+# 0x42d980 and the parameter loader 0x42fa80..0x42fb51. The numeric values
+# the parameters take live in the owner's data (`camparam.zrd` in
+# ZBD/zrdr.zbd), not in the image; they are not committed. Provenance
+# `static`; nothing here is `verified_original`.
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "register.cmd50"
+va = 0x004896c9
+bytes = "68b0934800"
+fact = "`push 0x4893b0` before `push 50` / `call 0x537bf0`: command 50 runs the handler at 0x4893b0"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "register.cmd51"
+va = 0x004896d5
+bytes = "68d0934800"
+fact = "`push 0x4893d0` before `push 51` / `call 0x537bf0`: command 51 runs the handler at 0x4893d0"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "register.cmd52"
+va = 0x004896e1
+bytes = "68f0934800"
+fact = "`push 0x4893f0` before `push 52` / `call 0x537bf0`: command 52 runs the handler at 0x4893f0"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "register.cmd53"
+va = 0x004896ed
+bytes = "6810944800"
+fact = "`push 0x489410` before `push 53` / `call 0x537bf0`: command 53 runs the handler at 0x489410"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "register.cmd54"
+va = 0x004896f9
+bytes = "6830944800"
+fact = "`push 0x489430` before `push 54` / `call 0x537bf0`: command 54 runs the handler at 0x489430"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "register.cmd55"
+va = 0x00489705
+bytes = "6850944800"
+fact = "`push 0x489450` before `push 55` / `call 0x537bf0`: command 55 runs the handler at 0x489450"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "register.cmd57"
+va = 0x00489711
+bytes = "6860944800"
+fact = "`push 0x489460` before `push 57` / `call 0x537bf0`: command 57 runs the handler at 0x489460"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "register.cmd56"
+va = 0x0048971d
+bytes = "68a0944800"
+fact = "`push 0x4894a0` before `push 56` / `call 0x537bf0`: command 56 runs the handler at 0x4894a0"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "handler.cmd50.mode"
+va = 0x004893c5
+bytes = "6a01"
+fact = "the command 50 handler passes camera mode 1 to the mode setter 0x42c280 (it does nothing while [[0x71c298]+0x91d] is set)"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "handler.cmd51.mode"
+va = 0x004893e5
+bytes = "6a02"
+fact = "the command 51 handler passes camera mode 2 to the mode setter 0x42c280 (it does nothing while [[0x71c298]+0x91d] is set)"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "handler.cmd52.mode"
+va = 0x00489405
+bytes = "6a03"
+fact = "the command 52 handler passes camera mode 3 to the mode setter 0x42c280 (it does nothing while [[0x71c298]+0x91d] is set)"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "handler.cmd53.mode"
+va = 0x00489425
+bytes = "6a04"
+fact = "the command 53 handler passes camera mode 4 to the mode setter 0x42c280 (it does nothing while [[0x71c298]+0x91d] is set)"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "handler.cmd54.mode"
+va = 0x00489445
+bytes = "6a09"
+fact = "the command 54 handler passes camera mode 9 to the mode setter 0x42c280 (it does nothing while [[0x71c298]+0x91d] is set)"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "look.snap_handler"
+va = 0x00489452
+bytes = "68ef640000"
+fact = "command 55 handler: look-mode word [0x64ef68] = 0 (snap look)"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "look.smooth_handler"
+va = 0x00489488
+bytes = "c70568ef640001000000"
+fact = "command 57 handler: look-mode word [0x64ef68] = 1 (smooth look) after zeroing the look targets 0x64ef60/0x64ef64 and the smoothed look 0x64ef58/0x64ef5c"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "look.track_handler_sub"
+va = 0x004894a5
+bytes = "83e802"
+fact = "command 56 handler: [0x64ef68] - 2 ..."
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "look.track_handler_and"
+va = 0x004894ac
+bytes = "83e002"
+fact = "... neg/sbb/and 2: the new look-mode word is 0 if it was 2 and 2 otherwise (track target toggles with snap look)"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "mode.keep_table"
+va = 0x00621380
+bytes = "01000000000000000100000000000000000000000000000001000000010000000000000000000000000000000100000000000000000000000000000000000000010000000100000000000000000000000100000000000000010000000000000000000000000000000100000001000000000000000000000000000000000000000000000001000000010000000000000001000000010000000000000000000000000000000000000000000000010000000100000000000000010000000100000000000000000000000000000000000000000000000000000000000000000000000100000001000000000000000000000000000000000000000000000000000000000000000000000001000000010000000000000000000000000000000000000000000000000000000000000000000000010000000100000000000000000000000000000000000000000000000000000000000000000000000100000001000000000000000000000000000000000000000000000000000000000000000000000001000000010000000000000001000000"
+fact = "10x10 dword table indexed [from*10+to] read by the setter at 0x42c29f: nonzero keeps the running mode state, zero sets the re-init flag [0x64ef2c]=1. Nonzero: 0<->2, 1->1, 3<->4, any->6, any->7, 9->9"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "mode.reinit_flag"
+va = 0x0042c2af
+bytes = "a22cef6400"
+fact = "zero table entry: [0x64ef2c] = 1, so the next mode function runs its init routine before placing the camera"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "mode.dispatch_table"
+va = 0x0042c648
+bytes = "d7c54200ecc54200d7c54200fac54200fac542000fc642001dc642001dc642002bc6420039c64200"
+fact = "per-frame dispatch by [camera+0x14c]: 0,2 -> 0x42c5d7 (calls 0x42c7f0, flag = mode==2); 1 -> 0x42c5ec (0x42ca50); 3,4 -> 0x42c5fa (0x42cb70, flag = mode==4); 5 -> 0x42c60f (0x42ce00); 6,7 -> 0x42c61d (eye 0x42d980); 8 -> 0x42c62b (0x42cf10); 9 -> 0x42c639 (0x42db40)"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "mode.init_table"
+va = 0x0042dcc0
+bytes = "48dc42005cdc420048dc420070dc420070dc420084dc4200b5dc4200b5dc420098dc4200acdc4200"
+fact = "per-mode init dispatch for 0x42dc20: 0,2 -> 0x42dcf0; 1 -> 0x42dd50; 3,4 -> 0x42de10; 5 -> 0x42df90; 8 -> 0x42e0b0; 9 -> 0x42e1f0; 6,7 -> none"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "setter.zero_chase"
+va = 0x0042c33d
+bytes = "c70538ef640000000000"
+fact = "entering mode 0 from another mode zeroes the smoothed zoom [0x64ef38] and the zoom target [0x64ef30]"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "setter.zero_look"
+va = 0x0042c351
+bytes = "c70558ef640000000000"
+fact = "entering modes 0, 6 or 7 from another mode zeroes the look state 0x64ef58/0x64ef5c/0x64ef60/0x64ef64"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "fov.default"
+va = 0x0060409c
+bytes = "920a863f"
+fact = "f32 1.0471976 rad (60 degrees): the angle 0x42b660 returns for every mode except 6 with a vehicle attached"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "fov.second_eye"
+va = 0x006040a0
+bytes = "c2b8b23f"
+fact = "f32 1.3962634 rad (80 degrees): returned by 0x42b660 when [camera+0x150] != 0 and mode == 6 (not mode 7)"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "fov.mode6_test"
+va = 0x0042b66f
+bytes = "83b84c01000006"
+fact = "the 80 degree angle needs mode 6 exactly"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "fov.apply"
+va = 0x0042b585
+bytes = "d9f2"
+fact = "0x42b570 takes tan(angle/2), multiplies by the screen factor [0x71b3f8], and passes 2*atan(.) to 0x4d2c20 with the angle: whether the 60/80 degree angle is horizontal or vertical depends on [0x71b3f8], a run-time value not in the image (unknown)"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "smooth.helper"
+va = 0x00460490
+bytes = "d90544d79a00"
+fact = "0x460490(&v, target, rate): v = target + (v - target) * e(rate * dt), dt = [0x9ad744]; e is 0x460410, a polynomial for 0 < x < 0.1 and 0x53e2e0 otherwise (read as exp(-x), not traced)"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "zoom.in_poll"
+va = 0x0042d894
+bytes = "6a43"
+fact = "command id 0x43 (67, zoom in) is polled with 0x537c10 each frame"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "zoom.out_poll"
+va = 0x0042d8de
+bytes = "6a44"
+fact = "command id 0x44 (68, zoom out) is polled with 0x537c10 each frame"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "zoom.in_step"
+va = 0x0042d8bd
+bytes = "d90544d79a00"
+fact = "zoom in: the zoom target [0x64ef30] -= 2 * dt (dt = [0x9ad744]), i.e. 2 per second; only when the 0x44 query's bit 4 is clear"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "zoom.out_step"
+va = 0x0042d907
+bytes = "d90544d79a00"
+fact = "zoom out: [0x64ef30] += 2 * dt"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "zoom.clamp_hi"
+va = 0x0042d92e
+bytes = "c70530ef64000000803f"
+fact = "the zoom target is clamped to 1.0"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "zoom.clamp_lo"
+va = 0x0042d94d
+bytes = "c70530ef640000000000"
+fact = "the zoom target is clamped to 0.0"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "zoom.smooth_rate"
+va = 0x0042d95c
+bytes = "680000c03f"
+fact = "smoothed zoom [0x64ef38] approaches the target with rate 1.5 (push 0x3fc00000, 0x460490)"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "zoom.consumer"
+va = 0x0042c9e1
+bytes = "d80d90336000"
+fact = "mode 0 only (not mode 2): the chase distance gets + [0x64ef38] * [0x603390]"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "zoom.scale"
+va = 0x00603390
+bytes = "00002041"
+fact = "f32 10.0: metres of extra chase distance at full zoom"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "look.poll_cmd58"
+va = 0x0042d18b
+bytes = "6a3a"
+fact = "look-direction poll of command 58 in the snap/smooth reader 0x42d010 (x: +1 left, -1 right; y: +1 up, -1 down)"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "look.poll_cmd59"
+va = 0x0042d1b4
+bytes = "6a3b"
+fact = "look-direction poll of command 59 in the snap/smooth reader 0x42d010 (x: +1 left, -1 right; y: +1 up, -1 down)"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "look.poll_cmd60"
+va = 0x0042d1d3
+bytes = "6a3c"
+fact = "look-direction poll of command 60 in the snap/smooth reader 0x42d010 (x: +1 left, -1 right; y: +1 up, -1 down)"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "look.poll_cmd61"
+va = 0x0042d1f6
+bytes = "6a3d"
+fact = "look-direction poll of command 61 in the snap/smooth reader 0x42d010 (x: +1 left, -1 right; y: +1 up, -1 down)"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "look.poll_cmd63"
+va = 0x0042d228
+bytes = "6a3f"
+fact = "look-direction poll of command 63 in the snap/smooth reader 0x42d010 (x: +1 left, -1 right; y: +1 up, -1 down)"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "look.poll_cmd64"
+va = 0x0042d247
+bytes = "6a40"
+fact = "look-direction poll of command 64 in the snap/smooth reader 0x42d010 (x: +1 left, -1 right; y: +1 up, -1 down)"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "look.poll_cmd65"
+va = 0x0042d26a
+bytes = "6a41"
+fact = "look-direction poll of command 65 in the snap/smooth reader 0x42d010 (x: +1 left, -1 right; y: +1 up, -1 down)"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "look.poll_cmd66"
+va = 0x0042d289
+bytes = "6a42"
+fact = "look-direction poll of command 66 in the snap/smooth reader 0x42d010 (x: +1 left, -1 right; y: +1 up, -1 down)"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "look.poll_cmd62_recentre"
+va = 0x0042d3a5
+bytes = "6a3e"
+fact = "command 62 (look middle) is polled only in the track-target branch, where it sets the recentre flag [ebp-1]"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "look.track_target_ptr"
+va = 0x0042d02b
+bytes = "8b8848090000"
+fact = "track target mode reads the current target pointer [[0x71c298]+0x948]; none: look targets are zeroed"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "look.hat_poll"
+va = 0x0042d155
+bytes = "6a00"
+fact = "a joystick hat (input mode 2 from 0x440540) is read by 0x536c70(0): 0xffff is centred, otherwise hundredths of a degree"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "look.key_to_angle"
+va = 0x0042d2af
+bytes = "dc0d00416000"
+fact = "key directions become the angle atan2(x, y) * 57.29578 * -100 (hundredths of a degree, as the hat reports)"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "look.snap_yaw"
+va = 0x0042d5a6
+bytes = "d80df0406000"
+fact = "snap look: yaw target [0x64ef64] = angle_hundredths * -0.01 * pi/180"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "look.snap_up"
+va = 0x0042d5ba
+bytes = "c70560ef6400db0fc93f"
+fact = "snap look: an angle under 10 hundredths of a degree (straight up on the pad) sets the pitch target [0x64ef60] to pi/2"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "look.snap_diagonal"
+va = 0x0042d606
+bytes = "c70560ef6400db0f493f"
+fact = "snap look: angles within 0.2 degrees of 45, 135, 225 or 315 degrees (0x118a..0x119e, 0x34b2..0x34c6, 0x57da..0x57ee, 0x7b02..0x7b16 hundredths) set the pitch target to pi/4; every other direction sets 0"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "look.smooth_rate"
+va = 0x0042d4db
+bytes = "d90544d79a00"
+fact = "smooth look: each frame pitch target [0x64ef60] += 2 * dt * y and yaw target [0x64ef64] += 2 * dt * x (x +1 left, y +1 up), pitch clamped to pi/2 (0x42d501) or to the caller's limit, yaw wrapped by 0x460ab0"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "look.smooth_pitch_rate"
+va = 0x0042d827
+bytes = "6800004040"
+fact = "the smoothed pitch [0x64ef58] follows the target with rate 3.0 (push 0x40400000, 0x460490)"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "look.smooth_yaw_rate"
+va = 0x0042d867
+bytes = "680000a040"
+fact = "the smoothed yaw [0x64ef5c] follows the target with rate 5.0 (push 0x40a00000, 0x460490)"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "look.chase_call"
+va = 0x0042c87c
+bytes = "e88f070000"
+fact = "mode 0/2 call 0x42d010(limit = -pi/2 (0xbfc90fdb), flag 0)"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "look.chase_consume"
+va = 0x0042c887
+bytes = "8b0dd0ef6400"
+fact = "mode 0/2 camera pitch = [0x64ef58] + camparam[+0x28] (thirdp_pitch), yaw = [0x64ef5c]"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "look.eye_call"
+va = 0x0042da70
+bytes = "e89bf5ffff"
+fact = "modes 6/7 call 0x42d010(limit 0, flag = [0x71dacc] && mode == 7), then rotate by [0x64ef58] and [0x64ef5c]"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "look.eye_tilt"
+va = 0x0042dac2
+bytes = "6858ffa7bd"
+fact = "the eye view applies a fixed extra rotation of f32 0xbda7ff58 = -0.08203 rad (-4.7 degrees) after the look rotations"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "mode1.speed_scale"
+va = 0x0042cac1
+bytes = "d80da8366000"
+fact = "mode 1 (External Camera Down): velocity [esi+0x18c..0x194] * [0x6036a8]; the offset angle uses the constant [0x6040c8]"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "mode1.velocity_scale"
+va = 0x006036a8
+bytes = "9a99193e"
+fact = "f32 0.15"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "mode1.pitch_const"
+va = 0x006040c8
+bytes = "66663640"
+fact = "f32 2.85"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "mode34.speed_gate"
+va = 0x0042cbe5
+bytes = "d81da8346000"
+fact = "modes 3/4: horizontal speed of [esi+0x198],[esi+0x1a0] compared with [0x6034a8]"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "mode34.speed_threshold"
+va = 0x006034a8
+bytes = "cdcccc3d"
+fact = "f32 0.1"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "mode4.side"
+va = 0x0042cd82
+bytes = "c745ec000000c0"
+fact = "mode 4 (External Camera Right) placement call: scalar -2.0 (0xc0000000) with the vector (0,0,1); what the scalar and vector mean is not traced"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "mode3.side"
+va = 0x0042cda0
+bytes = "c745ec00000040"
+fact = "mode 3 (External Camera Left) placement call: scalar +2.0 (0x40000000) with the vector (1,0,0); not traced further"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "mode34.flip_threshold"
+va = 0x006040d0
+bytes = "7a008bfcfa21f93f"
+fact = "f64 1.570796 (pi/2): the side flag [0x64ef70] flips when the absolute heading change exceeds it"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "params.file"
+va = 0x0042fa85
+bytes = "6848186200"
+fact = "the loader opens the keyed list named by the string at 0x621848 (`camparam.zrd`, carried by ZBD/zrdr.zbd)"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "params.default_name"
+va = 0x0042fa9e
+bytes = "6858186200"
+fact = "the record named by the string at 0x621858 (`default`) fills the default record at 0x64efd8"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "params.airframe_names"
+va = 0x00620c70
+bytes = "a40d6200b00d6200c00d6200cc0d6200d80d6200e40d6200f00d6200fc0d6200080e6200180e6200240e6200300e62003c0e6200440e62004c0e6200580e6200680e6200740e6200800e62008c0e6200980e6200a40e6200b00e6200c00e6200cc0e6200d80e6200e40e6200f00e6200fc0e6200040f6200140f6200200f62002c0f6200380f6200400f6200480f6200540f6200640f6200700f62007c0f6200840f6200940f6200a00f6200ac0f6200bc0f6200c80f6200d40f6200e00f6200ec0f6200f80f6200001062000c106200141062001c106200241062002c106200341062003c1062004c10620058106200641062007010620078106200801062008c106200a0106200ac106200b8106200c4106200d0106200dc106200e4106200f4106200001162000c1162001811620020116200"
+fact = "11 records of 28 bytes: a name pointer first (Autogyro, Hellhound, Balmoral, Bloodhawk, Brigand, Devastator, Firebrand, Fury, Kestrel, Peacemaker, Warhawk); index i names the keyed record copied over the default into 0x64f058 + i*0x80"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "params.select"
+va = 0x0042fb44
+bytes = "c1e007"
+fact = "0x42fb30(i): record = 0x64f058 + i*0x80; i == 11 selects the default 0x64efd8; the result goes to the camera parameter pointer [0x64efd0]"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "params.thirdp_pitch_scale"
+va = 0x0042f835
+bytes = "dc0de8406000"
+fact = "thirdp_pitch is multiplied by f64 0.01745329 (degrees to radians) on load"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "param.dist"
+va = 0x0042f710
+bytes = "6860166200"
+fact = "camparam key `dist` (string 0x621660) is stored at record offset 0x0"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "param.dist_factor"
+va = 0x0042f72a
+bytes = "6868166200"
+fact = "camparam key `dist_factor` (string 0x621668) is stored at record offset 0x4"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "param.dist_vary"
+va = 0x0042f745
+bytes = "6874166200"
+fact = "camparam key `dist_vary` (string 0x621674) is stored at record offset 0x8"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "param.dist_catch_up"
+va = 0x0042f760
+bytes = "6880166200"
+fact = "camparam key `dist_catch_up` (string 0x621680) is stored at record offset 0xc"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "param.dist_min"
+va = 0x0042f77b
+bytes = "6890166200"
+fact = "camparam key `dist_min` (string 0x621690) is stored at record offset 0x10"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "param.dist_max"
+va = 0x0042f796
+bytes = "689c166200"
+fact = "camparam key `dist_max` (string 0x62169c) is stored at record offset 0x14"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "param.back_dist_min"
+va = 0x0042f7b1
+bytes = "68a8166200"
+fact = "camparam key `back_dist_min` (string 0x6216a8) is stored at record offset 0x18"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "param.back_dist_max"
+va = 0x0042f7cc
+bytes = "68b8166200"
+fact = "camparam key `back_dist_max` (string 0x6216b8) is stored at record offset 0x1c"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "param.pos_catch_up"
+va = 0x0042f7e7
+bytes = "68c8166200"
+fact = "camparam key `pos_catch_up` (string 0x6216c8) is stored at record offset 0x20"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "param.thirdp_height"
+va = 0x0042f802
+bytes = "68d8166200"
+fact = "camparam key `thirdp_height` (string 0x6216d8) is stored at record offset 0x24"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "param.thirdp_pitch"
+va = 0x0042f81d
+bytes = "68e8166200"
+fact = "camparam key `thirdp_pitch` (string 0x6216e8) is stored at record offset 0x28"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "param.look_catch_up"
+va = 0x0042f83e
+bytes = "68f8166200"
+fact = "camparam key `look_catch_up` (string 0x6216f8) is stored at record offset 0x2c"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "param.death_interval"
+va = 0x0042f859
+bytes = "6808176200"
+fact = "camparam key `death_interval` (string 0x621708) is stored at record offset 0x30"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "param.death_z"
+va = 0x0042f874
+bytes = "6818176200"
+fact = "camparam key `death_z` (string 0x621718) is stored at record offset 0x34"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "param.death_x"
+va = 0x0042f88f
+bytes = "6820176200"
+fact = "camparam key `death_x` (string 0x621720) is stored at record offset 0x38"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "param.death_alt"
+va = 0x0042f8aa
+bytes = "6828176200"
+fact = "camparam key `death_alt` (string 0x621728) is stored at record offset 0x3c"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "param.death_min_alt"
+va = 0x0042f8c5
+bytes = "6834176200"
+fact = "camparam key `death_min_alt` (string 0x621734) is stored at record offset 0x40"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "param.crash_horiz"
+va = 0x0042f8e0
+bytes = "6844176200"
+fact = "camparam key `crash_horiz` (string 0x621744) is stored at record offset 0x44"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "param.crash_y"
+va = 0x0042f8fb
+bytes = "6850176200"
+fact = "camparam key `crash_y` (string 0x621750) is stored at record offset 0x48"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "param.crash_chord_y"
+va = 0x0042f916
+bytes = "6858176200"
+fact = "camparam key `crash_chord_y` (string 0x621758) is stored at record offset 0x4c"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "param.crash_min_elev"
+va = 0x0042f931
+bytes = "6868176200"
+fact = "camparam key `crash_min_elev` (string 0x621768) is stored at record offset 0x50"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "param.flyby_min_watch_time"
+va = 0x0042f94c
+bytes = "6878176200"
+fact = "camparam key `flyby_min_watch_time` (string 0x621778) is stored at record offset 0x54"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "param.flyby_max_watch_time"
+va = 0x0042f967
+bytes = "6890176200"
+fact = "camparam key `flyby_max_watch_time` (string 0x621790) is stored at record offset 0x58"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "param.flyby_min_radius"
+va = 0x0042f982
+bytes = "68a8176200"
+fact = "camparam key `flyby_min_radius` (string 0x6217a8) is stored at record offset 0x5c"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "param.flyby_max_radius"
+va = 0x0042f99d
+bytes = "68bc176200"
+fact = "camparam key `flyby_max_radius` (string 0x6217bc) is stored at record offset 0x60"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "param.flyby_z"
+va = 0x0042f9b8
+bytes = "68d0176200"
+fact = "camparam key `flyby_z` (string 0x6217d0) is stored at record offset 0x64"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "param.flyby_min_interval"
+va = 0x0042f9d3
+bytes = "68d8176200"
+fact = "camparam key `flyby_min_interval` (string 0x6217d8) is stored at record offset 0x68"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "param.flyby_max_interval"
+va = 0x0042f9ee
+bytes = "68ec176200"
+fact = "camparam key `flyby_max_interval` (string 0x6217ec) is stored at record offset 0x6c"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "param.flyby_y"
+va = 0x0042fa09
+bytes = "6800186200"
+fact = "camparam key `flyby_y` (string 0x621800) is stored at record offset 0x70"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "param.flyby_min_alt"
+va = 0x0042fa24
+bytes = "6808186200"
+fact = "camparam key `flyby_min_alt` (string 0x621808) is stored at record offset 0x74"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "param.flyby_min_switch_dist"
+va = 0x0042fa3f
+bytes = "6818186200"
+fact = "camparam key `flyby_min_switch_dist` (string 0x621818) is stored at record offset 0x78"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "param.flyby_max_switch_dist"
+va = 0x0042fa5a
+bytes = "6830186200"
+fact = "camparam key `flyby_max_switch_dist` (string 0x621830) is stored at record offset 0x7c"
