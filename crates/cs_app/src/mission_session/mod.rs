@@ -93,6 +93,7 @@
 
 mod actor_census;
 mod actor_visual;
+mod briefing_screen;
 mod cockpit_hud;
 mod compose;
 mod content;
@@ -131,6 +132,10 @@ pub use actor_visual::{
     ACTOR_MODEL_CLAIM, ActorVisualDrawn, MissionActorVisuals, attach_actor_visuals,
     build_actor_visuals,
 };
+pub use briefing_screen::{
+    BriefingArtwork, BriefingDriver, BriefingReadError, BriefingScreenPlugin, BriefingSource,
+    BriefingVoice, BriefingVoiceAsset, VOICE_CONTAINER, install_briefing_screen, read_briefing,
+};
 pub use cockpit_hud::{
     MissionCockpitHudPlugin, OBJECTIVE_BLUE, clock_hour, compass_strip, damage_fraction,
     damage_tint, marker_text, safe_area,
@@ -150,11 +155,12 @@ pub use evidence::{
     MissionCapturePlugin, PLAYBACK_FILE, TRACE_FILE, finish as finish_capture, write_playback,
 };
 pub use flight_check::{
-    ButtonRole, CHANGE_AMMO_UNAVAILABLE, CHANGE_PLANE_UNAVAILABLE, FlightCheckArtwork,
-    FlightCheckPhase, FlightCheckPhaseError, FlightCheckScene, FlightCheckSceneError,
-    FlightCheckScreenPlugin, PhaseResponse, RETURN_TO_BRIEFING_UNAVAILABLE, SKIP_NOTICE,
-    SceneButton, SceneText, SceneUnknown, install_flight_check, install_flight_check_screen,
-    mission_is_held, mission_is_released,
+    BriefingStage, ButtonRole, CHANGE_AMMO_UNAVAILABLE, CHANGE_PLANE_UNAVAILABLE,
+    FlightCheckArtwork, FlightCheckPhase, FlightCheckPhaseError, FlightCheckScene,
+    FlightCheckSceneError, FlightCheckScreenPlugin, PhaseResponse, PreMissionStage,
+    RETURN_TO_BRIEFING_UNAVAILABLE, RETURN_TO_CABIN_UNAVAILABLE, SKIP_NOTICE, SceneButton,
+    SceneText, SceneUnknown, install_flight_check, install_flight_check_screen, mission_is_held,
+    mission_is_released,
 };
 pub use gun_sound::{
     GunSound, GunSoundError, MEASURED_GUN_MEMBER, WeaponSound, WeaponSoundError, measure_gun_sound,
@@ -236,10 +242,12 @@ pub use scenario::{
     WATCH_MAX_FRAMES_ENV,
 };
 pub use smoke::{
-    ActorMetrics, ApproachMetrics, AudioMetrics, CINEMATIC_SHOT_SECONDS, CameraMetrics, Check,
-    CinematicMetrics, DEFAULT_MISSION_CAPTURE_DIR, FirstControlMetrics, FlightCheckButtonMetrics,
-    FlightCheckMetrics, FlightCheckTextMetrics, GunMetrics, HudMetrics,
+    ActorMetrics, ApproachMetrics, AudioMetrics, BriefingButtonMetrics, BriefingMetrics,
+    BriefingReplayMetrics, BriefingShotMetrics, BriefingVoiceMetrics, CINEMATIC_SHOT_SECONDS,
+    CameraMetrics, Check, CinematicMetrics, DEFAULT_MISSION_CAPTURE_DIR, FirstControlMetrics,
+    FlightCheckButtonMetrics, FlightCheckMetrics, FlightCheckTextMetrics, GunMetrics, HudMetrics,
     MAX_SKY_BELOW_HORIZON_PIXELS, MAX_WINGMAN_DISTANCE_M, MIN_ACTOR_PIXELS,
+    MIN_BRIEFING_CHANGE_PIXELS, MIN_BRIEFING_DRAWN_PERMILLE, MIN_BUTTON_WARM_PERMILLE,
     MIN_FLIGHT_CHECK_BUTTON_PIXELS, MIN_FLIGHT_CHECK_DRAWN_PERMILLE, MIN_FLIGHT_CHECK_TEXT_PIXELS,
     MIN_GUN_ROUNDS, MIN_MISSION_SMOKE_SECONDS, MIN_OBJECTIVE_TEXT_PIXELS,
     MIN_SEA_COVERAGE_PERMILLE, MIN_TERRAIN_DETAIL_PERMILLE, MIN_TERRAIN_DISTINCT_COLOURS,

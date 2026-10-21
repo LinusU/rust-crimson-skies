@@ -1675,6 +1675,11 @@ pub fn teardown(app: &mut App) {
     world.remove_resource::<super::launch_cinematic::LaunchCinematic>();
     world.remove_resource::<super::launch_camera::LaunchCameraPlayback>();
     world.remove_resource::<super::flight_check::FlightCheckArtwork>();
+    if let Some(mut voice) = world.remove_resource::<super::briefing_screen::BriefingVoice>() {
+        voice.close();
+    }
+    world.remove_resource::<super::briefing_screen::BriefingArtwork>();
+    world.remove_resource::<super::briefing_screen::BriefingDriver>();
     world.remove_resource::<MissionHost>();
     world.remove_resource::<crate::mission_session::MissionHostReport>();
     world.remove_resource::<crate::mission_session::MissionHostRestartRequest>();
@@ -1745,17 +1750,21 @@ pub fn run_windowed(
     if capture.is_some() {
         println!("{}", super::flight_check::SKIP_NOTICE);
     } else {
-        let (phase, artwork) = super::flight_check::FlightCheckPhase::from_retail(
-            install_root,
-            &plan.mission_dir,
-            &stage,
-        )
-        .map_err(MissionCompositionError::FlightCheck)?;
+        // The briefing map screen comes first (#1750); Go to Flight Check
+        // opens the Flight Check, Return to Briefing comes back.
+        let (phase, artwork, briefing) =
+            super::flight_check::FlightCheckPhase::from_retail_with_briefing(
+                install_root,
+                &plan.mission_dir,
+                &stage,
+            )
+            .map_err(MissionCompositionError::FlightCheck)?;
         for line in phase.report_lines() {
             println!("{line}");
         }
         super::flight_check::install_flight_check(&mut app, phase);
         super::flight_check::install_flight_check_screen(&mut app, artwork);
+        super::briefing_screen::install_briefing_screen(&mut app, briefing);
     }
     // After Fly Mission the launch cinematic holds the player's control and
     // the HUD for its measured length (#1663) and plays the measured camera

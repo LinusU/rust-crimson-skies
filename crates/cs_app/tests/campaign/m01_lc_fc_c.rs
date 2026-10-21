@@ -94,12 +94,12 @@ fn view(title: &str) -> FlightCheckView {
     )
 }
 
-fn scene(title: &str) -> FlightCheckScene {
+pub(crate) fn scene(title: &str) -> FlightCheckScene {
     let layout = OriginalLayout::parse(LAYOUT).expect("the layout parses");
     FlightCheckScene::build(&layout, &view(title), &extents, &strings).expect("the scene builds")
 }
 
-fn loadout() -> Loadout {
+pub(crate) fn loadout() -> Loadout {
     Loadout {
         player: Some(
             ContentId::from_source(ContentKind::Airframe, AIRFRAME_TABLE[0].scene_root)

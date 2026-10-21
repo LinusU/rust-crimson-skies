@@ -54,29 +54,41 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::Path;
 
+use bevy::ecs::schedule::IntoScheduleConfigs;
 use bevy::prelude::{
     App, BackgroundColor, ButtonInput, Color, Commands, Component, Entity, GlobalZIndex, Image,
     ImageNode, KeyCode, Last, MouseButton, Node, Plugin, PositionType, PreUpdate, Query, Res,
-    ResMut, Resource, Startup, Text, TextColor, TextFont, Update, Val, Window, With, default,
+    ResMut, Resource, Text, TextColor, TextFont, Update, Val, Window, With, default,
 };
 use bevy::text::FontSize;
 use bevy::time::{Time, Virtual};
+use cs_content::briefing::DialogButtonKind;
 use cs_content::ui_layout::{AspectFit, Rect};
 use cs_types::content::ContentId;
 
 use super::MissionStage;
+use super::briefing_screen::{BriefingSource, read_briefing};
 use crate::ui::front_end::{
-    Action, ArtExtents, Artwork, BUTTON_STATE_FRAMES, Entry, FlightCheckButton, FlightCheckSlot,
-    FlightCheckView, FrontEnd, FrontEndScreens, LayoutRow as Row, Loadout, OriginalLayout, Screen,
+    Action, ArtExtents, Artwork, BUTTON_STATE_FRAMES, BriefingPlayback, BriefingScene, Entry,
+    FlightCheckButton, FlightCheckSlot, FlightCheckView, FrontEnd, FrontEndScreens,
+    LayoutRow as Row, Loadout, OriginalLayout, Screen,
 };
 
 /// What a run prints when the phase is skipped.
 pub const SKIP_NOTICE: &str = "mission flight check: skipped — a developer shortcut (capture \
      scenario) starts the mission directly";
 
-/// Why Return to Briefing does nothing yet.
-pub const RETURN_TO_BRIEFING_UNAVAILABLE: &str = "Return to Briefing is unavailable: the briefing \
-     screen does not exist yet (the briefing slice of #1642)";
+/// Why Return to Briefing does nothing when the phase was opened without a
+/// briefing (the Flight Check alone, a developer composition).
+pub const RETURN_TO_BRIEFING_UNAVAILABLE: &str = "Return to Briefing is unavailable: this run \
+     opened on the Flight Check without a briefing screen";
+
+/// Why Return to Cabin does nothing yet: the briefing screen's button is wired
+/// to the front-end machine's `Back` row (Briefing to Cabin), but the window
+/// holds no cabin hub screen to land on until the hub task (#1749) installs
+/// one and declares it with [`FlightCheckPhase::with_cabin_hub`].
+pub const RETURN_TO_CABIN_UNAVAILABLE: &str = "Return to Cabin is unavailable: the cabin hub \
+     screen is not built yet (#1749), so there is nothing to return to";
 
 /// Why the Change Ammo buttons do nothing yet.
 pub const CHANGE_AMMO_UNAVAILABLE: &str = "Change Ammo is out of scope here: its screen \
@@ -533,6 +545,8 @@ pub enum FlightCheckPhaseError {
     NoWalk,
     /// The machine refused the loadout.
     Loadout(String),
+    /// The briefing could not be read (#1750).
+    Briefing(String),
 }
 
 impl fmt::Display for FlightCheckPhaseError {
@@ -542,6 +556,7 @@ impl fmt::Display for FlightCheckPhaseError {
             Self::Scene(error) => write!(f, "the Flight Check screen cannot be built: {error}"),
             Self::NoWalk => f.write_str("the front-end table has no walk to the Flight Check"),
             Self::Loadout(reason) => write!(f, "the Flight Check loadout is refused: {reason}"),
+            Self::Briefing(error) => write!(f, "the briefing screen cannot be opened: {error}"),
         }
     }
 }
@@ -553,6 +568,14 @@ impl std::error::Error for FlightCheckPhaseError {}
 pub enum PhaseResponse {
     /// Fly Mission went through the machine; the mission is released.
     Launched,
+    /// Go to Flight Check went through the machine; the Flight Check is open.
+    FlightCheckOpened,
+    /// Return to Briefing went through the machine; the briefing plays again.
+    BriefingOpened,
+    /// Replay Briefing restarted the briefing's clock and voice-over.
+    Replayed,
+    /// Return to Cabin went through the machine; the cabin hub is next.
+    CabinOpened,
     /// The button is drawn but does nothing yet; the reason is named.
     Unavailable {
         /// The hotspot.
@@ -568,6 +591,59 @@ pub enum PhaseResponse {
     Over,
 }
 
+/// Which pre-mission screen the window shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PreMissionStage {
+    /// The briefing map screen (#1750).
+    Briefing,
+    /// The Flight Check (#1671).
+    FlightCheck,
+    /// The cabin hub: reached by Return to Cabin once the hub exists.
+    Cabin,
+    /// Fly Mission went through: the mission runs.
+    Released,
+}
+
+/// The briefing screen's state inside the phase.
+#[derive(Clone, Debug)]
+pub struct BriefingStage {
+    scene: BriefingScene,
+    playback: BriefingPlayback,
+    cabin_hub: bool,
+    notice: Option<String>,
+}
+
+impl BriefingStage {
+    /// What the screen draws.
+    #[must_use]
+    pub fn scene(&self) -> &BriefingScene {
+        &self.scene
+    }
+
+    /// The briefing's clock.
+    #[must_use]
+    pub fn playback(&self) -> &BriefingPlayback {
+        &self.playback
+    }
+
+    /// The briefing's clock, for the system that advances it.
+    pub fn playback_mut(&mut self) -> &mut BriefingPlayback {
+        &mut self.playback
+    }
+
+    /// The last thing a press reported that is worth showing.
+    #[must_use]
+    pub fn notice(&self) -> Option<&str> {
+        self.notice.as_deref()
+    }
+
+    /// Whether a cabin hub screen exists for Return to Cabin to land on.
+    #[must_use]
+    pub const fn has_cabin_hub(&self) -> bool {
+        self.cabin_hub
+    }
+}
+
 /// The pre-mission phase: the machine on the Flight Check and the scene it
 /// draws.
 #[derive(Clone, Debug, Resource)]
@@ -576,6 +652,11 @@ pub struct FlightCheckPhase {
     scene: FlightCheckScene,
     release_pending: bool,
     notice: Option<String>,
+    /// The loadout the Flight Check commits; selected on every entry to the
+    /// screen, because leaving it for the briefing drops the selection.
+    loadout: Loadout,
+    /// The briefing the phase opens on, when it has one.
+    briefing: Option<BriefingStage>,
 }
 
 impl FlightCheckPhase {
@@ -588,19 +669,83 @@ impl FlightCheckPhase {
     /// [`FlightCheckPhaseError::Loadout`] when the machine refuses the
     /// loadout.
     pub fn open(scene: FlightCheckScene, loadout: Loadout) -> Result<Self, FlightCheckPhaseError> {
-        let mut front_end = walk_to_flight_check().ok_or(FlightCheckPhaseError::NoWalk)?;
+        let mut front_end = walk_to(Screen::FlightCheck).ok_or(FlightCheckPhaseError::NoWalk)?;
         front_end
-            .select_loadout(loadout)
+            .select_loadout(loadout.clone())
             .map_err(|refusal| FlightCheckPhaseError::Loadout(refusal.to_string()))?;
         Ok(Self {
             front_end,
             scene,
             release_pending: false,
             notice: None,
+            loadout,
+            briefing: None,
         })
     }
 
-    /// Reads and opens the phase for one retail mission.
+    /// Opens the phase on the briefing screen (#1750): the machine is walked
+    /// to [`Screen::Briefing`], and **Go to Flight Check** carries it on to
+    /// the Flight Check with `loadout` selected, the way the original's
+    /// briefing leads to its Flight Check.
+    ///
+    /// # Errors
+    ///
+    /// [`FlightCheckPhaseError::NoWalk`] when no walk reaches the briefing.
+    pub fn open_with_briefing(
+        scene: FlightCheckScene,
+        briefing: BriefingScene,
+        loadout: Loadout,
+    ) -> Result<Self, FlightCheckPhaseError> {
+        let front_end = walk_to(Screen::Briefing).ok_or(FlightCheckPhaseError::NoWalk)?;
+        Ok(Self {
+            front_end,
+            scene,
+            release_pending: false,
+            notice: None,
+            loadout,
+            briefing: Some(BriefingStage {
+                scene: briefing,
+                playback: BriefingPlayback::new(),
+                cabin_hub: false,
+                notice: None,
+            }),
+        })
+    }
+
+    /// Declares that a cabin hub screen exists, so Return to Cabin delivers
+    /// the machine's `Back` row (Briefing to Cabin) instead of reporting the
+    /// hub missing. The hub task (#1749) calls this when it installs the hub.
+    #[must_use]
+    pub fn with_cabin_hub(mut self) -> Self {
+        if let Some(briefing) = &mut self.briefing {
+            briefing.cabin_hub = true;
+        }
+        self
+    }
+
+    /// Which pre-mission screen is showing.
+    #[must_use]
+    pub fn stage(&self) -> PreMissionStage {
+        match self.front_end.screen() {
+            Screen::Briefing | Screen::Recon => PreMissionStage::Briefing,
+            Screen::FlightCheck => PreMissionStage::FlightCheck,
+            Screen::Cabin => PreMissionStage::Cabin,
+            _ => PreMissionStage::Released,
+        }
+    }
+
+    /// The briefing screen's state, when the phase has a briefing.
+    #[must_use]
+    pub fn briefing(&self) -> Option<&BriefingStage> {
+        self.briefing.as_ref()
+    }
+
+    /// The briefing screen's state, for the systems that advance it.
+    pub fn briefing_mut(&mut self) -> Option<&mut BriefingStage> {
+        self.briefing.as_mut()
+    }
+
+    /// Reads and opens the phase for one retail mission, on the Flight Check.
     ///
     /// # Errors
     ///
@@ -610,33 +755,43 @@ impl FlightCheckPhase {
         mission: &str,
         stage: &MissionStage,
     ) -> Result<(Self, FlightCheckArtwork), FlightCheckPhaseError> {
-        let read = |reason: String| FlightCheckPhaseError::Read(reason);
-        let view = FlightCheckView::from_retail(install_root, mission)
-            .map_err(|error| read(error.to_string()))?;
-        let screens =
-            FrontEndScreens::open(install_root).map_err(|error| read(error.to_string()))?;
-        let strings = |id: &str| {
-            let catalog = stage.messages.catalog()?;
-            match catalog.resolve(id, None) {
-                cs_content::config::MessageLookup::Found { row, .. } => row.text.clone(),
-                _ => None,
-            }
-        };
-        let scene = FlightCheckScene::from_retail(&screens, &view, &strings)?;
-        let artwork = FlightCheckArtwork::read(&screens, &scene)?;
-        let airframe = designed_player_airframe(install_root, mission)?;
-        let loadout = Loadout {
-            player: Some(airframe),
-            wingmate: None,
-            ammunition: Some(super::mission_ammunition_id()),
-        };
-        Ok((Self::open(scene, loadout)?, artwork))
+        let parts = RetailParts::read(install_root, mission, stage)?;
+        Ok((Self::open(parts.scene, parts.loadout)?, parts.artwork))
     }
 
-    /// Whether the mission is still held.
+    /// Reads and opens the phase for one retail mission on its briefing
+    /// screen (#1750): the Flight Check follows Go to Flight Check.
+    ///
+    /// # Errors
+    ///
+    /// [`FlightCheckPhaseError`] from any stage, the briefing's own read
+    /// included ([`FlightCheckPhaseError::Briefing`]).
+    pub fn from_retail_with_briefing(
+        install_root: &Path,
+        mission: &str,
+        stage: &MissionStage,
+    ) -> Result<(Self, FlightCheckArtwork, BriefingSource), FlightCheckPhaseError> {
+        let parts = RetailParts::read(install_root, mission, stage)?;
+        let strings = |id: &str| stage_string(stage, id);
+        let objectives = parts
+            .view
+            .objectives
+            .iter()
+            .map(|row| match &row.text {
+                Entry::Known(text) => text.clone(),
+                Entry::Unknown { .. } => format!("unknown ({})", row.key),
+            })
+            .collect();
+        let source = read_briefing(install_root, mission, &parts.screens, &strings, objectives)
+            .map_err(|error| FlightCheckPhaseError::Briefing(error.to_string()))?;
+        let phase = Self::open_with_briefing(parts.scene, source.scene.clone(), parts.loadout)?;
+        Ok((phase, parts.artwork, source))
+    }
+
+    /// Whether the mission is still held: a pre-mission screen is showing.
     #[must_use]
     pub fn is_pending(&self) -> bool {
-        self.front_end.screen() == Screen::FlightCheck
+        self.stage() != PreMissionStage::Released
     }
 
     /// The machine behind the screen.
@@ -658,14 +813,31 @@ impl FlightCheckPhase {
         self.notice.as_deref()
     }
 
-    /// Enter: the default button, Fly Mission.
+    /// Enter: the default button of the screen showing — Go to Flight Check
+    /// on the briefing, Fly Mission on the Flight Check.
     pub fn press_enter(&mut self) -> PhaseResponse {
-        self.fly_mission()
+        match self.stage() {
+            PreMissionStage::Briefing => self.press_briefing_button(DialogButtonKind::FlightCheck),
+            PreMissionStage::FlightCheck => self.fly_mission(),
+            _ => PhaseResponse::Over,
+        }
     }
 
-    /// Presses a hotspot by its layout id.
+    /// Escape: the way back — Return to Cabin on the briefing, Return to
+    /// Briefing on the Flight Check.
+    pub fn press_back(&mut self) -> PhaseResponse {
+        match self.stage() {
+            PreMissionStage::Briefing => {
+                self.press_briefing_button(DialogButtonKind::ReturnToCabin)
+            }
+            PreMissionStage::FlightCheck => self.press_hotspot("FC_B_RETURNBRIEF"),
+            _ => PhaseResponse::Over,
+        }
+    }
+
+    /// Presses a Flight Check hotspot by its layout id.
     pub fn press_hotspot(&mut self, hotspot: &str) -> PhaseResponse {
-        if !self.is_pending() {
+        if self.stage() != PreMissionStage::FlightCheck {
             return PhaseResponse::Over;
         }
         let Some(button) = self
@@ -676,42 +848,174 @@ impl FlightCheckPhase {
         else {
             return PhaseResponse::NoButton;
         };
-        match button.role.unavailable() {
-            None => self.fly_mission(),
-            Some(reason) => {
+        match &button.role {
+            ButtonRole::FlyMission => self.fly_mission(),
+            ButtonRole::ReturnToBriefing if self.briefing.is_some() => self.return_to_briefing(),
+            role => {
                 let hotspot = button.hotspot.clone();
+                let reason = role.unavailable().unwrap_or(RETURN_TO_BRIEFING_UNAVAILABLE);
                 self.notice = Some(reason.to_owned());
                 PhaseResponse::Unavailable { hotspot, reason }
             }
         }
     }
 
-    /// A click at a window point, `surface` being the window's size: hit-tests
-    /// through the same aspect-fit the screen is drawn with.
-    pub fn click(&mut self, surface: (u32, u32), x: u32, y: u32) -> PhaseResponse {
-        if !self.is_pending() {
+    /// Presses one of the briefing's three buttons.
+    ///
+    /// * **Replay Briefing** goes through the machine's `ReplayBriefing` row
+    ///   (Briefing to Briefing, which never starts the mission) and restarts the
+    ///   briefing's clock; the screen then restarts the voice-over.
+    /// * **Return to Cabin** goes through the machine's `Back` row when a cabin
+    ///   hub exists ([`Self::with_cabin_hub`]) and otherwise reports
+    ///   [`RETURN_TO_CABIN_UNAVAILABLE`].
+    /// * **Go to Flight Check** goes through `ContinueToFlightCheck` and
+    ///   selects the loadout the Flight Check commits.
+    pub fn press_briefing_button(&mut self, kind: DialogButtonKind) -> PhaseResponse {
+        if self.stage() != PreMissionStage::Briefing || self.briefing.is_none() {
             return PhaseResponse::Over;
         }
-        let Some(fit) = AspectFit::new(self.scene.size, surface) else {
-            return PhaseResponse::NoButton;
+        let hotspot = kind.key().to_owned();
+        let refuse = |this: &mut Self, reason: String| {
+            if let Some(briefing) = &mut this.briefing {
+                briefing.notice = Some(reason.clone());
+            }
+            PhaseResponse::Refused(reason)
         };
-        let hit = self
-            .scene
-            .buttons
-            .iter()
-            .rev()
-            .find(|button| fit.map_rect(button.rect).contains(x, y))
-            .map(|button| button.hotspot.clone());
-        match hit {
-            Some(hotspot) => self.press_hotspot(&hotspot),
-            None => PhaseResponse::NoButton,
+        match kind {
+            DialogButtonKind::Replay => match self.front_end.apply(Action::ReplayBriefing) {
+                Ok(_) => {
+                    if let Some(briefing) = &mut self.briefing {
+                        briefing.playback.restart();
+                        briefing.notice = None;
+                    }
+                    PhaseResponse::Replayed
+                }
+                Err(refusal) => refuse(self, refusal.to_string()),
+            },
+            DialogButtonKind::ReturnToCabin => {
+                if !self.briefing.as_ref().is_some_and(|b| b.cabin_hub) {
+                    if let Some(briefing) = &mut self.briefing {
+                        briefing.notice = Some(RETURN_TO_CABIN_UNAVAILABLE.to_owned());
+                    }
+                    return PhaseResponse::Unavailable {
+                        hotspot,
+                        reason: RETURN_TO_CABIN_UNAVAILABLE,
+                    };
+                }
+                match self.front_end.apply(Action::Back) {
+                    Ok(_) => PhaseResponse::CabinOpened,
+                    Err(refusal) => refuse(self, refusal.to_string()),
+                }
+            }
+            DialogButtonKind::FlightCheck => {
+                let opened = self
+                    .front_end
+                    .apply(Action::ContinueToFlightCheck)
+                    .map_err(|refusal| refusal.to_string())
+                    .and_then(|_| {
+                        self.front_end
+                            .select_loadout(self.loadout.clone())
+                            .map_err(|refusal| refusal.to_string())
+                    });
+                match opened {
+                    Ok(()) => {
+                        if let Some(briefing) = &mut self.briefing {
+                            briefing.notice = None;
+                        }
+                        self.notice = None;
+                        PhaseResponse::FlightCheckOpened
+                    }
+                    Err(reason) => refuse(self, reason),
+                }
+            }
+        }
+    }
+
+    /// Return to Briefing: the machine's `Back` row from the Flight Check
+    /// (dropping the loadout selection, which the next entry makes again), then
+    /// the briefing plays from its start. Whether the original resumes or
+    /// restarts is unread ([`BriefingScene::unknowns`]).
+    fn return_to_briefing(&mut self) -> PhaseResponse {
+        let mut moved = self.front_end.apply(Action::Back);
+        // The selection is the phase's own loadout, not a draft the player
+        // made: the machine's discard question is answered yes.
+        if moved.as_ref().is_ok_and(|outcome| {
+            outcome
+                .effects
+                .iter()
+                .any(|effect| matches!(effect, crate::ui::front_end::Effect::AskDiscard))
+        }) {
+            moved = self.front_end.confirm_discard();
+        }
+        match moved {
+            Ok(_) if self.front_end.screen() == Screen::Briefing => {
+                if let Some(briefing) = &mut self.briefing {
+                    briefing.playback.restart();
+                    briefing.notice = None;
+                }
+                self.notice = None;
+                PhaseResponse::BriefingOpened
+            }
+            Ok(_) => {
+                let reason = "Return to Briefing did not reach the briefing".to_owned();
+                self.notice = Some(reason.clone());
+                PhaseResponse::Refused(reason)
+            }
+            Err(refusal) => {
+                let reason = refusal.to_string();
+                self.notice = Some(reason.clone());
+                PhaseResponse::Refused(reason)
+            }
+        }
+    }
+
+    /// A click at a window point, `surface` being the window's size: hit-tests
+    /// through the same aspect-fit the showing screen is drawn with.
+    pub fn click(&mut self, surface: (u32, u32), x: u32, y: u32) -> PhaseResponse {
+        match self.stage() {
+            PreMissionStage::Briefing => {
+                let Some(briefing) = &self.briefing else {
+                    return PhaseResponse::Over;
+                };
+                let Some(fit) = AspectFit::new(briefing.scene.size, surface) else {
+                    return PhaseResponse::NoButton;
+                };
+                let hit = briefing
+                    .scene
+                    .buttons
+                    .iter()
+                    .rev()
+                    .find(|button| fit.map_rect(button.rect).contains(x, y))
+                    .map(|button| button.kind);
+                match hit {
+                    Some(kind) => self.press_briefing_button(kind),
+                    None => PhaseResponse::NoButton,
+                }
+            }
+            PreMissionStage::FlightCheck => {
+                let Some(fit) = AspectFit::new(self.scene.size, surface) else {
+                    return PhaseResponse::NoButton;
+                };
+                let hit = self
+                    .scene
+                    .buttons
+                    .iter()
+                    .rev()
+                    .find(|button| fit.map_rect(button.rect).contains(x, y))
+                    .map(|button| button.hotspot.clone());
+                match hit {
+                    Some(hotspot) => self.press_hotspot(&hotspot),
+                    None => PhaseResponse::NoButton,
+                }
+            }
+            _ => PhaseResponse::Over,
         }
     }
 
     /// Delivers Fly Mission through the machine: `Launch` on the Flight
     /// Check, then the system result that the load finished.
     fn fly_mission(&mut self) -> PhaseResponse {
-        if !self.is_pending() {
+        if self.stage() != PreMissionStage::FlightCheck {
             return PhaseResponse::Over;
         }
         let launched = self
@@ -740,14 +1044,40 @@ impl FlightCheckPhase {
     /// The lines a run prints about the phase.
     #[must_use]
     pub fn report_lines(&self) -> Vec<String> {
-        let mut lines = vec![format!(
+        let mut lines = Vec::new();
+        if let Some(briefing) = &self.briefing {
+            let scene = &briefing.scene;
+            lines.push(format!(
+                "mission briefing: script {} on {}x{}, {} elements, {} markers of the voice-over, {} \
+                 buttons; the Flight Check follows Go to Flight Check, verified_original=false",
+                scene.script_key,
+                scene.size.0,
+                scene.size.1,
+                scene.timeline.tracks().len(),
+                scene.markers.len(),
+                scene.buttons.len()
+            ));
+            if !briefing.cabin_hub {
+                lines.push(format!("mission briefing: {RETURN_TO_CABIN_UNAVAILABLE}"));
+            }
+            for unknown in &scene.unknowns {
+                lines.push(format!(
+                    "mission briefing: unknown — {}; drawn as: {}",
+                    unknown.what, unknown.drawn_as
+                ));
+            }
+        }
+        lines.push(format!(
             "mission flight check: {} buttons and {} text rows drawn from the original layout \
              [{SECTION}]; the mission is held until Fly Mission, loadout is the designed one, \
              verified_original=false",
             self.scene.buttons.len(),
             self.scene.texts.len()
-        )];
+        ));
         for button in &self.scene.buttons {
+            if button.role == ButtonRole::ReturnToBriefing && self.briefing.is_some() {
+                continue;
+            }
             if let Some(reason) = button.role.unavailable() {
                 lines.push(format!(
                     "mission flight check: {}: {reason}",
@@ -765,9 +1095,57 @@ impl FlightCheckPhase {
     }
 }
 
-/// Walks a fresh machine to the Flight Check through the table's own rows
+/// The string-table text of a message id, through the stage's catalog.
+fn stage_string(stage: &MissionStage, id: &str) -> Option<String> {
+    let catalog = stage.messages.catalog()?;
+    match catalog.resolve(id, None) {
+        cs_content::config::MessageLookup::Found { row, .. } => row.text.clone(),
+        _ => None,
+    }
+}
+
+/// What both retail openings read.
+struct RetailParts {
+    view: FlightCheckView,
+    screens: FrontEndScreens,
+    scene: FlightCheckScene,
+    artwork: FlightCheckArtwork,
+    loadout: Loadout,
+}
+
+impl RetailParts {
+    fn read(
+        install_root: &Path,
+        mission: &str,
+        stage: &MissionStage,
+    ) -> Result<Self, FlightCheckPhaseError> {
+        let read = |reason: String| FlightCheckPhaseError::Read(reason);
+        let view = FlightCheckView::from_retail(install_root, mission)
+            .map_err(|error| read(error.to_string()))?;
+        let screens =
+            FrontEndScreens::open(install_root).map_err(|error| read(error.to_string()))?;
+        let strings = |id: &str| stage_string(stage, id);
+        let scene = FlightCheckScene::from_retail(&screens, &view, &strings)?;
+        let artwork = FlightCheckArtwork::read(&screens, &scene)?;
+        let airframe = designed_player_airframe(install_root, mission)?;
+        let loadout = Loadout {
+            player: Some(airframe),
+            wingmate: None,
+            ammunition: Some(super::mission_ammunition_id()),
+        };
+        Ok(Self {
+            view,
+            screens,
+            scene,
+            artwork,
+            loadout,
+        })
+    }
+}
+
+/// Walks a fresh machine to `target` through the table's own rows
 /// (breadth first over the real `apply`).
-fn walk_to_flight_check() -> Option<FrontEnd> {
+fn walk_to(target: Screen) -> Option<FrontEnd> {
     let start = FrontEnd::new();
     // A state is a screen and the profile choice made on it: the profile screen's
     // New/Continue rows stay on the screen and only set the choice Confirm needs.
@@ -776,7 +1154,7 @@ fn walk_to_flight_check() -> Option<FrontEnd> {
     while !frontier.is_empty() {
         let mut next = Vec::new();
         for machine in frontier {
-            if machine.screen() == Screen::FlightCheck {
+            if machine.screen() == target {
                 return Some(machine);
             }
             for action in Action::ALL {
@@ -921,14 +1299,30 @@ pub struct FlightCheckScreenPlugin;
 
 impl Plugin for FlightCheckScreenPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, spawn_screen)
-            .add_systems(Update, (phase_input, fit_screen, show_notice, close_screen));
+        // The screen is spawned when the Flight Check becomes the stage and
+        // despawned when it stops being it (Return to Briefing, Fly Mission),
+        // so the briefing can come before it and Return to Briefing can come
+        // back to it.
+        app.init_resource::<FlightCheckShown>().add_systems(
+            Update,
+            (
+                sync_flight_check_screen,
+                phase_input,
+                fit_screen,
+                show_notice,
+            )
+                .chain(),
+        );
     }
 }
 
 /// Everything the screen spawns.
 #[derive(Component)]
 struct ScreenPart;
+
+/// Whether the Flight Check's parts are spawned.
+#[derive(Resource, Default)]
+struct FlightCheckShown(bool);
 
 /// Everything the screen draws over its background pane: the buttons, their
 /// labels, the text rows and the notice line. `row` names the layout row a
@@ -952,12 +1346,12 @@ struct LogicalFont(f32);
 #[derive(Component)]
 struct NoticeLine;
 
-fn argb(color: u32) -> Color {
+pub(super) fn argb(color: u32) -> Color {
     let [a, r, g, b] = color.to_be_bytes();
     Color::srgba_u8(r, g, b, a)
 }
 
-fn to_image(artwork: &Artwork) -> Image {
+pub(super) fn to_image(artwork: &Artwork) -> Image {
     use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
     Image::new(
         Extent3d {
@@ -973,10 +1367,10 @@ fn to_image(artwork: &Artwork) -> Image {
 }
 
 fn spawn_screen(
-    mut commands: Commands,
-    phase: Res<FlightCheckPhase>,
-    artwork: Res<FlightCheckArtwork>,
-    mut images: ResMut<bevy::prelude::Assets<Image>>,
+    commands: &mut Commands,
+    phase: &FlightCheckPhase,
+    artwork: &FlightCheckArtwork,
+    images: &mut bevy::prelude::Assets<Image>,
 ) {
     let scene = phase.scene();
     // Above the HUD, the letterbox and every other overlay: while the phase
@@ -1141,6 +1535,8 @@ fn phase_input(
     }
     let response = if keys.just_pressed(KeyCode::Enter) || keys.just_pressed(KeyCode::NumpadEnter) {
         Some(phase.press_enter())
+    } else if keys.just_pressed(KeyCode::Escape) {
+        Some(phase.press_back())
     } else if mouse.just_pressed(MouseButton::Left) {
         windows.single().ok().and_then(|window| {
             let at = window.cursor_position()?;
@@ -1152,11 +1548,23 @@ fn phase_input(
     };
     match response {
         Some(PhaseResponse::Launched) => println!("mission flight check: Fly Mission — released"),
+        Some(PhaseResponse::FlightCheckOpened) => {
+            println!("mission briefing: Go to Flight Check — the Flight Check is open");
+        }
+        Some(PhaseResponse::BriefingOpened) => {
+            println!("mission flight check: Return to Briefing — the briefing plays again");
+        }
+        Some(PhaseResponse::Replayed) => {
+            println!("mission briefing: Replay Briefing — the briefing restarts");
+        }
+        Some(PhaseResponse::CabinOpened) => {
+            println!("mission briefing: Return to Cabin — the cabin hub is next");
+        }
         Some(PhaseResponse::Unavailable { reason, .. }) => {
-            println!("mission flight check: {reason}");
+            println!("mission pre-flight: {reason}");
         }
         Some(PhaseResponse::Refused(reason)) => {
-            println!("mission flight check: Fly Mission refused: {reason}");
+            println!("mission pre-flight: press refused: {reason}");
         }
         _ => {}
     }
@@ -1171,15 +1579,22 @@ fn show_notice(phase: Res<FlightCheckPhase>, mut lines: Query<&mut Text, With<No
     }
 }
 
-fn close_screen(
+fn sync_flight_check_screen(
     mut commands: Commands,
     phase: Res<FlightCheckPhase>,
+    artwork: Res<FlightCheckArtwork>,
+    mut images: ResMut<bevy::prelude::Assets<Image>>,
+    mut shown: ResMut<FlightCheckShown>,
     parts: Query<Entity, With<ScreenPart>>,
 ) {
-    if phase.is_pending() {
-        return;
-    }
-    for part in &parts {
-        commands.entity(part).despawn();
+    let wanted = phase.stage() == PreMissionStage::FlightCheck;
+    if wanted && !shown.0 {
+        spawn_screen(&mut commands, &phase, &artwork, &mut images);
+        shown.0 = true;
+    } else if !wanted && shown.0 {
+        for part in &parts {
+            commands.entity(part).despawn();
+        }
+        shown.0 = false;
     }
 }
