@@ -1017,6 +1017,7 @@ fn add_composition(
     app.insert_resource(crate::playtest::PlaytestCamera::capture_fitted());
     // The cockpit views (F8, #1810) take the camera from the chase rig.
     super::cockpit_camera::install_cockpit_camera(app);
+    super::cockpit_interior::install_cockpit_interior(app);
     if visuals {
         app.add_plugins(crate::playtest::visuals::PlaytestVisualsPlugin);
         // The F1 help screen and the pause screen list the table's real
@@ -1228,6 +1229,9 @@ fn add_composition(
         app.insert_resource(visual);
         // The pilot's eye (#1810): the airframe's own `cockpit_camera` node.
         app.insert_resource(super::cockpit_camera::resolve_player_cockpit_eye(source)?);
+        // The cockpit1 interior (#1811), shown only in the pilot-eye views.
+        let interior = super::cockpit_interior::build_cockpit_interior(app, source)?;
+        app.insert_resource(interior);
         // 2c. The scripted aircraft's drawn models (M01-WINDOW-ACTORS, #1538),
         //     built from the same `planes.zbd` source. A prefix that cannot be
         //     drawn is a recorded refusal, not a failed composition.
@@ -1595,6 +1599,7 @@ pub fn spawn_player(world: &mut World) -> Result<Entity, SceneError> {
     // never leave a second copy. A stage that carried no airframe source
     // spawns the body alone.
     spawn_player_visual(world, entity);
+    super::cockpit_interior::spawn_cockpit_interior(world, entity);
     if let Ok(mut composition) = world.query::<&mut MissionComposition>().single_mut(world) {
         composition.player = entity;
     }
@@ -1660,6 +1665,7 @@ pub fn teardown(app: &mut App) {
     world.remove_resource::<MissionPlayerStart>();
     world.remove_resource::<MissionPlayerVisual>();
     world.remove_resource::<super::cockpit_camera::MissionCockpitEye>();
+    world.remove_resource::<super::cockpit_interior::MissionCockpitInterior>();
     world.remove_resource::<super::view_cycle::MissionViewMode>();
     world.remove_resource::<super::hud_art::MissionHudArt>();
     world.remove_resource::<super::world_draw::MissionWorldParts>();

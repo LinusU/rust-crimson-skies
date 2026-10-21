@@ -96,6 +96,7 @@ mod actor_visual;
 mod briefing_screen;
 mod cockpit_camera;
 mod cockpit_hud;
+mod cockpit_interior;
 mod compose;
 mod content;
 mod debrief;
@@ -148,6 +149,12 @@ pub use cockpit_camera::{
 pub use cockpit_hud::{
     MissionCockpitHudPlugin, OBJECTIVE_BLUE, clock_hour, compass_strip, damage_fraction,
     damage_tint, marker_text, safe_area,
+};
+pub use cockpit_interior::{
+    COCKPIT_GAUGES_NODE_NAME, COCKPIT_GLASS_NODE_NAME, COCKPIT_GLASS_TEXTURE,
+    COCKPIT_INTERIOR_NODE_NAME, CockpitInteriorNode, CockpitInteriorReport, CockpitInteriorRoot,
+    MissionCockpitInterior, build_cockpit_interior, drive_cockpit_interior,
+    install_cockpit_interior, spawn_cockpit_interior,
 };
 pub use compose::{
     MissionComposition, MissionCompositionError, MissionPlayerBody, MissionPlayerStart,
