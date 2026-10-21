@@ -1764,3 +1764,45 @@ key_a = 0x03b
 key_b = 0x000
 joystick = 0
 mouse = 0
+
+# The `Cockpit views` command (id 49, F8; PARITY3-COCKPIT-VIEW.01, #1809,
+# finding docs/findings/2026-10-21-parity3-cockpit-view-01-original-view-cycle.md).
+# The registration `push 0x489340 / push 0x31 / call 0x537bf0` at 0x4896ba
+# binds command 49 to the handler at 0x489340. The handler reads the camera
+# mode at [camera + 0x14c] and calls the mode setter 0x42c280 with the `to`
+# mode below; a mode outside {0, 6, 7} goes to the remembered mode at
+# [0x62137c] (initially 6, written by the setter at 0x42c2ff whenever the new
+# mode is 0, 6 or 7). The names of the modes and the mission's start mode are
+# unmeasured (recorded unknown in the finding). Not `verified_original`.
+[view_cycle]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+command = 49
+registration_va = 0x004896ba
+handler_va = 0x00489340
+mode_setter_va = 0x0042c280
+mode_field_offset = 0x14c
+remembered_mode_va = 0x0062137c
+remembered_mode_initial = 6
+
+# `va` is the instruction that loads the `to` mode into esi.
+[[view_cycle_step]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+va = 0x0048937c
+from = 0
+to = 7
+
+[[view_cycle_step]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+va = 0x00489371
+from = 7
+to = 6
+
+[[view_cycle_step]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+va = 0x00489378
+from = 6
+to = 0
