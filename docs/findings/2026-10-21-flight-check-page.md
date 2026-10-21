@@ -180,8 +180,8 @@ Fly Mission / Return to Briefing captions are drawn into
 
 All are proprietary Windows-era faces not shipped as usable font files in the
 install. **Open owner decision: license/package the original faces or accept a
-stand-in.** Interim: the engine default font draws all rows (follow-up task
-filed for the licensing question).
+stand-in** — follow-up task #1901 (`PARITY2-UI-FONTS`). Interim: the engine
+default font draws all rows.
 
 ## Silhouettes
 
