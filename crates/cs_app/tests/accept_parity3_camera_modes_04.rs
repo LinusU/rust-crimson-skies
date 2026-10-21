@@ -31,7 +31,7 @@ fn sample(label: &str, view: MissionViewMode, offset: [f32; 3]) -> CameraModeSam
 /// The camera stage of a healthy run, one sample per stage.
 pub fn healthy_camera_modes() -> CameraModeMetrics {
     use MissionViewMode as V;
-    let mut chase = |label, view, offset| sample(label, view, offset);
+    let chase = |label, view, offset| sample(label, view, offset);
     let mut zoom_out = chase("zoom_out", V::Chase, [0.0, 3.0, 17.0]);
     zoom_out.zoom_target = 1.0;
     zoom_out.zoom_smoothed = 0.4;
