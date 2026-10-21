@@ -559,6 +559,12 @@ impl TargetingSession {
         &self.selection
     }
 
+    /// Hands the selection to `actor` when it is eligible (a mission rule's
+    /// selection, not a player command); `false` leaves the selection as it was.
+    pub fn select_scripted(&mut self, actor: ActorId) -> bool {
+        self.store.select_actor(&mut self.selection, actor)
+    }
+
     /// The lowered command-edge table.
     #[must_use]
     pub const fn bindings(&self) -> &SelectionBinding {

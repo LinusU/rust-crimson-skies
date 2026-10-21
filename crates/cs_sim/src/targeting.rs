@@ -1506,6 +1506,18 @@ impl TargetStore {
         })
     }
 
+    /// Selects `actor` directly, the way a mission rule hands the selection
+    /// on (M01-EXAMINE-OBJECTIVE, #1754): no cycle, no filter. Only an
+    /// [`eligible`](Self::eligible) actor can be selected; otherwise the
+    /// selection is left as it was and `false` is returned.
+    pub fn select_actor(&self, selection: &mut TargetSelection, actor: ActorId) -> bool {
+        let eligible = self.eligible(&actor);
+        if eligible {
+            selection.set(actor);
+        }
+        eligible
+    }
+
     /// Whether the actor is still **in the world**: registered and not ended
     /// by a lifecycle transition.
     ///
