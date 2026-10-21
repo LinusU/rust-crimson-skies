@@ -203,6 +203,7 @@ mod accept_m01_window_hud_pending_objective;
 mod accept_parity2_m01_missing_terrain;
 mod accept_parity2_m01_target_indicators;
 mod accept_parity2_original_keybindings;
+mod accept_parity3_camera_modes_01;
 mod accept_parity3_cockpit_view_01;
 mod accept_parity3_cockpit_view_02;
 mod accept_parity_m01_lc_letterbox;
