@@ -26,7 +26,13 @@
 //! * [`update_hud_art`] drives the live elements every frame from the same
 //!   authorities [`super::cockpit_hud`] reads: speed/altitude needles, the
 //!   compass tape, missile/gun pips, the ammo/type glyph quads and the
-//!   per-zone damage material swap.
+//!   per-zone damage material swap. The cockpit panel's dials
+//!   (`super::cockpit_dials`, #1812) carry the same markers, so the one
+//!   drive serves both clusters; the `pfhorizon` attitude ball it also
+//!   drives only ever exists on the panel.
+//! * [`fit_hud_viewport`] also switches the pass off in the pilot-eye views:
+//!   there the dials are the panel meshes and the corner cluster must not
+//!   draw over them (PARITY3-COCKPIT-VIEW.04).
 //! * [`read_reticle_image`] decodes `rcircle` from `ZBD/rimage.zbd` through
 //!   `cs_formats::texture::read_zbd_textures` + the production RGB565
 //!   expansion; [`spawn_reticle`] draws it as a centred `ImageNode`.
@@ -38,7 +44,8 @@
 //! state→colour mapping are **designed** and recorded as such in the finding.
 //! The `horiz` attitude
 //! indicator is not listed in `instruments.zrd` and stays out of the HUD
-//! pass; `lowalt_on`/`stallwarning_on`/`mgarrow`/`ggarrow` and the nitro
+//! pass (the cockpit dials draw it from its stored transform);
+//! `lowalt_on`/`stallwarning_on`/`mgarrow`/`ggarrow` and the nitro
 //! needles have no measured driver yet, so they keep their authored state
 //! (the flags hidden, as authored) and each is reported in
 //! [`HudArt::unknowns`].
@@ -78,7 +85,7 @@ use crate::playtest::PlaytestState;
 use crate::playtest_retail::{
     AircraftPartAsset, PlaytestContainer, aircraft_graph, playtest_adapter,
 };
-use crate::playtest_textures::{NeutralColor, TextureBinder};
+use crate::playtest_textures::{NeutralColor, PlaytestPart, TextureBinder};
 use crate::scene::NodeVisualTransform;
 use crate::ui::hud::{airframe_zones, ordnance_rows, weapon_gauge};
 use crate::weapons::{SessionDamageResolver, WeaponSession};
@@ -157,6 +164,9 @@ const SLOT_MG_AMMO: u32 = 87;
 const SLOT_MG_TYPE: u32 = 93;
 const SLOT_GG_AMMO: u32 = 101;
 const SLOT_GG_TYPE: u32 = 107;
+/// `pfhorizon` (slot 61): the attitude ball inside `horiz` — cockpit-view
+/// only, so [`build_hud_art`] never reaches it.
+pub(crate) const SLOT_PFHORIZON: u32 = 61;
 
 /// One instrument's measured `instruments.zrd` translation in HUD units.
 #[derive(Clone, Debug, PartialEq)]
@@ -401,64 +411,11 @@ pub fn build_hud_art(
         let place = Mat4::from_translation(Vec3::from(placement.position))
             * Mat4::from_scale(Vec3::splat(scale));
         for node in planes.subtree(instrument.id()) {
-            let Some(binding) = node.mesh() else {
+            let Some((handle, pieces)) =
+                upload_gauge_part(app, aircraft, &mut binder, &mut meshes, node, &mut unknowns)?
+            else {
                 continue;
             };
-            let id = match &binding.mesh {
-                Resolved::Known(known) => known.value.clone(),
-                Resolved::Unknown { reason, .. } => {
-                    unknowns.push(format!(
-                        "instrument node {} mesh {}: binding unknown: {reason}",
-                        node.index(),
-                        binding.index
-                    ));
-                    continue;
-                }
-            };
-            let Some(slot) = aircraft.meshes().get(binding.index) else {
-                unknowns.push(format!(
-                    "instrument node {}: mesh {} is not in the container",
-                    node.index(),
-                    binding.index
-                ));
-                continue;
-            };
-            let render = match stored_render_mesh(slot) {
-                Ok(render) => render,
-                Err(error) => {
-                    unknowns.push(format!(
-                        "instrument node {}: stored mesh {} refused: {error}",
-                        node.index(),
-                        binding.index
-                    ));
-                    continue;
-                }
-            };
-            let unknown_list = stored_presentation_unknowns(&render);
-            if let Err(reason) = meshes.insert_render_mesh(id.clone(), &render, &unknown_list) {
-                unknowns.push(format!(
-                    "instrument node {}: the mesh would not upload: {reason}",
-                    node.index()
-                ));
-                continue;
-            }
-            let uploaded = meshes.get(&id).ok_or_else(|| {
-                refuse(format!(
-                    "the instrument mesh {} is not registered after upload",
-                    id.key()
-                ))
-            })?;
-            let handle: Handle<Mesh> = app
-                .world_mut()
-                .resource_mut::<Assets<Mesh>>()
-                .add(uploaded.mesh().clone());
-            let pieces = binder.parts(
-                app,
-                aircraft,
-                uploaded,
-                NeutralColor(LIGHT_HUD_NORM),
-                binding.index,
-            );
             let world = world_transform(node)?;
             let placed = place * w_instr.inverse() * world;
             let (p_scale, rotation, translation) = placed.to_scale_rotation_translation();
@@ -481,11 +438,113 @@ pub fn build_hud_art(
         ));
     }
 
-    // Preload the glyph alphabet and the zone recolours through the same
-    // archive the parts bound: names that refuse are reported and the quads
-    // keep their authored material.
+    let (images, texture_unknowns) = preload_drive_images(app, source.sources().textures());
+    unknowns.extend(texture_unknowns);
+    let _ = binder.finish();
+    Ok(HudArt {
+        parts,
+        placements,
+        scale,
+        images,
+        unknowns,
+    })
+}
+
+/// What [`upload_gauge_part`] yields for one drawable node: the whole-mesh
+/// handle and its bound material pieces.
+type GaugePartDraw = (Handle<Mesh>, Vec<PlaytestPart>);
+
+/// Uploads one mesh-binding node's stored mesh and binds its materials —
+/// the shared production block [`build_hud_art`] and
+/// [`super::cockpit_dials::build_cockpit_dials`] both run. Returns `None`
+/// (with a recorded reason in `unknowns`) when the node binds no mesh or the
+/// binding cannot be drawn.
+///
+/// # Errors
+///
+/// [`MissionCompositionError::AirframeVisual`] when an upload that reported
+/// success left no registered mesh — the same hard refusal the HUD build
+/// makes.
+pub(crate) fn upload_gauge_part(
+    app: &mut App,
+    aircraft: &PlaytestContainer,
+    binder: &mut TextureBinder,
+    meshes: &mut WorldMeshes,
+    node: &SceneNode,
+    unknowns: &mut Vec<String>,
+) -> Result<Option<GaugePartDraw>, MissionCompositionError> {
+    let Some(binding) = node.mesh() else {
+        return Ok(None);
+    };
+    let id = match &binding.mesh {
+        Resolved::Known(known) => known.value.clone(),
+        Resolved::Unknown { reason, .. } => {
+            unknowns.push(format!(
+                "instrument node {} mesh {}: binding unknown: {reason}",
+                node.index(),
+                binding.index
+            ));
+            return Ok(None);
+        }
+    };
+    let Some(slot) = aircraft.meshes().get(binding.index) else {
+        unknowns.push(format!(
+            "instrument node {}: mesh {} is not in the container",
+            node.index(),
+            binding.index
+        ));
+        return Ok(None);
+    };
+    let render = match stored_render_mesh(slot) {
+        Ok(render) => render,
+        Err(error) => {
+            unknowns.push(format!(
+                "instrument node {}: stored mesh {} refused: {error}",
+                node.index(),
+                binding.index
+            ));
+            return Ok(None);
+        }
+    };
+    let unknown_list = stored_presentation_unknowns(&render);
+    if let Err(reason) = meshes.insert_render_mesh(id.clone(), &render, &unknown_list) {
+        unknowns.push(format!(
+            "instrument node {}: the mesh would not upload: {reason}",
+            node.index()
+        ));
+        return Ok(None);
+    }
+    let Some(uploaded) = meshes.get(&id) else {
+        return Err(MissionCompositionError::AirframeVisual(format!(
+            "the instrument mesh {} is not registered after upload",
+            id.key()
+        )));
+    };
+    let handle: Handle<Mesh> = app
+        .world_mut()
+        .resource_mut::<Assets<Mesh>>()
+        .add(uploaded.mesh().clone());
+    let pieces = binder.parts(
+        app,
+        aircraft,
+        uploaded,
+        NeutralColor(LIGHT_HUD_NORM),
+        binding.index,
+    );
+    Ok(Some((handle, pieces)))
+}
+
+/// Preloads the glyph alphabet and the zone recolours the live drive swaps
+/// between through `archive` (the same texture archive the parts bound):
+/// names that refuse are reported and the quads keep their authored
+/// material. Shared by [`build_hud_art`] and
+/// [`super::cockpit_dials::build_cockpit_dials`].
+pub(crate) fn preload_drive_images(
+    app: &mut App,
+    archive: &crate::playtest_textures::PlaytestTextureArchive,
+) -> (BTreeMap<String, Handle<Image>>, Vec<String>) {
     let mut images = BTreeMap::new();
-    let archive = source.sources().textures();
+    let mut unknowns = Vec::new();
     for name in glyph_names()
         .into_iter()
         .chain(ZONE_TEXTURES.iter().map(|name| (*name).to_owned()))
@@ -501,18 +560,15 @@ pub fn build_hud_art(
             )),
         }
     }
-    let _ = binder.finish();
-    Ok(HudArt {
-        parts,
-        placements,
-        scale,
-        images,
-        unknowns,
-    })
+    (images, unknowns)
 }
 
 /// One node of the path under the graph's `player` root, by name.
-fn find_child<'g>(graph: &'g SceneGraph, parent: &SceneNode, name: &str) -> Option<&'g SceneNode> {
+pub(crate) fn find_child<'g>(
+    graph: &'g SceneGraph,
+    parent: &SceneNode,
+    name: &str,
+) -> Option<&'g SceneNode> {
     parent
         .children()
         .iter()
@@ -525,7 +581,7 @@ fn find_child<'g>(graph: &'g SceneGraph, parent: &SceneNode, name: &str) -> Opti
 }
 
 /// Resolves `root("player") > …path` to the terminal node.
-fn find_path<'g>(graph: &'g SceneGraph, path: &[&str]) -> Option<&'g SceneNode> {
+pub(crate) fn find_path<'g>(graph: &'g SceneGraph, path: &[&str]) -> Option<&'g SceneNode> {
     let mut node = graph.root(path.first()?).ok()?;
     for name in &path[1..] {
         node = find_child(graph, node, name)?;
@@ -534,7 +590,7 @@ fn find_path<'g>(graph: &'g SceneGraph, path: &[&str]) -> Option<&'g SceneNode> 
 }
 
 /// The node's composed world transform as a `Mat4` (canonical → engine).
-fn world_transform(node: &SceneNode) -> Result<Mat4, MissionCompositionError> {
+pub(crate) fn world_transform(node: &SceneNode) -> Result<Mat4, MissionCompositionError> {
     Ok(NodeVisualTransform::from_canonical(node.visual_transform())
         .map_err(|error| {
             MissionCompositionError::AirframeVisual(format!(
@@ -618,6 +674,16 @@ pub struct HudCompassTape {
 /// state is hidden.
 #[derive(Component, Clone, Copy, Debug)]
 pub struct HudFlag;
+
+/// The `pfhorizon` attitude ball (slot 61, under `horiz`): the cockpit dials
+/// tag it; [`update_hud_art`] counter-rotates it by the telemetry's pitch and
+/// roll (the designed attitude-indicator rule — the original's ball mapping,
+/// axis and range are unmeasured).
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
+pub struct HudAttitudeBall {
+    /// The transform's authored rotation, kept so the drive composes on it.
+    pub base: Quat,
+}
 
 /// One damage-zone overlay (`rightwingdamage` … `nosedamage`, slots 79–82).
 #[derive(Component, Clone, Copy, Debug)]
@@ -760,7 +826,7 @@ pub fn spawn_hud_art(world: &mut World, art: &HudArt) -> Entity {
     for part in &art.parts {
         let entity = part.spawn(world, root, part.local);
         insert_layer(world, entity, &layer);
-        tag_part(world, entity, part);
+        tag_part(world, entity, part, &part.local);
     }
     root
 }
@@ -781,31 +847,44 @@ fn insert_layer(world: &mut World, entity: Entity, layer: &RenderLayers) {
 }
 
 /// Attaches the live-element markers [`update_hud_art`] reads, keyed by the
-/// measured node slot the part draws.
-fn tag_part(world: &mut World, entity: Entity, part: &AircraftPartAsset) {
+/// measured node slot the part draws. `transform` is the transform the part
+/// entity actually carries — the HUD placement for [`spawn_hud_art`], the
+/// oriented stored transform for [`super::cockpit_dials::spawn_cockpit_dials`]
+/// — so the bases the drive composes on match what is spawned.
+pub(crate) fn tag_part(
+    world: &mut World,
+    entity: Entity,
+    part: &AircraftPartAsset,
+    transform: &Transform,
+) {
     match part.node_slot {
         SLOT_SPEED => {
             world.entity_mut(entity).insert(HudNeedle {
                 role: NeedleRole::Speed,
-                base: part.local.rotation,
+                base: transform.rotation,
             });
         }
         SLOT_ALT_HUNDREDS => {
             world.entity_mut(entity).insert(HudNeedle {
                 role: NeedleRole::AltHundreds,
-                base: part.local.rotation,
+                base: transform.rotation,
             });
         }
         SLOT_ALT_THOUSANDS => {
             world.entity_mut(entity).insert(HudNeedle {
                 role: NeedleRole::AltThousands,
-                base: part.local.rotation,
+                base: transform.rotation,
+            });
+        }
+        SLOT_PFHORIZON => {
+            world.entity_mut(entity).insert(HudAttitudeBall {
+                base: transform.rotation,
             });
         }
         SLOT_COMPASS => {
-            let period = compass_period(world, part);
+            let period = compass_period(world, part, transform);
             world.entity_mut(entity).insert(HudCompassTape {
-                base_x: part.local.translation.x,
+                base_x: transform.translation.x,
                 period,
             });
         }
@@ -924,8 +1003,14 @@ fn tag_glyph_cells(
 }
 
 /// The tape's designed units-per-turn: its own measured width is one 360°
-/// cycle (the strip carries the compass lettering around it).
-fn compass_period(world: &mut World, part: &AircraftPartAsset) -> f32 {
+/// cycle (the strip carries the compass lettering around it). `transform` is
+/// the transform the part entity actually carries — its scale multiplies the
+/// mesh's own width.
+pub(crate) fn compass_period(
+    world: &mut World,
+    part: &AircraftPartAsset,
+    transform: &Transform,
+) -> f32 {
     let Some(piece) = part.pieces.first() else {
         return 1.0;
     };
@@ -942,7 +1027,7 @@ fn compass_period(world: &mut World, part: &AircraftPartAsset) -> f32 {
         .fold((f32::INFINITY, f32::NEG_INFINITY), |(lo, hi), x| {
             (lo.min(x), hi.max(x))
         });
-    let width = (width.1 - width.0) * part.local.scale.x.abs();
+    let width = (width.1 - width.0) * transform.scale.x.abs();
     if width > 0.0 { width } else { 1.0 }
 }
 
@@ -1027,14 +1112,19 @@ pub fn spawn_reticle(parent: &mut bevy::prelude::ChildSpawnerCommands, image: Ha
 /// node cannot cover what a second `Camera3d` draws over the window — a run
 /// with no cinematic installed (the no-teleport smoke, a mission without a
 /// launch record) would otherwise draw the cluster over the check screen.
+/// The pilot-eye views hold it as well (PARITY3-COCKPIT-VIEW.04): there the
+/// dials are the cockpit panel's own meshes, so the chase-view corner
+/// cluster stands down with the text layer.
 pub fn fit_hud_viewport(
     windows: Query<&Window, With<PrimaryWindow>>,
     phase: Option<Res<super::launch_cinematic::LaunchCinematic>>,
     check: Option<Res<super::flight_check::FlightCheckPhase>>,
+    view: Option<Res<super::view_cycle::MissionViewMode>>,
     mut cameras: Query<&mut Camera, With<HudArtCamera>>,
 ) {
     let held = phase.is_some_and(|phase| phase.is_playing())
-        || check.is_some_and(|phase| phase.is_pending());
+        || check.is_some_and(|phase| phase.is_pending())
+        || view.is_some_and(|view| view.at_pilot_eye());
     let rect = windows.single().ok().and_then(|window| {
         let (w, h) = safe_area(window.width(), window.height());
         if w <= 0.0 || h <= 0.0 {
@@ -1061,6 +1151,16 @@ pub fn fit_hud_viewport(
     }
 }
 
+/// The attitude-ball side of [`update_hud_art`]'s parameter set, factored
+/// out for readability; disjoint from the needle and tape queries so the
+/// `&mut Transform` accesses do not conflict.
+type AttitudeBalls<'w, 's> = Query<
+    'w,
+    's,
+    (&'static mut Transform, &'static HudAttitudeBall),
+    (Without<HudNeedle>, Without<HudCompassTape>),
+>;
+
 /// Per-frame drive of the drawn cluster: needles from telemetry, pips and
 /// glyph counts from the weapon/ordnance authorities, zone materials from the
 /// damage resolver — the same session reads [`super::cockpit_hud`] makes.
@@ -1075,6 +1175,7 @@ pub fn update_hud_art(
     mut materials: ResMut<Assets<StandardMaterial>>,
     mut needles: Query<(&mut Transform, &HudNeedle), Without<HudCompassTape>>,
     mut tapes: Query<(&mut Transform, &HudCompassTape), Without<HudNeedle>>,
+    mut balls: AttitudeBalls,
     mut pips: Query<(&mut Visibility, &HudPip)>,
     mut zone_pieces: Query<
         (&mut MeshMaterial3d<StandardMaterial>, &HudZonePiece),
@@ -1099,6 +1200,16 @@ pub fn update_hud_art(
     for (mut transform, tape) in &mut tapes {
         // Designed direction: turning right scrolls the tape left.
         transform.translation.x = tape.base_x - (t.heading_deg / 360.0) * tape.period;
+    }
+    for (mut transform, ball) in &mut balls {
+        // Designed attitude rule: the ball is gyro-fixed to the world, so it
+        // counter-rotates the airframe's pitch and roll inside the panel
+        // frame — `Rz(-roll) * Rx(-pitch)` is the inverse of the X-then-Z
+        // attitude composition. The original's mapping and range are
+        // unmeasured (the finding records it).
+        transform.rotation = ball.base
+            * Quat::from_rotation_z(-t.roll_deg.to_radians())
+            * Quat::from_rotation_x(-t.pitch_deg.to_radians());
     }
 
     let Some(mission) = mission else {
