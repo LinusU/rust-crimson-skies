@@ -207,6 +207,7 @@ mod accept_parity3_camera_modes_01;
 mod accept_parity3_cockpit_view_01;
 mod accept_parity3_cockpit_view_02;
 mod accept_parity3_cockpit_view_03;
+mod accept_parity3_cockpit_view_04;
 mod accept_parity_m01_lc_letterbox;
 mod accept_parity_m01_player_view;
 mod accept_parity_m01_player_view_c;
