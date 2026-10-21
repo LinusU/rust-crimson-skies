@@ -60,10 +60,20 @@
 //! the domain, and the application-supplied inputs (session epoch,
 //! compatibility signature, resolved endpoint, client hello, loadout
 //! validator) the forms submit with. Its prefix is `accept_f55_cu1_`.
+//!
+//! Task FE-MENU-1 (#1833, `mod fe_menu_1`) adds the windowed front-end
+//! shell: `cs --cs-path <retail> --front-end` presents one `LAYOUT.CSV`
+//! section's panes and 4-state buttons from the original art, applies only
+//! the effects the data states, and its `--smoke-seconds` variant drives a
+//! scripted capture run. Its prefix is `accept_fe_menu_1_`; the retail and
+//! windowed tests are `#[ignore]`d because CI has no installation and no
+//! GPU.
 
 mod evidence;
 mod evidence_f45_b_1;
 mod evidence_f45_c_5;
+mod evidence_fe_menu_1;
+mod fe_menu_1;
 mod flight_check_options;
 mod flow;
 /// The import dialog's fixture, read through F64-C's own designed fixture
