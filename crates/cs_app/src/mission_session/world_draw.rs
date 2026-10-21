@@ -58,15 +58,17 @@ use cs_content::world::WorldDefinition;
 use cs_formats::gamez::GameZMaterials;
 use cs_types::content::{ContentId, Resolved};
 
+use crate::playtest::scene::PlaytestSea;
 use crate::playtest_retail::{
-    PlaytestConfig, WorldScenery, WorldSources, build_world_scenery, read_world_sources,
+    CONTACT_SWEEP_NODE_FLAGS, PlaytestConfig, WorldScenery, WorldSources, build_world_scenery,
+    read_world_sources,
 };
 use crate::playtest_textures::{NeutralColor, PlaytestPart, TextureBinder};
 use crate::render::horizon::HorizonSpec;
 use crate::render::matrix::HORIZON_ANCHOR;
 use crate::world::WorldMeshes;
 use crate::world::contacts::{WorldObjectBinding, WorldVisual};
-use crate::world::spawn::canonical_matrix;
+use crate::world::spawn::{canonical_matrix, static_collider_components};
 
 use super::compose::{MissionCompositionError, MissionStage};
 
@@ -961,6 +963,22 @@ fn attach_world_scenery(
             if part.image.as_deref().is_some_and(is_water_image) {
                 commands.entity(child).insert(WorldWaterPart);
             }
+        }
+        // The sea is a contact source for the player. The original's sweep
+        // tests a node that stores `CONTACT_SWEEP_NODE_FLAGS` and does so
+        // through the node's own mesh; M01's water tiles store both bits
+        // (`docs/findings/2026-10-22-m01-sea-contact.md`). Only the water
+        // tiles are made colliders here: the other scenery stores the same
+        // bits, and its contact response is a separate task (#1752).
+        let is_water = pieces
+            .iter()
+            .any(|part| part.image.as_deref().is_some_and(is_water_image));
+        if is_water
+            && placement.node_flags & CONTACT_SWEEP_NODE_FLAGS == CONTACT_SWEEP_NODE_FLAGS
+            && let Some(collision) = scenery.colliders.get(&placement.mesh)
+            && let Some(collider) = static_collider_components(placement.global, collision)
+        {
+            commands.spawn((collider, PlaytestSea, ChildOf(root)));
         }
     }
 }

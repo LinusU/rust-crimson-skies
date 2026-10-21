@@ -1615,6 +1615,32 @@ pub(crate) fn mesh_collider(collision: &ColliderMesh) -> Collider {
     Collider::trimesh_with_config(vertices, indices, MESH_TRIMESH_FLAGS)
 }
 
+/// The components of one **static world collider** built from a mesh's collision
+/// view, without a drawn mesh: the body, the explicit trimesh, the world layer
+/// and the declared [`BodyLayer`], placed at `transform`.
+///
+/// For a record the flat world definition cannot hold (scenery below a grouping
+/// node) whose drawing another system owns. `None` when the collision view
+/// carries no triangle, because the trimesh constructor panics on an empty
+/// index buffer.
+pub(crate) fn static_collider_components(
+    transform: Transform,
+    collision: &ColliderMesh,
+) -> Option<impl bevy::prelude::Bundle> {
+    if collision.indices().is_empty() {
+        return None;
+    }
+    Some((
+        RigidBody::Static,
+        mesh_collider(collision),
+        avian_layers(static_world_membership()),
+        BodyLayer(static_world_layer()),
+        transform,
+        Position(transform.translation),
+        Rotation(transform.rotation),
+    ))
+}
+
 /// The constructor a caller outside the world spawn path
 /// ([`crate::asset_stack::spawn_static_mesh_collider_on_body`]) spawns a
 /// mesh-derived collider with: the mesh's **collision** view as an explicit

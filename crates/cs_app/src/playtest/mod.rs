@@ -78,7 +78,9 @@ use crate::physics::{
 use self::command::{CRUISE_THROTTLE, flight_command, playtest_action_map};
 pub use self::retail::RetailRequest;
 use self::retail::{PlaytestAreaBody, RetailContent, RetailFlight};
-use self::scene::{PlaytestAircraft, PlaytestGround, PlaytestObstacle, PlaytestOriginalFlight};
+use self::scene::{
+    PlaytestAircraft, PlaytestGround, PlaytestObstacle, PlaytestOriginalFlight, PlaytestSea,
+};
 
 /// The label shown on screen and in every artifact of the playtest.
 pub const PLAYTEST_LABEL: &str = "DEVELOPMENT PLAYTEST / SYNTHETIC SCENE / UNCALIBRATED FLIGHT";
@@ -640,11 +642,14 @@ fn sync_pause(
 /// any entity of the original area.
 type ObstacleFilter = Or<(With<PlaytestObstacle>, With<PlaytestAreaBody>)>;
 
+/// The bodies a contact counts as hitting the ground: the slab or the sea.
+type GroundFilter = Or<(With<PlaytestGround>, With<PlaytestSea>)>;
+
 fn record_collisions(
     reports: Res<ContactReports>,
     ledger: Res<PhysicsTickLedger>,
     obstacles: Query<(), ObstacleFilter>,
-    grounds: Query<(), With<PlaytestGround>>,
+    grounds: Query<(), GroundFilter>,
     mut state: ResMut<PlaytestState>,
 ) {
     for report in reports.reports() {

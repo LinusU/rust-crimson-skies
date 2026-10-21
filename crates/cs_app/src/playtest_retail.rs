@@ -3561,7 +3561,16 @@ pub struct WorldSceneryPlacement {
     pub mesh: ContentId,
     /// The node's composed transform from the world record down.
     pub global: Transform,
+    /// The node's stored flag word, uninterpreted. The original's contact
+    /// sweep tests a node only when it carries [`CONTACT_SWEEP_NODE_FLAGS`]
+    /// (static reading `docs/findings/2026-10-21-m01-contact-response-static-locate.md`).
+    pub node_flags: u32,
 }
+
+/// The two bits of a node's flag word (`node+0x24`) the original's world
+/// contact sweep requires before it tests a node (`0x4ca506..0x4ca55e`, static
+/// reading, never observed): `0x04 | 0x10`.
+pub const CONTACT_SWEEP_NODE_FLAGS: u32 = 0x14;
 
 /// The authored scenery the flat mission world definition does not own
 /// (#1735): the descendants of the world record's direct children, one intact
@@ -3570,6 +3579,8 @@ pub struct WorldSceneryPlacement {
 pub struct WorldScenery {
     /// The drawn pieces of each distinct mesh, keyed by mesh reference.
     pub meshes: std::collections::BTreeMap<ContentId, Vec<PlaytestPart>>,
+    /// The collision view of each mesh in [`Self::meshes`], keyed the same way.
+    pub colliders: std::collections::BTreeMap<ContentId, crate::render::bevy_mesh::ColliderMesh>,
     /// The drawn nodes, in stored order of their roots.
     pub placements: Vec<WorldSceneryPlacement>,
     /// Every direct child of the world record whose subtree was walked.
@@ -3676,6 +3687,8 @@ pub fn build_world_scenery(
                     index,
                 );
                 out.meshes.insert(known.value.clone(), pieces);
+                out.colliders
+                    .insert(known.value.clone(), uploaded.collision().clone());
             }
             let global = crate::scene::NodeVisualTransform::from_canonical(node.visual_transform())
                 .map_err(|error| PlaytestError::World {
@@ -3687,6 +3700,7 @@ pub fn build_world_scenery(
                 node_name: node.name().to_owned(),
                 mesh: known.value.clone(),
                 global: Transform::from_matrix(bevy::math::Mat4::from(global.affine())),
+                node_flags: nodes.get(node.index()).map_or(0, |raw| raw.flags()),
             });
         }
         out.roots_drawn.push((root.index, root.name.clone()));

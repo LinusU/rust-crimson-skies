@@ -216,3 +216,114 @@ fn accept_parity4_m01_actor_placement_at_hand_over_is_the_measured_one() {
         );
     }
 }
+
+/// The sea is a contact source (#1850): a body just above M01's water at the
+/// measured cruise sink angle (nose 2.8 deg down, 113.5 m/s) is held by the sea
+/// surface and neither passes through it nor is destroyed by it.
+///
+/// The water tiles are the world's own (`wtr00000`, y = 0), colliding because
+/// their stored node flags carry the bits the original's contact sweep tests
+/// (`docs/findings/2026-10-22-m01-sea-contact.md`).
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_parity4_m01_sea_contact_a_low_body_skims_the_sea() {
+    use bevy::prelude::*;
+    use cs_app::mission_session::{MissionPlayerBody, MissionWorldParts, build_headless, teardown};
+    use cs_app::playtest::PlaytestState;
+    use cs_app::playtest::scene::PlaytestSea;
+
+    let root = PathBuf::from(std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR"));
+    let plan = plan_mission_launch(&root, label("M01"), "The Lost Treasure").expect("plan");
+    let stage = stage_for(&root, &plan).expect("stage");
+    let mut app = build_headless(&stage).expect("M01 composes");
+    for _ in 0..3 {
+        app.update();
+    }
+    let seas = app
+        .world_mut()
+        .query_filtered::<&Transform, With<PlaytestSea>>()
+        .iter(app.world())
+        .count();
+    assert!(seas > 0, "the world's water tiles are colliders");
+
+    // The widest flat tile at y = 0: the point the body is aimed over.
+    let parts = app.world().resource::<MissionWorldParts>();
+    let scenery = parts.scenery().expect("scenery");
+    let mut best: Option<(f32, Vec3)> = None;
+    for placement in &scenery.placements {
+        if placement.node_flags & cs_app::playtest_retail::CONTACT_SWEEP_NODE_FLAGS
+            != cs_app::playtest_retail::CONTACT_SWEEP_NODE_FLAGS
+        {
+            continue;
+        }
+        let Some(collision) = scenery.colliders.get(&placement.mesh) else {
+            continue;
+        };
+        let world: Vec<Vec3> = collision
+            .vertices()
+            .iter()
+            .map(|v| placement.global.transform_point(Vec3::from(*v)))
+            .collect();
+        if world.is_empty() || world.iter().any(|v| v.y.abs() > 0.01) {
+            continue;
+        }
+        let (mut lo, mut hi) = (world[0], world[0]);
+        for v in &world {
+            lo = lo.min(*v);
+            hi = hi.max(*v);
+        }
+        let size = (hi - lo).min_element().max(0.0) + (hi - lo).x.min((hi - lo).z);
+        if best.is_none_or(|(s, _)| size > s) && (hi - lo).x > 200.0 && (hi - lo).z > 200.0 {
+            best = Some((size, (lo + hi) * 0.5));
+        }
+    }
+    let (_, centre) = best.expect("a flat water tile at least 200 m across");
+
+    let angle = 2.8_f32.to_radians();
+    let speed = 113.5_f32;
+    let start = Vec3::new(centre.x - 10.0, 1.0, centre.z);
+    let player = app
+        .world_mut()
+        .query_filtered::<Entity, With<MissionPlayerBody>>()
+        .single(app.world())
+        .expect("the player body");
+    {
+        let mut entity = app.world_mut().entity_mut(player);
+        *entity.get_mut::<avian3d::prelude::Position>().unwrap() =
+            avian3d::prelude::Position(start);
+        *entity.get_mut::<Transform>().unwrap() =
+            Transform::from_translation(start).with_rotation(Quat::from_rotation_z(-angle));
+        *entity.get_mut::<avian3d::prelude::Rotation>().unwrap() =
+            avian3d::prelude::Rotation(Quat::from_rotation_z(-angle));
+        *entity
+            .get_mut::<avian3d::prelude::LinearVelocity>()
+            .unwrap() = avian3d::prelude::LinearVelocity(Vec3::new(
+            speed * angle.cos(),
+            -speed * angle.sin(),
+            0.0,
+        ));
+    }
+    let mut lowest = f32::INFINITY;
+    for _ in 0..30 {
+        app.update();
+        let y = app
+            .world()
+            .entity(player)
+            .get::<avian3d::prelude::Position>()
+            .expect("the player body survives the contact")
+            .0
+            .y;
+        lowest = lowest.min(y);
+    }
+    let state = app.world().resource::<PlaytestState>();
+    assert!(
+        state.ground_contacts > 0,
+        "the sea reported no contact (lowest y {lowest})"
+    );
+    assert!(
+        lowest > -3.0,
+        "the body passed through the sea (lowest y {lowest})"
+    );
+    assert_eq!(state.resets, 0, "the contact did not reset the flight");
+    teardown(&mut app);
+}

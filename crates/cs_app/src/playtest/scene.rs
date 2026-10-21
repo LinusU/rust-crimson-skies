@@ -67,6 +67,11 @@ pub struct PlaytestGround {
     pub half_extents_m: [f32; 3],
 }
 
+/// Marks a collider that is the sea surface of an original mission's world: a
+/// contact with it counts as a ground contact, like the ground slab.
+#[derive(Component, Clone, Copy, Debug, Default)]
+pub struct PlaytestSea;
+
 /// The original 2000 PC game's fixed-wing law as the retail playtest flies it
 /// (task #797): the recovered law, this airframe's imported parameters and the
 /// command the input session holds.
