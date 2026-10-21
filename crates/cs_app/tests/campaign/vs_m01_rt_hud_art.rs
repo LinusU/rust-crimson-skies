@@ -28,6 +28,31 @@ fn count<T: bevy::prelude::Component>(world: &mut bevy::prelude::World) -> usize
     query.iter(world).count()
 }
 
+/// The entities the HUD camera pass draws (layer `HUD_CAMERA_LAYER`): the
+/// corner cluster. The cockpit panel dials carry the same markers in
+/// cockpit space (PARITY3-COCKPIT-VIEW.04, #1812), so the cluster's own
+/// counts are measured on this set alone.
+fn on_hud_layer(world: &bevy::prelude::World, entity: Entity) -> bool {
+    world
+        .get::<RenderLayers>(entity)
+        .is_some_and(|layers| layers.intersects(&RenderLayers::layer(HUD_CAMERA_LAYER)))
+}
+
+/// The entities under `root` — the root's parts and their material-piece
+/// children (glyph cells and zone pieces are tagged on the children).
+fn cluster_entities(world: &bevy::prelude::World, root: Entity) -> Vec<Entity> {
+    let mut members = vec![root];
+    let mut cursor = 0;
+    while cursor < members.len() {
+        let entity = members[cursor];
+        cursor += 1;
+        if let Some(children) = world.get::<Children>(entity) {
+            members.extend(children.iter().copied());
+        }
+    }
+    members
+}
+
 /// **The `instruments.zrd` placements decode through the production reader**:
 /// the seven measured instruments, at the measured HUD-space positions.
 #[test]
@@ -102,16 +127,17 @@ fn accept_parity2_m01_hud_art_composition_draws_the_measured_cluster() {
     let world = app.world_mut();
     assert_eq!(count::<HudArtRoot>(world), 1, "exactly one HUD root");
     assert_eq!(count::<HudArtCamera>(world), 1, "exactly one HUD camera");
+    let hud_root = world
+        .query_filtered::<Entity, With<HudArtRoot>>()
+        .single(world)
+        .expect("one HUD root");
+    let cluster = cluster_entities(world, hud_root);
 
     // Every drawn part sits on the HUD layer, never the world pass's.
     let mut layered = world.query_filtered::<(Entity, &AircraftPart), With<Mesh3d>>();
     let parts: Vec<(Entity, u32)> = layered
         .iter(world)
-        .filter(|(entity, _)| {
-            world
-                .get::<RenderLayers>(*entity)
-                .is_some_and(|layers| layers.intersects(&RenderLayers::layer(HUD_CAMERA_LAYER)))
-        })
+        .filter(|(entity, _)| on_hud_layer(world, *entity))
         .map(|(entity, part)| (entity, part.node_slot))
         .collect();
     assert!(
@@ -120,11 +146,21 @@ fn accept_parity2_m01_hud_art_composition_draws_the_measured_cluster() {
         parts.len()
     );
 
-    // The measured live elements all carry their marker.
-    let needles: Vec<NeedleRole> = {
-        let mut query = world.query::<&HudNeedle>();
-        query.iter(world).map(|needle| needle.role).collect()
-    };
+    // The measured live elements all carry their marker — counted on the
+    // corner cluster alone; the panel dials repeat the same tagging under
+    // `CockpitDialsRoot` (PARITY3-COCKPIT-VIEW.04).
+    let count_on_cluster =
+        |world: &bevy::prelude::World, marker: fn(&bevy::prelude::World, Entity) -> bool| {
+            cluster
+                .iter()
+                .filter(|entity| marker(world, **entity))
+                .count()
+        };
+    let needles: Vec<NeedleRole> = parts
+        .iter()
+        .filter_map(|(entity, _)| world.get::<HudNeedle>(*entity))
+        .map(|needle| needle.role)
+        .collect();
     for role in [
         NeedleRole::Speed,
         NeedleRole::AltHundreds,
@@ -132,16 +168,24 @@ fn accept_parity2_m01_hud_art_composition_draws_the_measured_cluster() {
     ] {
         assert!(needles.contains(&role), "needle {role:?} must be drawn");
     }
-    assert_eq!(count::<HudCompassTape>(world), 1, "one compass tape");
     assert_eq!(
-        count::<HudZone>(world),
+        count_on_cluster(world, |world, entity| world
+            .get::<HudCompassTape>(entity)
+            .is_some()),
+        1,
+        "one compass tape"
+    );
+    assert_eq!(
+        count_on_cluster(world, |world, entity| world
+            .get::<HudZone>(entity)
+            .is_some()),
         4,
         "four damage zones (nose/tail/left wing/right wing)"
     );
     {
-        let mut query = world.query::<&HudPip>();
-        let pips: Vec<(PipGauge, usize)> = query
-            .iter(world)
+        let pips: Vec<(PipGauge, usize)> = cluster
+            .iter()
+            .filter_map(|entity| world.get::<HudPip>(*entity))
             .map(|pip| (pip.gauge, pip.index))
             .collect();
         for index in 0..8 {
@@ -158,14 +202,30 @@ fn accept_parity2_m01_hud_art_composition_draws_the_measured_cluster() {
         }
     }
     assert_eq!(
-        count::<HudGlyphCell>(world),
+        count_on_cluster(world, |world, entity| world
+            .get::<HudGlyphCell>(entity)
+            .is_some()),
         20,
         "4+6 missile glyphs and 4+6 gun glyphs"
     );
-    assert_eq!(count::<HudFlag>(world), 2, "the lowalt and stall flags");
-    assert_eq!(count::<HudArrow>(world), 2, "the mg/gg ordnance arrows");
     assert_eq!(
-        count::<HudNitroNeedle>(world),
+        count_on_cluster(world, |world, entity| world
+            .get::<HudFlag>(entity)
+            .is_some()),
+        2,
+        "the lowalt and stall flags"
+    );
+    assert_eq!(
+        count_on_cluster(world, |world, entity| world
+            .get::<HudArrow>(entity)
+            .is_some()),
+        2,
+        "the mg/gg ordnance arrows"
+    );
+    assert_eq!(
+        count_on_cluster(world, |world, entity| world
+            .get::<HudNitroNeedle>(entity)
+            .is_some()),
         2,
         "nitro boost + charge needles"
     );
