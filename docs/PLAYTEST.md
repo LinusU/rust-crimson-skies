@@ -633,3 +633,10 @@ and judges `debrief_failure_settled`, `debrief_screen_shown`,
 `debrief_run_stays_open` (no `AppExit` was written), `debrief_text_matches`,
 `debrief_buttons_drawn` and `smoke_shots_delivered`. See
 `docs/findings/2026-10-22-parity-m01-outcome-c-debrief-screen.md`.
+
+Since #1656 (`PARITY-M01-OUTCOME-D`) the mode then presses **Replay Mission**
+through the screen's own press path, waits for the mission host's restart and
+photographs the restarted mission (`frame_dbNNNNN_replayed.png`); the check
+`debrief_replay_restarts_the_mission` needs a new session generation, no
+terminal, no `AppExit` and a mostly non-black frame. Use `--smoke-seconds 60`.
+See `docs/findings/2026-10-22-parity-m01-outcome-d-replay-mission.md`.
