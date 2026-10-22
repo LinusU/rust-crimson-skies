@@ -256,6 +256,7 @@ mod accept_t718_mission_animations;
 mod accept_t761_deviating_command;
 mod accept_test_bin_cs_app;
 mod environment;
+mod evidence_report_flak_c;
 mod evidence_report_flak_c5_smoke;
 mod evidence_report_m01_b_obj;
 mod evidence_report_m01_b_obj_2;
