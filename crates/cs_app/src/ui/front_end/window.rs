@@ -1299,11 +1299,13 @@ fn inject_smoke_input(world: &mut World, state: &mut ShellResource) {
             Step::HoverButton(id) => {
                 // The centre of the named button's surface rect this frame —
                 // `None` when the section shows no such button (the step then
-                // does nothing, and the run's own checks fail it).
+                // does nothing, and the run's own checks fail it). Row ids
+                // are stored upper-cased; the steps name them as the file
+                // writes them, so the match is case-insensitive.
                 let position = state.shell.view(state.surface).and_then(|view| {
                     view.buttons
                         .iter()
-                        .find(|button| button.id == *id)
+                        .find(|button| button.id.eq_ignore_ascii_case(id))
                         .map(|button| {
                             Vec2::new(
                                 button.rect.x as f32 + button.rect.width as f32 * 0.5,
