@@ -744,6 +744,7 @@ pub mod mission_markers;
 pub mod mission_session;
 pub mod mission_start;
 pub mod mission_targets;
+pub mod mission_turret_update;
 pub mod mission_turrets;
 pub mod mission_world_actors;
 pub mod network;
