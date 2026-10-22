@@ -311,10 +311,28 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
                 .to_string(),
         };
     }
-    if resume_start_flow.is_some() && (mission.is_some() || front_end) {
+    if resume_start_flow.is_some()
+        && (mission.is_some()
+            || front_end
+            || playtest
+            || synthetic
+            || headless
+            || world.is_some()
+            || aircraft.is_some()
+            || ticks.is_some()
+            || trace.is_some()
+            || seed.is_some()
+            || smoke_seconds.is_some()
+            || capture_dir.is_some()
+            || smoke_no_teleport
+            || dev_overlay
+            || dev_keys
+            || smoke_engagement
+            || smoke_failure)
+    {
         return CliRequest::Invalid {
             reason: "--resume-start-flow re-opens the start flow (`cs --cs-path <dir>`) after a \
- mission; it does not combine with --mission or --front-end"
+ mission; it combines with no other flag"
                 .to_string(),
         };
     }

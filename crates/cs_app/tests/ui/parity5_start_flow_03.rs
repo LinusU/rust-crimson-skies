@@ -69,6 +69,33 @@ fn accept_parity5_start_flow_03_handover_and_return_commands_round_trip() {
         ])),
         CliRequest::Invalid { .. }
     ));
+    // The flag belongs to the bare start flow only: no other run mode may
+    // swallow it.
+    assert!(matches!(
+        cli::parse(args(&["--playtest", "--resume-start-flow", "cabin"])),
+        CliRequest::Invalid { .. }
+    ));
+    assert!(matches!(
+        cli::parse(args(&[
+            "--synthetic",
+            "--headless",
+            "--ticks",
+            "10",
+            "--resume-start-flow",
+            "cabin"
+        ])),
+        CliRequest::Invalid { .. }
+    ));
+    assert!(matches!(
+        cli::parse(args(&[
+            "--cs-path",
+            "/retail",
+            "--front-end",
+            "--resume-start-flow",
+            "cabin"
+        ])),
+        CliRequest::Invalid { .. }
+    ));
 }
 
 /// Both ways out of a flight end on the cabin, with the world released and
