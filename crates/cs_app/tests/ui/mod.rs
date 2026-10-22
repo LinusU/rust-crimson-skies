@@ -93,6 +93,7 @@ mod parity5_start_flow_03;
 mod pause_map;
 mod pause_map_presenter;
 mod pause_map_restart;
+mod preferences_overlay;
 mod scrapbook_dispatch;
 mod screens;
 mod stage_d;

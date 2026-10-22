@@ -130,6 +130,7 @@ pub(crate) mod parts;
 mod pause_map;
 mod player_victim;
 mod player_visual;
+mod preferences_overlay;
 mod radio;
 mod scenario;
 pub(crate) mod smoke;
@@ -319,6 +320,12 @@ pub use player_visual::{
     MISSION_PLAYER_LOD_DISTANCE_M, MISSION_PLAYER_PIRATE_HOOK_NODE_SLOTS,
     MISSION_PLAYER_PROP_NODE_NAME, MISSION_PLAYER_PROP_NODE_SLOT, MissionPlayerVisual,
     PlayerAirframeSource, build_player_visual, spawn_player_visual,
+};
+pub use preferences_overlay::{
+    ClosePreferencesOverlay, DrawnRow, OpenPreferencesOverlay, PREFERENCES_SECTION,
+    PreferencesEffect, PreferencesOverlay, PreferencesOverlayError, PreferencesOverlayPart,
+    PreferencesOverlayPlugin, PreferencesOverlaySource, PreferencesPress, PreferencesPressed,
+    install_preferences_overlay, read_preferences_overlay,
 };
 pub use radio::{
     MissionRadio, MusicTrackSource, PreparedLine, RADIO_SOUND_CONTAINER, RadioError,
