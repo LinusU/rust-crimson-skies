@@ -3812,3 +3812,504 @@ name = "sequence.sound_keys"
 va = 0x0063343c
 bytes = "534f554e445f4e4f44450000534f554e445f41444a55535400000000534f554e"
 fact = "the sequence-script keywords SOUND_NODE (0x63343c, handler 0x4f3730), SOUND_ADJUST (0x633448, handler 0x4f0220) and SOUND (0x633458, handler 0x4ef5d0) are dispatched at 0x51d0a0..0x51d1f7; START_TIME (0x62effc), ANIMATION_OFFSET (0x62f0d8) and EVENT_OFFSET (0x62f060) are the time keys of an entry"
+
+# FLAK-C1-TRACE (#1883, finding docs/findings/2026-10-22-flak-c1-burst-presentation-and-descriptor-flag.md):
+# the weapon descriptor flag 0x40 (the CANNON key), how a turret-fired LOCK_ON rocket gets its
+# target, the range end of a rocket, and the burst presentation path 0x5ac3a0 -> 0x5ac7a0 and the
+# animation IF PLAYER_RANGE gate. Provenance `static`; nothing here is `verified_original`.
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "descr.ctor_clear"
+va = 0x005ae0ed
+bytes = "89bb10020000"
+fact = "the weapon constructor zeroes weapon+0x210 (the descriptor pointer) before anything else can set it"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "descr.ctor_callback"
+va = 0x005ae0f5
+bytes = "5356ffd0"
+fact = "if the constructor was given a descriptor callback (its fourth argument, ebp+0x14) it calls it with (record, weapon)"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "descr.parser_callback_arg"
+va = 0x004647de
+bytes = "68f0a64b00"
+fact = "the only call of the weapon parser 0x5ad630 (at 0x4647ef) passes the callback 0x4ba6f0 as its fourth argument (the third is the value 0x440ad0 returns)"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "descr.parser_call"
+va = 0x004647ef
+bytes = "e83c8e1400"
+fact = "call 0x5ad630: the weapon-section parser; its sole caller in the image"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "descr.alloc"
+va = 0x004ba6f3
+bytes = "6a38bf0100000057ff15b401a200"
+fact = "the callback 0x4ba6f0 allocates the descriptor with calloc(1, 0x38) (the import at 0xa201b4 is MSVCRT calloc), so every descriptor flag starts clear"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "descr.store"
+va = 0x004ba711
+bytes = "89b010020000"
+fact = "the callback stores the descriptor in weapon+0x210"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "descr.cannon_key"
+va = 0x004ba9a8
+bytes = "6820b36200"
+fact = "the callback tests the weapon record for the key at 0x62b320 (the string CANNON)"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "descr.cannon_flag"
+va = 0x004ba9b6
+bytes = "85c07403830e40"
+fact = "the key present: descriptor flags |= 0x40; this is the only instruction in 0x4ba6f0..0x4bab50 that sets 0x40, so descriptor flag 0x40 means the weapon record has a CANNON key"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "descr.cannon_string"
+va = 0x0062b320
+bytes = "43414e4e4f4e00"
+fact = "the key string tested by descr.cannon_key"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "descr.read_in_fire"
+va = 0x004ab2bd
+bytes = "8b9010020000f60240"
+fact = "the turret fire code reads the descriptor flag 0x40 through weapon+0x210 (same read as aim and fire gates)"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "turret.target_node_store"
+va = 0x004ab0a0
+bytes = "8b86100200008b48048b01ff108986f4010000"
+fact = "with a held target the turret calls slot 0 of the target wrapper (vtable+0) and stores the result in entry+0x1f4 (a pointer: vehicle obj+0x3a0, turret obj+0x70, struct obj+0xc, projectile 0x4416d0(obj)+0xc), whatever the weapon descriptor"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "turret.target_slot1_store"
+va = 0x004ab0b3
+bytes = "8b86100200008b48048b11ff52048bce8986f8010000"
+fact = "slot 1 of the target wrapper (vtable+4; vehicle returns the float at obj+0x930, the other wrappers 0.0) is stored in entry+0x1f8"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "turret.lock_globals"
+va = 0x004ab377
+bytes = "8d8ef0010000518d96ec01000052e8160d1000"
+fact = "before every shot (flag 0x40 or not) 0x5ac0a0(&entry+0x1ec, &entry+0x1f0) points the globals 0xa1d7cc / 0xa1d7d0 at the turret lock fields"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "turret.lock_default"
+va = 0x004a9c5f
+bytes = "b801000000b9000020418986ec010000"
+fact = "the constructor sets entry+0x1ec = 1; no instruction of the turret code 0x4a9000..0x4ac800 writes it again, so the lock fields are always offered to the weapon"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "lock.globals_setter"
+va = 0x005ac0a0
+bytes = "8b4424048b4c2408a3ccd7a100890dd0d7a100"
+fact = "0x5ac0a0(a, b) stores a in 0xa1d7cc and b in 0xa1d7d0"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "rocket.target_clear"
+va = 0x005af60a
+bytes = "899f3c060000895f70895f74"
+fact = "a new rocket entity starts with rocket+0x63c, +0x70 and +0x74 cleared"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "rocket.lock_copy_gate"
+va = 0x005af616
+bytes = "8b4e74f6c5807446391dd0d7a100743e"
+fact = "only a weapon with flag 0x8000 (LOCK_ON) and a non-null 0xa1d7d0 takes the lock fields; this does not look at descriptor flag 0x40"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "rocket.lock_copy"
+va = 0x005af639
+bytes = "a1ccd7a1003bc3741c39187e18a1d0d7a1008b088d576c890a8b4804894a048b4008894208891dccd7a100"
+fact = "if [0xa1d7cc] points at a positive int, the 12 bytes at [0xa1d7d0] (entry+0x1f0..0x1fb) are copied to rocket+0x6c..0x77, so rocket+0x70 is the turret target pointer; 0xa1d7cc is then cleared"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "wrapper.vehicle_slot0"
+va = 0x004a5a80
+bytes = "8b41048b80a0030000c3"
+fact = "TargetVehicle vtable+0: returns obj+0x3a0"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "wrapper.turret_slot0"
+va = 0x004a5ab0
+bytes = "8b41048b4070c3"
+fact = "TargetTurret vtable+0: returns obj+0x70 (the mount node)"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "wrapper.projectile_slot0"
+va = 0x004a5ac0
+bytes = "8b4904e808bcf9ff8b400cc3"
+fact = "TargetProjectile vtable+0: returns [0x4416d0(obj)+0xc] where obj is the wrapped object"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "wrapper.struct_slot0"
+va = 0x004a5af0
+bytes = "8b41048b400cc3"
+fact = "TargetStruct vtable+0: returns obj+0xc"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "wrapper.vehicle_slot1"
+va = 0x004a59c0
+bytes = "8b4104d98030090000c3"
+fact = "TargetVehicle vtable+4: returns the float at obj+0x930"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "rocket.alive_set"
+va = 0x005afd5f
+bytes = "c7462001000000"
+fact = "every rocket update pass starts with rocket+0x20 = 1"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "rocket.range_end_lock_expires"
+va = 0x005b01f9
+bytes = "f6c4807408a8800f84b4000000"
+fact = "at travelled >= RANGE: weapon flag 0x8000 (LOCK_ON) clear goes to the DETONATE_AT_RANGE test; LOCK_ON set tests flag 0x80 and, when it is clear, jumps to the burst at 0x5b02ba"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "rocket.range_end_detonate_test"
+va = 0x005b0206
+bytes = "a9000000020f8407010000e9a4000000"
+fact = "flag 0x2000000 (DETONATE_AT_RANGE) clear goes to 0x5b0318 (silent end); set jumps to the burst at 0x5b02ba"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "rocket.burst_call"
+va = 0x005b0310
+bytes = "e88bc0ffff83c408"
+fact = "the burst: call 0x5ac3a0(weapon, rocket) for every burst reason (proximity, time, range end)"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "rocket.silent_end"
+va = 0x005b0318
+bytes = "c7462000000000"
+fact = "rocket+0x20 = 0 with no burst call: reached directly by a range end without DETONATE_AT_RANGE (and by the other no-burst exits) and after the burst call"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "weapon.expires_key"
+va = 0x005adc8b
+bytes = "68e0d06300"
+fact = "the weapon parser reads the boolean key at 0x63d0e0 (the string EXPIRES)"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "weapon.expires_flag"
+va = 0x005adca3
+bytes = "83e001c1e00781e17fffffff0bc1894374"
+fact = "EXPIRES true sets weapon flag 0x80 (mask 0xffffff7f cleared first, bit 7 written)"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "burst.record_zero"
+va = 0x005ac402
+bytes = "c744246400000000"
+fact = "0x5ac3a0 zeroes the word at hit-record-surface + 0x20 before calling the impact code, so the surface index of a rocket burst is 0"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "burst.impact_call"
+va = 0x005ac410
+bytes = "e88b030000"
+fact = "0x5ac3a0 calls the impact code 0x5ac7a0(weapon, hit record, rocket, 0)"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "burst.row_index"
+va = 0x005ac7a9
+bytes = "8b452033c93bc15657894c2414894c241074058b5820eb0233db"
+fact = "the IMPACT row index is [[record+0x20]+0x20], 0 when record+0x20 is null"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "burst.callback_hook"
+va = 0x005ac7c7
+bytes = "8b860c0200003bc18b7c2448740c575556ffd083c40c89442410"
+fact = "weapon+0x20c, when set, is called with (weapon, record, rocket) and its result is the impact flags: value 1 skips the 0x5ad100 sound pick, value 2 skips the crater step, the 0x5ac580 step and the row sound at 0x5aca0b, value 4 skips the ANIMATION start"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "burst.tangler_key"
+va = 0x004ba841
+bytes = "68b8b26200"
+fact = "the descriptor callback looks for the key at 0x62b2b8 (the string TANGLER)"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "burst.hook_set"
+va = 0x004ba877
+bytes = "e814440f00"
+fact = "only with TANGLER does the callback install the hook 0x4ba660 with 0x5aec90"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "burst.hook_setter"
+va = 0x005aec98
+bytes = "89810c020000"
+fact = "0x5aec90 stores its argument in weapon+0x20c; its sole caller is 0x4ba877"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "burst.crater_gate"
+va = 0x005ac81e
+bytes = "a810742ef6442410027527a9000080007508c744241401000000"
+fact = "weapon flag 0x10 (set by the CRATER key) without hook flag 2: unless weapon flag 0x800000 (ANIMATION_ALWAYS) is set, local 0x14 starts as 1"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "burst.crater_call"
+va = 0x005ac83c
+bytes = "e84ffeffff8b4c242483c41023c8894c2414"
+fact = "0x5ac690 (crater placement) is called; local 0x14 = 1 & its result"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "burst.crater_node_gate"
+va = 0x005ac698
+bytes = "8b4e248b512433c0f7c2000001000f84e9000000"
+fact = "0x5ac690 returns 0 unless the node [record+0x24] has mask 0x10000 at +0x24"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "burst.skip_anim_if_crater"
+va = 0x005ac927
+bytes = "8b44241485c00f85c8000000"
+fact = "a non-zero local 0x14 (a crater was placed) jumps to 0x5ac9fb, skipping the ANIMATION and EFFECT starts; the row sound at 0x5ac9fb still plays"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "burst.anim_guard"
+va = 0x005ac933
+bytes = "f644241004754d8b44244485c07545"
+fact = "the ANIMATION start is skipped when hook flag value 4 is set or when the stack word at esp+0x44 (the second cdecl argument, the hit record pointer, under the standard layout) is non-zero; every caller passes a non-null record, see the finding for why this is unresolved"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "burst.anim_row"
+va = 0x005ac942
+bytes = "8b965c0100008d049b8d0c808b448a0485c0"
+fact = "the ANIMATION handle is row+4 of the IMPACT rows at weapon+0x15c (100-byte rows, index in ebx); zero skips the start"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "burst.anim_start"
+va = 0x005ac97f
+bytes = "e88c12f4ff"
+fact = "call 0x4edc10(handle, 0, burst position x y z, 0 x6): starts the row animation at the burst position with no node"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "burst.sound_pick"
+va = 0x005ac910
+bytes = "f6442410017510680000803f535556e8dc070000"
+fact = "unless hook flag 1: call 0x5ad100(weapon, record, row, 1.0f), the random sound pick"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "burst.sound_play"
+va = 0x005ad14e
+bytes = "e82d6afeff"
+fact = "0x5ad100 plays its pick through 0x593b80"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "burst.row_sound"
+va = 0x005aca01
+bytes = "8b865c0100008b44902485c07414f644241002750d83c50c5550e87093f7ff"
+fact = "unless hook flag 2: the row+0x24 handle is played at the burst position through 0x525d90"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "burst.anim_wrapper"
+va = 0x004edc47
+bytes = "e8e4faffff"
+fact = "0x4edc10 forwards its twelve arguments to the animation start 0x4ed730"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "surface.table"
+va = 0x00637b10
+bytes = "06000000b47c6300"
+fact = "the surface name table: count 6, then pointers to default, water, seafloor, quicksand, lava, fire; index 0 is default"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "surface.default_name"
+va = 0x00637cb4
+bytes = "64656661756c7400"
+fact = "the string of surface index 0"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "if.player_range_key"
+va = 0x00516a93
+bytes = "68ac2c6300"
+fact = "the animation IF parser reads the key at 0x632cac (the string PLAYER_RANGE)"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "if.player_range_string"
+va = 0x00632cac
+bytes = "504c415945525f52414e474500"
+fact = "the key string"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "if.flag"
+va = 0x00516ac0
+bytes = "09530c"
+fact = "PLAYER_RANGE sets bit 2 of the IF entry flags (entry+0xc)"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "if.store_squared"
+va = 0x00516acd
+bytes = "8b500c895314d94314d9c05fd8c95e5d33c0d95b14"
+fact = "a float PLAYER_RANGE is stored squared in entry+0x14 (fmul of the value by itself)"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "if.eval_threshold"
+va = 0x004ec086
+bytes = "8b45108b4814538b580c"
+fact = "the IF evaluator 0x4ec080 loads the entry flags (entry+0xc) into ebx and entry+0x14 into ecx"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "if.eval_flag"
+va = 0x004ec0ef
+bytes = "f6c3027439a16cd19f0085c00f84b6020000"
+fact = "flag bit 2 requires the player-position valid word 0x9fd16c"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "if.eval_distance"
+va = 0x004ec105
+bytes = "8b55088b426c50e82f040000d95d0c"
+fact = "squared distance from the animation node [anim+0x6c] to the player position through 0x4ec540"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "if.eval_compare"
+va = 0x004ec117
+bytes = "d9450cd85dfcdfe0f6c4410f848f020000"
+fact = "the condition holds when the squared distance <= entry+0x14"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "if.dist_sq"
+va = 0x004ec559
+bytes = "d9442400d82584d19f00d9442404d82588d19f00d9442408d8258cd19f00"
+fact = "0x4ec540 subtracts the player position 0x9fd184 / 0x9fd188 / 0x9fd18c from the node world position and sums the squares"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "if.player_pos_setter"
+va = 0x004e7020
+bytes = "8b4424048b08890d84d19f008b5004891588d19f008b4008a38cd19f00c7056cd19f0001000000"
+fact = "0x4e7020(vec) stores the player position in 0x9fd184.. and sets 0x9fd16c"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "if.player_pos_caller_a"
+va = 0x0047780c
+bytes = "3b3598c2710075388d864c02000050e8a0f806008d8e0402000051e8f4f70600"
+fact = "when the vehicle is the local player (0x71c298) the vehicle position V+0x204 is passed to 0x4e7020"
+
+[[flak_trace_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "if.player_pos_caller_b"
+va = 0x00489f03
+bytes = "3b3598c2710075388d864c02000050e8a9d105008d8e0402000051e8fdd00500"
+fact = "the same at the second call site"
