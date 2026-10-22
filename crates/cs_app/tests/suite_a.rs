@@ -230,6 +230,7 @@ mod accept_parity3_cockpit_view_05;
 mod accept_parity6_m01_audio_01_sample_identity;
 mod accept_parity6_m01_audio_02_voice_laws;
 mod accept_parity6_m01_audio_03_launch_voices;
+mod accept_parity6_m01_audio_04_rattle_and_sequences;
 mod accept_parity6_m01_audio_07_burst_triggers;
 mod accept_parity_m01_lc_letterbox;
 mod accept_parity_m01_player_damage_graph;

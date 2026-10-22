@@ -5165,3 +5165,177 @@ groups = "snd_exp_plane1,snd_exp_plane3,snd_exp_ground_a,snd_exp_ground_b"
 excluded = "enginelooped.wav (looped group named only by ZBD/C3/M05) and 4 VO lines"
 event = "exp_plane_1/3: plane_destroy_sg (random of four) in the destruction sequences; exp_ground_a: the destruction sequences (ground crash); exp_ground_b: touchdown_default and touchdown_dirt glance sequences (ground contact)"
 residual = "decided by which event fired: aircraft destruction (exp_plane_1/3 or exp_ground_a) versus ground contact on land (exp_ground_b), and for plane_destroy_sg the rand() pick; the engine side of both is the sequence SOUND executor"
+
+# The M01 audio timeline, task #1918 (PARITY6-M01-AUDIO-TIMELINE.04, finding
+# docs/findings/2026-10-23-m01-audio-rattle-slot-and-sound-sequences.md): the keyed voice-slot
+# helper 0x45e470 behind the rattle, the vehicle step that runs it, the SOUND/AT_NODE sequence
+# compile step, the START_TIME clocks and the EXECUTION_BY_RANGE gate. `bytes` are the cited image
+# bytes at `va`. Provenance `static`; nothing here is verified_original.
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "rattle.slot_helper"
+va = 0x0045e4d4
+bytes = "8b308b50048b461085c08954241075158b44243c680000803f50e89d50130083c4088946108b461085c074"
+fact = "0x45e470(ref, key, group, ttl, pos*, vel*) is a keyed voice-slot play: it finds or inserts the record for `key` (arg 2) in the map at 0x71b1e8 (0x45e670), and only when the record's voice handle [rec+0x10] is 0 starts the group (arg 3) through the 2D play 0x593590(group, 1.0f) (0x45e4ee) and stores the handle; an already-started record is not restarted. If a handle exists it calls 0x597af0(handle, arg5, arg6, 0) (0x45e50d) and sets the record expiry [rec+0x14] = [0x71b1f8] + arg4 (0x45e512..0x45e51f)"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "rattle.slot_update_and_expiry"
+va = 0x0045e512
+bytes = "d905f8b17100d844245083c410d95e148b4c2424"
+fact = "expiry stamp: [rec+0x14] = now + ttl, where now is the slot clock [0x71b1f8]; the rattle consumer 0x48d272 passes ttl 0 and null pos/vel (0x48d25c..0x48d260), so every call re-stamps the expiry to the current slot clock and does not touch the playing voice"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "rattle.slot_reap"
+va = 0x0045e360
+bytes = "568bf18b0e85c9741fd905f8b17100d85e04dfe0f6c441750f51e8415a130083c404c706000000005ec3"
+fact = "0x45e360(rec): when the record has a handle and the slot clock [0x71b1f8] is strictly greater than the expiry [rec+0x14] (fcomp then test ah,0x41), it stops the voice with 0x593dc0(handle) and zeroes the handle; a handle whose expiry is not yet passed is kept"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "rattle.slot_tick"
+va = 0x0045e410
+bytes = "51a158d5710085c0753f8b0decb171008b013bc189442400741f8d4810e82effffff8d4c2400e8550d00008b0decb171008b4424003bc175e1d905f8b17100d8442408d91df8b1710059c3"
+fact = "0x45e410(dt): when [0x71d558] is 0 it calls 0x45e360 on every record of the map at 0x71b1e8 and then advances the slot clock [0x71b1f8] += dt; the order (reap, then advance) with the strict `>` test means a voice last stamped at clock T is stopped by the second tick after the stamp, not the first"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "rattle.slot_tick_caller"
+va = 0x004a099d
+bytes = "8b1544d79a0052e867dafbff83c404e8ff5501"
+fact = "0x4a09a4 calls 0x45e410 with dt = [0x9ad744], once per pass of the mission frame routine that also runs 0x4b5fb0; the same dt variable steps the animation clocks"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "rattle.slot_ids"
+va = 0x0045e460
+bytes = "8b0dfcb171008bc141890dfcb17100c3"
+fact = "0x45e460() returns the counter [0x71b1fc] and increments it: the key allocator; 0x473b7d stores one id as the rattle slot key [0x71c338] right after the group lookup stores [0x71c334] (0x473b78); 0x45e390 resets the clock [0x71b1f8] and the counter to 0"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "rattle.call_args"
+va = 0x0048d250
+bytes = "8b0d34c371008b1538c371006a006a006a0051528d8544ffffff50c745fc01000000e8"
+fact = "the rattle call at 0x48d272 passes (ref to the aircraft built by 0x4a6330, key [0x71c338], group [0x71c334], ttl 0, pos 0, vel 0), only inside the gate of rattle.consumer; because ttl is 0 and the voice is not restarted while the handle is held, the rattle plays as one voice (LOOPED if the group is looped) from the first frame the gate is true until two slot ticks after the gate last held"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "vehicle.update_dispatch"
+va = 0x00489ea0
+bytes = "568bf18a861d09000084c0740e8a861f09000084c00f84880000008a86cc00000084c0740b56e84502000083c4045ec38b867c06000083f8057728ff2485489f480056e898090000eb16"
+fact = "0x489ea0(vehicle) steps one vehicle: skipped when [+0x91d] is set and [+0x91f] clear, diverted to 0x48a110 when [+0xcc] is set, else jumps through the 6-entry table at 0x489f48 on the mode word [+0x67c]; modes 0 and 4 reach 0x48e580 (via 0x489ef2), which calls the force routine 0x48c470 (0x48e6da) that contains the rattle consumer"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "vehicle.update_table"
+va = 0x00489f48
+bytes = "f29e4800fa9e4800e29e4800ea9e4800f29e4800ea9e4800"
+fact = "jump table of 0x489ea0: modes 0 and 4 -> 0x489ef2 (0x48e580), 1 -> 0x489efa (0x48ffe0), 2 -> 0x489ee2 (0x48a880), 3 and 5 -> 0x489eea (0x48b480)"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "vehicle.update_loop"
+va = 0x00489b84
+bytes = "8a864409000084c00f84af000000ff05a4c2710083be580300000575138a861f09000084c075098bcee8de690000eb078bcee8e50200008a"
+fact = "0x489bb6 is the only call of 0x489ea0; it sits in the vehicle-list step 0x4897c0, which 0x4739e8 registers as a per-frame scene callback (push 0x4897c0, call 0x4ccd30) and which steps a vehicle only when [+0x944] is nonzero (0x489b84..0x489b8c)"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "vehicle.update_callback"
+va = 0x004739e2
+bytes = "8b15b0c2710068c097480052e83d93050083c410"
+fact = "registration of the vehicle-list step 0x4897c0 as a scene callback (0x4ccd30) at 0x4739e8..0x4739ee"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "sequence.sound_compile"
+va = 0x004ef5f4
+bytes = "f60f84c30100008b433c8b4b3883c01c5051ff153803a2008b4b3c8b5424448d2c0189433883c11c894b3c33c0b9070000008bfdf3ab6834f2620052c6450001c745041c000000c6450101894508e849aa080083c41085c0894424380f844b0100008b40048b500c83c9ff33c08bfaf2aef7"
+fact = "SOUND handler 0x4ef5d0 (four stack arguments) is a compile-time step, not a player: it appends a 0x1c-byte event to the sequence buffer (type byte 1, size 0x1c, default time mode byte [+1] = 1, offset [+8] = 0), reads NAME (0x62f234) and truncates it to 31 characters, resolves the sound group through 0x4eedb0 into the word [event+0xc] (zero is a fatal `Missing Sound Effect`), then START_TIME (0x62effc) through 0x4ef270 and AT_NODE (0x62f1a4) through 0x4ef7d0 into the word [event+0xe]"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "sequence.sound_at_node"
+va = 0x004ef761
+bytes = "8b869c0000006a006a01c1e81583e001506a006a005756e8530000006894f1620053566a016689450e5783c510"
+fact = "AT_NODE branch of 0x4ef5d0: resolves the node names that follow the keyword with 0x4ef7d0 (a node name, optionally prefixed by GLOBAL or LOCAL; the literal INPUT_NODE gives -200 and MAIN_ROOT_NODE -100), stores the node id in [event+0xe], then 0x4efb90 copies the event's trailing parameters; an entry without AT_NODE leaves [event+0xe] = 0 and plays 2D at execution"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "sequence.start_time_modes"
+va = 0x004ef308
+bytes = "885a01e9"
+fact = "0x4ef270 parses `START_TIME <word> <number>` (three values, else `Illegal number of parameters`): ANIMATION_OFFSET (0x62f0d8) stores mode byte [event+1] = 1 (0x4ef308), SEQUENCE_OFFSET (0x62f0c8) stores 2 (0x4ef377) and EVENT_OFFSET (0x62f060) stores 3 (0x4ef3cf); the latter two are rejected as the first event of a sequence ([0x728378] == 0); the number (int or float) is stored as a float at [event+8] (0x4ef3ec, 0x4ef401)"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "sequence.start_time_mode_2"
+va = 0x004ef377
+bytes = "c6410102"
+fact = "mode 2 (SEQUENCE_OFFSET) store at 0x4ef377"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "sequence.start_time_mode_3"
+va = 0x004ef3cf
+bytes = "c6410103"
+fact = "mode 3 (EVENT_OFFSET) store at 0x4ef3cf"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "sequence.step_clocks"
+va = 0x004ecc04
+bytes = "8b463433c98a480149743049741a490f85a6000000d94628d85808dfe0f6c4010f85ab000000eb27d94624d85808dfe0f6c4010f8598000000eb14d987b0000000d85808dfe0f6c4010f8582000000a1"
+fact = "the sequence step 0x4ecbb0(animation, sequence) fires the current event when the clock chosen by its mode byte has reached its offset (`clock < offset` returns and waits): mode 1 compares the animation clock [anim+0xb0] (0x4ecc3f), mode 2 the sequence clock [seq+0x24] (0x4ecc2c), mode 3 the event clock [seq+0x28] (0x4ecc19); after an event fires the event clock is set to the step dt [0x9fd1a8] (0x4ecc53) and the loop moves to the next event, so events of one sequence run strictly in order and a late event blocks the ones behind it; dt is the frame delta [0x9ad744] copied at 0x4ecee2"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "animation.clock_advance"
+va = 0x004eceb4
+bytes = "d90544d79a008a86d8000000d886b00000008bbecc00000033ed84c0d99eb00000000f86810000008b0d"
+fact = "each step of an animation adds the frame delta [0x9ad744] to the animation clock [anim+0xb0] (0x4eceb4..0x4eced0) before stepping its sequences"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "animation.range_gate"
+va = 0x004ecd83
+bytes = "85c9746da16cd19f0085c00f84090200008b466c50e8a3f7ffffd896a400000083c404dfe0f6c401750fd89ea8000000dfe0f6c401753aeb02ddd8"
+fact = "per-step gate of an animation with the range flag ([anim+0x9c] & 2): the squared distance from the animation's node [anim+0x6c] to the camera position [0x9fd184..0x9fd18c] (0x4ec540) is compared with [anim+0xa4] (minimum) and [anim+0xa8] (maximum); below the minimum or at or above the maximum the animation skips the step (it sets a skip counter [anim+0xa3] from the rotating counter [0x727fd0] and returns); only a distance in [min, max) falls through to stepping its sequences"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "animation.range_parse_one_value"
+va = 0x0051ebe9
+bytes = "83f9020f85a10e0000c783a4000000000000008b45048b480883f902750e8b400c8983a8000000e99b01000083"
+fact = "EXECUTION_BY_RANGE (0x633c20, flag [anim+0x9c] |= 2 at 0x51e86e) with one value stores [anim+0xa4] = 0 (0x51ebf2) and the value into [anim+0xa8] (0x51ec0a / 0x51ec1d) and then squares [anim+0xa8] (0x51edb0..0x51edba): `EXECUTION_BY_RANGE 600` runs the animation only while the node is within 600 world units of the camera; two values set minimum and maximum (0x51e894 / 0x51e8a7)"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "animation.range_square"
+va = 0x0051edb0
+bytes = "d983a8000000d9c0d8c9d99ba8000000dd"
+fact = "squaring of the range maximum [anim+0xa8] at 0x51edb0..0x51edba"
