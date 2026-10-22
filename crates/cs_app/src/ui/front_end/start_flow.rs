@@ -562,10 +562,10 @@ impl StartFlow {
 }
 
 /// The command line the hand-over runs: exactly what a player types for the
-/// mission, so `--mission` behaves as it always has.
+/// mission, so `--mission` behaves as it always has. `--from-start-flow`
+/// asks the mission to come back here when the player leaves it for the
+/// cabin (see [`return_args`]).
 #[must_use]
-/// `--from-start-flow` asks the mission to come back here when the player
-/// leaves it for the cabin (see [`return_args`]).
 pub fn handover_args(request: &StartFlowRequest, mission: &str) -> Vec<String> {
     vec![
         "--cs-path".to_owned(),
