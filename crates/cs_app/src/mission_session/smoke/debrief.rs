@@ -16,6 +16,11 @@
 //!    labels, text rows, the stat card) and takes the bare pane, then judges
 //!    both against the scene the screen built.
 //!
+//! 4. it **presses Replay Mission** (#1656 `PARITY-M01-OUTCOME-D`) through
+//!    the screen's own press path, waits for the mission host's restart to
+//!    land, and photographs the restarted mission: a new session generation,
+//!    no debrief, no terminal, no `AppExit`.
+//!
 //! The floors are designed and named next to their constants. A run is never
 //! `human_play`, and nothing it measures is `verified_original`; the frames are
 //! for comparing with the owner's capture by eye.
@@ -28,7 +33,9 @@ use cs_sim::damage::{DamageChannel, DamageNodeKey, HitEvent};
 use cs_types::Tick;
 use cs_types::net::EventId;
 
-use super::super::debrief_screen::{DebriefOverlay, DebriefScene, DebriefScreen};
+use super::super::debrief_screen::{
+    DebriefOverlay, DebriefScene, DebriefScreen, press_debrief_hotspot,
+};
 use super::super::host::MissionHost;
 use super::super::player_victim::PlayerVictim;
 use super::super::weapons::MISSION_TARGET_NODE;
@@ -65,6 +72,11 @@ pub const MIN_DEBRIEF_DRAWN_PERMILLE: u32 = 300;
 pub const MIN_DEBRIEF_TEXT_PIXELS: usize = 24;
 /// The least pixels a button or pane must add inside its region. **Designed.**
 pub const MIN_DEBRIEF_BUTTON_PIXELS: usize = 32;
+/// Frames after the Replay press that the restarted mission is photographed.
+const REPLAY_SHOT_OFFSET: u32 = 90;
+/// The least share of the restarted mission's frame that must be off black, in
+/// parts per thousand. **Designed:** the mission's world fills the window.
+pub const MIN_REPLAY_DRAWN_PERMILLE: u32 = 300;
 /// The text rows the screen must draw.
 const REQUIRED_TEXTS: [&str; 5] = [
     "SB_T_COMPLETETITLE",
@@ -103,6 +115,19 @@ pub struct DebriefMetrics {
     pub buttons: Vec<FlightCheckButtonMetrics>,
     /// What the scene lists as unknown or left out.
     pub unknown_rows: Vec<String>,
+    /// The script frame Replay Mission was pressed in.
+    pub replay_frame: Option<u32>,
+    /// The mission host's session generation before the press.
+    pub generation_before: Option<u32>,
+    /// The mission host's session generation once the restart had landed.
+    pub generation_after: Option<u32>,
+    /// Whether the debrief screen was gone and the host's terminal cleared.
+    pub replay_running: bool,
+    /// Whether the restarted mission's framebuffer arrived.
+    pub replay_frame_delivered: bool,
+    /// The share of the restarted mission's frame that is off black, in parts
+    /// per thousand.
+    pub replay_permille: u32,
 }
 
 /// The debrief stage's own progress.
@@ -273,6 +298,61 @@ pub fn smoke_debrief(
         return;
     }
 
+    // --- 4. after the press: the restarted mission ---------------------------
+    if let Some(pressed) = data
+        .measurements
+        .debrief
+        .as_ref()
+        .and_then(|metrics| metrics.replay_frame)
+    {
+        let at = frame - pressed;
+        if let (Some(host), None) = (host.as_deref(), screen.as_ref())
+            && let Some(metrics) = data.measurements.debrief.as_mut()
+            && metrics.generation_after.is_none()
+            && Some(host.generation().0) != metrics.generation_before
+        {
+            metrics.generation_after = Some(host.generation().0);
+            metrics.replay_running = host.terminal().is_none();
+        }
+        if at == REPLAY_SHOT_OFFSET {
+            data.shots_requested += 1;
+            data.requested.push("replayed".to_owned());
+            request_screenshot(
+                &mut commands,
+                shots.clone(),
+                config
+                    .request
+                    .capture_dir
+                    .join(format!("frame_db{frame:05}_replayed.png")),
+                "replayed".to_owned(),
+                clear.as_deref().map(clear_colour_encodings),
+                None,
+                Some(frames.clone()),
+            );
+        }
+        if at <= REPLAY_SHOT_OFFSET {
+            return;
+        }
+        let raw = frames
+            .0
+            .lock()
+            .map(|frames| frames.clone())
+            .unwrap_or_default();
+        let replayed = raw.iter().find(|frame| frame.label == "replayed");
+        if replayed.is_none() && at < REPLAY_SHOT_OFFSET + SHOT_GRACE_FRAMES {
+            return;
+        }
+        if let Some(metrics) = data.measurements.debrief.as_mut() {
+            metrics.replay_frame_delivered = replayed.is_some();
+            metrics.replay_permille = replayed.map_or(0, |frame| {
+                non_black_permille(&frame.data, frame.width, frame.height)
+            });
+        }
+        data.phase = Phase::Final;
+        data.phase_start = frame;
+        return;
+    }
+
     // --- 2. the settle and the screen ----------------------------------------
     if let Some(terminal) = host.as_deref().and_then(MissionHost::terminal)
         && let Some(metrics) = data.measurements.debrief.as_mut()
@@ -373,8 +453,14 @@ pub fn smoke_debrief(
             metrics,
         );
     }
-    data.phase = Phase::Final;
-    data.phase_start = frame;
+    // Press Replay Mission as a player would: through the screen's own press.
+    if let Some(metrics) = data.measurements.debrief.as_mut() {
+        metrics.replay_frame = Some(frame);
+        metrics.generation_before = host.as_deref().map(|host| host.generation().0);
+    }
+    commands.queue(|world: &mut bevy::prelude::World| {
+        let _ = press_debrief_hotspot(world, "SB_B_REPLAY");
+    });
 }
 
 /// The debrief checks: the failure the run settles, the screen it opens and
@@ -501,6 +587,29 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
         },
     });
     checks.push(Check {
+        id: "debrief_replay_restarts_the_mission".to_owned(),
+        applies: true,
+        passed: d.replay_frame.is_some()
+            && d.generation_after.is_some()
+            && d.generation_after != d.generation_before
+            && d.replay_running
+            && d.replay_frame_delivered
+            && d.replay_permille >= MIN_REPLAY_DRAWN_PERMILLE
+            && d.exits_seen == 0,
+        detail: format!(
+            "Replay Mission pressed at frame {:?}; the host's generation went {:?} -> {:?}; \
+             the fresh session is running with no terminal: {}; {} per mille of the restarted \
+             mission's frame is off black (floor {}); {} AppExit message(s)",
+            d.replay_frame,
+            d.generation_before,
+            d.generation_after,
+            d.replay_running,
+            d.replay_permille,
+            MIN_REPLAY_DRAWN_PERMILLE,
+            d.exits_seen
+        ),
+    });
+    checks.push(Check {
         id: "smoke_shots_delivered".to_owned(),
         applies: true,
         passed: m.missing_shots.is_empty(),
@@ -570,7 +679,9 @@ pub fn debrief_json(metrics: Option<&DebriefMetrics>) -> String {
         "{{\"kill_frame\":{},\"settled_outcome\":{},\"settled_source\":{},\"screen_frame\":{},\
          \"exits_seen\":{},\"frames_delivered\":{},\"frame_width\":{},\"frame_height\":{},\
          \"drawn_permille\":{},\"texts\":[{texts}],\"panes\":[{}],\"buttons\":[{}],\
-         \"unknown_rows\":[{unknown_rows}]}}",
+         \"unknown_rows\":[{unknown_rows}],\"replay_frame\":{},\
+         \"generation_before\":{},\"generation_after\":{},\"replay_running\":{},\
+         \"replay_permille\":{}}}",
         option_u32(d.kill_frame),
         option_string(&d.settled_outcome),
         option_string(&d.settled_source),
@@ -582,5 +693,10 @@ pub fn debrief_json(metrics: Option<&DebriefMetrics>) -> String {
         d.drawn_permille,
         parts(&d.panes),
         parts(&d.buttons),
+        option_u32(d.replay_frame),
+        option_u32(d.generation_before),
+        option_u32(d.generation_after),
+        d.replay_running,
+        d.replay_permille,
     )
 }
