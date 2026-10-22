@@ -94,10 +94,16 @@ impl<R: Read> MovieSource for MpegVideoSource<R> {
 /// presentation time — rebased to the first frame's, so an MPEG stream's
 /// nonzero container timestamps cannot stall playback — comes due on the
 /// elapsed clock the caller supplies. At the stream's end the `open` closure
-/// reopens it, the clock restarts and `played` counts the playthroughs, until
-/// `# Loops` is spent (`0` never is). A decode error or a failed reopen is
-/// recorded in [`Self::failure`] and the last delivered frame stays up; the
-/// backdrop never fabricates a replacement.
+/// reopens it and `played` counts the playthroughs, until `# Loops` is
+/// spent (`0` never is). The reopened stream's clock does **not** restart
+/// at the instant its decode drained: the new cycle starts where the old
+/// stream's last frame's nominal display time ends (`last pts - pts_base`
+/// plus one frame interval, `1/frame_rate` when the stream reports a usable
+/// rate and the last observed inter-frame gap otherwise), so a loop keeps
+/// the stream's own period — a design choice; the original's exact restart
+/// timing is unread. A decode error or a failed reopen is recorded in
+/// [`Self::failure`] and the last delivered frame stays up; the backdrop
+/// never fabricates a replacement.
 ///
 /// `O` opens a *fresh* source at the start of the stream — the loop
 /// restart. Holding the closure rather than the path keeps the player over
@@ -126,6 +132,12 @@ pub struct MovieBackdrop<S, O> {
     extent: (u32, u32),
     /// The stream's measured frame rate.
     frame_rate: f64,
+    /// The current playthrough's last delivered frame's raw pts (the cycle's
+    /// own `pts_base` before its first frame is delivered).
+    last_pts: u64,
+    /// The pts distance between the current playthrough's last two delivered
+    /// frames — the fallback frame interval when the stream reports no rate.
+    last_gap: u64,
 }
 
 impl<S: MovieSource, O> MovieBackdrop<S, O> {
@@ -187,12 +199,17 @@ impl<S: MovieSource, O> MovieBackdrop<S, O> {
         self.failure.as_deref()
     }
 
-    /// Copies the pending frame onto the surface.
-    fn deliver(&mut self) {
+    /// Copies the pending frame onto the surface. `false` when the source
+    /// held no pixels for it — the presentation time still advanced, the
+    /// surface just did not change.
+    fn deliver(&mut self) -> bool {
         if let Some(pixels) = self.source.pixels() {
             self.current.clear();
             self.current.extend_from_slice(pixels);
             self.delivered += 1;
+            true
+        } else {
+            false
         }
     }
 }
@@ -218,12 +235,13 @@ impl<S: MovieSource, O: FnMut() -> Result<S, MediaFailure>> MovieBackdrop<S, O> 
             .ok_or_else(|| MediaFailure::DecodeFailed {
                 detail: format!("{} has no video frames", movie.file),
             })?;
+        let pts_base = first.pts_us;
         Ok(Self {
             movie: movie.clone(),
             open,
             source,
             cycle_start: now,
-            pts_base: first.pts_us,
+            pts_base,
             pending: Some(first),
             current: Vec::new(),
             delivered: 0,
@@ -232,6 +250,8 @@ impl<S: MovieSource, O: FnMut() -> Result<S, MediaFailure>> MovieBackdrop<S, O> 
             failure: None,
             extent,
             frame_rate,
+            last_pts: pts_base,
+            last_gap: 0,
         })
     }
 
@@ -242,22 +262,25 @@ impl<S: MovieSource, O: FnMut() -> Result<S, MediaFailure>> MovieBackdrop<S, O> 
         if self.ended || self.failure.is_some() {
             return false;
         }
-        let elapsed_us = micros(now.saturating_sub(self.cycle_start));
         let mut changed = false;
         loop {
-            if self.pending.is_none() && !self.fill(now) {
+            if self.pending.is_none() && !self.fill() {
                 break;
             }
-            let due = self
-                .pending
-                .as_ref()
-                .is_some_and(|frame| frame.pts_us.saturating_sub(self.pts_base) <= elapsed_us);
+            // Due on the cycle's own clock: a frame of a cycle that has not
+            // started yet (`now < cycle_start`) is never due.
+            let due = self.pending.as_ref().is_some_and(|frame| {
+                now.checked_sub(self.cycle_start).is_some_and(|elapsed| {
+                    Duration::from_micros(frame.pts_us.saturating_sub(self.pts_base)) <= elapsed
+                })
+            });
             if !due {
                 break;
             }
-            self.pending = None;
-            self.deliver();
-            changed = true;
+            let frame = self.pending.take().expect("pending checked above");
+            self.last_gap = frame.pts_us.saturating_sub(self.last_pts);
+            self.last_pts = frame.pts_us;
+            changed |= self.deliver();
         }
         changed
     }
@@ -265,7 +288,7 @@ impl<S: MovieSource, O: FnMut() -> Result<S, MediaFailure>> MovieBackdrop<S, O> 
     /// Refills `pending` from the source, looping to a reopened source at
     /// the stream's end while `# Loops` allows. `false` when there is
     /// nothing more to decode (loops spent or a recorded failure).
-    fn fill(&mut self, now: Duration) -> bool {
+    fn fill(&mut self) -> bool {
         match self.source.next_frame() {
             Ok(Some(frame)) => {
                 self.pending = Some(frame);
@@ -281,6 +304,16 @@ impl<S: MovieSource, O: FnMut() -> Result<S, MediaFailure>> MovieBackdrop<S, O> 
                     self.ended = true;
                     return false;
                 }
+                // The new cycle's clock starts where the ended stream's
+                // last frame finishes its nominal display time, so the
+                // loop's period is the stream's own, not the instant its
+                // decode drained.
+                let shown = self.last_pts.saturating_sub(self.pts_base);
+                let interval = frame_interval(self.frame_rate)
+                    .unwrap_or_else(|| Duration::from_micros(self.last_gap));
+                self.cycle_start = self
+                    .cycle_start
+                    .saturating_add(Duration::from_micros(shown).saturating_add(interval));
                 match (self.open)() {
                     Err(failure) => {
                         self.failure = Some(failure.to_string());
@@ -289,8 +322,9 @@ impl<S: MovieSource, O: FnMut() -> Result<S, MediaFailure>> MovieBackdrop<S, O> 
                     Ok(mut source) => match source.next_frame() {
                         Ok(Some(first)) => {
                             self.source = source;
-                            self.cycle_start = now;
                             self.pts_base = first.pts_us;
+                            self.last_pts = first.pts_us;
+                            self.last_gap = 0;
                             self.pending = Some(first);
                             true
                         }
@@ -310,6 +344,8 @@ impl<S: MovieSource, O: FnMut() -> Result<S, MediaFailure>> MovieBackdrop<S, O> 
     }
 }
 
-fn micros(duration: Duration) -> u64 {
-    u64::try_from(duration.as_micros()).unwrap_or(u64::MAX)
+/// One frame's nominal display time, `1/rate`; `None` when the stream
+/// reports no usable rate.
+fn frame_interval(rate: f64) -> Option<Duration> {
+    (rate.is_finite() && rate > 0.0).then(|| Duration::from_secs_f64(1.0 / rate))
 }
