@@ -243,6 +243,11 @@ const ROCKET_WAIT_FRAMES: u32 = 90;
 const COCKPIT_STOP_FRAMES: u32 = 16;
 /// Frames into a cockpit stop at which the view is read and photographed.
 const COCKPIT_SHOT_OFFSET: u32 = 10;
+/// Distance the rocket shot is placed from the hostile, metres.
+const ROCKET_RANGE_M: f32 = 150.0;
+/// Most frames the rocket phase waits for the rocket to detonate (its burst
+/// puffs are photographed, #1806) before moving on.
+const ROCKET_BURST_WAIT_FRAMES: u32 = 900;
 /// Frames into the help phase at which the open keymap overlay is photographed.
 const HELP_SHOT_OFFSET: u32 = 10;
 /// Frames into the help phase at which `F1` is pressed again to close it.
@@ -254,6 +259,8 @@ const PAUSE_MAP_SHOT_OFFSET: u32 = 10;
 const PAUSE_MAP_CLOSE_OFFSET: u32 = 14;
 /// Frames into the rocket phase at which its screenshot is requested.
 const ROCKET_SHOT_OFFSET: u32 = 80;
+/// Frames after the first burst puff is alive at which its screenshot is taken.
+const BURST_SHOT_DELAY: u32 = 6;
 
 /// Frames into `Phase::Target` the under-reticule key is pressed.
 const TARGET_KEY_OFFSET: u32 = 14;
@@ -646,6 +653,11 @@ pub struct RocketMetrics {
     pub launched: bool,
     /// The most rocket mirrors alive at once after the tap.
     pub max_rockets: u32,
+    /// Smoke puffs the burst-puff consumer spawned during the rocket phase
+    /// (PARITY2-DMG-FX-B #1806).
+    pub puffs_spawned: u64,
+    /// The most puff entities alive at once after the tap.
+    pub max_live_puffs: u32,
     /// The mission publisher's own rocket refusals, verbatim.
     pub refusals: Vec<String>,
 }
@@ -1344,6 +1356,17 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
                 }
             )
         },
+    });
+
+    checks.push(Check {
+        id: "weapon_burst_puffs_drawn".to_owned(),
+        applies: true,
+        passed: m.rocket.puffs_spawned > 0,
+        detail: format!(
+            "the rocket's detonation spawned {} smoke puffs ({} alive at once; \
+             PARITY2-DMG-FX-B #1806)",
+            m.rocket.puffs_spawned, m.rocket.max_live_puffs
+        ),
     });
 
     // --- audio -------------------------------------------------------------
@@ -2172,6 +2195,8 @@ struct SmokeData {
     rounds_probe_pending: bool,
     /// This frame's reading of the view (`smoke_cockpit`).
     cockpit_sample: CockpitViewSample,
+    /// Frame the burst-puff screenshot was requested (`None`: not yet).
+    burst_shot_frame: Option<u32>,
     /// Where the launch cinematic's first sampled frame found the body.
     cinematic_start_m: Option<Vec3>,
     /// Where the launch cinematic's first sampled frame found the body's attitude.
@@ -2798,6 +2823,8 @@ fn smoke_sample(
     rounds: Query<&WeaponRoundMirror>,
     rockets: Query<&OrdnanceItemMirror>,
     rocket_report: Option<Res<MissionWeaponReport>>,
+    puff_report: Option<Res<super::burst_puffs::BurstPuffReport>>,
+    puffs: Query<&super::burst_puffs::BurstPuff>,
     audio: Option<Res<AudioSession>>,
     mix: Option<Res<AudioMixReport>>,
     bind_log: Option<Res<AudioBindLog>>,
@@ -2850,6 +2877,12 @@ fn smoke_sample(
         let live = rockets.iter().count() as u32;
         data.measurements.rocket.max_rockets = data.measurements.rocket.max_rockets.max(live);
         data.measurements.rocket.launched |= live > 0;
+        let live_puffs = puffs.iter().count() as u32;
+        data.measurements.rocket.max_live_puffs =
+            data.measurements.rocket.max_live_puffs.max(live_puffs);
+        if let Some(report) = puff_report.as_ref() {
+            data.measurements.rocket.puffs_spawned = report.puffs_spawned;
+        }
         if let Some(report) = rocket_report.as_ref() {
             data.measurements.rocket.refusals = report.rocket_refusals.clone();
         }
@@ -3508,15 +3541,42 @@ fn smoke_script(
                 queue.0.push(KeyOp::Release(KeyCode::Space));
                 data.phase = Phase::Rocket;
                 data.phase_start = frame + 1;
-                queue.0.push(KeyOp::Press(KeyCode::KeyX));
             }
         }
         Phase::Rocket => {
-            if at == 8 {
+            if data.measurements.rocket.max_live_puffs > 0 && data.burst_shot_frame.is_none() {
+                // A few frames after the first puff so the cloud has grown.
+                data.burst_shot_frame = Some(frame + BURST_SHOT_DELAY);
+            }
+            if data.burst_shot_frame == Some(frame) {
+                due.push("rocket_burst".to_owned());
+            }
+            if at == 0 {
+                // A test placement, listed in the report: the rocket flies
+                // straight, so the player faces the hostile from close enough
+                // for the rocket to really hit it and detonate (#1806).
+                if let Some(index) = data.census.iter().position(|entry| entry.hostile)
+                    && let Some(mut placement) = place_near_actor(&data, index, &player, &poses)
+                {
+                    let offset = Vec3::new(ROCKET_RANGE_M, 0.0, 0.0);
+                    let target = Vec3::from_array(placement.position_m)
+                        - Vec3::new(PLACEMENT_OFFSET_M, 0.0, 0.0);
+                    placement.position_m = (target + offset).to_array();
+                    placement.yaw = yaw_toward(-offset);
+                    placement.distance_m = f64::from(ROCKET_RANGE_M);
+                    placement.name = format!("rocket shot at {}", placement.name);
+                    pending.0 = Some(placement);
+                }
+            } else if at == 4 {
+                queue.0.push(KeyOp::Press(KeyCode::KeyX));
+            } else if at == 12 {
                 queue.0.push(KeyOp::Release(KeyCode::KeyX));
             } else if at == ROCKET_SHOT_OFFSET {
                 due.push("rocket".to_owned());
-            } else if at == ROCKET_WAIT_FRAMES {
+            } else if at >= ROCKET_WAIT_FRAMES
+                && (data.burst_shot_frame.is_some_and(|shot| frame > shot)
+                    || at >= ROCKET_BURST_WAIT_FRAMES)
+            {
                 data.phase = Phase::Help;
                 data.phase_start = frame + 1;
             }
@@ -4808,7 +4868,7 @@ fn write_artifacts(
          \"guns\":{{\"effects\":{effects},\"max_live_rounds\":{live},\"rounds_drawn\":{drawn},\
          \"rounds_examined\":{examined},\
          \"flash_frames\":{flash_frames},\"flashes_undrawn\":{flashes_undrawn}}},\"rocket\":{{\"launched\":{launched},\
-         \"max_rockets\":{max_rockets},\"refusals\":[{refusals}]}},\
+         \"max_rockets\":{max_rockets},\"puffs_spawned\":{puffs_spawned},\"max_live_puffs\":{max_live_puffs},\"refusals\":[{refusals}]}},\
          \"audio\":{{\"radio_seen\":{radio_seen},\"engine_seen\":{engine_seen},\
          \"engine_bindings\":{bindings},\"active_loops\":{loops},\
          \"radio_started\":{radio_started},\"voice_trace\":{voice_trace},\
@@ -4859,6 +4919,8 @@ fn write_artifacts(
         flashes_undrawn = report.measurements.guns.flashes_undrawn,
         launched = report.measurements.rocket.launched,
         max_rockets = report.measurements.rocket.max_rockets,
+        puffs_spawned = report.measurements.rocket.puffs_spawned,
+        max_live_puffs = report.measurements.rocket.max_live_puffs,
         refusals = report
             .measurements
             .rocket

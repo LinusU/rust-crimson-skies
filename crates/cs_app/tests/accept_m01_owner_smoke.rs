@@ -109,6 +109,8 @@ fn healthy() -> SmokeMeasurements {
         rocket: RocketMetrics {
             launched: true,
             max_rockets: 1,
+            puffs_spawned: 5,
+            max_live_puffs: 5,
             refusals: vec![],
         },
         audio: AudioMetrics {
@@ -316,6 +318,8 @@ fn accept_m01_owner_smoke_the_judge_fails_everything_the_owner_could_not_see() {
         rocket: RocketMetrics {
             launched: false,
             max_rockets: 0,
+            puffs_spawned: 0,
+            max_live_puffs: 0,
             refusals: vec!["no declared-hostile damage target is live".to_owned()],
         },
         audio: AudioMetrics {
