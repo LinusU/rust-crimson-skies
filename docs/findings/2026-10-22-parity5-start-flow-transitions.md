@@ -211,9 +211,9 @@ at the engine level**; the owner frame cannot show them.
   engine-side, unmeasured here).
 * **Change Plane / Change Ammo** (`FC_B_CHANGEPLANE[W]` → layout script
   `PlaneSelection`, `FC_B_CHANGEAMMO[W]` → `OrdinanceLayout`): the arm sets
-  `@globals@ZQ` to -1 for the pilot's pair and -2 for the wingman's pair, and
-  the layout script starts. The first pair (`OP`, `AQ`) is deactivated when
-  `E 2018` returns < 3.
+  `@globals@ZQ` to -1 for the pilot's Change Plane / Change Ammo (`OP`, `PP`)
+  and -2 for the wingman's (`AQ`, `BQ`), and the layout script starts. Both
+  Change Plane buttons (`OP`, `AQ`) are deactivated when `E 2018` returns < 3.
 * **Esc**: none. **Quit**: none.
 
 ### Flight → Esc pause (engine-native; `escape.zrd`)
