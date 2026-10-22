@@ -11,7 +11,7 @@
 //! reads that emitter from the retail archive ([`measure_burst_puffs`]),
 //! decodes its textures from the flown world's own texture archive, and draws
 //! one burst of puffs where an ordnance item of the mission's session
-//! detonates ([`OrdnanceBurst`], published by `drive_mission_ordnance`).
+//! detonates ([`PuffBurst`], published by `drive_mission_ordnance`).
 //!
 //! # What is read, what is applied, what is not
 //!
@@ -30,7 +30,7 @@
 //!
 //! The source events are the mission's own ordnance detonations and
 //! guidance-loss blasts. The flak shooters of the sites are #1741's: when they
-//! publish an [`OrdnanceBurst`] this module draws it unchanged.
+//! publish an [`PuffBurst`] this module draws it unchanged.
 
 use std::fmt;
 use std::path::Path;
@@ -198,7 +198,7 @@ pub fn measure_burst_puffs(
 
 /// One ordnance burst: the tick it happened on and where.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct OrdnanceBurst {
+pub struct PuffBurst {
     /// The committed tick the burst was resolved on.
     pub at: Tick,
     /// The world position of the burst.
@@ -207,7 +207,7 @@ pub struct OrdnanceBurst {
 
 /// Bursts published by the ordnance step and not yet drawn.
 #[derive(Resource, Clone, Debug, Default)]
-pub struct PendingOrdnanceBursts(pub Vec<OrdnanceBurst>);
+pub struct PendingOrdnanceBursts(pub Vec<PuffBurst>);
 
 /// How many puffs the module has spawned and how many bursts it could not
 /// draw (no definition installed), for the smoke check and the tests.
@@ -273,7 +273,7 @@ impl Splitmix {
 #[must_use]
 pub fn plan_burst(
     definition: &BurstPuffDefinition,
-    burst: OrdnanceBurst,
+    burst: PuffBurst,
     tick_hz: f32,
 ) -> Vec<(BurstPuff, usize)> {
     let seed = burst.at.0

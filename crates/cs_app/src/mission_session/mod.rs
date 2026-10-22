@@ -153,8 +153,8 @@ pub use briefing_screen::{
 };
 pub use burst_puffs::{
     BURST_PUFF_MOTION_CLAIM, BurstPuff, BurstPuffDefinition, BurstPuffError, BurstPuffReport,
-    BurstPuffSource, BurstPuffSourceResource, MissionBurstPuffPlugin, OrdnanceBurst,
-    PendingOrdnanceBursts, measure_burst_puffs, plan_burst, puff_pose, read_burst_puff_definition,
+    BurstPuffSource, BurstPuffSourceResource, MissionBurstPuffPlugin, PendingOrdnanceBursts,
+    PuffBurst, measure_burst_puffs, plan_burst, puff_pose, read_burst_puff_definition,
 };
 pub use cockpit_camera::{
     COCKPIT_EYE_NODE_NAME, MissionCockpitEye, drive_cockpit_camera, find_cockpit_eye,

@@ -10,7 +10,7 @@ Date: 2026-10-21. Task: #1806. Builds on
 `thickblksmoke01..03` textures from the c3 texture archive, at stage time (M01
 only, `MissionStage::burst_puffs`). Each ordnance detonation or guidance-loss
 blast of the mission session (`drive_mission_ordnance`) publishes an
-`OrdnanceBurst`; the plugin spawns `NUMBER` (5) camera-facing puffs there.
+`PuffBurst`; the plugin spawns `NUMBER` (5) camera-facing puffs there.
 Applied as stored: count, `SIZE_RANGE` 4-7, `LIFETIME_RANGE` 4-5 s, per-axis
 `MIN/MAX_RANDOM_VELOCITY` (+-65), one of the three textures per puff.
 
@@ -29,7 +29,7 @@ flash and the screen flash of `flak_effect`.
 ## Source events
 
 Only the player's rocket detonations exist in M01 today. The flak shooters are
-#1741's: when they publish an `OrdnanceBurst` the puffs draw unchanged.
+#1741's: when they publish an `PuffBurst` the puffs draw unchanged.
 
 ## Not shown in the owner-command smoke
 

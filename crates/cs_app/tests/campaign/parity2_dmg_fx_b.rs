@@ -12,7 +12,7 @@ use bevy::prelude::{App, Vec3};
 
 use cs_app::mission_session::{
     BurstPuff, BurstPuffDefinition, BurstPuffReport, BurstPuffSource, BurstPuffSourceResource,
-    MissionCockpitActions, OrdnanceBurst, PendingOrdnanceBursts, measure_burst_puffs, plan_burst,
+    MissionCockpitActions, PendingOrdnanceBursts, PuffBurst, measure_burst_puffs, plan_burst,
     puff_pose, read_burst_puff_definition, teardown,
 };
 use cs_app::physics::PhysicsTickLedger;
@@ -57,7 +57,7 @@ fn fire_rocket(app: &mut App) {
 #[test]
 fn accept_parity2_dmg_fx_b_a_burst_plans_the_stored_number_inside_the_stored_ranges() {
     let definition = authored_definition();
-    let burst = OrdnanceBurst {
+    let burst = PuffBurst {
         at: Tick(10),
         position: Vec3::new(100.0, 50.0, -20.0),
     };
@@ -128,7 +128,7 @@ fn accept_parity2_dmg_fx_b_a_burst_without_a_definition_draws_nothing_and_says_s
     app.world_mut()
         .resource_mut::<PendingOrdnanceBursts>()
         .0
-        .push(OrdnanceBurst {
+        .push(PuffBurst {
             at: Tick(1),
             position: Vec3::ZERO,
         });

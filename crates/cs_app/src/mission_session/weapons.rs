@@ -69,7 +69,7 @@ use cs_types::input::{Action, FlightCommand};
 use cs_types::net::SessionId;
 use cs_types::space::{Radians, WorldPosition};
 
-use super::burst_puffs::{OrdnanceBurst, PendingOrdnanceBursts};
+use super::burst_puffs::{PendingOrdnanceBursts, PuffBurst};
 use super::weapon_counts::{OriginalGunRecord, OriginalWeaponCounts};
 use crate::damage::{DamageActorBinding, PendingDamageEvents};
 use crate::input::platform::PlatformInput;
@@ -1423,7 +1423,7 @@ pub fn drive_mission_ordnance(world: &mut World) {
     // The burst puffs' source events (PARITY2-DMG-FX-B, #1806): every item
     // that detonated, at the position the runtime recorded for it.
     {
-        let mut bursts: Vec<OrdnanceBurst> = tick
+        let mut bursts: Vec<PuffBurst> = tick
             .detonations
             .iter()
             .filter_map(|detonation| {
@@ -1435,7 +1435,7 @@ pub fn drive_mission_ordnance(world: &mut World) {
             .chain(tick.guidance_blasts.iter().map(|blast| blast.position))
             .map(|position| {
                 let [x, y, z] = position.to_array();
-                OrdnanceBurst {
+                PuffBurst {
                     at: tick.at,
                     position: bevy::prelude::Vec3::new(x as f32, y as f32, z as f32),
                 }
