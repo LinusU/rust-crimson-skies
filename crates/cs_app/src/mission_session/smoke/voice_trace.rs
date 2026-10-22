@@ -19,7 +19,7 @@ use crate::audio::device::DeviceSampleLibrary;
 use crate::audio::engine::EngineVoices;
 use crate::audio::loops::AudioSession;
 use crate::audio::measured_voice::{
-    EngineGroupLaw, LaunchVoices, MeasuredVoice, VoiceListenerPose, measured_mix,
+    EngineGroupLaw, LaunchVoices, MeasuredVoice, VoiceListenerPose, listener_pose, measured_mix,
 };
 use crate::audio::mixer::AudioSpatial;
 
@@ -223,6 +223,14 @@ pub fn sample_second(
 }
 
 /// Samples the trace once per mission second, from the second frame on.
+///
+/// The measured rows' listener is read *here* from the player body's own
+/// transform — not taken from [`VoiceListenerPose`]: this system runs in
+/// `Last`, after transform propagation, while `follow_listener` refreshes
+/// the resource in `Update`. Sampling the body beside the emitters keeps
+/// the pose and the emitter transforms on one generation — the player's
+/// own loop stays coincident instead of showing its one-frame displacement
+/// as a phantom pan — so the rows report the mix `mix_session` computed.
 #[allow(clippy::needless_pass_by_value)]
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(super) fn smoke_voice_trace(
@@ -237,6 +245,10 @@ pub(super) fn smoke_voice_trace(
         Option<&avian3d::prelude::LinearVelocity>,
         Has<MeasuredVoice>,
     )>,
+    player: Query<
+        (&GlobalTransform, Option<&avian3d::prelude::LinearVelocity>),
+        With<super::super::compose::MissionPlayerBody>,
+    >,
     law: Option<Res<EngineGroupLaw>>,
     pose: Option<Res<VoiceListenerPose>>,
     launch_voices: Option<Res<LaunchVoices>>,
@@ -251,6 +263,11 @@ pub(super) fn smoke_voice_trace(
     if data.voice_trace.last().map(|s| s.second) == Some(second) {
         return;
     }
+    let listener = player
+        .iter()
+        .next()
+        .map(|(transform, velocity)| listener_pose(transform, velocity))
+        .or_else(|| pose.as_deref().copied());
     let row = sample_second(
         second,
         session,
@@ -259,7 +276,7 @@ pub(super) fn smoke_voice_trace(
         library.as_deref(),
         &emitters,
         law.as_deref(),
-        pose.as_deref(),
+        listener.as_ref(),
         launch_voices.as_deref(),
     );
     data.voice_trace.push(row);

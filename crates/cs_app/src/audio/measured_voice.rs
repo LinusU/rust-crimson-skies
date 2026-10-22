@@ -24,9 +24,11 @@
 //! `.02` unknowns, so the group `VOLUME` and the unit-right-axis assumption
 //! are the only base terms applied.
 
+use avian3d::prelude::LinearVelocity;
 use bevy::ecs::component::Component;
 use bevy::ecs::resource::Resource;
 use bevy::ecs::world::World;
+use bevy::transform::components::GlobalTransform;
 use cs_sim::audio_events::{AudioBus, DeviceVoiceId, SpatialPolicy, VoiceStart};
 use cs_types::content::ContentId;
 
@@ -138,6 +140,26 @@ pub struct VoiceListenerPose {
     /// The listener's velocity for the Doppler term — the player body's
     /// `LinearVelocity` (zero while the cinematic holds it).
     pub velocity: [f64; 3],
+}
+
+/// The [`VoiceListenerPose`] of the body the listener rides on: the body's
+/// own position and `LinearVelocity`, and the designed `+X` right axis.
+///
+/// Every caller that needs the pose builds it from the transform
+/// generation *it* reads: `follow_listener` refreshes the resource in
+/// `Update` beside the mix, while the smoke's voice trace samples in
+/// `Last` — after propagation — and must read the body again there or the
+/// player's own emitter shows a one-frame displacement as a phantom pan.
+#[must_use]
+pub fn listener_pose(
+    transform: &GlobalTransform,
+    velocity: Option<&LinearVelocity>,
+) -> VoiceListenerPose {
+    VoiceListenerPose {
+        position: transform.translation().as_dvec3().to_array(),
+        right: [1.0, 0.0, 0.0],
+        velocity: velocity.map_or([0.0; 3], |v| v.0.as_dvec3().to_array()),
+    }
 }
 
 /// One emitter's measured mix for one frame.

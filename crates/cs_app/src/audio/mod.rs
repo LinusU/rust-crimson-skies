@@ -98,7 +98,8 @@ pub use lower::{
 pub use measured_voice::{
     AUDIBLE_RANGE_M, EngineGroupLaw, HeldSceneVoice, LaunchVoicePlan, LaunchVoices, MeasuredVoice,
     PAN_SCALE, SPEED_OF_SOUND, SceneCue, VoiceListenerPose, bearing_pan, distance_gain,
-    doppler_factor, drive_launch_voices, measured_mix, projected_position, projection_policy,
+    doppler_factor, drive_launch_voices, listener_pose, measured_mix, projected_position,
+    projection_policy,
 };
 pub use mixer::{
     AudioMixReport, AudioMixing, AudioOutput, AudioSpatial, device_lost, device_restored,

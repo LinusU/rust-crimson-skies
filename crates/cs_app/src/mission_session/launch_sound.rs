@@ -26,7 +26,9 @@ use bevy::ecs::system::RunSystemOnce;
 use bevy::prelude::{GlobalTransform, Query, ResMut, Resource, With, World};
 use cs_sim::audio_events::{AudioDevice, Listener, SpatialPolicy};
 
-use crate::audio::measured_voice::{EngineGroupLaw, LaunchVoicePlan, SceneCue, VoiceListenerPose};
+use crate::audio::measured_voice::{
+    EngineGroupLaw, LaunchVoicePlan, SceneCue, VoiceListenerPose, listener_pose,
+};
 use crate::audio::mixer::mix_session;
 use crate::audio::{
     AudioBackendLog, AudioPlugin, AudioSession, AudioSpatial, CapabilityDeclaration,
@@ -594,15 +596,11 @@ fn follow_listener(
     >,
 ) {
     if let Some((transform, velocity)) = body.iter().next() {
-        let position = transform.translation().as_dvec3().to_array();
-        if let Ok(listener) = Listener::try_new(position, [1.0, 0.0, 0.0]) {
+        let next = listener_pose(transform, velocity);
+        if let Ok(listener) = Listener::try_new(next.position, next.right) {
             spatial.at(listener);
         }
-        *pose = VoiceListenerPose {
-            position,
-            right: [1.0, 0.0, 0.0],
-            velocity: velocity.map_or([0.0; 3], |v| v.0.as_dvec3().to_array()),
-        };
+        *pose = next;
     }
 }
 
