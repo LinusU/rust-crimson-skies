@@ -17,10 +17,14 @@
 //!   hit on the player's swept hull box resolves through the session's one
 //!   [`SessionDamageResolver`](crate::weapons::SessionDamageResolver).
 //! * **Rocket turrets** (`aagun**`/`maingun*` name `wep_27`) fly a
-//!   [`FlakRound`] from the retail record. Its burst is recorded; applying the
-//!   splash to the player is *not* modelled (the falloff and the
+//!   [`FlakRound`] from the retail record. The shot's `snd_enemyflak` cue
+//!   plays at the muzzle and the burst is published on
+//!   [`PendingFlakBursts`] — the `flak_effect` consumer of FLAK-C3 draws the
+//!   flash, the smoke ball and the close-range framebuffer flicker — while
+//!   `snd_missile_flak` plays at the burst point (FLAK-C4). Applying the
+//!   burst's splash to the player is *not* modelled (the falloff and the
 //!   `entity+0x678` factor are unmeasured), and no M01 program wakes such a
-//!   turret.
+//!   turret — the owner-command smoke's flak phase test-wakes one (FLAK-C5).
 //!
 //! The line of sight is a physics ray against the static world
 //! ([`SightAnswer`]); the muzzle's own enclosing static colliders and the
@@ -44,7 +48,9 @@ use cs_types::content::{ContentId, ContentKind};
 use cs_types::net::SessionId;
 use cs_types::space::WorldPosition;
 
+use super::flak_burst_fx::PendingFlakBursts;
 use super::flak_round::{FlakRecord, FlakRound, FlakStep, OrdnanceBurst};
+use super::flak_sound::{FlakSoundSequences, play_flak_burst, play_flak_shot};
 use super::gun_sound::{READER_ARCHIVE, WEAPONS_MEMBER};
 use super::host::MissionHost;
 use super::launch_sound::reader_member;
@@ -55,6 +61,7 @@ use super::weapon_counts::{
 };
 use super::weapons::{MISSION_FACTION_HOSTILE, MissionWeapons, selected_gun_loadout};
 use super::{MissionPlayerBody, MissionStage};
+use crate::audio::{AudioSession, AudioSpatial};
 use crate::mission_turret_update::{
     MountPose, SightAnswer, TargetCandidate, TargetKind, TurretConfig, TurretFireIntent,
     TurretFrame, TurretSystem,
@@ -203,8 +210,15 @@ pub struct TurretFireReport {
     pub cannon_orders: u64,
     /// Rocket rounds fired.
     pub rockets_fired: u64,
-    /// Bursts of rocket rounds, with no splash applied.
+    /// Bursts of rocket rounds, with no splash applied — each one is also
+    /// published on [`PendingFlakBursts`] for the `flak_effect` presentation.
     pub rocket_bursts: Vec<OrdnanceBurst>,
+    /// `snd_enemyflak` shot cues the audio router accepted (FLAK-C4/C5).
+    pub flak_shot_cues: u64,
+    /// `snd_missile_flak` burst cues the audio router accepted (FLAK-C4/C5).
+    pub flak_burst_cues: u64,
+    /// Why a flak cue could not play, verbatim — one entry per attempt.
+    pub flak_sound_refusals: Vec<String>,
     /// Ticks the player's line of sight was asked and the ray answered.
     pub sight_queries: u64,
     /// Ticks a ray found the player's line blocked.
@@ -510,7 +524,9 @@ fn spawn_cannon(
 /// One fixed tick of the turrets: the update law over the live bytes the
 /// wake ledger holds, the player as the only target, and the physics ray as
 /// the line of sight. Cannon intents aim their body and queue a fire order;
-/// rocket intents fire a [`FlakRound`]; rocket rounds fly.
+/// rocket intents fire a [`FlakRound`]; rocket rounds fly, and a round's
+/// burst is published on `pending_flak` for the `flak_effect` presentation
+/// while the flak cues play through `audio` (FLAK-C4/C5).
 #[allow(clippy::too_many_arguments)]
 pub fn step_mission_turrets(
     fire: Option<ResMut<MissionTurretFire>>,
@@ -524,6 +540,10 @@ pub fn step_mission_turrets(
     mut mounts: Query<(&ChildOf, &mut NodeVisualTransform)>,
     damage: Option<Res<SessionDamageResolver>>,
     victim: Option<Res<PlayerVictim>>,
+    mut pending_flak: Option<ResMut<PendingFlakBursts>>,
+    mut audio: Option<ResMut<AudioSession>>,
+    audio_spatial: Option<Res<AudioSpatial>>,
+    mut flak_sequences: Option<ResMut<FlakSoundSequences>>,
 ) {
     let (Some(mut fire), Some(host), Some(stage), Some(ledger)) = (fire, host, stage, ledger)
     else {
@@ -621,6 +641,7 @@ pub fn step_mission_turrets(
     fire.report.sight_queries += queries;
     fire.report.sight_blocked += blocked;
 
+    let shots_before = fire.report.shots.len();
     for intent in intents {
         take_shot(
             &mut fire,
@@ -629,6 +650,44 @@ pub fn step_mission_turrets(
             &mut mounts,
             player_m,
         );
+    }
+    // The `snd_enemyflak` cue of each rocket shot the intents produced, at
+    // the muzzle (FLAK-C4): a measured sound with no audio session or
+    // sequence counter to play it through is a named refusal, never silent.
+    // The shots are copied out first: the loop body writes the report's cue
+    // counters and refusals.
+    let new_shots: Vec<TurretShot> = fire.report.shots[shots_before..].to_vec();
+    let spatial = audio_spatial.as_deref();
+    for shot in new_shots {
+        if shot.weapon != super::flak_round::FLAK_RECORD {
+            continue;
+        }
+        let Some(sound) = stage.flak_sound.as_ref() else {
+            break;
+        };
+        match (audio.as_deref_mut(), flak_sequences.as_deref_mut()) {
+            (Some(audio), Some(sequences)) => {
+                match play_flak_shot(
+                    sound,
+                    Tick(shot.tick),
+                    shot.muzzle_m,
+                    audio,
+                    sequences,
+                    spatial,
+                ) {
+                    Ok(_) => fire.report.flak_shot_cues += 1,
+                    Err(error) => fire.report.flak_sound_refusals.push(format!(
+                        "{}: the flak shot cue was refused: {error}",
+                        shot.name
+                    )),
+                }
+            }
+            _ => fire.report.flak_sound_refusals.push(format!(
+                "{}: the flak shot cue has a measured sound but no audio session or \
+                 sequence counter is installed",
+                shot.name
+            )),
+        }
     }
 
     // Rocket rounds fly.
@@ -643,7 +702,32 @@ pub fn step_mission_turrets(
             }
             FlakStep::SilentEnd => false,
         });
-    fire.report.rocket_bursts.extend(bursts);
+    for burst in bursts {
+        // The `flak_effect` presentation (FLAK-C3) draws what the runtime
+        // publishes; the `snd_missile_flak` cue sounds at the burst point.
+        if let Some(pending) = pending_flak.as_deref_mut() {
+            pending.0.push(burst);
+        }
+        if let Some(sound) = stage.flak_sound.as_ref() {
+            match (audio.as_deref_mut(), flak_sequences.as_deref_mut()) {
+                (Some(audio), Some(sequences)) => {
+                    match play_flak_burst(sound, &burst, audio, sequences, spatial) {
+                        Ok(_) => fire.report.flak_burst_cues += 1,
+                        Err(error) => fire
+                            .report
+                            .flak_sound_refusals
+                            .push(format!("the flak burst cue was refused: {error}")),
+                    }
+                }
+                _ => fire.report.flak_sound_refusals.push(
+                    "the flak burst cue has a measured sound but no audio session or \
+                     sequence counter is installed"
+                        .to_owned(),
+                ),
+            }
+        }
+        fire.report.rocket_bursts.push(burst);
+    }
 }
 
 fn take_shot(

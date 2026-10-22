@@ -1720,6 +1720,9 @@ impl Plugin for MissionWeaponsPlugin {
                     .after(avian3d::prelude::PhysicsSystems::StepSimulation)
                     .before(crate::weapons::drive_weapon_session),
             )
+            // The flak cues' one-shot producer counter (FLAK-C4/C5): the
+            // turret step plays `snd_enemyflak`/`snd_missile_flak` through it.
+            .init_resource::<super::flak_sound::FlakSoundSequences>()
             .add_systems(
                 FixedPostUpdate,
                 (
