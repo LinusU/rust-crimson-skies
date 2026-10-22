@@ -478,7 +478,15 @@ of the declared-hostile cargo zeppelin so an objective wakes, checks the
 **objective widget** against the read model and its own UI region, **holds
 `Space` for a second** and counts the rounds the weapon session accepted and
 the meshes they carry, then **taps `X`** (the original's rocket key) beside the hostile and looks
-for the rocket.
+for the rocket. After the rocket it runs the **flak phase** (#1887
+`FLAK-C5-SMOKE`): it test-wakes one sleeping world turret whose `WEAPON` the
+runtime reads as `wep_27` — M01's `aagun99`, a flak gun no M01 program ever
+wakes — through the wake ledger's own matcher (the wake and the player's
+stand-off placement are labelled test ones in `report.json`), waits for the
+production turret law to acquire the player, fire the retail flak rocket and
+burst it, and photographs the drawn `flak_effect` while the flash, the smoke
+ball and the close-range flicker are alive (`frame_*_flak_burst.png`) and
+again after they expire (`frame_*_flak_burst_tail.png`).
 
 It writes real window framebuffer PNGs (`frame_*.png`) and `report.json`, and
 exits **non-zero when any check fails**:
@@ -501,6 +509,11 @@ exits **non-zero when any check fails**:
 | `weapon_rounds_not_drawn` | a live round entity carries a mesh — a tracer the original's capture does not show (#1742) |
 | `weapon_muzzle_flash_drawn` | no muzzle-effect record was live during the held second, or one carried no drawn flash (a designed stand-in, #1595) |
 | `weapon_rocket_launches` | `X` beside a declared-hostile actor launched no rocket |
+| `flak_turret_woken` | the phase found no world turret whose `WEAPON` reads as `wep_27`, or the test wake it issued through the wake ledger was never recorded |
+| `flak_turret_fired` | the woken turret fired no `wep_27` round during the phase (its runtime refusals are named in the report) |
+| `flak_burst_drawn` | no burst of the turret's rounds reached the `flak_effect` presentation, or one drew without the flash light and smoke ball (#1885) |
+| `flak_flicker_drawn` | no burst inside the stored 100 m gate started the close-range framebuffer flicker |
+| `flak_sounds_queued` | `snd_enemyflak` never played at a muzzle or `snd_missile_flak` never played at a burst (#1886); recorded not applicable when the stage measured no flak sounds |
 | `audio_radio_queued` | no radio line ever reached the queue or the mixer |
 | `audio_engine_queued` | the engine loop was never bound and running |
 | `smoke_shots_delivered` | a requested screenshot never arrived |
