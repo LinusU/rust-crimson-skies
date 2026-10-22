@@ -288,6 +288,9 @@ pub struct MissionStage {
     /// #1806): the `large_black_smokeball` emitter and its decoded textures.
     /// `Some` only for M01's retail stage; `None` draws no burst puffs.
     pub burst_puffs: Option<super::burst_puffs::BurstPuffSource>,
+    /// The measured `flak_effect` a flak round's burst presents (FLAK-C3,
+    /// #1885). `Some` only for M01's retail stage.
+    pub flak_effect: Option<super::flak_burst_fx::FlakEffectDefinition>,
     /// The measured length of the launch cinematic that holds the player's
     /// control after Fly Mission (#1663). `None` for a stage with no launch
     /// cinematic: every synthetic stage and every mission but M01.
@@ -398,6 +401,8 @@ pub enum MissionCompositionError {
     WeaponCounts(WeaponCountsError),
     /// The burst puff emitter or its textures could not be measured.
     BurstPuffs(super::burst_puffs::BurstPuffError),
+    /// The flak effect could not be measured.
+    FlakEffect(super::flak_burst_fx::FlakEffectError),
     /// The mission's sound-group table or a member it names could not be read
     /// for the radio dialogue ([`super::radio`]).
     Radio(super::radio::RadioError),
@@ -447,6 +452,7 @@ impl fmt::Display for MissionCompositionError {
             Self::FlakSound(error) => write!(f, "{error}"),
             Self::WeaponCounts(error) => write!(f, "{error}"),
             Self::BurstPuffs(error) => write!(f, "{error}"),
+            Self::FlakEffect(error) => write!(f, "{error}"),
             Self::Audio(error) if error.code == crate::audio::CODE_CAPABILITY_ABSENT => write!(
                 f,
                 "add audio to CS_CAPABILITIES, e.g. CS_CAPABILITIES=retail,gpu,audio\n  \
@@ -612,6 +618,14 @@ pub fn stage_for(
         Some(
             super::burst_puffs::measure_burst_puffs(install_root, "c3")
                 .map_err(MissionCompositionError::BurstPuffs)?,
+        )
+    } else {
+        None
+    };
+    let flak_effect = if plan.mission_dir.eq_ignore_ascii_case("zbd/c3/m01") {
+        Some(
+            super::flak_burst_fx::read_flak_effect(install_root)
+                .map_err(MissionCompositionError::FlakEffect)?,
         )
     } else {
         None
@@ -801,6 +815,7 @@ pub fn stage_for(
         flak_sound,
         weapon_counts,
         burst_puffs,
+        flak_effect,
         launch_cinematic,
         label: MISSION_COMPOSITION_LABEL.to_owned(),
         cache_root: Path::new(DEFAULT_MISSION_CACHE_DIR).to_path_buf(),
@@ -1311,6 +1326,12 @@ fn add_composition(
         ));
     }
     app.add_plugins(crate::mission_session::MissionBurstPuffPlugin);
+    // FLAK-C3 (#1885): the flash, smoke ball and close-range flicker of a
+    // flak round's burst.
+    if let Some(effect) = &stage.flak_effect {
+        app.insert_resource(crate::mission_session::FlakEffectResource(effect.clone()));
+    }
+    app.add_plugins(crate::mission_session::FlakBurstFxPlugin);
 
     // 2b. The player airframe's drawn visual, when the stage carries its
     //     source: the measured intact selection built through the same

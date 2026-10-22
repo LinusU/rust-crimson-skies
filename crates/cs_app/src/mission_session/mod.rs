@@ -106,6 +106,7 @@ mod debrief;
 mod evidence;
 mod examine;
 mod external_view;
+mod flak_burst_fx;
 mod flak_round;
 mod flak_sound;
 mod flight_check;
@@ -194,6 +195,12 @@ pub use examine::{TargetFlagChange, TargetFlagLedger};
 pub use external_view::{
     BACK_DISTANCE_M, DOWN_ASTERN_M, DOWN_HEIGHT_M, EXTERNAL_DISTANCE_M, HeldPoint,
     drive_external_camera, external_eye, install_external_view, step_zoom,
+};
+pub use flak_burst_fx::{
+    FLAK_EFFECT_ANIMATION, FLAK_EFFECT_MEMBER, FLAK_FLICKER_SEQUENCE, FLAK_FX_DESIGN_CLAIM,
+    FlakBurstFxPlugin, FlakBurstFxReport, FlakEffectDefinition, FlakEffectError,
+    FlakEffectResource, FlakFlash, FlakFlicker, FlashStep, FlickerStep, PendingFlakBursts,
+    definition_from, flash_range_at, flicker_color_at, flickers, read_flak_effect,
 };
 pub use flak_round::{
     BURST_IMPACT_ROW, BurstCause, FLAK_RECORD, FlakFireRefusal, FlakRecord, FlakRecordError,

@@ -240,7 +240,7 @@ pub struct BurstPuff {
 
 /// The installed definition and the engine textures built from it.
 #[derive(Resource, Clone, Debug)]
-struct BurstPuffArt {
+pub(super) struct BurstPuffArt {
     definition: BurstPuffDefinition,
     textures: Vec<Handle<Image>>,
     mesh: Handle<Mesh>,
@@ -341,7 +341,7 @@ fn build_art(
     });
 }
 
-fn spawn_burst_puffs(
+pub(super) fn spawn_burst_puffs(
     mut commands: Commands,
     mut pending: ResMut<PendingOrdnanceBursts>,
     mut report: ResMut<BurstPuffReport>,
