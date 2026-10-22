@@ -170,4 +170,12 @@ fn accept_flak_b_retail_objective6_wakes_every_truck_and_each_one_shoots_the_pla
         "the rounds landed on the player: {start} -> {end}"
     );
     assert!(report.rocket_bursts.is_empty() && report.rockets_fired == 0);
+    // The island guns' own data keeps them asleep, not just out of range.
+    let ledger = app.world().resource::<MissionHost>().wake_turrets().clone();
+    for name in ["aagun01", "aagun02", "aagun30", "aagun31", "aagun32"] {
+        assert!(
+            !ledger.entry(name).expect("an entry").live,
+            "{name} stays asleep in M01"
+        );
+    }
 }
