@@ -158,6 +158,7 @@ mod accept_flak_a_turret_update_law;
 mod accept_flak_b1_turret_wake;
 mod accept_flak_b2_turret_update;
 mod accept_flak_c1_trace;
+mod accept_flak_c4_sounds;
 mod accept_m01_b_obj_1_completion_effects;
 mod accept_m01_b_obj_2_objective_semantics;
 mod accept_m01_b_obj_3_stage_conditions;

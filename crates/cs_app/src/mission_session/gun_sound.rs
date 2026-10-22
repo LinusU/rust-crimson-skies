@@ -44,7 +44,7 @@ pub(super) const READER_ARCHIVE: &str = "ZBD/zrdr.zbd";
 /// The member holding the ballistics records.
 pub(super) const WEAPONS_MEMBER: &str = "weapons.zrd";
 /// The member mapping sound groups to archive members.
-const SOUNDS_MEMBER: &str = "sounds.zrd";
+pub(super) const SOUNDS_MEMBER: &str = "sounds.zrd";
 /// The weapon-record field naming the gun's sound group.
 const SOUND_FIELD: &str = "LOOPED_SOUND_NAME";
 
@@ -95,7 +95,7 @@ pub(super) fn value_of<'a>(node: &'a ZrdValue, key: &str) -> Option<&'a ZrdValue
 }
 
 /// The first text in `node`, looking through single-element lists.
-fn first_text(node: &ZrdValue) -> Option<&str> {
+pub(super) fn first_text(node: &ZrdValue) -> Option<&str> {
     match node {
         ZrdValue::Text(text) => Some(text),
         ZrdValue::List(children) => children.first().and_then(first_text),
@@ -104,7 +104,7 @@ fn first_text(node: &ZrdValue) -> Option<&str> {
 }
 
 /// The list whose first element is the text `name`.
-fn record_headed_by<'a>(node: &'a ZrdValue, name: &str) -> Option<&'a [ZrdValue]> {
+pub(super) fn record_headed_by<'a>(node: &'a ZrdValue, name: &str) -> Option<&'a [ZrdValue]> {
     let children = node.as_list()?;
     if children.first().and_then(ZrdValue::as_text) == Some(name) {
         return Some(children);
@@ -179,9 +179,9 @@ pub fn measure_weapon_sound(
 pub const MEASURED_GUN_MEMBER: &str = "50cal_gun.wav";
 
 /// The claim ids the delivered record's provenance cites (#1628).
-const CLAIM_MIX: &str = "m01-window-fire-gun-loadout.gun-loop-mix";
+pub(super) const CLAIM_MIX: &str = "m01-window-fire-gun-loadout.gun-loop-mix";
 const CLAIM_LOOPED: &str = "m01-window-fire-gun-loadout.looped-mode";
-const CLAIM_DECODED: &str = "m01-window-fire-gun-loadout.decoded-shape";
+pub(super) const CLAIM_DECODED: &str = "m01-window-fire-gun-loadout.decoded-shape";
 
 /// The content id [`measure_gun_sound`] delivers: [`MEASURED_GUN_MEMBER`]
 /// inside the launch sound's container, derived through the same helper the
@@ -369,7 +369,11 @@ impl GunSound {
 /// [`reader_member`] only reads *reader* archives and refuses a sound
 /// container by family; the delivered gun member lives in a sound archive,
 /// so its membership proof goes through [`read_sound_archive`] instead.
-fn sound_member(install_root: &Path, container: &str, member: &str) -> Result<Vec<u8>, String> {
+pub(super) fn sound_member(
+    install_root: &Path,
+    container: &str,
+    member: &str,
+) -> Result<Vec<u8>, String> {
     let bytes = std::fs::read(install_root.join(container))
         .map_err(|error| format!("cannot read {container}: {error}"))?;
     let spelling = cs_types::install::RelativePath::new(container).map_err(|e| e.to_string())?;

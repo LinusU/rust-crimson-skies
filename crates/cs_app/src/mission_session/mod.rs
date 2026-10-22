@@ -106,6 +106,7 @@ mod evidence;
 mod examine;
 mod external_view;
 mod flak_round;
+mod flak_sound;
 mod flight_check;
 mod gun_sound;
 mod host;
@@ -191,6 +192,11 @@ pub use external_view::{
 pub use flak_round::{
     BURST_IMPACT_ROW, BurstCause, FLAK_RECORD, FlakFireRefusal, FlakRecord, FlakRecordError,
     FlakRound, FlakStep, OrdnanceBurst, RangeEnd, range_end,
+};
+pub use flak_sound::{
+    FLAK_SOUND_PRODUCER, FlakSound, FlakSoundCue, FlakSoundError, FlakSoundKind,
+    FlakSoundSequences, FlakVoice, measure_flak_sound, pick_index, play_flak_burst, play_flak_shot,
+    play_flak_sound, voices_from_documents,
 };
 pub use flight_check::{
     BriefingStage, ButtonRole, CHANGE_AMMO_UNAVAILABLE, CHANGE_PLANE_UNAVAILABLE,
