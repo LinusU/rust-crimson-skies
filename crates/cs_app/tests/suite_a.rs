@@ -299,6 +299,7 @@ mod evidence_report_m01_radio_sample;
 mod evidence_report_m01_wingman_formation;
 mod evidence_report_parity2_m01_hud_art;
 mod evidence_report_parity2_m01_target_indicators;
+mod evidence_report_parity4_lens_flare;
 mod evidence_report_parity4_lens_flare_c;
 mod evidence_report_parity_m01_island_shading;
 mod evidence_report_parity_m01_launch_cinematic;
