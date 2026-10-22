@@ -27,9 +27,21 @@ the two stacked discs (`prop1` at z 3.865 turning −220 and `prop1b` at z 4.350
 turning +60, `2026-10-21-parity2-dmg-fx-a-effect-definitions.md`), which
 `prop1b` not being drawn leaves untested.
 
-## Unmet
+## Compared with the owner frame (smoke on a display-attached host)
 
-The owner-command smoke run on this host (Apple M5 Max, Metal, unattended
-session) produced all-black framebuffers (10 of 37 checks failed, including
-`world_terrain_textured`), so no frame of the disc could be seen or cited, and
-no original frame with the blur is in `private/ref-drydock/m01/` to compare.
+`cs --cs-path <retail> --mission M01 --smoke-seconds 60 --capture-dir
+private/evidence/PARITY2-DMG-FX-C` passed (59 checks, failures: none); the
+frames `frame_03298_cam_f10_back.png` and `frame_03148_cam_chase.png` show the
+disc from behind (not committed). Against the owner's `orig70.png` (+70 s):
+
+* Ours: a translucent grey-blue disc of the player's `prop1` (radius 1.666 m),
+  the static blades hidden, the ring only a faint tint. It is not opaque.
+* Original: the disc reads darker and more opaque, with pinkish ring arcs and
+  ghost copies offset from one another. Those copies could be `prop1b` drawn
+  at its own z and turn, or the frame's own blur; the frame does not tell.
+
+The ring colour (red annulus near 0.6 radius) is present in the texture and
+drawn. The darker opacity and the offset copies are **not** reproduced and are
+not explained by any measured number, so no alpha or ring count was added.
+Affected content: the player's prop in every M01 frame. Resolving work: a
+measurement of which prop states the original draws at which engine state.
