@@ -371,9 +371,9 @@ fn accept_parity_m01_player_view_c2_retail_player_carries_the_measured_flare_qua
         assert_eq!(bound_actor, &player, "the quad binds the player actor");
         assert_eq!(
             *state,
-            PartState::Unknown,
-            "the player actor has no damage graph yet, so the scheduled pass \
-             published Unknown — never a guessed Intact"
+            PartState::Intact,
+            "the player's damage graph (#1699) registers the four regions, so \
+             the scheduled pass publishes Intact at spawn"
         );
         assert_eq!(
             *visibility,

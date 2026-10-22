@@ -33,6 +33,7 @@ use cs_types::content::{ContentId, ContentKind, Known, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
 use cs_types::net::ActorId;
 
+use crate::airframe_damage::AirframeDamageRegion;
 use crate::damage::DamageActorBinding;
 use crate::scene::{NodeVisualTransform, SceneGeneration};
 use crate::weapons::{PartSweptBox, SessionDamageResolver};
@@ -50,6 +51,18 @@ pub const M01_PLAYER_DAMAGE_UNKNOWN_CLAIM: &str = "m01-player-victim.damage-tabl
 /// capture: a hundred of the designed gun's twelve-unit rounds.
 pub const DESIGNED_PLAYER_INTEGRITY: f64 = 1_200.0;
 
+/// The claim the designed region integrity is filed under.
+pub const M01_PLAYER_REGION_CLAIM: &str = "m01-player-victim.designed-region-integrity";
+
+/// The claim the unmeasured per-part integrity and threshold table is filed
+/// under.
+pub const M01_PLAYER_REGION_UNKNOWN_CLAIM: &str = "m01-player-victim.region-integrity-unmeasured";
+
+/// The designed integrity of each airframe region node: a quarter of the
+/// hull pool. Project design, not a measurement; the `destroyable_parts`
+/// records of `player_pfighter` carry no recovered integrity.
+pub const DESIGNED_REGION_INTEGRITY: f64 = DESIGNED_PLAYER_INTEGRITY / 4.0;
+
 /// The designed half extents of the player's hull box, in metres.
 pub const DESIGNED_PLAYER_HALF_EXTENTS_M: [f64; 3] = [6.0, 1.0, 5.0];
 
@@ -63,6 +76,9 @@ pub struct PlayerVictim {
     pub integrity: Known<f64>,
     /// The original's per-airframe damage table, an explicit unknown.
     pub unmeasured: Resolved<f64>,
+    /// The original's per-part integrity and level thresholds, an explicit
+    /// unknown standing beside the designed region pools.
+    pub region_unmeasured: Resolved<f64>,
 }
 
 /// Component: the player's hull box, whose [`NodeVisualTransform`] follows the
@@ -97,7 +113,9 @@ pub fn attach_player_victim(
         Resolved::Known(integrity.clone()),
     )
     .with_lethal(true);
-    let graph = DamageGraph::try_new(subject.clone(), vec![node])
+    let mut nodes = vec![node];
+    nodes.extend(region_nodes());
+    let graph = DamageGraph::try_new(subject.clone(), nodes)
         .map_err(|error| format!("the player's damage graph refuses: {error}"))?;
     let policy = DamagePolicy {
         attribution: AttributionRule::FirstLethalHit,
@@ -140,11 +158,45 @@ pub fn attach_player_victim(
          and box stand in for them",
     )
     .map_err(|error| error.to_string())?;
+    let region_unmeasured = Resolved::<f64>::unknown(
+        ClaimId::new(M01_PLAYER_REGION_UNKNOWN_CLAIM).expect("a claim id this module declares"),
+        "the `destroyable_parts` of `player_pfighter` (nose, tail, leftwing, rightwing; each \
+         `critical`) carry no recovered integrity, damage threshold or lethality: the designed \
+         region pools are non-lethal and stand in until a measurement replaces them",
+    )
+    .map_err(|error| error.to_string())?;
     Ok(PlayerVictim {
         actor,
         integrity,
         unmeasured,
+        region_unmeasured,
     })
+}
+
+/// The four airframe region nodes of the player, named as measured in
+/// `ZBD/planes.zbd`. `taildamage` is an engine node because the vehicle
+/// record names the tail part `engine`; the pools are designed.
+fn region_nodes() -> Vec<DamageNode> {
+    let claim = ClaimId::new(M01_PLAYER_REGION_CLAIM).expect("a claim id this module declares");
+    AirframeDamageRegion::ALL
+        .into_iter()
+        .map(|region| {
+            let key = DamageNodeKey::new(region.node_name())
+                .expect("a measured region node name is a valid key");
+            let kind = match region {
+                AirframeDamageRegion::Tail => DamageNodeKind::Engine,
+                _ => DamageNodeKind::InternalStructure,
+            };
+            DamageNode::new(
+                key,
+                kind,
+                Resolved::Known(Known::new(
+                    DESIGNED_REGION_INTEGRITY,
+                    Provenance::designed(claim.clone()),
+                )),
+            )
+        })
+        .collect()
 }
 
 /// Composes the hull box's [`NodeVisualTransform`] from the live body, so a

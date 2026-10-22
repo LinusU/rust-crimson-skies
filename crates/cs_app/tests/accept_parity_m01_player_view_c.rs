@@ -278,8 +278,8 @@ fn accept_parity_m01_player_view_c_release_rehides_the_quads() {
 /// **M01's composed player carries the slice's whole wiring**: the two
 /// measured fire quads, bound by the scheduled driver to the measured
 /// `leftwingdamage`/`rightwingdamage` nodes of the player actor, each with a
-/// C1 record. The player registers no damage graph yet (resolving task
-/// #1699), so the records read `Unknown` and both quads stay `Hidden` —
+/// C1 record. The player's damage graph (#1699) registers the regions, so
+/// the records read `Intact` and both quads stay `Hidden` —
 /// exactly the intact presentation `orig25.png` shows.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
@@ -355,9 +355,8 @@ fn accept_parity_m01_player_view_c_retail_m01_player_carries_the_driven_plume() 
         );
         assert_eq!(
             *record_state,
-            PartState::Unknown,
-            "no player damage graph yet (#1699): the record is honest Unknown, \
-             never a guessed Intact"
+            PartState::Intact,
+            "the player's damage graph (#1699) registers the region: Intact at spawn"
         );
         assert_eq!(
             *quad_visibility,

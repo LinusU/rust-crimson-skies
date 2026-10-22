@@ -32,8 +32,8 @@ use cs_sim::damage::PartState;
 /// resolves the eye at the capture-fitted offset from the one player body;
 /// the `prop1` blur disc hangs off that body and is drawn while its engine
 /// runs; both measured `wing_flare` quads bind the player actor's own wing
-/// damage nodes and, with no damage graph published yet (#1699), read the
-/// honest `Unknown` that keeps them `Hidden` — the intact presentation
+/// damage nodes and, with the player's damage graph registered (#1699), read
+/// the `Intact` that keeps them `Hidden` — the intact presentation
 /// `orig25.png` shows.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
@@ -141,8 +141,8 @@ fn accept_parity_m01_player_view_retail_m01_composes_the_integrated_player_view(
         assert_eq!(*node, region_key(region), "the {region:?} quad's own node");
         assert_eq!(
             *state,
-            PartState::Unknown,
-            "no player damage graph yet (#1699): an honest Unknown, never a guessed Intact"
+            PartState::Intact,
+            "the player's damage graph (#1699) registers the region: Intact at spawn"
         );
         assert_eq!(
             *visibility,

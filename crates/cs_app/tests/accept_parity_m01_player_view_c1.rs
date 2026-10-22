@@ -210,10 +210,11 @@ fn accept_parity_m01_player_view_c1_region_names_are_the_measured_four() {
     );
 }
 
-/// Measures what M01's player has in the session resolver.
+/// Measures what M01's player has in the session resolver: since #1699 the
+/// four region nodes are registered, so a bound region publishes `Intact`.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_parity_m01_player_view_c1_retail_m01_player_graph_has_no_region_nodes() {
+fn accept_parity_m01_player_view_c1_retail_m01_player_graph_has_region_nodes() {
     use cs_app::mission_launch::plan_mission_launch;
     use cs_app::mission_session::{MissionWeapons, build_headless, stage_for};
     use cs_app::weapons::SessionDamageResolver;
@@ -232,26 +233,19 @@ fn accept_parity_m01_player_view_c1_retail_m01_player_graph_has_no_region_nodes(
         .map(|graph| {
             graph
                 .nodes()
-                .filter(|n| AirframeDamageRegion::from_node_name(n.key().as_str()).is_some())
-                .map(|n| n.key().clone())
+                .filter_map(|n| AirframeDamageRegion::from_node_name(n.key().as_str()))
                 .collect()
         })
         .unwrap_or_default();
-    // Measured: the player's actor has no region node, so no mapping exists
-    // and the hook publishes nothing for it until a spawn path declares one.
-    assert!(
-        regions.is_empty(),
-        "the player unexpectedly has region nodes: {regions:?}"
-    );
-    // And the pass over the real resolver leaves a bound region Unknown.
+    assert_eq!(regions.len(), 4, "all four measured regions: {regions:?}");
     let mut world = World::new();
     let region = bind_for(&mut world, player);
     let outcome = apply_region_damage_state(&mut world, resolver, player);
     assert_eq!(
         record(&world, region).map(|r| r.state),
-        Some(PartState::Unknown)
+        Some(PartState::Intact)
     );
-    assert_eq!(outcome.refusals.len(), 1);
+    assert!(outcome.refusals.is_empty(), "{:?}", outcome.refusals);
 }
 
 fn bind_for(world: &mut World, player: ActorId) -> Entity {

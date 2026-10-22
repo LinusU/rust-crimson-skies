@@ -232,6 +232,7 @@ mod accept_parity6_m01_audio_02_voice_laws;
 mod accept_parity6_m01_audio_03_launch_voices;
 mod accept_parity6_m01_audio_07_burst_triggers;
 mod accept_parity_m01_lc_letterbox;
+mod accept_parity_m01_player_damage_graph;
 mod accept_parity_m01_player_view;
 mod accept_parity_m01_player_view_c;
 mod accept_parity_m01_player_view_c1;

@@ -306,8 +306,9 @@ pub use pause_map::{
     player_fix, read_pause_map, world_to_chart_pixel,
 };
 pub use player_victim::{
-    DESIGNED_PLAYER_HALF_EXTENTS_M, DESIGNED_PLAYER_INTEGRITY, M01_PLAYER_DAMAGE_CLAIM,
-    M01_PLAYER_DAMAGE_UNKNOWN_CLAIM, PlayerHullBox, PlayerVictim, attach_player_victim,
+    DESIGNED_PLAYER_HALF_EXTENTS_M, DESIGNED_PLAYER_INTEGRITY, DESIGNED_REGION_INTEGRITY,
+    M01_PLAYER_DAMAGE_CLAIM, M01_PLAYER_DAMAGE_UNKNOWN_CLAIM, M01_PLAYER_REGION_CLAIM,
+    M01_PLAYER_REGION_UNKNOWN_CLAIM, PlayerHullBox, PlayerVictim, attach_player_victim,
     compose_player_hull_box,
 };
 pub use player_visual::{
