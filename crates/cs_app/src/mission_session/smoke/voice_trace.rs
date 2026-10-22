@@ -164,7 +164,7 @@ pub(super) fn smoke_voice_trace(
     mut data: ResMut<super::SmokeData>,
     audio: Option<Res<AudioSession>>,
     spatial: Option<Res<AudioSpatial>>,
-    engine_voices: Res<EngineVoices>,
+    engine_voices: Option<Res<EngineVoices>>,
     library: Option<Res<DeviceSampleLibrary>>,
     emitters: Query<(&AudioEmitterBinding, Option<&GlobalTransform>)>,
 ) {
@@ -182,7 +182,7 @@ pub(super) fn smoke_voice_trace(
         second,
         session,
         spatial.as_deref(),
-        &engine_voices,
+        engine_voices.as_deref().unwrap_or(&EngineVoices::default()),
         library.as_deref(),
         &emitters,
     );
