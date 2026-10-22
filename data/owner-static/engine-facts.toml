@@ -3486,3 +3486,329 @@ name = "camera.mode5_look_at_vehicle"
 va = 0x0042ce3a
 bytes = "8d45e481c604020000890d24"
 fact = "each frame the camera is placed at the anchor and aimed at V+0x204 (add esi,0x204), the vehicle position, via 0x4d2710/0x4d2490: the anchor does not move after init, only the aim follows the vehicle"
+
+# The M01 audio timeline (task #1862, PARITY6-M01-AUDIO-TIMELINE.02, finding
+# docs/findings/2026-10-22-m01-audio-timeline-voice-laws.md): the zSound
+# volume, pan and rate laws and the aircraft engine/prop voice laws read from
+# the decrypted image. `bytes` are the cited image bytes at `va`; `fact` states
+# what the bytes establish. Nothing here is verified_original.
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "zsnd.pitch_setter.law"
+va = 0x005975ee
+bytes = "d944240cd80d08946000e863f80500b9a00f00002bc881f9a0d70000"
+fact = "0x5975a0(handle, x) with the backend flag [0x639cb4]==0 computes rate = clamp(4000 - ftol(x * -51200.0f), 4000, 55200) Hz and calls SetFrequency (0x597624): x in 0..1 spans 4,000..55,200 Hz; the clamp immediates are 0xfa0 and 0xd7a0"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "zsnd.pitch_setter.constant"
+va = 0x00609408
+bytes = "000048c7"
+fact = "-51200.0f, the scale of the rate setter 0x5975a0 (so the span is 51,200 Hz above the 4,000 Hz floor)"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "zsnd.freq_fraction.law"
+va = 0x005976e8
+bytes = "d94124d86128d84c240cd84128e866f705003da0d700007607b8a0d70000eb0c3da00f0000"
+fact = "0x597650(handle, f) clamps f to 0..1 then sets rate = clamp(ftol((desc[+0x24] - desc[+0x28]) * f + desc[+0x28]), 4000, 55200) Hz through SetFrequency (0x597718); desc is the sound descriptor at handle+0x2c"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "zsnd.freq_multiplier.law"
+va = 0x005977d4
+bytes = "d94128e884f6050089442404c744240800000000df6c2404d84c2414e86bf605003da0d70000"
+fact = "0x597740(handle, m) sets rate = clamp(ftol(ftol(desc[+0x2c]) * m), 4000, 55200) Hz through SetFrequency (0x597813): a multiplier on the descriptor float at +0x2c (the sound base rate; its origin is not decoded)"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "zsnd.pan_setter.law"
+va = 0x00597892
+bytes = "d944240cd80d0c946000e8bff50500b960f0ffff2bc881f9a00f0000"
+fact = "0x597840(handle, x) sets pan = clamp(-4000 - ftol(x * -8000.0f), -4000, +4000) in 1/100 dB through SetPan (0x5978c8): x 0..1 spans -4000..+4000, 0.5 is centre"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "zsnd.pan_setter.constant"
+va = 0x0060940c
+bytes = "0000fac5"
+fact = "-8000.0f, the scale of the pan setter 0x597840"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "zsnd.volume_setter.law"
+va = 0x00597973
+bytes = "8b0d8c9e6300d9442410d80951d91c24e898bcffff6a006a006a005689471c"
+fact = "0x5978f0(handle, g) stores handle[+0x24] = 0x593620(g * [[0x639e8c]]) (a 1/100 dB value; [0x639e8c] points at a master gain float) and re-applies the voice through 0x597af0(handle, 0, 0, 0)"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "zsnd.gain_to_hundredth_db"
+va = 0x00593623
+bytes = "d94508d81ddc326000dfe0f6c401750433c05dc3d94508d81d04946000dfe0f6c4417407b8f0d8ffff5dc3d905b0a06300d94508d9f1d95d08d94508d825e0326000e8f63706005d"
+fact = "0x593620(g): g >= 1.0 -> 0; g <= 1/1024 (0x609404) -> -10000; else ftol(1000.0f (0x63a0b0) * log2(g) - 0.5f (0x6032e0)): 1000 hundredths of a dB (10 dB) per octave of gain, floor -10000"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "zsnd.gain_floor_constant"
+va = 0x00609404
+bytes = "0000803a"
+fact = "0.0009765625f = 1/1024, the gain at or below which 0x593620 returns -10000"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "zsnd.gain_slope_constant"
+va = 0x0063a0b0
+bytes = "00007a44"
+fact = "1000.0f, hundredths of a dB per octave of gain in 0x593620"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "zsnd3d.entry"
+va = 0x00597c20
+bytes = "558bec83ec2c53568b7508833e00"
+fact = "0x597c20(handle, pos*, vel*, doppler) is the DirectSound-backend 3D update, reached from 0x597af0 (call at 0x597b30) when [0x639cb4]==0; the DS3D hardware branch is 0x597b40; it issues SetVolume (0x597fd7), SetPan (0x597fcd) and, only when doppler != 0, GetFrequency (0x597f57) then SetFrequency (0x597f9d)"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "zsnd3d.base_volume"
+va = 0x00597d01
+bytes = "8b0d8c9e6300d94318d80951d84d08d91c24e808b9ffff83c4048bf8"
+fact = "start volume v = 0x593620(desc[+0x18] * [[0x639e8c]] * g) where g is 1.0f or the per-sound factor from the callback [0x639ec0](desc[+0x10]); or -10000 when the mute predicate 0x5946f0 is set"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "zsnd3d.mute_predicate"
+va = 0x005946f0
+bytes = "a1789c630085c0750333c0c38b0d809e630033c085c90f9fc0c3"
+fact = "0x5946f0 returns 1 when [0x639c78] != 0 and [0x639e80] > 0, else 0: a global mute that forces SetVolume(-10000) in the 3D paths"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "zsnd3d.pan_law"
+va = 0x00597dd4
+bytes = "ba349e6300d901d80ad94104d84a04d94108d84a08d9c9dec2dec1d95df0d945f0d84dfcd80d28946000e85df00500"
+fact = "pan = ftol(dot(source - listener, A) * (1/dist) * 1600.0f (0x609428)) in 1/100 dB, where A is the first vector of the 12-float listener block at 0x639e34 (copied by 0x597aa8) and dist = sqrt(|source - listener|^2) by the bit trick (bits >> 1) + 0x1fc00000; SetPan(pan) is at 0x597fcd; a source exactly at the listener gives pan 0"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "zsnd3d.pan_constant"
+va = 0x00609428
+bytes = "0000c844"
+fact = "1600.0f: the pan reached by a source on the +A axis, 16 dB"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "zsnd3d.rolloff"
+va = 0x00597e6d
+bytes = "d94120d8611cdc0d18946000d9450cd8611cd8d1dfe0f6c4417526d9c9d8f1d9edd9c9d9f1dc0d10946000da4510e8c0ef0500"
+fact = "for desc[+0x1c]=dmin <= d < desc[+0x20]=dmax: x = (dmax - dmin) * 0.125 (f64 0x609418), y = d - dmin; when y > x the volume gets + ftol(1442.7 (f64 0x609410) * ln(x / y)) i.e. -1000 per doubling of y/x (10 dB/octave); d < dmin or y <= x leave the volume unchanged"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "zsnd3d.mute_beyond"
+va = 0x00597e09
+bytes = "d94120d80de8826000d85d0cdfe0f6c4410f859a000000"
+fact = "when dmax * 1.1f (0x6082e8) <= d the voice is set to -10000 (SetVolume at 0x597ec5) and the update returns"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "zsnd3d.fade_zone"
+va = 0x00597e2d
+bytes = "db4510d9450cd86120d80d24946000d94120d80da8346000def9d80520946000dee9e80cf00500"
+fact = "for dmax <= d < 1.1 * dmax the volume is v - (3000.0f + 7000.0f * (d - dmax) / (dmax * 0.1f)) (constants 0x609420, 0x609424, 0x6034a8): -30 dB at dmax falling to -100 dB at 1.1 dmax"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "zsnd3d.doppler_factor"
+va = 0x00597f38
+bytes = "d945f08b46088b10d80d94a563008d4d0c51d84dfc50d82ddc326000d95d10ff5220"
+fact = "with doppler != 0: factor = 1.0f - dot(vsrc - vlis, src - lis) * (1/dist) * (1/345) where vlis is the listener velocity at 0x639e64 (written by 0x597abf) and 0x63a594 = 1/345 f32: the speed of sound is 345 m/s; positive (receding) lowers the rate"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "zsnd3d.doppler_apply"
+va = 0x00597f73
+bytes = "e8e8ee05003da086010089450c7607b8a0860100eb0a83f8647308b864000000"
+fact = "new rate = ftol(current_rate * factor + 0.5f) clamped to 100..100000 Hz (immediates 0x64 and 0x186a0), where current_rate is GetFrequency (0x597f57) of the voice, i.e. the rate the caller last set with 0x597740; SetFrequency at 0x597f9d"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "zsnd3d.volume_cap"
+va = 0x00597fa0
+bytes = "8b46243bf87e1c8bf8"
+fact = "the 3D volume is capped at handle[+0x24], the value stored by the volume setter 0x5978f0: final SetVolume = min(distance law volume, voice gain in 1/100 dB)"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "zsnd3d.non3d_path"
+va = 0x00597fab
+bytes = "e840c7ffff85c0bff0d8ffff75038b7e24c745f800000000"
+fact = "without a position (or with 3D disabled, [0x639e30] == 0) the voice gets pan 0 and volume -10000 when muted else handle[+0x24]"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "engine.voice_slots"
+va = 0x004b1495
+bytes = "94be800000006a008d8604020000505152e8d5260e0083c4108944be70"
+fact = "an aircraft keeps up to four voice handles at [+0x70 + 4*i] and sound groups (0x596120(name)) at [+0x80 + 4*i]; 0x4b1470(i, gain) plays group i as a 3D voice at the aircraft position (+0x204) through 0x593b80 and stores the handle; 0x4b14e0(i) stops it through 0x593dc0; slot 0 is the engine loop, slot 1 the prop loop"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "engine.audible_gate"
+va = 0x004b19c5
+bytes = "e8b66e0800d81d0c35600083c408c645ff01dfe0f6c4017504c645ff00"
+fact = "for every aircraft other than the player ([0x71c298]) the engine and prop voices exist only while the squared distance (0x538880, no sqrt) to the player aircraft is below 4000000.0f (0x60350c), i.e. 2000 m; otherwise 0x4b1b47 stops slots 0 and 1; the player is always audible here"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "engine.audible_limit"
+va = 0x0060350c
+bytes = "0024744a"
+fact = "4000000.0f, the squared distance (2000 m) beyond which a non-player aircraft loses its engine and prop voices"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "engine.reroll_timer"
+va = 0x004b1a1e
+bytes = "d94710d81dd0356000dfe0f6c4410f85f0000000ff155003a2008945ecdb45ecd80d98356000dcc0d805d0356000d85f10dfe0f6c4010f84c8000000"
+fact = "with the engine-mode flags [aircraft+0x2dc] nonzero, the aircraft audible and slot 0 empty or finished (0x593c90), a timer at [table+0x10] grows by the frame time [0x9ad744] (0x4b1b22); once above 3.0f (0x6035d0) it fires on the frame where it exceeds 3.0f + 2 * rand()/32768 (a fresh draw per frame, so between 3 and 5 s): the timer is zeroed and a random table entry is started in slot 0 through 0x4b1540 and 0x4b1470(0, 1.0f) at 0x4b1ac7..0x4b1ad5"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "engine.pitch_scale_roll"
+va = 0x004b1af2
+bytes = "ff155003a2008945ecdb45ecd80d98356000d945f0d865f4dec9d845f8d95e68"
+fact = "[aircraft+0x68] = a + (b - a) * rand() * (1/32768) with a, b the floats at +0x14 and +0x18 of the 28-byte sound-table entry chosen at random from the airframe record table at record+0x78; 1.0f when the record has none (0x4b1b33): a fixed pitch scale per aircraft"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "engine.throttle_fraction"
+va = 0x004b1bac
+bytes = "d98624010000d81d60c37100dfe0"
+fact = "A (volume fraction) = clamp01((throttle - T0) / (T1 - T0)) with throttle = [aircraft+0x124], T0 = [0x71c360], T1 = [0x71c368]; B (pitch fraction) is the same with [0x71c370] and [0x71c378] (0x4b1c01..0x4b1c4f)"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "engine.flag_override"
+va = 0x004b1c51
+bytes = "8a8647090000d955f484c07412ddd8c745f88fc2953fd9059c8b6000d955f4"
+fact = "when the byte [aircraft+0x947] is set (role not decoded) A = 0x3f95c28f (1.17f) and B = 1.25f (0x608b9c) replace the throttle fractions"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "engine.sideslip_terms"
+va = 0x004b1d19
+bytes = "d945ecd80d988b6000d9869c010000d80da8366000dee9d845f8d95df8"
+fact = "while [aircraft+0x67c] is 0 or 4: with (vx, vy) the first two components of the velocity at +0x16c rotated by the matrix at +0x180, A += 0.26f (0x608b98) * sqrt(vx^2 + vy^2) - 0.15f (0x6036a8) * [aircraft+0x19c] and B += 0.25f (0x6034f4) * sqrt(vx^2 + vy^2) - 0.15f * [aircraft+0x19c]; A and B are then clamped to 0..1.5f (0x603460)"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "engine.rate_and_gain"
+va = 0x004b1dca
+bytes = "d9056cc371008b5670d82564c3710051d84df8d80564c37100d95df8d9057cc37100d82574c37100d8c9d80574c37100d84e68d91c2452ddd8"
+fact = "engine voice (slot 0): V = vmin + (vmax - vmin) * A with vmin = [0x71c364], vmax = [0x71c36c]; P = pmin + (pmax - pmin) * B with pmin = [0x71c374], pmax = [0x71c37c]; the rate multiplier is P * [aircraft+0x68] passed to 0x597740 at 0x4b1e03, so rate = round(base) * P * pitch scale"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "engine.gain_chain"
+va = 0x004b1e08
+bytes = "e843e8f8ffd80d24ae62008b4e70d84df8d95df88b45f85051e8ca5a0e00"
+fact = "engine voice gain passed to 0x5978f0 at 0x4b1e21 is [[0x64f6dc]] (0x440650) * [0x62ae24] * V; [0x62ae24] is a global float written at 0x4b1f9e..0x4b2009 (a fade; its meaning is not decoded) and [0x64f6dc] points at a master float"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "prop.fractions"
+va = 0x004b1e4e
+bytes = "d98634090000d8b668060000d955ecd81d80c37100dfe0f6c441740b8b1584c371008955f0eb48"
+fact = "prop voice (slot 1): r = [aircraft+0x934] / [aircraft+0x668] (speed over the airframe maximum); volume Vp is [0x71c384] for r <= [0x71c380], [0x71c38c] for r >= [0x71c388], linear in between; rate multiplier Pp is [0x71c394] for r <= [0x71c390], [0x71c39c] for r >= [0x71c398], linear in between; Pp goes to 0x597740 at 0x4b1f25 without the per-aircraft scale and the gain is [[0x64f6dc]] * [0x62ae24] * Vp via 0x5978f0 at 0x4b1f43"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "config.player_zrd"
+va = 0x00627554
+bytes = "706c617965722e7a7264"
+fact = "the tuning file name read by 0x473900 (call 0x579c60 at 0x4739ff); its sections are rattle (0x62756c), engine_sound (0x6275d8), prop_sound (0x627638) and the float voiceover_volume_limiter (0x62768c)"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "config.engine_sound_defaults"
+va = 0x00473c44
+bytes = "c70560c37100cdcccc3dc70564c37100cdcccc3dc70568c371006666663fc7056cc371006666663fc70570c37100cdcccc3dc70574c37100cdcccc3dc70578c371006666663fc7057cc371006666663f"
+fact = "engine_sound defaults 0.1, 0.1, 0.9, 0.9, 0.1, 0.1, 0.9, 0.9 into 0x71c360..0x71c37c; each key read overwrites an (x, y) float pair: min_throttle_volume -> (0x71c360, 0x71c364), max_throttle_volume -> (0x71c368, 0x71c36c), min_throttle_pitch -> (0x71c370, 0x71c374), max_throttle_pitch -> (0x71c378, 0x71c37c)"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "config.prop_sound_defaults"
+va = 0x00473d52
+bytes = "c70580c37100cdcccc3dc70584c37100cdcccc3dc70588c371006666663fc7058cc371006666663fc70590c37100cdcccc3dc70594c37100cdcccc3dc70598c371006666663fc7059cc371006666663f"
+fact = "prop_sound defaults 0.1, 0.1, 0.9, 0.9, 0.1, 0.1, 0.9, 0.9 into 0x71c380..0x71c39c: min_speed_volume -> (0x71c380, 0x71c384), max_speed_volume -> (0x71c388, 0x71c38c), min_speed_pitch -> (0x71c390, 0x71c394), max_speed_pitch -> (0x71c398, 0x71c39c)"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "config.rattle_defaults"
+va = 0x00473a77
+bytes = "c7053cc371000000803ec70540c371000000803fc70544c371000000803fc70548c3710000000040"
+fact = "rattle defaults volume_range (0.25, 1.0) into 0x71c33c/0x71c340 and speed_range (1.0, 2.0) into 0x71c344/0x71c348; the group named by rattle.sound is looked up by 0x596120 into 0x71c334 (0x473b73); no code reads 0x71c33c, 0x71c340 or 0x71c348 again, only 0x71c334, 0x71c338 and 0x71c344 are read (0x48d21a..0x48d256)"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "rattle.consumer"
+va = 0x0048d21a
+bytes = "a134c3710085c00f8480000000d98634090000d90544c37100d88e68060000d9c9ded9dfe0f6c4017563"
+fact = "in the aircraft routine 0x48cf40..0x48d2b7 (which also starts the crash group [0x71c3a8] at 0x48d018 and a camera effect 0x42c070(4, x) at 0x48d1bc): when the aircraft is the camera target ([[0x64ef78]+0x150]) and speed [+0x934] >= [0x71c344] * [+0x668] the rattle group [0x71c334] is started through 0x45e470 (0x48d272); how often the routine runs is not decoded, so rattle as a sustained loop is not established"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "soundnode.update"
+va = 0x004e0d60
+bytes = "56578b7c240c85ff750c6814cc62006855020000eb1b"
+fact = "per-frame update of a SOUND_NODE object (called at 0x4ce638 and 0x4db76f): only while the node active bit [node+0x24] & 4 is set; a 3D node (state flag 4, set when the node has a parent in the scene graph, 0x4cf730(node) != node, or state flag 2 is set) starts its voice once with 0x593b80(group, 1.0f, &node position) at 0x4e0df2 and then only updates the position through 0x597af0 (0x4e0e12); a non-3D node plays 0x593590(group, 1.0f) at 0x4e0e3b; there is no distance test in the node: silence at range comes from the 3D law (zsnd3d.mute_beyond)"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "sequence.sound_keys"
+va = 0x0063343c
+bytes = "534f554e445f4e4f44450000534f554e445f41444a55535400000000534f554e"
+fact = "the sequence-script keywords SOUND_NODE (0x63343c, handler 0x4f3730), SOUND_ADJUST (0x633448, handler 0x4f0220) and SOUND (0x633458, handler 0x4ef5d0) are dispatched at 0x51d0a0..0x51d1f7; START_TIME (0x62effc), ANIMATION_OFFSET (0x62f0d8) and EVENT_OFFSET (0x62f060) are the time keys of an entry"

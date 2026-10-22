@@ -215,6 +215,7 @@ mod accept_parity3_cockpit_view_03;
 mod accept_parity3_cockpit_view_04;
 mod accept_parity3_cockpit_view_05;
 mod accept_parity6_m01_audio_01_sample_identity;
+mod accept_parity6_m01_audio_02_voice_laws;
 mod accept_parity_m01_lc_letterbox;
 mod accept_parity_m01_player_view;
 mod accept_parity_m01_player_view_c;
