@@ -14,10 +14,13 @@
 //! * [`PauseMapPlugin`] draws the scene while the player's Esc pause holds
 //!   the session (`playtest::meta_controls` is the one Esc path; the fixed
 //!   clock freezes with the session's pause, `playtest::sync_pause`). The
-//!   **Resume** button resumes the session. **Restart**, **Preferences** and
-//!   **Quit** are drawn, rolled over and pressed like Resume but only report
-//!   the press as a [`PauseMapPress`]: their effects are their own tasks and
-//!   nothing here fakes one.
+//!   **Resume** button resumes the session. **Quit** abandons the mission: it
+//!   writes `AppExit::Success` (the composed `cs --mission` window has no
+//!   front-end machine to return to, so leaving ends the run, as F10 does)
+//!   and reports the press. **Restart** and **Preferences** are drawn,
+//!   rolled over and pressed like Resume but only report the press as a
+//!   [`PauseMapPress`]: their effects are their own tasks and nothing here
+//!   fakes one.
 //!
 //! The live parts (PARITY3-PAUSE-MAP-SCREEN.02-B, #1874) come from
 //! [`PauseMapLive`], which [`PauseMapPlugin`] fills from the mission host's
@@ -41,6 +44,7 @@ use std::fmt;
 use std::path::Path;
 
 use avian3d::prelude::{Position, Rotation};
+use bevy::app::AppExit;
 use bevy::asset::RenderAssetUsages;
 use bevy::ecs::schedule::IntoScheduleConfigs;
 use bevy::prelude::{
@@ -859,7 +863,8 @@ fn read_pause_map_live(
 // ------------------------------------------------------- the presenter --
 
 /// A button of the screen was pressed. Resume has already resumed the
-/// session when this is written; the others have no effect yet.
+/// session when this is written and Quit has asked the app to exit; Restart
+/// and Preferences have no effect yet.
 #[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PauseMapPress(pub PauseButtonKind);
 
@@ -1441,6 +1446,7 @@ fn drive_pause_map(
     mouse: Res<ButtonInput<MouseButton>>,
     mut platform: ResMut<PlatformInput>,
     mut presses: MessageWriter<PauseMapPress>,
+    mut exit: MessageWriter<AppExit>,
     mut arts: Query<(&ButtonArt, &mut ImageNode, &Placed)>,
     mut labels: Query<(&ButtonLabel, &mut TextColor)>,
     mut cursors: Query<
@@ -1513,6 +1519,14 @@ fn drive_pause_map(
         if kind == PauseButtonKind::Resume {
             platform.session_mut().resume();
         }
+        if kind == PauseButtonKind::Quit {
+            // `cs --mission` composes no front-end machine, so there is no
+            // main menu to return to: leaving the mission ends the window
+            // like the developer F10 does, and `run_windowed` tears the
+            // composition down on the way out. The player abandoned the
+            // flight, which is not a mission failure, so the exit is clean.
+            exit.write(AppExit::Success);
+        }
         presses.write(PauseMapPress(kind));
     }
 }
@@ -1549,7 +1563,8 @@ pub struct PauseMapPlugin;
 
 impl Plugin for PauseMapPlugin {
     fn build(&self, app: &mut App) {
-        app.init_resource::<PauseMapShown>()
+        app.add_message::<AppExit>()
+            .init_resource::<PauseMapShown>()
             .init_resource::<PauseMapLive>()
             .init_resource::<PauseMapImages>()
             .add_message::<PauseMapPress>()

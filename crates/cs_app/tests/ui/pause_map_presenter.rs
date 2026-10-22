@@ -287,13 +287,12 @@ fn accept_parity3_pause_map_02a_other_buttons_report_a_press_and_change_nothing(
     for (kind, x, y) in [
         (PauseButtonKind::Restart, 127.0, 559.0),
         (PauseButtonKind::Preferences, 367.0, 528.0),
-        (PauseButtonKind::Quit, 347.0, 559.0),
     ] {
         click_at(&mut app, x + 66.0, y + 14.0);
         assert_eq!(app.world().resource::<Presses>().0.last(), Some(&kind));
     }
     run(&mut app, 30);
-    assert_eq!(app.world().resource::<Presses>().0.len(), 3);
+    assert_eq!(app.world().resource::<Presses>().0.len(), 2);
     assert!(
         app.world().resource::<PlaytestState>().paused,
         "still paused"
@@ -303,7 +302,52 @@ fn accept_parity3_pause_map_02a_other_buttons_report_a_press_and_change_nothing(
 
     // A click on the chart presses nothing.
     click_at(&mut app, 400.0, 300.0);
-    assert_eq!(app.world().resource::<Presses>().0.len(), 3);
+    assert_eq!(app.world().resource::<Presses>().0.len(), 2);
+}
+
+fn exits(app: &mut App) -> Vec<bevy::app::AppExit> {
+    let messages = app
+        .world()
+        .resource::<bevy::prelude::Messages<bevy::app::AppExit>>();
+    messages.iter_current_update_messages().cloned().collect()
+}
+
+#[test]
+fn accept_parity3_pause_map_02d_quit_button_abandons_the_mission_with_a_clean_exit() {
+    let mut app = app();
+    tap_escape(&mut app);
+    run(&mut app, 2);
+    // Resume, Restart and Preferences never ask the app to exit.
+    click_at(&mut app, 127.0 + 66.0, 559.0 + 14.0);
+    click_at(&mut app, 367.0 + 66.0, 528.0 + 14.0);
+    assert!(
+        !app.world()
+            .resource::<bevy::prelude::Messages<bevy::app::AppExit>>()
+            .iter_current_update_messages()
+            .any(|_| true)
+    );
+
+    // Quit presses and the same update writes the exit.
+    let window = {
+        let mut query = app.world_mut().query_filtered::<Entity, With<Window>>();
+        query.single(app.world()).expect("one window")
+    };
+    app.world_mut()
+        .get_mut::<Window>(window)
+        .expect("window")
+        .set_cursor_position(Some(Vec2::new(347.0 + 66.0, 559.0 + 14.0)));
+    app.update();
+    app.world_mut().write_message(MouseButtonInput {
+        button: MouseButton::Left,
+        state: ButtonState::Pressed,
+        window,
+    });
+    app.update();
+    assert_eq!(exits(&mut app), [bevy::app::AppExit::Success]);
+    assert_eq!(
+        app.world().resource::<Presses>().0.last(),
+        Some(&PauseButtonKind::Quit)
+    );
 }
 
 fn game_dir() -> PathBuf {
