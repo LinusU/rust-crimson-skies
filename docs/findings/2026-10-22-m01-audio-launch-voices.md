@@ -88,10 +88,10 @@ target/release/cs --cs-path <retail> --mission M01 \
   --smoke-seconds 45 --capture-dir private/evidence/PARITY6-M01-AUDIO-03
 ```
 
-Exit 0, 3,810 frames, 59 checks, all `[pass]` (run on this branch's
-rebased code — impl commit `a1b53b3e4` — after the launch-window trace was
-first captured on the pre-rebase `26aad982e`; the re-run reproduced every
-launch-window row below verbatim). The per-second voice set the trace held
+Exit 0, 3,810 frames, 59 checks, all `[pass]`. The trace was first
+captured on `26aad982e`, reproduced verbatim after the branch's rebases
+(`d6aaa716a`, and again by the reviewer on `0032ad03a`): every launch-window
+row below is what the run holds. The per-second voice set the trace held
 — the task's required evidence — beside the owner's instants (our clock
 starts at Fly Mission; the ~27.8 s offset question is recorded above):
 
