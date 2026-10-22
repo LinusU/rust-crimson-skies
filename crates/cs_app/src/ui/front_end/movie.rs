@@ -32,6 +32,7 @@
 use std::io::Read;
 use std::time::Duration;
 
+use cs_content::catalog::baseline::install_file_key;
 use cs_sim::cinematic_state::MediaFailure;
 use cs_types::content::{ContentId, ContentKind};
 
@@ -44,17 +45,16 @@ use crate::cinematics::playback::{DecodedFrame, FrameSource};
 ///
 /// `file` is the `M` row's file name as written (`CrimFlag.MPG`); the id is
 /// the installation-relative path under `GOSDATA/ASSETS/GRAPHICS/MPG`,
-/// lower-cased the way the id grammar normalizes.
+/// escaped through the catalog's own [`install_file_key`] — the same key
+/// the install-file inventory row carries, so the id is that row's
+/// identity.
 #[must_use]
 pub fn movie_media(file: &str) -> ContentId {
     ContentId::from_source(
         ContentKind::InstallFile,
-        &format!("{MOVIE_DIRECTORY}/{file}"),
+        &install_file_key(&format!("{MOVIE_DIRECTORY}/{file}")),
     )
-    .unwrap_or_else(|_| {
-        ContentId::from_source(ContentKind::InstallFile, "gosdata/assets/graphics/mpg")
-            .expect("the constant movie directory is a valid content key")
-    })
+    .expect("an install_file_key output is inside the id grammar")
 }
 
 /// One decoded-movie source: the video half of the cinematics
