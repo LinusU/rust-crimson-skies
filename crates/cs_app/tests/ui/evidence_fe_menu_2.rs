@@ -273,8 +273,8 @@ fn review_method() -> String {
      front-end-mainmenu.json (the MM_LOGO/BFRAME panes, the `MOVIE` row's fields verbatim, the six \
      MM_B_* buttons' `ResID=0` and stated effects), and the windowed test drove \
      `cs --cs-path $CS_GAME_DIR --front-end --smoke-seconds 14 --capture-dir \
-     private/evidence/FE-MENU-2` on this machine's GPU (Apple M3 Pro, Metal), which wrote 11 real \
-     framebuffer PNGs and report.json: the flag movie opened and delivered 169 decoded frames to \
+     private/evidence/FE-MENU-2` on this machine's GPU (Apple M3 Pro, Metal), which wrote 12 real \
+     framebuffer PNGs and report.json: the flag movie opened and delivered 302 decoded frames to \
      its texture under the panes at the row's 250%x250% (the authored 800x600), the pointer walk \
      visited MainMenu → Campaign → MainMenu → InstantAction → MainMenu → Preferences (left by Esc, \
      its return button's handler guarded) → MainMenu → Credits → MainMenu, the Multiplayer press \
