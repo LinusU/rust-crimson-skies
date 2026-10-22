@@ -68,12 +68,21 @@
 //! scripted capture run. Its prefix is `accept_fe_menu_1_`; the retail and
 //! windowed tests are `#[ignore]`d because CI has no installation and no
 //! GPU.
+//!
+//! Task FE-MENU-2 (#1834, `mod fe_menu_2`) adds the main menu's own
+//! composition: the `M` row's `CrimFlag.MPG` looping under the panes, the
+//! logo and button frame, the six buttons' `ResID` label record and their
+//! presses routed through the F45 machine's start flow. Its prefix is
+//! `accept_fe_menu_2_`; the retail and windowed tests are `#[ignore]`d for
+//! the same reason as FE-MENU-1's.
 
 mod evidence;
 mod evidence_f45_b_1;
 mod evidence_f45_c_5;
 mod evidence_fe_menu_1;
+mod evidence_fe_menu_2;
 mod fe_menu_1;
+mod fe_menu_2;
 mod flight_check_options;
 mod flow;
 /// The import dialog's fixture, read through F64-C's own designed fixture
