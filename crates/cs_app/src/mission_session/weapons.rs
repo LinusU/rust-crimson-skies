@@ -1125,6 +1125,8 @@ pub fn publish_mission_weapon_input(world: &mut World) {
     // publish a second record for the same tick — it rides the mission's own
     // publication.
     crate::mission_ai::append_ai_fire_orders(world, &mut input);
+    // FLAK-B3 (#1882): a woken turret's shots ride the same record.
+    super::turret_fire::append_turret_fire_orders(world, &mut input);
     world
         .get_resource_mut::<WeaponTickInputs>()
         .expect("the installed session initialises the weapon input queue")
@@ -1717,6 +1719,17 @@ impl Plugin for MissionWeaponsPlugin {
                 super::player_victim::compose_player_hull_box
                     .after(avian3d::prelude::PhysicsSystems::StepSimulation)
                     .before(crate::weapons::drive_weapon_session),
+            )
+            .add_systems(
+                FixedPostUpdate,
+                (
+                    super::turret_fire::build_mission_turrets,
+                    super::turret_fire::step_mission_turrets
+                        .run_if(resource_exists::<super::turret_fire::MissionTurretFire>),
+                )
+                    .chain()
+                    .after(avian3d::prelude::PhysicsSystems::StepSimulation)
+                    .before(compose_mission_mount_poses),
             )
             .add_systems(
                 FixedPostUpdate,

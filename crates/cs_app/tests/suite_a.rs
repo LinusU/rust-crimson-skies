@@ -158,6 +158,7 @@ mod accept_f59_b_replay_capture;
 mod accept_flak_a_turret_update_law;
 mod accept_flak_b1_turret_wake;
 mod accept_flak_b2_turret_update;
+mod accept_flak_b3_turret_fire;
 mod accept_flak_c1_trace;
 mod accept_flak_c3_burst_fx;
 mod accept_flak_c4_sounds;

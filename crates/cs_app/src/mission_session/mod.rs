@@ -134,6 +134,7 @@ pub(crate) mod smoke;
 mod spyglass;
 mod targeting_input;
 mod terminal;
+pub mod turret_fire;
 mod view_cycle;
 mod weapon_counts;
 mod weapon_present;

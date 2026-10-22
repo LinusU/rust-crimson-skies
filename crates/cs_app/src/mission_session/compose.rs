@@ -758,6 +758,11 @@ pub fn stage_for(
         &turrets.specs,
         &crate::mission_turrets::zeppelin_part_chains(&host),
     );
+    // The `WEAPON` records those turrets fire (FLAK-B3, #1882).
+    let (weapons, weapon_refusals) =
+        super::turret_fire::read_turret_weapons(install_root, &turrets.specs);
+    host.turrets.weapons = weapons;
+    host.turrets.refusals.extend(weapon_refusals);
 
     Ok(MissionStage {
         target,
@@ -1793,6 +1798,8 @@ pub fn teardown(app: &mut App) {
                 With<super::hud_art::HudArtRoot>,
                 // The drawn scenery root (#1735).
                 With<super::world_draw::WorldSceneryRoot>,
+                // The cannon turrets' weapon bodies (FLAK-B3, #1882).
+                With<super::turret_fire::TurretBody>,
             )>,
         )>();
         query.iter(world).collect()
@@ -1819,6 +1826,8 @@ pub fn teardown(app: &mut App) {
     // decision and its publication must not leave its asks behind for the
     // next composition in the same process to ride along.
     world.remove_resource::<crate::mission_ai::MissionAiFireOrders>();
+    // FLAK-B3 (#1882): the turrets' runtime and their pending asks.
+    world.remove_resource::<super::turret_fire::MissionTurretFire>();
     world.remove_resource::<MissionPlayerStart>();
     world.remove_resource::<MissionPlayerVisual>();
     world.remove_resource::<super::cockpit_camera::MissionCockpitEye>();

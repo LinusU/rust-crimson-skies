@@ -285,6 +285,12 @@ pub struct TurretEntries {
     pub entries: Vec<TurretEntry>,
     /// Every source that could not be read or bound, verbatim.
     pub refusals: Vec<String>,
+    /// The `TURRET` records the entries were bound over, for the fire.
+    pub specs: Vec<TurretSpec>,
+    /// The `WEAPON` records the specs name, read from `weapons.zrd`
+    /// (FLAK-B3, #1882); empty for a stage with no installation.
+    pub weapons:
+        std::collections::BTreeMap<String, crate::mission_session::turret_fire::TurretWeaponRecord>,
 }
 
 impl TurretEntries {
@@ -350,7 +356,12 @@ impl TurretEntries {
                 });
             }
         }
-        Self { entries, refusals }
+        Self {
+            entries,
+            refusals,
+            specs: specs.to_vec(),
+            weapons: std::collections::BTreeMap::new(),
+        }
     }
 
     /// Reads the world container's positions through the production binder and
