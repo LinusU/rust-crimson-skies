@@ -7,7 +7,7 @@
 //! which also reaches every subtask test (`accept_parity4_lens_flare_a_`,
 //! `_b_`, `_c_`). The synthetic tests run in CI and drive the production
 //! `MissionLensFlarePlugin` over a stand-in scene camera and a bound
-//! `node-491` object. The ignored tests need `retail` (M01's real stored
+//! `node-3237` object. The ignored tests need `retail` (M01's real stored
 //! record and `lflare` art, through the production readers) and
 //! `retail,gpu,audio` (the owner's own windowed command). Nothing here is
 //! `verified_original`: the bulb's world placement is a test one, labelled
@@ -209,7 +209,7 @@ fn assert_quads_laid_out(app: &mut App, bulb_world: Vec3) {
 /// The chain the subtasks built: `LensFlareSources::read`'s output (the `sun`
 /// record A recovered), the `lflare` art slots B loads and the
 /// `MissionLensFlarePlugin` draw — `spawn_flare_nodes` makes one quad per
-/// `lflare` texture, `place_flares` projects the bound `node-491` bulb
+/// `lflare` texture, `place_flares` projects the bound `node-3237` bulb
 /// through the scene camera and places each quad at its recovered centre and
 /// half-extent at the stored fade, the sprite routine's 50 percent alpha on
 /// the image node.

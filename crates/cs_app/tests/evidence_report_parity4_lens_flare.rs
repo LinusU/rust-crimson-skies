@@ -224,7 +224,7 @@ fn review_method() -> String {
     "The split's integration step reviewed the whole prefix locally with `retail,gpu,audio` \
      (CS_GAME_DIR, CS_ENGINE_IMAGE): `cargo test --locked -p cs_app -p cs_formats -- \
      accept_parity4_lens_flare_ --include-ignored` ran this task's own draw-path tests (the \
-     MissionLensFlarePlugin over a stand-in scene camera and a bound node-491 object), the \
+     MissionLensFlarePlugin over a stand-in scene camera and a bound node-3237 object), the \
      retail legs through the production readers (the `sun` node's stored flagged light and \
      `lflare1..4` out of C3) and the ignored windowed test, which drove the owner's own command \
      `cs --cs-path $CS_GAME_DIR --mission M01 --smoke-seconds 45 --capture-dir \
