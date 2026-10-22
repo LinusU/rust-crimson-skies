@@ -88,10 +88,12 @@ target/release/cs --cs-path <retail> --mission M01 \
   --smoke-seconds 45 --capture-dir private/evidence/PARITY6-M01-AUDIO-03
 ```
 
-Exit 0, 3,810 frames, 58 checks, all `[pass]` (run on commit 26aad982e,
-plus this findings edit). The per-second voice set the trace held — the
-task's required evidence — beside the owner's instants (our clock starts
-at Fly Mission; the ~27.8 s offset question is recorded above):
+Exit 0, 3,810 frames, 59 checks, all `[pass]` (run on this branch's
+rebased code — impl commit `a1b53b3e4` — after the launch-window trace was
+first captured on the pre-rebase `26aad982e`; the re-run reproduced every
+launch-window row below verbatim). The per-second voice set the trace held
+— the task's required evidence — beside the owner's instants (our clock
+starts at Fly Mission; the ~27.8 s offset question is recorded above):
 
 | Second | Voice set enters/leaves | Owner instant (offset read) |
 | --- | --- | --- |
@@ -110,6 +112,11 @@ the scene voices hand over on the same boundaries the scenes do. The engine
 loops' pan/gain/rate columns now carry the `.02` terms (bearing pan swings
 of ±0.16, the `VOLUME 0.8` base, the Doppler-scaled rates) rather than the
 designed flat-zone constants the .06 run recorded.
+
+The table lists this task's voices; the trace's seconds also carry the
+radio queue's lines — `sparks_1` (3–4), `jack_2` (5–8), `betty_3` (9–12),
+`zachary_4` (13–17), `zachary_21` (60) — which are the radio slice's
+voices, not this task's.
 
 **No listening claim**: nothing here says the voices are audible or sound
 right — `human_review` stays with the owner. Framebuffer evidence from the
