@@ -4337,3 +4337,831 @@ name = "if.player_pos_caller_b"
 va = 0x00489f03
 bytes = "3b3598c2710075388d864c02000050e8a9d105008d8e0402000051e8fdd00500"
 fact = "the same at the second call site"
+
+# M01-AUDIO-07 (#1919, finding docs/findings/2026-10-22-m01-audio-burst-triggers.md): the call sites of the sound play helpers
+# 0x593590 (2D) and 0x593b80 (3D), their classification, and the burst-size to member map.
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "play.helper_dispatch"
+va = 0x005935fd
+bytes = "8b4c240c6a006a005156e874050000"
+fact = "0x593590(handle, gain) is the position-less play: for an ordinary (non-music) handle it calls 0x593b80(handle, gain, 0, 0) at 0x593607, so 0x593590 and 0x593b80 are the same play with and without a world position; 0x593590 has 49 direct call sites and 0x593b80 has 10, 59 in all, and there is no jmp to either"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "play.weapon_fire"
+va = 0x005af3c0
+bytes = "8b86e800000083f8ff741b8b55208b8486c40000006a0052680000803f50e89d47feff"
+fact = "weapon fire (0x5aef9c, builds the projectile record): if the weapon's current fire index [weapon+0xe8] is not -1 it plays the handle at [weapon+0xc4+4*index] as a 3D voice (0x593b80) at the muzzle position argument: the gun-shot sound"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "play.weapon_row_pick_twin"
+va = 0x005ad1a0
+bytes = "8d0cbf8d048803c88b4c8b445251e8cd69feff"
+fact = "0x5ad160 is the twin of the 0x5ad100 sound pick: it reads the weapon row's second list (count at +0x40, handles at +0x44) with the same rand() * count >> 15 index and plays it through 0x593b80 at the record position; the callers of 0x5ad100 are 0x5ac91f, 0x5ad039 (inside 0x5acf60) and 0x5b1387 (inside 0x5b0cb0), the only caller of 0x5ad160 is 0x5b0b64 (inside 0x5b0a50)"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "play.weapon_row_pick_0x5ad039"
+va = 0x005ad039
+bytes = "e8c2000000"
+fact = "call 0x5ad100 from inside 0x5acf60 (impact/burst step: it also calls 0x5ad330, 0x5ad1c0 and 0x5abcf0); the row selected is not decoded here"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "play.weapon_row_pick_0x5b1387"
+va = 0x005b1387
+bytes = "e874bdffff"
+fact = "call 0x5ad100 from inside 0x5b0cb0, next to two rand() calls and 0x5acf60/0x5ad090; the row selected is not decoded here"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "play.weapon_row_pick_0x5b0b64"
+va = 0x005b0b64
+bytes = "e8f7c5ffff"
+fact = "the only call to 0x5ad160 (twin pick, second list) from inside 0x5b0a50; the row selected is not decoded here"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "play.sequence_sound_event_3d"
+va = 0x004e755f
+bytes = "8b54c12052e817c60a0083c418eb1f0fbf460c8b8ff80000008d04808b54c120680000803f52e806c00a00"
+fact = "the executor of a sequence SOUND event (0x4e74e0): the event record's sound index word [event+0xc] picks the handle at [owner+0xf8] + 40 * index + 0x20; when the event also names a node ([event+0xe] > 0) the sound is played as a 3D voice (0x593b80) at that node's position plus the event offsets [event+0x10..0x18], otherwise as a 2D voice (0x593590, 0x4e7585); the returned voice is stored at row +0x24"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "play.sequence_sound_event_second"
+va = 0x004e9b83
+bytes = "0fbf83f20000008b55fc8b7d086a008d4df0518b8ff8000000528d04808b54c12052e8d69f0a00"
+fact = "a second sequence executor (0x4e8fa0) plays the handle at [owner+0xf8] + 40 * [entry+0xf2] + 0x20 as a 3D voice (0x593b80) at a position it computed in [ebp-0x10], with a gain argument [ebp-4]; the keyword it serves is not decoded here"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "play.player_bullet_hit"
+va = 0x004b9ea9
+bytes = "a188c4710085c00f848c070000680000803f50e8cf960d0083c408e979070000a18cc4710085c0740e680000803f50e8b3960d00"
+fact = "the aircraft hit routine 0x4b9bc0 (called at 0x4b961a, 0x4b9ac1, 0x4b9b76): when the hit aircraft is the player ([0x71c298]) and the hit kind passes ([aircraft+0x67c] is the tested value or 4, hit flag bit 0x40), if the byte [aircraft+0x91c] is set and 0x440ad0() returns 0 it plays the handle [0x71c488] (the player.zrd warning_shot_sound group) 2D at gain 1.0 (0x4b9ebc); otherwise it plays the handle [0x71c48c] (the bullet_hit_sound group) 2D at gain 1.0 (0x4b9ed8)"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "config.warning_shot_sound"
+va = 0x004746e1
+bytes = "68dc79620055e8a459100083c4083bc674168b50048b420c50e8211a120083c404a388c47100eb06"
+fact = "the mission start reads player.zrd key warning_shot_sound and stores the group handle (0x596120 of the string) at [0x71c488]; retail ZBD/zrdr.zbd player.zrd value is the group bullet_warning_sg, whose members are snd_bulletpass1..3 (bullet_pass1.wav..bullet_pass3.wav), not the warning_shot*.wav members"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "config.bullet_hit_sound"
+va = 0x0047470f
+bytes = "68f079620055e87659100083c4083bc674168b48048b510c52e8f319120083c404a38cc47100eb06"
+fact = "the mission start reads player.zrd key bullet_hit_sound and stores the group handle at [0x71c48c]; retail value is the group bullet_hit_sg, whose members are snd_ricochet1..4 (ricco4.wav, ricco1.wav, ricco3.wav, ricco2.wav)"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "string.warning_shot_sound"
+va = 0x006279dc
+bytes = "7761726e696e675f73686f745f736f756e6400"
+fact = "the player.zrd key name warning_shot_sound"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "string.bullet_hit_sound"
+va = 0x006279f0
+bytes = "62756c6c65745f6869745f736f756e6400"
+fact = "the player.zrd key name bullet_hit_sound"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "config.touchdown_names"
+va = 0x00473801
+bytes = "bfec746200f2aef7"
+fact = "mission start (0x4735b0) builds the animation names touchdown_<soil> from the prefix at 0x6274ec; retail soils.zrd lists player, enemy, airstrip, opensesame, death, buildings, dzone, dirt, and retail touchdown.zrd defines the animations touchdown_default (sequence glance_spark: SOUND snd_exp_ground_b AT_NODE MAIN_ROOT_NODE), touchdown_dirt (glance_dust: snd_exp_ground_b WITH_NODE MAIN_ROOT_NODE) and touchdown_water (glance: snd_exp_water_b AT_NODE MAIN_ROOT_NODE): the ground-contact sounds are sequence SOUND events"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "string.touchdown_prefix"
+va = 0x006274ec
+bytes = "746f756368646f776e5f00"
+fact = "the animation-name prefix touchdown_"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "play.dangerzone_camera"
+va = 0x0047396e
+bytes = "683c756200a3a8c37100e8a3271200a3acc37100"
+fact = "the group snd_dangerzone_camera is looked up at mission start and kept at [0x71c3ac]; 0x446ad9 (in 0x446990) plays it 2D when its caller condition holds: a danger-zone camera cue"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "play.select_weapon"
+va = 0x00487f3f
+bytes = "680000803f68d8886200eb10680000803f89be0406000068ec886200e8c0e1100083c40450e827b61000"
+fact = "the weapon-slot switch 0x487460 (called at 0x489824) plays sg_select_weapon when the slot is usable (0x4b20b0 true) else sg_empty_weapon, once per slot (call sites 0x487f64, 0x487fd1, 0x488040, 0x4880ab): a cockpit control cue, not a world event"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "play.switch_target"
+va = 0x00488779
+bytes = "680000803f686889620089be48090000e892d9100083c40450e8f9ad1000"
+fact = "the target-switch commands 0x488740..0x488c90 (nine functions, call sites 0x488792, 0x488848, 0x4888d3, 0x48897c, 0x488a2c, 0x488aab, 0x488b62, 0x488c12, 0x488c8e) clear [player+0x948] and play sg_switchtarget 2D: a cockpit control cue"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "play.no_ammo_warning"
+va = 0x005ac560
+bytes = "a180e1a100680000803f50e82070feff83c408"
+fact = "0x5ac560 plays the handle [0xa1e180] 2D at gain 1.0; 0x5ad6fd..0x5ad71e stores the group named by the weapon section key NO_AMMO_WARNING there; called at 0x4b757c"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "play.zep_destroyed"
+va = 0x004997e1
+bytes = "680000803f50e8a49d0f00"
+fact = "0x499730 (called at 0x499719) plays the handle [0x71d210] (snd_Zep_dest group, set at 0x495d03) or [0x71d220] 2D at gain 1.0: a zeppelin-destroyed/lost cue"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "play.music_state"
+va = 0x0059a67a
+bytes = "74178d4e14518b4e208d5608525150e8f294ffff83c410eb0d8b56205250e8f38effff"
+fact = "0x59a594 plays the mission-state music handle [[esi+0x40]+0x14]: 3D (0x593b80) when bit 0 of [esi+0x38] is set, else 2D (0x593590); see finding 2026-10-16-m01-play-music-state-requests.md"
+
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x0041e8a7
+target = 0x00593590
+function = "0x41e815"
+event = "unknown"
+group = "[0x71c3b0]"
+evidence = "the handle global is only ever written 0 (0x47398c); no other writer in the image, so the play is dead"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x0041e96e
+target = 0x00593590
+function = "0x41e815"
+event = "unknown"
+group = "[0x71c3b4]"
+evidence = "the handle global is only ever written 0 (0x473992); no other writer in the image, so the play is dead"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x0042b463
+target = 0x00593590
+function = "0x42b410"
+event = "unknown"
+group = "caller-supplied handle"
+evidence = "stops the voice at [0x64ef04], registers the completion callback 0x42b4b0 (0x5979a0) and plays the argument handle; its callers are not decoded"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x0042b496
+target = 0x00593590
+function = "0x42b410"
+event = "unknown"
+group = "caller-supplied handle"
+evidence = "stops the voice at [0x64ef04], registers the completion callback 0x42b4b0 (0x5979a0) and plays the argument handle; its callers are not decoded"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x0042eb6c
+target = 0x00593590
+function = "0x42e9d0"
+event = "unknown"
+group = "caller-supplied handle"
+evidence = "plays the argument handle when [0x64efa0] is clear; called at 0x4b91da and 0x4ba61d from aircraft code; the handle and the event are not decoded"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x0043da4c
+target = 0x00593b80
+function = "0x43d948"
+event = "unknown"
+group = "handle in eax"
+evidence = "3D play at a computed position (0x64f658 argument); the group is not decoded"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x00446ad9
+target = 0x00593590
+function = "0x446990"
+event = "danger_zone_cue"
+group = "snd_dangerzone_camera"
+evidence = "handle [0x71c3ac] is set at 0x47397d from the string snd_dangerzone_camera; called at 0x445d8a"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x0044bc8c
+target = 0x00593590
+function = "0x44bc80"
+event = "unknown"
+group = "handle [this+8]"
+evidence = "plays the object handle at gain 1.0; the group is not decoded"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x0044be5f
+target = 0x00593590
+function = "0x44be30"
+event = "unknown"
+group = "handle [this+8] from 0x596120"
+evidence = "looks a named group up with 0x596120, stops [this+0xc], plays it; the name is an argument"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x0045e4ee
+target = 0x00593590
+function = "0x45e470"
+event = "unknown"
+group = "caller-supplied handle"
+evidence = "2D branch of the play-with-voice-record helper; its callers are 0x41f6fd, 0x41f741, 0x4882ae, 0x488303, 0x4884b8, 0x488504, 0x48d018, 0x48d272 (the rattle consumer), 0x4ab1d9 and 0x4b22c4"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x0046cb57
+target = 0x00593590
+function = "0x46cb42"
+event = "unknown"
+group = "caller-supplied handle (ebx)"
+evidence = "plays an argument handle with an argument gain; callers not decoded"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x0046cce9
+target = 0x00593590
+function = "0x46cce3"
+event = "unknown"
+group = "caller-supplied handle (ecx)"
+evidence = "plays an argument handle at gain 1.0 (the other branch calls 0x46caf0); callers not decoded"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x00487f64
+target = 0x00593590
+function = "0x487460"
+event = "ui_cue"
+group = "sg_select_weapon or sg_empty_weapon"
+evidence = "the weapon-slot switch picks sg_select_weapon when 0x4b20b0 is true, else sg_empty_weapon; cockpit control cue"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x00487fd1
+target = 0x00593590
+function = "0x487460"
+event = "ui_cue"
+group = "sg_select_weapon or sg_empty_weapon"
+evidence = "the weapon-slot switch picks sg_select_weapon when 0x4b20b0 is true, else sg_empty_weapon; cockpit control cue"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x00488040
+target = 0x00593590
+function = "0x487460"
+event = "ui_cue"
+group = "sg_select_weapon or sg_empty_weapon"
+evidence = "the weapon-slot switch picks sg_select_weapon when 0x4b20b0 is true, else sg_empty_weapon; cockpit control cue"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x004880ab
+target = 0x00593590
+function = "0x487460"
+event = "ui_cue"
+group = "sg_select_weapon or sg_empty_weapon"
+evidence = "the weapon-slot switch picks sg_select_weapon when 0x4b20b0 is true, else sg_empty_weapon; cockpit control cue"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x00488792
+target = 0x00593590
+function = "0x488740..0x488c90"
+event = "ui_cue"
+group = "sg_switchtarget"
+evidence = "clears [player+0x948] and plays sg_switchtarget; cockpit control cue"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x00488848
+target = 0x00593590
+function = "0x488740..0x488c90"
+event = "ui_cue"
+group = "sg_switchtarget"
+evidence = "clears [player+0x948] and plays sg_switchtarget; cockpit control cue"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x004888d3
+target = 0x00593590
+function = "0x488740..0x488c90"
+event = "ui_cue"
+group = "sg_switchtarget"
+evidence = "clears [player+0x948] and plays sg_switchtarget; cockpit control cue"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x0048897c
+target = 0x00593590
+function = "0x488740..0x488c90"
+event = "ui_cue"
+group = "sg_switchtarget"
+evidence = "clears [player+0x948] and plays sg_switchtarget; cockpit control cue"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x00488a2c
+target = 0x00593590
+function = "0x488740..0x488c90"
+event = "ui_cue"
+group = "sg_switchtarget"
+evidence = "clears [player+0x948] and plays sg_switchtarget; cockpit control cue"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x00488aab
+target = 0x00593590
+function = "0x488740..0x488c90"
+event = "ui_cue"
+group = "sg_switchtarget"
+evidence = "clears [player+0x948] and plays sg_switchtarget; cockpit control cue"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x00488b62
+target = 0x00593590
+function = "0x488740..0x488c90"
+event = "ui_cue"
+group = "sg_switchtarget"
+evidence = "clears [player+0x948] and plays sg_switchtarget; cockpit control cue"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x00488c12
+target = 0x00593590
+function = "0x488740..0x488c90"
+event = "ui_cue"
+group = "sg_switchtarget"
+evidence = "clears [player+0x948] and plays sg_switchtarget; cockpit control cue"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x00488c8e
+target = 0x00593590
+function = "0x488740..0x488c90"
+event = "ui_cue"
+group = "sg_switchtarget"
+evidence = "clears [player+0x948] and plays sg_switchtarget; cockpit control cue"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x004997e7
+target = 0x00593590
+function = "0x499730"
+event = "mission_cue"
+group = "snd_Zep_dest group ([0x71d210]) or [0x71d220]"
+evidence = "[0x71d210] is set at 0x495d03; [0x71d220] has no writer; the zeppelin destroyed or lost cue"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x0049981c
+target = 0x00593590
+function = "0x499730"
+event = "mission_cue"
+group = "snd_Zep_dest group ([0x71d210]) or [0x71d220]"
+evidence = "[0x71d210] is set at 0x495d03; [0x71d220] has no writer; the zeppelin destroyed or lost cue"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x0049a66b
+target = 0x00593590
+function = "0x49a300 and 0x49a762"
+event = "multiplayer_cue"
+group = "snd_CTF* groups ([0x71d1e0..0x71d1f4])"
+evidence = "the handles are set at 0x495c4f..0x495c9a; capture-the-flag score and flag cues (multiplayer)"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x0049a6b1
+target = 0x00593590
+function = "0x49a300 and 0x49a762"
+event = "multiplayer_cue"
+group = "snd_CTF* groups ([0x71d1e0..0x71d1f4])"
+evidence = "the handles are set at 0x495c4f..0x495c9a; capture-the-flag score and flag cues (multiplayer)"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x0049a6cf
+target = 0x00593590
+function = "0x49a300 and 0x49a762"
+event = "multiplayer_cue"
+group = "snd_CTF* groups ([0x71d1e0..0x71d1f4])"
+evidence = "the handles are set at 0x495c4f..0x495c9a; capture-the-flag score and flag cues (multiplayer)"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x0049a81b
+target = 0x00593590
+function = "0x49a300 and 0x49a762"
+event = "multiplayer_cue"
+group = "snd_CTF* groups ([0x71d1e0..0x71d1f4])"
+evidence = "the handles are set at 0x495c4f..0x495c9a; capture-the-flag score and flag cues (multiplayer)"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x0049a879
+target = 0x00593590
+function = "0x49a300 and 0x49a762"
+event = "multiplayer_cue"
+group = "snd_CTF* groups ([0x71d1e0..0x71d1f4])"
+evidence = "the handles are set at 0x495c4f..0x495c9a; capture-the-flag score and flag cues (multiplayer)"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x0049a897
+target = 0x00593590
+function = "0x49a300 and 0x49a762"
+event = "multiplayer_cue"
+group = "snd_CTF* groups ([0x71d1e0..0x71d1f4])"
+evidence = "the handles are set at 0x495c4f..0x495c9a; capture-the-flag score and flag cues (multiplayer)"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x0049b763
+target = 0x00593590
+function = "0x49b740"
+event = "multiplayer_cue"
+group = "snd_Zep_GB*lost / snd_Zep_GB*dest ([0x71d204], [0x71d1f8])"
+evidence = "the handles are set at 0x495ca9 and 0x495cd6; zeppelin gasbag cues (multiplayer team zeppelins)"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x0049b781
+target = 0x00593590
+function = "0x49b740"
+event = "multiplayer_cue"
+group = "snd_Zep_GB*lost / snd_Zep_GB*dest ([0x71d204], [0x71d1f8])"
+evidence = "the handles are set at 0x495ca9 and 0x495cd6; zeppelin gasbag cues (multiplayer team zeppelins)"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x004afcbe
+target = 0x00593590
+function = "0x4afc90"
+event = "unknown"
+group = "handle [this]"
+evidence = "rate-limited play: only when the clock [0x71c470] has passed [this+8], which is then set a fixed step ahead; called at 0x4afde0; the group is not decoded"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x004b14a6
+target = 0x00593b80
+function = "0x4b1470"
+event = "aircraft_voice"
+group = "aircraft sound slot i ([+0x80+4*i])"
+evidence = "3D voice at the aircraft position +0x204 (engine and prop loops; rows engine.voice_slots)"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x004b14c4
+target = 0x00593590
+function = "0x4b14b7"
+event = "aircraft_voice"
+group = "aircraft sound slot i ([+0x80+4*i])"
+evidence = "the 2D fallback of the same slot play, taken when 0x598df0 of the position test is zero"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x004b9ebc
+target = 0x00593590
+function = "0x4b9bc0"
+event = "warning_shot"
+group = "player.zrd warning_shot_sound = bullet_warning_sg (snd_bulletpass1..3)"
+evidence = "row play.player_bullet_hit: the player aircraft hit routine, branch [aircraft+0x91c] set and 0x440ad0() == 0"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x004b9ed8
+target = 0x00593590
+function = "0x4b9bc0"
+event = "bullet_impact"
+group = "player.zrd bullet_hit_sound = bullet_hit_sg (snd_ricochet1..4)"
+evidence = "row play.player_bullet_hit: the player aircraft hit routine, the other branch"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x004e0df2
+target = 0x00593b80
+function = "0x4e0dab"
+event = "sound_node"
+group = "SOUND_NODE group ([node])"
+evidence = "existing row soundnode.update: a 3D node starts its voice once"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x004e0e3b
+target = 0x00593590
+function = "0x4e0e28"
+event = "sound_node"
+group = "SOUND_NODE group ([node])"
+evidence = "existing row soundnode.update: a non-3D node plays 2D"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x004e7564
+target = 0x00593b80
+function = "0x4e74e0"
+event = "sequence_sound"
+group = "sequence SOUND event handle ([owner+0xf8] row +0x20)"
+evidence = "row play.sequence_sound_event_3d; the sounds of destruction, touchdown and puffer-trail sequences all play here"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x004e7585
+target = 0x00593590
+function = "0x4e74e0"
+event = "sequence_sound"
+group = "sequence SOUND event handle ([owner+0xf8] row +0x20)"
+evidence = "row play.sequence_sound_event_3d; the sounds of destruction, touchdown and puffer-trail sequences all play here"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x004e9ba5
+target = 0x00593b80
+function = "0x4e8fa0"
+event = "sequence_sound"
+group = "sequence entry handle ([owner+0xf8] row +0x20)"
+evidence = "row play.sequence_sound_event_second; the keyword it serves is not decoded"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x00593607
+target = 0x00593b80
+function = "0x5935fd"
+event = "dispatcher"
+group = "any handle"
+evidence = "row play.helper_dispatch: 0x593590 forwards an ordinary sound to 0x593b80"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x0059a689
+target = 0x00593b80
+function = "0x59a594"
+event = "music"
+group = "mission-state music handle"
+evidence = "row play.music_state"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x0059a698
+target = 0x00593590
+function = "0x59a594"
+event = "music"
+group = "mission-state music handle"
+evidence = "row play.music_state"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x005ac56b
+target = 0x00593590
+function = "0x5ac560"
+event = "ui_cue"
+group = "NO_AMMO_WARNING weapon-section group ([0xa1e180])"
+evidence = "row play.no_ammo_warning: out of ammunition; cockpit control cue"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x005ad14e
+target = 0x00593b80
+function = "0x5ad100"
+event = "weapon_row_pick"
+group = "weapon row handle list (+0x30..)"
+evidence = "rows play.weapon_row_pick_twin and burst.sound_play: the random pick of an IMPACT/burst row sound at the record position; the table of retail rows is in the finding"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x005ad1ae
+target = 0x00593b80
+function = "0x5ad160"
+event = "weapon_row_pick"
+group = "weapon row second handle list (+0x44..)"
+evidence = "row play.weapon_row_pick_twin: the twin pick; the row it serves is not decoded"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x005af3de
+target = 0x00593b80
+function = "0x5aef9c"
+event = "gun_shot"
+group = "weapon fire handle [weapon+0xc4+4*index]"
+evidence = "row play.weapon_fire: the weapon-fire routine plays the weapon sound at the muzzle"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x005c28db
+target = 0x00593590
+function = "0x5c2890 0x5c2b90 0x5c4120"
+event = "ui_cue"
+group = "object-held handle ([this+0x120], [this+0x130], [item])"
+evidence = "front-end widget family (callers 0x427b57, 0x46dbfc, 0x4a15d0.., 0x5cd0f0..); the groups are not decoded"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x005c2bea
+target = 0x00593590
+function = "0x5c2890 0x5c2b90 0x5c4120"
+event = "ui_cue"
+group = "object-held handle ([this+0x120], [this+0x130], [item])"
+evidence = "front-end widget family (callers 0x427b57, 0x46dbfc, 0x4a15d0.., 0x5cd0f0..); the groups are not decoded"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x005c419a
+target = 0x00593590
+function = "0x5c2890 0x5c2b90 0x5c4120"
+event = "ui_cue"
+group = "object-held handle ([this+0x120], [this+0x130], [item])"
+evidence = "front-end widget family (callers 0x427b57, 0x46dbfc, 0x4a15d0.., 0x5cd0f0..); the groups are not decoded"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x005cbd82
+target = 0x00593590
+function = "0x5cbd73"
+event = "ui_cue"
+group = "snd_ricochet1 ([0x9e799c], ricco4.wav, 22,264 B) at gain 0.2 (0x3e4ccccd)"
+evidence = "handle set at 0x5cbb1f from the hard-coded string snd_ricochet1; played from a window message handler for every message but 0x42b, not in flight"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x005d0075
+target = 0x00593590
+function = "0x5d0020"
+event = "ui_cue"
+group = "object-held handle ([edi])"
+evidence = "menu state sounds started after 0x59c030; callers 0x404dc2.., 0x5cfcfd..; the groups are not decoded"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x005d0098
+target = 0x00593590
+function = "0x5d0020"
+event = "ui_cue"
+group = "object-held handle ([edi])"
+evidence = "menu state sounds started after 0x59c030; callers 0x404dc2.., 0x5cfcfd..; the groups are not decoded"
+
+[[audio_site]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+va = 0x005f98c4
+target = 0x00593590
+function = "0x5f98a0"
+event = "ui_cue"
+group = "object-held handle ([this+0x404])"
+evidence = "played once when [this+0x408] is set, then cleared; called at 0x5f9582; the group is not decoded"
+
+[[audio_burst]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+size = 267168
+status = "member"
+members = "explosion_7.wav"
+groups = "snd_exp_hit5"
+excluded = "train_derail.wav (looped group with no starter by name), 2 VO lines"
+event = "air_mixed_exp_sg: weapon IMPACT rows (player), destruction sequences, small_injure_fireball puffer"
+residual = "the only SFX member of the size that is reachable by name; a VO line is not excluded statically"
+
+[[audio_burst]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+size = 22264
+status = "member"
+members = "ricco4.wav"
+groups = "snd_ricochet1"
+excluded = "tny_exp_2.wav (snd_bullet_hit) and warning_shot2.wav (snd_warningshot2): named by nothing but the sound table"
+event = "bullet_hit_sg: bullet impact on the player aircraft (weapons IMPACT player row, player.zrd bullet_hit_sound at 0x4b9ed8) and the pufftrails ricochet sequence"
+residual = "one of four random members of bullet_hit_sg; the 0x5cbd82 window cue also plays this member at gain 0.2 outside flight"
+
+[[audio_burst]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+size = 16192
+status = "member"
+members = "ricco3.wav"
+groups = "snd_ricochet3"
+excluded = "warning_seeker.wav (snd_seeker, looped, named by nothing but the sound table)"
+event = "bullet_hit_sg as above"
+residual = "one of four random members of bullet_hit_sg"
+
+[[audio_burst]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+size = 18216
+status = "member"
+members = "ricco2.wav"
+groups = "snd_ricochet4"
+excluded = "warning_shot3.wav (snd_warningshot3, named by nothing but the sound table)"
+event = "bullet_hit_sg as above"
+residual = "one of four random members of bullet_hit_sg"
+
+[[audio_burst]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+size = 78936
+status = "member"
+members = "exp_water_b.wav"
+groups = "snd_exp_water_b"
+excluded = "3 VO lines"
+event = "touchdown_water animation glance sequence (SOUND AT_NODE MAIN_ROOT_NODE): the ground-contact event on water, played by the sequence SOUND executor 0x4e74e0"
+residual = "the only SFX member of the size; a VO line is not excluded statically; which M01 events call touchdown_water is not decoded"
+
+[[audio_burst]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+size = 220616
+status = "candidates"
+members = "exp_plane_1.wav,exp_plane_3.wav,exp_ground_a.wav,exp_ground_b.wav"
+groups = "snd_exp_plane1,snd_exp_plane3,snd_exp_ground_a,snd_exp_ground_b"
+excluded = "enginelooped.wav (looped group named only by ZBD/C3/M05) and 4 VO lines"
+event = "exp_plane_1/3: plane_destroy_sg (random of four) in the destruction sequences; exp_ground_a: the destruction sequences (ground crash); exp_ground_b: touchdown_default and touchdown_dirt glance sequences (ground contact)"
+residual = "decided by which event fired: aircraft destruction (exp_plane_1/3 or exp_ground_a) versus ground contact on land (exp_ground_b), and for plane_destroy_sg the rand() pick; the engine side of both is the sequence SOUND executor"
