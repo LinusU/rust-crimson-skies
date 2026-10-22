@@ -120,6 +120,62 @@ fn first_int(node: &ZrdValue) -> Option<u32> {
     }
 }
 
+/// The numbers `record` states for a gun, read like [`SELECTED_GUN_RECORD`]'s.
+///
+/// # Errors
+///
+/// [`WeaponCountsError::Unmeasured`] when the record or a number is absent.
+pub fn gun_record_from_document(
+    weapons: &ZrdValue,
+    record: &str,
+) -> Result<OriginalGunRecord, WeaponCountsError> {
+    Ok(OriginalGunRecord {
+        fire_rate_per_s: positive_float(weapons, record, "FIRE_RATE")?,
+        velocity_mps: positive_float(weapons, record, "VELOCITY")?,
+        range_m: positive_float(weapons, record, "RANGE")?,
+        armor_damage: positive_float(weapons, record, "ARMOR_DAMAGE")?,
+        health_damage: positive_float(weapons, record, "HEALTH_DAMAGE")?,
+    })
+}
+
+/// A positive number `record` states under `field`.
+///
+/// # Errors
+///
+/// [`WeaponCountsError::Unmeasured`] when the record or the field is absent.
+pub fn float_from_document(
+    weapons: &ZrdValue,
+    record: &str,
+    field: &str,
+) -> Result<f64, WeaponCountsError> {
+    positive_float(weapons, record, field)
+}
+
+/// The `AMMO_LIMIT` `record` states.
+///
+/// # Errors
+///
+/// [`WeaponCountsError::Unmeasured`] when the record or the field is absent.
+pub fn ammo_limit_from_document(
+    weapons: &ZrdValue,
+    record: &str,
+) -> Result<u64, WeaponCountsError> {
+    positive_int(weapons, record, "AMMO_LIMIT")
+}
+
+/// Whether `record` states `key` at all (a presence flag such as `CANNON`).
+#[must_use]
+pub fn record_has_key(weapons: &ZrdValue, record: &str, key: &str) -> bool {
+    fn mentions(node: &ZrdValue, key: &str) -> bool {
+        match node {
+            ZrdValue::Text(text) => text == key,
+            ZrdValue::List(children) => children.iter().any(|child| mentions(child, key)),
+            _ => false,
+        }
+    }
+    value_of(weapons, record).is_some_and(|node| mentions(node, key))
+}
+
 /// Reads the counts from a decoded `weapons.zrd`.
 ///
 /// # Errors
@@ -129,13 +185,7 @@ pub fn counts_from_document(weapons: &ZrdValue) -> Result<OriginalWeaponCounts, 
     Ok(OriginalWeaponCounts {
         gun_rounds: positive_int(weapons, SELECTED_GUN_RECORD, "AMMO_LIMIT")?,
         rocket_stack: positive_int(weapons, SELECTED_ROCKET_RECORD, "CLUSTER_SIZE")?,
-        gun: OriginalGunRecord {
-            fire_rate_per_s: positive_float(weapons, SELECTED_GUN_RECORD, "FIRE_RATE")?,
-            velocity_mps: positive_float(weapons, SELECTED_GUN_RECORD, "VELOCITY")?,
-            range_m: positive_float(weapons, SELECTED_GUN_RECORD, "RANGE")?,
-            armor_damage: positive_float(weapons, SELECTED_GUN_RECORD, "ARMOR_DAMAGE")?,
-            health_damage: positive_float(weapons, SELECTED_GUN_RECORD, "HEALTH_DAMAGE")?,
-        },
+        gun: gun_record_from_document(weapons, SELECTED_GUN_RECORD)?,
     })
 }
 

@@ -141,8 +141,20 @@ impl FlakRecord {
     /// [`FlakRecordError::Unmeasured`] when the record or a number is absent
     /// or not positive.
     pub fn from_document(weapons: &ZrdValue) -> Result<Self, FlakRecordError> {
-        let body = record_body(weapons, FLAK_RECORD).ok_or_else(|| {
-            FlakRecordError::Unmeasured(format!("weapons.zrd has no record {FLAK_RECORD}"))
+        Self::from_document_record(weapons, FLAK_RECORD)
+    }
+
+    /// Reads the rocket record named `record` from a decoded `weapons.zrd`:
+    /// the same numbers and flags as [`Self::from_document`], for a turret
+    /// record that names another rocket.
+    ///
+    /// # Errors
+    ///
+    /// [`FlakRecordError::Unmeasured`] when the record or a number is absent
+    /// or not positive.
+    pub fn from_document_record(weapons: &ZrdValue, record: &str) -> Result<Self, FlakRecordError> {
+        let body = record_body(weapons, record).ok_or_else(|| {
+            FlakRecordError::Unmeasured(format!("weapons.zrd has no record {record}"))
         })?;
         let has = |key: &str| body.chunks(2).any(|pair| pair[0].as_text() == Some(key));
         let number = |key: &str| {
@@ -153,7 +165,7 @@ impl FlakRecord {
                 .filter(|n| n.is_finite() && *n > 0.0)
                 .ok_or_else(|| {
                     FlakRecordError::Unmeasured(format!(
-                        "{FLAK_RECORD} {key} is absent or not a positive number"
+                        "{record} {key} is absent or not a positive number"
                     ))
                 })
         };
