@@ -118,6 +118,7 @@ use crate::world_actors::WorldActorBinding;
 
 mod briefing;
 mod camera_modes;
+pub mod voice_trace;
 
 pub use briefing::{
     BriefingButtonMetrics, BriefingMetrics, BriefingReplayMetrics, BriefingShotMetrics,
@@ -1989,6 +1990,8 @@ pub struct MissionSmokeReport {
     pub checks: Vec<Check>,
     /// The measurements behind the checks.
     pub measurements: SmokeMeasurements,
+    /// Our playing voice set, once per mission second (Rally #1866).
+    pub voice_trace: Vec<voice_trace::VoiceSecond>,
     /// The screenshots taken, with their measurements.
     pub shots: Vec<FrameRecord>,
     /// The placements the run made, verbatim.
@@ -2136,6 +2139,8 @@ struct SmokeConfig {
 /// The run's own state, filled by [`smoke_step`].
 #[derive(Resource, Default)]
 struct SmokeData {
+    /// Our playing voice set per mission second (Rally #1866).
+    voice_trace: Vec<voice_trace::VoiceSecond>,
     /// Frames since Fly Mission: the script's clock, which does not run while
     /// the Flight Check holds the mission.
     frame: u32,
@@ -2258,6 +2263,7 @@ fn add_script_systems(app: &mut App) {
             smoke_flight_check,
             smoke_census,
             smoke_sample,
+            voice_trace::smoke_voice_trace,
             smoke_wingmen,
             smoke_cinematic,
             smoke_first_control,
@@ -4480,6 +4486,7 @@ fn build_report(data: &SmokeData, shots: Vec<FrameRecord>) -> MissionSmokeReport
         ticks: data.measurements.ticks,
         checks,
         measurements: data.measurements.clone(),
+        voice_trace: data.voice_trace.clone(),
         shots,
         placements: data.placements.clone(),
         failures,
@@ -4779,7 +4786,9 @@ fn write_artifacts(
          \"max_rockets\":{max_rockets},\"refusals\":[{refusals}]}},\
          \"audio\":{{\"radio_seen\":{radio_seen},\"engine_seen\":{engine_seen},\
          \"engine_bindings\":{bindings},\"active_loops\":{loops},\
-         \"radio_started\":{radio_started}}},\
+         \"radio_started\":{radio_started},\"voice_trace\":{voice_trace},\
+         \"voice_set_changes\":[{voice_changes}],\
+         \"voice_trace_unobserved\":[{voice_unobserved}]}},\
          \"cinematic\":{cinematic},\"first_control\":{first_control},\
          \"approach\":{{\"placed\":{approach_placed},\"anchor\":{anchor},\
          \"frames\":{approach_frames},\"objective_woke\":{woke}}},\
@@ -4838,6 +4847,17 @@ fn write_artifacts(
         bindings = report.measurements.audio.engine_bindings,
         loops = report.measurements.audio.active_loops,
         radio_started = report.measurements.audio.radio_started,
+        voice_trace = voice_trace::trace_json(&report.voice_trace),
+        voice_changes = voice_trace::set_changes(&report.voice_trace)
+            .iter()
+            .map(u32::to_string)
+            .collect::<Vec<_>>()
+            .join(","),
+        voice_unobserved = voice_trace::UNOBSERVED
+            .iter()
+            .map(|line| json_string(line))
+            .collect::<Vec<_>>()
+            .join(","),
         cinematic = cinematic,
         first_control = first_control,
         approach_placed = report.measurements.approach.placed,
