@@ -22,7 +22,8 @@ use crate::playtest::smoke::MIN_SMOKE_SECONDS;
 use crate::playtest::{DEFAULT_CAPTURE_DIR, PlaytestRequest, RetailRequest, SmokeRequest};
 use crate::run::SyntheticRequest;
 use crate::ui::front_end::{
-    DEFAULT_FRONT_END_CAPTURE_DIR, FrontEndRequest, MIN_SHELL_SMOKE_SECONDS, StartFlowRequest,
+    DEFAULT_FRONT_END_CAPTURE_DIR, FrontEndRequest, MIN_SHELL_SMOKE_SECONDS, MissionEnd,
+    StartFlowRequest,
 };
 
 /// Exit code for invalid input or unsupported content (CLI-EVIDENCE contract).
@@ -67,6 +68,11 @@ pub struct MissionRequest {
     /// and judges the journal's debrief screen the failed run opens (Rally
     /// #1655 `PARITY-M01-OUTCOME-C`).
     pub smoke_failure: bool,
+    /// `--from-start-flow`: the mission was handed over by the start flow
+    /// (`cs --cs-path <dir>`), so leaving it for the cabin (the debrief's
+    /// Return to Cabin, the pause map's Quit) re-opens the front end instead
+    /// of ending the process (Rally #1831 `PARITY5-START-FLOW.03`).
+    pub from_start_flow: bool,
 }
 
 /// What the caller asked the binary to do.
@@ -153,6 +159,8 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
     let mut smoke_engagement = false;
     let mut smoke_failure = false;
     let mut front_end = false;
+    let mut from_start_flow = false;
+    let mut resume_start_flow: Option<String> = None;
     let mut unknown = false;
 
     let mut index = 0;
@@ -169,6 +177,14 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
             "--smoke-engagement" => smoke_engagement = true,
             "--smoke-failure" => smoke_failure = true,
             "--front-end" => front_end = true,
+            "--from-start-flow" => from_start_flow = true,
+            "--resume-start-flow" => {
+                let Some(value) = args.get(index + 1).cloned() else {
+                    return CliRequest::Unsupported { args };
+                };
+                resume_start_flow = Some(value);
+                values = 1;
+            }
             "--smoke-seconds" => {
                 let Some(value) = args.get(index + 1).cloned() else {
                     return CliRequest::Unsupported { args };
@@ -288,6 +304,20 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
                 .to_string(),
         };
     }
+    if from_start_flow && mission.is_none() {
+        return CliRequest::Invalid {
+            reason: "--from-start-flow is a mode of --cs-path <dir> --mission <id>: it is how \
+ the start flow hands a mission over"
+                .to_string(),
+        };
+    }
+    if resume_start_flow.is_some() && (mission.is_some() || front_end) {
+        return CliRequest::Invalid {
+            reason: "--resume-start-flow re-opens the start flow (`cs --cs-path <dir>`) after a \
+ mission; it does not combine with --mission or --front-end"
+                .to_string(),
+        };
+    }
     if front_end {
         if playtest
             || synthetic
@@ -386,6 +416,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
             dev_keys,
             smoke_engagement,
             smoke_failure,
+            from_start_flow,
         });
     }
     if playtest {
@@ -451,8 +482,22 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
         && !dev_keys
         && !smoke_engagement
     {
+        let resume = match resume_start_flow.as_deref() {
+            None => None,
+            Some(key) => match MissionEnd::from_key(key) {
+                Some(end) => Some(end),
+                None => {
+                    return CliRequest::Invalid {
+                        reason: format!(
+                            "--resume-start-flow expects `cabin` or `abandoned`, found {key:?}"
+                        ),
+                    };
+                }
+            },
+        };
         return CliRequest::StartFlow(StartFlowRequest {
             cs_path: cs_path.clone(),
+            resume,
         });
     }
     if cs_path.is_some() || world.is_some() || aircraft.is_some() {

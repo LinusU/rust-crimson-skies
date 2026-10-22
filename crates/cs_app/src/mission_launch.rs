@@ -519,6 +519,8 @@ pub enum MissionLaunchError {
     /// refused — no `NoRuntime` arm exists (Rally #1215): the composition
     /// is built, and its own reader's diagnostics are carried verbatim.
     Composition(crate::mission_session::MissionCompositionError),
+    /// The player left for the cabin and the front end could not re-open.
+    ReturnToFrontEnd(String),
 }
 
 impl fmt::Display for MissionLaunchError {
@@ -543,6 +545,12 @@ impl fmt::Display for MissionLaunchError {
                 Ok(())
             }
             Self::Composition(error) => write!(f, "{error}"),
+            Self::ReturnToFrontEnd(reason) => {
+                write!(
+                    f,
+                    "the front end could not re-open after the mission: {reason}"
+                )
+            }
         }
     }
 }
@@ -593,7 +601,7 @@ pub fn launch_mission(request: &crate::cli::MissionRequest) -> Result<(), Missio
     if !plan.launchable() {
         return Err(MissionLaunchError::Blocked(Box::new(plan)));
     }
-    crate::mission_session::run_windowed(
+    let left = crate::mission_session::run_windowed(
         &request.cs_path,
         &plan,
         request.smoke.as_ref(),
@@ -608,8 +616,16 @@ pub fn launch_mission(request: &crate::cli::MissionRequest) -> Result<(), Missio
         },
         request.dev_overlay,
         request.dev_keys,
+        request.from_start_flow,
     )
-    .map_err(MissionLaunchError::Composition)
+    .map_err(MissionLaunchError::Composition)?;
+    // The player left for the cabin: the world is torn down, so the front end
+    // takes this process over (Rally #1831).
+    match left {
+        Some(end) => crate::ui::front_end::return_to_front_end(&request.cs_path, end)
+            .map_err(|error| MissionLaunchError::ReturnToFrontEnd(error.to_string())),
+        None => Ok(()),
+    }
 }
 
 /// Measures one surface: reads the archives it covers and judges the

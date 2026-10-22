@@ -111,6 +111,7 @@ mod flak_burst_fx;
 mod flak_round;
 mod flak_sound;
 mod flight_check;
+mod front_end_return;
 mod gun_sound;
 mod host;
 mod hud_art;
@@ -227,6 +228,7 @@ pub use flight_check::{
     SceneButton, ScenePane, SceneText, SceneUnknown, install_flight_check,
     install_flight_check_screen, mission_is_held, mission_is_released,
 };
+pub use front_end_return::{MissionEnd, MissionLeft, ReturnToFrontEnd};
 pub use gun_sound::{
     GunSound, GunSoundError, MEASURED_GUN_MEMBER, WeaponSound, WeaponSoundError, measure_gun_sound,
     measure_weapon_sound, measured_gun_sound_id, sound_like_keys, weapon_sound_from_documents,

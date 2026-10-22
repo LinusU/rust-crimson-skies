@@ -1452,6 +1452,8 @@ fn drive_pause_map(
     mut platform: ResMut<PlatformInput>,
     mut presses: MessageWriter<PauseMapPress>,
     mut exit: MessageWriter<AppExit>,
+    mut commands: bevy::prelude::Commands,
+    return_to_front_end: Option<Res<super::ReturnToFrontEnd>>,
     mut arts: Query<(&ButtonArt, &mut ImageNode, &Placed)>,
     mut labels: Query<(&ButtonLabel, &mut TextColor)>,
     mut cursors: Query<
@@ -1530,6 +1532,11 @@ fn drive_pause_map(
             // like the developer F10 does, and `run_windowed` tears the
             // composition down on the way out. The player abandoned the
             // flight, which is not a mission failure, so the exit is clean.
+            // A run the start flow handed over also records that the player
+            // is going back to the cabin (#1831).
+            if return_to_front_end.is_some() {
+                commands.insert_resource(super::MissionLeft(super::MissionEnd::Abandoned));
+            }
             exit.write(AppExit::Success);
         }
         presses.write(PauseMapPress(kind));

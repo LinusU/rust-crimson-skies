@@ -55,11 +55,50 @@ use super::{FrontEndError, FrontEndRequest};
 /// the pilot's completed count; persistence is #1835).
 pub const FIRST_MISSION: &str = "M01";
 
+/// How a flight the start flow handed over to ended, when the player chose to
+/// come back to the front end (task #1831 `PARITY5-START-FLOW.03`).
+///
+/// A mission that ends any other way (the window closed, a settled success
+/// that has no screen yet) simply ends the process, as `--mission` always has.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MissionEnd {
+    /// The failure debrief's **Return to Cabin** (`SB_B_RETURNPC`): the table's
+    /// `Flight --MissionFailed--> Results --ReturnToCabin--> Cabin`.
+    ReturnedToCabin,
+    /// The Esc pause map's **Quit**: the table's
+    /// `Flight --Pause--> Pause --AbortMission--> Cabin`. The target is the
+    /// table's design; the original's Quit handler is unread (finding
+    /// `2026-10-22-parity5-start-flow-transitions.md`).
+    Abandoned,
+}
+
+impl MissionEnd {
+    /// The value of `--resume-start-flow`.
+    #[must_use]
+    pub const fn key(self) -> &'static str {
+        match self {
+            Self::ReturnedToCabin => "cabin",
+            Self::Abandoned => "abandoned",
+        }
+    }
+
+    /// The end `--resume-start-flow <key>` names.
+    #[must_use]
+    pub fn from_key(key: &str) -> Option<Self> {
+        [Self::ReturnedToCabin, Self::Abandoned]
+            .into_iter()
+            .find(|end| end.key() == key)
+    }
+}
+
 /// What `cs --cs-path <retail>` was asked to do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StartFlowRequest {
     /// The original installation root.
     pub cs_path: PathBuf,
+    /// `--resume-start-flow <end>`: the flow comes back from a mission that
+    /// ended this way and opens on the cabin instead of the main menu.
+    pub resume: Option<MissionEnd>,
 }
 
 /// How a front-end screen is put in front of the player.
@@ -83,7 +122,11 @@ pub enum Presentation {
 #[must_use]
 pub fn presentation(screen: Screen) -> Presentation {
     match screen {
-        Screen::MainMenu | Screen::Settings | Screen::Credits => Presentation::Shell,
+        // The cabin is the `PassengerCabin` layout section's own buttons; the
+        // hub's photograph, pins and pilot data are #1840's.
+        Screen::MainMenu | Screen::Settings | Screen::Credits | Screen::Cabin => {
+            Presentation::Shell
+        }
         Screen::Briefing
         | Screen::Recon
         | Screen::FlightCheck
@@ -92,10 +135,6 @@ pub fn presentation(screen: Screen) -> Presentation {
         Screen::ProfileSelect => Presentation::Pending {
             what: "the Campaign pilot-selection page",
             task: Some(1835),
-        },
-        Screen::Cabin => Presentation::Pending {
-            what: "the cabin hub",
-            task: Some(1840),
         },
         Screen::Results => Presentation::Pending {
             what: "the debrief",
@@ -288,6 +327,58 @@ impl StartFlow {
         }
     }
 
+    /// The machine after the player left a flight handed over from here: the
+    /// walk the table prescribes from the main menu to the mission and back,
+    /// so the world the flight acquired is released and the machine stands on
+    /// the cabin. The mission is the one [`FIRST_MISSION`] names.
+    ///
+    /// The pilot-selection page has not landed (#1835), so the walk takes the
+    /// table's `ProfileSelect` rows itself; the requests they ask for
+    /// (`OpenProfile`, `ApplyOutcome` …) are recorded in [`Self::requests`].
+    ///
+    /// # Errors
+    ///
+    /// [`StartRefusal::Machine`] when the table refuses a step of the walk.
+    pub fn after_mission(end: MissionEnd) -> Result<Self, StartRefusal> {
+        let mut flow = Self::new();
+        let to_flight = [
+            Action::OpenCampaign,
+            // The pilot already exists: the flight was theirs.
+            Action::ContinueProfile,
+            Action::ConfirmProfile,
+            Action::OpenBriefing,
+            Action::ContinueToFlightCheck,
+            Action::Launch,
+            Action::LoadSucceeded,
+        ];
+        let leave: &[Action] = match end {
+            MissionEnd::ReturnedToCabin => &[Action::MissionFailed, Action::ReturnToCabin],
+            MissionEnd::Abandoned => &[Action::Pause, Action::AbortMission],
+        };
+        for action in to_flight.iter().chain(leave) {
+            // The Flight Check that launched the flight is the mission
+            // session's, so the machine's own loadout draft is empty: the
+            // launch row's guard is not asked again.
+            let outcome = flow
+                .front_end
+                .apply_replayed(*action)
+                .map_err(|refusal| StartRefusal::Machine(refusal.to_string()))?;
+            for effect in outcome.effects {
+                if let Effect::Request(request) = effect {
+                    flow.requests.push(request);
+                }
+            }
+        }
+        Ok(flow)
+    }
+
+    /// The layout section the shell shows for the machine's screen, when the
+    /// shell presents it.
+    #[must_use]
+    pub fn section(&self) -> Option<&'static str> {
+        section_of_screen(self.screen())
+    }
+
     /// The same flow with every [`Presentation::Pending`] screen treated as
     /// presented: what the walk will do once the sibling tasks have landed,
     /// for a test to exercise the table beyond today's frontier.
@@ -473,13 +564,41 @@ impl StartFlow {
 /// The command line the hand-over runs: exactly what a player types for the
 /// mission, so `--mission` behaves as it always has.
 #[must_use]
+/// `--from-start-flow` asks the mission to come back here when the player
+/// leaves it for the cabin (see [`return_args`]).
 pub fn handover_args(request: &StartFlowRequest, mission: &str) -> Vec<String> {
     vec![
         "--cs-path".to_owned(),
         request.cs_path.display().to_string(),
         "--mission".to_owned(),
         mission.to_owned(),
+        "--from-start-flow".to_owned(),
     ]
+}
+
+/// The command line the mission runs to come back to the front end.
+#[must_use]
+pub fn return_args(cs_path: &std::path::Path, end: MissionEnd) -> Vec<String> {
+    vec![
+        "--cs-path".to_owned(),
+        cs_path.display().to_string(),
+        "--resume-start-flow".to_owned(),
+        end.key().to_owned(),
+    ]
+}
+
+/// Replaces the finished mission process with the front end, opened on the
+/// cabin. A new process image, again because winit allows one event loop per
+/// process; the mission's world was torn down before this is called.
+///
+/// # Errors
+///
+/// [`StartFlowError::Handover`] when the front end cannot start.
+pub fn return_to_front_end(
+    cs_path: &std::path::Path,
+    end: MissionEnd,
+) -> Result<(), StartFlowError> {
+    hand_over(&return_args(cs_path, end))
 }
 
 /// Why the start flow ended in failure.
@@ -516,8 +635,12 @@ pub fn run_start_flow(request: &StartFlowRequest) -> Result<(), StartFlowError> 
         cs_path: request.cs_path.clone(),
         smoke: None,
     };
-    let (mut app, _) =
-        shell_app_with(&window, Some(StartFlow::new())).map_err(StartFlowError::FrontEnd)?;
+    let flow = match request.resume {
+        Some(end) => StartFlow::after_mission(end)
+            .map_err(|refusal| StartFlowError::Handover(refusal.to_string()))?,
+        None => StartFlow::new(),
+    };
+    let (mut app, _) = shell_app_with(&window, Some(flow)).map_err(StartFlowError::FrontEnd)?;
     let exit = app.run();
     let mission = app
         .world()

@@ -680,6 +680,9 @@ impl DebriefScene {
 pub enum DebriefResponse {
     /// Replay Mission: the caller restarts the mission ([`apply_response`]).
     Replay,
+    /// Return to Cabin in a run the start flow handed over: the caller ends
+    /// the flight and the front end opens on the cabin ([`apply_response`]).
+    ReturnToCabin,
     /// The button exists and does nothing yet; `reason` is also the notice.
     Unavailable {
         /// The button.
@@ -696,6 +699,7 @@ pub enum DebriefResponse {
 pub struct DebriefScreen {
     scene: DebriefScene,
     notice: Option<String>,
+    cabin: bool,
 }
 
 impl DebriefScreen {
@@ -705,7 +709,16 @@ impl DebriefScreen {
         Self {
             scene,
             notice: None,
+            cabin: false,
         }
+    }
+
+    /// The same screen with a cabin to return to: Return to Cabin then
+    /// answers [`DebriefResponse::ReturnToCabin`] instead of its notice.
+    #[must_use]
+    pub const fn with_cabin(mut self) -> Self {
+        self.cabin = true;
+        self
     }
 
     /// What is drawn.
@@ -731,6 +744,9 @@ impl DebriefScreen {
             return DebriefResponse::NoButton;
         };
         let role = button.role;
+        if self.cabin && role == DebriefRole::ReturnToCabin {
+            return DebriefResponse::ReturnToCabin;
+        }
         let Some(reason) = role.unavailable() else {
             return DebriefResponse::Replay;
         };
@@ -1007,6 +1023,11 @@ pub fn show_debrief(world: &mut bevy::prelude::World, debrief: &MissionDebrief) 
     };
     match source.screen_for(debrief) {
         Ok(screen) => {
+            let screen = if world.contains_resource::<super::ReturnToFrontEnd>() {
+                screen.with_cabin()
+            } else {
+                screen
+            };
             for line in screen.report_lines() {
                 println!("{line}");
             }
@@ -1032,6 +1053,12 @@ pub fn apply_response(world: &mut bevy::prelude::World, response: &DebriefRespon
         println!("mission debrief: Replay Mission restarts the mission");
         world.remove_resource::<DebriefScreen>();
         world.insert_resource(MissionHostRestartRequest);
+    }
+    if matches!(response, DebriefResponse::ReturnToCabin) {
+        println!("mission debrief: Return to Cabin leaves the flight for the front end");
+        world.remove_resource::<DebriefScreen>();
+        world.insert_resource(super::MissionLeft(super::MissionEnd::ReturnedToCabin));
+        world.write_message(bevy::app::AppExit::Success);
     }
 }
 
@@ -1353,9 +1380,9 @@ fn debrief_input(
         Some(DebriefResponse::Unavailable { reason, .. }) => {
             println!("mission debrief: {reason}");
         }
-        Some(DebriefResponse::Replay) => {
-            commands.queue(|world: &mut bevy::prelude::World| {
-                apply_response(world, &DebriefResponse::Replay);
+        Some(response @ (DebriefResponse::Replay | DebriefResponse::ReturnToCabin)) => {
+            commands.queue(move |world: &mut bevy::prelude::World| {
+                apply_response(world, &response);
             });
         }
         Some(DebriefResponse::NoButton) | None => {}

@@ -1914,7 +1914,8 @@ pub fn run_windowed(
     smoke_mode: crate::mission_session::MissionSmokeMode,
     dev_overlay: bool,
     dev_keys: bool,
-) -> Result<(), MissionCompositionError> {
+    from_start_flow: bool,
+) -> Result<Option<super::MissionEnd>, MissionCompositionError> {
     // A requested capture is judged before any content is read.
     let capture = crate::mission_session::CaptureSettings::from_env()
         .map_err(MissionCompositionError::Capture)?;
@@ -1923,6 +1924,9 @@ pub fn run_windowed(
         settings.scenario.apply(&mut stage.start);
     }
     let mut app = build_windowed(&stage)?;
+    if from_start_flow {
+        app.insert_resource(super::ReturnToFrontEnd);
+    }
     if dev_keys {
         apply_developer_keys(&mut app);
     }
@@ -2132,11 +2136,15 @@ pub fn run_windowed(
         };
         trace.and(audio)
     });
+    let left = app
+        .world()
+        .get_resource::<super::MissionLeft>()
+        .map(|left| left.0);
     teardown(&mut app);
     captured.map_err(MissionCompositionError::Capture)?;
     smoked?;
     match exit {
-        AppExit::Success => Ok(()),
+        AppExit::Success => Ok(left),
         AppExit::Error(code) => Err(MissionCompositionError::Exit(format!("exit code {code}"))),
     }
 }

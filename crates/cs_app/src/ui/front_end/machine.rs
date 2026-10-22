@@ -634,6 +634,24 @@ impl FrontEnd {
         self.perform(action, row.to, row.request)
     }
 
+    /// As [`Self::apply`] with the row's guard not evaluated: for a flight
+    /// that already happened outside this machine, whose preconditions the
+    /// part that ran it checked (the start flow replaying the walk of a
+    /// mission the mission session's own Flight Check launched; Rally #1831).
+    /// Only the guard is skipped: the row, its effects and its resources are
+    /// the table's.
+    ///
+    /// # Errors
+    ///
+    /// [`Refusal::NoTransition`] when the table has no such row.
+    pub(super) fn apply_replayed(&mut self, action: Action) -> Result<Outcome, Refusal> {
+        let row = find(self.screen, action).ok_or(Refusal::NoTransition {
+            screen: self.screen,
+            action,
+        })?;
+        self.perform(action, row.to, row.request)
+    }
+
     /// Answers the discard prompt: drop the draft and carry on.
     ///
     /// # Errors

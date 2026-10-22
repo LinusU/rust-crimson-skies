@@ -61,7 +61,8 @@ fn accept_parity5_start_flow_02_bare_cs_path_is_the_start_flow() {
     assert_eq!(
         cli::parse(args(&["--cs-path", "/retail"])),
         CliRequest::StartFlow(StartFlowRequest {
-            cs_path: PathBuf::from("/retail")
+            cs_path: PathBuf::from("/retail"),
+            resume: None,
         })
     );
     // `--mission` is untouched: it still parses to the mission request.
@@ -99,6 +100,7 @@ fn accept_parity5_start_flow_02_bare_cs_path_is_the_start_flow() {
 fn accept_parity5_start_flow_02_handover_is_the_mission_command() {
     let request = StartFlowRequest {
         cs_path: PathBuf::from("/retail"),
+        resume: None,
     };
     match cli::parse(handover_args(&request, FIRST_MISSION)) {
         CliRequest::Mission(mission) => {

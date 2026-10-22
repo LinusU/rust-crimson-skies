@@ -1343,7 +1343,11 @@ pub(super) fn shell_app_with(
         &|art: &str| screens.art_extent(art),
         &|section: &str| screens.script_text(&script_member(section)),
     );
-    shell.open(START_SECTION).map_err(FrontEndError::Shell)?;
+    let entry = flow
+        .as_ref()
+        .and_then(StartFlow::section)
+        .unwrap_or(START_SECTION);
+    shell.open(entry).map_err(FrontEndError::Shell)?;
 
     // Every art name the sections reference, decoded once: the shell can
     // reach any of them, so the texture cache is complete up front.

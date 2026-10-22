@@ -145,8 +145,9 @@ pub use shell::{
     ShellSection, ShellView, SkippedReason, SkippedRow, UnhandledEffect,
 };
 pub use start_flow::{
-    FIRST_MISSION, Presentation, StartFlow, StartFlowError, StartFlowRequest, StartRefusal,
-    StartStep, handover_args, presentation, run_start_flow, screen_of_section,
+    FIRST_MISSION, MissionEnd, Presentation, StartFlow, StartFlowError, StartFlowRequest,
+    StartRefusal, StartStep, handover_args, presentation, return_args, return_to_front_end,
+    run_start_flow, screen_of_section,
 };
 pub use window::{
     DEFAULT_FRONT_END_CAPTURE_DIR, FrontEndError, FrontEndRequest, FrontEndShellPlugin,
