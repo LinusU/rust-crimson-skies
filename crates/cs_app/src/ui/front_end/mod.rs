@@ -90,6 +90,7 @@ mod paths;
 mod retail;
 mod screens;
 mod shell;
+mod start_flow;
 mod window;
 
 use std::collections::{BTreeMap, BTreeSet};
@@ -142,6 +143,10 @@ pub use shell::{
     ButtonEffect, ButtonVisual, CURSOR_CANDIDATES, MenuShell, SECTION_SURFACE, START_SECTION,
     ShellButton, ShellButtonView, ShellError, ShellOutcome, ShellPane, ShellPaneView, ShellRect,
     ShellSection, ShellView, SkippedReason, SkippedRow, UnhandledEffect,
+};
+pub use start_flow::{
+    FIRST_MISSION, Presentation, StartFlow, StartFlowError, StartFlowRequest, StartRefusal,
+    StartStep, handover_args, presentation, run_start_flow, screen_of_section,
 };
 pub use window::{
     DEFAULT_FRONT_END_CAPTURE_DIR, FrontEndError, FrontEndRequest, FrontEndShellPlugin,

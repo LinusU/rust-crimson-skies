@@ -74,6 +74,7 @@ use super::retail::{FrontEndScreens, RetailError};
 use super::shell::{
     ButtonVisual, MenuShell, SECTION_SURFACE, START_SECTION, ShellOutcome, ShellView,
 };
+use super::start_flow::{StartFlow, StartStep};
 use super::{Artwork, ShellError};
 use crate::playtest::SmokeRequest;
 use crate::playtest::smoke::SMOKE_FRAME_HZ;
@@ -159,6 +160,17 @@ pub struct ShellResource {
     scene: ShellScene,
     /// The section's sprites are stale: respawn them.
     redraw: bool,
+    /// The F45 machine that decides which moves the shell may make; `Some` in
+    /// the start flow (`cs --cs-path <retail>`), `None` in `--front-end`.
+    flow: Option<StartFlow>,
+}
+
+impl ShellResource {
+    /// The start flow's machine, when this run has one.
+    #[must_use]
+    pub fn flow(&self) -> Option<&StartFlow> {
+        self.flow.as_ref()
+    }
 }
 
 /// The decoded art.
@@ -255,6 +267,7 @@ pub struct FrontEndShellPlugin {
     art: BTreeMap<String, Artwork>,
     cursor: Option<(String, Artwork)>,
     visuals: bool,
+    flow: Mutex<Option<StartFlow>>,
 }
 
 impl FrontEndShellPlugin {
@@ -272,7 +285,15 @@ impl FrontEndShellPlugin {
             art,
             cursor,
             visuals: true,
+            flow: Mutex::new(None),
         }
+    }
+
+    /// Puts the F45 machine in charge of the shell's moves (the start flow).
+    #[must_use]
+    pub fn with_flow(self, flow: StartFlow) -> Self {
+        *self.flow.lock().expect("the plugin is not shared yet") = Some(flow);
+        self
     }
 
     /// The model-only presenter for a headless drive: no sprites, no image
@@ -285,6 +306,7 @@ impl FrontEndShellPlugin {
             art: BTreeMap::new(),
             cursor: None,
             visuals: false,
+            flow: Mutex::new(None),
         }
     }
 }
@@ -334,6 +356,11 @@ impl Plugin for FrontEndShellPlugin {
             art,
             scene: ShellScene::default(),
             redraw: true,
+            flow: self
+                .flow
+                .lock()
+                .map(|mut slot| slot.take())
+                .unwrap_or_default(),
         });
         if self.visuals {
             app.add_systems(Startup, startup_shell);
@@ -461,6 +488,7 @@ fn frame_shell(world: &mut World) {
     }
     let in_smoke = world.contains_resource::<ShellSmoke>();
     let shell = &mut state.shell;
+    let flow = &mut state.flow;
     if let Some(position) = state.input.cursor {
         if position.x < 0.0 || position.y < 0.0 {
             shell.pointer_leave();
@@ -472,6 +500,7 @@ fn frame_shell(world: &mut World) {
             shell.pointer_leave();
         }
     }
+    let mut exit = false;
     for event in events.drain(..) {
         let outcome = match event {
             ShellEvent::PointerDown => {
@@ -494,8 +523,36 @@ fn frame_shell(world: &mut World) {
                 ShellOutcome::Nothing
             }
             ShellEvent::ActivateUp => shell.activate_up(),
-            ShellEvent::Escape => shell.escape(),
+            ShellEvent::Escape => match flow {
+                // The machine decides where Esc is bound (Credits only).
+                Some(flow) => {
+                    if matches!(flow.route_escape(shell), StartStep::Moved { .. }) {
+                        state
+                            .run
+                            .visited
+                            .push(shell.section_name().unwrap_or_default().to_owned());
+                        state.redraw = true;
+                    }
+                    ShellOutcome::Nothing
+                }
+                None => shell.escape(),
+            },
         };
+        if let Some(flow) = flow {
+            match flow.route(shell, outcome.clone()) {
+                StartStep::Moved { .. } => {
+                    state
+                        .run
+                        .visited
+                        .push(shell.section_name().unwrap_or_default().to_owned());
+                    state.redraw = true;
+                }
+                StartStep::Launch { .. } | StartStep::Quit => exit = true,
+                StartStep::Refused(refusal) => eprintln!("cs: {refusal}"),
+                StartStep::Stay => {}
+            }
+            continue;
+        }
         match outcome {
             ShellOutcome::Entered { section } | ShellOutcome::Back { section } => {
                 state.run.visited.push(section);
@@ -506,13 +563,16 @@ fn frame_shell(world: &mut World) {
                 if in_smoke {
                     state.run.quit_seen = true;
                 } else {
-                    world
-                        .resource_mut::<Messages<AppExit>>()
-                        .write(AppExit::Success);
+                    exit = true;
                 }
             }
             ShellOutcome::Nothing => {}
         }
+    }
+    if exit {
+        world
+            .resource_mut::<Messages<AppExit>>()
+            .write(AppExit::Success);
     }
     // The observable states the report checks: hovers and the depressed frame.
     if let Some(section) = shell.section() {
@@ -1263,6 +1323,19 @@ fn json_f32(value: f32) -> String {
 pub fn shell_app(
     request: &FrontEndRequest,
 ) -> Result<(App, Option<ShellSmokeHandle>), FrontEndError> {
+    shell_app_with(request, None)
+}
+
+/// As [`shell_app`], with the F45 machine in charge of the shell's moves when
+/// `flow` is given (the start flow, [`super::start_flow`]).
+///
+/// # Errors
+///
+/// As [`shell_app`].
+pub(super) fn shell_app_with(
+    request: &FrontEndRequest,
+    flow: Option<StartFlow>,
+) -> Result<(App, Option<ShellSmokeHandle>), FrontEndError> {
     let screens = FrontEndScreens::open(&request.cs_path).map_err(FrontEndError::Retail)?;
     let layout = screens.original_layout().map_err(FrontEndError::Retail)?;
     let mut shell = MenuShell::build(
@@ -1309,7 +1382,11 @@ pub fn shell_app(
             std::time::Duration::from_secs_f64(1.0 / SMOKE_FRAME_HZ),
         ));
     }
-    app.add_plugins(FrontEndShellPlugin::windowed(shell, art, cursor));
+    let plugin = FrontEndShellPlugin::windowed(shell, art, cursor);
+    app.add_plugins(match flow {
+        Some(flow) => plugin.with_flow(flow),
+        None => plugin,
+    });
     let handle = request.smoke.as_ref().map(|smoke| {
         let plugin = ShellSmokePlugin::windowed(smoke.clone());
         let handle = plugin.handle();

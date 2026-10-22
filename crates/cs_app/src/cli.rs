@@ -22,7 +22,7 @@ use crate::playtest::smoke::MIN_SMOKE_SECONDS;
 use crate::playtest::{DEFAULT_CAPTURE_DIR, PlaytestRequest, RetailRequest, SmokeRequest};
 use crate::run::SyntheticRequest;
 use crate::ui::front_end::{
-    DEFAULT_FRONT_END_CAPTURE_DIR, FrontEndRequest, MIN_SHELL_SMOKE_SECONDS,
+    DEFAULT_FRONT_END_CAPTURE_DIR, FrontEndRequest, MIN_SHELL_SMOKE_SECONDS, StartFlowRequest,
 };
 
 /// Exit code for invalid input or unsupported content (CLI-EVIDENCE contract).
@@ -96,6 +96,9 @@ pub enum CliRequest {
     /// <dir>]]`: open the windowed front end presenting the original
     /// `ASSETS/LAYOUT.CSV` sections (FE-MENU-1, task #1833).
     FrontEnd(FrontEndRequest),
+    /// `--cs-path <dir>` alone: open the windowed start flow on the original
+    /// main menu, driven by the F45 front-end machine (Rally #1830).
+    StartFlow(StartFlowRequest),
     /// No arguments at all: invalid input, reported on stderr and exit 2.
     MissingInput,
     /// Arguments that name no supported run mode: reported on stderr and
@@ -433,6 +436,25 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
         };
         return CliRequest::Playtest(PlaytestRequest { smoke, retail });
     }
+    if let Some(cs_path) = &cs_path
+        && world.is_none()
+        && aircraft.is_none()
+        && !synthetic
+        && !headless
+        && smoke_seconds.is_none()
+        && capture_dir.is_none()
+        && ticks.is_none()
+        && trace.is_none()
+        && seed.is_none()
+        && !smoke_no_teleport
+        && !dev_overlay
+        && !dev_keys
+        && !smoke_engagement
+    {
+        return CliRequest::StartFlow(StartFlowRequest {
+            cs_path: cs_path.clone(),
+        });
+    }
     if cs_path.is_some() || world.is_some() || aircraft.is_some() {
         return CliRequest::Invalid {
             reason: "--cs-path, --world and --aircraft select the original-assets \
@@ -590,6 +612,16 @@ WINDOWED PLAYTEST (development, not original)
         through the session's damage authority (a scripted test input, not
         the original's failure) and judges the journal's debrief screen the
         failed run opens: its text rows, buttons and that the run stays open
+
+START FLOW (windowed)
+    --cs-path <dir>
+        Open the original main menu in a window, with the front-end state
+        machine deciding which moves the buttons may make: Preferences and
+        Credits open, Quit ends, and Esc steps back only where the original
+        binds it (Credits). A screen whose presenter is not built yet (the
+        Campaign pilot page, the cabin) is refused on stderr with its task,
+        never replaced. Reaching the briefing hands over to
+        `--cs-path <dir> --mission M01`
 
 ORIGINAL FRONT END (windowed)
     --cs-path <dir> --front-end
