@@ -538,7 +538,7 @@ fn accept_fe_menu_1_the_cli_takes_a_front_end_and_refuses_its_misuse() {
         "/i",
         "--front-end",
         "--smoke-seconds",
-        "10",
+        "15",
         "--capture-dir",
         "d",
     ]));
@@ -548,7 +548,7 @@ fn accept_fe_menu_1_the_cli_takes_a_front_end_and_refuses_its_misuse() {
     assert_eq!(
         request.smoke,
         Some(SmokeRequest {
-            seconds: 10,
+            seconds: 15,
             capture_dir: PathBuf::from("d"),
         })
     );
@@ -558,7 +558,7 @@ fn accept_fe_menu_1_the_cli_takes_a_front_end_and_refuses_its_misuse() {
         "/i",
         "--front-end",
         "--smoke-seconds",
-        "8",
+        "14",
     ]));
     let CliRequest::FrontEnd(FrontEndRequest {
         smoke: Some(smoke), ..
