@@ -416,6 +416,8 @@ pub enum MissionCompositionError {
     LaunchCinematic(super::launch_cinematic::LaunchCinematicError),
     /// The Esc pause screen could not be read from `escape.zrd`.
     PauseMap(super::pause_map::PauseMapError),
+    /// The journal's debrief screen could not be read from the installation.
+    Debrief(super::debrief_screen::DebriefReadError),
     /// The app exited with an error.
     Exit(String),
 }
@@ -463,6 +465,7 @@ impl fmt::Display for MissionCompositionError {
             Self::FlightCheck(error) => write!(f, "{error}"),
             Self::LaunchCinematic(error) => write!(f, "{error}"),
             Self::PauseMap(error) => write!(f, "{error}"),
+            Self::Debrief(error) => write!(f, "{error}"),
             Self::Exit(reason) => write!(f, "the mission window exited with an error: {reason}"),
         }
     }
@@ -1937,6 +1940,14 @@ pub fn run_windowed(
             super::pause_map::read_pause_map(install_root, &plan.mission_dir, &screens, &strings)
                 .map_err(MissionCompositionError::PauseMap)?;
         super::pause_map::install_pause_map(&mut app, source);
+    }
+    // A failed run shows the journal's debrief; it is read now so the screen
+    // can be built the moment the failure settles.
+    {
+        let (source, artwork) =
+            super::debrief_screen::DebriefSource::read(install_root, &plan.mission_dir)
+                .map_err(MissionCompositionError::Debrief)?;
+        super::debrief_screen::install_debrief_screen(&mut app, source, artwork);
     }
     // The Flight Check holds the mission until Fly Mission. A capture scenario
     // (the developer shortcuts) starts the mission directly and says so; the

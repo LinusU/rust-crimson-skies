@@ -31,7 +31,7 @@ use cs_types::net::EventId;
 
 use super::vs_m01_rt_window::{Scratch, synthetic_stage};
 
-fn step(app: &mut App) {
+pub(super) fn step(app: &mut App) {
     let timestep = app
         .world()
         .resource::<bevy::prelude::Time<bevy::time::Fixed>>()
@@ -41,7 +41,7 @@ fn step(app: &mut App) {
     app.update();
 }
 
-fn exits(app: &App, cursor: &mut MessageCursor<AppExit>) -> usize {
+pub(super) fn exits(app: &App, cursor: &mut MessageCursor<AppExit>) -> usize {
     app.world()
         .get_resource::<Messages<AppExit>>()
         .map_or(0, |messages| cursor.read(messages).count())
@@ -49,7 +49,7 @@ fn exits(app: &App, cursor: &mut MessageCursor<AppExit>) -> usize {
 
 /// Crashes the composed mission's player into a slab laid under it: 700 of the
 /// designed 1200 hull are gone, so a head-on contact finishes it.
-fn crash_the_player(app: &mut App) -> Entity {
+pub(super) fn crash_the_player(app: &mut App) -> Entity {
     let victim = app.world().resource::<PlayerVictim>().clone();
     let tick = Tick(
         app.world()

@@ -109,7 +109,7 @@ const SECTION: &str = "FlightCheck";
 
 /// The designed text height of a row whose layout height is an unresolved
 /// placeholder, in logical pixels.
-const DESIGNED_TEXT_HEIGHT: u32 = 16;
+pub(super) const DESIGNED_TEXT_HEIGHT: u32 = 16;
 
 /// The script's Change Plane gate (`if (3 > JQ) deactivate`): the pills show
 /// only when the plane choice offers at least this many planes.
@@ -297,16 +297,16 @@ pub struct FlightCheckScene {
     pub unknowns: Vec<SceneUnknown>,
 }
 
-fn field(row: &Row, index: usize) -> &str {
+pub(super) fn field(row: &Row, index: usize) -> &str {
     row.fields.get(index).map_or("", String::as_str)
 }
 
-fn number(row: &Row, index: usize) -> Option<u32> {
+pub(super) fn number(row: &Row, index: usize) -> Option<u32> {
     field(row, index).parse().ok()
 }
 
 /// A colour the layout writes as `0xAARRGGBB` or decimal.
-fn color_of(text: &str) -> Option<u32> {
+pub(super) fn color_of(text: &str) -> Option<u32> {
     match text.strip_prefix("0x").or_else(|| text.strip_prefix("0X")) {
         Some(hex) => u32::from_str_radix(hex, 16).ok(),
         None => text.parse().ok(),
@@ -1436,8 +1436,21 @@ impl FlightCheckArtwork {
         screens: &FrontEndScreens,
         scene: &FlightCheckScene,
     ) -> Result<Self, FlightCheckPhaseError> {
+        Self::read_names(screens, scene.art_names())
+    }
+
+    /// Decodes the named art files from the screen container.
+    ///
+    /// # Errors
+    ///
+    /// [`FlightCheckPhaseError::Read`] for an art file the container does not
+    /// hold or will not decode.
+    pub fn read_names<'a>(
+        screens: &FrontEndScreens,
+        names: impl IntoIterator<Item = &'a str>,
+    ) -> Result<Self, FlightCheckPhaseError> {
         let mut images = BTreeMap::new();
-        for name in scene.art_names() {
+        for name in names {
             let wanted = format!("{}{name}", crate::ui::front_end::GRAPHICS_PREFIX);
             let spelling = screens
                 .screens_container()

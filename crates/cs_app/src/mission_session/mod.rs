@@ -103,6 +103,7 @@ mod compose;
 mod content;
 mod crash_flow;
 mod debrief;
+mod debrief_screen;
 mod evidence;
 mod examine;
 mod external_view;
@@ -187,6 +188,11 @@ pub use content::{
 };
 pub use crash_flow::{MissionCrashMessagePlugin, install_crash_flow, step_crash_sequence};
 pub use debrief::{M01_CASH_EARNED_UNKNOWN_CLAIM, MissionDebrief, MissionTally, tally_player_gun};
+pub use debrief_screen::{
+    Arg, DebriefArtwork, DebriefButton, DebriefFacts, DebriefPane, DebriefReadError,
+    DebriefResponse, DebriefRole, DebriefScene, DebriefSceneError, DebriefScreen,
+    DebriefScreenPlugin, DebriefSource, format_message, install_debrief_screen, show_debrief,
+};
 pub use evidence::{
     CAPABILITIES_ENV, CAPTURE_ENV, CaptureHandle, CaptureRefusal, CaptureSettings,
     EVIDENCE_DIR_ENV, MIN_CLEAR_COVERAGE_PERMILLE, MIN_WORLD_COVERAGE_PERMILLE,
