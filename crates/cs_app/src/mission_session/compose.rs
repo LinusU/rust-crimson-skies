@@ -104,6 +104,7 @@ use cs_types::space::Quaternion;
 
 use super::actor_census::MissionActorAidPlugin;
 use super::actor_visual::build_actor_visuals;
+use super::flak_sound::{FlakSound, FlakSoundError, measure_flak_sound};
 use super::gun_sound::{GunSound, GunSoundError, measure_gun_sound};
 use super::hud_art::{
     MissionHudArt, build_hud_art, read_instrument_table, read_reticle_image, spawn_hud_art,
@@ -273,6 +274,11 @@ pub struct MissionStage {
     /// saved campaign's persisted loadout is unmeasured. The synthetic
     /// acceptance stages set `None`.
     pub gun_sound: Option<GunSound>,
+    /// The flak turret's measured shot and burst sounds (FLAK-C4, #1886),
+    /// the `wep_27` record's `FIRE` and `IMPACT` rows' sound groups, delivered
+    /// from the same staged container. `Some` only for M01's retail stage;
+    /// the synthetic acceptance stages set `None`.
+    pub flak_sound: Option<FlakSound>,
     /// The starting gun rounds and rocket stack the original's HUD shows
     /// (PARITY2-M01-HUD-VALUES, #1732), read from `weapons.zrd`. `Some` only
     /// for M01's retail stage, like [`Self::gun_sound`]: it is the
@@ -382,6 +388,8 @@ pub enum MissionCompositionError {
     /// declared record could not be built (M01-WINDOW-FIRE-GUN-LOADOUT,
     /// #1628).
     GunSound(GunSoundError),
+    /// The flak sounds could not be measured.
+    FlakSound(FlakSoundError),
     /// `weapons.zrd` did not state the starting weapon counts.
     WeaponCounts(WeaponCountsError),
     /// The mission's sound-group table or a member it names could not be read
@@ -430,6 +438,7 @@ impl fmt::Display for MissionCompositionError {
             Self::Capture(refusal) => write!(f, "{refusal}"),
             Self::LaunchSound(error) => write!(f, "{error}"),
             Self::GunSound(error) => write!(f, "{error}"),
+            Self::FlakSound(error) => write!(f, "{error}"),
             Self::WeaponCounts(error) => write!(f, "{error}"),
             Self::Audio(error) if error.code == crate::audio::CODE_CAPABILITY_ABSENT => write!(
                 f,
@@ -575,6 +584,14 @@ pub fn stage_for(
         Some(
             measure_gun_sound(install_root, &content.sound_archives)
                 .map_err(MissionCompositionError::GunSound)?,
+        )
+    } else {
+        None
+    };
+    let flak_sound = if plan.mission_dir.eq_ignore_ascii_case("zbd/c3/m01") {
+        Some(
+            measure_flak_sound(install_root, &content.sound_archives)
+                .map_err(MissionCompositionError::FlakSound)?,
         )
     } else {
         None
@@ -766,6 +783,7 @@ pub fn stage_for(
             .map_err(MissionCompositionError::LaunchSound)?,
         ),
         gun_sound,
+        flak_sound,
         weapon_counts,
         launch_cinematic,
         label: MISSION_COMPOSITION_LABEL.to_owned(),
@@ -1122,12 +1140,15 @@ fn add_composition(
     if let Some(launch) = &stage.launch_sound {
         // The measured gun sound is declared beside the launch record (#1628):
         // one catalog, one device, one population pass.
-        let extra: Vec<AudioAssetRecord> = stage
+        let mut extra: Vec<AudioAssetRecord> = stage
             .gun_sound
             .iter()
             .map(|gun| gun.record())
             .collect::<Result<_, _>>()
             .map_err(MissionCompositionError::GunSound)?;
+        if let Some(flak) = &stage.flak_sound {
+            extra.extend(flak.records().map_err(MissionCompositionError::FlakSound)?);
+        }
         super::launch_sound::install_launch_audio(
             app,
             launch,
@@ -1578,6 +1599,28 @@ fn load_items(stage: &MissionStage) -> Result<Vec<LoadItem>, MissionCompositionE
                     reason: error.to_string(),
                 })?,
             );
+        }
+        // The flak shot and burst members, one binding per distinct member.
+        if let Some(flak) = &stage.flak_sound {
+            let mut seen = Vec::new();
+            for voice in [&flak.shot, &flak.burst] {
+                if seen.contains(&&voice.content) {
+                    continue;
+                }
+                seen.push(&voice.content);
+                items.push(
+                    LoadItem::new(
+                        key.clone(),
+                        voice.content.clone(),
+                        Criticality::GameplayCritical,
+                        flak.bytes,
+                    )
+                    .map_err(|error| MissionCompositionError::Item {
+                        key: spelling.clone(),
+                        reason: error.to_string(),
+                    })?,
+                );
+            }
         }
     }
     Ok(items)

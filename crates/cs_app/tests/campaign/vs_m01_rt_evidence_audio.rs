@@ -185,7 +185,11 @@ fn accept_vs_m01_runtime_evidence_audio_the_launch_plays_the_engine_loop_through
     // through the launch's staged container: the engine member and, since
     // #1628's measured loadout, the player's selected gun member beside it.
     // The count is the stage's delivered set, not a fixed number.
-    let delivered_audio = 1 + usize::from(stage.gun_sound.is_some());
+    let delivered_audio = 1
+        + usize::from(stage.gun_sound.is_some())
+        + stage.flak_sound.as_ref().map_or(0, |flak| {
+            1 + usize::from(flak.shot.content != flak.burst.content)
+        });
     assert_eq!(
         install.samples, delivered_audio,
         "every delivered audio member was decoded into the library: {handoff:?}"

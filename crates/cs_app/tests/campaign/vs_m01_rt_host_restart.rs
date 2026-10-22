@@ -681,8 +681,12 @@ fn accept_vs_m01_runtime_host_03_retail_m01_restart_rebuilds_its_authored_initia
     // measured gun sound's member when the stage measured them
     // (VS-M01-RT-EVIDENCE-B, M01-WINDOW-FIRE-GUN-LOADOUT #1628): all are
     // delivered, none invented.
-    let expected_bindings =
-        1 + usize::from(stage.launch_sound.is_some()) + usize::from(stage.gun_sound.is_some());
+    let expected_bindings = 1
+        + usize::from(stage.launch_sound.is_some())
+        + usize::from(stage.gun_sound.is_some())
+        + stage.flak_sound.as_ref().map_or(0, |flak| {
+            1 + usize::from(flak.shot.content != flak.burst.content)
+        });
     assert_eq!(
         bindings_before, expected_bindings,
         "the announced items were delivered"
