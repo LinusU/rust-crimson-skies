@@ -998,6 +998,28 @@ fn path_contains_chain(path: &str, chain: &[String], leaf: &str) -> bool {
     true
 }
 
+/// Every node of the world group's container with its composed world position
+/// in metres (`root ∘ … ∘ local`), in container order — the join
+/// [`bind_mission_targets`] makes for its own targets, for a consumer that
+/// binds nodes by name pattern (the turret entries).
+///
+/// # Errors
+///
+/// The installation cannot be discovered or the container cannot be read.
+pub fn world_node_positions(
+    install_root: &Path,
+    group_dir: &str,
+) -> Result<Vec<(String, [f64; 3])>, String> {
+    let found = cs_assets::install::discover(install_root)
+        .map_err(|error| format!("the installation cannot be discovered: {error}"))?;
+    let (graph, _) = read_world_scene_from(&found, install_root, group_dir)?;
+    Ok(graph
+        .nodes()
+        .iter()
+        .map(|node| (node.name().to_owned(), node.world_transform().translation()))
+        .collect())
+}
+
 /// Reads the world group's `gamez.zbd` through the production readers: the raw
 /// node array plus the converted scene graph, exactly the join
 /// `crate::mission_world_actors::read_world_scene` makes.

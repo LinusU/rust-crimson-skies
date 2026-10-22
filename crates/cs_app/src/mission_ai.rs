@@ -973,7 +973,7 @@ impl WakeEnemiesLedger {
 /// in the site's own order. `None` when the arguments are not that measured
 /// shape — the operation's own measured parse is a list of names, and no other
 /// shape is interpreted rather than read as a name.
-fn wake_enemy_names(args: &[Value]) -> Option<Vec<String>> {
+pub(crate) fn wake_enemy_names(args: &[Value]) -> Option<Vec<String>> {
     let mut names = Vec::with_capacity(args.len());
     for value in args {
         match value {

@@ -409,6 +409,9 @@ pub struct TurretTable {
     /// The `TURRET` list in record order — [`read_turret_records`]'s own
     /// records, empty when no carrier holds the member.
     pub records: Vec<TurretRecord>,
+    /// The same list with every field the turret update reads
+    /// ([`crate::mission_turrets::read_turret_specs`]).
+    pub specs: Vec<crate::mission_turrets::TurretSpec>,
     /// The logical key of the container the member decoded from
     /// (`zbd/zrdr.zbd`), or `None` when no searched carrier held it.
     pub carrier: Option<String>,
@@ -489,6 +492,7 @@ pub fn read_scope_turrets(install_root: &Path, mission_dir: &str, group_dir: &st
         };
         return TurretTable {
             records: read_turret_records(&decoded),
+            specs: crate::mission_turrets::read_turret_specs(&decoded),
             carrier: Some(archive.clone()),
             refusal: None,
         };
