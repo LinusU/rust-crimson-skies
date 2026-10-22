@@ -105,6 +105,7 @@ mod debrief;
 mod evidence;
 mod examine;
 mod external_view;
+mod flak_round;
 mod flight_check;
 mod gun_sound;
 mod host;
@@ -186,6 +187,10 @@ pub use examine::{TargetFlagChange, TargetFlagLedger};
 pub use external_view::{
     BACK_DISTANCE_M, DOWN_ASTERN_M, DOWN_HEIGHT_M, EXTERNAL_DISTANCE_M, HeldPoint,
     drive_external_camera, external_eye, install_external_view, step_zoom,
+};
+pub use flak_round::{
+    BURST_IMPACT_ROW, BurstCause, FLAK_RECORD, FlakFireRefusal, FlakRecord, FlakRecordError,
+    FlakRound, FlakStep, OrdnanceBurst, RangeEnd, range_end,
 };
 pub use flight_check::{
     BriefingStage, ButtonRole, CHANGE_AMMO_UNAVAILABLE, CHANGE_PLANE_UNAVAILABLE,
