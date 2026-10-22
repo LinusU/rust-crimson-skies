@@ -285,6 +285,8 @@ pub struct TurretEntries {
     pub entries: Vec<TurretEntry>,
     /// Every source that could not be read or bound, verbatim.
     pub refusals: Vec<String>,
+    /// Every `WEAPON` record that could not be read or classified, verbatim.
+    pub weapon_refusals: Vec<String>,
     /// The `TURRET` records the entries were bound over, for the fire.
     pub specs: Vec<TurretSpec>,
     /// The `WEAPON` records the specs name, read from `weapons.zrd`
@@ -359,6 +361,7 @@ impl TurretEntries {
         Self {
             entries,
             refusals,
+            weapon_refusals: Vec::new(),
             specs: specs.to_vec(),
             weapons: std::collections::BTreeMap::new(),
         }

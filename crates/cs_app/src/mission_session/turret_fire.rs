@@ -320,6 +320,9 @@ pub fn build_mission_turrets(world: &mut World) {
         ..TurretFireReport::default()
     };
     report.refusals.extend(bound.refusals.iter().cloned());
+    report
+        .refusals
+        .extend(bound.weapon_refusals.iter().cloned());
     let hz = crate::mission_world_actors::SESSION_TICKS_PER_SECOND;
 
     // Stale bodies of a previous generation go first.

@@ -762,7 +762,7 @@ pub fn stage_for(
     let (weapons, weapon_refusals) =
         super::turret_fire::read_turret_weapons(install_root, &turrets.specs);
     host.turrets.weapons = weapons;
-    host.turrets.refusals.extend(weapon_refusals);
+    host.turrets.weapon_refusals = weapon_refusals;
 
     Ok(MissionStage {
         target,
