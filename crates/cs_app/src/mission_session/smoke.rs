@@ -118,6 +118,7 @@ use crate::world_actors::WorldActorBinding;
 
 mod briefing;
 mod camera_modes;
+mod debrief;
 pub mod voice_trace;
 
 pub use briefing::{
@@ -837,6 +838,11 @@ pub enum MissionSmokeMode {
     /// whole `--smoke-seconds` budget, gives no input and is never moved; the
     /// one judged check is `hostiles_damage_idle_player`.
     Engagement,
+    /// `--smoke-failure`: the player flies the measured start until control is
+    /// theirs, is destroyed through the damage authority (a scripted test
+    /// input) and the journal's debrief screen the failed run opens is
+    /// photographed and judged (#1655).
+    Failure,
 }
 
 /// Everything the engagement mode measured about the idle player's hull.
@@ -1036,6 +1042,8 @@ pub struct SmokeMeasurements {
     pub camera_modes: CameraModeMetrics,
     /// The idle player's hull ([`MissionSmokeMode::Engagement`] only).
     pub engagement: Option<EngagementMetrics>,
+    /// The failed run's debrief screen ([`MissionSmokeMode::Failure`] only).
+    pub debrief: Option<debrief::DebriefMetrics>,
 }
 
 /// One pass/fail verdict with its evidence.
@@ -1062,6 +1070,9 @@ pub struct Check {
 pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
     if let Some(engagement) = &m.engagement {
         return evaluate_engagement(m, engagement);
+    }
+    if m.debrief.is_some() {
+        return debrief::evaluate(m);
     }
     if m.no_teleport {
         // The no-teleport run passes through the Flight Check to release the
@@ -2125,6 +2136,9 @@ enum ProbeMode {
     /// and keep its background pane: the bare pane the full frame is compared
     /// with.
     FlightCheckBare,
+    /// Hide the journal debrief screen's overlay (stat card, buttons, labels,
+    /// text rows, notice): the bare pane remains (#1655).
+    DebriefBare,
 }
 
 #[derive(Resource, Clone, Copy, Debug, Default)]
@@ -2174,6 +2188,8 @@ struct SmokeData {
     frame: u32,
     /// Frames the Flight Check has been up.
     flight_check_frame: u32,
+    /// The debrief stage's progress (#1655).
+    debrief_run: debrief::DebriefRun,
     /// The briefing stage's progress (#1750).
     briefing: briefing::BriefingRun,
     /// The overlay nodes read at the Flight Check's full frame.
@@ -2301,6 +2317,7 @@ fn add_script_systems(app: &mut App) {
             smoke_cinematic,
             smoke_first_control,
             smoke_hull,
+            debrief::smoke_debrief,
             smoke_cockpit,
             camera_modes::smoke_camera_modes,
             smoke_script,
@@ -2414,6 +2431,7 @@ struct ProbeClasses<'w, 's> {
     visuals: Query<'w, 's, Entity, With<WorldVisual>>,
     ui: Query<'w, 's, UiProbeRow, With<Node>>,
     flight_check_overlay: Query<'w, 's, Entity, With<ScreenOverlay>>,
+    debrief_overlay: Query<'w, 's, Entity, With<super::debrief_screen::DebriefOverlay>>,
     /// The mesh HUD cluster's root (#1726): it carries no `Node`, so the UI
     /// class never reaches it — it hides with the actor bodies on every probe
     /// and comes back on restore.
@@ -2532,14 +2550,21 @@ fn apply_probe(
         }
         // The HUD's safe area and the letterbox bars are shown or hidden by
         // the launch cinematic; a restore leaves them to it (#1704).
-        if cinematic_owned && matches!(mode, ProbeMode::Restored | ProbeMode::FlightCheckBare) {
+        if cinematic_owned
+            && matches!(
+                mode,
+                ProbeMode::Restored | ProbeMode::FlightCheckBare | ProbeMode::DebriefBare
+            )
+        {
             continue;
         }
-        let value = if mode == ProbeMode::FlightCheckBare {
-            // Only the Flight Check's overlay goes; its background pane and
-            // the cover behind it stay, and the mission's own UI is under
-            // that cover.
-            if classes.flight_check_overlay.contains(entity) {
+        let value = if matches!(mode, ProbeMode::FlightCheckBare | ProbeMode::DebriefBare) {
+            // Only the screen's overlay goes; its background pane and the
+            // cover behind it stay, and the mission's own UI is under that
+            // cover.
+            if classes.flight_check_overlay.contains(entity)
+                || classes.debrief_overlay.contains(entity)
+            {
                 hidden
             } else {
                 shown
@@ -2844,6 +2869,9 @@ fn smoke_sample(
             config.mode,
             MissionSmokeMode::NoTeleport | MissionSmokeMode::Engagement
         );
+        if config.mode == MissionSmokeMode::Failure {
+            data.measurements.debrief = Some(debrief::DebriefMetrics::default());
+        }
         if config.mode == MissionSmokeMode::Engagement {
             data.measurements.engagement = Some(EngagementMetrics {
                 watch_frames: config.request.seconds.saturating_mul(60),
@@ -3207,6 +3235,9 @@ fn smoke_script(
     }
     let at = frame.saturating_sub(data.phase_start);
     match data.phase {
+        // The failure mode's own system (`debrief::smoke_debrief`) kills the
+        // player, photographs the screen and hands over to `Final`.
+        _ if config.mode == MissionSmokeMode::Failure => {}
         _ if config.mode == MissionSmokeMode::Engagement => {
             if data.phase != Phase::Final && data.phase != Phase::Ended {
                 let metrics = data.measurements.engagement.clone().unwrap_or_default();
@@ -4859,6 +4890,7 @@ fn write_artifacts(
         "{{\"kind\":{kind},\"mission\":{mission},\"human_play\":false,\
          \"mode\":{mode},\"player_teleported\":{teleported},\
          \"engagement\":{engagement},\
+         \"debrief\":{debrief},\
          \"wingman_threshold_m\":{threshold},\"wingmen\":[{wingmen}],\
          \"verified_original\":false,\"frames\":{frames},\"ticks\":{ticks},\
          \"hud\":{{\"model_line\":{model_line},\"drawn_line\":{drawn_line},\
@@ -4893,6 +4925,8 @@ fn write_artifacts(
         mission = json_string(&report.mission),
         mode = json_string(if report.measurements.engagement.is_some() {
             "engagement"
+        } else if report.measurements.debrief.is_some() {
+            "failure"
         } else if report.measurements.no_teleport {
             "no_teleport"
         } else {
@@ -4900,6 +4934,7 @@ fn write_artifacts(
         }),
         teleported = !report.placements.is_empty(),
         engagement = engagement,
+        debrief = debrief::debrief_json(report.measurements.debrief.as_ref()),
         threshold = MAX_WINGMAN_DISTANCE_M,
         wingmen = wingmen,
         frames = report.frames,

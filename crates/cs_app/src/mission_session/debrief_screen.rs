@@ -69,7 +69,7 @@ use bevy::prelude::{
     ImageNode, Last, MouseButton, Node, Plugin, PositionType, Query, Res, ResMut, Resource, Text,
     TextColor, TextFont, Update, Val, Window, With, default,
 };
-use bevy::text::FontSize;
+use bevy::text::{FontSize, Justify, TextLayout};
 use bevy::time::{Time, Virtual};
 use cs_content::campaign_bindings::SourceContext;
 use cs_content::ui_layout::{AspectFit, Rect};
@@ -441,6 +441,23 @@ impl DebriefScene {
                         frames,
                         frame: 0,
                     });
+                }
+                id if id.starts_with("SB_KILL") => {
+                    if !unknowns
+                        .iter()
+                        .any(|unknown| unknown.row == "SB_KILL0..SB_KILL10")
+                    {
+                        unknowns.push(SceneUnknown {
+                            row: "SB_KILL0..SB_KILL10".to_owned(),
+                            reason: "the layout has eleven kill markers (a strip of \
+                                     `NUMFRAMES` frames each, with a count text) at fixed \
+                                     places; the owner's frames are of runs with no kill, so \
+                                     how a kill is drawn is not photographed and none is \
+                                     drawn"
+                                .to_owned(),
+                            resolving_task: FOLLOW_UP.to_owned(),
+                        });
+                    }
                 }
                 _ => unknowns.push(SceneUnknown {
                     row: row.id.clone(),
@@ -1096,7 +1113,9 @@ fn spawn_debrief(
     // because roots of one global index are stacked in no stated order.
     let cover = GlobalZIndex(3000);
     let pane = GlobalZIndex(3001);
-    let above = GlobalZIndex(3002);
+    let card = GlobalZIndex(3002);
+    let buttons_z = GlobalZIndex(3003);
+    let text_z = GlobalZIndex(3004);
     commands.spawn((
         Node {
             position_type: PositionType::Absolute,
@@ -1148,11 +1167,8 @@ fn spawn_debrief(
             },
             node,
             Logical(part.rect),
-            above,
+            card,
             DebriefPart,
-            DebriefOverlay {
-                row: Some(part.id.clone()),
-            },
         ));
     }
     let mut buttons: Vec<&DebriefButton> = scene.buttons.iter().collect();
@@ -1178,7 +1194,7 @@ fn spawn_debrief(
             },
             node,
             Logical(button.rect),
-            above,
+            buttons_z,
             DebriefPart,
             DebriefOverlay {
                 row: Some(button.hotspot.clone()),
@@ -1196,9 +1212,14 @@ fn spawn_debrief(
                     ..default()
                 },
                 TextColor(Color::BLACK),
-                Logical(button.rect),
+                Logical(Rect {
+                    y: button.rect.y + button.rect.height.saturating_sub(14) / 2,
+                    height: 14,
+                    ..button.rect
+                }),
+                TextLayout::justify(Justify::Center),
                 LogicalFont(14.0),
-                above,
+                text_z,
                 DebriefPart,
                 DebriefOverlay { row: None },
             ));
@@ -1219,7 +1240,7 @@ fn spawn_debrief(
             TextColor(argb(text.color)),
             Logical(text.rect),
             LogicalFont(size),
-            above,
+            text_z,
             DebriefPart,
             DebriefOverlay {
                 row: Some(text.id.clone()),
@@ -1239,7 +1260,7 @@ fn spawn_debrief(
             ..default()
         },
         TextColor(Color::srgb(1.0, 0.85, 0.2)),
-        above,
+        text_z,
         NoticeLine,
         DebriefPart,
         DebriefOverlay { row: None },

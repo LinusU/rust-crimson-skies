@@ -613,3 +613,23 @@ fitted to the retail capture (first damage and failure at 1:37). The report's
 hit and a hull sample every 10 s; screenshots are `flight` (t+10 s), `damaged`
 (1.5 s after the first hit) or `end` (the budget ran out with no hit). The
 mode and its retail run are in `docs/findings/2026-10-18-m01-hostile-engagement.md`.
+
+#### The failure mode (#1655 `PARITY-M01-OUTCOME-C`)
+
+```sh
+target/release/cs --cs-path /path/to/retail --mission M01 \
+  --smoke-seconds 45 --smoke-failure --capture-dir private/evidence/PARITY-M01-OUTCOME-C
+```
+
+`--smoke-failure` (valid only with `--mission … --smoke-seconds`, not with the
+other two modes) goes through the briefing, the Flight Check and the launch
+cinematic, waits 60 frames after the player has control and then **destroys
+the player through the session's damage authority** (one lethal hit with no
+attacker on the hull node — a scripted test input, not the original's
+failure). The mission host settles the failure and the window shows the
+journal's debrief screen instead of exiting. The run photographs the screen
+(`frame_dbNNNNN_debrief.png`), hides its overlay and photographs the bare pane,
+and judges `debrief_failure_settled`, `debrief_screen_shown`,
+`debrief_run_stays_open` (no `AppExit` was written), `debrief_text_matches`,
+`debrief_buttons_drawn` and `smoke_shots_delivered`. See
+`docs/findings/2026-10-22-parity-m01-outcome-c-debrief-screen.md`.

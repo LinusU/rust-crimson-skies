@@ -62,6 +62,11 @@ pub struct MissionRequest {
     /// hostile aircraft damage the player (Rally #1653
     /// `PARITY-M01-OUTCOME-A`).
     pub smoke_engagement: bool,
+    /// `--smoke-failure`: the smoke flies the measured start, kills the
+    /// player through the session's damage authority once control is theirs
+    /// and judges the journal's debrief screen the failed run opens (Rally
+    /// #1655 `PARITY-M01-OUTCOME-C`).
+    pub smoke_failure: bool,
 }
 
 /// What the caller asked the binary to do.
@@ -143,6 +148,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
     let mut dev_overlay = false;
     let mut dev_keys = false;
     let mut smoke_engagement = false;
+    let mut smoke_failure = false;
     let mut front_end = false;
     let mut unknown = false;
 
@@ -158,6 +164,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
             "--dev-overlay" => dev_overlay = true,
             "--dev-keys" => dev_keys = true,
             "--smoke-engagement" => smoke_engagement = true,
+            "--smoke-failure" => smoke_failure = true,
             "--front-end" => front_end = true,
             "--smoke-seconds" => {
                 let Some(value) = args.get(index + 1).cloned() else {
@@ -269,6 +276,15 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
                 .to_string(),
         };
     }
+    if smoke_failure
+        && (mission.is_none() || smoke_seconds.is_none() || smoke_no_teleport || smoke_engagement)
+    {
+        return CliRequest::Invalid {
+            reason: "--smoke-failure is a mode of --cs-path <dir> --mission <id> \
+ --smoke-seconds <n> and does not combine with --smoke-no-teleport or --smoke-engagement"
+                .to_string(),
+        };
+    }
     if front_end {
         if playtest
             || synthetic
@@ -366,6 +382,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
             dev_overlay,
             dev_keys,
             smoke_engagement,
+            smoke_failure,
         });
     }
     if playtest {
@@ -555,7 +572,7 @@ WINDOWED PLAYTEST (development, not original)
         Fly with the developer key layout (W/S Q/E A/D, Left Shift / F
         throttle, R reset, F10 quit) instead of the original game's default
         controls.
-    --mission <id> --smoke-seconds <n> [--smoke-no-teleport | --smoke-engagement] [--capture-dir <dir>]
+    --mission <id> --smoke-seconds <n> [--smoke-no-teleport | --smoke-engagement | --smoke-failure] [--capture-dir <dir>]
         The same windowed launch driven as a scripted smoke (n >= 45
         simulated seconds): it injects keys through the real input path,
         places the player near each spawned actor, saves framebuffer PNGs and
@@ -569,6 +586,10 @@ WINDOWED PLAYTEST (development, not original)
         whole --smoke-seconds budget, never moves the player and judges only
         hostiles_damage_idle_player: whether the mission's hostile aircraft
         lowered the player's hull
+        --smoke-failure flies the measured start, then destroys the player
+        through the session's damage authority (a scripted test input, not
+        the original's failure) and judges the journal's debrief screen the
+        failed run opens: its text rows, buttons and that the run stays open
 
 ORIGINAL FRONT END (windowed)
     --cs-path <dir> --front-end

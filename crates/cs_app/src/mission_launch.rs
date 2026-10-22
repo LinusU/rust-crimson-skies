@@ -601,6 +601,8 @@ pub fn launch_mission(request: &crate::cli::MissionRequest) -> Result<(), Missio
             crate::mission_session::MissionSmokeMode::NoTeleport
         } else if request.smoke_engagement {
             crate::mission_session::MissionSmokeMode::Engagement
+        } else if request.smoke_failure {
+            crate::mission_session::MissionSmokeMode::Failure
         } else {
             crate::mission_session::MissionSmokeMode::Scripted
         },

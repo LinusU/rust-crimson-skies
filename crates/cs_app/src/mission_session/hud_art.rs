@@ -1121,12 +1121,14 @@ pub fn fit_hud_viewport(
     check: Option<Res<super::flight_check::FlightCheckPhase>>,
     view: Option<Res<super::view_cycle::MissionViewMode>>,
     crash: Option<Res<crate::playtest::fatal_contact::CrashSequence>>,
+    debrief: Option<Res<super::debrief_screen::DebriefScreen>>,
     mut cameras: Query<&mut Camera, With<HudArtCamera>>,
 ) {
     let held = phase.is_some_and(|phase| phase.is_playing())
         || check.is_some_and(|phase| phase.is_pending())
         || view.is_some_and(|view| view.at_pilot_eye())
-        || crash.is_some();
+        || crash.is_some()
+        || debrief.is_some();
     let rect = windows.single().ok().and_then(|window| {
         let (w, h) = safe_area(window.width(), window.height());
         if w <= 0.0 || h <= 0.0 {
