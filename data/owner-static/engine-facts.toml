@@ -2511,6 +2511,30 @@ fact = "only a weapon whose descriptor flag 0x40 is set builds the lock-on recor
 # ZBD/zrdr.zbd), not in the image; they are not committed. Provenance
 # `static`; nothing here is `verified_original`.
 
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "default.fire_rate"
+va = 0x004a9c45
+bytes = "b80000803f8986a80100008986a00100008986a4010000"
+fact = "constructor: entry+0x1a8, +0x1a0 and +0x1a4 = 1.0 (0x3f800000): FIRE_RATE absent is (1.0, 1.0)"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "default.attack_interval"
+va = 0x004a9c64
+bytes = "b900002041"
+fact = "constructor: ecx = 10.0 (0x41200000), stored to entry+0x1b8 and +0x1bc at 0x4a9c87/0x4a9c8d: ATTACK_INTERVAL absent is (10.0, 10.0)"
+
+[[turret_update_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "default.bored_interval"
+va = 0x004a9c97
+bytes = "899ec0010000899ec4010000"
+fact = "constructor: entry+0x1c0 and +0x1c4 = ebx (0, as for the other cleared fields): BORED_INTERVAL absent is (0, 0)"
+
 [[camera_mode_fact]]
 claim = "OWNER-STATIC-2026-10-21"
 provenance = "static"
