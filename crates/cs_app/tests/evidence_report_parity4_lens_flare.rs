@@ -28,7 +28,7 @@
 //!    CS_EVIDENCE_EXIT_CODE=<status from step 1> \
 //!    CS_EVIDENCE_REVIEWER=<identity> \
 //!    CS_GAME_DIR="$CS_GAME_DIR" \
-//!      cargo test --locked -p cs_app --test cs_app_tests_a -- evidence_report_parity4_lens_flare --ignored
+//!      cargo test --locked -p cs_app --test cs_app_tests_a -- evidence_report_parity4_lens_flare_writes_the_acceptance_report --ignored
 //!    ```
 //! 3. ```sh
 //!    python3 tools/validate_evidence.py private/evidence/PARITY4-LENS-FLARE/acceptance.json \
