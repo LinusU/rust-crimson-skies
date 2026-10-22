@@ -898,13 +898,7 @@ fn place_movie(world: &mut World, sprite: &MovieSprite, view: &ShellView, surfac
     // Video texels of the visible region: the row's `ScaleX`/`ScaleY` are
     // the *drawn* size as a percent of the video, so a drawn logical pixel
     // is `100/scale` video texels — texels = logical * 100 / scale.
-    let texel = |drawn: u32, scale: u32| {
-        if scale == 0 {
-            0
-        } else {
-            drawn.saturating_mul(100) / scale
-        }
-    };
+    let texel = |drawn: u32, scale: u32| drawn.saturating_mul(100).checked_div(scale).unwrap_or(0);
     let Ok(mut entity) = world.get_entity_mut(sprite.entity) else {
         return;
     };

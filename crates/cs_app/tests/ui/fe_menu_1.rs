@@ -675,7 +675,8 @@ fn accept_fe_menu_1_retail_the_original_sections_present_and_navigate_as_written
     );
     // The CrimFlag.MPG row parses to a movie (FE-MENU-2): the file, its
     // authored origin/scale and the loop flag kept.
-    let movies: Vec<(&str, &str, i32, i32, u32, u32, u32, u32, bool)> = menu
+    type MovieFields<'a> = (&'a str, &'a str, i32, i32, u32, u32, u32, u32, bool);
+    let movies: Vec<MovieFields<'_>> = menu
         .movies
         .iter()
         .map(|movie| {
