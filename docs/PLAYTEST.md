@@ -486,7 +486,20 @@ stand-off placement are labelled test ones in `report.json`), waits for the
 production turret law to acquire the player, fire the retail flak rocket and
 burst it, and photographs the drawn `flak_effect` while the flash, the smoke
 ball and the close-range flicker are alive (`frame_*_flak_burst.png`) and
-again after they expire (`frame_*_flak_burst_tail.png`).
+again after they expire (`frame_*_flak_burst_tail.png`). After the cockpit
+views it runs the **sun-aim phase** (#1860 `PARITY4-LENS-FLARE-C`): it freezes
+the flight on a scripted `Menu` hold — never the `PlayerRequest` pause, so the
+Esc map screen stays shut and the frame keeps the world view — writes a test
+placement that aims the nose so the camera-anchored `sun` node's stored bulb
+lands on the owner's reference capture's fraction of the viewport — upper
+left, `0.35, 0.20`, designed so the recovered quad chain runs down through the
+centre like the capture shows — corrects the aim once against the live
+projection, and photographs the drawn flare (`frame_*_lens_flare.png`) and
+then the identical frozen frame with only the four `lflare` quads hidden
+(`frame_*_lens_flare_hidden.png`), the pair the per-quad comparison is
+measured from. The owner's capture is comparison-only
+reference material, never committed:
+https://locousercontent.com/QcKrmWs5b2BXu1Ajf7YPMACejPs5_rFl2tVwWoWyOxOPFDYhHgDlXjGr2YXOlPfZ/original.png
 
 It writes real window framebuffer PNGs (`frame_*.png`) and `report.json`, and
 exits **non-zero when any check fails**:
@@ -516,6 +529,8 @@ exits **non-zero when any check fails**:
 | `flak_sounds_queued` | `snd_enemyflak` never played at a muzzle or `snd_missile_flak` never played at a burst (#1886); recorded not applicable when the stage measured no flak sounds |
 | `audio_radio_queued` | no radio line ever reached the queue or the mixer |
 | `audio_engine_queued` | the engine loop was never bound and running |
+| `lens_flare_sun_in_view` | the sun-aim phase's test placement was never written, or the measured sun position missed the designed `0.35, 0.20` viewport fraction of the owner's capture (#1860) |
+| `lens_flare_quads_drawn` | fewer than the four `lflare` quads drew in the `lens_flare` frame, the `lens_flare`/`lens_flare_hidden` raw pair never arrived, or a drawn quad added under 256 pixels over the hidden frame |
 | `smoke_shots_delivered` | a requested screenshot never arrived |
 
 The floors are designed and documented next to the constants
