@@ -936,6 +936,7 @@ fn place_picture(
 
 /// Spawns the screen while the player's Esc pause holds the session and
 /// removes it when the pause ends; hides the system pointer while it is up.
+#[allow(clippy::too_many_arguments)]
 fn sync_pause_map(
     mut commands: Commands,
     source: Res<PauseMapSource>,
@@ -967,6 +968,7 @@ fn sync_pause_map(
 
 /// Lays every part out in window pixels: a top-level part sits in the fitted
 /// 800x600 rectangle, a nested one (the chart inside its clip) in its parent.
+#[allow(clippy::type_complexity)]
 fn place_pause_map(
     windows: Query<&Window>,
     mut parts: Query<
@@ -1086,6 +1088,26 @@ fn drive_pause_map(
     }
 }
 
+/// The mesh HUD (dials and compass) is drawn by its own camera over the UI, so
+/// the screen hides it while it is open and gives it back when it closes.
+fn hide_hud_art(
+    shown: Res<PauseMapShown>,
+    mut was: bevy::prelude::Local<bool>,
+    mut roots: Query<&mut bevy::prelude::Visibility, With<super::hud_art::HudArtRoot>>,
+) {
+    if shown.0 == *was {
+        return;
+    }
+    *was = shown.0;
+    for mut visibility in &mut roots {
+        *visibility = if shown.0 {
+            bevy::prelude::Visibility::Hidden
+        } else {
+            bevy::prelude::Visibility::Inherited
+        };
+    }
+}
+
 /// Installs the pause map over a mission composition.
 pub fn install_pause_map(app: &mut App, source: PauseMapSource) {
     app.insert_resource(source);
@@ -1102,7 +1124,13 @@ impl Plugin for PauseMapPlugin {
             .add_message::<PauseMapPress>()
             .add_systems(
                 Update,
-                (sync_pause_map, place_pause_map, drive_pause_map).chain(),
+                (
+                    sync_pause_map,
+                    place_pause_map,
+                    drive_pause_map,
+                    hide_hud_art,
+                )
+                    .chain(),
             );
     }
 }

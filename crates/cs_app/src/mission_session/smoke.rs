@@ -2393,6 +2393,8 @@ struct ProbeClasses<'w, 's> {
     /// class never reaches it — it hides with the actor bodies on every probe
     /// and comes back on restore.
     hud_art: Query<'w, 's, Entity, With<super::hud_art::HudArtRoot>>,
+    /// Whether the Esc pause screen is up: it hides the mesh HUD itself.
+    pause_map: Option<Res<'w, super::pause_map::PauseMapShown>>,
 }
 
 /// One UI node as the probe sees it: the entity, whether the developer
@@ -2477,7 +2479,10 @@ fn apply_probe(
     write_all(&mut visibility, classes.zeppelins.iter(), body_value);
     // The mesh HUD cluster is an overlay, not world geometry: out of every
     // probe frame like the UI nodes, back on restore.
-    write_all(&mut visibility, classes.hud_art.iter(), body_value);
+    let pause_map_up = classes.pause_map.as_ref().is_some_and(|shown| shown.0);
+    if !(pause_map_up && mode == ProbeMode::Restored) {
+        write_all(&mut visibility, classes.hud_art.iter(), body_value);
+    }
     write_all(&mut visibility, classes.visuals.iter(), world_value);
     // The world's `horizon` records — the sky band, the haze wall under it and
     // the cloud quads — are anchored to the camera like the dome is, so a sea
