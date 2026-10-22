@@ -90,8 +90,9 @@ target/release/cs --cs-path <retail> --mission M01 \
 
 Exit 0, 3,810 frames, 59 checks, all `[pass]`. The trace was first
 captured on `26aad982e`, reproduced verbatim after the branch's rebases
-(`d6aaa716a`, and again by the reviewer on `0032ad03a`): every launch-window
-row below is what the run holds. The per-second voice set the trace held
+(`d6aaa716a`, and again by the reviewer on `0032ad03a`). The review then
+fixed one trace-reading fault (below) and re-ran the same command on the
+fix commit `3d473ddcf`: the per-second voice set the trace held
 — the task's required evidence — beside the owner's instants (our clock
 starts at Fly Mission; the ~27.8 s offset question is recorded above):
 
@@ -109,9 +110,19 @@ Each one-shot is held exactly its decoded length (`introscene1` 16.0 s at
 11,025 Hz mono, `introscene2` 12.6 s, `introscene3` 10.2 s, `introscene4`
 2.0 s at 22,050 Hz), so each leaves the second after its cue's scene ends —
 the scene voices hand over on the same boundaries the scenes do. The engine
-loops' pan/gain/rate columns now carry the `.02` terms (bearing pan swings
-of ±0.16, the `VOLUME 0.8` base, the Doppler-scaled rates) rather than the
+loops' pan/gain/rate columns now carry the `.02` terms (the `VOLUME 0.8`
+base, bearing pan inside ±0.16, the Doppler-scaled rates) rather than the
 designed flat-zone constants the .06 run recorded.
+
+One trace-reading fault the review found and fixed: the voice trace runs in
+`Last`, after transform propagation, but read the `VoiceListenerPose`
+`follow_listener` had refreshed a generation earlier in `Update` — so the
+player's own coincident loop showed its one-frame displacement as phantom
+±0.16 pan swings on some post-hand-over seconds (the device mix itself was
+unaffected: `mix_session` reads the pose and the emitter transforms in the
+same `Update` pass, so it always heard pan 0). The trace now reads the
+player body's transform in its own schedule, and the post-hand-over rows
+report the loop centred at pan 0.0 — the value the device heard.
 
 The table lists this task's voices; the trace's seconds also carry the
 radio queue's lines — `sparks_1` (3–4), `jack_2` (5–8), `betty_3` (9–12),
