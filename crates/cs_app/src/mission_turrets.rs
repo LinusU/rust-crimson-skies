@@ -509,6 +509,15 @@ impl TurretWakeLedger {
         }
     }
 
+    /// A test wake: applies one name match exactly as a `WAKEUP_TURRETS`
+    /// emission would — the same matcher and the same `TurretWake` /
+    /// `TurretWakeRefusal` records, so the ledger's own report shows what a
+    /// scripted run put down (the owner-command smoke's flak phase wakes a
+    /// sleeping gun this way, FLAK-C5). Nothing in a mission run calls it.
+    pub fn wake_for_test(&mut self, name: &str, tick: Tick) {
+        self.wake(name, false, DirectiveOperation::WakeTurrets, tick);
+    }
+
     /// The entries with their current live bytes.
     #[must_use]
     pub fn entries(&self) -> &[TurretEntry] {

@@ -1520,6 +1520,13 @@ impl MissionHost {
         &self.turrets
     }
 
+    /// The turret wake ledger, mutable: the owner-command smoke's flak phase
+    /// test-wakes a sleeping turret through it (FLAK-C5). No ordinary mission
+    /// step writes here — the directive consumer is `step`'s own path.
+    pub const fn wake_turrets_mut(&mut self) -> &mut TurretWakeLedger {
+        &mut self.turrets
+    }
+
     /// The `WAKEUP_ENEMIES` consumer's ledger (M01-PLAY-AI-WAKE, #1487):
     /// which directive keys were applied, which sleeping scripted aircraft
     /// they released and which names woke nothing.
