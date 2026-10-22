@@ -682,6 +682,7 @@ pub fn stage_for(
         rewards: Vec::new(),
         radio,
         targets,
+        turrets: crate::mission_turrets::TurretEntries::default(),
     };
 
     // The message catalog is read once, here, from the installation root the
@@ -701,6 +702,16 @@ pub fn stage_for(
     // of collapsing into "no turret declared".
     let turrets =
         super::parts::read_scope_turrets(install_root, &plan.mission_dir, &plan.group_dir);
+    // One turret entry per world node or named zeppelin part a record's
+    // `NODES` declares, each with the live byte its `ACTIVATED` sets
+    // (FLAK-B1, #1880).
+    let mut host = host;
+    host.turrets = crate::mission_turrets::TurretEntries::read(
+        install_root,
+        &plan.group_dir,
+        &turrets.specs,
+        &crate::mission_turrets::zeppelin_part_chains(&host),
+    );
 
     Ok(MissionStage {
         target,

@@ -178,6 +178,7 @@ use crate::mission_markers::{
     MissionMarkerConsumer,
 };
 use crate::mission_session::SoundArchive;
+use crate::mission_turrets::TurretWakeLedger;
 use crate::objectives::{
     LoweredObjectives, ObjectiveSession, SessionLaunchError, SessionTick, TeardownReport,
 };
@@ -397,6 +398,10 @@ pub struct MissionHostSeed {
     /// one from (the synthetic acceptance stages) carries the empty binding and
     /// spawns none.
     pub targets: crate::mission_targets::MissionTargetBinding,
+    /// The turret entries bound at load, each with the live byte its record's
+    /// `ACTIVATED` sets (FLAK-B1, #1880). A stage with no installation carries
+    /// none.
+    pub turrets: crate::mission_turrets::TurretEntries,
 }
 
 /// Launches the control session of `seed` for `generation`.
@@ -762,6 +767,10 @@ pub struct MissionHost {
     /// which directive keys were applied, which sleeping scripted aircraft
     /// they released, and every name that woke nothing and why.
     enemies: WakeEnemiesLedger,
+    /// The `WAKEUP_TURRETS` / `WAKEUP_ZEP_TURRETS` consumer and the turret
+    /// entries' live bytes (FLAK-B1, #1880). Reset to the seed's entries on
+    /// restart.
+    turrets: TurretWakeLedger,
     /// The objective-target flag consumer (M01-EXAMINE-OBJECTIVE, #1754).
     target_flags: TargetFlagLedger,
     armed: Vec<ArmedNode>,
@@ -854,6 +863,7 @@ impl MissionHost {
             wake: WakeAnimationLedger::default(),
             calls: CallAnimationLedger::default(),
             enemies: WakeEnemiesLedger::default(),
+            turrets: TurretWakeLedger::new(&seed.turrets),
             target_flags: TargetFlagLedger::default(),
             armed: Vec::new(),
             landings: LandingLedger::default(),
@@ -981,6 +991,7 @@ impl MissionHost {
         self.wake = WakeAnimationLedger::default();
         self.calls = CallAnimationLedger::default();
         self.enemies = WakeEnemiesLedger::default();
+        self.turrets = TurretWakeLedger::new(&seed.turrets);
         self.target_flags = TargetFlagLedger::default();
         self.armed.clear();
         self.landings = LandingLedger::default();
@@ -1246,6 +1257,10 @@ impl MissionHost {
         //     next fixed tick's arm/decide pass then flies it, so a release
         //     made on this tick is visible to the AI on the following one.
         let _woken_enemies = self.enemies.consume(world, self.script.state(), tick);
+        // 6c1. Wake turrets: every `WAKEUP_TURRETS` / `WAKEUP_ZEP_TURRETS`
+        //      emission not applied yet sets the live byte of the entries it
+        //      names (FLAK-B1, #1880). Nothing fires here.
+        self.turrets.consume(self.script.state(), tick);
         // 6c2. Objective-target flags: every `ADD`/`REMOVE_OBJECTIVE_TARGET`
         //      emission this host has not applied yet flips its ground target's
         //      flag, and the selection follows (M01-EXAMINE-OBJECTIVE, #1754).
@@ -1496,6 +1511,13 @@ impl MissionHost {
     #[must_use]
     pub const fn wake_animations(&self) -> &WakeAnimationLedger {
         &self.wake
+    }
+
+    /// The turret wake consumer's ledger and the turret entries' live bytes
+    /// (FLAK-B1, #1880).
+    #[must_use]
+    pub const fn wake_turrets(&self) -> &TurretWakeLedger {
+        &self.turrets
     }
 
     /// The `WAKEUP_ENEMIES` consumer's ledger (M01-PLAY-AI-WAKE, #1487):
