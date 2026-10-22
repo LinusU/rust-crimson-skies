@@ -1,15 +1,12 @@
-# M01 audio timeline: the launch-cinematic voices (WIP)
+# M01 audio timeline: the launch-cinematic voices
 
-Task #1863 (PARITY6-M01-AUDIO-TIMELINE.03). Capabilities: `retail`, `audio`.
-Provenance: `static` — read from the installation's own files and the decrypted
-engine image; nothing here is `verified_original`. Companions:
+Task #1863 (PARITY6-M01-AUDIO-TIMELINE.03). Capabilities: `retail`, `gpu`,
+`audio`. Provenance: `static` plus an owner-command smoke run (a scripted
+run, never `human_play`, nothing `verified_original`). Companions:
 `2026-10-22-m01-audio-timeline-voice-laws.md` (the .02 laws this task
 implements), `2026-10-22-m01-audio-timeline-sample-identity.md` (which member
 each Drydock buffer is), `2026-10-22-m01-audio-timeline-smoke-trace.md` (the
 .06 per-second voice trace this task's evidence extends).
-
-**WIP** — the implementation half is in progress; the data half below is
-measured and pinned by the task's tests.
 
 ## The owner's log, this task's slice
 
@@ -82,3 +79,40 @@ measured sequence/scene instant, not to a guessed wall clock.
 - Unknowns refused by name: `snd_droplaunch` (no group record), the
   `SoundVolume` float, the listener axis sign, the airframe pitch-scale
   table (`.02` leaves it unread).
+
+## The owner-command smoke (the task's evidence)
+
+```sh
+CS_CAPABILITIES=retail,gpu,audio CS_ENGINE_IMAGE=... \
+target/release/cs --cs-path <retail> --mission M01 \
+  --smoke-seconds 45 --capture-dir private/evidence/PARITY6-M01-AUDIO-03
+```
+
+Exit 0, 3,810 frames, 58 checks, all `[pass]` (run on commit 26aad982e,
+plus this findings edit). The per-second voice set the trace held — the
+task's required evidence — beside the owner's instants (our clock starts
+at Fly Mission; the ~27.8 s offset question is recorded above):
+
+| Second | Voice set enters/leaves | Owner instant (offset read) |
+| --- | --- | --- |
+| 1 | `devastator.wav` loop (287,408 B, pan 0.065, rate 30,319) + `introscene1.wav` (354,000 B) | 0.5: the other engine loop |
+| 16 | + `introscene2.wav` (277,000 B); `introscene1` drops at 17 | — |
+| 29 | `introscene3.wav` (225,000 B); `introscene2` drops | scene-3 cue |
+| 39 | `introscene4.wav` (89,056 B); `introscene3` drops | 10.5: the 89,056 B one-shot |
+| 41 | second `devastator.wav` loop joins — the player's own at hand-over (40.15 s); `introscene4` drops | 13.0: the player engine |
+| 42 | the other plane's loop ends — it crossed the 2,000 m `.02` audible limit and its binding was removed | — |
+| 46+ | the player's loop alone at gain 0.80 (`VOLUME` × flat zone) and rate 35,280 Hz | — |
+
+Each one-shot is held exactly its decoded length (`introscene1` 16.0 s at
+11,025 Hz mono, `introscene2` 12.6 s, `introscene3` 10.2 s, `introscene4`
+2.0 s at 22,050 Hz), so each leaves the second after its cue's scene ends —
+the scene voices hand over on the same boundaries the scenes do. The engine
+loops' pan/gain/rate columns now carry the `.02` terms (bearing pan swings
+of ±0.16, the `VOLUME 0.8` base, the Doppler-scaled rates) rather than the
+designed flat-zone constants the .06 run recorded.
+
+**No listening claim**: nothing here says the voices are audible or sound
+right — `human_review` stays with the owner. Framebuffer evidence from the
+same run sits in `private/evidence/PARITY6-M01-AUDIO-03/` (e.g.
+`frame_00005_cinematic_start.png`, `frame_02403_cinematic_end.png`,
+`frame_02417_cinematic_handover.png`, `frame_02411_first_control.png`).
