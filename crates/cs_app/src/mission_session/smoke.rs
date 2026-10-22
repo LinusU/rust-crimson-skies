@@ -51,6 +51,8 @@
 //! | `flak_sounds_queued` | `snd_enemyflak` played at the muzzle and `snd_missile_flak` at a burst (FLAK-C4); recorded not applicable when the stage measured no flak sounds |
 //! | `audio_radio_queued` | a radio line reached the audio queue or the mixer |
 //! | `audio_engine_queued` | the player's engine loop is bound and running |
+//! | `lens_flare_sun_in_view` | the sun-aim phase placed the camera-anchored sun on the owner's capture's frame fraction (#1860) |
+//! | `lens_flare_quads_drawn` | all four `lflare` quads drew in the `lens_flare` frame and each added real pixels over the `lens_flare_hidden` comparison (#1860) |
 //! | `smoke_shots_delivered` | every screenshot the run asked for arrived |
 //!
 //! # How the picture is measured
@@ -74,8 +76,8 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use avian3d::prelude::{AngularVelocity, LinearVelocity, Position, Rotation};
-use bevy::camera::Camera;
 use bevy::camera::visibility::InheritedVisibility;
+use bevy::camera::{Camera, Projection};
 use bevy::ecs::query::Has;
 use bevy::ecs::system::SystemParam;
 use bevy::input::keyboard::KeyCode;
@@ -87,7 +89,7 @@ use bevy::prelude::{
 };
 use bevy::render::render_resource::TextureFormat;
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk};
-use bevy::ui::{ComputedNode, Node, UiGlobalTransform};
+use bevy::ui::{ComputedNode, Node, UiGlobalTransform, Val};
 use cs_content::world::SurfaceRole;
 use cs_types::Tick;
 
@@ -98,11 +100,12 @@ use super::flak_burst_fx::FlakBurstFxReport;
 use super::flight_check::{FlightCheckPhase, PhaseResponse, ScreenOverlay};
 use super::host::MissionHost;
 use super::launch_cinematic::LaunchCinematic;
+use super::lens_flare::{FLARE_TEXTURES, FlareQuadNode, MissionLensFlare};
 use super::letterbox::LaunchLetterbox;
 use super::lifecycles::ObjectiveLifecycles;
 use super::turret_fire::{MissionTurretFire, TurretWeaponRecord};
 use super::weapons::MissionWeaponReport;
-use super::world_draw::{HorizonRest, WorldWaterPart};
+use super::world_draw::{HorizonRest, WorldWaterPart, node_slot_of};
 use crate::audio::loops::AudioSession;
 use crate::audio::mixer::AudioMixReport;
 use crate::audio::spawn::{AudioBindLog, AudioEmitterRole};
@@ -123,7 +126,7 @@ use crate::ui::hud::{MissionMessages, OBJECTIVE_HUD_CAPTION, ObjectiveHud};
 use crate::weapon_effects::MuzzleEffectSpawn;
 use crate::weapons::{WeaponRoundMirror, WeaponSession};
 use crate::world::WorldResidency;
-use crate::world::contacts::WorldVisual;
+use crate::world::contacts::{WorldObjectBinding, WorldVisual};
 use crate::world_actors::WorldActorBinding;
 
 mod briefing;
@@ -268,6 +271,51 @@ const HELP_CLOSE_OFFSET: u32 = 14;
 const PAUSE_MAP_SHOT_OFFSET: u32 = 10;
 /// Frames into the pause-map phase at which `Esc` is pressed again to resume.
 const PAUSE_MAP_CLOSE_OFFSET: u32 = 14;
+/// Frames into `Phase::LensFlare` at which the flight is frozen — a
+/// `PauseReason::Menu` hold, never `PlayerRequest`, so the Esc map screen
+/// stays shut and the two frames keep the world view
+/// (PARITY4-LENS-FLARE-C, #1860).
+const LENS_FLARE_PAUSE_OFFSET: u32 = 0;
+/// Frames into `Phase::LensFlare` at which the aimed placement is written.
+const LENS_FLARE_PLACE_OFFSET: u32 = 4;
+/// Frames into `Phase::LensFlare` at which the measured projection corrects
+/// the aim once (the reseated chase camera has settled by then).
+const LENS_FLARE_CORRECT_OFFSET: u32 = 10;
+/// Frames into `Phase::LensFlare` at which the quads are read and the
+/// `lens_flare` screenshot is requested.
+const LENS_FLARE_SHOT_OFFSET: u32 = 16;
+/// Frames into `Phase::LensFlare` at which the probe hides the quads alone.
+const LENS_FLARE_HIDE_OFFSET: u32 = 18;
+/// Frames into `Phase::LensFlare` at which the `lens_flare_hidden`
+/// screenshot is requested.
+const LENS_FLARE_HIDDEN_SHOT_OFFSET: u32 = 20;
+/// Frames into `Phase::LensFlare` at which the probe restores and the flight
+/// resumes.
+const LENS_FLARE_RESUME_OFFSET: u32 = 22;
+/// Frames into `Phase::LensFlare` at which the phase hands over.
+const LENS_FLARE_END_OFFSET: u32 = 24;
+/// The viewport fraction the sun is aimed at — the composition of the
+/// owner's capture: upper left, so the recovered quad chain runs down
+/// through the centre to the big mirrored ring at the lower right.
+/// **Designed.**
+pub const SUN_SCREEN_FRACTION: [f32; 2] = [0.35, 0.20];
+/// The fraction of the viewport the measured sun position may miss
+/// [`SUN_SCREEN_FRACTION`] by on either axis before the check fails — one
+/// correction step lands far inside it; the floor guards an aim that never
+/// converged. **Designed.**
+pub const MAX_SUN_SCREEN_ERROR: f32 = 0.05;
+/// The least pixels a drawn quad's rect may add over the hidden frame. The
+/// faintest of the four (the `lflare2` ring, at the designed 50% alpha) still
+/// changes tens of thousands of pixels on the sky at [`FLARE_PIXEL_DELTA`],
+/// so the floor separates *drawn* from *never drew*, nothing more.
+/// **Designed.**
+pub const MIN_FLARE_QUAD_PIXELS: usize = 256;
+/// The channel delta the flare comparison counts a pixel on. The strong
+/// flight-check threshold (16) undercounts a quad the original blends
+/// faintly — the `lflare2` ring moves most of its pixels under it — while a
+/// frozen frame's background is byte-identical outside the quads, so 4 still
+/// rejects sub-LSB noise and keeps every real texture pixel. **Designed.**
+const FLARE_PIXEL_DELTA: u8 = 4;
 /// Frames into the rocket phase at which its screenshot is requested.
 const ROCKET_SHOT_OFFSET: u32 = 80;
 /// Frames after the first burst puff is alive at which its screenshot is taken.
@@ -1068,6 +1116,42 @@ pub const MAX_COCKPIT_EYE_ERROR_M: f32 = 0.05;
 /// **Designed:** any chase rig stands clear of the pilot's head.
 pub const MIN_CHASE_FROM_EYE_M: f32 = 1.0;
 
+/// One flare quad as the `lens_flare` frame measured it
+/// (PARITY4-LENS-FLARE-C, #1860).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FlareQuadMetrics {
+    /// The `lflare` texture slot, 0..=3.
+    pub texture: usize,
+    /// `place_flares` projected the source into the viewport and showed the
+    /// quad in the `lens_flare` frame.
+    pub drawn: bool,
+    /// The quad's screen rect in physical pixels (x, y, width, height).
+    pub region: [u32; 4],
+    /// Pixels inside `region` that differ between the `lens_flare` and
+    /// `lens_flare_hidden` raw frames (`None`: the raw pair never arrived).
+    pub pixels_added: Option<usize>,
+}
+
+/// What the sun-aim phase measured (PARITY4-LENS-FLARE-C, #1860).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LensFlareMetrics {
+    /// The drawn source the camera was aimed at (`None`: the session drew no
+    /// flare source).
+    pub source: Option<String>,
+    /// The aimed placement was written onto the production body.
+    pub placed: bool,
+    /// The source's measured position in the `lens_flare` frame, in logical
+    /// pixels (`None`: the projection failed at the shot frame).
+    pub source_px: Option<[f32; 2]>,
+    /// The viewport `source_px` is measured against, in logical pixels.
+    pub viewport_px: [f32; 2],
+    /// Both the `lens_flare` and `lens_flare_hidden` raw frames arrived for
+    /// the per-quad comparison.
+    pub frames_delivered: bool,
+    /// One row per spawned quad, in texture order.
+    pub quads: Vec<FlareQuadMetrics>,
+}
+
 /// Everything the run measured, as [`evaluate`] consumes it.
 #[derive(Clone, Debug, Default)]
 pub struct SmokeMeasurements {
@@ -1122,6 +1206,10 @@ pub struct SmokeMeasurements {
     pub cockpit: CockpitViewMetrics,
     /// The camera-mode stage (PARITY3-CAMERA-MODES.04, #1826).
     pub camera_modes: CameraModeMetrics,
+    /// The sun-aim phase (PARITY4-LENS-FLARE-C, #1860): the measured sun
+    /// position, the four quads' drawn state and how much each added over
+    /// the hidden comparison frame (`None`: the run never reached it).
+    pub lens_flare: Option<LensFlareMetrics>,
     /// The idle player's hull ([`MissionSmokeMode::Engagement`] only).
     pub engagement: Option<EngagementMetrics>,
     /// The failed run's debrief screen ([`MissionSmokeMode::Failure`] only).
@@ -1758,6 +1846,82 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
     // --- the camera modes (PARITY3-CAMERA-MODES.04, #1826) ------------------
     checks.extend(camera_modes::evaluate(m));
 
+    // --- the sun's lens flare (PARITY4-LENS-FLARE-C, #1860) ----------------
+    match &m.lens_flare {
+        Some(flare) => {
+            let in_view = flare.placed
+                && flare.source_px.is_some_and(|at| {
+                    flare.viewport_px[0] > 0.0
+                        && flare.viewport_px[1] > 0.0
+                        && (at[0] / flare.viewport_px[0] - SUN_SCREEN_FRACTION[0]).abs()
+                            <= MAX_SUN_SCREEN_ERROR
+                        && (at[1] / flare.viewport_px[1] - SUN_SCREEN_FRACTION[1]).abs()
+                            <= MAX_SUN_SCREEN_ERROR
+                });
+            checks.push(Check {
+                id: "lens_flare_sun_in_view".to_owned(),
+                applies: true,
+                passed: in_view,
+                detail: format!(
+                    "aimed at {:?} (placed: {}): the sun sat at {:?} of a {:?} viewport, \
+                     {} from the designed {:?} fraction",
+                    flare.source,
+                    flare.placed,
+                    flare.source_px,
+                    flare.viewport_px,
+                    if in_view { "inside" } else { "outside" },
+                    SUN_SCREEN_FRACTION,
+                ),
+            });
+            let drawn = flare.quads.iter().filter(|quad| quad.drawn).count();
+            let weak: Vec<String> = flare
+                .quads
+                .iter()
+                .filter(|quad| quad.drawn)
+                .filter(|quad| {
+                    quad.pixels_added
+                        .is_none_or(|pixels| pixels < MIN_FLARE_QUAD_PIXELS)
+                })
+                .map(|quad| format!("lflare{}:+{:?}", quad.texture + 1, quad.pixels_added))
+                .collect();
+            checks.push(Check {
+                id: "lens_flare_quads_drawn".to_owned(),
+                applies: true,
+                passed: flare.frames_delivered
+                    && flare.quads.len() == FLARE_TEXTURES.len()
+                    && drawn == FLARE_TEXTURES.len()
+                    && weak.is_empty(),
+                detail: format!(
+                    "{} of {} quads drawn in the `lens_flare` frame{}",
+                    drawn,
+                    flare.quads.len(),
+                    if flare.frames_delivered {
+                        format!(
+                            "; under-floor quads: {}",
+                            if weak.is_empty() {
+                                "none".to_owned()
+                            } else {
+                                weak.join(", ")
+                            }
+                        )
+                    } else {
+                        "; the raw frame pair never arrived".to_owned()
+                    }
+                ),
+            });
+        }
+        None => {
+            for id in ["lens_flare_sun_in_view", "lens_flare_quads_drawn"] {
+                checks.push(Check {
+                    id: id.to_owned(),
+                    applies: true,
+                    passed: false,
+                    detail: "the run never reached the sun-aim phase".to_owned(),
+                });
+            }
+        }
+    }
+
     // --- the picture arrived ----------------------------------------------
     checks.push(Check {
         id: "smoke_shots_delivered".to_owned(),
@@ -2312,6 +2476,11 @@ enum ProbeMode {
     /// Hide the journal debrief screen's overlay (stat card, buttons, labels,
     /// text rows, notice): the bare pane remains (#1655).
     DebriefBare,
+    /// Hide the lens-flare quads alone: the world, the sea, the actors and
+    /// the rest of the UI stay exactly as drawn, so the `lens_flare` and
+    /// `lens_flare_hidden` frames differ only in the flare
+    /// (PARITY4-LENS-FLARE-C, #1860).
+    LensFlareAbsent,
 }
 
 #[derive(Resource, Clone, Copy, Debug, Default)]
@@ -2324,6 +2493,11 @@ enum KeyOp {
     Press(KeyCode),
     Release(KeyCode),
     Pause,
+    /// A scripted hold on the session clock (`PauseReason::Menu`): the flight
+    /// freezes for a comparison exactly as `Pause` freezes it, but the
+    /// reason never raises the Esc map screen, so the photographed frame
+    /// keeps the world view (PARITY4-LENS-FLARE-C, #1860).
+    Freeze,
     Resume,
 }
 
@@ -2337,6 +2511,10 @@ struct Placement {
     name: String,
     position_m: [f32; 3],
     yaw: f32,
+    /// Nose attitude: 0 for every placement except the sun-aim phase's, which
+    /// pitches up to put the camera-anchored sun on its frame fraction
+    /// (PARITY4-LENS-FLARE-C, #1860).
+    pitch: f32,
     speed_m_s: f32,
     distance_m: f64,
 }
@@ -2412,6 +2590,9 @@ struct SmokeData {
     /// The placement that faced the target-indicator demo actor, so the
     /// phase can turn the player away from the held selection (#1727).
     target_placement: Option<Placement>,
+    /// The sun-aim phase's last written (yaw, pitch), so its correction step
+    /// can refine it (#1860).
+    flare_aim: Option<(f32, f32)>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -2447,6 +2628,11 @@ enum Phase {
     /// The cockpit views: `F8` three times, a frame and a reading at each
     /// stop, 0 -> 7 -> 6 -> 0 (PARITY3-COCKPIT-VIEW.05, #1813).
     Cockpit,
+    /// The sun's lens flare: freeze the flight, aim the nose so the
+    /// camera-anchored sun sits on the owner's capture's frame fraction,
+    /// photograph the glow and its rings, photograph the same frame with the
+    /// quads hidden (PARITY4-LENS-FLARE-C, #1860).
+    LensFlare,
     /// The camera keys: `F7`, `F9`-`F12`, zoom, `K`/`J`/`L` and the numpad
     /// look, each photographed (#1826).
     Cameras,
@@ -2479,8 +2665,13 @@ impl Plugin for MissionSmokePlugin {
         // The probe runs again in `PostUpdate`: a system in `Update` may have
         // respawned an actor label (the #1538 contact list redraws its rows)
         // *after* the first pass, and nothing after `PostUpdate` writes
-        // visibility, so this is the state the frame's render sees.
-        .add_systems(PostUpdate, apply_probe);
+        // visibility, so this is the state the frame's render sees. Ordered
+        // after `place_flares` so a `LensFlareAbsent` hide wins over the
+        // projection's own verdict in the same frame (#1860).
+        .add_systems(
+            PostUpdate,
+            apply_probe.after(super::lens_flare::place_flares),
+        );
         add_script_systems(app);
     }
 }
@@ -2502,6 +2693,7 @@ fn add_script_systems(app: &mut App) {
             debrief::smoke_debrief,
             smoke_cockpit,
             camera_modes::smoke_camera_modes,
+            smoke_lens_flare,
             smoke_script,
             smoke_rounds,
             smoke_flashes,
@@ -2529,6 +2721,9 @@ fn drive_script(
             KeyOp::Release(key) => keys.release(key),
             KeyOp::Pause => {
                 platform.session_mut().pause(PauseReason::PlayerRequest);
+            }
+            KeyOp::Freeze => {
+                platform.session_mut().pause(PauseReason::Menu);
             }
             KeyOp::Resume => {
                 platform.session_mut().resume();
@@ -2562,20 +2757,26 @@ fn apply_placement(
     let Ok((mut position, mut rotation, mut velocity, mut angular)) = player.single_mut() else {
         return;
     };
-    let heading = Quat::from_rotation_y(placement.yaw);
+    let heading = Quat::from_euler(
+        bevy::math::EulerRot::YXZ,
+        placement.yaw,
+        placement.pitch,
+        0.0,
+    );
     position.0 = Vec3::from_array(placement.position_m);
     rotation.0 = heading;
     velocity.0 = heading * Vec3::NEG_Z * placement.speed_m_s;
     angular.0 = Vec3::ZERO;
     camera.reseat();
     data.placements.push(format!(
-        "{}: {:.0} m from its target at [{:.1}, {:.1}, {:.1}], heading {:.3} rad, {:.0} m/s",
+        "{}: {:.0} m from its target at [{:.1}, {:.1}, {:.1}], heading {:.3} rad, pitch {:.3} rad, {:.0} m/s",
         placement.name,
         placement.distance_m,
         placement.position_m[0],
         placement.position_m[1],
         placement.position_m[2],
         placement.yaw,
+        placement.pitch,
         placement.speed_m_s,
     ));
 }
@@ -2635,6 +2836,34 @@ struct FlakParams<'w> {
     tick_ledger: Option<Res<'w, PhysicsTickLedger>>,
 }
 
+/// The sun-aim phase's reads — the drawn flare, the camera `place_flares`
+/// projects through, the source node's placed transform, the quads it
+/// placed and the raw-frame store the two screenshots fill — grouped so
+/// `smoke_script` stays inside Bevy's arity limit (PARITY4-LENS-FLARE-C,
+/// #1860).
+#[derive(SystemParam)]
+struct FlareParams<'w, 's> {
+    /// The mission's flare; `None` when the session found no source.
+    flare: Option<Res<'w, MissionLensFlare>>,
+    /// The scene camera — the same first-active pick `place_flares` makes.
+    camera: Query<
+        'w,
+        's,
+        (
+            &'static Camera,
+            &'static GlobalTransform,
+            Option<&'static Projection>,
+        ),
+        super::lens_flare::SceneCamera,
+    >,
+    /// Every bound world object, for the source node's placed transform.
+    objects: Query<'w, 's, (&'static WorldObjectBinding, &'static GlobalTransform)>,
+    /// The quad nodes `place_flares` laid out this frame.
+    quads: Query<'w, 's, (&'static FlareQuadNode, &'static Node, &'static Visibility)>,
+    /// The raw framebuffers the two screenshots' observers fill.
+    frames: Res<'w, FlightCheckFrames>,
+}
+
 /// The entity classes a probe writes its hide value onto, grouped so the
 /// system's parameter list stays inside Bevy's arity limit.
 #[derive(SystemParam)]
@@ -2650,6 +2879,9 @@ struct ProbeClasses<'w, 's> {
     zeppelins: Query<'w, 's, Entity, With<MissionZeppelinActor>>,
     visuals: Query<'w, 's, Entity, With<WorldVisual>>,
     ui: Query<'w, 's, UiProbeRow, With<Node>>,
+    /// The lens-flare quads: `place_flares` owns their visibility every
+    /// frame, so a probe writes them only to hide them (#1860).
+    flares: Query<'w, 's, Entity, With<super::lens_flare::FlareQuadNode>>,
     flight_check_overlay: Query<'w, 's, Entity, With<ScreenOverlay>>,
     debrief_overlay: Query<'w, 's, Entity, With<super::debrief_screen::DebriefOverlay>>,
     /// The mesh HUD cluster's root (#1726): it carries no `Node`, so the UI
@@ -2661,13 +2893,15 @@ struct ProbeClasses<'w, 's> {
 }
 
 /// One UI node as the probe sees it: the entity, whether the developer
-/// overlay owns it, whether the launch cinematic owns its visibility and
-/// whether it is the help/pause panel.
+/// overlay owns it, whether the launch cinematic owns its visibility,
+/// whether it is the help/pause panel and whether it is a lens-flare quad
+/// (whose visibility `place_flares` owns, #1860).
 type UiProbeRow = (
     Entity,
     Has<crate::playtest::visuals::DeveloperOverlayNode>,
     Has<super::launch_cinematic::CinematicOwnedVisibility>,
     Has<super::original_keys::ControlsHelpPanel>,
+    Has<super::lens_flare::FlareQuadNode>,
 );
 
 /// Applies the probe's hide mode to every entity class it covers. A value is
@@ -2686,10 +2920,17 @@ fn apply_probe(
     let mode = mode.0;
     let hidden = Visibility::Hidden;
     let shown = Visibility::Inherited;
-    let anything_hidden = mode != ProbeMode::Restored;
+    // The lens-flare comparison hides the quads alone: the flight is frozen
+    // on the `Menu` hold, so the `lens_flare_hidden` frame is the
+    // `lens_flare` frame minus the flare and nothing else.
+    let anything_hidden = !matches!(mode, ProbeMode::Restored | ProbeMode::LensFlareAbsent);
     // The sea plane is drawn geometry, so every probe that isolates something
-    // else hides it — only the sea probe's own "visible" frame keeps it.
-    let sea_value = if matches!(mode, ProbeMode::Restored | ProbeMode::SeaVisible) {
+    // else hides it — only the sea probe's own "visible" frame and the flare
+    // comparison keep it.
+    let sea_value = if matches!(
+        mode,
+        ProbeMode::Restored | ProbeMode::SeaVisible | ProbeMode::LensFlareAbsent
+    ) {
         shown
     } else {
         hidden
@@ -2737,7 +2978,14 @@ fn apply_probe(
         shown
     };
     write_all(&mut visibility, classes.water_tiles.iter(), tile_value);
-    write_all(&mut visibility, classes.players.iter(), body_value);
+    // The player body's visibility belongs to `drive_cockpit_camera`: it
+    // hides the body under a pilot-eye view and re-shows it every
+    // `PostUpdate` the view leaves one, so a restore writes the body nothing
+    // — a `shown` would land after the owner's `Hidden` and lift it. The
+    // hiding modes still write it: nothing else hides the body for them.
+    if mode != ProbeMode::Restored {
+        write_all(&mut visibility, classes.players.iter(), body_value);
+    }
     write_all(&mut visibility, classes.aircraft.iter(), body_value);
     write_all(&mut visibility, classes.zeppelins.iter(), body_value);
     // The mesh HUD cluster is an overlay, not world geometry: out of every
@@ -2762,7 +3010,13 @@ fn apply_probe(
     }
     // Restoring the UI must not re-show what the developer overlay hides.
     let overlay_on = crate::playtest::visuals::overlay_visible(overlay.as_deref());
-    for (entity, developer, cinematic_owned, help_panel) in &classes.ui {
+    for (entity, developer, cinematic_owned, help_panel, flare_quad) in &classes.ui {
+        // `place_flares` rewrites the quads' visibility from the source's own
+        // projection every `PostUpdate`; the class write would re-show a quad
+        // the projection dropped. The dedicated arm below owns them.
+        if flare_quad {
+            continue;
+        }
         // The help/pause panel shows itself while the session is paused or F1
         // is open (#1733); a restore leaves it to its own system.
         if help_panel && mode == ProbeMode::Restored {
@@ -2795,6 +3049,14 @@ fn apply_probe(
             body_value
         };
         write_all(&mut visibility, std::iter::once(entity), value);
+    }
+    // The flare quads' owner is `place_flares` (PostUpdate): every probe
+    // frame writes them hidden — the `LensFlareAbsent` comparison among them
+    // — while a restored frame writes nothing and leaves the projection's own
+    // verdict. This system is ordered after `place_flares` in `PostUpdate`,
+    // so this hide is what the frame's render sees.
+    if mode != ProbeMode::Restored {
+        write_all(&mut visibility, classes.flares.iter(), hidden);
     }
     if let ProbeMode::Actor(Some(keep)) = mode {
         write_all(&mut visibility, std::iter::once(keep), shown);
@@ -3438,6 +3700,7 @@ fn smoke_script(
     scene: SceneParams<'_, '_>,
     targeting: TargetingParams<'_, '_>,
     mut flak: FlakParams<'_>,
+    flare: FlareParams<'_, '_>,
 ) {
     let frame = data.frame;
     if frame == 1 {
@@ -3936,6 +4199,82 @@ fn smoke_script(
                     due.push(label.to_owned());
                 }
             } else if at >= 3 * COCKPIT_STOP_FRAMES {
+                data.phase = Phase::LensFlare;
+                data.phase_start = frame + 1;
+            }
+        }
+        // PARITY4-LENS-FLARE-C (#1860): freeze the flight — the `Menu` hold,
+        // never the `PlayerRequest` one that would raise the Esc map over the
+        // frame — aim the nose so the camera-anchored sun sits on the owner's
+        // capture's fraction of the viewport, photograph the glow and its
+        // four rings, then photograph the identical frame with the quads
+        // hidden — the pair is the frame-by-frame evidence the flare drew.
+        Phase::LensFlare => {
+            if at == LENS_FLARE_PAUSE_OFFSET {
+                queue.0.push(KeyOp::Freeze);
+                let source = flare
+                    .flare
+                    .as_deref()
+                    .and_then(|flare| flare.sources().drawn.first())
+                    .map(|source| source.name.clone());
+                data.measurements.lens_flare = Some(LensFlareMetrics {
+                    source,
+                    ..LensFlareMetrics::default()
+                });
+            } else if at == LENS_FLARE_PLACE_OFFSET {
+                if let Some((_, world)) = flare_source_world(&flare)
+                    && let Some(placement) = place_for_sun(&data, &flare, &scene, world)
+                {
+                    data.flare_aim = Some((placement.yaw, placement.pitch));
+                    pending.0 = Some(placement);
+                    if let Some(metrics) = data.measurements.lens_flare.as_mut() {
+                        metrics.placed = true;
+                    }
+                }
+            } else if at == LENS_FLARE_CORRECT_OFFSET {
+                // One correction step measured through the live camera: the
+                // bearing/elevation the sun reads at minus the aimed one.
+                if let (Some((yaw, pitch)), Some((_, world))) =
+                    (data.flare_aim, flare_source_world(&flare))
+                    && let Some((camera, camera_transform, projection)) =
+                        flare.camera.iter().find(|(c, _, _)| c.is_active)
+                    && let Some(viewport) = camera.logical_viewport_size()
+                    && let Ok(position) = scene.player.single()
+                {
+                    let (vfov, aspect) = camera_fov_aspect(camera, projection, viewport);
+                    let dir = (world - camera_transform.translation()).normalize();
+                    let c = camera_transform.rotation().inverse() * dir;
+                    let (yaw_fix, pitch_fix) =
+                        flare_aim_correction(c, SUN_SCREEN_FRACTION, aspect, vfov);
+                    let (yaw, pitch) = (yaw + yaw_fix, pitch + pitch_fix);
+                    data.flare_aim = Some((yaw, pitch));
+                    pending.0 = Some(Placement {
+                        name: "sun aim correction".to_owned(),
+                        position_m: position.0.to_array(),
+                        yaw,
+                        pitch,
+                        speed_m_s: data.speed_m_s,
+                        distance_m: 0.0,
+                    });
+                }
+            } else if at == LENS_FLARE_SHOT_OFFSET {
+                if let Some((_, world)) = flare_source_world(&flare) {
+                    let (source_px, viewport, quads) = read_flare_frame(&flare, world);
+                    if let Some(metrics) = data.measurements.lens_flare.as_mut() {
+                        metrics.source_px = source_px.map(|px| [px.x, px.y]);
+                        metrics.viewport_px = [viewport.x, viewport.y];
+                        metrics.quads = quads;
+                    }
+                }
+                due.push("lens_flare".to_owned());
+            } else if at == LENS_FLARE_HIDE_OFFSET {
+                probe.0 = ProbeMode::LensFlareAbsent;
+            } else if at == LENS_FLARE_HIDDEN_SHOT_OFFSET {
+                due.push("lens_flare_hidden".to_owned());
+            } else if at == LENS_FLARE_RESUME_OFFSET {
+                probe.0 = ProbeMode::Restored;
+                queue.0.push(KeyOp::Resume);
+            } else if at == LENS_FLARE_END_OFFSET {
                 data.phase = Phase::Cameras;
                 data.phase_start = frame + 1;
             }
@@ -3956,6 +4295,13 @@ fn smoke_script(
             .capture_dir
             .join(format!("frame_{frame:05}_{label}.png"));
         let measured = if label == "hud" { region } else { None };
+        // The sun-aim pair keeps its raw frames for the per-quad comparison
+        // (#1860).
+        let raw = if matches!(label.as_str(), "lens_flare" | "lens_flare_hidden") {
+            Some(flare.frames.clone())
+        } else {
+            None
+        };
         request_screenshot(
             &mut commands,
             shots.clone(),
@@ -3963,7 +4309,7 @@ fn smoke_script(
             label.clone(),
             clear_colours,
             measured,
-            None,
+            raw,
         );
     }
 
@@ -4208,10 +4554,25 @@ fn flight_check_metrics(
 }
 
 /// Pixels inside `region` (`[x, y, width, height]`, clamped to the frame) that
-/// differ between two same-sized RGBA frames by more than a few levels in any
-/// colour channel. The alpha channel is ignored.
+/// differ between two same-sized RGBA frames by more than [`FLIGHT_CHECK_PIXEL_DELTA`]
+/// levels in any colour channel. The alpha channel is ignored.
 #[must_use]
 pub fn region_difference(a: &[u8], b: &[u8], width: u32, height: u32, region: [u32; 4]) -> usize {
+    region_difference_delta(a, b, width, height, region, FLIGHT_CHECK_PIXEL_DELTA)
+}
+
+/// [`region_difference`] with the delta as an argument: the lens-flare
+/// comparison counts a quad's own change, and a faint 50%-alpha ring over the
+/// sky moves most of its pixels under the strong flight-check threshold
+/// (PARITY4-LENS-FLARE-C, #1860).
+fn region_difference_delta(
+    a: &[u8],
+    b: &[u8],
+    width: u32,
+    height: u32,
+    region: [u32; 4],
+    delta: u8,
+) -> usize {
     let [x, y, w, h] = region;
     let x_end = x.saturating_add(w).min(width);
     let y_end = y.saturating_add(h).min(height);
@@ -4222,10 +4583,7 @@ pub fn region_difference(a: &[u8], b: &[u8], width: u32, height: u32, region: [u
             let (Some(p), Some(q)) = (a.get(at..at + 3), b.get(at..at + 3)) else {
                 continue;
             };
-            if p.iter()
-                .zip(q)
-                .any(|(p, q)| p.abs_diff(*q) > FLIGHT_CHECK_PIXEL_DELTA)
-            {
+            if p.iter().zip(q).any(|(p, q)| p.abs_diff(*q) > delta) {
                 count += 1;
             }
         }
@@ -4265,6 +4623,7 @@ fn place_near_actor(
         name: entry.name.clone(),
         position_m: position.to_array(),
         yaw: yaw_toward(-offset),
+        pitch: 0.0,
         speed_m_s: data.speed_m_s,
         distance_m: f64::from(PLACEMENT_OFFSET_M),
     })
@@ -4276,6 +4635,7 @@ fn examine_placement(data: &SmokeData, site: Vec3, offset: Vec3, name: &str) -> 
         name: name.to_owned(),
         position_m: (site + offset).to_array(),
         yaw: yaw_toward(-offset),
+        pitch: 0.0,
         speed_m_s: data.speed_m_s,
         distance_m: f64::from(offset.length()),
     }
@@ -4320,6 +4680,7 @@ fn place_for_trigger(data: &mut SmokeData) -> Option<Placement> {
         name: format!("trigger approach to {subject}"),
         position_m: position.to_array(),
         yaw: yaw_toward(-direction),
+        pitch: 0.0,
         speed_m_s: data.speed_m_s,
         distance_m: APPROACH_M_F64,
     })
@@ -4329,6 +4690,193 @@ fn place_for_trigger(data: &mut SmokeData) -> Option<Placement> {
 /// component.
 fn yaw_toward(direction: Vec3) -> f32 {
     (-direction.x).atan2(-direction.z)
+}
+
+/// The `(yaw, pitch)` that aims a level (YXZ, zero-roll) nose so the
+/// world-space `dir` lands on the `screen` fraction of a `vfov`-radian,
+/// `aspect`-wide viewport — the exact solve of
+/// `Ry(yaw)·Rx(pitch)·(α, β, −1) = dir`, where `(α, β, −1)` is the
+/// camera-space direction of that fraction (`α = ndc_x·tan(vfov/2)·aspect`,
+/// `β = ndc_y·tan(vfov/2)`). `None` when the direction cannot reach the row
+/// at any pitch (PARITY4-LENS-FLARE-C, #1860).
+#[must_use]
+pub fn flare_aim(dir: Vec3, screen: [f32; 2], aspect: f32, vfov: f32) -> Option<(f32, f32)> {
+    let s = dir.try_normalize()?;
+    let tan = (vfov * 0.5).tan();
+    let alpha = (screen[0] * 2.0 - 1.0) * tan * aspect;
+    let beta = (1.0 - screen[1] * 2.0) * tan;
+    let n = (alpha * alpha + beta * beta + 1.0).sqrt();
+    // The y row of `s = R·(α,β,−1)/n` is `sin p + β cos p = n·s.y`, i.e.
+    // `√(1+β²)·sin(p + atan β) = n·s.y`.
+    let arg = n * s.y / (1.0 + beta * beta).sqrt();
+    if arg.abs() > 1.0 {
+        return None;
+    }
+    let pitch = arg.asin() - beta.atan();
+    // With `b = β sin p − cos p` the x/z rows are `n·(s.x, s.z) =
+    // [[α, b], [b, −α]]·(cos y, sin y)`, a scaled reflection whose inverse
+    // is itself over `α² + b²`.
+    let b = beta * pitch.sin() - pitch.cos();
+    let d = alpha * alpha + b * b;
+    let yaw = ((b * n * s.x - alpha * n * s.z) / d).atan2((alpha * n * s.x + b * n * s.z) / d);
+    Some((yaw, pitch))
+}
+
+/// The first drawn flare source's bulb in world space: the node is
+/// camera-anchored, so this is a fixed *direction* the chase camera can be
+/// aimed at, wherever it stands. `(drawn index, world position)`.
+fn flare_source_world(params: &FlareParams<'_, '_>) -> Option<(usize, Vec3)> {
+    let flare = params.flare.as_deref()?;
+    flare
+        .sources()
+        .drawn
+        .iter()
+        .enumerate()
+        .find_map(|(index, source)| {
+            params
+                .objects
+                .iter()
+                .find(|(binding, _)| node_slot_of(binding.object().as_str()) == Some(source.slot))
+                .map(|(_, placed)| (index, placed.transform_point(source.bulb)))
+        })
+}
+
+/// The camera's vertical field of view in radians and its aspect, for
+/// [`flare_aim`] — the live projection's own values, never an assumed one.
+fn camera_fov_aspect(
+    _camera: &Camera,
+    projection: Option<&Projection>,
+    viewport: Vec2,
+) -> (f32, f32) {
+    let vfov = match projection {
+        Some(Projection::Perspective(p)) => p.fov,
+        _ => std::f32::consts::FRAC_PI_4,
+    };
+    (vfov, viewport.x / viewport.y.max(1.0))
+}
+
+/// The sun-aim placement (PARITY4-LENS-FLARE-C, #1860): keeps the player's
+/// position and speed and turns the nose so the drawn source lands on
+/// [`SUN_SCREEN_FRACTION`] of the viewport — the composition of the owner's
+/// capture. The sun node is camera-anchored, so the aim direction is the
+/// camera's own at whatever pose it reads.
+fn place_for_sun(
+    data: &SmokeData,
+    flare: &FlareParams<'_, '_>,
+    scene: &SceneParams<'_, '_>,
+    world: Vec3,
+) -> Option<Placement> {
+    let (camera, camera_transform, projection) =
+        flare.camera.iter().find(|(c, _, _)| c.is_active)?;
+    let viewport = camera.logical_viewport_size()?;
+    let (vfov, aspect) = camera_fov_aspect(camera, projection, viewport);
+    let dir = (world - camera_transform.translation()).try_normalize()?;
+    let (yaw, pitch) = flare_aim(dir, SUN_SCREEN_FRACTION, aspect, vfov)?;
+    let position = scene.player.single().ok()?;
+    Some(Placement {
+        name: "sun aim".to_owned(),
+        position_m: position.0.to_array(),
+        yaw,
+        pitch,
+        speed_m_s: data.speed_m_s,
+        distance_m: 0.0,
+    })
+}
+
+/// The `(yaw, pitch)` correction that moves a sun direction read in camera
+/// space (`c`, already rotated by `camera_transform.rotation().inverse()`)
+/// onto the aimed screen fraction: the `atan` difference of each axis'
+/// tangent. Exact for a pure re-aim (PARITY4-LENS-FLARE-C, #1860).
+fn flare_aim_correction(c: Vec3, screen: [f32; 2], aspect: f32, vfov: f32) -> (f32, f32) {
+    let tan = (vfov * 0.5).tan();
+    let (u, v) = (c.x / -c.z, c.y / -c.z);
+    let u_star = (screen[0] * 2.0 - 1.0) * tan * aspect;
+    let v_star = (1.0 - screen[1] * 2.0) * tan;
+    (u_star.atan() - u.atan(), v_star.atan() - v.atan())
+}
+
+/// The sun's placement frame read: its projected position, the viewport it
+/// is measured against and every quad `place_flares` laid out, as
+/// `(texture, drawn, physical-pixel rect)`.
+fn read_flare_frame(
+    params: &FlareParams<'_, '_>,
+    world: Vec3,
+) -> (Option<Vec2>, Vec2, Vec<FlareQuadMetrics>) {
+    let Some((camera, camera_transform, _)) = params.camera.iter().find(|(c, _, _)| c.is_active)
+    else {
+        return (None, Vec2::ZERO, Vec::new());
+    };
+    let Some(viewport) = camera.logical_viewport_size() else {
+        return (None, Vec2::ZERO, Vec::new());
+    };
+    let source_px = camera.world_to_viewport(camera_transform, world).ok();
+    // The raw frames are in physical pixels; the node rects `place_flares`
+    // wrote are logical — scale them up by the viewport's own ratio.
+    let scale = camera
+        .physical_viewport_size()
+        .map_or(1.0, |physical| physical.x as f32 / viewport.x.max(1.0));
+    let mut quads: Vec<FlareQuadMetrics> = params
+        .quads
+        .iter()
+        .map(|(quad, node, visibility)| {
+            let logical = |val: Val| match val {
+                Val::Px(px) => px,
+                _ => 0.0,
+            };
+            let x = logical(node.left) * scale;
+            let y = logical(node.top) * scale;
+            FlareQuadMetrics {
+                texture: quad.texture,
+                drawn: *visibility == Visibility::Inherited,
+                region: [
+                    x.max(0.0).round() as u32,
+                    y.max(0.0).round() as u32,
+                    (logical(node.width) * scale).round() as u32,
+                    (logical(node.height) * scale).round() as u32,
+                ],
+                pixels_added: None,
+            }
+        })
+        .collect();
+    quads.sort_by_key(|quad| quad.texture);
+    (source_px, viewport, quads)
+}
+
+/// Fills the per-quad `pixels_added` once both the `lens_flare` and
+/// `lens_flare_hidden` raw frames have arrived — the same full/bare rule the
+/// Flight Check measures by (#1860).
+fn smoke_lens_flare(mut data: ResMut<SmokeData>, frames: Res<FlightCheckFrames>) {
+    let Some(flare) = data.measurements.lens_flare.as_mut() else {
+        return;
+    };
+    if flare.frames_delivered || flare.quads.is_empty() {
+        return;
+    }
+    let Ok(frames) = frames.0.lock() else {
+        return;
+    };
+    let find = |label: &str| frames.iter().find(|frame| frame.label == label);
+    let Some((full, hidden)) = find("lens_flare").zip(find("lens_flare_hidden")) else {
+        return;
+    };
+    let pair = (full.width == hidden.width
+        && full.height == hidden.height
+        && full.data.len() == hidden.data.len()
+        && !full.data.is_empty())
+    .then_some((full, hidden));
+    for quad in &mut flare.quads {
+        quad.pixels_added = pair.map(|(full, hidden)| {
+            region_difference_delta(
+                &full.data,
+                &hidden.data,
+                full.width,
+                full.height,
+                quad.region,
+                FLARE_PIXEL_DELTA,
+            )
+        });
+    }
+    flare.frames_delivered = pair.is_some();
 }
 
 /// The flak phase's setup (FLAK-C5-SMOKE, #1887): finds the first world
@@ -4390,6 +4938,7 @@ fn wake_and_place_flak(
         name: format!("flak turret {} (test-woken, test placement)", entry.name),
         position_m: (mount + offset).to_array(),
         yaw: yaw_toward(-offset),
+        pitch: 0.0,
         speed_m_s: data.speed_m_s,
         distance_m: f64::from(offset.length()),
     })
@@ -5037,6 +5586,41 @@ fn flight_check_json(metrics: Option<&FlightCheckMetrics>) -> String {
     )
 }
 
+/// The sun-aim phase's measurements as a JSON object (`null` when the run
+/// never reached it, #1860).
+fn lens_flare_json(metrics: Option<&LensFlareMetrics>) -> String {
+    let Some(flare) = metrics else {
+        return "null".to_owned();
+    };
+    let quads = flare
+        .quads
+        .iter()
+        .map(|quad| {
+            format!(
+                "{{\"texture\":{},\"drawn\":{},\"region\":{:?},\"pixels_added\":{}}}",
+                quad.texture,
+                quad.drawn,
+                quad.region,
+                json_option_usize(quad.pixels_added),
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(",");
+    let sun_px = flare.source_px.map_or_else(
+        || "null".to_owned(),
+        |at| format!("[{:.1},{:.1}]", at[0], at[1]),
+    );
+    format!(
+        "{{\"source\":{},\"placed\":{},\"sun_px\":{sun_px},\"viewport_px\":[{:.0},{:.0}],\
+         \"frames_delivered\":{},\"quads\":[{quads}]}}",
+        json_option_str(flare.source.as_deref()),
+        flare.placed,
+        flare.viewport_px[0],
+        flare.viewport_px[1],
+        flare.frames_delivered,
+    )
+}
+
 fn json_string(text: &str) -> String {
     let mut out = String::from("\"");
     for character in text.chars() {
@@ -5299,7 +5883,7 @@ fn write_artifacts(
          \"objective_class\":{t_objective_class},\"objective_selected\":{t_objective}}},\
          \"examine\":{{\"ran\":{x_ran},\"before_node\":{x_before},\"before_flagged\":{x_bf},\
          \"after_node\":{x_after},\"after_flagged\":{x_af}}},\
-         \"cockpit\":{cockpit},\
+         \"cockpit\":{cockpit},\"lens_flare\":{lens_flare},\
          \"actors\":[{actors}],\"placements\":[{placements}],\"shots\":[{shots}],\
          \"checks\":[{checks}],\"failures\":[{failures}],\"passed\":{passed}}}\n",
         kind = json_string(SMOKE_KIND),
@@ -5443,6 +6027,7 @@ fn write_artifacts(
         x_after = json_option_str(report.measurements.examine.after_node.as_deref()),
         x_af = report.measurements.examine.after_flagged,
         cockpit = cockpit_json(&report.measurements.cockpit),
+        lens_flare = lens_flare_json(report.measurements.lens_flare.as_ref()),
         actors = actors,
         placements = placements,
         shots = shots,
@@ -6314,5 +6899,561 @@ FC_T_OBJECTIVES =T,,10,60,0,200,360000,0xFF2D3843,0
             ]
         );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ------------------------------------------- PARITY4-LENS-FLARE-C (#1860)
+
+    /// The screen fraction a camera-space sun direction `c` sits at, given
+    /// the live vertical field of view and aspect — the inverse of
+    /// [`flare_aim`]'s solve.
+    fn fraction_of(c: Vec3, aspect: f32, vfov: f32) -> [f32; 2] {
+        let tan = (vfov * 0.5).tan();
+        [
+            ((c.x / -c.z) / (tan * aspect) + 1.0) * 0.5,
+            (1.0 - (c.y / -c.z) / tan) * 0.5,
+        ]
+    }
+
+    /// **`accept_parity4_lens_flare_c_` the aim puts the sun on the owner's
+    /// capture's fraction.**
+    ///
+    /// A sun high and left of the nose, the attitude M01's camera-anchored
+    /// `sun` node reads at; the placement's (yaw, pitch) is put back through
+    /// the live projection's own tangent mapping and the sun must land on
+    /// [`SUN_SCREEN_FRACTION`]. A sun under the horizon admits no aim.
+    #[test]
+    fn accept_parity4_lens_flare_c_the_aim_puts_the_sun_on_the_capture_fraction() {
+        let (aspect, vfov) = (1280.0 / 720.0, 60.0_f32.to_radians());
+        let sun = Vec3::new(-0.30, 0.45, -0.80).normalize();
+        let (yaw, pitch) =
+            flare_aim(sun, SUN_SCREEN_FRACTION, aspect, vfov).expect("a forward sun solves");
+        let rotation = Quat::from_euler(bevy::math::EulerRot::YXZ, yaw, pitch, 0.0);
+        let c = rotation.inverse() * sun;
+        assert!(c.z < 0.0, "the sun lands in front of the camera: {c:?}");
+        let fraction = fraction_of(c, aspect, vfov);
+        assert!(
+            (fraction[0] - SUN_SCREEN_FRACTION[0]).abs() < 1e-3
+                && (fraction[1] - SUN_SCREEN_FRACTION[1]).abs() < 1e-3,
+            "the aim lands at {fraction:?}, not {SUN_SCREEN_FRACTION:?}"
+        );
+        assert_eq!(
+            flare_aim(Vec3::NEG_Y, SUN_SCREEN_FRACTION, aspect, vfov),
+            None,
+            "a sun under the horizon admits no aim"
+        );
+        assert_eq!(
+            flare_aim(Vec3::ZERO, SUN_SCREEN_FRACTION, aspect, vfov),
+            None,
+            "no direction admits no aim"
+        );
+    }
+
+    /// **`accept_parity4_lens_flare_c_` the live correction converges a
+    /// missed aim.**
+    ///
+    /// The correction step reads the sun's camera-space direction after the
+    /// first placement — the chase rig's own offset included — and adds the
+    /// tangent difference onto the aim. One step lands inside the check's
+    /// tolerance from any plausible miss, and an already-aimed sun asks for
+    /// nothing.
+    #[test]
+    fn accept_parity4_lens_flare_c_the_correction_converges_a_missed_aim() {
+        let (aspect, vfov) = (1280.0 / 720.0, 60.0_f32.to_radians());
+        // The sun as a misthrown first aim left it: well off the fraction.
+        let c = Vec3::new(0.25, 0.35, -1.0).normalize();
+        let (yaw_fix, pitch_fix) = flare_aim_correction(c, SUN_SCREEN_FRACTION, aspect, vfov);
+        let fixed = Quat::from_euler(bevy::math::EulerRot::YXZ, yaw_fix, pitch_fix, 0.0);
+        let fraction = fraction_of(fixed.inverse() * c, aspect, vfov);
+        assert!(
+            (fraction[0] - SUN_SCREEN_FRACTION[0]).abs() < MAX_SUN_SCREEN_ERROR
+                && (fraction[1] - SUN_SCREEN_FRACTION[1]).abs() < MAX_SUN_SCREEN_ERROR,
+            "the correction lands at {fraction:?}"
+        );
+        // An aimed sun wants no correction.
+        let sun = Vec3::new(-0.30, 0.45, -0.80).normalize();
+        let (yaw, pitch) =
+            flare_aim(sun, SUN_SCREEN_FRACTION, aspect, vfov).expect("a forward sun solves");
+        let aimed = Quat::from_euler(bevy::math::EulerRot::YXZ, yaw, pitch, 0.0).inverse() * sun;
+        let (dyaw, dpitch) = flare_aim_correction(aimed, SUN_SCREEN_FRACTION, aspect, vfov);
+        assert!(
+            dyaw.abs() < 1e-3 && dpitch.abs() < 1e-3,
+            "an aimed sun asks for ({dyaw}, {dpitch})"
+        );
+    }
+
+    /// **`accept_parity4_lens_flare_c_` the comparison probe hides the quads
+    /// alone.**
+    ///
+    /// `LensFlareAbsent` must leave the `lens_flare_hidden` frame identical to
+    /// `lens_flare` minus the flare: the sky records, the sea, the player and
+    /// every other UI node keep `place_flares`' own verdicts and the drawn
+    /// world — only the four quad entities go hidden. A restored frame
+    /// writes them nothing at all: the projection owns their visibility.
+    #[test]
+    fn accept_parity4_lens_flare_c_the_probe_hides_the_quads_alone() {
+        let mut app = App::new();
+        app.init_resource::<ProbeState>()
+            .add_systems(Update, apply_probe);
+        let quad = app
+            .world_mut()
+            .spawn((
+                Node::default(),
+                Visibility::Inherited,
+                FlareQuadNode {
+                    source: 0,
+                    texture: 0,
+                },
+            ))
+            .id();
+        let ui = app
+            .world_mut()
+            .spawn((Node::default(), Visibility::Inherited))
+            .id();
+        let player = app
+            .world_mut()
+            .spawn((PlaytestAircraft, Visibility::Inherited))
+            .id();
+        let sky = app
+            .world_mut()
+            .spawn((HorizonRest(Vec3::ZERO), Visibility::Inherited))
+            .id();
+        let sea = app
+            .world_mut()
+            .spawn((HorizonSea, Visibility::Inherited))
+            .id();
+        let value = |app: &App, entity: Entity| *app.world().get::<Visibility>(entity).unwrap();
+        app.world_mut().resource_mut::<ProbeState>().0 = ProbeMode::LensFlareAbsent;
+        app.update();
+        assert_eq!(value(&app, quad), Visibility::Hidden, "the quad hides");
+        for (entity, what) in [
+            (ui, "another UI node"),
+            (player, "the player's body"),
+            (sky, "a camera-anchored sky record"),
+            (sea, "the sea plane"),
+        ] {
+            assert_eq!(
+                value(&app, entity),
+                Visibility::Inherited,
+                "{what} stays drawn"
+            );
+        }
+        // Restoring writes the quads nothing: `place_flares` owns their
+        // verdict, so a restore must not re-show one the projection dropped.
+        app.world_mut().resource_mut::<ProbeState>().0 = ProbeMode::Restored;
+        app.update();
+        assert_eq!(
+            value(&app, quad),
+            Visibility::Hidden,
+            "the restore leaves the projection's own verdict"
+        );
+        assert_eq!(value(&app, ui), Visibility::Inherited);
+        // Every other probe still hides them: an isolating frame never shows
+        // a flare quad.
+        app.world_mut().resource_mut::<ProbeState>().0 = ProbeMode::SeaVisible;
+        app.update();
+        assert_eq!(value(&app, quad), Visibility::Hidden);
+        assert_eq!(
+            value(&app, sea),
+            Visibility::Inherited,
+            "the sea probe still shows the sea"
+        );
+    }
+
+    /// The headless sun-aim scene: the production script systems over a
+    /// stand-in body, a scene camera with a live projection, the `sun` node's
+    /// bound object and the four quad nodes `place_flares` owns.
+    fn flare_app(dir: &Path) -> (App, MissionSmokeHandle) {
+        use bevy::camera::{CameraProjection, PerspectiveProjection, RenderTargetInfo, Viewport};
+        use bevy::math::UVec2;
+        use bevy::ui::widget::ImageNode;
+        use cs_content::world::{WorldId, WorldObjectId};
+        use cs_types::content::{Provenance, Resolved};
+        use cs_types::evidence::ClaimId;
+
+        let plugin = MissionSmokePlugin::new(SmokeRequest {
+            seconds: 45,
+            capture_dir: dir.to_path_buf(),
+        });
+        let handle = plugin.handle();
+        let mut app = App::new();
+        app.add_plugins(bevy::time::TimePlugin)
+            .add_message::<AppExit>()
+            .insert_resource(SmokeConfig {
+                request: plugin.request.clone(),
+                mode: plugin.mode,
+                handle: plugin.handle.clone(),
+            })
+            .init_resource::<SmokeShots>()
+            .init_resource::<FlightCheckFrames>()
+            .init_resource::<SmokeData>()
+            .init_resource::<ProbeState>()
+            .init_resource::<KeyQueue>()
+            .init_resource::<PendingPlacement>()
+            .init_resource::<PlaytestState>()
+            .insert_resource(PlaytestCamera::new())
+            .init_resource::<PhysicsTickLedger>()
+            .add_systems(Update, (apply_placement, apply_probe))
+            // The windowed app's chase rig resolves the body pose into the
+            // camera `Transform`, transform propagation carries it to
+            // `GlobalTransform`, then `place_flares` lays the quads out and
+            // the probe gets the last visibility word — the PostUpdate order
+            // below is the production order.
+            .add_systems(
+                PostUpdate,
+                (
+                    follow_test_camera,
+                    super::super::lens_flare::place_flares,
+                    apply_probe,
+                )
+                    .chain(),
+            );
+        // The flare itself: the M01 `sun` source, art slots filled with
+        // default handles (no assets headless).
+        app.insert_resource(MissionLensFlare::new(
+            super::super::lens_flare::LensFlareSources {
+                drawn: vec![super::super::lens_flare::FlareSource {
+                    slot: 491,
+                    name: "sun".to_owned(),
+                    bulb: Vec3::new(6.184_89, 18.294_209, 0.0),
+                    fade_min: 5.0,
+                    fade_max: 10000.0,
+                }],
+                held_back: Vec::new(),
+            },
+            [(); 4].map(|_| bevy::prelude::Handle::default()),
+        ));
+        // The quad nodes `spawn_flare_nodes` lays out at startup in the
+        // windowed run.
+        for texture in 0..4 {
+            app.world_mut().spawn((
+                Node::default(),
+                ImageNode::new(bevy::prelude::Handle::default()),
+                Visibility::Hidden,
+                FlareQuadNode { source: 0, texture },
+            ));
+        }
+        // The player body the placements write.
+        let start = Vec3::new(120.0, 900.0, -4_000.0);
+        app.world_mut().spawn((
+            MissionPlayerBody,
+            Position(start),
+            Rotation::default(),
+            LinearVelocity::default(),
+            AngularVelocity::default(),
+            GlobalTransform::from_translation(start),
+        ));
+        // The scene camera: a real projection and viewport, no window.
+        let vfov = 60.0_f32.to_radians();
+        let aspect = 1280.0 / 720.0;
+        let projection = PerspectiveProjection {
+            fov: vfov,
+            aspect_ratio: aspect,
+            ..Default::default()
+        };
+        let clip_from_view = projection.get_clip_from_view();
+        let mut camera = Camera {
+            is_active: true,
+            viewport: Some(Viewport {
+                physical_size: UVec2::new(1280, 720),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        camera.computed.target_info = Some(RenderTargetInfo {
+            physical_size: UVec2::new(1280, 720),
+            scale_factor: 1.0,
+        });
+        camera.computed.clip_from_view = clip_from_view;
+        app.world_mut().spawn((
+            camera,
+            bevy::prelude::Camera3d::default(),
+            crate::playtest::PlaytestCameraMarker,
+            Projection::Perspective(projection),
+            GlobalTransform::IDENTITY,
+        ));
+        // The `sun` node's bound object, anchored over the start so its bulb
+        // sits high and left of the nose like the camera-anchored horizon
+        // subtree puts it.
+        let bulb_world = start + Vec3::new(-1500.0, 2200.0, -4000.0);
+        app.world_mut().spawn((
+            WorldObjectBinding::new(
+                WorldId::from_key("fixture").expect("the fixture world key is valid"),
+                WorldObjectId::new("node-491").expect("the node slot key is valid"),
+                Vec::new(),
+                Resolved::<SurfaceRole>::unknown(
+                    ClaimId::new("test.sun.surface").expect("the claim id is valid"),
+                    "the sun sits in the sky",
+                )
+                .expect("the explicit unknown resolves"),
+                Provenance::designed(
+                    ClaimId::new("test.sun.fixture").expect("the claim id is valid"),
+                ),
+            ),
+            GlobalTransform::from_translation(bulb_world - Vec3::new(6.184_89, 18.294_209, 0.0)),
+        ));
+        // The run enters the phase directly: the frame clock counts it from
+        // its first update, as a real transition's `phase_start = frame + 1`.
+        {
+            let mut data = app.world_mut().resource_mut::<SmokeData>();
+            data.phase = Phase::LensFlare;
+            data.phase_start = 1;
+            data.speed_m_s = 100.0;
+        }
+        add_script_systems(&mut app);
+        (app, handle)
+    }
+
+    /// The test stand-in for the chase rig and propagation: the body pose as
+    /// the camera's `GlobalTransform`, astern of it like the chase view.
+    fn follow_test_camera(
+        body: Query<(&Position, &Rotation), With<MissionPlayerBody>>,
+        mut camera: Query<&mut GlobalTransform, With<crate::playtest::PlaytestCameraMarker>>,
+    ) {
+        let Ok((position, rotation)) = body.single() else {
+            return;
+        };
+        for mut transform in &mut camera {
+            *transform = GlobalTransform::from(
+                Transform::from_translation(position.0 + rotation.0 * Vec3::new(0.0, 2.0, 25.0))
+                    .with_rotation(rotation.0),
+            );
+        }
+    }
+
+    /// **`accept_parity4_lens_flare_c_` the phase aims, freezes, photographs
+    /// and restores.**
+    ///
+    /// The production script walks the phase over the stand-in scene: it
+    /// queues the freeze, writes the aimed placement, the correction lands
+    /// the sun on the capture's fraction, `place_flares` shows all four
+    /// quads, the script asks for `lens_flare` then `lens_flare_hidden` with
+    /// only the quads hidden between them, and the probe restores and
+    /// resumes. Fed the raw pair the windowed run leaves, the per-quad
+    /// comparison fills and both smoke checks pass.
+    #[test]
+    fn accept_parity4_lens_flare_c_the_phase_aims_pauses_photographs_and_restores() {
+        let dir = std::env::temp_dir().join("accept_parity4_lens_flare_c_phase");
+        let (mut app, _handle) = flare_app(&dir);
+        // The phase needs PAUSE(0) .. RESUME(22) frames after its start.
+        for _ in 0..(LENS_FLARE_END_OFFSET - 1) {
+            app.update();
+        }
+        let data = app.world().resource::<SmokeData>();
+        let flare = data
+            .measurements
+            .lens_flare
+            .as_ref()
+            .expect("the phase ran and measured");
+        assert_eq!(flare.source.as_deref(), Some("sun"));
+        assert!(flare.placed, "the aimed placement was written");
+        // The sun's measured position is the designed fraction of the
+        // viewport — the owner's composition.
+        let source = flare.source_px.expect("the sun projected");
+        let fraction = [
+            source[0] / flare.viewport_px[0],
+            source[1] / flare.viewport_px[1],
+        ];
+        assert!(
+            (fraction[0] - SUN_SCREEN_FRACTION[0]).abs() <= MAX_SUN_SCREEN_ERROR
+                && (fraction[1] - SUN_SCREEN_FRACTION[1]).abs() <= MAX_SUN_SCREEN_ERROR,
+            "the sun sat at {fraction:?} of {:?}",
+            flare.viewport_px
+        );
+        assert_eq!(flare.quads.len(), FLARE_TEXTURES.len());
+        assert!(
+            flare
+                .quads
+                .iter()
+                .all(|quad| quad.drawn && quad.region[2] > 0),
+            "every quad drew with a rect: {:?}",
+            flare.quads
+        );
+        // The glow is centred on the sun itself.
+        let glow = &flare.quads[0];
+        assert!(
+            glow.region[0] <= source[0] as u32
+                && glow.region[1] <= source[1] as u32
+                && glow.region[0] + glow.region[2] >= source[0] as u32
+                && glow.region[1] + glow.region[3] >= source[1] as u32,
+            "the glow surrounds the sun at {source:?}: {glow:?}"
+        );
+        // The script asked for the pair, hid only the quads between them,
+        // and resumed.
+        assert!(data.requested.iter().any(|label| label == "lens_flare"));
+        assert!(
+            data.requested
+                .iter()
+                .any(|label| label == "lens_flare_hidden")
+        );
+        let queue = &app.world().resource::<KeyQueue>().0;
+        assert!(
+            queue.contains(&KeyOp::Freeze) && queue.contains(&KeyOp::Resume),
+            "the flight froze for the comparison and resumed: {queue:?}"
+        );
+        assert_eq!(
+            app.world().resource::<ProbeState>().0,
+            ProbeMode::Restored,
+            "the probe restored after the hidden frame"
+        );
+        // The screenshot observers never run headless: feed the raw pair the
+        // windowed run leaves — the same frame, brighter inside each quad's
+        // rect — and the comparison fills.
+        let (width, height) = (1280_u32, 720_u32);
+        let mut full = vec![0x40_u8; (width * height * 4) as usize];
+        for quad in &flare.quads {
+            let [x, y, w, h] = quad.region;
+            for row in y..y + h {
+                for column in x..x + w {
+                    full[((row * width + column) * 4) as usize] = 0xF0;
+                }
+            }
+        }
+        {
+            let frames = app.world().resource::<FlightCheckFrames>();
+            let mut frames = frames.0.lock().expect("lock");
+            frames.push(RawFrame {
+                label: "lens_flare".to_owned(),
+                width,
+                height,
+                data: full,
+            });
+            frames.push(RawFrame {
+                label: "lens_flare_hidden".to_owned(),
+                width,
+                height,
+                data: vec![0x40_u8; (width * height * 4) as usize],
+            });
+        }
+        app.update();
+        let flare = app
+            .world()
+            .resource::<SmokeData>()
+            .measurements
+            .lens_flare
+            .clone()
+            .expect("measured");
+        assert!(flare.frames_delivered);
+        for quad in &flare.quads {
+            assert_eq!(
+                quad.pixels_added,
+                Some((quad.region[2] * quad.region[3]) as usize),
+                "{quad:?} added its whole rect"
+            );
+        }
+        let checks = evaluate(&app.world().resource::<SmokeData>().measurements);
+        for id in ["lens_flare_sun_in_view", "lens_flare_quads_drawn"] {
+            let verdict = checks.iter().find(|check| check.id == id).expect(id);
+            assert!(verdict.passed, "{id}: {}", verdict.detail);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// **`accept_parity4_lens_flare_c_` the judge names every missing piece.**
+    ///
+    /// A run that never reached the phase fails both checks by name; an aim
+    /// that missed, a quad that never drew or one that added nothing each
+    /// fails its own check with the measured detail.
+    #[test]
+    fn accept_parity4_lens_flare_c_the_judge_names_every_missing_piece() {
+        let failures_of = |measurements: &SmokeMeasurements| {
+            evaluate(measurements)
+                .into_iter()
+                .filter(|check| !check.passed)
+                .map(|check| check.id)
+                .collect::<Vec<String>>()
+        };
+        let failed = failures_of(&SmokeMeasurements::default());
+        assert!(
+            failed.contains(&"lens_flare_sun_in_view".to_owned())
+                && failed.contains(&"lens_flare_quads_drawn".to_owned()),
+            "a run that never reached the phase fails both: {failed:?}"
+        );
+        let quad = |pixels: Option<usize>| FlareQuadMetrics {
+            texture: 0,
+            drawn: true,
+            region: [100, 100, 90, 90],
+            pixels_added: pixels,
+        };
+        let drawn_quads = |pixels| {
+            (0..4)
+                .map(|texture| FlareQuadMetrics {
+                    texture,
+                    ..quad(pixels)
+                })
+                .collect()
+        };
+        let healthy = |quads: Vec<FlareQuadMetrics>| LensFlareMetrics {
+            source: Some("sun".to_owned()),
+            placed: true,
+            source_px: Some([0.35 * 1280.0, 0.20 * 720.0]),
+            viewport_px: [1280.0, 720.0],
+            frames_delivered: true,
+            quads,
+        };
+        // The aimed run passes.
+        let failed = failures_of(&SmokeMeasurements {
+            lens_flare: Some(healthy(drawn_quads(Some(MIN_FLARE_QUAD_PIXELS)))),
+            ..SmokeMeasurements::default()
+        });
+        assert!(
+            !failed.contains(&"lens_flare_sun_in_view".to_owned())
+                && !failed.contains(&"lens_flare_quads_drawn".to_owned()),
+            "a sun on its fraction with four drawn quads passes: {failed:?}"
+        );
+        // An unplaced aim fails the in-view check.
+        let mut missed = healthy(drawn_quads(Some(MIN_FLARE_QUAD_PIXELS)));
+        missed.placed = false;
+        let failed = failures_of(&SmokeMeasurements {
+            lens_flare: Some(missed),
+            ..SmokeMeasurements::default()
+        });
+        assert!(
+            failed.contains(&"lens_flare_sun_in_view".to_owned()),
+            "{failed:?}"
+        );
+        // A sun off the fraction fails the in-view check.
+        let mut off = healthy(drawn_quads(Some(MIN_FLARE_QUAD_PIXELS)));
+        off.source_px = Some([0.90 * 1280.0, 0.20 * 720.0]);
+        let failed = failures_of(&SmokeMeasurements {
+            lens_flare: Some(off),
+            ..SmokeMeasurements::default()
+        });
+        assert!(
+            failed.contains(&"lens_flare_sun_in_view".to_owned()),
+            "{failed:?}"
+        );
+        // One quad never drew.
+        let mut short = healthy(drawn_quads(Some(MIN_FLARE_QUAD_PIXELS)));
+        short.quads[3].drawn = false;
+        let failed = failures_of(&SmokeMeasurements {
+            lens_flare: Some(short),
+            ..SmokeMeasurements::default()
+        });
+        assert!(
+            failed.contains(&"lens_flare_quads_drawn".to_owned()),
+            "{failed:?}"
+        );
+        // A quad that added nothing over the hidden frame.
+        let mut weak = healthy(drawn_quads(Some(MIN_FLARE_QUAD_PIXELS)));
+        weak.quads[1].pixels_added = Some(MIN_FLARE_QUAD_PIXELS - 1);
+        let failed = failures_of(&SmokeMeasurements {
+            lens_flare: Some(weak),
+            ..SmokeMeasurements::default()
+        });
+        assert!(
+            failed.contains(&"lens_flare_quads_drawn".to_owned()),
+            "{failed:?}"
+        );
+        // The raw pair never arrived.
+        let mut no_frames = healthy(drawn_quads(None));
+        no_frames.frames_delivered = false;
+        let failed = failures_of(&SmokeMeasurements {
+            lens_flare: Some(no_frames),
+            ..SmokeMeasurements::default()
+        });
+        assert!(
+            failed.contains(&"lens_flare_quads_drawn".to_owned()),
+            "{failed:?}"
+        );
     }
 }

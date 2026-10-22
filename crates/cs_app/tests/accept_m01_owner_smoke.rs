@@ -209,6 +209,21 @@ fn healthy() -> SmokeMeasurements {
             after_flagged: false,
         },
         camera_modes: crate::accept_parity3_camera_modes_04::healthy_camera_modes(),
+        lens_flare: Some(cs_app::mission_session::LensFlareMetrics {
+            source: Some("sun".to_owned()),
+            placed: true,
+            source_px: Some([448.0, 144.0]),
+            viewport_px: [1280.0, 720.0],
+            frames_delivered: true,
+            quads: (0..4)
+                .map(|texture| cs_app::mission_session::FlareQuadMetrics {
+                    texture,
+                    drawn: true,
+                    region: [100 + texture as u32 * 10, 100, 200, 200],
+                    pixels_added: Some(10_000),
+                })
+                .collect(),
+        }),
         ..SmokeMeasurements::default()
     }
 }

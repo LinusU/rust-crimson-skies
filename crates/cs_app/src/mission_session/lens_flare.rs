@@ -207,9 +207,9 @@ fn spawn_flare_nodes(mut commands: Commands, flare: Option<Res<MissionLensFlare>
 }
 
 /// The scene camera, not the HUD pass.
-type SceneCamera = (With<Camera3d>, Without<OverlayCamera>);
+pub(super) type SceneCamera = (With<Camera3d>, Without<OverlayCamera>);
 
-fn place_flares(
+pub(super) fn place_flares(
     flare: Option<Res<MissionLensFlare>>,
     cameras: Query<(&Camera, &GlobalTransform), SceneCamera>,
     objects: Query<(&WorldObjectBinding, &GlobalTransform)>,
