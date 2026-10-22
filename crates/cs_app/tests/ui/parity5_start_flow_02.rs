@@ -175,35 +175,58 @@ fn accept_parity5_start_flow_02_esc_is_bound_only_where_the_original_binds_it() 
     assert_eq!(shell.section_name(), Some("MainMenu"));
 }
 
-/// **Preferences, Cancel and Quit** come from the buttons and the table;
-/// Campaign is refused by name while its presenter is unbuilt.
+/// **Preferences, Cancel, Multiplayer and Quit** come from the buttons and
+/// the table; Campaign reaches its shell-drawn section (the pilot page's
+/// interactive controls stay #1835's), and Multiplayer is refused by name
+/// while the lobby's presenter is unbuilt.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_parity5_start_flow_02_buttons_follow_the_table_and_refuse_unbuilt_screens() {
     let mut shell = retail_shell();
     let mut flow = StartFlow::new();
 
-    // Campaign: the pilot page (#1835) is not built.
+    // Campaign: the shell draws the `Campaign` layout section as the pilot
+    // page (FE-MENU-2); the controls #1835 owns stay drawn-but-recorded.
     let step = press(&mut flow, &mut shell, "MM_B_CAMPAIGN");
     assert_eq!(
         step,
+        StartStep::Moved {
+            from: Screen::MainMenu,
+            to: Screen::ProfileSelect
+        }
+    );
+    assert_eq!(flow.screen(), Screen::ProfileSelect);
+    assert_eq!(shell.section_name(), Some("Campaign"));
+    assert!(matches!(
+        presentation(Screen::ProfileSelect),
+        Presentation::Shell
+    ));
+    // Its Cancel hands back to MainMenu.
+    let step = press(&mut flow, &mut shell, "CM_B_CANCEL");
+    assert_eq!(
+        step,
+        StartStep::Moved {
+            from: Screen::ProfileSelect,
+            to: Screen::MainMenu
+        }
+    );
+    assert_eq!(flow.screen(), Screen::MainMenu);
+    assert_eq!(shell.section_name(), Some("MainMenu"));
+
+    // Multiplayer: the layout holds no `MultiPlayerMain` section, so the
+    // press stands for the table's `OpenLobby` — refused by name while the
+    // lobby presenter is unbuilt (never a guessed screen).
+    let step = press(&mut flow, &mut shell, "MM_B_MULTIPLAYER");
+    assert_eq!(
+        step,
         StartStep::Refused(StartRefusal::NotYetPresented {
-            screen: Screen::ProfileSelect,
-            what: "the Campaign pilot-selection page",
-            task: Some(1835),
+            screen: Screen::Lobby,
+            what: "Multiplayer",
+            task: None,
         })
     );
     assert_eq!(flow.screen(), Screen::MainMenu, "the machine did not move");
-    assert_eq!(
-        shell.section_name(),
-        Some("MainMenu"),
-        "the shell stepped back"
-    );
-    assert_eq!(shell.depth(), 1);
-    assert!(matches!(
-        presentation(Screen::ProfileSelect),
-        Presentation::Pending { .. }
-    ));
+    assert_eq!(shell.section_name(), Some("MainMenu"));
 
     // Preferences and back through its main-menu button.
     let step = press(&mut flow, &mut shell, "MM_B_PREFERENCES");

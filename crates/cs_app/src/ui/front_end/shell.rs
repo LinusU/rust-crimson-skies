@@ -49,8 +49,11 @@
 //!   `CAMPAIGN.SCRIPT`), unread statically; every presented button is enabled,
 //!   and the disabled frame is reachable only through
 //!   [`MenuShell::set_enabled`], a designed affordance.
-//! * `M` movie rows, `T`/`E`/`L`/`D`/`S`/`W`/`Z` controls — counted on the
-//!   section ([`ShellSection::other_rows`]), never drawn or faked.
+//! * `M` movie rows — parsed into [`ShellSection::movies`] for the presenter
+//!   to play (FE-MENU-2); the *movie's own* audio, the `Z` draw order and
+//!   whether a non-looping movie's last frame stays up are still unread.
+//! * `T`/`E`/`L`/`D`/`S`/`W`/`Z` controls — counted on the section
+//!   ([`ShellSection::other_rows`]), never drawn or faked.
 //! * A `P` row's `NUMFRAMES` other than 1 — the shell draws frame 0 of the
 //!   strip and keeps the count on [`ShellPane::frames`].
 //! * `AlphaType=2` (colour-key) — which texel the original keys out is
@@ -217,6 +220,52 @@ pub struct ShellPane {
     pub color_keyed: bool,
 }
 
+/// One `M` row to play: the screen's movie object, drawn under the panes.
+/// The drawn rect needs the decoded video's extent, which the parser does
+/// not have: [`ShellMovie::rect_at`] applies the row's `ScaleX`/`ScaleY`
+/// once the decoder reports it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ShellMovie {
+    /// The row id as written, upper-cased.
+    pub id: String,
+    /// The movie file name as the row writes it (`CrimFlag.MPG`).
+    pub file: String,
+    /// The row's `X`,`Y` in logical pixels (signed: may be negative).
+    pub x: i32,
+    /// Top edge in logical pixels.
+    pub y: i32,
+    /// The row's `Z` — kept for the record; movies draw under the panes in
+    /// declaration order (the draw order the column carries is unread).
+    pub z: u32,
+    /// The row's `ScaleX`/`ScaleY`, percent of the video's own extent: `250`
+    /// draws the measured 320x240 `crimflag.mpg` at the authored 800x600 the
+    /// front end presents (the only reading that lands the flag the owner's
+    /// frame shows; inferred, not `verified_original`).
+    pub scale_x: u32,
+    /// See `scale_x`.
+    pub scale_y: u32,
+    /// The row's `# Loops`: `0` loops continuously (the convention the file's
+    /// own `W` sound rows document and the owner's frame shows), anything
+    /// else is the play count (`CF_MOVIE` plays `Final.MPG` once).
+    pub loops: u32,
+    /// The row's `Region?` — kept for the record; movies are not hit-tested.
+    pub region: bool,
+}
+
+impl ShellMovie {
+    /// The drawn rect once the video's decoded extent is known: the row's
+    /// `X`,`Y` plus the video extent at `ScaleX`/`ScaleY` percent.
+    #[must_use]
+    pub fn rect_at(&self, video: (u32, u32)) -> ShellRect {
+        ShellRect {
+            x: self.x,
+            y: self.y,
+            width: video.0.saturating_mul(self.scale_x).saturating_div(100),
+            height: video.1.saturating_mul(self.scale_y).saturating_div(100),
+        }
+    }
+}
+
 /// One `B` row to draw: a button whose art is a vertical strip of
 /// [`BUTTON_STATE_FRAMES`] equal state frames.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -235,7 +284,7 @@ pub struct ShellButton {
     pub enabled: bool,
 }
 
-/// Why a `P`/`B` row is not drawn.
+/// Why a `P`/`B`/`M` row is not drawn.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum SkippedReason {
     /// The row names no art.
@@ -258,6 +307,13 @@ pub enum SkippedReason {
         /// The measured height (buttons) or the declared count (panes).
         height: u32,
     },
+    /// An `M` row's field is empty or not the unsigned number the header's
+    /// record layout declares (`ScaleX`, `ScaleY`, `# Loops`; `X`,`Y`,`Z`
+    /// reuse [`SkippedReason::PositionUnread`]).
+    MovieFieldUnread {
+        /// The field's name in the header's record layout.
+        field: &'static str,
+    },
 }
 
 /// A row the shell does not draw, with the reason.
@@ -265,7 +321,7 @@ pub enum SkippedReason {
 pub struct SkippedRow {
     /// The row id as written.
     pub id: String,
-    /// `P` or `B`.
+    /// `P`, `B` or `M`.
     pub kind: String,
     /// Why it is not drawn.
     pub reason: SkippedReason,
@@ -276,13 +332,15 @@ pub struct SkippedRow {
 pub struct ShellSection {
     /// The section name as written.
     pub name: String,
+    /// The `M` rows in declaration order, drawn under the panes.
+    pub movies: Vec<ShellMovie>,
     /// The `P` rows in declaration (draw) order.
     pub panes: Vec<ShellPane>,
     /// The `B` rows in declaration (focus) order.
     pub buttons: Vec<ShellButton>,
-    /// The `P`/`B` rows not drawn, in declaration order with reasons.
+    /// The `P`/`B`/`M` rows not drawn, in declaration order with reasons.
     pub skipped: Vec<SkippedRow>,
-    /// The row kinds present besides `P`/`B` (`T`, `E`, `M`, `A`, `D`, `L`,
+    /// The row kinds present besides `P`/`B`/`M` (`T`, `E`, `A`, `D`, `L`,
     /// `S`, `W`, `Z`, …), counted and never drawn.
     pub other_rows: Vec<String>,
 }
@@ -818,14 +876,16 @@ impl MenuShell {
     }
 }
 
-/// Presents one section: its `P` rows into panes and its `B` rows into
-/// buttons, every row it cannot draw kept in `skipped` with the reason.
+/// Presents one section: its `P` rows into panes, its `B` rows into buttons
+/// and its `M` rows into movies, every row it cannot draw kept in `skipped`
+/// with the reason.
 fn present_section(
     layout: &OriginalLayout,
     section: &super::original::Section,
     measure: &mut dyn FnMut(&str) -> Option<(u32, u32)>,
     handlers: Option<&ScreenHandlers>,
 ) -> ShellSection {
+    let mut movies = Vec::new();
     let mut panes = Vec::new();
     let mut buttons = Vec::new();
     let mut skipped = Vec::new();
@@ -849,11 +909,30 @@ fn present_section(
             }),
         }
     }
-    let mut other_rows: Vec<String> = section.other.iter().map(|row| row.kind.clone()).collect();
+    for row in &section.other {
+        if !row.kind.eq_ignore_ascii_case("M") {
+            continue;
+        }
+        match present_movie(row) {
+            Ok(present) => movies.push(present),
+            Err(reason) => skipped.push(SkippedRow {
+                id: row.id.clone(),
+                kind: row.kind.clone(),
+                reason,
+            }),
+        }
+    }
+    let mut other_rows: Vec<String> = section
+        .other
+        .iter()
+        .filter(|row| !row.kind.eq_ignore_ascii_case("M"))
+        .map(|row| row.kind.clone())
+        .collect();
     other_rows.sort();
     other_rows.dedup();
     ShellSection {
         name: section.name.clone(),
+        movies,
         panes,
         buttons,
         skipped,
@@ -974,6 +1053,40 @@ fn present_button(
         },
         effect,
         enabled: true,
+    })
+}
+
+/// Presents one `M` row: `ID=M,file,X,Y,Z,ScaleX,ScaleY,# Loops,Region?` —
+/// the record layout `cs_content::ui_layout::RecordKind::Movie` measures.
+/// The drawn rect waits for the decoded extent ([`ShellMovie::rect_at`]):
+/// the row carries the authored *scale*, not pixels.
+fn present_movie(row: &Row) -> Result<ShellMovie, SkippedReason> {
+    if let Some(name) = row.unresolved.first() {
+        return Err(SkippedReason::UnresolvedPlaceholder { name: name.clone() });
+    }
+    let file = row.fields.first().map_or("", String::as_str);
+    if file.is_empty() {
+        return Err(SkippedReason::MovieFieldUnread { field: "file" });
+    }
+    let (Some(x), Some(y), Some(z)) = (signed(row, 1), signed(row, 2), signed(row, 3)) else {
+        return Err(SkippedReason::PositionUnread);
+    };
+    let unsigned = |index: usize, field: &'static str| {
+        row.fields
+            .get(index)
+            .and_then(|field| field.trim().parse::<u32>().ok())
+            .ok_or(SkippedReason::MovieFieldUnread { field })
+    };
+    Ok(ShellMovie {
+        id: row.id.clone(),
+        file: file.to_owned(),
+        x,
+        y,
+        z: u32::try_from(z).map_err(|_| SkippedReason::PositionUnread)?,
+        scale_x: unsigned(4, "ScaleX")?,
+        scale_y: unsigned(5, "ScaleY")?,
+        loops: unsigned(6, "# Loops")?,
+        region: row.fields.get(7).is_some_and(|field| field.trim() == "1"),
     })
 }
 

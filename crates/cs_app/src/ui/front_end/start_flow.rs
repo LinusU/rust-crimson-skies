@@ -123,19 +123,21 @@ pub enum Presentation {
 pub fn presentation(screen: Screen) -> Presentation {
     match screen {
         // The cabin is the `PassengerCabin` layout section's own buttons; the
-        // hub's photograph, pins and pilot data are #1840's.
-        Screen::MainMenu | Screen::Settings | Screen::Credits | Screen::Cabin => {
-            Presentation::Shell
-        }
+        // hub's photograph, pins and pilot data are #1840's. The pilot page
+        // and the Instant Action selection open as their `LAYOUT.CSV`
+        // sections (FE-MENU-2): the controls #1835 and the Instant Action
+        // flow own stay drawn-but-recorded until those land.
+        Screen::MainMenu
+        | Screen::Settings
+        | Screen::Credits
+        | Screen::Cabin
+        | Screen::ProfileSelect
+        | Screen::IaSelect => Presentation::Shell,
         Screen::Briefing
         | Screen::Recon
         | Screen::FlightCheck
         | Screen::Loading
         | Screen::Flight => Presentation::MissionLaunch,
-        Screen::ProfileSelect => Presentation::Pending {
-            what: "the Campaign pilot-selection page",
-            task: Some(1835),
-        },
         Screen::Results => Presentation::Pending {
             what: "the debrief",
             task: Some(1655),
@@ -158,12 +160,10 @@ pub fn presentation(screen: Screen) -> Presentation {
                 task: None,
             }
         }
-        Screen::IaSelect | Screen::IaCustomize | Screen::IaFlight | Screen::IaResults => {
-            Presentation::Pending {
-                what: "Instant Action",
-                task: None,
-            }
-        }
+        Screen::IaCustomize | Screen::IaFlight | Screen::IaResults => Presentation::Pending {
+            what: "Instant Action",
+            task: None,
+        },
         Screen::Lobby => Presentation::Pending {
             what: "Multiplayer",
             task: None,
@@ -198,10 +198,15 @@ pub fn screen_of_section(section: &str) -> Option<Screen> {
 /// * the Cabin's Next Mission is `E 2104(-2)` then `A 6`, open the briefing;
 /// * Preferences' main-menu button is `activate(@mainmenu@)` +
 ///   `script_end "preferences.script"` when the in-game flag `$$KW$$` is clear,
-///   which it is in the start flow.
+///   which it is in the start flow;
+/// * the main menu's Multiplayer is `activate(@MultiPlayerMain@)`, a section
+///   the layout does not hold — the press stands for the table's
+///   `OpenLobby`, which `Multiplayer`'s presenter being unbuilt refuses
+///   by name.
 const BUTTON_ACTIONS: &[(&str, Action)] = &[
     ("PC_B_NEWMISSION", Action::OpenBriefing),
     ("PF_B_MAINMENU", Action::Back),
+    ("MM_B_MULTIPLAYER", Action::OpenLobby),
 ];
 
 /// The layout section that presents `screen` through the shell.

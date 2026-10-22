@@ -73,6 +73,12 @@ pub const SCREEN_CONTAINER: &str = "GOSDATA/ASSETS/crimson.rof";
 /// [`SCREEN_CONTAINER`].
 pub const GRAPHICS_PREFIX: &str = "ASSETS/GRAPHICS/";
 
+/// The directory the `M` rows' movie files live under, installation-relative
+/// as discovery spells it (`GOSDATA/ASSETS/GRAPHICS/MPG/crimflag.mpg`,
+/// measured). These are **loose files**, not `crimson.rof` members: the
+/// `M` row's file name resolves here, never inside the screen container.
+pub const MOVIE_DIRECTORY: &str = "GOSDATA/ASSETS/GRAPHICS/MPG";
+
 /// The smallest front-end screen this installation stores: `mainmenu` and
 /// `escapemenu` in [`UI_IMAGE_CONTAINER`], both measured 640x480.
 ///
@@ -751,6 +757,35 @@ impl FrontEndScreens {
         let read = self.rof.read(&key).ok()?;
         let (_, width, height, _) = decode_image(&member.spelling, &read.data).ok()?;
         Some((width, height))
+    }
+
+    /// The loose movie file `file` (an `M` row's file name, e.g.
+    /// `CrimFlag.MPG`) read out of the installation under
+    /// [`MOVIE_DIRECTORY`] through the install mount — the same namespace the
+    /// sound archives resolve through.
+    ///
+    /// # Errors
+    ///
+    /// [`RetailError::Member`] when the key is invalid, the file does not
+    /// resolve or its bytes will not read.
+    pub fn movie_bytes(&self, file: &str) -> Result<Vec<u8>, RetailError> {
+        let member_error = |reason: String| RetailError::Member {
+            name: format!("{MOVIE_DIRECTORY}/{file}"),
+            reason,
+        };
+        let key = AssetKey::from_spelling(
+            INSTALL_NAMESPACE,
+            &format!("{MOVIE_DIRECTORY}/{file}"),
+            "default",
+        )
+        .map_err(|error| member_error(error.to_string()))?;
+        let asset = self
+            .session
+            .resolve(&key)
+            .map_err(|error| member_error(error.to_string()))?;
+        self.session
+            .read_all(&asset)
+            .map_err(|error| member_error(error.to_string()))
     }
 
     /// The container graphic the layout names `art` (matched ASCII

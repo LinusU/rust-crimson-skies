@@ -668,10 +668,33 @@ fn accept_fe_menu_1_retail_the_original_sections_present_and_navigate_as_written
         vec!["MM_LOGO", "BFRAME"],
         "the logo and the button frame, in declaration order"
     );
+    assert!(
+        menu.other_rows.is_empty(),
+        "the main menu holds no unhandled row kinds: {:?}",
+        menu.other_rows
+    );
+    // The CrimFlag.MPG row parses to a movie (FE-MENU-2): the file, its
+    // authored origin/scale and the loop flag kept.
+    let movies: Vec<(&str, &str, i32, i32, u32, u32, u32, u32, bool)> = menu
+        .movies
+        .iter()
+        .map(|movie| {
+            (
+                movie.id.as_str(),
+                movie.file.as_str(),
+                movie.x,
+                movie.y,
+                movie.z,
+                movie.scale_x,
+                movie.scale_y,
+                movie.loops,
+                movie.region,
+            )
+        })
+        .collect();
     assert_eq!(
-        menu.other_rows,
-        vec!["M".to_owned()],
-        "CrimFlag.MPG is a movie row: counted, never drawn"
+        movies,
+        vec![("MOVIE", "CrimFlag.MPG", 0, 0, 0, 250, 250, 0, false)]
     );
     let effects: Vec<(&str, &ButtonEffect)> = menu
         .buttons
@@ -884,7 +907,7 @@ fn accept_fe_menu_1_the_windowed_launch_runs_the_scripted_smoke() {
     std::fs::create_dir_all(&dir).expect("the capture directory is created");
     let output = std::process::Command::new(front_end_bin())
         .args(["--cs-path", &game_dir, "--front-end"])
-        .args(["--smoke-seconds", "8", "--capture-dir"])
+        .args(["--smoke-seconds", "14", "--capture-dir"])
         .arg(&dir)
         .env("CS_CAPABILITIES", capabilities)
         .output()
@@ -906,7 +929,9 @@ fn accept_fe_menu_1_the_windowed_launch_runs_the_scripted_smoke() {
         "the report names its kind: {report}"
     );
     assert!(
-        report.contains("\"visited\":[\"MainMenu\",\"Campaign\",\"MainMenu\"]"),
+        report.contains(
+            "\"visited\":[\"MainMenu\",\"Campaign\",\"MainMenu\",\"InstantAction\",\"MainMenu\",\"Preferences\",\"MainMenu\",\"Credits\",\"MainMenu\"]"
+        ),
         "the scripted navigation happened: {report}"
     );
     assert!(

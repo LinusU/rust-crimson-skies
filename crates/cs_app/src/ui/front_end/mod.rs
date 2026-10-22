@@ -85,6 +85,7 @@ mod flight_check_view;
 mod flow;
 mod import_dialog;
 mod machine;
+mod movie;
 mod original;
 mod paths;
 mod retail;
@@ -120,6 +121,7 @@ pub use machine::{
     ConstructionDraft, Effect, FrontEnd, LoadFailure, Loadout, LoadoutProblem, MissionOutcome,
     Outcome, PageMove, Plan, ProfileIntent, Refusal, Request,
 };
+pub use movie::{MovieBackdrop, MovieSource, movie_media};
 pub use original::Row as LayoutRow;
 pub use original::{
     ArtExtents, BUTTON_STATE_FRAMES, BoundButton, FlightCheckControl, FlightCheckSelection,
@@ -133,7 +135,7 @@ pub use paths::{
 };
 pub use retail::{
     FrontEndInventory, FrontEndScreens, GRAPHICS_PREFIX, ImageSource, MINIMUM_SCREEN_EXTENT,
-    OriginalImage, SCREEN_CONTAINER, SoundMember, UI_IMAGE_CONTAINER,
+    MOVIE_DIRECTORY, OriginalImage, SCREEN_CONTAINER, SoundMember, UI_IMAGE_CONTAINER,
 };
 pub use screens::{
     Button, ButtonView, DeckError, ScreenAssetError, ScreenAssets, ScreenDeck, ScreenSession,
@@ -141,8 +143,8 @@ pub use screens::{
 };
 pub use shell::{
     ButtonEffect, ButtonVisual, CURSOR_CANDIDATES, MenuShell, SECTION_SURFACE, START_SECTION,
-    ShellButton, ShellButtonView, ShellError, ShellOutcome, ShellPane, ShellPaneView, ShellRect,
-    ShellSection, ShellView, SkippedReason, SkippedRow, UnhandledEffect,
+    ShellButton, ShellButtonView, ShellError, ShellMovie, ShellOutcome, ShellPane, ShellPaneView,
+    ShellRect, ShellSection, ShellView, SkippedReason, SkippedRow, UnhandledEffect,
 };
 pub use start_flow::{
     FIRST_MISSION, MissionEnd, Presentation, StartFlow, StartFlowError, StartFlowRequest,
@@ -152,7 +154,7 @@ pub use start_flow::{
 pub use window::{
     DEFAULT_FRONT_END_CAPTURE_DIR, FrontEndError, FrontEndRequest, FrontEndShellPlugin,
     MIN_SHELL_SMOKE_SECONDS, ShellResource, ShellShotRecord, ShellSmokeHandle, ShellSmokePlugin,
-    ShellSmokeReport, headless_app, run_front_end, shell_app,
+    ShellSmokeReport, headless_app, headless_app_flow, run_front_end, shell_app,
 };
 
 /// A front-end screen.
