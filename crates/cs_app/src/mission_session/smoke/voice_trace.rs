@@ -18,12 +18,16 @@ use crate::audio::AudioEmitterBinding;
 use crate::audio::device::DeviceSampleLibrary;
 use crate::audio::engine::EngineVoices;
 use crate::audio::loops::AudioSession;
+use crate::audio::measured_voice::{
+    EngineGroupLaw, LaunchVoices, MeasuredVoice, VoiceListenerPose, measured_mix,
+};
 use crate::audio::mixer::AudioSpatial;
 
 /// What a mission second's trace cannot say, verbatim into the report.
 pub const UNOBSERVED: &[&str] = &[
-    "one-shot effects (gunfire, explosions, ricochets) are accepted by the router and \
-     handed on without a held voice, so they never appear in a second's set",
+    "one-shot effects other than the launch-cinematic voices (gunfire, explosions, ricochets) \
+     are accepted by the router and handed on without a held voice, so they never appear in a \
+     second's set; the launch voices are held in LaunchVoices and do appear",
     "music tracks start on a verdict the smoke does not read back as a voice",
     "radio lines appear only while the queue holds one active line",
 ];
@@ -107,41 +111,101 @@ pub fn set_changes(trace: &[VoiceSecond]) -> Vec<u32> {
 }
 
 /// Reads the live audio state into one second's set.
-#[allow(clippy::too_many_arguments)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn sample_second(
     second: u32,
     session: &AudioSession,
     spatial: Option<&AudioSpatial>,
     engine: &EngineVoices,
     library: Option<&DeviceSampleLibrary>,
-    emitters: &Query<(&AudioEmitterBinding, Option<&GlobalTransform>)>,
+    emitters: &Query<(
+        &AudioEmitterBinding,
+        Option<&GlobalTransform>,
+        Option<&avian3d::prelude::LinearVelocity>,
+        Has<MeasuredVoice>,
+    )>,
+    law: Option<&EngineGroupLaw>,
+    pose: Option<&VoiceListenerPose>,
+    launch_voices: Option<&LaunchVoices>,
 ) -> VoiceSecond {
-    let poses: std::collections::BTreeMap<AudioEmitterId, [f64; 3]> = emitters
+    let states: std::collections::BTreeMap<AudioEmitterId, ([f64; 3], [f64; 3], bool)> = emitters
         .iter()
-        .filter_map(|(binding, transform)| {
-            transform.map(|t| (binding.emitter, t.translation().as_dvec3().to_array()))
+        .filter_map(|(binding, transform, velocity, marked)| {
+            transform.map(|t| {
+                (
+                    binding.emitter,
+                    (
+                        t.translation().as_dvec3().to_array(),
+                        velocity.map_or([0.0; 3], |v| v.0.as_dvec3().to_array()),
+                        marked,
+                    ),
+                )
+            })
         })
         .collect();
     let mut voices = Vec::new();
     for binding in session.router.active_loops() {
         let level = engine.level(&binding.emitter);
-        let placed = spatial.zip(poses.get(&binding.emitter)).and_then(|(s, p)| {
-            let mix = EmitterMix {
-                emitter: binding.emitter,
-                position_m: *p,
-                level,
-            };
-            spatialize(&s.policy, &s.listener, mix.position_m).ok()
-        });
+        let state = states.get(&binding.emitter);
+        // A marked emitter plays the measured `.02` mix: the trace computes
+        // exactly the values `mix_session` hands the device — distance gain
+        // and bearing pan from the measured law, the group `VOLUME` folded
+        // into the level, the Doppler factor into the rate.
+        let measured = law
+            .zip(pose)
+            .zip(state)
+            .and_then(|((law, pose), (p, v, marked))| {
+                marked.then(|| {
+                    let mix = measured_mix(law, *p, *v, pose);
+                    (mix.gain, Some(mix.pan), law.volume, mix.doppler)
+                })
+            });
+        let (spatial_gain, pan, group_volume, doppler) = match measured {
+            Some((gain, pan, volume, doppler)) => (gain, pan, volume, doppler),
+            None => {
+                let placed = spatial.zip(state).and_then(|(s, (p, _, _))| {
+                    let mix = EmitterMix {
+                        emitter: binding.emitter,
+                        position_m: *p,
+                        level,
+                    };
+                    spatialize(&s.policy, &s.listener, mix.position_m).ok()
+                });
+                (
+                    placed.map_or(1.0, |s| s.gain),
+                    placed.map(|s| s.pan),
+                    1.0,
+                    1.0,
+                )
+            }
+        };
         let pcm = library.and_then(|l| l.library().pcm(&binding.asset));
         voices.push(VoiceRow {
             member: binding.asset.to_string(),
             decoded_bytes: pcm.as_ref().map(|p| p.sample_count() * 2),
             looping: true,
-            gain: binding.gain * level.gain * placed.map_or(1.0, |s| s.gain),
-            pan: placed.map(|s| s.pan),
-            rate_hz: pcm.as_ref().map(|p| f64::from(p.rate_hz()) * level.pitch),
+            gain: binding.gain * level.gain * group_volume * spatial_gain,
+            pan,
+            rate_hz: pcm
+                .as_ref()
+                .map(|p| f64::from(p.rate_hz()) * level.pitch * doppler),
         });
+    }
+    if let Some(held) = launch_voices {
+        // The launch-cinematic one-shots the device took: a held voice is
+        // sounding, so it joins the second's set with the mix it was started
+        // with (full gain, centred, native rate).
+        for voice in &held.held {
+            let pcm = library.and_then(|l| l.library().pcm(&voice.member));
+            voices.push(VoiceRow {
+                member: voice.member.to_string(),
+                decoded_bytes: pcm.as_ref().map(|p| p.sample_count() * 2),
+                looping: false,
+                gain: 1.0,
+                pan: Some(0.0),
+                rate_hz: pcm.as_ref().map(|p| f64::from(p.rate_hz())),
+            });
+        }
     }
     if let Some(line) = session.radio.active() {
         let pcm = library.and_then(|l| l.library().pcm(&line.asset));
@@ -160,13 +224,22 @@ pub fn sample_second(
 
 /// Samples the trace once per mission second, from the second frame on.
 #[allow(clippy::needless_pass_by_value)]
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub(super) fn smoke_voice_trace(
     mut data: ResMut<super::SmokeData>,
     audio: Option<Res<AudioSession>>,
     spatial: Option<Res<AudioSpatial>>,
     engine_voices: Option<Res<EngineVoices>>,
     library: Option<Res<DeviceSampleLibrary>>,
-    emitters: Query<(&AudioEmitterBinding, Option<&GlobalTransform>)>,
+    emitters: Query<(
+        &AudioEmitterBinding,
+        Option<&GlobalTransform>,
+        Option<&avian3d::prelude::LinearVelocity>,
+        Has<MeasuredVoice>,
+    )>,
+    law: Option<Res<EngineGroupLaw>>,
+    pose: Option<Res<VoiceListenerPose>>,
+    launch_voices: Option<Res<LaunchVoices>>,
 ) {
     let Some(session) = audio.as_deref() else {
         return;
@@ -185,6 +258,9 @@ pub(super) fn smoke_voice_trace(
         engine_voices.as_deref().unwrap_or(&EngineVoices::default()),
         library.as_deref(),
         &emitters,
+        law.as_deref(),
+        pose.as_deref(),
+        launch_voices.as_deref(),
     );
     data.voice_trace.push(row);
 }

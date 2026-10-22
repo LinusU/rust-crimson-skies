@@ -207,6 +207,7 @@ pub struct AudioMixReport {
 /// timing through a loss (F41 non-negotiable behavior 2), so a line that started
 /// unvoiced or completed unvoiced is named in [`AudioMixReport::radio`] rather
 /// than left to pile up in the session until the device returns.
+#[allow(clippy::too_many_arguments, clippy::type_complexity)]
 pub fn mix_session(
     mut mixing: Option<ResMut<AudioMixing>>,
     mut output: Option<ResMut<AudioOutput>>,
@@ -217,7 +218,11 @@ pub fn mix_session(
         &AudioEmitterBinding,
         Option<&GlobalTransform>,
         Has<NonPositionalEmitter>,
+        Option<&avian3d::prelude::LinearVelocity>,
+        Has<super::measured_voice::MeasuredVoice>,
     )>,
+    group_law: Option<Res<super::measured_voice::EngineGroupLaw>>,
+    listener_pose: Option<Res<super::measured_voice::VoiceListenerPose>>,
     mut report: ResMut<AudioMixReport>,
 ) {
     let (Some(mixing), Some(output), Some(session), Some(spatial)) = (
@@ -242,10 +247,18 @@ pub fn mix_session(
         report.music = mixing.mixer_mut().mix_music(&music, None);
         return;
     }
+    // The measured half of the pass needs the group's law *and* the listener
+    // pose the `.02` terms are computed from; a world missing either mixes
+    // every emitter under the designed policy exactly as before.
+    let measured_terms = group_law
+        .as_deref()
+        .copied()
+        .zip(listener_pose.as_deref().copied());
     let mut placed = Vec::with_capacity(emitters.iter().len());
+    let mut measured_states: Vec<EmitterMix> = Vec::new();
     let mut unplaced = 0;
     let mut non_positional = 0;
-    for (binding, transform, declared_non_positional) in &emitters {
+    for (binding, transform, declared_non_positional, velocity, is_measured) in &emitters {
         let Some(transform) = transform else {
             if declared_non_positional {
                 non_positional += 1;
@@ -254,11 +267,36 @@ pub fn mix_session(
             }
             continue;
         };
-        placed.push(EmitterMix {
-            emitter: binding.emitter,
-            position_m: transform.translation().as_dvec3().to_array(),
-            level: voices.level(&binding.emitter),
-        });
+        let position_m = transform.translation().as_dvec3().to_array();
+        let level = voices.level(&binding.emitter);
+        match measured_terms.filter(|_| is_measured) {
+            Some((law, pose)) => {
+                let mix = super::measured_voice::measured_mix(
+                    &law,
+                    position_m,
+                    velocity.map_or([0.0; 3], |v| v.0.as_dvec3().to_array()),
+                    &pose,
+                );
+                measured_states.push(EmitterMix {
+                    emitter: binding.emitter,
+                    position_m: super::measured_voice::projected_position(&pose, position_m, &mix),
+                    // The engine's own level stays the voice's dynamics; the
+                    // group's measured `VOLUME` and the Doppler factor are
+                    // the law's terms on top of it.
+                    level: cs_sim::audio_events::VoiceLevel {
+                        gain: level.gain * law.volume,
+                        pitch: level.pitch * mix.doppler,
+                    },
+                });
+            }
+            None => {
+                placed.push(EmitterMix {
+                    emitter: binding.emitter,
+                    position_m,
+                    level,
+                });
+            }
+        }
     }
     // The drain comes first so the outcomes are taken before the router is
     // borrowed for the pass: the mixer reads the router the *end* of this frame
@@ -272,6 +310,24 @@ pub fn mix_session(
         &spatial.policy,
         output.device_mut(),
     );
+    if !measured_states.is_empty() {
+        // The measured emitters place under their own policy: the projected
+        // positions carry the `.02` distance gain and bearing pan through the
+        // same `spatialize` the designed law runs, so the device sees exactly
+        // the measured values. The report's lifecycle lists stay the first
+        // pass's — this pass only updates placements — so only `updated` and
+        // `refusals` merge.
+        let second = mixing.mixer_mut().mix(
+            &session.router,
+            &[],
+            &measured_states,
+            &spatial.listener,
+            &super::measured_voice::projection_policy(),
+            output.device_mut(),
+        );
+        report.last.updated.extend(second.updated);
+        report.last.refusals.extend(second.refusals);
+    }
     // Radio follows the loop pass: `mix` opens the device if it was closed, so
     // a line started this frame reaches an open output, and a device that
     // refused to open refuses the line too and names it. The events are taken

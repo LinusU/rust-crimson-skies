@@ -75,6 +75,10 @@ pub struct LaunchCinematicLength {
     pub scene_root: String,
     /// The length in seconds of game time.
     pub seconds: f64,
+    /// The scene spans the replay produced, in start order: the launch
+    /// voices' `SOUND` cues anchor at the starts of the scenes whose
+    /// sequences carry them (#1863).
+    pub scenes: Vec<crate::cinematics::intro_timeline::SceneSpan>,
 }
 
 impl LaunchCinematicLength {
@@ -136,6 +140,7 @@ pub fn measure_launch_cinematic(
     Ok(LaunchCinematicLength {
         scene_root: scene_root.to_owned(),
         seconds: timeline.length,
+        scenes: timeline.scenes,
     })
 }
 
@@ -261,7 +266,7 @@ fn hold_body(
     }
 }
 
-fn advance_phase(
+pub(crate) fn advance_phase(
     mut phase: ResMut<LaunchCinematic>,
     mut bodies: Query<&mut LinearVelocity, With<MissionPlayerBody>>,
 ) {

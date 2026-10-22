@@ -44,6 +44,9 @@ fn launch_sound(host: PathBuf, bytes: u64, sha256: ContentHash) -> LaunchSound {
         content: member_content_id(LAUNCH_SOUND_CONTAINER, "devastator.wav")
             .expect("the member id is valid"),
         bytes,
+        engine_law: None,
+        scene_sounds: Vec::new(),
+        scene_refusals: Vec::new(),
     }
 }
 
@@ -62,6 +65,7 @@ fn accept_vs_m01_runtime_evidence_audio_a_machine_without_audio_is_refused_with_
             declared: DeclaredCapabilities::of([CapabilityClass::Retail]),
             malformed: None,
         },
+        None,
     )
     .expect("the audio stack installs");
     let backend = app.world().resource::<AudioBackendLog>();
@@ -182,14 +186,17 @@ fn accept_vs_m01_runtime_evidence_audio_the_launch_plays_the_engine_loop_through
         .clone()
         .expect("the load installed an audio session");
     // The population pass decodes every audio member the stage delivers
-    // through the launch's staged container: the engine member and, since
-    // #1628's measured loadout, the player's selected gun member beside it.
-    // The count is the stage's delivered set, not a fixed number.
+    // through the launch's staged container: the engine member, the player's
+    // selected gun member beside it since #1628's measured loadout, the flak
+    // shot and burst members, and the launch cinematic's resolved `SOUND`
+    // members since #1863. The count is the stage's delivered set, not a
+    // fixed number.
     let delivered_audio = 1
         + usize::from(stage.gun_sound.is_some())
         + stage.flak_sound.as_ref().map_or(0, |flak| {
             1 + usize::from(flak.shot.content != flak.burst.content)
-        });
+        })
+        + launch.scene_sounds.len();
     assert_eq!(
         install.samples, delivered_audio,
         "every delivered audio member was decoded into the library: {handoff:?}"

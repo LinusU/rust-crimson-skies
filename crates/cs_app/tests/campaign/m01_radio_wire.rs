@@ -116,6 +116,9 @@ fn synthetic_launch_sound(scratch: &Path) -> LaunchSound {
         host,
         content: member_content_id(container, member).expect("the synthetic member derives an id"),
         bytes: bytes.len() as u64,
+        engine_law: None,
+        scene_sounds: Vec::new(),
+        scene_refusals: Vec::new(),
     }
 }
 

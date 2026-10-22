@@ -79,6 +79,8 @@ use cs_types::content::ContentId;
 use cs_types::net::{ActorAllocator, AllocError, SessionId};
 
 use crate::loading::{LoadIdentity, LoadedItemBinding};
+use crate::mission_session::MissionPlayerBody;
+use crate::mission_session::launch_cinematic::LaunchCinematic;
 use crate::physics::flight::FlightAircraft;
 use crate::playtest::scene::PlaytestOriginalFlight;
 
@@ -87,6 +89,7 @@ use super::engine::EngineVoiceFollow;
 use super::handoff::{AudioHandoffLog, DeclaredAudioCatalog};
 use super::loops::AudioSession;
 use super::lower::{lower_bus, lower_mode};
+use super::measured_voice::{AUDIBLE_RANGE_M, EngineGroupLaw, MeasuredVoice};
 
 /// Marker: this emitter is declared **non-positional** — ambience that fills
 /// the world rather than sounding from a point (F41-B3, Rally #1277).
@@ -355,6 +358,49 @@ pub fn bind_spawned_emitters(world: &mut World) {
             });
     }
 
+    // The `.02` `engine.audible_gate`: an aircraft voice exists only while
+    // the aircraft is the player or within `AUDIBLE_RANGE_M` of the player
+    // aircraft (the limit is a squared-metre compare against the body's
+    // position). During the launch cinematic the player aircraft is not yet
+    // the player — the phase hands it over at its last tick — so its voice
+    // is bound at hand-over, not at spawn. A world with no cinematic phase
+    // or no measured gate law binds every aircraft exactly as before.
+    let player_gated = world
+        .get_resource::<LaunchCinematic>()
+        .is_some_and(LaunchCinematic::is_playing);
+    let gated = world.get_resource::<EngineGroupLaw>().is_some();
+    let player_position: Option<[f64; 3]> = {
+        let mut query =
+            world.query_filtered::<&bevy::prelude::GlobalTransform, With<MissionPlayerBody>>();
+        query
+            .iter(world)
+            .next()
+            .map(|t| t.translation().as_dvec3().to_array())
+    };
+    // The bound half of the gate: an aircraft that has left the player's
+    // audible range loses its binding — and with it the loop — rather than
+    // sounding on from anywhere (`0x4b1b47`'s "otherwise both are stopped").
+    if gated && let Some(player) = player_position {
+        let limit = AUDIBLE_RANGE_M * AUDIBLE_RANGE_M;
+        let mut out_of_range: Vec<Entity> = Vec::new();
+        let mut query = world.query_filtered::<(Entity, &bevy::prelude::GlobalTransform), (
+            With<AudioEmitterBinding>,
+            Or<(With<FlightAircraft>, With<PlaytestOriginalFlight>)>,
+            Without<MissionPlayerBody>,
+        )>();
+        out_of_range.extend(query.iter(world).filter_map(|(entity, t)| {
+            let p = t.translation().as_dvec3().to_array();
+            ((p[0] - player[0]).powi(2) + (p[1] - player[1]).powi(2) + (p[2] - player[2]).powi(2)
+                >= limit)
+                .then_some(entity)
+        }));
+        for entity in out_of_range {
+            world
+                .entity_mut(entity)
+                .remove::<(AudioEmitterBinding, EngineVoiceFollow, MeasuredVoice)>();
+        }
+    }
+
     // Aircraft: every spawned body with a flight authority and no binding yet.
     // Both authorities the workspace spawns are included — the designed F24
     // law and the recovered original law a mission's player body carries —
@@ -369,6 +415,30 @@ pub fn bind_spawned_emitters(world: &mut World) {
         )>();
         aircraft.extend(query.iter(world));
     }
+    aircraft.retain(|entity| {
+        let is_player = world.entity(*entity).contains::<MissionPlayerBody>();
+        if is_player {
+            // `.02`: the player aircraft's own voice exists only while the
+            // aircraft *is* the player — which the hand-over makes true.
+            return !player_gated;
+        }
+        if !(gated && player_position.is_some()) {
+            return true;
+        }
+        let player = player_position.unwrap_or_default();
+        let Some(transform) = world
+            .entity(*entity)
+            .get::<bevy::prelude::GlobalTransform>()
+        else {
+            // No pose yet: the gate cannot measure it, so it stays unbound —
+            // the mixer's unplaced report is for a bound emitter with no
+            // pose, and a gated-out one is neither bound nor claimed.
+            return false;
+        };
+        let p = transform.translation().as_dvec3().to_array();
+        let limit = AUDIBLE_RANGE_M * AUDIBLE_RANGE_M;
+        (p[0] - player[0]).powi(2) + (p[1] - player[1]).powi(2) + (p[2] - player[2]).powi(2) < limit
+    });
 
     // World emitters: the installed load's own delivered item entities whose
     // declared record is the environment loop. An entity of a *superseded*
@@ -416,9 +486,17 @@ pub fn bind_spawned_emitters(world: &mut World) {
                 asset: asset.clone(),
                 generation,
             };
-            world
-                .entity_mut(entity)
-                .insert((binding.clone(), EngineVoiceFollow::default()));
+            if gated {
+                world.entity_mut(entity).insert((
+                    binding.clone(),
+                    EngineVoiceFollow::default(),
+                    MeasuredVoice,
+                ));
+            } else {
+                world
+                    .entity_mut(entity)
+                    .insert((binding.clone(), EngineVoiceFollow::default()));
+            }
             record_bind(world, entity, emitter, &binding, AudioEmitterRole::Engine);
         }
     }

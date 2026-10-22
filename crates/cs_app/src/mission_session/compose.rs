@@ -1194,6 +1194,7 @@ fn add_composition(
             &extra,
             stage.start.position,
             &crate::audio::CapabilityDeclaration::from_environment(),
+            stage.launch_cinematic.as_ref(),
         )
         .map_err(MissionCompositionError::LaunchSound)?;
     }
@@ -1674,6 +1675,23 @@ fn load_items(stage: &MissionStage) -> Result<Vec<LoadItem>, MissionCompositionE
                 );
             }
         }
+        // The launch cinematic's `SOUND` members ride the same staged
+        // container (#1863) so the device library the plan's cues ask for is
+        // populated by the same pass.
+        for scene in &launch.scene_sounds {
+            items.push(
+                LoadItem::new(
+                    key.clone(),
+                    scene.content.clone(),
+                    Criticality::GameplayCritical,
+                    launch.bytes,
+                )
+                .map_err(|error| MissionCompositionError::Item {
+                    key: spelling.clone(),
+                    reason: error.to_string(),
+                })?,
+            );
+        }
     }
     Ok(items)
 }
@@ -1856,6 +1874,12 @@ pub fn teardown(app: &mut App) {
     world.remove_resource::<MissionStage>();
     world.remove_resource::<super::flight_check::FlightCheckPhase>();
     world.remove_resource::<super::launch_cinematic::LaunchCinematic>();
+    // The launch-audio install's measured resources go with it (#1863): a
+    // stale `LaunchVoices.fired` would silence the second build's cues.
+    world.remove_resource::<crate::audio::measured_voice::LaunchVoicePlan>();
+    world.remove_resource::<crate::audio::measured_voice::LaunchVoices>();
+    world.remove_resource::<crate::audio::measured_voice::EngineGroupLaw>();
+    world.remove_resource::<crate::audio::measured_voice::VoiceListenerPose>();
     world.remove_resource::<super::launch_camera::LaunchCameraPlayback>();
     world.remove_resource::<super::flight_check::FlightCheckArtwork>();
     if let Some(mut voice) = world.remove_resource::<super::briefing_screen::BriefingVoice>() {

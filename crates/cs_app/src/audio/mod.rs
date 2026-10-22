@@ -53,11 +53,14 @@
 //!   the app schedule.
 //!
 //! Every value here is newly authored project design; no original audio was
-//! read. The loop regions remain unknown (no `smpl` chunks in any retail
-//! member) and the attenuation law is designed rather than measured; both are
-//! recorded in
-//! `docs/findings/2026-10-01-f41-b-loops-and-spatial-emitters.md` and gate
-//! every fidelity claim.
+//! read — with one exception: [`measured_voice`] carries the `.02` engine
+//! group's own measured `RANGE`/`VOLUME` and the `zsnd3d` distance/pan/rate
+//! laws, applied to emitters marked [`MeasuredVoice`]. The loop regions
+//! remain unknown (no `smpl` chunks in any retail member) and the general
+//! attenuation law stays designed; the designed halves are recorded in
+//! `docs/findings/2026-10-01-f41-b-loops-and-spatial-emitters.md` and the
+//! measured half in `docs/findings/2026-10-22-m01-audio-timeline-voice-laws.md`;
+//! both gate every fidelity claim.
 
 pub mod audit;
 pub mod device;
@@ -65,6 +68,7 @@ pub mod engine;
 pub mod handoff;
 pub mod loops;
 pub mod lower;
+pub mod measured_voice;
 pub mod mixer;
 pub mod music;
 pub mod pcm_size;
@@ -90,6 +94,11 @@ pub use loops::{
 };
 pub use lower::{
     AudioLowerError, LoweredAudioAsset, lower_bus, lower_catalog, lower_mode, lower_record,
+};
+pub use measured_voice::{
+    AUDIBLE_RANGE_M, EngineGroupLaw, HeldSceneVoice, LaunchVoicePlan, LaunchVoices, MeasuredVoice,
+    PAN_SCALE, SPEED_OF_SOUND, SceneCue, VoiceListenerPose, bearing_pan, distance_gain,
+    doppler_factor, drive_launch_voices, measured_mix, projected_position, projection_policy,
 };
 pub use mixer::{
     AudioMixReport, AudioMixing, AudioOutput, AudioSpatial, device_lost, device_restored,

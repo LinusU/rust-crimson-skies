@@ -250,5 +250,12 @@ impl Plugin for AudioPlugin {
                 // engine loop starts and no line plays before Fly Mission.
                 .run_if(crate::mission_session::mission_is_released),
         );
+        // The launch-cinematic `SOUND` cues fire on the phase's own tick
+        // count, so they run right after the tick advances (#1863).
+        app.add_systems(
+            bevy::prelude::FixedLast,
+            super::measured_voice::drive_launch_voices
+                .after(crate::mission_session::launch_cinematic::advance_phase),
+        );
     }
 }

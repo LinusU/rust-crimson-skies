@@ -26,6 +26,7 @@ use bevy::ecs::system::RunSystemOnce;
 use bevy::prelude::{GlobalTransform, Query, ResMut, Resource, With, World};
 use cs_sim::audio_events::{AudioDevice, Listener, SpatialPolicy};
 
+use crate::audio::measured_voice::{EngineGroupLaw, LaunchVoicePlan, SceneCue, VoiceListenerPose};
 use crate::audio::mixer::mix_session;
 use crate::audio::{
     AudioBackendLog, AudioPlugin, AudioSession, AudioSpatial, CapabilityDeclaration,
@@ -33,6 +34,9 @@ use crate::audio::{
     sync_emitter_loops,
 };
 use crate::scene::SceneGenerations;
+
+use super::gun_sound::record_headed_by;
+use super::launch_cinematic::LaunchCinematicLength;
 
 use cs_content::audio::{
     AudioAssetRecord, AudioBus, AudioCatalog, AudioDraft, AudioLevel, AudioPlayback, PlaybackMode,
@@ -79,6 +83,30 @@ pub struct LaunchSound {
     pub content: ContentId,
     /// The archive's byte length.
     pub bytes: u64,
+    /// The engine group's own `RANGE`/`VOLUME` fields — the `.02` `desc`
+    /// terms — when `sounds.zrd` carries them (#1863).
+    pub engine_law: Option<EngineGroupLaw>,
+    /// The launch cinematic's `SOUND` cues resolved through `sounds.zrd`.
+    pub scene_sounds: Vec<SceneSound>,
+    /// Every `SOUND` name the data could not bind, with the reason
+    /// (`snd_droplaunch` declares no group record).
+    pub scene_refusals: Vec<String>,
+}
+
+/// A launch-cinematic `SOUND` cue resolved through `sounds.zrd` (#1863):
+/// the group the sequence names, the member it maps to, and the scene
+/// animation whose sequence carries it — its anchor is that scene's
+/// `started_at` on the cinematic clock.
+#[derive(Clone, Debug)]
+pub struct SceneSound {
+    /// The group the cue names (e.g. `snd_scene3`).
+    pub group: String,
+    /// The archive member the group maps to (e.g. `introscene3.wav`).
+    pub member: String,
+    /// The member's content id in [`LAUNCH_SOUND_CONTAINER`].
+    pub content: ContentId,
+    /// The scene animation whose sequence carries the `SOUND` item.
+    pub animation: String,
 }
 
 /// Why the launch sound could not be measured.
@@ -122,6 +150,54 @@ fn find_record<'a>(node: &'a ZrdValue, name: &str) -> Option<&'a ZrdValue> {
         }
     }
     children.iter().find_map(|child| find_record(child, name))
+}
+
+/// The launch cinematic's `SOUND` cues and the scene animation whose
+/// sequence carries each — measured from `generic_intro.zrd`: `snd_scene1`
+/// in `gi_scene1`'s `fadefromblack` sequence, `snd_scene2` in `gi_scene2`'s
+/// first sequence, `snd_scene3` and `snd_droplaunch` (the latter at
+/// `START_TIME ANIMATION_OFFSET 1.8`) in `gi_1stperson`'s `Grahams_sound`
+/// sequence, and `snd_scene4` in `gi_playerdrop`'s first sequence.
+/// `accept_parity6_m01_audio_03_` checks the nesting against the production
+/// reader so this table cannot drift from the data.
+const SCENE_SOUND_CUES: &[(&str, &str)] = &[
+    ("snd_scene1", "gi_scene1"),
+    ("snd_scene2", "gi_scene2"),
+    ("snd_scene3", "gi_1stperson"),
+    ("snd_droplaunch", "gi_1stperson"),
+    ("snd_scene4", "gi_playerdrop"),
+];
+
+/// A `.zrd` number as `f64` (integer or float node; nothing else).
+fn zrd_number(value: &ZrdValue) -> Option<f64> {
+    match value {
+        ZrdValue::Int(int) => Some(f64::from(*int)),
+        ZrdValue::Float(float) => Some(f64::from(*float)),
+        _ => None,
+    }
+}
+
+/// The numbers a group record's `key` field carries — the field is a
+/// `{key, n0, n1, …}` sub-list (`RANGE`) or a `key, n` sibling pair
+/// (`VOLUME`); both shapes occur in `sounds.zrd` group records.
+fn field_numbers(entry: &[ZrdValue], key: &str) -> Option<Vec<f64>> {
+    for child in entry {
+        if let Some(inner) = child.as_list()
+            && inner.first().and_then(ZrdValue::as_text) == Some(key)
+        {
+            return Some(inner[1..].iter().filter_map(zrd_number).collect());
+        }
+    }
+    for (index, child) in entry.iter().enumerate() {
+        if child.as_text() == Some(key) {
+            return match entry.get(index + 1) {
+                Some(ZrdValue::List(inner)) => Some(inner.iter().filter_map(zrd_number).collect()),
+                Some(value) => zrd_number(value).map(|n| vec![n]),
+                None => None,
+            };
+        }
+    }
+    None
 }
 
 pub(crate) fn reader_member(
@@ -184,6 +260,34 @@ pub fn measure_launch_sound(
             ))
         })?
         .to_owned();
+    // The `.02` `desc` terms on the engine group itself: `RANGE` and
+    // `VOLUME` are fields of the group's own record, measured here so the
+    // mixer's distance gain, fade, mute and base volume are the data's.
+    let engine_law = record_headed_by(&sounds, &group).and_then(|entry| {
+        let range = field_numbers(entry, "RANGE")?;
+        let volume = field_numbers(entry, "VOLUME")?.first().copied()?;
+        EngineGroupLaw::try_new(*range.first()?, *range.get(1)?, volume).ok()
+    });
+    // The launch cinematic's `SOUND` cues resolve through the same group
+    // table: a group with no record is a named refusal, not a dropped cue.
+    let mut scene_sounds = Vec::new();
+    let mut scene_refusals = Vec::new();
+    for &(group, animation) in SCENE_SOUND_CUES {
+        match record_headed_by(&sounds, group)
+            .and_then(|entry| entry.get(1))
+            .and_then(ZrdValue::as_text)
+        {
+            Some(member) => scene_sounds.push(SceneSound {
+                group: group.to_owned(),
+                member: member.to_owned(),
+                content: member_content_id(LAUNCH_SOUND_CONTAINER, member)?,
+                animation: animation.to_owned(),
+            }),
+            None => scene_refusals.push(format!(
+                "{group}: {SOUND_GROUPS_MEMBER} declares no group record"
+            )),
+        }
+    }
 
     let archive = archives
         .iter()
@@ -208,14 +312,24 @@ pub fn measure_launch_sound(
         container_sha256,
         host,
         bytes,
+        engine_law,
+        scene_sounds,
+        scene_refusals,
     })
 }
 
 impl LaunchSound {
-    /// The one-record declared catalog the mixer is given.
+    /// The declared catalog the mixer is given: the engine loop's record plus
+    /// one record per resolved scene `SOUND` member (#1863). A scene member
+    /// that is delivered but **not** declared is never decoded — the
+    /// population pass decodes only what the catalog names — so declaring
+    /// them is what lets `drive_launch_voices`' `start_one_shot` find the
+    /// member in the device library.
     ///
-    /// The member's identity is measured; its bus, mode and level are
-    /// designed, and the record's origin and provenance say so.
+    /// The member identities are measured; their bus and level are designed
+    /// (the groups carry no `RANGE`/`VOLUME`/3D fields), and the mode is
+    /// measured: no `sounds.zrd` scene group is flagged `LOOPED`, so each is
+    /// a one-shot. The records' origin and provenance say so.
     ///
     /// # Errors
     ///
@@ -249,6 +363,43 @@ impl LaunchSound {
         .map_err(|e| refuse(e.to_string()))?;
         let mut catalog = AudioCatalog::new();
         catalog.insert(record).map_err(|e| refuse(e.to_string()))?;
+        for scene in &self.scene_sounds {
+            let scene_designed = || -> Result<Provenance, LaunchSoundError> {
+                Ok(Provenance::designed(claim(
+                    "parity6-m01-audio-timeline-03.scene-mix",
+                )?))
+            };
+            let record = AudioAssetRecord::try_new(AudioDraft {
+                id: scene.content.clone(),
+                origin: Origin::Designed,
+                playback: AudioPlayback {
+                    bus: Resolved::Known(Known::new(AudioBus::Environment, scene_designed()?)),
+                    level: Resolved::Known(Known::new(
+                        AudioLevel::try_new(1.0).map_err(|e| refuse(e.to_string()))?,
+                        scene_designed()?,
+                    )),
+                    // The group's flag set carries PURGEABLE and no LOOPED —
+                    // the one-shot mode is the data's, not a guess.
+                    mode: Resolved::Known(Known::new(
+                        PlaybackMode::OneShot,
+                        Provenance::new(
+                            claim("parity6-m01-audio-timeline-03.scene-mode")?,
+                            cs_types::evidence::ClaimStatus::ObservedTool,
+                            None,
+                        )
+                        .map_err(|e| refuse(e.to_string()))?,
+                    )),
+                },
+                decoded: Resolved::unknown(
+                    claim("parity6-m01-audio-timeline-03.scene-decoded-shape")?,
+                    "decoded when the load populates the sample library",
+                )
+                .map_err(|e| refuse(e.to_string()))?,
+                provenance: scene_designed()?,
+            })
+            .map_err(|e| refuse(e.to_string()))?;
+            catalog.insert(record).map_err(|e| refuse(e.to_string()))?;
+        }
         Ok(catalog)
     }
 }
@@ -339,6 +490,7 @@ pub fn install_launch_audio(
     extra: &[AudioAssetRecord],
     start_m: [f32; 3],
     declaration: &CapabilityDeclaration,
+    cinematic: Option<&LaunchCinematicLength>,
 ) -> Result<(), LaunchSoundError> {
     let refuse = |reason: String| LaunchSoundError::Read(reason);
     let library = Arc::new(InMemorySamples::new());
@@ -370,6 +522,19 @@ pub fn install_launch_audio(
     app.add_plugins(
         AudioPlugin::new(catalog, AudioSpatial::new(policy, listener)).with_device(device),
     );
+    // The measured `.02` law and the listener pose it is computed against;
+    // `follow_listener` keeps the pose current with the body it tracks.
+    if let Some(law) = launch.engine_law {
+        app.insert_resource(law);
+    }
+    app.insert_resource(VoiceListenerPose {
+        position: start_m.map(f64::from),
+        right: [1.0, 0.0, 0.0],
+        velocity: [0.0, 0.0, 0.0],
+    });
+    if let Some(length) = cinematic {
+        app.insert_resource(launch_voice_plan(launch, length));
+    }
     // The plugin records a stand-in for a caller-given device and publishes no
     // library for it; this device is the audible one (or the named refusal),
     // so the log and the library say so.
@@ -385,20 +550,59 @@ pub fn install_launch_audio(
     Ok(())
 }
 
+/// The launch voices' measured schedule (#1863): each `SOUND` cue anchors at
+/// the start tick of the scene animation whose sequence carries it, on the
+/// cinematic's own clock — the `.02` wait law means the sequence's first
+/// update, not a guessed wall-clock second.
+fn launch_voice_plan(launch: &LaunchSound, length: &LaunchCinematicLength) -> LaunchVoicePlan {
+    let mut plan = LaunchVoicePlan {
+        cues: Vec::new(),
+        refusals: launch.scene_refusals.clone(),
+    };
+    for scene in &launch.scene_sounds {
+        match length
+            .scenes
+            .iter()
+            .find(|span| span.animation == scene.animation)
+        {
+            Some(span) => plan.cues.push(SceneCue {
+                group: scene.group.clone(),
+                member: scene.content.clone(),
+                at_tick: super::launch_cinematic::ticks_for(
+                    span.started_at,
+                    crate::physics::BASELINE_FIXED_HZ,
+                ),
+            }),
+            None => plan.refusals.push(format!(
+                "{}: the measured cinematic has no scene {:?}",
+                scene.group, scene.animation
+            )),
+        }
+    }
+    plan
+}
+
 /// The listener rides with the player's body: the engine is the player's own,
 /// so it is heard from where the body is. The right axis stays `+X` (designed;
 /// the original's listener orientation is unmeasured).
 fn follow_listener(
     mut spatial: ResMut<AudioSpatial>,
-    body: Query<&GlobalTransform, With<super::compose::MissionPlayerBody>>,
+    mut pose: ResMut<VoiceListenerPose>,
+    body: Query<
+        (&GlobalTransform, Option<&avian3d::prelude::LinearVelocity>),
+        With<super::compose::MissionPlayerBody>,
+    >,
 ) {
-    if let Some(transform) = body.iter().next()
-        && let Ok(listener) = Listener::try_new(
-            transform.translation().as_dvec3().to_array(),
-            [1.0, 0.0, 0.0],
-        )
-    {
-        spatial.at(listener);
+    if let Some((transform, velocity)) = body.iter().next() {
+        let position = transform.translation().as_dvec3().to_array();
+        if let Ok(listener) = Listener::try_new(position, [1.0, 0.0, 0.0]) {
+            spatial.at(listener);
+        }
+        *pose = VoiceListenerPose {
+            position,
+            right: [1.0, 0.0, 0.0],
+            velocity: velocity.map_or([0.0; 3], |v| v.0.as_dvec3().to_array()),
+        };
     }
 }
 
