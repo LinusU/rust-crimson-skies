@@ -247,6 +247,11 @@ const COCKPIT_SHOT_OFFSET: u32 = 10;
 const HELP_SHOT_OFFSET: u32 = 10;
 /// Frames into the help phase at which `F1` is pressed again to close it.
 const HELP_CLOSE_OFFSET: u32 = 14;
+/// Frames into the pause-map phase at which the open Esc screen is
+/// photographed.
+const PAUSE_MAP_SHOT_OFFSET: u32 = 10;
+/// Frames into the pause-map phase at which `Esc` is pressed again to resume.
+const PAUSE_MAP_CLOSE_OFFSET: u32 = 14;
 /// Frames into the rocket phase at which its screenshot is requested.
 const ROCKET_SHOT_OFFSET: u32 = 80;
 
@@ -2213,6 +2218,9 @@ enum Phase {
     /// The `F1` keymap overlay: open it over the flight view, photograph it,
     /// close it (#1739).
     Help,
+    /// The Esc pause screen: press `Esc`, photograph the chart screen, press
+    /// `Esc` again to resume (PARITY3-PAUSE-MAP-SCREEN.02-A, #1873).
+    PauseMap,
     /// The cockpit views: `F8` three times, a frame and a reading at each
     /// stop, 0 -> 7 -> 6 -> 0 (PARITY3-COCKPIT-VIEW.05, #1813).
     Cockpit,
@@ -3516,6 +3524,18 @@ fn smoke_script(
             } else if at == HELP_SHOT_OFFSET {
                 due.push("keymap_help".to_owned());
             } else if at == HELP_CLOSE_OFFSET + 6 {
+                data.phase = Phase::PauseMap;
+                data.phase_start = frame + 1;
+            }
+        }
+        Phase::PauseMap => {
+            if at == 0 || at == PAUSE_MAP_CLOSE_OFFSET {
+                queue.0.push(KeyOp::Press(KeyCode::Escape));
+            } else if at == 2 || at == PAUSE_MAP_CLOSE_OFFSET + 2 {
+                queue.0.push(KeyOp::Release(KeyCode::Escape));
+            } else if at == PAUSE_MAP_SHOT_OFFSET {
+                due.push("pause_map".to_owned());
+            } else if at == PAUSE_MAP_CLOSE_OFFSET + 6 {
                 data.phase = Phase::Cockpit;
                 data.phase_start = frame + 1;
             }

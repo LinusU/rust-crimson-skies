@@ -121,6 +121,7 @@ mod look_view;
 mod observation;
 mod original_keys;
 pub(crate) mod parts;
+mod pause_map;
 mod player_victim;
 mod player_visual;
 mod radio;
@@ -263,6 +264,11 @@ pub use parts::{
     MissionPartSweep, TurretRecord, classed_part_node, designed_part_node, part_entities,
     part_in_play, part_state_chains, part_state_node, part_sweep_geometry, pattern_matches,
     plan_part_states, read_turret_records, spawn_part_state, turret_part_node, turret_record_for,
+};
+pub use pause_map::{
+    PauseButton, PauseButtonKind, PauseChart, PauseMapError, PauseMapPart, PauseMapPlugin,
+    PauseMapPress, PauseMapScene, PauseMapShown, PauseMapSource, PauseNote, PausePicture,
+    install_pause_map, read_pause_map,
 };
 pub use player_victim::{
     DESIGNED_PLAYER_HALF_EXTENTS_M, DESIGNED_PLAYER_INTEGRITY, M01_PLAYER_DAMAGE_CLAIM,

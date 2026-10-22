@@ -395,6 +395,8 @@ pub enum MissionCompositionError {
     FlightCheck(super::flight_check::FlightCheckPhaseError),
     /// The launch cinematic's length could not be measured (#1663).
     LaunchCinematic(super::launch_cinematic::LaunchCinematicError),
+    /// The Esc pause screen could not be read from `escape.zrd`.
+    PauseMap(super::pause_map::PauseMapError),
     /// The app exited with an error.
     Exit(String),
 }
@@ -438,6 +440,7 @@ impl fmt::Display for MissionCompositionError {
             Self::Audio(error) => write!(f, "the mission audio refuses: {error}"),
             Self::FlightCheck(error) => write!(f, "{error}"),
             Self::LaunchCinematic(error) => write!(f, "{error}"),
+            Self::PauseMap(error) => write!(f, "{error}"),
             Self::Exit(reason) => write!(f, "the mission window exited with an error: {reason}"),
         }
     }
@@ -1812,6 +1815,21 @@ pub fn run_windowed(
     let mut app = build_windowed(&stage)?;
     if dev_keys {
         apply_developer_keys(&mut app);
+    }
+    // The Esc pause screen reads `escape.zrd` for the mission; a mission whose
+    // entry is missing refuses here rather than pausing to a stand-in.
+    {
+        let screens =
+            crate::ui::front_end::FrontEndScreens::open(install_root).map_err(|error| {
+                MissionCompositionError::PauseMap(super::pause_map::PauseMapError(
+                    error.to_string(),
+                ))
+            })?;
+        let strings = |id: &str| super::flight_check::stage_string(&stage, id);
+        let source =
+            super::pause_map::read_pause_map(install_root, &plan.mission_dir, &screens, &strings)
+                .map_err(MissionCompositionError::PauseMap)?;
+        super::pause_map::install_pause_map(&mut app, source);
     }
     // The Flight Check holds the mission until Fly Mission. A capture scenario
     // (the developer shortcuts) starts the mission directly and says so; the

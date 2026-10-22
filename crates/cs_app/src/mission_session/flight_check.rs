@@ -1210,7 +1210,7 @@ impl FlightCheckPhase {
 }
 
 /// The string-table text of a message id, through the stage's catalog.
-fn stage_string(stage: &MissionStage, id: &str) -> Option<String> {
+pub(super) fn stage_string(stage: &MissionStage, id: &str) -> Option<String> {
     let catalog = stage.messages.catalog()?;
     match catalog.resolve(id, None) {
         cs_content::config::MessageLookup::Found { row, .. } => row.text.clone(),
