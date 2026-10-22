@@ -54,6 +54,10 @@
 //!   whether a non-looping movie's last frame stays up are still unread.
 //! * `T`/`E`/`L`/`D`/`S`/`W`/`Z` controls — counted on the section
 //!   ([`ShellSection::other_rows`]), never drawn or faked.
+//! * A `B` row's `ResID` label — kept on [`ShellButton::res_id`]; which
+//!   string table answers an `IDS_*` name and how the text is drawn over
+//!   the art are unread, and no label text is drawn (the `MainMenu`
+//!   buttons write `0`: their labels are the strips' baked text).
 //! * A `P` row's `NUMFRAMES` other than 1 — the shell draws frame 0 of the
 //!   strip and keeps the count on [`ShellPane::frames`].
 //! * `AlphaType=2` (colour-key) — which texel the original keys out is
@@ -276,6 +280,14 @@ pub struct ShellButton {
     pub art: String,
     /// One frame's extent at the row's position.
     pub rect: ShellRect,
+    /// The row's `ResID` column as written: `None` when it is empty or `0`
+    /// — no string-table label, so the text is whatever the art strip
+    /// bakes in (all six `MainMenu` buttons) — `Some` of the token
+    /// otherwise (`IDS_*` names like `IA_B_FLY`'s `IDS_IA_B_FLYMISSION`,
+    /// or the `!` the message-box rows write). How the original draws a
+    /// `ResID` label — which string table answers it, which font and
+    /// where over the art — is unread, and no label text is drawn here.
+    pub res_id: Option<String>,
     /// The effect pressing it takes.
     pub effect: ButtonEffect,
     /// Whether it can be pressed. Always `true` when built from the layout —
@@ -1042,6 +1054,13 @@ fn present_button(
         }
         other => other,
     };
+    let res_id = row
+        .fields
+        .get(4)
+        .map(String::as_str)
+        .map(str::trim)
+        .filter(|field| !field.is_empty() && *field != "0")
+        .map(str::to_owned);
     Ok(ShellButton {
         id: row.id.clone(),
         art: art.to_owned(),
@@ -1051,15 +1070,18 @@ fn present_button(
             width,
             height: height / BUTTON_STATE_FRAMES,
         },
+        res_id,
         effect,
         enabled: true,
     })
 }
 
 /// Presents one `M` row: `ID=M,file,X,Y,Z,ScaleX,ScaleY,# Loops,Region?` —
-/// the record layout `cs_content::ui_layout::RecordKind::Movie` measures.
-/// The drawn rect waits for the decoded extent ([`ShellMovie::rect_at`]):
-/// the row carries the authored *scale*, not pixels.
+/// the header's `ID=M,X,Y,Z,ScaleX,ScaleY,# Loops,Region?,HelpID` omits the
+/// file column the data rows write first (the same staleness F45-B.1
+/// recorded on the button header). The drawn rect waits for the decoded
+/// extent ([`ShellMovie::rect_at`]): the row carries the authored *scale*,
+/// not pixels.
 fn present_movie(row: &Row) -> Result<ShellMovie, SkippedReason> {
     if let Some(name) = row.unresolved.first() {
         return Err(SkippedReason::UnresolvedPlaceholder { name: name.clone() });

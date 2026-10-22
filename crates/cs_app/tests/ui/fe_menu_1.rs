@@ -823,7 +823,12 @@ fn accept_fe_menu_1_retail_the_original_sections_present_and_navigate_as_written
                     .buttons
                     .iter()
                     .map(|button| {
-                        json_str(&format!("{} -> {:?}", button.id, button.effect))
+                        json_str(&format!(
+                            "{} res={} -> {:?}",
+                            button.id,
+                            button.res_id.as_deref().unwrap_or("0"),
+                            button.effect
+                        ))
                     })
                     .collect::<Vec<_>>()
                     .join(", ");
