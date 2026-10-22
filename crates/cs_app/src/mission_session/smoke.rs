@@ -44,6 +44,11 @@
 //! | `weapon_rounds_not_drawn` | no live round entity carries a mesh: the original's capture shows no tracer streaks |
 //! | `weapon_muzzle_flash_drawn` | every muzzle-effect record seen during the hold carries a drawn flash, and at least one was seen |
 //! | `weapon_rocket_launches` | `X` — the original's secondary-fire row — near a declared-hostile actor launches a rocket |
+//! | `flak_turret_woken` | a sleeping flak turret (a world entry whose `WEAPON` reads as `wep_27`) is test-woken through the wake ledger's own matcher (#1887) |
+//! | `flak_turret_fired` | the woken turret's runtime fires the retail `wep_27` at the player |
+//! | `flak_burst_drawn` | a burst of the turret's round reaches the `flak_effect` presentation: flash light, smoke ball (FLAK-C3) |
+//! | `flak_flicker_drawn` | a burst inside the stored 100 m gate starts the close-range framebuffer flicker |
+//! | `flak_sounds_queued` | `snd_enemyflak` played at the muzzle and `snd_missile_flak` at a burst (FLAK-C4); recorded not applicable when the stage measured no flak sounds |
 //! | `audio_radio_queued` | a radio line reached the audio queue or the mixer |
 //! | `audio_engine_queued` | the player's engine loop is bound and running |
 //! | `smoke_shots_delivered` | every screenshot the run asked for arrived |
@@ -84,14 +89,18 @@ use bevy::render::render_resource::TextureFormat;
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk};
 use bevy::ui::{ComputedNode, Node, UiGlobalTransform};
 use cs_content::world::SurfaceRole;
+use cs_types::Tick;
 
+use super::MissionStage;
 use super::compose::MissionPlayerBody;
 use super::evidence::{CaptureRefusal, clear_colour_encodings, count_world_pixels, same_colour};
+use super::flak_burst_fx::FlakBurstFxReport;
 use super::flight_check::{FlightCheckPhase, PhaseResponse, ScreenOverlay};
 use super::host::MissionHost;
 use super::launch_cinematic::LaunchCinematic;
 use super::letterbox::LaunchLetterbox;
 use super::lifecycles::ObjectiveLifecycles;
+use super::turret_fire::{MissionTurretFire, TurretWeaponRecord};
 use super::weapons::MissionWeaponReport;
 use super::world_draw::{HorizonRest, WorldWaterPart};
 use crate::audio::loops::AudioSession;
@@ -102,6 +111,7 @@ use crate::input::session::PauseReason;
 use crate::mission_actors::{
     MissionActorSpawnReport, MissionGroundTarget, MissionZeppelinActor, ScriptedAircraftActor,
 };
+use crate::mission_turrets::TurretMount;
 use crate::ordnance::OrdnanceItemMirror;
 use crate::physics::PhysicsTickLedger;
 use crate::playtest::scene::PlaytestAircraft;
@@ -262,6 +272,31 @@ const PAUSE_MAP_CLOSE_OFFSET: u32 = 14;
 const ROCKET_SHOT_OFFSET: u32 = 80;
 /// Frames after the first burst puff is alive at which its screenshot is taken.
 const BURST_SHOT_DELAY: u32 = 6;
+/// The share of the woken flak turret's `DETECTION_RANGE` at which the
+/// player is stood for the flak phase (FLAK-C5-SMOKE, #1887) — inside the
+/// record's range with room for the sight ray and the aim to settle.
+/// **Designed.**
+const FLAK_RANGE_FRACTION: f64 = 0.6;
+/// The vertical offset above the turret mount, as a share of the stand-off
+/// distance, so a `SHOOT_UP_ONLY` record admits the player and the ordinary
+/// `PITCH` limits hold the approach. **Designed.**
+const FLAK_HEIGHT_FRACTION: f64 = 0.3;
+/// The flak stand-off distance's bounds, metres — near enough that the
+/// `wep_27` round's proximity burst lands well inside the flicker's 100 m
+/// gate, far enough for the muzzle to stand off the player. **Designed.**
+const FLAK_DISTANCE_MIN_M: f64 = 80.0;
+/// The flak stand-off distance's upper bound, metres. **Designed.**
+const FLAK_DISTANCE_MAX_M: f64 = 400.0;
+/// Frames after a presented flak burst at which its framebuffer is taken —
+/// the flash, the smoke ball and the flicker are still alive.
+const FLAK_BURST_SHOT_DELAY: u32 = 6;
+/// Frames after the flak burst shot at which the tail framebuffer is
+/// taken — the flash and the flicker have run out and the smoke ball
+/// drifts on.
+const FLAK_TAIL_SHOT_DELAY: u32 = 48;
+/// The most frames the flak phase waits for the shot, the burst and its
+/// frames before it gives up on the named checks.
+const FLAK_BUDGET_FRAMES: u32 = 720;
 
 /// Frames into `Phase::Target` the under-reticule key is pressed.
 const TARGET_KEY_OFFSET: u32 = 14;
@@ -663,6 +698,51 @@ pub struct RocketMetrics {
     pub refusals: Vec<String>,
 }
 
+/// What the flak phase measured (FLAK-C5-SMOKE, #1887): a test-woken flak
+/// turret — an `aagun*`/`maingun*` entry whose `WEAPON` the runtime reads as
+/// `wep_27` — firing at the player, the round's bursts, the `flak_effect`
+/// presentation and the flak cues.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub struct FlakMetrics {
+    /// The turret entry the phase test-woke, by name (`None`: the mission
+    /// bound no rocket turret the phase could wake).
+    pub turret: Option<String>,
+    /// The wake ledger recorded the test wake for the chosen entry.
+    pub woken: bool,
+    /// The test placement was made (listed under `placements`).
+    pub placed: bool,
+    /// The record's `DETECTION_RANGE` of the chosen turret, metres.
+    pub detection_range_m: f64,
+    /// The stage measured the flak sounds (`snd_enemyflak`, `snd_missile_flak`).
+    pub sound_measured: bool,
+    /// `wep_27` rounds the turret runtime fired during the phase.
+    pub rockets_fired: u64,
+    /// Shot-log entries naming the woken turret and `wep_27`.
+    pub shots_logged: u64,
+    /// Rocket bursts the runtime published.
+    pub bursts: u64,
+    /// Bursts the `flak_effect` presentation drew (FLAK-C3).
+    pub bursts_presented: u64,
+    /// Flash point lights spawned.
+    pub flashes_spawned: u64,
+    /// Smoke balls handed to the burst puffs.
+    pub smoke_balls: u64,
+    /// Close-range framebuffer flickers started.
+    pub flickers_started: u64,
+    /// Bursts whose flicker the gate skipped (burst over 100 m from the player).
+    pub flickers_skipped: u64,
+    /// Bursts whose `call_flak_trails` stayed undrawn (unmeasured motion).
+    pub trails_undrawn: u64,
+    /// `snd_enemyflak` shot cues the audio router accepted.
+    pub shot_cues: u64,
+    /// `snd_missile_flak` burst cues the audio router accepted.
+    pub burst_cues: u64,
+    /// Flak cue refusals, verbatim.
+    pub sound_refusals: Vec<String>,
+    /// Turret-runtime refusals, verbatim.
+    pub refusals: Vec<String>,
+}
+
 /// What the audio probes measured across the run.
 #[derive(Clone, Debug, PartialEq, Default)]
 pub struct AudioMetrics {
@@ -1015,6 +1095,8 @@ pub struct SmokeMeasurements {
     pub guns: GunMetrics,
     /// The rocket tap.
     pub rocket: RocketMetrics,
+    /// The woken flak turret phase (FLAK-C5-SMOKE, #1887).
+    pub flak: FlakMetrics,
     /// The audio probes.
     pub audio: AudioMetrics,
     /// The trigger approach.
@@ -1378,6 +1460,97 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
              PARITY2-DMG-FX-B #1806)",
             m.rocket.puffs_spawned, m.rocket.max_live_puffs
         ),
+    });
+
+    // --- the woken flak turret (FLAK-C5-SMOKE, #1887) -----------------------
+    checks.push(Check {
+        id: "flak_turret_woken".to_owned(),
+        applies: true,
+        passed: m.flak.woken,
+        detail: match &m.flak.turret {
+            Some(name) if m.flak.woken => format!(
+                "the test wake of {name} set its live byte through the wake ledger's \
+                 own matcher (a test wake, labelled in the report; no M01 program wakes it)"
+            ),
+            Some(name) => format!("the wake ledger recorded no wake for the test-woken {name}"),
+            None => "the mission bound no world turret whose weapon reads as wep_27 \
+                     (the retail flak rocket) for the phase to wake"
+                .to_owned(),
+        },
+    });
+    checks.push(Check {
+        id: "flak_turret_fired".to_owned(),
+        applies: m.flak.woken,
+        passed: m.flak.rockets_fired > 0 && m.flak.shots_logged > 0,
+        detail: if m.flak.woken {
+            format!(
+                "{} test-woken {} fired {} wep_27 round(s) at the player ({} shot log \
+                 entries); runtime refusals: {}",
+                m.flak.turret.as_deref().unwrap_or("(none)"),
+                if m.flak.placed {
+                    "with the player stood in its field"
+                } else {
+                    "with no placement made"
+                },
+                m.flak.rockets_fired,
+                m.flak.shots_logged,
+                if m.flak.refusals.is_empty() {
+                    "none".to_owned()
+                } else {
+                    m.flak.refusals.join("; ")
+                }
+            )
+        } else {
+            "the turret never went live, so nothing could fire".to_owned()
+        },
+    });
+    checks.push(Check {
+        id: "flak_burst_drawn".to_owned(),
+        applies: m.flak.woken,
+        passed: m.flak.bursts_presented > 0 && m.flak.flashes_spawned > 0 && m.flak.smoke_balls > 0,
+        detail: format!(
+            "the turret's rounds burst {} time(s); the flak_effect presentation drew {}, \
+             spawned {} flash light(s) and handed {} smoke ball(s) to the puffs \
+             ({} burst(s) dropped, {} trails undrawn — the unmeasured object motion)",
+            m.flak.bursts,
+            m.flak.bursts_presented,
+            m.flak.flashes_spawned,
+            m.flak.smoke_balls,
+            m.flak.bursts.saturating_sub(m.flak.bursts_presented),
+            m.flak.trails_undrawn
+        ),
+    });
+    checks.push(Check {
+        id: "flak_flicker_drawn".to_owned(),
+        applies: m.flak.woken,
+        passed: m.flak.flickers_started > 0,
+        detail: format!(
+            "{} close-range framebuffer flicker(s) started ({} skipped: the burst stood \
+             over the stored 100 m gate from the player)",
+            m.flak.flickers_started, m.flak.flickers_skipped
+        ),
+    });
+    checks.push(Check {
+        id: "flak_sounds_queued".to_owned(),
+        applies: m.flak.sound_measured,
+        passed: m.flak.shot_cues > 0 && m.flak.burst_cues > 0,
+        detail: if m.flak.sound_measured {
+            format!(
+                "snd_enemyflak played {} shot cue(s) and snd_missile_flak {} burst cue(s); \
+                 refusals: {}",
+                m.flak.shot_cues,
+                m.flak.burst_cues,
+                if m.flak.sound_refusals.is_empty() {
+                    "none".to_owned()
+                } else {
+                    m.flak.sound_refusals.join("; ")
+                }
+            )
+        } else {
+            "the stage measured no flak sounds (measure_flak_sound ran only for the \
+                 retail M01 scope)"
+                .to_owned()
+        },
     });
 
     // --- audio -------------------------------------------------------------
@@ -2213,6 +2386,11 @@ struct SmokeData {
     cockpit_sample: CockpitViewSample,
     /// Frame the burst-puff screenshot was requested (`None`: not yet).
     burst_shot_frame: Option<u32>,
+    /// Frame the flak-burst screenshot was requested (FLAK-C5; `None`: no
+    /// presented burst yet).
+    flak_burst_shot_frame: Option<u32>,
+    /// Frame the flak-burst tail screenshot was requested (`None`: not yet).
+    flak_tail_shot_frame: Option<u32>,
     /// Where the launch cinematic's first sampled frame found the body.
     cinematic_start_m: Option<Vec3>,
     /// Where the launch cinematic's first sampled frame found the body's attitude.
@@ -2256,6 +2434,10 @@ enum Phase {
     Hud,
     Guns,
     Rocket,
+    /// The flak phase (FLAK-C5-SMOKE, #1887): test-wake a sleeping flak
+    /// turret, stand the player in its field of fire and photograph the
+    /// `wep_27` burst the production turret path presents.
+    Flak,
     /// The `F1` keymap overlay: open it over the flight view, photograph it,
     /// close it (#1739).
     Help,
@@ -2413,6 +2595,44 @@ struct TargetingParams<'w, 's> {
     spyglass_camera: Query<'w, 's, &'static Camera, With<super::spyglass::SpyglassCamera>>,
     /// The declared ground targets (the objective sites).
     grounds: Query<'w, 's, &'static MissionGroundTarget>,
+}
+
+/// The script's read-only world queries — the player body, every pose, the
+/// chase camera and the world's water tiles — grouped so `smoke_script`
+/// stays inside Bevy's arity limit (FLAK-C5 added a second bundle).
+#[derive(SystemParam)]
+struct SceneParams<'w, 's> {
+    /// The production player body.
+    player: Query<'w, 's, &'static Position, With<MissionPlayerBody>>,
+    /// Every pose: an actor's `Position` or drawn `Transform`.
+    poses: Query<'w, 's, (Option<&'static Position>, Option<&'static Transform>)>,
+    /// The windowed camera.
+    camera: Query<
+        'w,
+        's,
+        (&'static Camera, &'static GlobalTransform),
+        With<crate::playtest::PlaytestCameraMarker>,
+    >,
+    /// The world's own water tiles.
+    water_tiles: Query<'w, 's, (), With<WorldWaterPart>>,
+}
+
+/// The flak phase's reads and its one write — the mission host's wake
+/// ledger for the test wake — grouped so `smoke_script` stays inside
+/// Bevy's arity limit (FLAK-C5-SMOKE, #1887).
+#[derive(SystemParam)]
+struct FlakParams<'w> {
+    /// The mission host: `wake_turrets_mut` takes the test wake.
+    mission_host: Option<ResMut<'w, MissionHost>>,
+    /// The stage: its `host.turrets` table picks the turret and
+    /// `flak_sound` says whether the cues exist.
+    stage: Option<Res<'w, MissionStage>>,
+    /// The turret runtime's report.
+    turret_fire: Option<Res<'w, MissionTurretFire>>,
+    /// The `flak_effect` presentation's report.
+    flak_fx: Option<Res<'w, FlakBurstFxReport>>,
+    /// The tick the wake is recorded at.
+    tick_ledger: Option<Res<'w, PhysicsTickLedger>>,
 }
 
 /// The entity classes a probe writes its hide value onto, grouped so the
@@ -3215,11 +3435,9 @@ fn smoke_script(
     clear: Option<Res<ClearColor>>,
     objective_nodes: ObjectiveNodes<'_, '_>,
     overlay: Option<Res<crate::playtest::visuals::DeveloperOverlay>>,
-    player: Query<&Position, With<MissionPlayerBody>>,
-    poses: Query<(Option<&Position>, Option<&Transform>)>,
-    camera: Query<(&Camera, &GlobalTransform), With<crate::playtest::PlaytestCameraMarker>>,
-    water_tiles: Query<(), With<WorldWaterPart>>,
+    scene: SceneParams<'_, '_>,
     targeting: TargetingParams<'_, '_>,
+    mut flak: FlakParams<'_>,
 ) {
     let frame = data.frame;
     if frame == 1 {
@@ -3343,7 +3561,7 @@ fn smoke_script(
         }
         Phase::SeaProbe => {
             if at == SEA_PAUSE_OFFSET {
-                data.water_tile_parts = water_tiles.iter().count();
+                data.water_tile_parts = scene.water_tiles.iter().count();
                 queue.0.push(KeyOp::Pause);
                 probe.0 = ProbeMode::SeaVisible;
             } else if at == SEA_VISIBLE_SHOT_OFFSET {
@@ -3378,7 +3596,9 @@ fn smoke_script(
                 let entry = data.census.get(index).cloned();
                 let is_player = entry.as_ref().is_some_and(|entry| entry.kind == "player");
                 if step == ACTOR_PLACE_OFFSET && !is_player {
-                    if let Some(placement) = place_near_actor(&data, index, &player, &poses) {
+                    if let Some(placement) =
+                        place_near_actor(&data, index, &scene.player, &scene.poses)
+                    {
                         pending.0 = Some(placement);
                         if let Some(metrics) = data.measurements.actors.get_mut(index) {
                             metrics.placed = true;
@@ -3389,8 +3609,8 @@ fn smoke_script(
                     probe.0 = ProbeMode::Actor(entry.as_ref().and_then(|entry| entry.drawn_entity));
                 } else if step == ACTOR_SHOT_OFFSET {
                     let on_screen = entry.as_ref().is_some_and(|entry| {
-                        live_position(entry, &player, &poses)
-                            .and_then(|position| project_onto_screen(position, &camera))
+                        live_position(entry, &scene.player, &scene.poses)
+                            .and_then(|position| project_onto_screen(position, &scene.camera))
                             .is_some()
                     });
                     if let Some(metrics) = data.measurements.actors.get_mut(index) {
@@ -3426,7 +3646,8 @@ fn smoke_script(
         Phase::Target => {
             if at == 0 {
                 if let Some(index) = data.census.iter().position(|entry| entry.hostile)
-                    && let Some(placement) = place_near_actor(&data, index, &player, &poses)
+                    && let Some(placement) =
+                        place_near_actor(&data, index, &scene.player, &scene.poses)
                 {
                     data.target_placement = Some(placement.clone());
                     pending.0 = Some(placement);
@@ -3443,7 +3664,7 @@ fn smoke_script(
             } else if at == TARGET_KEY_OFFSET + 2 {
                 queue.0.push(KeyOp::Release(KeyCode::KeyQ));
             } else if at == TARGET_IN_VIEW_OFFSET {
-                record_targeting(&mut data, targeting.session.as_deref(), &camera, true);
+                record_targeting(&mut data, targeting.session.as_deref(), &scene.camera, true);
                 data.measurements.targeting.in_view_nodes = targeting.brackets.iter().count();
                 due.push("target_in_view".to_owned());
             } else if at == TARGET_FLIP_OFFSET {
@@ -3453,7 +3674,12 @@ fn smoke_script(
                     pending.0 = Some(flip);
                 }
             } else if at == TARGET_OFF_VIEW_OFFSET {
-                record_targeting(&mut data, targeting.session.as_deref(), &camera, false);
+                record_targeting(
+                    &mut data,
+                    targeting.session.as_deref(),
+                    &scene.camera,
+                    false,
+                );
                 data.measurements.targeting.off_view_nodes = targeting.brackets.iter().count();
                 data.measurements.targeting.window_shown =
                     targeting.spyglass.as_deref().is_some_and(|s| s.shown());
@@ -3587,7 +3813,8 @@ fn smoke_script(
                 // straight, so the player faces the hostile from close enough
                 // for the rocket to really hit it and detonate (#1806).
                 if let Some(index) = data.census.iter().position(|entry| entry.hostile)
-                    && let Some(mut placement) = place_near_actor(&data, index, &player, &poses)
+                    && let Some(mut placement) =
+                        place_near_actor(&data, index, &scene.player, &scene.poses)
                 {
                     let offset = Vec3::new(ROCKET_RANGE_M, 0.0, 0.0);
                     let target = Vec3::from_array(placement.position_m)
@@ -3608,6 +3835,51 @@ fn smoke_script(
                 && (data.burst_shot_frame.is_some_and(|shot| frame > shot)
                     || at >= ROCKET_BURST_WAIT_FRAMES)
             {
+                data.phase = Phase::Flak;
+                data.phase_start = frame + 1;
+            }
+        }
+        // FLAK-C5-SMOKE (#1887): test-wake a sleeping flak turret — an
+        // `aagun*`/`maingun*` world entry whose `WEAPON` the runtime reads
+        // as `wep_27`; no M01 program wakes one — stand the player in its
+        // field of fire (a test placement, listed in the report), and wait
+        // for the production turret path to fire the retail flak rocket,
+        // the round to burst and the `flak_effect` to draw. The shot's
+        // framebuffer comes a few frames after the burst so the flash, the
+        // smoke ball and the flicker are alive; the tail frame catches the
+        // drift.
+        Phase::Flak => {
+            update_flak_metrics(
+                &mut data,
+                flak.turret_fire.as_deref(),
+                flak.flak_fx.as_deref(),
+            );
+            if at == 0 {
+                data.measurements.flak.sound_measured = flak
+                    .stage
+                    .as_deref()
+                    .is_some_and(|stage| stage.flak_sound.is_some());
+                if let Some(placement) = wake_and_place_flak(
+                    &mut data,
+                    flak.mission_host.as_deref_mut(),
+                    flak.stage.as_deref(),
+                    flak.tick_ledger.as_deref(),
+                ) {
+                    pending.0 = Some(placement);
+                    data.measurements.flak.placed = true;
+                }
+            }
+            if data.measurements.flak.bursts_presented > 0 && data.flak_burst_shot_frame.is_none() {
+                data.flak_burst_shot_frame = Some(frame + FLAK_BURST_SHOT_DELAY);
+                data.flak_tail_shot_frame = Some(frame + FLAK_TAIL_SHOT_DELAY);
+            }
+            if data.flak_burst_shot_frame == Some(frame) {
+                due.push("flak_burst".to_owned());
+            } else if data.flak_tail_shot_frame == Some(frame) {
+                due.push("flak_burst_tail".to_owned());
+            }
+            let tail_taken = data.flak_tail_shot_frame.is_some_and(|shot| frame > shot);
+            if at >= FLAK_BUDGET_FRAMES || tail_taken {
                 data.phase = Phase::Help;
                 data.phase_start = frame + 1;
             }
@@ -4057,6 +4329,108 @@ fn place_for_trigger(data: &mut SmokeData) -> Option<Placement> {
 /// component.
 fn yaw_toward(direction: Vec3) -> f32 {
     (-direction.x).atan2(-direction.z)
+}
+
+/// The flak phase's setup (FLAK-C5-SMOKE, #1887): finds the first world
+/// turret entry whose `WEAPON` the runtime classifies as a `ROCKET` —
+/// `wep_27`, the retail flak rocket — **test-wakes it through the mission
+/// host's wake ledger** (the same name matcher a `WAKEUP_TURRETS` emission
+/// uses, so the ledger's own `wakes()` records it) and returns the player's
+/// test placement: inside the record's `DETECTION_RANGE`, over the mount so
+/// a `SHOOT_UP_ONLY` record admits the approach and the `PITCH` limits
+/// hold, heading at the mount. No M01 program wakes these guns, which is
+/// why this wake — and only this wake — is the script's own.
+fn wake_and_place_flak(
+    data: &mut SmokeData,
+    host: Option<&mut MissionHost>,
+    stage: Option<&MissionStage>,
+    ledger: Option<&PhysicsTickLedger>,
+) -> Option<Placement> {
+    let (host, stage) = (host?, stage?);
+    let bound = &stage.host.turrets;
+    let entry = host
+        .wake_turrets()
+        .entries()
+        .iter()
+        .find(|entry| {
+            entry.mount == TurretMount::World
+                && entry.position_m.is_some()
+                && bound
+                    .specs
+                    .iter()
+                    .find(|spec| spec.index == entry.record)
+                    .and_then(|spec| spec.weapon.as_deref())
+                    .and_then(|name| bound.weapons.get(name))
+                    .is_some_and(|weapon| matches!(weapon, TurretWeaponRecord::Rocket(_)))
+        })?
+        .clone();
+    let spec = bound.specs.iter().find(|spec| spec.index == entry.record)?;
+    let detection = spec.detection_range();
+    let tick = Tick(ledger.map_or(0, |ledger| ledger.ticks));
+    host.wake_turrets_mut().wake_for_test(&entry.name, tick);
+    let woken = host
+        .wake_turrets()
+        .wakes()
+        .iter()
+        .any(|wake| wake.woken.iter().any(|name| name == &entry.name));
+    let metrics = &mut data.measurements.flak;
+    metrics.turret = Some(entry.name.clone());
+    metrics.woken = woken;
+    metrics.detection_range_m = detection;
+
+    let mount = Vec3::from_array(entry.position_m?.map(|component| component as f32));
+    let horizontal =
+        (detection * FLAK_RANGE_FRACTION).clamp(FLAK_DISTANCE_MIN_M, FLAK_DISTANCE_MAX_M);
+    let offset = Vec3::new(
+        horizontal as f32,
+        (horizontal * FLAK_HEIGHT_FRACTION) as f32,
+        0.0,
+    );
+    Some(Placement {
+        name: format!("flak turret {} (test-woken, test placement)", entry.name),
+        position_m: (mount + offset).to_array(),
+        yaw: yaw_toward(-offset),
+        speed_m_s: data.speed_m_s,
+        distance_m: f64::from(offset.length()),
+    })
+}
+
+/// Reads the turret runtime's and the `flak_effect` presentation's counters
+/// into the phase's measurements, every frame the phase runs.
+fn update_flak_metrics(
+    data: &mut SmokeData,
+    fire: Option<&MissionTurretFire>,
+    fx: Option<&FlakBurstFxReport>,
+) {
+    let metrics = &mut data.measurements.flak;
+    if let Some(fire) = fire {
+        let report = fire.report();
+        metrics.rockets_fired = report.rockets_fired;
+        metrics.bursts = report.rocket_bursts.len() as u64;
+        metrics.shots_logged = report
+            .shots
+            .iter()
+            .filter(|shot| {
+                shot.weapon == super::flak_round::FLAK_RECORD
+                    && metrics
+                        .turret
+                        .as_ref()
+                        .is_none_or(|name| name == &shot.name)
+            })
+            .count() as u64;
+        metrics.shot_cues = report.flak_shot_cues;
+        metrics.burst_cues = report.flak_burst_cues;
+        metrics.sound_refusals = report.flak_sound_refusals.clone();
+        metrics.refusals = report.refusals.clone();
+    }
+    if let Some(fx) = fx {
+        metrics.bursts_presented = fx.bursts_presented;
+        metrics.flashes_spawned = fx.flashes_spawned;
+        metrics.smoke_balls = fx.smoke_balls_requested;
+        metrics.flickers_started = fx.flickers_started;
+        metrics.flickers_skipped = fx.flickers_skipped;
+        metrics.trails_undrawn = fx.trails_undrawn;
+    }
 }
 
 /// The live world position of a census member.
@@ -4901,6 +5275,13 @@ fn write_artifacts(
          \"rounds_examined\":{examined},\
          \"flash_frames\":{flash_frames},\"flashes_undrawn\":{flashes_undrawn}}},\"rocket\":{{\"launched\":{launched},\
          \"max_rockets\":{max_rockets},\"puffs_spawned\":{puffs_spawned},\"max_live_puffs\":{max_live_puffs},\"refusals\":[{refusals}]}},\
+         \"flak\":{{\"turret\":{f_turret},\"test_wake\":{f_woken},\"test_placement\":{f_placed},\
+         \"detection_range_m\":{f_range},\"sound_measured\":{f_sound_measured},\
+         \"rockets_fired\":{f_rockets},\"shots_logged\":{f_shots},\"bursts\":{f_bursts},\
+         \"bursts_presented\":{f_presented},\"flashes_spawned\":{f_flashes},\
+         \"smoke_balls\":{f_balls},\"flickers_started\":{f_flickers},\"flickers_skipped\":{f_skipped},\
+         \"trails_undrawn\":{f_trails},\"shot_cues\":{f_shot_cues},\"burst_cues\":{f_burst_cues},\
+         \"sound_refusals\":[{f_sound_refusals}],\"refusals\":[{f_refusals}]}},\
          \"audio\":{{\"radio_seen\":{radio_seen},\"engine_seen\":{engine_seen},\
          \"engine_bindings\":{bindings},\"active_loops\":{loops},\
          \"radio_started\":{radio_started},\"voice_trace\":{voice_trace},\
@@ -4959,6 +5340,43 @@ fn write_artifacts(
         refusals = report
             .measurements
             .rocket
+            .refusals
+            .iter()
+            .map(|refusal| json_string(refusal))
+            .collect::<Vec<_>>()
+            .join(","),
+        f_turret = report
+            .measurements
+            .flak
+            .turret
+            .as_deref()
+            .map_or_else(|| "null".to_owned(), json_string),
+        f_woken = report.measurements.flak.woken,
+        f_placed = report.measurements.flak.placed,
+        f_range = report.measurements.flak.detection_range_m,
+        f_sound_measured = report.measurements.flak.sound_measured,
+        f_rockets = report.measurements.flak.rockets_fired,
+        f_shots = report.measurements.flak.shots_logged,
+        f_bursts = report.measurements.flak.bursts,
+        f_presented = report.measurements.flak.bursts_presented,
+        f_flashes = report.measurements.flak.flashes_spawned,
+        f_balls = report.measurements.flak.smoke_balls,
+        f_flickers = report.measurements.flak.flickers_started,
+        f_skipped = report.measurements.flak.flickers_skipped,
+        f_trails = report.measurements.flak.trails_undrawn,
+        f_shot_cues = report.measurements.flak.shot_cues,
+        f_burst_cues = report.measurements.flak.burst_cues,
+        f_sound_refusals = report
+            .measurements
+            .flak
+            .sound_refusals
+            .iter()
+            .map(|refusal| json_string(refusal))
+            .collect::<Vec<_>>()
+            .join(","),
+        f_refusals = report
+            .measurements
+            .flak
             .refusals
             .iter()
             .map(|refusal| json_string(refusal))

@@ -334,7 +334,7 @@ pub use smoke::{
     BriefingReplayMetrics, BriefingShotMetrics, BriefingVoiceMetrics, CINEMATIC_SHOT_SECONDS,
     CameraMetrics, CameraModeMetrics, CameraModeSample, Check, CinematicMetrics,
     CockpitViewMetrics, CockpitViewSample, DEFAULT_MISSION_CAPTURE_DIR, ENGAGEMENT_SAMPLE_EVERY_S,
-    EngagementMetrics, ExamineMetrics, FirstControlMetrics, FlightCheckButtonMetrics,
+    EngagementMetrics, ExamineMetrics, FirstControlMetrics, FlakMetrics, FlightCheckButtonMetrics,
     FlightCheckMetrics, FlightCheckTextMetrics, GunMetrics, HudMetrics, MAX_COCKPIT_EYE_ERROR_M,
     MAX_SKY_BELOW_HORIZON_PIXELS, MAX_WINGMAN_DISTANCE_M, MIN_ACTOR_PIXELS,
     MIN_BRIEFING_CHANGE_PIXELS, MIN_BRIEFING_DRAWN_PERMILLE, MIN_BUTTON_WARM_PERMILLE,
