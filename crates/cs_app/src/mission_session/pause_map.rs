@@ -19,37 +19,52 @@
 //!   the press as a [`PauseMapPress`]: their effects are their own tasks and
 //!   nothing here fakes one.
 //!
+//! The live parts (PARITY3-PAUSE-MAP-SCREEN.02-B, #1874) come from
+//! [`PauseMapLive`], which [`PauseMapPlugin`] fills from the mission host's
+//! objective session and the player body: each pin shows the record's bitmap
+//! until its objective is revealed and then its numbered flag
+//! ([`pin_flag_bitmap`]), the note lists the revealed objectives with a check
+//! mark on completed ones, and the player icon sits at the world position
+//! through the candidate [`world_to_chart_pixel`].
+//!
 //! What is a stand-in, recorded in
-//! `docs/findings/2026-10-22-pause-map-presenter.md`: the faces `Andy Bold`
-//! and `Trebuchet MS Bold` are not in the installation, so the note title and
-//! the button labels use Bevy's default face (colours and offsets are the
-//! record's); every pin is the "?" flag the record names (the number switch is
-//! native and unread); the objective list, the player icon and the `WORLD`
-//! mapping are later tasks. Nothing here is `verified_original`.
+//! `docs/findings/2026-10-22-pause-map-presenter.md` and
+//! `docs/findings/2026-10-22-pause-map-live-objectives.md`: the faces `Andy
+//! Bold` and `Trebuchet MS Bold` are not in the installation, so the note
+//! title, list and the button labels use Bevy's default face (colours and
+//! offsets are the record's); the "?" to number rule, the check mark's
+//! placement and the `WORLD` mapping are readings, not decodes. Nothing here
+//! is `verified_original`.
 
 use std::collections::BTreeMap;
 use std::fmt;
 use std::path::Path;
 
+use avian3d::prelude::{Position, Rotation};
 use bevy::asset::RenderAssetUsages;
 use bevy::ecs::schedule::IntoScheduleConfigs;
 use bevy::prelude::{
-    App, BackgroundColor, ButtonInput, ChildOf, Color, Commands, Component, Entity, GlobalZIndex,
-    Handle, Has, Image, ImageNode, Message, MessageWriter, MouseButton, Node, Overflow, Plugin,
-    PositionType, Query, Res, ResMut, Resource, Text, TextColor, TextFont, Update, Val, Window,
-    With, default,
+    App, BackgroundColor, ButtonInput, ChildOf, Color, Commands, Component, Entity, FlexDirection,
+    GlobalZIndex, Handle, Has, Image, ImageNode, Local, Message, MessageWriter, MouseButton, Node,
+    Overflow, Plugin, PositionType, Quat, Query, Res, ResMut, Resource, Rot2, Text, TextColor,
+    TextFont, UiTransform, Update, Val, Vec3, Window, With, Without, default,
 };
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::text::{FontSize, Justify, LineBreak, TextLayout};
 use bevy::window::CursorOptions;
 use cs_content::briefing::{BRIEFING_ARCHIVE, BRIEFING_MEMBER, BriefingDocument, Point};
 use cs_content::campaign_bindings::SourceContext;
+use cs_content::config::MessageCatalog;
 use cs_content::stunts::{ZrdValue, decode_zrd, zrd_field};
 
+use super::compose::MissionPlayerBody;
+use super::host::MissionHost;
 use super::launch_sound::reader_member;
+use super::lifecycles::ObjectiveLifecycles;
 use crate::input::platform::PlatformInput;
 use crate::input::session::PauseReason;
 use crate::ui::front_end::{Artwork, FrontEndScreens};
+use crate::ui::hud::{MissionMessages, ObjectiveHud};
 
 /// The reader archive that holds the Esc scripts.
 pub const ESCAPE_ARCHIVE: &str = "ZBD/zrdr.zbd";
@@ -69,6 +84,13 @@ const TITLE_COLOR: [u8; 3] = [16, 16, 16];
 /// The designed sizes of the stand-in face (the record's heights are the
 /// unavailable faces' own).
 const TITLE_FONT_PX: f32 = 16.0;
+const LIST_FONT_PX: f32 = 14.0;
+/// The note list's text colour, from `fonts.zrd`'s `ObjList`.
+const LIST_COLOR: [u8; 3] = [16, 16, 16];
+/// The highest number a numbered flag carries (`pin1`..`pin8`).
+const MAX_FLAG_NUMBER: u32 = 8;
+/// The check mark's width: it is drawn left of the list's column.
+const CHECK_MARK_WIDTH: f32 = 25.0;
 const LABEL_FONT_PX: f32 = 14.0;
 
 /// The layers, back to front.
@@ -171,6 +193,14 @@ pub struct PauseNote {
     pub title: String,
     /// Where the title is drawn.
     pub title_at: Point,
+    /// The check mark bitmap (`obj_check1`) of a completed objective.
+    pub check_mark: String,
+    /// Where the list's column starts (`LIST POSITION`).
+    pub list_at: Point,
+    /// The column's word-wrap width and height (`LIST WORDWRAP`).
+    pub list_wrap: (i32, i32),
+    /// The space between two entries (`LIST SPACING`).
+    pub list_spacing: i32,
 }
 
 /// One button.
@@ -210,6 +240,11 @@ pub struct PauseMapScene {
     pub buttons: Vec<PauseButton>,
     /// The cursor bitmap and its rollover bitmap.
     pub cursor: (String, String),
+    /// The player aircraft icon's bitmap (`OWNSHIP`, `singledev`).
+    pub own_ship: String,
+    /// The script's `Objective OBJn index i` rows: the row id and the
+    /// objective index the note's `n`-th line shows.
+    pub objectives: Vec<(String, usize)>,
     /// Script commands this reading does not interpret, by name.
     pub unread_commands: Vec<String>,
 }
@@ -228,6 +263,9 @@ impl PauseMapScene {
         }
         names.push(self.cursor.0.clone());
         names.push(self.cursor.1.clone());
+        names.push(self.own_ship.clone());
+        names.push(self.note.check_mark.clone());
+        names.extend((1..=MAX_FLAG_NUMBER).filter_map(numbered_flag));
         let mut seen = Vec::<String>::new();
         names.retain(|name| {
             let lower = name.to_ascii_lowercase();
@@ -239,6 +277,18 @@ impl PauseMapScene {
             }
         });
         names
+    }
+
+    /// The row index the pin `pin` (`OBJPIN2`) stands for: the `index` of the
+    /// script's `Objective OBJ2 index i`.
+    #[must_use]
+    pub fn pin_objective(&self, pin: &PausePicture) -> Option<usize> {
+        let number = pin.id.strip_prefix("OBJPIN")?;
+        let wanted = format!("OBJ{number}");
+        self.objectives
+            .iter()
+            .find(|(id, _)| *id == wanted)
+            .map(|(_, index)| *index)
     }
 
     /// The pins: the pictures named `OBJPIN<n>`, in script order.
@@ -424,6 +474,7 @@ impl PauseMapScene {
         }
 
         let mut pictures = Vec::new();
+        let mut objectives = Vec::new();
         let mut unread_commands = Vec::new();
         let script = field(entry, "ESC_SCRIPT", key)?;
         for pair in script
@@ -463,10 +514,23 @@ impl PauseMapScene {
                         centered,
                     });
                 }
-                // The visibility and stacking commands, and the objective
-                // rows the next task draws, are read as: everything is on, the
-                // note is behind the pictures.
-                Some("ToBack" | "On" | "Objective") => {}
+                Some("Objective") => {
+                    let id = args
+                        .as_list()
+                        .and_then(|children| children.first())
+                        .and_then(ZrdValue::as_text);
+                    let (Some(id), Some(index)) = (id, argument(args, "index")) else {
+                        return fail("an Objective names no id or index");
+                    };
+                    let index = match ints(index, id)?.as_slice() {
+                        [index] if *index >= 0 => *index as usize,
+                        _ => return fail(format!("Objective {id} has no index")),
+                    };
+                    objectives.push((id.to_owned(), index));
+                }
+                // The visibility and stacking commands are read as: everything
+                // is on, the note is behind the pictures.
+                Some("ToBack" | "On") => {}
                 Some(other) => unread_commands.push(other.to_owned()),
                 None => unread_commands.push("<not a text>".to_owned()),
             }
@@ -480,6 +544,7 @@ impl PauseMapScene {
         )?;
         let background_record = field(list, "BACKGROUND", "OBJECTIVESLIST")?;
         let title_record = field(list, "TITLE", "OBJECTIVESLIST")?;
+        let list_record = field(list, "LIST", "OBJECTIVESLIST")?;
         let title_text = text(field(title_record, "TEXT", "TITLE")?, "TITLE")?;
         let Some(title) = strings(&title_text) else {
             return fail(format!("the string {title_text} does not resolve"));
@@ -496,7 +561,37 @@ impl PauseMapScene {
             title_text,
             title,
             title_at: point(field(title_record, "POSITION", "TITLE")?, "TITLE")?,
+            check_mark: text(
+                field(
+                    field(list, "CHECKMARK", "OBJECTIVESLIST")?,
+                    "BITMAP",
+                    "CHECKMARK",
+                )?,
+                "CHECKMARK",
+            )?,
+            list_at: point(field(list_record, "POSITION", "LIST")?, "LIST")?,
+            list_wrap: match ints(field(list_record, "WORDWRAP", "LIST")?, "WORDWRAP")?.as_slice() {
+                [width, height] => (*width, *height),
+                _ => return fail("LIST WORDWRAP is not a pair"),
+            },
+            list_spacing: match ints(field(list_record, "SPACING", "LIST")?, "SPACING")?.as_slice()
+            {
+                [spacing] => *spacing,
+                _ => return fail("LIST SPACING is not one number"),
+            },
         };
+        let own_ship = text(
+            field(
+                field(
+                    field(dialog, "PRIMITIVES", "LOADINGDIALOG")?,
+                    "OWNSHIP",
+                    "PRIMITIVES",
+                )?,
+                "BITMAP",
+                "OWNSHIP",
+            )?,
+            "OWNSHIP",
+        )?;
         let buttons_record = field(dialog, "BUTTONS", "LOADINGDIALOG")?;
         let buttons = PauseButtonKind::ALL
             .iter()
@@ -529,6 +624,8 @@ impl PauseMapScene {
             note,
             buttons,
             cursor,
+            own_ship,
+            objectives,
             unread_commands,
         })
     }
@@ -591,10 +688,172 @@ pub fn read_pause_map(
     for name in scene.bitmaps() {
         let art = screens
             .ui_artwork(&name)
-            .map_err(|error| PauseMapError(error.to_string()))?;
+            .map_err(|error| PauseMapError(format!("the bitmap {name}: {error}")))?;
         artwork.insert(name.to_ascii_lowercase(), art);
     }
     Ok(PauseMapSource { scene, artwork })
+}
+
+// ----------------------------------------------------------- live state --
+
+/// One objective of the note: the identity rows the objective session declares
+/// with a message (M01: `PRIMARY 1`..`PRIMARY 4`), in (role, ordinal) order.
+/// The script's `Objective OBJn index i` and pin `OBJPINn` name row `i`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PauseObjectiveRow {
+    /// The `IDENTITY` ordinal: the number its flag carries.
+    pub ordinal: u32,
+    /// The resolved objective text (the message key when it does not resolve).
+    pub text: String,
+    /// The session has woken it (or it is the one the HUD shows next).
+    pub revealed: bool,
+    /// The session marks it completed.
+    pub completed: bool,
+}
+
+/// Where the player is, in the world's own axes, and which way the nose
+/// points on the chart.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PlayerFix {
+    /// World `x`.
+    pub x: f32,
+    /// World `z`.
+    pub z: f32,
+    /// Clockwise from the chart's top, radians: `0` is the nose along
+    /// `-z` (`cs_sim::flight::BODY_FORWARD`).
+    pub heading: f32,
+}
+
+/// What the screen shows of the running mission. The presenter reads only this
+/// resource; [`read_pause_map_live`] fills it from the mission host and the
+/// player body every frame.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct PauseMapLive {
+    /// The objective rows.
+    pub rows: Vec<PauseObjectiveRow>,
+    /// The player, once a body exists.
+    pub player: Option<PlayerFix>,
+}
+
+impl PauseObjectiveRow {
+    /// The note's rows of the objective session `hud` projects: every
+    /// identity with a role and a message element, in (role, ordinal) order.
+    /// A row is *revealed* when the session has woken it, or when it is the
+    /// objective the HUD shows while every one still sleeps
+    /// ([`ObjectiveHud::displayed`]): the original's rule is native and
+    /// unread, this is the reading the findings record
+    /// (`2026-10-22-pause-map-live-objectives.md`).
+    #[must_use]
+    pub fn rows_of(hud: &ObjectiveHud, messages: Option<&MessageCatalog>) -> Vec<Self> {
+        let shown = hud.displayed().map(|row| row.objective);
+        let mut rows: Vec<_> = hud
+            .rows()
+            .iter()
+            .filter(|row| row.role_code != 0 && row.message.is_some())
+            .collect();
+        rows.sort_by_key(|row| (row.role_code, row.ordinal, row.objective));
+        rows.into_iter()
+            .filter_map(|row| {
+                Some(Self {
+                    ordinal: row.ordinal,
+                    text: ObjectiveHud::row_text(row, messages)?,
+                    revealed: row.revealed || shown == Some(row.objective),
+                    completed: row.completed,
+                })
+            })
+            .collect()
+    }
+}
+
+/// The numbered flag texture of objective number `number`: `pin1`..`pin8`,
+/// with `pin6_1` for 6 because `pin6` is the "?" flag. `None` beyond 8.
+#[must_use]
+pub fn numbered_flag(number: u32) -> Option<String> {
+    match number {
+        6 => Some("pin6_1".to_owned()),
+        1..=MAX_FLAG_NUMBER => Some(format!("pin{number}")),
+        _ => None,
+    }
+}
+
+/// The "?" -> number rule of one pin: **the single named reading**. The
+/// script names one bitmap per pin (`authored`: the "?" flag for three of
+/// M01's four, the "4" flag for the fourth). While the pin's objective is
+/// not revealed the pin keeps that authored bitmap; once the session reveals
+/// it, the pin shows the numbered flag of its `IDENTITY` ordinal. Whether the
+/// original switches on a woken objective, on the HUD's choice or on
+/// something else is native and not in the data; provenance `static`,
+/// unverified.
+#[must_use]
+pub fn pin_flag_bitmap(authored: &str, row: Option<&PauseObjectiveRow>) -> String {
+    match row {
+        Some(row) if row.revealed => {
+            numbered_flag(row.ordinal).unwrap_or_else(|| authored.to_owned())
+        }
+        _ => authored.to_owned(),
+    }
+}
+
+/// The candidate chart mapping: the `WORLD` rectangle is the chart's clip
+/// rectangle, world `x` runs left to right and world `z` runs **down** (the
+/// record's second `WORLD` component is `-z`, descending top to bottom).
+/// Candidate only: no engine decode and no owner capture fits it
+/// (`2026-10-22-pause-map-live-objectives.md`). `None` for a degenerate
+/// rectangle.
+#[must_use]
+pub fn world_to_chart_pixel(chart: &PauseChart, x: f32, z: f32) -> Option<(f32, f32)> {
+    let [left, top, right, bottom] = chart.world;
+    let (width, height) = (right - left, bottom - top);
+    if width == 0.0 || height == 0.0 {
+        return None;
+    }
+    let u = (x - left) / width;
+    let v = (-z - top) / height;
+    let clip_width = (chart.clip_bottom_right.x - chart.clip_top_left.x) as f32;
+    let clip_height = (chart.clip_bottom_right.y - chart.clip_top_left.y) as f32;
+    Some((
+        chart.clip_top_left.x as f32 + u * clip_width,
+        chart.clip_top_left.y as f32 + v * clip_height,
+    ))
+}
+
+/// The player's chart fix from the body's pose.
+#[must_use]
+pub fn player_fix(position: Vec3, rotation: Quat) -> PlayerFix {
+    let [fx, _, fz] = cs_sim::flight::BODY_FORWARD;
+    let nose = rotation * Vec3::new(fx as f32, 0.0, fz as f32);
+    PlayerFix {
+        x: position.x,
+        z: position.z,
+        heading: nose.x.atan2(-nose.z),
+    }
+}
+
+/// Fills [`PauseMapLive`]: the rows from the mission host's engine objective
+/// model and the fix from the player body. A source that is absent leaves its
+/// half untouched (no host, or a host on the declared model, has no rows).
+fn read_pause_map_live(
+    host: Option<Res<MissionHost>>,
+    messages: Option<Res<MissionMessages>>,
+    bodies: Query<(&Position, &Rotation), With<MissionPlayerBody>>,
+    mut live: ResMut<PauseMapLive>,
+) {
+    let mut next = live.clone();
+    if let Some(host) = host
+        && let ObjectiveLifecycles::Engine(engine) = host.lifecycles()
+    {
+        let hud = ObjectiveHud::from_engine(engine);
+        next.rows = PauseObjectiveRow::rows_of(
+            &hud,
+            messages.as_deref().and_then(MissionMessages::catalog),
+        );
+    }
+    if let Ok((position, rotation)) = bodies.single() {
+        next.player = Some(player_fix(position.0, rotation.0));
+    }
+    if *live != next {
+        *live = next;
+    }
 }
 
 // ------------------------------------------------------- the presenter --
@@ -621,6 +880,24 @@ struct Placed {
     width: f32,
     height: f32,
 }
+
+/// A part the live state decides (pins, the note's list, the player icon):
+/// rebuilt whenever [`PauseMapLive`] changes.
+#[derive(Component)]
+struct LivePart;
+
+/// The clip container of the chart, the icon's parent.
+#[derive(Component)]
+struct ChartClip;
+
+/// The space between a column's entries, in logical pixels.
+#[derive(Component, Clone, Copy)]
+struct RowGap(f32);
+
+/// The decoded bitmaps' handles and sizes by lower-cased name, while the
+/// screen is up.
+#[derive(Resource, Default)]
+struct PauseMapImages(BTreeMap<String, (Handle<Image>, f32, f32)>);
 
 /// A text part's designed size in logical pixels.
 #[derive(Component, Clone, Copy)]
@@ -709,7 +986,7 @@ fn spawn_pause_map(
     commands: &mut Commands,
     source: &PauseMapSource,
     images: &mut bevy::prelude::Assets<Image>,
-) {
+) -> BTreeMap<String, (Handle<Image>, f32, f32)> {
     let scene = &source.scene;
     let handles: BTreeMap<String, (Handle<Image>, f32, f32)> = source
         .artwork
@@ -778,6 +1055,7 @@ fn spawn_pause_map(
                     ..absolute()
                 },
                 clip,
+                ChartClip,
                 GlobalZIndex(Z_CHART),
                 PauseMapPart,
                 super::original_keys::ControlsHelpPanel,
@@ -836,10 +1114,6 @@ fn spawn_pause_map(
         PauseMapPart,
         super::original_keys::ControlsHelpPanel,
     ));
-    // One flag pin per objective, at the authored pixels.
-    for picture in scene.pins() {
-        place_picture(commands, picture, Z_PINS, &handle_of);
-    }
     for button in &scene.buttons {
         let states = button
             .bitmaps
@@ -903,6 +1177,7 @@ fn spawn_pause_map(
             super::original_keys::ControlsHelpPanel,
         ));
     }
+    handles
 }
 
 fn place_picture(
@@ -910,28 +1185,173 @@ fn place_picture(
     picture: &PausePicture,
     z: i32,
     handle_of: &impl Fn(&str) -> Option<(Handle<Image>, f32, f32)>,
-) {
-    let Some((handle, width, height)) = handle_of(&picture.bitmap) else {
-        return;
-    };
+) -> Option<Entity> {
+    let (handle, width, height) = handle_of(&picture.bitmap)?;
     let (mut x, mut y) = (picture.at.x as f32, picture.at.y as f32);
     if picture.centered {
         x -= width / 2.0;
         y -= height / 2.0;
     }
-    commands.spawn((
-        absolute(),
-        ImageNode::new(handle),
-        Placed {
-            x,
-            y,
-            width,
-            height,
-        },
-        GlobalZIndex(z),
-        PauseMapPart,
-        super::original_keys::ControlsHelpPanel,
-    ));
+    Some(
+        commands
+            .spawn((
+                absolute(),
+                ImageNode::new(handle),
+                Placed {
+                    x,
+                    y,
+                    width,
+                    height,
+                },
+                GlobalZIndex(z),
+                PauseMapPart,
+                super::original_keys::ControlsHelpPanel,
+            ))
+            .id(),
+    )
+}
+
+/// Spawns what the live state decides: one flag pin per objective, the
+/// note's list and the player icon. Every part carries [`LivePart`].
+fn spawn_live(
+    commands: &mut Commands,
+    scene: &PauseMapScene,
+    images: &PauseMapImages,
+    live: &PauseMapLive,
+    clip: Option<Entity>,
+) {
+    let handle_of = |name: &str| images.0.get(&name.to_ascii_lowercase()).cloned();
+    for pin in scene.pins() {
+        let row = scene
+            .pin_objective(pin)
+            .and_then(|index| live.rows.get(index));
+        let shown = PausePicture {
+            bitmap: pin_flag_bitmap(&pin.bitmap, row),
+            ..pin.clone()
+        };
+        if let Some(entity) = place_picture(commands, &shown, Z_PINS, &handle_of) {
+            commands.entity(entity).insert(LivePart);
+        }
+    }
+
+    let revealed: Vec<_> = live.rows.iter().filter(|row| row.revealed).collect();
+    if !revealed.is_empty() {
+        let note = &scene.note;
+        let check = handle_of(&note.check_mark);
+        commands
+            .spawn((
+                Node {
+                    flex_direction: FlexDirection::Column,
+                    overflow: Overflow::clip(),
+                    ..absolute()
+                },
+                Placed {
+                    x: note.list_at.x as f32,
+                    y: note.list_at.y as f32,
+                    width: note.list_wrap.0 as f32,
+                    height: note.list_wrap.1 as f32,
+                },
+                RowGap(note.list_spacing as f32),
+                GlobalZIndex(Z_NOTE + 1),
+                PauseMapPart,
+                LivePart,
+                super::original_keys::ControlsHelpPanel,
+            ))
+            .with_children(|list| {
+                for row in revealed {
+                    list.spawn((
+                        Node {
+                            width: Val::Percent(100.0),
+                            ..default()
+                        },
+                        PauseMapPart,
+                    ))
+                    .with_children(|line| {
+                        if let (true, Some((handle, width, height))) = (row.completed, &check) {
+                            line.spawn((
+                                absolute(),
+                                ImageNode::new(handle.clone()),
+                                Placed {
+                                    x: -CHECK_MARK_WIDTH,
+                                    y: 0.0,
+                                    width: *width,
+                                    height: *height,
+                                },
+                                PauseMapPart,
+                            ));
+                        }
+                        line.spawn((
+                            Text::new(row.text.clone()),
+                            TextFont {
+                                font_size: FontSize::Px(LIST_FONT_PX),
+                                ..default()
+                            },
+                            TextLayout::new(Justify::Left, LineBreak::WordBoundary),
+                            TextColor(rgb(LIST_COLOR)),
+                            FontPx(LIST_FONT_PX),
+                            PauseMapPart,
+                        ));
+                    });
+                }
+            });
+    }
+
+    // The player icon sits inside the chart's clip container, so the chart's
+    // edge clips it.
+    if let (Some(fix), Some(clip), Some((handle, width, height))) =
+        (live.player, clip, handle_of(&scene.own_ship))
+        && let Some((px, py)) = world_to_chart_pixel(&scene.chart, fix.x, fix.z)
+    {
+        let origin = scene.chart.clip_top_left;
+        commands.entity(clip).with_children(|parent| {
+            parent.spawn((
+                absolute(),
+                ImageNode::new(handle),
+                Placed {
+                    x: px - origin.x as f32 - width / 2.0,
+                    y: py - origin.y as f32 - height / 2.0,
+                    width,
+                    height,
+                },
+                UiTransform::from_rotation(Rot2::radians(fix.heading)),
+                PauseMapPart,
+                LivePart,
+            ));
+        });
+    }
+}
+
+/// Builds the live parts when the screen opens and again whenever the live
+/// state changes while it is up.
+#[allow(clippy::too_many_arguments)]
+fn refresh_live(
+    mut commands: Commands,
+    source: Res<PauseMapSource>,
+    images: Res<PauseMapImages>,
+    live: Res<PauseMapLive>,
+    shown: Res<PauseMapShown>,
+    old: Query<Entity, With<LivePart>>,
+    clips: Query<Entity, With<ChartClip>>,
+    mut built: Local<Option<PauseMapLive>>,
+) {
+    if !shown.0 {
+        *built = None;
+        return;
+    }
+    if built.as_ref() == Some(&*live) {
+        return;
+    }
+    for part in &old {
+        commands.entity(part).despawn();
+    }
+    spawn_live(
+        &mut commands,
+        &source.scene,
+        &images,
+        &live,
+        clips.iter().next(),
+    );
+    *built = Some(live.clone());
 }
 
 /// Spawns the screen while the player's Esc pause holds the session and
@@ -951,7 +1371,8 @@ fn sync_pause_map(
     let wanted = platform.is_some_and(|platform| pause_is_open(&platform))
         && !pending.is_some_and(|phase| phase.is_pending());
     if wanted && !shown.0 {
-        spawn_pause_map(&mut commands, &source, &mut images);
+        let handles = spawn_pause_map(&mut commands, &source, &mut images);
+        commands.insert_resource(PauseMapImages(handles));
         shown.0 = true;
     } else if !wanted && shown.0 {
         for part in &parts {
@@ -977,10 +1398,12 @@ fn place_pause_map(
             &mut Node,
             Option<&FontPx>,
             Option<&mut TextFont>,
+            Option<&RowGap>,
             Has<ChildOf>,
         ),
         With<PauseMapPart>,
     >,
+    mut unplaced_text: Query<(&FontPx, &mut TextFont), (With<PauseMapPart>, Without<Placed>)>,
 ) {
     let Ok(window) = windows.single() else {
         return;
@@ -988,7 +1411,7 @@ fn place_pause_map(
     let Some(fit) = Fit::of(window) else {
         return;
     };
-    for (placed, mut node, size, font, nested) in &mut parts {
+    for (placed, mut node, size, font, gap, nested) in &mut parts {
         let (left, top) = if nested {
             (0.0, 0.0)
         } else {
@@ -998,9 +1421,15 @@ fn place_pause_map(
         node.top = Val::Px(top + placed.y * fit.scale);
         node.width = Val::Px(placed.width * fit.scale);
         node.height = Val::Px(placed.height * fit.scale);
+        if let Some(gap) = gap {
+            node.row_gap = Val::Px(gap.0 * fit.scale);
+        }
         if let (Some(size), Some(mut font)) = (size, font) {
             font.font_size = FontSize::Px(size.0 * fit.scale);
         }
+    }
+    for (size, mut font) in &mut unplaced_text {
+        font.font_size = FontSize::Px(size.0 * fit.scale);
     }
 }
 
@@ -1121,11 +1550,15 @@ pub struct PauseMapPlugin;
 impl Plugin for PauseMapPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<PauseMapShown>()
+            .init_resource::<PauseMapLive>()
+            .init_resource::<PauseMapImages>()
             .add_message::<PauseMapPress>()
             .add_systems(
                 Update,
                 (
+                    read_pause_map_live,
                     sync_pause_map,
+                    refresh_live,
                     place_pause_map,
                     drive_pause_map,
                     hide_hud_art,

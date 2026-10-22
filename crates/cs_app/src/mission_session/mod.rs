@@ -266,9 +266,10 @@ pub use parts::{
     plan_part_states, read_turret_records, spawn_part_state, turret_part_node, turret_record_for,
 };
 pub use pause_map::{
-    PauseButton, PauseButtonKind, PauseChart, PauseMapError, PauseMapPart, PauseMapPlugin,
-    PauseMapPress, PauseMapScene, PauseMapShown, PauseMapSource, PauseNote, PausePicture,
-    install_pause_map, read_pause_map,
+    PauseButton, PauseButtonKind, PauseChart, PauseMapError, PauseMapLive, PauseMapPart,
+    PauseMapPlugin, PauseMapPress, PauseMapScene, PauseMapShown, PauseMapSource, PauseNote,
+    PauseObjectiveRow, PausePicture, PlayerFix, install_pause_map, numbered_flag, pin_flag_bitmap,
+    player_fix, read_pause_map, world_to_chart_pixel,
 };
 pub use player_victim::{
     DESIGNED_PLAYER_HALF_EXTENTS_M, DESIGNED_PLAYER_INTEGRITY, M01_PLAYER_DAMAGE_CLAIM,
