@@ -47,7 +47,7 @@ SB_T_CASH =T,,<STATX>,460,14,0,0,0xFF000000,0
 SB_T_PLANES =T,,<STATX>,484,14,0,0,0xFF000000,0
 ";
 
-fn authored_source() -> DebriefSource {
+pub(super) fn authored_source() -> DebriefSource {
     let extents = [
         ("sb_background.jpg", (800, 600)),
         ("sb_p_card.png", (354, 480)),
@@ -78,7 +78,7 @@ fn authored_source() -> DebriefSource {
     )
 }
 
-fn key_press(app: &mut bevy::prelude::App) {
+pub(super) fn key_press(app: &mut bevy::prelude::App) {
     app.world_mut().write_message(KeyboardInput {
         key_code: KeyCode::Space,
         logical_key: Key::Space,
@@ -264,13 +264,16 @@ fn accept_parity_m01_outcome_c_buttons_report_instead_of_doing_nothing_silently(
         .expect("the replay button")
         .rect;
     let response = screen.click((800, 600), rect.x + 4, rect.y + 4);
-    assert!(matches!(
+    assert_eq!(
         response,
-        DebriefResponse::Unavailable {
-            role: DebriefRole::ReplayMission,
-            ..
-        }
-    ));
+        DebriefResponse::Replay,
+        "Replay Mission asks the caller to restart the mission"
+    );
+    assert!(
+        screen
+            .notice()
+            .is_none_or(|notice| !notice.contains("Replay"))
+    );
 }
 
 fn game_dir() -> std::path::PathBuf {

@@ -47,9 +47,12 @@
 //!   state frame; what pressing them shows, which tab is selected and which of
 //!   the strip's frames is the selected one are not photographed, so a press
 //!   reports a notice and changes nothing.
-//! * **Replay Mission** is the next task (#1656); **Return to Cabin** has no
-//!   cabin hub to land on (#1749). Both report why instead of doing nothing
-//!   silently.
+//! * **Replay Mission** (#1656) closes the screen and raises the mission
+//!   host's own restart request ([`apply_response`]): the composed
+//!   `mission_host_restart` rebuilds the authored initial state under a fresh
+//!   session generation, the path the playtest's `R` takes. **Return to
+//!   Cabin** has no cabin hub to land on (#1749); it reports why instead of
+//!   doing nothing silently.
 //! * The player's name is the installation's default
 //!   (`IDS_DEFAULTPLAYERNAME`): the windowed mission run has no profile.
 //! * The original's Windows fonts are not bundled, so text uses the engine's
@@ -80,6 +83,7 @@ use super::flight_check::{
     DESIGNED_TEXT_HEIGHT, FlightCheckArtwork, FlightCheckPhaseError, FlightCheckStrings, SceneText,
     SceneUnknown, argb, color_of, field, number, to_image,
 };
+use super::host::MissionHostRestartRequest;
 use crate::ui::front_end::{
     ArtExtents, Artwork, BUTTON_STATE_FRAMES, FrontEndScreens, OriginalLayout, strip_font_tag,
 };
@@ -104,10 +108,6 @@ pub const CASH_STRING: &str = "IDS_SB_CASH_VAL";
 
 /// The format of the Overall Planes Downed value (`%1!d!`).
 pub const PLANES_STRING: &str = "IDS_SB_PLANES_VAL";
-
-/// Why a press does nothing yet, per button role.
-pub const REPLAY_UNAVAILABLE: &str = "Replay Mission is not wired yet: restarting the mission \
-     through the launch path is the next task (#1656)";
 
 /// Why Return to Cabin does nothing.
 pub const CABIN_UNAVAILABLE: &str = "Return to Cabin is unavailable: the cabin hub screen is \
@@ -225,15 +225,16 @@ impl DebriefRole {
         }
     }
 
-    /// Why a press of this button does nothing.
+    /// Why a press of this button does nothing; `None` for Replay Mission,
+    /// which restarts the mission.
     #[must_use]
-    pub const fn unavailable(self) -> &'static str {
+    pub const fn unavailable(self) -> Option<&'static str> {
         match self {
-            Self::ReplayMission => REPLAY_UNAVAILABLE,
-            Self::ViewAllMissions => VIEW_ALL_UNAVAILABLE,
-            Self::ReturnToCabin => CABIN_UNAVAILABLE,
+            Self::ReplayMission => None,
+            Self::ViewAllMissions => Some(VIEW_ALL_UNAVAILABLE),
+            Self::ReturnToCabin => Some(CABIN_UNAVAILABLE),
             Self::BestToDate | Self::MostRecent | Self::NextPage | Self::PreviousPage => {
-                TAB_UNAVAILABLE
+                Some(TAB_UNAVAILABLE)
             }
         }
     }
@@ -677,6 +678,8 @@ impl DebriefScene {
 /// What a press on the screen did.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum DebriefResponse {
+    /// Replay Mission: the caller restarts the mission ([`apply_response`]).
+    Replay,
     /// The button exists and does nothing yet; `reason` is also the notice.
     Unavailable {
         /// The button.
@@ -727,8 +730,10 @@ impl DebriefScreen {
         else {
             return DebriefResponse::NoButton;
         };
-        let reason = button.role.unavailable();
         let role = button.role;
+        let Some(reason) = role.unavailable() else {
+            return DebriefResponse::Replay;
+        };
         self.notice = Some(reason.to_owned());
         DebriefResponse::Unavailable { role, reason }
     }
@@ -1013,6 +1018,34 @@ pub fn show_debrief(world: &mut bevy::prelude::World, debrief: &MissionDebrief) 
             false
         }
     }
+}
+
+/// Carries out what a press on the screen asked for.
+///
+/// Replay Mission drops the screen (releasing the held clock and bringing the
+/// HUD back) and raises [`MissionHostRestartRequest`], which the composed
+/// `mission_host_restart` consumes in `PostUpdate`: the same rebuild, under a
+/// fresh session generation, as the playtest's `R`. Any other response is
+/// already reported by the screen's notice.
+pub fn apply_response(world: &mut bevy::prelude::World, response: &DebriefResponse) {
+    if matches!(response, DebriefResponse::Replay) {
+        println!("mission debrief: Replay Mission restarts the mission");
+        world.remove_resource::<DebriefScreen>();
+        world.insert_resource(MissionHostRestartRequest);
+    }
+}
+
+/// Presses `hotspot` on the shown screen and carries the press out. `None`
+/// when no screen is up.
+pub fn press_debrief_hotspot(
+    world: &mut bevy::prelude::World,
+    hotspot: &str,
+) -> Option<DebriefResponse> {
+    let response = world
+        .get_resource_mut::<DebriefScreen>()?
+        .press_hotspot(hotspot);
+    apply_response(world, &response);
+    Some(response)
 }
 
 impl DebriefScreen {
@@ -1302,6 +1335,7 @@ fn fit_debrief(
 }
 
 fn debrief_input(
+    mut commands: Commands,
     screen: Option<ResMut<DebriefScreen>>,
     windows: Query<&Window>,
     mouse: Res<ButtonInput<MouseButton>>,
@@ -1315,8 +1349,16 @@ fn debrief_input(
         let surface = (window.width() as u32, window.height() as u32);
         Some(screen.click(surface, at.x as u32, at.y as u32))
     });
-    if let Some(DebriefResponse::Unavailable { reason, .. }) = response {
-        println!("mission debrief: {reason}");
+    match response {
+        Some(DebriefResponse::Unavailable { reason, .. }) => {
+            println!("mission debrief: {reason}");
+        }
+        Some(DebriefResponse::Replay) => {
+            commands.queue(|world: &mut bevy::prelude::World| {
+                apply_response(world, &DebriefResponse::Replay);
+            });
+        }
+        Some(DebriefResponse::NoButton) | None => {}
     }
 }
 

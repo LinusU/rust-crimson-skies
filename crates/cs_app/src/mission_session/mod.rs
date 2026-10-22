@@ -191,7 +191,8 @@ pub use debrief::{M01_CASH_EARNED_UNKNOWN_CLAIM, MissionDebrief, MissionTally, t
 pub use debrief_screen::{
     Arg, DebriefArtwork, DebriefButton, DebriefFacts, DebriefPane, DebriefReadError,
     DebriefResponse, DebriefRole, DebriefScene, DebriefSceneError, DebriefScreen,
-    DebriefScreenPlugin, DebriefSource, format_message, install_debrief_screen, show_debrief,
+    DebriefScreenPlugin, DebriefSource, apply_response, format_message, install_debrief_screen,
+    press_debrief_hotspot, show_debrief,
 };
 pub use evidence::{
     CAPABILITIES_ENV, CAPTURE_ENV, CaptureHandle, CaptureRefusal, CaptureSettings,
