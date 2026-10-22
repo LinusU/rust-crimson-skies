@@ -279,6 +279,7 @@ mod m01_aiv_layout;
 mod m01_b;
 mod m01_c3_world_residuals;
 mod m01_chase_view_parity;
+mod m01_collision;
 mod m01_examine_objective;
 mod m01_free_flight;
 mod m01_lc_campaign_airframe_pose;
