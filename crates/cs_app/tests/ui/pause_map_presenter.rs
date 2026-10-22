@@ -38,6 +38,15 @@ fn synthetic_source() -> PauseMapSource {
         ("momento_shad", 300, 300),
         ("pin6", 76, 80),
         ("pin4", 76, 80),
+        ("pin1", 76, 80),
+        ("pin2", 76, 80),
+        ("pin3", 76, 80),
+        ("pin5", 76, 80),
+        ("pin6_1", 76, 80),
+        ("pin7", 76, 80),
+        ("pin8", 76, 80),
+        ("obj_check1", 25, 24),
+        ("singledev", 32, 32),
         ("parchment", 240, 312),
         ("escape_button1", 132, 28),
         ("escape_button2", 132, 28),
@@ -47,8 +56,9 @@ fn synthetic_source() -> PauseMapSource {
     ];
     let artwork = sizes
         .iter()
-        .map(|(name, width, height)| {
-            let rgba = vec![200u8; (*width as usize) * (*height as usize) * 4];
+        .enumerate()
+        .map(|(index, (name, width, height))| {
+            let rgba = vec![index as u8 + 1; (*width as usize) * (*height as usize) * 4];
             (
                 (*name).to_owned(),
                 Artwork::new(*width, *height, rgba).expect("artwork"),
@@ -97,6 +107,10 @@ fn synthetic_source() -> PauseMapSource {
             title_text: "MSG_BRF_DLG_OBJECTIVES".to_owned(),
             title: "Objectives".to_owned(),
             title_at: point(595, 25),
+            check_mark: "obj_check1".to_owned(),
+            list_at: point(580, 50),
+            list_wrap: (190, 255),
+            list_spacing: 5,
         },
         buttons: vec![
             button(PauseButtonKind::Resume, 107, 528, "Resume"),
@@ -105,6 +119,8 @@ fn synthetic_source() -> PauseMapSource {
             button(PauseButtonKind::Quit, 347, 559, "Quit"),
         ],
         cursor: ("daglove".to_owned(), "dafinger".to_owned()),
+        own_ship: "singledev".to_owned(),
+        objectives: (0..4).map(|i| (format!("OBJ{}", i + 1), i)).collect(),
         unread_commands: Vec::new(),
     };
     PauseMapSource { scene, artwork }
@@ -406,4 +422,324 @@ fn accept_parity3_pause_map_02a_a_missing_entry_or_string_is_refused() {
     let error = read_pause_map(&install, "zbd/c9/m99", &screens, &strings)
         .expect_err("an unknown mission refuses");
     assert!(error.0.contains("not in the campaign layout"), "{error}");
+}
+
+// ---------------------------------------------------------------- 02-B --
+
+use bevy::prelude::{Assets, Image, Quat, Text, UiTransform, Vec3};
+use cs_app::mission_session::{
+    MissionPlayerBody, PauseMapLive, PauseObjectiveRow, numbered_flag, pin_flag_bitmap, player_fix,
+    world_to_chart_pixel,
+};
+use cs_app::ui::hud::ObjectiveHud;
+use cs_content::objectives_engine::{
+    DormantTimers, EngineDeclaration, EngineIdentity, EngineObjective, EngineObjectives,
+};
+
+/// Colour byte of a synthetic bitmap: its index in `synthetic_source`'s list
+/// plus one (the first texel's value).
+fn colour_of(source: &PauseMapSource, name: &str) -> u8 {
+    source.artwork[name].rgba()[0]
+}
+
+/// M01's shape: four dormant `PRIMARY n` objectives with messages.
+fn engine() -> EngineObjectives {
+    let objective = |n: u32| {
+        EngineObjective::loaded(EngineDeclaration {
+            identity: Some(EngineIdentity::from_record(
+                "PRIMARY",
+                n,
+                Some(format!("MSG_OBJ{n}")),
+            )),
+            begin_dormant: Some(DormantTimers::from_elements(&[-1.0])),
+            ..EngineDeclaration::default()
+        })
+    };
+    EngineObjectives::new((1..=4).map(objective).collect()).expect("engine objectives")
+}
+
+fn rows_of(engine: &EngineObjectives) -> Vec<PauseObjectiveRow> {
+    PauseObjectiveRow::rows_of(&ObjectiveHud::from_engine(engine), None)
+}
+
+fn set_live(app: &mut App, rows: Vec<PauseObjectiveRow>) {
+    let mut live = app.world_mut().resource_mut::<PauseMapLive>();
+    live.rows = rows;
+}
+
+/// The colour byte of the picture drawn with its top-left corner at
+/// (`left`, `top`) in window pixels, if any.
+fn picture_at(app: &mut App, left: f32, top: f32) -> Option<u8> {
+    let found = {
+        let mut query = app
+            .world_mut()
+            .query_filtered::<(&bevy::prelude::Node, &ImageNode), With<PauseMapPart>>();
+        query
+            .iter(app.world())
+            .find(|(node, _)| {
+                node.left == bevy::prelude::Val::Px(left) && node.top == bevy::prelude::Val::Px(top)
+            })
+            .map(|(_, image)| image.image.clone())
+    }?;
+    let images = app.world().resource::<Assets<Image>>();
+    images.get(&found)?.data.as_ref().map(|data| data[0])
+}
+
+/// The four pins' colours, in objective order (pins are 76x80 centred).
+fn pins(app: &mut App) -> Vec<Option<u8>> {
+    [
+        (506.0, 149.0),
+        (396.0, 254.0),
+        (181.0, 244.0),
+        (106.0, 319.0),
+    ]
+    .iter()
+    .map(|(x, y)| picture_at(app, x - 38.0, y - 40.0))
+    .collect()
+}
+
+fn list_texts(app: &mut App) -> Vec<String> {
+    let mut query = app
+        .world_mut()
+        .query_filtered::<&Text, With<PauseMapPart>>();
+    query
+        .iter(app.world())
+        .map(|text| text.0.clone())
+        .filter(|text| text.starts_with("MSG_OBJ"))
+        .collect()
+}
+
+fn checks(app: &mut App, colour: u8) -> usize {
+    let mut query = app
+        .world_mut()
+        .query_filtered::<&ImageNode, With<PauseMapPart>>();
+    let handles: Vec<_> = query.iter(app.world()).map(|i| i.image.clone()).collect();
+    let images = app.world().resource::<Assets<Image>>();
+    handles
+        .iter()
+        .filter(|handle| {
+            images
+                .get(*handle)
+                .and_then(|image| image.data.as_ref())
+                .is_some_and(|data| data[0] == colour)
+        })
+        .count()
+}
+
+#[test]
+fn accept_parity3_pause_map_02b_numbering_rules_are_the_named_functions() {
+    assert_eq!(numbered_flag(1).as_deref(), Some("pin1"));
+    assert_eq!(numbered_flag(6).as_deref(), Some("pin6_1"));
+    assert_eq!(numbered_flag(8).as_deref(), Some("pin8"));
+    assert_eq!(numbered_flag(9), None);
+    let row = |revealed| PauseObjectiveRow {
+        ordinal: 2,
+        text: String::new(),
+        revealed,
+        completed: false,
+    };
+    assert_eq!(pin_flag_bitmap("pin6", Some(&row(false))), "pin6");
+    assert_eq!(pin_flag_bitmap("pin6", None), "pin6");
+    assert_eq!(pin_flag_bitmap("pin6", Some(&row(true))), "pin2");
+
+    // The candidate mapping puts Lighthouse (-7898, 280, -5765) where the
+    // record's clip rectangle says (the data finding's 405, 248).
+    let source = synthetic_source();
+    let (x, y) = world_to_chart_pixel(&source.scene.chart, -7898.0, -5765.0).expect("a mapping");
+    assert!(
+        (x - 405.0).abs() < 1.0 && (y - 248.0).abs() < 1.0,
+        "{x},{y}"
+    );
+    // The corners map onto the clip rectangle's corners.
+    let [left, top, right, bottom] = source.scene.chart.world;
+    let (cx, cy) = world_to_chart_pixel(&source.scene.chart, left, -top).expect("corner");
+    assert_eq!((cx.round(), cy.round()), (211.0, 51.0));
+    let (cx, cy) = world_to_chart_pixel(&source.scene.chart, right, -bottom).expect("corner");
+    assert_eq!((cx.round(), cy.round()), (784.0, 551.0));
+
+    // Heading: the nose along -z is the chart's top; +x is clockwise a quarter.
+    let up = player_fix(Vec3::ZERO, Quat::IDENTITY);
+    assert!(up.heading.abs() < 1e-6);
+    let east = player_fix(
+        Vec3::ZERO,
+        Quat::from_rotation_y(-std::f32::consts::FRAC_PI_2),
+    );
+    assert!((east.heading - std::f32::consts::FRAC_PI_2).abs() < 1e-5);
+}
+
+#[test]
+fn accept_parity3_pause_map_02b_a_revealed_objective_changes_its_pin_from_question_mark_to_number()
+{
+    let source = synthetic_source();
+    let (question, one, two, four) = (
+        colour_of(&source, "pin6"),
+        colour_of(&source, "pin1"),
+        colour_of(&source, "pin2"),
+        colour_of(&source, "pin4"),
+    );
+    let mut engine = engine();
+    let mut app = app();
+    set_live(&mut app, rows_of(&engine));
+    tap_escape(&mut app);
+    run(&mut app, 3);
+    // Everything sleeps: the first pending objective is the one the HUD shows,
+    // so it is revealed; objectives 2 and 3 are "?"; objective 4's authored
+    // flag is already its number.
+    assert_eq!(
+        pins(&mut app),
+        [Some(one), Some(question), Some(question), Some(four)]
+    );
+
+    // The session wakes objective 2: its pin becomes the "2" flag, live. The
+    // HUD now shows objective 2, and objective 1 has never been woken.
+    engine.wake(&[1]);
+    set_live(&mut app, rows_of(&engine));
+    run(&mut app, 3);
+    assert_eq!(
+        pins(&mut app),
+        [Some(question), Some(two), Some(question), Some(four)]
+    );
+
+    // Completing objective 1 reveals it as well.
+    engine.complete(0);
+    set_live(&mut app, rows_of(&engine));
+    run(&mut app, 3);
+    assert_eq!(
+        pins(&mut app),
+        [Some(one), Some(two), Some(question), Some(four)]
+    );
+}
+
+#[test]
+fn accept_parity3_pause_map_02b_the_note_lists_revealed_objectives_with_check_marks() {
+    let source = synthetic_source();
+    let check = colour_of(&source, "obj_check1");
+    let mut engine = engine();
+    let mut app = app();
+    set_live(&mut app, rows_of(&engine));
+    tap_escape(&mut app);
+    run(&mut app, 3);
+    assert_eq!(list_texts(&mut app), ["MSG_OBJ1"], "no hidden objective");
+    assert_eq!(checks(&mut app, check), 0);
+
+    // Objective 2 wakes: the HUD moves to it and objective 1 (never woken) is
+    // not listed.
+    engine.wake(&[1]);
+    set_live(&mut app, rows_of(&engine));
+    run(&mut app, 3);
+    assert_eq!(list_texts(&mut app), ["MSG_OBJ2"]);
+
+    engine.complete(0);
+    set_live(&mut app, rows_of(&engine));
+    run(&mut app, 3);
+    assert_eq!(list_texts(&mut app), ["MSG_OBJ1", "MSG_OBJ2"]);
+    assert_eq!(
+        checks(&mut app, check),
+        1,
+        "a completed objective is ticked"
+    );
+}
+
+#[test]
+fn accept_parity3_pause_map_02b_the_player_icon_follows_position_and_heading() {
+    let source = synthetic_source();
+    let icon = colour_of(&source, "singledev");
+    let mut app = app();
+    let body = app
+        .world_mut()
+        .spawn((
+            MissionPlayerBody,
+            bevy::prelude::Transform::from_xyz(-7898.0, 280.0, -5765.0),
+            avian3d::prelude::Position(Vec3::new(-7898.0, 280.0, -5765.0)),
+            avian3d::prelude::Rotation(Quat::IDENTITY),
+        ))
+        .id();
+    tap_escape(&mut app);
+    run(&mut app, 3);
+
+    let icon_node = |app: &mut App| {
+        let mut query = app
+            .world_mut()
+            .query_filtered::<(&bevy::prelude::Node, &ImageNode, &UiTransform), With<PauseMapPart>>(
+            );
+        let found: Vec<_> = query
+            .iter(app.world())
+            .map(|(node, image, transform)| {
+                (node.left, node.top, image.image.clone(), transform.rotation)
+            })
+            .collect();
+        let images = app.world().resource::<Assets<Image>>();
+        let mut hits = found.into_iter().filter(|(_, _, handle, _)| {
+            images
+                .get(handle)
+                .and_then(|image| image.data.as_ref())
+                .is_some_and(|data| data[0] == icon)
+        });
+        let hit = hits.next().expect("the icon is drawn");
+        assert!(hits.next().is_none(), "one icon");
+        hit
+    };
+    let expect = |x: f32, z: f32| {
+        let (px, py) = world_to_chart_pixel(&source.scene.chart, x, z).expect("a mapping");
+        (
+            bevy::prelude::Val::Px(px - 211.0 - 16.0),
+            bevy::prelude::Val::Px(py - 51.0 - 16.0),
+        )
+    };
+    let (left, top, _, rotation) = icon_node(&mut app);
+    assert_eq!((left, top), expect(-7898.0, -5765.0));
+    assert!(rotation.as_radians().abs() < 1e-5);
+
+    // Moved and turned a quarter to the right while the screen is up.
+    {
+        let mut entity = app.world_mut().entity_mut(body);
+        let turn = Quat::from_rotation_y(-std::f32::consts::FRAC_PI_2);
+        entity.insert((
+            bevy::prelude::Transform::from_xyz(-4897.0, 200.0, -5018.0).with_rotation(turn),
+            avian3d::prelude::Position(Vec3::new(-4897.0, 200.0, -5018.0)),
+            avian3d::prelude::Rotation(turn),
+        ));
+    }
+    run(&mut app, 3);
+    let (left, top, _, rotation) = icon_node(&mut app);
+    assert_eq!((left, top), expect(-4897.0, -5018.0));
+    assert!((rotation.as_radians() - std::f32::consts::FRAC_PI_2).abs() < 1e-4);
+}
+
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_parity3_pause_map_02b_reads_the_objective_rows_icon_and_list_records() {
+    let install = game_dir();
+    let screens = FrontEndScreens::open(&install).expect("the screen artwork opens");
+    let strings = |id: &str| Some(format!("<{id}>"));
+    let source =
+        read_pause_map(&install, "zbd/c3/m01", &screens, &strings).expect("M01's Esc screen reads");
+    let scene = &source.scene;
+    assert_eq!(
+        scene.objectives,
+        [
+            ("OBJ1".to_owned(), 0),
+            ("OBJ2".to_owned(), 1),
+            ("OBJ3".to_owned(), 2),
+            ("OBJ4".to_owned(), 3),
+        ]
+    );
+    assert_eq!(scene.own_ship, "singledev");
+    assert_eq!(scene.note.check_mark, "obj_check1");
+    assert_eq!(scene.note.list_at, point(580, 50));
+    assert_eq!(scene.note.list_wrap, (190, 255));
+    assert_eq!(scene.note.list_spacing, 5);
+    for (name, width, height) in [
+        ("singledev", 32, 32),
+        ("obj_check1", 25, 24),
+        ("pin1", 76, 80),
+        ("pin6_1", 76, 80),
+        ("pin8", 76, 80),
+    ] {
+        let art = source
+            .artwork
+            .get(name)
+            .unwrap_or_else(|| panic!("no {name}"));
+        assert_eq!((art.width(), art.height()), (width, height), "{name}");
+    }
 }
