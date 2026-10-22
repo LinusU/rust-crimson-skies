@@ -90,6 +90,7 @@ mod parity5_cabin_intro_01;
 mod parity5_cabin_intro_02;
 mod pause_map;
 mod pause_map_presenter;
+mod pause_map_restart;
 mod scrapbook_dispatch;
 mod screens;
 mod stage_d;

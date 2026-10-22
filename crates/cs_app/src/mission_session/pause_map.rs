@@ -14,13 +14,17 @@
 //! * [`PauseMapPlugin`] draws the scene while the player's Esc pause holds
 //!   the session (`playtest::meta_controls` is the one Esc path; the fixed
 //!   clock freezes with the session's pause, `playtest::sync_pause`). The
-//!   **Resume** button resumes the session. **Quit** abandons the mission: it
-//!   writes `AppExit::Success` (the composed `cs --mission` window has no
-//!   front-end machine to return to, so leaving ends the run, as F10 does)
-//!   and reports the press. **Restart** and **Preferences** are drawn,
-//!   rolled over and pressed like Resume but only report the press as a
-//!   [`PauseMapPress`]: their effects are their own tasks and nothing here
-//!   fakes one.
+//!   **Resume** button resumes the session. **Restart** closes the screen,
+//!   resumes the clock and raises the composed host's
+//!   [`MissionHostRestartRequest`](super::host::MissionHostRestartRequest)
+//!   (PARITY3-PAUSE-MAP-SCREEN.02-C, #1875), so the host's one restart path
+//!   rebuilds the authored initial state under a fresh session generation.
+//!   **Quit** abandons the mission: it writes `AppExit::Success` (the
+//!   composed `cs --mission` window has no front-end machine to return to,
+//!   so leaving ends the run, as F10 does) and reports the press.
+//!   **Preferences** is drawn, rolled over and pressed like Resume but only
+//!   reports the press as a [`PauseMapPress`]: its effect is its own task
+//!   and nothing here fakes one.
 //!
 //! The live parts (PARITY3-PAUSE-MAP-SCREEN.02-B, #1874) come from
 //! [`PauseMapLive`], which [`PauseMapPlugin`] fills from the mission host's
@@ -49,9 +53,9 @@ use bevy::asset::RenderAssetUsages;
 use bevy::ecs::schedule::IntoScheduleConfigs;
 use bevy::prelude::{
     App, BackgroundColor, ButtonInput, ChildOf, Color, Commands, Component, Entity, FlexDirection,
-    GlobalZIndex, Handle, Has, Image, ImageNode, Local, Message, MessageWriter, MouseButton, Node,
-    Overflow, Plugin, PositionType, Quat, Query, Res, ResMut, Resource, Rot2, Text, TextColor,
-    TextFont, UiTransform, Update, Val, Vec3, Window, With, Without, default,
+    GlobalZIndex, Handle, Has, Image, ImageNode, Local, Message, MessageReader, MessageWriter,
+    MouseButton, Node, Overflow, Plugin, PositionType, Quat, Query, Res, ResMut, Resource, Rot2,
+    Text, TextColor, TextFont, UiTransform, Update, Val, Vec3, Window, With, Without, default,
 };
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::text::{FontSize, Justify, LineBreak, TextLayout};
@@ -62,7 +66,7 @@ use cs_content::config::MessageCatalog;
 use cs_content::stunts::{ZrdValue, decode_zrd, zrd_field};
 
 use super::compose::MissionPlayerBody;
-use super::host::MissionHost;
+use super::host::{MissionHost, MissionHostRestartRequest};
 use super::launch_sound::reader_member;
 use super::lifecycles::ObjectiveLifecycles;
 use crate::input::platform::PlatformInput;
@@ -863,8 +867,9 @@ fn read_pause_map_live(
 // ------------------------------------------------------- the presenter --
 
 /// A button of the screen was pressed. Resume has already resumed the
-/// session when this is written and Quit has asked the app to exit; Restart
-/// and Preferences have no effect yet.
+/// A button of the screen was pressed. Resume has already resumed the
+/// session when this is written, Quit has asked the app to exit and Restart
+/// is acted on by [`restart_on_press`]; Preferences has no effect yet.
 #[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PauseMapPress(pub PauseButtonKind);
 
@@ -1531,6 +1536,25 @@ fn drive_pause_map(
     }
 }
 
+/// **Restart**: closes the pause and hands the composed host a
+/// [`MissionHostRestartRequest`], which `mission_host_restart` (`PostUpdate`)
+/// consumes in the same frame. A composition with no [`MissionHost`] has no
+/// session to restart, so the press changes nothing there.
+fn restart_on_press(
+    mut presses: MessageReader<PauseMapPress>,
+    host: Option<Res<MissionHost>>,
+    mut platform: ResMut<PlatformInput>,
+    mut commands: Commands,
+) {
+    let restart = presses
+        .read()
+        .any(|press| press.0 == PauseButtonKind::Restart);
+    if restart && host.is_some() {
+        platform.session_mut().resume();
+        commands.insert_resource(MissionHostRestartRequest);
+    }
+}
+
 /// The mesh HUD (dials and compass) is drawn by its own camera over the UI, so
 /// the screen hides it while it is open and gives it back when it closes.
 fn hide_hud_art(
@@ -1576,6 +1600,7 @@ impl Plugin for PauseMapPlugin {
                     refresh_live,
                     place_pause_map,
                     drive_pause_map,
+                    restart_on_press,
                     hide_hud_art,
                 )
                     .chain(),
