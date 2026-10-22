@@ -9,7 +9,7 @@ use avian3d::prelude::{LinearVelocity, Position};
 use bevy::prelude::{App, Entity, Time, Vec3, With};
 use bevy::time::TimeUpdateStrategy;
 use cs_app::mission_launch::plan_mission_launch;
-use cs_app::mission_session::turret_fire::{MissionTurretFire, TurretWeaponRecord};
+use cs_app::mission_session::turret_fire::MissionTurretFire;
 use cs_app::mission_session::{
     MISSION_TARGET_NODE, MissionHost, MissionPlayerBody, PlayerVictim, build_headless,
     mission_world_observation, stage_for,
