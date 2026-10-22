@@ -324,6 +324,11 @@ fn accept_flak_c5_the_windowed_launch_wakes_fires_and_draws_wep27() {
 
     let report = std::fs::read_to_string(dir.join(SMOKE_REPORT_FILE))
         .unwrap_or_else(|error| panic!("{} is written: {error}\n{stderr}", SMOKE_REPORT_FILE));
+    // The run must not merely judge the flak checks — on a retail,gpu,audio
+    // host every one applies and passes (the sounds are measured, the cues
+    // play). A check that failed or never applied fails this test, so a
+    // regression in the wake, the fire, the presentation or the cue wiring
+    // cannot slip through a run that still wrote lit framebuffers.
     for id in [
         "flak_turret_woken",
         "flak_turret_fired",
@@ -332,8 +337,8 @@ fn accept_flak_c5_the_windowed_launch_wakes_fires_and_draws_wep27() {
         "flak_sounds_queued",
     ] {
         assert!(
-            report.contains(&format!("\"id\":\"{id}\"")),
-            "the report judges {id}: {report}"
+            report.contains(&format!("\"id\":\"{id}\",\"applies\":true,\"passed\":true")),
+            "the report judges {id} applied and passed: {report}"
         );
     }
     for field in [
