@@ -129,13 +129,18 @@ fn accept_playtest_retail_launch_cli_routes_the_exact_command_to_original_assets
         &["--playtest", "--aircraft", "bloodhawk"][..],
         &["--playtest", "--cs-path", "/x", "--world", "nowhere"][..],
         &["--playtest", "--cs-path", "/x", "--aircraft", "nothing"][..],
-        &["--cs-path", "/x"][..],
+        &["--cs-path", "/x", "--world", "c1c"][..],
     ] {
         assert!(
             matches!(cli::parse(args(bad)), CliRequest::Invalid { .. }),
             "{bad:?}"
         );
     }
+    // A bare `--cs-path` is the start flow (#1830), not a playtest.
+    assert!(matches!(
+        cli::parse(args(&["--cs-path", "/x"])),
+        CliRequest::StartFlow(_)
+    ));
     assert!(cli::HELP_TEXT.contains("--cs-path"));
 }
 
