@@ -75,6 +75,10 @@ pub struct HudObjective {
     pub live: bool,
     /// The model marks it completed.
     pub completed: bool,
+    /// The model marks it present and either completed or no longer
+    /// `Dormant` — it has been woken at least once, so the player may know
+    /// of it (the pause map's pin flag and note read this).
+    pub revealed: bool,
 }
 
 impl HudObjective {
@@ -125,6 +129,8 @@ impl ObjectiveHud {
                     message: identity.message.clone(),
                     live,
                     completed: objective.completed,
+                    revealed: objective.present
+                        && (objective.completed || objective.state != EngineState::Dormant),
                 });
             }
             index += 1;
@@ -197,6 +203,13 @@ impl ObjectiveHud {
     pub fn current_text(&self, messages: Option<&MessageCatalog>) -> Option<String> {
         let message = self.current()?.message.as_deref()?;
         Some(Self::resolve_text(message, messages))
+    }
+
+    /// The text of one row, resolved as [`current_text`](Self::current_text)
+    /// resolves it; `None` for a row with no message element.
+    #[must_use]
+    pub fn row_text(row: &HudObjective, messages: Option<&MessageCatalog>) -> Option<String> {
+        Some(Self::resolve_text(row.message.as_deref()?, messages))
     }
 
     fn resolve_text(message: &str, messages: Option<&MessageCatalog>) -> String {
