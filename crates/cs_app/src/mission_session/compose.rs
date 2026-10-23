@@ -308,6 +308,8 @@ pub struct MissionStage {
     /// (PARITY-M01-PLAYER-DAMAGE-TRAIL, #1700). `Some` only for M01's retail
     /// stage; `None` draws no trail.
     pub damage_trail: Option<super::damage_trail::DamageTrailSource>,
+    /// The BOOM rocket's smoke trail (`he_rocket`), measured for M01 only.
+    pub rocket_trail: Option<super::weapon_present::RocketTrailSource>,
     /// The measured `pdpanelN` wing fire ladders and their effects
     /// (PARITY4-CRASH-D.03, #1946). `Some` only for M01's retail stage.
     pub wing_fire: Option<super::wing_fire::WingFireSource>,
@@ -432,6 +434,8 @@ pub enum MissionCompositionError {
     ContactSparks(super::contact_sparks::ContactSparkError),
     /// The damage trail effect or its textures could not be measured.
     DamageTrail(super::damage_trail::DamageTrailError),
+    /// The rocket trail could not be measured.
+    RocketTrail(super::weapon_present::RocketTrailError),
     /// The wing fire ladders or their textures could not be measured.
     WingFire(super::wing_fire::WingFireError),
     /// The flak effect could not be measured.
@@ -494,6 +498,7 @@ impl fmt::Display for MissionCompositionError {
             Self::BurstPuffs(error) => write!(f, "{error}"),
             Self::ContactSparks(error) => write!(f, "{error}"),
             Self::DamageTrail(error) => write!(f, "{error}"),
+            Self::RocketTrail(error) => write!(f, "{error}"),
             Self::WingFire(error) => write!(f, "{error}"),
             Self::FlakEffect(error) => write!(f, "{error}"),
             Self::Audio(error) if error.code == crate::audio::CODE_CAPABILITY_ABSENT => write!(
@@ -695,6 +700,14 @@ pub fn stage_for(
         Some(
             super::damage_trail::measure_damage_trail(install_root, "c3")
                 .map_err(MissionCompositionError::DamageTrail)?,
+        )
+    } else {
+        None
+    };
+    let rocket_trail = if plan.mission_dir.eq_ignore_ascii_case("zbd/c3/m01") {
+        Some(
+            super::weapon_present::measure_rocket_trail(install_root, "c3")
+                .map_err(MissionCompositionError::RocketTrail)?,
         )
     } else {
         None
@@ -909,6 +922,7 @@ pub fn stage_for(
         burst_puffs,
         contact_sparks,
         damage_trail,
+        rocket_trail,
         wing_fire,
         flak_effect,
         launch_cinematic,
@@ -1450,6 +1464,12 @@ fn add_composition(
         ));
     }
     app.add_plugins(crate::mission_session::MissionDamageTrailPlugin);
+    // M01-ROCKET-LAUNCH-PUFFS-AND-SMOKE-TRAIL (#1827): the BOOM rocket's trail.
+    if let Some(trail) = &stage.rocket_trail {
+        app.insert_resource(crate::mission_session::RocketTrailSourceResource(
+            trail.clone(),
+        ));
+    }
     // PARITY4-CRASH-D.03 (#1946): the fire a damaged wing keeps burning.
     if let Some(fire) = &stage.wing_fire {
         app.insert_resource(crate::mission_session::WingFireSourceResource(fire.clone()));

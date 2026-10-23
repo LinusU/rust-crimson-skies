@@ -40,22 +40,36 @@
 //! drawing with it — the same scene-generation discipline the mirrors
 //! themselves follow.
 
+use std::collections::BTreeMap;
+use std::fmt;
+use std::path::Path;
+
 use bevy::asset::{AssetApp, Assets};
 use bevy::mesh::Mesh;
 use bevy::prelude::FixedPostUpdate;
 use bevy::prelude::{
-    Added, App, BackgroundColor, ChildOf, Children, Color, Commands, Component, Cuboid, Entity,
-    Handle, IntoScheduleConfigs, Local, Mesh3d, MeshMaterial3d, Node, Plugin, PositionType, Quat,
-    Query, Res, ResMut, Resource, StandardMaterial, Startup, Text, TextColor, TextFont, Transform,
-    UiRect, Update, Val, Vec3, Visibility, With, Without, World, default,
+    Added, AlphaMode, App, BackgroundColor, Camera3d, ChildOf, Children, Color, Commands,
+    Component, Cuboid, Entity, Handle, Image, IntoScheduleConfigs, Local, Mesh3d, MeshMaterial3d,
+    Node, Plugin, PositionType, Quat, Query, Rectangle, Res, ResMut, Resource, StandardMaterial,
+    Startup, Text, TextColor, TextFont, Transform, UiRect, Update, Val, Vec3, Visibility, With,
+    Without, World, default,
 };
 use bevy::text::FontSize;
+use cs_assets::install;
+use cs_formats::texture::DecodedImage;
+use cs_formats::zbd::{read_animation_definitions, read_reader_nodes};
 use cs_types::Tick;
 use cs_types::content::ContentId;
 
-use super::weapons::MissionWeaponReport;
+use super::damage_trail::{
+    TrailEmitter, TrailKind, TrailPuff, colour_at, emitter_of, plan_emissions, plan_puff,
+    trail_puff_position,
+};
+use super::launch_sound::reader_member;
+use super::weapons::{MissionWeaponReport, MissionWeapons};
 use crate::ordnance::OrdnanceItemMirror;
 use crate::physics::PhysicsTickLedger;
+use crate::playtest_textures::{PlaytestTextureArchive, to_bevy_image};
 use crate::weapon_effects::{MuzzleEffectSpawn, drive_weapon_effect_presentation};
 
 /// The claim the mission's weapon visuals and its HUD notice line are filed
@@ -492,6 +506,326 @@ fn update_notice_line(
     *last = Some((text, overlay_on));
 }
 
+// ---------------------------------------------------------------------------
+// The BOOM rocket's smoke trail (M01 rocket launch puffs and smoke trail, #1827)
+// ---------------------------------------------------------------------------
+
+/// The claim the trail's units, curves and gate are filed under.
+pub const ROCKET_TRAIL_DESIGN_CLAIM: &str = "m01-rocket-trail.designed-trail";
+/// The reader archive holding the effect.
+pub const ROCKET_TRAIL_ARCHIVE: &str = "ZBD/zrdr.zbd";
+/// The member of [`ROCKET_TRAIL_ARCHIVE`]. `weapons.zrd` binds it: `wep_06`
+/// (`BOOM`) `FLYOUT` `MODEL_ANIMATION he_rocket`.
+pub const ROCKET_TRAIL_MEMBER: &str = "missile_puffers.zrd";
+/// The animation the BOOM flyout names.
+pub const ROCKET_TRAIL_ANIMATION: &str = "he_rocket";
+/// The `PUFFER_STATE` inside it that is switched on (`ACTIVE`).
+pub const ROCKET_TRAIL_EMITTER: &str = "he_rocket_trail";
+
+/// What the stored `he_rocket` animation states for its trail.
+#[derive(Clone, Debug, PartialEq)]
+pub struct RocketTrailDefinition {
+    /// `he_rocket_trail`, anchored `AT_NODE he_rocket`.
+    pub emitter: TrailEmitter,
+    /// The `ANIMATION_OFFSET` the second, `ACTIVE FALSE` state of the same
+    /// emitter carries (seconds, 10.0 in the retail data). Its meaning
+    /// (switch-off after that offset) is not measured and is not applied.
+    pub switch_off_offset_s: Option<f32>,
+}
+
+/// The definition and its decoded texture, as the stage carries them.
+#[derive(Clone, Debug)]
+pub struct RocketTrailSource {
+    /// The effect.
+    pub definition: RocketTrailDefinition,
+    /// `(name, image)` for each of the emitter's textures.
+    pub images: Vec<(String, DecodedImage)>,
+    /// The archive the textures came from.
+    pub texture_archive: String,
+}
+
+/// Why the rocket trail could not be measured.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum RocketTrailError {
+    /// The archive, member or token stream could not be read.
+    Read(String),
+    /// The record lacks a field the trail needs.
+    Unmeasured(String),
+    /// A texture the emitter names did not resolve or decode.
+    Texture(String),
+}
+
+impl fmt::Display for RocketTrailError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Read(r) => write!(f, "rocket trail definition unreadable: {r}"),
+            Self::Unmeasured(r) => write!(f, "rocket trail definition unmeasured: {r}"),
+            Self::Texture(r) => write!(f, "rocket trail texture unavailable: {r}"),
+        }
+    }
+}
+
+impl std::error::Error for RocketTrailError {}
+
+/// Reads `he_rocket` from the retail reader archive.
+///
+/// # Errors
+///
+/// [`RocketTrailError`] when the archive cannot be read or a field is absent.
+pub fn read_rocket_trail_definition(
+    install_root: &Path,
+) -> Result<RocketTrailDefinition, RocketTrailError> {
+    let bytes = reader_member(install_root, ROCKET_TRAIL_ARCHIVE, ROCKET_TRAIL_MEMBER)
+        .map_err(RocketTrailError::Read)?;
+    let nodes = read_reader_nodes(&bytes).map_err(|e| RocketTrailError::Read(e.to_string()))?;
+    let animations =
+        read_animation_definitions(&nodes).map_err(|e| RocketTrailError::Read(e.to_string()))?;
+    let animation = animations
+        .iter()
+        .find(|a| a.id() == ROCKET_TRAIL_ANIMATION)
+        .ok_or_else(|| {
+            RocketTrailError::Unmeasured(format!("no animation {ROCKET_TRAIL_ANIMATION}"))
+        })?;
+    let active = animation
+        .puffers()
+        .find(|p| p.name == ROCKET_TRAIL_EMITTER && p.active == Some(true))
+        .ok_or_else(|| RocketTrailError::Unmeasured(format!("no active {ROCKET_TRAIL_EMITTER}")))?;
+    let emitter = emitter_of(active).map_err(|e| RocketTrailError::Unmeasured(e.to_string()))?;
+    let switch_off_offset_s = animation
+        .puffers()
+        .filter(|p| p.name == ROCKET_TRAIL_EMITTER && p.active == Some(false))
+        .find_map(|p| p.start_time.filter(|(k, _)| *k == "ANIMATION_OFFSET"))
+        .map(|(_, seconds)| seconds);
+    Ok(RocketTrailDefinition {
+        emitter,
+        switch_off_offset_s,
+    })
+}
+
+/// Reads the effect and decodes its texture from the world group's own
+/// texture archive.
+///
+/// # Errors
+///
+/// [`RocketTrailError`] when the definition or a texture is unavailable.
+pub fn measure_rocket_trail(
+    install_root: &Path,
+    world_group: &str,
+) -> Result<RocketTrailSource, RocketTrailError> {
+    let definition = read_rocket_trail_definition(install_root)?;
+    let found =
+        install::discover(install_root).map_err(|e| RocketTrailError::Texture(e.to_string()))?;
+    let archive = PlaytestTextureArchive::open(install_root, &found, world_group)
+        .map_err(|e| RocketTrailError::Texture(e.to_string()))?;
+    let mut images = Vec::new();
+    for name in &definition.emitter.textures {
+        let (_, image) = archive
+            .fetch(name)
+            .map_err(|(why, code)| RocketTrailError::Texture(format!("{name}: {code}: {why}")))?;
+        images.push((name.clone(), image));
+    }
+    Ok(RocketTrailSource {
+        definition,
+        images,
+        texture_archive: archive.path().to_owned(),
+    })
+}
+
+/// Component: one live puff of a rocket's trail.
+#[derive(Component, Clone, Copy, Debug, PartialEq)]
+pub struct RocketTrailPuff(pub TrailPuff);
+
+/// What the trail has drawn, for the smoke check and the tests.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct RocketTrailReport {
+    /// Trail puffs spawned.
+    pub puffs_spawned: u64,
+}
+
+/// Component on a rocket mirror: the emitter's progress along its flight.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq)]
+pub struct RocketTrailCursor {
+    last: Option<Vec3>,
+    carried: f32,
+    emitted: u64,
+}
+
+/// The stage's source, waiting for the plugin to build the engine assets.
+#[derive(Resource, Clone, Debug)]
+pub struct RocketTrailSourceResource(pub RocketTrailSource);
+
+/// The definition and the engine texture built from it.
+#[derive(Resource, Clone, Debug)]
+pub struct RocketTrailArt {
+    definition: RocketTrailDefinition,
+    textures: BTreeMap<String, Handle<Image>>,
+    mesh: Handle<Mesh>,
+}
+
+impl RocketTrailArt {
+    /// Builds the art from handles already made (the tests' seam).
+    #[must_use]
+    pub fn from_handles(
+        definition: RocketTrailDefinition,
+        textures: BTreeMap<String, Handle<Image>>,
+        mesh: Handle<Mesh>,
+    ) -> Self {
+        Self {
+            definition,
+            textures,
+            mesh,
+        }
+    }
+}
+
+fn tick_hz_of(ledger: &PhysicsTickLedger) -> f32 {
+    if ledger.timestep_s > 0.0 {
+        1.0 / ledger.timestep_s
+    } else {
+        120.0
+    }
+}
+
+fn build_rocket_trail_art(
+    source: Option<Res<RocketTrailSourceResource>>,
+    art: Option<Res<RocketTrailArt>>,
+    mut images: ResMut<Assets<Image>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut commands: Commands,
+) {
+    if art.is_some() {
+        return;
+    }
+    let Some(source) = source else {
+        return;
+    };
+    let textures = source
+        .0
+        .images
+        .iter()
+        .map(|(name, decoded)| (name.clone(), images.add(to_bevy_image(decoded).0)))
+        .collect();
+    commands.insert_resource(RocketTrailArt {
+        definition: source.0.definition.clone(),
+        textures,
+        mesh: meshes.add(Rectangle::new(1.0, 1.0)),
+    });
+}
+
+/// Drops one puff per `DISTANCE_INTERVAL` of the player's rocket's travel.
+#[allow(clippy::too_many_arguments)]
+fn emit_rocket_trail(
+    mut commands: Commands,
+    art: Option<Res<RocketTrailArt>>,
+    ledger: Option<Res<PhysicsTickLedger>>,
+    weapons: Option<Res<MissionWeapons>>,
+    mut report: ResMut<RocketTrailReport>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut rockets: Query<(
+        &OrdnanceItemMirror,
+        &Transform,
+        Option<&mut RocketTrailCursor>,
+        Entity,
+    )>,
+) {
+    let (Some(art), Some(ledger), Some(weapons)) = (art, ledger, weapons) else {
+        return;
+    };
+    let tick_hz = tick_hz_of(&ledger);
+    let emitter = &art.definition.emitter;
+    for (mirror, transform, cursor, entity) in &mut rockets {
+        if mirror.shooter != weapons.player() {
+            continue;
+        }
+        let now = transform.translation;
+        let Some(mut cursor) = cursor else {
+            commands.entity(entity).insert(RocketTrailCursor {
+                last: Some(now),
+                ..RocketTrailCursor::default()
+            });
+            continue;
+        };
+        let Some(previous) = cursor.last.replace(now) else {
+            continue;
+        };
+        let (points, carried) =
+            plan_emissions(previous, now, cursor.carried, emitter.distance_interval);
+        cursor.carried = carried;
+        for point in points {
+            cursor.emitted += 1;
+            let puff = plan_puff(
+                emitter,
+                TrailKind::Smoke,
+                point,
+                ledger.ticks,
+                cursor.emitted ^ (mirror.projectile.serial << 32),
+                tick_hz,
+            );
+            let texture = emitter.textures.get(puff.cycle_index);
+            let material = materials.add(StandardMaterial {
+                base_color: Color::WHITE,
+                base_color_texture: texture.and_then(|n| art.textures.get(n)).cloned(),
+                unlit: true,
+                alpha_mode: AlphaMode::Blend,
+                cull_mode: None,
+                ..Default::default()
+            });
+            commands.spawn((
+                RocketTrailPuff(puff),
+                Mesh3d(art.mesh.clone()),
+                MeshMaterial3d(material),
+                Transform::from_translation(point).with_scale(Vec3::splat(puff.size)),
+                Visibility::Visible,
+            ));
+            report.puffs_spawned += 1;
+        }
+    }
+}
+
+fn advance_rocket_trail_puffs(
+    mut commands: Commands,
+    art: Option<Res<RocketTrailArt>>,
+    ledger: Option<Res<PhysicsTickLedger>>,
+    mut materials: ResMut<Assets<StandardMaterial>>,
+    mut puffs: Query<(
+        Entity,
+        &RocketTrailPuff,
+        &mut Transform,
+        &MeshMaterial3d<StandardMaterial>,
+    )>,
+) {
+    let (Some(art), Some(ledger)) = (art, ledger) else {
+        return;
+    };
+    let tick_hz = tick_hz_of(&ledger);
+    for (entity, RocketTrailPuff(puff), mut transform, material) in &mut puffs {
+        let age = ledger.ticks.saturating_sub(puff.born);
+        if age >= puff.life_ticks {
+            commands.entity(entity).despawn();
+            continue;
+        }
+        transform.translation = trail_puff_position(puff, age, tick_hz);
+        let fraction = age as f32 / puff.life_ticks as f32;
+        let [r, g, b, a] = colour_at(&art.definition.emitter.colors, fraction);
+        if let Some(mut material) = materials.get_mut(&material.0) {
+            material.base_color = Color::srgba(r, g, b, a);
+        }
+    }
+}
+
+/// Turns every rocket trail puff to face the camera, each rendered frame.
+fn face_rocket_trail_puffs(
+    cameras: Query<&Transform, (With<Camera3d>, Without<RocketTrailPuff>)>,
+    mut puffs: Query<&mut Transform, With<RocketTrailPuff>>,
+) {
+    let Some(camera) = cameras.iter().next() else {
+        return;
+    };
+    for mut transform in &mut puffs {
+        transform.rotation = camera.rotation;
+    }
+}
+
 /// Wires the mission's weapon presentation: the two drawn mirrors, their
 /// orientation and the refusal notice.
 ///
@@ -516,6 +850,18 @@ impl Plugin for MissionWeaponPresentationPlugin {
         }
         app.init_resource::<MissionHudNotice>()
             .init_resource::<WeaponVisualAssets>()
+            .init_resource::<RocketTrailReport>()
+            .add_systems(
+                FixedPostUpdate,
+                (
+                    build_rocket_trail_art,
+                    emit_rocket_trail,
+                    advance_rocket_trail_puffs,
+                )
+                    .chain()
+                    .after(drive_weapon_effect_presentation),
+            )
+            .add_systems(Update, face_rocket_trail_puffs)
             .add_systems(
                 Update,
                 (attach_rocket_visuals, orient_weapon_visuals).chain(),

@@ -157,7 +157,7 @@ impl fmt::Display for DamageTrailError {
 
 impl std::error::Error for DamageTrailError {}
 
-fn emitter_of(puffer: &PufferState<'_>) -> Result<TrailEmitter, DamageTrailError> {
+pub(super) fn emitter_of(puffer: &PufferState<'_>) -> Result<TrailEmitter, DamageTrailError> {
     let need = |what: &str| DamageTrailError::Unmeasured(format!("{} has no {what}", puffer.name));
     let distance_interval = puffer
         .distance_interval
