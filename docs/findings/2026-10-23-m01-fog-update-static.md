@@ -53,8 +53,9 @@ State block layout (written by the setters, `eax = [obj+0x38]`; the first dword 
   script commands, registered at `0x5bc967` `WorldSetFogState`, `0x5bc8f0` `WorldGetFogRange`, `0x5bc87c`
   `WorldSetFogRangeFar`, `0x5bc808` `WorldSetFogRangeNear`, `0x5bc7a1` `WorldSetFogRange`, `0x5bc765`
   `WorldSetFogDensity`, `0x5bc6df` `WorldGetFogColor`, `0x5bc681` `WorldSetFogColor`, `0x5bc618`
-  `WorldSetFogAltitude` (setter calls at `0x5bc66a`, `0x5bc6ca`, `0x5bc7f3`, `0x5bc867`, `0x5bc8db`,
-  `0x5bc9bd`, `0x5bc9eb`, `0x5bca18`); and the cinematic mode pair `0x450550` / `0x450e30` (mode only, section 2).
+  `WorldSetFogAltitude` (setter calls at `0x5bc66a`, `0x5bc6ca`, `0x5bc78c`, `0x5bc7f3`, `0x5bc867`,
+  `0x5bc8db`, `0x5bc9bd`, `0x5bc9eb`, `0x5bca18`); and the cinematic mode pair `0x450550` / `0x450e30`
+  (mode only, section 2).
   The readers of the stored fields are the flush above and the dump `0x4db940` (via the getters
   `0x4da8b0..0x4da940`) and, for the range, `0x49dcde` (a per-frame consumer that reads near/far of `0x71c0b8` and
   uses `near + 0.8 * (far - near)`, `0x6034b0`, as a distance limit for a camera-relative test; what it gates is not
@@ -81,10 +82,14 @@ State block layout (written by the setters, `eax = [obj+0x38]`; the first dword 
 ### 2.1 What the pair does
 
 `0x450550` (cinematic mode entry; wrappers `0x450790`, `0x4507b0`, called from `0x431132` and `0x434862`) sets `0x654120 = 1` (`0x450562`), calls the mode setter with **0**
-(`0x45067c`, `push 0 / push world / call 0x4da800`) and multiplies the camera far clip (`+0xb4`, getter `0x4d29c0`,
-setter `0x4d2930`) by **4.0** (`0x4506a6`, row `cinematic_enter_far_clip_factor`; the near clip is unchanged).
+(`0x45067c`, `push 0 / push [0x71c2ac] / call 0x4da800`) and multiplies the camera far clip (`+0xb4`, getter `0x4d29c0`,
+setter `0x4d2930`) by **4.0** (`0x4506a6`, row `cinematic_enter_far_clip_factor`; the near clip is unchanged). The
+object the pair writes is the one `0x71c2ac` names — installed by the zone-world setup `0x4735b0` (`0x4735e3`,
+its only direct store) — not the `0x71c0b8` global the zone apply uses; whether the two hold the same class-14
+object shares the section-4 unknown (how `0x71c0b8` is assigned).
 
-`0x450e30` (called from `0x423e86`, the exit) calls the mode setter with **1** (`0x450ee1`), multiplies the far
+`0x450e30` (called from `0x423e86`, the exit) calls the mode setter with **1** (`0x450ee1`, again on
+`[0x71c2ac]`, loaded at `0x450edb`), multiplies the far
 clip by **0.25** (`0x450f0b`, row `cinematic_leave_far_clip_factor`, the exact inverse), runs the cleanup of the
 list at `0x64ff4c`, and clears `0x654120` (`0x450f9b`). `0x654120` is the flag the cloud consumers test
 (section 3: the camera tint and the `zone2_cloud_floor` toggle run only when it is 0; it is also read at
@@ -119,7 +124,7 @@ list at `0x64ff4c`, and clears `0x654120` (`0x450f9b`). `0x654120` is the flag t
 | screen fill `0x42f4c4..0x42f553` | if the intensity is above 0 (`0x6032c8`): packs colour*255 (`0x60414c`) into the display pixel format (masks `0x9c6800..0x9c680c`) and calls `0x5ca1f0(colour, intensity as f64)` which forwards to `0x5ca0e0` on the 2D object `0x9c8a98`. This is the **only** in-layer visual of the band that is not geometry |
 | per-vertex evaluator `0x5782d0` (called at `0x551e8b`, `0x552116`, enabled by `0xa06f70` and polygon flag `0x4`) | cloud trapezoid intensity per vertex (atmo-a) |
 | zone selector `0x473580` | zone 1 below the midpoint, 2 above (drives the zone apply; the fog colour change when crossing 10 500 m) |
-| `0x42b7c0` (called each frame from `0x489c9b` with the camera object `0x64ef78`) | **not fog**: gated on the weather record being present (`0x4bd040`) and a precipitation object (`0x71df68`); tests camera Y against `BOTTOM` (`0x42b80d`) and `BOTTOM + 0.8 * (TOP - BOTTOM)` (`cloud_inside_fraction`), runs a ray test (`0x4c8f70`, camera position with `+50` added to Y) and calls virtual slots `+0x60` / `+0x64` of that object (the first with `-1.0`); reading it as a precipitation on/off controller is an inference from the weather-record guard. M01 spells no precipitation block, so this controller has nothing to switch for M01 |
+| `0x42b7c0` (called each frame from `0x489c9b` and `0x489e4e`, both with the camera object `0x64ef78`) | **not fog**: gated on the weather record being present (`0x4bd040`) and a precipitation object (`0x71df68`); tests camera Y against `BOTTOM` (`0x42b80d`) and `BOTTOM + 0.8 * (TOP - BOTTOM)` (`cloud_inside_fraction`), runs a ray test (`0x4c8f70`, camera position with `+50` added to Y) and calls virtual slots `+0x60` / `+0x64` of that object (the first with `-1.0`); reading it as a precipitation on/off controller is an inference from the weather-record guard. M01 spells no precipitation block, so this controller has nothing to switch for M01 |
 
 Nothing reads the band to change **fog near/far or colour**; the zone fog switches only at the midpoint. The
 `zone2_cloud_floor` node (`0x71c2b4`, toggled by the camera function through `0x4cca30` when `0x654120 == 0`) is
