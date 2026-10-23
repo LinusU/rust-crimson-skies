@@ -1,69 +1,39 @@
-//! The drawn weather of a windowed scene: the cloud deck and the low haze
-//! (task #1440 `M01-PLAY-WEATHER`).
+//! The drawn weather of a windowed scene: the designed cloud deck of a record
+//! that authors no cloud (task #1440 `M01-PLAY-WEATHER`, narrowed by task #2001
+//! `BUG-M01-WHITE-WEATHER-SHEET`).
 //!
 //! Task #1434 (`M01-PLAY-SKY`) drew the *horizon* of a windowed scene — the
-//! sky dome, the sea and the fog. This module draws what a mission's own
-//! `weather.zrd` describes about the air the aircraft flies through: its cloud
-//! cover and its haze. Both windowed compositions install it
-//! ([`WeatherPlugin`]) right after the horizon.
+//! sky dome, the sea and the fog. This module used to add two flat translucent
+//! quads over it, a cloud deck and a "low haze" veil. Both windowed
+//! compositions install it ([`WeatherPlugin`]) right after the horizon.
 //!
-//! # What is original and what is designed
+//! # What is drawn, and what no longer is
 //!
-//! Every value a drawn layer is built from carries a [`WeatherOrigin`]:
+//! * **No haze plane.** The haze was a designed, horizontal, translucent quad
+//!   at 300 m. Seen from above it blended over the whole ground and washed the
+//!   island out white, and it cut straight through hills. Nothing in the
+//!   original puts a flat layer there: the original's distance fog is the
+//!   zone's `FOG_COLOR`/`FOG_RANGES`, which `render::horizon` binds as real
+//!   fog (`docs/findings/2026-10-23-m01-fog-update-static.md`). The haze quad
+//!   is deleted, not tuned.
+//! * **No deck for an authored `CLOUD_COVER`.** The actual campaign M01
+//!   (`ZBD/C3/M01`) authors `BOTTOM 10000`, `TOP 11000`: in the original that
+//!   band is a *volume* — a screen-colour and vertex-intensity effect applied
+//!   to geometry whose world Y lies between the two, zero at and outside
+//!   them (`docs/findings/2026-10-18-parity-m01-atmo-a-weather-units-and-
+//!   sky-consumers.md`, §3). Drawing it as one coplanar quad would present a
+//!   volume as a sheet, so an authored layer draws **nothing** here; how the
+//!   volume looks from inside is the open question of `PARITY-M01-ATMO`
+//!   (#1643, #1745).
+//! * **The designed deck** remains for an environment that authors no cloud
+//!   layer at all (the original-assets playtest, which carries no record):
+//!   one horizontal, unlit, translucent quad whose per-vertex alpha is a
+//!   designed, deterministic pattern whose *area* is the deck's coverage, so
+//!   it is never a uniform sheet. It is labelled [`DESIGNED_LABEL`] on every
+//!   field.
 //!
-//! * **bound** — the value came out of the mission's own
-//!   [`EnvironmentDefinition`], which for a retail mission is the production
-//!   bind of `weather.zrd` (task #636). A record that *authors* cloud layers
-//!   has them drawn: one deck per [`CloudLayer`], at that layer's own altitude
-//!   and with its own coverage when the record knows one. The haze layer takes
-//!   the record's fog colour when the record carries one.
-//! * **designed** — the value is this build's own, labelled by
-//!   [`DESIGNED_LABEL`].
-//!
-//! M01 binds the parts task #1460 measured: `CLOUD_COVER.BOTTOM` is the
-//! cloud floor in metres, so its deck is drawn at 1 055 m as **bound**,
-//! and its zones spell one shared `FOG_COLOR`, so the haze takes the
-//! record's own colour. What the record still does not give — a coverage
-//! fraction, a layer colour or extent, `TOP`/`THICKNESS` and every fog
-//! range and altitude band — stays the labelled design
-//! (`docs/findings/2026-10-16-f19-weather-units-measure.md`).
-//!
-//! # Read the record, do not guess a layout
-//!
-//! The original's `weather.zrd` really does describe clouds: `CLOUD_COVER`
-//! carries a `TOP`, a `BOTTOM` and a `THICKNESS` — a cloud *band* — and some
-//! documents also carry a `TOP_COLOR`/`BOTTOM_COLOR` pair (task #636's
-//! finding). What no evidence gives is the unit of those altitudes, the
-//! colour scale of those integers, or how the original renderer turned them
-//! into pixels (*how* it consumes `cloudlayer`, `cloud1` and `cloud2` in
-//! `ZBD/C1C/gamez.zbd` is unmeasured). AGENTS.md rule 4 makes that a reason to
-//! label a design, not to pick a number: this module therefore draws a
-//! **designed** deck whenever the record binds no layer, exactly as
-//! `render::horizon` draws a designed gradient rather than guessing a mapping
-//! for `Sky1`.
-//!
-//! # The two drawn layers
-//!
-//! * **Cloud deck** — one horizontal, unlit, translucent quad per authored
-//!   layer, at that layer's altitude, or one designed deck when the record
-//!   authors none. The quad is not a flat sheet: its per-vertex alpha is a
-//!   designed, deterministic pattern whose *area* is the layer's own coverage,
-//!   so a 0.55 layer paints a little over half the sky and leaves the rest of
-//!   the [#1434](crate::render::horizon) sky visible, and a layer whose
-//!   coverage nobody measured is never drawn at full opacity by accident. It
-//!   reaches past the fog's far distance, so its far edge fades into the same
-//!   haze the horizon draws instead of ending on a hard line.
-//! * **Haze** — one wide, low, translucent quad in the record's fog colour
-//!   (or the designed haze colour when the record has none, which is exactly
-//!   the colour the dome paints below the horizon), so the near-ground air the
-//!   aircraft flies through is tinted by the same colour the fog and the sky
-//!   meet in. Its alpha is a designed radial profile: lightest overhead, at
-//!   its own coverage towards the horizon, which is the shape a real haze has
-//!   and the reason it does not flatten the sky above the aircraft.
-//!
-//! Both are kept horizontally under the camera on every frame and never
-//! rotated: a layer sits at its own world altitude whatever the camera's
-//! attitude, so rolling or climbing cannot tilt or drag it
+//! The deck is kept horizontally under the camera on every frame and never
+//! rotated: it sits at its own world altitude whatever the camera's attitude
 //! (`specs/F19-sky-atmosphere-weather-and-visibility.md`, non-negotiable 3).
 //!
 //! Nothing here is `verified_original`: this is a labelled development
@@ -78,8 +48,8 @@ use bevy::prelude::{
     Quat, Query, Res, ResMut, Resource, StandardMaterial, Startup, Transform, Update, Vec3,
     Visibility, With, Without,
 };
-use cs_content::environment::{CloudLayer, EnvironmentDefinition};
-use cs_types::content::{Provenance, Resolved};
+use cs_content::environment::EnvironmentDefinition;
+use cs_types::content::Provenance;
 use cs_types::evidence::ClaimStatus;
 
 /// The label every designed weather value carries.
@@ -102,19 +72,6 @@ pub const DESIGNED_CLOUD_COVERAGE: f32 = 0.55;
 /// The designed cloud colour (sRGB): a bright, slightly cool white.
 pub const DESIGNED_CLOUD_COLOUR: [f32; 3] = [0.86, 0.88, 0.92];
 
-/// The designed haze layer's altitude in metres: low enough to read as the
-/// air the aircraft starts in, and well under [`DESIGNED_CLOUD_ALTITUDE_M`].
-pub const DESIGNED_HAZE_ALTITUDE_M: f32 = 300.0;
-
-/// The designed haze layer's coverage fraction: its alpha towards the
-/// horizon, where the optical path through it is longest. A veil, not a wall.
-pub const DESIGNED_HAZE_COVERAGE: f32 = 0.35;
-
-/// The designed haze colour (sRGB): the same air the designed horizon uses,
-/// so the near-ground veil and the fog the dome paints below the horizon are
-/// one colour.
-pub const DESIGNED_HAZE_COLOUR: [f32; 3] = [0.66, 0.75, 0.84];
-
 /// The designed half extent of every drawn layer, in metres: past the
 /// horizon's fog far distance, so a layer's edge is always already haze and
 /// is never visible as an edge.
@@ -129,31 +86,6 @@ pub const LAYER_MESH_CELLS: usize = 64;
 /// pattern's own range: the band over which a cell fades from clear to
 /// covered instead of switching at a hard line.
 pub const CLOUD_PATTERN_EDGE: f32 = 0.06;
-
-/// The designed haze profile's alpha directly over the camera, as a fraction
-/// of the layer's coverage: the haze thins overhead, where the aircraft is
-/// closest to it, and thickens towards the horizon.
-pub const HAZE_OVERHEAD_FRACTION: f32 = 0.35;
-
-/// Which of the two drawn layers a [`WeatherLayerSpec`] is.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum WeatherLayerKind {
-    /// A cloud deck: the record's own layer, or the designed fallback.
-    CloudDeck,
-    /// The low haze veil, always drawn and always labelled.
-    Haze,
-}
-
-impl WeatherLayerKind {
-    /// The kind's stable spelling, for a report or a log line.
-    #[must_use]
-    pub const fn label(self) -> &'static str {
-        match self {
-            Self::CloudDeck => "cloud-deck",
-            Self::Haze => "haze",
-        }
-    }
-}
 
 /// One field of a drawn layer, named so its origin can be asked for.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -213,7 +145,6 @@ impl std::error::Error for UnknownWeatherField {}
 /// fraction in `[0, 1]`, exactly as the scene's other colours are written.
 #[derive(Clone, Debug, PartialEq)]
 pub struct WeatherLayerSpec {
-    kind: WeatherLayerKind,
     altitude_m: f32,
     coverage: f32,
     colour: [f32; 3],
@@ -223,11 +154,10 @@ pub struct WeatherLayerSpec {
 
 impl WeatherLayerSpec {
     /// The designed cloud deck: what a record that authors no cloud layer
-    /// gets, and one of the two layers M01 draws.
+    /// gets, and the only layer this module draws.
     #[must_use]
     pub fn designed_cloud() -> Self {
         Self::recorded(
-            WeatherLayerKind::CloudDeck,
             DESIGNED_CLOUD_ALTITUDE_M,
             DESIGNED_CLOUD_COVERAGE,
             DESIGNED_CLOUD_COLOUR,
@@ -241,69 +171,7 @@ impl WeatherLayerSpec {
         )
     }
 
-    /// One authored cloud layer, as the record carries it.
-    ///
-    /// The altitude and a **known** coverage are the record's own values; a
-    /// coverage the record leaves unknown falls back to the labelled design
-    /// rather than to full opacity, and the drawn colour and extent are
-    /// designed either way (a `CloudLayer` carries no colour and no extent —
-    /// `CLOUD_COVER`'s `TOP_COLOR`/`BOTTOM_COLOR` are unbound, task #636).
-    ///
-    /// `record` is the environment record's own provenance: a `CloudLayer`
-    /// carries a provenance for its coverage but none for its altitude, so
-    /// the altitude is bound to the record that stated it. `CLOUD_COVER`'s
-    /// `BOTTOM` is the measured cloud-floor altitude in metres (task #1460).
-    #[must_use]
-    pub fn from_authored(layer: &CloudLayer, record: &Provenance) -> Self {
-        let (coverage, coverage_origin) = match layer.coverage() {
-            Resolved::Known(known) => (
-                known.value as f32,
-                WeatherOrigin::Bound(known.provenance.clone()),
-            ),
-            Resolved::Unknown { .. } => (
-                DESIGNED_CLOUD_COVERAGE,
-                WeatherOrigin::Designed("the record authors no coverage fraction for this layer"),
-            ),
-        };
-        Self::recorded(
-            WeatherLayerKind::CloudDeck,
-            layer.altitude_m() as f32,
-            coverage,
-            DESIGNED_CLOUD_COLOUR,
-            DESIGNED_LAYER_EXTENT_M,
-            [
-                WeatherOrigin::Bound(record.clone()),
-                coverage_origin,
-                WeatherOrigin::Designed(DESIGNED_LABEL),
-                WeatherOrigin::Designed(DESIGNED_LABEL),
-            ],
-        )
-    }
-
-    /// The low haze veil, in `colour`.
-    ///
-    /// `colour_origin` is the record's, when the record carries a fog colour,
-    /// and the label otherwise. Every other field is the labelled design: the
-    /// record's `FOG_ALTITUDE` bands are unbound (task #636).
-    #[must_use]
-    pub fn haze(colour: [f32; 3], colour_origin: WeatherOrigin) -> Self {
-        Self::recorded(
-            WeatherLayerKind::Haze,
-            DESIGNED_HAZE_ALTITUDE_M,
-            DESIGNED_HAZE_COVERAGE,
-            colour,
-            DESIGNED_LAYER_EXTENT_M,
-            [
-                WeatherOrigin::Designed(DESIGNED_LABEL),
-                WeatherOrigin::Designed(DESIGNED_LABEL),
-                colour_origin,
-                WeatherOrigin::Designed(DESIGNED_LABEL),
-            ],
-        )
-    }
-
     fn recorded(
-        kind: WeatherLayerKind,
         altitude_m: f32,
         coverage: f32,
         colour: [f32; 3],
@@ -311,19 +179,12 @@ impl WeatherLayerSpec {
         origins: [WeatherOrigin; 4],
     ) -> Self {
         Self {
-            kind,
             altitude_m,
             coverage,
             colour,
             half_extent_m,
             origins: WEATHER_FIELDS.iter().copied().zip(origins).collect(),
         }
-    }
-
-    /// Which of the two layers this is.
-    #[must_use]
-    pub const fn kind(&self) -> WeatherLayerKind {
-        self.kind
     }
 
     /// The layer's altitude above the ground plane, in metres.
@@ -334,9 +195,8 @@ impl WeatherLayerSpec {
 
     /// The layer's coverage fraction.
     ///
-    /// For a cloud deck it is the share of the deck's own area the pattern
-    /// paints; for the haze it is the layer's alpha towards the horizon. It is
-    /// never the uniform opacity of the plane.
+    /// It is the share of the deck's own area the pattern paints, never the
+    /// uniform opacity of the plane.
     #[must_use]
     pub const fn coverage(&self) -> f32 {
         self.coverage
@@ -439,14 +299,11 @@ impl WeatherLayerSpec {
     /// This is the one function the layer's mesh is built from, which is what
     /// makes the drawn pattern testable without a GPU:
     ///
-    /// * a **cloud deck** reads the designed pattern of
-    ///   [`designed_cloud_field`] and paints, at full opacity and with
-    ///   [`CLOUD_PATTERN_EDGE`] of soft edge, every cell the pattern puts
-    ///   above the threshold — which `pattern_threshold` places so that the
-    ///   painted share of the deck's own grid is the layer's coverage;
-    /// * the **haze** fades from [`HAZE_OVERHEAD_FRACTION`] of the coverage
-    ///   overhead to the coverage itself at the layer's edge, where the line
-    ///   of sight through it is longest.
+    /// The deck reads the designed pattern of [`designed_cloud_field`] and
+    /// paints, at full opacity and with [`CLOUD_PATTERN_EDGE`] of soft edge,
+    /// every cell the pattern puts above the threshold — which
+    /// `pattern_threshold` places so that the painted share of the deck's own
+    /// grid is the layer's coverage.
     ///
     /// `u` and `v` outside `[-1, 1]` are clamped, so an extended mesh can
     /// never paint a value the pattern does not have.
@@ -454,31 +311,19 @@ impl WeatherLayerSpec {
     fn alpha_with(&self, threshold: f32, u: f32, v: f32) -> f32 {
         let u = u.clamp(-1.0, 1.0);
         let v = v.clamp(-1.0, 1.0);
-        match self.kind {
-            WeatherLayerKind::CloudDeck => smoothstep(
-                threshold - CLOUD_PATTERN_EDGE,
-                threshold + CLOUD_PATTERN_EDGE,
-                designed_cloud_field(u, v),
-            ),
-            WeatherLayerKind::Haze => {
-                let radial = (u * u + v * v).sqrt() / std::f32::consts::SQRT_2;
-                self.coverage
-                    * (HAZE_OVERHEAD_FRACTION + (1.0 - HAZE_OVERHEAD_FRACTION) * radial.min(1.0))
-            }
-        }
+        smoothstep(
+            threshold - CLOUD_PATTERN_EDGE,
+            threshold + CLOUD_PATTERN_EDGE,
+            designed_cloud_field(u, v),
+        )
     }
 
     /// The [`designed_cloud_field`] value the deck paints from: the quantile
     /// of the layer's own grid at `1 - coverage`, so the share of the grid the
     /// pattern paints *is* the layer's coverage rather than a threshold that
     /// happens to look about right for the pattern's distribution.
-    ///
-    /// The haze paints a smooth profile and does not use it.
     #[must_use]
     fn pattern_threshold(&self) -> f32 {
-        if self.kind != WeatherLayerKind::CloudDeck {
-            return 0.0;
-        }
         let cells = LAYER_MESH_CELLS;
         let mut samples: Vec<f32> = (0..=cells)
             .flat_map(|row| (0..=cells).map(move |column| (row, column)))
@@ -534,98 +379,50 @@ fn smoothstep(edge0: f32, edge1: f32, x: f32) -> f32 {
     t * t * (3.0 - 2.0 * t)
 }
 
-/// Converts a record's linear colour triple to sRGB for display.
-fn linear_to_srgb(linear: [f64; 3]) -> [f32; 3] {
-    let color = Color::linear_rgb(linear[0] as f32, linear[1] as f32, linear[2] as f32);
-    let srgb = color.to_srgba();
-    [srgb.red, srgb.green, srgb.blue]
-}
-
 /// Every layer a windowed scene draws, with the origin of each value.
 ///
 /// [`WeatherSpec::from_environment`] is the constructor a composed mission
-/// uses: the record's own cloud layers and fog colour are bound where the
-/// record carries them, and every value nobody measured is the labelled
-/// design.
+/// uses. It may hold no layer at all: a record that authors a cloud band
+/// describes a volume, which this module does not draw as a sheet.
 #[derive(Clone, Debug, PartialEq, Resource)]
 pub struct WeatherSpec {
     layers: Vec<WeatherLayerSpec>,
 }
 
 impl WeatherSpec {
-    /// The designed weather: one cloud deck and the haze, both labelled.
+    /// The designed weather: one labelled cloud deck.
     ///
     /// This is what the original-assets playtest draws, which carries no
     /// environment record at all.
     #[must_use]
     pub fn designed() -> Self {
         Self {
-            layers: vec![
-                WeatherLayerSpec::designed_cloud(),
-                WeatherLayerSpec::haze(
-                    DESIGNED_HAZE_COLOUR,
-                    WeatherOrigin::Designed(DESIGNED_LABEL),
-                ),
-            ],
+            layers: vec![WeatherLayerSpec::designed_cloud()],
         }
     }
 
     /// The weather a mission's own environment definition asks for.
     ///
-    /// A record that authors cloud layers has every one of them drawn at its
-    /// own altitude; a record that authors none gets one designed deck, and
-    /// the label travels with it. The haze layer always follows the record's
-    /// fog colour when the record knows one — one value, so the veil, the fog
-    /// and the sky the dome paints below the horizon stay one colour.
+    /// A record that authors cloud layers draws **no** layer: its
+    /// `CLOUD_COVER` band is a volume (`BOTTOM`/`TOP` world-Y metres, M01:
+    /// 10 000–11 000), and a flat quad would show it as a sheet. A record that
+    /// authors none gets one designed deck, and the label travels with it.
+    /// Nothing is ever drawn as a haze plane: the distance fog is the
+    /// horizon's.
     #[must_use]
     pub fn from_environment(environment: &EnvironmentDefinition) -> Self {
-        let (haze_colour, haze_origin) = match environment.fog().color_linear() {
-            Resolved::Known(known) => (
-                linear_to_srgb(known.value),
-                WeatherOrigin::Bound(known.provenance.clone()),
-            ),
-            Resolved::Unknown { .. } => (
-                DESIGNED_HAZE_COLOUR,
-                WeatherOrigin::Designed(DESIGNED_LABEL),
-            ),
-        };
-        let mut layers: Vec<WeatherLayerSpec> = if environment.cloud_layers().is_empty() {
+        let layers = if environment.cloud_layers().is_empty() {
             vec![WeatherLayerSpec::designed_cloud()]
         } else {
-            environment
-                .cloud_layers()
-                .iter()
-                .map(|layer| WeatherLayerSpec::from_authored(layer, environment.provenance()))
-                .collect()
+            Vec::new()
         };
-        layers.push(WeatherLayerSpec::haze(haze_colour, haze_origin));
         Self { layers }
     }
 
-    /// Every drawn layer, cloud decks first and the haze last.
+    /// Every drawn layer.
     #[must_use]
     pub fn layers(&self) -> &[WeatherLayerSpec] {
         &self.layers
-    }
-
-    /// The cloud decks, in authored order.
-    pub fn cloud_layers(&self) -> impl Iterator<Item = &WeatherLayerSpec> {
-        self.layers
-            .iter()
-            .filter(|layer| layer.kind() == WeatherLayerKind::CloudDeck)
-    }
-
-    /// The low haze veil: the last layer, always drawn.
-    ///
-    /// # Panics
-    ///
-    /// Never: both constructors append exactly one haze layer.
-    #[must_use]
-    pub fn haze(&self) -> &WeatherLayerSpec {
-        self.layers
-            .last()
-            .filter(|layer| layer.kind() == WeatherLayerKind::Haze)
-            .expect("every weather spec ends in its haze layer")
     }
 
     /// The origin recorded for `field` of the layer at `layer`.
@@ -656,17 +453,14 @@ impl WeatherSpec {
     }
 }
 
-/// One drawn layer entity: the deck or the haze the plugin keeps under the
-/// camera.
+/// One drawn layer entity: the deck the plugin keeps under the camera.
 #[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct WeatherLayer {
     /// The index of the layer in [`WeatherSpec::layers`].
     pub layer: usize,
-    /// Which of the two layers it is.
-    pub kind: WeatherLayerKind,
 }
 
-/// Draws the cloud deck and the haze for one windowed scene.
+/// Draws the designed cloud deck, when a scene has one.
 ///
 /// The plugin owns no game state: it takes a [`WeatherSpec`] once, spawns one
 /// entity per layer at `Startup` and re-places them around the camera every
@@ -736,10 +530,7 @@ fn spawn_weather(
             ..StandardMaterial::default()
         });
         commands.spawn((
-            WeatherLayer {
-                layer: index,
-                kind: layer.kind(),
-            },
+            WeatherLayer { layer: index },
             Mesh3d(meshes.add(layer.mesh())),
             MeshMaterial3d(material),
             Transform::from_xyz(0.0, layer.altitude_m(), 0.0),

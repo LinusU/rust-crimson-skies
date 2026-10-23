@@ -821,7 +821,7 @@ pub fn windowed_app(
     app.add_plugins(visuals::PlaytestVisualsPlugin);
     if retail.is_some() {
         // The original-assets scene draws a sky, a sea and fog (#1434
-        // `M01-PLAY-SKY`) and, under it, a labelled cloud deck and haze
+        // `M01-PLAY-SKY`) and, under it, a labelled cloud deck
         // (#1440 `M01-PLAY-WEATHER`); the synthetic scene keeps the flat
         // clear colour it was captured under. Added after the visuals so its
         // clear colour and ambient replace theirs.

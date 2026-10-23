@@ -1207,10 +1207,11 @@ fn add_composition(
                 .map_err(|error| MissionCompositionError::WorldVisual(error.to_string()))?;
         }
         app.add_plugins(horizon);
-        // Under the horizon, the mission's own weather record decides the
-        // cloud deck and the haze (#1440 `M01-PLAY-WEATHER`): a record that
-        // authors cloud layers has them drawn; every value nobody measured —
-        // all of M01's are unknown — is the labelled design.
+        // Over the horizon, only a designed cloud deck for a record that
+        // authors no cloud at all (#1440). There is no haze plane, and an
+        // authored `CLOUD_COVER` band (M01: 10 000–11 000 m) is a volume the
+        // original tints, not a sheet, so it draws nothing here
+        // (`BUG-M01-WHITE-WEATHER-SHEET`, #2001).
         app.add_plugins(crate::render::WeatherPlugin::from_environment(
             stage.host.environment.definition(),
         ));

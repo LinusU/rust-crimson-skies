@@ -55,7 +55,12 @@ use cs_types::content::Resolved;
 /// Every acceptance test the report must see pass.
 const ACCEPTANCE_PREFIX: &str = "accept_m01_play_weather_";
 /// The mission whose `weather.zrd` the task measured and binds.
-const M01: &str = "zbd/c1c/m01";
+/// **Not the campaign M01.** `ZBD/C1C/M01` is a different archive (a test
+/// fixture of the #1460 unit measurement): the campaign M01 is `ZBD/C3/M01`,
+/// whose `CLOUD_COVER` is `BOTTOM 10000`, `TOP 11000` and whose zone fog
+/// colours differ (#2001; `docs/findings/2026-10-18-parity-m01-atmo-a-weather-
+/// units-and-sky-consumers.md`). The 1055 and 0.69 below are this archive's.
+const C1C_FIXTURE: &str = "zbd/c1c/m01";
 
 /// What the second production observation records per bound layer.
 struct BoundLayer {
@@ -78,8 +83,8 @@ struct Census {
 /// `FOG_COLOR`, while `TOP`/`THICKNESS` and the fog ranges stay named unbound.
 fn observe(game_dir: &Path) -> Census {
     let found = discover(game_dir).expect("production discovery reads the installation");
-    let weather =
-        read_mission_weather(&found, M01).unwrap_or_else(|error| panic!("{M01}: {error}"));
+    let weather = read_mission_weather(&found, C1C_FIXTURE)
+        .unwrap_or_else(|error| panic!("{C1C_FIXTURE}: {error}"));
     let session = weather
         .session(TickRate::new(64).expect("64 Hz"), RunSeeds::from_root(7))
         .expect("M01's weather starts a session");
@@ -164,7 +169,7 @@ impl Census {
         format!(
             "{{\n \"mission\": {},\n \"install_sha256\": {},\n \"candidate_tree\": {},\n \
              \"layers\": [{}],\n \"fog_color\": {},\n \"unbound\": [{}]\n}}\n",
-            jstr(M01),
+            jstr(C1C_FIXTURE),
             jstr(install_sha256),
             jstr(candidate_tree),
             layers.join(", "),

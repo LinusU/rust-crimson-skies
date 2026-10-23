@@ -1,6 +1,7 @@
-//! Acceptance tests for task #1440 (`M01-PLAY-WEATHER`): the one production
-//! path that draws a mission's cloud deck and haze for a windowed scene, and
-//! the origin of every value it draws them from.
+//! Acceptance tests for task #1440 (`M01-PLAY-WEATHER`), as narrowed by task
+//! #2001 (`BUG-M01-WHITE-WEATHER-SHEET`): the one production path that draws a
+//! windowed scene's designed cloud deck, and the proof that no flat haze plane
+//! and no flat deck for an authored cloud *volume* is drawn.
 //!
 //! Spec: `specs/F19-sky-atmosphere-weather-and-visibility.md` (non-negotiable
 //! 1 and 3). Shared contract: `docs/contracts/IDENTITY-CONTENT.md`. Task test
@@ -14,16 +15,15 @@
 //!
 //! What is pinned:
 //!
-//! * every drawn value of the designed weather is **labelled**, so a
-//!   screenshot or a review can always say these clouds are this build's;
-//! * a cloud layer an environment record *does* author reaches the screen at
-//!   its own altitude and with its own coverage, with its provenance;
-//! * a record that authors no layer (and M01's record binds none) gets the
-//!   labelled design instead of an invented layout;
-//! * the layers sit above the water and inside the horizon's haze, so neither
-//!   a deck's edge nor the haze's edge can be seen against a different colour;
-//! * the plugin spawns one entity per layer and keeps every one of them
-//!   horizontally under the camera at its own world altitude.
+//! * every drawn value of the designed deck is **labelled**;
+//! * a record that authors a cloud band (the clear-sky fixture; the retail
+//!   `ZBD/C3/M01` band 10 000–11 000 m) draws **no** quad: the band is a
+//!   volume, and a coplanar sheet washed the island out white (#2001);
+//! * a record that authors none gets the labelled design instead of an
+//!   invented layout;
+//! * no layer is a haze: nothing sits at the old 300 m veil altitude;
+//! * the deck sits above the water, inside the horizon's fog, and the plugin
+//!   keeps it horizontally under the camera at its own altitude.
 
 use bevy::asset::{AssetApp, Assets};
 use bevy::mesh::{Mesh, Mesh3d, VertexAttributeValues};
@@ -34,31 +34,24 @@ use cs_app::environment::fixture::{clear_sky_environment, storm_environment};
 use cs_app::environment::{RunSeeds, read_mission_weather};
 use cs_app::render::horizon::HorizonSpec;
 use cs_app::render::weather::{
-    DESIGNED_CLOUD_ALTITUDE_M, DESIGNED_HAZE_ALTITUDE_M, DESIGNED_LABEL, WEATHER_FIELDS,
-    WeatherField, WeatherLayerKind, WeatherLayerSpec, WeatherOrigin, WeatherPlugin, WeatherSpec,
+    DESIGNED_CLOUD_ALTITUDE_M, DESIGNED_LABEL, WEATHER_FIELDS, WeatherLayerSpec, WeatherOrigin,
+    WeatherPlugin, WeatherSpec,
 };
-use cs_types::content::Resolved;
 
-const M01: &str = "zbd/c1c/m01";
+/// The actual campaign M01, "The Lost Treasure". (`zbd/c1c/m01` is a
+/// different archive: an earlier version of this file read it by mistake and
+/// recorded its `BOTTOM 1055` as M01's.)
+const M01: &str = "zbd/c3/m01";
 
-/// A record's colour, converted the way the spec converts one for display.
-fn srgb_of(linear: [f64; 3]) -> [f32; 3] {
-    let srgb = Color::linear_rgb(linear[0] as f32, linear[1] as f32, linear[2] as f32).to_srgba();
-    [srgb.red, srgb.green, srgb.blue]
-}
+/// The altitude of the removed haze plane, in metres. No drawn layer may sit
+/// here again.
+const REMOVED_HAZE_ALTITUDE_M: f32 = 300.0;
 
 #[test]
 fn accept_m01_play_weather_the_designed_weather_labels_every_value_it_draws() {
     let spec = WeatherSpec::designed();
     assert!(spec.is_entirely_designed());
-    assert_eq!(spec.layers().len(), 2, "a cloud deck and the haze");
-    assert_eq!(
-        spec.layers()
-            .iter()
-            .map(|layer| layer.kind())
-            .collect::<Vec<_>>(),
-        vec![WeatherLayerKind::CloudDeck, WeatherLayerKind::Haze]
-    );
+    assert_eq!(spec.layers().len(), 1, "one cloud deck and no haze");
     for (index, _layer) in spec.layers().iter().enumerate() {
         for field in WEATHER_FIELDS {
             assert_eq!(
@@ -72,71 +65,22 @@ fn accept_m01_play_weather_the_designed_weather_labels_every_value_it_draws() {
     // The label names the task, so a screenshot or a review note can trace the
     // clouds back to the build that painted them.
     assert!(DESIGNED_LABEL.contains("M01-PLAY-WEATHER"));
-    // No two layers claim the same altitude: the haze is under the deck.
     assert_eq!(spec.layers()[0].altitude_m(), DESIGNED_CLOUD_ALTITUDE_M);
-    assert_eq!(spec.layers()[1].altitude_m(), DESIGNED_HAZE_ALTITUDE_M);
 }
 
 #[test]
-fn accept_m01_play_weather_an_authored_cloud_layer_reaches_the_drawn_deck() {
+fn accept_m01_play_weather_an_authored_cloud_band_is_a_volume_and_draws_no_sheet() {
     // The clear-sky fixture authors one cloud layer: 1 500 m at a 0.25
-    // coverage. The drawn deck must be that layer, not the design.
+    // coverage. A band is a volume in the original, so no quad is drawn for
+    // it, and no haze quad either, whatever fog colour the record has.
     let environment = clear_sky_environment().expect("the fixture is representable");
+    assert_eq!(environment.cloud_layers().len(), 1);
     let spec = WeatherSpec::from_environment(&environment);
-
-    let decks = spec.cloud_layers().collect::<Vec<_>>();
-    assert_eq!(decks.len(), 1, "one authored layer, one drawn deck");
-    assert_eq!(decks[0].kind(), WeatherLayerKind::CloudDeck);
-    assert_eq!(decks[0].altitude_m(), 1_500.0);
-    assert_eq!(decks[0].coverage(), 0.25);
-
-    // The altitude comes from the record that stated the layer; the coverage
-    // carries its own provenance.
-    assert_eq!(
-        spec.origin(0, WeatherField::Altitude)
-            .unwrap_or_else(|error| panic!("{error}")),
-        &WeatherOrigin::Bound(environment.provenance().clone())
+    assert!(
+        spec.layers().is_empty(),
+        "an authored band must not become a flat sheet, found {:?}",
+        spec.layers()
     );
-    let authored = environment
-        .cloud_layers()
-        .first()
-        .expect("the fixture authors one layer");
-    let Resolved::Known(coverage) = authored.coverage() else {
-        panic!("the clear-sky fixture authors a known coverage");
-    };
-    assert_eq!(
-        spec.origin(0, WeatherField::Coverage)
-            .unwrap_or_else(|error| panic!("{error}")),
-        &WeatherOrigin::Bound(coverage.provenance.clone())
-    );
-
-    // A `CloudLayer` carries no colour and no extent — the record's
-    // `TOP_COLOR`/`BOTTOM_COLOR` are unbound (task #636) — so those two stay
-    // the labelled design.
-    for field in [WeatherField::Colour, WeatherField::Extent] {
-        assert_eq!(
-            spec.origin(0, field)
-                .unwrap_or_else(|error| panic!("{error}")),
-            &WeatherOrigin::Designed(DESIGNED_LABEL),
-            "{field:?} has no authored value and must stay labelled"
-        );
-    }
-
-    // The haze follows the record's own fog colour, so the veil, the fog and
-    // the sky the dome paints below the horizon are one value.
-    let Resolved::Known(fog) = environment.fog().color_linear() else {
-        panic!("the clear-sky fixture authors a fog colour");
-    };
-    let haze = spec.haze();
-    assert_eq!(haze.colour(), srgb_of(fog.value));
-    assert_eq!(
-        spec.origin(spec.layers().len() - 1, WeatherField::Colour)
-            .unwrap_or_else(|error| panic!("{error}")),
-        &WeatherOrigin::Bound(fog.provenance.clone())
-    );
-    // Nothing here is a measurement: the fixture's provenance says designed,
-    // so the whole spec stays a design end to end.
-    assert!(spec.is_entirely_designed());
 }
 
 #[test]
@@ -150,7 +94,7 @@ fn accept_m01_play_weather_a_record_with_no_layer_falls_back_to_the_labelled_des
     );
     let spec = WeatherSpec::from_environment(&environment);
 
-    let decks = spec.cloud_layers().collect::<Vec<_>>();
+    let decks = spec.layers().iter().collect::<Vec<_>>();
     assert_eq!(decks.len(), 1, "one designed deck");
     let designed = WeatherSpec::designed();
     assert_eq!(decks[0].altitude_m(), designed.layers()[0].altitude_m());
@@ -164,38 +108,36 @@ fn accept_m01_play_weather_a_record_with_no_layer_falls_back_to_the_labelled_des
             "{field:?} carries no measured value and must stay labelled"
         );
     }
-    // The haze still follows the record's fog colour, which the storm fixture
-    // does author.
-    let Resolved::Known(fog) = environment.fog().color_linear() else {
-        panic!("the storm fixture authors a fog colour");
-    };
-    assert_eq!(spec.haze().colour(), srgb_of(fog.value));
+    assert_eq!(
+        spec.layers().len(),
+        1,
+        "the deck is the only layer: no haze"
+    );
     assert!(spec.is_entirely_designed());
 }
 
 #[test]
-fn accept_m01_play_weather_the_layers_sit_above_the_water_and_inside_the_haze() {
+fn accept_m01_play_weather_the_deck_sits_above_the_water_and_inside_the_fog() {
     let spec = WeatherSpec::designed();
     let horizon = HorizonSpec::designed();
-    let haze = spec.haze();
     let deck = spec
-        .cloud_layers()
-        .next()
+        .layers()
+        .first()
         .expect("the designed spec draws one deck");
 
     assert!(
-        haze.altitude_m() < deck.altitude_m(),
-        "the haze veil is under the cloud deck"
-    );
-    assert!(
-        haze.altitude_m() > horizon.sea_level_m(),
-        "the haze must be above the water or it is drawn inside the sea"
+        deck.altitude_m() > horizon.sea_level_m(),
+        "the deck must be above the water or it is drawn inside the sea"
     );
     assert!(
         deck.altitude_m() < horizon.dome_radius_m(),
         "a deck above the dome's radius would be occluded by the sky itself"
     );
     for layer in spec.layers() {
+        assert!(
+            (layer.altitude_m() - REMOVED_HAZE_ALTITUDE_M).abs() > 1.0,
+            "no layer may sit at the removed haze altitude"
+        );
         assert!(
             layer.half_extent_m() >= horizon.fog_end_m(),
             "a layer must reach past the fog's far distance or its edge is visible"
@@ -205,10 +147,6 @@ fn accept_m01_play_weather_the_layers_sit_above_the_water_and_inside_the_haze() 
             "a coverage fraction is the layer's alpha and must be in (0, 1]"
         );
     }
-    // The seam rule: the designed haze is the very colour the designed dome
-    // paints below the horizon, so the veil fades into the fog rather than
-    // into a different colour.
-    assert_eq!(haze.colour(), horizon.fog_colour());
 }
 
 #[test]
@@ -244,16 +182,10 @@ fn accept_m01_play_weather_the_plugin_draws_each_layer_under_the_camera() {
     let mut drawn = query
         .iter(world)
         .map(|(drawn, transform, mesh, material)| {
-            (
-                drawn.layer,
-                drawn.kind,
-                *transform,
-                mesh.0.clone(),
-                material.0.clone(),
-            )
+            (drawn.layer, *transform, mesh.0.clone(), material.0.clone())
         })
         .collect::<Vec<_>>();
-    drawn.sort_by_key(|(index, _, _, _, _)| *index);
+    drawn.sort_by_key(|(index, _, _, _)| *index);
     assert_eq!(drawn.len(), spec.layers().len(), "one entity per layer");
 
     let materials = world
@@ -263,9 +195,8 @@ fn accept_m01_play_weather_the_plugin_draws_each_layer_under_the_camera() {
         .get_resource::<Assets<Mesh>>()
         .expect("the mesh asset collection exists");
 
-    for (index, kind, transform, mesh, material) in &drawn {
+    for (index, transform, mesh, material) in &drawn {
         let layer = &spec.layers()[*index];
-        assert_eq!(*kind, layer.kind());
         assert_eq!(
             transform.translation,
             Vec3::new(512.0, layer.altitude_m(), -1_024.0),
@@ -404,66 +335,46 @@ fn accept_m01_play_weather_the_headless_stack_answers_a_fixed_steps_resources() 
 
 #[test]
 fn accept_m01_play_weather_the_deck_paints_its_coverage_and_leaves_the_sky_visible() {
-    use cs_app::render::weather::{HAZE_OVERHEAD_FRACTION, LAYER_MESH_CELLS};
+    use cs_app::render::weather::LAYER_MESH_CELLS;
 
     // A deck is a broken layer, not a sheet: the share of its own grid the
     // designed pattern paints is the layer's coverage, and the gaps between
     // the clouds are clear, so the horizon's sky stays visible through them.
     let designed = WeatherSpec::designed();
-    let environment = clear_sky_environment().expect("the fixture is representable");
-    let bound = WeatherSpec::from_environment(&environment);
-    let decks = [
-        designed
-            .cloud_layers()
-            .next()
-            .expect("the designed spec draws a deck"),
-        bound
-            .cloud_layers()
-            .next()
-            .expect("the fixture's authored layer is drawn"),
-    ];
-    for deck in decks {
-        let alphas = mesh_alphas(&deck.mesh());
-        assert_eq!(
-            alphas.len(),
-            (LAYER_MESH_CELLS + 1) * (LAYER_MESH_CELLS + 1)
-        );
-        let lowest = alphas.iter().copied().fold(f32::INFINITY, f32::min);
-        let highest = alphas.iter().copied().fold(f32::NEG_INFINITY, f32::max);
-        assert!(lowest < 0.05, "a gap must stay clear, found alpha {lowest}");
-        assert!(
-            highest > 0.95,
-            "a cloud must be opaque, found alpha {highest}"
-        );
-        let painted = alphas.iter().filter(|alpha| **alpha > 0.5).count() as f64;
-        #[allow(clippy::cast_precision_loss)]
-        let share = painted / alphas.len() as f64;
-        let wanted = f64::from(deck.coverage());
-        assert!(
-            (share - wanted).abs() < 0.02,
-            "the painted share {share} must be the layer's coverage {wanted}"
-        );
-    }
-
-    // The haze is a profile, not a sheet either: thinnest overhead, at the
-    // coverage towards the horizon, and never above it.
-    let haze = designed.haze();
-    let alphas = mesh_alphas(&haze.mesh());
-    let highest = alphas.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    let deck = designed
+        .layers()
+        .first()
+        .expect("the designed spec draws a deck");
+    let alphas = mesh_alphas(&deck.mesh());
+    assert_eq!(
+        alphas.len(),
+        (LAYER_MESH_CELLS + 1) * (LAYER_MESH_CELLS + 1)
+    );
     let lowest = alphas.iter().copied().fold(f32::INFINITY, f32::min);
-    assert!((highest - haze.coverage()).abs() < 1e-6);
-    assert!((lowest - haze.coverage() * HAZE_OVERHEAD_FRACTION).abs() < 1e-6);
+    let highest = alphas.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+    assert!(lowest < 0.05, "a gap must stay clear, found alpha {lowest}");
+    assert!(
+        highest > 0.95,
+        "a cloud must be opaque, found alpha {highest}"
+    );
+    let painted = alphas.iter().filter(|alpha| **alpha > 0.5).count() as f64;
+    #[allow(clippy::cast_precision_loss)]
+    let share = painted / alphas.len() as f64;
+    let wanted = f64::from(deck.coverage());
+    assert!(
+        (share - wanted).abs() < 0.02,
+        "the painted share {share} must be the layer's coverage {wanted}"
+    );
 }
 
-/// The retail half: M01's own `weather.zrd` through the production bind, so
-/// the weather a composed mission draws is the one the original mission's
-/// record asks for — the cloud floor at `CLOUD_COVER.BOTTOM` metres and the
-/// shared zone `FOG_COLOR`, bound where task #1460 measured their units
-/// (`docs/findings/2026-10-16-f19-weather-units-measure.md`), labelled where
-/// the record still carries nothing a measurement reached.
+/// The retail half: the actual campaign M01 (`ZBD/C3/M01`) through the
+/// production bind. Its cloud band is 10 000–11 000 m and its zones' fog
+/// colours differ (`docs/findings/2026-10-18-parity-m01-atmo-a-weather-units-
+/// and-sky-consumers.md`); neither becomes a drawn quad, so there is no sheet
+/// at any flight altitude (#2001).
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_m01_play_weather_retail_m01_weather_is_bound_to_its_record_and_labelled() {
+fn accept_m01_play_weather_retail_m01_draws_no_sheet_at_any_altitude() {
     use cs_assets::install;
     use cs_sim::time::TickRate;
 
@@ -471,94 +382,46 @@ fn accept_m01_play_weather_retail_m01_weather_is_bound_to_its_record_and_labelle
         std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR must name the original installation"),
     );
     let found = install::discover(&root).expect("the installation is discoverable");
-    let weather =
-        read_mission_weather(&found, M01).unwrap_or_else(|error| panic!("{M01}: {error}"));
+    let weather = read_mission_weather(&found, M01).unwrap_or_else(|error| panic!("{error}"));
+
+    // The raw record: the C3 cloud band, and fog colours that differ by zone.
+    let cloud = &weather.document.cloud_cover;
+    assert_eq!(cloud.bottom.as_f64(), 10_000.0, "CLOUD_COVER.BOTTOM");
+    assert_eq!(cloud.top.as_f64(), 11_000.0, "CLOUD_COVER.TOP");
+    let fog = |name: &str| {
+        weather
+            .document
+            .zones
+            .iter()
+            .find(|zone| zone.name == name)
+            .unwrap_or_else(|| panic!("M01 has {name}"))
+            .fog_color
+            .map(cs_content::weather::WeatherScalar::as_f64)
+    };
+    assert_ne!(
+        fog("ZONE1"),
+        fog("ZONE2"),
+        "M01's zones do not share one fog colour"
+    );
+
+    // The bound definition: one layer at the band's floor.
     let session = weather
         .session(TickRate::new(64).expect("64 Hz"), RunSeeds::from_root(7))
         .expect("M01's weather starts a session");
     let definition = session.definition();
-
-    // The record is M01's own, not a fixture, and it *does* describe cloud
-    // cover: `BOTTOM 1055` binds the deck's floor altitude in metres and the
-    // shared zone colour `(0.69, 0.69, 0.69)` the haze's colour.
     assert!(definition.origin().is_original());
     let layers = definition.cloud_layers();
     assert_eq!(layers.len(), 1, "CLOUD_COVER binds one cloud layer");
-    assert_eq!(layers[0].altitude_m(), 1055.0, "BOTTOM in metres");
-    let Resolved::Known(fog) = definition.fog().color_linear() else {
-        panic!("M01's zones spell one shared fog colour");
-    };
-    // The record spells 0.69f: the channels are at or below 1.0, so the
-    // measured rule takes them verbatim — f32 widened to f64.
-    assert_eq!(fog.value, [f64::from(0.69f32); 3]);
-    assert!(!definition.fog().density_per_m().is_known());
+    assert_eq!(layers[0].altitude_m(), 10_000.0, "BOTTOM in metres");
 
-    // `TOP`/`THICKNESS` and the fog ranges/bands still have no contract
-    // fields, so they stay named unbound rather than silently dropped.
-    for key in ["CLOUD_COVER.TOP/THICKNESS", "ZONEn.FOG_RANGES/FOG_ALTITUDE"] {
-        assert!(
-            weather.binding.unbound.iter().any(|field| field.key == key),
-            "{key} must stay named as unbound"
-        );
-    }
-    assert!(
-        !weather
-            .binding
-            .unbound
-            .iter()
-            .any(|field| field.key == "ZONEn.FOG_COLOR"),
-        "FOG_COLOR binds when the zones agree"
-    );
-
+    // The drawn weather: nothing. Not a deck at the band, not a haze.
     let spec = WeatherPlugin::from_environment(definition).spec().clone();
-    assert_eq!(spec.layers().len(), 2);
-    let deck = spec
-        .cloud_layers()
-        .next()
-        .expect("M01's bound layer is the drawn deck");
-    assert_eq!(deck.altitude_m(), 1055.0);
-    assert_eq!(
-        spec.origin(0, WeatherField::Altitude)
-            .unwrap_or_else(|error| panic!("{error}")),
-        &WeatherOrigin::Bound(definition.provenance().clone()),
-        "the deck's altitude is the record's own"
-    );
-    assert_eq!(
-        spec.origin(0, WeatherField::Coverage)
-            .unwrap_or_else(|error| panic!("{error}")),
-        &WeatherOrigin::Designed("the record authors no coverage fraction for this layer"),
-        "the record spells no coverage fraction, so the drawn coverage is labelled"
-    );
-    for field in [WeatherField::Colour, WeatherField::Extent] {
-        assert_eq!(
-            spec.origin(0, field)
-                .unwrap_or_else(|error| panic!("{error}")),
-            &WeatherOrigin::Designed(DESIGNED_LABEL),
-            "{field:?} of the deck has no authored value and stays labelled"
-        );
-    }
-    let haze = spec.haze();
-    assert_eq!(haze.colour(), srgb_of(fog.value));
-    assert_eq!(
-        spec.origin(1, WeatherField::Colour)
-            .unwrap_or_else(|error| panic!("{error}")),
-        &WeatherOrigin::Bound(fog.provenance.clone()),
-        "the haze's colour is the record's own fog colour"
-    );
-    for field in [
-        WeatherField::Altitude,
-        WeatherField::Coverage,
-        WeatherField::Extent,
-    ] {
-        assert_eq!(
-            spec.origin(1, field)
-                .unwrap_or_else(|error| panic!("{error}")),
-            &WeatherOrigin::Designed(DESIGNED_LABEL),
-            "{field:?} of the haze has no authored value and stays labelled"
-        );
-    }
     assert!(
-        !spec.is_entirely_designed(),
-        "the bound altitude and fog colour must show as bound"
+        spec.layers().is_empty(),
+        "M01 must draw no weather quad, found {:?}",
+        spec.layers()
+            .iter()
+            .map(WeatherLayerSpec::altitude_m)
+            .collect::<Vec<_>>()
     );
 }
