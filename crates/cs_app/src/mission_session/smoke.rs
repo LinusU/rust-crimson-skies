@@ -775,6 +775,27 @@ pub struct RocketMetrics {
     pub max_live_puffs: u32,
     /// The mission publisher's own rocket refusals, verbatim.
     pub refusals: Vec<String>,
+    /// The actor the launch engagement named — the selected target.
+    pub designated: Option<String>,
+    /// The node the engagement named on the designated victim.
+    pub designated_node: Option<String>,
+    /// The actor a detonation's routed hits named.
+    pub victim: Option<String>,
+    /// The damage node those hits named on the victim (e.g. `t_truck01`).
+    pub victim_node: Option<String>,
+    /// The fuse cause of the first routed detonation (`impact`,
+    /// `proximity`, `timed`).
+    pub detonation_trigger: Option<String>,
+    /// Hits the damage authority applied across the phase's detonations.
+    pub hits_applied: u32,
+    /// Hit refusals and blocks the authority recorded, verbatim.
+    pub hit_refusals: Vec<String>,
+    /// A detonation's resolution recorded the victim's `Destroyed`
+    /// lifecycle.
+    pub victim_destroyed: bool,
+    /// The last ordnance tick the accumulating report covered when the
+    /// metrics restated it.
+    pub ordnance_tick: Option<Tick>,
 }
 
 /// What the damage-trail phase measured (PARITY-M01-PLAYER-DAMAGE-TRAIL,
@@ -1653,6 +1674,48 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
              PARITY2-DMG-FX-B #1806)",
             m.rocket.puffs_spawned, m.rocket.max_live_puffs
         ),
+    });
+    checks.push(Check {
+        id: "weapon_rocket_damages".to_owned(),
+        applies: true,
+        passed: m.rocket.hits_applied > 0 && m.rocket.victim_destroyed,
+        detail: if m.rocket.hits_applied > 0 && m.rocket.victim_destroyed {
+            format!(
+                "the rocket's {} detonation routed {} hit(s) to {} on {} and destroyed it",
+                m.rocket.detonation_trigger.clone().unwrap_or_default(),
+                m.rocket.hits_applied,
+                m.rocket.victim_node.clone().unwrap_or_default(),
+                m.rocket.victim.clone().unwrap_or_default(),
+            )
+        } else {
+            format!(
+                "no routed damage landed: {} hit(s) applied, victim={} node={} trigger={} \
+                 refusals={} designated={} node={}",
+                m.rocket.hits_applied,
+                m.rocket.victim.clone().unwrap_or_else(|| "none".to_owned()),
+                m.rocket
+                    .victim_node
+                    .clone()
+                    .unwrap_or_else(|| "none".to_owned()),
+                m.rocket
+                    .detonation_trigger
+                    .clone()
+                    .unwrap_or_else(|| "none".to_owned()),
+                if m.rocket.hit_refusals.is_empty() {
+                    "none".to_owned()
+                } else {
+                    m.rocket.hit_refusals.join("; ")
+                },
+                m.rocket
+                    .designated
+                    .clone()
+                    .unwrap_or_else(|| "none".to_owned()),
+                m.rocket
+                    .designated_node
+                    .clone()
+                    .unwrap_or_else(|| "none".to_owned()),
+            )
+        },
     });
 
     // --- the woken flak turret (FLAK-C5-SMOKE, #1887) -----------------------
@@ -3693,6 +3756,18 @@ fn smoke_flashes(
     guns.flashes_undrawn += undrawn;
 }
 
+/// The weapon-session reports the sampler reads — grouped so `smoke_sample`
+/// stays inside Bevy's system-arity limit.
+#[derive(SystemParam)]
+struct WeaponReportParams<'w> {
+    /// The mission publisher's gun/rocket report.
+    weapon: Option<Res<'w, MissionWeaponReport>>,
+    /// The ordnance driver's per-tick launch/detonation report (#1999).
+    ordnance: Option<Res<'w, super::weapons::MissionOrdnanceReport>>,
+    /// The burst-puff consumer's report (PARITY2-DMG-FX-B).
+    puffs: Option<Res<'w, super::burst_puffs::BurstPuffReport>>,
+}
+
 /// Samples the live world into the measurements every frame: the audio queue,
 /// the weapon session's rounds and the ordnance session's rockets.
 #[allow(clippy::too_many_arguments)]
@@ -3704,8 +3779,7 @@ fn smoke_sample(
     weapons: Option<Res<WeaponSession>>,
     rounds: Query<&WeaponRoundMirror>,
     rockets: Query<&OrdnanceItemMirror>,
-    rocket_report: Option<Res<MissionWeaponReport>>,
-    puff_report: Option<Res<super::burst_puffs::BurstPuffReport>>,
+    reports: WeaponReportParams,
     puffs: Query<&super::burst_puffs::BurstPuff>,
     audio: Option<Res<AudioSession>>,
     mix: Option<Res<AudioMixReport>>,
@@ -3775,11 +3849,48 @@ fn smoke_sample(
         let live_puffs = puffs.iter().count() as u32;
         data.measurements.rocket.max_live_puffs =
             data.measurements.rocket.max_live_puffs.max(live_puffs);
-        if let Some(report) = puff_report.as_ref() {
+        if let Some(report) = reports.puffs.as_ref() {
             data.measurements.rocket.puffs_spawned = report.puffs_spawned;
         }
-        if let Some(report) = rocket_report.as_ref() {
+        if let Some(report) = reports.weapon.as_ref() {
             data.measurements.rocket.refusals = report.rocket_refusals.clone();
+        }
+        if let Some(report) = reports.ordnance.as_ref() {
+            // The report accumulates across the session's ordnance ticks, so
+            // the metrics restate it each frame rather than folding per tick.
+            let rocket = &mut data.measurements.rocket;
+            rocket.ordnance_tick = report.at;
+            if let Some(launch) = report.launches.last() {
+                rocket.designated = Some(launch.target.to_string());
+                rocket.designated_node = Some(launch.node.as_str().to_owned());
+            }
+            rocket.hits_applied = report
+                .detonations
+                .iter()
+                .map(|detonation| detonation.applied as u32)
+                .sum();
+            rocket.hit_refusals = report
+                .detonations
+                .iter()
+                .flat_map(|detonation| detonation.refused.iter().cloned())
+                .collect();
+            rocket.victim_destroyed = report
+                .detonations
+                .iter()
+                .any(|detonation| detonation.destroyed);
+            if rocket.victim.is_none()
+                && let Some(detonation) = report
+                    .detonations
+                    .iter()
+                    .find(|detonation| detonation.victim.is_some())
+            {
+                rocket.victim = detonation.victim.map(|victim| victim.to_string());
+                rocket.victim_node = detonation
+                    .node
+                    .as_ref()
+                    .map(|node| node.as_str().to_owned());
+                rocket.detonation_trigger = Some(detonation.trigger.to_owned());
+            }
         }
     }
     // The HUD is held back while the cinematic plays; the objective probe is
@@ -4474,9 +4585,28 @@ fn smoke_script(
             }
             if at == 0 {
                 // A test placement, listed in the report: the rocket flies
-                // straight, so the player faces the hostile from close enough
-                // for the rocket to really hit it and detonate (#1806).
-                if let Some(index) = data.census.iter().position(|entry| entry.hostile)
+                // straight, so the player faces the hostile ground target
+                // from close enough for the rocket to really reach it and
+                // detonate. Ground targets are the victims the convoy-rocket
+                // damage path can actually resolve (#1999) — aircraft pools
+                // are unresolved.
+                let victim = targeting.grounds.iter().find(|ground| {
+                    ground.roster.as_ref().is_some_and(|roster| {
+                        roster.player_allegiance == Some(cs_sim::targeting::Allegiance::Hostile)
+                    })
+                });
+                if let Some(ground) = victim {
+                    let offset = Vec3::new(ROCKET_RANGE_M, 0.0, 0.0);
+                    let site = Vec3::from_array(ground.position_m.map(|v| v as f32));
+                    pending.0 = Some(Placement {
+                        name: format!("rocket shot at {}", ground.node),
+                        position_m: (site + offset).to_array(),
+                        yaw: yaw_toward(-offset),
+                        pitch: 0.0,
+                        speed_m_s: data.speed_m_s,
+                        distance_m: f64::from(ROCKET_RANGE_M),
+                    });
+                } else if let Some(index) = data.census.iter().position(|entry| entry.hostile)
                     && let Some(mut placement) =
                         place_near_actor(&data, index, &scene.player, &scene.poses)
                 {
@@ -4490,8 +4620,16 @@ fn smoke_script(
                     pending.0 = Some(placement);
                 }
             } else if at == 4 {
+                // Select the victim before firing: rockets now require a
+                // selected target (Ctrl+R = nearest ground target).
+                queue.0.push(KeyOp::Press(KeyCode::ControlLeft));
+                queue.0.push(KeyOp::Press(KeyCode::KeyR));
+            } else if at == 6 {
+                queue.0.push(KeyOp::Release(KeyCode::KeyR));
+                queue.0.push(KeyOp::Release(KeyCode::ControlLeft));
+            } else if at == 8 {
                 queue.0.push(KeyOp::Press(KeyCode::KeyX));
-            } else if at == 12 {
+            } else if at == 16 {
                 queue.0.push(KeyOp::Release(KeyCode::KeyX));
             } else if at == ROCKET_SHOT_OFFSET {
                 due.push("rocket".to_owned());
