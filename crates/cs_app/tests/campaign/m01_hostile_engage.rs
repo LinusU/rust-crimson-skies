@@ -17,6 +17,7 @@
 //! original measurements, and nothing here is fitted to the retail capture's
 //! first damage at 1:37.
 
+use bevy::ecs::message::Messages;
 use bevy::prelude::{App, Time, With};
 use bevy::time::TimeUpdateStrategy;
 
@@ -30,6 +31,7 @@ use cs_app::mission_session::{
     build_headless, evaluate_mission_smoke, stage_for, teardown,
 };
 use cs_app::physics::BASELINE_FIXED_HZ;
+use cs_app::playtest::fatal_contact::TerrainContactJudged;
 use cs_app::scene::NodeVisualTransform;
 use cs_app::weapons::SessionDamageResolver;
 use cs_app::weapons::part_sweep_candidates;
@@ -68,7 +70,8 @@ fn hull_integrity(app: &App) -> Option<f64> {
 /// within 200 m, …). With no input the chain never reaches it, so no hostile
 /// aircraft fires and the player's hull — a real damage victim, see
 /// `accept_m01_outcome_a_the_player_is_a_damage_victim_with_a_live_hull_box` —
-/// is untouched. This pins that measurement; it is **not** a claim about the
+/// loses only what its own judged terrain contacts cost (sea and shore, from
+/// about t=50 s). This pins that measurement; it is **not** a claim about the
 /// original, whose idle player took damage at 1:37 from a source this
 /// repository has not identified
 /// (`docs/findings/2026-10-18-m01-hostile-engagement.md`).
@@ -98,10 +101,17 @@ fn accept_m01_outcome_a_an_idle_player_never_wakes_the_kestrels() {
 
     let timestep = app.world().resource::<Time<bevy::time::Fixed>>().timestep();
     let steps = IDLE_SECONDS * u64::from(BASELINE_FIXED_HZ);
+    let mut terrain_damage = 0.0_f64;
     for _ in 0..steps {
         *app.world_mut().resource_mut::<TimeUpdateStrategy>() =
             TimeUpdateStrategy::ManualDuration(timestep);
         app.update();
+        terrain_damage += app
+            .world()
+            .resource::<Messages<TerrainContactJudged>>()
+            .iter_current_update_messages()
+            .map(|judged| judged.damage)
+            .sum::<f64>();
     }
 
     let host = app.world().resource::<MissionHost>();
@@ -115,10 +125,16 @@ fn accept_m01_outcome_a_an_idle_player_never_wakes_the_kestrels() {
         after.iter().all(|(_, flown)| !flown),
         "the Kestrels are still asleep after {IDLE_SECONDS} s: {after:?}"
     );
+    // The idle flight meets the sea and the shore from about t=50 s
+    // (`docs/findings/2026-10-23-m01-collision-comparison.md`), and since the
+    // fatal contact rule judges those contacts (#1850, #1854, #1983) they cost
+    // hull. That is the player's own crash, not a hostile round: every point
+    // of hull lost must be accounted for by a judged terrain contact.
     assert_eq!(
         hull_integrity(&app),
-        Some(start),
-        "nothing damaged the idle player's hull in {IDLE_SECONDS} s"
+        Some((start - terrain_damage).max(0.0)),
+        "only judged terrain contacts (total {terrain_damage}) damaged the idle player's \
+         hull in {IDLE_SECONDS} s"
     );
     teardown(&mut app);
 }
