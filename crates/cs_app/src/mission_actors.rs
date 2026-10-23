@@ -113,7 +113,7 @@ const MISSION_DAMAGE_PRODUCER: u32 = 0;
 
 /// The designed single node every scripted actor's damage graph carries:
 /// a lethal internal-structure part with an unresolved pool.
-const SCRIPTED_DAMAGE_NODE: &str = "airframe";
+pub(crate) const SCRIPTED_DAMAGE_NODE: &str = "airframe";
 
 /// Resource: the scripted-aircraft records the composition spawns — every
 /// `aiv.zrd` record except the `player` one (the composition's own

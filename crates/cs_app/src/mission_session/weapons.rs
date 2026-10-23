@@ -40,6 +40,8 @@
 //! victim fires into a world that resolves nothing, which is the honest
 //! state and is reported rather than papered over.
 
+use std::collections::BTreeMap;
+
 use bevy::prelude::*;
 
 use cs_content::damage::DamageNodeKey;
@@ -58,10 +60,12 @@ use cs_content::weapons::{
     DeclaredGunDefinition, DeclaredGunMountKind, DeclaredGunRate, DeclaredInheritanceRule,
     DeclaredSelfHitRule, DeclaredSpreadCone, DeclaredWeaponDamage, InteractionRules,
 };
-use cs_sim::damage::{ActorId, DamageResolver, SystemKind};
+use cs_sim::damage::{ActorId, DamageEventKind, DamageResolver, SystemKind};
 use cs_sim::targeting::{Allegiance, TargetClass, TargetRecord};
 use cs_sim::time::TickRate;
-use cs_sim::weapons::{GunBank, OrdnanceId, OrdnanceRegistry, StatusEffectTarget, TargetPath};
+use cs_sim::weapons::{
+    GunBank, OrdnanceId, OrdnanceRegistry, ProjectileId, StatusEffectTarget, TargetPath,
+};
 use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind, Known, Origin, Provenance, Resolved};
 use cs_types::evidence::{ClaimId, ClaimStatus};
@@ -73,6 +77,7 @@ use super::burst_puffs::{PendingOrdnanceBursts, PuffBurst};
 use super::weapon_counts::{OriginalGunRecord, OriginalWeaponCounts};
 use crate::damage::{DamageActorBinding, PendingDamageEvents};
 use crate::input::platform::PlatformInput;
+use crate::mission_actors::{MissionGroundTarget, SCRIPTED_DAMAGE_NODE};
 use crate::ordnance::{
     OrdnanceEngagement, OrdnanceLaunch, OrdnanceLaunchId, OrdnanceLauncherBinding, OrdnanceOrder,
     OrdnanceSession, OrdnanceStep, lower_ordnance, step_ordnance_session,
@@ -1246,51 +1251,121 @@ pub struct MissionOrdnanceOrders {
     pub orders: Vec<OrdnanceOrder>,
 }
 
-/// One rocket launch aimed at the nearest declared-hostile bound target.
+/// Resource: what the session's committed ordnance ticks' rockets did.
 ///
-/// The target is selected as design: the live actor with the lowest serial
-/// whose target record declares the player hostile. The original's lock and
-/// launch gesture are unmeasured, so this is labelled project design, not a
-/// reproduction. An unknown node on the victim is refused by the resolver by
-/// name rather than aimed somewhere else.
+/// The instrumentation the convoy-rocket path was missing: a launch that
+/// left the rail, the selected target its engagement named, every fuse
+/// trigger with the victim it actually reached and the node the hits were
+/// routed to, what the damage authority applied or refused, and the
+/// victim's integrity afterwards. A rocket that reached nothing is
+/// reported as nothing — an expiry or a routing refusal — never as silent
+/// phantom damage.
+///
+/// A rendered frame can run several ordnance ticks and a launch is ticks
+/// apart from the detonation it causes, so the record accumulates: each
+/// committed tick appends its launches, detonations, refusals and expiries
+/// and moves `at` forward.
+#[derive(Resource, Clone, Debug, Default, PartialEq)]
+pub struct MissionOrdnanceReport {
+    /// The tick the report covers, when a step ran.
+    pub at: Option<Tick>,
+    /// The launches ordered this tick: the selected target and the node
+    /// each engagement named, in mint order.
+    pub launches: Vec<MissionOrdnanceLaunch>,
+    /// Launch orders the ordnance step refused, verbatim.
+    pub orders_refused: Vec<String>,
+    /// The items the step accepted, in launch order.
+    pub projectiles: Vec<ProjectileId>,
+    /// One entry per detonation the tick routed.
+    pub detonations: Vec<MissionOrdnanceDetonation>,
+    /// Triggered items whose routing refused, verbatim.
+    pub routing_refused: Vec<String>,
+    /// Items whose lifetime ended without a trigger.
+    pub expired: Vec<ProjectileId>,
+}
+
+/// One minted rocket launch's designated engagement.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MissionOrdnanceLaunch {
+    /// The selected target the engagement named.
+    pub target: ActorId,
+    /// The victim's own registered node the hits were aimed at.
+    pub node: DamageNodeKey,
+}
+
+/// One detonation's victim-facing outcome.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MissionOrdnanceDetonation {
+    /// The item that detonated.
+    pub projectile: ProjectileId,
+    /// The fuse cause — `impact`, `proximity` or `timed`.
+    pub trigger: &'static str,
+    /// The actor the routed hits named, when the routing produced any.
+    pub victim: Option<ActorId>,
+    /// The damage node the hits named on the victim.
+    pub node: Option<DamageNodeKey>,
+    /// How many hits the damage authority applied.
+    pub applied: usize,
+    /// The hits the authority refused or could not resolve, each with its
+    /// reason — an unknown node, an unknown actor or an unresolved pool.
+    pub refused: Vec<String>,
+    /// The victim node's integrity after the resolution, when the pool is
+    /// resolved.
+    pub remaining_integrity: Option<f64>,
+    /// Whether the resolution recorded the victim's `Destroyed` lifecycle.
+    pub destroyed: bool,
+}
+
+/// One rocket launch aimed at the player's selected target.
+///
+/// The designated victim is the selection the mission's targeting session
+/// already holds (F30-C): the player picks the truck, the engagement names
+/// it. The original's lock and launch gesture are unmeasured, so this is
+/// labelled project design, not a reproduction — but a roster scan that
+/// fires at the lowest-serial hostile is what made rockets hit the wrong
+/// truck, and it is gone. The node the engagement names is the victim's own
+/// registered one, read back from the damage authority — a bound ground
+/// target's `targets.zrd` node (`t_truck01`), a scripted actor's
+/// `airframe` — so `"hull"` can no longer be aimed at an actor that never
+/// registered one. A selected target that is stale, unrostered, not
+/// hostile or node-less is refused by name.
 fn rocket_launch(
     world: &mut World,
     mission: &MissionWeapons,
     at: Tick,
     sequence: u32,
 ) -> Result<OrdnanceOrder, String> {
-    // The live damage-bound actors, lowest serial first: a deterministic
-    // designed selection that does not depend on entity iteration order.
-    let candidates: Vec<ActorId> = {
-        let mut query = world.query::<(Entity, &DamageActorBinding)>();
-        let mut candidates: Vec<ActorId> = query
-            .iter(world)
-            .map(|(_, binding)| binding)
-            .filter(|binding| {
-                binding.generation == mission.generation && binding.actor != mission.player
-            })
-            .map(|binding| binding.actor)
-            .collect();
-        candidates.sort();
-        candidates.dedup();
-        candidates
+    let (target, hostile) = {
+        let targeting = world
+            .get_resource::<TargetingSession>()
+            .ok_or_else(|| "no targeting session is installed".to_owned())?;
+        let target = targeting
+            .selection()
+            .current()
+            .ok_or_else(|| "no target is selected".to_owned())?;
+        if target == mission.player {
+            return Err("the selected target is the player".to_owned());
+        }
+        let store = targeting.store();
+        let shooter = store
+            .record(&mission.player)
+            .ok_or_else(|| "the player is not rostered in the targeting store".to_owned())?;
+        let record = store
+            .record(&target)
+            .ok_or_else(|| format!("the selected target {target} is not rostered"))?;
+        (
+            target,
+            store.allegiance(&shooter.faction, &record.faction) == Some(Allegiance::Hostile),
+        )
     };
-
-    let targeting = world
-        .get_resource::<TargetingSession>()
-        .ok_or_else(|| "no targeting session is installed".to_owned())?;
-    let store = targeting.store();
-    let shooter = store
-        .record(&mission.player)
-        .ok_or_else(|| "the player is not rostered in the targeting store".to_owned())?;
-    let target = candidates
-        .into_iter()
-        .find(|actor| {
-            store.record(actor).is_some_and(|record| {
-                store.allegiance(&shooter.faction, &record.faction) == Some(Allegiance::Hostile)
-            })
-        })
-        .ok_or_else(|| "no declared-hostile damage target is live".to_owned())?;
+    if !hostile {
+        return Err(format!(
+            "the selected target {target} is not hostile to the player"
+        ));
+    }
+    let node = victim_damage_node(world, mission, target).ok_or_else(|| {
+        format!("the selected target {target} registers no damage node this session")
+    })?;
     Ok(OrdnanceOrder::Launch(OrdnanceLaunch {
         id: OrdnanceLaunchId {
             session: mission.session.get(),
@@ -1303,10 +1378,67 @@ fn rocket_launch(
         target: Some(target),
         engagement: OrdnanceEngagement {
             damage_target: target,
-            node: DamageNodeKey::new(MISSION_TARGET_NODE).expect("the target node key is valid"),
+            node,
             status_recipient: StatusEffectTarget::actor_system(target, SystemKind::Propulsion),
         },
     }))
+}
+
+/// The damage node one victim actor's hits name: a bound ground target's
+/// own `targets.zrd` node, a scripted actor's `airframe` frame node, else
+/// the first node its registered graph declares. `None` when the actor
+/// registers no graph this session — a stale or unbound victim — because
+/// there is then no honest node to aim at.
+fn victim_damage_node(
+    world: &mut World,
+    mission: &MissionWeapons,
+    actor: ActorId,
+) -> Option<DamageNodeKey> {
+    {
+        let mut query = world.query::<&MissionGroundTarget>();
+        for target in query.iter(world) {
+            if target.generation == mission.generation && target.damage_actor == actor {
+                return DamageNodeKey::new(target.node.as_str()).ok();
+            }
+        }
+    }
+    let scripted = DamageNodeKey::new(SCRIPTED_DAMAGE_NODE).ok()?;
+    let resolver = world.get_resource::<SessionDamageResolver>()?.resolver();
+    let graph = resolver.graph(&actor)?;
+    if graph.nodes().any(|node| *node.key() == scripted) {
+        return Some(scripted);
+    }
+    graph.nodes().next().map(|node| node.key().clone())
+}
+
+/// The victim→node table one ordnance step routes fuse victims through:
+/// every live damage-bound actor of the generation mapped to its own
+/// registered node, so a proximity detonation's damage lands on the actor
+/// the rocket actually reached rather than the one the launch designated.
+fn mission_victim_nodes(
+    world: &mut World,
+    mission: &MissionWeapons,
+) -> BTreeMap<ActorId, DamageNodeKey> {
+    let actors: Vec<ActorId> = {
+        let mut query = world.query::<&DamageActorBinding>();
+        let mut actors: Vec<ActorId> = query
+            .iter(world)
+            .filter(|binding| {
+                binding.generation == mission.generation && binding.actor != mission.player
+            })
+            .map(|binding| binding.actor)
+            .collect();
+        actors.sort();
+        actors.dedup();
+        actors
+    };
+    let mut nodes = BTreeMap::new();
+    for actor in actors {
+        if let Some(node) = victim_damage_node(world, mission, actor) {
+            nodes.insert(actor, node);
+        }
+    }
+    nodes
 }
 
 /// The eligible targets' swept paths for the rockets' proximity test.
@@ -1386,6 +1518,7 @@ pub fn drive_mission_ordnance(world: &mut World) {
         .map(|orders| orders.orders)
         .unwrap_or_default();
     let paths = rocket_target_paths(world, &mission, dt_s);
+    let victim_nodes = mission_victim_nodes(world, &mission);
     let wind = mission_wind(world).velocity_m_s;
     let MissionOrdnanceSession(mut session) = world
         .remove_resource::<MissionOrdnanceSession>()
@@ -1407,8 +1540,76 @@ pub fn drive_mission_ordnance(world: &mut World) {
             targets: &paths,
             impacts: &[],
             blast_recipients: None,
+            victim_nodes: Some(&victim_nodes),
         },
     );
+    // The per-rocket truth the mission reports: fired, selected target,
+    // detonation victim and node, applied or refused hits and the victim's
+    // integrity afterwards.
+    {
+        let resolver = damage.resolver();
+        let mut report = world
+            .remove_resource::<MissionOrdnanceReport>()
+            .unwrap_or_default();
+        report.at = Some(tick.at);
+        report
+            .launches
+            .extend(orders.iter().filter_map(|order| match order {
+                OrdnanceOrder::Launch(launch) => Some(MissionOrdnanceLaunch {
+                    target: launch.engagement.damage_target,
+                    node: launch.engagement.node.clone(),
+                }),
+                _ => None,
+            }));
+        report
+            .orders_refused
+            .extend(tick.orders_refused.iter().map(ToString::to_string));
+        report.projectiles.extend(tick.launched.iter().copied());
+        report
+            .routing_refused
+            .extend(tick.routing_refused.iter().map(ToString::to_string));
+        report.expired.extend(tick.expired.iter().copied());
+        for detonation in &tick.detonations {
+            let victim = detonation.hits.first().map(|hit| hit.target);
+            let node = detonation.hits.first().map(|hit| hit.node.clone());
+            let mut entry = MissionOrdnanceDetonation {
+                projectile: detonation.projectile,
+                trigger: detonation.trigger.label(),
+                victim,
+                node: node.clone(),
+                applied: 0,
+                refused: Vec::new(),
+                remaining_integrity: None,
+                destroyed: false,
+            };
+            if let Some(resolution) = &detonation.damage {
+                for event in &resolution.events {
+                    match &event.kind {
+                        DamageEventKind::HitApplied { .. } => entry.applied += 1,
+                        DamageEventKind::HitBlocked { reason, .. } => {
+                            entry.refused.push(format!("blocked: {reason}"));
+                        }
+                        DamageEventKind::HitRefused { reason, .. } => {
+                            entry.refused.push(format!("refused: {}", reason.label()));
+                        }
+                        DamageEventKind::Lifecycle {
+                            kind: cs_sim::damage::LifecycleKind::Destroyed,
+                            ..
+                        } => entry.destroyed = true,
+                        _ => {}
+                    }
+                }
+            }
+            if let Some(source) = &detonation.damage_refused {
+                entry.refused.push(format!("batch refused: {source}"));
+            }
+            if let (Some(victim), Some(node)) = (victim, node.as_ref()) {
+                entry.remaining_integrity = resolver.remaining_integrity(&victim, node);
+            }
+            report.detonations.push(entry);
+        }
+        world.insert_resource(report);
+    }
     // A detonation's resolved batch goes to the same damage consumers the gun
     // path's rounds go to, so a rocket kill scores and wrecks exactly once.
     world.init_resource::<PendingDamageEvents>();
