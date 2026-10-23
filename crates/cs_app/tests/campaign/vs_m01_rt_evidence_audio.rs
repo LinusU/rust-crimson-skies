@@ -45,6 +45,7 @@ fn launch_sound(host: PathBuf, bytes: u64, sha256: ContentHash) -> LaunchSound {
             .expect("the member id is valid"),
         bytes,
         engine_law: None,
+        engine_rate: None,
         scene_sounds: Vec::new(),
         scene_refusals: Vec::new(),
     }

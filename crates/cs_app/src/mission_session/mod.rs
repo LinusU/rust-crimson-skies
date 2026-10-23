@@ -298,7 +298,8 @@ pub use launch_cinematic::{
 };
 pub use launch_sound::{
     LAUNCH_SOUND_CONTAINER, LaunchAudioProbe, LaunchSound, LaunchSoundError, backend_refusal,
-    install_launch_audio, measure_launch_sound, member_content_id, stage_container,
+    engine_rate_law, install_launch_audio, measure_launch_sound, member_content_id,
+    stage_container,
 };
 pub use lens_flare::{
     FLARE_ALPHA, FLARE_TEXTURES, FlareQuadNode, FlareSource, LensFlareSources, MissionLensFlare,

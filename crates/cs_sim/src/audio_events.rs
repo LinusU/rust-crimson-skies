@@ -1245,6 +1245,120 @@ impl EngineVoice {
     }
 }
 
+/// The measured engine-voice law of the original (`player.zrd`
+/// `engine_sound`, claim `OWNER-STATIC-2026-10-22`, provenance `static`):
+/// with `A` and `B` the throttle fractions of the volume and pitch pairs,
+/// `V = vmin + (vmax - vmin) * A` and `P = pmin + (pmax - pmin) * B`, each
+/// fraction `clamp01((throttle - T0) / (T1 - T0))`
+/// (`engine.throttle_fraction`, `engine.rate_and_gain`).
+///
+/// The original applies it every frame with no smoothing, so a voice that
+/// follows it jumps to [`Self::target`] ([`EngineVoice::jump_to`]). Not
+/// modelled, and named so: the sideslip terms of `engine.sideslip_terms`
+/// (they need the velocity in the body frame), the per-aircraft pitch scale
+/// (`1.0` for a record with no `damaged_engine_sound` table, which is every
+/// retail player airframe) and the byte `[aircraft+0x947]` override.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct EngineRateLaw {
+    volume_throttle: (f64, f64),
+    volume: (f64, f64),
+    pitch_throttle: (f64, f64),
+    pitch: (f64, f64),
+}
+
+impl EngineRateLaw {
+    /// Builds the law from the four `(throttle, value)` pairs in the file's
+    /// order: `min_throttle_volume`, `max_throttle_volume`,
+    /// `min_throttle_pitch`, `max_throttle_pitch`.
+    ///
+    /// # Errors
+    ///
+    /// [`EngineAudioError::NonFinite`] for a NaN or infinite field,
+    /// [`EngineAudioError::NonPositivePitch`] for a throttle span that is not
+    /// increasing or a pitch that is not positive, and
+    /// [`EngineAudioError::BadGain`] for a gain outside the module's ceiling.
+    pub fn try_new(
+        min_volume: (f64, f64),
+        max_volume: (f64, f64),
+        min_pitch: (f64, f64),
+        max_pitch: (f64, f64),
+    ) -> Result<Self, EngineAudioError> {
+        for (field, value) in [
+            ("min_throttle_volume.x", min_volume.0),
+            ("min_throttle_volume.y", min_volume.1),
+            ("max_throttle_volume.x", max_volume.0),
+            ("max_throttle_volume.y", max_volume.1),
+            ("min_throttle_pitch.x", min_pitch.0),
+            ("min_throttle_pitch.y", min_pitch.1),
+            ("max_throttle_pitch.x", max_pitch.0),
+            ("max_throttle_pitch.y", max_pitch.1),
+        ] {
+            if !value.is_finite() {
+                return Err(EngineAudioError::NonFinite { field });
+            }
+        }
+        for (field, value) in [("volume.min", min_volume.1), ("volume.max", max_volume.1)] {
+            if value < 0.0 || value > MAX_AUDIO_GAIN {
+                return Err(EngineAudioError::BadGain { field, value });
+            }
+        }
+        for (field, value) in [
+            ("pitch.min", min_pitch.1),
+            ("pitch.max", max_pitch.1),
+            ("volume_throttle.span", max_volume.0 - min_volume.0),
+            ("pitch_throttle.span", max_pitch.0 - min_pitch.0),
+        ] {
+            if value <= 0.0 {
+                return Err(EngineAudioError::NonPositivePitch { field, value });
+            }
+        }
+        Ok(Self {
+            volume_throttle: (min_volume.0, max_volume.0),
+            volume: (min_volume.1, max_volume.1),
+            pitch_throttle: (min_pitch.0, max_pitch.0),
+            pitch: (min_pitch.1, max_pitch.1),
+        })
+    }
+
+    fn lerp(throttle: f64, span: (f64, f64), values: (f64, f64)) -> f64 {
+        let throttle = if throttle.is_finite() { throttle } else { 0.0 };
+        let fraction = ((throttle - span.0) / (span.1 - span.0)).clamp(0.0, 1.0);
+        values.0 + (values.1 - values.0) * fraction
+    }
+
+    /// The gain `V` the law asks for at `throttle`.
+    #[must_use]
+    pub fn gain_at(&self, throttle: f64) -> f64 {
+        Self::lerp(throttle, self.volume_throttle, self.volume)
+    }
+
+    /// The pitch multiplier `P` the law asks for at `throttle`.
+    #[must_use]
+    pub fn pitch_at(&self, throttle: f64) -> f64 {
+        Self::lerp(throttle, self.pitch_throttle, self.pitch)
+    }
+
+    /// The level an engine at `throttle` asks for; silence for an engine that
+    /// is not running (the original's behaviour for a stopped engine is not
+    /// measured, so this keeps the designed rule).
+    #[must_use]
+    pub fn target(&self, running: bool, throttle: f64) -> VoiceLevel {
+        if !running {
+            return VoiceLevel::new(0.0, self.pitch_at(0.0));
+        }
+        VoiceLevel::new(self.gain_at(throttle), self.pitch_at(throttle))
+    }
+}
+
+impl EngineVoice {
+    /// Sets the level outright: a law that is not smoothed (the measured
+    /// original applies its pairs every frame).
+    pub fn jump_to(&mut self, level: VoiceLevel) {
+        self.gain = level.gain;
+        self.pitch = level.pitch;
+    }
+}
+
 // ------------------------------------------------------------------ device --
 
 /// A voice id one device assigned to one started loop.

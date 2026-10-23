@@ -90,7 +90,7 @@ pub use device::{
     InMemorySamples, LoopingVoice, PcmAudio, PcmError, RefusingAudioDevice, SampleLibrary,
     SampleProbe, audibility_exit_code, classify_refusal, open_audible_device, sound_member_pcm,
 };
-pub use engine::{EngineVoiceFollow, EngineVoices, smooth_engine_voices};
+pub use engine::{EngineVoiceFollow, EngineVoices, MeasuredEngineRate, smooth_engine_voices};
 pub use handoff::{
     AudioHandoffLog, AudioHandoffRefusal, AudioInstall, DeclaredAudioCatalog, insert_audio_session,
 };

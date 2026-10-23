@@ -34,15 +34,19 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use bevy::ecs::component::Component;
 use bevy::ecs::entity::Entity;
+use bevy::ecs::query::Has;
 use bevy::ecs::resource::Resource;
 use bevy::ecs::system::{Query, Res, ResMut};
 use bevy::time::{Fixed, Time};
-use cs_sim::audio_events::{AudioEmitterId, EngineSmoothing, EngineVoice, VoiceLevel};
+use cs_sim::audio_events::{
+    AudioEmitterId, EngineRateLaw, EngineSmoothing, EngineVoice, VoiceLevel,
+};
 
 use crate::physics::flight::FlightAircraft;
 use crate::playtest::scene::PlaytestOriginalFlight;
 
 use super::AudioEmitterBinding;
+use super::measured_voice::MeasuredVoice;
 
 /// Component: this emitter's engine loop follows the flight model's throttle.
 ///
@@ -62,6 +66,13 @@ impl Default for EngineVoiceFollow {
         }
     }
 }
+
+/// Resource: the original's measured engine rate and volume law
+/// (`player.zrd` `engine_sound`), installed with the launch audio. A
+/// [`MeasuredVoice`] engine emitter follows it instead of the designed
+/// smoothing law: the original applies its pairs every frame, unsmoothed.
+#[derive(Resource, Clone, Copy, Debug, PartialEq)]
+pub struct MeasuredEngineRate(pub EngineRateLaw);
 
 /// Resource: every live engine voice's smoothed level, keyed by emitter.
 ///
@@ -119,6 +130,20 @@ impl EngineVoices {
             .advance(smoothing, target, dt_s);
     }
 
+    /// Sets one voice to `target` outright, creating it when it is new: the
+    /// measured law is not smoothed.
+    pub fn jump(
+        &mut self,
+        emitter: AudioEmitterId,
+        smoothing: &EngineSmoothing,
+        target: VoiceLevel,
+    ) {
+        self.0
+            .entry(emitter)
+            .or_insert_with(|| EngineVoice::at_idle(smoothing))
+            .jump_to(target);
+    }
+
     /// Drops every voice whose emitter is not in `live`.
     pub fn retain(&mut self, live: &BTreeSet<AudioEmitterId>) {
         self.0.retain(|emitter, _| live.contains(emitter));
@@ -143,16 +168,22 @@ impl EngineVoices {
 pub fn smooth_engine_voices(
     time: Res<Time<Fixed>>,
     mut voices: ResMut<EngineVoices>,
-    followed: Query<(Entity, &AudioEmitterBinding, &EngineVoiceFollow)>,
+    measured_rate: Option<Res<MeasuredEngineRate>>,
+    followed: Query<(
+        Entity,
+        &AudioEmitterBinding,
+        &EngineVoiceFollow,
+        Has<MeasuredVoice>,
+    )>,
     authorities: Query<(Option<&FlightAircraft>, Option<&PlaytestOriginalFlight>)>,
 ) {
     let dt_s = f64::from(time.delta_secs());
     let live: BTreeSet<AudioEmitterId> = followed
         .iter()
-        .map(|(_, binding, _)| binding.emitter)
+        .map(|(_, binding, _, _)| binding.emitter)
         .collect();
     voices.retain(&live);
-    for (entity, binding, follow) in &followed {
+    for (entity, binding, follow, measured) in &followed {
         // Two engine authorities and one law per body, exactly as the
         // propeller spin reads them: the designed F24 record when the body
         // carries it, otherwise the recovered original law's own throttle. A
@@ -166,6 +197,13 @@ pub fn smooth_engine_voices(
             (_, Some(record)) => record.engine(),
             (None, None) => continue,
         };
+        if let (true, Some(rate)) = (measured, measured_rate.as_deref()) {
+            // The spool stands in for `[aircraft+0x124]`, the throttle the
+            // original's law reads; their equality is not measured.
+            let target = rate.0.target(engine.running, engine.spool);
+            voices.jump(binding.emitter, &follow.smoothing, target);
+            continue;
+        }
         let target = follow.smoothing.target(engine.running, engine.spool);
         voices.advance(binding.emitter, &follow.smoothing, target, dt_s);
     }

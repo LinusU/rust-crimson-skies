@@ -24,7 +24,7 @@ use bevy::app::App;
 use bevy::ecs::schedule::IntoScheduleConfigs;
 use bevy::ecs::system::RunSystemOnce;
 use bevy::prelude::{GlobalTransform, Query, ResMut, Resource, With, World};
-use cs_sim::audio_events::{AudioDevice, Listener, SpatialPolicy};
+use cs_sim::audio_events::{AudioDevice, EngineRateLaw, Listener, SpatialPolicy};
 
 use crate::audio::measured_voice::{
     EngineGroupLaw, LaunchVoicePlan, SceneCue, VoiceListenerPose, listener_pose,
@@ -60,6 +60,9 @@ pub const LAUNCH_SOUND_CONTAINER: &str = "ZBD/soundsh.zbd";
 /// The vehicle field naming the airframe's external engine sound group.
 const ENGINE_SOUND_FIELD: &str = "engine_sound";
 
+/// The member of [`SOUND_GROUPS_ARCHIVE`] holding the engine rate tuning.
+const PLAYER_TUNING_MEMBER: &str = "player.zrd";
+
 /// The reader archive holding the sound group table.
 const SOUND_GROUPS_ARCHIVE: &str = "ZBD/zrdr.zbd";
 
@@ -88,6 +91,9 @@ pub struct LaunchSound {
     /// The engine group's own `RANGE`/`VOLUME` fields — the `.02` `desc`
     /// terms — when `sounds.zrd` carries them (#1863).
     pub engine_law: Option<EngineGroupLaw>,
+    /// The measured throttle-to-pitch and -volume law of `player.zrd`
+    /// `engine_sound`, when the file carries all four pairs.
+    pub engine_rate: Option<EngineRateLaw>,
     /// The launch cinematic's `SOUND` cues resolved through `sounds.zrd`.
     pub scene_sounds: Vec<SceneSound>,
     /// Every `SOUND` name the data could not bind, with the reason
@@ -202,6 +208,29 @@ pub(super) fn field_numbers(entry: &[ZrdValue], key: &str) -> Option<Vec<f64>> {
     None
 }
 
+/// The `engine_sound` pairs of a decoded `player.zrd` as the measured engine
+/// rate law; `None` unless all four `(throttle, value)` pairs are present
+/// numbers that the law accepts.
+#[must_use]
+pub fn engine_rate_law(player: &ZrdValue) -> Option<EngineRateLaw> {
+    let section = find_record(player, ENGINE_SOUND_FIELD)?;
+    let pair = |key: &str| -> Option<(f64, f64)> {
+        let values: Vec<f64> = find_record(section, key)?
+            .as_list()?
+            .iter()
+            .filter_map(zrd_number)
+            .collect();
+        Some((*values.first()?, *values.get(1)?))
+    };
+    EngineRateLaw::try_new(
+        pair("min_throttle_volume")?,
+        pair("max_throttle_volume")?,
+        pair("min_throttle_pitch")?,
+        pair("max_throttle_pitch")?,
+    )
+    .ok()
+}
+
 pub(crate) fn reader_member(
     install_root: &Path,
     container: &str,
@@ -270,6 +299,11 @@ pub fn measure_launch_sound(
         let volume = field_numbers(entry, "VOLUME")?.first().copied()?;
         EngineGroupLaw::try_new(*range.first()?, *range.get(1)?, volume).ok()
     });
+    // The throttle-to-pitch/volume pairs the engine voice is driven by.
+    let engine_rate = reader_member(install_root, SOUND_GROUPS_ARCHIVE, PLAYER_TUNING_MEMBER)
+        .ok()
+        .and_then(|bytes| decode_zrd(&bytes).ok())
+        .and_then(|player| engine_rate_law(&player));
     // The launch cinematic's `SOUND` cues resolve through the same group
     // table: a group with no record is a named refusal, not a dropped cue.
     let mut scene_sounds = Vec::new();
@@ -315,6 +349,7 @@ pub fn measure_launch_sound(
         host,
         bytes,
         engine_law,
+        engine_rate,
         scene_sounds,
         scene_refusals,
     })
@@ -528,6 +563,9 @@ pub fn install_launch_audio(
     // `follow_listener` keeps the pose current with the body it tracks.
     if let Some(law) = launch.engine_law {
         app.insert_resource(law);
+    }
+    if let Some(rate) = launch.engine_rate {
+        app.insert_resource(crate::audio::MeasuredEngineRate(rate));
     }
     app.insert_resource(VoiceListenerPose {
         position: start_m.map(f64::from),
