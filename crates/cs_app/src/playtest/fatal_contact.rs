@@ -41,7 +41,11 @@ use cs_types::net::EventId;
 
 use super::retail::PlaytestAreaBody;
 use super::scene::{PlaytestAircraft, PlaytestGround, PlaytestSea};
-use crate::mission_session::{MISSION_TARGET_NODE, PlayerVictim};
+use crate::airframe_damage::AirframeDamageRegion;
+use crate::mission_session::{
+    MISSION_TARGET_NODE, PendingOrdnanceBursts, PlayerVictim, contact_wing_zone, queue_crash_smoke,
+    wing_node,
+};
 use crate::physics::{ContactReports, PhysicsTickLedger};
 use crate::weapons::SessionDamageResolver;
 
@@ -171,6 +175,28 @@ pub struct PlayerCrashed {
     pub crash: PlayerCrash,
 }
 
+/// Message: one judged terrain contact episode of the player's aircraft, fatal
+/// or not. One per contact that did damage.
+#[derive(Message, Clone, Copy, Debug, PartialEq)]
+pub struct TerrainContactJudged {
+    /// The fixed tick of the contact.
+    pub tick: u64,
+    /// The aircraft that touched the terrain.
+    pub aircraft: Entity,
+    /// The world contact point, from the avian manifold point.
+    pub point_m: Vec3,
+    /// The unit surface normal, pointing out of the terrain.
+    pub normal: Vec3,
+    /// `-dot(normalize(v), n)`.
+    pub severity: f64,
+    /// The damage done to the hull pool (and routed to the wing).
+    pub damage: f64,
+    /// The wing region the damage was routed to (designed side rule).
+    pub wing: AirframeDamageRegion,
+    /// The contact emptied the hull pool.
+    pub fatal: bool,
+}
+
 /// The bodies a contact counts as terrain: the slab, the sea or the original
 /// area's scenery.
 type TerrainFilter = Or<(
@@ -211,6 +237,8 @@ pub fn judge_terrain_contacts(
     damage: Option<ResMut<SessionDamageResolver>>,
     mut commands: bevy::prelude::Commands,
     mut crashed: MessageWriter<PlayerCrashed>,
+    mut judged: MessageWriter<TerrainContactJudged>,
+    mut smoke: Option<ResMut<PendingOrdnanceBursts>>,
 ) {
     let (Some(victim), Some(mut damage)) = (victim, damage) else {
         for (_, _, _, velocity, _, mut rule) in &mut aircraft {
@@ -240,7 +268,7 @@ pub fn judge_terrain_contacts(
             if !terrain.contains(other) {
                 continue;
             }
-            let Some(normal) = outward_normal(&collisions, entity, other) else {
+            let Some((normal, point)) = terrain_contact(&collisions, entity, other) else {
                 continue;
             };
             let severity = contact_severity(before, normal);
@@ -248,31 +276,49 @@ pub fn judge_terrain_contacts(
                 continue;
             }
             let hit_damage = crash_damage(rule.health_damage_range, severity, true);
-            let Ok(hit) = HitEvent::try_new(
-                EventId {
-                    session,
-                    tick: Tick(ledger.ticks),
-                    producer: MISSION_CRASH_PRODUCER,
-                    sequence,
-                },
-                None,
-                victim.actor,
-                node.clone(),
-                DamageChannel::Internal,
-                hit_damage,
+            let wing = contact_wing_zone(rotation.0.inverse() * (point - position.0)).value;
+            let hit_at = |sequence, node| {
+                HitEvent::try_new(
+                    EventId {
+                        session,
+                        tick: Tick(ledger.ticks),
+                        producer: MISSION_CRASH_PRODUCER,
+                        sequence,
+                    },
+                    None,
+                    victim.actor,
+                    node,
+                    DamageChannel::Internal,
+                    hit_damage,
+                )
+            };
+            let (Ok(hit), Ok(wing_hit)) = (
+                hit_at(sequence, node.clone()),
+                hit_at(sequence + 1, wing_node(wing)),
             ) else {
                 continue;
             };
-            sequence += 1;
+            sequence += 2;
             let was_destroyed = damage.resolver().is_destroyed(&victim.actor);
             if damage
                 .resolver_mut()
-                .resolve(Tick(ledger.ticks), &[hit])
+                .resolve(Tick(ledger.ticks), &[hit, wing_hit])
                 .is_err()
             {
                 continue;
             }
-            if was_destroyed || !damage.resolver().is_destroyed(&victim.actor) {
+            let fatal = !was_destroyed && damage.resolver().is_destroyed(&victim.actor);
+            judged.write(TerrainContactJudged {
+                tick: ledger.ticks,
+                aircraft: entity,
+                point_m: point,
+                normal,
+                severity,
+                damage: hit_damage,
+                wing,
+                fatal,
+            });
+            if !fatal {
                 continue;
             }
             let crash = PlayerCrash {
@@ -289,6 +335,9 @@ pub fn judge_terrain_contacts(
             rule.crash = Some(crash);
             commands.entity(entity).insert(RigidBody::Static);
             commands.insert_resource(CrashSequence::begin(crash, rotation.0));
+            if let Some(pending) = smoke.as_deref_mut() {
+                queue_crash_smoke(pending, ledger.ticks, position.0);
+            }
             crashed.write(PlayerCrashed {
                 aircraft: entity,
                 crash,
@@ -299,8 +348,13 @@ pub fn judge_terrain_contacts(
 }
 
 /// The unit normal of the surface `other` presents to `aircraft`, pointing out
-/// of the surface, from the first touching manifold of their pair.
-fn outward_normal(collisions: &Collisions, aircraft: Entity, other: Entity) -> Option<Vec3> {
+/// of the surface, and the world contact point, from the first touching
+/// manifold of their pair.
+fn terrain_contact(
+    collisions: &Collisions,
+    aircraft: Entity,
+    other: Entity,
+) -> Option<(Vec3, Vec3)> {
     use avian3d::prelude::ContactPairFlags;
     collisions.iter().find_map(|pair| {
         if !pair.flags.contains(ContactPairFlags::TOUCHING) {
@@ -318,6 +372,6 @@ fn outward_normal(collisions: &Collisions, aircraft: Entity, other: Entity) -> O
             return None;
         };
         let manifold = pair.manifolds.iter().find(|m| !m.points.is_empty())?;
-        Some(manifold.normal * sign)
+        Some((manifold.normal * sign, manifold.points.first()?.point))
     })
 }

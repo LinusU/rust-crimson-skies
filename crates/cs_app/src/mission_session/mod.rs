@@ -101,6 +101,7 @@ mod cockpit_dials;
 mod cockpit_hud;
 mod cockpit_interior;
 mod compose;
+mod contact_fx;
 mod content;
 mod crash_flow;
 mod damage_trail;
@@ -187,6 +188,10 @@ pub use compose::{
     MissionComposition, MissionCompositionError, MissionPlayerBody, MissionPlayerStart,
     MissionStage, StageItem, StageMount, build_headless, build_windowed,
     declared_engine_objectives, run_windowed, stage_for, teardown,
+};
+pub use contact_fx::{
+    CONTACT_WING_ZONE_CLAIM, CONTACT_ZONE_UNKNOWN_CLAIM, contact_wing_zone, queue_crash_smoke,
+    wing_node,
 };
 pub use content::{
     MissionContent, MissionFlight, MissionSessionError, SoundArchive, prepare_mission_content,

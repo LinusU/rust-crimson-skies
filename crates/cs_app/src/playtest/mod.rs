@@ -366,6 +366,7 @@ impl Plugin for PlaytestPlugin {
                 apply_flight_command.in_set(RunFixedMainLoopSystems::BeforeFixedMainLoop),
             )
             .add_message::<fatal_contact::PlayerCrashed>()
+            .add_message::<fatal_contact::TerrainContactJudged>()
             .add_systems(
                 FixedLast,
                 (record_collisions, fatal_contact::judge_terrain_contacts),
