@@ -167,7 +167,12 @@ fn accept_m01_fog_update_static_rows_and_instructions_match_the_image() {
     );
     // The cinematic entry sets fog mode 0 and 0x654120 = 1 and multiplies
     // the far clip by 4.0; the exit sets fog mode 1 and clears 0x654120 after
-    // multiplying by 0.25.
+    // multiplying by 0.25. Both write the fog mode of the object at 0x71c2ac.
+    bytes(
+        0x450676,
+        &[0x8b, 0x15, 0xac, 0xc2, 0x71, 0x00],
+        "entry: mode-setter object is [0x71c2ac]",
+    );
     bytes(
         0x45067c,
         &[0x6a, 0x00, 0x52, 0xe8, 0x7c, 0xa1, 0x08],
@@ -198,6 +203,17 @@ fn accept_m01_fog_update_static_rows_and_instructions_match_the_image() {
         &[0xc7, 0x05, 0x20, 0x41, 0x65, 0x00, 0x00, 0x00, 0x00, 0x00],
         "exit: 0x654120 = 0",
     );
+    bytes(
+        0x450edb,
+        &[0x8b, 0x15, 0xac, 0xc2, 0x71, 0x00],
+        "exit: mode-setter object is [0x71c2ac]",
+    );
+    // The WorldSetFogDensity handler reaches the density setter.
+    bytes(
+        0x5bc78c,
+        &[0xe8, 0xff, 0xe0, 0xf1, 0xff],
+        "WorldSetFogDensity handler call",
+    );
     // The zone apply runs from the camera-zone change (0x42f283) and writes
     // the three fog setters with the zone record.
     bytes(
@@ -227,10 +243,16 @@ fn accept_m01_fog_update_static_rows_and_instructions_match_the_image() {
         &[0xe8, 0x98, 0xac, 0x19, 0x00],
         "screen fill call",
     );
-    // The precipitation controller 0x42b7c0 compares camera Y with BOTTOM.
+    // The precipitation controller 0x42b7c0 compares camera Y with BOTTOM;
+    // a second per-frame site calls it with the same camera object.
     bytes(
         0x42b80d,
         &[0xd8, 0x1d, 0xd8, 0xdc, 0x71, 0x00],
         "controller: Y against BOTTOM",
+    );
+    bytes(
+        0x489e4e,
+        &[0xe8, 0x6d, 0x19, 0xfa, 0xff],
+        "second controller call site",
     );
 }
