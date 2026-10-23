@@ -710,7 +710,17 @@ fn accept_fe_menu_3_the_windowed_smoke_draws_the_typed_name_and_the_pilot_list()
         |_| std::env::temp_dir().join("fe-menu-3-smoke"),
         PathBuf::from,
     );
-    let _ = std::fs::remove_dir_all(&dir);
+    // Only the smoke's own artifacts and its seeded population: the
+    // directory may also hold the evidence run's log.
+    let _ = std::fs::remove_dir_all(dir.join(cs_app::ui::front_end::SMOKE_PROFILE_SUBDIR));
+    if let Ok(entries) = std::fs::read_dir(&dir) {
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name == "report.json" || name.ends_with(".png") {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
     std::fs::create_dir_all(&dir).expect("the capture directory is created");
     {
         // The smoke's own population: the synthetic one under the capture
