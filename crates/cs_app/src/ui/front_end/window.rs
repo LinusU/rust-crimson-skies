@@ -994,6 +994,14 @@ fn frame_shell(world: &mut World) {
         }
     }
     if exit {
+        // A Launch step exits through the same AppExit a Quit does; the
+        // mission it named is what the caller's `hand_over` needs, and the
+        // world it lived in is the one `App::run` is about to take away.
+        if let Some(cell) = world.get_resource::<HandoverCell>()
+            && let Some(mission) = flow.as_ref().and_then(StartFlow::handover)
+        {
+            *cell.0.lock().unwrap_or_else(|poison| poison.into_inner()) = Some(mission.to_owned());
+        }
         world
             .resource_mut::<Messages<AppExit>>()
             .write(AppExit::Success);
@@ -1647,6 +1655,21 @@ struct ShellSmoke {
     request: SmokeRequest,
     /// The slot the outcome is reported through.
     handle: ShellSmokeHandle,
+}
+
+/// Shared cell the shell fills with the mission its Launch step named, the
+/// frame it writes the run's `AppExit`: `App::run` leaves the caller an
+/// empty world, so the hand-over travels through this like the smoke's
+/// report through [`ShellSmokeHandle`] (#1832).
+#[derive(Resource, Clone, Default)]
+pub(super) struct HandoverCell(Arc<Mutex<Option<String>>>);
+
+impl HandoverCell {
+    /// The mission the hand-over was made for, once it was.
+    #[inline(always)]
+    pub fn take(&self) -> Option<String> {
+        self.0.lock().ok().and_then(|mut slot| slot.take())
+    }
 }
 
 /// Shared slot the smoke fills when the run ends.

@@ -45,7 +45,7 @@ use std::path::PathBuf;
 
 use bevy::app::AppExit;
 
-use super::window::{ShellResource, shell_app_with};
+use super::window::{HandoverCell, shell_app_with};
 use super::{
     Action, ActionSource, Effect, FrontEnd, MenuShell, Request, SCREEN_SECTIONS, Screen,
     ShellOutcome, find, rows_on,
@@ -822,17 +822,16 @@ pub fn run_start_flow(request: &StartFlowRequest) -> Result<(), StartFlowError> 
     };
     let (mut app, handle) =
         shell_app_with(&window, Some(flow), scene).map_err(StartFlowError::FrontEnd)?;
+    // `App::run` leaves this handle an empty app, so the Launch step's
+    // mission comes back through the shared cell the shell fills the frame
+    // it writes the exit.
+    let handover = HandoverCell::default();
+    app.world_mut().insert_resource(handover.clone());
     let exit = app.run();
     if let (Some(handle), Some(smoke)) = (&handle, &window.smoke) {
         super::window::finish(handle, smoke).map_err(StartFlowError::FrontEnd)?;
     }
-    let mission = app
-        .world()
-        .get_resource::<ShellResource>()
-        .and_then(ShellResource::flow)
-        .and_then(StartFlow::handover)
-        .map(str::to_owned);
-    eprintln!("cs: debug exit={exit:?} mission={mission:?} shell={:?}", app.world().get_resource::<ShellResource>().map(|s| (s.flow().is_some(), s.flow().and_then(|f| f.handover().map(str::to_owned)))));
+    let mission = handover.take();
     drop(app);
     if let AppExit::Error(code) = exit {
         return Err(StartFlowError::FrontEnd(FrontEndError::Exit(format!(
