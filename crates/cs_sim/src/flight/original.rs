@@ -914,6 +914,18 @@ pub struct OriginalStep {
     pub fuel: f64,
     /// Whether the AI minimum forward speed clamped the velocity.
     pub speed_floor_applied: bool,
+    /// The stall margin the step's rotation used: `1 - q * S * min(CLmax, 1.8)
+    /// / W`. Positive means stalled (the law strips nose-up rotation and drops
+    /// the nose in proportion to it); zero or negative means flying.
+    pub stall_margin: f64,
+}
+
+/// The stall margin of a step's aerodynamics: `1 - q * S * min(CLmax, 1.8) /
+/// W`, positive when the airframe cannot lift its weight at the maximum lift
+/// coefficient.
+fn stall_margin(aero: &AeroStep, airframe: &OriginalAirframe) -> f64 {
+    let cl_max = max_lift_coefficient(aero.mach);
+    1.0 - aero.dynamic_pressure * airframe.ref_area * cl_max.min(1.8) / airframe.veh_weight
 }
 
 /// The forces of one step, before gravity and before the `F * 9.82 / W` scale.
@@ -1100,6 +1112,7 @@ impl OriginalFlightModel {
             throttle,
             fuel: state.fuel,
             speed_floor_applied,
+            stall_margin: stall_margin(&aero, airframe),
         })
     }
 
@@ -1282,9 +1295,7 @@ impl OriginalFlightModel {
         }
 
         // Stall: strip any nose-up component, then drop the nose.
-        let cl_max = max_lift_coefficient(aero.mach);
-        let stall_margin =
-            1.0 - aero.dynamic_pressure * airframe.ref_area * cl_max.min(1.8) / airframe.veh_weight;
+        let stall_margin = stall_margin(aero, airframe);
         if stall_margin > 0.0 {
             let nose_up = dot(increment, right);
             if nose_up > 0.0 {
