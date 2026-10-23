@@ -2305,7 +2305,7 @@ fn evaluate(
         let required: &[&str] = if resumed {
             &["cabin"]
         } else {
-            &["mainmenu", "campaign", "intro", "cabin"]
+            &["mainmenu", "campaign", "pilot", "intro", "cabin"]
         };
         for label in required {
             if !shots.iter().any(|shot| shot.label == *label) {

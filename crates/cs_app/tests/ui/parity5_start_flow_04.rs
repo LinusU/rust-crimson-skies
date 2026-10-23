@@ -224,25 +224,33 @@ fn accept_parity5_start_flow_04_chain_args_round_trip_and_terminate() {
 /// The end-to-end run: the real `cs` binary drives the whole chain under
 /// `$CS_GAME_DIR`. Four process images, four capture directories, every
 /// report's checks green. Ignored without the retail installation and a
-/// window.
+/// window. `CS_START_FLOW_SMOKE_OUT` names the capture root (so the
+/// evidence harness can collect the chain's artifacts); the default is a
+/// temporary directory.
 #[test]
 #[ignore = "requires CS_GAME_DIR, a GPU and the built cs binary"]
 fn accept_parity5_start_flow_04_owner_command_smoke_runs_the_whole_flow() {
     let cs_path = std::env::var("CS_GAME_DIR")
         .expect("CS_GAME_DIR must name the original installation for this retail test");
-    let capture = std::env::temp_dir().join("parity5-start-flow-04-smoke");
+    let capture = std::env::var("CS_START_FLOW_SMOKE_OUT").map_or_else(
+        |_| std::env::temp_dir().join("parity5-start-flow-04-smoke"),
+        PathBuf::from,
+    );
     let _ = std::fs::remove_dir_all(&capture);
-    let status = std::process::Command::new(env!("CARGO_BIN_EXE_cs"))
-        .args([
-            "--cs-path",
-            &cs_path,
-            "--smoke-seconds",
-            "60",
-            "--capture-dir",
-            &capture.display().to_string(),
-        ])
-        .status()
-        .expect("the cs binary spawns");
+    let status = std::process::Command::new(
+        std::env::var("CS_START_FLOW_BIN")
+            .map_or_else(|_| PathBuf::from(env!("CARGO_BIN_EXE_cs")), PathBuf::from),
+    )
+    .args([
+        "--cs-path",
+        &cs_path,
+        "--smoke-seconds",
+        "60",
+        "--capture-dir",
+        &capture.display().to_string(),
+    ])
+    .status()
+    .expect("the cs binary spawns");
     assert!(
         status.success(),
         "the start-flow smoke chain failed: {status}"
@@ -258,5 +266,13 @@ fn accept_parity5_start_flow_04_owner_command_smoke_runs_the_whole_flow() {
             body.contains("\"passed\":true"),
             "the {leg} leg's checks failed: {body}"
         );
+        // The mission legs are the start-flow mode's own run, labelled so a
+        // later audit cannot read them as the scripted smoke's.
+        if leg == "mission" || leg == "replay" {
+            assert!(
+                body.contains("\"mode\":\"start_flow\""),
+                "the {leg} leg's report mislabels its mode: {body}"
+            );
+        }
     }
 }

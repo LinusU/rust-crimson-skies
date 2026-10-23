@@ -80,6 +80,7 @@ fn accept_parity5_start_flow_04_missing_screens_fail_naming_them() {
     };
     let checks = evaluate_mission_smoke(&m);
     for (id, name) in [
+        ("briefing_screen_drawn", "briefing"),
         ("start_flow_pause_map_opened", "pause map"),
         ("start_flow_quit_clicked", "Quit"),
         ("start_flow_mission_left", "reported its end"),

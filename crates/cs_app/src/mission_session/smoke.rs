@@ -6435,6 +6435,8 @@ fn write_artifacts(
             "engagement"
         } else if report.measurements.debrief.is_some() {
             "failure"
+        } else if report.measurements.start_flow.is_some() {
+            "start_flow"
         } else if report.measurements.no_teleport {
             "no_teleport"
         } else {

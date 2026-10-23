@@ -47,6 +47,18 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
         }];
     };
     let mut checks = evaluate_briefing(m);
+    // The briefing is a required screen of the leg: a run that never
+    // reached it collected no briefing metrics at all, and
+    // `evaluate_briefing` stays silent on those — so the leg names it here
+    // instead of failing only on what came after.
+    if m.briefing.is_none() {
+        checks.push(Check {
+            id: "briefing_screen_drawn".to_owned(),
+            applies: true,
+            passed: false,
+            detail: "the leg never reached the briefing screen, so nothing was measured".to_owned(),
+        });
+    }
     checks.extend(evaluate_flight_check(m));
 
     // The launch cinematic, as the scripted mode judges it.
