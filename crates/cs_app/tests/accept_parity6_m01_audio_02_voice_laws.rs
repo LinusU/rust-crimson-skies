@@ -77,7 +77,7 @@ fn contains(haystack: &[u8], needle: &[u8]) -> bool {
 fn accept_parity6_m01_audio_02_the_committed_table_parses_with_the_audio_rows() {
     let facts = engine_facts().expect("the committed table parses");
     let rows = rows();
-    assert_eq!(rows.len(), 109);
+    assert_eq!(rows.len(), 123);
     let mut names: Vec<&str> = rows.iter().map(|row| row.name.as_str()).collect();
     names.sort_unstable();
     names.dedup();

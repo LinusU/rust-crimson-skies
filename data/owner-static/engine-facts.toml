@@ -5152,8 +5152,8 @@ status = "member"
 members = "exp_water_b.wav"
 groups = "snd_exp_water_b"
 excluded = "3 VO lines"
-event = "touchdown_water animation glance sequence (SOUND AT_NODE MAIN_ROOT_NODE): the ground-contact event on water, played by the sequence SOUND executor 0x4e74e0"
-residual = "the only SFX member of the size; a VO line is not excluded statically; which M01 events call touchdown_water is not decoded"
+event = "touchdown_water animation glance sequence (SOUND AT_NODE MAIN_ROOT_NODE): started by the aircraft contact resolvers through 0x48d2c0 when the contact node's soil is water (index 1), played by the sequence SOUND executor 0x4e74e0"
+residual = "the only SFX member of the size; a VO line is not excluded statically; whether M01's sea node carries soil water is not recoverable from the gamez export (no node descriptions), so which M01 contact it is stays unknown"
 
 [[audio_burst]]
 claim = "OWNER-STATIC-2026-10-22"
@@ -5164,7 +5164,7 @@ members = "exp_plane_1.wav,exp_plane_3.wav,exp_ground_a.wav,exp_ground_b.wav"
 groups = "snd_exp_plane1,snd_exp_plane3,snd_exp_ground_a,snd_exp_ground_b"
 excluded = "enginelooped.wav (looped group named only by ZBD/C3/M05) and 4 VO lines"
 event = "exp_plane_1/3: plane_destroy_sg (random of four) in the destruction sequences; exp_ground_a: the destruction sequences (ground crash); exp_ground_b: touchdown_default and touchdown_dirt glance sequences (ground contact)"
-residual = "decided by which event fired: aircraft destruction (exp_plane_1/3 or exp_ground_a) versus ground contact on land (exp_ground_b), and for plane_destroy_sg the rand() pick; the engine side of both is the sequence SOUND executor"
+residual = "decided by which event fired: a player crash on default soil (exp_plane_1/3 by the plane_destroy_sg pick), a crash on dirt (exp_ground_a), or a default-soil or dirt contact (exp_ground_b); the callers are decoded for contact (0x48d2c0) but not for crash, so the event stays unknown"
 
 # The M01 audio timeline, task #1918 (PARITY6-M01-AUDIO-TIMELINE.04, finding
 # docs/findings/2026-10-23-m01-audio-rattle-slot-and-sound-sequences.md): the keyed voice-slot
@@ -5642,3 +5642,120 @@ wav = "VO_c5-MN-m2_Zachary_26.wav"
 sound = "snd_c5-MN-m2_Zachary_26"
 status = "excluded"
 reason = "campaign 5 mission 2 dialogue; named by no group of M01 and by no engine-built name"
+
+# The M01 audio timeline, task #1940 (PARITY6-M01-AUDIO-BURST-EVENTS, finding
+# docs/findings/2026-10-23-m01-audio-touchdown-and-crash-events.md): the soil table, the touchdown
+# animation lookup and its callers, the crash animation vectors. `bytes` are the cited image bytes
+# at `va`. Provenance `static`; nothing here is verified_original.
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "soil.engine_table"
+va = 0x00637cb4
+bytes = "64656661756c74007761746572000000736561666c6f6f7200000000717569636b73616e640000006c617661000000006669726500"
+fact = "the engine's built-in soil table: count dword at 0x637b10 and name pointers from 0x637b14; the six built-in names are default(0), water(1), seafloor(2), quicksand(3), lava(4), fire(5). Every other reader of the table is 0x559650 (count), 0x559660 (name by index) and 0x559670 (index by name)"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "soil.table_reset_to_six"
+va = 0x0055ab7b
+bytes = "c705107b630006000000"
+fact = "0x55ab7b resets the soil count [0x637b10] to 6, the built-in names; the loader at 0x55b815 appends a name at [0x637b14+4*count] up to 0x64 (cmp at 0x55b8b6), so the names of the retail soils.zrd (player, enemy, airstrip, opensesame, death, buildings, dzone, dirt) are indices 6..13 and `water` is index 1 for every mission"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "touchdown.vector_fill"
+va = 0x00473785
+bytes = "e8c65e0e003bc389442434895c24100f8e680100008b44241050e8bc5e0e00"
+fact = "mission start (0x4735b0) walks the soil table by count (0x559650) and name (0x559660) and builds the animation name touchdown_<soil name> for each index; the animation handle found by name (0x523820) is pushed to the vector at 0x71c2e4 (begin [0x71c2e8], end [0x71c2ec]), so the vector index is the soil index and touchdown_water is element 1, touchdown_default element 0. The vector is read at exactly one place, 0x48d419"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "touchdown.play_lookup"
+va = 0x0048d40e
+bytes = "8b472085c08b3decc271008b0de8c2710074218b502085d27c1a85c9750433c0eb078bc72bc1c1f8023bd073078b1c9185db751485c9747b2bf9f7c7fcffffff74718b1985db746b"
+fact = "0x48d2c0 picks the touchdown animation: contact record [edi+0x20] is the intersected node, node+0x20 its soil index (a null node counts as no soil); a negative index, an index past the vector or a null element falls back to element 0 (touchdown_default). This is the only reader of the touchdown vector"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "touchdown.play_call"
+va = 0x0048d4b8
+bytes = "53e85207060083"
+fact = "0x48d4b9 starts the chosen touchdown animation with the animation starter 0x4edc10 at the aircraft position (arguments pushed at 0x48d456..0x48d4b8); the sequence SOUND of that animation is what is heard"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "touchdown.player_gate"
+va = 0x0048d3a2
+bytes = "3b3598c2710075118a868403000084c00f85090100008b7d08"
+fact = "0x48d2c0 runs for every aircraft (this = ecx = esi). For the player aircraft ([0x71c298]) a nonzero byte [esi+0x384] skips the touchdown animation (jne 0x48d4c1); every other aircraft plays it. The routine as a whole is skipped when the byte [0x64f66e] is set (0x48d2db)"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "touchdown.caller_resolver_a"
+va = 0x0048ed52
+bytes = "d945f0d81dc83260008d87e00100008b108d8fec01000089118b50048b4008895104894108dfe0f6c44175128b4df0518d9578ffffff528bcfe830e5ffff"
+fact = "0x48e580, the first aircraft contact resolver (called from 0x489ea0 from the aircraft step 0x489790), calls 0x48d2c0(this = the aircraft, contact*, impulse) at 0x48ed8b only when the impulse is greater than 0.0 (0x6032c8)"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "touchdown.caller_resolver_b"
+va = 0x00490aeb
+bytes = "d945f4d81dc8326000dfe0f6c44175128b55f4528d8530ffffff508bcfe8b3c7ffff"
+fact = "0x490590, the second aircraft contact resolver (called from the same step 0x489790 at 0x489bad), calls 0x48d2c0 at 0x490b08 under the same impulse > 0.0 gate. 0x48d2c0 has exactly these two callers"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "soil.height_query_water"
+va = 0x0048f472
+bytes = "8b0285c08b4af0894c242c74058b4820eb0233c93b0dd8c2710075088b4204a398c571003b0ddcc27100751cd944242cd805e0326000d85c241cdfe0f6c4417507c6059cc571000183f901751bd944242cd805e0326000d85c241cdfe0f6c4417506880d9dc57100"
+fact = "the terrain height query 0x48f430 walks the surface layers of the altitude surface; a layer's soil is node+0x20 (null node: soil 0). Soil 1 (water) sets the flag byte [0x71c59d] when a height comparison against 0.5 (0x6032e0) passes, and reports the layer height lowered by 0.3 (0x6034ac): the water soil is a property of the layer's node, nothing else marks water"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "soil.description_parse"
+va = 0x004c56c0
+bytes = "8b44240485c05674368b74240c85f6742e6898bf620050ff159001a20083c40885c0741b83c00550e8833f090083c40483f8ff740a5056e8a459090083c408"
+fact = "0x4c56c0(description, record) finds `soil_` (0x62bf98) in a node's GameGen description string, looks the rest up with 0x559670 and stores the soil index at record+0x20 (0x55b0a0). A node has a soil only through such a description; the retail gamez.zbd export does not carry the descriptions"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "crash.player_prefix"
+va = 0x00627cf8
+bytes = "706c617965725f63726173685f00"
+fact = "the animation-name prefix player_crash_; 0x476c80..0x476d3b appends player_crash_<soil name> (0x523820 lookup) for every soil index to the vector at [airframe record + 0x1f8]"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "crash.player_loader"
+va = 0x00476d11
+bytes = "ff156401a2008b45c085c07505a11001a20050e8f7ca0a0083c4048d4de8518945e88b43086a01508bcbe85058feff"
+fact = "0x476250 (caller 0x47c77b; ebx = esi+0x1f8 is the vector object) builds the per-soil player crash animation vector; its reader is not decoded (see the finding)"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "crash.ai_prefix"
+va = 0x00627d40
+bytes = "61695f63726173685f00"
+fact = "the animation-name prefix ai_crash_; 0x478e54..0x478f87 appends ai_crash_<soil name> for every soil index to the vector at [record + 0x15c]"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "crash.ai_loader"
+va = 0x00478f6a
+bytes = "e8b1a80a0083c4048d542414528d8d5c010000894424188b41086a0150e80436feff"
+fact = "the routine entered at 0x478a00 (caller 0x474c66; its `this` is the record with the vector at +0x15c) builds the per-soil AI crash animation vector; its reader is not decoded (see the finding)"
