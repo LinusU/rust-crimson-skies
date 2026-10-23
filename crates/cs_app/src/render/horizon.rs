@@ -99,10 +99,20 @@ pub const DESIGNED_LABEL: &str = "M01-PLAY-SKY designed horizon, 2026-10-14";
 pub const WORLD_WATER_LABEL: &str =
     "M01-WINDOW-FARDRAW sea follows the world's own water altitude, 2026-10-17";
 
-/// How far behind the world's own water tiles the horizon sea is pushed in the
-/// depth test, so the two coplanar surfaces do not z-fight. Designed
-/// ([`WORLD_WATER_LABEL`]).
-const SEA_DEPTH_BIAS: f32 = -4.0;
+/// How far below the world's own water tiles the horizon sea hangs, as a
+/// fraction of the camera's height above them, so the two surfaces never tie
+/// in the depth buffer. A surface `h` metres lower is a fixed relative depth
+/// apart whatever the distance (`h / height` of the view ray's length), so this
+/// is the margin the 32-bit depth buffer has to resolve: 2e-4 is some 1 700
+/// depth steps. A `StandardMaterial::depth_bias` is measured inert on this
+/// path (`playtest_textures`), so the old bias of -4 never separated them
+/// (`docs/findings/2026-10-24-m01-sea-depth-fight.md`). Designed.
+const SEA_DROP_PER_HEIGHT: f32 = 2.0e-4;
+
+/// The least the sea hangs below the tiles, in metres: low over the water the
+/// proportional drop shrinks to nothing. Far below any wave the tiles carry
+/// and invisible through a gap. Designed.
+const SEA_DROP_MIN_M: f32 = 0.25;
 
 /// The label the sea's surface carries once it is drawn with the world's own
 /// water art (PARITY-M01-ATMO-C, Rally #1650). The texture and its mapping are
@@ -518,6 +528,16 @@ impl HorizonSpec {
         self.sea_level_m
     }
 
+    /// How far below [`Self::sea_level_m`] the sea plane is drawn for a camera
+    /// at `camera_y_m`: [`SEA_DROP_PER_HEIGHT`] of its height above the level,
+    /// never less than [`SEA_DROP_MIN_M`]. The world's own water tiles stay at
+    /// the level; the plane only continues them, so it must lose every depth
+    /// test against them.
+    #[must_use]
+    pub fn sea_drop_m(&self, camera_y_m: f32) -> f32 {
+        ((camera_y_m - self.sea_level_m).abs() * SEA_DROP_PER_HEIGHT).max(SEA_DROP_MIN_M)
+    }
+
     /// The sea plane's half extent in metres.
     #[must_use]
     pub const fn sea_extent_m(&self) -> f32 {
@@ -836,10 +856,7 @@ fn spawn_horizon(
         .as_ref()
         .and_then(|art| materials.get(&art.material).cloned());
     let sea_material = materials.add(match art_material {
-        Some(material) => StandardMaterial {
-            depth_bias: SEA_DEPTH_BIAS,
-            ..material
-        },
+        Some(material) => StandardMaterial { ..material },
         None => StandardMaterial {
             base_color: Color::srgb(
                 spec.sea_colour()[0],
@@ -847,7 +864,6 @@ fn spawn_horizon(
                 spec.sea_colour()[2],
             ),
             unlit: true,
-            depth_bias: SEA_DEPTH_BIAS,
             perceptual_roughness: 1.0,
             ..StandardMaterial::default()
         },
@@ -931,6 +947,54 @@ fn place_around_camera(
     }
     for mut transform in &mut seas {
         let [x, z] = spec.sea_snap(translation.x, translation.z);
-        transform.translation = Vec3::new(x, spec.sea_level_m(), z);
+        transform.translation =
+            Vec3::new(x, spec.sea_level_m() - spec.sea_drop_m(translation.y), z);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The sea plane hangs a fixed relative depth below the world's water
+    /// tiles at any camera height: a view ray of length `d` reaches the plane
+    /// `drop / height` further than the tile, whatever the distance, so the
+    /// margin is the same at the shore and at the edge of the world. The depth
+    /// buffer resolves a 2^-23 relative step; the margin has to be many of
+    /// them, or the two surfaces tie pixel by pixel and flicker as the camera
+    /// moves (BUG-M01-SEA-EDGE-FLICKER, #2000).
+    #[test]
+    fn accept_bug_m01_sea_edge_flicker_plane_hangs_many_depth_steps_below_the_tiles() {
+        let mut spec = HorizonSpec::designed();
+        spec.bind_world_water_level(0.0);
+        let step = f32::EPSILON;
+        for height in [0.5_f32, 2.0, 30.0, 150.0, 800.0, 1_500.0, 4_000.0, 12_000.0] {
+            for camera_y in [height, -height] {
+                let drop = spec.sea_drop_m(camera_y);
+                assert!(
+                    drop >= SEA_DROP_MIN_M,
+                    "the plane is always below the tiles"
+                );
+                assert!(
+                    drop / height >= 1_000.0 * step,
+                    "at {camera_y} m the plane is only {} depth steps below the tiles",
+                    drop / height / step
+                );
+            }
+        }
+    }
+
+    /// The plane drawn for a camera hangs below the level, never above it
+    /// (the tiles must win every contact).
+    #[test]
+    fn accept_bug_m01_sea_edge_flicker_plane_sits_below_the_bound_water_level() {
+        let mut spec = HorizonSpec::designed();
+        spec.bind_world_water_level(12.5);
+        for camera_y in [12.5, 13.0, 500.0, 4_000.0] {
+            assert!(
+                spec.sea_level_m() - spec.sea_drop_m(camera_y) < spec.sea_level_m(),
+                "camera at {camera_y}"
+            );
+        }
     }
 }

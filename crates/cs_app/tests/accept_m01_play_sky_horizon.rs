@@ -307,7 +307,11 @@ fn accept_m01_play_sky_the_plugin_draws_dome_sea_and_fog_around_the_camera() {
     let drawn = seas.iter(world).collect::<Vec<_>>();
     assert_eq!(drawn.len(), 1, "exactly one sea plane is drawn");
     let (_, sea_transform, _) = drawn[0];
-    assert_eq!(sea_transform.translation.y, spec.sea_level_m());
+    assert_eq!(
+        sea_transform.translation.y,
+        spec.sea_level_m() - spec.sea_drop_m(camera_translation.y),
+        "the sea hangs its drop below the level"
+    );
     assert_eq!(sea_transform.translation.x, camera_translation.x);
     assert_eq!(sea_transform.translation.z, camera_translation.z);
 
@@ -349,8 +353,8 @@ fn accept_m01_play_sky_the_plugin_draws_dome_sea_and_fog_around_the_camera() {
     let sea = seas.iter(world).next().expect("the sea is still spawned");
     assert_eq!(
         sea.1.translation,
-        Vec3::new(0.0, spec.sea_level_m(), 0.0),
-        "the sea follows the camera horizontally and keeps its level"
+        Vec3::new(0.0, spec.sea_level_m() - spec.sea_drop_m(512.0), 0.0),
+        "the sea follows the camera horizontally and keeps its level less its drop"
     );
 }
 
