@@ -32,7 +32,9 @@
 //!
 //! [`platform::BevyInputPlugin`] (F22-F) is the one Bevy-facing module: it
 //! produces the device events from the engine's input state and pumps the
-//! session once per frame, owning no policy.
+//! session once per frame, owning no policy. [`hid`] reads host joysticks
+//! through their HID report descriptors (with USB PID force feedback) and feeds
+//! the same seam (SIDEWINDER-FFB2, #1968).
 //!
 //! The rest of the module is deliberately asset- and ECS-free: it is plain typed state so
 //! a headless test can drive it exactly like the render loop, and so no game
@@ -42,6 +44,7 @@ use cs_types::Tick;
 use cs_types::input::{Action, ActionMap, BindingSource, DeviceId, InputContext, InputFrame};
 
 pub mod devices;
+pub mod hid;
 pub mod platform;
 pub mod session;
 
