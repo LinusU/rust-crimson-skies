@@ -26,6 +26,7 @@ mod campaign {
     mod f37_c_fu1;
     mod m01_bridge_convoy_spawn;
     mod m01_convoy_gun_hits;
+    mod m01_convoy_rocket;
     mod m01_hostile_engage;
     mod m01_lc_fc_c;
     mod m01_lc_fc_d;
@@ -277,6 +278,7 @@ mod evidence_report_m01_b_obj;
 mod evidence_report_m01_b_obj_2;
 mod evidence_report_m01_b_obj_4;
 mod evidence_report_m01_b_wake;
+mod evidence_report_m01_convoy_rocket;
 mod evidence_report_m01_hud_objective;
 mod evidence_report_m01_lc;
 mod evidence_report_m01_lc_actor_anim_consumers;
