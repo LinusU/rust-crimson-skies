@@ -172,7 +172,9 @@ or reset. Nobody has played this by hand yet; that is for you.
 
 A held flight key deflects the stick half way (designed: full deflection
 pitched the uncalibrated airframe 80 degrees in two seconds). Mouse and
-gamepad are bound by the F22 default map but are untested here.
+gamepad are bound by the F22 default map but are untested here. A HID
+joystick (and its force feedback) is read by the mission only, see
+"Joystick and force feedback" under "Original mission M01".
 
 The on-screen readout shows speed, altitude, heading, pitch, bank, throttle,
 pause state and collisions, all read from the simulated aircraft.
@@ -334,6 +336,80 @@ Controls are the keyboard table above (`W`/`S`, `Q`/`E`, `A`/`D`, throttle,
 `Esc`, `F10`). `R` restarts the whole mission: it reloads the world and
 respawns the player from the start recipe, instead of only resetting the
 aircraft.
+
+### Joystick and force feedback (#1968 `SIDEWINDER-FFB2`)
+
+A connected HID joystick flies the mission; nothing has to be set. The game
+reads it itself through its HID report descriptor (hidapi), shared with the
+rest of the system, and skips Bevy's own gamepad for the same device. A USB
+PID force-feedback stick — the Microsoft SideWinder Force Feedback 2
+(`045e:001b`) — also gets force feedback, with no driver, on Apple Silicon
+macOS.
+
+| Control | Drives |
+| --- | --- |
+| stick left / right | roll |
+| stick forward / back | pitch (back is nose up) |
+| twist | yaw |
+| throttle lever | throttle, continuously: forward is full, back is idle |
+| buttons 1–8 | the original's joystick column: 1 guns, 2 rockets, 3 next enemy target, 4 cockpit views, 5 spyglass, 6 next ground target; 7 and 8 are bound to weapon commands that have no consumer yet and do nothing (`F1` lists them) |
+| hat | look in its eight directions (ahead of the numpad look keys) |
+
+The axis assignment and the lever's direction are the original's (static
+evidence, `ORIGINAL_JOYSTICK_AXES`); the signs, the 8% dead zone of the
+stick's three axes and the lever's 2% hysteresis are designed. The lever
+and the throttle keys share the throttle: the last one moved wins.
+
+Force feedback is **designed, not the original's** (the original's
+Immersion effects are unmeasured): a centring spring that stiffens with
+airspeed and ramps in over 1.5 s, a light damper, a buffet while the flight
+law reports a stall, a rattle while the guns fire, and a short push for a
+hit or an impact. It plays only while you fly — never in the launch
+cinematic, the pause map, an unfocused window, after a crash or on a
+screen — and every effect is stopped the moment that ends, on unplug and on
+exit. The strength is 25% unless asked:
+
+```sh
+target/release/cs --cs-path /path/to/retail --mission M01 --force-feedback-gain 50
+target/release/cs --cs-path /path/to/retail --mission M01 --no-force-feedback
+target/release/cs --cs-path /path/to/retail --mission M01 --no-joystick
+```
+
+`--joystick <vid:pid|name>` picks one device when several are connected. A
+scripted smoke (`--smoke-seconds`) never reads the joystick. The start flow
+(`--cs-path` alone) hands the mission over with the defaults.
+
+#### Checking the stick
+
+```sh
+target/release/cs --joystick-probe
+target/release/cs --joystick-probe --test-force-feedback
+```
+
+The probe lists the host's joysticks, says whether the stick's descriptor is
+the bundled SideWinder capture and whether it offers USB PID force feedback,
+and prints its axes (normalized and raw), hat and buttons live for 10 s
+(`--probe-seconds`). It sends no force unless `--test-force-feedback` is
+given; that plays a spring, a damper, a push right, left, forward and back,
+a buffet and a gun rattle at 25% (`--force-feedback-gain`), prints how far
+each step moved the stick and resets the device. Hold the grip: the stick
+applies force only with a hand on it.
+
+#### Owner checklist (physical stick)
+
+1. `cs --joystick-probe`: stick right → `x` +1, back → `y` +1, clockwise
+   twist → `twist` +1, lever forward → `throttle` −1 (raw 0); all eight hat
+   directions; buttons 1–8 in order.
+2. `cs --joystick-probe --test-force-feedback`: each step felt, each push in
+   its stated direction, everything stops at the end.
+3. `cs --cs-path … --mission M01`, after the launch cinematic: the stick
+   rolls, pitches and yaws the right way; the lever sets the throttle; button
+   1 fires the guns and 2 a rocket; the hat looks around; the spring is felt
+   and stiffens with speed, the guns rattle, a stall buffets.
+4. `Esc`: every force stops at once, and comes back (softly) on resume;
+   switching to another window does the same. Unplugging the stick in flight
+   stops the guns firing; plugging it back in flies again. Quitting leaves
+   the stick limp.
 
 ### Placing the player and waiting for a block (#1486)
 
