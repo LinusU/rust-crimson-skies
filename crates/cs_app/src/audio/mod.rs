@@ -72,6 +72,7 @@ pub mod lower;
 pub mod measured_voice;
 pub mod mixer;
 pub mod music;
+pub mod one_shot_tap;
 pub mod pcm_size;
 pub mod plugin;
 pub mod samples;
@@ -116,6 +117,7 @@ pub use music::{
     MusicStateSpec, MusicTrackLoader, PREFERRED_MUSIC_CONTAINER, ensure_music_published,
     music_member_id, music_state_spec, publish_music_members,
 };
+pub use one_shot_tap::{OneShotTap, TappedStart, TappingDevice};
 pub use plugin::AudioPlugin;
 pub use samples::{AudioSampleSource, CODE_SAMPLE_ABSENT, ContentSampleSource, SampleSource};
 pub use spawn::{

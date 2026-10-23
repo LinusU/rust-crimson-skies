@@ -48,6 +48,7 @@ use super::device::DeviceSampleLibrary;
 use super::engine::EngineVoices;
 use super::loops::AudioSession;
 use super::music::{LazyMusicTracks, ensure_music_published};
+use super::one_shot_tap::{OneShotTap, TappingDevice};
 use super::spawn::NonPositionalEmitter;
 
 /// Resource: the one device this world mixes to.
@@ -61,30 +62,45 @@ use super::spawn::NonPositionalEmitter;
 /// play, and is closed again by [`device_lost`] until a caller calls
 /// [`device_restored`].
 #[derive(Resource, Debug)]
-pub struct AudioOutput(Box<dyn AudioDevice>);
+pub struct AudioOutput {
+    device: Box<dyn AudioDevice>,
+    tap: OneShotTap,
+}
 
 impl Default for AudioOutput {
     fn default() -> Self {
-        Self(Box::new(RecordingAudioDevice::new()))
+        Self::new(Box::new(RecordingAudioDevice::new()))
     }
 }
 
 impl AudioOutput {
-    /// Wraps `device` as this world's output.
+    /// Wraps `device` as this world's output. Every one-shot start the
+    /// device is asked for is also recorded in [`Self::one_shot_tap`]; the
+    /// commands themselves reach `device` unchanged.
     #[must_use]
     pub fn new(device: Box<dyn AudioDevice>) -> Self {
-        Self(device)
+        let tap = OneShotTap::default();
+        Self {
+            device: Box::new(TappingDevice::new(device, tap.clone())),
+            tap,
+        }
+    }
+
+    /// The log of one-shot starts this output's device was asked for.
+    #[must_use]
+    pub fn one_shot_tap(&self) -> OneShotTap {
+        self.tap.clone()
     }
 
     /// Read-only access, for diagnostics and probes.
     #[must_use]
     pub fn device(&self) -> &dyn AudioDevice {
-        self.0.as_ref()
+        self.device.as_ref()
     }
 
     /// Mutable access, for the mixer and for the device-failure path.
     pub fn device_mut(&mut self) -> &mut dyn AudioDevice {
-        self.0.as_mut()
+        self.device.as_mut()
     }
 }
 

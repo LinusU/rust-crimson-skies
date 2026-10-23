@@ -22,13 +22,14 @@ use crate::audio::loops::AudioSession;
 use crate::audio::measured_voice::{
     EngineGroupLaw, LaunchVoices, MeasuredVoice, VoiceListenerPose, listener_pose, measured_mix,
 };
-use crate::audio::mixer::AudioSpatial;
+use crate::audio::mixer::{AudioOutput, AudioSpatial};
+use crate::physics::PhysicsTickLedger;
 
 /// What a mission second's trace cannot say, verbatim into the report.
 pub const UNOBSERVED: &[&str] = &[
-    "one-shot effects other than the launch-cinematic voices (gunfire, explosions, ricochets) \
-     are accepted by the router and handed on without a held voice, so they never appear in a \
-     second's set; the launch voices are held in LaunchVoices and do appear",
+    "one-shot effects (gunfire, explosions, ricochets) end on their own and are not held, so \
+     they never appear in a second's set; every one-shot the output device was asked to start \
+     is listed in audio.one_shots instead, stamped with the frame and tick it started at",
     "music tracks start on a verdict the smoke does not read back as a voice",
     "radio lines appear only while the queue holds one active line",
 ];
@@ -301,6 +302,95 @@ pub(super) fn smoke_voice_trace(
     data.voice_trace.push(row);
 }
 
+/// One one-shot voice the output device was asked to start (Rally #1941).
+#[derive(Clone, Debug, PartialEq)]
+pub struct OneShotRow {
+    /// The content id of the member the voice plays.
+    pub member: String,
+    /// The member's decoded 16-bit PCM size in bytes (`None`: not in the
+    /// device library, so not measured).
+    pub decoded_bytes: Option<u64>,
+    /// Smoke frames since Fly Mission when the start was drained.
+    pub frame: u32,
+    /// Fixed physics ticks the ledger had counted then (`None`: no ledger).
+    pub tick: Option<u64>,
+    /// Mission time of the frame in seconds, at 60 frames per second.
+    pub time_s: f64,
+    /// The gain the voice was started with.
+    pub gain: f64,
+    /// The stereo placement it was started with.
+    pub pan: f64,
+    /// The playback rate in Hz: the member's own rate times the pitch.
+    pub rate_hz: Option<f64>,
+    /// The device's refusal code, `None` when it took the voice.
+    pub refused: Option<String>,
+}
+
+/// Drains the output's one-shot tap every frame into the smoke's data.
+///
+/// Runs ahead of the per-second sample, and unlike it on every frame, so a
+/// one-shot that started and ended between two samples is still listed.
+#[allow(clippy::needless_pass_by_value)]
+pub(super) fn smoke_one_shot_tap(
+    mut data: ResMut<super::SmokeData>,
+    output: Option<Res<AudioOutput>>,
+    library: Option<Res<DeviceSampleLibrary>>,
+    ledger: Option<Res<PhysicsTickLedger>>,
+) {
+    let Some(output) = output else {
+        return;
+    };
+    for tapped in output.one_shot_tap().drain() {
+        let pcm = library
+            .as_deref()
+            .and_then(|l| l.library().pcm(&tapped.start.asset));
+        let frame = data.frame;
+        data.one_shots.push(OneShotRow {
+            member: tapped.start.asset.to_string(),
+            decoded_bytes: pcm.as_ref().map(|p| p.sample_count() * 2),
+            frame,
+            tick: ledger.as_deref().map(|l| l.ticks),
+            time_s: f64::from(frame) / 60.0,
+            gain: tapped.start.gain,
+            pan: tapped.start.pan,
+            rate_hz: pcm
+                .as_ref()
+                .map(|p| f64::from(p.rate_hz()) * tapped.start.pitch),
+            refused: tapped.refused,
+        });
+    }
+}
+
+/// The one-shots as a JSON array, in start order.
+#[must_use]
+pub fn one_shots_json(rows: &[OneShotRow]) -> String {
+    let rows: Vec<String> = rows
+        .iter()
+        .map(|r| {
+            format!(
+                "{{\"member\":{},\"decoded_bytes\":{},\"frame\":{},\"tick\":{},\
+                 \"time_s\":{:.3},\"gain\":{:.4},\"gain_db\":{:.2},\"pan\":{:.3},\
+                 \"rate_hz\":{},\"refused\":{}}}",
+                super::json_string(&r.member),
+                r.decoded_bytes
+                    .map_or_else(|| "null".to_owned(), |b| b.to_string()),
+                r.frame,
+                r.tick.map_or_else(|| "null".to_owned(), |t| t.to_string()),
+                r.time_s,
+                r.gain,
+                gain_to_db(r.gain),
+                r.pan,
+                r.rate_hz
+                    .map_or_else(|| "null".to_owned(), |v| format!("{v:.3}")),
+                r.refused
+                    .as_deref()
+                    .map_or_else(|| "null".to_owned(), super::json_string),
+            )
+        })
+        .collect();
+    format!("[{}]", rows.join(","))
+}
+
 /// The trace as a JSON array, one object per second.
 #[must_use]
 pub fn trace_json(trace: &[VoiceSecond]) -> String {
@@ -371,5 +461,81 @@ mod tests {
         let json = trace_json(&trace);
         assert!(json.starts_with("[{\"second\":0,\"voices\":[]}"));
         assert!(json.contains("\"gain_db\":-10.00"));
+    }
+
+    /// **`accept_parity6_m01_audio_10_` a one-shot the production mixer starts
+    /// is listed, with its decoded size, in the smoke's `one_shots`.**
+    ///
+    /// A radio line is started through `AudioMixer::mix_radio` onto the world's
+    /// `AudioOutput`; it ends before any per-second sample would look, so only
+    /// the device-side tap can show it. Without the tap `one_shots` is empty.
+    #[test]
+    fn accept_parity6_m01_audio_10_one_shot_is_in_the_trace() {
+        use std::sync::Arc;
+
+        use cs_content::catalog::baseline::install_file_key;
+        use cs_sim::audio_events::{AudioMixer, RadioEvent, RecordingAudioDevice};
+        use cs_types::Tick;
+        use cs_types::content::{ContentId, ContentKind};
+        use cs_types::net::{EventId, SessionId};
+
+        use crate::audio::device::{InMemorySamples, PcmAudio};
+
+        let asset = ContentId::from_source(ContentKind::Dialogue, &install_file_key("burst/one"))
+            .expect("a content id");
+        let mut samples = InMemorySamples::new();
+        samples.insert(
+            asset.clone(),
+            PcmAudio::try_new(1, 22_050, vec![0.0; 100]).expect("pcm"),
+        );
+        let recording = RecordingAudioDevice::new();
+        let output = AudioOutput::new(Box::new(recording.clone()));
+        let mut app = App::new();
+        app.insert_resource(super::super::SmokeData::default());
+        app.insert_resource(DeviceSampleLibrary::new(Arc::new(samples)));
+        app.insert_resource(output);
+        app.add_systems(Last, smoke_one_shot_tap);
+
+        let session = SessionId::new(1).expect("session");
+        let id = EventId {
+            session,
+            tick: Tick(3),
+            producer: 0,
+            sequence: 0,
+        };
+        let mut mixer = AudioMixer::new(session);
+        let report = {
+            let mut output = app.world_mut().resource_mut::<AudioOutput>();
+            mixer.mix_radio(
+                &[RadioEvent::Started {
+                    id,
+                    speaker: "x".to_owned(),
+                    asset: asset.clone(),
+                    subtitle: None,
+                    audible: true,
+                }],
+                Some(output.device_mut()),
+            )
+        };
+        assert_eq!(report.started, vec![id]);
+        app.world_mut()
+            .resource_mut::<super::super::SmokeData>()
+            .frame = 90;
+        app.update();
+
+        let data = app.world().resource::<super::super::SmokeData>();
+        assert_eq!(data.one_shots.len(), 1);
+        let row = &data.one_shots[0];
+        assert_eq!(row.member, asset.to_string());
+        assert_eq!(row.decoded_bytes, Some(200));
+        assert_eq!(row.frame, 90);
+        assert!((row.time_s - 1.5).abs() < 1e-9);
+        assert_eq!(row.rate_hz, Some(22_050.0));
+        assert_eq!(row.refused, None);
+        let json = one_shots_json(&data.one_shots);
+        assert!(json.contains(&asset.to_string()));
+        assert!(json.contains("\"decoded_bytes\":200"));
+        // The tap is a pure observer: the device still got the start.
+        assert_eq!(recording.voices().len(), 1);
     }
 }

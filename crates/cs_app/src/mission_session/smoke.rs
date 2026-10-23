@@ -2415,6 +2415,8 @@ pub struct MissionSmokeReport {
     pub measurements: SmokeMeasurements,
     /// Our playing voice set, once per mission second (Rally #1866).
     pub voice_trace: Vec<voice_trace::VoiceSecond>,
+    /// Every one-shot voice the output device was asked to start (Rally #1941).
+    pub one_shots: Vec<voice_trace::OneShotRow>,
     /// The screenshots taken, with their measurements.
     pub shots: Vec<FrameRecord>,
     /// The placements the run made, verbatim.
@@ -2581,6 +2583,8 @@ struct SmokeConfig {
 struct SmokeData {
     /// Our playing voice set per mission second (Rally #1866).
     voice_trace: Vec<voice_trace::VoiceSecond>,
+    /// Every one-shot the output device was asked to start (Rally #1941).
+    one_shots: Vec<voice_trace::OneShotRow>,
     /// Frames since Fly Mission: the script's clock, which does not run while
     /// the Flight Check holds the mission.
     frame: u32,
@@ -2736,6 +2740,7 @@ fn add_script_systems(app: &mut App) {
             smoke_flight_check,
             smoke_census,
             smoke_sample,
+            voice_trace::smoke_one_shot_tap,
             voice_trace::smoke_voice_trace,
             smoke_wingmen,
             smoke_cinematic,
@@ -5642,6 +5647,7 @@ fn build_report(data: &SmokeData, shots: Vec<FrameRecord>) -> MissionSmokeReport
         checks,
         measurements: data.measurements.clone(),
         voice_trace: data.voice_trace.clone(),
+        one_shots: data.one_shots.clone(),
         shots,
         placements: data.placements.clone(),
         failures,
@@ -5986,7 +5992,7 @@ fn write_artifacts(
          \"engine_bindings\":{bindings},\"active_loops\":{loops},\
          \"radio_started\":{radio_started},\"voice_trace\":{voice_trace},\
          \"voice_set_changes\":[{voice_changes}],\
-         \"voice_trace_unobserved\":[{voice_unobserved}]}},\
+         \"one_shots\":{one_shots},\"voice_trace_unobserved\":[{voice_unobserved}]}},\
          \"cinematic\":{cinematic},\"first_control\":{first_control},\
          \"approach\":{{\"placed\":{approach_placed},\"anchor\":{anchor},\
          \"frames\":{approach_frames},\"objective_woke\":{woke}}},\
@@ -6088,6 +6094,7 @@ fn write_artifacts(
         loops = report.measurements.audio.active_loops,
         radio_started = report.measurements.audio.radio_started,
         voice_trace = voice_trace::trace_json(&report.voice_trace),
+        one_shots = voice_trace::one_shots_json(&report.one_shots),
         voice_changes = voice_trace::set_changes(&report.voice_trace)
             .iter()
             .map(u32::to_string)
