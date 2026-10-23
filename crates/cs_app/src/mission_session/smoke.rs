@@ -4607,11 +4607,18 @@ fn smoke_script(
                     }
                 }
                 // The open map's frame, then the Quit click's press edge on
-                // its authored centre.
+                // its authored centre. The click waits for the frame to
+                // arrive: the press carries the map's own `AppExit`, so the
+                // report is written that frame — a shot still in flight
+                // would land in `missing_shots`.
                 1 => {
                     if since == PAUSE_MAP_OPEN_SHOT_FRAMES {
                         due.push("pause_map".to_owned());
-                    } else if since == PAUSE_MAP_OPEN_SHOT_FRAMES + 2
+                    } else if since > PAUSE_MAP_OPEN_SHOT_FRAMES + 2
+                        && shots
+                            .0
+                            .lock()
+                            .is_ok_and(|shots| shots.iter().any(|shot| shot.label == "pause_map"))
                         && let Some((x, y)) = pause_map.quit_centre()
                     {
                         queue.0.push(KeyOp::CursorAt(x, y));
