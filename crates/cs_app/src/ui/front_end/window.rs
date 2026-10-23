@@ -65,7 +65,8 @@ use bevy::asset::{Assets, Handle, RenderAssetUsages};
 use bevy::ecs::message::{MessageCursor, Messages};
 use bevy::image::{Image, ImageSampler};
 use bevy::input::ButtonInput;
-use bevy::input::keyboard::KeyCode;
+use bevy::input::ButtonState;
+use bevy::input::keyboard::{Key, KeyCode, KeyboardInput};
 use bevy::input::mouse::MouseButton;
 use bevy::prelude::{
     App, Camera, Camera2d, ClearColorConfig, Color, DefaultPlugins, Entity, On, Plugin,
@@ -80,6 +81,7 @@ use cs_sim::cinematic_state::MediaFailure;
 
 use super::movie::{MovieBackdrop, movie_media};
 use super::original::script_member;
+use super::pilot_page::{CONTINUE_BUTTON, DELETE_BUTTON, PILOT_SECTION, PilotOutcome, PilotPage};
 use super::retail::{FrontEndScreens, RetailError};
 use super::shell::{
     ButtonVisual, MenuShell, SECTION_SURFACE, START_SECTION, ShellOutcome, ShellView,
@@ -89,6 +91,7 @@ use super::{Artwork, ShellError};
 use crate::cinematics::mpeg::MpegVideoSource;
 use crate::playtest::SmokeRequest;
 use crate::playtest::smoke::SMOKE_FRAME_HZ;
+use crate::profile::ProfileSession;
 
 /// The scripted pass needs this many simulated seconds: the last scripted
 /// input lands at 12.6 s and the run wants settling frames after it.
@@ -181,9 +184,55 @@ pub struct ShellResource {
     /// The F45 machine that decides which moves the shell may make; `Some` in
     /// the start flow (`cs --cs-path <retail>`), `None` in `--front-end`.
     flow: Option<StartFlow>,
+    /// The Campaign pilot page and the profile session behind it, when the
+    /// run has them (FE-MENU-3).
+    pilots: Option<PilotState>,
+}
+
+/// The pilot page's live state.
+struct PilotState {
+    page: PilotPage,
+    session: ProfileSession,
+    /// What Continue / Delete did, in order.
+    outcomes: Vec<PilotOutcome>,
+    /// The overlay's entities while the page is on screen.
+    scene: Vec<Entity>,
+    /// The surface the overlay was laid out for.
+    drawn_surface: (u32, u32),
+    /// The keyboard message reader that survives between frames.
+    keys: MessageCursor<KeyboardInput>,
+}
+
+/// The pilot page and the profile session it drives, for
+/// [`FrontEndShellPlugin::with_pilots`].
+pub struct PilotSetup {
+    /// The page, read from the layout.
+    pub page: PilotPage,
+    /// The session the page creates, chooses and deletes pilots through.
+    pub session: ProfileSession,
 }
 
 impl ShellResource {
+    /// The pilot page, when the run has one.
+    #[must_use]
+    pub fn pilot_page(&self) -> Option<&PilotPage> {
+        self.pilots.as_ref().map(|pilots| &pilots.page)
+    }
+
+    /// The profile session behind the pilot page.
+    #[must_use]
+    pub fn pilot_session(&self) -> Option<&ProfileSession> {
+        self.pilots.as_ref().map(|pilots| &pilots.session)
+    }
+
+    /// What the pilot page's Continue and Delete did, in order.
+    #[must_use]
+    pub fn pilot_outcomes(&self) -> &[PilotOutcome] {
+        self.pilots
+            .as_ref()
+            .map_or(&[], |pilots| pilots.outcomes.as_slice())
+    }
+
     /// The start flow's machine, when this run has one.
     #[must_use]
     pub fn flow(&self) -> Option<&StartFlow> {
@@ -319,6 +368,7 @@ pub struct FrontEndShellPlugin {
     movie_files: Mutex<BTreeMap<String, Result<Vec<u8>, String>>>,
     visuals: bool,
     flow: Mutex<Option<StartFlow>>,
+    pilots: Mutex<Option<PilotSetup>>,
 }
 
 impl FrontEndShellPlugin {
@@ -341,6 +391,7 @@ impl FrontEndShellPlugin {
             movie_files: Mutex::new(movie_files),
             visuals: true,
             flow: Mutex::new(None),
+            pilots: Mutex::new(None),
         }
     }
 
@@ -348,6 +399,13 @@ impl FrontEndShellPlugin {
     #[must_use]
     pub fn with_flow(self, flow: StartFlow) -> Self {
         *self.flow.lock().expect("the plugin is not shared yet") = Some(flow);
+        self
+    }
+
+    /// Gives the Campaign section its pilot page (FE-MENU-3).
+    #[must_use]
+    pub fn with_pilots(self, setup: PilotSetup) -> Self {
+        *self.pilots.lock().expect("the plugin is not shared yet") = Some(setup);
         self
     }
 
@@ -363,6 +421,7 @@ impl FrontEndShellPlugin {
             movie_files: Mutex::new(BTreeMap::new()),
             visuals: false,
             flow: Mutex::new(None),
+            pilots: Mutex::new(None),
         }
     }
 }
@@ -423,6 +482,22 @@ impl Plugin for FrontEndShellPlugin {
                 .lock()
                 .map(|mut slot| slot.take())
                 .unwrap_or_default(),
+            pilots: self
+                .pilots
+                .lock()
+                .map(|mut slot| slot.take())
+                .unwrap_or_default()
+                .map(|mut setup| {
+                    setup.page.refresh(&setup.session);
+                    PilotState {
+                        page: setup.page,
+                        session: setup.session,
+                        outcomes: Vec::new(),
+                        scene: Vec::new(),
+                        drawn_surface: (0, 0),
+                        keys: MessageCursor::default(),
+                    }
+                }),
         });
         if self.visuals {
             app.add_systems(Startup, startup_shell);
@@ -450,6 +525,22 @@ pub fn headless_app_flow(shell: MenuShell, flow: Option<StartFlow>) -> App {
     app.init_resource::<ButtonInput<KeyCode>>();
     app.init_resource::<ButtonInput<MouseButton>>();
     let plugin = FrontEndShellPlugin::headless(shell);
+    app.add_plugins(match flow {
+        Some(flow) => plugin.with_flow(flow),
+        None => plugin,
+    });
+    app
+}
+
+/// As [`headless_app_flow`], with the Campaign pilot page over `setup`'s
+/// profile session (FE-MENU-3's route tests).
+pub fn headless_app_pilots(shell: MenuShell, flow: Option<StartFlow>, setup: PilotSetup) -> App {
+    let mut app = App::new();
+    app.add_plugins(bevy::input::InputPlugin);
+    app.add_message::<CursorMoved>();
+    app.init_resource::<ButtonInput<KeyCode>>();
+    app.init_resource::<ButtonInput<MouseButton>>();
+    let plugin = FrontEndShellPlugin::headless(shell).with_pilots(setup);
     app.add_plugins(match flow {
         Some(flow) => plugin.with_flow(flow),
         None => plugin,
@@ -518,6 +609,30 @@ fn frame_shell(world: &mut World) {
         inject_smoke_input(world, &mut state);
     }
     let mut events = std::mem::take(&mut state.input.events);
+    let on_page = state.pilots.is_some()
+        && state
+            .shell
+            .section_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case(PILOT_SECTION));
+    if let Some(pilots) = &mut state.pilots {
+        // Typed text reaches the page only while it is on screen; the
+        // reader advances either way so keys typed elsewhere never replay.
+        let typed: Vec<KeyboardInput> = pilots
+            .keys
+            .read(world.resource::<Messages<KeyboardInput>>())
+            .filter(|event| event.state == ButtonState::Pressed)
+            .cloned()
+            .collect();
+        if on_page {
+            for event in typed {
+                if event.logical_key == Key::Backspace {
+                    pilots.page.backspace();
+                } else if let Some(text) = &event.text {
+                    pilots.page.type_text(text);
+                }
+            }
+        }
+    }
     {
         let keys = world.resource::<ButtonInput<KeyCode>>();
         if keys.just_pressed(KeyCode::ArrowDown) {
@@ -573,14 +688,41 @@ fn frame_shell(world: &mut World) {
             shell.pointer_leave();
         }
     }
+    let point = state.input.cursor.and_then(|position| {
+        (position.x >= 0.0 && position.y >= 0.0)
+            .then(|| MenuShell::unmap_point(state.surface, position.x as u32, position.y as u32))
+            .flatten()
+    });
+    let pilots = &mut state.pilots;
+    if on_page && let Some(pilots) = pilots.as_mut() {
+        pilots.page.hover_at(point);
+    }
     let mut exit = false;
     for event in events.drain(..) {
+        // The pilot page takes the arrows, Enter and Esc for itself (the
+        // edit box has the focus; the list is arrow-driven) and a press on
+        // a list row; Continue and Delete arrive below as button presses.
+        let mut pilot_step = None;
         let outcome = match event {
             ShellEvent::PointerDown => {
-                shell.pointer_down();
+                let row = pilots
+                    .as_ref()
+                    .filter(|_| on_page)
+                    .and_then(|pilots| point.and_then(|(x, y)| pilots.page.row_at(x, y)));
+                if let (Some(pilots), Some(row)) = (pilots.as_mut(), row) {
+                    pilots.page.select_row(row);
+                } else {
+                    shell.pointer_down();
+                }
                 ShellOutcome::Nothing
             }
             ShellEvent::PointerUp => shell.pointer_up(),
+            ShellEvent::FocusNext | ShellEvent::FocusPrev if on_page => {
+                if let Some(pilots) = pilots.as_mut() {
+                    pilots.page.move_selection(event == ShellEvent::FocusNext);
+                }
+                ShellOutcome::Nothing
+            }
             ShellEvent::FocusNext => {
                 shell.move_focus(true);
                 state.run.focus_moves += 1;
@@ -591,11 +733,23 @@ fn frame_shell(world: &mut World) {
                 state.run.focus_moves += 1;
                 ShellOutcome::Nothing
             }
+            ShellEvent::ActivateDown if on_page => {
+                if let Some(pilots) = pilots.as_mut() {
+                    pilot_step = Some(pilot_continue(pilots, flow, shell));
+                }
+                ShellOutcome::Nothing
+            }
+            ShellEvent::ActivateUp if on_page => ShellOutcome::Nothing,
             ShellEvent::ActivateDown => {
                 shell.activate_down();
                 ShellOutcome::Nothing
             }
             ShellEvent::ActivateUp => shell.activate_up(),
+            ShellEvent::Escape
+                if on_page && pilots.as_mut().is_some_and(|pilots| pilots.page.escape()) =>
+            {
+                ShellOutcome::Nothing
+            }
             ShellEvent::Escape => match flow {
                 // The machine decides where Esc is bound (Credits only).
                 Some(flow) => {
@@ -611,8 +765,28 @@ fn frame_shell(world: &mut World) {
                 None => shell.escape(),
             },
         };
-        if let Some(flow) = flow {
-            match flow.route(shell, outcome.clone()) {
+        if pilot_step.is_none()
+            && on_page
+            && let ShellOutcome::Unhandled { id, .. } = &outcome
+            && let Some(pilots) = pilots.as_mut()
+        {
+            if id.eq_ignore_ascii_case(CONTINUE_BUTTON) {
+                pilot_step = Some(pilot_continue(pilots, flow, shell));
+            } else if id.eq_ignore_ascii_case(DELETE_BUTTON) {
+                let done = pilots.page.press_delete(&mut pilots.session);
+                if done != PilotOutcome::Nothing {
+                    pilots.outcomes.push(done);
+                }
+                pilot_step = Some(StartStep::Stay);
+            }
+        }
+        if flow.is_some() || pilot_step.is_some() {
+            let step = match (pilot_step, flow.as_mut()) {
+                (Some(step), _) => step,
+                (None, Some(flow)) => flow.route(shell, outcome.clone()),
+                (None, None) => StartStep::Stay,
+            };
+            match step {
                 StartStep::Moved { .. } => {
                     state
                         .run
@@ -739,6 +913,7 @@ fn frame_shell(world: &mut World) {
             }
         }
     }
+    sync_pilot_scene(world, &mut state);
     if let Some(cursor) = state.scene.cursor
         && let Ok(mut entity) = world.get_entity_mut(cursor)
     {
@@ -769,6 +944,65 @@ fn frame_shell(world: &mut World) {
         world.insert_resource(smoke);
     }
     world.insert_resource(state);
+}
+
+/// Continue (the button or Enter) on the pilot page: creates or chooses the
+/// pilot, and with the F45 machine in charge takes its `NewProfile` /
+/// `ContinueProfile` then `ConfirmProfile` rows to the cabin.
+fn pilot_continue(
+    pilots: &mut PilotState,
+    flow: &mut Option<StartFlow>,
+    shell: &mut MenuShell,
+) -> StartStep {
+    let outcome = pilots.page.press_continue(&mut pilots.session);
+    let created = match &outcome {
+        PilotOutcome::Continued { created, .. } => Some(*created),
+        _ => None,
+    };
+    if outcome != PilotOutcome::Nothing {
+        pilots.outcomes.push(outcome);
+    }
+    let (Some(created), Some(flow)) = (created, flow.as_mut()) else {
+        return StartStep::Stay;
+    };
+    let step = flow.choose_pilot(created);
+    if matches!(step, StartStep::Moved { .. })
+        && let Some(section) = flow.section()
+    {
+        let _ = shell.open(section);
+    }
+    step
+}
+
+/// Keeps the pilot page's overlay in step with the model: drawn while the
+/// `Campaign` section is shown, redrawn when the model or the surface
+/// changed, gone otherwise.
+fn sync_pilot_scene(world: &mut World, state: &mut ShellResource) {
+    if !state.visuals {
+        return;
+    }
+    let active = state
+        .shell
+        .section_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case(PILOT_SECTION));
+    let surface = state.surface;
+    let Some(pilots) = state.pilots.as_mut() else {
+        return;
+    };
+    if !active {
+        for entity in pilots.scene.drain(..) {
+            let _ = world.despawn(entity);
+        }
+        return;
+    }
+    let dirty = pilots.page.take_dirty();
+    if pilots.scene.is_empty() || dirty || pilots.drawn_surface != surface {
+        for entity in pilots.scene.drain(..) {
+            let _ = world.despawn(entity);
+        }
+        pilots.scene = super::pilot_view::spawn_page(world, &pilots.page, surface);
+        pilots.drawn_surface = surface;
+    }
 }
 
 /// The scale the aspect-fit applies: fitted width over logical width.
@@ -1167,6 +1401,9 @@ enum Step {
     Mouse(bool),
     /// A key down/up.
     Key(KeyCode, bool),
+    /// Typed text, as one `KeyboardInput` press per character (the message
+    /// the OS text input writes), for the pilot page's edit box.
+    Type(&'static str),
     /// A framebuffer screenshot.
     Shot(&'static str),
 }
@@ -1195,6 +1432,13 @@ fn script() -> Vec<(u32, Step)> {
         (at(2.2), Step::Shot("pressed")),
         (at(2.4), Step::Mouse(false)),
         (at(3.0), Step::Shot("campaign")),
+        // The pilot page (FE-MENU-3): type a name, then Down selects the
+        // first listed pilot (when the population has one), copying its name.
+        (at(3.05), Step::Type("Eve")),
+        (at(3.1), Step::Shot("campaign-typed")),
+        (at(3.15), Step::Key(KeyCode::ArrowDown, true)),
+        (at(3.2), Step::Key(KeyCode::ArrowDown, false)),
+        (at(3.3), Step::Shot("campaign-list")),
         (at(3.4), Step::HoverButton("CM_B_CANCEL")),
         (at(3.6), Step::Mouse(true)),
         (at(3.8), Step::Mouse(false)),
@@ -1340,6 +1584,23 @@ fn inject_smoke_input(world: &mut World, state: &mut ShellResource) {
                     keys.press(*key);
                 } else {
                     keys.release(*key);
+                }
+            }
+            Step::Type(text) => {
+                let window = state.scene.window.unwrap_or(Entity::PLACEHOLDER);
+                let mut keyboard = world.resource_mut::<Messages<KeyboardInput>>();
+                for character in text.chars() {
+                    let typed = character.to_string();
+                    keyboard.write(KeyboardInput {
+                        key_code: KeyCode::Unidentified(
+                            bevy::input::keyboard::NativeKeyCode::Unidentified,
+                        ),
+                        logical_key: Key::Character(typed.as_str().into()),
+                        state: ButtonState::Pressed,
+                        text: Some(typed.as_str().into()),
+                        repeat: false,
+                        window,
+                    });
                 }
             }
             Step::Shot(label) => {
@@ -1707,6 +1968,11 @@ pub(super) fn shell_app_with(
             }
         }
     }
+    // The Campaign section's pilot page and the profile session behind it
+    // (FE-MENU-3). A page the layout cannot supply, or a population that
+    // cannot open, is reported and the section still draws its panes and
+    // buttons.
+    let pilots = pilot_setup(request, &layout);
     let cursor = shell.cursor().and_then(|(name, _)| {
         screens
             .graphic_artwork(name)
@@ -1743,7 +2009,10 @@ pub(super) fn shell_app_with(
             std::time::Duration::from_secs_f64(1.0 / SMOKE_FRAME_HZ),
         ));
     }
-    let plugin = FrontEndShellPlugin::windowed(shell, art, cursor, movie_files);
+    let mut plugin = FrontEndShellPlugin::windowed(shell, art, cursor, movie_files);
+    if let Some(setup) = pilots {
+        plugin = plugin.with_pilots(setup);
+    }
     app.add_plugins(match flow {
         Some(flow) => plugin.with_flow(flow),
         None => plugin,
@@ -1755,6 +2024,52 @@ pub(super) fn shell_app_with(
         handle
     });
     Ok((app, handle))
+}
+
+/// The environment variable naming the directory pilots persist in.
+pub const PROFILE_DIR_ENV: &str = "CS_PROFILE_DIR";
+
+/// Where a smoke run keeps its pilots, inside the capture directory.
+pub const SMOKE_PROFILE_SUBDIR: &str = "profiles";
+
+/// The pilot page and its session for a run: automation (a smoke) gets the
+/// synthetic population under its capture directory — the profile library
+/// refuses an automated caller the production tree — and a person gets the
+/// production population in `$CS_PROFILE_DIR`, else `~/.crimson-skies`.
+fn pilot_setup(request: &FrontEndRequest, layout: &super::OriginalLayout) -> Option<PilotSetup> {
+    let page = match PilotPage::from_layout(layout) {
+        Ok(page) => page,
+        Err(error) => {
+            eprintln!("cs: no pilot page: {error}");
+            return None;
+        }
+    };
+    let catalog = cs_content::save::settings::SettingCatalog::empty();
+    let opened = match &request.smoke {
+        Some(smoke) => {
+            ProfileSession::open_sandbox(&smoke.capture_dir.join(SMOKE_PROFILE_SUBDIR), &catalog)
+        }
+        None => {
+            let base = std::env::var_os(PROFILE_DIR_ENV)
+                .map(PathBuf::from)
+                .or_else(|| {
+                    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".crimson-skies"))
+                })?;
+            ProfileSession::open(
+                &base,
+                crate::profile::SessionOrigin::Interactive,
+                cs_types::profile::ProfileKind::Production,
+                &catalog,
+            )
+        }
+    };
+    match opened {
+        Ok(session) => Some(PilotSetup { page, session }),
+        Err(error) => {
+            eprintln!("cs: the pilot population cannot open: {error}");
+            None
+        }
+    }
 }
 
 /// Turns the finished smoke into the process result and prints the summary.

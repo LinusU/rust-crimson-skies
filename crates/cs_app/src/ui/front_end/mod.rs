@@ -88,6 +88,8 @@ mod machine;
 mod movie;
 mod original;
 mod paths;
+mod pilot_page;
+mod pilot_view;
 mod retail;
 mod screens;
 mod shell;
@@ -133,6 +135,11 @@ pub use paths::{
     NavigationInputs, PathReview, PathStep, StepOutcome, SuppliedInput, review_navigation,
     review_navigation_with,
 };
+pub use pilot_page::{
+    CANCEL_BUTTON, CONTINUE_BUTTON, DELETE_BUTTON, EDIT_ROW, EditBox, HOVER_FRAME, LIST_ROW,
+    ListBox, MAX_PILOTS, PILOT_SECTION, PilotEntry, PilotNotice, PilotOutcome, PilotPage,
+    PilotPageError, ROW_TEXT, SELECTED_FILL,
+};
 pub use retail::{
     FrontEndInventory, FrontEndScreens, GRAPHICS_PREFIX, ImageSource, MINIMUM_SCREEN_EXTENT,
     MOVIE_DIRECTORY, OriginalImage, SCREEN_CONTAINER, SoundMember, UI_IMAGE_CONTAINER,
@@ -153,8 +160,9 @@ pub use start_flow::{
 };
 pub use window::{
     DEFAULT_FRONT_END_CAPTURE_DIR, FrontEndError, FrontEndRequest, FrontEndShellPlugin,
-    MIN_SHELL_SMOKE_SECONDS, ShellResource, ShellShotRecord, ShellSmokeHandle, ShellSmokePlugin,
-    ShellSmokeReport, headless_app, headless_app_flow, run_front_end, shell_app,
+    MIN_SHELL_SMOKE_SECONDS, PROFILE_DIR_ENV, PilotSetup, SMOKE_PROFILE_SUBDIR, ShellResource,
+    ShellShotRecord, ShellSmokeHandle, ShellSmokePlugin, ShellSmokeReport, headless_app,
+    headless_app_flow, headless_app_pilots, run_front_end, shell_app,
 };
 
 /// A front-end screen.

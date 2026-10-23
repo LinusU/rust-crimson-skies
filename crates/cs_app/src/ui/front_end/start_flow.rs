@@ -33,7 +33,9 @@
 //!   and ignores Esc elsewhere (in particular it never quits). Cancel, Return
 //!   and Quit are buttons: their moves come from the layout and the table.
 //! * Domain requests (`OpenProfile`, `CloseProfile`) are **recorded**
-//!   ([`StartFlow::requests`]); no profile is persisted here (#1835).
+//!   ([`StartFlow::requests`]); the pilot page (#1835, [`super::PilotPage`])
+//!   carries them out against the profile session and reports the choice
+//!   through [`StartFlow::choose_pilot`].
 //!
 //! Nothing here is `verified_original`: the machine's table is designed, the
 //! transitions it is checked against are static readings.
@@ -468,10 +470,27 @@ impl StartFlow {
         self.go(Action::Quit)
     }
 
-    /// Esc. Bound on Credits only (the original's `gui_char` there); every
-    /// other screen ignores it, the main menu included.
+    /// The pilot page chose a pilot (Continue or Enter): the table's
+    /// `NewProfile`/`ContinueProfile` then `ConfirmProfile` rows, which end
+    /// on the cabin. A refusal leaves the machine where the first refused
+    /// step left it.
+    pub fn choose_pilot(&mut self, created: bool) -> StartStep {
+        let choice = if created {
+            Action::NewProfile
+        } else {
+            Action::ContinueProfile
+        };
+        match self.go(choice) {
+            StartStep::Moved { .. } | StartStep::Stay => self.go(Action::ConfirmProfile),
+            other => other,
+        }
+    }
+
+    /// Esc. Bound on Credits (the original's `gui_char` there) and, as a
+    /// design addition the task asks for, on the pilot page, where it is
+    /// Cancel; every other screen ignores it, the main menu included.
     pub fn escape(&mut self) -> StartStep {
-        if self.screen() == Screen::Credits {
+        if matches!(self.screen(), Screen::Credits | Screen::ProfileSelect) {
             self.go(Action::Back)
         } else {
             StartStep::Stay
