@@ -650,6 +650,32 @@ impl GamepadAxis {
     }
 }
 
+/// Axis index of a joystick's stick left/right deflection (HID X, positive right).
+///
+/// The four `JOYSTICK_AXIS_*` indices and the `JOYSTICK_HAT_*` virtual buttons
+/// are this project's numbering of a joystick's controls in
+/// [`BindingSource::JoystickAxis`] / [`BindingSource::JoystickButton`]
+/// (SIDEWINDER-FFB2, #1968); the HID decoder in `cs_app` reports them, finding
+/// each control by its HID usage. Axis readings keep the device's own HID sign.
+pub const JOYSTICK_AXIS_X: u16 = 0;
+/// Axis index of a joystick's stick forward/back deflection (HID Y, positive
+/// pulled back).
+pub const JOYSTICK_AXIS_Y: u16 = 1;
+/// Axis index of a joystick's twist (HID Rz, positive clockwise seen from above).
+pub const JOYSTICK_AXIS_TWIST: u16 = 2;
+/// Axis index of a joystick's throttle lever (HID Slider, else Z; the minimum is
+/// the lever pushed forward, as DirectInput reports sliders).
+pub const JOYSTICK_AXIS_THROTTLE: u16 = 3;
+/// Virtual button index of a joystick's point-of-view hat pushed up (forward).
+/// A diagonal holds two of the four hat buttons.
+pub const JOYSTICK_HAT_UP: u16 = 128;
+/// Virtual button index of the hat pushed right.
+pub const JOYSTICK_HAT_RIGHT: u16 = 129;
+/// Virtual button index of the hat pushed down (back).
+pub const JOYSTICK_HAT_DOWN: u16 = 130;
+/// Virtual button index of the hat pushed left.
+pub const JOYSTICK_HAT_LEFT: u16 = 131;
+
 /// One physical source an [`ActionMap`] can bind.
 ///
 /// A binding names a source by **device class**, not by device instance: the
