@@ -56,6 +56,13 @@ flight. **The rattle never starts in this flight**: the speed gate
 `speed >= 113 m/s` did not hold, so the 119,416 B loop of the owner's 18-37.5 s
 window is not reproduced.
 
+The owner-command smoke (`--mission M01 --smoke-seconds 45`, no engagement
+flag) also passes on this tree: exit 0, 3,894 frames, 66 checks, no failure,
+69 framebuffers in `private/evidence/PARITY6-AUDIO-04-smoke` (Git-ignored;
+e.g. `frame_00005_cinematic_start.png`, `frame_01982_scene_33s.png`,
+`frame_fc00020_flight_check.png`). The change is audio-only, so it adds no
+new visual claim.
+
 ## Unknowns that remain
 
 | Unknown | Affects |
