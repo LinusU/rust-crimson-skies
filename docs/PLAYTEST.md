@@ -744,3 +744,46 @@ photographs the restarted mission (`frame_dbNNNNN_replayed.png`); the check
 `debrief_replay_restarts_the_mission` needs a new session generation, no
 terminal, no `AppExit` and a mostly non-black frame. Use `--smoke-seconds 60`.
 See `docs/findings/2026-10-22-parity-m01-outcome-d-replay-mission.md`.
+
+#### The start-flow mode (#1832 `PARITY5-START-FLOW.04`)
+
+```sh
+target/release/cs --cs-path /path/to/retail \
+  --smoke-seconds 60 --capture-dir private/evidence/PARITY5-START-FLOW.04
+```
+
+The bare command — no `--mission`, no `--front-end` — scripts the whole
+start flow end to end as a chain of four process images (winit allows one
+event loop per process, so each leg `exec`s into the next on the command
+line the interactive flow would produce). `--smoke-seconds` must be at
+least 45 — each mission leg is the mission smoke's own scripted run — and
+the capture directory defaults to `private/front-end`. A scripted run is
+never `human_play`, and nothing it measures is `verified_original`.
+
+The legs, and what each writes under `<dir>`:
+
+| leg | what it drives | captures |
+| --- | --- | --- |
+| `front-end/` | main menu → Campaign → the typed new pilot → **Continue** → the intro movie → Esc skip → the cabin → **Next Mission** | `mainmenu.png`, `campaign.png`, `pilot.png`, `intro.png`, `cabin.png` |
+| `mission/` | `… --mission M01 --from-start-flow … --smoke-start-flow`: the ten briefing pages, the Flight Check and its bare pane, the launch cinematic, the `first_control` frame, a short `flight`, then Esc's `pause_map` and its authored **Quit** — the flight reports `abandoned` | `frame_br*` … `frame_*_pause_map.png` |
+| `resumed/` | `… --resume-start-flow abandoned …`: the cabin again, then **Next Mission** hands the replay over | `cabin.png` |
+| `replay/` | `… --mission M01 … --smoke-start-flow` (no `--from-start-flow`): the mission leg once more; its Quit ends the process and the chain | as `mission/` |
+
+The run exits non-zero when any leg's report fails: a required screen that
+never arrives is named (`the <label> framebuffer never arrived` on the
+front-end legs; `briefing_screen_drawn`, `flight_check_*`,
+`launch_cinematic_plays`, `first_control_frame`,
+`start_flow_pause_map_opened`, `start_flow_quit_clicked` on the mission
+legs), a screen the front-end machine refuses is named in `refusals`, and
+the first mission leg must report its end as `abandoned`
+(`start_flow_mission_left`, recorded not-applicable on the replay leg,
+which never returns to the cabin). The typed pilot lives under
+`front-end/profiles/`, the smoke's sandbox; the production profile tree is
+never opened, and per-pilot state does not cross the chain's process
+images.
+
+The windowed test is ignored in CI:
+`cargo test --locked -p cs_app -- accept_parity5_start_flow_04_ --include-ignored`
+(the parser and chain-args tests run in `cs_app_tests_a`, the windowed run
+in `cs_app_tests_c`). The chain's retail run is cited in
+`docs/findings/2026-10-23-parity5-start-flow-04-owner-command-smoke.md`.
