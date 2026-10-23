@@ -731,9 +731,18 @@ impl MenuShell {
     }
 
     /// Moves the pointer to a logical point and updates the hover.
+    ///
+    /// The hover is always the button under the pointer, but only actual
+    /// motion selects it: the window re-applies the cached cursor position
+    /// every frame, and a stationary pointer must not take the selection
+    /// back from the keyboard.
     pub fn pointer_move(&mut self, x: i32, y: i32) {
+        let moved = self.pointer != Some((x, y));
         self.pointer = Some((x, y));
         self.hover = self.button_at(x, y);
+        if moved && self.hover.is_some() {
+            self.focus = self.hover;
+        }
     }
 
     /// The pointer left the surface.
@@ -749,6 +758,7 @@ impl MenuShell {
                 .section()
                 .is_some_and(|section| section.buttons[index].enabled)
         {
+            self.focus = Some(index);
             self.pressed = Some((index, PressKind::Pointer));
         }
     }
@@ -882,7 +892,7 @@ impl MenuShell {
         if self.pressed.is_some_and(|(held, _)| held == index) {
             return ButtonVisual::Depressed;
         }
-        if self.hover == Some(index) || self.focus == Some(index) {
+        if self.focus == Some(index) {
             return ButtonVisual::Rollover;
         }
         ButtonVisual::Active
@@ -935,7 +945,8 @@ impl MenuShell {
     }
 
     /// Resets the per-screen input state on entry: focus to the first
-    /// enabled button, hover and held released, pointer kept.
+    /// enabled button, held released, hover recomputed under the kept pointer
+    /// (which does not select it: only motion does).
     fn entered(&mut self) {
         self.focus = self.section().and_then(|section| {
             section
@@ -943,7 +954,7 @@ impl MenuShell {
                 .then(|| section.buttons.iter().position(|button| button.enabled))
                 .flatten()
         });
-        self.hover = None;
+        self.hover = self.pointer.and_then(|(x, y)| self.button_at(x, y));
         self.pressed = None;
     }
 }

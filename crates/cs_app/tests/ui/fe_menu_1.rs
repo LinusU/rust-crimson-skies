@@ -394,6 +394,90 @@ fn accept_fe_menu_1_the_view_aspect_fits_and_hit_tests_the_same_transform() {
     assert_eq!(shell.hover(), None);
 }
 
+/// The one button drawn as Rollover or Depressed, asserting there is one.
+fn selected_button(shell: &MenuShell) -> usize {
+    let view = shell.view(SECTION_SURFACE).expect("a view");
+    let lit: Vec<usize> = view
+        .buttons
+        .iter()
+        .filter(|button| {
+            matches!(
+                button.visual,
+                ButtonVisual::Rollover | ButtonVisual::Depressed
+            )
+        })
+        .map(|button| button.index)
+        .collect();
+    assert_eq!(lit.len(), 1, "exactly one button is selected: {lit:?}");
+    lit[0]
+}
+
+#[test]
+fn accept_fe_menu_1_pointer_and_keyboard_share_one_selection() {
+    let mut shell = menu_shell();
+    assert_eq!(selected_button(&shell), 0);
+
+    // The pointer moves onto the third button: only it is selected.
+    shell.pointer_move(140, 205);
+    assert_eq!(selected_button(&shell), 2);
+
+    // The window re-applies the cached cursor every frame; a stationary
+    // pointer does not oscillate nor take the selection back.
+    shell.pointer_move(140, 205);
+    assert_eq!(selected_button(&shell), 2);
+
+    // ArrowUp steps from the pointer-selected button, not from the old focus,
+    // and the stationary pointer does not pull the selection back.
+    shell.move_focus(false);
+    assert_eq!(selected_button(&shell), 1);
+    for _ in 0..3 {
+        shell.pointer_move(140, 205);
+        assert_eq!(selected_button(&shell), 1);
+    }
+    shell.move_focus(true);
+    assert_eq!(selected_button(&shell), 2);
+
+    // Actual motion over another button transfers the selection back.
+    shell.move_focus(false);
+    shell.pointer_move(141, 205);
+    assert_eq!(selected_button(&shell), 2);
+
+    // Leaving the surface keeps exactly one selection.
+    shell.pointer_leave();
+    assert_eq!(selected_button(&shell), 2);
+
+    // Enter activates the selected button: the third one has no navigation.
+    shell.move_focus(false);
+    shell.activate_down();
+    assert_eq!(selected_button(&shell), 1);
+    assert_eq!(shell.activate_up(), ShellOutcome::Quit);
+}
+
+#[test]
+fn accept_fe_menu_1_click_after_keyboard_selects_and_activates_the_pointed_button() {
+    let mut shell = menu_shell();
+    shell.pointer_move(140, 155);
+    shell.move_focus(true);
+    assert_eq!(selected_button(&shell), 2);
+    // The pointer has not moved: it still points at the second button, and a
+    // click selects and activates it.
+    shell.pointer_down();
+    assert_eq!(
+        shell.view(SECTION_SURFACE).unwrap().buttons[1].visual,
+        ButtonVisual::Depressed
+    );
+    assert_eq!(selected_button(&shell), 1);
+    assert_eq!(shell.pointer_up(), ShellOutcome::Quit);
+
+    // A disabled button is never selected by the pointer.
+    let mut shell = menu_shell();
+    assert!(shell.set_enabled("b_quit", false));
+    shell.pointer_move(140, 155);
+    assert_eq!(selected_button(&shell), 0);
+    shell.pointer_down();
+    assert_eq!(shell.pointer_up(), ShellOutcome::Nothing);
+}
+
 /// The centre of a view button's surface rect, in surface pixels.
 fn button_surface_centre(button: &cs_app::ui::front_end::ShellButtonView) -> (u32, u32) {
     (
