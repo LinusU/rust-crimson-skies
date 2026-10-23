@@ -126,6 +126,14 @@ fn script_states_in_game_variant(script: &str) -> bool {
 }
 
 impl PreferencesOverlaySource {
+    /// A source from a shell that already holds the section and the decoded
+    /// art for it — the shape [`read_preferences_overlay`] produces from the
+    /// installation, built by hand for a composition that has none.
+    #[must_use]
+    pub fn from_shell(shell: MenuShell, artwork: BTreeMap<String, Artwork>) -> Self {
+        Self { shell, artwork }
+    }
+
     /// The shell holding every section of the layout (the overlay opens
     /// [`PREFERENCES_SECTION`] on it).
     #[must_use]

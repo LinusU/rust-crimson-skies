@@ -1,15 +1,25 @@
-//! Task PARITY3-PAUSE-MAP-SCREEN.02-E.02 (#1923): the Esc pause screen's
-//! Preferences button opens the mission window's preferences overlay with
-//! the session's clock frozen, and the overlay's Return to Game shows the
-//! map again — the pause reason untouched throughout.
+//! Tasks PARITY3-PAUSE-MAP-SCREEN.02-E (#1877) and its .02-E.02 stage
+//! (#1923): the Esc pause screen's Preferences button opens the mission
+//! window's preferences overlay with the session's clock frozen, and the
+//! overlay's Return to Game shows the map again — the pause reason
+//! untouched throughout.
 //!
-//! The headless test drives the production Esc path (`sync_pause_map`,
-//! `drive_pause_map`) over synthetic bitmaps with a `PreferencesOverlay`
-//! record standing in for the overlay plugin's open flag (the section's
-//! source is retail-read). The retail test runs the whole loop on the
-//! composed M01 with both plugins installed. Prefix
-//! `accept_parity3_pause_map_02e_02_`.
+//! * The `02e_02` headless test drives the production Esc path
+//!   (`sync_pause_map`, `drive_pause_map`) over synthetic bitmaps with a
+//!   `PreferencesOverlay` record standing in for the overlay plugin's open
+//!   flag (its section's source is retail-read).
+//! * The `02e` headless test — the parent's own acceptance — runs the same
+//!   loop against the real [`PreferencesOverlayPlugin`] over a synthetic
+//!   `Preferences` section: a `MenuShell` built from layout text in the
+//!   original's format with the in-game page's own rows at the retail
+//!   rects, so the press lands on the drawn settings screen and its own
+//!   Return to Game row.
+//! * The `02e_02` retail test runs the whole loop on the composed M01
+//!   with both plugins installed.
+//!
+//! Prefix `accept_parity3_pause_map_02e_`.
 
+use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use bevy::asset::AssetApp;
@@ -26,12 +36,13 @@ use cs_app::mission_launch::plan_mission_launch;
 use cs_app::mission_session::{
     MissionStage, OpenPreferencesOverlay, PauseButtonKind, PauseMapPart, PauseMapPlugin,
     PauseMapPress, PauseMapScene, PauseMapShown, PauseMapSource, PreferencesEffect,
-    PreferencesOverlay, PreferencesOverlayPlugin, build_headless, install_pause_map,
-    read_pause_map, read_preferences_overlay, stage_for, teardown,
+    PreferencesOverlay, PreferencesOverlayPlugin, PreferencesOverlaySource, build_headless,
+    install_pause_map, install_preferences_overlay, read_pause_map, read_preferences_overlay,
+    stage_for, teardown,
 };
 use cs_app::physics::PhysicsTickLedger;
 use cs_app::playtest::{PlaytestState, headless_app_with};
-use cs_app::ui::front_end::{Artwork, FrontEndScreens};
+use cs_app::ui::front_end::{Artwork, FrontEndScreens, MenuShell, OriginalLayout};
 use cs_content::briefing::Point;
 use cs_content::campaign_bindings::MissionLabel;
 
@@ -185,6 +196,96 @@ fn app() -> App {
     app
 }
 
+/// The `Preferences` section as layout text in the original's format — the
+/// in-game page's own rows at the retail rects — plus the one-line sections
+/// its option buttons name, so the shell reads their `Navigate` effects the
+/// way the real layout does (`PF_B_RETURNTOGAME` starts no script; its arm
+/// the retail `PREFERENCES.SCRIPT` keys by the slot object, so the shell
+/// reads the same `NoHandler` it does there).
+const OVERLAY_LAYOUT: &str = "\
+[@Preferences@]
+PF_BACKGROUND=P,prefback.png,110,215,0,1,0,1,0
+PF_LOGO=P,preflogo.png,134,13,0,1,0,1,0
+PF_B_GAMEOPTIONS=B,prefbtn.png,115,272,0,0,GameOptions,0x1000,1
+PF_B_AUDIO=B,prefbtn.png,115,323,0,0,Audio,0x1000,1
+PF_B_VIDEO=B,prefbtn.png,115,374,0,0,Video,0x1000,1
+PF_B_CONTROLS=B,prefbtn.png,115,425,0,0,ControlsPrefs,0x1000,1
+PF_B_RETURNTOGAME=B,prefret.png,455,509,0,0,,0x1000,1
+PF_MOVIE=M,prefmov.mpg,0,0,0,250,250,0,0
+
+[@GameOptions@]
+GO_BACKGROUND=P,goback.png,0,0,0,1,0,1,0
+
+[@Audio@]
+AU_BACKGROUND=P,auback.png,0,0,0,1,0,1,0
+
+[@Video@]
+VI_BACKGROUND=P,viback.png,0,0,0,1,0,1,0
+
+[@ControlsPrefs@]
+CP_BACKGROUND=P,cpback.png,0,0,0,1,0,1,0
+";
+
+/// The synthetic arts' extents — the retail rows' own sizes (`prefbtn`'s
+/// four 42-px state frames, `prefret`'s four 32-px ones).
+fn overlay_art_extent(art: &str) -> Option<(u32, u32)> {
+    match art.to_ascii_lowercase().as_str() {
+        "prefback.png" | "goback.png" | "auback.png" | "viback.png" | "cpback.png" => {
+            Some((566, 331))
+        }
+        "preflogo.png" => Some((544, 240)),
+        "prefbtn.png" => Some((221, 168)),
+        "prefret.png" => Some((200, 128)),
+        _ => None,
+    }
+}
+
+/// A [`PreferencesOverlaySource`] built by hand: the section measured
+/// through `MenuShell` exactly like `read_preferences_overlay` measures the
+/// installation's, with synthetic bitmaps of the retail extents.
+fn synthetic_overlay_source() -> PreferencesOverlaySource {
+    let layout = OriginalLayout::parse(OVERLAY_LAYOUT).expect("the synthetic section parses");
+    let shell = MenuShell::build(&layout, &|art: &str| overlay_art_extent(art), &|_: &str| {
+        None
+    });
+    let artwork: BTreeMap<String, Artwork> =
+        ["prefback.png", "preflogo.png", "prefbtn.png", "prefret.png"]
+            .iter()
+            .enumerate()
+            .map(|(index, name)| {
+                let (width, height) =
+                    overlay_art_extent(name).expect("the named art has an extent");
+                let rgba = vec![index as u8 + 1; (width as usize) * (height as usize) * 4];
+                (
+                    (*name).to_owned(),
+                    Artwork::new(width, height, rgba).expect("artwork"),
+                )
+            })
+            .collect();
+    PreferencesOverlaySource::from_shell(shell, artwork)
+}
+
+/// The headless app with both production plugins installed — the real
+/// overlay over the real pause map, not the `open_on_message` stand-in.
+fn app_with_overlay() -> App {
+    let mut app = headless_app_with(|app| {
+        if !app
+            .world()
+            .contains_resource::<bevy::prelude::Assets<bevy::prelude::Image>>()
+        {
+            app.init_asset::<bevy::prelude::Image>();
+        }
+        install_pause_map(app, synthetic_source());
+        install_preferences_overlay(app, synthetic_overlay_source());
+    });
+    app.world_mut().spawn(Window {
+        resolution: (800, 600).into(),
+        ..default()
+    });
+    app.update();
+    app
+}
+
 fn key(app: &mut App, code: KeyCode, state: ButtonState) {
     app.world_mut().write_message(KeyboardInput {
         key_code: code,
@@ -323,6 +424,114 @@ fn accept_parity3_pause_map_02e_02_preferences_press_covers_the_map_under_the_ov
         Some(PauseReason::PlayerRequest)
     );
     assert_eq!(ticks(&app), frozen, "Resume was never triggered");
+
+    // Esc still closes the pause and lifts the map afterwards: the detour
+    // leaves the screen's own close path working.
+    tap_escape(&mut app);
+    run(&mut app, 4);
+    assert!(
+        !app.world()
+            .resource::<PlatformInput>()
+            .session()
+            .is_paused(),
+        "Esc closes the pause after the detour"
+    );
+    assert!(!app.world().resource::<PauseMapShown>().0);
+    assert_eq!(parts(&mut app), 0);
+}
+
+/// **The parent task's own acceptance**: the Esc map's Preferences button
+/// opens the *real* overlay plugin's settings screen — its rows drawn, its
+/// own Return to Game live — that row brings the map back, and the
+/// session's clock never moves.
+#[test]
+fn accept_parity3_pause_map_02e_preferences_button_opens_the_settings_screen_and_back_returns_to_the_map()
+ {
+    let mut app = app_with_overlay();
+    run(&mut app, 30);
+    tap_escape(&mut app);
+    run(&mut app, 2);
+    assert!(app.world().resource::<PauseMapShown>().0);
+    let map_parts = parts(&mut app);
+    assert!(map_parts > 0, "the Esc screen is drawn");
+    let frozen = ticks(&app);
+    run(&mut app, 10);
+    assert_eq!(ticks(&app), frozen, "the clock is frozen under the map");
+
+    // The Preferences button's authored centre.
+    click_at(&mut app, 367.0 + 66.0, 528.0 + 14.0);
+    run(&mut app, 2);
+    {
+        let overlay = app.world().resource::<PreferencesOverlay>();
+        assert!(overlay.open, "the press opened the settings screen");
+        let ids: Vec<&str> = overlay.drawn.iter().map(|row| row.id.as_str()).collect();
+        assert_eq!(
+            ids,
+            [
+                "PF_BACKGROUND",
+                "PF_LOGO",
+                "PF_B_GAMEOPTIONS",
+                "PF_B_AUDIO",
+                "PF_B_VIDEO",
+                "PF_B_CONTROLS",
+                "PF_B_RETURNTOGAME"
+            ],
+            "the in-game page's own rows are drawn"
+        );
+    }
+    assert!(
+        overlay_parts(&mut app) > 0,
+        "the settings screen's rows are on screen"
+    );
+    assert!(
+        !app.world().resource::<PauseMapShown>().0,
+        "the map is hidden under the settings screen"
+    );
+    assert_eq!(parts(&mut app), 0, "the map's parts are gone");
+    assert!(app.world().resource::<PlaytestState>().paused);
+    assert_eq!(
+        app.world()
+            .resource::<PlatformInput>()
+            .session()
+            .pause_reason(),
+        Some(PauseReason::PlayerRequest)
+    );
+    assert_eq!(ticks(&app), frozen, "the clock stays frozen");
+
+    // The settings screen's own return: its Return to Game row at its
+    // authored rect's centre.
+    click_at(&mut app, 455.0 + 100.0, 509.0 + 16.0);
+    run(&mut app, 2);
+    {
+        let overlay = app.world().resource::<PreferencesOverlay>();
+        assert!(!overlay.open, "the return row closed the screen");
+        assert_eq!(
+            overlay
+                .presses
+                .last()
+                .map(|press| (&press.id[..], &press.effect)),
+            Some(("PF_B_RETURNTOGAME", &PreferencesEffect::ReturnToGame))
+        );
+    }
+    assert!(
+        app.world().resource::<PauseMapShown>().0,
+        "the map is drawn again"
+    );
+    assert_eq!(parts(&mut app), map_parts);
+    assert!(
+        app.world().resource::<PlaytestState>().paused,
+        "still paused: Resume was never triggered"
+    );
+    assert_eq!(
+        app.world()
+            .resource::<PlatformInput>()
+            .session()
+            .pause_reason(),
+        Some(PauseReason::PlayerRequest)
+    );
+    assert_eq!(ticks(&app), frozen);
+    run(&mut app, 30);
+    assert_eq!(ticks(&app), frozen, "the clock never ran");
 
     // Esc still closes the pause and lifts the map afterwards: the detour
     // leaves the screen's own close path working.
