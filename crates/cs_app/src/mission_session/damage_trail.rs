@@ -19,21 +19,29 @@
 //! `MIN_/MAX_RANDOM_VELOCITY`, `FRICTION`, and the texture names (`TEXTURES`
 //! cycle for the smoke, `TEXTURE_SEQUENCE` for the fire).
 //!
+//! # Measured since #1979 (`docs/findings/2026-10-23-parity2-dmg-fx-levels.md`)
+//!
+//! The gate: `player_smoketrail` is the vehicle-level `injure_anims` entry at
+//! health fraction 0.10, an independent switch that runs while the vehicle's
+//! remaining integrity over its pool is at or below the threshold
+//! ([`vehicle_health_fraction`], [`DAMAGE_TRAIL_VEHICLE_THRESHOLD`]). The
+//! `COLORS` keys and `TEXTURE_SEQUENCE` times are fractions of the puff's
+//! life, a puff with no `COLORS` is white at opacity `1 - fraction`, and
+//! `GROWTH_FACTOR` scales the size linearly from 1x to Gx over the life.
+//!
 //! # Designed, filed under [`DAMAGE_TRAIL_DESIGN_CLAIM`]
 //!
-//! The data states no unit or curve for these: the `TEXTURE_SEQUENCE` frame
-//! times read as seconds of puff age; the `COLORS` key times as a fraction of
-//! the puff's life (rgb 0..255, alpha 0..1, linearly interpolated); velocity
-//! decays as `v * exp(-FRICTION * t)`; the quad faces the camera and blends.
-//! The gate is designed too: the trail plays while any wing region reports
-//! `Damaged` or `Destroyed`, because which `injure_anims` threshold calls
-//! `player_smoketrail`, and the direction of that threshold, is unmeasured.
+//! The pool ([`DESIGNED_REGION_INTEGRITY`], the original's zone pools are
+//! unknown), velocity decaying as `v * exp(-FRICTION * t)`, and the quad
+//! facing the camera and blending.
 //!
 //! # Not applied (unmeasured meaning)
 //!
-//! `GROWTH_FACTOR`, `FADE_RANGE`, `DEVIATION_DISTANCE`, the `fire_lt` light
-//! flicker, the `wing_flare2` INACTIVE switch, `player_fuelleak`'s
-//! `fuel_trail` at `pdp1..3`, and the per-panel `pdpanel*` fires.
+//! `FADE_RANGE` (the depth unit of M01's camera was not read),
+//! `DEVIATION_DISTANCE`, the `fire_lt` light flicker, the `wing_flare2`
+//! INACTIVE switch, `player_fuelleak`'s `fuel_trail` at `pdp1..3` (a
+//! `RANDOM_WEIGHT` pick), and the per-panel `pdpanel*` fires (see
+//! [`super::wing_fire`]).
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -49,13 +57,15 @@ use bevy::prelude::{
 use cs_assets::install;
 use cs_formats::texture::DecodedImage;
 use cs_formats::zbd::{PufferState, read_animation_definitions, read_reader_nodes};
-use cs_sim::damage::PartState;
+use cs_sim::damage::DamageNodeKey;
 
 use super::launch_sound::reader_member;
-use crate::airframe_damage::{RegionDamagePresentation, WingFlare};
+use super::{DESIGNED_REGION_INTEGRITY, PlayerVictim};
+use crate::airframe_damage::AirframeDamageRegion;
 use crate::physics::PhysicsTickLedger;
 use crate::playtest::propeller::PropellerBlur;
 use crate::playtest_textures::{PlaytestTextureArchive, to_bevy_image};
+use crate::weapons::SessionDamageResolver;
 
 /// The claim the trail's units, curves and gate are filed under.
 pub const DAMAGE_TRAIL_DESIGN_CLAIM: &str = "parity-m01-player-damage-trail.designed-trail";
@@ -90,8 +100,12 @@ pub struct TrailEmitter {
     pub textures: Vec<String>,
     /// `TEXTURE_SEQUENCE` `(time, texture)`; empty when it uses a cycle.
     pub frames: Vec<(f32, String)>,
-    /// `COLORS` keys `[t, r, g, b, a]`; empty for none (white, opaque).
+    /// `COLORS` keys `[t, r, g, b, a]` (`t` a fraction of the puff's life);
+    /// empty for none (white, opacity `1 - fraction of life`).
     pub colors: Vec<[f32; 5]>,
+    /// `GROWTH_FACTOR` G: the size runs linearly from 1x to Gx over the
+    /// puff's life; `1.0` without the keyword.
+    pub growth_factor: f32,
 }
 
 /// The stored `dense_firetrail`.
@@ -186,6 +200,7 @@ fn emitter_of(puffer: &PufferState<'_>) -> Result<TrailEmitter, DamageTrailError
             .map(|(t, name)| (*t, (*name).to_owned()))
             .collect(),
         colors: puffer.colors.clone(),
+        growth_factor: puffer.growth_factor.unwrap_or(1.0),
     })
 }
 
@@ -368,13 +383,32 @@ pub fn colour_at(colors: &[[f32; 5]], fraction: f32) -> [f32; 4] {
     colors.last().map_or([1.0; 4], key)
 }
 
-/// The `TEXTURE_SEQUENCE` frame shown at `age_s`: the last frame whose time
-/// has passed.
+/// The colour of a puff at `fraction` of its life: the stored keys, or, with
+/// none, white at opacity `1 - fraction` (claim
+/// `parity2-dmg-fx-levels.keys-are-life-fractions`).
 #[must_use]
-pub fn frame_at(frames: &[(f32, String)], age_s: f32) -> Option<&str> {
+pub fn puff_colour(colors: &[[f32; 5]], fraction: f32) -> [f32; 4] {
+    if colors.is_empty() {
+        return [1.0, 1.0, 1.0, (1.0 - fraction).clamp(0.0, 1.0)];
+    }
+    colour_at(colors, fraction)
+}
+
+/// The size multiplier of a puff at `fraction` of its life for
+/// `GROWTH_FACTOR` `growth`: `1 + (growth - 1) * fraction`.
+#[must_use]
+pub fn growth_scale(growth: f32, fraction: f32) -> f32 {
+    1.0 + (growth - 1.0) * fraction.clamp(0.0, 1.0)
+}
+
+/// The `TEXTURE_SEQUENCE` frame shown at `fraction` of the puff's life (the
+/// stored times are fractions of life, not seconds): the last frame whose
+/// time has passed.
+#[must_use]
+pub fn frame_at(frames: &[(f32, String)], fraction: f32) -> Option<&str> {
     frames
         .iter()
-        .take_while(|(time, _)| *time <= age_s)
+        .take_while(|(time, _)| *time <= fraction)
         .last()
         .or_else(|| frames.first())
         .map(|(_, name)| name.as_str())
@@ -469,11 +503,24 @@ fn build_trail_art(
     });
 }
 
-/// The gate: any wing flare's published region state is damaged or destroyed.
-fn wings_burning(flares: &Query<(&WingFlare, Option<&RegionDamagePresentation>)>) -> bool {
-    flares.iter().any(|(_, record)| {
-        record.is_some_and(|r| matches!(r.state, PartState::Damaged | PartState::Destroyed))
-    })
+/// The health fraction at or below which `player_smoketrail` runs: the
+/// vehicle-level `injure_anims` entry (claim `parity2-dmg-fx-levels.ladders`).
+pub const DAMAGE_TRAIL_VEHICLE_THRESHOLD: f32 = 0.10;
+
+/// The vehicle's health-remaining fraction: the sum of the four regions'
+/// remaining integrity over the sum of their pools (claim
+/// `parity2-dmg-fx-levels.fraction`). `None` when a region is not described.
+#[must_use]
+pub fn vehicle_health_fraction(
+    damage: &SessionDamageResolver,
+    victim: &PlayerVictim,
+) -> Option<f64> {
+    let mut remaining = 0.0;
+    for region in AirframeDamageRegion::ALL {
+        let key = DamageNodeKey::new(region.node_name()).ok()?;
+        remaining += damage.resolver().remaining_integrity(&victim.actor, &key)?;
+    }
+    Some(remaining / (DESIGNED_REGION_INTEGRITY * AirframeDamageRegion::ALL.len() as f64))
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -484,17 +531,22 @@ fn emit_damage_trail(
     mut cursor: ResMut<DamageTrailCursor>,
     mut report: ResMut<DamageTrailReport>,
     mut materials: ResMut<Assets<StandardMaterial>>,
-    flares: Query<(&WingFlare, Option<&RegionDamagePresentation>)>,
+    damage: Option<Res<SessionDamageResolver>>,
+    victim: Option<Res<PlayerVictim>>,
     anchors: Query<&GlobalTransform, With<PropellerBlur>>,
 ) {
     let (Some(art), Some(ledger)) = (art, ledger) else {
         return;
     };
+    let burning = damage
+        .zip(victim)
+        .and_then(|(damage, victim)| vehicle_health_fraction(&damage, &victim))
+        .is_some_and(|fraction| fraction <= f64::from(DAMAGE_TRAIL_VEHICLE_THRESHOLD));
     let Some(anchor) = anchors.iter().next().map(GlobalTransform::translation) else {
         return;
     };
     let previous = cursor.last_anchor.replace(anchor);
-    if !wings_burning(&flares) {
+    if !burning {
         cursor.carried = [0.0; 2];
         return;
     }
@@ -581,10 +633,11 @@ fn advance_trail_puffs(
             TrailKind::Fire => &art.definition.fire,
         };
         let fraction = age as f32 / puff.life_ticks as f32;
-        let [r, g, b, a] = colour_at(&emitter.colors, fraction);
+        let [r, g, b, a] = puff_colour(&emitter.colors, fraction);
+        transform.scale = Vec3::splat(puff.size * growth_scale(emitter.growth_factor, fraction));
         let name = match puff.kind {
             TrailKind::Smoke => emitter.textures.get(puff.cycle_index).map(String::as_str),
-            TrailKind::Fire => frame_at(&emitter.frames, age as f32 / tick_hz),
+            TrailKind::Fire => frame_at(&emitter.frames, fraction),
         };
         if let Some(mut material) = materials.get_mut(&material.0) {
             material.base_color = Color::srgba(r, g, b, a);

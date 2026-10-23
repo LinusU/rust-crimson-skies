@@ -338,6 +338,10 @@ const FLARE_PIXEL_DELTA: u8 = 4;
 /// Frames into the damage-trail phase at which its screenshot is requested:
 /// long enough after the test hit for the trail to have grown.
 const DAMAGE_TRAIL_SHOT_OFFSET: u32 = 90;
+/// Frames after the first shot at which the second test hit takes the
+/// airframe to the `player_smoketrail` level (vehicle health fraction 0.10 or
+/// below, PARITY2-M01-DAMAGE-EFFECTS #1737) and its screenshot follows.
+const DAMAGE_TRAIL_CRITICAL_OFFSET: u32 = DAMAGE_TRAIL_SHOT_OFFSET + 4;
 /// Frames into the rocket phase at which its screenshot is requested.
 const ROCKET_SHOT_OFFSET: u32 = 80;
 /// Frames after the first burst puff is alive at which its screenshot is taken.
@@ -780,6 +784,14 @@ pub struct DamageTrailMetrics {
     pub hit_applied: bool,
     /// Why the hit could not be applied, when it could not.
     pub refusal: Option<String>,
+    /// The second test hit (vehicle health fraction below 0.10) resolved.
+    pub critical_applied: bool,
+    /// Why the second hit could not be applied, when it could not.
+    pub critical_refusal: Option<String>,
+    /// Puffs (smoke + fire) the trail had spawned when the second hit landed:
+    /// the first hit leaves the vehicle above 0.10, so it must be zero.
+    pub spawned_before_critical: u64,
+
     /// Smoke puffs spawned.
     pub smoke_spawned: u64,
     /// Fire puffs spawned.
@@ -1667,13 +1679,22 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
         id: "damage_trail_drawn".to_owned(),
         applies: m.damage_trail.hit_applied || m.damage_trail.refusal.is_some(),
         passed: m.damage_trail.hit_applied
+            && m.damage_trail.critical_applied
+            && m.damage_trail.spawned_before_critical == 0
             && m.damage_trail.smoke_spawned > 0
             && m.damage_trail.fire_spawned > 0,
         detail: format!(
-            "a test hit on the player's left wing node {}; the airframe then drew {} smoke \
+            "the first test hits (vehicle health above 0.10) {} and the trail drew {} puff(s); \
+             the second hits (below 0.10) {}; the airframe then drew {} smoke \
              and {} fire trail puffs over {} burning pass(es) (PARITY-M01-PLAYER-DAMAGE-TRAIL \
-             #1700){}",
+             #1700, level rule #1737){}",
             if m.damage_trail.hit_applied {
+                "resolved"
+            } else {
+                "did not resolve"
+            },
+            m.damage_trail.spawned_before_critical,
+            if m.damage_trail.critical_applied {
                 "resolved"
             } else {
                 "did not resolve"
@@ -1684,6 +1705,7 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
             m.damage_trail
                 .refusal
                 .as_deref()
+                .or(m.damage_trail.critical_refusal.as_deref())
                 .map_or_else(String::new, |why| format!(": {why}")),
         ),
     });
@@ -4485,13 +4507,29 @@ fn smoke_script(
                     flak.damage.as_deref_mut(),
                     flak.weapons.as_deref(),
                     flak.tick_ledger.as_deref(),
+                    &TRAIL_FIRST_HITS,
                 )
                 .err();
                 data.measurements.damage_trail.hit_applied =
                     data.measurements.damage_trail.refusal.is_none();
             } else if at == DAMAGE_TRAIL_SHOT_OFFSET {
                 due.push("damage_trail".to_owned());
-            } else if at >= DAMAGE_TRAIL_SHOT_OFFSET + 4 {
+            } else if at == DAMAGE_TRAIL_CRITICAL_OFFSET {
+                data.measurements.damage_trail.spawned_before_critical =
+                    data.measurements.damage_trail.smoke_spawned
+                        + data.measurements.damage_trail.fire_spawned;
+                data.measurements.damage_trail.critical_refusal = apply_trail_test_hit(
+                    flak.damage.as_deref_mut(),
+                    flak.weapons.as_deref(),
+                    flak.tick_ledger.as_deref(),
+                    &TRAIL_CRITICAL_HITS,
+                )
+                .err();
+                data.measurements.damage_trail.critical_applied =
+                    data.measurements.damage_trail.critical_refusal.is_none();
+            } else if at == DAMAGE_TRAIL_CRITICAL_OFFSET + DAMAGE_TRAIL_SHOT_OFFSET {
+                due.push("damage_trail_critical".to_owned());
+            } else if at >= DAMAGE_TRAIL_CRITICAL_OFFSET + DAMAGE_TRAIL_SHOT_OFFSET + 4 {
                 data.phase = Phase::Help;
                 data.phase_start = frame + 1;
             }
@@ -5459,29 +5497,41 @@ fn wake_and_place_flak(
 
 /// Reads the turret runtime's and the `flak_effect` presentation's counters
 /// into the phase's measurements, every frame the phase runs.
-/// Hits the player's left wing region through the damage authority: the
-/// smoke's test hit, a quarter of the designed region pool.
+/// PARITY-M01-PLAYER-DAMAGE-GAUGE-B (#1943): the first test hits leave the
+/// four cockpit zones at distinct measured gauge frames — right wing intact
+/// (green), left wing at 0.40 remaining (orange), nose at 0.65 (yellow),
+/// tail at 0.15 (red). Fractions of the designed region pool.
+const TRAIL_FIRST_HITS: [(&str, f64); 4] = [
+    ("leftwingdamage", 0.25),
+    ("leftwingdamage", 0.35),
+    ("nosedamage", 0.35),
+    ("taildamage", 0.85),
+];
+/// The second test hits take the vehicle's health fraction (the sum of the
+/// four regions over the sum of their pools, claim
+/// `parity2-dmg-fx-levels.fraction`) from 0.55 to 0.0375, below the 0.10 at
+/// which the original starts `player_smoketrail`.
+const TRAIL_CRITICAL_HITS: [(&str, f64); 4] = [
+    ("leftwingdamage", 0.35),
+    ("rightwingdamage", 1.0),
+    ("nosedamage", 0.60),
+    ("taildamage", 0.10),
+];
+
+/// Hits the player's regions through the damage authority: the smoke's test
+/// hits, as fractions of the designed region pool.
 fn apply_trail_test_hit(
     damage: Option<&mut crate::weapons::SessionDamageResolver>,
     weapons: Option<&super::MissionWeapons>,
     ledger: Option<&PhysicsTickLedger>,
+    hits: &[(&str, f64)],
 ) -> Result<(), String> {
     use cs_sim::damage::{DamageChannel, DamageNodeKey, HitEvent, HitEventId};
     let damage = damage.ok_or("no session damage authority")?;
     let player = weapons.ok_or("no mission weapons session")?.player();
     let tick = cs_types::Tick(ledger.map_or(0, |l| l.ticks));
-    // PARITY-M01-PLAYER-DAMAGE-GAUGE-B (#1943): the hits leave the four
-    // cockpit zones at distinct measured gauge frames — right wing intact
-    // (green), left wing at 0.40 remaining (orange), nose at 0.65 (yellow),
-    // tail at 0.15 (red).
-    let hits = [
-        ("leftwingdamage", 0.25),
-        ("leftwingdamage", 0.35),
-        ("nosedamage", 0.35),
-        ("taildamage", 0.85),
-    ];
     let mut events = Vec::new();
-    for (sequence, (node, fraction)) in hits.into_iter().enumerate() {
+    for (sequence, (node, fraction)) in hits.iter().copied().enumerate() {
         events.push(
             HitEvent::try_new(
                 HitEventId {

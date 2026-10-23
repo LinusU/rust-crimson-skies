@@ -13,15 +13,17 @@ use bevy::mesh::Mesh;
 use bevy::prelude::{
     App, FixedPostUpdate, GlobalTransform, Handle, Image, Transform, Vec3, Visibility,
 };
-use cs_app::airframe_damage::{AirframeDamageRegion, RegionDamagePresentation, WingFlare};
 use cs_app::mission_session::{
-    DamageTrailArt, DamageTrailDefinition, DamageTrailReport, MissionDamageTrailPlugin,
-    TrailEmitter, TrailKind, TrailPuff, colour_at, frame_at, plan_emissions,
+    DESIGNED_REGION_INTEGRITY, DamageTrailArt, DamageTrailDefinition, DamageTrailReport,
+    MissionDamageTrailPlugin, TrailEmitter, TrailKind, TrailPuff, attach_player_victim, colour_at,
+    frame_at, plan_emissions,
 };
 use cs_app::physics::PhysicsTickLedger;
 use cs_app::playtest::propeller::PropellerBlur;
 use cs_app::scene::SceneGeneration;
-use cs_sim::damage::{ActorId, PartState};
+use cs_app::weapons::SessionDamageResolver;
+use cs_sim::damage::{ActorId, DamageChannel, DamageNodeKey, HitEvent, HitEventId};
+use cs_types::Tick;
 use cs_types::net::SessionId;
 
 fn emitter(interval: f32, textures: &[&str], frames: &[(f32, &str)]) -> TrailEmitter {
@@ -35,6 +37,7 @@ fn emitter(interval: f32, textures: &[&str], frames: &[(f32, &str)]) -> TrailEmi
         textures: textures.iter().map(|t| (*t).to_owned()).collect(),
         frames: frames.iter().map(|(t, n)| (*t, (*n).to_owned())).collect(),
         colors: vec![[0.0, 255.0, 0.0, 0.0, 1.0], [1.0, 0.0, 0.0, 0.0, 0.0]],
+        growth_factor: 1.0,
     }
 }
 
@@ -69,6 +72,41 @@ fn actor() -> ActorId {
     }
 }
 
+/// Registers the player as a damage victim, as the production spawn path does.
+fn make_victim(app: &mut App) {
+    let aircraft = app.world_mut().spawn_empty().id();
+    let victim = attach_player_victim(app.world_mut(), aircraft, actor(), SceneGeneration(1))
+        .expect("the player becomes a victim");
+    app.world_mut().insert_resource(victim);
+}
+
+/// A production damage-resolver hit that takes `fraction` of a region's pool.
+fn hit(app: &mut App, node: &str, fraction: f64, sequence: u32) {
+    hit_actor(app, actor(), node, fraction, sequence);
+}
+
+fn hit_actor(app: &mut App, target: ActorId, node: &str, fraction: f64, sequence: u32) {
+    let event = HitEvent::try_new(
+        HitEventId {
+            session: target.session,
+            tick: Tick(0),
+            producer: 999,
+            sequence,
+        },
+        None,
+        target,
+        DamageNodeKey::new(node).expect("key"),
+        DamageChannel::Internal,
+        DESIGNED_REGION_INTEGRITY * fraction,
+    )
+    .expect("a finite hit");
+    app.world_mut()
+        .resource_mut::<SessionDamageResolver>()
+        .resolver_mut()
+        .resolve(Tick(0), &[event])
+        .expect("the hit resolves");
+}
+
 fn step(app: &mut App, anchor: Entity, x: f32) {
     let mut global = app
         .world_mut()
@@ -80,23 +118,6 @@ fn step(app: &mut App, anchor: Entity, x: f32) {
 }
 
 use bevy::prelude::Entity;
-
-fn spawn_flare(app: &mut App, state: PartState) -> Entity {
-    app.world_mut()
-        .spawn((
-            WingFlare {
-                region: AirframeDamageRegion::LeftWing,
-            },
-            RegionDamagePresentation {
-                actor: actor(),
-                region: AirframeDamageRegion::LeftWing,
-                state,
-                generation: SceneGeneration(1),
-            },
-            Visibility::Hidden,
-        ))
-        .id()
-}
 
 #[test]
 fn accept_parity_m01_player_damage_trail_emission_spacing_is_the_stored_distance() {
@@ -131,13 +152,13 @@ fn accept_parity_m01_player_damage_trail_colour_and_frame_follow_the_stored_keys
 }
 
 #[test]
-fn accept_parity_m01_player_damage_trail_plays_only_while_a_wing_reports_damage() {
+fn accept_parity_m01_player_damage_trail_plays_only_below_a_tenth_of_vehicle_health() {
     let mut app = trail_app();
+    make_victim(&mut app);
     let anchor = app
         .world_mut()
         .spawn((PropellerBlur, GlobalTransform::default()))
         .id();
-    let flare = spawn_flare(&mut app, PartState::Intact);
     for i in 0..4u8 {
         step(&mut app, anchor, f32::from(i) * 2.0);
     }
@@ -146,15 +167,27 @@ fn accept_parity_m01_player_damage_trail_plays_only_while_a_wing_reports_damage(
         DamageTrailReport::default()
     );
 
-    app.world_mut()
-        .get_mut::<RegionDamagePresentation>(flare)
-        .expect("record")
-        .state = PartState::Damaged;
-    for i in 4..10u8 {
+    // Three regions gone, one whole: the vehicle is at 0.25, above 0.10, and
+    // a wing region reporting damage alone does not start the trail.
+    hit(&mut app, "leftwingdamage", 1.0, 0);
+    hit(&mut app, "rightwingdamage", 1.0, 1);
+    hit(&mut app, "nosedamage", 1.0, 2);
+    for i in 4..8u8 {
+        step(&mut app, anchor, f32::from(i) * 2.0);
+    }
+    assert_eq!(
+        app.world().resource::<DamageTrailReport>().passes_burning,
+        0
+    );
+
+    // The last region at 0.35 of its pool: 0.35 / 4 = 0.0875, at or below 0.10.
+    hit(&mut app, "taildamage", 0.65, 3);
+    for i in 8..14u8 {
         step(&mut app, anchor, f32::from(i) * 2.0);
     }
     let report = *app.world().resource::<DamageTrailReport>();
     // Six segments of 2 m: smoke every 1 m, fire every 0.25 m.
+    assert!(report.passes_burning >= 6);
     assert_eq!(report.smoke_spawned, 12);
     assert_eq!(report.fire_spawned, 48);
     let world = app.world_mut();
@@ -165,23 +198,23 @@ fn accept_parity_m01_player_damage_trail_plays_only_while_a_wing_reports_damage(
         .collect();
     assert_eq!(kinds.len(), 60);
     assert!(kinds.contains(&TrailKind::Smoke) && kinds.contains(&TrailKind::Fire));
+}
 
-    // Repaired: no further puffs, and the live ones die at the stored life.
-    app.world_mut()
-        .get_mut::<RegionDamagePresentation>(flare)
-        .expect("record")
-        .state = PartState::Intact;
-    for i in 10..20u8 {
-        step(&mut app, anchor, f32::from(i) * 2.0);
-    }
-    assert_eq!(
-        app.world().resource::<DamageTrailReport>().smoke_spawned,
-        12
-    );
-    app.world_mut().resource_mut::<PhysicsTickLedger>().ticks += 121;
-    app.world_mut().run_schedule(FixedPostUpdate);
-    let world = app.world_mut();
-    assert_eq!(world.query::<&TrailPuff>().iter(world).count(), 0);
+#[test]
+fn accept_parity_m01_player_damage_trail_puffs_follow_life_fractions_and_growth() {
+    use cs_app::mission_session::{growth_scale, puff_colour};
+    // No COLORS: white, opacity 1 - fraction of life.
+    assert_eq!(puff_colour(&[], 0.25), [1.0, 1.0, 1.0, 0.75]);
+    assert_eq!(puff_colour(&[], 1.5)[3], 0.0);
+    // GROWTH_FACTOR 2.45 runs 1x to 2.45x linearly over the life.
+    assert_eq!(growth_scale(2.45, 0.0), 1.0);
+    assert!((growth_scale(2.45, 0.5) - 1.725).abs() < 1e-6);
+    assert!((growth_scale(2.45, 1.0) - 2.45).abs() < 1e-6);
+    assert_eq!(growth_scale(1.0, 0.7), 1.0);
+    // TEXTURE_SEQUENCE times are fractions of life: 0.5-0.7 s of life at 0.3.
+    let frames = [(0.0, "a".to_owned()), (0.3, "b".to_owned())];
+    assert_eq!(frame_at(&frames, 0.29), Some("a"));
+    assert_eq!(frame_at(&frames, 0.3), Some("b"));
 }
 
 /// Over real M01 data: the stored emitter numbers, nine decoded textures, and
@@ -193,11 +226,7 @@ fn accept_parity_m01_player_damage_trail_retail_dense_firetrail_is_measured_and_
     use cs_app::mission_session::{
         MissionWeapons, build_headless, measure_damage_trail, stage_for,
     };
-    use cs_app::weapons::SessionDamageResolver;
     use cs_content::campaign_bindings::MissionLabel;
-    use cs_sim::damage::{DamageChannel, DamageNodeKey, HitEvent, HitEventId};
-    use cs_types::Tick;
-
     let root =
         std::path::PathBuf::from(std::env::var_os("CS_GAME_DIR").expect("CS_GAME_DIR must be set"));
     let source = measure_damage_trail(&root, "c3").expect("the trail measures");
@@ -226,25 +255,18 @@ fn accept_parity_m01_player_damage_trail_retail_dense_firetrail_is_measured_and_
         0
     );
 
-    let event = HitEvent::try_new(
-        HitEventId {
-            session: player.session,
-            tick: Tick(0),
-            producer: 999,
-            sequence: 0,
-        },
-        None,
-        player,
-        DamageNodeKey::new("leftwingdamage").expect("key"),
-        DamageChannel::Internal,
-        cs_app::mission_session::DESIGNED_REGION_INTEGRITY / 4.0,
-    )
-    .expect("a finite hit");
-    app.world_mut()
-        .resource_mut::<SessionDamageResolver>()
-        .resolver_mut()
-        .resolve(Tick(0), &[event])
-        .expect("the hit resolves");
+    // One region short of the 0.10 level does not burn; the last hit does.
+    hit_actor(&mut app, player, "leftwingdamage", 1.0, 0);
+    hit_actor(&mut app, player, "rightwingdamage", 1.0, 1);
+    hit_actor(&mut app, player, "nosedamage", 1.0, 2);
+    for _ in 0..10 {
+        app.update();
+    }
+    assert_eq!(
+        app.world().resource::<DamageTrailReport>().passes_burning,
+        0
+    );
+    hit_actor(&mut app, player, "taildamage", 0.65, 3);
     for _ in 0..30 {
         app.update();
     }

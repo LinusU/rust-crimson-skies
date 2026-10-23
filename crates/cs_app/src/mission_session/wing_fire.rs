@@ -36,12 +36,13 @@
 //! * A distance emitter on an anchor that does not move would never emit, so
 //!   the anchor is credited [`WING_FIRE_MIN_TRAVEL_M_S`] of travel per second:
 //!   the fire on a static wreck keeps burning.
-//! * Units and curves as in the damage trail (frame times in seconds of puff
-//!   age, colour keys as a fraction of life, `v * exp(-friction * t)`).
+//! * Units and curves as in the damage trail (frame times and colour keys as
+//!   fractions of the puff's life, `GROWTH_FACTOR` as a linear size ramp,
+//!   `v * exp(-friction * t)`).
 //!
 //! # Not applied (unmeasured meaning)
 //!
-//! `AT_NODE` offset words, `GROWTH_FACTOR`, `FADE_RANGE`, the
+//! `AT_NODE` offset words, `FADE_RANGE`, the
 //! `short_firetrail` stage hand-over (`CALL_SEQUENCE ... EVENT_OFFSET`
 //! switch-offs; every stage runs on), the 50 % `RANDOM_WEIGHT` of its
 //! `black_smoke`, the first-person `pcdpN` branch of `pdpanel4`/`6`
@@ -69,7 +70,9 @@ use cs_formats::zbd::{
 use cs_formats::zbd::{ZbdProbe, dispatch, read_reader_archive, read_version_one_index};
 use cs_sim::damage::DamageNodeKey;
 
-use super::damage_trail::{TrailEmitter, TrailKind, TrailPuff, colour_at, frame_at, plan_puff};
+use super::damage_trail::{
+    TrailEmitter, TrailKind, TrailPuff, frame_at, growth_scale, plan_puff, puff_colour,
+};
 use super::{DESIGNED_REGION_INTEGRITY, PlayerVictim};
 use crate::airframe_damage::AirframeDamageRegion;
 use crate::physics::PhysicsTickLedger;
@@ -231,6 +234,7 @@ fn emitter_of(puffer: &PufferState<'_>) -> Option<TrailEmitter> {
             .map(|(t, name)| (*t, (*name).to_owned()))
             .collect(),
         colors: puffer.colors.clone(),
+        growth_factor: puffer.growth_factor.unwrap_or(1.0),
     })
 }
 
@@ -731,10 +735,10 @@ fn emit_wing_fire(
     }
 }
 
-fn puff_texture<'a>(emitter: &'a TrailEmitter, puff: &TrailPuff, age_s: f32) -> Option<&'a str> {
+fn puff_texture<'a>(emitter: &'a TrailEmitter, puff: &TrailPuff, fraction: f32) -> Option<&'a str> {
     match puff.kind {
         TrailKind::Smoke => emitter.textures.get(puff.cycle_index).map(String::as_str),
-        TrailKind::Fire => frame_at(&emitter.frames, age_s),
+        TrailKind::Fire => frame_at(&emitter.frames, fraction),
     }
 }
 
@@ -772,8 +776,11 @@ fn advance_wing_fire_puffs(
         else {
             continue;
         };
-        let [r, g, b, a] = colour_at(&emitter.emitter.colors, age as f32 / puff.life_ticks as f32);
-        let name = puff_texture(&emitter.emitter, puff, age as f32 / hz);
+        let fraction = age as f32 / puff.life_ticks as f32;
+        let [r, g, b, a] = puff_colour(&emitter.emitter.colors, fraction);
+        transform.scale =
+            Vec3::splat(puff.size * growth_scale(emitter.emitter.growth_factor, fraction));
+        let name = puff_texture(&emitter.emitter, puff, fraction);
         if let Some(mut material) = materials.get_mut(&material.0) {
             material.base_color = Color::srgba(r, g, b, a);
             if let Some(handle) = name.and_then(|n| art.textures.get(n)) {

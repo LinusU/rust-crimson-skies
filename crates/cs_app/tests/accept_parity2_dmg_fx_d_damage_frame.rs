@@ -30,6 +30,7 @@ fn verdict(trail: DamageTrailMetrics) -> (bool, bool) {
 fn accept_parity2_dmg_fx_d_the_judge_needs_a_hit_through_the_authority_and_drawn_puffs() {
     let drawn = DamageTrailMetrics {
         hit_applied: true,
+        critical_applied: true,
         smoke_spawned: 10,
         fire_spawned: 20,
         passes_burning: 5,
@@ -40,6 +41,10 @@ fn accept_parity2_dmg_fx_d_the_judge_needs_a_hit_through_the_authority_and_drawn
     let mut quiet = drawn.clone();
     quiet.fire_spawned = 0;
     assert_eq!(verdict(quiet), (true, false));
+    // Puffs before the vehicle reached the 0.10 level: the gate leaked.
+    let mut early = drawn.clone();
+    early.spawned_before_critical = 3;
+    assert_eq!(verdict(early), (true, false));
     // The authority refused the hit: the check applies and fails by name.
     let refused = DamageTrailMetrics {
         refusal: Some("no session damage authority".to_owned()),

@@ -35,6 +35,7 @@ fn emitter() -> TrailEmitter {
         textures: vec!["smoke101".to_owned()],
         frames: Vec::new(),
         colors: Vec::new(),
+        growth_factor: 1.0,
     }
 }
 

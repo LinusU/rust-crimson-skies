@@ -208,11 +208,11 @@ pub use content::{
 };
 pub use crash_flow::{MissionCrashMessagePlugin, install_crash_flow, step_crash_sequence};
 pub use damage_trail::{
-    DAMAGE_TRAIL_DESIGN_CLAIM, DamageTrailArt, DamageTrailCursor, DamageTrailDefinition,
-    DamageTrailError, DamageTrailReport, DamageTrailSource, DamageTrailSourceResource,
-    MissionDamageTrailPlugin, TrailEmitter, TrailKind, TrailPuff, colour_at, frame_at,
-    measure_damage_trail, plan_emissions, plan_puff, read_damage_trail_definition,
-    trail_puff_position,
+    DAMAGE_TRAIL_DESIGN_CLAIM, DAMAGE_TRAIL_VEHICLE_THRESHOLD, DamageTrailArt, DamageTrailCursor,
+    DamageTrailDefinition, DamageTrailError, DamageTrailReport, DamageTrailSource,
+    DamageTrailSourceResource, MissionDamageTrailPlugin, TrailEmitter, TrailKind, TrailPuff,
+    colour_at, frame_at, growth_scale, measure_damage_trail, plan_emissions, plan_puff,
+    puff_colour, read_damage_trail_definition, trail_puff_position, vehicle_health_fraction,
 };
 pub use debrief::{M01_CASH_EARNED_UNKNOWN_CLAIM, MissionDebrief, MissionTally, tally_player_gun};
 pub use debrief_screen::{
