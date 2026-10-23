@@ -57,6 +57,25 @@ Doppler is still applied by the mixer on top.
 Tests: `accept_parity6_m01_audio_10_` in
 `crates/cs_app/tests/accept_parity6_m01_audio_10_engine_rate.rs`.
 
+## Owner-command smoke
+
+```sh
+CS_CAPABILITIES=retail,gpu,audio target/release/cs --cs-path "$CS_GAME_DIR" \
+  --mission M01 --smoke-engagement --smoke-seconds 100 --capture-dir private/evidence/1955
+```
+
+Exit 0, 5,776 frames, 2 checks, no failures; 15 framebuffers under
+`private/evidence/1955/` (not committed), among them `frame_00600_flight.png`,
+`frame_02411_first_control.png` and `frame_05773_damaged.png`. An earlier
+45 s run of the same command failed `hostiles_damage_idle_player` only because
+the first hit lands at t+94.7 s; it is a duration limit of that check, not an
+audio effect. In the 100 s trace the player `devastator.wav` loop's rate runs
+from 18,240 to about 20,500 Hz (57 distinct values, from the law and Doppler)
+instead of the constant 30,319 Hz of the earlier trace; the gain is still 0.8
+(`VOLUME` only, `V = 1.0`). The idle, unmoved aircraft never reaches the
+owner's 6.6 kHz or 31 kHz. These are the mixer's commands, not DirectSound
+read-backs.
+
 ## Still unknown (rule 4)
 
 | Unknown | Affected content | Resolving work |
