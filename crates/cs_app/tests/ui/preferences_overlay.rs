@@ -12,8 +12,8 @@ use bevy::time::{Fixed, Time, TimeUpdateStrategy};
 use cs_app::mission_launch::plan_mission_launch;
 use cs_app::mission_session::{
     ClosePreferencesOverlay, MissionStage, OpenPreferencesOverlay, PreferencesEffect,
-    PreferencesOverlay, PreferencesOverlayPart, PreferencesOverlayPlugin, build_headless,
-    read_preferences_overlay, stage_for, teardown,
+    PreferencesOverlay, PreferencesOverlayPart, PreferencesOverlayPlugin, PreferencesOverlaySource,
+    build_headless, read_preferences_overlay, stage_for, teardown,
 };
 use cs_app::physics::PhysicsTickLedger;
 use cs_app::ui::front_end::FrontEndScreens;
@@ -157,11 +157,18 @@ fn accept_parity3_pause_map_02e_01_rows_spawn_at_authored_positions_and_return_c
          PF_B_MAINMENU is not among them"
     );
     assert!(record.skipped.is_empty(), "{:?}", record.skipped);
-    assert!(
-        record.other_rows.iter().any(|kind| kind == "M"),
-        "the backdrop movie row is counted, never drawn: {:?}",
-        record.other_rows
-    );
+    // The backdrop movie row is parsed into the section's `movies` —
+    // counted, never drawn; `other_rows` counts the row kinds the
+    // presenter does not present ("T" here).
+    let movies = &app
+        .world()
+        .resource::<PreferencesOverlaySource>()
+        .shell()
+        .section()
+        .expect("the open section")
+        .movies;
+    assert_eq!(movies.len(), 1, "the backdrop movie row: {movies:?}");
+    assert_eq!(record.other_rows, ["T"], "{:?}", record.other_rows);
     let placed = placements(&mut app);
     assert_eq!(placed.len(), 7, "one UI node per drawn row");
     assert!(placed.contains(&(455.0, 509.0, 200.0, 32.0)));

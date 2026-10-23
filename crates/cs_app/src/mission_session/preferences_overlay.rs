@@ -236,8 +236,9 @@ pub struct PreferencesOverlay {
     pub drawn: Vec<DrawnRow>,
     /// The `P`/`B` rows the section could not draw, with the shell's reason.
     pub skipped: Vec<SkippedRow>,
-    /// The other row kinds the section holds (`M` movie backdrop, `T`, `E`,
-    /// …), counted and never drawn.
+    /// The other row kinds the section holds besides `P`/`B`/`M` (`T`, `E`,
+    /// …), counted and never drawn; the `M` movie backdrop is parsed into
+    /// the section's `movies` and is not among them.
     pub other_rows: Vec<String>,
     /// Every press in order.
     pub presses: Vec<PreferencesPress>,
