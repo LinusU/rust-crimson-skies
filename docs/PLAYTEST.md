@@ -531,6 +531,14 @@ own budget) and the capture directory defaults to `private/mission-smoke`.
 Every frame is exactly 1/60 s of simulated time. **A scripted run is never
 `human_play`,** and nothing it measures is `verified_original`.
 
+The Esc pause-map phase (#1818) presses `Esc` in flight, photographs the map
+(`frame_*_pause_map.png`), takes the Preferences detour, then **clicks
+Resume**. `pause_map_clock_frozen` fails if the physics tick count differs
+between the map's first drawn frame and the Resume press, and
+`pause_map_resumed` if the click did not close the map. The frame's differences
+from the owner's original are in
+`docs/findings/2026-10-23-pause-map-smoke-frame-vs-original.md`.
+
 What the script does, in order: it **opens on the briefing map** (#1750; eight
 `briefing_*` checks, frames `frame_brNN_*.png`; see
 `docs/findings/2026-10-21-parity5-briefing-map.md`), presses Replay Briefing,
