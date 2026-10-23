@@ -10,19 +10,25 @@ input and pins what main does today.
 
 ## Result (main at the time of writing, no input after the hand-over)
 
-| t | ours (x, y, z) m/s | original (#1752) |
-| --- | --- | --- |
-| 0 | (-1426.6, 150.0, -1813.7) 55.5 | (-1426.0, 150.0, -1813.0) 111.8 |
-| 10 | (-2036.7, 150.0, -2540.9) 100.5 | (-2014.8, 102.6, -2514.7) 113.6 |
-| 20 | (-2682.7, 150.0, -3310.8) 100.5 | (-2743.8, 46.3, -3383.5) 113.6 |
-| 28 | (-3202.5, 148.3, -3919.8) 100.1 | (-3327.1, 1.2, -4078.6) 113.6 |
-| 30 | (-3332.7, 150.0, -4072.0) 100.2 | (-3470.5, 7.2, -4250.0) 111.0 |
-| 34 | (-3592.9, 153.9, -4376.7) 100.1 | (-3749.3, 27.5, -4593.4) 110.4 |
-| 36 | (-3722.9, 156.0, -4529.1) 100.1 | (-3839.8, 105.3, -4718.8) 78.5 |
-| 40 | (-3982.3, 160.4, -4834.1) 100.1 | (-3883.0, 373.9, -4851.8) 75.8 |
-| 60 | (-5212.3, 1.1, -6267.6) 100.5 | (-3993.7, 1608.7, -5940.9) 94.6 |
-| 70 | (-5740.8, 1.0, -6808.8) 1.0 | (-3899.5, 1925.0, -6902.7) 111.2 |
-| 80 | (-5713.1, 1.1, -6883.2) 59.3 | (-3634.7, 1707.9, -8014.6) 123.2 |
+`judged` is the `TerrainContactJudged` count of the fatal-contact rule and
+`hull` the damage it dealt so far (PARITY4-CRASH-E.01, #1983: since that task
+the judge counts the world's own `Solid` colliders as terrain, so the contacts
+below now do damage where they were silent before; see
+`2026-10-23-crash-e-01-world-collider-is-terrain.md`).
+
+| t | ours (x, y, z) m/s | original (#1752) | judged · hull |
+| --- | --- | --- | --- |
+| 0 | (-1426.6, 150.0, -1813.7) 55.5 | (-1426.0, 150.0, -1813.0) 111.8 | 0 · 0 |
+| 10 | (-2036.7, 150.0, -2540.9) 100.5 | (-2014.8, 102.6, -2514.7) 113.6 | 0 · 0 |
+| 20 | (-2682.7, 150.0, -3310.8) 100.5 | (-2743.8, 46.3, -3383.5) 113.6 | 0 · 0 |
+| 28 | (-3202.5, 148.3, -3919.8) 100.1 | (-3327.1, 1.2, -4078.6) 113.6 | 0 · 0 |
+| 30 | (-3332.7, 150.0, -4072.0) 100.2 | (-3470.5, 7.2, -4250.0) 111.0 | 0 · 0 |
+| 34 | (-3592.9, 153.9, -4376.7) 100.1 | (-3749.3, 27.5, -4593.4) 110.4 | 0 · 0 |
+| 36 | (-3722.9, 156.0, -4529.1) 100.1 | (-3839.8, 105.3, -4718.8) 78.5 | 0 · 0 |
+| 40 | (-3982.3, 160.4, -4834.1) 100.1 | (-3883.0, 373.9, -4851.8) 75.8 | 0 · 0 |
+| 60 | (-5212.3, 1.1, -6267.6) 100.5 | (-3993.7, 1608.7, -5940.9) 94.6 | 4 · 400 |
+| 70 | (-5740.8, 1.0, -6808.8) 1.0 | (-3899.5, 1925.0, -6902.7) 111.2 | 6 · 716 |
+| 80 | (-5713.1, 1.1, -6883.2) 59.3 | (-3634.7, 1707.9, -8014.6) 123.2 | 9 · 1049 |
 
 Per-second (not in the table): main flies level at 150 m until t=22, drops
 1.5 m over a hill at t=23..24, climbs to 173 m by t=50, dives at t=51..54
@@ -30,6 +36,16 @@ Per-second (not in the table): main flies level at 150 m until t=22, drops
 t=55, is stopped to 19 m/s at t=62, sits at about 1 m/s at t=70..78 and
 accelerates again. Player never reset, no contact counted before t=51; 5 ground
 contacts by t=60, 8 by t=70. It is never destroyed.
+
+The judged contacts, by tick (fixed ticks run at 120 Hz): t≈50.0 world-mesh
+graze over the island's high ground (severity 0.32), t≈54.5/58.2/58.6 the sea
+tiles of the skim (severity 0.41/0.00/0.00, `PlaytestSea`), and
+t≈69.6/69.7/70.1/70.6/71.1 the pushes into the stopped shore terrain (world
+collider, severity 0.41/0.71/0.05/0.00/0.61). Before #1983 only the three
+`PlaytestSea` contacts reached the judge — 300 damage; the six world-collider
+contacts were unjudged bounces. The window now spends 1049 of the designed
+1200 hull and still survives; nothing in the trajectory moved because damage
+does not act on the body's motion, only a crash does.
 
 ## Divergences, each with the task that would close it
 
@@ -41,7 +57,7 @@ contacts by t=60, 8 by t=70. It is never destroyed.
 | no beach impact at t=34..36, no 60 degree throw | speed 110 -> 78 m/s, path +61 degrees | #1852 (owner's finer capture of V+0x924 over t=34..36); the response law of #1849 is a normal impulse with restitution 0.6 and has no extra term |
 | trajectory after t=40 unrelated | original climbs to 1925 m at t=70 | consequence of the above |
 | ground-blow look-ahead (`groundblow_elev` 400, `groundblow_mag` 10) not applied | unknown whether the measured flight is affected | open unknown from `2026-10-21-m01-collision-response.md`; needs its own task |
-| contact damage not compared | the original survives both contacts | destruction threshold unknown (rule 4) |
+| contact damage uncompared | the original survives both measured contacts | since #1983 the same window's nine contacts spend 1049 of the designed 1200 hull (six of them on the world collider); whether the original would call any of them fatal is unmeasured — the pool and the per-contact range stay the designed/retail values, `2026-10-23-crash-e-01-world-collider-is-terrain.md` |
 
 Heading agrees in the first seconds (positions at t=10 are 58 m apart, mostly altitude).
 Nothing is tuned.
