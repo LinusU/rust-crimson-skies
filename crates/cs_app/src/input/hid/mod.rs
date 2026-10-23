@@ -9,3 +9,5 @@
 //! descriptor.
 
 pub mod descriptor;
+pub mod effect;
+pub mod pid;
