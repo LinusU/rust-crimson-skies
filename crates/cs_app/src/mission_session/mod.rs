@@ -147,6 +147,7 @@ mod view_cycle;
 mod weapon_counts;
 mod weapon_present;
 mod weapons;
+mod wing_fire;
 mod world_draw;
 
 pub use actor_census::{
@@ -425,6 +426,13 @@ pub use weapons::{
     mission_ammunition, mission_ammunition_id, mission_tick_input, mission_wind,
     open_composed_mission_weapons, open_mission_weapons, open_mission_weapons_with,
     publish_mission_weapon_input, rocket_content_id, selected_gun_loadout,
+};
+pub use wing_fire::{
+    BurningEffect, MissionWingFirePlugin, WING_FIRE_DESIGN_CLAIM, WING_FIRE_MIN_TRAVEL_M_S,
+    WING_FIRE_UNKNOWN_CLAIM, WingFireArt, WingFireDefinition, WingFireEffect, WingFireEmitter,
+    WingFireError, WingFireNode, WingFirePuff, WingFireSource, WingFireSourceResource,
+    WingFireStage, WingFireState, burning_effects, measure_wing_fire, plan_wing_emissions,
+    read_wing_fire_definition, threshold_reached,
 };
 pub use world_draw::{
     HORIZON_SUBTREE_LABEL, HorizonRest, HorizonSubtree, MissionWorldDrawPlugin, MissionWorldParts,

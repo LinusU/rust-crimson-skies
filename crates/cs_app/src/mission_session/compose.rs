@@ -308,6 +308,9 @@ pub struct MissionStage {
     /// (PARITY-M01-PLAYER-DAMAGE-TRAIL, #1700). `Some` only for M01's retail
     /// stage; `None` draws no trail.
     pub damage_trail: Option<super::damage_trail::DamageTrailSource>,
+    /// The measured `pdpanelN` wing fire ladders and their effects
+    /// (PARITY4-CRASH-D.03, #1946). `Some` only for M01's retail stage.
+    pub wing_fire: Option<super::wing_fire::WingFireSource>,
     /// The measured `flak_effect` a flak round's burst presents (FLAK-C3,
     /// #1885). `Some` only for M01's retail stage.
     pub flak_effect: Option<super::flak_burst_fx::FlakEffectDefinition>,
@@ -429,6 +432,8 @@ pub enum MissionCompositionError {
     ContactSparks(super::contact_sparks::ContactSparkError),
     /// The damage trail effect or its textures could not be measured.
     DamageTrail(super::damage_trail::DamageTrailError),
+    /// The wing fire ladders or their textures could not be measured.
+    WingFire(super::wing_fire::WingFireError),
     /// The flak effect could not be measured.
     FlakEffect(super::flak_burst_fx::FlakEffectError),
     /// The mission's sound-group table or a member it names could not be read
@@ -489,6 +494,7 @@ impl fmt::Display for MissionCompositionError {
             Self::BurstPuffs(error) => write!(f, "{error}"),
             Self::ContactSparks(error) => write!(f, "{error}"),
             Self::DamageTrail(error) => write!(f, "{error}"),
+            Self::WingFire(error) => write!(f, "{error}"),
             Self::FlakEffect(error) => write!(f, "{error}"),
             Self::Audio(error) if error.code == crate::audio::CODE_CAPABILITY_ABSENT => write!(
                 f,
@@ -689,6 +695,14 @@ pub fn stage_for(
         Some(
             super::damage_trail::measure_damage_trail(install_root, "c3")
                 .map_err(MissionCompositionError::DamageTrail)?,
+        )
+    } else {
+        None
+    };
+    let wing_fire = if plan.mission_dir.eq_ignore_ascii_case("zbd/c3/m01") {
+        Some(
+            super::wing_fire::measure_wing_fire(install_root, "c3")
+                .map_err(MissionCompositionError::WingFire)?,
         )
     } else {
         None
@@ -895,6 +909,7 @@ pub fn stage_for(
         burst_puffs,
         contact_sparks,
         damage_trail,
+        wing_fire,
         flak_effect,
         launch_cinematic,
         label: MISSION_COMPOSITION_LABEL.to_owned(),
@@ -1435,6 +1450,11 @@ fn add_composition(
         ));
     }
     app.add_plugins(crate::mission_session::MissionDamageTrailPlugin);
+    // PARITY4-CRASH-D.03 (#1946): the fire a damaged wing keeps burning.
+    if let Some(fire) = &stage.wing_fire {
+        app.insert_resource(crate::mission_session::WingFireSourceResource(fire.clone()));
+    }
+    app.add_plugins(crate::mission_session::MissionWingFirePlugin);
     // FLAK-C3 (#1885): the flash, smoke ball and close-range flicker of a
     // flak round's burst.
     if let Some(effect) = &stage.flak_effect {
