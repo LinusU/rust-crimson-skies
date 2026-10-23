@@ -5759,3 +5759,61 @@ name = "crash.ai_loader"
 va = 0x00478f6a
 bytes = "e8b1a80a0083c4048d542414528d8d5c010000894424188b41086a0150e80436feff"
 fact = "the routine entered at 0x478a00 (caller 0x474c66; its `this` is the record with the vector at +0x15c) builds the per-soil AI crash animation vector; its reader is not decoded (see the finding)"
+
+# Static trace of the fog state's writers and consumers (task #1847,
+# docs/findings/2026-10-23-m01-fog-update-static.md). The fog parameters live
+# in the state block of the world object (class 14); the flush 0x4da1b0 copies
+# them into the renderer globals 0xa06f4c.. through 0x54e230..0x54e300.
+[[fog_state]]
+name = "fog_default_near"
+claim = "OWNER-STATIC-2026-10-23"
+provenance = "static"
+va = 0x54dace
+kind = "f32"
+value = 500.0
+meaning = "imm32 of `mov [0xa06f4c], imm` (0x54dac8): the renderer's boot default of the fog near distance, replaced by the flush when FOG_RANGES is applied"
+
+[[fog_state]]
+name = "fog_default_far"
+claim = "OWNER-STATIC-2026-10-23"
+provenance = "static"
+va = 0x54dae2
+kind = "f32"
+value = 700.0
+meaning = "imm32 of `mov [0xa06f54], imm` (0x54dadc): the boot default of the fog far distance"
+
+[[fog_state]]
+name = "fog_default_altitude_upper"
+claim = "OWNER-STATIC-2026-10-23"
+provenance = "static"
+va = 0x54daf6
+kind = "f32"
+value = 300.0
+meaning = "imm32 of `mov [0xa06f60], imm` (0x54daf0): the boot default of the upper fog altitude (fog state +0x28, the second spelled FOG_ALTITUDE number)"
+
+[[fog_state]]
+name = "fog_default_altitude_lower"
+claim = "OWNER-STATIC-2026-10-23"
+provenance = "static"
+va = 0x54db00
+kind = "f32"
+value = 200.0
+meaning = "imm32 of `mov [0xa06f64], imm` (0x54dafa): the boot default of the lower fog altitude (fog state +0x2c, the first spelled FOG_ALTITUDE number)"
+
+[[fog_state]]
+name = "cinematic_enter_far_clip_factor"
+claim = "OWNER-STATIC-2026-10-23"
+provenance = "static"
+va = 0x603514
+kind = "f32"
+value = 4.0
+meaning = "4.0f: the cinematic-mode entry 0x450550 multiplies the camera far clip (state +0xb4) by it at 0x4506a6 and switches the fog mode to 0"
+
+[[fog_state]]
+name = "cinematic_leave_far_clip_factor"
+claim = "OWNER-STATIC-2026-10-23"
+provenance = "static"
+va = 0x6034f4
+kind = "f32"
+value = 0.25
+meaning = "0.25f: the cinematic-mode exit 0x450e30 multiplies the camera far clip (state +0xb4) by it at 0x450f0b, switches the fog mode to 1 and clears 0x654120"
