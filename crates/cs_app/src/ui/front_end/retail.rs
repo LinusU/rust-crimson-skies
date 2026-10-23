@@ -830,6 +830,15 @@ impl FrontEndScreens {
     /// screen container, or `None` when it is absent or will not read.
     #[must_use]
     pub fn script_text(&self, member: &str) -> Option<String> {
+        let data = self.rof_member_bytes(member)?;
+        Some(data.iter().map(|&byte| char::from(byte)).collect())
+    }
+
+    /// The stored bytes of one member of the screen container, matched ASCII
+    /// case-insensitively on its spelling, or `None` when it is absent or
+    /// will not read.
+    #[must_use]
+    pub fn rof_member_bytes(&self, member: &str) -> Option<Vec<u8>> {
         let spelling = self
             .rof
             .members()
@@ -842,8 +851,19 @@ impl FrontEndScreens {
             TEXTURE_ARCHIVE_VARIANT,
         )
         .ok()?;
-        let read = self.rof.read(&key).ok()?;
-        Some(read.data.iter().map(|&byte| char::from(byte)).collect())
+        Some(self.rof.read(&key).ok()?.data.to_vec())
+    }
+
+    /// The spellings of the screen container's members whose name contains
+    /// `needle` (ASCII case-insensitive), in container order.
+    #[must_use]
+    pub fn rof_member_names(&self, needle: &str) -> Vec<String> {
+        let needle = needle.to_ascii_uppercase();
+        self.rof
+            .members()
+            .filter(|member| member.spelling.to_ascii_uppercase().contains(&needle))
+            .map(|member| member.spelling.clone())
+            .collect()
     }
 
     /// The recorded texture id of a UI-archive image, for a test that needs
