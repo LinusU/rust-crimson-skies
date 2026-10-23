@@ -19,10 +19,10 @@
 //! * one drawn flash per accepted shot — a child of the shot's
 //!   [`MuzzleEffectSpawn`] record, at the emitted muzzle position, for a
 //!   designed number of committed fixed ticks ([`MUZZLE_FLASH_LIFETIME_TICKS`]);
-//! * [`MissionHudNotice`]: a weapon refusal the publisher records (today: the
-//!   rocket's "no declared-hostile damage target is live") is published for
-//!   the HUD to show, so a refused shot is reported on screen instead of
-//!   silently doing nothing.
+//! * [`MissionHudNotice`]: a weapon refusal the publisher records (today:
+//!   the rocket's "no target is selected") is published for the HUD to show,
+//!   so a refused shot is reported on screen instead of silently doing
+//!   nothing.
 //!
 //! # Everything here is designed, and says so
 //!
