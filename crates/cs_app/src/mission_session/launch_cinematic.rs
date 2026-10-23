@@ -30,7 +30,9 @@ use std::path::Path;
 use avian3d::prelude::LinearVelocity;
 use bevy::app::{App, FixedFirst, FixedLast, Update};
 use bevy::math::Vec3;
-use bevy::prelude::{Component, Query, ResMut, Resource, With, World};
+use bevy::prelude::{
+    Component, DistanceFog, Entity, FogFalloff, Local, Query, ResMut, Resource, With, World,
+};
 use cs_formats::io::ParseContext;
 use cs_formats::zbd::{ZbdFamily, ZbdProbe, dispatch, family_record, read_animation_index};
 use cs_types::install::RelativePath;
@@ -243,7 +245,7 @@ pub fn install_launch_cinematic(
     app.insert_resource(LaunchCinematic::new(total_ticks)?);
     app.add_systems(FixedFirst, hold_body)
         .add_systems(FixedLast, advance_phase)
-        .add_systems(Update, sync_letterbox);
+        .add_systems(Update, (sync_letterbox, sync_fog));
     Ok(())
 }
 
@@ -287,5 +289,67 @@ fn sync_letterbox(
         && bars.is_active() != phase.is_playing()
     {
         bars.set_active(phase.is_playing());
+    }
+}
+
+/// The falloff a [`DistanceFog`] is parked on while the cinematic plays: far
+/// beyond anything drawn, the same stand-in the smoke's probes use for "no
+/// fog" (`apply_probe` in `smoke.rs`). It has no `PartialEq`, so the parked
+/// state is tested on the fields.
+const CINEMATIC_FALLOFF: FogFalloff = FogFalloff::Linear {
+    start: 1.0e9,
+    end: 2.0e9,
+};
+
+fn is_parked(falloff: &FogFalloff) -> bool {
+    matches!(falloff, FogFalloff::Linear { start, end }
+        if *start == 1.0e9 && *end == 2.0e9)
+}
+
+/// The cinematic-mode half of the original's camera hand-over, parked for as
+/// long as the phase plays. Entering cinematic mode writes fog **mode 0** —
+/// "no fog test at all", per the mode read at `0x551e3b` — to the world
+/// object's state block through setter `0x4da800` (call `0x45067c` inside
+/// entry `0x450550`) and multiplies the camera far clip by 4.0
+/// (`cinematic_enter_far_clip_factor`, `0x4506a6`); the exit `0x450e30`
+/// writes **mode 1** (`0x450ee1`) and multiplies the clip by 0.25
+/// (`cinematic_leave_far_clip_factor`, `0x450f0b`, the exact inverse) and
+/// clears the cinematic flag `0x654120`. Fog range, colour and altitude are
+/// never touched — only whether the renderer tests them
+/// (`docs/findings/2026-10-23-m01-fog-update-static.md`, section 2).
+///
+/// That the launch takes this path is an inference, not a trace: the flag is
+/// stored only by the pair (`0x450562` sets it, `0x450f9b` clears it), and
+/// the per-frame camera dispatch steps the cinematic camera `0x450ad0`
+/// exactly while it is set (`0x489cec`), so the intro's driven camera means
+/// entry ran and the return of control means the exit ran — mode 1 plus a
+/// quarter of the cinematic far clip — before the first controllable frame.
+/// The clip half has no visible effect here: nothing drawn sits beyond the
+/// composed camera's 40 km far plane, so scaling it fourfold both ways
+/// changes no pixel; the fog step is the portable half. The five-second
+/// clearing the owner's frames show after hand-over is not a fog change —
+/// nothing in the image interpolates the parameters — it is the aircraft
+/// flying through the constant zone fog (`FOG_RANGES 1000 4500`).
+fn sync_fog(
+    phase: Option<bevy::prelude::Res<LaunchCinematic>>,
+    mut fogs: Query<(Entity, &mut DistanceFog)>,
+    mut parked: Local<Vec<(Entity, FogFalloff)>>,
+) {
+    if phase.is_some_and(|phase| phase.is_playing()) {
+        for (entity, mut fog) in &mut fogs {
+            if is_parked(&fog.falloff) {
+                continue;
+            }
+            if parked.iter().all(|&(kept, _)| kept != entity) {
+                parked.push((entity, fog.falloff.clone()));
+            }
+            fog.falloff = CINEMATIC_FALLOFF.clone();
+        }
+    } else {
+        for (entity, falloff) in parked.drain(..) {
+            if let Ok((_, mut fog)) = fogs.get_mut(entity) {
+                fog.falloff = falloff;
+            }
+        }
     }
 }
