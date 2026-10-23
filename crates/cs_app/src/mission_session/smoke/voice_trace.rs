@@ -14,6 +14,7 @@ use std::collections::BTreeSet;
 use bevy::prelude::*;
 use cs_sim::audio_events::{AudioEmitterId, EmitterMix, spatialize};
 
+use crate::audio::AmbientVoices;
 use crate::audio::AudioEmitterBinding;
 use crate::audio::device::DeviceSampleLibrary;
 use crate::audio::engine::EngineVoices;
@@ -127,6 +128,7 @@ pub fn sample_second(
     law: Option<&EngineGroupLaw>,
     pose: Option<&VoiceListenerPose>,
     launch_voices: Option<&LaunchVoices>,
+    ambient: Option<&AmbientVoices>,
 ) -> VoiceSecond {
     let states: std::collections::BTreeMap<AudioEmitterId, ([f64; 3], [f64; 3], bool)> = emitters
         .iter()
@@ -207,6 +209,21 @@ pub fn sample_second(
             });
         }
     }
+    if let Some(ambient) = ambient {
+        // The rattle slot and the waterfall loop: held device loops with the
+        // gain, pan and rate last handed to the device.
+        for voice in ambient.held() {
+            let pcm = library.and_then(|l| l.library().pcm(&voice.member));
+            voices.push(VoiceRow {
+                member: voice.member.to_string(),
+                decoded_bytes: pcm.as_ref().map(|p| p.sample_count() * 2),
+                looping: true,
+                gain: voice.gain,
+                pan: Some(voice.pan),
+                rate_hz: pcm.as_ref().map(|p| f64::from(p.rate_hz()) * voice.pitch),
+            });
+        }
+    }
     if let Some(line) = session.radio.active() {
         let pcm = library.and_then(|l| l.library().pcm(&line.asset));
         voices.push(VoiceRow {
@@ -252,6 +269,7 @@ pub(super) fn smoke_voice_trace(
     law: Option<Res<EngineGroupLaw>>,
     pose: Option<Res<VoiceListenerPose>>,
     launch_voices: Option<Res<LaunchVoices>>,
+    ambient: Option<Res<AmbientVoices>>,
 ) {
     let Some(session) = audio.as_deref() else {
         return;
@@ -278,6 +296,7 @@ pub(super) fn smoke_voice_trace(
         law.as_deref(),
         listener.as_ref(),
         launch_voices.as_deref(),
+        ambient.as_deref(),
     );
     data.voice_trace.push(row);
 }

@@ -257,5 +257,12 @@ impl Plugin for AudioPlugin {
             super::measured_voice::drive_launch_voices
                 .after(crate::mission_session::launch_cinematic::advance_phase),
         );
+        // The rattle slot and the waterfall's range gate run on the same
+        // fixed clock, after the cinematic's tick (the control hand-over).
+        app.add_systems(
+            bevy::prelude::FixedLast,
+            super::ambient_voices::drive_ambient_voices
+                .after(crate::mission_session::launch_cinematic::advance_phase),
+        );
     }
 }

@@ -104,6 +104,7 @@ use cs_types::space::Quaternion;
 
 use super::actor_census::MissionActorAidPlugin;
 use super::actor_visual::build_actor_visuals;
+use super::ambient_sound::{AmbientSound, AmbientSoundError, measure_ambient_sound};
 use super::flak_sound::{FlakSound, FlakSoundError, measure_flak_sound};
 use super::gun_sound::{GunSound, GunSoundError, measure_gun_sound};
 use super::hud_art::{
@@ -279,6 +280,11 @@ pub struct MissionStage {
     /// from the same staged container. `Some` only for M01's retail stage;
     /// the synthetic acceptance stages set `None`.
     pub flak_sound: Option<FlakSound>,
+    /// The M01 ambient loops (PARITY6-M01-AUDIO-TIMELINE.04, #1864): the
+    /// player's rattle and the waterfall at the `spew` nodes, delivered from
+    /// the same staged container. `Some` only for M01's retail stage; the
+    /// synthetic acceptance stages set `None`.
+    pub ambient_sound: Option<AmbientSound>,
     /// The starting gun rounds and rocket stack the original's HUD shows
     /// (PARITY2-M01-HUD-VALUES, #1732), read from `weapons.zrd`. `Some` only
     /// for M01's retail stage, like [`Self::gun_sound`]: it is the
@@ -401,6 +407,8 @@ pub enum MissionCompositionError {
     GunSound(GunSoundError),
     /// The flak sounds could not be measured.
     FlakSound(FlakSoundError),
+    /// The M01 ambient loops could not be measured or delivered.
+    AmbientSound(AmbientSoundError),
     /// `weapons.zrd` did not state the starting weapon counts.
     WeaponCounts(WeaponCountsError),
     /// The burst puff emitter or its textures could not be measured.
@@ -458,6 +466,7 @@ impl fmt::Display for MissionCompositionError {
             Self::LaunchSound(error) => write!(f, "{error}"),
             Self::GunSound(error) => write!(f, "{error}"),
             Self::FlakSound(error) => write!(f, "{error}"),
+            Self::AmbientSound(error) => write!(f, "{error}"),
             Self::WeaponCounts(error) => write!(f, "{error}"),
             Self::BurstPuffs(error) => write!(f, "{error}"),
             Self::DamageTrail(error) => write!(f, "{error}"),
@@ -615,6 +624,14 @@ pub fn stage_for(
         Some(
             measure_flak_sound(install_root, &content.sound_archives)
                 .map_err(MissionCompositionError::FlakSound)?,
+        )
+    } else {
+        None
+    };
+    let ambient_sound = if plan.mission_dir.eq_ignore_ascii_case("zbd/c3/m01") {
+        Some(
+            measure_ambient_sound(install_root, &content.flight.record, &plan.group_dir)
+                .map_err(MissionCompositionError::AmbientSound)?,
         )
     } else {
         None
@@ -836,6 +853,7 @@ pub fn stage_for(
         ),
         gun_sound,
         flak_sound,
+        ambient_sound,
         weapon_counts,
         burst_puffs,
         damage_trail,
@@ -1204,6 +1222,13 @@ fn add_composition(
         if let Some(flak) = &stage.flak_sound {
             extra.extend(flak.records().map_err(MissionCompositionError::FlakSound)?);
         }
+        if let Some(ambient) = &stage.ambient_sound {
+            extra.extend(
+                ambient
+                    .records()
+                    .map_err(MissionCompositionError::AmbientSound)?,
+            );
+        }
         super::launch_sound::install_launch_audio(
             app,
             launch,
@@ -1213,6 +1238,9 @@ fn add_composition(
             stage.launch_cinematic.as_ref(),
         )
         .map_err(MissionCompositionError::LaunchSound)?;
+        if let Some(ambient) = &stage.ambient_sound {
+            app.insert_resource(ambient.plan.clone());
+        }
     }
     // 1a. The radio prepare step's decoded voice members (M01-RADIO-SAMPLE-WIRE,
     //     #1466): the device library the launch audio installed is filled by
@@ -1699,6 +1727,23 @@ fn load_items(stage: &MissionStage) -> Result<Vec<LoadItem>, MissionCompositionE
                 );
             }
         }
+        // The ambient loops' members (#1864), one binding per member.
+        if let Some(ambient) = &stage.ambient_sound {
+            for member in &ambient.members {
+                items.push(
+                    LoadItem::new(
+                        key.clone(),
+                        member.clone(),
+                        Criticality::GameplayCritical,
+                        launch.bytes,
+                    )
+                    .map_err(|error| MissionCompositionError::Item {
+                        key: spelling.clone(),
+                        reason: error.to_string(),
+                    })?,
+                );
+            }
+        }
         // The launch cinematic's `SOUND` members ride the same staged
         // container (#1863) so the device library the plan's cues ask for is
         // populated by the same pass.
@@ -1902,6 +1947,8 @@ pub fn teardown(app: &mut App) {
     // stale `LaunchVoices.fired` would silence the second build's cues.
     world.remove_resource::<crate::audio::measured_voice::LaunchVoicePlan>();
     world.remove_resource::<crate::audio::measured_voice::LaunchVoices>();
+    world.remove_resource::<crate::audio::ambient_voices::AmbientVoicePlan>();
+    world.remove_resource::<crate::audio::ambient_voices::AmbientVoices>();
     world.remove_resource::<crate::audio::measured_voice::EngineGroupLaw>();
     world.remove_resource::<crate::audio::measured_voice::VoiceListenerPose>();
     world.remove_resource::<super::launch_camera::LaunchCameraPlayback>();

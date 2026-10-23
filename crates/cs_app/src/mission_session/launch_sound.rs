@@ -182,7 +182,7 @@ fn zrd_number(value: &ZrdValue) -> Option<f64> {
 /// The numbers a group record's `key` field carries — the field is a
 /// `{key, n0, n1, …}` sub-list (`RANGE`) or a `key, n` sibling pair
 /// (`VOLUME`); both shapes occur in `sounds.zrd` group records.
-fn field_numbers(entry: &[ZrdValue], key: &str) -> Option<Vec<f64>> {
+pub(super) fn field_numbers(entry: &[ZrdValue], key: &str) -> Option<Vec<f64>> {
     for child in entry {
         if let Some(inner) = child.as_list()
             && inner.first().and_then(ZrdValue::as_text) == Some(key)

@@ -62,6 +62,7 @@
 //! measured half in `docs/findings/2026-10-22-m01-audio-timeline-voice-laws.md`;
 //! both gate every fidelity claim.
 
+pub mod ambient_voices;
 pub mod audit;
 pub mod device;
 pub mod engine;
@@ -77,6 +78,10 @@ pub mod samples;
 pub mod spawn;
 pub mod voice;
 
+pub use ambient_voices::{
+    AMBIENT_PRODUCER, AmbientVoicePlan, AmbientVoices, HeldAmbient, RattleSlot, RattleSpec,
+    WaterfallSpec, anim_range_gate, drive_ambient_voices, rattle_gate,
+};
 pub use device::{
     AudibleDevice, AudioBackendKind, AudioBackendLog, AudioBackendRefusal, CODE_CAPABILITY_ABSENT,
     CODE_DEVICE_CLOSED, CODE_INVALID_MIX, CODE_NO_OUTPUT_DEVICE, CODE_SAMPLE_UNAVAILABLE,
