@@ -72,9 +72,10 @@
 
 use std::collections::BTreeMap;
 
-use avian3d::prelude::{NoAutoMass, Rotation};
+use avian3d::prelude::{LinearVelocity, NoAutoMass, Rotation};
 use bevy::prelude::{
-    App, Component, Entity, FixedPreUpdate, Plugin, Quat, Resource, Transform, Vec3, World,
+    App, Component, Entity, FixedPreUpdate, GlobalTransform, Plugin, Quat, Resource, Transform,
+    Vec3, World,
 };
 use cs_script::ir::{ActorId as WorldActorId, MemberName};
 use cs_sim::collision::{CollisionLayer, ShapeClass};
@@ -85,7 +86,7 @@ use cs_sim::damage::{
 use cs_sim::net_state::{NetActorState, NetControlMode};
 use cs_sim::targeting::{Allegiance, TargetClass, TargetRecord};
 use cs_sim::world_actors::runtime::WorldActorKind;
-use cs_types::content::{ContentId, ContentKind, Resolved};
+use cs_types::content::{ContentId, ContentKind, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
 use cs_types::net::{ActorAllocator, ActorId, SessionId};
 use cs_types::space::{Quaternion, WorldPosition};
@@ -98,9 +99,10 @@ use crate::mission_session::{MISSION_FACTION_PLAYER, MissionHost, MissionStage, 
 use crate::mission_start::{ScriptedAircraft, SpawnDispatch, stored_heading_radians};
 use crate::mission_world_actors::{AllegianceBinding, object3d_orientation};
 use crate::physics::{BodyMode, BodySpec, spawn_body};
-use crate::scene::SceneGenerations;
+use crate::scene::{NodeVisualTransform, SceneGenerations};
 use crate::score::SessionScoreLedger;
 use crate::targeting::TargetingSession;
+use crate::weapons::PartSweptBox;
 use crate::weapons::SessionDamageResolver;
 use crate::world_actors::WorldActorBinding;
 
@@ -202,6 +204,74 @@ pub struct BoundGroundTarget {
     pub entity: Entity,
     /// The session damage actor registered for it.
     pub actor: ActorId,
+}
+
+/// Claim id of the designed swept box of a ground target
+/// (BUG-M01-CONVOY-GUN-HITS, #1998).
+pub const GROUND_TARGET_BOX_CLAIM: &str = "m01-convoy-gun-hits.designed-ground-target-box";
+
+/// The designed half extents, in metres, of a ground target's swept box.
+///
+/// The container stores a bounding box per node, but its extents have no
+/// decoded reader in this tree; only its centre is measured
+/// ([`MissionGroundTarget::target_point_m`]). The box is an axis-aligned
+/// *designed* cube-ish volume generous enough to cover a truck of any heading
+/// (a truck is roughly 3 m x 3 m x 7 m), so aiming at the visible body hits.
+pub const DESIGNED_GROUND_TARGET_HALF_EXTENTS_M: [f64; 3] = [5.0, 3.0, 5.0];
+
+/// Component: where a ground target's swept box came from.
+#[derive(Component, Clone, Debug, PartialEq)]
+pub struct MissionGroundTargetSweep {
+    /// The half extents [`PartSweptBox`] carries, in metres.
+    pub half_extents_m: [f64; 3],
+    /// The box centre in metres: the measured target point.
+    pub centre_m: [f64; 3],
+    /// `designed` for the extents; the centre is measured.
+    pub provenance: Provenance,
+}
+
+/// The swept-hit components of one ground target, and the box centre used.
+///
+/// The box is centred on the measured target point (the centre of the node's
+/// stored box) and is still: M01's ground targets declare no route, so their
+/// velocity is zero. A non-finite point falls back to the node position
+/// rather than refusing every round.
+#[must_use]
+pub fn ground_target_sweep(
+    actor: ActorId,
+    node: DamageNodeKey,
+    target_point_m: [f64; 3],
+    position_m: [f64; 3],
+) -> (
+    (
+        NodeVisualTransform,
+        LinearVelocity,
+        PartSweptBox,
+        MissionGroundTargetSweep,
+    ),
+    [f64; 3],
+) {
+    let centre_m = if target_point_m.iter().all(|c| c.is_finite()) {
+        target_point_m
+    } else {
+        position_m
+    };
+    let centre = Vec3::new(centre_m[0] as f32, centre_m[1] as f32, centre_m[2] as f32);
+    (
+        (
+            NodeVisualTransform(GlobalTransform::from_translation(centre)),
+            LinearVelocity(Vec3::ZERO),
+            PartSweptBox::new(actor, node, DESIGNED_GROUND_TARGET_HALF_EXTENTS_M),
+            MissionGroundTargetSweep {
+                half_extents_m: DESIGNED_GROUND_TARGET_HALF_EXTENTS_M,
+                centre_m,
+                provenance: Provenance::designed(
+                    ClaimId::new(GROUND_TARGET_BOX_CLAIM).expect("a claim id this module declares"),
+                ),
+            },
+        ),
+        centre_m,
+    )
 }
 
 /// Component: one bound ground target's ECS face — the entity the damage
@@ -1274,6 +1344,7 @@ fn spawn_mission_actors_under(
                 continue;
             }
         };
+        let target_node_key = node.key().clone();
         let graph = match DamageGraph::try_new(subject.clone(), vec![node]) {
             Ok(graph) => graph,
             Err(error) => {
@@ -1314,10 +1385,17 @@ fn spawn_mission_actors_under(
         }
         let (roster, allegiance_open) = ground_target_roster(target, player_team_of_player);
         let [x, y, z] = target.position_m;
+        let (sweep_bundle, _centre) = ground_target_sweep(
+            actor,
+            target_node_key.clone(),
+            target.target_point_m,
+            target.position_m,
+        );
         let entity = world
             .spawn((
                 Transform::from_translation(Vec3::new(x as f32, y as f32, z as f32)),
                 bevy::prelude::Visibility::Inherited,
+                sweep_bundle,
                 DamageActorBinding {
                     actor,
                     graph: subject,

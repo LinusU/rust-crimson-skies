@@ -25,6 +25,7 @@ mod campaign {
     mod f29_c_3c_extraction;
     mod f37_c_fu1;
     mod m01_bridge_convoy_spawn;
+    mod m01_convoy_gun_hits;
     mod m01_hostile_engage;
     mod m01_lc_fc_c;
     mod m01_lc_fc_d;

@@ -764,12 +764,39 @@ fn accept_m01_play_parts_geometry_m01_binds_the_measured_allegiance_and_a_labell
         "every part read its pose, box and velocity: {:?}",
         candidates.refused
     );
+    // The mission's ground targets carry their own swept boxes
+    // (BUG-M01-CONVOY-GUN-HITS, #1998); this test is about the zeppelin parts.
+    let ground_actors: Vec<ActorId> = app
+        .world()
+        .resource::<cs_app::mission_actors::MissionGroundTargetReport>()
+        .targets
+        .iter()
+        .map(|target| target.actor)
+        .collect();
+    let part_candidates: Vec<_> = candidates
+        .candidates
+        .iter()
+        .filter(|candidate| {
+            by_actor
+                .iter()
+                .any(|(actor, _)| *actor == candidate.target.actor)
+        })
+        .collect();
     assert_eq!(
-        candidates.candidates.len(),
+        part_candidates.len(),
         39,
         "every bound part is a sweep candidate"
     );
-    for candidate in &candidates.candidates {
+    for actor in &ground_actors {
+        assert!(
+            candidates
+                .candidates
+                .iter()
+                .any(|candidate| candidate.target.actor == *actor),
+            "ground target {actor:?} is a sweep candidate beside the parts"
+        );
+    }
+    for candidate in part_candidates {
         let hostile = by_actor.iter().any(|(actor, chains)| {
             *actor == candidate.target.actor
                 && chains
