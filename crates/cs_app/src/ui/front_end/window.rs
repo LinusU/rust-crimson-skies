@@ -75,6 +75,7 @@ use bevy::prelude::{
 };
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk};
+use bevy::sprite::Anchor;
 use bevy::time::TimeUpdateStrategy;
 use bevy::window::{CursorMoved, CursorOptions, PrimaryWindow};
 use cs_sim::cinematic_state::MediaFailure;
@@ -1106,17 +1107,16 @@ fn frame_shell(world: &mut World) {
     {
         match (state.input.cursor, cursor_extent) {
             (Some(position), Some(extent)) => {
-                let scale = fit_scale(state.surface);
+                let (size, translation) = cursor_placement(position, extent, state.surface);
                 if let Some(mut visibility) = entity.get_mut::<Visibility>() {
                     *visibility = Visibility::Visible;
                 }
                 if let Some(mut sprite) = entity.get_mut::<Sprite>() {
-                    sprite.custom_size =
-                        Some(Vec2::new(extent.0 as f32 * scale, extent.1 as f32 * scale));
+                    sprite.custom_size = Some(size);
                 }
                 if let Some(mut transform) = entity.get_mut::<Transform>() {
-                    transform.translation.x = position.x - state.surface.0 as f32 * 0.5;
-                    transform.translation.y = state.surface.1 as f32 * 0.5 - position.y;
+                    transform.translation.x = translation.x;
+                    transform.translation.y = translation.y;
                 }
             }
             _ => {
@@ -1429,6 +1429,34 @@ fn place_movie(world: &mut World, sprite: &MovieSprite, view: &ShellView, surfac
     }
 }
 
+/// The cursor sprite: anchored at its top-left corner, where the arrow's tip
+/// is, so the sprite's origin is the pointer position the hit tests use.
+/// (`Sprite` alone anchors at the image centre.)
+#[inline(always)]
+fn cursor_bundle(image: Handle<Image>) -> (Sprite, Anchor, Transform) {
+    (
+        Sprite { image, ..default() },
+        Anchor::TOP_LEFT,
+        Transform::from_xyz(0.0, 0.0, 100.0),
+    )
+}
+
+/// The cursor sprite's size and the world position of its top-left corner for
+/// a pointer at `position` (window pixels, y down) over a `surface`-sized
+/// window: the arrow's tip lands exactly on the pointer, the art scaled by the
+/// same aspect fit as the sections.
+#[inline(always)]
+fn cursor_placement(position: Vec2, extent: (u32, u32), surface: (u32, u32)) -> (Vec2, Vec2) {
+    let scale = fit_scale(surface);
+    (
+        Vec2::new(extent.0 as f32 * scale, extent.1 as f32 * scale),
+        Vec2::new(
+            position.x - surface.0 as f32 * 0.5,
+            surface.1 as f32 * 0.5 - position.y,
+        ),
+    )
+}
+
 /// Spawns the sprites of one section frame (panes under buttons), records
 /// them in `scene`, and spawns the cursor sprite once — it lives outside the
 /// section's lists so navigation never respawns it.
@@ -1490,15 +1518,7 @@ fn spawn_section(
         // `(Sprite, Transform)` like the panes and buttons — `Visibility`
         // arrives as a required component — so one bundle type serves every
         // sprite the presenter spawns.
-        let cursor = world
-            .spawn((
-                Sprite {
-                    image: image.clone(),
-                    ..default()
-                },
-                Transform::from_xyz(0.0, 0.0, 100.0),
-            ))
-            .id();
+        let cursor = world.spawn(cursor_bundle(image.clone())).id();
         if let Some(mut visibility) = world.get_mut::<Visibility>(cursor) {
             *visibility = Visibility::Hidden;
         }
@@ -2911,5 +2931,43 @@ pub fn run_front_end(request: &FrontEndRequest) -> Result<(), FrontEndError> {
     match exit {
         AppExit::Success => Ok(()),
         AppExit::Error(code) => Err(FrontEndError::Exit(format!("exit code {code}"))),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// BUG-FE-CURSOR-TOPLEFT (#1995): the arrow's tip, the sprite's top-left
+    /// corner, sits on the pointer position the hit tests receive — for any
+    /// cursor art extent and window size, not the image centre.
+    #[test]
+    fn accept_bug_fe_cursor_topleft_tip_is_the_pointer() {
+        let mut world = World::new();
+        let cursor = world.spawn(cursor_bundle(Handle::default())).id();
+        assert_eq!(
+            world.get::<Anchor>(cursor).copied(),
+            Some(Anchor::TOP_LEFT),
+            "the production cursor sprite is anchored at its top-left"
+        );
+        for surface in [SECTION_SURFACE, (1920, 1080), (800, 900), (1024, 768)] {
+            for extent in [(32, 32), (19, 27), (64, 48)] {
+                for pointer in [
+                    Vec2::new(0.0, 0.0),
+                    Vec2::new(123.0, 456.0),
+                    Vec2::new(surface.0 as f32 - 1.0, surface.1 as f32 - 1.0),
+                ] {
+                    let (size, translation) = cursor_placement(pointer, extent, surface);
+                    let tip_x = translation.x + surface.0 as f32 * 0.5;
+                    let tip_y = surface.1 as f32 * 0.5 - translation.y;
+                    assert_eq!(Vec2::new(tip_x, tip_y), pointer, "{surface:?} {extent:?}");
+                    let scale = fit_scale(surface);
+                    assert_eq!(
+                        size,
+                        Vec2::new(extent.0 as f32 * scale, extent.1 as f32 * scale)
+                    );
+                }
+            }
+        }
     }
 }
