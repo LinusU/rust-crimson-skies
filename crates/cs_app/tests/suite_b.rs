@@ -37,6 +37,7 @@ mod accept_f40_d1_mpeg_playback;
 mod accept_f40_d3_camera_anim;
 mod accept_f40_d4_device_playback;
 mod accept_f40_d_story_cinematics;
+mod accept_sidewinder_ffb2;
 mod accept_t336_suite_b_image;
 mod eh_frame_gate;
 mod evidence_report_f40_d;
