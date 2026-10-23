@@ -37,6 +37,7 @@ use cs_app::mission_session::{
     is_fire_guns, teardown,
 };
 use cs_app::ordnance::OrdnanceItemMirror;
+use cs_app::targeting::TargetingSession;
 use cs_app::weapons::WeaponRoundMirror;
 use cs_types::input::FlightCommand;
 
@@ -261,11 +262,19 @@ fn accept_m01_window_fire_a_live_round_draws_no_tracer() {
 /// HUD notice instead of silently doing nothing.**
 ///
 /// The drawn body is a designed visual; which way it points comes from the
-/// rocket's own flight path. The refusal line is published from the mission's
+/// rocket's own flight path. The launch aims at the player's current target
+/// selection, so the test selects the armed target the way the cockpit's
+/// targeting keys would. The refusal line is published from the mission's
 /// weapon report, whose reason text is the publisher's own diagnostic.
 #[test]
 fn accept_m01_window_fire_rockets_are_drawn_and_a_refusal_is_published() {
-    let (_scratch, mut app, _actor) = armed_stage("m01-window-fire-rockets");
+    let (_scratch, mut app, actor) = armed_stage("m01-window-fire-rockets");
+    assert!(
+        app.world_mut()
+            .resource_mut::<TargetingSession>()
+            .select_scripted(actor),
+        "the spawned target is selectable"
+    );
 
     let mut launched = false;
     for _ in 0..MAX_FRAMES {
@@ -296,9 +305,10 @@ fn accept_m01_window_fire_rockets_are_drawn_and_a_refusal_is_published() {
     }
     teardown(&mut app);
 
-    // The same key in a mission with **no** declared-hostile target is refused
-    // by name — and that refusal is published for the HUD rather than
-    // swallowed, so the player is told instead of left guessing.
+    // The same key in a mission with nothing selected — this stage declares
+    // no hostile target to select — is refused by name, and that refusal is
+    // published for the HUD rather than swallowed, so the player is told
+    // instead of left guessing.
     let (_scratch, mut refused) = composed("m01-window-fire-notice");
     press(&mut refused, KeyCode::KeyX);
     refused.update();
@@ -312,7 +322,7 @@ fn accept_m01_window_fire_rockets_are_drawn_and_a_refusal_is_published() {
         .as_ref()
         .expect("a refused rocket publishes a notice");
     assert!(
-        line.text.contains("hostile"),
+        line.text.contains("no target is selected"),
         "the notice shows the publisher's own refusal: {:?}",
         line.text
     );

@@ -16,6 +16,7 @@ use cs_app::mission_session::{
     puff_pose, read_burst_puff_definition, teardown,
 };
 use cs_app::physics::PhysicsTickLedger;
+use cs_app::targeting::TargetingSession;
 use cs_types::Tick;
 use cs_types::input::{Action, FlightCommand};
 
@@ -88,7 +89,13 @@ fn accept_parity2_dmg_fx_b_a_burst_plans_the_stored_number_inside_the_stored_ran
 /// committed tick ledger.**
 #[test]
 fn accept_parity2_dmg_fx_b_a_rocket_detonation_draws_the_stored_puffs_and_they_expire() {
-    let (_scratch, mut app, _actor) = armed_stage("parity2-dmg-fx-b-rocket");
+    let (_scratch, mut app, actor) = armed_stage("parity2-dmg-fx-b-rocket");
+    assert!(
+        app.world_mut()
+            .resource_mut::<TargetingSession>()
+            .select_scripted(actor),
+        "the spawned target is selectable"
+    );
     app.insert_resource(BurstPuffSourceResource(authored_source()));
     let mut drawn = false;
     for _ in 0..400 {
