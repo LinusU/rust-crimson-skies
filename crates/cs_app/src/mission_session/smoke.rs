@@ -44,6 +44,7 @@
 //! | `weapon_rounds_not_drawn` | no live round entity carries a mesh: the original's capture shows no tracer streaks |
 //! | `weapon_muzzle_flash_drawn` | every muzzle-effect record seen during the hold carries a drawn flash, and at least one was seen |
 //! | `weapon_rocket_launches` | `X` — the original's secondary-fire row — near a declared-hostile actor launches a rocket |
+//! | `weapon_rocket_trail_drawn` | the launched rocket leaves puffs of the `he_rocket_trail` emitter behind it (#1827) |
 //! | `damage_trail_drawn` | a test hit on the player's left wing node resolves and the airframe then draws smoke and fire trail puffs (#1700) |
 //! | `flak_turret_woken` | a sleeping flak turret (a world entry whose `WEAPON` reads as `wep_27`) is test-woken through the wake ledger's own matcher (#1887) |
 //! | `flak_turret_fired` | the woken turret's runtime fires the retail `wep_27` at the player |
@@ -764,6 +765,10 @@ pub struct RocketMetrics {
     pub puffs_spawned: u64,
     /// The most puff entities alive at once after the tap.
     pub max_live_puffs: u32,
+    /// Puffs the rocket's own trail (`he_rocket_trail`) spawned (#1827).
+    pub trail_puffs_spawned: u64,
+    /// The most rocket-trail puff entities alive at once.
+    pub max_live_trail_puffs: u32,
     /// The mission publisher's own rocket refusals, verbatim.
     pub refusals: Vec<String>,
 }
@@ -1615,6 +1620,16 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
             "the rocket's detonation spawned {} smoke puffs ({} alive at once; \
              PARITY2-DMG-FX-B #1806)",
             m.rocket.puffs_spawned, m.rocket.max_live_puffs
+        ),
+    });
+
+    checks.push(Check {
+        id: "weapon_rocket_trail_drawn".to_owned(),
+        applies: true,
+        passed: m.rocket.trail_puffs_spawned > 0,
+        detail: format!(
+            "the launched rocket left {} trail puffs ({} alive at once; M01 rocket trail #1827)",
+            m.rocket.trail_puffs_spawned, m.rocket.max_live_trail_puffs
         ),
     });
 
@@ -3602,6 +3617,21 @@ fn smoke_flashes(
     guns.flashes_undrawn += undrawn;
 }
 
+/// What the burst-puff sample reads (the other half of the parameter budget).
+#[derive(bevy::ecs::system::SystemParam)]
+struct BurstPuffProbe<'w, 's> {
+    report: Option<Res<'w, super::burst_puffs::BurstPuffReport>>,
+    puffs: Query<'w, 's, &'static super::burst_puffs::BurstPuff>,
+}
+
+/// What the rocket-trail sample reads (one parameter of [`smoke_sample`], which
+/// is at the system-parameter limit).
+#[derive(bevy::ecs::system::SystemParam)]
+struct RocketTrailProbe<'w, 's> {
+    report: Option<Res<'w, super::weapon_present::RocketTrailReport>>,
+    puffs: Query<'w, 's, &'static super::weapon_present::RocketTrailPuff>,
+}
+
 /// Samples the live world into the measurements every frame: the audio queue,
 /// the weapon session's rounds and the ordnance session's rockets.
 #[allow(clippy::too_many_arguments)]
@@ -3614,8 +3644,8 @@ fn smoke_sample(
     rounds: Query<&WeaponRoundMirror>,
     rockets: Query<&OrdnanceItemMirror>,
     rocket_report: Option<Res<MissionWeaponReport>>,
-    puff_report: Option<Res<super::burst_puffs::BurstPuffReport>>,
-    puffs: Query<&super::burst_puffs::BurstPuff>,
+    burst: BurstPuffProbe,
+    trail: RocketTrailProbe,
     audio: Option<Res<AudioSession>>,
     mix: Option<Res<AudioMixReport>>,
     bind_log: Option<Res<AudioBindLog>>,
@@ -3678,11 +3708,20 @@ fn smoke_sample(
         let live = rockets.iter().count() as u32;
         data.measurements.rocket.max_rockets = data.measurements.rocket.max_rockets.max(live);
         data.measurements.rocket.launched |= live > 0;
-        let live_puffs = puffs.iter().count() as u32;
+        let live_puffs = burst.puffs.iter().count() as u32;
         data.measurements.rocket.max_live_puffs =
             data.measurements.rocket.max_live_puffs.max(live_puffs);
-        if let Some(report) = puff_report.as_ref() {
+        if let Some(report) = burst.report.as_ref() {
             data.measurements.rocket.puffs_spawned = report.puffs_spawned;
+        }
+        let live_trail = trail.puffs.iter().count() as u32;
+        data.measurements.rocket.max_live_trail_puffs = data
+            .measurements
+            .rocket
+            .max_live_trail_puffs
+            .max(live_trail);
+        if let Some(report) = trail.report.as_ref() {
+            data.measurements.rocket.trail_puffs_spawned = report.puffs_spawned;
         }
         if let Some(report) = rocket_report.as_ref() {
             data.measurements.rocket.refusals = report.rocket_refusals.clone();
