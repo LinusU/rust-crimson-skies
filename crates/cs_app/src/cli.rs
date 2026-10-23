@@ -73,6 +73,10 @@ pub struct MissionRequest {
     /// Return to Cabin, the pause map's Quit) re-opens the front end instead
     /// of ending the process (Rally #1831 `PARITY5-START-FLOW.03`).
     pub from_start_flow: bool,
+    /// The host joystick and its force feedback (`--no-joystick`,
+    /// `--joystick <device>`, `--force-feedback-gain <percent>`,
+    /// `--no-force-feedback`; SIDEWINDER-FFB2, #1968).
+    pub joystick: crate::input::hid::HostJoystickOptions,
 }
 
 /// What the caller asked the binary to do.
@@ -161,6 +165,10 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
     let mut front_end = false;
     let mut from_start_flow = false;
     let mut resume_start_flow: Option<String> = None;
+    let mut no_joystick = false;
+    let mut joystick_filter: Option<String> = None;
+    let mut force_feedback_gain: Option<u32> = None;
+    let mut no_force_feedback = false;
     let mut unknown = false;
 
     let mut index = 0;
@@ -178,6 +186,33 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
             "--smoke-failure" => smoke_failure = true,
             "--front-end" => front_end = true,
             "--from-start-flow" => from_start_flow = true,
+            "--no-joystick" => no_joystick = true,
+            "--no-force-feedback" => no_force_feedback = true,
+            "--joystick" => {
+                let Some(value) = args.get(index + 1).cloned() else {
+                    return CliRequest::Unsupported { args };
+                };
+                joystick_filter = Some(value);
+                values = 1;
+            }
+            "--force-feedback-gain" => {
+                let Some(value) = args.get(index + 1).cloned() else {
+                    return CliRequest::Unsupported { args };
+                };
+                let Ok(parsed) = value.parse::<u32>() else {
+                    return CliRequest::Invalid {
+                        reason: format!("{arg} expects a whole number, found {value:?}"),
+                    };
+                };
+                if let Err(error) = crate::force_feedback::ForceFeedbackSettings::with_gain(parsed)
+                {
+                    return CliRequest::Invalid {
+                        reason: format!("--force-feedback-gain: {error}"),
+                    };
+                }
+                force_feedback_gain = Some(parsed);
+                values = 1;
+            }
             "--resume-start-flow" => {
                 let Some(value) = args.get(index + 1).cloned() else {
                     return CliRequest::Unsupported { args };
@@ -271,6 +306,40 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
     if unknown {
         return CliRequest::Unsupported { args };
     }
+    let joystick_flags = no_joystick
+        || joystick_filter.is_some()
+        || force_feedback_gain.is_some()
+        || no_force_feedback;
+    if joystick_flags && mission.is_none() {
+        return CliRequest::Invalid {
+            reason: "--no-joystick, --joystick, --force-feedback-gain and --no-force-feedback \
+ are flags of --cs-path <dir> --mission <id>"
+                .to_string(),
+        };
+    }
+    if no_joystick && (joystick_filter.is_some() || force_feedback_gain.is_some()) {
+        return CliRequest::Invalid {
+            reason: "--no-joystick does not combine with --joystick or --force-feedback-gain"
+                .to_string(),
+        };
+    }
+    if no_force_feedback && force_feedback_gain.is_some() {
+        return CliRequest::Invalid {
+            reason: "--no-force-feedback does not combine with --force-feedback-gain".to_string(),
+        };
+    }
+    let joystick = crate::input::hid::HostJoystickOptions {
+        enabled: !no_joystick,
+        filter: joystick_filter,
+        force_feedback: if no_force_feedback || no_joystick {
+            crate::force_feedback::ForceFeedbackSettings::off()
+        } else {
+            crate::force_feedback::ForceFeedbackSettings::with_gain(
+                force_feedback_gain.unwrap_or(crate::force_feedback::DESIGNED_DEFAULT_GAIN_PERCENT),
+            )
+            .expect("the gain was checked where it was parsed")
+        },
+    };
     if dev_overlay && mission.is_none() {
         return CliRequest::Invalid {
             reason: "--dev-overlay is a flag of --cs-path <dir> --mission <id>".to_string(),
@@ -435,6 +504,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
             smoke_engagement,
             smoke_failure,
             from_start_flow,
+            joystick,
         });
     }
     if playtest {
@@ -675,6 +745,20 @@ WINDOWED PLAYTEST (development, not original)
         through the session's damage authority (a scripted test input, not
         the original's failure) and judges the journal's debrief screen the
         failed run opens: its text rows, buttons and that the run stays open
+
+    --mission <id> [--joystick <vid:pid|name>] [--force-feedback-gain <percent>]
+        A connected HID joystick flies too (SIDEWINDER-FFB2): stick X roll,
+        Y pitch, twist yaw, throttle lever throttle (the original's axis
+        assignment), its buttons as the original's joystick column (button 1
+        guns, 2 rockets, F1 lists them), the hat looks around. A USB PID
+        force-feedback stick (Microsoft SideWinder Force Feedback 2) plays a
+        designed centring spring, stall buffet, gun, hit and impact feel at
+        25% strength unless --force-feedback-gain (0-100) says otherwise;
+        effects stop while paused or unfocused and on exit. --joystick picks
+        one device; the first is used otherwise
+    --mission <id> --no-joystick | --no-force-feedback
+        Leave host joysticks alone, or read the stick but never drive its
+        motors
 
 START FLOW (windowed)
     --cs-path <dir>

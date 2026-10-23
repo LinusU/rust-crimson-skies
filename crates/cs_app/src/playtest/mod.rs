@@ -514,6 +514,7 @@ fn drive_original_flight(
     mut requests: ResMut<ForceRequests>,
     mut state: ResMut<PlaytestState>,
     mut aircraft: Query<FlyingRecord>,
+    mut feel: Option<ResMut<crate::force_feedback::PlayerFlightFeel>>,
 ) {
     let dt_s = time.timestep().as_secs_f64();
     for (entity, mut flight, position, mut rotation, velocity, mut angular, rule) in &mut aircraft {
@@ -536,6 +537,13 @@ fn drive_original_flight(
             state.original_step_errors += 1;
             continue;
         };
+        if flight.is_player
+            && let Some(feel) = feel.as_mut()
+        {
+            let [vx, vy, vz] = flight.state.velocity_mps;
+            feel.airspeed_mps = (vx * vx + vy * vy + vz * vz).sqrt() as f32;
+            feel.stall_margin = step.stall_margin as f32;
+        }
         let Ok(request) =
             ForceRequest::new(entity, step.world_force.map(|value| value as f32), [0.0; 3])
         else {

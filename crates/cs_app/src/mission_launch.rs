@@ -617,6 +617,7 @@ pub fn launch_mission(request: &crate::cli::MissionRequest) -> Result<(), Missio
         request.dev_overlay,
         request.dev_keys,
         request.from_start_flow,
+        &request.joystick,
     )
     .map_err(MissionLaunchError::Composition)?;
     // The player left for the cabin: the world is torn down, so the front end

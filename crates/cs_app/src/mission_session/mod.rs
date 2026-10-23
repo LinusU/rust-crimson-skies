@@ -115,6 +115,7 @@ mod flak_burst_fx;
 mod flak_round;
 mod flak_sound;
 mod flight_check;
+pub(crate) mod flight_feel;
 mod front_end_return;
 mod gun_sound;
 mod hit_sound;

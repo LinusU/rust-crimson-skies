@@ -386,6 +386,7 @@ fn accept_vs_m01_runtime_the_mission_request_parses_and_refuses_a_synthetic_mix(
             smoke_engagement: false,
             smoke_failure: false,
             from_start_flow: false,
+            joystick: Default::default(),
         })
     );
     for bad in [
@@ -418,6 +419,7 @@ fn accept_vs_m01_runtime_launch_refuses_an_undeclared_mission_and_an_empty_insta
         smoke_engagement: false,
         smoke_failure: false,
         from_start_flow: false,
+        joystick: Default::default(),
     })
     .expect_err("M99 declares no identity");
     assert!(matches!(
@@ -434,6 +436,7 @@ fn accept_vs_m01_runtime_launch_refuses_an_undeclared_mission_and_an_empty_insta
         smoke_engagement: false,
         smoke_failure: false,
         from_start_flow: false,
+        joystick: Default::default(),
     })
     .expect_err("an empty installation cannot launch");
     assert!(matches!(empty, MissionLaunchError::Plan(_)), "{empty}");

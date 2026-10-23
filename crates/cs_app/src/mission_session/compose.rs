@@ -2087,6 +2087,7 @@ pub fn apply_developer_keys(app: &mut App) {
 /// the load fails before interactivity, the world will not load, or the
 /// window exits with an error — each carrying the refusing stage's own
 /// message, so the caller's nonzero exit is never without diagnostics.
+#[allow(clippy::too_many_arguments)]
 pub fn run_windowed(
     install_root: &Path,
     plan: &MissionLaunchPlan,
@@ -2095,6 +2096,7 @@ pub fn run_windowed(
     dev_overlay: bool,
     dev_keys: bool,
     from_start_flow: bool,
+    joystick: &crate::input::hid::HostJoystickOptions,
 ) -> Result<Option<super::MissionEnd>, MissionCompositionError> {
     // A requested capture is judged before any content is read.
     let capture = crate::mission_session::CaptureSettings::from_env()
@@ -2109,6 +2111,15 @@ pub fn run_windowed(
     }
     if dev_keys {
         apply_developer_keys(&mut app);
+    }
+    // The host joystick flies a played mission (SIDEWINDER-FFB2, #1968). A
+    // scripted smoke injects its own input and must not also read a stick
+    // someone left on the desk, nor drive its motors.
+    if smoke.is_none() {
+        app.add_plugins((
+            crate::input::hid::HostJoystickPlugin::new(joystick.clone()),
+            super::flight_feel::FlightFeelPlugin,
+        ));
     }
     // The Esc pause screen reads `escape.zrd` for the mission; a mission whose
     // entry is missing refuses here rather than pausing to a stand-in.
