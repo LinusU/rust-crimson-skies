@@ -107,6 +107,7 @@ use super::actor_visual::build_actor_visuals;
 use super::ambient_sound::{AmbientSound, AmbientSoundError, measure_ambient_sound};
 use super::flak_sound::{FlakSound, FlakSoundError, measure_flak_sound};
 use super::gun_sound::{GunSound, GunSoundError, measure_gun_sound};
+use super::hit_sound::{HitSound, HitSoundError, measure_hit_sound};
 use super::hud_art::{
     MissionHudArt, build_hud_art, read_instrument_table, read_reticle_image, spawn_hud_art,
 };
@@ -280,6 +281,11 @@ pub struct MissionStage {
     /// from the same staged container. `Some` only for M01's retail stage;
     /// the synthetic acceptance stages set `None`.
     pub flak_sound: Option<FlakSound>,
+    /// The player's bullet-hit ricochets (PARITY6-M01-AUDIO-TIMELINE.05,
+    /// #1865): the members of `bullet_hit_sg`, delivered from the same staged
+    /// container. `Some` only for M01's retail stage; the synthetic
+    /// acceptance stages set `None`.
+    pub hit_sound: Option<HitSound>,
     /// The M01 ambient loops (PARITY6-M01-AUDIO-TIMELINE.04, #1864): the
     /// player's rattle and the waterfall at the `spew` nodes, delivered from
     /// the same staged container. `Some` only for M01's retail stage; the
@@ -407,6 +413,8 @@ pub enum MissionCompositionError {
     GunSound(GunSoundError),
     /// The flak sounds could not be measured.
     FlakSound(FlakSoundError),
+    /// The player's bullet-hit sounds could not be measured.
+    HitSound(HitSoundError),
     /// The M01 ambient loops could not be measured or delivered.
     AmbientSound(AmbientSoundError),
     /// `weapons.zrd` did not state the starting weapon counts.
@@ -466,6 +474,7 @@ impl fmt::Display for MissionCompositionError {
             Self::LaunchSound(error) => write!(f, "{error}"),
             Self::GunSound(error) => write!(f, "{error}"),
             Self::FlakSound(error) => write!(f, "{error}"),
+            Self::HitSound(error) => write!(f, "{error}"),
             Self::AmbientSound(error) => write!(f, "{error}"),
             Self::WeaponCounts(error) => write!(f, "{error}"),
             Self::BurstPuffs(error) => write!(f, "{error}"),
@@ -624,6 +633,14 @@ pub fn stage_for(
         Some(
             measure_flak_sound(install_root, &content.sound_archives)
                 .map_err(MissionCompositionError::FlakSound)?,
+        )
+    } else {
+        None
+    };
+    let hit_sound = if plan.mission_dir.eq_ignore_ascii_case("zbd/c3/m01") {
+        Some(
+            measure_hit_sound(install_root, &content.sound_archives)
+                .map_err(MissionCompositionError::HitSound)?,
         )
     } else {
         None
@@ -853,6 +870,7 @@ pub fn stage_for(
         ),
         gun_sound,
         flak_sound,
+        hit_sound,
         ambient_sound,
         weapon_counts,
         burst_puffs,
@@ -1221,6 +1239,9 @@ fn add_composition(
             .map_err(MissionCompositionError::GunSound)?;
         if let Some(flak) = &stage.flak_sound {
             extra.extend(flak.records().map_err(MissionCompositionError::FlakSound)?);
+        }
+        if let Some(hit) = &stage.hit_sound {
+            extra.extend(hit.records().map_err(MissionCompositionError::HitSound)?);
         }
         if let Some(ambient) = &stage.ambient_sound {
             extra.extend(
@@ -1719,6 +1740,23 @@ fn load_items(stage: &MissionStage) -> Result<Vec<LoadItem>, MissionCompositionE
                         voice.content.clone(),
                         Criticality::GameplayCritical,
                         flak.bytes,
+                    )
+                    .map_err(|error| MissionCompositionError::Item {
+                        key: spelling.clone(),
+                        reason: error.to_string(),
+                    })?,
+                );
+            }
+        }
+        // The bullet-hit ricochet members (#1865), one binding per member.
+        if let Some(hit) = &stage.hit_sound {
+            for voice in &hit.voices {
+                items.push(
+                    LoadItem::new(
+                        key.clone(),
+                        voice.content.clone(),
+                        Criticality::GameplayCritical,
+                        hit.bytes,
                     )
                     .map_err(|error| MissionCompositionError::Item {
                         key: spelling.clone(),

@@ -1723,6 +1723,14 @@ impl Plugin for MissionWeaponsPlugin {
             // The flak cues' one-shot producer counter (FLAK-C4/C5): the
             // turret step plays `snd_enemyflak`/`snd_missile_flak` through it.
             .init_resource::<super::flak_sound::FlakSoundSequences>()
+            // The player's bullet-hit ricochets (#1865).
+            .init_resource::<super::hit_sound::HitSoundState>()
+            .add_systems(
+                FixedPostUpdate,
+                super::hit_sound::cue_player_hits
+                    .after(crate::weapons::drive_weapon_session)
+                    .before(crate::damage::drive_damage_schedule),
+            )
             .add_systems(
                 FixedPostUpdate,
                 (

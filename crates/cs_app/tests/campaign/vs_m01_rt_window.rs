@@ -303,6 +303,7 @@ pub(crate) fn synthetic_stage(scratch: &Path) -> MissionStage {
         launch_sound: None,
         gun_sound: None,
         flak_sound: None,
+        hit_sound: None,
         ambient_sound: None,
         weapon_counts: None,
         burst_puffs: None,

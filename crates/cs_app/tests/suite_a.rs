@@ -232,6 +232,7 @@ mod accept_parity6_m01_audio_02_voice_laws;
 mod accept_parity6_m01_audio_03_launch_voices;
 mod accept_parity6_m01_audio_04_ambient_loops;
 mod accept_parity6_m01_audio_04_rattle_and_sequences;
+mod accept_parity6_m01_audio_05_hit_sound;
 mod accept_parity6_m01_audio_07_burst_triggers;
 mod accept_parity6_m01_audio_08_group_pick;
 mod accept_parity6_m01_audio_09_touchdown_and_crash;

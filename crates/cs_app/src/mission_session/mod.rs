@@ -115,6 +115,7 @@ mod flak_sound;
 mod flight_check;
 mod front_end_return;
 mod gun_sound;
+mod hit_sound;
 mod host;
 mod hud_art;
 mod keymap_overlay;
@@ -243,6 +244,10 @@ pub use front_end_return::{MissionEnd, MissionLeft, ReturnToFrontEnd};
 pub use gun_sound::{
     GunSound, GunSoundError, MEASURED_GUN_MEMBER, WeaponSound, WeaponSoundError, measure_gun_sound,
     measure_weapon_sound, measured_gun_sound_id, sound_like_keys, weapon_sound_from_documents,
+};
+pub use hit_sound::{
+    BULLET_HIT_GROUP, CRand, GroupPick, HIT_SOUND_PRODUCER, HitSound, HitSoundError, HitSoundState,
+    HitVoice, cue_player_hits, measure_hit_sound, play_hit_cue, voices_from_document,
 };
 pub use host::{
     MissionHost, MissionHostLaunchError, MissionHostRefusal, MissionHostReport,
