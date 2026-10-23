@@ -81,6 +81,11 @@
 //! selection, Continue / Delete / Cancel over the profile session, and the
 //! machine's `ProfileSelect` rows. Its prefix is `accept_fe_menu_3_`; the
 //! retail and windowed tests are `#[ignore]`d for the same reason.
+//!
+//! Task FE-MENU-4 (#1836, `mod fe_menu_4`) adds the front end's music loop
+//! and rollover / press / text-entry cues, read from `GLOBALS.SCRIPT`'s
+//! `sound` declarations. Its prefix is `accept_fe_menu_4_`; the retail and
+//! windowed tests are `#[ignore]`d for the same reason.
 
 mod evidence;
 mod evidence_f45_b_1;
@@ -88,9 +93,11 @@ mod evidence_f45_c_5;
 mod evidence_fe_menu_1;
 mod evidence_fe_menu_2;
 mod evidence_fe_menu_3;
+mod evidence_fe_menu_4;
 mod fe_menu_1;
 mod fe_menu_2;
 mod fe_menu_3;
+mod fe_menu_4;
 mod flight_check_options;
 mod flow;
 /// The import dialog's fixture, read through F64-C's own designed fixture
