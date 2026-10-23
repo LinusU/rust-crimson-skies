@@ -82,11 +82,13 @@ use bevy::camera::{Camera, Projection};
 use bevy::ecs::query::Has;
 use bevy::ecs::system::SystemParam;
 use bevy::input::keyboard::KeyCode;
+use bevy::input::mouse::MouseButton;
 use bevy::input::{ButtonInput, InputSystems};
 use bevy::prelude::{
     App, AppExit, ChildOf, ClearColor, Commands, DistanceFog, Entity, FogFalloff, GlobalTransform,
     IntoScheduleConfigs, Last, Local, Mesh3d, MessageWriter, On, Plugin, PostUpdate, PreUpdate,
-    Quat, Query, Res, ResMut, Resource, Text, Transform, Update, Vec2, Vec3, Visibility, With,
+    Quat, Query, Res, ResMut, Resource, Text, Transform, Update, Vec2, Vec3, Visibility, Window,
+    With,
 };
 use bevy::render::render_resource::TextureFormat;
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk};
@@ -104,6 +106,8 @@ use super::launch_cinematic::LaunchCinematic;
 use super::lens_flare::{FLARE_TEXTURES, FlareQuadNode, MissionLensFlare};
 use super::letterbox::LaunchLetterbox;
 use super::lifecycles::ObjectiveLifecycles;
+use super::pause_map::{PauseButtonKind, PauseMapShown, PauseMapSource};
+use super::preferences_overlay::PreferencesOverlay;
 use super::turret_fire::{MissionTurretFire, TurretWeaponRecord};
 use super::weapons::MissionWeaponReport;
 use super::world_draw::{HorizonRest, WorldWaterPart, node_slot_of};
@@ -267,11 +271,16 @@ const ROCKET_BURST_WAIT_FRAMES: u32 = 900;
 const HELP_SHOT_OFFSET: u32 = 10;
 /// Frames into the help phase at which `F1` is pressed again to close it.
 const HELP_CLOSE_OFFSET: u32 = 14;
-/// Frames into the pause-map phase at which the open Esc screen is
-/// photographed.
-const PAUSE_MAP_SHOT_OFFSET: u32 = 10;
-/// Frames into the pause-map phase at which `Esc` is pressed again to resume.
-const PAUSE_MAP_CLOSE_OFFSET: u32 = 14;
+/// Frames the open Esc screen settles before its screenshot
+/// (PARITY3-PAUSE-MAP-SCREEN.02-E.02, #1923).
+const PAUSE_MAP_OPEN_SHOT_FRAMES: u32 = 6;
+/// Frames a scripted mouse press is held, so both screens read the down edge
+/// on one frame and the up edge on another (#1923).
+const PAUSE_MAP_CLICK_FRAMES: u32 = 2;
+/// The most frames the pause-map phase may take across its open →
+/// Preferences → Return → close steps: a step that never lands fails its
+/// check instead of hanging the run (#1923).
+const PAUSE_MAP_BUDGET_FRAMES: u32 = 600;
 /// Frames into `Phase::LensFlare` at which the flight is frozen — a
 /// `PauseReason::Menu` hold, never `PlayerRequest`, so the Esc map screen
 /// stays shut and the two frames keep the world view
@@ -1173,6 +1182,17 @@ pub struct LensFlareMetrics {
     pub quads: Vec<FlareQuadMetrics>,
 }
 
+/// What the Esc pause-map phase's preferences detour observed
+/// (PARITY3-PAUSE-MAP-SCREEN.02-E.02, #1923).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PauseMapMetrics {
+    /// The Preferences click opened the preferences overlay with the map
+    /// hidden under it.
+    pub preferences_opened: bool,
+    /// The overlay's Return to Game closed it and the map was drawn again.
+    pub returned: bool,
+}
+
 /// Everything the run measured, as [`evaluate`] consumes it.
 #[derive(Clone, Debug, Default)]
 pub struct SmokeMeasurements {
@@ -1225,6 +1245,9 @@ pub struct SmokeMeasurements {
     pub targeting: TargetingMetrics,
     /// The examine hand-off phase (M01-EXAMINE-OBJECTIVE, #1754).
     pub examine: ExamineMetrics,
+    /// The Esc pause-map phase's preferences detour
+    /// (PARITY3-PAUSE-MAP-SCREEN.02-E.02, #1923).
+    pub pause_map: PauseMapMetrics,
     /// The cockpit-view phase (PARITY3-COCKPIT-VIEW.05, #1813).
     pub cockpit: CockpitViewMetrics,
     /// The camera-mode stage (PARITY3-CAMERA-MODES.04, #1826).
@@ -1888,6 +1911,31 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
         });
     }
 
+    // --- the Esc map's preferences detour (PARITY3-PAUSE-MAP-SCREEN.02-E.02,
+    // #1923) ---------------------------------------------------------------
+    checks.push(Check {
+        id: "pause_map_preferences_opened".to_owned(),
+        applies: true,
+        passed: m.pause_map.preferences_opened,
+        detail: if m.pause_map.preferences_opened {
+            "the Preferences click opened the overlay with the map hidden".to_owned()
+        } else {
+            "the Esc map's Preferences press never left the overlay open over a \
+             hidden map"
+                .to_owned()
+        },
+    });
+    checks.push(Check {
+        id: "pause_map_preferences_returned".to_owned(),
+        applies: true,
+        passed: m.pause_map.returned,
+        detail: if m.pause_map.returned {
+            "Return to Game closed the overlay and the map was drawn again".to_owned()
+        } else {
+            "the overlay's Return to Game never came back to the Esc map".to_owned()
+        },
+    });
+
     // --- the cockpit views (PARITY3-COCKPIT-VIEW.05, #1813) -----------------
     evaluate_cockpit(&m.cockpit, &mut checks);
     // --- the camera modes (PARITY3-CAMERA-MODES.04, #1826) ------------------
@@ -2537,7 +2585,7 @@ struct ProbeState(ProbeMode);
 
 /// A key or pause the state machine wants applied on the next frame, when the
 /// F22 pump reads the keyboard state.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 enum KeyOp {
     Press(KeyCode),
     Release(KeyCode),
@@ -2548,6 +2596,15 @@ enum KeyOp {
     /// keeps the world view (PARITY4-LENS-FLARE-C, #1860).
     Freeze,
     Resume,
+    /// Move the window's cursor to a point of the screens' shared logical
+    /// 800x600 space: `Window::set_cursor_position` is what the pause screen
+    /// and the preferences overlay read the pointer through (#1923).
+    CursorAt(f32, f32),
+    /// The left mouse button down/up — the `ButtonInput<MouseButton>` state
+    /// both screens read — applied after `mouse_button_input_system` so the
+    /// `just_pressed`/`just_released` edge survives to `Update` (#1923).
+    MouseDown,
+    MouseUp,
 }
 
 #[derive(Resource, Default)]
@@ -2644,6 +2701,13 @@ struct SmokeData {
     /// The sun-aim phase's last written (yaw, pitch), so its correction step
     /// can refine it (#1860).
     flare_aim: Option<(f32, f32)>,
+    /// The pause-map phase's place in its open → Preferences → Return →
+    /// close sequence (#1923): a step waits on the screens' own state rather
+    /// than a fixed frame, so the shots land on what they name.
+    pause_map_step: u8,
+    /// The frame the current pause-map step began, for its short timed beats
+    /// (the settle before a shot, the held mouse press) (#1923).
+    pause_map_mark: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -2677,8 +2741,10 @@ enum Phase {
     /// The `F1` keymap overlay: open it over the flight view, photograph it,
     /// close it (#1739).
     Help,
-    /// The Esc pause screen: press `Esc`, photograph the chart screen, press
-    /// `Esc` again to resume (PARITY3-PAUSE-MAP-SCREEN.02-A, #1873).
+    /// The Esc pause screen: press `Esc`, photograph the chart screen, click
+    /// **Preferences**, photograph the open overlay with the map hidden,
+    /// click **Return to Game**, photograph the map again, then `Esc` to
+    /// resume (PARITY3-PAUSE-MAP-SCREEN.02-A/.02-E.02, #1873/#1923).
     PauseMap,
     /// The cockpit views: `F8` three times, a frame and a reading at each
     /// stop, 0 -> 7 -> 6 -> 0 (PARITY3-COCKPIT-VIEW.05, #1813).
@@ -2714,7 +2780,11 @@ impl Plugin for MissionSmokePlugin {
             PreUpdate,
             drive_script
                 .in_set(InputSystems)
-                .after(bevy::input::keyboard::keyboard_input_system),
+                .after(bevy::input::keyboard::keyboard_input_system)
+                // Its mouse writes keep their `just_pressed`/`just_released`
+                // edge only if `mouse_button_input_system` has already run
+                // this frame's `clear()` (#1923).
+                .after(bevy::input::mouse::mouse_button_input_system),
         )
         .add_systems(Update, (apply_placement, apply_probe, keep_focus))
         // The probe runs again in `PostUpdate`: a system in `Update` may have
@@ -2769,6 +2839,8 @@ fn keep_focus(mut platform: ResMut<PlatformInput>) {
 fn drive_script(
     mut queue: ResMut<KeyQueue>,
     mut keys: ResMut<ButtonInput<KeyCode>>,
+    mut mouse: ResMut<ButtonInput<MouseButton>>,
+    mut windows: Query<&mut Window>,
     mut platform: ResMut<PlatformInput>,
 ) {
     for op in std::mem::take(&mut queue.0) {
@@ -2784,6 +2856,28 @@ fn drive_script(
             KeyOp::Resume => {
                 platform.session_mut().resume();
             }
+            KeyOp::CursorAt(x, y) => {
+                let Ok(mut window) = windows.single_mut() else {
+                    continue;
+                };
+                // The logical point through the same aspect-fit the screens
+                // map surface points back with.
+                let surface = (window.width() as u32, window.height() as u32);
+                let Some(fit) =
+                    cs_content::ui_layout::AspectFit::new(super::pause_map::SCREEN_SIZE, surface)
+                else {
+                    continue;
+                };
+                let image = fit.image_rect();
+                window.set_cursor_position(Some(Vec2::new(
+                    image.x as f32
+                        + x * image.width as f32 / super::pause_map::SCREEN_SIZE.0 as f32,
+                    image.y as f32
+                        + y * image.height as f32 / super::pause_map::SCREEN_SIZE.1 as f32,
+                )));
+            }
+            KeyOp::MouseDown => mouse.press(MouseButton::Left),
+            KeyOp::MouseUp => mouse.release(MouseButton::Left),
         }
     }
 }
@@ -2899,6 +2993,57 @@ struct FlakParams<'w> {
     trail: Option<Res<'w, super::damage_trail::DamageTrailReport>>,
 }
 
+/// The screens' state the pause-map phase watches
+/// (PARITY3-PAUSE-MAP-SCREEN.02-E.02, #1923): whether the Esc map is drawn,
+/// its Preferences button's authored rect and the overlay it opens — the
+/// open flag and the drawn Return to Game row the detour clicks.
+#[derive(SystemParam)]
+struct PauseMapParams<'w> {
+    /// Whether the map's parts are spawned.
+    shown: Option<Res<'w, PauseMapShown>>,
+    /// The record the map was read from (the button's position and size).
+    source: Option<Res<'w, PauseMapSource>>,
+    /// The overlay the Preferences button opened.
+    overlay: Option<Res<'w, PreferencesOverlay>>,
+}
+
+impl PauseMapParams<'_> {
+    /// The Preferences button's centre in the screens' shared logical
+    /// 800x600 space.
+    fn preferences_centre(&self) -> Option<(f32, f32)> {
+        let source = self.source.as_deref()?;
+        let button = source
+            .scene
+            .buttons
+            .iter()
+            .find(|button| button.kind == PauseButtonKind::Preferences)?;
+        let (width, height) = source
+            .artwork
+            .get(&button.bitmaps[0].to_ascii_lowercase())
+            .map(|art| (art.width() as f32, art.height() as f32))
+            .unwrap_or((132.0, 28.0));
+        Some((
+            button.at.x as f32 + width / 2.0,
+            button.at.y as f32 + height / 2.0,
+        ))
+    }
+
+    /// The overlay's Return to Game row's centre in the same space, once it
+    /// is drawn.
+    fn return_centre(&self) -> Option<(f32, f32)> {
+        let row = self
+            .overlay
+            .as_deref()?
+            .drawn
+            .iter()
+            .find(|row| row.kind == 'B' && row.id == "PF_B_RETURNTOGAME")?;
+        Some((
+            row.logical.x as f32 + row.logical.width as f32 / 2.0,
+            row.logical.y as f32 + row.logical.height as f32 / 2.0,
+        ))
+    }
+}
+
 /// The sun-aim phase's reads — the drawn flare, the camera `place_flares`
 /// projects through, the source node's placed transform, the quads it
 /// placed and the raw-frame store the two screenshots fill — grouped so
@@ -2953,6 +3098,9 @@ struct ProbeClasses<'w, 's> {
     hud_art: Query<'w, 's, Entity, With<super::hud_art::HudArtRoot>>,
     /// Whether the Esc pause screen is up: it hides the mesh HUD itself.
     pause_map: Option<Res<'w, super::pause_map::PauseMapShown>>,
+    /// Whether the preferences overlay covers the pause screen: it hides the
+    /// mesh HUD the same way (#1923).
+    preferences_overlay: Option<Res<'w, super::preferences_overlay::PreferencesOverlay>>,
 }
 
 /// One UI node as the probe sees it: the entity, whether the developer
@@ -3052,8 +3200,13 @@ fn apply_probe(
     write_all(&mut visibility, classes.aircraft.iter(), body_value);
     write_all(&mut visibility, classes.zeppelins.iter(), body_value);
     // The mesh HUD cluster is an overlay, not world geometry: out of every
-    // probe frame like the UI nodes, back on restore.
-    let pause_map_up = classes.pause_map.as_ref().is_some_and(|shown| shown.0);
+    // probe frame like the UI nodes, back on restore — except while the Esc
+    // map or the preferences overlay over it owns the hide itself (#1923).
+    let pause_map_up = classes.pause_map.as_ref().is_some_and(|shown| shown.0)
+        || classes
+            .preferences_overlay
+            .as_ref()
+            .is_some_and(|overlay| overlay.open);
     if !(pause_map_up && mode == ProbeMode::Restored) {
         write_all(&mut visibility, classes.hud_art.iter(), body_value);
     }
@@ -3764,6 +3917,7 @@ fn smoke_script(
     targeting: TargetingParams<'_, '_>,
     mut flak: FlakParams<'_>,
     flare: FlareParams<'_, '_>,
+    pause_map: PauseMapParams<'_>,
 ) {
     let frame = data.frame;
     if frame == 1 {
@@ -4248,14 +4402,93 @@ fn smoke_script(
                 data.phase_start = frame + 1;
             }
         }
+        // PARITY3-PAUSE-MAP-SCREEN.02-E.02 (#1923): the Esc map's
+        // Preferences detour. Every step waits on the screens' own state —
+        // the map drawn, the overlay open over the hidden map, the map
+        // drawn again — so each frame is the state its name claims; a step
+        // that never lands is a failed check, not a hung run.
         Phase::PauseMap => {
-            if at == 0 || at == PAUSE_MAP_CLOSE_OFFSET {
+            let shown = pause_map.shown.as_deref().is_some_and(|shown| shown.0);
+            let covered = pause_map
+                .overlay
+                .as_deref()
+                .is_some_and(|overlay| overlay.open);
+            let since = frame.saturating_sub(data.pause_map_mark);
+            // The opening Esc press/release runs on the phase clock, not a
+            // step: the map can answer the press before the release frame
+            // arrives, and a step-gated release would never fire.
+            if at == 0 {
                 queue.0.push(KeyOp::Press(KeyCode::Escape));
-            } else if at == 2 || at == PAUSE_MAP_CLOSE_OFFSET + 2 {
+            } else if at == PAUSE_MAP_CLICK_FRAMES {
                 queue.0.push(KeyOp::Release(KeyCode::Escape));
-            } else if at == PAUSE_MAP_SHOT_OFFSET {
-                due.push("pause_map".to_owned());
-            } else if at == PAUSE_MAP_CLOSE_OFFSET + 6 {
+            }
+            match data.pause_map_step {
+                // The drawn map answers the opening Esc.
+                0 => {
+                    if shown {
+                        data.pause_map_step = 1;
+                        data.pause_map_mark = frame;
+                    }
+                }
+                // The open map's frame, then the Preferences click's
+                // press edge on its authored centre.
+                1 => {
+                    if since == PAUSE_MAP_OPEN_SHOT_FRAMES {
+                        due.push("pause_map".to_owned());
+                    } else if since == PAUSE_MAP_OPEN_SHOT_FRAMES + 2
+                        && let Some((x, y)) = pause_map.preferences_centre()
+                    {
+                        queue.0.push(KeyOp::CursorAt(x, y));
+                        queue.0.push(KeyOp::MouseDown);
+                        data.pause_map_step = 2;
+                        data.pause_map_mark = frame;
+                    }
+                }
+                // The click's release edge, then the overlay over the
+                // hidden map. Transitions wait for `since > CLICK` so the
+                // release is always queued before the step can move on.
+                2 => {
+                    if since == PAUSE_MAP_CLICK_FRAMES {
+                        queue.0.push(KeyOp::MouseUp);
+                    } else if since > PAUSE_MAP_CLICK_FRAMES && covered && !shown {
+                        data.measurements.pause_map.preferences_opened = true;
+                        due.push("pause_map_preferences".to_owned());
+                        if let Some((x, y)) = pause_map.return_centre() {
+                            queue.0.push(KeyOp::CursorAt(x, y));
+                            queue.0.push(KeyOp::MouseDown);
+                            data.pause_map_step = 3;
+                            data.pause_map_mark = frame;
+                        }
+                    }
+                }
+                // The release edge on Return to Game, then the map back.
+                3 => {
+                    if since == PAUSE_MAP_CLICK_FRAMES {
+                        queue.0.push(KeyOp::MouseUp);
+                    } else if since > PAUSE_MAP_CLICK_FRAMES && !covered && shown {
+                        data.measurements.pause_map.returned = true;
+                        due.push("pause_map_returned".to_owned());
+                        queue.0.push(KeyOp::Press(KeyCode::Escape));
+                        data.pause_map_step = 4;
+                        data.pause_map_mark = frame;
+                    }
+                }
+                // Esc closes the pause: the release edge, then the map
+                // gone hands over to the cockpit views.
+                4 => {
+                    if since == PAUSE_MAP_CLICK_FRAMES {
+                        queue.0.push(KeyOp::Release(KeyCode::Escape));
+                        data.pause_map_step = 5;
+                        data.pause_map_mark = frame;
+                    }
+                }
+                5 if !shown => {
+                    data.phase = Phase::Cockpit;
+                    data.phase_start = frame + 1;
+                }
+                _ => {}
+            }
+            if at >= PAUSE_MAP_BUDGET_FRAMES {
                 data.phase = Phase::Cockpit;
                 data.phase_start = frame + 1;
             }
@@ -6020,6 +6253,7 @@ fn write_artifacts(
          \"objective_class\":{t_objective_class},\"objective_selected\":{t_objective}}},\
          \"examine\":{{\"ran\":{x_ran},\"before_node\":{x_before},\"before_flagged\":{x_bf},\
          \"after_node\":{x_after},\"after_flagged\":{x_af}}},\
+         \"pause_map\":{{\"preferences_opened\":{pm_opened},\"returned\":{pm_returned}}},\
          \"cockpit\":{cockpit},\"lens_flare\":{lens_flare},\
          \"actors\":[{actors}],\"placements\":[{placements}],\"shots\":[{shots}],\
          \"checks\":[{checks}],\"failures\":[{failures}],\"passed\":{passed}}}\n",
@@ -6164,6 +6398,8 @@ fn write_artifacts(
         x_bf = report.measurements.examine.before_flagged,
         x_after = json_option_str(report.measurements.examine.after_node.as_deref()),
         x_af = report.measurements.examine.after_flagged,
+        pm_opened = report.measurements.pause_map.preferences_opened,
+        pm_returned = report.measurements.pause_map.returned,
         cockpit = cockpit_json(&report.measurements.cockpit),
         lens_flare = lens_flare_json(report.measurements.lens_flare.as_ref()),
         actors = actors,

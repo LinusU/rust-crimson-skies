@@ -208,6 +208,10 @@ fn healthy() -> SmokeMeasurements {
             after_node: Some("grasshut2".to_owned()),
             after_flagged: false,
         },
+        pause_map: cs_app::mission_session::PauseMapMetrics {
+            preferences_opened: true,
+            returned: true,
+        },
         camera_modes: crate::accept_parity3_camera_modes_04::healthy_camera_modes(),
         lens_flare: Some(cs_app::mission_session::LensFlareMetrics {
             source: Some("sun".to_owned()),
