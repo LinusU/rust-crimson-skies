@@ -9,6 +9,7 @@
 //! descriptor.
 
 pub mod descriptor;
+pub mod device;
 pub mod effect;
 pub mod layout;
 pub mod pid;

@@ -59,6 +59,16 @@ rodio = { version = "0.22", default-features = false, features = ["playback"] }
 # four decoders this stage reads are enabled.
 image = { version = "0.25.10", default-features = false, features = ["png", "jpeg", "tga", "bmp"] }
 
+# `hidapi` is a production dependency of `src/input/hid/device.rs`
+# (SIDEWINDER-FFB2, #1968): it lists the host's joysticks, reads their report
+# descriptors and input reports, and writes the USB PID output and feature
+# reports that play force feedback on a SideWinder Force Feedback 2 (macOS has
+# no force-feedback API for it). The same crate and features the owner's
+# drydock86 project drives that stick with; on macOS it builds the bundled C
+# hidapi (BSD-3-Clause, chosen among its licences), on Linux the Rust hidraw
+# backend over libudev, which CI already installs for gilrs.
+hidapi = { version = "2.6", default-features = false, features = ["linux-native-basic-udev"] }
+
 # `slopmpeg` is a production dependency of `src/cinematics/mpeg.rs` (F40-D1): it
 # demuxes the retail MPEG-1 program streams and decodes their MPEG-1 video and
 # MP2 audio. The owner approved it as the decoder dependency (task #660 note,
