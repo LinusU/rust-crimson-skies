@@ -14,9 +14,11 @@
 //! axes are the stored ones, turned by the same [`nose_mapping`] yaw
 //! ([`crate::playtest_retail::PLAYTEST_UNIT_IS_DESIGNED`]); a stored `-Z` nose
 //! and a forward eye offset such as `player_pfighter`'s `z = -0.2` agree. The
-//! vertical field of view is not recovered either: the camera keeps the chase
-//! view's designed projection. See
-//! `docs/findings/2026-10-21-parity3-cockpit-view-02-eye-camera.md`.
+//! field of view is measured ([`cockpit_vertical_fov`]): the original's 60
+//! degrees is horizontal and its vertical angle follows from the fixed 4:3
+//! screen factor. The stored-unit scale stays designed. See
+//! `docs/findings/2026-10-21-parity3-cockpit-view-02-eye-camera.md` and
+//! `docs/findings/2026-10-24-parity3-cockpit-fov.md`.
 //!
 //! The exterior airframe is hidden in these views by hiding the body (its
 //! parts inherit); the chase rig keeps resolving underneath and is re-seated
@@ -24,6 +26,7 @@
 
 use avian3d::prelude::{Position, Rotation};
 use bevy::app::{App, PostUpdate};
+use bevy::camera::Projection;
 use bevy::prelude::{
     IntoScheduleConfigs, Local, Quat, Query, Res, ResMut, Resource, Transform, Vec3, Visibility,
     With,
@@ -40,6 +43,23 @@ use crate::playtest_retail::{STORED_AIRCRAFT_NOSE_AXIS, nose_mapping};
 
 /// The airframe node whose stored translation is the pilot's eye.
 pub const COCKPIT_EYE_NODE_NAME: &str = "cockpit_camera";
+
+/// The horizontal angle `0x42b660` returns for the cockpit modes, degrees
+/// (`fov.default`, VA `0x0060409c`).
+pub const COCKPIT_HORIZONTAL_FOV_DEGREES: f32 = 60.0;
+
+/// The screen factor `[0x71b3f8]`: `1.0 / (4/3)`, written once at start-up
+/// from two image constants (`fov.screen_factor_*`, VA `0x004603f0`), so the
+/// vertical angle does not depend on the window.
+pub const COCKPIT_SCREEN_FACTOR: f32 = 0.75;
+
+/// The vertical field of view in radians for a horizontal angle `horizontal`
+/// (radians): `2 * atan(factor * tan(horizontal / 2))`, as `0x42b570`
+/// derives it (`fov.vertical_derivation`).
+#[must_use]
+pub fn cockpit_vertical_fov(horizontal: f32) -> f32 {
+    2.0 * (COCKPIT_SCREEN_FACTOR * (horizontal * 0.5).tan()).atan()
+}
 
 /// The pilot's eye in the player body's frame.
 #[derive(Resource, Clone, Copy, Debug, PartialEq)]
@@ -166,9 +186,10 @@ pub fn drive_cockpit_camera(
     cinematic: Option<Res<LaunchCinematic>>,
     camera: Option<ResMut<PlaytestCamera>>,
     bodies: Query<(&Position, &Rotation, &mut Visibility), With<MissionPlayerBody>>,
-    mut cameras: Query<&mut Transform, With<PlaytestCameraMarker>>,
-    mut in_cockpit: Local<bool>,
+    mut cameras: Query<(&mut Transform, Option<&mut Projection>), With<PlaytestCameraMarker>>,
+    mut state: Local<(bool, Option<f32>)>,
 ) {
+    let (in_cockpit, chase_fov) = &mut *state;
     let mut bodies = bodies;
     // The launch cinematic owns the camera while it plays.
     let cinematic_plays = cinematic.is_some_and(|phase| phase.is_playing());
@@ -184,8 +205,25 @@ pub fn drive_cockpit_camera(
         }
         if let (true, Some(eye)) = (active, eye.as_deref()) {
             let pose = eye.pose(position.0, rotation.0);
-            for mut transform in &mut cameras {
+            let fov = cockpit_vertical_fov(COCKPIT_HORIZONTAL_FOV_DEGREES.to_radians());
+            for (mut transform, projection) in &mut cameras {
                 *transform = pose;
+                if let Some(mut projection) = projection
+                    && let Projection::Perspective(perspective) = &mut *projection
+                    && perspective.fov != fov
+                {
+                    chase_fov.get_or_insert(perspective.fov);
+                    perspective.fov = fov;
+                }
+            }
+        }
+    }
+    if !active && let Some(fov) = chase_fov.take() {
+        for (_, projection) in &mut cameras {
+            if let Some(mut projection) = projection
+                && let Projection::Perspective(perspective) = &mut *projection
+            {
+                perspective.fov = fov;
             }
         }
     }
@@ -196,4 +234,69 @@ pub fn drive_cockpit_camera(
         camera.reseat();
     }
     *in_cockpit = active;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::playtest::PlaytestCamera;
+    use bevy::app::Update;
+    use bevy::camera::PerspectiveProjection;
+    use bevy::prelude::Quat;
+
+    #[test]
+    fn accept_parity3_cockpit_fov_vertical_follows_the_fixed_four_by_three_factor() {
+        let vertical = cockpit_vertical_fov(COCKPIT_HORIZONTAL_FOV_DEGREES.to_radians());
+        assert!((vertical.to_degrees() - 46.827).abs() < 1e-2, "{vertical}");
+        // The factor is 1.0 / (4/3), the two constants the writer divides.
+        assert!((COCKPIT_SCREEN_FACTOR - 1.0 / (4.0_f32 / 3.0)).abs() < 1e-6);
+    }
+
+    #[test]
+    fn accept_parity3_cockpit_fov_is_applied_in_the_cockpit_and_restored_in_chase() {
+        let mut app = App::new();
+        app.insert_resource(MissionViewMode::default());
+        app.insert_resource(PlaytestCamera::capture_fitted());
+        app.insert_resource(MissionCockpitEye::new([0.0, 0.75, -0.2], Quat::IDENTITY));
+        app.add_systems(Update, drive_cockpit_camera);
+        app.world_mut().spawn((
+            MissionPlayerBody,
+            Position(Vec3::ZERO),
+            Rotation(Quat::IDENTITY),
+            Visibility::Inherited,
+        ));
+        let chase = 0.9;
+        let camera = app
+            .world_mut()
+            .spawn((
+                PlaytestCameraMarker,
+                Transform::IDENTITY,
+                Projection::Perspective(PerspectiveProjection {
+                    fov: chase,
+                    ..PerspectiveProjection::default()
+                }),
+            ))
+            .id();
+        let fov = |app: &App| match app.world().get::<Projection>(camera) {
+            Some(Projection::Perspective(p)) => p.fov,
+            _ => panic!("perspective camera"),
+        };
+        app.update();
+        assert_eq!(fov(&app), chase, "chase view keeps its projection");
+        let mut view = MissionViewMode::default();
+        while !view.at_pilot_eye() {
+            view = view.next();
+        }
+        app.insert_resource(view);
+        app.update();
+        let expected = cockpit_vertical_fov(60.0_f32.to_radians());
+        assert!((fov(&app) - expected).abs() < 1e-6);
+        app.insert_resource(MissionViewMode::default());
+        app.update();
+        assert_eq!(
+            fov(&app),
+            chase,
+            "leaving the cockpit restores the chase fov"
+        );
+    }
 }

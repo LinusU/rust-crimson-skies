@@ -2749,7 +2749,47 @@ provenance = "static"
 name = "fov.apply"
 va = 0x0042b585
 bytes = "d9f2"
-fact = "0x42b570 takes tan(angle/2), multiplies by the screen factor [0x71b3f8], and passes 2*atan(.) to 0x4d2c20 with the angle: whether the 60/80 degree angle is horizontal or vertical depends on [0x71b3f8], a run-time value not in the image (unknown)"
+fact = "0x42b570 takes tan(angle/2), multiplies by the screen factor [0x71b3f8], and passes 2*atan(.) to 0x4d2c20 with the angle: [0x71b3f8] is the constant 0.75 (see fov.screen_factor_writer), so the 60/80 degree angle is horizontal"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "fov.screen_factor_writer"
+va = 0x004603f0
+bytes = "d905dc326000d835d07b6000d91df8b37100"
+fact = "the only writer of [0x71b3f8]: fld [0x6032dc]; fdiv [0x607bd0]; fstp [0x71b3f8], i.e. 1.0 / (4/3) = 0.75, with no window or resolution input"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "fov.screen_factor_numerator"
+va = 0x006032dc
+bytes = "0000803f"
+fact = "f32 1.0: the dividend of the screen factor"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "fov.screen_factor_denominator"
+va = 0x00607bd0
+bytes = "abaaaa3f"
+fact = "f32 1.3333334 (4/3): the divisor of the screen factor, the 4:3 aspect, fixed in the image"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "fov.screen_factor_initializer"
+va = 0x006190ec
+bytes = "e0034600"
+fact = "the .data entry pointing at the jmp thunk 0x4603e0 (-> 0x4603f0) that runs the writer; read as a start-up initializer table entry, the table itself not traced"
+
+[[camera_mode_fact]]
+claim = "OWNER-STATIC-2026-10-21"
+provenance = "static"
+name = "fov.vertical_derivation"
+va = 0x0042b58f
+bytes = "d905f8b37100dc4c2414d9e8d9f3dcc0"
+fact = "0x42b570 computes vertical = 2*atan(0.75 * tan(angle/2)) from the screen factor; 0x4d2c20 receives (angle, vertical) and stores them at [obj+0xe0] and [obj+0xe4] (0x4d2c9b, 0x4d2ca5), so the 60/80 degree angle is the HORIZONTAL one: 60 degrees gives 46.83 degrees vertical"
 
 [[camera_mode_fact]]
 claim = "OWNER-STATIC-2026-10-21"
