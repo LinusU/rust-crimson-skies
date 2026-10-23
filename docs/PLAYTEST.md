@@ -751,6 +751,31 @@ through the screen's own press path, waits for the mission host's restart and
 photographs the restarted mission (`frame_dbNNNNN_replayed.png`); the check
 `debrief_replay_restarts_the_mission` needs a new session generation, no
 terminal, no `AppExit` and a mostly non-black frame. Use `--smoke-seconds 60`.
+
+#### The crash mode (#1857 `PARITY4-CRASH-E`)
+
+```sh
+target/release/cs --cs-path /path/to/retail --mission M01 \
+  --smoke-seconds 60 --smoke-crash --capture-dir private/evidence/PARITY4-CRASH-E
+```
+
+`--smoke-crash` (valid only with `--mission … --smoke-seconds`, not with the
+other modes) goes through the briefing, the Flight Check and the launch
+cinematic, waits 60 frames after the player has control, **places the player
+400 m up with the nose 45 degrees down** (a test placement, listed in
+`report.json`) and holds the original's nose-down key (the Up arrow). Everything
+after that is production: the flight law, the terrain-contact rule, the crash
+camera, `Fatal Crash!` and the handover. The run photographs the contact
+(`frame_crNNNNN_crash_contact.png`), the detached camera
+(`frame_crNNNNN_crash_camera.png`), presses a key (a scripted input) and
+photographs the Mission Failed screen (`frame_crNNNNN_failed.png`). It judges
+`crash_flight_ended`, `crash_frames_drawn`, `crash_contact_effects` (a contact
+spark and a wing-fire puff were alive), `crash_camera_detached`,
+`crash_message_shown`, `crash_key_hands_over`, `crash_failed_screen_shown` and
+`smoke_shots_delivered`; `report.json` carries a `crash` object with the
+player's track once a second. See
+`docs/findings/2026-10-23-crash-e-owner-command-smoke.md` for what the retail
+run showed and what it could not yet show.
 See `docs/findings/2026-10-22-parity-m01-outcome-d-replay-mission.md`.
 
 #### The start-flow mode (#1832 `PARITY5-START-FLOW.04`)
