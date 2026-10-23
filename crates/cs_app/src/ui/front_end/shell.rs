@@ -561,6 +561,47 @@ impl MenuShell {
         Ok(())
     }
 
+    /// Draws `from`'s `M` rows and the `P` rows named in `pane_ids` under
+    /// `to`'s own rows: the layers a screen that only *hides* its predecessor
+    /// leaves showing (`MAINMENU.SCRIPT` runs `deactivate(this)` on Campaign,
+    /// and the owner's Drydock capture of the pilot page shows the flag movie
+    /// and the logo behind it, not the button frame or the buttons).
+    ///
+    /// The carried panes come first in `to`'s draw order (they are the ground
+    /// its own panes stand on); a row `to` already holds is not doubled. A
+    /// name absent from either section changes nothing and returns `false`.
+    pub fn carry_under(&mut self, to: &str, from: &str, pane_ids: &[&str]) -> bool {
+        let key = |name: &str| name.to_ascii_uppercase();
+        let Some(source) = self.sections.get(&key(from)) else {
+            return false;
+        };
+        let movies = source.movies.clone();
+        let panes: Vec<ShellPane> = pane_ids
+            .iter()
+            .filter_map(|id| {
+                source
+                    .panes
+                    .iter()
+                    .find(|pane| pane.id.eq_ignore_ascii_case(id))
+            })
+            .cloned()
+            .collect();
+        let Some(target) = self.sections.get_mut(&key(to)) else {
+            return false;
+        };
+        for movie in movies {
+            if !target.movies.iter().any(|held| held.id == movie.id) {
+                target.movies.push(movie);
+            }
+        }
+        let fresh: Vec<ShellPane> = panes
+            .into_iter()
+            .filter(|pane| !target.panes.iter().any(|held| held.id == pane.id))
+            .collect();
+        target.panes.splice(0..0, fresh);
+        true
+    }
+
     /// The current section.
     #[must_use]
     pub fn section(&self) -> Option<&ShellSection> {

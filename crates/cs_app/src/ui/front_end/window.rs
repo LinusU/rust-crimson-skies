@@ -357,6 +357,10 @@ struct DrawnSprite {
     entity: Entity,
 }
 
+/// The main menu's panes the Campaign page keeps showing under its own: the
+/// logo, per the owner's Drydock capture (the button frame is hidden).
+const PILOT_CARRIED_PANES: &[&str] = &["MM_LOGO"];
+
 /// The decoder a retail movie file opens over its read bytes.
 type RetailMovie = MpegVideoSource<Cursor<Vec<u8>>>;
 
@@ -2124,6 +2128,7 @@ pub(super) fn shell_app_with(
         &|art: &str| screens.art_extent(art),
         &|section: &str| screens.script_text(&script_member(section)),
     );
+    shell.carry_under(PILOT_SECTION, START_SECTION, PILOT_CARRIED_PANES);
     let entry = flow
         .as_ref()
         .and_then(StartFlow::section)
