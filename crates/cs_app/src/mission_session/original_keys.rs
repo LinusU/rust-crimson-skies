@@ -13,6 +13,12 @@
 //!   combinations (`E`/`W`/`R` targeting, `X` rockets and `Ctrl+X` bail out,
 //!   `Shift+L` level-off, ...) from the raw keyboard state, by the original's
 //!   exact-modifier rule ([`ControlsMap::commands_for_key`]).
+//! * The same minter reads the host joystick (SIDEWINDER-FFB2, #1968): a
+//!   joystick button whose row is a view or look-mode command selects it as
+//!   the key would (the flight commands of the joystick column are in the
+//!   action map), and the hat is the look direction — the original's joystick
+//!   mode reads the hat first and falls back to the numpad look keys when it is
+//!   centred.
 //! * [`MissionControlsHelpPlugin`] draws the table's real bindings on the
 //!   `F1` keymap overlay ([`super::keymap_overlay`]); the `Esc` pause
 //!   screen is the chart of [`super::pause_map`].
@@ -28,6 +34,8 @@ use bevy::prelude::{
 use cs_types::input::{Action, ActionMap};
 use cs_types::keymap::{ControlsMap, Modifiers, original_edge_action};
 
+use crate::input::hid::HostJoysticks;
+use crate::input::hid::layout::HatDirection;
 use crate::input::platform::{PlatformInput, scancode_from_bevy};
 use crate::playtest::command::KEY_DEFLECTION;
 
@@ -77,6 +85,55 @@ const SPYGLASS_COMMAND_ID: u16 = 48;
 #[derive(Resource, Clone, Debug, Default, PartialEq, Eq)]
 pub struct ChordKeyMemory(pub std::collections::BTreeSet<KeyCode>);
 
+/// The joystick buttons held at the end of the last [`mint_original_chord_keys`]
+/// run (bit `n` is button `n + 1`), so a button press is an edge.
+#[derive(Resource, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct JoystickButtonMemory(pub u32);
+
+/// The look direction of a hat, in [`look_direction`]'s terms: `x` `+1` left,
+/// `y` `+1` up.
+#[must_use]
+pub const fn hat_look(hat: HatDirection) -> (i8, i8) {
+    match hat {
+        HatDirection::Up => (0, 1),
+        HatDirection::UpRight => (-1, 1),
+        HatDirection::Right => (-1, 0),
+        HatDirection::DownRight => (-1, -1),
+        HatDirection::Down => (0, -1),
+        HatDirection::DownLeft => (1, -1),
+        HatDirection::Left => (1, 0),
+        HatDirection::UpLeft => (1, 1),
+    }
+}
+
+/// The original command ids bound to the 1-based joystick `button`.
+fn joystick_commands(controls: &ControlsMap, button: u8) -> Vec<u16> {
+    controls
+        .rows()
+        .iter()
+        .filter(|row| row.joystick_button == button)
+        .map(|row| row.command_id)
+        .collect()
+}
+
+/// Sorts one pressed command into the view and look-mode presses.
+fn classify_view_press(
+    command: u16,
+    view_presses: &mut Vec<Option<MissionViewMode>>,
+    look_presses: &mut Vec<u16>,
+) {
+    if command == VIEW_CYCLE_COMMAND_ID {
+        view_presses.push(None);
+    } else if let Some(target) = MissionViewMode::for_command(command) {
+        view_presses.push(Some(target));
+    } else if matches!(
+        command,
+        SNAP_LOOK_COMMAND_ID | SMOOTH_LOOK_COMMAND_ID | TRACK_TARGET_COMMAND_ID
+    ) {
+        look_presses.push(command);
+    }
+}
+
 /// Mints the frame's modifier-sensitive key presses into the cockpit queue.
 ///
 /// Every newly pressed key whose scancode has a modifier combination bound is
@@ -120,16 +177,7 @@ pub fn mint_original_chord_keys(world: &mut World) {
         // here, ahead of the modifier filter, and left standing.
         if !paused && !crashed {
             for command in &commands {
-                if *command == VIEW_CYCLE_COMMAND_ID {
-                    view_presses.push(None);
-                } else if let Some(target) = MissionViewMode::for_command(*command) {
-                    view_presses.push(Some(target));
-                } else if matches!(
-                    *command,
-                    SNAP_LOOK_COMMAND_ID | SMOOTH_LOOK_COMMAND_ID | TRACK_TARGET_COMMAND_ID
-                ) {
-                    look_presses.push(*command);
-                }
+                classify_view_press(*command, &mut view_presses, &mut look_presses);
             }
         }
         if !controls.0.has_modifier_variants(scancode) {
@@ -171,6 +219,40 @@ pub fn mint_original_chord_keys(world: &mut World) {
         }
     }
     world.insert_resource(ChordKeyMemory(now));
+    // The host joystick: new button presses of view and look-mode rows, and
+    // the hat as the look direction ahead of the numpad.
+    let (joy_buttons, hat) = world
+        .get_resource::<HostJoysticks>()
+        .filter(|joysticks| joysticks.connected().is_some())
+        .map_or((0, None), |joysticks| {
+            (joysticks.state().buttons, joysticks.hat())
+        });
+    let joy_before = world
+        .get_resource::<JoystickButtonMemory>()
+        .map_or(0, |memory| memory.0);
+    world.insert_resource(JoystickButtonMemory(joy_buttons));
+    if !paused && !crashed {
+        let mut spyglass = false;
+        for bit in 0..10u8 {
+            if joy_buttons & !joy_before & (1 << bit) != 0 {
+                for command in joystick_commands(&controls.0, bit + 1) {
+                    classify_view_press(command, &mut view_presses, &mut look_presses);
+                    spyglass ^= command == SPYGLASS_COMMAND_ID;
+                }
+            }
+        }
+        // The spyglass reads its own key from the raw keyboard; its joystick
+        // button toggles it here.
+        if spyglass
+            && let Some(mut state) = world.get_resource_mut::<super::spyglass::SpyglassState>()
+        {
+            state.enabled = !state.enabled;
+        }
+        if let Some(hat) = hat {
+            look_held = hat_look(hat);
+            centre_held = false;
+        }
+    }
     {
         let mut zoom = world.get_resource_or_insert_with(MissionZoom::default);
         zoom.in_held = zoom_in;
