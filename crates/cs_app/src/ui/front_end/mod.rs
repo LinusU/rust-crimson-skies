@@ -57,6 +57,9 @@
 //! * [`capture_screen`] (in `capture`, F45-D) — one screen drawn on the real
 //!   renderer, artwork and hotspots and focus, offscreen, with a named refusal
 //!   for every frame that is not evidence of a drawn screen.
+//! * [`MenuAudio`] (in `sound`, FE-MENU-4) — the front end's music loop and
+//!   rollover/click/text-entry cues, read from `GLOBALS.SCRIPT`'s own `sound`
+//!   declarations and played over any audio device.
 //! * [`FrontEndScreens`] (in `retail`, F45-D) — the original installation's
 //!   front-end screen artwork: the complete inventory of both sources and the
 //!   decode that feeds a capture. `retail` here is read access to the owner's
@@ -93,6 +96,7 @@ mod pilot_view;
 mod retail;
 mod screens;
 mod shell;
+mod sound;
 mod start_flow;
 mod window;
 
@@ -153,6 +157,10 @@ pub use shell::{
     ShellButton, ShellButtonView, ShellError, ShellMovie, ShellOutcome, ShellPane, ShellPaneView,
     ShellRect, ShellSection, ShellView, SkippedReason, SkippedRow, UnhandledEffect,
 };
+pub use sound::{
+    DeclaredSound, GLOBALS_SECTION, MenuAudio, MenuAudioEvent, MenuCue, MenuMusic, MenuSamples,
+    MenuSoundError, MenuSoundTable, SOUND_DIRECTORY, cue_sample_id, decode_wave, music_sample_id,
+};
 pub use start_flow::{
     FIRST_MISSION, MissionEnd, Presentation, StartFlow, StartFlowError, StartFlowRequest,
     StartRefusal, StartStep, handover_args, presentation, return_args, return_to_front_end,
@@ -162,7 +170,7 @@ pub use window::{
     DEFAULT_FRONT_END_CAPTURE_DIR, FrontEndError, FrontEndRequest, FrontEndShellPlugin,
     MIN_SHELL_SMOKE_SECONDS, PROFILE_DIR_ENV, PilotSetup, SMOKE_PROFILE_SUBDIR, ShellResource,
     ShellShotRecord, ShellSmokeHandle, ShellSmokePlugin, ShellSmokeReport, headless_app,
-    headless_app_flow, headless_app_pilots, run_front_end, shell_app,
+    headless_app_audio, headless_app_flow, headless_app_pilots, run_front_end, shell_app,
 };
 
 /// A front-end screen.

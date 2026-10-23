@@ -86,8 +86,10 @@ use super::retail::{FrontEndScreens, RetailError};
 use super::shell::{
     ButtonVisual, MenuShell, SECTION_SURFACE, START_SECTION, ShellOutcome, ShellView,
 };
+use super::sound::{MenuAudio, MenuAudioEvent, MenuCue, MenuSamples, MenuSoundTable};
 use super::start_flow::{StartFlow, StartStep};
 use super::{Artwork, ShellError};
+use crate::audio::CapabilityDeclaration;
 use crate::cinematics::mpeg::MpegVideoSource;
 use crate::playtest::SmokeRequest;
 use crate::playtest::smoke::SMOKE_FRAME_HZ;
@@ -187,6 +189,23 @@ pub struct ShellResource {
     /// The Campaign pilot page and the profile session behind it, when the
     /// run has them (FE-MENU-3).
     pilots: Option<PilotState>,
+    /// The front end's music and cues, when the run has an output (FE-MENU-4).
+    audio: Option<MenuAudio>,
+    /// The button the pointer or focus was last on, so a cue plays on entry.
+    watch: AudioWatch,
+}
+
+/// What the audio hooks last saw of the shell.
+#[derive(Default)]
+struct AudioWatch {
+    /// The section last watched: a screen change (or the first frame) moves
+    /// the focus to its first button without anyone touching anything, and
+    /// that is not a rollover.
+    section: Option<String>,
+    /// `(section, button index)` of the button in rollover or depressed.
+    target: Option<(String, usize)>,
+    /// A button was held down.
+    depressed: bool,
 }
 
 /// The pilot page's live state.
@@ -231,6 +250,12 @@ impl ShellResource {
         self.pilots
             .as_ref()
             .map_or(&[], |pilots| pilots.outcomes.as_slice())
+    }
+
+    /// The front end's audio, when this run has an output.
+    #[must_use]
+    pub fn audio(&self) -> Option<&MenuAudio> {
+        self.audio.as_ref()
     }
 
     /// The start flow's machine, when this run has one.
@@ -302,6 +327,8 @@ struct ShellRun {
     movies: Vec<String>,
     /// Decoded movie frames delivered to a texture, all sections.
     movie_frames: u64,
+    /// Why the run has no audio output, when it has none.
+    audio_note: Option<String>,
 }
 
 /// The live scene: every entity the presenter spawned, so `sync_shell` can
@@ -369,6 +396,8 @@ pub struct FrontEndShellPlugin {
     visuals: bool,
     flow: Mutex<Option<StartFlow>>,
     pilots: Mutex<Option<PilotSetup>>,
+    audio: Mutex<Option<MenuAudio>>,
+    audio_note: Mutex<Option<String>>,
 }
 
 impl FrontEndShellPlugin {
@@ -392,6 +421,8 @@ impl FrontEndShellPlugin {
             visuals: true,
             flow: Mutex::new(None),
             pilots: Mutex::new(None),
+            audio: Mutex::new(None),
+            audio_note: Mutex::new(None),
         }
     }
 
@@ -409,6 +440,22 @@ impl FrontEndShellPlugin {
         self
     }
 
+    /// Gives the presenter its music and cues (FE-MENU-4). `Err` carries why
+    /// the run has no output, recorded in the smoke report.
+    #[must_use]
+    pub fn with_audio(self, audio: Result<MenuAudio, String>) -> Self {
+        match audio {
+            Ok(audio) => *self.audio.lock().expect("the plugin is not shared yet") = Some(audio),
+            Err(note) => {
+                *self
+                    .audio_note
+                    .lock()
+                    .expect("the plugin is not shared yet") = Some(note);
+            }
+        }
+        self
+    }
+
     /// The model-only presenter for a headless drive: no sprites, no image
     /// assets needed.
     #[must_use]
@@ -422,6 +469,8 @@ impl FrontEndShellPlugin {
             visuals: false,
             flow: Mutex::new(None),
             pilots: Mutex::new(None),
+            audio: Mutex::new(None),
+            audio_note: Mutex::new(None),
         }
     }
 }
@@ -443,6 +492,7 @@ impl Plugin for FrontEndShellPlugin {
                 .section_name()
                 .map(|name| vec![name.to_owned()])
                 .unwrap_or_default(),
+            audio_note: self.audio_note.lock().ok().and_then(|mut note| note.take()),
             ..ShellRun::default()
         };
         let mut art = ShellArt::default();
@@ -498,6 +548,8 @@ impl Plugin for FrontEndShellPlugin {
                         keys: MessageCursor::default(),
                     }
                 }),
+            audio: self.audio.lock().ok().and_then(|mut slot| slot.take()),
+            watch: AudioWatch::default(),
         });
         if self.visuals {
             app.add_systems(Startup, startup_shell);
@@ -541,6 +593,29 @@ pub fn headless_app_pilots(shell: MenuShell, flow: Option<StartFlow>, setup: Pil
     app.init_resource::<ButtonInput<KeyCode>>();
     app.init_resource::<ButtonInput<MouseButton>>();
     let plugin = FrontEndShellPlugin::headless(shell).with_pilots(setup);
+    app.add_plugins(match flow {
+        Some(flow) => plugin.with_flow(flow),
+        None => plugin,
+    });
+    app
+}
+
+/// As [`headless_app_pilots`], with the front end's music and cues over
+/// `audio` (FE-MENU-4's route tests; the device is the test's recording one).
+pub fn headless_app_audio(
+    shell: MenuShell,
+    flow: Option<StartFlow>,
+    setup: PilotSetup,
+    audio: MenuAudio,
+) -> App {
+    let mut app = App::new();
+    app.add_plugins(bevy::input::InputPlugin);
+    app.add_message::<CursorMoved>();
+    app.init_resource::<ButtonInput<KeyCode>>();
+    app.init_resource::<ButtonInput<MouseButton>>();
+    let plugin = FrontEndShellPlugin::headless(shell)
+        .with_pilots(setup)
+        .with_audio(Ok(audio));
     app.add_plugins(match flow {
         Some(flow) => plugin.with_flow(flow),
         None => plugin,
@@ -605,6 +680,11 @@ fn frame_shell(world: &mut World) {
     let Some(mut state) = world.remove_resource::<ShellResource>() else {
         return;
     };
+    // The music control is initialised by the shared script when the front
+    // end starts (`GLOBALS.SCRIPT` `gui_create`), not by any one screen.
+    if let Some(audio) = &mut state.audio {
+        audio.start_music();
+    }
     if world.contains_resource::<ShellSmoke>() {
         inject_smoke_input(world, &mut state);
     }
@@ -628,7 +708,18 @@ fn frame_shell(world: &mut World) {
                 if event.logical_key == Key::Backspace {
                     pilots.page.backspace();
                 } else if let Some(text) = &event.text {
+                    let before = pilots.page.text().chars().count();
                     pilots.page.type_text(text);
+                    let printable = text.chars().any(|c| !c.is_control());
+                    if let Some(audio) = &mut state.audio
+                        && printable
+                    {
+                        audio.cue(if pilots.page.text().chars().count() > before {
+                            MenuCue::TextAccepted
+                        } else {
+                            MenuCue::TextRejected
+                        });
+                    }
                 }
             }
         }
@@ -837,6 +928,7 @@ fn frame_shell(world: &mut World) {
             state.run.depressed_seen = true;
         }
     }
+    watch_buttons(&mut state);
     let cursor_extent = state.art.cursor.as_ref().map(|(_, extent)| *extent);
     let now = world
         .get_resource::<Time>()
@@ -944,6 +1036,45 @@ fn frame_shell(world: &mut World) {
         world.insert_resource(smoke);
     }
     world.insert_resource(state);
+}
+
+/// Plays the rollover cue when a button newly takes the pointer or focus and
+/// the press cue when one is newly held down.
+///
+/// Read from the shell's own button states after the frame's input: which
+/// control class plays which declared sound is the executable's, so the cues
+/// follow the visible states (see [`super::sound`]).
+fn watch_buttons(state: &mut ShellResource) {
+    let Some(section) = state.shell.section() else {
+        return;
+    };
+    let name = state.shell.section_name().unwrap_or_default().to_owned();
+    let mut target = None;
+    let mut depressed = false;
+    for index in 0..section.buttons.len() {
+        match state.shell.visual(index) {
+            ButtonVisual::Rollover => target = Some((name.clone(), index)),
+            ButtonVisual::Depressed => {
+                target = Some((name.clone(), index));
+                depressed = true;
+            }
+            ButtonVisual::Disabled | ButtonVisual::Active => {}
+        }
+    }
+    let moved_screen = state.watch.section.as_deref() != Some(name.as_str());
+    let entered = target.is_some() && target != state.watch.target && !moved_screen;
+    let pressed = depressed && !state.watch.depressed;
+    state.watch.section = Some(name);
+    state.watch.target = target;
+    state.watch.depressed = depressed;
+    if let Some(audio) = &mut state.audio {
+        if entered {
+            audio.cue(MenuCue::Rollover);
+        }
+        if pressed {
+            audio.cue(MenuCue::Press);
+        }
+    }
 }
 
 /// Continue (the button or Enter) on the pilot page: creates or chooses the
@@ -1385,6 +1516,12 @@ pub struct ShellSmokeReport {
     pub movies: Vec<String>,
     /// Decoded movie frames delivered to a texture.
     pub movie_frames: u64,
+    /// Whether the menu music loop started.
+    pub music_started: bool,
+    /// The audio the run asked of its output, one line per kind
+    /// (`cue rollover x3`, `refused music: <code>`), or the note saying why
+    /// the run had no output.
+    pub audio: Vec<String>,
     /// The screenshots taken.
     pub shots: Vec<ShellShotRecord>,
     /// Every failed check; empty means the run passed.
@@ -1631,7 +1768,7 @@ fn step_smoke(world: &mut World, state: &ShellResource, smoke: &mut ShellSmoke) 
     let delivered = smoke.shots.lock().map_or(0, |shots| shots.len());
     let finished = delivered >= smoke.shots_requested;
     if frame >= end_frame && (finished || frame >= end_frame + SCREENSHOT_GRACE_FRAMES) {
-        let report = evaluate(smoke, &state.run);
+        let report = evaluate(smoke, &state.run, state.audio.as_ref());
         let outcome = write_artifacts(&smoke.request.capture_dir, &report)
             .map(|()| report.clone())
             .map_err(|(path, error)| format!("cannot write {}: {error}", path.display()));
@@ -1707,7 +1844,7 @@ fn measure_shot(image: &Image, label: String, path: PathBuf) -> ShellShotRecord 
 
 /// The pass/fail checks of a finished run.
 #[inline(always)]
-fn evaluate(smoke: &ShellSmoke, run: &ShellRun) -> ShellSmokeReport {
+fn evaluate(smoke: &ShellSmoke, run: &ShellRun, audio: Option<&MenuAudio>) -> ShellSmokeReport {
     let shots = smoke
         .shots
         .lock()
@@ -1801,7 +1938,39 @@ fn evaluate(smoke: &ShellSmoke, run: &ShellRun) -> ShellSmokeReport {
         }
         _ => {}
     }
+    let mut audio_lines = Vec::new();
+    if let Some(note) = &run.audio_note {
+        audio_lines.push(format!("no audio output: {note}"));
+    }
+    if let Some(audio) = audio {
+        for cue in MenuCue::ALL {
+            let count = audio.cue_count(cue);
+            if count > 0 {
+                audio_lines.push(format!("cue {} x{count}", cue.label()));
+            }
+        }
+        for event in audio.events() {
+            if let MenuAudioEvent::Refused { what, code } = event {
+                audio_lines.push(format!("refused {what}: {code}"));
+            }
+        }
+        // FE-MENU-4: with an output, the music must sound from the start and
+        // the main menu walk must have produced both pointer cues.
+        if !audio.music_playing() {
+            failures.push("the menu music never started on the output".to_owned());
+        }
+        for cue in [MenuCue::Rollover, MenuCue::Press] {
+            if audio.cue_count(cue) == 0 {
+                failures.push(format!("the {} cue never played", cue.label()));
+            }
+        }
+        if audio.cue_count(MenuCue::TextAccepted) == 0 {
+            failures.push("the typed name never played the text-entry cue".to_owned());
+        }
+    }
     ShellSmokeReport {
+        music_started: audio.is_some_and(MenuAudio::music_playing),
+        audio: audio_lines,
         frames: smoke.frames,
         visited: run.visited.clone(),
         focus_moves: run.focus_moves,
@@ -1863,8 +2032,14 @@ fn write_artifacts(dir: &Path, report: &ShellSmokeReport) -> Result<(), (PathBuf
         .map(|failure| json_string(failure))
         .collect::<Vec<_>>()
         .join(",");
+    let audio = report
+        .audio
+        .iter()
+        .map(|line| json_string(line))
+        .collect::<Vec<_>>()
+        .join(",");
     let body = format!(
-        "{{\"kind\":\"front-end-shell-smoke-report\",\"frames\":{},\"visited\":[{}],\"focus_moves\":{},\"hovered\":[{}],\"depressed_seen\":{},\"quit_seen\":{},\"unhandled\":{},\"cursor\":{},\"movies\":[{}],\"movie_frames\":{},\"shots\":[{}],\"failures\":[{}],\"passed\":{}}}\n",
+        "{{\"kind\":\"front-end-shell-smoke-report\",\"frames\":{},\"visited\":[{}],\"focus_moves\":{},\"hovered\":[{}],\"depressed_seen\":{},\"quit_seen\":{},\"unhandled\":{},\"cursor\":{},\"movies\":[{}],\"movie_frames\":{},\"music_started\":{},\"audio\":[{}],\"shots\":[{}],\"failures\":[{}],\"passed\":{}}}\n",
         report.frames,
         visited,
         report.focus_moves,
@@ -1878,6 +2053,8 @@ fn write_artifacts(dir: &Path, report: &ShellSmokeReport) -> Result<(), (PathBuf
             .map_or("null".to_owned(), |name| json_string(name)),
         movies,
         report.movie_frames,
+        report.music_started,
+        audio,
         shots,
         failures,
         report.failures.is_empty(),
@@ -2009,7 +2186,8 @@ pub(super) fn shell_app_with(
             std::time::Duration::from_secs_f64(1.0 / SMOKE_FRAME_HZ),
         ));
     }
-    let mut plugin = FrontEndShellPlugin::windowed(shell, art, cursor, movie_files);
+    let mut plugin = FrontEndShellPlugin::windowed(shell, art, cursor, movie_files)
+        .with_audio(menu_audio(&screens));
     if let Some(setup) = pilots {
         plugin = plugin.with_pilots(setup);
     }
@@ -2024,6 +2202,23 @@ pub(super) fn shell_app_with(
         handle
     });
     Ok((app, handle))
+}
+
+/// The front end's music and cues over the machine's real output, or the
+/// named reason there is none (no `audio` capability, no output device, a
+/// script without the declarations, a member that will not decode). A run
+/// without output still presents; the reason is printed and reported.
+fn menu_audio(screens: &FrontEndScreens) -> Result<MenuAudio, String> {
+    let table = MenuSoundTable::from_screens(screens).map_err(|error| error.to_string())?;
+    let samples = MenuSamples::load(screens, &table);
+    if let Some(failure) = samples.failures.first() {
+        return Err(format!("sound members unavailable: {failure}"));
+    }
+    let declaration = CapabilityDeclaration::from_environment();
+    MenuAudio::audible(samples, &table, &declaration).map_err(|error| {
+        eprintln!("cs: the front end plays no sound: {error}");
+        error.to_string()
+    })
 }
 
 /// The environment variable naming the directory pilots persist in.
@@ -2088,7 +2283,7 @@ fn finish(
         .ok_or_else(|| FrontEndError::Exit("the smoke run ended before it finished".to_owned()))?;
     let report = outcome.map_err(FrontEndError::Exit)?;
     println!(
-        "front-end smoke: {}\n  frames {} visited [{}] focus moves {} unhandled {} cursor {}\n  movies [{}] movie frames {} framebuffers {} in {}",
+        "front-end smoke: {}\n  frames {} visited [{}] focus moves {} unhandled {} cursor {}\n  movies [{}] movie frames {} framebuffers {} in {}\n  music {} audio [{}]",
         report.visited.join(" → "),
         report.frames,
         report.visited.join(", "),
@@ -2099,6 +2294,12 @@ fn finish(
         report.movie_frames,
         report.shots.len(),
         request.capture_dir.display(),
+        if report.music_started {
+            "playing"
+        } else {
+            "silent"
+        },
+        report.audio.join("; "),
     );
     if report.failures.is_empty() {
         Ok(report)
