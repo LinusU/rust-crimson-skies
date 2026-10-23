@@ -75,6 +75,12 @@
 //! presses routed through the F45 machine's start flow. Its prefix is
 //! `accept_fe_menu_2_`; the retail and windowed tests are `#[ignore]`d for
 //! the same reason as FE-MENU-1's.
+//!
+//! Task FE-MENU-3 (#1835, `mod fe_menu_3`) adds the Campaign pilot page:
+//! the `E`/`L` rows' edit box and list, typing, arrow and pointer
+//! selection, Continue / Delete / Cancel over the profile session, and the
+//! machine's `ProfileSelect` rows. Its prefix is `accept_fe_menu_3_`; the
+//! retail and windowed tests are `#[ignore]`d for the same reason.
 
 mod evidence;
 mod evidence_f45_b_1;
@@ -83,6 +89,7 @@ mod evidence_fe_menu_1;
 mod evidence_fe_menu_2;
 mod fe_menu_1;
 mod fe_menu_2;
+mod fe_menu_3;
 mod flight_check_options;
 mod flow;
 /// The import dialog's fixture, read through F64-C's own designed fixture
