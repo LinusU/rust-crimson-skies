@@ -161,7 +161,7 @@ pub fn smoke_crash(
     host: Option<Res<MissionHost>>,
     screen: Option<Res<DebriefScreen>>,
     mut exits: MessageReader<AppExit>,
-    mut contacts: MessageReader<TerrainContactJudged>,
+    mut contacts: Option<MessageReader<TerrainContactJudged>>,
     shots: Res<SmokeShots>,
     frames: Res<FlightCheckFrames>,
     mut commands: Commands,
@@ -193,7 +193,9 @@ pub fn smoke_crash(
         .as_ref()
         .is_some_and(|metrics| metrics.dive_frame.is_some());
     let seen_exits = u32::try_from(exits.read().count()).unwrap_or(u32::MAX);
-    let seen_contacts = u32::try_from(contacts.read().count()).unwrap_or(u32::MAX);
+    let seen_contacts = contacts.as_mut().map_or(0, |reader| {
+        u32::try_from(reader.read().count()).unwrap_or(u32::MAX)
+    });
     if dived && let Some(metrics) = data.measurements.crash.as_mut() {
         if metrics.crash_frame.is_some() {
             metrics.exits_seen += seen_exits;
