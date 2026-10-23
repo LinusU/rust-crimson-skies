@@ -263,6 +263,7 @@
 // (or two) of them reach it.
 mod accept_crash_b_fatal_contact;
 mod accept_crash_d_01_contact_fx;
+mod accept_crash_d_02_contact_sparks;
 mod accept_m01_c3_player_config;
 mod closure;
 mod common;

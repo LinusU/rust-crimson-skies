@@ -102,6 +102,7 @@ mod cockpit_hud;
 mod cockpit_interior;
 mod compose;
 mod contact_fx;
+mod contact_sparks;
 mod content;
 mod crash_flow;
 mod damage_trail;
@@ -192,6 +193,12 @@ pub use compose::{
 pub use contact_fx::{
     CONTACT_WING_ZONE_CLAIM, CONTACT_ZONE_UNKNOWN_CLAIM, contact_wing_zone, queue_crash_smoke,
     wing_node,
+};
+pub use contact_sparks::{
+    CONTACT_SPARK_ANIMATION, CONTACT_SPARK_MOTION_CLAIM, ContactSpark, ContactSparkDefinition,
+    ContactSparkError, ContactSparkReport, ContactSparkSource, ContactSparkSourceResource,
+    MissionContactSparkPlugin, SparkEmitter, measure_contact_sparks, plan_contact_sparks,
+    read_contact_spark_definition, spark_pose,
 };
 pub use content::{
     MissionContent, MissionFlight, MissionSessionError, SoundArchive, prepare_mission_content,

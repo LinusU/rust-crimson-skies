@@ -300,6 +300,10 @@ pub struct MissionStage {
     /// #1806): the `large_black_smokeball` emitter and its decoded textures.
     /// `Some` only for M01's retail stage; `None` draws no burst puffs.
     pub burst_puffs: Option<super::burst_puffs::BurstPuffSource>,
+    /// The measured sparks a terrain contact throws (PARITY4-CRASH-D.02,
+    /// #1945): the `yellow_sparks_follow` emitters and their decoded
+    /// textures. `Some` only for M01's retail stage.
+    pub contact_sparks: Option<super::contact_sparks::ContactSparkSource>,
     /// The measured `dense_firetrail` a damaged player airframe leaves
     /// (PARITY-M01-PLAYER-DAMAGE-TRAIL, #1700). `Some` only for M01's retail
     /// stage; `None` draws no trail.
@@ -421,6 +425,8 @@ pub enum MissionCompositionError {
     WeaponCounts(WeaponCountsError),
     /// The burst puff emitter or its textures could not be measured.
     BurstPuffs(super::burst_puffs::BurstPuffError),
+    /// The contact spark emitters or their textures could not be measured.
+    ContactSparks(super::contact_sparks::ContactSparkError),
     /// The damage trail effect or its textures could not be measured.
     DamageTrail(super::damage_trail::DamageTrailError),
     /// The flak effect could not be measured.
@@ -481,6 +487,7 @@ impl fmt::Display for MissionCompositionError {
             Self::AmbientSound(error) => write!(f, "{error}"),
             Self::WeaponCounts(error) => write!(f, "{error}"),
             Self::BurstPuffs(error) => write!(f, "{error}"),
+            Self::ContactSparks(error) => write!(f, "{error}"),
             Self::DamageTrail(error) => write!(f, "{error}"),
             Self::FlakEffect(error) => write!(f, "{error}"),
             Self::Audio(error) if error.code == crate::audio::CODE_CAPABILITY_ABSENT => write!(
@@ -666,6 +673,14 @@ pub fn stage_for(
         Some(
             super::burst_puffs::measure_burst_puffs(install_root, "c3")
                 .map_err(MissionCompositionError::BurstPuffs)?,
+        )
+    } else {
+        None
+    };
+    let contact_sparks = if plan.mission_dir.eq_ignore_ascii_case("zbd/c3/m01") {
+        Some(
+            super::contact_sparks::measure_contact_sparks(install_root, "c3")
+                .map_err(MissionCompositionError::ContactSparks)?,
         )
     } else {
         None
@@ -878,6 +893,7 @@ pub fn stage_for(
         ambient_sound,
         weapon_counts,
         burst_puffs,
+        contact_sparks,
         damage_trail,
         flak_effect,
         launch_cinematic,
@@ -1404,6 +1420,13 @@ fn add_composition(
         ));
     }
     app.add_plugins(crate::mission_session::MissionBurstPuffPlugin);
+    // PARITY4-CRASH-D.02 (#1945): the sparks of a terrain contact.
+    if let Some(sparks) = &stage.contact_sparks {
+        app.insert_resource(crate::mission_session::ContactSparkSourceResource(
+            sparks.clone(),
+        ));
+    }
+    app.add_plugins(crate::mission_session::MissionContactSparkPlugin);
     // PARITY-M01-PLAYER-DAMAGE-TRAIL (#1700): the fire and smoke trail of a
     // damaged player airframe.
     if let Some(trail) = &stage.damage_trail {
