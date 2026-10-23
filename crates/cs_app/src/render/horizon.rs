@@ -856,7 +856,7 @@ fn spawn_horizon(
         .as_ref()
         .and_then(|art| materials.get(&art.material).cloned());
     let sea_material = materials.add(match art_material {
-        Some(material) => StandardMaterial { ..material },
+        Some(material) => material,
         None => StandardMaterial {
             base_color: Color::srgb(
                 spec.sea_colour()[0],
