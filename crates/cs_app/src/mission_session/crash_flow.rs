@@ -67,7 +67,7 @@ pub fn install_crash_flow(app: &mut App) {
 
 /// The text node of `Fatal Crash!`.
 #[derive(Component)]
-struct CrashMessage;
+pub(super) struct CrashMessage;
 
 /// Draws `Fatal Crash!` for the length of a crash sequence (windowed only).
 #[derive(Clone, Copy, Debug, Default)]

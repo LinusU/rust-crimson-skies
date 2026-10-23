@@ -136,6 +136,7 @@ use crate::world_actors::WorldActorBinding;
 
 mod briefing;
 mod camera_modes;
+mod crash;
 mod debrief;
 mod start_flow;
 pub mod voice_trace;
@@ -149,6 +150,7 @@ pub use camera_modes::{
     CameraModeMetrics, CameraModeSample, MIN_CAMERA_FRAME_LUMINANCE_LEVELS, MIN_LOOK_ANGLE_RAD,
     MIN_VIEW_SEPARATION_M, MIN_ZOOM_DISTANCE_M,
 };
+pub use crash::CrashMetrics;
 pub use start_flow::StartFlowMetrics;
 
 /// Rendered frames per simulated second, the playtest smoke's own rate.
@@ -1025,6 +1027,12 @@ pub enum MissionSmokeMode {
     /// input) and the journal's debrief screen the failed run opens is
     /// photographed and judged (#1655).
     Failure,
+    /// `--smoke-crash`: the player is placed in a dive onto the terrain, the
+    /// production flight and terrain-contact rule crash it, and the crash
+    /// flow's frames (contact sparks and fire, the detached camera with
+    /// `Fatal Crash!`, the Mission Failed screen after a key) are
+    /// photographed and judged (#1857 `PARITY4-CRASH-E`).
+    Crash,
     /// `--smoke-start-flow`: one mission leg of the owner-command start-flow
     /// smoke (`cs --cs-path <retail> --smoke-seconds <n>`, #1832
     /// `PARITY5-START-FLOW.04`). The run goes through the briefing, the Flight
@@ -1301,6 +1309,8 @@ pub struct SmokeMeasurements {
     pub engagement: Option<EngagementMetrics>,
     /// The failed run's debrief screen ([`MissionSmokeMode::Failure`] only).
     pub debrief: Option<debrief::DebriefMetrics>,
+    /// The crash stage ([`MissionSmokeMode::Crash`] only).
+    pub crash: Option<crash::CrashMetrics>,
     /// The leave-the-flight stage ([`MissionSmokeMode::StartFlow`] only).
     pub start_flow: Option<start_flow::StartFlowMetrics>,
 }
@@ -1332,6 +1342,9 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
     }
     if m.debrief.is_some() {
         return debrief::evaluate(m);
+    }
+    if m.crash.is_some() {
+        return crash::evaluate(m);
     }
     if m.start_flow.is_some() {
         return start_flow::evaluate(m);
@@ -2926,6 +2939,7 @@ fn add_script_systems(app: &mut App) {
             smoke_first_control,
             smoke_hull,
             debrief::smoke_debrief,
+            crash::smoke_crash,
             smoke_cockpit,
             camera_modes::smoke_camera_modes,
             smoke_lens_flare,
@@ -3716,6 +3730,9 @@ fn smoke_sample(
         if config.mode == MissionSmokeMode::Failure {
             data.measurements.debrief = Some(debrief::DebriefMetrics::default());
         }
+        if config.mode == MissionSmokeMode::Crash {
+            data.measurements.crash = Some(crash::CrashMetrics::default());
+        }
         if config.mode == MissionSmokeMode::Engagement {
             data.measurements.engagement = Some(EngagementMetrics {
                 watch_frames: config.request.seconds.saturating_mul(60),
@@ -4091,6 +4108,9 @@ fn smoke_script(
         // The failure mode's own system (`debrief::smoke_debrief`) kills the
         // player, photographs the screen and hands over to `Final`.
         _ if config.mode == MissionSmokeMode::Failure => {}
+        // `crash::smoke_crash` dives the player, photographs the crash and
+        // hands over to `Final`.
+        _ if config.mode == MissionSmokeMode::Crash => {}
         _ if config.mode == MissionSmokeMode::Engagement => {
             if data.phase != Phase::Final && data.phase != Phase::Ended {
                 let metrics = data.measurements.engagement.clone().unwrap_or_default();
@@ -6503,7 +6523,7 @@ fn write_artifacts(
         "{{\"kind\":{kind},\"mission\":{mission},\"human_play\":false,\
          \"mode\":{mode},\"player_teleported\":{teleported},\
          \"engagement\":{engagement},\
-         \"debrief\":{debrief},\
+         \"debrief\":{debrief},\"crash\":{crash},\
          \"wingman_threshold_m\":{threshold},\"wingmen\":[{wingmen}],\
          \"verified_original\":false,\"frames\":{frames},\"ticks\":{ticks},\
          \"hud\":{{\"model_line\":{model_line},\"drawn_line\":{drawn_line},\
@@ -6548,6 +6568,8 @@ fn write_artifacts(
             "engagement"
         } else if report.measurements.debrief.is_some() {
             "failure"
+        } else if report.measurements.crash.is_some() {
+            "crash"
         } else if report.measurements.start_flow.is_some() {
             "start_flow"
         } else if report.measurements.no_teleport {
@@ -6558,6 +6580,7 @@ fn write_artifacts(
         teleported = !report.placements.is_empty(),
         engagement = engagement,
         debrief = debrief::debrief_json(report.measurements.debrief.as_ref()),
+        crash = crash::crash_json(report.measurements.crash.as_ref()),
         threshold = MAX_WINGMAN_DISTANCE_M,
         wingmen = wingmen,
         frames = report.frames,
