@@ -517,10 +517,13 @@ const NO_TELEPORT_SHOT_FRAME: u32 =
 /// The owner-capture seconds the no-teleport run also photographs, counted
 /// from Fly Mission like the wingman samples: `PARITY-M01-PLAYER-VIEW` (#1644)
 /// compares `flight_25s` with the owner's `orig25.png` and `flight_70s` with
-/// `orig70.png` at the same simulated time after control starts. The player
-/// is never moved, so each frame is the measured start's own flight at that
-/// second.
-const NO_TELEPORT_PARITY_SHOT_SECONDS: [u32; 2] = [25, 70];
+/// `orig70.png` at the same simulated time after control starts, and #1744
+/// compares `flight_1s` with `c03` and `flight_5s` with `c04` — the haze pair
+/// a few seconds apart after control (`first_control` itself is asked for the
+/// frame control returns, before the window's first flight present, so the
+/// next whole second is the earliest clean haze frame). The player is never
+/// moved, so each frame is the measured start's own flight at that second.
+const NO_TELEPORT_PARITY_SHOT_SECONDS: [u32; 4] = [1, 5, 25, 70];
 
 /// The frame the no-teleport run finishes after: its last framebuffer.
 const NO_TELEPORT_END_FRAME: u32 =
@@ -6999,10 +7002,10 @@ mod tests {
     ///
     /// The production script systems drive the whole no-teleport schedule
     /// over a stand-in player body: the run asks for `first_control`, then
-    /// `flight_25s` at t+25 s, `flight` after the last wingman sample and
-    /// `flight_70s` at t+70 s — the frames `orig25.png` and `orig70.png` are
-    /// compared against at the same simulated time — and finishes only after
-    /// the last of them.
+    /// `flight_1s`, `flight_5s`, `flight_25s` at those seconds, `flight`
+    /// after the last wingman sample and `flight_70s` at t+70 s — the frames
+    /// `orig25.png`, `orig70.png` and #1744's haze pair are compared against
+    /// at the same simulated time — and finishes only after the last of them.
     #[test]
     fn accept_parity_m01_player_view_no_teleport_smoke_photographs_the_capture_seconds() {
         let dir = std::env::temp_dir().join("accept_parity_m01_player_view_capture_seconds");
@@ -7059,7 +7062,14 @@ mod tests {
         // in the order the script asked for them.
         assert_eq!(
             report.measurements.missing_shots,
-            ["first_control", "flight_25s", "flight", "flight_70s"],
+            [
+                "first_control",
+                "flight_1s",
+                "flight_5s",
+                "flight_25s",
+                "flight",
+                "flight_70s"
+            ],
             "the capture-second frames are on the schedule"
         );
         assert!(report.measurements.frames >= NO_TELEPORT_END_FRAME);
