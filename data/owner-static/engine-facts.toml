@@ -5817,3 +5817,107 @@ va = 0x6034f4
 kind = "f32"
 value = 0.25
 meaning = "0.25f: the cinematic-mode exit 0x450e30 multiplies the camera far clip (state +0xb4) by it at 0x450f0b, switches the fog mode to 1 and clears 0x654120"
+
+# The puffer (particle emitter) runtime constants of finding
+# docs/findings/2026-10-23-parity2-dmg-fx-levels.md (#1979). The draw is
+# 0x54e6e0, the per-frame update 0x54ee10, the emitter 0x54f8b0, the event
+# applier 0x4e7e60. `va` is the address of the constant itself (or of the
+# immediate inside the cited instruction).
+[[puffer_runtime]]
+name = "puffer_age_factor_default"
+claim = "OWNER-STATIC-2026-10-23"
+provenance = "static"
+va = 0x637a90
+kind = "f32"
+value = 1.0
+meaning = "1.0f: the global age factor (script PufferSetGlobalAgeFactor, setter 0x5506e0); the update 0x54efc1 adds it times the frame step to every puff's age"
+
+[[puffer_runtime]]
+name = "puffer_fade_factor_default"
+claim = "OWNER-STATIC-2026-10-23"
+provenance = "static"
+va = 0x637a94
+kind = "f32"
+value = 1.0
+meaning = "1.0f: the global fade factor (script PufferSetGlobalFadeFactor, setter 0x5506f0); the draw 0x54e732 multiplies the far-fade depth by it"
+
+[[puffer_runtime]]
+name = "puffer_jump_guard_distance"
+claim = "OWNER-STATIC-2026-10-23"
+provenance = "static"
+va = 0x6035c4
+kind = "f32"
+value = 200.0
+meaning = "200.0f: a distance emitter (DISTANCE_INTERVAL) adds the anchor's travel since the last frame only when it is below this (0x54fa4c); a jump of 200 or more adds nothing"
+
+[[puffer_runtime]]
+name = "puffer_alpha_scale"
+claim = "OWNER-STATIC-2026-10-23"
+provenance = "static"
+va = 0x60414c
+kind = "f32"
+value = 255.0
+meaning = "255.0f: the draw (0x54ea9c) multiplies the final 0..1 opacity by it, adds 0.5 and clamps to 0..255 for the vertex alpha"
+
+[[puffer_runtime]]
+name = "puffer_priority_depth_bias_a"
+claim = "OWNER-STATIC-2026-10-23"
+provenance = "static"
+va = 0x54db72
+kind = "f32"
+value = 0.02
+meaning = "imm32 of `mov [0xa06fb0], imm` at 0x54db6c: the boot value of the factor the draw (0x54e8e9) multiplies by PRIORITY and adds 1.0 to for the sprite depth; the other boot value is the next row, chosen by a branch at 0x54db6a"
+
+[[puffer_runtime]]
+name = "puffer_priority_depth_bias_b"
+claim = "OWNER-STATIC-2026-10-23"
+provenance = "static"
+va = 0x54db88
+kind = "f32"
+value = 0.01
+meaning = "imm32 of `mov [0xa06fb0], imm` at 0x54db82, the branch target of 0x54db6a"
+
+[[puffer_runtime]]
+name = "puffer_growth_start_scale"
+claim = "OWNER-STATIC-2026-10-23"
+provenance = "static"
+va = 0x4fafb7
+kind = "f32"
+value = 1.0
+meaning = "imm32 of `mov eax, 0x3f800000` at 0x4fafb6: the parser writes GROWTH_FACTOR as a two-key scale sequence (count 2, key 0.0 -> scale this, key 1.0 -> scale G from +0x230), so a puff's size runs from 1x to G x over its normalised age"
+
+[[puffer_runtime]]
+name = "puffer_far_fade_default_bits"
+claim = "OWNER-STATIC-2026-10-23"
+provenance = "static"
+va = 0x550263
+kind = "u32"
+value = 0x7f7fffff
+meaning = "imm32 of `mov ecx, 0x7f7fffff` at 0x550262 in the emitter constructor: f32::MAX is stored as both far-fade numbers (+0xdc, +0xe0), so a puffer without FADE_RANGE never fades or culls by distance"
+
+[[puffer_runtime]]
+name = "puffer_friction_lookup_scale"
+claim = "OWNER-STATIC-2026-10-23"
+provenance = "static"
+va = 0x609128
+kind = "f32"
+value = -51.0
+meaning = "-51.0f: the friction factor 0x53e2e0(x) indexes a 256-entry table by floor(x * 51) (0x53e363); the update 0x54f030 calls it with the frame step times a puff's FRICTION"
+
+[[puffer_runtime]]
+name = "puffer_friction_table_step"
+claim = "OWNER-STATIC-2026-10-23"
+provenance = "static"
+va = 0x60912c
+kind = "f32"
+value = -0.019607844
+meaning = "-1/51 as f32: the table builder (0x53e2e0, first call) stores exp(i * this) for i = 0..255, so entry floor(51 x) is exp(-x) to a 1/51 step"
+
+[[puffer_runtime]]
+name = "puffer_friction_cutoff"
+claim = "OWNER-STATIC-2026-10-23"
+provenance = "static"
+va = 0x6036bc
+kind = "f32"
+value = 5.0
+meaning = "5.0f: the friction factor returns 0.0 above this argument (0x53e335), 1.0 below zero (0x53e354); 255/51 = 5 is the table's last entry"
