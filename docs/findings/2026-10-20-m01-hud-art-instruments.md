@@ -150,7 +150,14 @@ green→yellow/orange→red (designed mapping).
 
 ## UI textures in `ZBD/rimage.zbd`
 
-- `rcircle`/`rcircle_y` 32×36 (alpha plane): centre reticle ring.
+- `impact_point` 32×32 (alpha): the centre reticle — ring with cross ticks. Identified by
+  visual match against the owner's original M01 flight frames (#2016); the engine consumer
+  was not traced. Correction: an earlier version of this note named `rcircle` here from the
+  texture name alone.
+- `rcircle`/`rcircle_y` 32×36 (alpha plane): a hand-drawn felt-marker circle. The owner
+  recognises it from the briefing/debrief map callouts (owner observation, consumer not
+  source-verified). **Not** the flight reticle; kept unused for the map screens.
+- `alignment_point` 32×32: decodes fully black/transparent; role unknown.
 - `arrow` 35×28, `darrow`/`uarrow` 36×43, `larrow`/`rarrow` 43×36:
   off-screen contact direction arrows (the `<`/`>`/`^`/`v` edge markers in
   the captures).
@@ -177,7 +184,7 @@ green→yellow/orange→red (designed mapping).
    `ggindicatorN` visibility by rocket/round count vs per-pip unit
    (unmeasured — label designed); zone material swap by `PartState`;
    `lowalt_on`/`stallwarning_on` flags (thresholds unmeasured).
-4. Reticle: `rcircle` texture as a centred UI `ImageNode` (decode through
+4. Reticle: `impact_point` texture as a centred UI `ImageNode` (decode through
    `read_zbd_textures` + the front-end `DecodedImage`→`Image` path).
 5. Values: reuse `cockpit_hud::read_values` sources; it needs per-zone
    states (not just `damage_fraction`) — `airframe_zones` already yields

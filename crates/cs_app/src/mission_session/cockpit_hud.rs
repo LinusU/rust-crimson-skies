@@ -445,7 +445,7 @@ fn spawn_cockpit(mut commands: Commands, hud: Option<Res<MissionHudArt>>) {
                     strip.spawn(text(14.0, "", CompassPointer));
                 });
             }
-            // Reticle, screen centre: the `rcircle` texture when the art
+            // Reticle, screen centre: the `impact_point` texture when the art
             // decoded it, the designed bars otherwise.
             match reticle {
                 Some(image) if art => super::hud_art::spawn_reticle(area, image),

@@ -10,9 +10,9 @@ use bevy::prelude::{Children, Entity, Mesh3d, With};
 use cs_app::mission_launch::plan_mission_launch;
 use cs_app::mission_session::{
     HUD_CAMERA_LAYER, HudArrow, HudArtCamera, HudArtRoot, HudCompassTape, HudFlag, HudGlyphCell,
-    HudNeedle, HudNitroNeedle, HudPip, HudZone, MissionHudArt, NeedleRole, PipGauge, ZonePieceRole,
-    build_headless, gauge_frame, read_instrument_table, read_reticle_image, stage_for, teardown,
-    zone_texture_name,
+    HudNeedle, HudNitroNeedle, HudPip, HudZone, MissionHudArt, NeedleRole, PipGauge,
+    RETICLE_TEXTURE, ZonePieceRole, build_headless, gauge_frame, read_instrument_table,
+    read_reticle_image, stage_for, teardown, zone_texture_name,
 };
 use cs_app::playtest_retail::AircraftPart;
 use cs_sim::damage::PartState;
@@ -245,16 +245,30 @@ fn accept_parity2_m01_hud_art_composition_draws_the_measured_cluster() {
     teardown(&mut app);
 }
 
-/// **The reticle texture decodes** through the production `rimage.zbd`
-/// reader: `rcircle` at its stored 32×36 extent.
+/// **The flight reticle is the gunsight, not the map circle.** The original
+/// owner frames show a small ring with cross ticks at screen centre; in
+/// `ZBD/rimage.zbd` that is `impact_point` (32×32). `rcircle` (32×36) is the
+/// hand-drawn felt-marker circle and must not be the HUD reticle.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_parity2_m01_hud_art_reticle_decodes_rcircle() {
+fn accept_bug_m01_crosshair_is_impact_point_not_rcircle() {
+    assert_eq!(RETICLE_TEXTURE, "impact_point");
     let mut images = bevy::prelude::Assets::<bevy::prelude::Image>::default();
-    let handle = read_reticle_image(&game_dir(), &mut images).expect("rcircle must decode");
+    let handle =
+        read_reticle_image(&game_dir(), &mut images).expect("the reticle texture must decode");
     let image = images.get(&handle).expect("the handle holds an image");
     let extent = image.texture_descriptor.size;
-    assert_eq!((extent.width, extent.height), (32, 36));
+    assert_eq!((extent.width, extent.height), (32, 32));
+    // The gunsight is a ring with cross ticks: the centre column and row carry
+    // visible texels while the corners are fully transparent.
+    let data = image.data.as_ref().expect("the image has texel data");
+    let alpha = |x: usize, y: usize| data[(y * 32 + x) * 4 + 3];
+    assert_eq!(alpha(0, 0), 0, "the corner is transparent");
+    assert_eq!(alpha(31, 31), 0, "the corner is transparent");
+    assert!(
+        (0..32).any(|y| alpha(16, y) > 0) && (0..32).any(|x| alpha(x, 16) > 0),
+        "the cross ticks are drawn"
+    );
 }
 
 /// **The gauge frame follows the measured ladder** (0.72 / 0.46 / 0.2 over

@@ -33,7 +33,7 @@
 //! * [`fit_hud_viewport`] also switches the pass off in the pilot-eye views:
 //!   there the dials are the panel meshes and the corner cluster must not
 //!   draw over them (PARITY3-COCKPIT-VIEW.04).
-//! * [`read_reticle_image`] decodes `rcircle` from `ZBD/rimage.zbd` through
+//! * [`read_reticle_image`] decodes `impact_point` from `ZBD/rimage.zbd` through
 //!   `cs_formats::texture::read_zbd_textures` + the production RGB565
 //!   expansion; [`spawn_reticle`] draws it as a centred `ImageNode`.
 //!
@@ -828,7 +828,7 @@ pub struct MissionHudArt {
     pub zone_materials: BTreeMap<(u8, u8), Handle<StandardMaterial>>,
     /// The reticle texture's name once decoded, so evidence can cite it.
     pub reticle: Option<String>,
-    /// The decoded `rcircle` image the reticle `ImageNode` draws.
+    /// The decoded `impact_point` image the reticle `ImageNode` draws.
     pub reticle_image: Option<Handle<Image>>,
 }
 
@@ -1078,10 +1078,16 @@ pub(crate) fn compass_period(
 }
 
 // ---------------------------------------------------------------------------
-// The reticle: `ZBD/rimage.zbd`'s `rcircle` as a centred `ImageNode`.
+// The reticle: `ZBD/rimage.zbd`'s `impact_point` as a centred `ImageNode`.
 // ---------------------------------------------------------------------------
 
-/// Decodes `rcircle` (32×36, alpha) from `ZBD/rimage.zbd` through the
+/// The `ZBD/rimage.zbd` texture the centre reticle draws: the 32×32 ring with
+/// cross ticks the original owner frames show at screen centre (`rcircle`, the
+/// hand-drawn circle, is not the gunsight). Identity by visual match; the
+/// original consumer was not traced in the engine image.
+pub const RETICLE_TEXTURE: &str = "impact_point";
+
+/// Decodes `impact_point` (32×32, alpha) from `ZBD/rimage.zbd` through the
 /// production `read_zbd_textures` + RGB565 expansion path.
 ///
 /// # Errors
@@ -1108,20 +1114,20 @@ pub fn read_reticle_image(
     let package = read_zbd_textures("zbd/rimage.zbd", &bytes, &mut budget)
         .map_err(|error| format!("zbd/rimage.zbd refuses: {error}"))?;
     let texture = package
-        .named("rcircle")
+        .named(RETICLE_TEXTURE)
         .next()
-        .ok_or_else(|| "zbd/rimage.zbd holds no texture named rcircle".to_owned())?;
+        .ok_or_else(|| format!("zbd/rimage.zbd holds no texture named {RETICLE_TEXTURE}"))?;
     let decoded = texture
         .decode(&mut budget)
-        .map_err(|error| format!("rcircle refuses to decode: {error}"))?;
+        .map_err(|error| format!("{RETICLE_TEXTURE} refuses to decode: {error}"))?;
     let decoded = crate::hd_textures::pack()
-        .and_then(|pack| pack.ui_decoded("rimage/rcircle", &decoded))
+        .and_then(|pack| pack.ui_decoded("rimage/impact_point", &decoded))
         .unwrap_or(decoded);
     let (image, _, _) = crate::playtest_textures::to_bevy_image(&decoded);
     Ok(images.add(image))
 }
 
-/// The centred reticle node — the `rcircle` texture at its stored 32×36
+/// The centred reticle node — the `impact_point` texture at its stored 32×32
 /// extent.
 #[derive(Component, Clone, Copy, Debug)]
 pub struct HudReticle;
@@ -1134,10 +1140,10 @@ pub fn spawn_reticle(parent: &mut bevy::prelude::ChildSpawnerCommands, image: Ha
             left: Val::Percent(50.0),
             top: Val::Percent(50.0),
             width: Val::Px(32.0),
-            height: Val::Px(36.0),
+            height: Val::Px(32.0),
             margin: UiRect {
                 left: Val::Px(-16.0),
-                top: Val::Px(-18.0),
+                top: Val::Px(-16.0),
                 ..default()
             },
             ..default()

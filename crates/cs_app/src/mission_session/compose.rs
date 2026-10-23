@@ -1526,7 +1526,7 @@ fn add_composition(
                         .resource_mut::<bevy::prelude::Assets<bevy::prelude::Image>>(),
                 ) {
                     Ok(image) => {
-                        hud.reticle = Some("rcircle".to_owned());
+                        hud.reticle = Some(super::hud_art::RETICLE_TEXTURE.to_owned());
                         hud.reticle_image = Some(image);
                     }
                     Err(reason) => hud.unknowns.push(format!("reticle: {reason}")),
