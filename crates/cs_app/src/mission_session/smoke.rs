@@ -5046,23 +5046,38 @@ fn apply_trail_test_hit(
     let damage = damage.ok_or("no session damage authority")?;
     let player = weapons.ok_or("no mission weapons session")?.player();
     let tick = cs_types::Tick(ledger.map_or(0, |l| l.ticks));
-    let event = HitEvent::try_new(
-        HitEventId {
-            session: player.session,
-            tick,
-            producer: 998,
-            sequence: 0,
-        },
-        None,
-        player,
-        DamageNodeKey::new("leftwingdamage").map_err(|e| e.to_string())?,
-        DamageChannel::Internal,
-        super::DESIGNED_REGION_INTEGRITY / 4.0,
-    )
-    .map_err(|e| e.to_string())?;
+    // PARITY-M01-PLAYER-DAMAGE-GAUGE-B (#1943): the hits leave the four
+    // cockpit zones at distinct measured gauge frames — right wing intact
+    // (green), left wing at 0.40 remaining (orange), nose at 0.65 (yellow),
+    // tail at 0.15 (red).
+    let hits = [
+        ("leftwingdamage", 0.25),
+        ("leftwingdamage", 0.35),
+        ("nosedamage", 0.35),
+        ("taildamage", 0.85),
+    ];
+    let mut events = Vec::new();
+    for (sequence, (node, fraction)) in hits.into_iter().enumerate() {
+        events.push(
+            HitEvent::try_new(
+                HitEventId {
+                    session: player.session,
+                    tick,
+                    producer: 998,
+                    sequence: sequence as u32,
+                },
+                None,
+                player,
+                DamageNodeKey::new(node).map_err(|e| e.to_string())?,
+                DamageChannel::Internal,
+                super::DESIGNED_REGION_INTEGRITY * fraction,
+            )
+            .map_err(|e| e.to_string())?,
+        );
+    }
     damage
         .resolver_mut()
-        .resolve(tick, &[event])
+        .resolve(tick, &events)
         .map(|_| ())
         .map_err(|e| e.to_string())
 }

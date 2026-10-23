@@ -299,8 +299,8 @@ pub struct HudArt {
     /// per measured face radius).
     pub scale: f32,
     /// Texture name → engine image, preloaded for the glyph and zone-state
-    /// swaps (`zero`–`nine`, `A`–`Z`, `space`, `yellowhilite`, `redhilite`,
-    /// `yel_hatchptrn`, `red_hatchptrn`).
+    /// swaps (`zero`–`nine`, `A`–`Z`, `space`, and the yellow/orange/red
+    /// `*hilite` and `*_hatchptrn` gauge frames).
     pub images: BTreeMap<String, Handle<Image>>,
     /// Nodes the table does not place and roles without a measured driver —
     /// reported, never silent.
@@ -324,12 +324,58 @@ fn glyph_names() -> Vec<String> {
 }
 
 /// The texture names the damage zones recolour to (finding §Damage zones).
-const ZONE_TEXTURES: [&str; 4] = [
+const ZONE_TEXTURES: [&str; 6] = [
     "yellowhilite",
+    "orangehilite",
     "redhilite",
     "yel_hatchptrn",
+    "orng_hatchptrn",
     "red_hatchptrn",
 ];
+
+/// The measured gauge ladder: a part's `<part>_damage_green|yellow|red`
+/// `injure_anims` thresholds, identical for the nose, tail and both wings
+/// (`docs/findings/2026-10-23-parity-m01-player-damage-gauge-mapping.md`).
+/// Each level's animation holds one `OBJECT_CYCLE_TEXTURE ... RESET (n)`,
+/// `n` = 1, 2, 3. The handler (engine image `0x4eabd0` → `0x564410`, static)
+/// selects frame `n` of the node's 0-based texture cycle
+/// `[green, yellow, orange, red]`, so the frame for a remaining-health
+/// fraction is the number of thresholds it has fallen to or below. The unit
+/// (remaining vs damage fraction) and the boundary comparison are inferred
+/// from the descending order and stay recorded as unknown.
+pub const GAUGE_THRESHOLDS: [f64; 3] = [0.72, 0.46, 0.2];
+
+/// The gauge cycle frame (`0` green … `3` red) of a zone: the measured
+/// ladder over `remaining_fraction` (remaining integrity / declared pool),
+/// with `Destroyed` pinned to the last frame; an unresolved pool draws the
+/// intact frame (the ladder says nothing for it).
+#[must_use]
+pub fn gauge_frame(remaining_fraction: Option<f64>, state: PartState) -> u8 {
+    match state {
+        PartState::Intact | PartState::Unknown => 0,
+        PartState::Destroyed => 3,
+        // Damaged but above the first level (or with no resolved pool) is
+        // still the intact frame: the ladder has no entry before 0.72.
+        PartState::Damaged => remaining_fraction.map_or(0, |fraction| {
+            GAUGE_THRESHOLDS.iter().filter(|t| fraction <= **t).count() as u8
+        }),
+    }
+}
+
+/// The texture name of one cycle frame for a zone piece role.
+#[must_use]
+pub fn zone_texture_name(role: ZonePieceRole, frame: u8) -> &'static str {
+    match (role, frame) {
+        (ZonePieceRole::Hilite, 0) => "greenhilite",
+        (ZonePieceRole::Hilite, 1) => "yellowhilite",
+        (ZonePieceRole::Hilite, 2) => "orangehilite",
+        (ZonePieceRole::Hilite, _) => "redhilite",
+        (ZonePieceRole::Hatch, 0) => "grn_hatchptrn",
+        (ZonePieceRole::Hatch, 1) => "yel_hatchptrn",
+        (ZonePieceRole::Hatch, 2) => "orng_hatchptrn",
+        (ZonePieceRole::Hatch, _) => "red_hatchptrn",
+    }
+}
 
 /// Builds the HUD instrument parts from the same aircraft container the
 /// player visual draws.
@@ -1302,15 +1348,19 @@ pub fn update_hud_art(
     .ok()
     .flatten()
     .unwrap_or_default();
+    let resolver = damage.as_deref().map(SessionDamageResolver::resolver);
     for (mut material, piece) in &mut zone_pieces {
+        let key = DamageNodeKey::new(piece.region.node_name()).ok();
         let state = zones
             .iter()
-            .find(|zone| {
-                DamageNodeKey::new(piece.region.node_name()).is_ok_and(|key| key == zone.node)
-            })
+            .find(|zone| key.as_ref() == Some(&zone.node))
             .map_or(PartState::Unknown, |zone| zone.state);
+        let fraction = resolver
+            .zip(key.as_ref())
+            .and_then(|(resolver, key)| remaining_fraction(resolver, actor, key));
+        let frame = gauge_frame(fraction, state);
         if let Some(handle) =
-            zone_material(&mut hud, &mut materials, &piece.authored, piece.role, state)
+            zone_material(&mut hud, &mut materials, &piece.authored, piece.role, frame)
             && material.0 != handle
         {
             material.0 = handle;
@@ -1364,26 +1414,33 @@ fn glyph_material(
     Some(handle)
 }
 
-/// `(role, state)` → the zone material: the authored `*hilite`+`*_hatchptrn`
-/// pair recoloured green/yellow/red by `PartState` (the designed mapping —
-/// `Damaged` → yellow, `Destroyed` → red). `Intact` and `Unknown` draw the
-/// authored green: the gauge always shows some zone colour and the intact
-/// capture is the documented default. `base` is the piece's authored
-/// material, so a state returning to green restores it rather than keeping
-/// the last variant.
+/// A node's remaining integrity over its declared pool; `None` when either
+/// is unresolved or the pool is empty.
+fn remaining_fraction(
+    resolver: &cs_sim::damage::DamageResolver,
+    actor: ActorId,
+    key: &DamageNodeKey,
+) -> Option<f64> {
+    let Resolved::Known(pool) = resolver.graph(&actor)?.node(key)?.integrity() else {
+        return None;
+    };
+    let pool = pool.value;
+    let remaining = resolver.remaining_integrity(&actor, key)?;
+    (pool > 0.0).then(|| (remaining / pool).clamp(0.0, 1.0))
+}
+
+/// `(role, gauge frame)` → the zone material: the cycle frame's
+/// `*hilite`/`*_hatchptrn` image on the piece's authored material. Frame 0
+/// is the authored green, so a zone returning to it restores `base` rather
+/// than keeping the last variant.
 fn zone_material(
     hud: &mut MissionHudArt,
     materials: &mut Assets<StandardMaterial>,
     base: &Handle<StandardMaterial>,
     role: ZonePieceRole,
-    state: PartState,
+    frame: u8,
 ) -> Option<Handle<StandardMaterial>> {
-    let colour = match state {
-        PartState::Intact | PartState::Unknown => 0u8,
-        PartState::Damaged => 1,
-        PartState::Destroyed => 2,
-    };
-    if colour == 0 {
+    if frame == 0 {
         return Some(base.clone());
     }
     let key = (
@@ -1391,18 +1448,12 @@ fn zone_material(
             ZonePieceRole::Hilite => 0u8,
             ZonePieceRole::Hatch => 1,
         },
-        colour,
+        frame,
     );
     if let Some(handle) = hud.zone_materials.get(&key) {
         return Some(handle.clone());
     }
-    let name = match (role, colour) {
-        (ZonePieceRole::Hilite, 1) => "yellowhilite",
-        (ZonePieceRole::Hilite, _) => "redhilite",
-        (ZonePieceRole::Hatch, 1) => "yel_hatchptrn",
-        (ZonePieceRole::Hatch, _) => "red_hatchptrn",
-    };
-    let image = hud.images.get(name)?.clone();
+    let image = hud.images.get(zone_texture_name(role, frame))?.clone();
     let mut variant = materials.get(base)?.clone();
     variant.base_color_texture = Some(image);
     let handle = materials.add(variant);

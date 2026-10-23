@@ -10,10 +10,12 @@ use bevy::prelude::{Children, Entity, Mesh3d, With};
 use cs_app::mission_launch::plan_mission_launch;
 use cs_app::mission_session::{
     HUD_CAMERA_LAYER, HudArrow, HudArtCamera, HudArtRoot, HudCompassTape, HudFlag, HudGlyphCell,
-    HudNeedle, HudNitroNeedle, HudPip, HudZone, MissionHudArt, NeedleRole, PipGauge,
-    build_headless, read_instrument_table, read_reticle_image, stage_for, teardown,
+    HudNeedle, HudNitroNeedle, HudPip, HudZone, MissionHudArt, NeedleRole, PipGauge, ZonePieceRole,
+    build_headless, gauge_frame, read_instrument_table, read_reticle_image, stage_for, teardown,
+    zone_texture_name,
 };
 use cs_app::playtest_retail::AircraftPart;
+use cs_sim::damage::PartState;
 
 use crate::campaign::common::label;
 
@@ -253,4 +255,58 @@ fn accept_parity2_m01_hud_art_reticle_decodes_rcircle() {
     let image = images.get(&handle).expect("the handle holds an image");
     let extent = image.texture_descriptor.size;
     assert_eq!((extent.width, extent.height), (32, 36));
+}
+
+/// **The gauge frame follows the measured ladder** (0.72 / 0.46 / 0.2 over
+/// the 0-based `[green, yellow, orange, red]` cycle): orange is reachable and
+/// `Destroyed` is the last frame.
+#[test]
+fn accept_parity_m01_player_damage_gauge_frame_follows_the_measured_ladder() {
+    let damaged = |fraction| gauge_frame(Some(fraction), PartState::Damaged);
+    assert_eq!(gauge_frame(Some(1.0), PartState::Intact), 0);
+    assert_eq!(gauge_frame(None, PartState::Unknown), 0);
+    assert_eq!(damaged(0.95), 0, "damaged but above the first level");
+    assert_eq!(damaged(0.73), 0);
+    assert_eq!(damaged(0.72), 1);
+    assert_eq!(damaged(0.60), 1);
+    assert_eq!(damaged(0.46), 2);
+    assert_eq!(damaged(0.30), 2);
+    assert_eq!(damaged(0.20), 3);
+    assert_eq!(damaged(0.05), 3);
+    assert_eq!(gauge_frame(Some(0.0), PartState::Destroyed), 3);
+    assert_eq!(gauge_frame(None, PartState::Destroyed), 3);
+    assert_eq!(zone_texture_name(ZonePieceRole::Hilite, 2), "orangehilite");
+    assert_eq!(zone_texture_name(ZonePieceRole::Hatch, 2), "orng_hatchptrn");
+    assert_eq!(zone_texture_name(ZonePieceRole::Hatch, 3), "red_hatchptrn");
+}
+
+/// **Every gauge frame's retail texture decodes** through the production
+/// composition: the yellow, orange and red `*hilite` and `*_hatchptrn`
+/// images are preloaded for the zone drive.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_parity_m01_player_damage_gauge_composition_preloads_every_frame() {
+    let root = game_dir();
+    let plan = plan_mission_launch(&root, label("M06"), "The Red Menace")
+        .expect("M01's launch closure plans");
+    let stage = stage_for(&root, &plan).expect("M01's stage reads through the production readers");
+    let mut app = build_headless(&stage).expect("M01's stage composes headlessly");
+    app.update();
+    {
+        let hud = app
+            .world()
+            .get_resource::<MissionHudArt>()
+            .expect("the composition records the HUD art build");
+        for role in [ZonePieceRole::Hilite, ZonePieceRole::Hatch] {
+            for frame in 1..=3u8 {
+                let name = zone_texture_name(role, frame);
+                assert!(
+                    hud.images.contains_key(name),
+                    "gauge frame {name} must preload; build record: {:?}",
+                    hud.unknowns
+                );
+            }
+        }
+    }
+    teardown(&mut app);
 }

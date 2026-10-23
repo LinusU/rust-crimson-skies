@@ -257,12 +257,13 @@ pub use host::{
     mission_host_restart, mission_host_tick, no_declared_objectives,
 };
 pub use hud_art::{
-    GlyphRow, HUD_ASPECT, HUD_CAMERA_LAYER, HUD_FOV, HUD_HALF_HEIGHT, HUD_HALF_WIDTH,
-    HUD_PLANE_DEPTH, HudArrow, HudArt, HudArtCamera, HudArtRoot, HudAttitudeBall, HudCompassTape,
-    HudFlag, HudGlyphCell, HudNeedle, HudNitroNeedle, HudPip, HudReticle, HudZone, HudZonePiece,
-    InstrumentPlacement, InstrumentTable, MissionHudArt, MissionHudArtPlugin, NeedleRole, PipGauge,
-    ZonePieceRole, build_hud_art, fit_hud_viewport, read_instrument_table, read_reticle_image,
-    spawn_hud_art, spawn_reticle, update_hud_art,
+    GAUGE_THRESHOLDS, GlyphRow, HUD_ASPECT, HUD_CAMERA_LAYER, HUD_FOV, HUD_HALF_HEIGHT,
+    HUD_HALF_WIDTH, HUD_PLANE_DEPTH, HudArrow, HudArt, HudArtCamera, HudArtRoot, HudAttitudeBall,
+    HudCompassTape, HudFlag, HudGlyphCell, HudNeedle, HudNitroNeedle, HudPip, HudReticle, HudZone,
+    HudZonePiece, InstrumentPlacement, InstrumentTable, MissionHudArt, MissionHudArtPlugin,
+    NeedleRole, PipGauge, ZonePieceRole, build_hud_art, fit_hud_viewport, gauge_frame,
+    read_instrument_table, read_reticle_image, spawn_hud_art, spawn_reticle, update_hud_art,
+    zone_texture_name,
 };
 pub use landings::{
     LANDING_CALL_CHAIN_CLAIM, LANDING_DETECTION_CLAIM, LANDING_NODE_POSITION_CLAIM,
