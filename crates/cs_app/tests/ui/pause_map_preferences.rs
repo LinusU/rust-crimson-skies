@@ -9,10 +9,11 @@
 //!   `PreferencesOverlay` record standing in for the overlay plugin's open
 //!   flag (its section's source is retail-read).
 //! * The `02e` headless test — the parent's own acceptance — runs the same
-//!   loop against the real [`PreferencesOverlayPlugin`] over a synthetic
-//!   `Preferences` section: a `MenuShell` built from layout text in the
-//!   original's format with the in-game page's own rows at the retail
-//!   rects, so the press lands on the drawn settings screen and its own
+//!   loop against the real [`PreferencesOverlayPlugin`] over the retail
+//!   `[@Preferences@]` section itself: a `MenuShell` built from the
+//!   section's layout text verbatim (its hidden `PF_B_MAINMENU` slot, its
+//!   text and movie rows included) with synthetic bitmaps of the retail
+//!   extents, so the press lands on the drawn settings screen and its own
 //!   Return to Game row.
 //! * The `02e_02` retail test runs the whole loop on the composed M01
 //!   with both plugins installed.
@@ -196,22 +197,38 @@ fn app() -> App {
     app
 }
 
-/// The `Preferences` section as layout text in the original's format — the
-/// in-game page's own rows at the retail rects — plus the one-line sections
-/// its option buttons name, so the shell reads their `Navigate` effects the
-/// way the real layout does (`PF_B_RETURNTOGAME` starts no script; its arm
-/// the retail `PREFERENCES.SCRIPT` keys by the slot object, so the shell
-/// reads the same `NoHandler` it does there).
+/// The retail `[@Preferences@]` section verbatim — its own rows, rects,
+/// art names and `<…>` placeholders (the section's `V` vars and the two
+/// `[GLOBALVARS]` entries they resolve through included) — plus the
+/// one-line sections its option buttons name, so the shell reads their
+/// `Navigate` effects the way the real layout does. `PF_B_MAINMENU` stays
+/// in the section like the data holds it: the overlay hides and disarms
+/// the out-of-game slot itself (`PF_B_RETURNTOGAME` starts no script; its
+/// arm the retail `PREFERENCES.SCRIPT` keys by the slot object, so the
+/// shell reads the same `NoHandler` it does there).
 const OVERLAY_LAYOUT: &str = "\
+[GLOBALVARS]
+G13=PF_DESCW,310
+G14=PF_DESCH,40
+
 [@Preferences@]
-PF_BACKGROUND=P,prefback.png,110,215,0,1,0,1,0
-PF_LOGO=P,preflogo.png,134,13,0,1,0,1,0
-PF_B_GAMEOPTIONS=B,prefbtn.png,115,272,0,0,GameOptions,0x1000,1
-PF_B_AUDIO=B,prefbtn.png,115,323,0,0,Audio,0x1000,1
-PF_B_VIDEO=B,prefbtn.png,115,374,0,0,Video,0x1000,1
-PF_B_CONTROLS=B,prefbtn.png,115,425,0,0,ControlsPrefs,0x1000,1
-PF_B_RETURNTOGAME=B,prefret.png,455,509,0,0,,0x1000,1
-PF_MOVIE=M,prefmov.mpg,0,0,0,250,250,0,0
+V1=GX,115
+V2=TCOLOR,0xFFFFDDc4
+V3=TEXTX,348
+PF_BACKGROUND=P,PF_BackGround.png,110,215,0,1,0,1,0
+PF_B_GAMEOPTIONS=B,PF_B_GameOptions.png,<GX>,272,0,0,GameOptions,0x1000,0,,,,,,
+PF_B_AUDIO=B,PF_B_Audio.png,<GX>,323,0,0,Audio,0x1000,0,,,,,,
+PF_B_VIDEO=B,PF_B_Video.png,<GX>,374,0,0,Video,0x1000,0,,,,,,,
+PF_B_CONTROLS=B,PF_B_Controls.png,<GX>,425,0,0,ControlsPrefs,0x1000,0,,,,,,
+PF_B_MAINMENU=B,PC_B_ReturnMainMenu.png,462,504,0,0,,,,,,,,,
+PF_B_RETURNTOGAME=B,GN_B_ReturnToGame.Png,455,509,0,0,,,,,,,,,
+PF_T_TITLE=T,IDS_PF_TITLE,122,228,50,200,28,0XFFC0BAAD,1
+PF_T_GODESC=T,IDS_PF_GO_DESC,<TEXTX>,284,0,<PF_DESCW>,<PF_DESCH>,<TCOLOR>,0
+PF_T_APDESC=T,IDS_PF_AUDIO_DESC,<TEXTX>,335,0,<PF_DESCW>,<PF_DESCH>,<TCOLOR>,0
+PF_T_VPDESC=T,IDS_PF_VIDEO_DESC,<TEXTX>,386,0,<PF_DESCW>,<PF_DESCH>,<TCOLOR>,0
+PF_T_CPDESC=T,IDS_PF_CONTROLS_DESC,<TEXTX>,437,0,<PF_DESCW>,<PF_DESCH>,<TCOLOR>,0
+PF_LOGO=P,MM_Logo.png,134,13,0,1,0,1,0
+MOVIE=M,CrimFlag.MPG,0,0,0,250,250,0,0
 
 [@GameOptions@]
 GO_BACKGROUND=P,goback.png,0,0,0,1,0,1,0
@@ -226,16 +243,19 @@ VI_BACKGROUND=P,viback.png,0,0,0,1,0,1,0
 CP_BACKGROUND=P,cpback.png,0,0,0,1,0,1,0
 ";
 
-/// The synthetic arts' extents — the retail rows' own sizes (`prefbtn`'s
-/// four 42-px state frames, `prefret`'s four 32-px ones).
+/// The synthetic arts' extents — the retail bitmaps' own sizes (the
+/// option strips' four 42-px state frames, the return strips' four 32-px
+/// ones).
 fn overlay_art_extent(art: &str) -> Option<(u32, u32)> {
     match art.to_ascii_lowercase().as_str() {
-        "prefback.png" | "goback.png" | "auback.png" | "viback.png" | "cpback.png" => {
+        "pf_background.png" | "goback.png" | "auback.png" | "viback.png" | "cpback.png" => {
             Some((566, 331))
         }
-        "preflogo.png" => Some((544, 240)),
-        "prefbtn.png" => Some((221, 168)),
-        "prefret.png" => Some((200, 128)),
+        "mm_logo.png" => Some((544, 240)),
+        "pf_b_gameoptions.png" | "pf_b_audio.png" | "pf_b_video.png" | "pf_b_controls.png" => {
+            Some((221, 168))
+        }
+        "pc_b_returnmainmenu.png" | "gn_b_returntogame.png" => Some((200, 128)),
         _ => None,
     }
 }
@@ -248,20 +268,27 @@ fn synthetic_overlay_source() -> PreferencesOverlaySource {
     let shell = MenuShell::build(&layout, &|art: &str| overlay_art_extent(art), &|_: &str| {
         None
     });
-    let artwork: BTreeMap<String, Artwork> =
-        ["prefback.png", "preflogo.png", "prefbtn.png", "prefret.png"]
-            .iter()
-            .enumerate()
-            .map(|(index, name)| {
-                let (width, height) =
-                    overlay_art_extent(name).expect("the named art has an extent");
-                let rgba = vec![index as u8 + 1; (width as usize) * (height as usize) * 4];
-                (
-                    (*name).to_owned(),
-                    Artwork::new(width, height, rgba).expect("artwork"),
-                )
-            })
-            .collect();
+    let artwork: BTreeMap<String, Artwork> = [
+        "pf_background.png",
+        "mm_logo.png",
+        "pf_b_gameoptions.png",
+        "pf_b_audio.png",
+        "pf_b_video.png",
+        "pf_b_controls.png",
+        "pc_b_returnmainmenu.png",
+        "gn_b_returntogame.png",
+    ]
+    .iter()
+    .enumerate()
+    .map(|(index, name)| {
+        let (width, height) = overlay_art_extent(name).expect("the named art has an extent");
+        let rgba = vec![index as u8 + 1; (width as usize) * (height as usize) * 4];
+        (
+            (*name).to_owned(),
+            Artwork::new(width, height, rgba).expect("artwork"),
+        )
+    })
+    .collect();
     PreferencesOverlaySource::from_shell(shell, artwork)
 }
 
@@ -476,9 +503,28 @@ fn accept_parity3_pause_map_02e_preferences_button_opens_the_settings_screen_and
                 "PF_B_CONTROLS",
                 "PF_B_RETURNTOGAME"
             ],
-            "the in-game page's own rows are drawn"
+            "the in-game page's own rows are drawn; the section's \
+             PF_B_MAINMENU stays hidden like the script's slot swap states"
+        );
+        assert!(overlay.skipped.is_empty(), "{:?}", overlay.skipped);
+        assert_eq!(
+            overlay.other_rows,
+            ["T"],
+            "the five text rows counted, never drawn: {:?}",
+            overlay.other_rows
         );
     }
+    assert_eq!(
+        app.world()
+            .resource::<PreferencesOverlaySource>()
+            .shell()
+            .section()
+            .expect("the open section")
+            .movies
+            .len(),
+        1,
+        "the CrimFlag.MPG backdrop row is counted, never drawn"
+    );
     assert!(
         overlay_parts(&mut app) > 0,
         "the settings screen's rows are on screen"
@@ -497,6 +543,20 @@ fn accept_parity3_pause_map_02e_preferences_button_opens_the_settings_screen_and
         Some(PauseReason::PlayerRequest)
     );
     assert_eq!(ticks(&app), frozen, "the clock stays frozen");
+
+    // A click where the hidden PF_B_MAINMENU sits (462,504 — inside its
+    // strip and outside Return to Game's) presses nothing: the out-of-game
+    // slot is dead like the slot swap leaves it.
+    click_at(&mut app, 500.0, 506.0);
+    run(&mut app, 2);
+    assert!(
+        app.world()
+            .resource::<PreferencesOverlay>()
+            .presses
+            .is_empty(),
+        "the hidden main-menu slot takes no press"
+    );
+    assert!(app.world().resource::<PreferencesOverlay>().open);
 
     // The settings screen's own return: its Return to Game row at its
     // authored rect's centre.
