@@ -16,6 +16,7 @@
 mod eh_frame_gate;
 mod campaign {
     mod accept_crash_c_crash_flow;
+    mod accept_crash_e_smoke;
     mod accept_m01_b_wake;
     mod common;
     mod f27_c_fx_render;
