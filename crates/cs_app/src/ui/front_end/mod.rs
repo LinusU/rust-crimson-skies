@@ -83,6 +83,7 @@
 //! for F45-D's.
 
 mod briefing;
+mod cabin;
 mod capture;
 mod flight_check_view;
 mod flow;
@@ -108,6 +109,10 @@ use cs_content::ui_layout::ScreenLayout;
 pub use briefing::{
     BriefingButton, BriefingPlayback, BriefingScene, BriefingSceneError, DESIGNED_LINE_HEIGHT,
     DrawnElement, ElementKind, PANEL_ELEMENT, SceneUnknown, Timeline, TimelineError, Track,
+};
+pub use cabin::{
+    CABIN_SECTION, CabinApplied, CabinError, CabinHub, HANGAR_COUNT, PIN_PANES, PLANE_PANE,
+    SAVE_BUTTON,
 };
 pub use capture::{
     Artwork, CapturedButton, SCREEN_CAPTURE_HEIGHT, SCREEN_CAPTURE_SURFACE, SCREEN_CAPTURE_WIDTH,
@@ -170,10 +175,10 @@ pub use start_flow::{
 };
 pub use window::{
     DEFAULT_FRONT_END_CAPTURE_DIR, FrontEndError, FrontEndRequest, FrontEndShellPlugin,
-    MIN_SHELL_SMOKE_SECONDS, PROFILE_DIR_ENV, PilotSetup, SMOKE_PROFILE_SUBDIR, ShellResource,
-    ShellShotRecord, ShellSmokeHandle, ShellSmokePlugin, ShellSmokeReport, headless_app,
-    headless_app_audio, headless_app_flow, headless_app_intro, headless_app_pilots, run_front_end,
-    shell_app,
+    MIN_SHELL_SMOKE_SECONDS, PROFILE_DIR_ENV, PilotSetup, SMOKE_PROFILE_SUBDIR, SMOKE_SCENE_ENV,
+    ShellResource, ShellShotRecord, ShellSmokeHandle, ShellSmokePlugin, ShellSmokeReport,
+    SmokeScene, headless_app, headless_app_audio, headless_app_flow, headless_app_intro,
+    headless_app_pilots, run_front_end, shell_app,
 };
 
 /// A front-end screen.

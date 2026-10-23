@@ -79,6 +79,7 @@ use bevy::time::TimeUpdateStrategy;
 use bevy::window::{CursorMoved, CursorOptions, PrimaryWindow};
 use cs_sim::cinematic_state::MediaFailure;
 
+use super::cabin::CabinHub;
 use super::intro::{self, IntroMovie, IntroState};
 use super::movie::{MovieBackdrop, movie_media};
 use super::original::script_member;
@@ -1506,10 +1507,40 @@ fn artwork_image(artwork: &Artwork) -> Image {
 
 // ----------------------------------------------------------------- smoke ---
 
+/// Which scripted pass a smoke run drives. The main menu's is the default; the
+/// cabin's (PARITY5-CABIN-INTRO.04) opens the start flow's `PassengerCabin`
+/// and is chosen by [`SMOKE_SCENE_ENV`], because `cli.rs` has no flag for it
+/// yet (the owner-command smoke of the whole flow is #1842).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SmokeScene {
+    /// The main-menu walk ([`script`]).
+    MainMenu,
+    /// The cabin hub's hover, press and focus pass ([`cabin_script`]).
+    Cabin,
+}
+
+/// The environment variable that selects [`SmokeScene::Cabin`] for
+/// `cs --cs-path <retail> --front-end --smoke-seconds <n> --capture-dir <dir>`:
+/// `cabin`. Any other value, or none, is the main-menu walk.
+pub const SMOKE_SCENE_ENV: &str = "CS_FRONT_END_SMOKE_SCENE";
+
+impl SmokeScene {
+    /// The scene the environment names.
+    #[must_use]
+    pub fn from_env() -> Self {
+        match std::env::var(SMOKE_SCENE_ENV) {
+            Ok(value) if value.trim().eq_ignore_ascii_case("cabin") => Self::Cabin,
+            _ => Self::MainMenu,
+        }
+    }
+}
+
 /// The smoke run, one resource: the collected data, the delivered shots,
 /// the remaining script and the static config.
 #[derive(Resource)]
 struct ShellSmoke {
+    /// Which scripted pass this is.
+    scene: SmokeScene,
     /// Rendered frames so far.
     frames: u32,
     /// Screenshots requested.
@@ -1687,8 +1718,41 @@ fn script() -> Vec<(u32, Step)> {
     steps
 }
 
+/// The deterministic pass over the cabin hub: settle → screenshot → hover
+/// Next Mission (rollover) → screenshot → press Previous Missions
+/// (depressed) → screenshot → slide off it and release (nothing activates) →
+/// `Down` three times (the focus walk) → screenshot. Next Mission is not
+/// pressed: that hands the process over to the mission.
+#[inline(always)]
+fn cabin_script() -> Vec<(u32, Step)> {
+    let at = |seconds: f64| (seconds * SMOKE_FRAME_HZ) as u32;
+    let mut steps = vec![
+        (at(0.6), Step::Shot("cabin")),
+        (at(0.9), Step::HoverButton("PC_B_NEWMISSION")),
+        (at(1.2), Step::Shot("cabin-hover")),
+        (at(1.5), Step::HoverButton("PC_B_PREVIOUS")),
+        (at(1.7), Step::Mouse(true)),
+        (at(1.9), Step::Shot("cabin-pressed")),
+        (at(2.1), Step::HoverButton("PC_B_PLANEX")),
+        (at(2.3), Step::Mouse(false)),
+    ];
+    for i in 0..3 {
+        steps.push((
+            at(2.6 + f64::from(i) * 0.2),
+            Step::Key(KeyCode::ArrowDown, true),
+        ));
+        steps.push((
+            at(2.65 + f64::from(i) * 0.2),
+            Step::Key(KeyCode::ArrowDown, false),
+        ));
+    }
+    steps.push((at(3.5), Step::Shot("cabin-focus")));
+    steps
+}
+
 /// The smoke run as a plugin.
 pub struct ShellSmokePlugin {
+    scene: SmokeScene,
     request: SmokeRequest,
     steps: Vec<(u32, Step)>,
     handle: ShellSmokeHandle,
@@ -1699,9 +1763,20 @@ impl ShellSmokePlugin {
     #[must_use]
     #[inline(always)]
     pub fn windowed(request: SmokeRequest) -> Self {
+        Self::windowed_scene(request, SmokeScene::MainMenu)
+    }
+
+    /// A windowed smoke for `request` driving `scene`.
+    #[must_use]
+    #[inline(always)]
+    pub fn windowed_scene(request: SmokeRequest, scene: SmokeScene) -> Self {
         Self {
+            scene,
             request,
-            steps: script(),
+            steps: match scene {
+                SmokeScene::MainMenu => script(),
+                SmokeScene::Cabin => cabin_script(),
+            },
             handle: ShellSmokeHandle::default(),
         }
     }
@@ -1717,6 +1792,7 @@ impl ShellSmokePlugin {
 impl Plugin for ShellSmokePlugin {
     fn build(&self, app: &mut App) {
         app.insert_resource(ShellSmoke {
+            scene: self.scene,
             frames: 0,
             shots_requested: 0,
             io_error: None,
@@ -1937,6 +2013,33 @@ fn evaluate(smoke: &ShellSmoke, run: &ShellRun, audio: Option<&MenuAudio>) -> Sh
             ));
         }
     }
+    if smoke.scene == SmokeScene::Cabin {
+        if run.visited != ["PassengerCabin"] {
+            failures.push(format!(
+                "the cabin pass visited {:?}; it opens the cabin and only hovers, presses and slides off",
+                run.visited
+            ));
+        }
+        if !run.hovered.iter().any(|id| id == "PC_B_NEWMISSION") {
+            failures.push("the pointer never hovered PC_B_NEWMISSION".to_owned());
+        }
+        if !run.depressed_seen {
+            failures.push("no button ever drew its depressed frame".to_owned());
+        }
+        if run.focus_moves < 3 {
+            failures.push(format!(
+                "focus moved only {} times (expected 3 Down presses)",
+                run.focus_moves
+            ));
+        }
+        if run.unhandled != 0 {
+            failures.push(format!(
+                "{} presses landed on buttons with no known effect (expected none)",
+                run.unhandled
+            ));
+        }
+        return smoke_report(smoke, run, shots, failures, Vec::new(), None);
+    }
     let expected = [
         "MainMenu",
         "Campaign",
@@ -2034,6 +2137,18 @@ fn evaluate(smoke: &ShellSmoke, run: &ShellRun, audio: Option<&MenuAudio>) -> Sh
             failures.push("the typed name never played the text-entry cue".to_owned());
         }
     }
+    smoke_report(smoke, run, shots, failures, audio_lines, audio)
+}
+
+/// The report of a finished pass.
+fn smoke_report(
+    smoke: &ShellSmoke,
+    run: &ShellRun,
+    shots: Vec<ShellShotRecord>,
+    failures: Vec<String>,
+    audio_lines: Vec<String>,
+    audio: Option<&MenuAudio>,
+) -> ShellSmokeReport {
     ShellSmokeReport {
         music_started: audio.is_some_and(MenuAudio::music_playing),
         audio: audio_lines,
@@ -2170,6 +2285,11 @@ fn json_f32(value: f32) -> String {
 pub fn shell_app(
     request: &FrontEndRequest,
 ) -> Result<(App, Option<ShellSmokeHandle>), FrontEndError> {
+    if request.smoke.is_some() && SmokeScene::from_env() == SmokeScene::Cabin {
+        let flow = StartFlow::after_mission(super::start_flow::MissionEnd::ReturnedToCabin)
+            .map_err(|refusal| FrontEndError::Exit(refusal.to_string()))?;
+        return shell_app_with(request, Some(flow));
+    }
     shell_app_with(request, None)
 }
 
@@ -2191,6 +2311,9 @@ pub(super) fn shell_app_with(
         &|section: &str| screens.script_text(&script_member(section)),
     );
     shell.carry_under(PILOT_SECTION, START_SECTION, PILOT_CARRIED_PANES);
+    // The cabin hub (#1840): a layout without the hangar art keeps the
+    // section as written.
+    let _ = CabinHub::NEW_PILOT.apply(&mut shell, &|art: &str| screens.art_extent(art));
     let entry = flow
         .as_ref()
         .and_then(StartFlow::section)
@@ -2268,8 +2391,13 @@ pub(super) fn shell_app_with(
         Some(flow) => plugin.with_flow(flow),
         None => plugin,
     });
+    let scene = if request.smoke.is_some() {
+        SmokeScene::from_env()
+    } else {
+        SmokeScene::MainMenu
+    };
     let handle = request.smoke.as_ref().map(|smoke| {
-        let plugin = ShellSmokePlugin::windowed(smoke.clone());
+        let plugin = ShellSmokePlugin::windowed_scene(smoke.clone(), scene);
         let handle = plugin.handle();
         app.add_plugins(plugin);
         handle
