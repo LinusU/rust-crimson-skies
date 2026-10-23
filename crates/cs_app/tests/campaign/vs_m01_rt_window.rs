@@ -305,6 +305,7 @@ pub(crate) fn synthetic_stage(scratch: &Path) -> MissionStage {
         flak_sound: None,
         weapon_counts: None,
         burst_puffs: None,
+        damage_trail: None,
         flak_effect: None,
         launch_cinematic: None,
         label: "SYNTHETIC MISSION COMPOSITION".to_owned(),

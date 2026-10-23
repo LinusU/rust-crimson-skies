@@ -288,6 +288,10 @@ pub struct MissionStage {
     /// #1806): the `large_black_smokeball` emitter and its decoded textures.
     /// `Some` only for M01's retail stage; `None` draws no burst puffs.
     pub burst_puffs: Option<super::burst_puffs::BurstPuffSource>,
+    /// The measured `dense_firetrail` a damaged player airframe leaves
+    /// (PARITY-M01-PLAYER-DAMAGE-TRAIL, #1700). `Some` only for M01's retail
+    /// stage; `None` draws no trail.
+    pub damage_trail: Option<super::damage_trail::DamageTrailSource>,
     /// The measured `flak_effect` a flak round's burst presents (FLAK-C3,
     /// #1885). `Some` only for M01's retail stage.
     pub flak_effect: Option<super::flak_burst_fx::FlakEffectDefinition>,
@@ -401,6 +405,8 @@ pub enum MissionCompositionError {
     WeaponCounts(WeaponCountsError),
     /// The burst puff emitter or its textures could not be measured.
     BurstPuffs(super::burst_puffs::BurstPuffError),
+    /// The damage trail effect or its textures could not be measured.
+    DamageTrail(super::damage_trail::DamageTrailError),
     /// The flak effect could not be measured.
     FlakEffect(super::flak_burst_fx::FlakEffectError),
     /// The mission's sound-group table or a member it names could not be read
@@ -454,6 +460,7 @@ impl fmt::Display for MissionCompositionError {
             Self::FlakSound(error) => write!(f, "{error}"),
             Self::WeaponCounts(error) => write!(f, "{error}"),
             Self::BurstPuffs(error) => write!(f, "{error}"),
+            Self::DamageTrail(error) => write!(f, "{error}"),
             Self::FlakEffect(error) => write!(f, "{error}"),
             Self::Audio(error) if error.code == crate::audio::CODE_CAPABILITY_ABSENT => write!(
                 f,
@@ -621,6 +628,14 @@ pub fn stage_for(
         Some(
             super::burst_puffs::measure_burst_puffs(install_root, "c3")
                 .map_err(MissionCompositionError::BurstPuffs)?,
+        )
+    } else {
+        None
+    };
+    let damage_trail = if plan.mission_dir.eq_ignore_ascii_case("zbd/c3/m01") {
+        Some(
+            super::damage_trail::measure_damage_trail(install_root, "c3")
+                .map_err(MissionCompositionError::DamageTrail)?,
         )
     } else {
         None
@@ -823,6 +838,7 @@ pub fn stage_for(
         flak_sound,
         weapon_counts,
         burst_puffs,
+        damage_trail,
         flak_effect,
         launch_cinematic,
         label: MISSION_COMPOSITION_LABEL.to_owned(),
@@ -1335,6 +1351,14 @@ fn add_composition(
         ));
     }
     app.add_plugins(crate::mission_session::MissionBurstPuffPlugin);
+    // PARITY-M01-PLAYER-DAMAGE-TRAIL (#1700): the fire and smoke trail of a
+    // damaged player airframe.
+    if let Some(trail) = &stage.damage_trail {
+        app.insert_resource(crate::mission_session::DamageTrailSourceResource(
+            trail.clone(),
+        ));
+    }
+    app.add_plugins(crate::mission_session::MissionDamageTrailPlugin);
     // FLAK-C3 (#1885): the flash, smoke ball and close-range flicker of a
     // flak round's burst.
     if let Some(effect) = &stage.flak_effect {

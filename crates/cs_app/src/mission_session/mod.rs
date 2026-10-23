@@ -102,6 +102,7 @@ mod cockpit_interior;
 mod compose;
 mod content;
 mod crash_flow;
+mod damage_trail;
 mod debrief;
 mod debrief_screen;
 mod evidence;
@@ -189,6 +190,13 @@ pub use content::{
     root_seed_from,
 };
 pub use crash_flow::{MissionCrashMessagePlugin, install_crash_flow, step_crash_sequence};
+pub use damage_trail::{
+    DAMAGE_TRAIL_DESIGN_CLAIM, DamageTrailArt, DamageTrailCursor, DamageTrailDefinition,
+    DamageTrailError, DamageTrailReport, DamageTrailSource, DamageTrailSourceResource,
+    MissionDamageTrailPlugin, TrailEmitter, TrailKind, TrailPuff, colour_at, frame_at,
+    measure_damage_trail, plan_emissions, plan_puff, read_damage_trail_definition,
+    trail_puff_position,
+};
 pub use debrief::{M01_CASH_EARNED_UNKNOWN_CLAIM, MissionDebrief, MissionTally, tally_player_gun};
 pub use debrief_screen::{
     Arg, DebriefArtwork, DebriefButton, DebriefFacts, DebriefPane, DebriefReadError,

@@ -44,6 +44,7 @@
 //! | `weapon_rounds_not_drawn` | no live round entity carries a mesh: the original's capture shows no tracer streaks |
 //! | `weapon_muzzle_flash_drawn` | every muzzle-effect record seen during the hold carries a drawn flash, and at least one was seen |
 //! | `weapon_rocket_launches` | `X` — the original's secondary-fire row — near a declared-hostile actor launches a rocket |
+//! | `damage_trail_drawn` | a test hit on the player's left wing node resolves and the airframe then draws smoke and fire trail puffs (#1700) |
 //! | `flak_turret_woken` | a sleeping flak turret (a world entry whose `WEAPON` reads as `wep_27`) is test-woken through the wake ledger's own matcher (#1887) |
 //! | `flak_turret_fired` | the woken turret's runtime fires the retail `wep_27` at the player |
 //! | `flak_burst_drawn` | a burst of the turret's round reaches the `flak_effect` presentation: flash light, smoke ball (FLAK-C3) |
@@ -316,6 +317,9 @@ pub const MIN_FLARE_QUAD_PIXELS: usize = 256;
 /// frozen frame's background is byte-identical outside the quads, so 4 still
 /// rejects sub-LSB noise and keeps every real texture pixel. **Designed.**
 const FLARE_PIXEL_DELTA: u8 = 4;
+/// Frames into the damage-trail phase at which its screenshot is requested:
+/// long enough after the test hit for the trail to have grown.
+const DAMAGE_TRAIL_SHOT_OFFSET: u32 = 90;
 /// Frames into the rocket phase at which its screenshot is requested.
 const ROCKET_SHOT_OFFSET: u32 = 80;
 /// Frames after the first burst puff is alive at which its screenshot is taken.
@@ -744,6 +748,23 @@ pub struct RocketMetrics {
     pub max_live_puffs: u32,
     /// The mission publisher's own rocket refusals, verbatim.
     pub refusals: Vec<String>,
+}
+
+/// What the damage-trail phase measured (PARITY-M01-PLAYER-DAMAGE-TRAIL,
+/// #1700): a designed test hit on the player's left wing through the damage
+/// authority, and the trail the airframe then drew.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct DamageTrailMetrics {
+    /// The test hit resolved against the player's `leftwingdamage` node.
+    pub hit_applied: bool,
+    /// Why the hit could not be applied, when it could not.
+    pub refusal: Option<String>,
+    /// Smoke puffs spawned.
+    pub smoke_spawned: u64,
+    /// Fire puffs spawned.
+    pub fire_spawned: u64,
+    /// Fixed passes that found a wing burning.
+    pub passes_burning: u64,
 }
 
 /// What the flak phase measured (FLAK-C5-SMOKE, #1887): a test-woken flak
@@ -1181,6 +1202,8 @@ pub struct SmokeMeasurements {
     pub rocket: RocketMetrics,
     /// The woken flak turret phase (FLAK-C5-SMOKE, #1887).
     pub flak: FlakMetrics,
+    /// The damage trail phase (PARITY-M01-PLAYER-DAMAGE-TRAIL, #1700).
+    pub damage_trail: DamageTrailMetrics,
     /// The audio probes.
     pub audio: AudioMetrics,
     /// The trigger approach.
@@ -1591,6 +1614,30 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
         } else {
             "the turret never went live, so nothing could fire".to_owned()
         },
+    });
+    checks.push(Check {
+        id: "damage_trail_drawn".to_owned(),
+        applies: m.damage_trail.hit_applied || m.damage_trail.refusal.is_some(),
+        passed: m.damage_trail.hit_applied
+            && m.damage_trail.smoke_spawned > 0
+            && m.damage_trail.fire_spawned > 0,
+        detail: format!(
+            "a test hit on the player's left wing node {}; the airframe then drew {} smoke \
+             and {} fire trail puffs over {} burning pass(es) (PARITY-M01-PLAYER-DAMAGE-TRAIL \
+             #1700){}",
+            if m.damage_trail.hit_applied {
+                "resolved"
+            } else {
+                "did not resolve"
+            },
+            m.damage_trail.smoke_spawned,
+            m.damage_trail.fire_spawned,
+            m.damage_trail.passes_burning,
+            m.damage_trail
+                .refusal
+                .as_deref()
+                .map_or_else(String::new, |why| format!(": {why}")),
+        ),
     });
     checks.push(Check {
         id: "flak_burst_drawn".to_owned(),
@@ -2619,6 +2666,10 @@ enum Phase {
     /// turret, stand the player in its field of fire and photograph the
     /// `wep_27` burst the production turret path presents.
     Flak,
+    /// The damage trail (PARITY-M01-PLAYER-DAMAGE-TRAIL, #1700): hit the
+    /// player's left wing through the damage authority, fly on and
+    /// photograph the fire and smoke trail the airframe leaves.
+    DamageTrail,
     /// The `F1` keymap overlay: open it over the flight view, photograph it,
     /// close it (#1739).
     Help,
@@ -2834,6 +2885,13 @@ struct FlakParams<'w> {
     flak_fx: Option<Res<'w, FlakBurstFxReport>>,
     /// The tick the wake is recorded at.
     tick_ledger: Option<Res<'w, PhysicsTickLedger>>,
+    /// The session's damage authority: the damage-trail phase hits the
+    /// player's left wing through it (#1700).
+    damage: Option<ResMut<'w, crate::weapons::SessionDamageResolver>>,
+    /// The session's player actor, the hit's victim.
+    weapons: Option<Res<'w, super::MissionWeapons>>,
+    /// What the damage trail has drawn.
+    trail: Option<Res<'w, super::damage_trail::DamageTrailReport>>,
 }
 
 /// The sun-aim phase's reads — the drawn flare, the camera `place_flares`
@@ -4143,6 +4201,32 @@ fn smoke_script(
             }
             let tail_taken = data.flak_tail_shot_frame.is_some_and(|shot| frame > shot);
             if at >= FLAK_BUDGET_FRAMES || tail_taken {
+                data.phase = Phase::DamageTrail;
+                data.phase_start = frame + 1;
+            }
+        }
+        // PARITY-M01-PLAYER-DAMAGE-TRAIL (#1700): the scripted run never
+        // damages the player, so the phase hits the left wing through the
+        // damage authority (a test hit, listed in the report), lets the
+        // airframe fly on and photographs the trail it leaves.
+        Phase::DamageTrail => {
+            if let Some(trail) = flak.trail.as_deref() {
+                data.measurements.damage_trail.smoke_spawned = trail.smoke_spawned;
+                data.measurements.damage_trail.fire_spawned = trail.fire_spawned;
+                data.measurements.damage_trail.passes_burning = trail.passes_burning;
+            }
+            if at == 0 {
+                data.measurements.damage_trail.refusal = apply_trail_test_hit(
+                    flak.damage.as_deref_mut(),
+                    flak.weapons.as_deref(),
+                    flak.tick_ledger.as_deref(),
+                )
+                .err();
+                data.measurements.damage_trail.hit_applied =
+                    data.measurements.damage_trail.refusal.is_none();
+            } else if at == DAMAGE_TRAIL_SHOT_OFFSET {
+                due.push("damage_trail".to_owned());
+            } else if at >= DAMAGE_TRAIL_SHOT_OFFSET + 4 {
                 data.phase = Phase::Help;
                 data.phase_start = frame + 1;
             }
@@ -4946,6 +5030,38 @@ fn wake_and_place_flak(
 
 /// Reads the turret runtime's and the `flak_effect` presentation's counters
 /// into the phase's measurements, every frame the phase runs.
+/// Hits the player's left wing region through the damage authority: the
+/// smoke's test hit, a quarter of the designed region pool.
+fn apply_trail_test_hit(
+    damage: Option<&mut crate::weapons::SessionDamageResolver>,
+    weapons: Option<&super::MissionWeapons>,
+    ledger: Option<&PhysicsTickLedger>,
+) -> Result<(), String> {
+    use cs_sim::damage::{DamageChannel, DamageNodeKey, HitEvent, HitEventId};
+    let damage = damage.ok_or("no session damage authority")?;
+    let player = weapons.ok_or("no mission weapons session")?.player();
+    let tick = cs_types::Tick(ledger.map_or(0, |l| l.ticks));
+    let event = HitEvent::try_new(
+        HitEventId {
+            session: player.session,
+            tick,
+            producer: 998,
+            sequence: 0,
+        },
+        None,
+        player,
+        DamageNodeKey::new("leftwingdamage").map_err(|e| e.to_string())?,
+        DamageChannel::Internal,
+        super::DESIGNED_REGION_INTEGRITY / 4.0,
+    )
+    .map_err(|e| e.to_string())?;
+    damage
+        .resolver_mut()
+        .resolve(tick, &[event])
+        .map(|_| ())
+        .map_err(|e| e.to_string())
+}
+
 fn update_flak_metrics(
     data: &mut SmokeData,
     fire: Option<&MissionTurretFire>,

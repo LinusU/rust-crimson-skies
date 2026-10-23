@@ -234,6 +234,7 @@ mod accept_parity6_m01_audio_04_rattle_and_sequences;
 mod accept_parity6_m01_audio_07_burst_triggers;
 mod accept_parity_m01_lc_letterbox;
 mod accept_parity_m01_player_damage_graph;
+mod accept_parity_m01_player_damage_trail;
 mod accept_parity_m01_player_view;
 mod accept_parity_m01_player_view_c;
 mod accept_parity_m01_player_view_c1;
