@@ -11,7 +11,10 @@
 //!    [`DeviceEvent::Removed`],
 //! 2. reads the keyboard, mouse and gamepad state into one
 //!    [`DeviceEvent::KeyboardFrame`] / [`DeviceEvent::MouseFrame`] /
-//!    [`DeviceEvent::GamepadFrame`] per device,
+//!    [`DeviceEvent::GamepadFrame`] per device, and appends the HID joystick's
+//!    events when [`HostJoystickPlugin`](super::hid::HostJoystickPlugin) runs
+//!    (SIDEWINDER-FFB2, #1968) — Bevy's own gamepad for that same device is
+//!    skipped, so one stick is one input source,
 //! 3. forwards the window's focus to [`InputSession::set_focus`],
 //! 4. converts the frame's real wall time into committed fixed ticks with a
 //!    real [`SimClock`] and calls [`InputSession::pump_frame`], and
@@ -64,6 +67,7 @@ use cs_types::input::{
 };
 
 use super::devices::{DeviceEvent, DeviceLoss};
+use super::hid::HostJoysticks;
 use super::session::{FrameInput, FrameOutcome, InputFault, InputSession, UiRequest};
 
 /// Pixels of cursor motion in one frame that report a full deflection.
@@ -386,9 +390,19 @@ pub(crate) fn pump_platform_input(
     scroll: Option<Res<AccumulatedMouseScroll>>,
     pads: Query<(Entity, &Gamepad)>,
     mut focus: MessageReader<WindowFocused>,
+    mut joysticks: Option<ResMut<HostJoysticks>>,
 ) {
     let platform = &mut *platform;
     let mut events = Vec::new();
+    if let Some(joysticks) = joysticks.as_mut() {
+        joysticks.drain(&mut platform.session);
+    }
+    // Bevy's gamepad for the device the HID seam reads is not a second source.
+    let owned = |pad: &Gamepad| {
+        joysticks
+            .as_ref()
+            .is_some_and(|j| j.owns_model(pad.vendor_id(), pad.product_id()))
+    };
 
     if platform.keyboard.is_none() && keys.is_some() {
         let device = DeviceId::enumeration_fallback(DeviceClass::Keyboard, 0);
@@ -410,7 +424,7 @@ pub(crate) fn pump_platform_input(
     // A gamepad entity that vanished was removed; one that is new is connected.
     let mut removed = Vec::new();
     platform.pads.retain(|(entity, device)| {
-        let present = pads.get(*entity).is_ok();
+        let present = pads.get(*entity).is_ok_and(|(_, pad)| !owned(pad));
         if !present {
             removed.push(device.clone());
         }
@@ -419,8 +433,8 @@ pub(crate) fn pump_platform_input(
     for device in removed {
         events.push(DeviceEvent::Removed { device });
     }
-    for (entity, _) in &pads {
-        if platform.pads.iter().all(|(known, _)| *known != entity) {
+    for (entity, pad) in &pads {
+        if !owned(pad) && platform.pads.iter().all(|(known, _)| *known != entity) {
             let device = DeviceId::enumeration_fallback(DeviceClass::Gamepad, platform.next_pad);
             platform.next_pad += 1;
             platform.name_device(&device, "gamepad");
@@ -494,6 +508,10 @@ pub(crate) fn pump_platform_input(
                 .collect(),
             axes,
         });
+    }
+
+    if let Some(joysticks) = joysticks.as_mut() {
+        events.extend(joysticks.take_events());
     }
 
     for message in focus.read() {
