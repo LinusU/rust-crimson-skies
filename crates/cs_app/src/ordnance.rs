@@ -42,7 +42,7 @@
 //! repairs — the area effect whose radius no production path reads is named,
 //! not silently implemented.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 
 use bevy::ecs::component::Component;
 use cs_content::ordnance::{
@@ -63,8 +63,6 @@ use cs_sim::weapons::{
 };
 use cs_types::content::{ContentId, Known, Resolved};
 use cs_types::evidence::ClaimId;
-
-use std::collections::BTreeMap;
 
 use avian3d::prelude::LinearVelocity;
 use bevy::prelude::{ChildOf, Entity, Transform, World};

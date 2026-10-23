@@ -232,9 +232,9 @@ fn ordnance(app: &App) -> Option<&MissionOrdnanceReport> {
     app.world().get_resource::<MissionOrdnanceReport>()
 }
 
-/// Every ordnance tick's records merged into one view. The report covers a
-/// single tick — a launch and the detonation it causes are ticks apart — so
-/// a test that waits for a kill drains each frame's report into this.
+/// The accumulating ordnance report's latest fold, mirrored so a test that
+/// waits for a kill can read mid-loop what the session recorded so far —
+/// a launch and the detonation it causes are ticks apart.
 #[derive(Debug, Default)]
 struct OrdnanceLog {
     launches: Vec<MissionOrdnanceLaunch>,
@@ -246,13 +246,11 @@ struct OrdnanceLog {
 
 fn drain(app: &App, log: &mut OrdnanceLog) {
     if let Some(report) = ordnance(app) {
-        log.launches.extend(report.launches.iter().cloned());
-        log.orders_refused
-            .extend(report.orders_refused.iter().cloned());
-        log.detonations.extend(report.detonations.iter().cloned());
-        log.routing_refused
-            .extend(report.routing_refused.iter().cloned());
-        log.expired.extend(report.expired.iter().cloned());
+        log.launches.clone_from(&report.launches);
+        log.orders_refused.clone_from(&report.orders_refused);
+        log.detonations.clone_from(&report.detonations);
+        log.routing_refused.clone_from(&report.routing_refused);
+        log.expired.clone_from(&report.expired);
     }
 }
 

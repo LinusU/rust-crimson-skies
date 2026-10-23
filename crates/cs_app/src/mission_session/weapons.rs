@@ -1267,16 +1267,16 @@ pub struct MissionOrdnanceOrders {
 /// and moves `at` forward.
 #[derive(Resource, Clone, Debug, Default, PartialEq)]
 pub struct MissionOrdnanceReport {
-    /// The tick the report covers, when a step ran.
+    /// The last committed ordnance tick the report folded in, when a step ran.
     pub at: Option<Tick>,
-    /// The launches ordered this tick: the selected target and the node
-    /// each engagement named, in mint order.
+    /// The launches ordered so far: the selected target and the node each
+    /// engagement named, in mint order.
     pub launches: Vec<MissionOrdnanceLaunch>,
     /// Launch orders the ordnance step refused, verbatim.
     pub orders_refused: Vec<String>,
     /// The items the step accepted, in launch order.
     pub projectiles: Vec<ProjectileId>,
-    /// One entry per detonation the tick routed.
+    /// One entry per detonation routed so far.
     pub detonations: Vec<MissionOrdnanceDetonation>,
     /// Triggered items whose routing refused, verbatim.
     pub routing_refused: Vec<String>,
