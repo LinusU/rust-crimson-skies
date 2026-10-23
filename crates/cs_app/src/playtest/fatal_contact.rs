@@ -33,6 +33,7 @@ use avian3d::prelude::{
 use bevy::prelude::{
     Component, Entity, Message, MessageWriter, Or, Quat, Query, Res, ResMut, Resource, Vec3, With,
 };
+use cs_content::world::WorldCollisionRole;
 use cs_sim::collision::CollisionLayer;
 use cs_sim::contact_response::crash_damage;
 use cs_sim::damage::{DamageChannel, DamageNodeKey, HitEvent};
@@ -48,6 +49,7 @@ use crate::mission_session::{
 };
 use crate::physics::{ContactReports, PhysicsTickLedger};
 use crate::weapons::SessionDamageResolver;
+use crate::world::WorldColliderInstance;
 
 /// The producer serial of the crash hits (the mission's 201..=205 are taken).
 pub const MISSION_CRASH_PRODUCER: u32 = 206;
@@ -198,11 +200,20 @@ pub struct TerrainContactJudged {
 }
 
 /// The bodies a contact counts as terrain: the slab, the sea or the original
-/// area's scenery.
+/// area's scenery, and the imported world's colliders — in a composed mission
+/// the island, the plateau and the sea surface the aircraft bounces off all
+/// live on one static `WorldColliderInstance` mesh body, which is the only
+/// terrain a mission flight can reach (finding
+/// `2026-10-23-crash-e-01-world-collider-is-terrain.md`).
+///
+/// A world collider counts only while its declared role is
+/// [`WorldCollisionRole::Solid`]: a `Sensor` volume reports the overlap and
+/// never blocks, so flying through one can never be a fatal terrain contact.
 type TerrainFilter = Or<(
     With<PlaytestGround>,
     With<PlaytestSea>,
     With<PlaytestAreaBody>,
+    With<WorldColliderInstance>,
 )>;
 
 /// `-dot(normalize(velocity), normal)`, 0 for a body at rest.
@@ -221,7 +232,7 @@ pub fn judge_terrain_contacts(
     reports: Res<ContactReports>,
     ledger: Res<PhysicsTickLedger>,
     collisions: Collisions,
-    terrain: Query<(), TerrainFilter>,
+    terrain: Query<Option<&WorldColliderInstance>, TerrainFilter>,
     mut aircraft: Query<
         (
             Entity,
@@ -265,7 +276,10 @@ pub fn judge_terrain_contacts(
             let Some(other) = report.bodies.into_iter().find(|body| *body != entity) else {
                 continue;
             };
-            if !terrain.contains(other) {
+            let Ok(world_collider) = terrain.get(other) else {
+                continue;
+            };
+            if world_collider.is_some_and(|c| c.role() != WorldCollisionRole::Solid) {
                 continue;
             }
             let Some((normal, point)) = terrain_contact(&collisions, entity, other) else {

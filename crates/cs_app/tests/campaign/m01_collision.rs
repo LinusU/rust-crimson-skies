@@ -9,10 +9,16 @@
 //! would close it. A cause task that lands moves the pins with it.
 use std::path::PathBuf;
 
+use avian3d::prelude::{AngularVelocity, LinearVelocity, Position, RigidBody, Rotation};
 use bevy::prelude::*;
 use cs_app::mission_launch::plan_mission_launch;
 use cs_app::mission_session::{MissionPlayerBody, build_headless, stage_for, teardown};
 use cs_app::playtest::PlaytestState;
+use cs_app::playtest::fatal_contact::{
+    CrashSequence, FailureCause, FatalContactRule, PlayerCrashed, TerrainContactJudged,
+};
+use cs_app::world::WorldColliderInstance;
+use cs_content::world::WorldCollisionRole;
 
 use crate::campaign::common::label;
 
@@ -35,13 +41,16 @@ const MEASURED: [(usize, [f64; 3], Option<f64>); 11] = [
 const SECONDS: usize = 80;
 
 /// One sample per simulated second: position, speed, ground and obstacle
-/// contact counts, resets.
+/// contact counts, resets, and the contacts the fatal rule judged so far.
 struct Sample {
     p: Vec3,
     speed: f32,
     ground: u64,
     obstacle: u64,
     resets: u32,
+    judged: u64,
+    hull_damage: f64,
+    crashed: bool,
 }
 
 fn fly() -> Vec<Sample> {
@@ -50,8 +59,18 @@ fn fly() -> Vec<Sample> {
     let stage = stage_for(&root, &plan).expect("stage");
     let mut app = build_headless(&stage).expect("M01 composes");
     let mut samples = Vec::new();
+    let mut judged = 0_u64;
+    let mut hull_damage = 0.0_f64;
     for f in 0..=SECONDS * 60 {
         app.update();
+        for message in app
+            .world()
+            .resource::<Messages<TerrainContactJudged>>()
+            .iter_current_update_messages()
+        {
+            judged += 1;
+            hull_damage += message.damage;
+        }
         if f % 60 == 0 {
             let e = app
                 .world_mut()
@@ -68,6 +87,9 @@ fn fly() -> Vec<Sample> {
                 ground: state.ground_contacts,
                 obstacle: state.obstacle_contacts,
                 resets: state.resets,
+                judged,
+                hull_damage,
+                crashed: app.world().contains_resource::<CrashSequence>(),
             });
         }
     }
@@ -89,7 +111,7 @@ fn accept_parity4_m01_collision_no_input_trajectory_is_pinned() {
             + (o.p.z as f64 - m[2]).powi(2))
         .sqrt();
         report += &format!(
-            "t={t:>2} ours=({:.1}, {:.1}, {:.1}) {:.1} m/s  measured=({:.1}, {:.1}, {:.1}) {} m/s  off={d:.0} m  ground={} obstacle={}\n",
+            "t={t:>2} ours=({:.1}, {:.1}, {:.1}) {:.1} m/s  measured=({:.1}, {:.1}, {:.1}) {} m/s  off={d:.0} m  ground={} obstacle={} judged={} hull={:.0} crashed={}\n",
             o.p.x,
             o.p.y,
             o.p.z,
@@ -99,7 +121,10 @@ fn accept_parity4_m01_collision_no_input_trajectory_is_pinned() {
             m[2],
             speed.map_or("-".into(), |v| format!("{v:.1}")),
             o.ground,
-            o.obstacle
+            o.obstacle,
+            o.judged,
+            o.hull_damage,
+            o.crashed
         );
     }
     println!("{report}");
@@ -151,4 +176,127 @@ fn accept_parity4_m01_collision_no_input_trajectory_is_pinned() {
             "t={t} now agrees with the measured altitude: {report}"
         );
     }
+    // PARITY4-CRASH-E.01 (#1983): the contacts are judged and do damage now.
+    // Nine episodes by t=80 — six on the world collider (the graze over the
+    // island's high ground at t=50 and the pushes into the stopped shore at
+    // t=69.6..71), three on the sea tiles of the skim at t=54.5..58.6 — spend
+    // 1049 of the designed 1200 hull. The pool holds, so the flight is never
+    // crashed and the trajectory above is the unchanged one.
+    assert_eq!(
+        (at(60).judged, at(70).judged, at(SECONDS).judged),
+        (4, 6, 9),
+        "{report}"
+    );
+    assert!(
+        (at(60).hull_damage - 400.0).abs() < 1.0
+            && (at(70).hull_damage - 715.7).abs() < 1.0
+            && (at(SECONDS).hull_damage - 1049.0).abs() < 1.0,
+        "{report}"
+    );
+    assert!(s.iter().all(|x| !x.crashed), "{report}");
+}
+
+/// PARITY4-CRASH-E.01 (#1983): in the composed mission the aircraft's terrain
+/// is the imported world's own colliders — one `WorldColliderInstance`
+/// `Solid` mesh body at the origin carries the island, the plateau and the
+/// sea the no-input flight skims. A dive into it is judged like any other
+/// terrain contact and, once the designed hull pool is spent, ends in the
+/// crash sequence; before the terrain filter named world colliders, the same
+/// contacts were silent bounces (the #1857 logging, finding
+/// `2026-10-23-crash-e-01-world-collider-is-terrain.md`).
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_crash_e1_a_dive_into_the_world_collider_is_judged_and_fatal() {
+    let root = PathBuf::from(std::env::var("CS_GAME_DIR").expect("CS_GAME_DIR"));
+    let plan = plan_mission_launch(&root, label("M01"), "The Lost Treasure").expect("plan");
+    let stage = stage_for(&root, &plan).expect("stage");
+    let mut app = build_headless(&stage).expect("M01 composes");
+    for _ in 0..10 {
+        app.update();
+    }
+    let player = app
+        .world_mut()
+        .query_filtered::<Entity, With<MissionPlayerBody>>()
+        .single(app.world())
+        .expect("the player body");
+
+    // The placement the #1857 crash smoke makes, steeper: same point lifted
+    // 400 m over the sea, same heading, the nose put straight down and the
+    // original's nose-down key (ArrowUp, flight command 1) held so the law
+    // keeps the dive instead of levelling the stickless aircraft off.
+    let mut entity = app.world_mut().entity_mut(player);
+    let from = entity.get::<Position>().unwrap().0;
+    let (yaw, _, _) = entity.get::<Rotation>().unwrap().0.to_euler(EulerRot::YXZ);
+    let dive = Quat::from_euler(EulerRot::YXZ, yaw, -std::f32::consts::FRAC_PI_2, 0.0);
+    entity.get_mut::<Position>().unwrap().0 = Vec3::new(from.x, 400.0, from.z);
+    entity.get_mut::<Rotation>().unwrap().0 = dive;
+    entity.get_mut::<Transform>().unwrap().rotation = dive;
+    entity.get_mut::<LinearVelocity>().unwrap().0 = dive * Vec3::NEG_Z * 110.0;
+    entity.get_mut::<AngularVelocity>().unwrap().0 = Vec3::ZERO;
+    app.world_mut()
+        .resource_mut::<ButtonInput<KeyCode>>()
+        .press(KeyCode::ArrowUp);
+
+    let mut judged = Vec::new();
+    let mut crashed_msgs = Vec::new();
+    let mut frames = 0;
+    while frames < 3600 && !app.world().contains_resource::<CrashSequence>() {
+        app.update();
+        frames += 1;
+        judged.extend(
+            app.world()
+                .resource::<Messages<TerrainContactJudged>>()
+                .iter_current_update_messages()
+                .copied(),
+        );
+        crashed_msgs.extend(
+            app.world()
+                .resource::<Messages<PlayerCrashed>>()
+                .iter_current_update_messages()
+                .copied(),
+        );
+    }
+
+    assert!(
+        !judged.is_empty(),
+        "a dive into the world's own collider was never judged a terrain \
+         contact after {frames} frames"
+    );
+    assert!(
+        judged.iter().all(|j| j.aircraft == player),
+        "a judged contact names another aircraft: {judged:?}"
+    );
+    let last = judged.last().unwrap();
+    assert!(
+        last.fatal,
+        "the contacts did not empty the hull pool: {judged:?}"
+    );
+    assert!(
+        app.world().contains_resource::<CrashSequence>(),
+        "no crash sequence after {frames} frames ({} contacts judged)",
+        judged.len()
+    );
+    assert_eq!(crashed_msgs.len(), 1, "one crash message: {crashed_msgs:?}");
+
+    // The fatal contact names the world collider itself, not a playtest slab,
+    // and the message's record is the one stamped on the aircraft.
+    let crash = crashed_msgs[0].crash;
+    assert_eq!(
+        app.world().get::<FatalContactRule>(player).unwrap().crash,
+        Some(crash)
+    );
+    let FailureCause::TerrainContact {
+        terrain, severity, ..
+    } = crash.cause;
+    assert!(severity > 0.0);
+    let collider = app
+        .world()
+        .get::<WorldColliderInstance>(terrain)
+        .expect("the fatal terrain is an imported world collider");
+    assert_eq!(collider.role(), WorldCollisionRole::Solid);
+    assert_eq!(
+        *app.world().get::<RigidBody>(terrain).unwrap(),
+        RigidBody::Static
+    );
+    teardown(&mut app);
 }
