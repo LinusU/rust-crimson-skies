@@ -275,6 +275,7 @@ mod f39_e3_evidence;
 mod f50_b;
 mod f50_c;
 mod f50_e4;
+mod flak_c_burst_effect_parts_static;
 mod identity;
 mod inventory;
 mod m01_a;
