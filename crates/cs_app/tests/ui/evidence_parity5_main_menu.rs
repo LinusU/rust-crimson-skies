@@ -59,8 +59,7 @@ const ACCEPTANCE_PREFIX: &str = "accept_parity5_main_menu_";
 const RETAIL_TEST: &str =
     "accept_parity5_main_menu_retail_the_pilot_page_stands_on_the_logo_and_flag";
 
-/// The windowed test: drives `cs --front-end --smoke-seconds` on a GPU and the
-/// machine's real audio output.
+/// The windowed test: drives `cs --front-end --smoke-seconds` on a GPU.
 const WINDOWED_TEST: &str =
     "accept_parity5_main_menu_the_windowed_smoke_shows_the_flag_behind_the_pilot_page";
 
@@ -188,7 +187,7 @@ fn evidence_report_parity5_main_menu_writes_the_acceptance_report() {
          \"engine\": {},\n \"created_at\": {},\n \"command\": {{\"argv\": {}, \"cwd\": {}, \
          \"exit_code\": {}}},\n \"source\": {{\"install_sha256\": {}, \"content_sha256\": {}}},\n \
          \"seed\": 0,\n \"ticks\": {{\"start\": 0, \"end\": {frames}}},\n \"overrides\": {},\n \
-         \"capabilities\": [\"retail\", \"gpu\", \"audio\", \"synthetic\"],\n \"tests\": {{\"discovered\": {}, \
+         \"capabilities\": [\"retail\", \"gpu\", \"synthetic\"],\n \"tests\": {{\"discovered\": {}, \
          \"executed\": {}, \"passed\": {}, \"failed\": {}, \"ignored\": {}}},\n \"assertions\": \
          [{}],\n \"artifacts\": [{}],\n \"unknowns\": [],\n \"review\": {{\"identity\": {}, \
          \"method\": {}}},\n \"claim\": \"implemented\"\n}}\n",
