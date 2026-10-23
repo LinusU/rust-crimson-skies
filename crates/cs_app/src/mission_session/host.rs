@@ -1129,6 +1129,14 @@ impl MissionHost {
             .get_resource::<PlaytestState>()
             .is_some_and(|state| state.paused);
 
+        // The gameplay clock — objective timers and the control program's
+        // lifecycle clock — does not run while the player has no control: the
+        // launch cinematic owns that stretch, and the crew's opening speech is
+        // `OBJECTIVE1`'s two-second wake counted from the hand-over (task
+        // #2010). Animations, markers and the sound cues of the cinematic
+        // itself keep stepping on the tick; only the clock is held.
+        let clock_held = paused || super::launch_cinematic::launch_cinematic_playing(world);
+
         // 1. Environment: the pause reaches the authored weather first, then
         //    the frame's elapsed advances it.
         self.environment.set_paused(paused);
@@ -1156,7 +1164,7 @@ impl MissionHost {
         //    A paused frame commits zero gameplay ticks, so the objective
         //    session's timers do not advance while the playtest is paused.
         let input = TickInput {
-            committed_ticks: if paused { 0 } else { 1 },
+            committed_ticks: if clock_held { 0 } else { 1 },
             ..TickInput::at(tick)
         };
         let composed = step_mission_animations(
@@ -1202,9 +1210,11 @@ impl MissionHost {
         //    elapsed this step covers, before the control program reads the
         //    fresh lifecycle rows — a paused frame covers no gameplay time,
         //    so its mission clock does not advance.
-        let lifecycles_advanced =
-            self.lifecycles
-                .advance(if paused { 0.0 } else { elapsed.as_secs_f64() });
+        let lifecycles_advanced = self.lifecycles.advance(if clock_held {
+            0.0
+        } else {
+            elapsed.as_secs_f64()
+        });
 
         // 6. Script host: the production fact fold over the fresh lifecycle
         //    rows, then the program's own answer for this tick; the
