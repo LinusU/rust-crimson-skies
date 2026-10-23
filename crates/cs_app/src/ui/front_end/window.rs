@@ -822,8 +822,10 @@ fn spawn_movies(world: &mut World, state: &mut ShellResource, view: &ShellView, 
         // The first decoded frame lands before the sprite exists, so the
         // texture never shows a black first frame.
         let _ = backdrop.update(now);
+        let rect = backdrop.rect();
+        let visible = rect.clip(SECTION_SURFACE).is_some();
         record(format!(
-            "{} {}x{} @{:.2} fps, loops {}",
+            "{} {}x{} @{:.2} fps, loops {}{}",
             movie.file,
             backdrop.extent().0,
             backdrop.extent().1,
@@ -832,9 +834,16 @@ fn spawn_movies(world: &mut World, state: &mut ShellResource, view: &ShellView, 
                 "continuous".to_owned()
             } else {
                 movie.loops.to_string()
+            },
+            if visible {
+                ""
+            } else {
+                ", off-surface (not drawn)"
             }
         ));
-        let rect = backdrop.rect();
+        if !visible {
+            continue;
+        }
         let scale = (movie.scale_x, movie.scale_y);
         let pixels = if backdrop.pixels().is_empty() {
             vec![0; backdrop.extent().0 as usize * backdrop.extent().1 as usize * 4]
