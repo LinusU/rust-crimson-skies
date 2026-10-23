@@ -816,6 +816,9 @@ USAGE
 OPTIONS
     -h, --help   Print this help text and exit 0
     -V, --version   Print the version and exit 0
+    --hd <dir>   Draw textures from the HD pack in <dir> (the unextracted
+        crimson_hd_chosen_*_textures.zip files of crimson-texture-upscale)
+        where it has a replacement; works with every run mode
 
 SYNTHETIC SMOKE
     --synthetic --headless --ticks <n>

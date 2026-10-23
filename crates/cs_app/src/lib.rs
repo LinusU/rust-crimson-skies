@@ -732,6 +732,7 @@ pub mod diagnostics;
 pub mod engine_facts;
 pub mod environment;
 pub mod force_feedback;
+pub mod hd_textures;
 pub mod input;
 pub mod interaction;
 pub mod livery;

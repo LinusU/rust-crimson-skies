@@ -332,6 +332,10 @@ impl PlaytestTextureArchive {
             .catalog
             .decode(&self.session, &resolved)
             .map_err(|error| (error.to_string(), "texture_not_decoded"))?;
+        // `--hd`: the original resolved and decoded, so only its pixels change.
+        let image = crate::hd_textures::pack()
+            .and_then(|pack| pack.world_decoded(&self.group, &projected, &image))
+            .unwrap_or(image);
         Ok((resolved.id().clone(), image))
     }
 }
@@ -1025,6 +1029,9 @@ pub(crate) fn to_bevy_image(decoded: &DecodedImage) -> (Image, u32, Option<&'sta
         mipmap_filter: ImageFilterMode::Nearest,
         ..ImageSamplerDescriptor::default()
     });
+    if crate::hd_textures::pack().is_some() {
+        crate::hd_textures::add_mips(&mut image);
+    }
     (image, translucent, note)
 }
 

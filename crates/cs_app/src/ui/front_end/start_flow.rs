@@ -716,6 +716,7 @@ pub fn handover_args(request: &StartFlowRequest, mission: &str) -> Vec<String> {
             "--smoke-start-flow".to_owned(),
         ]);
     }
+    crate::hd_textures::forward_flag(&mut args);
     args
 }
 
@@ -749,6 +750,7 @@ pub fn return_args_smoke(
             root.display().to_string(),
         ]);
     }
+    crate::hd_textures::forward_flag(&mut args);
     args
 }
 

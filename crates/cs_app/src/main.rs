@@ -15,7 +15,27 @@ use cs_app::playtest;
 use cs_app::run;
 
 fn main() -> ExitCode {
-    match cli::parse(std::env::args().skip(1)) {
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    match cs_app::hd_textures::take_flag(&mut args) {
+        Ok(None) => {}
+        Ok(Some(dir)) => match cs_app::hd_textures::install(&dir) {
+            Ok(pack) => eprintln!(
+                "cs: HD pack {}: {} world and {} UI replacements",
+                pack.dir().display(),
+                pack.world_entries(),
+                pack.ui_entries()
+            ),
+            Err(error) => {
+                eprintln!("cs: {error}");
+                return ExitCode::from(cli::EXIT_INVALID_INPUT);
+            }
+        },
+        Err(reason) => {
+            eprintln!("{}", cli::invalid_message(&reason));
+            return ExitCode::from(cli::EXIT_INVALID_INPUT);
+        }
+    }
+    match cli::parse(args) {
         CliRequest::Help => {
             print!("{}", cli::HELP_TEXT);
             ExitCode::SUCCESS
