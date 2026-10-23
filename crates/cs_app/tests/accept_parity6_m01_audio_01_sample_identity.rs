@@ -22,7 +22,7 @@ use cs_formats::zbd::{
 /// The Drydock buffer length no retail member decodes to.
 const UNRESOLVED_BYTES: u64 = 33_864;
 
-fn game_dir() -> PathBuf {
+pub(crate) fn game_dir() -> PathBuf {
     PathBuf::from(
         std::env::var_os("CS_GAME_DIR")
             .expect("CS_GAME_DIR must name the original installation for this test"),
@@ -30,9 +30,9 @@ fn game_dir() -> PathBuf {
 }
 
 /// One archive member: name, format tag, channels, rate, decoded bytes.
-type Row = (String, u16, u16, u32, u64);
+pub(crate) type Row = (String, u16, u16, u32, u64);
 
-fn archive_rows(root: &Path, container: &str) -> Vec<Row> {
+pub(crate) fn archive_rows(root: &Path, container: &str) -> Vec<Row> {
     let bytes = std::fs::read(root.join(container)).expect("sound archive readable");
     let spelling = cs_types::install::RelativePath::new(container).expect("relative path");
     let mut context = ParseContext::with_defaults("parity6_audio_01");
@@ -68,7 +68,7 @@ fn members_of(rows: &[Row], bytes: u64) -> Vec<String> {
     names
 }
 
-fn sounds_zrd(root: &Path) -> ZrdValue {
+pub(crate) fn sounds_zrd(root: &Path) -> ZrdValue {
     let container = "ZBD/zrdr.zbd";
     let bytes = std::fs::read(root.join(container)).expect("zrdr.zbd readable");
     let spelling = cs_types::install::RelativePath::new(container).expect("relative path");

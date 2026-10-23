@@ -233,6 +233,7 @@ mod accept_parity6_m01_audio_03_launch_voices;
 mod accept_parity6_m01_audio_04_ambient_loops;
 mod accept_parity6_m01_audio_04_rattle_and_sequences;
 mod accept_parity6_m01_audio_07_burst_triggers;
+mod accept_parity6_m01_audio_08_group_pick;
 mod accept_parity_m01_lc_letterbox;
 mod accept_parity_m01_player_damage_graph;
 mod accept_parity_m01_player_damage_trail;
