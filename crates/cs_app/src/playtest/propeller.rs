@@ -281,15 +281,15 @@ pub const fn propeller_blur_visible(engine: EngineState) -> bool {
     engine.running
 }
 
+/// Either blur disc: `prop1` or `prop1b`.
+type BlurDisc = Or<(With<PropellerBlur>, With<PropellerBlurSecond>)>;
+
 /// Shows or hides every [`PropellerBlur`] from its flight body's engine state,
 /// read from the same two producers as [`spin_propellers`]. Writes only the
 /// blur part's own [`Visibility`].
 pub fn update_propeller_blur(
     engines: Query<(Option<&FlightAircraft>, Option<&PlaytestOriginalFlight>)>,
-    mut blurs: Query<
-        (&ChildOf, &mut Visibility),
-        Or<(With<PropellerBlur>, With<PropellerBlurSecond>)>,
-    >,
+    mut blurs: Query<(&ChildOf, &mut Visibility), BlurDisc>,
 ) {
     for (child, mut visibility) in &mut blurs {
         let Ok((aircraft, original)) = engines.get(child.parent()) else {
