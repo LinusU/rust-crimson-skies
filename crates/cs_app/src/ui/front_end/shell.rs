@@ -216,6 +216,9 @@ pub struct ShellPane {
     /// The row's `NUMFRAMES` column (1 for a still pane; the shell draws
     /// frame 0 and records any other count).
     pub frames: u32,
+    /// The strip frame drawn: 0 unless a screen's script picks another (the
+    /// cabin's map pins, [`super::cabin`]).
+    pub frame: u32,
     /// The row's `IsRegion?` column — kept for the record; the shell does
     /// not hit-test panes.
     pub is_region: bool,
@@ -355,6 +358,10 @@ pub struct ShellSection {
     /// The row kinds present besides `P`/`B`/`M` (`T`, `E`, `A`, `D`, `L`,
     /// `S`, `W`, `Z`, …), counted and never drawn.
     pub other_rows: Vec<String>,
+    /// Whether entering the section focuses its first enabled button (the
+    /// default). A screen whose script focuses the control host rather than a
+    /// button (`focus(@ctl@)`, the cabin) starts with no button focused.
+    pub focus_on_entry: bool,
 }
 
 /// The outcome one applied input produced.
@@ -602,6 +609,12 @@ impl MenuShell {
         true
     }
 
+    /// The named section for a screen's own set-up (the cabin's hub,
+    /// [`super::cabin::CabinHub`]), matched ASCII case-insensitively.
+    pub fn section_mut(&mut self, name: &str) -> Option<&mut ShellSection> {
+        self.sections.get_mut(&name.to_ascii_uppercase())
+    }
+
     /// The current section.
     #[must_use]
     pub fn section(&self) -> Option<&ShellSection> {
@@ -803,7 +816,10 @@ impl MenuShell {
                 art: pane.art.clone(),
                 logical: visible,
                 rect: fit.map_rect(visible),
-                texel_offset,
+                texel_offset: (
+                    texel_offset.0,
+                    texel_offset.1 + pane.frame * pane.rect.height,
+                ),
             });
         }
         let buttons = section
@@ -921,9 +937,12 @@ impl MenuShell {
     /// Resets the per-screen input state on entry: focus to the first
     /// enabled button, hover and held released, pointer kept.
     fn entered(&mut self) {
-        self.focus = self
-            .section()
-            .and_then(|section| section.buttons.iter().position(|button| button.enabled));
+        self.focus = self.section().and_then(|section| {
+            section
+                .focus_on_entry
+                .then(|| section.buttons.iter().position(|button| button.enabled))
+                .flatten()
+        });
         self.hover = None;
         self.pressed = None;
     }
@@ -990,6 +1009,7 @@ fn present_section(
         buttons,
         skipped,
         other_rows,
+        focus_on_entry: true,
     }
 }
 
@@ -1044,9 +1064,38 @@ fn present_pane(
             height: height / frames,
         },
         frames,
+        frame: 0,
         is_region: row.fields.get(5).is_some_and(|field| field.trim() == "1"),
         color_keyed: row.fields.get(6).is_some_and(|field| field.trim() == "2"),
     })
+}
+
+/// The art whose strip is [`BUTTON_STATE_FRAMES`] frames plus a trailing
+/// transparent row, measured on the installation (task #1840): the Previous
+/// Missions strip is 201x129, every row of its four 32-row frames repeats at
+/// period 32 and row 128 holds no opaque texel. `(art stem, height, frame
+/// height)`; an art not named here must divide evenly.
+const PADDED_BUTTON_STRIPS: &[(&str, u32, u32)] = &[("pc_b_previousmissions", 129, 32)];
+
+/// One state frame's height of a button strip, or `None` when the strip is
+/// not [`BUTTON_STATE_FRAMES`] equal frames (never guessed).
+fn button_frame_height(art: &str, width: u32, height: u32) -> Option<u32> {
+    let stem = art
+        .rsplit_once('.')
+        .map_or(art, |(stem, _)| stem)
+        .to_ascii_lowercase();
+    if height == 0 || width == 0 || stem.contains("8states") {
+        return None;
+    }
+    if let Some((_, _, frame)) = PADDED_BUTTON_STRIPS
+        .iter()
+        .find(|(name, padded, _)| *name == stem && *padded == height)
+    {
+        return Some(*frame);
+    }
+    height
+        .is_multiple_of(BUTTON_STATE_FRAMES)
+        .then_some(height / BUTTON_STATE_FRAMES)
 }
 
 /// Presents one `B` row: `ID=B,art,X,Y,Z,ResID,ScriptToExe,…` — its region is
@@ -1072,17 +1121,9 @@ fn present_button(
     let (width, height) = measure(art).ok_or_else(|| SkippedReason::ArtUnread {
         art: art.to_owned(),
     })?;
-    if height == 0
-        || height % BUTTON_STATE_FRAMES != 0
-        || width == 0
-        || art
-            .rsplit_once('.')
-            .map_or(art, |(stem, _)| stem)
-            .to_ascii_lowercase()
-            .contains("8states")
-    {
+    let Some(frame_height) = button_frame_height(art, width, height) else {
         return Err(SkippedReason::FrameCountUnknown { height });
-    }
+    };
     let script = row.fields.get(5).map_or("", String::as_str);
     let effect = if !script.is_empty() {
         ButtonEffect::Navigate(script.to_owned())
@@ -1109,7 +1150,7 @@ fn present_button(
             x,
             y,
             width,
-            height: height / BUTTON_STATE_FRAMES,
+            height: frame_height,
         },
         res_id,
         effect,
