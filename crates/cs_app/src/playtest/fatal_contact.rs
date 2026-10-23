@@ -15,8 +15,9 @@
 //!   are unknown (finding, "Unknown"); the hull pool is the designed
 //!   [`DESIGNED_PLAYER_INTEGRITY`](crate::mission_session::DESIGNED_PLAYER_INTEGRITY),
 //!   so *which* contact kills is a design value, not the original's. The
-//!   `health_damage_range` pair is applied as that pool's damage; the armor pair
-//!   has no consumer.
+//!   `health_damage_range` pair is converted to that pool's damage by
+//!   [`crash_hull_damage`], calibrated on the owner's observation that a direct
+//!   impact is fatal on first contact (#2005); the armor pair has no consumer.
 //! * **Stops the simulation.** A fatal contact stamps the aircraft with a
 //!   [`PlayerCrash`] record (tick, position, cause) in [`FatalContactRule::crash`], writes one [`PlayerCrashed`]
 //!   message, zeroes the body's velocities and makes it static; the original
@@ -44,8 +45,8 @@ use super::retail::PlaytestAreaBody;
 use super::scene::{PlaytestAircraft, PlaytestGround, PlaytestSea};
 use crate::airframe_damage::AirframeDamageRegion;
 use crate::mission_session::{
-    MISSION_TARGET_NODE, PendingOrdnanceBursts, PlayerVictim, contact_wing_zone, queue_crash_smoke,
-    wing_node,
+    DESIGNED_PLAYER_INTEGRITY, MISSION_TARGET_NODE, PendingOrdnanceBursts, PlayerVictim,
+    contact_wing_zone, queue_crash_smoke, wing_node,
 };
 use crate::physics::{ContactReports, PhysicsTickLedger};
 use crate::weapons::SessionDamageResolver;
@@ -53,6 +54,31 @@ use crate::world::WorldColliderInstance;
 
 /// The producer serial of the crash hits (the mission's 201..=205 are taken).
 pub const MISSION_CRASH_PRODUCER: u32 = 206;
+
+/// The raw crash damage (the doubled `crash` record damage, original units)
+/// that empties an undamaged player hull in one contact: `300`, the damage a
+/// contact of severity `s = 0.79` does (`2 * 300 * s^3`), a direct strike
+/// about 38 degrees or less off the surface normal. **Designed, not measured**:
+/// the owner's playtest of the original (2026-10-23, #2005) is that a direct,
+/// non-glancing terrain impact is almost always fatal on first contact, and the
+/// original's zone armor/health totals are still unrecovered (finding
+/// `2026-10-22-crash-a-fatal-contact-and-crash-camera.md`).
+pub const DESIGNED_LETHAL_CRASH_DAMAGE: f64 = 300.0;
+
+/// How steeply the hull pool answers raw crash damage: the share of the pool
+/// a contact takes is `(raw / DESIGNED_LETHAL_CRASH_DAMAGE)^2`. Designed. The
+/// floor contacts of a sea skim (raw 100) cost a ninth of the pool, a hit at
+/// 45 degrees (raw 216) about half, and one at or above the lethal damage all
+/// of it; the weapons' damage to the same pool is untouched.
+pub const DESIGNED_CRASH_HULL_EXPONENT: i32 = 2;
+
+/// The damage a contact of raw crash damage `raw` does to the player's hull
+/// pool of `integrity` (the designed [`DESIGNED_CRASH_HULL_EXPONENT`] curve,
+/// see [`DESIGNED_LETHAL_CRASH_DAMAGE`]); the wing region takes `raw`.
+#[must_use]
+pub fn crash_hull_damage(raw: f64, integrity: f64) -> f64 {
+    integrity * (raw / DESIGNED_LETHAL_CRASH_DAMAGE).powi(DESIGNED_CRASH_HULL_EXPONENT)
+}
 
 /// Component: the aircraft's terrain-contact state. Only a body that carries it
 /// can crash; a reset despawns the aircraft and with it the state.
@@ -191,8 +217,10 @@ pub struct TerrainContactJudged {
     pub normal: Vec3,
     /// `-dot(normalize(v), n)`.
     pub severity: f64,
-    /// The damage done to the hull pool (and routed to the wing).
+    /// The raw crash damage of the contact (original units), routed to the wing.
     pub damage: f64,
+    /// The damage done to the hull pool ([`crash_hull_damage`] of `damage`).
+    pub hull_damage: f64,
     /// The wing region the damage was routed to (designed side rule).
     pub wing: AirframeDamageRegion,
     /// The contact emptied the hull pool.
@@ -291,7 +319,8 @@ pub fn judge_terrain_contacts(
             }
             let hit_damage = crash_damage(rule.health_damage_range, severity, true);
             let wing = contact_wing_zone(rotation.0.inverse() * (point - position.0)).value;
-            let hit_at = |sequence, node| {
+            let hull_damage = crash_hull_damage(hit_damage, DESIGNED_PLAYER_INTEGRITY);
+            let hit_at = |sequence, node, amount| {
                 HitEvent::try_new(
                     EventId {
                         session,
@@ -303,12 +332,12 @@ pub fn judge_terrain_contacts(
                     victim.actor,
                     node,
                     DamageChannel::Internal,
-                    hit_damage,
+                    amount,
                 )
             };
             let (Ok(hit), Ok(wing_hit)) = (
-                hit_at(sequence, node.clone()),
-                hit_at(sequence + 1, wing_node(wing)),
+                hit_at(sequence, node.clone(), hull_damage),
+                hit_at(sequence + 1, wing_node(wing), hit_damage),
             ) else {
                 continue;
             };
@@ -329,6 +358,7 @@ pub fn judge_terrain_contacts(
                 normal,
                 severity,
                 damage: hit_damage,
+                hull_damage,
                 wing,
                 fatal,
             });

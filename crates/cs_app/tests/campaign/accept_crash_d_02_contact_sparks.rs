@@ -67,6 +67,7 @@ fn publish(app: &mut App, tick: u64, point: Vec3, fatal: bool) {
         normal: Vec3::Y,
         severity: 0.5,
         damage: 100.0,
+        hull_damage: 100.0,
         wing: AirframeDamageRegion::LeftWing,
         fatal,
     });

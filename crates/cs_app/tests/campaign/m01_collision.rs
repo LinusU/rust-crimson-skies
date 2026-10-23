@@ -69,7 +69,7 @@ fn fly() -> Vec<Sample> {
             .iter_current_update_messages()
         {
             judged += 1;
-            hull_damage += message.damage;
+            hull_damage += message.hull_damage;
         }
         if f % 60 == 0 {
             let e = app
@@ -176,24 +176,25 @@ fn accept_parity4_m01_collision_no_input_trajectory_is_pinned() {
             "t={t} now agrees with the measured altitude: {report}"
         );
     }
-    // PARITY4-CRASH-E.01 (#1983): the contacts are judged and do damage now.
-    // Nine episodes by t=80 — six on the world collider (the graze over the
-    // island's high ground at t=50 and the pushes into the stopped shore at
-    // t=69.6..71), three on the sea tiles of the skim at t=54.5..58.6 — spend
-    // 1049 of the designed 1200 hull. The pool holds, so the flight is never
-    // crashed and the trajectory above is the unchanged one.
-    assert_eq!(
-        (at(60).judged, at(70).judged, at(SECONDS).judged),
-        (4, 6, 9),
-        "{report}"
-    );
+    // PARITY4-CRASH-E.01 (#1983): the contacts are judged and do damage. With
+    // the designed crash-to-hull curve (#2005) the island graze at t=50 and the
+    // three sea contacts of the skim at t=54.5..58.6 — four episodes, severities
+    // 0.32, 0.41 and two near 0 — spend 533 of the designed 1200 hull and the
+    // flight is not crashed by them. The hard push into the stopped shore (the
+    // trajectory artifact of the missing 60 degree throw, above) then finishes
+    // it: the sixth episode (severity 0.71) is fatal before t=70, once.
+    assert_eq!((at(60).judged, at(70).judged), (4, 6), "{report}");
     assert!(
-        (at(60).hull_damage - 400.0).abs() < 1.0
-            && (at(70).hull_damage - 715.7).abs() < 1.0
-            && (at(SECONDS).hull_damage - 1049.0).abs() < 1.0,
+        (at(60).hull_damage - 533.0).abs() < 1.0 && at(70).hull_damage > 1200.0,
         "{report}"
     );
-    assert!(s.iter().all(|x| !x.crashed), "{report}");
+    assert!(s[..=60].iter().all(|x| !x.crashed), "{report}");
+    assert!(s[70..].iter().all(|x| x.crashed), "{report}");
+    assert_eq!(
+        at(SECONDS).judged,
+        at(70).judged,
+        "no judging after the crash: {report}"
+    );
 }
 
 /// PARITY4-CRASH-E.01 (#1983): in the composed mission the aircraft's terrain

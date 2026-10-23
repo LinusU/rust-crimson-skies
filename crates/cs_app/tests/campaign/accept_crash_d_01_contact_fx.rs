@@ -128,7 +128,7 @@ fn accept_crash_d_01_light_contact_publishes_and_damages_only_the_contacted_wing
 
 #[test]
 fn accept_crash_d_01_head_on_contact_destroys_wing_and_hull_and_queues_smoke() {
-    let (mut app, aircraft, actor) = dive_app(700.0, 0.35, Vec3::new(0.0, -100.0, 0.0));
+    let (mut app, aircraft, actor) = dive_app(0.0, 0.35, Vec3::new(0.0, -100.0, 0.0));
     let judged = run(&mut app);
     let fatal: Vec<_> = judged.iter().filter(|j| j.fatal).collect();
     assert_eq!(fatal.len(), 1);

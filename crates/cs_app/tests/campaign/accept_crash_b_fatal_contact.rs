@@ -81,15 +81,21 @@ fn remaining(app: &App, actor: ActorId) -> f64 {
 
 #[test]
 fn accept_crash_b_survivable_contact_keeps_flying() {
+    // An oblique pass over the slab (severity about 0.12): the floor damage,
+    // the designed pool survives it. A direct dive does not (#2005).
     let (mut app, aircraft, actor) = dive_app(0.0);
+    let mut entity = app.world_mut().entity_mut(aircraft);
+    entity.get_mut::<LinearVelocity>().unwrap().0 = Vec3::new(0.0, -12.0, -100.0);
+    entity.get_mut::<avian3d::prelude::Rotation>().unwrap().0 =
+        bevy::prelude::Quat::from_rotation_z(0.35);
     let before = remaining(&app, actor);
     for _ in 0..30 {
         app.update();
     }
     assert!(app.world().resource::<PlaytestState>().ground_contacts > 0);
     assert!(
-        remaining(&app, actor) <= before - 2.0 * RETAIL_RANGE[0],
-        "the contact did at least the doubled floor damage"
+        remaining(&app, actor) < before,
+        "the contact did hull damage"
     );
     assert!(
         !app.world()
@@ -106,8 +112,8 @@ fn accept_crash_b_survivable_contact_keeps_flying() {
 
 #[test]
 fn accept_crash_b_fatal_contact_stops_the_flight_and_records_the_cause() {
-    // 700 of the designed 1200 are gone: a head-on contact (600) finishes it.
-    let (mut app, aircraft, actor) = dive_app(700.0);
+    // A fresh hull: a head-on contact is fatal on first contact (#2005).
+    let (mut app, aircraft, actor) = dive_app(0.0);
     let ticks_before = app
         .world()
         .resource::<cs_app::physics::PhysicsTickLedger>()

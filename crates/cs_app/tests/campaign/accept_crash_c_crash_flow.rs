@@ -15,19 +15,15 @@ use bevy::prelude::{App, Entity, KeyCode, Quat, Transform, Vec3, With};
 use bevy::time::TimeUpdateStrategy;
 
 use cs_app::mission_session::{
-    MISSION_TARGET_NODE, MissionHost, MissionPlayerBody, MissionTerminalSource, MissionViewMode,
-    PlayerVictim, build_headless, teardown,
+    MissionHost, MissionPlayerBody, MissionTerminalSource, MissionViewMode, build_headless,
+    teardown,
 };
 use cs_app::playtest::PlaytestCameraMarker;
 use cs_app::playtest::fatal_contact::{
     CRASH_CAMERA_HEIGHT, CRASH_CAMERA_HORIZONTAL, CRASH_PLACEHOLDER_TARGET, CrashSequence,
     FatalContactRule, crash_camera_point,
 };
-use cs_app::weapons::SessionDamageResolver;
-use cs_sim::damage::{DamageChannel, DamageNodeKey, HitEvent};
 use cs_sim::objectives::terminal::TerminalOutcome;
-use cs_types::Tick;
-use cs_types::net::EventId;
 
 use super::vs_m01_rt_window::{Scratch, synthetic_stage};
 
@@ -47,40 +43,9 @@ pub(super) fn exits(app: &App, cursor: &mut MessageCursor<AppExit>) -> usize {
         .map_or(0, |messages| cursor.read(messages).count())
 }
 
-/// Crashes the composed mission's player into a slab laid under it: 700 of the
-/// designed 1200 hull are gone, so a head-on contact finishes it.
+/// Crashes the composed mission's fresh, undamaged player into a slab laid
+/// under it: a head-on contact is fatal on first contact (#2005).
 pub(super) fn crash_the_player(app: &mut App) -> Entity {
-    let victim = app.world().resource::<PlayerVictim>().clone();
-    let tick = Tick(
-        app.world()
-            .resource::<cs_app::physics::PhysicsTickLedger>()
-            .ticks,
-    );
-    let session = app
-        .world()
-        .resource::<SessionDamageResolver>()
-        .resolver()
-        .session();
-    let hit = HitEvent::try_new(
-        EventId {
-            session,
-            tick,
-            producer: 9_001,
-            sequence: 0,
-        },
-        None,
-        victim.actor,
-        DamageNodeKey::new(MISSION_TARGET_NODE).expect("the hull key"),
-        DamageChannel::Internal,
-        700.0,
-    )
-    .expect("a finite hit");
-    app.world_mut()
-        .resource_mut::<SessionDamageResolver>()
-        .resolver_mut()
-        .resolve(tick, &[hit])
-        .expect("the prior hit applies");
-
     let body = app
         .world_mut()
         .query_filtered::<Entity, With<MissionPlayerBody>>()
