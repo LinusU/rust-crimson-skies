@@ -102,7 +102,7 @@ use super::evidence::{CaptureRefusal, clear_colour_encodings, count_world_pixels
 use super::flak_burst_fx::FlakBurstFxReport;
 use super::flight_check::{FlightCheckPhase, PhaseResponse, ScreenOverlay};
 use super::host::MissionHost;
-use super::launch_cinematic::LaunchCinematic;
+use super::launch_cinematic::{CINEMATIC_FALLOFF, LaunchCinematic, is_parked};
 use super::lens_flare::{FLARE_TEXTURES, FlareQuadNode, MissionLensFlare};
 use super::letterbox::LaunchLetterbox;
 use super::lifecycles::ObjectiveLifecycles;
@@ -3243,16 +3243,21 @@ fn apply_probe(
     // `Local`: `apply_probe` is registered twice (with and without the flare
     // ordering), so two copies of a `Local` would race and the second would
     // save the already parked value as the one to restore.
+    // The same guard protects the cinematic's own parking: while
+    // `LaunchCinematic` plays, `sync_fog` already holds every fog on the
+    // stand-in and keeps the bound value in its own `Local`. A probe that
+    // starts before the hand-over must not record the stand-in as the value
+    // to put back — it would restore "no fog" after the hand-over returned
+    // the zone fog. A falloff already parked belongs to whoever parked it;
+    // this system parks it itself (and keeps the real value) only once it is
+    // back to a bound falloff.
     for (entity, mut fog, kept) in &mut fogs {
         if anything_hidden {
-            if kept.is_none() {
+            if kept.is_none() && !is_parked(&fog.falloff) {
                 commands
                     .entity(entity)
                     .insert(KeptFogFalloff(fog.falloff.clone()));
-                fog.falloff = FogFalloff::Linear {
-                    start: 1.0e9,
-                    end: 2.0e9,
-                };
+                fog.falloff = CINEMATIC_FALLOFF.clone();
             }
         } else if let Some(KeptFogFalloff(falloff)) = kept {
             fog.falloff = falloff.clone();

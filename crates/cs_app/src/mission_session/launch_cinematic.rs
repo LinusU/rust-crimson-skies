@@ -295,13 +295,15 @@ fn sync_letterbox(
 /// The falloff a [`DistanceFog`] is parked on while the cinematic plays: far
 /// beyond anything drawn, the same stand-in the smoke's probes use for "no
 /// fog" (`apply_probe` in `smoke.rs`). It has no `PartialEq`, so the parked
-/// state is tested on the fields.
-const CINEMATIC_FALLOFF: FogFalloff = FogFalloff::Linear {
+/// state is tested on the fields. `pub(crate)` so the smoke's own parking
+/// can recognise a falloff this system already holds instead of recording
+/// the stand-in as the value to restore.
+pub(crate) const CINEMATIC_FALLOFF: FogFalloff = FogFalloff::Linear {
     start: 1.0e9,
     end: 2.0e9,
 };
 
-fn is_parked(falloff: &FogFalloff) -> bool {
+pub(crate) fn is_parked(falloff: &FogFalloff) -> bool {
     matches!(falloff, FogFalloff::Linear { start, end }
         if *start == 1.0e9 && *end == 2.0e9)
 }
