@@ -39,9 +39,7 @@ use cs_app::score::SessionScoreLedger;
 use cs_app::targeting::TargetingSession;
 use cs_app::weapons::PartSweptBox;
 use cs_sim::control::LocalSeatId;
-use cs_sim::damage::{
-    ActorId, AttributionRule, DamageNodeKey, DamagePolicy, synthetic_airframe_graph,
-};
+use cs_sim::damage::{ActorId, AttributionRule, DamageNodeKey, DamagePolicy};
 use cs_types::Tick;
 use cs_types::content::{ContentId, ContentKind, Known, Provenance, Resolved};
 use cs_types::evidence::ClaimId;
@@ -76,6 +74,27 @@ fn target_actor(session: SessionId) -> ActorId {
         session,
         serial: TARGET_SERIAL,
     }
+}
+
+/// The test target's damage graph: a single lethal `hull` node — the same
+/// single-lethal-node shape the real convoy trucks carry, so a rocket's
+/// victim-node routing resolves it the same way.
+fn target_graph() -> cs_sim::damage::DamageGraph {
+    let subject = ContentId::from_source(ContentKind::Airframe, "m01-play-weapons.test-target")
+        .expect("the target subject id is valid");
+    let integrity = Resolved::Known(Known::new(1.0, Provenance::designed(claim())));
+    cs_sim::damage::DamageGraph::try_new(
+        subject,
+        vec![
+            cs_sim::damage::DamageNode::new(
+                key(HULL),
+                cs_sim::damage::DamageNodeKind::InternalStructure,
+                integrity,
+            )
+            .with_lethal(true),
+        ],
+    )
+    .expect("the test target graph is valid")
 }
 
 /// The composed synthetic mission, with the weapon session opened and the
@@ -124,7 +143,7 @@ fn spawn_target(app: &mut App) -> ActorId {
     let session = served(app);
     let generation = generation(app);
     let actor = target_actor(session);
-    let graph = synthetic_airframe_graph();
+    let graph = target_graph();
     let subject = graph.subject().clone();
     let (position, forward) = player_pose(app);
     let centre = position + forward * TARGET_AHEAD_M;
@@ -272,11 +291,17 @@ fn accept_m01_play_weapons_the_fire_guns_key_destroys_a_target_and_scores_it() {
     teardown(&mut app);
 }
 
-/// **The fire-rockets key launches a rocket that detonates on the target,
-/// applies F29 damage and scores the kill.**
+/// **The fire-rockets key launches a rocket that detonates on the selected
+/// target, applies F29 damage and scores the kill.**
 #[test]
 fn accept_m01_play_weapons_the_fire_rockets_key_destroys_a_target_and_scores_it() {
     let (_scratch, mut app, actor) = armed_stage("m01-play-weapons-rockets");
+    assert!(
+        app.world_mut()
+            .resource_mut::<TargetingSession>()
+            .select_scripted(actor),
+        "the spawned target is selectable"
+    );
 
     let mut killed = false;
     for _ in 0..MAX_FRAMES {
@@ -299,8 +324,8 @@ fn accept_m01_play_weapons_the_fire_rockets_key_destroys_a_target_and_scores_it(
     teardown(&mut app);
 }
 
-/// **Firing a rocket with no declared-hostile target is refused by name, not
-/// invented at a default target.**
+/// **Firing a rocket with no selected target is refused by name, not aimed
+/// at an arbitrary hostile the roster scan picked.**
 #[test]
 fn accept_m01_play_weapons_a_rocket_with_no_target_is_refused_by_name() {
     let (_scratch, mut app) = composed("m01-play-weapons-no-target");
@@ -311,14 +336,14 @@ fn accept_m01_play_weapons_a_rocket_with_no_target_is_refused_by_name() {
         .expect("the publisher ran");
     assert!(
         !report.rocket_refusals.is_empty(),
-        "a rocket with no hostile target is refused by name: {report:?}"
+        "a rocket with no selected target is refused by name: {report:?}"
     );
     assert!(
         report
             .rocket_refusals
             .iter()
-            .any(|reason| reason.contains("hostile")),
-        "the refusal names the missing hostile target: {report:?}"
+            .any(|reason| reason.contains("no target is selected")),
+        "the refusal names the missing selection: {report:?}"
     );
     teardown(&mut app);
 }
