@@ -10,4 +10,5 @@
 
 pub mod descriptor;
 pub mod effect;
+pub mod layout;
 pub mod pid;
