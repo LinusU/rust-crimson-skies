@@ -68,6 +68,11 @@ pub struct MissionRequest {
     /// and judges the journal's debrief screen the failed run opens (Rally
     /// #1655 `PARITY-M01-OUTCOME-C`).
     pub smoke_failure: bool,
+    /// `--smoke-crash`: the smoke dives the player onto the terrain, lets the
+    /// production terrain-contact rule crash it and photographs the crash
+    /// flow: contact effects, the detached camera with `Fatal Crash!` and the
+    /// Mission Failed screen after a key (Rally #1857 `PARITY4-CRASH-E`).
+    pub smoke_crash: bool,
     /// `--from-start-flow`: the mission was handed over by the start flow
     /// (`cs --cs-path <dir>`), so leaving it for the cabin (the debrief's
     /// Return to Cabin, the pause map's Quit) re-opens the front end instead
@@ -191,6 +196,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
     let mut dev_keys = false;
     let mut smoke_engagement = false;
     let mut smoke_failure = false;
+    let mut smoke_crash = false;
     let mut smoke_start_flow = false;
     let mut front_end = false;
     let mut from_start_flow = false;
@@ -218,6 +224,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
             "--dev-keys" => dev_keys = true,
             "--smoke-engagement" => smoke_engagement = true,
             "--smoke-failure" => smoke_failure = true,
+            "--smoke-crash" => smoke_crash = true,
             "--smoke-start-flow" => smoke_start_flow = true,
             "--front-end" => front_end = true,
             "--from-start-flow" => from_start_flow = true,
@@ -455,7 +462,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
                 .to_string(),
         };
     }
-    if smoke_start_flow
+    if smoke_crash
         && (mission.is_none()
             || smoke_seconds.is_none()
             || smoke_no_teleport
@@ -463,9 +470,24 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
             || smoke_failure)
     {
         return CliRequest::Invalid {
-            reason: "--smoke-start-flow is a mode of --cs-path <dir> --mission <id> \
+            reason: "--smoke-crash is a mode of --cs-path <dir> --mission <id> \
  --smoke-seconds <n> and does not combine with --smoke-no-teleport, --smoke-engagement or \
  --smoke-failure"
+                .to_string(),
+        };
+    }
+    if smoke_start_flow
+        && (mission.is_none()
+            || smoke_seconds.is_none()
+            || smoke_no_teleport
+            || smoke_engagement
+            || smoke_failure
+            || smoke_crash)
+    {
+        return CliRequest::Invalid {
+            reason: "--smoke-start-flow is a mode of --cs-path <dir> --mission <id> \
+ --smoke-seconds <n> and does not combine with --smoke-no-teleport, --smoke-engagement or \
+ --smoke-failure or --smoke-crash"
                 .to_string(),
         };
     }
@@ -492,6 +514,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
             || dev_keys
             || smoke_engagement
             || smoke_failure
+            || smoke_crash
             || smoke_start_flow)
     {
         return CliRequest::Invalid {
@@ -599,6 +622,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
             dev_keys,
             smoke_engagement,
             smoke_failure,
+            smoke_crash,
             from_start_flow,
             joystick,
             smoke_start_flow,
@@ -665,6 +689,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
         && !dev_keys
         && !smoke_engagement
         && !smoke_failure
+        && !smoke_crash
         && !smoke_start_flow
     {
         if capture_dir.is_some() && smoke_seconds.is_none() {
@@ -854,7 +879,7 @@ WINDOWED PLAYTEST (development, not original)
         Fly with the developer key layout (W/S Q/E A/D, Left Shift / F
         throttle, R reset, F10 quit) instead of the original game's default
         controls.
-    --mission <id> --smoke-seconds <n> [--smoke-no-teleport | --smoke-engagement | --smoke-failure] [--capture-dir <dir>]
+    --mission <id> --smoke-seconds <n> [--smoke-no-teleport | --smoke-engagement | --smoke-failure | --smoke-crash] [--capture-dir <dir>]
         The same windowed launch driven as a scripted smoke (n >= 45
         simulated seconds): it injects keys through the real input path,
         places the player near each spawned actor, saves framebuffer PNGs and
@@ -872,6 +897,10 @@ WINDOWED PLAYTEST (development, not original)
         through the session's damage authority (a scripted test input, not
         the original's failure) and judges the journal's debrief screen the
         failed run opens: its text rows, buttons and that the run stays open
+        --smoke-crash places the player in a dive onto the terrain (a test
+        placement), lets the production terrain-contact rule crash it and
+        judges the crash flow: contact sparks and fire, the detached camera
+        with 'Fatal Crash!', and the Mission Failed screen after a key
 
     --mission <id> [--joystick <vid:pid|name>] [--force-feedback-gain <percent>]
         A connected HID joystick flies too (SIDEWINDER-FFB2): stick X roll,

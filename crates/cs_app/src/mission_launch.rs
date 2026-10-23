@@ -611,6 +611,8 @@ pub fn launch_mission(request: &crate::cli::MissionRequest) -> Result<(), Missio
             crate::mission_session::MissionSmokeMode::Engagement
         } else if request.smoke_failure {
             crate::mission_session::MissionSmokeMode::Failure
+        } else if request.smoke_crash {
+            crate::mission_session::MissionSmokeMode::Crash
         } else if request.smoke_start_flow {
             crate::mission_session::MissionSmokeMode::StartFlow
         } else {
