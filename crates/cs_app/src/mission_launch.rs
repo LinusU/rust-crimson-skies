@@ -611,6 +611,8 @@ pub fn launch_mission(request: &crate::cli::MissionRequest) -> Result<(), Missio
             crate::mission_session::MissionSmokeMode::Engagement
         } else if request.smoke_failure {
             crate::mission_session::MissionSmokeMode::Failure
+        } else if request.smoke_start_flow {
+            crate::mission_session::MissionSmokeMode::StartFlow
         } else {
             crate::mission_session::MissionSmokeMode::Scripted
         },
@@ -621,10 +623,18 @@ pub fn launch_mission(request: &crate::cli::MissionRequest) -> Result<(), Missio
     )
     .map_err(MissionLaunchError::Composition)?;
     // The player left for the cabin: the world is torn down, so the front end
-    // takes this process over (Rally #1831).
+    // takes this process over (Rally #1831). A start-flow smoke leg keeps its
+    // own smoke request on the resumed run (#1832).
     match left {
-        Some(end) => crate::ui::front_end::return_to_front_end(&request.cs_path, end)
-            .map_err(|error| MissionLaunchError::ReturnToFrontEnd(error.to_string())),
+        Some(end) => crate::ui::front_end::return_to_front_end(
+            &request.cs_path,
+            end,
+            request
+                .smoke_start_flow
+                .then_some(request.smoke.as_ref())
+                .flatten(),
+        )
+        .map_err(|error| MissionLaunchError::ReturnToFrontEnd(error.to_string())),
         None => Ok(()),
     }
 }

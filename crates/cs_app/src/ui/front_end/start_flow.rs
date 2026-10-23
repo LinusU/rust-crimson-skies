@@ -50,7 +50,8 @@ use super::{
     Action, ActionSource, Effect, FrontEnd, MenuShell, Request, SCREEN_SECTIONS, Screen,
     ShellOutcome, find, rows_on,
 };
-use super::{FrontEndError, FrontEndRequest};
+use super::{FrontEndError, FrontEndRequest, SmokeScene};
+use crate::playtest::SmokeRequest;
 
 /// The mission a new campaign starts on: the first mission, since this flow
 /// keeps no per-pilot progress yet (the original selects "the next one" from
@@ -101,6 +102,13 @@ pub struct StartFlowRequest {
     /// `--resume-start-flow <end>`: the flow comes back from a mission that
     /// ended this way and opens on the cabin instead of the main menu.
     pub resume: Option<MissionEnd>,
+    /// `--smoke-seconds <n> [--capture-dir <dir>]` on the bare start flow: the
+    /// owner-command smoke (#1832 `PARITY5-START-FLOW.04`). The run is a chain
+    /// of process images under the one capture directory: `front-end/` (or
+    /// `resumed/`) this leg's screens ([`run_start_flow`]), `mission/` the
+    /// first flight and `replay/` the mission flown again (see
+    /// [`handover_args`] and [`return_args`]).
+    pub smoke: Option<SmokeRequest>,
 }
 
 /// How a front-end screen is put in front of the player.
@@ -652,35 +660,99 @@ impl StartFlow {
     }
 }
 
+/// The subdirectory under the owner-command smoke's capture directory its
+/// first front-end leg writes into (#1832); the parser picks it.
+pub const FRONT_END_SMOKE_SUBDIR: &str = "front-end";
+/// The subdirectory the resumed cabin leg writes into.
+pub const RESUMED_SMOKE_SUBDIR: &str = "resumed";
+/// The subdirectory the first mission leg writes into.
+pub const MISSION_SMOKE_SUBDIR: &str = "mission";
+/// The subdirectory the replayed mission leg writes into.
+pub const REPLAY_SMOKE_SUBDIR: &str = "replay";
+
 /// The command line the hand-over runs: exactly what a player types for the
 /// mission, so `--mission` behaves as it always has. `--from-start-flow`
 /// asks the mission to come back here when the player leaves it for the
 /// cabin (see [`return_args`]).
+///
+/// The owner-command smoke's legs chain the same way a typed command would
+/// (#1832): the smoke, its capture subdirectory and `--smoke-start-flow`
+/// ride along, and the resumed leg's own Next Mission omits
+/// `--from-start-flow` so the replay ends the process — the chain is four
+/// legs, never an infinite loop. An interactive flow always asks for the
+/// return, resumed or not.
 #[must_use]
 pub fn handover_args(request: &StartFlowRequest, mission: &str) -> Vec<String> {
-    vec![
+    let mut args = vec![
         "--cs-path".to_owned(),
         request.cs_path.display().to_string(),
         "--mission".to_owned(),
         mission.to_owned(),
-        "--from-start-flow".to_owned(),
-    ]
+    ];
+    if request.resume.is_none() || request.smoke.is_none() {
+        args.push("--from-start-flow".to_owned());
+    }
+    if let Some(smoke) = &request.smoke {
+        let subdir = if request.resume.is_some() {
+            REPLAY_SMOKE_SUBDIR
+        } else {
+            MISSION_SMOKE_SUBDIR
+        };
+        args.extend([
+            "--smoke-seconds".to_owned(),
+            smoke.seconds.to_string(),
+            "--capture-dir".to_owned(),
+            smoke.capture_dir.join(subdir).display().to_string(),
+            "--smoke-start-flow".to_owned(),
+        ]);
+    }
+    args
+}
+
+/// The command line the mission runs to come back to the front end, keeping
+/// the owner-command smoke's own request when one is in flight (#1832): the
+/// resumed leg is a smoke too, on the same capture directory. `smoke` is the
+/// mission leg's own request — its capture directory is `<root>/mission`, so
+/// the resumed leg is passed the root again and picks `resumed/` itself.
+#[must_use]
+pub fn return_args_smoke(
+    cs_path: &std::path::Path,
+    end: MissionEnd,
+    smoke: Option<&SmokeRequest>,
+) -> Vec<String> {
+    let mut args = vec![
+        "--cs-path".to_owned(),
+        cs_path.display().to_string(),
+        "--resume-start-flow".to_owned(),
+        end.key().to_owned(),
+    ];
+    if let Some(smoke) = smoke {
+        let root = smoke
+            .capture_dir
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
+            .unwrap_or(&smoke.capture_dir);
+        args.extend([
+            "--smoke-seconds".to_owned(),
+            smoke.seconds.to_string(),
+            "--capture-dir".to_owned(),
+            root.display().to_string(),
+        ]);
+    }
+    args
 }
 
 /// The command line the mission runs to come back to the front end.
 #[must_use]
 pub fn return_args(cs_path: &std::path::Path, end: MissionEnd) -> Vec<String> {
-    vec![
-        "--cs-path".to_owned(),
-        cs_path.display().to_string(),
-        "--resume-start-flow".to_owned(),
-        end.key().to_owned(),
-    ]
+    return_args_smoke(cs_path, end, None)
 }
 
 /// Replaces the finished mission process with the front end, opened on the
 /// cabin. A new process image, again because winit allows one event loop per
 /// process; the mission's world was torn down before this is called.
+/// `smoke` keeps the owner-command smoke's request on the resumed leg
+/// (#1832); an interactive mission passes `None`.
 ///
 /// # Errors
 ///
@@ -688,8 +760,9 @@ pub fn return_args(cs_path: &std::path::Path, end: MissionEnd) -> Vec<String> {
 pub fn return_to_front_end(
     cs_path: &std::path::Path,
     end: MissionEnd,
+    smoke: Option<&SmokeRequest>,
 ) -> Result<(), StartFlowError> {
-    hand_over(&return_args(cs_path, end))
+    hand_over(&return_args_smoke(cs_path, end, smoke))
 }
 
 /// Why the start flow ended in failure.
@@ -724,21 +797,42 @@ impl std::error::Error for StartFlowError {}
 pub fn run_start_flow(request: &StartFlowRequest) -> Result<(), StartFlowError> {
     let window = FrontEndRequest {
         cs_path: request.cs_path.clone(),
-        smoke: None,
+        smoke: request.smoke.clone().map(|mut smoke| {
+            // The front-end legs write under `front-end/` (or `resumed/` for
+            // the leg the mission returned to), the mission legs under
+            // `mission/` and `replay/` — all four under the one directory
+            // the command named (#1832).
+            smoke.capture_dir = smoke.capture_dir.join(if request.resume.is_some() {
+                RESUMED_SMOKE_SUBDIR
+            } else {
+                FRONT_END_SMOKE_SUBDIR
+            });
+            smoke
+        }),
     };
     let flow = match request.resume {
         Some(end) => StartFlow::after_mission(end)
             .map_err(|refusal| StartFlowError::Handover(refusal.to_string()))?,
         None => StartFlow::new(),
     };
-    let (mut app, _) = shell_app_with(&window, Some(flow)).map_err(StartFlowError::FrontEnd)?;
+    let scene = if request.resume.is_some() {
+        SmokeScene::StartFlowResumed
+    } else {
+        SmokeScene::StartFlow
+    };
+    let (mut app, handle) =
+        shell_app_with(&window, Some(flow), scene).map_err(StartFlowError::FrontEnd)?;
     let exit = app.run();
+    if let (Some(handle), Some(smoke)) = (&handle, &window.smoke) {
+        super::window::finish(handle, smoke).map_err(StartFlowError::FrontEnd)?;
+    }
     let mission = app
         .world()
         .get_resource::<ShellResource>()
         .and_then(ShellResource::flow)
         .and_then(StartFlow::handover)
         .map(str::to_owned);
+    eprintln!("cs: debug exit={exit:?} mission={mission:?} shell={:?}", app.world().get_resource::<ShellResource>().map(|s| (s.flow().is_some(), s.flow().and_then(|f| f.handover().map(str::to_owned)))));
     drop(app);
     if let AppExit::Error(code) = exit {
         return Err(StartFlowError::FrontEnd(FrontEndError::Exit(format!(

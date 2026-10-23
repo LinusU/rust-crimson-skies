@@ -57,6 +57,7 @@ mod campaign {
     mod parity2_dmg_fx_b;
     mod parity5_briefing_map;
     mod parity5_start_flow_03;
+    mod parity5_start_flow_04;
     mod parity_m01_atmo_c;
     mod parity_m01_clouds;
     mod parity_m01_island_shading;

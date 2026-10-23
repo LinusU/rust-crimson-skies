@@ -86,9 +86,9 @@ use bevy::input::mouse::MouseButton;
 use bevy::input::{ButtonInput, InputSystems};
 use bevy::prelude::{
     App, AppExit, ChildOf, ClearColor, Commands, DistanceFog, Entity, FogFalloff, GlobalTransform,
-    IntoScheduleConfigs, Last, Local, Mesh3d, MessageWriter, On, Plugin, PostUpdate, PreUpdate,
-    Quat, Query, Res, ResMut, Resource, Text, Transform, Update, Vec2, Vec3, Visibility, Window,
-    With,
+    IntoScheduleConfigs, Last, Local, Mesh3d, MessageReader, MessageWriter, On, Plugin, PostUpdate,
+    PreUpdate, Quat, Query, Res, ResMut, Resource, Text, Transform, Update, Vec2, Vec3, Visibility,
+    Window, With,
 };
 use bevy::render::render_resource::TextureFormat;
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk};
@@ -106,7 +106,7 @@ use super::launch_cinematic::LaunchCinematic;
 use super::lens_flare::{FLARE_TEXTURES, FlareQuadNode, MissionLensFlare};
 use super::letterbox::LaunchLetterbox;
 use super::lifecycles::ObjectiveLifecycles;
-use super::pause_map::{PauseButtonKind, PauseMapShown, PauseMapSource};
+use super::pause_map::{PauseButtonKind, PauseMapPress, PauseMapShown, PauseMapSource};
 use super::preferences_overlay::PreferencesOverlay;
 use super::turret_fire::{MissionTurretFire, TurretWeaponRecord};
 use super::weapons::MissionWeaponReport;
@@ -137,6 +137,7 @@ use crate::world_actors::WorldActorBinding;
 mod briefing;
 mod camera_modes;
 mod debrief;
+mod start_flow;
 pub mod voice_trace;
 
 pub use briefing::{
@@ -148,6 +149,7 @@ pub use camera_modes::{
     CameraModeMetrics, CameraModeSample, MIN_CAMERA_FRAME_LUMINANCE_LEVELS, MIN_LOOK_ANGLE_RAD,
     MIN_VIEW_SEPARATION_M, MIN_ZOOM_DISTANCE_M,
 };
+pub use start_flow::StartFlowMetrics;
 
 /// Rendered frames per simulated second, the playtest smoke's own rate.
 pub const MISSION_SMOKE_FRAME_HZ: f64 = 60.0;
@@ -281,6 +283,13 @@ const PAUSE_MAP_CLICK_FRAMES: u32 = 2;
 /// Preferences → Return → close steps: a step that never lands fails its
 /// check instead of hanging the run (#1923).
 const PAUSE_MAP_BUDGET_FRAMES: u32 = 600;
+/// Frames of controlled flight the start-flow smoke lets pass after the
+/// launch cinematic hands over — the "short flight" its `flight` frame is
+/// the evidence of (#1832).
+const START_FLOW_FLIGHT_FRAMES: u32 = 150;
+/// The most frames the leave-the-flight stage may take across its map-open
+/// → shot → Quit-click → press-seen steps before it fails its checks.
+const START_FLOW_LEAVE_BUDGET_FRAMES: u32 = 600;
 /// Frames into `Phase::LensFlare` at which the flight is frozen — a
 /// `PauseReason::Menu` hold, never `PlayerRequest`, so the Esc map screen
 /// stays shut and the two frames keep the world view
@@ -1001,6 +1010,14 @@ pub enum MissionSmokeMode {
     /// input) and the journal's debrief screen the failed run opens is
     /// photographed and judged (#1655).
     Failure,
+    /// `--smoke-start-flow`: one mission leg of the owner-command start-flow
+    /// smoke (`cs --cs-path <retail> --smoke-seconds <n>`, #1832
+    /// `PARITY5-START-FLOW.04`). The run goes through the briefing, the Flight
+    /// Check and the launch cinematic like the scripted mode, flies a short
+    /// measured flight, then opens the Esc pause map and presses **Quit**
+    /// through the map's own click path — the `Abandoned` the chain's next
+    /// leg resumes on, or the process end on the replay leg.
+    StartFlow,
 }
 
 /// Everything the engagement mode measured about the idle player's hull.
@@ -1260,6 +1277,8 @@ pub struct SmokeMeasurements {
     pub engagement: Option<EngagementMetrics>,
     /// The failed run's debrief screen ([`MissionSmokeMode::Failure`] only).
     pub debrief: Option<debrief::DebriefMetrics>,
+    /// The leave-the-flight stage ([`MissionSmokeMode::StartFlow`] only).
+    pub start_flow: Option<start_flow::StartFlowMetrics>,
 }
 
 /// One pass/fail verdict with its evidence.
@@ -1289,6 +1308,9 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
     }
     if m.debrief.is_some() {
         return debrief::evaluate(m);
+    }
+    if m.start_flow.is_some() {
+        return start_flow::evaluate(m);
     }
     if m.no_teleport {
         // The no-teleport run passes through the Flight Check to release the
@@ -1784,31 +1806,7 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
     }
 
     // --- the first control frame ------------------------------------------
-    checks.push(Check {
-        id: "first_control_frame".to_owned(),
-        applies: true,
-        passed: m.first_control.as_ref().is_some_and(|f| {
-            f.moves_before == 0
-                && f.position_m.iter().all(|v| v.is_finite())
-                && f.yaw_deg.is_finite()
-        }) && !m.missing_shots.iter().any(|shot| shot == "first_control"),
-        detail: m.first_control.as_ref().map_or_else(
-            || "the player never gained control: no first control pose".to_owned(),
-            |f| {
-                format!(
-                    "tick {} (frame {}): position ({:.1}, {:.1}, {:.1}) m, yaw {:.1} deg, \
-                     {} scripted moves before the frame",
-                    f.tick,
-                    f.frame,
-                    f.position_m[0],
-                    f.position_m[1],
-                    f.position_m[2],
-                    f.yaw_deg,
-                    f.moves_before
-                )
-            },
-        ),
-    });
+    checks.push(evaluate_first_control(m));
 
     // --- the selected-target indicator (#1727) -----------------------------
     {
@@ -2121,6 +2119,38 @@ fn evaluate_cockpit(cockpit: &CockpitViewMetrics, checks: &mut Vec<Check>) {
                     .collect::<Vec<_>>()
             ),
         });
+    }
+}
+
+/// The first-control-frame check: the pose the run read at the first frame
+/// the player owned, and the framebuffer that proves the flight drew.
+/// Shared by the scripted mode and the start-flow smoke's mission legs
+/// (#1832).
+fn evaluate_first_control(m: &SmokeMeasurements) -> Check {
+    Check {
+        id: "first_control_frame".to_owned(),
+        applies: true,
+        passed: m.first_control.as_ref().is_some_and(|f| {
+            f.moves_before == 0
+                && f.position_m.iter().all(|v| v.is_finite())
+                && f.yaw_deg.is_finite()
+        }) && !m.missing_shots.iter().any(|shot| shot == "first_control"),
+        detail: m.first_control.as_ref().map_or_else(
+            || "the player never gained control: no first control pose".to_owned(),
+            |f| {
+                format!(
+                    "tick {} (frame {}): position ({:.1}, {:.1}, {:.1}) m, yaw {:.1} deg, \
+                     {} scripted moves before the frame",
+                    f.tick,
+                    f.frame,
+                    f.position_m[0],
+                    f.position_m[1],
+                    f.position_m[2],
+                    f.yaw_deg,
+                    f.moves_before
+                )
+            },
+        ),
     }
 }
 
@@ -2708,6 +2738,12 @@ struct SmokeData {
     /// The frame the current pause-map step began, for its short timed beats
     /// (the settle before a shot, the held mouse press) (#1923).
     pause_map_mark: u32,
+    /// The start-flow mode's leave-the-flight steps (#1832): map drawn → its
+    /// frame → the Quit click → the press seen, each waiting on the screens'
+    /// own state like the pause-map phase's.
+    leave_step: u8,
+    /// The frame the current leave step began.
+    leave_mark: u32,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -2746,6 +2782,10 @@ enum Phase {
     /// click **Return to Game**, photograph the map again, then `Esc` to
     /// resume (PARITY3-PAUSE-MAP-SCREEN.02-A/.02-E.02, #1873/#1923).
     PauseMap,
+    /// The start-flow smoke's leave-the-flight stage (#1832): the short
+    /// flight's frame, `Esc`, the pause map's frame, then **Quit** through
+    /// the map's own click path.
+    Leave,
     /// The cockpit views: `F8` three times, a frame and a reading at each
     /// stop, 0 -> 7 -> 6 -> 0 (PARITY3-COCKPIT-VIEW.05, #1813).
     Cockpit,
@@ -2998,16 +3038,24 @@ struct FlakParams<'w> {
 /// its Preferences button's authored rect and the overlay it opens — the
 /// open flag and the drawn Return to Game row the detour clicks.
 #[derive(SystemParam)]
-struct PauseMapParams<'w> {
+struct PauseMapParams<'w, 's> {
     /// Whether the map's parts are spawned.
     shown: Option<Res<'w, PauseMapShown>>,
     /// The record the map was read from (the button's position and size).
     source: Option<Res<'w, PauseMapSource>>,
     /// The overlay the Preferences button opened.
     overlay: Option<Res<'w, PreferencesOverlay>>,
+    /// The end the flight reported to the start flow (#1831): present only
+    /// when a `--from-start-flow` mission's Quit landed — the start-flow
+    /// smoke's first leg reads it as its return proof (#1832).
+    left: Option<Res<'w, super::MissionLeft>>,
+    /// Every button press the map's own click path accepted. `None` where no
+    /// pause map is installed (a unit app that never composes one): a
+    /// missing stream is simply no presses.
+    presses: Option<MessageReader<'w, 's, PauseMapPress>>,
 }
 
-impl PauseMapParams<'_> {
+impl PauseMapParams<'_, '_> {
     /// The Preferences button's centre in the screens' shared logical
     /// 800x600 space.
     fn preferences_centre(&self) -> Option<(f32, f32)> {
@@ -3017,6 +3065,26 @@ impl PauseMapParams<'_> {
             .buttons
             .iter()
             .find(|button| button.kind == PauseButtonKind::Preferences)?;
+        let (width, height) = source
+            .artwork
+            .get(&button.bitmaps[0].to_ascii_lowercase())
+            .map(|art| (art.width() as f32, art.height() as f32))
+            .unwrap_or((132.0, 28.0));
+        Some((
+            button.at.x as f32 + width / 2.0,
+            button.at.y as f32 + height / 2.0,
+        ))
+    }
+
+    /// The Quit button's centre in the same space (#1832): the start-flow
+    /// smoke's leave-the-flight stage clicks the mission out through it.
+    fn quit_centre(&self) -> Option<(f32, f32)> {
+        let source = self.source.as_deref()?;
+        let button = source
+            .scene
+            .buttons
+            .iter()
+            .find(|button| button.kind == PauseButtonKind::Quit)?;
         let (width, height) = source
             .artwork
             .get(&button.bitmaps[0].to_ascii_lowercase())
@@ -3553,6 +3621,7 @@ fn smoke_sample(
     bind_log: Option<Res<AudioBindLog>>,
     host: Option<Res<MissionHost>>,
     messages: Option<Res<MissionMessages>>,
+    return_to_front_end: Option<Res<super::ReturnToFrontEnd>>,
 ) {
     if data.frame == 1 {
         data.measured_start_m = Some(state.spawn_m);
@@ -3574,6 +3643,12 @@ fn smoke_sample(
             data.measurements.engagement = Some(EngagementMetrics {
                 watch_frames: config.request.seconds.saturating_mul(60),
                 ..EngagementMetrics::default()
+            });
+        }
+        if config.mode == MissionSmokeMode::StartFlow {
+            data.measurements.start_flow = Some(start_flow::StartFlowMetrics {
+                return_to_front_end: return_to_front_end.is_some(),
+                ..start_flow::StartFlowMetrics::default()
             });
         }
     }
@@ -3713,7 +3788,10 @@ fn smoke_cinematic(
     playback: Option<Res<super::launch_camera::LaunchCameraPlayback>>,
 ) {
     let Some(phase) = phase else { return };
-    if config.mode != MissionSmokeMode::Scripted {
+    if !matches!(
+        config.mode,
+        MissionSmokeMode::Scripted | MissionSmokeMode::StartFlow
+    ) {
         return;
     }
     if data.frame == 1 {
@@ -3917,7 +3995,7 @@ fn smoke_script(
     targeting: TargetingParams<'_, '_>,
     mut flak: FlakParams<'_>,
     flare: FlareParams<'_, '_>,
-    pause_map: PauseMapParams<'_>,
+    mut pause_map: PauseMapParams<'_, '_>,
 ) {
     let frame = data.frame;
     if frame == 1 {
@@ -3978,6 +4056,15 @@ fn smoke_script(
                 data.phase = Phase::Final;
                 data.phase_start = frame + 1;
             }
+        }
+        // #1832 `PARITY5-START-FLOW.04`: the mission leg's own sequence —
+        // a short measured flight, then the Esc map's Quit leaves it.
+        Phase::Settle
+            if config.mode == MissionSmokeMode::StartFlow && at >= START_FLOW_FLIGHT_FRAMES =>
+        {
+            due.push("flight".to_owned());
+            data.phase = Phase::Leave;
+            data.phase_start = frame + 1;
         }
         Phase::Settle if at >= SETTLE_FRAMES => {
             data.phase = Phase::WorldProbe;
@@ -4490,6 +4577,84 @@ fn smoke_script(
             }
             if at >= PAUSE_MAP_BUDGET_FRAMES {
                 data.phase = Phase::Cockpit;
+                data.phase_start = frame + 1;
+            }
+        }
+        // #1832 `PARITY5-START-FLOW.04`: the Esc map's **Quit** ends the
+        // flight. Every step waits on the screens' own state like the
+        // pause-map phase's — the drawn map, its frame, the click's own
+        // press — and a press that never lands fails its checks instead of
+        // hanging the run. The report is written the frame the map's Quit
+        // press lands: that frame also carries the map's own `AppExit`, so
+        // there is no later frame to finish on.
+        Phase::Leave => {
+            let shown = pause_map.shown.as_deref().is_some_and(|shown| shown.0);
+            let since = frame.saturating_sub(data.leave_mark);
+            if at == 0 {
+                queue.0.push(KeyOp::Press(KeyCode::Escape));
+            } else if at == PAUSE_MAP_CLICK_FRAMES {
+                queue.0.push(KeyOp::Release(KeyCode::Escape));
+            }
+            match data.leave_step {
+                // The drawn map answers the opening Esc.
+                0 => {
+                    if shown {
+                        if let Some(metrics) = data.measurements.start_flow.as_mut() {
+                            metrics.map_shown = true;
+                        }
+                        data.leave_step = 1;
+                        data.leave_mark = frame;
+                    }
+                }
+                // The open map's frame, then the Quit click's press edge on
+                // its authored centre.
+                1 => {
+                    if since == PAUSE_MAP_OPEN_SHOT_FRAMES {
+                        due.push("pause_map".to_owned());
+                    } else if since == PAUSE_MAP_OPEN_SHOT_FRAMES + 2
+                        && let Some((x, y)) = pause_map.quit_centre()
+                    {
+                        queue.0.push(KeyOp::CursorAt(x, y));
+                        queue.0.push(KeyOp::MouseDown);
+                        data.leave_step = 2;
+                        data.leave_mark = frame;
+                    }
+                }
+                // The click's release edge.
+                2 if since == PAUSE_MAP_CLICK_FRAMES => {
+                    queue.0.push(KeyOp::MouseUp);
+                    data.leave_step = 3;
+                    data.leave_mark = frame;
+                }
+                _ => {}
+            }
+            // The presses the map's own click path accepted — read every
+            // frame: the map answers the Quit click's press edge with its
+            // own `AppExit`, so the frame the press lands is the last frame
+            // the run has to write the report in.
+            if let Some(metrics) = data.measurements.start_flow.as_mut() {
+                if let Some(presses) = pause_map.presses.as_mut() {
+                    for press in presses.read() {
+                        if press.0 == PauseButtonKind::Quit {
+                            metrics.quit_clicked = true;
+                        }
+                    }
+                }
+                if let Some(left) = pause_map.left.as_deref() {
+                    metrics.mission_left = Some(left.0.key().to_owned());
+                    metrics.quit_clicked = true;
+                }
+            }
+            let quit_landed = data
+                .measurements
+                .start_flow
+                .as_ref()
+                .is_some_and(|metrics| metrics.quit_clicked);
+            if quit_landed {
+                end_run(&config, &mut data, &shots, &mut exit, frame);
+            }
+            if data.phase == Phase::Leave && at >= START_FLOW_LEAVE_BUDGET_FRAMES {
+                data.phase = Phase::Final;
                 data.phase_start = frame + 1;
             }
         }

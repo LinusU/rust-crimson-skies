@@ -170,9 +170,10 @@ pub use sound::{
     MenuSoundError, MenuSoundTable, SOUND_DIRECTORY, cue_sample_id, decode_wave, music_sample_id,
 };
 pub use start_flow::{
-    FIRST_MISSION, MissionEnd, NOT_IMPLEMENTED, NotImplemented, Presentation, StartFlow,
+    FIRST_MISSION, FRONT_END_SMOKE_SUBDIR, MISSION_SMOKE_SUBDIR, MissionEnd, NOT_IMPLEMENTED,
+    NotImplemented, Presentation, REPLAY_SMOKE_SUBDIR, RESUMED_SMOKE_SUBDIR, StartFlow,
     StartFlowError, StartFlowRequest, StartRefusal, StartStep, handover_args, presentation,
-    return_args, return_to_front_end, run_start_flow, screen_of_section,
+    return_args, return_args_smoke, return_to_front_end, run_start_flow, screen_of_section,
 };
 pub use window::{
     DEFAULT_FRONT_END_CAPTURE_DIR, FrontEndError, FrontEndRequest, FrontEndShellPlugin,

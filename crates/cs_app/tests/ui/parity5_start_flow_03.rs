@@ -26,6 +26,7 @@ fn accept_parity5_start_flow_03_handover_and_return_commands_round_trip() {
     let request = StartFlowRequest {
         cs_path: PathBuf::from("/retail"),
         resume: None,
+        smoke: None,
     };
     match cli::parse(handover_args(&request, FIRST_MISSION)) {
         CliRequest::Mission(mission) => assert!(mission.from_start_flow),
@@ -42,6 +43,7 @@ fn accept_parity5_start_flow_03_handover_and_return_commands_round_trip() {
             CliRequest::StartFlow(StartFlowRequest {
                 cs_path: PathBuf::from("/retail"),
                 resume: Some(end),
+                smoke: None,
             })
         );
     }

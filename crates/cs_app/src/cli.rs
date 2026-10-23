@@ -77,6 +77,13 @@ pub struct MissionRequest {
     /// `--joystick <device>`, `--force-feedback-gain <percent>`,
     /// `--no-force-feedback`; SIDEWINDER-FFB2, #1968).
     pub joystick: crate::input::hid::HostJoystickOptions,
+    /// `--smoke-start-flow`: the mission is one leg of the owner-command
+    /// start-flow smoke (`cs --cs-path <dir> --smoke-seconds <n>`, Rally #1832
+    /// `PARITY5-START-FLOW.04`): the smoke goes through the briefing, the
+    /// Flight Check and the launch cinematic like the scripted mode, then
+    /// flies a short flight, opens the Esc pause map and presses **Quit** —
+    /// the outcome the chain's next leg resumes (or ends) on.
+    pub smoke_start_flow: bool,
 }
 
 /// A `--joystick-probe` request: list the host's joysticks, show one's controls
@@ -184,6 +191,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
     let mut dev_keys = false;
     let mut smoke_engagement = false;
     let mut smoke_failure = false;
+    let mut smoke_start_flow = false;
     let mut front_end = false;
     let mut from_start_flow = false;
     let mut resume_start_flow: Option<String> = None;
@@ -210,6 +218,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
             "--dev-keys" => dev_keys = true,
             "--smoke-engagement" => smoke_engagement = true,
             "--smoke-failure" => smoke_failure = true,
+            "--smoke-start-flow" => smoke_start_flow = true,
             "--front-end" => front_end = true,
             "--from-start-flow" => from_start_flow = true,
             "--joystick-probe" => joystick_probe = true,
@@ -446,6 +455,20 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
                 .to_string(),
         };
     }
+    if smoke_start_flow
+        && (mission.is_none()
+            || smoke_seconds.is_none()
+            || smoke_no_teleport
+            || smoke_engagement
+            || smoke_failure)
+    {
+        return CliRequest::Invalid {
+            reason: "--smoke-start-flow is a mode of --cs-path <dir> --mission <id> \
+ --smoke-seconds <n> and does not combine with --smoke-no-teleport, --smoke-engagement or \
+ --smoke-failure"
+                .to_string(),
+        };
+    }
     if from_start_flow && mission.is_none() {
         return CliRequest::Invalid {
             reason: "--from-start-flow is a mode of --cs-path <dir> --mission <id>: it is how \
@@ -464,17 +487,17 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
             || ticks.is_some()
             || trace.is_some()
             || seed.is_some()
-            || smoke_seconds.is_some()
-            || capture_dir.is_some()
             || smoke_no_teleport
             || dev_overlay
             || dev_keys
             || smoke_engagement
-            || smoke_failure)
+            || smoke_failure
+            || smoke_start_flow)
     {
         return CliRequest::Invalid {
             reason: "--resume-start-flow re-opens the start flow (`cs --cs-path <dir>`) after a \
- mission; it combines with no other flag"
+ mission; it combines with no flag but the owner-command smoke's --smoke-seconds <n> \
+ [--capture-dir <dir>] (#1832)"
                 .to_string(),
         };
     }
@@ -578,6 +601,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
             smoke_failure,
             from_start_flow,
             joystick,
+            smoke_start_flow,
         });
     }
     if playtest {
@@ -633,8 +657,6 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
         && aircraft.is_none()
         && !synthetic
         && !headless
-        && smoke_seconds.is_none()
-        && capture_dir.is_none()
         && ticks.is_none()
         && trace.is_none()
         && seed.is_none()
@@ -642,7 +664,16 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
         && !dev_overlay
         && !dev_keys
         && !smoke_engagement
+        && !smoke_failure
+        && !smoke_start_flow
     {
+        if capture_dir.is_some() && smoke_seconds.is_none() {
+            return CliRequest::Invalid {
+                reason: "--capture-dir is where --cs-path <dir> --smoke-seconds <n> writes \
+ its artifacts; the interactive start flow writes none"
+                    .to_string(),
+            };
+        }
         let resume = match resume_start_flow.as_deref() {
             None => None,
             Some(key) => match MissionEnd::from_key(key) {
@@ -656,9 +687,32 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
                 }
             },
         };
+        // The owner-command smoke (#1832 `PARITY5-START-FLOW.04`): the given
+        // directory is the chain's root; each leg's own subdirectory is picked
+        // when the leg runs — `front-end/` or `resumed/` for the windowed
+        // front end (`run_start_flow`), `mission/` and `replay/` on the
+        // command lines `handover_args` writes.
+        let smoke = match smoke_seconds {
+            Some(seconds) if seconds < MIN_MISSION_SMOKE_SECONDS => {
+                return CliRequest::Invalid {
+                    reason: format!(
+                        "--smoke-seconds must be at least {MIN_MISSION_SMOKE_SECONDS}: the \
+ start-flow smoke's mission legs are the mission smoke's own scripted run, which needs \
+ that long to fly, pause and leave"
+                    ),
+                };
+            }
+            Some(seconds) => Some(SmokeRequest {
+                seconds,
+                capture_dir: capture_dir
+                    .unwrap_or_else(|| PathBuf::from(DEFAULT_FRONT_END_CAPTURE_DIR)),
+            }),
+            None => None,
+        };
         return CliRequest::StartFlow(StartFlowRequest {
             cs_path: cs_path.clone(),
             resume,
+            smoke,
         });
     }
     if cs_path.is_some() || world.is_some() || aircraft.is_some() {
@@ -854,6 +908,19 @@ START FLOW (windowed)
         Campaign pilot page, the cabin) is refused on stderr with its task,
         never replaced. Reaching the briefing hands over to
         `--cs-path <dir> --mission M01`
+    --cs-path <dir> --smoke-seconds <n> [--capture-dir <dir>]
+        The owner-command start-flow smoke (n >= 45, Rally #1832): a chain of
+        process images scripts the whole front end and a flight — main menu,
+        pilot selection, intro movie, cabin, briefing, Flight Check, launch
+        cinematic, a short flight, the pause map's Quit, the cabin again and
+        a replayed mission — each leg writing framebuffer PNGs and
+        report.json under <dir>/front-end, <dir>/mission, <dir>/resumed and
+        <dir>/replay (the root defaults to private/front-end). A screen or a
+        frame that never arrives fails the run non-zero, named. A scripted
+        run is never human_play
+    --mission <id> --smoke-seconds <n> --smoke-start-flow [--capture-dir <dir>]
+        One mission leg of the same smoke — the flag the chain's own
+        hand-overs carry; it is not meant to be typed by hand
 
 ORIGINAL FRONT END (windowed)
     --cs-path <dir> --front-end

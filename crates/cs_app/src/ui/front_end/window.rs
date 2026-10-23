@@ -89,7 +89,7 @@ use super::shell::{
     ButtonVisual, MenuShell, SECTION_SURFACE, START_SECTION, ShellOutcome, ShellView,
 };
 use super::sound::{MenuAudio, MenuAudioEvent, MenuCue, MenuSamples, MenuSoundTable};
-use super::start_flow::{StartFlow, StartStep};
+use super::start_flow::{FIRST_MISSION, StartFlow, StartStep};
 use super::{Artwork, ShellError};
 use crate::audio::CapabilityDeclaration;
 use crate::cinematics::movie_player::{AudioOutput, MoviePlayerPlugin};
@@ -1585,6 +1585,19 @@ pub enum SmokeScene {
     /// intro movie → cabin → a not-implemented notice → back to the main
     /// menu ([`flow_script`]).
     Flow,
+    /// The owner-command smoke's first leg (#1832 `PARITY5-START-FLOW.04`):
+    /// `cs --cs-path <retail> --smoke-seconds <n> --capture-dir <dir>` walks
+    /// the main menu → Campaign → a typed new pilot → Continue → the intro
+    /// movie → the cabin, then presses **Next Mission** so the run hands the
+    /// process over to the mission instead of ending on a timer
+    /// ([`start_flow_script`]).
+    StartFlow,
+    /// The owner-command smoke's return leg (#1832):
+    /// `cs --cs-path <retail> --resume-start-flow <end> --smoke-seconds <n>
+    /// --capture-dir <dir>` opens on the cabin, photographs it and presses
+    /// **Next Mission** again, replaying the mission the player left
+    /// ([`start_flow_resumed_script`]).
+    StartFlowResumed,
 }
 
 /// The environment variable that selects [`SmokeScene::Cabin`] for
@@ -1866,6 +1879,53 @@ fn flow_script() -> Vec<(u32, Step)> {
     ]
 }
 
+/// The owner-command smoke's first leg (#1832 `PARITY5-START-FLOW.04`):
+/// settle → `mainmenu` → hover and click `MM_B_CAMPAIGN` → `campaign` → type
+/// the pilot's name → `pilot` → `CM_B_START` (the intro movie starts) →
+/// `intro` → Esc skips the movie → `cabin` → hover and click
+/// `PC_B_NEWMISSION`, which takes the mission hand-over the table's Launch
+/// row names. The run does not end on a timer: [`step_smoke`] finishes it the
+/// frame the hand-over lands, and `run_start_flow` replaces the process with
+/// the mission leg. Every required screen names itself in a failure when its
+/// framebuffer never arrives.
+#[inline(always)]
+fn start_flow_script() -> Vec<(u32, Step)> {
+    let at = |seconds: f64| (seconds * SMOKE_FRAME_HZ) as u32;
+    vec![
+        (at(0.5), Step::Shot("mainmenu")),
+        (at(1.0), Step::HoverButton("MM_B_CAMPAIGN")),
+        (at(1.4), Step::Mouse(true)),
+        (at(1.6), Step::Mouse(false)),
+        (at(2.0), Step::Shot("campaign")),
+        (at(2.1), Step::Type("Eve")),
+        (at(2.3), Step::Shot("pilot")),
+        (at(2.5), Step::HoverButton("CM_B_START")),
+        (at(2.7), Step::Mouse(true)),
+        (at(2.9), Step::Mouse(false)),
+        (at(4.0), Step::Shot("intro")),
+        (at(10.0), Step::Key(KeyCode::Escape, true)),
+        (at(10.1), Step::Key(KeyCode::Escape, false)),
+        (at(11.0), Step::Shot("cabin")),
+        (at(11.4), Step::HoverButton("PC_B_NEWMISSION")),
+        (at(11.6), Step::Mouse(true)),
+        (at(11.8), Step::Mouse(false)),
+    ]
+}
+
+/// The owner-command smoke's return leg (#1832): the run opens on the cabin
+/// (the flow resumed after the mission the player left), photographs it and
+/// presses **Next Mission** — the replay the hand-over then launches.
+#[inline(always)]
+fn start_flow_resumed_script() -> Vec<(u32, Step)> {
+    let at = |seconds: f64| (seconds * SMOKE_FRAME_HZ) as u32;
+    vec![
+        (at(0.6), Step::Shot("cabin")),
+        (at(1.0), Step::HoverButton("PC_B_NEWMISSION")),
+        (at(1.2), Step::Mouse(true)),
+        (at(1.4), Step::Mouse(false)),
+    ]
+}
+
 /// The smoke run as a plugin.
 pub struct ShellSmokePlugin {
     scene: SmokeScene,
@@ -1893,6 +1953,8 @@ impl ShellSmokePlugin {
                 SmokeScene::MainMenu => script(),
                 SmokeScene::Cabin => cabin_script(),
                 SmokeScene::Flow => flow_script(),
+                SmokeScene::StartFlow => start_flow_script(),
+                SmokeScene::StartFlowResumed => start_flow_resumed_script(),
             },
             handle: ShellSmokeHandle::default(),
         }
@@ -2046,22 +2108,21 @@ fn step_smoke(world: &mut World, state: &ShellResource, smoke: &mut ShellSmoke) 
     }
     let delivered = smoke.shots.lock().map_or(0, |shots| shots.len());
     let finished = delivered >= smoke.shots_requested;
-    if frame >= end_frame && (finished || frame >= end_frame + SCREENSHOT_GRACE_FRAMES) {
-        let facts = FlowFacts {
-            intro: state
-                .intro
-                .outcomes
-                .iter()
-                .map(|outcome| format!("{outcome:?}"))
-                .collect(),
-            notices: state.flow.as_ref().map_or_else(Vec::new, |flow| {
-                flow.not_implemented_seen()
-                    .iter()
-                    .map(|entry| entry.button.to_owned())
-                    .collect()
-            }),
-            notice_open: state.flow.as_ref().is_some_and(|f| f.notice().is_some()),
-        };
+    // The owner-command smoke's legs end on the mission hand-over, not on
+    // the timer: `frame_shell` writes the Launch step's AppExit this same
+    // frame, so the report is written now or never. A required framebuffer
+    // still in flight lands in the report as missing, named by its label.
+    let handed_over = matches!(
+        smoke.scene,
+        SmokeScene::StartFlow | SmokeScene::StartFlowResumed
+    ) && state
+        .flow
+        .as_ref()
+        .is_some_and(|flow| flow.handover().is_some());
+    if handed_over
+        || (frame >= end_frame && (finished || frame >= end_frame + SCREENSHOT_GRACE_FRAMES))
+    {
+        let facts = flow_facts(state);
         let report = evaluate(smoke, &state.run, state.audio.as_ref(), &facts);
         let outcome = write_artifacts(&smoke.request.capture_dir, &report)
             .map(|()| report.clone())
@@ -2169,6 +2230,79 @@ fn evaluate(
                 shot.mean_luminance
             ));
         }
+    }
+    // The owner-command smoke's legs (#1832 `PARITY5-START-FLOW.04`): the
+    // first leg walks MainMenu → Campaign → PassengerCabin and hands over to
+    // the mission; the resumed leg opens on the cabin and replays. Every
+    // required screen names itself when its framebuffer never arrived, and a
+    // screen the machine refused names itself in `refusals`.
+    if matches!(
+        smoke.scene,
+        SmokeScene::StartFlow | SmokeScene::StartFlowResumed
+    ) {
+        let resumed = smoke.scene == SmokeScene::StartFlowResumed;
+        let expected: &[&str] = if resumed {
+            &["PassengerCabin"]
+        } else {
+            &["MainMenu", "Campaign", "PassengerCabin"]
+        };
+        if run.visited != expected {
+            failures.push(format!(
+                "the start-flow leg visited {:?}, expected {}",
+                run.visited,
+                expected.join(" → ")
+            ));
+        }
+        let intro_wanted = usize::from(!resumed);
+        if facts.intro.len() != intro_wanted {
+            failures.push(format!(
+                "the intro ended {} times ({:?}); expected {intro_wanted}",
+                facts.intro.len(),
+                facts.intro
+            ));
+        }
+        if !facts.notices.is_empty() {
+            failures.push(format!(
+                "not-implemented notices opened during the leg: {:?}",
+                facts.notices
+            ));
+        }
+        if facts.notice_open {
+            failures.push("a not-implemented notice was still up at the hand-over".to_owned());
+        }
+        match facts.handover.as_deref() {
+            Some(mission) if mission == FIRST_MISSION => {}
+            other => failures.push(format!(
+                "the leg handed over to {other:?}; expected Some(\"{FIRST_MISSION}\")"
+            )),
+        }
+        for refusal in &facts.refusals {
+            failures.push(format!("the start flow refused a screen: {refusal}"));
+        }
+        let required: &[&str] = if resumed {
+            &["cabin"]
+        } else {
+            &["mainmenu", "campaign", "intro", "cabin"]
+        };
+        for label in required {
+            if !shots.iter().any(|shot| shot.label == *label) {
+                failures.push(format!(
+                    "the {label} framebuffer never arrived — that screen was not captured"
+                ));
+            }
+        }
+        if run.unhandled != 0 {
+            failures.push(format!(
+                "{} presses landed on buttons with no known effect (expected none)",
+                run.unhandled
+            ));
+        }
+        let mut audio_lines = Vec::new();
+        if let Some(note) = &run.audio_note {
+            audio_lines.push(format!("no audio output: {note}"));
+        }
+        audio_lines.push(format!("intro outcomes {:?}", facts.intro));
+        return smoke_report(smoke, run, shots, failures, audio_lines, audio);
     }
     if smoke.scene == SmokeScene::Flow {
         // The notice and its dismissal do not move the section.
@@ -2336,6 +2470,36 @@ struct FlowFacts {
     notices: Vec<String>,
     /// A notice is up now.
     notice_open: bool,
+    /// The mission the hand-over named (`Some` once the Launch row ran).
+    handover: Option<String>,
+    /// Every screen the machine refused, in order.
+    refusals: Vec<String>,
+}
+
+/// Collects the [`FlowFacts`] of the run.
+fn flow_facts(state: &ShellResource) -> FlowFacts {
+    FlowFacts {
+        intro: state
+            .intro
+            .outcomes
+            .iter()
+            .map(|outcome| format!("{outcome:?}"))
+            .collect(),
+        notices: state.flow.as_ref().map_or_else(Vec::new, |flow| {
+            flow.not_implemented_seen()
+                .iter()
+                .map(|entry| entry.button.to_owned())
+                .collect()
+        }),
+        notice_open: state.flow.as_ref().is_some_and(|f| f.notice().is_some()),
+        handover: state
+            .flow
+            .as_ref()
+            .and_then(|flow| flow.handover().map(str::to_owned)),
+        refusals: state.flow.as_ref().map_or_else(Vec::new, |flow| {
+            flow.refusals().iter().map(ToString::to_string).collect()
+        }),
+    }
 }
 
 /// The report of a finished pass.
@@ -2483,19 +2647,21 @@ fn json_f32(value: f32) -> String {
 pub fn shell_app(
     request: &FrontEndRequest,
 ) -> Result<(App, Option<ShellSmokeHandle>), FrontEndError> {
-    if request.smoke.is_some() && SmokeScene::from_env() == SmokeScene::Flow {
-        return shell_app_with(request, Some(StartFlow::new()));
+    let scene = SmokeScene::from_env();
+    if request.smoke.is_some() && scene == SmokeScene::Flow {
+        return shell_app_with(request, Some(StartFlow::new()), scene);
     }
-    if request.smoke.is_some() && SmokeScene::from_env() == SmokeScene::Cabin {
+    if request.smoke.is_some() && scene == SmokeScene::Cabin {
         let flow = StartFlow::after_mission(super::start_flow::MissionEnd::ReturnedToCabin)
             .map_err(|refusal| FrontEndError::Exit(refusal.to_string()))?;
-        return shell_app_with(request, Some(flow));
+        return shell_app_with(request, Some(flow), scene);
     }
-    shell_app_with(request, None)
+    shell_app_with(request, None, scene)
 }
 
 /// As [`shell_app`], with the F45 machine in charge of the shell's moves when
-/// `flow` is given (the start flow, [`super::start_flow`]).
+/// `flow` is given (the start flow, [`super::start_flow`]) and `scene` picking
+/// the smoke run's script and checks when `request.smoke` is set.
 ///
 /// # Errors
 ///
@@ -2503,6 +2669,7 @@ pub fn shell_app(
 pub(super) fn shell_app_with(
     request: &FrontEndRequest,
     flow: Option<StartFlow>,
+    scene: SmokeScene,
 ) -> Result<(App, Option<ShellSmokeHandle>), FrontEndError> {
     let screens = FrontEndScreens::open(&request.cs_path).map_err(FrontEndError::Retail)?;
     let layout = screens.original_layout().map_err(FrontEndError::Retail)?;
@@ -2592,11 +2759,6 @@ pub(super) fn shell_app_with(
         Some(flow) => plugin.with_flow(flow),
         None => plugin,
     });
-    let scene = if request.smoke.is_some() {
-        SmokeScene::from_env()
-    } else {
-        SmokeScene::MainMenu
-    };
     let handle = request.smoke.as_ref().map(|smoke| {
         let plugin = ShellSmokePlugin::windowed_scene(smoke.clone(), scene);
         let handle = plugin.handle();
@@ -2676,7 +2838,7 @@ fn pilot_setup(request: &FrontEndRequest, layout: &super::OriginalLayout) -> Opt
 /// [`FrontEndError::SmokeFailed`] when any check failed,
 /// [`FrontEndError::Exit`] when the run produced no report.
 #[inline(always)]
-fn finish(
+pub(super) fn finish(
     handle: &ShellSmokeHandle,
     request: &SmokeRequest,
 ) -> Result<ShellSmokeReport, FrontEndError> {
