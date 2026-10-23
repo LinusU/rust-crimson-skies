@@ -37,7 +37,7 @@
 //! it through [`propeller_spin_json`].
 
 use bevy::math::{Quat, Vec3};
-use bevy::prelude::{ChildOf, Component, Query, Res, Time, Transform, Visibility, With};
+use bevy::prelude::{ChildOf, Component, Or, Query, Res, Time, Transform, Visibility, With};
 use bevy::time::Virtual;
 use cs_sim::flight::EngineState;
 
@@ -259,6 +259,14 @@ pub fn spin_propellers(
 #[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PropellerBlur;
 
+/// Marks the **second** blur disc (`prop1b`, also `rotorblur.tif`): `spinprops`
+/// makes `prop1` and `prop1b` active together and sets no opacity on either
+/// (`docs/findings/2026-10-23-parity2-dmg-fx-levels.md`, section 4), so it
+/// shows exactly when the [`PropellerBlur`] does. Kept apart from
+/// [`PropellerBlur`] because that marks the damage trail's `prop1` anchor.
+#[derive(Component, Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct PropellerBlurSecond;
+
 /// Marks the static propeller blades (`staticprop1`) of an airframe that also
 /// carries a [`PropellerBlur`] disc: they draw while the engine is stopped and
 /// give way to the blur disc while it runs, as the owner capture of the
@@ -278,7 +286,10 @@ pub const fn propeller_blur_visible(engine: EngineState) -> bool {
 /// blur part's own [`Visibility`].
 pub fn update_propeller_blur(
     engines: Query<(Option<&FlightAircraft>, Option<&PlaytestOriginalFlight>)>,
-    mut blurs: Query<(&ChildOf, &mut Visibility), With<PropellerBlur>>,
+    mut blurs: Query<
+        (&ChildOf, &mut Visibility),
+        Or<(With<PropellerBlur>, With<PropellerBlurSecond>)>,
+    >,
 ) {
     for (child, mut visibility) in &mut blurs {
         let Ok((aircraft, original)) = engines.get(child.parent()) else {

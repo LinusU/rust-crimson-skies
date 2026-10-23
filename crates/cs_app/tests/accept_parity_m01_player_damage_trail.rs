@@ -10,9 +10,7 @@ use std::collections::BTreeMap;
 
 use bevy::asset::Assets;
 use bevy::mesh::Mesh;
-use bevy::prelude::{
-    App, FixedPostUpdate, GlobalTransform, Handle, Image, Transform, Vec3, Visibility,
-};
+use bevy::prelude::{App, FixedPostUpdate, GlobalTransform, Handle, Image, Transform, Vec3};
 use cs_app::mission_session::{
     DESIGNED_REGION_INTEGRITY, DamageTrailArt, DamageTrailDefinition, DamageTrailReport,
     MissionDamageTrailPlugin, TrailEmitter, TrailKind, TrailPuff, attach_player_victim, colour_at,
@@ -152,7 +150,7 @@ fn accept_parity_m01_player_damage_trail_colour_and_frame_follow_the_stored_keys
 }
 
 #[test]
-fn accept_parity_m01_player_damage_trail_plays_only_below_a_tenth_of_vehicle_health() {
+fn accept_parity2_m01_damage_effects_trail_plays_only_below_a_tenth_of_vehicle_health() {
     let mut app = trail_app();
     make_victim(&mut app);
     let anchor = app
@@ -201,7 +199,7 @@ fn accept_parity_m01_player_damage_trail_plays_only_below_a_tenth_of_vehicle_hea
 }
 
 #[test]
-fn accept_parity_m01_player_damage_trail_puffs_follow_life_fractions_and_growth() {
+fn accept_parity2_m01_damage_effects_puffs_follow_life_fractions_and_growth() {
     use cs_app::mission_session::{growth_scale, puff_colour};
     // No COLORS: white, opacity 1 - fraction of life.
     assert_eq!(puff_colour(&[], 0.25), [1.0, 1.0, 1.0, 0.75]);

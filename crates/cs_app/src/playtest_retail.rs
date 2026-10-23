@@ -2222,6 +2222,11 @@ fn select_aircraft_parts<'g>(
         .as_ref()
         .map(|(slot, name)| pinned(*slot, name, "aircraft propeller blur node"))
         .transpose()?;
+    let blur_second = config
+        .aircraft_blur_second_node
+        .as_ref()
+        .map(|(slot, name)| pinned(*slot, name, "aircraft second propeller blur node"))
+        .transpose()?;
     let flares: Vec<&SceneNode> = config
         .aircraft_flare_nodes
         .iter()
@@ -2271,6 +2276,7 @@ fn select_aircraft_parts<'g>(
         airframe_bindings += 1;
         let reason = if node.index() == prop.index()
             || blur.is_some_and(|blur| blur.index() == node.index())
+            || blur_second.is_some_and(|blur| blur.index() == node.index())
             || flares.iter().any(|flare| flare.index() == node.index())
         {
             None
@@ -2392,6 +2398,10 @@ pub struct PlaytestConfig {
     /// draw in addition to the propeller (`prop1` under `dontmove`:
     /// `rotorblur.tif`). `None` draws none, as the playtest always has.
     pub aircraft_blur_node: Option<(u32, String)>,
+    /// The stored slot and authored name of the **second** blur disc
+    /// (`prop1b`), which `spinprops` makes active together with `prop1`
+    /// (PARITY2-M01-DAMAGE-EFFECTS, #1737). `None` draws none.
+    pub aircraft_blur_second_node: Option<(u32, String)>,
     /// The stored slots and authored names of the wingtip **fire quad** nodes
     /// to draw (the player's `wing_flare1`/`wing_flare2` under `dontmove`:
     /// `oil_liteflare.tif`, PARITY-M01-PLAYER-VIEW-C2). The mission draws them
@@ -2444,6 +2454,7 @@ impl PlaytestConfig {
             aircraft_prop_node_slot: PLAYTEST_AIRCRAFT_PROP_NODE_SLOT,
             aircraft_prop_node_name: PLAYTEST_AIRCRAFT_PROP_NODE_NAME.to_owned(),
             aircraft_blur_node: None,
+            aircraft_blur_second_node: None,
             aircraft_flare_nodes: Vec::new(),
             aircraft_lod_distance_m: PLAYTEST_AIRCRAFT_LOD_DISTANCE_M,
             area_lod_distance_m: PLAYTEST_AREA_LOD_DISTANCE_M,

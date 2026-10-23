@@ -30,7 +30,9 @@ use bevy::image::Image;
 use bevy::prelude::{AlphaMode, Entity, Quat, Resource, StandardMaterial, Visibility, World};
 
 use crate::airframe_damage::{AirframeDamageRegion, WingFlare};
-use crate::playtest::propeller::{PropellerBlur, PropellerSpin, StaticPropellerBlades};
+use crate::playtest::propeller::{
+    PropellerBlur, PropellerBlurSecond, PropellerSpin, StaticPropellerBlades,
+};
 use crate::playtest_retail::{
     AircraftPartAsset, AircraftSources, PlaytestAircraftReport, PlaytestConfig, PropellerBlurSpec,
     PropellerSpinSpec, STORED_AIRCRAFT_NOSE_AXIS, build_aircraft_visual, nose_mapping,
@@ -64,13 +66,20 @@ pub const MISSION_PLAYER_PROP_NODE_NAME: &str = "staticprop1";
 
 /// The stored slot of the propeller **blur disc**: `prop1` under `dontmove`
 /// (slot 207), bound to mesh #108 whose material is `rotorblur.tif`. Its
-/// sibling `prop1b` (212, mesh #109) is a second stored state of the same
-/// texture and stays undrawn: which of the two the original shows is
-/// unmeasured (`docs/findings/2026-10-18-m01-propeller-blur-disc.md`).
+/// sibling `prop1b` ([`MISSION_PLAYER_BLUR_SECOND_NODE_SLOT`]) is drawn with
+/// it, because `spinprops` makes both active
+/// (`docs/findings/2026-10-23-parity2-dmg-fx-levels.md`, section 4).
 pub const MISSION_PLAYER_BLUR_NODE_SLOT: u32 = 211;
 
 /// The authored name the pinned blur node stores.
 pub const MISSION_PLAYER_BLUR_NODE_NAME: &str = "prop1";
+
+/// The stored slot of the second blur disc, `prop1b` (mesh #109, also
+/// `rotorblur.tif`), 0.485 m behind `prop1`.
+pub const MISSION_PLAYER_BLUR_SECOND_NODE_SLOT: u32 = 212;
+
+/// The authored name the second blur node stores.
+pub const MISSION_PLAYER_BLUR_SECOND_NODE_NAME: &str = "prop1b";
 
 /// The stored slot of the left wing's fire quad: `wing_flare1` under
 /// `dontmove`, bound to mesh #105 whose material is `oil_liteflare.tif`, at
@@ -232,6 +241,10 @@ pub fn build_player_visual(
             MISSION_PLAYER_BLUR_NODE_SLOT,
             MISSION_PLAYER_BLUR_NODE_NAME.to_owned(),
         )),
+        aircraft_blur_second_node: Some((
+            MISSION_PLAYER_BLUR_SECOND_NODE_SLOT,
+            MISSION_PLAYER_BLUR_SECOND_NODE_NAME.to_owned(),
+        )),
         aircraft_flare_nodes: vec![
             (
                 MISSION_PLAYER_FLARE_LEFT_NODE_SLOT,
@@ -304,6 +317,12 @@ pub fn spawn_player_visual(world: &mut World, body: Entity) {
             world
                 .entity_mut(entity)
                 .insert((PropellerBlur, Visibility::Hidden));
+            blend_pieces(world, part);
+        }
+        if part.node_slot == MISSION_PLAYER_BLUR_SECOND_NODE_SLOT {
+            world
+                .entity_mut(entity)
+                .insert((PropellerBlurSecond, Visibility::Hidden));
             blend_pieces(world, part);
         }
         if MISSION_PLAYER_PIRATE_HOOK_NODE_SLOTS.contains(&part.node_slot) {
