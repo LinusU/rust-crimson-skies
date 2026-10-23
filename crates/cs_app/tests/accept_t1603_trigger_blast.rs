@@ -238,6 +238,7 @@ fn fly(
                 targets: &[],
                 impacts: &impacts,
                 blast_recipients: supplied.as_deref(),
+                victim_nodes: None,
             },
         );
         if at == 0 {

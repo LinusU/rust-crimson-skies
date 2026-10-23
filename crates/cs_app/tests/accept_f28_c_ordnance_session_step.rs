@@ -257,6 +257,7 @@ fn run_step(
             targets: &[],
             impacts: &[],
             blast_recipients: None,
+            victim_nodes: None,
         },
     )
 }

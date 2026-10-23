@@ -1050,6 +1050,16 @@ pub enum OrdnanceRoutingRefusal {
         /// The item that could not be routed.
         projectile: ProjectileId,
     },
+    /// A fuse `Impact`/`Proximity` trigger named a victim the producer's
+    /// [`OrdnanceStep::victim_nodes`] table binds no damage node for. The
+    /// detonation is refused rather than aimed at the engagement's
+    /// designated target.
+    UnboundVictim {
+        /// The item that triggered.
+        projectile: ProjectileId,
+        /// The victim the trigger reached.
+        target: ActorId,
+    },
     /// The runtime refused the routing or status call.
     Runtime(OrdnanceRuntimeError),
 }
@@ -1060,6 +1070,10 @@ impl std::fmt::Display for OrdnanceRoutingRefusal {
             Self::MissingEngagement { projectile } => write!(
                 f,
                 "item {projectile} triggered but has no recorded engagement to route to"
+            ),
+            Self::UnboundVictim { projectile, target } => write!(
+                f,
+                "item {projectile} reached victim {target} but no damage node is bound for it"
             ),
             Self::Runtime(source) => write!(f, "the runtime refused the routing: {source}"),
         }
@@ -1178,6 +1192,17 @@ pub struct OrdnanceStep<'a> {
     /// launch engagement's single target, as for an item with no area. `Some`
     /// of an empty slice is "nobody is there" and delivers no damage.
     pub blast_recipients: Option<&'a [BlastRecipient]>,
+    /// The damage node each fuse victim's hits name, when the producer binds
+    /// one per actor: an `Impact` or `Proximity` trigger names the actor it
+    /// actually reached, and that actor's hits — and its status effects —
+    /// route to its own registered node here rather than the launch
+    /// engagement's designated target, which may be a different actor
+    /// entirely. A triggered victim absent from the map is an
+    /// [`OrdnanceRoutingRefusal::UnboundVictim`], not a guess. A `Timed`
+    /// trigger names no victim and still routes through the engagement.
+    /// `None` keeps the single-target behavior: every trigger routes to the
+    /// engagement's `damage_target`/`node` unchanged.
+    pub victim_nodes: Option<&'a BTreeMap<ActorId, DamageNodeKey>>,
 }
 
 // ------------------------------------------------------------------ session ---
@@ -2033,6 +2058,30 @@ pub fn step_ordnance_session(
                     area_refused: None,
                 };
 
+                // A fuse `Impact`/`Proximity` trigger names the actor it
+                // actually reached; with a producer victim table its hits land
+                // on that actor's own registered node — never defaulted to
+                // the engagement's designated target, which may be a
+                // different actor. A `Timed` trigger names no victim and
+                // still routes through the engagement.
+                let (victim, victim_node) = match (detonation.trigger, step.victim_nodes) {
+                    (
+                        FuseTrigger::Impact { target, .. } | FuseTrigger::Proximity { target, .. },
+                        Some(nodes),
+                    ) => match nodes.get(&target) {
+                        Some(node) => (target, node.clone()),
+                        None => {
+                            tick.routing_refused
+                                .push(OrdnanceRoutingRefusal::UnboundVictim { projectile, target });
+                            continue;
+                        }
+                    },
+                    _ => (engagement.damage_target, engagement.node.clone()),
+                };
+                let status_recipient = match engagement.status_recipient.system() {
+                    Some(system) => StatusEffectTarget::actor_system(victim, system),
+                    None => StatusEffectTarget::whole_actor(victim),
+                };
                 let declares_area = session
                     .runtime
                     .get(&projectile)
@@ -2048,8 +2097,8 @@ pub fn step_ordnance_session(
                         session.session_id,
                         step.at,
                         &projectile,
-                        engagement.damage_target,
-                        engagement.node.clone(),
+                        victim,
+                        victim_node,
                     ),
                 };
                 match routed {
@@ -2063,7 +2112,7 @@ pub fn step_ordnance_session(
                             session.session_id,
                             step.at,
                             &projectile,
-                            engagement.status_recipient,
+                            status_recipient,
                         ) {
                             Ok(instances) => {
                                 for instance in instances {
@@ -2112,7 +2161,7 @@ pub fn step_ordnance_session(
                             OrdnanceEventKind::Triggered {
                                 shooter,
                                 projectile,
-                                target: engagement.damage_target,
+                                target: victim,
                             },
                         );
                         tick.events.push(event);
