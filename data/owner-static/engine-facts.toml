@@ -5339,3 +5339,306 @@ name = "animation.range_square"
 va = 0x0051edb0
 bytes = "d983a8000000d9c0d8c9d99ba8000000dd"
 fact = "squaring of the range maximum [anim+0xa8] at 0x51edb0..0x51edba"
+
+# The M01 audio timeline, task #1939 (PARITY6-M01-AUDIO-SFX-PICK, finding
+# docs/findings/2026-10-23-m01-audio-sfx-group-pick.md): how the engine picks one
+# member from a DYNAMIC_WEIGHTS sound group, and which VO lines that share a
+# burst size M01 can start. `bytes` are the cited image bytes at `va`. Nothing
+# here is verified_original.
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "group.handle_kind"
+va = 0x00599af4
+bytes = "68f40000006a01ff15b401a20083c40885c08944240c75055e83c40cc3538d5804c70001000000c74304"
+fact = "every record of the SOUND_GROUPS list is built by 0x599ae0(node), which callocs 0xf4 bytes, stores the kind dword 1 at [handle] (0x599b15) and works on the group part at handle+4; so a group handle has [handle]==1 for music and sound-effect groups alike (there is no separate sound-effect group builder: the DYNAMIC_WEIGHTS keyword is parsed only here, string 0x63af8c referenced only at 0x599cf0)"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "group.lookup_by_name"
+va = 0x00596157
+bytes = "57e8f338000083c4045f"
+fact = "the name resolver 0x596120(name) first searches the single-sound list [0x9ad6dc] with 0x596af0, and when nothing matches returns 0x599a50(name), the lookup of a group record by name in the group list [0x9ad718]; so a weapon row, an effect sequence or the pilot-voice table that names a *_sg group receives the group handle"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "group.play_dispatch"
+va = 0x005935ab
+bytes = "833e017510"
+fact = "0x593590(handle, gain): a handle whose first dword is 1 goes to 0x59ab40 (0x5935b6) instead of the 3D play 0x593b80, i.e. every play of a *_sg group starts a group voice"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "group.voice_start"
+va = 0x0059ac04
+bytes = "895e50896e4c89562074"
+fact = "0x59ab60 callocs a 0x64-byte voice record (a list element of [0x9ad71c]) and stores kind 1 at [voice], the group handle at [voice+0x50] (0x59ac04), state 0 at [voice+0x4c] (0x59ac07) and the gain at [voice+0x20] (0x59ac0a)"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "group.voice_init_pick"
+va = 0x0059ac5a
+bytes = "56e880f7ffff83c404"
+fact = "0x59ab60 then calls the state-0 initialiser 0x59a3e0(voice) (0x59ac5b): it clears the repeat counter [voice+0x3c], the current member [voice+0x40] and the handle list [voice+0x44]"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "group.voice_init_call_selector"
+va = 0x0059a3f7
+bytes = "3978207f12897e405fc7464c04000000b8010000005ec350e82c00000083c4043bc789464074e18b"
+fact = "0x59a3e0: when the group has no member ([group+0x20] <= 0) the voice goes straight to state 4 (done); otherwise it calls the member selector 0x59a440(group) (0x59a40f), stores the result in [voice+0x40] and enters state 1 (0x59a437); a NULL result (no eligible member) ends the voice. One call to the group is therefore one selector call"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "group.voice_state_table"
+va = 0x0059a366
+bytes = "ff2485c0a35900"
+fact = "0x59a350 steps a voice by its state [voice+0x4c] through the five-entry jump table at 0x59a3c0: 0 -> 0x59a3e0 (init and pick), 1 -> 0x59a5d0 (play the current member), 2 -> 0x59a820 (wait DELAY_REPEAT then pick again), 3 -> 0x59a870 (wait DELAY_TERMINATION), 4 -> 0x59a2c0 (finished)"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "group.voice_repick"
+va = 0x0059a83e
+bytes = "51c7463400000000e8f5fbffff83c40485c0"
+fact = "state 2 (0x59a820): once the voice clock [voice+0x34] reaches the group's DELAY_REPEAT [group+0x18] it clears the clock and calls the selector 0x59a440 again (0x59a846): each repeat of a REPEAT group is a fresh pick"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "group.voice_repeat_count"
+va = 0x0059a774
+bytes = "8b4e50668b41148b563c0fbff83bd7752dd9411cd81dc8326000dfe0f6c44175125fc7463400000000c7464c030000005e5dc35fc7464c040000005e5dc3663dffff74044289563cc7464c020000"
+fact = "when the current member chain is exhausted (0x59a76d), state 1 compares the repeat counter [voice+0x3c] with the group's REPEAT word [group+0x14]: equal ends the voice (state 3 when DELAY_TERMINATION [group+0x1c] > 0, else state 4); otherwise the counter is incremented unless REPEAT is 0xffff (endless) and the voice enters state 2. REPEAT defaults to 0, so a group without REPEAT picks and plays exactly one member per call"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "group.selector_single_member"
+va = 0x0059a451
+bytes = "8b4e2083f901895c240875148b7624668b460266f7d81bc023c65e5b83c40cc3"
+fact = "the member selector 0x59a440(group): clears the index store [0x9ad730], and a group with exactly one member ([group+0x20] == 1) returns member 0 when its play-count word [m+2] is nonzero, else NULL, without drawing"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "group.selector_total"
+va = 0x0059a47f
+bytes = "8b462483c008663958fa7402d80083c01c4975f2d9542418"
+fact = "the selector sums the float weights [m+8] of the members whose play-count word [m+2] is nonzero (0x59a47f..0x59a493); the member records are 0x1c bytes at [group+0x24]"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "group.selector_draw"
+va = 0x0059a497
+bytes = "d80dbc81600057d95c2414ff155003a2008b7e2089442410db44241033c93bfbd80d30946000d84c241cd95c"
+fact = "the selector's draw: epsilon = total * 0.001 (0x6081bc), then r = rand() * (1/32767) * total with rand the MSVCRT import slot [0xa20350] (0x59a4a2, 0x609430 = 1/32767 as a float): a single uniform draw in [0, total)"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "group.selector_walk"
+va = 0x0059a4cd
+bytes = "8b562483c20866395afa7417d802d9442414d8c1d85c241cdfe0f6c4010f84a40000004183c21c3bcf7cdb"
+fact = "the selector walks the members in table order accumulating the eligible weights and takes the first member whose running sum plus epsilon is not below r (fcomp and test ah,1 at 0x59a4e1..0x59a4ea, taken at 0x59a594): the pick is proportional to weight, ties go to the earlier member"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "group.selector_pick_store"
+va = 0x0059a594
+bytes = "890d30d79a00ddd88b56248d04cd000000002bc18d04828944240c395e080f8442ffffffd946108b44240cd84808d95808"
+fact = "on a pick the selector stores the index in [0x9ad730] (0x59a594), computes the member address (index * 0x1c + [group+0x24]) and, only when the group's DYNAMIC_WEIGHTS flag [group+8] is nonzero (0x59a5af), multiplies the picked member's weight by the group factor [group+0x10] (0x59a5b8..0x59a5c2) before the rescale"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "group.selector_floor"
+va = 0x0059a507
+bytes = "8b4620d905c83260003bc37e3b33ff8b562403d766837a020074223bd97417d94208d81dbc816000dfe0f6c4017407c742086f12833a8b4624d84407088b46204383c71c3bd87c"
+fact = "DYNAMIC_WEIGHTS rescale, first pass (0x59a507..0x59a54d): every eligible member other than the one picked whose weight is below 0.001 (0x6081bc) is raised to 0.001 (the immediate 0x3a83126f stored at 0x59a536), and the weights of all eligible members are summed"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "group.selector_normalise"
+va = 0x0059a54f
+bytes = "d905e43260008b4620d8f133d285c0d95c241cddd87e2333c98b462403c16683780200740ad944241cd84808d958088b46204283c11c3bd07cdf"
+fact = "DYNAMIC_WEIGHTS rescale, second pass (0x59a54f..0x59a587): every eligible weight is multiplied by 100.0 (0x6032e4) over that sum, so the weights always total 100; the picked member, reduced by the factor, is not raised to the floor"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "group.selector_constants"
+va = 0x006081bc
+bytes = "6f12833a"
+fact = "0.001f, the epsilon scale and the weight floor of the selector"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "group.selector_constant_inv32767"
+va = 0x00609430
+bytes = "00010038"
+fact = "0x38000100 = 3.0518509e-5f = 1/32767 (not 1/32768) as a float, the scale of the rand() draw: rand() in 0..32767 scales to r in [0, total] inclusive"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "group.selector_constant_100"
+va = 0x006032e4
+bytes = "0000c842"
+fact = "100.0f, the total the rescale normalises the weights to (and the equal-weight value is 100 over the member count)"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "group.dynamic_weights_parse"
+va = 0x00599d27
+bytes = "8b442420c74304010000008b48048d4439088b0883f90275088b500489530ceb2c83f9017508db4004d95b0ceb1f8b03506858af630068eb01000068e8af63006800020000e8bfb5e7ff83c414d9430cd81dc8326000dfe0f6c4417407c7430c00000000d9430cd81ddc326000dfe0f6c4410f85cafeffff8b44241040c7430c0000803f89442410e922010000"
+fact = "the group keyword DYNAMIC_WEIGHTS <number> (0x63af8c, 0x599cf0): sets the flag [handle+8] = 1 (0x599d2b, group part +4) and stores the number, an integer or a float, as the factor [handle+0x10]; a factor of 0 or less is stored as 0 and above 1.0 as 1.0 (0x599d74..0x599daf). Every SOUND_GROUPS record of an effect (air_mixed_exp_sg, bullet_hit_sg and the others) spells 0.5"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "group.default_weights"
+va = 0x00599efb
+bytes = "8b531c33c985d2895424187e538b732083c608d906d81d68916000dfe0f6c44175124183c61c3bca7ce98b4424105b5e83c40cc3db44241833c085d2d83de4326000d95c24187e1833c98b5320d9442418d95c0a088b531c4083c11c3bc27cea"
+fact = "after a group's members are parsed (0x599ef7): when any member's weight [m+8] is not above 0.0001 (0x609168; an unset WEIGHT leaves 0) every member's weight is set to 100.0 over the member count (0x599f2f..0x599f59); when all members carry a larger WEIGHT the given weights are kept. The effect groups spell no WEIGHT, so their members start equal (bullet_hit_sg 4 x 25, air_mixed_exp_sg 5 x 20)"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "group.member_play_count_default"
+va = 0x00599f70
+bytes = "8b4c240c6683790200750666c74102ffff668b41028b5424045366"
+fact = "0x599f70 (one member list): a play-count word [m+2] of 0 becomes 0xffff (unlimited) and the live count [m] is set to it; PLAY_COUNT sets both. A member with [m+2] == 0 would be skipped by the selector, so an effect member without PLAY_COUNT is always eligible"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "group.weight_keyword"
+va = 0x0059a199
+bytes = "be78b063008bc78a108aca3a16751c84c974148a50018aca3a5601750e83c00283c60284c975e033c0eb051bc083d8ff85c07540"
+fact = "the member keyword WEIGHT (0x63b078) stores its number as the float [m+8] (0x59a1cd..0x59a1e1)"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "group.rand_seed"
+va = 0x004a742b
+bytes = "00ff15b001a20050ff15d801a2008b"
+fact = "the start-up function seeds the C runtime generator that the selector uses: push 0, call [time], push eax, call [srand] (0x4a742c..0x4a7433); the command line option -seed N seeds it with N instead (finding 2026-10-18-parity-m01-lc-cinematic-timeline); nothing in the selector or its callers reseeds it, so the pick stream is the process-wide rand() stream shared with every other rand() consumer"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "pilot.voice_name_random"
+va = 0x0062b0f8
+bytes = "736e645f25735f696425645f72616e646f6d00"
+fact = "format string of the per-pilot callout group name `snd_%s_id%d_random`, built at 0x4b48a3, 0x4b4a01 and 0x4b4c0d and resolved with 0x596120; when that group is absent the engine falls back to `snd_id%d_%s` (0x62b0ec, 0x4b48c4)"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "pilot.voice_name_fallback"
+va = 0x0062b0ec
+bytes = "736e645f696425645f257300"
+fact = "format string `snd_id%d_%s`, the single-line fallback of the per-pilot callout name"
+
+[[audio_fact]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+name = "pilot.voice_cue_allydown"
+va = 0x00608d20
+bytes = "78b0620088b0620098b06200"
+fact = "entries 22..24 of the 29-entry cue-name pointer table at 0x608cc8 (ebp index of the loop at 0x4b4816, 0x4b4895) point at the strings GL-AllyDwn-A (0x62b078), GL-EnemyDwn-A and GL-PlyrDwn-A: with the pilot id these form snd_GL-AllyDwn-A_id1_random and so on, groups of sounds.zrd that list the A, B and C line of the pilot"
+
+[[audio_vo_line]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+size = 267168
+wav = "VO_c1-HA-M5_Zachary_23-02.wav"
+sound = "snd_c1-HA-M5_Zachary_2302"
+status = "excluded"
+reason = "mission 5 of campaign 1 dialogue; named by no group of M01 and by no engine-built name"
+
+[[audio_vo_line]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+size = 267168
+wav = "VO_c2-NW-M5_Zachary_19-5.wav"
+sound = "snd_c2-NW-M5_Zachary_195"
+status = "excluded"
+reason = "mission 5 of campaign 2 dialogue; named by no group of M01 and by no engine-built name"
+
+[[audio_vo_line]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+size = 78936
+wav = "VO_c5-MN-m1_Zachary_4.wav"
+sound = "snd_c5-MN-m1_Zachary_4"
+status = "excluded"
+reason = "campaign 5 mission 1 dialogue (group snd_MN1Cabbie); named by no group of M01 and by no engine-built name"
+
+[[audio_vo_line]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+size = 78936
+wav = "VO_c5-MN-m1_Zachary_21.wav"
+sound = "snd_c5-MN-m1_Zachary_21"
+status = "excluded"
+reason = "campaign 5 mission 1 dialogue; named by no group of M01 and by no engine-built name"
+
+[[audio_vo_line]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+size = 78936
+wav = "VO_id1_GL-AllyDwn-B.wav"
+sound = "snd_id1_GL-AllyDwn-B"
+status = "reachable"
+reason = "member B of the engine-built per-pilot group snd_GL-AllyDwn-A_id1_random (DYNAMIC_WEIGHTS 0.5, members A B C); played by the engine when pilot id 1 has an ally go down; whether any M01 pilot has id 1 is not decoded"
+
+[[audio_vo_line]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+size = 220616
+wav = "VO_c3-HW-M5_Zachary_18.wav"
+sound = "snd_c3-HW-M5_Zachary_18"
+status = "excluded"
+reason = "campaign 3 mission 5 dialogue; named by no group of M01 and by no engine-built name"
+
+[[audio_vo_line]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+size = 220616
+wav = "VO_c4-RM-m3_Zachary_10.wav"
+sound = "snd_c4-RM-m3_Zachary_10"
+status = "excluded"
+reason = "campaign 4 mission 3 dialogue; named by no group of M01 and by no engine-built name"
+
+[[audio_vo_line]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+size = 220616
+wav = "VO_c4-RM-m4_Zachary_8.wav"
+sound = "snd_c4-RM-m4_Zachary_8"
+status = "excluded"
+reason = "campaign 4 mission 4 dialogue; named by no group of M01 and by no engine-built name"
+
+[[audio_vo_line]]
+claim = "OWNER-STATIC-2026-10-22"
+provenance = "static"
+size = 220616
+wav = "VO_c5-MN-m2_Zachary_26.wav"
+sound = "snd_c5-MN-m2_Zachary_26"
+status = "excluded"
+reason = "campaign 5 mission 2 dialogue; named by no group of M01 and by no engine-built name"
