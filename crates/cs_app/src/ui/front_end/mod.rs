@@ -82,6 +82,8 @@
 //! unknowns and `docs/findings/2026-10-07-f45-d-front-end-screen-capture.md`
 //! for F45-D's.
 
+pub mod audio_page;
+mod audio_view;
 mod briefing;
 mod cabin;
 mod capture;
@@ -101,12 +103,17 @@ mod screens;
 mod shell;
 mod sound;
 mod start_flow;
+pub mod widgets;
 mod window;
 
 use std::collections::{BTreeMap, BTreeSet};
 
 use cs_content::ui_layout::ScreenLayout;
 
+pub use audio_page::{
+    AUDIO_SECTION, AudioAccept, AudioControl, AudioPage, AudioPageError, AudioSettingsFile,
+    AudioValues, SoundQuality,
+};
 pub use briefing::{
     BriefingButton, BriefingPlayback, BriefingScene, BriefingSceneError, DESIGNED_LINE_HEIGHT,
     DrawnElement, ElementKind, PANEL_ELEMENT, SceneUnknown, Timeline, TimelineError, Track,
@@ -166,8 +173,9 @@ pub use shell::{
     ShellRect, ShellSection, ShellView, SkippedReason, SkippedRow, UnhandledEffect,
 };
 pub use sound::{
-    DeclaredSound, GLOBALS_SECTION, MenuAudio, MenuAudioEvent, MenuCue, MenuMusic, MenuSamples,
-    MenuSoundError, MenuSoundTable, SOUND_DIRECTORY, cue_sample_id, decode_wave, music_sample_id,
+    DeclaredSound, GLOBALS_SECTION, MenuAudio, MenuAudioEvent, MenuCue, MenuMix, MenuMusic,
+    MenuSamples, MenuSoundError, MenuSoundTable, SOUND_DIRECTORY, cue_sample_id, decode_wave,
+    music_sample_id,
 };
 pub use start_flow::{
     FIRST_MISSION, FRONT_END_SMOKE_SUBDIR, MISSION_SMOKE_SUBDIR, MissionEnd, NOT_IMPLEMENTED,
@@ -179,8 +187,8 @@ pub use window::{
     DEFAULT_FRONT_END_CAPTURE_DIR, FrontEndError, FrontEndRequest, FrontEndShellPlugin,
     MIN_SHELL_SMOKE_SECONDS, PROFILE_DIR_ENV, PilotSetup, SMOKE_PROFILE_SUBDIR, SMOKE_SCENE_ENV,
     ShellResource, ShellShotRecord, ShellSmokeHandle, ShellSmokePlugin, ShellSmokeReport,
-    SmokeScene, headless_app, headless_app_audio, headless_app_flow, headless_app_intro,
-    headless_app_pilots, run_front_end, shell_app,
+    SmokeScene, headless_app, headless_app_audio, headless_app_audio_page, headless_app_flow,
+    headless_app_intro, headless_app_pilots, run_front_end, shell_app,
 };
 
 /// A front-end screen.

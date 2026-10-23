@@ -44,7 +44,7 @@ use cs_content::catalog::baseline::install_file_key;
 use cs_formats::ParseContext;
 use cs_formats::zbd::{SampleFormat, decode_sound_sample};
 use cs_sim::audio_events::{
-    AudioBus, AudioDevice, DeviceError, DeviceVoiceId, VoiceStart, VoiceStop,
+    AudioBus, AudioDevice, DeviceError, DeviceVoiceId, VoiceStart, VoiceStop, VoiceUpdate,
 };
 use cs_types::content::{ContentId, ContentKind};
 
@@ -393,6 +393,31 @@ pub struct MenuAudio {
     cues: BTreeMap<MenuCue, ContentId>,
     music_voice: Option<DeviceVoiceId>,
     events: Vec<MenuAudioEvent>,
+    /// The Audio page's mix (#1996): the music loop's linear gain, the cues'
+    /// linear gain and the in-game music check box. Unit gain and on until
+    /// the page says otherwise.
+    mix: MenuMix,
+}
+
+/// The linear levels the Audio preferences page sets.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct MenuMix {
+    /// Whether the music loop may sound (the *In-Game Music* check box).
+    pub music_on: bool,
+    /// The music loop's linear gain.
+    pub music_gain: f64,
+    /// The cues' linear gain.
+    pub effects_gain: f64,
+}
+
+impl Default for MenuMix {
+    fn default() -> Self {
+        Self {
+            music_on: true,
+            music_gain: UNIT_GAIN,
+            effects_gain: UNIT_GAIN,
+        }
+    }
 }
 
 impl MenuAudio {
@@ -422,7 +447,38 @@ impl MenuAudio {
             cues,
             music_voice: None,
             events: Vec::new(),
+            mix: MenuMix::default(),
         })
+    }
+
+    /// Applies the Audio page's mix at once: the check box starts or stops the
+    /// music loop (`AUDIO.SCRIPT` stops it at off and restarts it at on), the
+    /// gains change the voice already sounding and every later cue.
+    pub fn set_mix(&mut self, mix: MenuMix) {
+        let was_on = self.mix.music_on;
+        self.mix = mix;
+        if !mix.music_on {
+            self.stop_music();
+            return;
+        }
+        if let Some(voice) = self.music_voice {
+            let _ = self.device.update_voice(
+                voice,
+                VoiceUpdate {
+                    gain: mix.music_gain,
+                    pan: 0.0,
+                    pitch: 1.0,
+                },
+            );
+        } else if !was_on {
+            self.start_music();
+        }
+    }
+
+    /// The mix in force.
+    #[must_use]
+    pub const fn mix(&self) -> MenuMix {
+        self.mix
     }
 
     /// The real output, over the samples `samples` holds, when this machine
@@ -442,13 +498,13 @@ impl MenuAudio {
 
     /// Starts the music loop; a no-op once it plays.
     pub fn start_music(&mut self) {
-        if self.music_voice.is_some() {
+        if self.music_voice.is_some() || !self.mix.music_on {
             return;
         }
         let start = VoiceStart {
             asset: self.music.clone(),
             bus: AudioBus::Music,
-            gain: UNIT_GAIN,
+            gain: self.mix.music_gain,
             pan: 0.0,
             pitch: 1.0,
         };
@@ -486,7 +542,7 @@ impl MenuAudio {
         let start = VoiceStart {
             asset: asset.clone(),
             bus: AudioBus::Ui,
-            gain: UNIT_GAIN,
+            gain: self.mix.effects_gain,
             pan: 0.0,
             pitch: 1.0,
         };

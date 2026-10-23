@@ -293,6 +293,11 @@ pub struct ShellButton {
     pub res_id: Option<String>,
     /// The effect pressing it takes.
     pub effect: ButtonEffect,
+    /// `Some(checked)` for a check-box button (the row's `Type` column is
+    /// `1`): its art is [`CHECK_STATE_FRAMES`] frames — the four state frames
+    /// unchecked, then the same four checked — and a press flips the state
+    /// instead of running [`Self::effect`].
+    pub check: Option<bool>,
     /// Whether it can be pressed. Always `true` when built from the layout —
     /// the original's enable state is a runtime script effect, unread; see
     /// the module docs and [`MenuShell::set_enabled`].
@@ -376,6 +381,13 @@ pub enum ShellOutcome {
         id: String,
         /// Why the press is unhandled.
         effect: UnhandledEffect,
+    },
+    /// A check-box button flipped.
+    Toggled {
+        /// The button's row id.
+        id: String,
+        /// The state after the press.
+        checked: bool,
     },
     /// Moved to another section.
     Entered {
@@ -700,6 +712,64 @@ impl MenuShell {
         true
     }
 
+    /// Sets a check-box button's state (a page staging or discarding a
+    /// change). `false` when no such check box is on the current section.
+    pub fn set_checked(&mut self, id: &str, checked: bool) -> bool {
+        let Some(name) = self.stack.last().cloned() else {
+            return false;
+        };
+        self.sections
+            .get_mut(&name.to_ascii_uppercase())
+            .and_then(|section| {
+                section
+                    .buttons
+                    .iter_mut()
+                    .find(|button| button.id.eq_ignore_ascii_case(id) && button.check.is_some())
+            })
+            .map(|button| button.check = Some(checked))
+            .is_some()
+    }
+
+    /// A check-box button's state on the current section.
+    #[must_use]
+    pub fn is_checked(&self, id: &str) -> Option<bool> {
+        self.section()?
+            .buttons
+            .iter()
+            .find(|button| button.id.eq_ignore_ascii_case(id))
+            .and_then(|button| button.check)
+    }
+
+    /// The id of the button the pointer or key is holding down, if any.
+    #[must_use]
+    pub fn pressed_id(&self) -> Option<&str> {
+        let (index, _) = self.pressed?;
+        self.section()?
+            .buttons
+            .get(index)
+            .map(|button| button.id.as_str())
+    }
+
+    /// Focuses the button `id` of the current section (`None` clears focus,
+    /// for a page whose own control holds it). `false` when there is no
+    /// enabled button of that name.
+    pub fn set_focus_id(&mut self, id: Option<&str>) -> bool {
+        let Some(id) = id else {
+            self.focus = None;
+            return true;
+        };
+        let found = self.section().and_then(|section| {
+            section
+                .buttons
+                .iter()
+                .position(|button| button.enabled && button.id.eq_ignore_ascii_case(id))
+        });
+        if found.is_some() {
+            self.focus = found;
+        }
+        found.is_some()
+    }
+
     /// Moves focus to the next (or previous) enabled button, wrapping in
     /// declaration order — the order focus visits, the original's tab order
     /// being unread.
@@ -845,7 +915,17 @@ impl MenuShell {
                     art: button.art.clone(),
                     logical: visible,
                     rect: fit.map_rect(visible),
-                    texel_offset: (cut.0, cut.1 + visual.frame() * button.rect.height),
+                    texel_offset: (
+                        cut.0,
+                        cut.1
+                            + (visual.frame()
+                                + if button.check == Some(true) {
+                                    BUTTON_STATE_FRAMES
+                                } else {
+                                    0
+                                })
+                                * button.rect.height,
+                    ),
                     visual,
                     focused: self.focus == Some(index),
                 })
@@ -921,6 +1001,12 @@ impl MenuShell {
         let Some(button) = section.buttons.get(index) else {
             return ShellOutcome::Nothing;
         };
+        if let Some(checked) = button.check {
+            let id = button.id.clone();
+            let checked = !checked;
+            self.set_checked(&id, checked);
+            return ShellOutcome::Toggled { id, checked };
+        }
         match &button.effect {
             ButtonEffect::Navigate(name) => {
                 let name = self
@@ -1081,6 +1167,13 @@ fn present_pane(
     })
 }
 
+/// The frames of a check-box button's art: the four state frames unchecked,
+/// then the same four checked. Measured on `PF_B_CheckBoxSmall.png`
+/// (45x232 = 8 frames of 29; the lower four carry the cross). The order of
+/// the checked half repeating the unchecked half's state order is read off
+/// the art, not off a script.
+pub const CHECK_STATE_FRAMES: u32 = 2 * BUTTON_STATE_FRAMES;
+
 /// The art whose strip is [`BUTTON_STATE_FRAMES`] frames plus a trailing
 /// transparent row, measured on the installation (task #1840): the Previous
 /// Missions strip is 201x129, every row of its four 32-row frames repeats at
@@ -1132,7 +1225,18 @@ fn present_button(
     let (width, height) = measure(art).ok_or_else(|| SkippedReason::ArtUnread {
         art: art.to_owned(),
     })?;
-    let Some(frame_height) = button_frame_height(art, width, height) else {
+    // `ID=B,…` rows write `Type` (`0` normal, `1` check, `2` radio) and
+    // `Checked?` after `Left,Top,Right,Bottom` (columns 12 and 13 once the
+    // header's omitted `ResID` is accounted for, like `ScriptToExe` at 5).
+    let kind = row.fields.get(12).map_or("", |field| field.trim());
+    let check = (kind == "1").then(|| row.fields.get(13).is_some_and(|field| field.trim() == "1"));
+    let frame_height = if check.is_some() {
+        (height != 0 && height.is_multiple_of(CHECK_STATE_FRAMES))
+            .then_some(height / CHECK_STATE_FRAMES)
+    } else {
+        button_frame_height(art, width, height)
+    };
+    let Some(frame_height) = frame_height else {
         return Err(SkippedReason::FrameCountUnknown { height });
     };
     let script = row.fields.get(5).map_or("", String::as_str);
@@ -1165,6 +1269,7 @@ fn present_button(
         },
         res_id,
         effect,
+        check,
         enabled: true,
     })
 }

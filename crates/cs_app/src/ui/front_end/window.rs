@@ -80,6 +80,9 @@ use bevy::time::TimeUpdateStrategy;
 use bevy::window::{CursorMoved, CursorOptions, PrimaryWindow};
 use cs_sim::cinematic_state::MediaFailure;
 
+use super::audio_page::{
+    ACCEPT_BUTTON, AUDIO_SECTION, AudioControl, AudioPage, AudioSettingsFile, MUSIC_BUTTON,
+};
 use super::cabin::CabinHub;
 use super::intro::{self, IntroMovie, IntroState};
 use super::movie::{MovieBackdrop, movie_media};
@@ -89,7 +92,7 @@ use super::retail::{FrontEndScreens, RetailError};
 use super::shell::{
     ButtonVisual, MenuShell, SECTION_SURFACE, START_SECTION, ShellOutcome, ShellView,
 };
-use super::sound::{MenuAudio, MenuAudioEvent, MenuCue, MenuSamples, MenuSoundTable};
+use super::sound::{MenuAudio, MenuAudioEvent, MenuCue, MenuMix, MenuSamples, MenuSoundTable};
 use super::start_flow::{FIRST_MISSION, StartFlow, StartStep};
 use super::{Artwork, ShellError};
 use crate::audio::CapabilityDeclaration;
@@ -202,6 +205,24 @@ pub struct ShellResource {
     /// The not-implemented notice's entities and the surface they were laid
     /// out for; empty while no notice is up.
     notice_scene: (Vec<Entity>, (u32, u32)),
+    /// The Preferences → Audio page (#1996), when the run has one.
+    audio_page: Option<AudioPageState>,
+}
+
+/// The Audio page's live state.
+struct AudioPageState {
+    page: AudioPage,
+    /// The overlay's entities while the page is on screen.
+    scene: Vec<Entity>,
+    /// The surface the overlay was laid out for.
+    drawn_surface: (u32, u32),
+    /// The page was on screen last frame: leaving it commits or discards.
+    was_on: bool,
+    /// The button the last release was on (`Accept` commits, anything else
+    /// discards).
+    released: Option<String>,
+    /// The mix last handed to the menu audio.
+    applied: Option<MenuMix>,
 }
 
 /// What the audio hooks last saw of the shell.
@@ -241,6 +262,18 @@ pub struct PilotSetup {
 }
 
 impl ShellResource {
+    /// The Audio page, when the run has one.
+    #[must_use]
+    pub fn audio_page(&self) -> Option<&AudioPage> {
+        self.audio_page.as_ref().map(|state| &state.page)
+    }
+
+    /// The menu audio, when the run has an output.
+    #[must_use]
+    pub fn menu_audio(&self) -> Option<&MenuAudio> {
+        self.audio.as_ref()
+    }
+
     /// The pilot page, when the run has one.
     #[must_use]
     pub fn pilot_page(&self) -> Option<&PilotPage> {
@@ -306,6 +339,10 @@ enum ShellEvent {
     ActivateUp,
     /// `Esc` went down.
     Escape,
+    /// `ArrowLeft`: the Audio page's focused slider or list steps down.
+    Left,
+    /// `ArrowRight`: the Audio page's focused slider or list steps up.
+    Right,
 }
 
 /// The input the frame applies: the latest pointer position plus the edges,
@@ -415,6 +452,7 @@ pub struct FrontEndShellPlugin {
     visuals: bool,
     flow: Mutex<Option<StartFlow>>,
     pilots: Mutex<Option<PilotSetup>>,
+    audio_page: Mutex<Option<AudioPage>>,
     audio: Mutex<Option<MenuAudio>>,
     audio_note: Mutex<Option<String>>,
     intro: Mutex<Option<IntroMovie>>,
@@ -441,6 +479,7 @@ impl FrontEndShellPlugin {
             visuals: true,
             flow: Mutex::new(None),
             pilots: Mutex::new(None),
+            audio_page: Mutex::new(None),
             audio: Mutex::new(None),
             audio_note: Mutex::new(None),
             intro: Mutex::new(None),
@@ -458,6 +497,16 @@ impl FrontEndShellPlugin {
     #[must_use]
     pub fn with_pilots(self, setup: PilotSetup) -> Self {
         *self.pilots.lock().expect("the plugin is not shared yet") = Some(setup);
+        self
+    }
+
+    /// Gives the Audio section its page (#1996).
+    #[must_use]
+    pub fn with_audio_page(self, page: AudioPage) -> Self {
+        *self
+            .audio_page
+            .lock()
+            .expect("the plugin is not shared yet") = Some(page);
         self
     }
 
@@ -498,6 +547,7 @@ impl FrontEndShellPlugin {
             visuals: false,
             flow: Mutex::new(None),
             pilots: Mutex::new(None),
+            audio_page: Mutex::new(None),
             audio: Mutex::new(None),
             audio_note: Mutex::new(None),
             intro: Mutex::new(None),
@@ -582,6 +632,19 @@ impl Plugin for FrontEndShellPlugin {
             watch: AudioWatch::default(),
             intro: IntroState::new(self.intro.lock().ok().and_then(|mut slot| slot.take())),
             notice_scene: (Vec::new(), (0, 0)),
+            audio_page: self
+                .audio_page
+                .lock()
+                .ok()
+                .and_then(|mut slot| slot.take())
+                .map(|page| AudioPageState {
+                    page,
+                    scene: Vec::new(),
+                    drawn_surface: (0, 0),
+                    was_on: false,
+                    released: None,
+                    applied: None,
+                }),
         });
         if app.world().resource::<ShellResource>().intro.enabled()
             && !app.is_plugin_added::<MoviePlayerPlugin>()
@@ -653,6 +716,30 @@ pub fn headless_app_audio(
     let plugin = FrontEndShellPlugin::headless(shell)
         .with_pilots(setup)
         .with_audio(Ok(audio));
+    app.add_plugins(match flow {
+        Some(flow) => plugin.with_flow(flow),
+        None => plugin,
+    });
+    app
+}
+
+/// As [`headless_app_flow`], with the Audio page (and, when given, the menu
+/// audio it mixes) — the #1996 route tests.
+pub fn headless_app_audio_page(
+    shell: MenuShell,
+    flow: Option<StartFlow>,
+    page: AudioPage,
+    audio: Option<MenuAudio>,
+) -> App {
+    let mut app = App::new();
+    app.add_plugins(bevy::input::InputPlugin);
+    app.add_message::<CursorMoved>();
+    app.init_resource::<ButtonInput<KeyCode>>();
+    app.init_resource::<ButtonInput<MouseButton>>();
+    let mut plugin = FrontEndShellPlugin::headless(shell).with_audio_page(page);
+    if let Some(audio) = audio {
+        plugin = plugin.with_audio(Ok(audio));
+    }
     app.add_plugins(match flow {
         Some(flow) => plugin.with_flow(flow),
         None => plugin,
@@ -750,6 +837,11 @@ fn frame_shell(world: &mut World) {
         audio.start_music();
     }
     let mut events = std::mem::take(&mut state.input.events);
+    let on_audio = state.audio_page.is_some()
+        && state
+            .shell
+            .section_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case(AUDIO_SECTION));
     let on_page = state.pilots.is_some()
         && state
             .shell
@@ -798,6 +890,12 @@ fn frame_shell(world: &mut World) {
         }
         if keys.just_released(KeyCode::Enter) {
             events.push(ShellEvent::ActivateUp);
+        }
+        if keys.just_pressed(KeyCode::ArrowLeft) {
+            events.push(ShellEvent::Left);
+        }
+        if keys.just_pressed(KeyCode::ArrowRight) {
+            events.push(ShellEvent::Right);
         }
         if keys.just_pressed(KeyCode::Escape) {
             events.push(ShellEvent::Escape);
@@ -849,6 +947,15 @@ fn frame_shell(world: &mut World) {
     if on_page && let Some(pilots) = pilots.as_mut() {
         pilots.page.hover_at(point);
     }
+    let audio_page = &mut state.audio_page;
+    if on_audio
+        && let Some(page) = audio_page.as_mut()
+        && page.page.dragging()
+        && let Some((x, _)) = point
+    {
+        // A held slider follows the pointer, wherever on the surface it is.
+        page.page.drag_to(x);
+    }
     let mut exit = false;
     if intro_busy {
         // The movie owns the input: its skip keys must not reach the cabin.
@@ -876,18 +983,49 @@ fn frame_shell(world: &mut World) {
         let mut pilot_step = None;
         let outcome = match event {
             ShellEvent::PointerDown => {
+                let audio_hit = on_audio
+                    && match (audio_page.as_mut(), point) {
+                        (Some(audio), Some((x, y))) => {
+                            audio.page.press_dropdown(x, y) || audio.page.begin_drag(x, y)
+                        }
+                        _ => false,
+                    };
                 let row = pilots
                     .as_ref()
                     .filter(|_| on_page)
                     .and_then(|pilots| point.and_then(|(x, y)| pilots.page.row_at(x, y)));
-                if let (Some(pilots), Some(row)) = (pilots.as_mut(), row) {
+                if audio_hit {
+                    // The Audio page's slider or drop-down took the press.
+                } else if let (Some(pilots), Some(row)) = (pilots.as_mut(), row) {
                     pilots.page.select_row(row);
                 } else {
                     shell.pointer_down();
                 }
                 ShellOutcome::Nothing
             }
-            ShellEvent::PointerUp => shell.pointer_up(),
+            ShellEvent::PointerUp => {
+                if on_audio && let Some(audio) = audio_page.as_mut() {
+                    audio.page.end_drag();
+                    audio.released = shell.pressed_id().map(str::to_owned);
+                }
+                shell.pointer_up()
+            }
+            ShellEvent::FocusNext | ShellEvent::FocusPrev if on_audio => {
+                if let Some(audio) = audio_page.as_mut() {
+                    let control = audio.page.move_focus(event == ShellEvent::FocusNext);
+                    shell.set_focus_id(control.button());
+                    state.run.focus_moves += 1;
+                }
+                ShellOutcome::Nothing
+            }
+            ShellEvent::Left | ShellEvent::Right => {
+                if on_audio && let Some(audio) = audio_page.as_mut() {
+                    audio
+                        .page
+                        .adjust(if event == ShellEvent::Right { 1 } else { -1 });
+                }
+                ShellOutcome::Nothing
+            }
             ShellEvent::FocusNext | ShellEvent::FocusPrev if on_page => {
                 if let Some(pilots) = pilots.as_mut() {
                     pilots.page.move_selection(event == ShellEvent::FocusNext);
@@ -912,10 +1050,24 @@ fn frame_shell(world: &mut World) {
             }
             ShellEvent::ActivateUp if on_page => ShellOutcome::Nothing,
             ShellEvent::ActivateDown => {
-                shell.activate_down();
+                let page_took_it =
+                    on_audio && audio_page.as_mut().is_some_and(|a| a.page.activate());
+                if !page_took_it {
+                    shell.activate_down();
+                }
                 ShellOutcome::Nothing
             }
-            ShellEvent::ActivateUp => shell.activate_up(),
+            ShellEvent::ActivateUp => {
+                if on_audio && let Some(audio) = audio_page.as_mut() {
+                    audio.released = shell.pressed_id().map(str::to_owned);
+                }
+                shell.activate_up()
+            }
+            ShellEvent::Escape
+                if on_audio && audio_page.as_mut().is_some_and(|a| a.page.close_list()) =>
+            {
+                ShellOutcome::Nothing
+            }
             ShellEvent::Escape
                 if on_page && pilots.as_mut().is_some_and(|pilots| pilots.page.escape()) =>
             {
@@ -936,6 +1088,16 @@ fn frame_shell(world: &mut World) {
                 None => shell.escape(),
             },
         };
+        if let ShellOutcome::Toggled { id, checked } = &outcome {
+            if on_audio
+                && id.eq_ignore_ascii_case(MUSIC_BUTTON)
+                && let Some(audio) = audio_page.as_mut()
+            {
+                audio.page.set_music_on(*checked);
+                audio.page.set_focus(Some(AudioControl::Music));
+            }
+            continue;
+        }
         if pilot_step.is_none()
             && on_page
             && let ShellOutcome::Unhandled { id, .. } = &outcome
@@ -991,7 +1153,7 @@ fn frame_shell(world: &mut World) {
                     exit = true;
                 }
             }
-            ShellOutcome::Nothing => {}
+            ShellOutcome::Nothing | ShellOutcome::Toggled { .. } => {}
         }
     }
     if exit {
@@ -1024,6 +1186,7 @@ fn frame_shell(world: &mut World) {
         }
     }
     watch_buttons(&mut state);
+    sync_audio_page(&mut state);
     let cursor_extent = state.art.cursor.as_ref().map(|(_, extent)| *extent);
     let now = world
         .get_resource::<Time>()
@@ -1101,6 +1264,7 @@ fn frame_shell(world: &mut World) {
         }
     }
     sync_pilot_scene(world, &mut state);
+    sync_audio_scene(world, &mut state);
     sync_notice_scene(world, &mut state);
     if let Some(cursor) = state.scene.cursor
         && let Ok(mut entity) = world.get_entity_mut(cursor)
@@ -1241,6 +1405,93 @@ fn sync_notice_scene(world: &mut World, state: &mut ShellResource) {
             super::notice_view::spawn_notice(world, &entry, surface),
             surface,
         );
+    }
+}
+
+/// The Audio page's per-frame bookkeeping (#1996): leaving the section
+/// commits (the release was on Accept) or discards, the check box mirrors the
+/// staged value, and the menu audio plays the mix on screen — the staged
+/// values while the page is open (`AUDIO.SCRIPT` applies them live), the
+/// committed ones otherwise (Cancel puts them back).
+fn sync_audio_page(state: &mut ShellResource) {
+    let on = state
+        .shell
+        .section_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case(AUDIO_SECTION));
+    let Some(audio) = state.audio_page.as_mut() else {
+        return;
+    };
+    if audio.was_on && !on {
+        if audio
+            .released
+            .as_deref()
+            .is_some_and(|id| id.eq_ignore_ascii_case(ACCEPT_BUTTON))
+        {
+            let accepted = audio.page.accept();
+            if let Some(error) = &accepted.save_error {
+                eprintln!("cs: the audio settings were not saved: {error}");
+            }
+        } else {
+            audio.page.cancel();
+        }
+        audio.released = None;
+    }
+    if on && !audio.was_on {
+        // Every visit starts from what is committed.
+        audio.page.cancel();
+    }
+    audio.was_on = on;
+    if on {
+        let staged = audio.page.staged().music_on;
+        if state.shell.is_checked(MUSIC_BUTTON) != Some(staged) {
+            let _ = state.shell.set_checked(MUSIC_BUTTON, staged);
+        }
+    }
+    let values = if on {
+        audio.page.staged()
+    } else {
+        audio.page.committed()
+    };
+    let mix = MenuMix {
+        music_on: values.music_on,
+        music_gain: values.music_gain(),
+        effects_gain: values.effects_gain(),
+    };
+    if audio.applied != Some(mix) {
+        if let Some(menu) = &mut state.audio {
+            menu.set_mix(mix);
+        }
+        audio.applied = Some(mix);
+    }
+}
+
+/// Keeps the Audio page's overlay in step with its model: drawn while the
+/// `Audio` section is shown, redrawn when the model or the surface changed.
+fn sync_audio_scene(world: &mut World, state: &mut ShellResource) {
+    if !state.visuals {
+        return;
+    }
+    let active = state
+        .shell
+        .section_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case(AUDIO_SECTION));
+    let surface = state.surface;
+    let Some(audio) = state.audio_page.as_mut() else {
+        return;
+    };
+    if !active {
+        for entity in audio.scene.drain(..) {
+            let _ = world.despawn(entity);
+        }
+        return;
+    }
+    let dirty = audio.page.take_dirty();
+    if audio.scene.is_empty() || dirty || audio.drawn_surface != surface {
+        for entity in audio.scene.drain(..) {
+            let _ = world.despawn(entity);
+        }
+        audio.scene = super::audio_view::spawn_page(world, &audio.page, &state.art.images, surface);
+        audio.drawn_surface = surface;
     }
 }
 
@@ -1626,6 +1877,10 @@ pub enum SmokeScene {
     /// **Next Mission** again, replaying the mission the player left
     /// ([`start_flow_resumed_script`]).
     StartFlowResumed,
+    /// The Preferences → Audio page (#1996): Main Menu → Preferences →
+    /// Audio, the check box, a slider drag, the drop-down, Accept, a second
+    /// visit that Cancels ([`audio_script`]).
+    Audio,
 }
 
 /// The environment variable that selects [`SmokeScene::Cabin`] for
@@ -1648,6 +1903,7 @@ impl SmokeScene {
         match name.trim().to_ascii_lowercase().as_str() {
             "cabin" => Self::Cabin,
             "flow" => Self::Flow,
+            "audio" => Self::Audio,
             _ => Self::MainMenu,
         }
     }
@@ -1764,6 +2020,9 @@ enum Step {
     /// Move the pointer to the centre of the named button (resolved at run
     /// time from the model, so the same step works at any surface size).
     HoverButton(&'static str),
+    /// Move the pointer to a logical (800x600) point, mapped through the
+    /// fit the surface has this frame.
+    HoverPoint(i32, i32),
     /// Left button down/up.
     Mouse(bool),
     /// A key down/up.
@@ -1848,6 +2107,62 @@ fn script() -> Vec<(u32, Step)> {
     steps.push((at(12.5), Step::Key(KeyCode::Enter, true)));
     steps.push((at(12.6), Step::Shot("depressed")));
     steps.push((at(12.7), Step::Key(KeyCode::Enter, false)));
+    steps
+}
+
+/// The deterministic pass over the Audio page (#1996): Main Menu →
+/// Preferences → Audio → screenshot → the check box off → a drag of the music
+/// slider to its left end → the drop-down open → Low picked → screenshot →
+/// Accept (back on Preferences) → Audio again (the committed values return)
+/// → screenshot → the check box on and a drag, then Cancel → Audio a third
+/// time → screenshot (the discarded change is gone).
+#[inline(always)]
+fn audio_script() -> Vec<(u32, Step)> {
+    let at = |seconds: f64| (seconds * SMOKE_FRAME_HZ) as u32;
+    let click = |t: f64| {
+        [
+            (at(t), Step::Mouse(true)),
+            (at(t + 0.1), Step::Mouse(false)),
+        ]
+    };
+    let mut steps = vec![(at(0.5), Step::HoverButton("MM_B_PREFERENCES"))];
+    steps.extend(click(0.7));
+    steps.push((at(1.2), Step::HoverButton("PF_B_AUDIO")));
+    steps.extend(click(1.4));
+    steps.push((at(2.0), Step::Shot("audio-open")));
+    // The check box, then the music slider's left end.
+    steps.push((at(2.2), Step::HoverButton("AP_B_MUSIC")));
+    steps.extend(click(2.4));
+    steps.push((at(2.8), Step::Shot("audio-music-off")));
+    steps.push((at(3.0), Step::HoverPoint(200, 351)));
+    steps.push((at(3.1), Step::Mouse(true)));
+    steps.push((at(3.2), Step::HoverPoint(150, 351)));
+    steps.push((at(3.3), Step::HoverPoint(139, 351)));
+    steps.push((at(3.4), Step::Mouse(false)));
+    // The drop-down: open, pick the first item (Low).
+    steps.push((at(3.6), Step::HoverPoint(200, 513)));
+    steps.extend(click(3.7));
+    steps.push((at(4.1), Step::Shot("audio-list")));
+    steps.push((at(4.2), Step::HoverPoint(200, 530)));
+    steps.extend(click(4.3));
+    steps.push((at(4.7), Step::Shot("audio-edited")));
+    steps.push((at(4.9), Step::HoverButton("AP_B_ACCEPTCHANGES")));
+    steps.extend(click(5.0));
+    steps.push((at(5.5), Step::HoverButton("PF_B_AUDIO")));
+    steps.extend(click(5.6));
+    steps.push((at(6.1), Step::Shot("audio-reopened")));
+    steps.push((at(6.3), Step::HoverButton("AP_B_MUSIC")));
+    steps.extend(click(6.4));
+    steps.push((at(6.8), Step::HoverPoint(300, 408)));
+    steps.push((at(6.9), Step::Mouse(true)));
+    steps.push((at(7.0), Step::HoverPoint(310, 408)));
+    steps.push((at(7.1), Step::Mouse(false)));
+    steps.push((at(7.3), Step::Shot("audio-unsaved")));
+    steps.push((at(7.5), Step::HoverButton("AP_B_CANCELCHANGES")));
+    steps.extend(click(7.6));
+    steps.push((at(8.1), Step::HoverButton("PF_B_AUDIO")));
+    steps.extend(click(8.2));
+    steps.push((at(8.7), Step::Shot("audio-cancelled")));
     steps
 }
 
@@ -1998,6 +2313,7 @@ impl ShellSmokePlugin {
                 SmokeScene::Flow => flow_script(),
                 SmokeScene::StartFlow => start_flow_script(),
                 SmokeScene::StartFlowResumed => start_flow_resumed_script(),
+                SmokeScene::Audio => audio_script(),
             },
             handle: ShellSmokeHandle::default(),
         }
@@ -2087,6 +2403,23 @@ fn inject_smoke_input(world: &mut World, state: &mut ShellResource) {
                         .write(CursorMoved {
                             window: state.scene.window.unwrap_or(Entity::PLACEHOLDER),
                             position,
+                            delta: None,
+                        });
+                }
+            }
+            Step::HoverPoint(x, y) => {
+                if let Some(view) = state.shell.view(state.surface) {
+                    let at = view.fit.map_rect(cs_content::ui_layout::Rect {
+                        x: (*x).max(0) as u32,
+                        y: (*y).max(0) as u32,
+                        width: 1,
+                        height: 1,
+                    });
+                    world
+                        .resource_mut::<Messages<CursorMoved>>()
+                        .write(CursorMoved {
+                            window: state.scene.window.unwrap_or(Entity::PLACEHOLDER),
+                            position: Vec2::new(at.x as f32 + 0.5, at.y as f32 + 0.5),
                             delta: None,
                         });
                 }
@@ -2378,6 +2711,57 @@ fn evaluate(
         audio_lines.push(format!("intro outcomes {:?}", facts.intro));
         return smoke_report(smoke, run, shots, failures, audio_lines, audio);
     }
+    if smoke.scene == SmokeScene::Audio {
+        let expected = [
+            "MainMenu",
+            "Preferences",
+            "Audio",
+            "Preferences",
+            "Audio",
+            "Preferences",
+            "Audio",
+        ];
+        if run.visited != expected {
+            failures.push(format!(
+                "the audio pass visited {:?}, expected MainMenu → Preferences → Audio → \
+                 Preferences (Accept) → Audio → Preferences (Cancel) → Audio",
+                run.visited
+            ));
+        }
+        if facts.audio_accepts != 1 {
+            failures.push(format!(
+                "the Audio page committed {} times (expected the one Accept)",
+                facts.audio_accepts
+            ));
+        }
+        for label in [
+            "audio-open",
+            "audio-music-off",
+            "audio-list",
+            "audio-edited",
+            "audio-reopened",
+            "audio-unsaved",
+            "audio-cancelled",
+        ] {
+            if !shots.iter().any(|shot| shot.label == label) {
+                failures.push(format!("the {label} framebuffer never arrived"));
+            }
+        }
+        if run.unhandled != 0 {
+            failures.push(format!(
+                "{} presses landed on buttons with no known effect (expected none)",
+                run.unhandled
+            ));
+        }
+        let mut audio_lines = Vec::new();
+        if let Some(note) = &run.audio_note {
+            audio_lines.push(format!("no audio output: {note}"));
+        }
+        if let Some(committed) = &facts.audio_committed {
+            audio_lines.push(format!("audio committed {committed}"));
+        }
+        return smoke_report(smoke, run, shots, failures, audio_lines, audio);
+    }
     if smoke.scene == SmokeScene::Cabin {
         if run.visited != ["PassengerCabin"] {
             failures.push(format!(
@@ -2517,6 +2901,10 @@ struct FlowFacts {
     handover: Option<String>,
     /// Every screen the machine refused, in order.
     refusals: Vec<String>,
+    /// The Audio page's Accepts and the values it holds committed.
+    audio_accepts: usize,
+    /// The committed values (`Debug`), when the run has an Audio page.
+    audio_committed: Option<String>,
 }
 
 /// Collects the [`FlowFacts`] of the run.
@@ -2542,6 +2930,10 @@ fn flow_facts(state: &ShellResource) -> FlowFacts {
         refusals: state.flow.as_ref().map_or_else(Vec::new, |flow| {
             flow.refusals().iter().map(ToString::to_string).collect()
         }),
+        audio_accepts: state.audio_page().map_or(0, |page| page.accepts().len()),
+        audio_committed: state
+            .audio_page()
+            .map(|page| format!("{:?}", page.committed())),
     }
 }
 
@@ -2751,6 +3143,20 @@ pub(super) fn shell_app_with(
     // cannot open, is reported and the section still draws its panes and
     // buttons.
     let pilots = pilot_setup(request, &layout);
+    let audio_page = audio_page_setup(request, &screens, &layout);
+    if let Some(page) = &audio_page {
+        // The slider and drop-down art the generic rows do not reference.
+        let rows = page
+            .sliders()
+            .iter()
+            .flat_map(|slider| [&slider.slot_art, &slider.knob_art])
+            .chain(Some(&page.dropdown().arrow_art));
+        for name in rows {
+            if let Some(artwork) = screens.graphic_artwork(name) {
+                art.entry(name.to_ascii_lowercase()).or_insert(artwork);
+            }
+        }
+    }
     let cursor = shell.cursor().and_then(|(name, _)| {
         screens
             .graphic_artwork(name)
@@ -2798,6 +3204,9 @@ pub(super) fn shell_app_with(
     if let Some(setup) = pilots {
         plugin = plugin.with_pilots(setup);
     }
+    if let Some(page) = audio_page {
+        plugin = plugin.with_audio_page(page);
+    }
     app.add_plugins(match flow {
         Some(flow) => plugin.with_flow(flow),
         None => plugin,
@@ -2833,6 +3242,52 @@ pub const PROFILE_DIR_ENV: &str = "CS_PROFILE_DIR";
 
 /// Where a smoke run keeps its pilots, inside the capture directory.
 pub const SMOKE_PROFILE_SUBDIR: &str = "profiles";
+
+/// The directory the profile population and the audio settings live in: a
+/// smoke's own capture directory, else `$CS_PROFILE_DIR`, else
+/// `~/.crimson-skies`.
+fn profile_base(request: &FrontEndRequest) -> Option<PathBuf> {
+    match &request.smoke {
+        Some(smoke) => Some(smoke.capture_dir.join(SMOKE_PROFILE_SUBDIR)),
+        None => std::env::var_os(PROFILE_DIR_ENV)
+            .map(PathBuf::from)
+            .or_else(|| {
+                std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".crimson-skies"))
+            }),
+    }
+}
+
+/// The Audio page for a run (#1996): its rows from the layout, its labels
+/// from the installation's own string table and its values from the audio
+/// settings file. A page the installation cannot supply is reported and the
+/// section still draws its panes and buttons.
+fn audio_page_setup(
+    request: &FrontEndRequest,
+    screens: &FrontEndScreens,
+    layout: &super::OriginalLayout,
+) -> Option<AudioPage> {
+    let strings = match crate::mission_session::FlightCheckStrings::read(&request.cs_path, screens)
+    {
+        Ok(strings) => strings,
+        Err(error) => {
+            eprintln!("cs: no audio page: {error}");
+            return None;
+        }
+    };
+    let store = profile_base(request).map(|base| AudioSettingsFile::in_directory(&base));
+    match AudioPage::from_layout(
+        layout,
+        &|name: &str| strings.resolve_tagged(name),
+        &|art: &str| screens.art_extent(art),
+        store,
+    ) {
+        Ok(page) => Some(page),
+        Err(error) => {
+            eprintln!("cs: no audio page: {error}");
+            None
+        }
+    }
+}
 
 /// The pilot page and its session for a run: automation (a smoke) gets the
 /// synthetic population under its capture directory — the profile library

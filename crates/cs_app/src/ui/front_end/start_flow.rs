@@ -595,7 +595,9 @@ impl StartFlow {
                 step
             }
             ShellOutcome::Quit => self.terminate(),
-            ShellOutcome::Back { .. } | ShellOutcome::Nothing => StartStep::Stay,
+            ShellOutcome::Back { .. } | ShellOutcome::Nothing | ShellOutcome::Toggled { .. } => {
+                StartStep::Stay
+            }
         }
     }
 

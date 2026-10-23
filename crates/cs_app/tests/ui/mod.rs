@@ -87,6 +87,7 @@
 //! `sound` declarations. Its prefix is `accept_fe_menu_4_`; the retail and
 //! windowed tests are `#[ignore]`d for the same reason.
 
+mod audio_preferences;
 mod evidence;
 mod evidence_f45_b_1;
 mod evidence_f45_c_5;

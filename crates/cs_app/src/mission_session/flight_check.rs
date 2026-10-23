@@ -1322,13 +1322,17 @@ impl FlightCheckStrings {
     /// draws it — or `None`.
     #[must_use]
     pub fn resolve(&self, name: &str) -> Option<String> {
+        self.resolve_tagged(name)
+            .map(|text| crate::ui::front_end::strip_font_tag(&text).to_owned())
+    }
+
+    /// The text `name` names with its `[FONT]` tag kept, for a screen that
+    /// reads the face from it (the Audio page, #1996).
+    #[must_use]
+    pub fn resolve_tagged(&self, name: &str) -> Option<String> {
         let id = self.defines.get(name)?;
         match self.catalog.resolve(*id, None) {
-            cs_content::config::StringLookup::Found(row) => row
-                .text
-                .as_deref()
-                .map(crate::ui::front_end::strip_font_tag)
-                .map(str::to_owned),
+            cs_content::config::StringLookup::Found(row) => row.text.clone(),
             _ => None,
         }
     }

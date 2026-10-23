@@ -500,7 +500,7 @@ fn press_of(
     outcome: ShellOutcome,
 ) -> Option<PreferencesPress> {
     match outcome {
-        ShellOutcome::Nothing | ShellOutcome::Back { .. } => None,
+        ShellOutcome::Nothing | ShellOutcome::Back { .. } | ShellOutcome::Toggled { .. } => None,
         ShellOutcome::Entered { section } => {
             shell.escape();
             Some(PreferencesPress {
