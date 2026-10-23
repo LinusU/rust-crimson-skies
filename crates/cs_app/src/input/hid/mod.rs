@@ -28,6 +28,7 @@ pub mod device;
 pub mod effect;
 pub mod layout;
 pub mod pid;
+pub mod probe;
 
 use std::sync::Mutex;
 use std::sync::mpsc::{Receiver, Sender, channel};

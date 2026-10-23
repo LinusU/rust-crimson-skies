@@ -79,6 +79,23 @@ pub struct MissionRequest {
     pub joystick: crate::input::hid::HostJoystickOptions,
 }
 
+/// A `--joystick-probe` request: list the host's joysticks, show one's controls
+/// live and, when asked, play a low-strength force-feedback test sequence
+/// (SIDEWINDER-FFB2, #1968).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct JoystickProbeRequest {
+    /// Which joystick (`--joystick <vid:pid|name>`); the first otherwise.
+    pub filter: Option<String>,
+    /// Seconds of live input to show (`--probe-seconds <n>`).
+    pub seconds: u32,
+    /// `--test-force-feedback`: play the test sequence.
+    pub test_force_feedback: bool,
+    /// The test sequence's strength (`--force-feedback-gain <percent>`).
+    pub gain_percent: u32,
+    /// `--save-descriptor <file>`: write the raw HID report descriptor there.
+    pub save_descriptor: Option<PathBuf>,
+}
+
 /// What the caller asked the binary to do.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum CliRequest {
@@ -109,6 +126,11 @@ pub enum CliRequest {
     /// `--cs-path <dir>` alone: open the windowed start flow on the original
     /// main menu, driven by the F45 front-end machine (Rally #1830).
     StartFlow(StartFlowRequest),
+    /// `--joystick-probe [--joystick <device>] [--probe-seconds <n>]
+    /// [--test-force-feedback [--force-feedback-gain <percent>]]
+    /// [--save-descriptor <file>]`: check a host joystick
+    /// ([`crate::input::hid::probe`]).
+    JoystickProbe(JoystickProbeRequest),
     /// No arguments at all: invalid input, reported on stderr and exit 2.
     MissingInput,
     /// Arguments that name no supported run mode: reported on stderr and
@@ -165,10 +187,14 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
     let mut front_end = false;
     let mut from_start_flow = false;
     let mut resume_start_flow: Option<String> = None;
+    let mut joystick_probe = false;
     let mut no_joystick = false;
     let mut joystick_filter: Option<String> = None;
     let mut force_feedback_gain: Option<u32> = None;
     let mut no_force_feedback = false;
+    let mut test_force_feedback = false;
+    let mut probe_seconds: Option<u32> = None;
+    let mut save_descriptor: Option<PathBuf> = None;
     let mut unknown = false;
 
     let mut index = 0;
@@ -186,8 +212,10 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
             "--smoke-failure" => smoke_failure = true,
             "--front-end" => front_end = true,
             "--from-start-flow" => from_start_flow = true,
+            "--joystick-probe" => joystick_probe = true,
             "--no-joystick" => no_joystick = true,
             "--no-force-feedback" => no_force_feedback = true,
+            "--test-force-feedback" => test_force_feedback = true,
             "--joystick" => {
                 let Some(value) = args.get(index + 1).cloned() else {
                     return CliRequest::Unsupported { args };
@@ -195,7 +223,14 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
                 joystick_filter = Some(value);
                 values = 1;
             }
-            "--force-feedback-gain" => {
+            "--save-descriptor" => {
+                let Some(value) = args.get(index + 1).cloned() else {
+                    return CliRequest::Unsupported { args };
+                };
+                save_descriptor = Some(PathBuf::from(value));
+                values = 1;
+            }
+            "--force-feedback-gain" | "--probe-seconds" => {
                 let Some(value) = args.get(index + 1).cloned() else {
                     return CliRequest::Unsupported { args };
                 };
@@ -204,13 +239,18 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
                         reason: format!("{arg} expects a whole number, found {value:?}"),
                     };
                 };
-                if let Err(error) = crate::force_feedback::ForceFeedbackSettings::with_gain(parsed)
-                {
-                    return CliRequest::Invalid {
-                        reason: format!("--force-feedback-gain: {error}"),
-                    };
+                if arg == "--force-feedback-gain" {
+                    if let Err(error) =
+                        crate::force_feedback::ForceFeedbackSettings::with_gain(parsed)
+                    {
+                        return CliRequest::Invalid {
+                            reason: format!("--force-feedback-gain: {error}"),
+                        };
+                    }
+                    force_feedback_gain = Some(parsed);
+                } else {
+                    probe_seconds = Some(parsed);
                 }
-                force_feedback_gain = Some(parsed);
                 values = 1;
             }
             "--resume-start-flow" => {
@@ -306,6 +346,39 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
     if unknown {
         return CliRequest::Unsupported { args };
     }
+    if joystick_probe {
+        if mission.is_some()
+            || cs_path.is_some()
+            || playtest
+            || synthetic
+            || front_end
+            || no_joystick
+            || no_force_feedback
+            || smoke_seconds.is_some()
+        {
+            return CliRequest::Invalid {
+                reason: "--joystick-probe checks a host joystick on its own; it takes only \
+ --joystick, --probe-seconds, --test-force-feedback, --force-feedback-gain and \
+ --save-descriptor"
+                    .to_string(),
+            };
+        }
+        return CliRequest::JoystickProbe(JoystickProbeRequest {
+            filter: joystick_filter,
+            seconds: probe_seconds.unwrap_or(10),
+            test_force_feedback,
+            gain_percent: force_feedback_gain
+                .unwrap_or(crate::force_feedback::DESIGNED_DEFAULT_GAIN_PERCENT),
+            save_descriptor,
+        });
+    }
+    if test_force_feedback || probe_seconds.is_some() || save_descriptor.is_some() {
+        return CliRequest::Invalid {
+            reason: "--test-force-feedback, --probe-seconds and --save-descriptor are flags of \
+ --joystick-probe"
+                .to_string(),
+        };
+    }
     let joystick_flags = no_joystick
         || joystick_filter.is_some()
         || force_feedback_gain.is_some()
@@ -313,7 +386,7 @@ pub fn parse<I: IntoIterator<Item = String>>(args: I) -> CliRequest {
     if joystick_flags && mission.is_none() {
         return CliRequest::Invalid {
             reason: "--no-joystick, --joystick, --force-feedback-gain and --no-force-feedback \
- are flags of --cs-path <dir> --mission <id>"
+ are flags of --cs-path <dir> --mission <id> (or --joystick-probe)"
                 .to_string(),
         };
     }
@@ -759,6 +832,18 @@ WINDOWED PLAYTEST (development, not original)
     --mission <id> --no-joystick | --no-force-feedback
         Leave host joysticks alone, or read the stick but never drive its
         motors
+
+JOYSTICK CHECK
+    --joystick-probe [--joystick <vid:pid|name>] [--probe-seconds <n>] [--save-descriptor <file>]
+        List the host's HID joysticks, then show one's raw axes, buttons and
+        hat live for <n> seconds (default 10): what the game will read. Says
+        whether its report descriptor matches the bundled SideWinder Force
+        Feedback 2 capture and whether it offers USB PID force feedback, and
+        names the failure when the device cannot be opened. Sends no force
+    --joystick-probe --test-force-feedback [--force-feedback-gain <percent>]
+        Also play a test sequence on a USB PID stick: centring spring,
+        damper, a push to each side, a buffet and a gun rattle, at 25%
+        strength unless asked otherwise. Hold the grip loosely
 
 START FLOW (windowed)
     --cs-path <dir>

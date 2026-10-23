@@ -62,6 +62,13 @@ fn main() -> ExitCode {
                 ExitCode::from(cli::EXIT_RUNTIME_FAILURE)
             }
         },
+        CliRequest::JoystickProbe(request) => match cs_app::input::hid::probe::run(&request) {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(error) => {
+                eprintln!("cs: {error}");
+                ExitCode::from(cli::EXIT_RUNTIME_FAILURE)
+            }
+        },
         CliRequest::MissingInput => {
             eprintln!("{}", cli::missing_input_message());
             ExitCode::from(cli::EXIT_INVALID_INPUT)
