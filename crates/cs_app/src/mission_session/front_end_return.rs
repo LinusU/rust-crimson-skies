@@ -16,6 +16,8 @@
 //! Mission restarts the flight in place under a fresh session generation
 //! (#1656).
 
+use std::sync::{Arc, Mutex};
+
 use bevy::prelude::Resource;
 
 pub use crate::ui::front_end::MissionEnd;
@@ -28,3 +30,26 @@ pub struct ReturnToFrontEnd;
 /// How the player left the flight.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Resource)]
 pub struct MissionLeft(pub MissionEnd);
+
+/// The [`MissionEnd`] carried out of the consumed app: `App::run` leaves the
+/// caller an empty world, so a screen that records [`MissionLeft`] also
+/// writes this shared cell — the same channel the smoke's report takes
+/// through `MissionSmokeHandle` (#1832).
+#[derive(Clone, Default, Resource)]
+pub struct MissionLeftCell(pub Arc<Mutex<Option<MissionEnd>>>);
+
+impl MissionLeftCell {
+    /// The end the flight reported, once it did.
+    #[must_use]
+    pub fn take(&self) -> Option<MissionEnd> {
+        self.0.lock().ok().and_then(|mut slot| slot.take())
+    }
+
+    /// Records the end: called beside every [`MissionLeft`] insert so the
+    /// post-run caller sees what the consumed world did.
+    pub fn record(&self, end: MissionEnd) {
+        if let Ok(mut slot) = self.0.lock() {
+            *slot = Some(end);
+        }
+    }
+}

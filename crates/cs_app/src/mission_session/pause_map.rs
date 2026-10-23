@@ -1466,6 +1466,7 @@ fn drive_pause_map(
     mut exit: MessageWriter<AppExit>,
     mut commands: bevy::prelude::Commands,
     return_to_front_end: Option<Res<super::ReturnToFrontEnd>>,
+    left_cell: Option<Res<super::MissionLeftCell>>,
     mut arts: Query<(&ButtonArt, &mut ImageNode, &Placed)>,
     mut labels: Query<(&ButtonLabel, &mut TextColor)>,
     mut cursors: Query<
@@ -1554,6 +1555,9 @@ fn drive_pause_map(
             // is going back to the cabin (#1831).
             if return_to_front_end.is_some() {
                 commands.insert_resource(super::MissionLeft(super::MissionEnd::Abandoned));
+                if let Some(cell) = &left_cell {
+                    cell.record(super::MissionEnd::Abandoned);
+                }
             }
             exit.write(AppExit::Success);
         }

@@ -4066,7 +4066,7 @@ fn smoke_script(
             data.phase = Phase::Leave;
             data.phase_start = frame + 1;
         }
-        Phase::Settle if at >= SETTLE_FRAMES => {
+        Phase::Settle if config.mode != MissionSmokeMode::StartFlow && at >= SETTLE_FRAMES => {
             data.phase = Phase::WorldProbe;
             data.phase_start = frame + 1;
         }

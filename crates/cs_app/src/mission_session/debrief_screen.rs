@@ -1058,6 +1058,9 @@ pub fn apply_response(world: &mut bevy::prelude::World, response: &DebriefRespon
         println!("mission debrief: Return to Cabin leaves the flight for the front end");
         world.remove_resource::<DebriefScreen>();
         world.insert_resource(super::MissionLeft(super::MissionEnd::ReturnedToCabin));
+        if let Some(cell) = world.get_resource::<super::MissionLeftCell>() {
+            cell.record(super::MissionEnd::ReturnedToCabin);
+        }
         world.write_message(bevy::app::AppExit::Success);
     }
 }

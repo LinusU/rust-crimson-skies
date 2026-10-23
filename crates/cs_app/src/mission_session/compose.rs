@@ -2298,6 +2298,11 @@ pub fn run_windowed(
             );
         }
     }
+    // `App::run` leaves this handle an empty app: the end a screen records
+    // comes back through the shared cell, as the smoke's report does through
+    // its handle (#1832).
+    let left_cell = super::MissionLeftCell::default();
+    app.insert_resource(left_cell.clone());
     let exit = app.run();
     let smoked: Result<(), MissionCompositionError> = match (&smoke_handle, smoke) {
         (Some(handle), Some(request)) => {
@@ -2333,10 +2338,7 @@ pub fn run_windowed(
         };
         trace.and(audio)
     });
-    let left = app
-        .world()
-        .get_resource::<super::MissionLeft>()
-        .map(|left| left.0);
+    let left = left_cell.take();
     teardown(&mut app);
     captured.map_err(MissionCompositionError::Capture)?;
     smoked?;
