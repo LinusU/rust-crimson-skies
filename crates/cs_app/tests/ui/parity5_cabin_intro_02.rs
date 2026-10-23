@@ -127,7 +127,7 @@ fn pes_packet(stream_id: u8, payload: &[u8]) -> Vec<u8> {
     packet
 }
 
-fn program_stream() -> Vec<u8> {
+pub(super) fn program_stream() -> Vec<u8> {
     let mut w = BitWriter::default();
 
     // Pack header

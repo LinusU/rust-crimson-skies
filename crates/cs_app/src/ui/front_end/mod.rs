@@ -87,6 +87,7 @@ mod capture;
 mod flight_check_view;
 mod flow;
 mod import_dialog;
+mod intro;
 mod machine;
 mod movie;
 mod original;
@@ -123,6 +124,7 @@ pub use flow::{
     ResourceProblem, ScrapbookInputs,
 };
 pub use import_dialog::ImportDialog;
+pub use intro::{INTRO_FILE, IntroMovie, IntroState, follows as intro_follows};
 pub use machine::{
     ConstructionDraft, Effect, FrontEnd, LoadFailure, Loadout, LoadoutProblem, MissionOutcome,
     Outcome, PageMove, Plan, ProfileIntent, Refusal, Request,
@@ -170,7 +172,8 @@ pub use window::{
     DEFAULT_FRONT_END_CAPTURE_DIR, FrontEndError, FrontEndRequest, FrontEndShellPlugin,
     MIN_SHELL_SMOKE_SECONDS, PROFILE_DIR_ENV, PilotSetup, SMOKE_PROFILE_SUBDIR, ShellResource,
     ShellShotRecord, ShellSmokeHandle, ShellSmokePlugin, ShellSmokeReport, headless_app,
-    headless_app_audio, headless_app_flow, headless_app_pilots, run_front_end, shell_app,
+    headless_app_audio, headless_app_flow, headless_app_intro, headless_app_pilots, run_front_end,
+    shell_app,
 };
 
 /// A front-end screen.

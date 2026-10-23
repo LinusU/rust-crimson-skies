@@ -79,6 +79,7 @@ use bevy::time::TimeUpdateStrategy;
 use bevy::window::{CursorMoved, CursorOptions, PrimaryWindow};
 use cs_sim::cinematic_state::MediaFailure;
 
+use super::intro::{self, IntroMovie, IntroState};
 use super::movie::{MovieBackdrop, movie_media};
 use super::original::script_member;
 use super::pilot_page::{CONTINUE_BUTTON, DELETE_BUTTON, PILOT_SECTION, PilotOutcome, PilotPage};
@@ -90,6 +91,7 @@ use super::sound::{MenuAudio, MenuAudioEvent, MenuCue, MenuSamples, MenuSoundTab
 use super::start_flow::{StartFlow, StartStep};
 use super::{Artwork, ShellError};
 use crate::audio::CapabilityDeclaration;
+use crate::cinematics::movie_player::{AudioOutput, MoviePlayerPlugin};
 use crate::cinematics::mpeg::MpegVideoSource;
 use crate::playtest::SmokeRequest;
 use crate::playtest::smoke::SMOKE_FRAME_HZ;
@@ -193,6 +195,8 @@ pub struct ShellResource {
     audio: Option<MenuAudio>,
     /// The button the pointer or focus was last on, so a cue plays on entry.
     watch: AudioWatch,
+    /// The intro movie between the pilot page and the cabin.
+    intro: IntroState,
 }
 
 /// What the audio hooks last saw of the shell.
@@ -250,6 +254,12 @@ impl ShellResource {
         self.pilots
             .as_ref()
             .map_or(&[], |pilots| pilots.outcomes.as_slice())
+    }
+
+    /// The intro movie's state: whether it is up and how each one ended.
+    #[must_use]
+    pub fn intro(&self) -> &IntroState {
+        &self.intro
     }
 
     /// The front end's audio, when this run has an output.
@@ -402,6 +412,7 @@ pub struct FrontEndShellPlugin {
     pilots: Mutex<Option<PilotSetup>>,
     audio: Mutex<Option<MenuAudio>>,
     audio_note: Mutex<Option<String>>,
+    intro: Mutex<Option<IntroMovie>>,
 }
 
 impl FrontEndShellPlugin {
@@ -427,6 +438,7 @@ impl FrontEndShellPlugin {
             pilots: Mutex::new(None),
             audio: Mutex::new(None),
             audio_note: Mutex::new(None),
+            intro: Mutex::new(None),
         }
     }
 
@@ -441,6 +453,14 @@ impl FrontEndShellPlugin {
     #[must_use]
     pub fn with_pilots(self, setup: PilotSetup) -> Self {
         *self.pilots.lock().expect("the plugin is not shared yet") = Some(setup);
+        self
+    }
+
+    /// Plays `movie` between the pilot page and the cabin
+    /// (PARITY5-CABIN-INTRO.03), over the [`MoviePlayerPlugin`] this adds.
+    #[must_use]
+    pub fn with_intro(self, movie: IntroMovie) -> Self {
+        *self.intro.lock().expect("the plugin is not shared yet") = Some(movie);
         self
     }
 
@@ -475,6 +495,7 @@ impl FrontEndShellPlugin {
             pilots: Mutex::new(None),
             audio: Mutex::new(None),
             audio_note: Mutex::new(None),
+            intro: Mutex::new(None),
         }
     }
 }
@@ -554,7 +575,13 @@ impl Plugin for FrontEndShellPlugin {
                 }),
             audio: self.audio.lock().ok().and_then(|mut slot| slot.take()),
             watch: AudioWatch::default(),
+            intro: IntroState::new(self.intro.lock().ok().and_then(|mut slot| slot.take())),
         });
+        if app.world().resource::<ShellResource>().intro.enabled()
+            && !app.is_plugin_added::<MoviePlayerPlugin>()
+        {
+            app.add_plugins(MoviePlayerPlugin);
+        }
         if self.visuals {
             app.add_systems(Startup, startup_shell);
         }
@@ -627,6 +654,30 @@ pub fn headless_app_audio(
     app
 }
 
+/// As [`headless_app_pilots`], with `movie` played between the pilot page
+/// and the cabin (PARITY5-CABIN-INTRO.03's route tests). The caller supplies
+/// the asset store the movie presenter draws into.
+pub fn headless_app_intro(
+    shell: MenuShell,
+    flow: Option<StartFlow>,
+    setup: PilotSetup,
+    movie: IntroMovie,
+) -> App {
+    let mut app = App::new();
+    app.add_plugins(bevy::input::InputPlugin);
+    app.add_message::<CursorMoved>();
+    app.init_resource::<ButtonInput<KeyCode>>();
+    app.init_resource::<ButtonInput<MouseButton>>();
+    let plugin = FrontEndShellPlugin::headless(shell)
+        .with_pilots(setup)
+        .with_intro(movie);
+    app.add_plugins(match flow {
+        Some(flow) => plugin.with_flow(flow),
+        None => plugin,
+    });
+    app
+}
+
 /// The primary window's entity, when the world has one.
 #[inline(always)]
 fn primary_window(world: &World) -> Option<Entity> {
@@ -686,7 +737,10 @@ fn frame_shell(world: &mut World) {
     };
     // The music control is initialised by the shared script when the front
     // end starts (`GLOBALS.SCRIPT` `gui_create`), not by any one screen.
-    if let Some(audio) = &mut state.audio {
+    let intro_busy = state.intro.advance(world);
+    if let Some(audio) = &mut state.audio
+        && !state.intro.active()
+    {
         audio.start_music();
     }
     if world.contains_resource::<ShellSmoke>() {
@@ -793,6 +847,10 @@ fn frame_shell(world: &mut World) {
         pilots.page.hover_at(point);
     }
     let mut exit = false;
+    if intro_busy {
+        // The movie owns the input: its skip keys must not reach the cabin.
+        events.clear();
+    }
     for event in events.drain(..) {
         // The pilot page takes the arrows, Enter and Esc for itself (the
         // edit box has the focus; the list is arrow-driven) and a press on
@@ -881,6 +939,7 @@ fn frame_shell(world: &mut World) {
                 (None, Some(flow)) => flow.route(shell, outcome.clone()),
                 (None, None) => StartStep::Stay,
             };
+            let plays_intro = intro::follows(&step);
             match step {
                 StartStep::Moved { .. } => {
                     state
@@ -888,6 +947,9 @@ fn frame_shell(world: &mut World) {
                         .visited
                         .push(shell.section_name().unwrap_or_default().to_owned());
                     state.redraw = true;
+                    if plays_intro && state.intro.begin(state.audio.as_mut()) {
+                        break;
+                    }
                 }
                 StartStep::Launch { .. } | StartStep::Quit => exit = true,
                 StartStep::Refused(refusal) => eprintln!("cs: {refusal}"),
@@ -2193,6 +2255,12 @@ pub(super) fn shell_app_with(
     }
     let mut plugin = FrontEndShellPlugin::windowed(shell, art, cursor, movie_files)
         .with_audio(menu_audio(&screens));
+    if flow.is_some() {
+        plugin = plugin.with_intro(IntroMovie::retail(
+            &request.cs_path,
+            AudioOutput::Device(CapabilityDeclaration::from_environment()),
+        ));
+    }
     if let Some(setup) = pilots {
         plugin = plugin.with_pilots(setup);
     }
