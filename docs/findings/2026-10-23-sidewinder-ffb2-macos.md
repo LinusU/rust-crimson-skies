@@ -43,6 +43,14 @@ session; the owner moved the stick and held the grip.
   reported: "Seems good! It's a little weak", which is expected at 25% (the probe's pushes
   are 60% of full scale, so about 15% of the stick's force).
 
+* **In the mission** (`cs --cs-path … --mission M01`, release build, the owner flying): two
+  windowed runs, about 6 minutes at the default 25% and about 2 minutes at
+  `--force-feedback-gain 75`. Both logged `joystick: SideWinder Force Feedback 2 Joystick
+  (045e:001b) connected as usb:045e:001b: 4 axes, 8 buttons, hat, force feedback at …%`, logged
+  no joystick or force-feedback error and quit with exit 0. The owner's verdict after the 75%
+  run: "It feels good! Ship it!" This is `human_play` evidence for the owner's stick and Mac;
+  the 25% default stays (the owner preferred 75% for themselves, which is the flag's job).
+
 ## Decisions
 
 * **Axis assignment: original.** `ORIGINAL_JOYSTICK_AXES` (static, `OWNER-STATIC`) maps X to
@@ -69,9 +77,9 @@ session; the owner moved the stick and held the grip.
 
 ## Still open
 
-* **Felt in flight.** The in-mission feel (spring against airspeed, buffet, guns, hits) and the
-  pause/focus/unplug/exit stops have not yet been felt on the hardware; the owner checklist in
-  `docs/PLAYTEST.md` lists them. Until then full hardware compatibility is not claimed.
+* **Felt in flight, item by item.** The owner flew the owner checklist's flights but reported
+  one overall judgement, not each item; the pause, focus, unplug and exit stops in particular
+  were not reported separately. The tests cover them; a regression there would be a new task.
 * **Original effects.** The original's own Immersion effects (`crimsonff.ifr` through IFC) and
   the events that trigger them are unmeasured; nothing here reproduces them.
 * **Persistence.** Calibration and bindings are not saved (#404 F22-E owns persistent
