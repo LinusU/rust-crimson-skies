@@ -37,3 +37,36 @@ with Up held; the production terrain-contact rule judged 9 contacts and ended th
   comparison.
 * The `Fatal Crash!` text sits at the left edge in blue; whether that is the original's place and colour is
   not established here.
+
+## #2021 PARITY4-CRASH-F: the plateau dive, and why it is blocked
+
+Implementer: `claude-2`. Nothing here is `verified_original`.
+
+The stage now dives onto the owner's observed crash point `(-5055, 324, -4718)` (#1755; finding
+`2026-10-22-crash-a-…` §5): it casts a ray down at that point, places the player 400 m above the surface
+the ray found (the observed height when it found no scenery), 400 m back along the straight line from the
+player's position to the point, nose 45 degrees down, Up held. The original's own heading is unknown, so
+that approach is derived, not measured. New checks: `crash_on_plateau` (the fatal contact's terrain is
+world scenery, not `PlaytestSea`/`PlaytestGround`) and `crash_dial_red_pair`.
+
+**Run** (`private/evidence/PARITY4-CRASH-F`, `--smoke-seconds 60 --smoke-crash`): 9 of 10 checks pass,
+`crash_on_plateau` fails, on purpose:
+
+* The ray from 4000 m above the point hits the **sea at y = 0**, no scenery. Rays on `z = -4900, -4718,
+  -4500, -4300` for `x = -7000 … -3500` (step 100) all hit the sea first. Scenery colliders exist elsewhere
+  (e.g. `x ≈ -7400 … -3000`, `z ≈ -6800 … -5200` and `z ≈ -4000 … -3000`, tops 50–460 m), none at the
+  observed point. So **the surface at the owner's crash point cannot be confirmed from the world's colliders: unknown.**
+* The drawn world there is jungle hills (`frame_cr02491_crash_dial.png` shows them under the dive start
+  at `(-4742, 724, -4469)`), yet the production flight met the sea: the dive ended at frame 4007 at
+  `(-4647, 2.2, -4392)`, `contact_terrain: sea`. Either the drawn hills have no collider there or the
+  observed point is in another frame; both are unresolved. I did not move the dive to the nearest scenery:
+  that would be an invented coordinate.
+* **The dial frame**: the production crash flow holds the gauge cluster back from the first crash frame
+  (`fit_hud_viewport`, `crash.is_some()`), so no frame can show the dial red *at* contact. The stage
+  scripts one wing hit (`leftwingdamage`, through the damage authority, labelled in `report.json`) at the
+  dive and photographs `frame_cr02491_crash_dial.png` 20 frames later. The check reads the production zone
+  pieces: 4 of 4 left-wing pieces carry the red texture, none of the other zones. On the frame, though, the
+  zone overlay is barely visible: a thin red sliver on the left rim of the attitude dial, not a wing-shaped
+  zone over the silhouette. The overlay quads' placement on the dial looks wrong; follow-up task filed.
+* The scripted wing hit also starts the wing fire before the crash, so `crash_contact_effects` (sparks and
+  puffs alive after the crash began) is weaker here than in the #1857 run; the sparks come only from the crash.

@@ -27,6 +27,16 @@ fn full() -> CrashMetrics {
     CrashMetrics {
         dive_frame: Some(2_471),
         dive_from_m: Some([-1426.0, 400.0, -1813.0]),
+        surface_m: Some(([-5055.0, 320.0, -4718.0], "scenery".to_owned())),
+        contact_terrain: Some("scenery".to_owned()),
+        crash_offset_m: Some(40.0),
+        dial_hit_frame: Some(2_471),
+        dial_hit_refusal: None,
+        dial_red_pieces: 4,
+        dial_region_pieces: 4,
+        dial_other_red_pieces: 0,
+        dial_frame_delivered: true,
+        dial_permille: 990,
         contacts_judged: 2,
         track: vec![[2520.0, -1495.0, 357.0, -1895.0]],
         crash_frame: Some(2_900),
@@ -181,4 +191,45 @@ fn accept_crash_e_each_missing_piece_fails_its_own_check() {
     m.missing_shots = vec!["crash_camera".to_owned()];
     let checks = evaluate_mission_smoke(&m);
     assert!(!check(&checks, "smoke_shots_delivered").passed);
+}
+
+fn evaluate(crash: CrashMetrics) -> Vec<Check> {
+    evaluate_mission_smoke(&measured(crash))
+}
+
+/// PARITY4-CRASH-F (#2021): a contact with the sea, or none judged, is not a
+/// contact on the plateau.
+#[test]
+fn accept_crash_f_contact_on_the_plateau_needs_world_scenery() {
+    assert!(check(&evaluate(full()), "crash_on_plateau").passed);
+    for terrain in [Some("sea"), Some("ground"), Some("other"), None] {
+        let mut crash = full();
+        crash.contact_terrain = terrain.map(str::to_owned);
+        assert!(
+            !check(&evaluate(crash), "crash_on_plateau").passed,
+            "{terrain:?}"
+        );
+    }
+}
+
+/// PARITY4-CRASH-F (#2021): the dial check wants every piece of the destroyed
+/// zone red, no other zone red, and a delivered frame.
+#[test]
+fn accept_crash_f_dial_red_pair_needs_the_zone_red_and_a_frame() {
+    assert!(check(&evaluate(full()), "crash_dial_red_pair").passed);
+    let breakers: [fn(&mut CrashMetrics); 5] = [
+        |c| c.dial_red_pieces = 3,
+        |c| c.dial_other_red_pieces = 1,
+        |c| c.dial_frame_delivered = false,
+        |c| c.dial_permille = 10,
+        |c| c.dial_hit_frame = None,
+    ];
+    for (index, breaker) in breakers.into_iter().enumerate() {
+        let mut crash = full();
+        breaker(&mut crash);
+        assert!(
+            !check(&evaluate(crash), "crash_dial_red_pair").passed,
+            "breaker {index}"
+        );
+    }
 }

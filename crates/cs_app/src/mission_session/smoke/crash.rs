@@ -5,11 +5,14 @@
 //! cinematic like every windowed run, then:
 //!
 //! 1. once the player has control for a moment it **places the player** in a
-//!    dive onto the nearest declared ground target's terrain (a test
-//!    placement, labelled in `report.json`, found with a ray the production
-//!    physics world answers) — everything after the placement is the
-//!    production flight, the production terrain-contact rule and the
-//!    production crash flow;
+//!    dive onto the jungle plateau east of Site #2 (a test placement, labelled
+//!    in `report.json`; [`PLATEAU_CRASH_POINT_M`] is the owner's observation of
+//!    where the original crashed, and a ray the production physics world
+//!    answers says what lies under it) and **scripts one wing hit** so the
+//!    damage dial's red pair is on a frame (the production crash flow holds
+//!    the gauge cluster back from the first crash frame on) — everything after
+//!    the placement is the production flight, the production terrain-contact
+//!    rule and the production crash flow;
 //! 2. it waits for the terrain contacts to end the flight (a
 //!    [`CrashSequence`]), photographs the **contact** frame a few frames
 //!    later (sparks, fire, smoke) and the **detached crash camera** with
@@ -18,15 +21,21 @@
 //!    mission host to settle the failure and the journal's Mission Failed
 //!    screen to open, then photographs it.
 //!
+//! The approach is **derived, not measured**: the original's heading into the
+//! plateau is unknown, so the dive flies the straight line from the player's
+//! position at the placement to [`PLATEAU_CRASH_POINT_M`], at
+//! [`DIVE_PITCH_RAD`], from [`DIVE_HEIGHT_M`] above the surface the ray found.
+//!
 //! The floors are designed and named next to their constants. A run is never
 //! `human_play`, and nothing it measures is `verified_original`; the frames are
 //! for putting beside the Drydock originals by eye.
 
+use avian3d::prelude::{SpatialQuery, SpatialQueryFilter};
 use bevy::app::AppExit;
 use bevy::ecs::system::SystemParam;
 use bevy::prelude::{
-    ClearColor, Commands, GlobalTransform, InheritedVisibility, KeyCode, MessageReader, Query, Res,
-    ResMut, Text, Vec3, With,
+    Assets, ClearColor, Commands, Dir3, Entity, GlobalTransform, Has, InheritedVisibility, KeyCode,
+    MeshMaterial3d, MessageReader, Query, Res, ResMut, StandardMaterial, Text, Vec3, With,
 };
 
 use super::super::compose::MissionPlayerBody;
@@ -34,22 +43,50 @@ use super::super::contact_sparks::ContactSpark;
 use super::super::crash_flow::CrashMessage;
 use super::super::debrief_screen::DebriefScreen;
 use super::super::host::MissionHost;
+use super::super::hud_art::{HudZonePiece, MissionHudArt, ZonePieceRole};
 use super::super::wing_fire::WingFirePuff;
 use super::{
     Check, FlightCheckFrames, KeyOp, KeyQueue, PendingPlacement, Phase, Placement,
     SHOT_GRACE_FRAMES, SmokeConfig, SmokeData, SmokeMeasurements, SmokeShots,
     clear_colour_encodings, json_string, non_black_permille, request_screenshot,
 };
+use crate::airframe_damage::AirframeDamageRegion;
+use crate::physics::PhysicsTickLedger;
 use crate::playtest::PlaytestCameraMarker;
-use crate::playtest::fatal_contact::{CrashSequence, FATAL_CRASH_MESSAGE, TerrainContactJudged};
+use crate::playtest::fatal_contact::{
+    CrashSequence, FATAL_CRASH_MESSAGE, FailureCause, TerrainContactJudged,
+};
+use crate::playtest::scene::{PlaytestGround, PlaytestSea};
+use crate::weapons::SessionDamageResolver;
+use crate::world::WorldColliderInstance;
 
 /// Frames after the player gains control that the smoke waits before it
 /// places the dive.
 pub const DIVE_AFTER_CONTROL_FRAMES: u32 = 60;
-/// The height the dive starts at, metres above the sea. **Designed:** high
-/// enough that the production flight, not the placement, decides how the
-/// aircraft meets the water.
+/// Where the original's player was when it crashed in the Drydock capture,
+/// metres: the owner's observation recorded in #1755 (task #1755 and
+/// `docs/findings/2026-10-22-crash-a-fatal-contact-and-crash-camera.md` §5),
+/// on the jungle plateau east of Site #2. An observation, not a measurement
+/// of ours; the surface height under it is read from the retail world's
+/// colliders at run time and recorded as unknown when no scenery answers.
+pub const PLATEAU_CRASH_POINT_M: [f32; 3] = [-5055.0, 324.0, -4718.0];
+/// Where the surface ray starts above the crash point, metres. **Designed:**
+/// above every authored height.
+const SURFACE_RAY_START_M: f32 = 4_000.0;
+/// The surface ray's reach, metres.
+const SURFACE_RAY_REACH_M: f32 = 8_000.0;
+/// The height the dive starts at, metres above the surface under the crash
+/// point. **Designed:** high enough that the production flight, not the
+/// placement, decides how the aircraft meets the ground.
 pub const DIVE_HEIGHT_M: f32 = 400.0;
+/// Frames after the dive that the dial frame is taken, so the dial's drive has
+/// run on the scripted wing hit. **Designed.**
+const DIAL_SHOT_OFFSET: u32 = 20;
+/// The wing the scripted hit destroys for the dial frame.
+const DIAL_REGION: AirframeDamageRegion = AirframeDamageRegion::LeftWing;
+/// The scripted hit's size as a fraction of the designed region pool; above
+/// 1 so the region is `Destroyed`.
+const DIAL_HIT_FRACTION: f64 = 2.0;
 /// The nose attitude of the placement, radians (45 degrees down).
 /// **Designed.**
 pub const DIVE_PITCH_RAD: f32 = -std::f32::consts::FRAC_PI_4;
@@ -83,6 +120,29 @@ pub struct CrashMetrics {
     pub dive_frame: Option<u32>,
     /// Where the dive was placed, metres.
     pub dive_from_m: Option<[f32; 3]>,
+    /// The surface the ray found under [`PLATEAU_CRASH_POINT_M`], metres, with
+    /// what it is (`scenery`, `sea`, `ground` or `other`); `None`: no collider
+    /// answered, the plateau surface there is unknown.
+    pub surface_m: Option<([f32; 3], String)>,
+    /// What the crash's terrain entity is.
+    pub contact_terrain: Option<String>,
+    /// The crash position's horizontal distance from [`PLATEAU_CRASH_POINT_M`].
+    pub crash_offset_m: Option<f32>,
+    /// The script frame the wing hit for the dial frame was applied in.
+    pub dial_hit_frame: Option<u32>,
+    /// The scripted wing hit's refusal, if the damage authority refused it.
+    pub dial_hit_refusal: Option<String>,
+    /// Zone pieces of the scripted region drawn with the red texture at the
+    /// dial frame, out of those the dial has.
+    pub dial_red_pieces: usize,
+    /// Zone pieces of the scripted region.
+    pub dial_region_pieces: usize,
+    /// Zone pieces of the other regions drawn red at the dial frame.
+    pub dial_other_red_pieces: usize,
+    /// Whether the dial framebuffer arrived.
+    pub dial_frame_delivered: bool,
+    /// The share of the dial frame that is off black, per mille.
+    pub dial_permille: u32,
     /// Terrain contacts the production rule judged before the crash.
     pub contacts_judged: u32,
     /// The player's `[frame, x, y, z]` once a second from the dive on, up to
@@ -148,6 +208,72 @@ pub struct CrashWorld<'w, 's> {
     message: Query<'w, 's, (&'static Text, &'static InheritedVisibility), With<CrashMessage>>,
     sparks: Query<'w, 's, (), With<ContactSpark>>,
     puffs: Query<'w, 's, (), With<WingFirePuff>>,
+    spatial: SpatialQuery<'w, 's>,
+    kinds: Query<
+        'w,
+        's,
+        (
+            Has<PlaytestSea>,
+            Has<PlaytestGround>,
+            Option<&'static WorldColliderInstance>,
+        ),
+    >,
+}
+
+/// The damage dial's reads and the scripted wing hit's authorities.
+#[derive(SystemParam)]
+pub struct CrashDial<'w, 's> {
+    damage: Option<ResMut<'w, SessionDamageResolver>>,
+    weapons: Option<Res<'w, super::super::MissionWeapons>>,
+    ledger: Option<Res<'w, PhysicsTickLedger>>,
+    art: Option<Res<'w, MissionHudArt>>,
+    materials: Res<'w, Assets<StandardMaterial>>,
+    pieces: Query<
+        'w,
+        's,
+        (
+            &'static HudZonePiece,
+            &'static MeshMaterial3d<StandardMaterial>,
+        ),
+    >,
+}
+
+/// What kind of terrain `entity` is, for the report.
+fn terrain_kind(world: &CrashWorld, entity: Entity) -> String {
+    match world.kinds.get(entity) {
+        Ok((true, _, _)) => "sea",
+        Ok((_, true, _)) => "ground",
+        Ok((_, _, Some(_))) => "scenery",
+        _ => "other",
+    }
+    .to_owned()
+}
+
+/// Counts the zone pieces drawn with the red texture: `(region red, region
+/// total, other regions red)`.
+fn dial_reading(dial: &CrashDial) -> (usize, usize, usize) {
+    let Some(art) = dial.art.as_deref() else {
+        return (0, 0, 0);
+    };
+    let (mut red, mut total, mut other) = (0, 0, 0);
+    for (piece, material) in &dial.pieces {
+        let name = match piece.role {
+            ZonePieceRole::Hilite => "redhilite",
+            ZonePieceRole::Hatch => "red_hatchptrn",
+        };
+        let drawn_red = dial
+            .materials
+            .get(&material.0)
+            .and_then(|m| m.base_color_texture.as_ref())
+            .is_some_and(|texture| art.images.get(name) == Some(texture));
+        if piece.region == DIAL_REGION {
+            total += 1;
+            red += usize::from(drawn_red);
+        } else {
+            other += usize::from(drawn_red);
+        }
+    }
+    (red, total, other)
 }
 
 /// The stage's system: dives the player, follows the crash, photographs it.
@@ -167,14 +293,15 @@ pub fn smoke_crash(
     mut commands: Commands,
     clear: Option<Res<ClearColor>>,
     world: CrashWorld,
+    mut dial: CrashDial,
 ) {
-    let CrashWorld {
-        player,
-        camera,
-        message,
-        sparks,
-        puffs,
-    } = world;
+    let (player, camera, message, sparks, puffs) = (
+        &world.player,
+        &world.camera,
+        &world.message,
+        &world.sparks,
+        &world.puffs,
+    );
     if config.mode != super::MissionSmokeMode::Crash
         || matches!(data.phase, Phase::Final | Phase::Ended)
     {
@@ -214,24 +341,82 @@ pub fn smoke_crash(
         if !ready {
             return;
         }
-        let Ok((position, rotation)) = player.single() else {
+        let Ok((position, _)) = player.single() else {
             return;
         };
         // Straight down the way the player already flies: same heading, the
         // nose pitched down, [`DIVE_HEIGHT_M`] above the sea ahead.
-        let (yaw, _, _) = rotation.0.to_euler(bevy::math::EulerRot::YXZ);
-        let start = Vec3::new(position.0.x, DIVE_HEIGHT_M, position.0.z);
+        // The surface under the owner's crash point, from the production
+        // colliders; unknown when nothing answers.
+        let crash_point = Vec3::from_array(PLATEAU_CRASH_POINT_M);
+        let origin = Vec3::new(crash_point.x, SURFACE_RAY_START_M, crash_point.z);
+        let surface = world
+            .spatial
+            .cast_ray(
+                origin,
+                Dir3::NEG_Y,
+                SURFACE_RAY_REACH_M,
+                true,
+                &SpatialQueryFilter::default(),
+            )
+            .map(|hit| {
+                (
+                    [origin.x, origin.y - hit.distance, origin.z],
+                    terrain_kind(&world, hit.entity),
+                )
+            });
+        // An unconfirmed surface falls back to the observed height; the
+        // `crash_on_plateau` check then judges where the dive really met the
+        // ground.
+        let surface_y = surface
+            .as_ref()
+            .filter(|(_, kind)| kind == "scenery")
+            .map_or(crash_point.y, |(point, _)| point[1]);
+        // The straight line from where the player is to the crash point; the
+        // original's own heading into the plateau is unknown.
+        let toward = Vec3::new(
+            crash_point.x - position.0.x,
+            0.0,
+            crash_point.z - position.0.z,
+        )
+        .normalize_or_zero();
+        let toward = if toward == Vec3::ZERO {
+            Vec3::NEG_Z
+        } else {
+            toward
+        };
+        let yaw = (-toward.x).atan2(-toward.z);
+        // 45 degrees down: the horizontal run equals the height.
+        let start = Vec3::new(
+            crash_point.x - toward.x * DIVE_HEIGHT_M,
+            surface_y + DIVE_HEIGHT_M,
+            crash_point.z - toward.z * DIVE_HEIGHT_M,
+        );
         pending.0 = Some(Placement {
-            name: "crash dive onto the sea".to_owned(),
+            name: "crash dive onto the jungle plateau east of Site #2".to_owned(),
             position_m: start.to_array(),
             yaw,
             pitch: DIVE_PITCH_RAD,
             speed_m_s: data.speed_m_s,
-            distance_m: 0.0,
+            distance_m: f64::from(DIVE_HEIGHT_M),
         });
+        // The production crash flow holds the gauge cluster back from the
+        // first crash frame, so the dial's red pair gets its own frame: one
+        // scripted hit through the damage authority destroys a wing zone.
+        let hit = super::apply_trail_test_hit(
+            dial.damage.as_deref_mut(),
+            dial.weapons.as_deref(),
+            dial.ledger.as_deref(),
+            &[(DIAL_REGION.node_name(), DIAL_HIT_FRACTION)],
+        );
         if let Some(metrics) = data.measurements.crash.as_mut() {
             metrics.dive_frame = Some(frame);
             metrics.dive_from_m = Some(start.to_array());
+            metrics.surface_m = surface;
+            match hit {
+                Ok(()) => metrics.dial_hit_frame = Some(frame),
+                Err(refusal) => metrics.dial_hit_refusal = Some(refusal),
+            }
         }
         // Hold the original's nose-down key (the Up arrow, command 1) for the
         // whole dive: the flight law levels a stickless aircraft off.
@@ -248,6 +433,36 @@ pub fn smoke_crash(
         metrics
             .track
             .push([frame as f32, position.0.x, position.0.y, position.0.z]);
+    }
+
+    // The dial frame: the scripted wing hit has been drawn by now.
+    let dial_due = data.measurements.crash.as_ref().is_some_and(|metrics| {
+        metrics
+            .dial_hit_frame
+            .is_some_and(|hit| frame == hit + DIAL_SHOT_OFFSET)
+            && metrics.crash_frame.is_none()
+    });
+    if dial_due {
+        let (red, total, other) = dial_reading(&dial);
+        if let Some(metrics) = data.measurements.crash.as_mut() {
+            metrics.dial_red_pieces = red;
+            metrics.dial_region_pieces = total;
+            metrics.dial_other_red_pieces = other;
+        }
+        data.shots_requested += 1;
+        data.requested.push("crash_dial".to_owned());
+        request_screenshot(
+            &mut commands,
+            shots.clone(),
+            config
+                .request
+                .capture_dir
+                .join(format!("frame_cr{frame:05}_crash_dial.png")),
+            "crash_dial".to_owned(),
+            clear.as_deref().map(clear_colour_encodings),
+            None,
+            Some(frames.clone()),
+        );
     }
 
     // --- 2. waiting for the flight to end ------------------------------------
@@ -275,11 +490,14 @@ pub fn smoke_crash(
             queue.0.push(KeyOp::Release(KeyCode::ArrowUp));
             metrics.crash_tick = Some(crash.crash.tick);
             metrics.crash_position_m = Some(crash.crash.position_m);
-            metrics.severity = match crash.crash.cause {
-                crate::playtest::fatal_contact::FailureCause::TerrainContact {
-                    severity, ..
-                } => Some(severity),
-            };
+            let FailureCause::TerrainContact {
+                severity, terrain, ..
+            } = crash.crash.cause;
+            metrics.severity = Some(severity);
+            metrics.contact_terrain = Some(terrain_kind(&world, terrain));
+            let at = crash.crash.position_m;
+            let point = PLATEAU_CRASH_POINT_M;
+            metrics.crash_offset_m = Some((at[0] - point[0]).hypot(at[2] - point[2]));
         }
         *metrics.crash_frame.get_or_insert(frame)
     };
@@ -395,12 +613,16 @@ pub fn smoke_crash(
         })
     };
     let (contact, camera_shot) = (permille("crash_contact"), permille("crash_camera"));
+    let dial_permille = permille("crash_dial");
+    let dial_delivered = find("crash_dial").is_some();
     let failed_permille = failed.map_or(0, |frame| {
         non_black_permille(&frame.data, frame.width, frame.height)
     });
     let delivered = find("crash_contact").is_some() && find("crash_camera").is_some();
     if let Some(metrics) = data.measurements.crash.as_mut() {
         metrics.frames_delivered = delivered;
+        metrics.dial_frame_delivered = dial_delivered;
+        metrics.dial_permille = dial_permille;
         metrics.contact_permille = contact;
         metrics.camera_permille = camera_shot;
         metrics.failed_frame_delivered = failed.is_some();
@@ -438,6 +660,46 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
             c.crash_tick,
             c.severity,
             c.crash_position_m
+        ),
+    });
+    checks.push(Check {
+        id: "crash_on_plateau".to_owned(),
+        applies: true,
+        passed: c.contact_terrain.as_deref() == Some("scenery"),
+        detail: format!(
+            "the fatal contact was with {:?} terrain (world scenery is required, not the sea), \
+             {:?} m horizontally from the owner's observed crash point {:?}; the surface the ray \
+             found under that point: {}",
+            c.contact_terrain,
+            c.crash_offset_m,
+            PLATEAU_CRASH_POINT_M,
+            c.surface_m.as_ref().map_or_else(
+                || "unknown, no collider answered".to_owned(),
+                |(point, kind)| format!("{kind} at {point:?}")
+            )
+        ),
+    });
+    checks.push(Check {
+        id: "crash_dial_red_pair".to_owned(),
+        applies: true,
+        passed: c.dial_hit_frame.is_some()
+            && c.dial_region_pieces >= 2
+            && c.dial_red_pieces == c.dial_region_pieces
+            && c.dial_other_red_pieces == 0
+            && c.dial_frame_delivered
+            && c.dial_permille >= MIN_CRASH_DRAWN_PERMILLE,
+        detail: format!(
+            "a scripted wing hit (refusal: {:?}) destroyed the {:?} zone; {} of its {} dial \
+             pieces were drawn with the red texture, {} piece(s) of the other zones were red; \
+             the dial frame arrived: {}, {} per mille off black (floor {})",
+            c.dial_hit_refusal,
+            DIAL_REGION,
+            c.dial_red_pieces,
+            c.dial_region_pieces,
+            c.dial_other_red_pieces,
+            c.dial_frame_delivered,
+            c.dial_permille,
+            MIN_CRASH_DRAWN_PERMILLE
         ),
     });
     checks.push(Check {
@@ -561,6 +823,18 @@ pub fn crash_json(metrics: Option<&CrashMetrics>) -> String {
         || "null".to_owned(),
         |p| format!("[{:.2},{:.2},{:.2}]", p[0], p[1], p[2]),
     );
+    let surface = c.surface_m.as_ref().map_or_else(
+        || "null".to_owned(),
+        |(p, kind)| {
+            format!(
+                "{{\"point\":[{:.1},{:.1},{:.1}],\"kind\":{}}}",
+                p[0],
+                p[1],
+                p[2],
+                json_string(kind)
+            )
+        },
+    );
     let track = format!(
         "[{}]",
         c.track
@@ -570,7 +844,10 @@ pub fn crash_json(metrics: Option<&CrashMetrics>) -> String {
             .join(",")
     );
     format!(
-        "{{\"dive_frame\":{},\"dive_from_m\":{dive_from},\"contacts_judged\":{},\
+        "{{\"dive_frame\":{},\"dive_from_m\":{dive_from},\"surface\":{surface},\
+         \"contact_terrain\":{},\"crash_offset_m\":{},\"dial_hit_frame\":{},\
+         \"dial_red_pieces\":{},\"dial_region_pieces\":{},\"dial_other_red_pieces\":{},\
+         \"dial_frame_delivered\":{},\"dial_permille\":{},\"contacts_judged\":{},\
          \"track\":{track},\"crash_frame\":{},\"crash_tick\":{},\"crash_position_m\":{position},\"severity\":{},\
          \"max_sparks\":{},\"max_fire_puffs\":{},\"frames_delivered\":{},\
          \"contact_permille\":{},\"camera_permille\":{},\"camera_error_m\":{},\
@@ -578,6 +855,14 @@ pub fn crash_json(metrics: Option<&CrashMetrics>) -> String {
          \"settled_outcome\":{},\"settled_source\":{},\"screen_frame\":{},\"exits_seen\":{},\
          \"failed_frame_delivered\":{},\"failed_permille\":{}}}",
         option_u32(c.dive_frame),
+        option_string(&c.contact_terrain),
+        option_f32(c.crash_offset_m),
+        option_u32(c.dial_hit_frame),
+        c.dial_red_pieces,
+        c.dial_region_pieces,
+        c.dial_other_red_pieces,
+        c.dial_frame_delivered,
+        c.dial_permille,
         c.contacts_judged,
         option_u32(c.crash_frame),
         c.crash_tick
