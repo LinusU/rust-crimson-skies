@@ -54,7 +54,7 @@ use bevy::prelude::{
     Mesh, Mesh3d, MeshMaterial3d, Plugin, Query, Res, Resource, StandardMaterial, Transform,
     Update, Vec3, Visibility, With, Without,
 };
-use cs_content::world::WorldDefinition;
+use cs_content::world::{WorldCollisionRole, WorldDefinition};
 use cs_formats::gamez::GameZMaterials;
 use cs_types::content::{ContentId, Resolved};
 
@@ -67,7 +67,7 @@ use crate::playtest_textures::{NeutralColor, PlaytestPart, TextureBinder};
 use crate::render::horizon::HorizonSpec;
 use crate::render::matrix::HORIZON_ANCHOR;
 use crate::world::WorldMeshes;
-use crate::world::contacts::{WorldObjectBinding, WorldVisual};
+use crate::world::contacts::{WorldColliderInstance, WorldObjectBinding, WorldVisual};
 use crate::world::spawn::{canonical_matrix, static_collider_components};
 
 use super::compose::{MissionCompositionError, MissionStage};
@@ -968,19 +968,41 @@ fn attach_world_scenery(
         // tests a node that stores `CONTACT_SWEEP_NODE_FLAGS` and does so
         // through the node's own mesh; M01's water tiles store both bits
         // (`docs/findings/2026-10-22-m01-sea-contact.md`). Only the water
-        // tiles are made colliders here: the other scenery stores the same
-        // bits, and its contact response is a separate task (#1752).
-        let is_water = pieces
-            .iter()
-            .any(|part| part.image.as_deref().is_some_and(is_water_image));
-        if is_water
-            && placement.node_flags & CONTACT_SWEEP_NODE_FLAGS == CONTACT_SWEEP_NODE_FLAGS
+        // tiles are `PlaytestSea`; every other node that stores the bits (the
+        // mountains, cliffs and land below the grouping nodes) is a solid
+        // `WorldSceneryCollider` on the mesh's own collision triangles, so a
+        // rock arch or cave keeps its opening (#1814). The fatal-contact judge
+        // names `WorldColliderInstance`, so a hit on one is judged like the
+        // world mesh; the response is the same contact law as the sea's.
+        if placement.node_flags & CONTACT_SWEEP_NODE_FLAGS == CONTACT_SWEEP_NODE_FLAGS
             && let Some(collision) = scenery.colliders.get(&placement.mesh)
             && let Some(collider) = static_collider_components(placement.global, collision)
         {
-            commands.spawn((collider, PlaytestSea, ChildOf(root)));
+            let is_water = pieces
+                .iter()
+                .any(|part| part.image.as_deref().is_some_and(is_water_image));
+            if is_water {
+                commands.spawn((collider, PlaytestSea, ChildOf(root)));
+            } else {
+                commands.spawn((
+                    collider,
+                    WorldSceneryCollider {
+                        node_slot: placement.node_slot,
+                    },
+                    WorldColliderInstance::new(WorldCollisionRole::Solid),
+                    ChildOf(root),
+                ));
+            }
         }
     }
+}
+
+/// A solid collider of one scenery node below a world grouping node: the
+/// mesh's collision triangles at the node's composed transform (#1814).
+#[derive(Component, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct WorldSceneryCollider {
+    /// The stored slot of the node it belongs to.
+    pub node_slot: u32,
 }
 
 /// Marks a drawn child whose material binds the world's water texture

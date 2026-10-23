@@ -48,8 +48,22 @@ undrawn by the intact-variant rule, none unbuildable.
   distance for the whole world, `healthy` over `destroyed`. The original's
   per-frame LOD pick is unmeasured; gun turrets behind a 0-500 m band (for example
   slot 1969) are therefore not drawn.
-* **The scenery has no collider**: it is drawn only. Flying into a terrain tile
-  below a group does not collide. Affected content: every mesh listed above.
+* **The scenery had no collider** (closed by #1814, 2026-10-24): every scenery
+  node that stores `CONTACT_SWEEP_NODE_FLAGS` (`0x14`) and has a collision view
+  now spawns a static `WorldSceneryCollider` trimesh on that view at the node's
+  composed transform (water tiles stay `PlaytestSea`). It carries
+  `WorldColliderInstance { role: Solid }`, so the fatal-contact judge (#1983)
+  counts it as terrain; the response and damage are the existing laws, nothing
+  tuned. The shipwreck's mountain ring is node slot 2994 `g28637` (1024 m tile,
+  y up to 144.6 m, 151 triangles) and the cliffs east of it `g28911` (slot 2965,
+  54 triangles); the ship parts (slots 3010-3019) are colliders too, since they
+  store the same bits. Test `accept_m01_scenery_collider_ring_and_cliffs_stop_a_fast_body`
+  (retail, `m01_scenery_colliders.rs`) flies the real M01 into both at 113.5 m/s
+  and asserts the judge counted a contact and the body's centre never crossed a
+  solid triangle; a 15 m/s touch does not crash; free air above is clear.
+  Unknown: whether the original treats every node with the bits as solid (the
+  static reading never saw the sweep run), and any per-triangle opening flag;
+  openings here are only what the collision triangles leave open.
 
 ## Checks
 
@@ -68,3 +82,13 @@ undrawn by the intact-variant rule, none unbuildable.
 Owner-command smoke before (main, `private/evidence/1735-before`) and after
 (`private/evidence/1735-after`): `frame_02450_world.png` (hole before; closed island
 after), `frame_02410_first_control.png`, `frame_02461_sea_absent.png`.
+
+### Effect on the no-input flight (#1814)
+
+`accept_parity4_m01_collision_no_input_trajectory_is_pinned` changed with the
+colliders: main no longer flies level over the island, it meets the hillside at
+t = 40..42 (100 -> 58 m/s, two judged contacts, 455 of the designed 1200 hull),
+is thrown up and climbs to 567 m at t = 70 (the original: beach impact at
+t = 34..36, 110 -> 78 m/s, 1925 m at t = 70). The sea skim of
+`2026-10-23-m01-collision-comparison.md` no longer happens in that window; its
+table is the pre-#1814 state. Nothing was tuned to the original.

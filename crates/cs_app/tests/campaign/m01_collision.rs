@@ -147,54 +147,47 @@ fn accept_parity4_m01_collision_no_input_trajectory_is_pinned() {
         assert!((at(t).speed - 100.5).abs() < 1.5, "t={t}: {report}");
     }
     assert!(at(20).p.y - 46.3 > 100.0, "{report}");
-    // The original is on the sea at t=28; main is 148 m up and does not touch
-    // the sea until t=55 (the dive after the hill at t=50..54).
+    // The original is on the sea at t=28; main is 148 m up. Main flies into
+    // the island's hillside at t=40..42 instead (#1814: the scenery below the
+    // world's grouping nodes is solid now; before, nothing there collided and
+    // the flight went on to dive onto the sea at t=55). The original has its
+    // own beach impact at t=34..36 (110 -> 78 m/s).
     assert!(at(28).p.y > 140.0, "{report}");
-    assert!(at(54).p.y > 20.0 && at(55).p.y < 5.0, "{report}");
-    // From then on the sea holds the body: it skims at ~1 m (the sea contact
-    // of #1850), never through it, and it is never reset.
-    for t in 55..=SECONDS {
-        assert!(at(t).p.y > -3.0, "t={t} below the sea: {report}");
-    }
-    assert!((at(60).p.y - 1.1).abs() < 0.5, "{report}");
-    assert!(at(SECONDS).resets == 0 && at(55).resets == 0, "{report}");
-    // Contacts: main reports some, so the contact source is live.
-    assert!(
-        at(SECONDS).ground + at(SECONDS).obstacle > 0,
-        "no contact at all: {report}"
+    assert_eq!(
+        (at(40).judged, at(41).judged, at(42).judged),
+        (0, 1, 2),
+        "{report}"
     );
-    // Main never climbs: the original reaches 1925 m at t=70 after the beach
-    // impact (the response is a normal impulse, no 60 degree throw; unmet).
+    assert!(at(40).speed > 99.0 && at(42).speed < 70.0, "{report}");
+    // The bounce throws main up and it keeps climbing; it is never reset.
+    assert!(at(SECONDS).resets == 0 && at(41).resets == 0, "{report}");
+    assert!(
+        at(60).p.y > at(42).p.y && at(SECONDS).p.y > at(60).p.y,
+        "{report}"
+    );
+    assert!(at(SECONDS).judged > 0, "no judged contact at all: {report}");
+    // After the hillside the original reaches 1925 m at t=70 (the 60 degree
+    // throw is unmet: the response is a normal impulse); main climbs to 567 m.
     let ceiling = s.iter().map(|x| x.p.y).fold(f32::MIN, f32::max);
-    assert!(ceiling < 200.0, "ceiling {ceiling}: {report}");
-    // It is stopped by an obstacle at t=62 and ends the window almost at rest
-    // at t=70 on the way to the island, 3 km from the original's t=70 position.
-    assert!(at(70).speed < 5.0, "{report}");
+    assert!(ceiling < 1000.0, "ceiling {ceiling}: {report}");
+    assert!(at(70).speed > 80.0, "{report}");
     for (t, m, _) in MEASURED.iter().filter(|(t, ..)| *t >= 60) {
         assert!(
-            (at(*t).p.y as f64 - m[1]).abs() > 1000.0,
+            (at(*t).p.y as f64 - m[1]).abs() > 900.0,
             "t={t} now agrees with the measured altitude: {report}"
         );
     }
-    // PARITY4-CRASH-E.01 (#1983): the contacts are judged and do damage. With
-    // the designed crash-to-hull curve (#2005) the island graze at t=50 and the
-    // three sea contacts of the skim at t=54.5..58.6 — four episodes, severities
-    // 0.32, 0.41 and two near 0 — spend 533 of the designed 1200 hull and the
-    // flight is not crashed by them. The hard push into the stopped shore (the
-    // trajectory artifact of the missing 60 degree throw, above) then finishes
-    // it: the sixth episode (severity 0.71) is fatal before t=70, once.
-    assert_eq!((at(60).judged, at(70).judged), (4, 6), "{report}");
-    assert!(
-        (at(60).hull_damage - 533.0).abs() < 1.0 && at(70).hull_damage > 1200.0,
+    // PARITY4-CRASH-E.01 (#1983): the contacts are judged and do damage. Two
+    // episodes at the hillside (t=41, 42) spend 455 of the designed 1200 hull
+    // (the designed crash-to-hull curve, #2005) and nothing after; the pool
+    // holds, so the flight is never crashed.
+    assert_eq!(
+        (at(60).judged, at(70).judged, at(SECONDS).judged),
+        (2, 2, 2),
         "{report}"
     );
-    assert!(s[..=60].iter().all(|x| !x.crashed), "{report}");
-    assert!(s[70..].iter().all(|x| x.crashed), "{report}");
-    assert_eq!(
-        at(SECONDS).judged,
-        at(70).judged,
-        "no judging after the crash: {report}"
-    );
+    assert!((at(SECONDS).hull_damage - 455.0).abs() < 1.0, "{report}");
+    assert!(s.iter().all(|x| !x.crashed), "{report}");
 }
 
 /// PARITY4-CRASH-E.01 (#1983): in the composed mission the aircraft's terrain

@@ -298,6 +298,7 @@ mod m01_lc_player_config;
 mod m01_outcome_attacker;
 mod m01_play_triggers_turret_class;
 mod m01_player_prop_blur;
+mod m01_scenery_colliders;
 mod m01_window_actors;
 mod m01_wingman_formation_a;
 mod m01_wingman_player_leader;

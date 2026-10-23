@@ -441,7 +441,7 @@ pub use wing_fire::{
 };
 pub use world_draw::{
     HORIZON_SUBTREE_LABEL, HorizonRest, HorizonSubtree, MissionWorldDrawPlugin, MissionWorldParts,
-    WORLD_NEUTRAL_COLOR, WorldDrawReport, WorldDrawSource, WorldSceneryRoot, WorldWaterArt,
-    WorldWaterLevel, WorldWaterPart, bind_sea_to_world_water, build_scenery, build_world_draw,
-    water_level_of,
+    WORLD_NEUTRAL_COLOR, WorldDrawReport, WorldDrawSource, WorldSceneryCollider, WorldSceneryRoot,
+    WorldWaterArt, WorldWaterLevel, WorldWaterPart, bind_sea_to_world_water, build_scenery,
+    build_world_draw, water_level_of,
 };
