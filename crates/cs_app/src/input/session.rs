@@ -765,6 +765,13 @@ impl fmt::Display for ReplayError {
 
 impl std::error::Error for ReplayError {}
 
+/// How far an analog throttle lever must move, in its `[-1, 1]` reading, before
+/// the throttle follows it again ([`InputSession::follow_throttle_lever`]).
+///
+/// Designed: a little over one step of a 7-bit lever (`2 / 127`), so the last
+/// bit's jitter is not a movement and every real movement is.
+pub const THROTTLE_LEVER_HYSTERESIS: f32 = 0.02;
+
 /// The local input session of one player seat.
 ///
 /// It owns the whole path from a device report to the simulation's input
@@ -783,6 +790,9 @@ pub struct InputSession {
     gate: ControlGate,
     controls: ControlBuffer,
     throttle: ThrottleSteps,
+    /// The analog throttle-lever reading the throttle last followed
+    /// ([`follow_throttle_lever`](Self::follow_throttle_lever)).
+    lever: Option<f32>,
     mode: SessionMode,
     seat: LocalSeatId,
     tick: Tick,
@@ -825,6 +835,7 @@ impl InputSession {
             gate,
             controls: ControlBuffer::new(),
             throttle: ThrottleSteps::designed_default(),
+            lever: None,
             mode,
             seat,
             tick,
@@ -1331,6 +1342,36 @@ impl InputSession {
         }
     }
 
+    /// Moves the throttle to an analog throttle lever's reading (SIDEWINDER-FFB2,
+    /// #1968): the lever's `[-1, 1]` is the throttle's `[IDLE, FULL]`, the
+    /// mapping [`ThrottleSteps::axis_value`] inverts.
+    ///
+    /// The last control moved wins. A lever reports its position in every
+    /// frame, so following it every frame would undo each keyboard throttle
+    /// step at once; the throttle follows the lever only when it has moved by
+    /// [`THROTTLE_LEVER_HYSTERESIS`] since the reading it last followed (or for
+    /// its first reading), and a resting lever leaves the keys in charge. The
+    /// hysteresis also keeps a lever's last-bit jitter from moving the throttle.
+    /// It runs before the frame's boundaries, so a key step in the same frame
+    /// is applied after the lever.
+    pub fn follow_throttle_lever(&mut self, lever: f32) {
+        if !lever.is_finite() {
+            return;
+        }
+        let lever = lever.clamp(-1.0, 1.0);
+        let moved = self
+            .lever
+            .is_none_or(|last| (lever - last).abs() >= THROTTLE_LEVER_HYSTERESIS);
+        // The ends are always reached, however slowly the lever got there.
+        let at_end = lever.abs() >= 1.0 && self.lever != Some(lever);
+        if moved || at_end {
+            self.lever = Some(lever);
+            self.throttle
+                .set_position((lever + 1.0) * 0.5)
+                .expect("a clamped lever is inside the throttle range");
+        }
+    }
+
     /// Pumps one render frame.
     ///
     /// The live path ([`FrameInput::Devices`]) applies every device report to
@@ -1449,6 +1490,15 @@ impl InputSession {
             // `apply_frame` validates the whole frame before mutating any of it,
             // so a refusal leaves the buffer exactly as it was.
             self.controls.apply_frame(&frame)?;
+            // A neutral throttle sample is the restatement written when nothing
+            // drives the axis any more (a device removed, a text field opened),
+            // never a lever position, so it leaves the throttle where it is.
+            if !self.is_paused()
+                && let Some(lever) = frame.axis(FlightCommand::Throttle)
+                && lever.quantized() != 0
+            {
+                self.follow_throttle_lever(lever.as_unit());
+            }
         }
 
         let boundaries = if self.is_paused() {
