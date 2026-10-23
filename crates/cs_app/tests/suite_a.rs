@@ -215,6 +215,7 @@ mod accept_m01_play_sky_horizon;
 mod accept_m01_play_weather;
 mod accept_m01_radio_device;
 mod accept_m01_radio_sample;
+mod accept_m01_shipwreck_gray_triangles;
 mod accept_m01_smoke_c3_probes;
 mod accept_m01_smoke_no_teleport;
 mod accept_m01_window_hud_pending_objective;

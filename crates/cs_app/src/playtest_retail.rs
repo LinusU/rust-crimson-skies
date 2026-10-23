@@ -1934,12 +1934,47 @@ fn damage_alternative(node: &SceneNode, siblings: &[&SceneNode]) -> Option<Strin
     None
 }
 
+/// Whether one polygon's stored corners lie in a single plane, at any
+/// orientation (#2004): the C1C landing cards are axis-aligned (one extent axis
+/// is exactly zero), but the `cone` cards under C3's `shipwreck` are the same
+/// class — one triangle, flat material — stored tilted, with no zero axis. A
+/// triangle is planar by construction; a larger polygon is planar when every
+/// corner is within a millionth of the polygon's size of the plane through its
+/// first three non-collinear corners.
+fn is_planar(positions: &[[f32; 3]], extent: [f32; 3]) -> bool {
+    if extent.contains(&0.0) || positions.len() == 3 {
+        return true;
+    }
+    let size = extent[0].max(extent[1]).max(extent[2]);
+    let sub = |a: [f32; 3], b: [f32; 3]| [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+    let cross = |a: [f32; 3], b: [f32; 3]| {
+        [
+            a[1] * b[2] - a[2] * b[1],
+            a[2] * b[0] - a[0] * b[2],
+            a[0] * b[1] - a[1] * b[0],
+        ]
+    };
+    let origin = positions[0];
+    let first = sub(positions[1], origin);
+    let Some(normal) = positions[2..].iter().find_map(|corner| {
+        let n = cross(first, sub(*corner, origin));
+        let length = (n[0] * n[0] + n[1] * n[1] + n[2] * n[2]).sqrt();
+        (length > size * size * 1e-6).then(|| [n[0] / length, n[1] / length, n[2] / length])
+    }) else {
+        return false;
+    };
+    positions.iter().all(|corner| {
+        let d = sub(*corner, origin);
+        (d[0] * normal[0] + d[1] * normal[1] + d[2] * normal[2]).abs() <= size * 1e-6
+    })
+}
+
 /// Why one stored binding is an unmeasured-class **flat-colour card**, or `None`
 /// when it is an ordinary part (#795).
 ///
 /// The measured class, over the whole `piratezep` subtree of
 /// `ZBD/C1C/gamez.zbd`: the mesh stores exactly **one** polygon, that polygon is
-/// planar (one extent axis of the stored positions is exactly zero), and every
+/// planar (one extent axis of the stored positions is exactly zero, or — #2004 — the corners lie in one tilted plane), and every
 /// material group it stores resolves to a **flat-colour** material record — one
 /// whose textured flag is clear, so it names no texture and the surface carries
 /// no stored picture. Exactly two drawn bindings match, and both are cards of
@@ -1980,7 +2015,7 @@ fn flat_card_reason(
         }
     }
     let extent = [hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]];
-    if !extent.contains(&0.0) {
+    if !is_planar(positions, extent) {
         return None;
     }
     let mut materials = BTreeSet::new();
@@ -5302,6 +5337,33 @@ fn measure(image: &Image) -> FrameFacts {
         distinct_luminance: levels.len(),
         covered_pixels: covered,
         pixels: data.clone(),
+    }
+}
+
+#[cfg(test)]
+mod tilted_card_tests {
+    use super::is_planar;
+
+    /// **#2004:** a tilted triangle has no zero extent axis but is planar; a
+    /// tilted quad is planar, a warped one is not.
+    #[test]
+    fn accept_m01_shipwreck_gray_triangles_a_tilted_card_is_planar() {
+        let tri = [[0.0, 0.0, 0.0], [217.0, 271.0, 0.0], [0.0, 100.0, 125.0]];
+        assert!(is_planar(&tri, [217.0, 271.0, 125.0]));
+        let quad = [
+            [0.0, 0.0, 0.0],
+            [10.0, 10.0, 0.0],
+            [10.0, 10.0, 10.0],
+            [0.0, 0.0, 10.0],
+        ];
+        assert!(is_planar(&quad, [10.0, 10.0, 10.0]));
+        let warped = [
+            [0.0, 0.0, 0.0],
+            [10.0, 10.0, 0.0],
+            [10.0, 10.0, 10.0],
+            [0.0, 3.0, 10.0],
+        ];
+        assert!(!is_planar(&warped, [10.0, 10.0, 10.0]));
     }
 }
 
