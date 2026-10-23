@@ -22,9 +22,13 @@
 //!   **Quit** abandons the mission: it writes `AppExit::Success` (the
 //!   composed `cs --mission` window has no front-end machine to return to,
 //!   so leaving ends the run, as F10 does) and reports the press.
-//!   **Preferences** is drawn, rolled over and pressed like Resume but only
-//!   reports the press as a [`PauseMapPress`]: its effect is its own task
-//!   and nothing here fakes one.
+//!   **Preferences** opens the mission window's `Preferences` section
+//!   ([`super::preferences_overlay`], PARITY3-PAUSE-MAP-SCREEN.02-E.02,
+//!   #1923): the press writes [`OpenPreferencesOverlay`] and while the
+//!   overlay is up the screen's parts are despawned — its buttons dead —
+//!   until the overlay's Return to Game closes it and the map is drawn
+//!   again. The session stays paused and the fixed clock frozen either
+//!   way; a composition without the overlay only reports the press.
 //!
 //! The live parts (PARITY3-PAUSE-MAP-SCREEN.02-B, #1874) come from
 //! [`PauseMapLive`], which [`PauseMapPlugin`] fills from the mission host's
@@ -69,6 +73,7 @@ use super::compose::MissionPlayerBody;
 use super::host::{MissionHost, MissionHostRestartRequest};
 use super::launch_sound::reader_member;
 use super::lifecycles::ObjectiveLifecycles;
+use super::preferences_overlay::{OpenPreferencesOverlay, PreferencesOverlay};
 use crate::input::platform::PlatformInput;
 use crate::input::session::PauseReason;
 use crate::ui::front_end::{Artwork, FrontEndScreens};
@@ -867,9 +872,9 @@ fn read_pause_map_live(
 // ------------------------------------------------------- the presenter --
 
 /// A button of the screen was pressed. Resume has already resumed the
-/// A button of the screen was pressed. Resume has already resumed the
-/// session when this is written, Quit has asked the app to exit and Restart
-/// is acted on by [`restart_on_press`]; Preferences has no effect yet.
+/// session when this is written, Quit has asked the app to exit, Restart
+/// is acted on by [`restart_on_press`] and Preferences has already written
+/// [`OpenPreferencesOverlay`].
 #[derive(Message, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct PauseMapPress(pub PauseButtonKind);
 
@@ -1372,14 +1377,19 @@ fn sync_pause_map(
     source: Res<PauseMapSource>,
     platform: Option<Res<PlatformInput>>,
     pending: Option<Res<super::flight_check::FlightCheckPhase>>,
+    overlay: Option<Res<PreferencesOverlay>>,
     mut images: ResMut<bevy::prelude::Assets<Image>>,
     mut shown: ResMut<PauseMapShown>,
     parts: Query<Entity, With<PauseMapPart>>,
     mut cursors: Query<&mut CursorOptions>,
 ) {
-    // A pre-mission screen (briefing, Flight Check) is not the mission.
+    // A pre-mission screen (briefing, Flight Check) is not the mission, and
+    // while the preferences overlay the Preferences button opened is up the
+    // map is hidden under it: no part drawn, no button live.
+    let covered = overlay.is_some_and(|overlay| overlay.open);
     let wanted = platform.is_some_and(|platform| pause_is_open(&platform))
-        && !pending.is_some_and(|phase| phase.is_pending());
+        && !pending.is_some_and(|phase| phase.is_pending())
+        && !covered;
     if wanted && !shown.0 {
         let handles = spawn_pause_map(&mut commands, &source, &mut images);
         commands.insert_resource(PauseMapImages(handles));
@@ -1447,10 +1457,12 @@ fn place_pause_map(
 #[allow(clippy::too_many_arguments, clippy::type_complexity)]
 fn drive_pause_map(
     shown: Res<PauseMapShown>,
+    overlay: Option<Res<PreferencesOverlay>>,
     windows: Query<&Window>,
     mouse: Res<ButtonInput<MouseButton>>,
     mut platform: ResMut<PlatformInput>,
     mut presses: MessageWriter<PauseMapPress>,
+    mut opens: MessageWriter<OpenPreferencesOverlay>,
     mut exit: MessageWriter<AppExit>,
     mut commands: bevy::prelude::Commands,
     return_to_front_end: Option<Res<super::ReturnToFrontEnd>>,
@@ -1461,7 +1473,10 @@ fn drive_pause_map(
         bevy::prelude::Without<ButtonArt>,
     >,
 ) {
-    if !shown.0 {
+    // While the overlay covers the screen the buttons are dead — nothing
+    // hovered, no press (the frame the overlay opened on can still hold the
+    // map's parts until `sync_pause_map` despawns them).
+    if !shown.0 || overlay.is_some_and(|overlay| overlay.open) {
         return;
     }
     let Ok(window) = windows.single() else {
@@ -1526,6 +1541,9 @@ fn drive_pause_map(
         if kind == PauseButtonKind::Resume {
             platform.session_mut().resume();
         }
+        if kind == PauseButtonKind::Preferences {
+            opens.write(OpenPreferencesOverlay);
+        }
         if kind == PauseButtonKind::Quit {
             // `cs --mission` composes no front-end machine, so there is no
             // main menu to return to: leaving the mission ends the window
@@ -1563,18 +1581,22 @@ fn restart_on_press(
 }
 
 /// The mesh HUD (dials and compass) is drawn by its own camera over the UI, so
-/// the screen hides it while it is open and gives it back when it closes.
+/// the screen hides it while it is open and gives it back when it closes —
+/// and while the preferences overlay covers it (#1923): the flight
+/// instruments belong to no menu page.
 fn hide_hud_art(
     shown: Res<PauseMapShown>,
+    overlay: Option<Res<PreferencesOverlay>>,
     mut was: bevy::prelude::Local<bool>,
     mut roots: Query<&mut bevy::prelude::Visibility, With<super::hud_art::HudArtRoot>>,
 ) {
-    if shown.0 == *was {
+    let up = shown.0 || overlay.is_some_and(|overlay| overlay.open);
+    if up == *was {
         return;
     }
-    *was = shown.0;
+    *was = up;
     for mut visibility in &mut roots {
-        *visibility = if shown.0 {
+        *visibility = if up {
             bevy::prelude::Visibility::Hidden
         } else {
             bevy::prelude::Visibility::Inherited
@@ -1599,6 +1621,9 @@ impl Plugin for PauseMapPlugin {
             .init_resource::<PauseMapLive>()
             .init_resource::<PauseMapImages>()
             .add_message::<PauseMapPress>()
+            // Registered here too so `drive_pause_map` has a writer whether
+            // or not the overlay's plugin is installed.
+            .add_message::<OpenPreferencesOverlay>()
             .add_systems(
                 Update,
                 (

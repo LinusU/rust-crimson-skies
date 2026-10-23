@@ -438,6 +438,9 @@ pub enum MissionCompositionError {
     LaunchCinematic(super::launch_cinematic::LaunchCinematicError),
     /// The Esc pause screen could not be read from `escape.zrd`.
     PauseMap(super::pause_map::PauseMapError),
+    /// The mission window's `Preferences` section could not be read from
+    /// `ASSETS/LAYOUT.CSV` / `PREFERENCES.SCRIPT`.
+    PreferencesOverlay(super::preferences_overlay::PreferencesOverlayError),
     /// The journal's debrief screen could not be read from the installation.
     Debrief(super::debrief_screen::DebriefReadError),
     /// The app exited with an error.
@@ -490,6 +493,7 @@ impl fmt::Display for MissionCompositionError {
             Self::FlightCheck(error) => write!(f, "{error}"),
             Self::LaunchCinematic(error) => write!(f, "{error}"),
             Self::PauseMap(error) => write!(f, "{error}"),
+            Self::PreferencesOverlay(error) => write!(f, "{error}"),
             Self::Debrief(error) => write!(f, "{error}"),
             Self::Exit(reason) => write!(f, "the mission window exited with an error: {reason}"),
         }
@@ -2077,6 +2081,12 @@ pub fn run_windowed(
             super::pause_map::read_pause_map(install_root, &plan.mission_dir, &screens, &strings)
                 .map_err(MissionCompositionError::PauseMap)?;
         super::pause_map::install_pause_map(&mut app, source);
+        // The Esc screen's Preferences button opens the in-game `Preferences`
+        // section over the same window (#1923); a layout or script that does
+        // not state the in-game page refuses here like the map's read does.
+        let overlay = super::preferences_overlay::read_preferences_overlay(&screens)
+            .map_err(MissionCompositionError::PreferencesOverlay)?;
+        super::preferences_overlay::install_preferences_overlay(&mut app, overlay);
     }
     // A failed run shows the journal's debrief; it is read now so the screen
     // can be built the moment the failure settles.
