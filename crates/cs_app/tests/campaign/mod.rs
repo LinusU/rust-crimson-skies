@@ -286,6 +286,7 @@ mod m01_collision;
 mod m01_examine_objective;
 mod m01_fog_update_static;
 mod m01_free_flight;
+mod m01_handover_velocity_trace;
 mod m01_lc_campaign_airframe_pose;
 mod m01_lc_campaign_airframe_pose_evidence;
 mod m01_lc_fc_b;
