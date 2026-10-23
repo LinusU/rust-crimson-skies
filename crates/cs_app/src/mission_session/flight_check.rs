@@ -1600,18 +1600,7 @@ pub(super) fn argb(color: u32) -> Color {
 }
 
 pub(super) fn to_image(artwork: &Artwork) -> Image {
-    use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
-    Image::new(
-        Extent3d {
-            width: artwork.width(),
-            height: artwork.height(),
-            depth_or_array_layers: 1,
-        },
-        TextureDimension::D2,
-        artwork.rgba().to_vec(),
-        TextureFormat::Rgba8UnormSrgb,
-        bevy::asset::RenderAssetUsages::default(),
-    )
+    artwork.image()
 }
 
 fn spawn_screen(
@@ -1663,12 +1652,9 @@ fn spawn_screen(
         let frame_height = art.height() / frames;
         let top = plane.frame.min(frames - 1) * frame_height;
         let mut node = ImageNode::new(images.add(to_image(art)));
-        node.rect = Some(bevy::math::Rect::new(
-            0.0,
-            top as f32,
-            art.width() as f32,
-            (top + frame_height) as f32,
-        ));
+        let (left, upper) = art.presented_texel(0.0, top as f32);
+        let (right, lower) = art.presented_texel(art.width() as f32, (top + frame_height) as f32);
+        node.rect = Some(bevy::math::Rect::new(left, upper, right, lower));
         commands.spawn((
             Node {
                 position_type: PositionType::Absolute,
@@ -1691,12 +1677,8 @@ fn spawn_screen(
         // state order is unread, so no other frame is drawn.
         let frame = art.height() / BUTTON_STATE_FRAMES;
         let mut node = ImageNode::new(images.add(to_image(art)));
-        node.rect = Some(bevy::math::Rect::new(
-            0.0,
-            0.0,
-            art.width() as f32,
-            frame as f32,
-        ));
+        let (right, lower) = art.presented_texel(art.width() as f32, frame as f32);
+        node.rect = Some(bevy::math::Rect::new(0.0, 0.0, right, lower));
         commands.spawn((
             Node {
                 position_type: PositionType::Absolute,

@@ -53,7 +53,6 @@ use std::path::Path;
 
 use avian3d::prelude::{Position, Rotation};
 use bevy::app::AppExit;
-use bevy::asset::RenderAssetUsages;
 use bevy::ecs::schedule::IntoScheduleConfigs;
 use bevy::prelude::{
     App, BackgroundColor, ButtonInput, ChildOf, Color, Commands, Component, Entity, FlexDirection,
@@ -61,7 +60,6 @@ use bevy::prelude::{
     MouseButton, Node, Overflow, Plugin, PositionType, Quat, Query, Res, ResMut, Resource, Rot2,
     Text, TextColor, TextFont, UiTransform, Update, Val, Vec3, Window, With, Without, default,
 };
-use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 use bevy::text::{FontSize, Justify, LineBreak, TextLayout};
 use bevy::window::CursorOptions;
 use cs_content::briefing::{BRIEFING_ARCHIVE, BRIEFING_MEMBER, BriefingDocument, Point};
@@ -973,17 +971,7 @@ fn pause_is_open(platform: &PlatformInput) -> bool {
 }
 
 fn to_image(art: &Artwork) -> Image {
-    Image::new(
-        Extent3d {
-            width: art.width(),
-            height: art.height(),
-            depth_or_array_layers: 1,
-        },
-        TextureDimension::D2,
-        art.rgba().to_vec(),
-        TextureFormat::Rgba8UnormSrgb,
-        RenderAssetUsages::default(),
-    )
+    art.image()
 }
 
 fn rgb(color: [u8; 3]) -> Color {

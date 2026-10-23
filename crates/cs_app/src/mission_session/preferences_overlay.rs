@@ -45,7 +45,6 @@
 use std::collections::BTreeMap;
 use std::fmt;
 
-use bevy::asset::RenderAssetUsages;
 use bevy::ecs::schedule::IntoScheduleConfigs;
 use bevy::math::Rect as UiRect;
 use bevy::prelude::{
@@ -53,7 +52,6 @@ use bevy::prelude::{
     MessageReader, MessageWriter, MouseButton, Node, Plugin, PositionType, Query, Res, ResMut,
     Resource, Update, Val, Window, With, default,
 };
-use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat};
 
 use crate::ui::front_end::{
     Artwork, FrontEndScreens, MenuShell, ShellOutcome, ShellView, SkippedRow, UnhandledEffect,
@@ -261,32 +259,25 @@ pub struct PreferencesOverlayPart;
 struct Row {
     button: bool,
     index: usize,
+    /// The texture's texel scale (`(1, 1)` for original art,
+    /// [`Artwork::presented_texel`] for an `--hd` replacement).
+    scale: (f32, f32),
 }
 
 fn to_image(art: &Artwork) -> Image {
-    Image::new(
-        Extent3d {
-            width: art.width(),
-            height: art.height(),
-            depth_or_array_layers: 1,
-        },
-        TextureDimension::D2,
-        art.rgba().to_vec(),
-        TextureFormat::Rgba8UnormSrgb,
-        RenderAssetUsages::default(),
-    )
+    art.image()
 }
 
 fn surface_of(window: &Window) -> (u32, u32) {
     (window.width() as u32, window.height() as u32)
 }
 
-fn crop(offset: (u32, u32), logical: cs_content::ui_layout::Rect) -> UiRect {
+fn crop(offset: (u32, u32), logical: cs_content::ui_layout::Rect, scale: (f32, f32)) -> UiRect {
     UiRect::new(
-        offset.0 as f32,
-        offset.1 as f32,
-        (offset.0 + logical.width) as f32,
-        (offset.1 + logical.height) as f32,
+        offset.0 as f32 * scale.0,
+        offset.1 as f32 * scale.1,
+        (offset.0 + logical.width) as f32 * scale.0,
+        (offset.1 + logical.height) as f32 * scale.1,
     )
 }
 
@@ -306,18 +297,23 @@ fn spawn_rows(
     images: &mut bevy::prelude::Assets<Image>,
     record: &mut PreferencesOverlay,
 ) {
-    let handles: BTreeMap<&String, Handle<Image>> = source
+    let handles: BTreeMap<&String, (Handle<Image>, (f32, f32))> = source
         .artwork
         .iter()
-        .map(|(name, art)| (name, images.add(to_image(art))))
+        .map(|(name, art)| {
+            (
+                name,
+                (images.add(to_image(art)), art.presented_texel(1.0, 1.0)),
+            )
+        })
         .collect();
     record.drawn.clear();
     for pane in &view.panes {
-        let Some(handle) = handles.get(&pane.art.to_ascii_lowercase()) else {
+        let Some((handle, scale)) = handles.get(&pane.art.to_ascii_lowercase()) else {
             continue;
         };
         let mut image = ImageNode::new(handle.clone());
-        image.rect = Some(crop(pane.texel_offset, pane.logical));
+        image.rect = Some(crop(pane.texel_offset, pane.logical, *scale));
         let mut node = Node {
             position_type: PositionType::Absolute,
             ..default()
@@ -330,6 +326,7 @@ fn spawn_rows(
             Row {
                 button: false,
                 index: pane.index,
+                scale: *scale,
             },
             PreferencesOverlayPart,
         ));
@@ -341,11 +338,11 @@ fn spawn_rows(
         });
     }
     for button in view.buttons.iter().filter(|b| shown(&b.id)) {
-        let Some(handle) = handles.get(&button.art.to_ascii_lowercase()) else {
+        let Some((handle, scale)) = handles.get(&button.art.to_ascii_lowercase()) else {
             continue;
         };
         let mut image = ImageNode::new(handle.clone());
-        image.rect = Some(crop(button.texel_offset, button.logical));
+        image.rect = Some(crop(button.texel_offset, button.logical, *scale));
         let mut node = Node {
             position_type: PositionType::Absolute,
             ..default()
@@ -358,6 +355,7 @@ fn spawn_rows(
             Row {
                 button: true,
                 index: button.index,
+                scale: *scale,
             },
             PreferencesOverlayPart,
         ));
@@ -477,11 +475,11 @@ fn drive_overlay(
         if row.button {
             if let Some(button) = view.buttons.iter().find(|b| b.index == row.index) {
                 place(&mut node, button.rect);
-                image.rect = Some(crop(button.texel_offset, button.logical));
+                image.rect = Some(crop(button.texel_offset, button.logical, row.scale));
             }
         } else if let Some(pane) = view.panes.iter().find(|p| p.index == row.index) {
             place(&mut node, pane.rect);
-            image.rect = Some(crop(pane.texel_offset, pane.logical));
+            image.rect = Some(crop(pane.texel_offset, pane.logical, row.scale));
         }
     }
 }

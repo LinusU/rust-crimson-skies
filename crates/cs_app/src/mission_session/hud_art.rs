@@ -1114,6 +1114,9 @@ pub fn read_reticle_image(
     let decoded = texture
         .decode(&mut budget)
         .map_err(|error| format!("rcircle refuses to decode: {error}"))?;
+    let decoded = crate::hd_textures::pack()
+        .and_then(|pack| pack.ui_decoded("rimage/rcircle", &decoded))
+        .unwrap_or(decoded);
     let (image, _, _) = crate::playtest_textures::to_bevy_image(&decoded);
     Ok(images.add(image))
 }

@@ -318,6 +318,9 @@ impl ShellResource {
 struct ShellArt {
     /// Strip/pane textures by lower-cased layout art name.
     images: BTreeMap<String, Handle<Image>>,
+    /// Logical-to-texture texel scale of each texture in `images` that is
+    /// drawn from an `--hd` replacement ([`Artwork::presented_texel`]).
+    scales: BTreeMap<String, (f32, f32)>,
     /// The cursor texture found, and its native extent.
     cursor: Option<(Handle<Image>, (u32, u32))>,
 }
@@ -407,6 +410,8 @@ struct DrawnSprite {
     index: usize,
     z: f32,
     entity: Entity,
+    /// The texture's texel scale (`(1, 1)` for original art).
+    scale: (f32, f32),
 }
 
 /// The main menu's panes the Campaign page keeps showing under its own: the
@@ -581,6 +586,10 @@ impl Plugin for FrontEndShellPlugin {
             for (name, artwork) in &self.art {
                 art.images
                     .insert(name.clone(), images.add(artwork_image(artwork)));
+                if artwork.is_presented() {
+                    art.scales
+                        .insert(name.clone(), artwork.presented_texel(1.0, 1.0));
+                }
             }
             if let Some((_, artwork)) = &self.cursor {
                 art.cursor = Some((
@@ -1722,15 +1731,17 @@ fn spawn_section(
     scene: &mut ShellScene,
 ) {
     for (order, pane) in view.panes.iter().enumerate() {
-        let Some(image) = art.images.get(&pane.art.to_ascii_lowercase()) else {
+        let name = pane.art.to_ascii_lowercase();
+        let Some(image) = art.images.get(&name) else {
             continue;
         };
+        let scale = art.scales.get(&name).copied().unwrap_or((1.0, 1.0));
         let z = 1.0 + order as f32 * 0.01;
         let entity = world
             .spawn((
                 Sprite {
                     image: image.clone(),
-                    rect: Some(texel_rect(pane.texel_offset, pane.logical)),
+                    rect: Some(texel_rect(pane.texel_offset, pane.logical, scale)),
                     custom_size: Some(rect_size(pane.rect)),
                     ..default()
                 },
@@ -1741,18 +1752,21 @@ fn spawn_section(
             index: pane.index,
             z,
             entity,
+            scale,
         });
     }
     for button in &view.buttons {
-        let Some(image) = art.images.get(&button.art.to_ascii_lowercase()) else {
+        let name = button.art.to_ascii_lowercase();
+        let Some(image) = art.images.get(&name) else {
             continue;
         };
+        let scale = art.scales.get(&name).copied().unwrap_or((1.0, 1.0));
         let z = 10.0 + button.index as f32 * 0.01;
         let entity = world
             .spawn((
                 Sprite {
                     image: image.clone(),
-                    rect: Some(texel_rect(button.texel_offset, button.logical)),
+                    rect: Some(texel_rect(button.texel_offset, button.logical, scale)),
                     custom_size: Some(rect_size(button.rect)),
                     ..default()
                 },
@@ -1763,6 +1777,7 @@ fn spawn_section(
             index: button.index,
             z,
             entity,
+            scale,
         });
     }
     if scene.cursor.is_none()
@@ -1782,12 +1797,16 @@ fn spawn_section(
 /// The texture sub-rect a drawn element shows: `texel_offset` in the art plus
 /// the element's own (clipped) logical size.
 #[inline(always)]
-fn texel_rect(offset: (u32, u32), logical: cs_content::ui_layout::Rect) -> bevy::math::Rect {
+fn texel_rect(
+    offset: (u32, u32),
+    logical: cs_content::ui_layout::Rect,
+    scale: (f32, f32),
+) -> bevy::math::Rect {
     bevy::math::Rect::new(
-        offset.0 as f32,
-        offset.1 as f32,
-        offset.0 as f32 + logical.width as f32,
-        offset.1 as f32 + logical.height as f32,
+        offset.0 as f32 * scale.0,
+        offset.1 as f32 * scale.1,
+        (offset.0 as f32 + logical.width as f32) * scale.0,
+        (offset.1 as f32 + logical.height as f32) * scale.1,
     )
 }
 
@@ -1822,7 +1841,7 @@ fn place(
         return;
     };
     if let Some(mut sprite) = entity.get_mut::<Sprite>() {
-        sprite.rect = Some(texel_rect(texel_offset, logical));
+        sprite.rect = Some(texel_rect(texel_offset, logical, drawn.scale));
         sprite.custom_size = Some(rect_size(rect));
     }
     if let Some(mut transform) = entity.get_mut::<Transform>() {
@@ -1834,17 +1853,7 @@ fn place(
 /// [`super::capture::artwork_image`] uses: row-major from the top).
 #[inline(always)]
 fn artwork_image(artwork: &Artwork) -> Image {
-    let mut image = Image::new(
-        Extent3d {
-            width: artwork.width(),
-            height: artwork.height(),
-            depth_or_array_layers: 1,
-        },
-        TextureDimension::D2,
-        artwork.rgba().to_vec(),
-        TextureFormat::Rgba8UnormSrgb,
-        RenderAssetUsages::default(),
-    );
+    let mut image = artwork.image();
     image.sampler = ImageSampler::linear();
     image.texture_descriptor.usage |= TextureUsages::TEXTURE_BINDING;
     image

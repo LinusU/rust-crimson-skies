@@ -117,11 +117,18 @@ const MAX_CAPTURE_UPDATES: u32 = 24;
 /// The extent is the *logical* image the layout describes ([`ScreenView::image`]),
 /// so a capture can check that the picture and the hotspots it is drawn with
 /// describe the same image.
+///
+/// With the `--hd` pack ([`crate::hd_textures`]) the artwork may also carry a
+/// larger replacement ([`Self::with_presented`]). Everything that measures or
+/// lays out keeps reading the original extent and pixels; only what is
+/// uploaded ([`Self::image`]) and the texel crops into it
+/// ([`Self::presented_texel`]) use the replacement.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Artwork {
     width: u32,
     height: u32,
     rgba: Vec<u8>,
+    presented: Option<(u32, u32, Vec<u8>)>,
 }
 
 impl Artwork {
@@ -147,7 +154,66 @@ impl Artwork {
             width,
             height,
             rgba,
+            presented: None,
         })
+    }
+
+    /// The artwork drawn from a `width * height` RGBA8 replacement instead of
+    /// its own pixels, at its own logical extent. A replacement whose pixel
+    /// count does not match is ignored.
+    #[must_use]
+    pub fn with_presented(mut self, width: u32, height: u32, rgba: Vec<u8>) -> Self {
+        let expected = u64::from(width) * u64::from(height) * 4;
+        if width > 0 && height > 0 && u64::try_from(rgba.len()).ok() == Some(expected) {
+            self.presented = Some((width, height, rgba));
+        }
+        self
+    }
+
+    /// Whether the artwork is drawn from a replacement.
+    #[must_use]
+    pub const fn is_presented(&self) -> bool {
+        self.presented.is_some()
+    }
+
+    /// A point in the artwork's logical texels, in the texels of the texture
+    /// [`Self::image`] uploads.
+    #[must_use]
+    pub fn presented_texel(&self, x: f32, y: f32) -> (f32, f32) {
+        match &self.presented {
+            None => (x, y),
+            Some((width, height, _)) => (
+                x * *width as f32 / self.width as f32,
+                y * *height as f32 / self.height as f32,
+            ),
+        }
+    }
+
+    /// The artwork as a Bevy texture, row-major from the top: the replacement
+    /// when there is one (linearly filtered, with a mip chain), else the
+    /// original pixels under the default sampler.
+    #[must_use]
+    pub fn image(&self) -> Image {
+        let (width, height, rgba) = match &self.presented {
+            Some((width, height, rgba)) => (*width, *height, rgba),
+            None => (self.width, self.height, &self.rgba),
+        };
+        let mut image = Image::new(
+            Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            TextureDimension::D2,
+            rgba.clone(),
+            TextureFormat::Rgba8UnormSrgb,
+            bevy::asset::RenderAssetUsages::default(),
+        );
+        if self.presented.is_some() {
+            image.sampler = ImageSampler::linear();
+            crate::hd_textures::add_mips(&mut image);
+        }
+        image
     }
 
     /// The artwork's width in pixels.
@@ -558,17 +624,7 @@ const fn surface_y(y: u32) -> f32 {
 /// top, which is the canonical orientation [`AspectFit`] and every hotspot
 /// were written against.
 fn artwork_image(artwork: &Artwork) -> Image {
-    let mut image = Image::new(
-        Extent3d {
-            width: artwork.width(),
-            height: artwork.height(),
-            depth_or_array_layers: 1,
-        },
-        TextureDimension::D2,
-        artwork.rgba().to_vec(),
-        TextureFormat::Rgba8UnormSrgb,
-        bevy::asset::RenderAssetUsages::default(),
-    );
+    let mut image = artwork.image();
     image.sampler = ImageSampler::linear();
     image.texture_descriptor.usage |= TextureUsages::TEXTURE_BINDING;
     image

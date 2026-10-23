@@ -588,12 +588,12 @@ impl FrontEndScreens {
                     name: image.name.clone(),
                     reason,
                 })?;
-                Artwork::new(extent.width, extent.height, rgba).map_err(|error| {
-                    RetailError::Image {
+                Artwork::new(extent.width, extent.height, rgba)
+                    .map(|artwork| with_hd(artwork, &format!("rimage/{}", image.name)))
+                    .map_err(|error| RetailError::Image {
                         name: image.name.clone(),
                         reason: error.to_string(),
-                    }
-                })
+                    })
             }
             ImageSource::ScreenContainer => {
                 let key = AssetKey::from_spelling(
@@ -614,10 +614,12 @@ impl FrontEndScreens {
                         name: image.name.clone(),
                         reason,
                     })?;
-                Artwork::new(width, height, rgba).map_err(|error| RetailError::Image {
-                    name: image.name.clone(),
-                    reason: error.to_string(),
-                })
+                Artwork::new(width, height, rgba)
+                    .map(|artwork| with_hd(artwork, &format!("rof/{}", image.name)))
+                    .map_err(|error| RetailError::Image {
+                        name: image.name.clone(),
+                        reason: error.to_string(),
+                    })
             }
         }
     }
@@ -808,7 +810,9 @@ impl FrontEndScreens {
         .ok()?;
         let read = self.rof.read(&key).ok()?;
         let (_, width, height, rgba) = decode_image(&member.spelling, &read.data).ok()?;
-        Artwork::new(width, height, rgba).ok()
+        Artwork::new(width, height, rgba)
+            .ok()
+            .map(|artwork| with_hd(artwork, &format!("rof/{}", member.spelling)))
     }
 
     /// Reads every paired screen from the original layout over this
@@ -917,6 +921,16 @@ fn image_extension(upper: &str) -> Option<&'static str> {
 /// format is unknown the extension is the only identification this corpus
 /// offers, and the decoder is told the format explicitly instead of the image
 /// being reported as "format could not be determined".
+/// `artwork` drawn from the `--hd` pack's replacement for UI image `key`
+/// ([`crate::hd_textures::HdPack::ui_image`]), when there is one. The
+/// original extent and pixels stay what the layout and captures read.
+fn with_hd(artwork: Artwork, key: &str) -> Artwork {
+    match crate::hd_textures::pack().and_then(|pack| pack.ui_image(key)) {
+        Some(rgba) => artwork.with_presented(rgba.width(), rgba.height(), rgba.into_raw()),
+        None => artwork,
+    }
+}
+
 fn decode_image(name: &str, bytes: &[u8]) -> Result<(String, u32, u32, Vec<u8>), String> {
     let mut reader = image::ImageReader::new(Cursor::new(bytes.to_vec()))
         .with_guessed_format()
