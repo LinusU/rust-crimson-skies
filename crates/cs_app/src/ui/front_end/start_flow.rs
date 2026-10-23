@@ -211,6 +211,38 @@ const BUTTON_ACTIONS: &[(&str, Action)] = &[
     ("MM_B_MULTIPLAYER", Action::OpenLobby),
 ];
 
+/// A cabin button whose screen has not been built.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct NotImplemented {
+    /// The layout section the button starts.
+    pub section: &'static str,
+    /// The button.
+    pub button: &'static str,
+    /// What the screen is.
+    pub what: &'static str,
+}
+
+/// The cabin's three buttons that open a screen this project has not built.
+/// Each opens a marked "not implemented" screen (rule 5: a missing screen
+/// blocks release, it never passes); a follow-up task builds each.
+pub const NOT_IMPLEMENTED: &[NotImplemented] = &[
+    NotImplemented {
+        section: "ScrapBook_TOC",
+        button: "PC_B_PREVIOUS",
+        what: "Previous Missions",
+    },
+    NotImplemented {
+        section: "MomentoSelection",
+        button: "PC_B_CHANGEMOMENTO",
+        what: "Change Memento",
+    },
+    NotImplemented {
+        section: "PlaneName",
+        button: "PC_B_PLANEX",
+        what: "Plane Construction",
+    },
+];
+
 /// The layout section that presents `screen` through the shell.
 fn section_of_screen(screen: Screen) -> Option<&'static str> {
     SCREEN_SECTIONS
@@ -292,6 +324,9 @@ pub enum StartStep {
         /// The mission label.
         mission: String,
     },
+    /// A cabin button opened a screen that is not built: the marked
+    /// "not implemented" screen is up over the cabin until dismissed.
+    NotImplemented(NotImplemented),
     /// The application should end.
     Quit,
     /// The move was refused; the machine is where it was.
@@ -307,6 +342,8 @@ pub struct StartFlow {
     requests: Vec<Request>,
     refusals: Vec<StartRefusal>,
     launch: Option<String>,
+    notice: Option<NotImplemented>,
+    not_implemented_seen: Vec<NotImplemented>,
 }
 
 impl Default for StartFlow {
@@ -331,6 +368,8 @@ impl StartFlow {
             requests: Vec::new(),
             refusals: Vec::new(),
             launch: None,
+            notice: None,
+            not_implemented_seen: Vec::new(),
         }
     }
 
@@ -426,8 +465,36 @@ impl StartFlow {
         self.launch.as_deref()
     }
 
+    /// The marked "not implemented" screen that is up, if any.
+    #[must_use]
+    pub fn notice(&self) -> Option<&NotImplemented> {
+        self.notice.as_ref()
+    }
+
+    /// Every not-implemented screen opened so far, in order: screens that
+    /// block a release claim for the cabin.
+    #[must_use]
+    pub fn not_implemented_seen(&self) -> &[NotImplemented] {
+        &self.not_implemented_seen
+    }
+
+    /// Closes the not-implemented screen, back on the cabin. `false` when none
+    /// was up.
+    pub fn dismiss_notice(&mut self) -> bool {
+        self.notice.take().is_some()
+    }
+
     /// The shell started the layout section `section`: look up the move.
     pub fn enter_section(&mut self, section: &str) -> StartStep {
+        if self.screen() == Screen::Cabin
+            && let Some(entry) = NOT_IMPLEMENTED
+                .iter()
+                .find(|entry| entry.section.eq_ignore_ascii_case(section))
+        {
+            self.notice = Some(*entry);
+            self.not_implemented_seen.push(*entry);
+            return StartStep::NotImplemented(*entry);
+        }
         let Some(to) = screen_of_section(section) else {
             return self.refuse(StartRefusal::SectionHasNoScreen {
                 section: section.to_owned(),
@@ -503,7 +570,7 @@ impl StartFlow {
         match outcome {
             ShellOutcome::Entered { section } => {
                 let step = self.enter_section(&section);
-                if matches!(step, StartStep::Refused(_)) {
+                if matches!(step, StartStep::Refused(_) | StartStep::NotImplemented(_)) {
                     // The shell already pushed the section; step back off it.
                     let _ = shell.escape();
                 }

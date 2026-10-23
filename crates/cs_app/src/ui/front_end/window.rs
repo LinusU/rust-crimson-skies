@@ -198,6 +198,9 @@ pub struct ShellResource {
     watch: AudioWatch,
     /// The intro movie between the pilot page and the cabin.
     intro: IntroState,
+    /// The not-implemented notice's entities and the surface they were laid
+    /// out for; empty while no notice is up.
+    notice_scene: (Vec<Entity>, (u32, u32)),
 }
 
 /// What the audio hooks last saw of the shell.
@@ -577,6 +580,7 @@ impl Plugin for FrontEndShellPlugin {
             audio: self.audio.lock().ok().and_then(|mut slot| slot.take()),
             watch: AudioWatch::default(),
             intro: IntroState::new(self.intro.lock().ok().and_then(|mut slot| slot.take())),
+            notice_scene: (Vec::new(), (0, 0)),
         });
         if app.world().resource::<ShellResource>().intro.enabled()
             && !app.is_plugin_added::<MoviePlayerPlugin>()
@@ -852,6 +856,21 @@ fn frame_shell(world: &mut World) {
         // The movie owns the input: its skip keys must not reach the cabin.
         events.clear();
     }
+    if let Some(flow) = flow.as_mut()
+        && flow.notice().is_some()
+    {
+        // The not-implemented screen owns the input: Esc, Return or a click
+        // closes it, everything else is ignored, and none reaches the cabin.
+        if events.iter().any(|event| {
+            matches!(
+                event,
+                ShellEvent::Escape | ShellEvent::ActivateDown | ShellEvent::PointerDown
+            )
+        }) {
+            flow.dismiss_notice();
+        }
+        events.clear();
+    }
     for event in events.drain(..) {
         // The pilot page takes the arrows, Enter and Esc for itself (the
         // edit box has the focus; the list is arrow-driven) and a press on
@@ -951,6 +970,9 @@ fn frame_shell(world: &mut World) {
                     if plays_intro && state.intro.begin(state.audio.as_mut()) {
                         break;
                     }
+                }
+                StartStep::NotImplemented(entry) => {
+                    eprintln!("cs: {} is not implemented", entry.what);
                 }
                 StartStep::Launch { .. } | StartStep::Quit => exit = true,
                 StartStep::Refused(refusal) => eprintln!("cs: {refusal}"),
@@ -1073,6 +1095,7 @@ fn frame_shell(world: &mut World) {
         }
     }
     sync_pilot_scene(world, &mut state);
+    sync_notice_scene(world, &mut state);
     if let Some(cursor) = state.scene.cursor
         && let Ok(mut entity) = world.get_entity_mut(cursor)
     {
@@ -1170,6 +1193,28 @@ fn pilot_continue(
         let _ = shell.open(section);
     }
     step
+}
+
+/// Keeps the not-implemented notice drawn while the flow has one up.
+fn sync_notice_scene(world: &mut World, state: &mut ShellResource) {
+    if !state.visuals {
+        return;
+    }
+    let entry = state.flow.as_ref().and_then(|flow| flow.notice()).copied();
+    let surface = state.surface;
+    if entry.is_none() || state.notice_scene.1 != surface {
+        for entity in state.notice_scene.0.drain(..) {
+            let _ = world.despawn(entity);
+        }
+    }
+    if let Some(entry) = entry
+        && state.notice_scene.0.is_empty()
+    {
+        state.notice_scene = (
+            super::notice_view::spawn_notice(world, &entry, surface),
+            surface,
+        );
+    }
 }
 
 /// Keeps the pilot page's overlay in step with the model: drawn while the

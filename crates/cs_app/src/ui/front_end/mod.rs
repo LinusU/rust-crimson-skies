@@ -91,6 +91,7 @@ mod import_dialog;
 mod intro;
 mod machine;
 mod movie;
+mod notice_view;
 mod original;
 mod paths;
 mod pilot_page;
@@ -169,9 +170,9 @@ pub use sound::{
     MenuSoundError, MenuSoundTable, SOUND_DIRECTORY, cue_sample_id, decode_wave, music_sample_id,
 };
 pub use start_flow::{
-    FIRST_MISSION, MissionEnd, Presentation, StartFlow, StartFlowError, StartFlowRequest,
-    StartRefusal, StartStep, handover_args, presentation, return_args, return_to_front_end,
-    run_start_flow, screen_of_section,
+    FIRST_MISSION, MissionEnd, NOT_IMPLEMENTED, NotImplemented, Presentation, StartFlow,
+    StartFlowError, StartFlowRequest, StartRefusal, StartStep, handover_args, presentation,
+    return_args, return_to_front_end, run_start_flow, screen_of_section,
 };
 pub use window::{
     DEFAULT_FRONT_END_CAPTURE_DIR, FrontEndError, FrontEndRequest, FrontEndShellPlugin,
