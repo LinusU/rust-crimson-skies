@@ -359,21 +359,28 @@ pub fn mission_world_observation(world: &mut World) {
     //     bounding-box centre (`docs/findings/2026-10-21-m01-examine-
     //     objective.md`). A name a bound world actor already answered keeps
     //     that row.
-    let grounds: Vec<(String, [f64; 3])> = {
+    let grounds: Vec<(String, [f64; 3], ActorId)> = {
         let mut query = world.query::<&MissionGroundTarget>();
         query
             .iter(world)
-            .map(|target| (target.node.clone(), target.position_m))
+            .map(|target| (target.node.clone(), target.position_m, target.damage_actor))
             .collect()
     };
-    for (name, position) in grounds {
+    let damage = world.get_resource::<SessionDamageResolver>();
+    for (name, position, actor) in grounds {
         if anchors.contains_key(&name) {
             continue;
         }
-        observation = observation.member(
-            member_chain([name.as_str()]),
-            MemberObservation::held_in_play(position),
-        );
+        // A destroyed target leaves play the way the original's counters
+        // read it: the convoy's `INACTIVE` ladders complete on the member
+        // row turning, not on the entity despawning — the wreck stays in
+        // the world.
+        let member = if damage.is_some_and(|damage| damage.resolver().is_destroyed(&actor)) {
+            MemberObservation::no_longer_in_play(position)
+        } else {
+            MemberObservation::held_in_play(position)
+        };
+        observation = observation.member(member_chain([name.as_str()]), member);
     }
 
     // 3. Groups: which ids the composition actually spawned members for, and
