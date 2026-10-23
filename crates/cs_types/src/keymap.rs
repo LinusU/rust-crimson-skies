@@ -27,9 +27,11 @@
 //! constants, the analog calibration and the original's rebind screen itself.
 
 use crate::input::{
-    Action, ActionMap, Binding, BindingSource, BindingTarget, FlightCommand, Key, MouseButton,
-    ORIGINAL_DEFAULT_BINDINGS, ORIGINAL_KEY_ALT, ORIGINAL_KEY_CTRL, ORIGINAL_KEY_SHIFT,
-    OriginalControlCategory, OriginalKeyCode, UiAction, original_scancode,
+    Action, ActionMap, Binding, BindingSource, BindingTarget, FlightCommand,
+    JOYSTICK_AXIS_THROTTLE, JOYSTICK_AXIS_TWIST, JOYSTICK_AXIS_X, JOYSTICK_AXIS_Y, Key,
+    MouseButton, ORIGINAL_DEFAULT_BINDINGS, ORIGINAL_JOYSTICK_AXES, ORIGINAL_KEY_ALT,
+    ORIGINAL_KEY_CTRL, ORIGINAL_KEY_SHIFT, OriginalControlCategory, OriginalJoystickAxis,
+    OriginalKeyCode, UiAction, original_scancode,
 };
 
 /// The Alt, Ctrl and Shift state held while a key goes down.
@@ -293,11 +295,13 @@ impl ControlsMap {
     /// * A joystick button `n` becomes `JoystickButton(n - 1)`.
     /// * Axis keys deflect by `key_axis_scale` (designed: the original's
     ///   keyboard rate is unmeasured).
-    /// * The designed gamepad and joystick axis bindings and the menu
-    ///   navigation keys are carried over from [`ActionMap::designed_default`]
-    ///   unchanged: the original's analog calibration and menu keys are not
-    ///   measured. The original's default has **no mouse binding** and the
-    ///   map therefore has none.
+    /// * The joystick axes are the original's assignment,
+    ///   [`original_joystick_axis_bindings`].
+    /// * The designed gamepad bindings and the menu navigation keys are
+    ///   carried over from [`ActionMap::designed_default`] unchanged: the
+    ///   original's analog calibration and menu keys are not measured. The
+    ///   original's default has **no mouse binding** and the map therefore has
+    ///   none.
     ///
     /// # Panics
     ///
@@ -347,9 +351,10 @@ impl ControlsMap {
                 });
             }
         }
+        bindings.extend(original_joystick_axis_bindings());
         for binding in designed.bindings() {
             let carried = match binding.source {
-                BindingSource::GamepadAxis(_) | BindingSource::JoystickAxis { .. } => true,
+                BindingSource::GamepadAxis(_) => true,
                 BindingSource::GamepadButton(_) => true,
                 BindingSource::Key(key) => {
                     matches!(binding.target, BindingTarget::Ui(action) if action != UiAction::Pause)
@@ -434,6 +439,43 @@ pub fn key_from_scancode(scancode: u16) -> Option<Key> {
         .iter()
         .copied()
         .find(|key| original_scancode(*key) == Some(scancode))
+}
+
+/// The joystick axis bindings of the live game: the original's assignment of
+/// device axes to flight axes ([`ORIGINAL_JOYSTICK_AXES`]), in this project's
+/// axis numbering and sign convention (SIDEWINDER-FFB2, #1968).
+///
+/// Which device axis drives which flight axis, and that the throttle is full
+/// with the lever at its minimum (`0.5 - 0.5 * normalised`), are the
+/// original's (static evidence). The signs are this project's: the HID axes
+/// read positive with the stick right, pulled back and twisted clockwise, and
+/// the flight axes read positive for roll right, nose up and nose right, so
+/// the stick drives each one unscaled. The original's own `inverted` flags
+/// describe its internal roll and yaw signs, which differ from this project's,
+/// and are therefore not copied. The hat drives the look directions, not an
+/// axis, and has no binding here.
+#[must_use]
+pub fn original_joystick_axis_bindings() -> Vec<Binding> {
+    ORIGINAL_JOYSTICK_AXES
+        .iter()
+        .filter_map(|original| {
+            let command = original.flight_axis?;
+            let (index, inverted) = match original.axis {
+                OriginalJoystickAxis::X => (JOYSTICK_AXIS_X, false),
+                OriginalJoystickAxis::Y => (JOYSTICK_AXIS_Y, false),
+                OriginalJoystickAxis::Z => (JOYSTICK_AXIS_THROTTLE, true),
+                OriginalJoystickAxis::Rz => (JOYSTICK_AXIS_TWIST, false),
+                OriginalJoystickAxis::Hat => return None,
+            };
+            Some(Binding {
+                source: BindingSource::JoystickAxis { index, inverted },
+                target: BindingTarget::Axis {
+                    command,
+                    scale: 1.0,
+                },
+            })
+        })
+        .collect()
 }
 
 /// The project action an original command id runs, or `None` when the
