@@ -116,6 +116,7 @@ mod parity5_cabin_intro_02;
 mod parity5_cabin_intro_03;
 mod parity5_cabin_intro_04;
 mod parity5_cabin_intro_05;
+mod parity5_cabin_intro_06;
 mod parity5_main_menu;
 mod parity5_start_flow_02;
 mod parity5_start_flow_03;

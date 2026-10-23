@@ -70,8 +70,8 @@ use bevy::input::keyboard::{Key, KeyCode, KeyboardInput};
 use bevy::input::mouse::MouseButton;
 use bevy::prelude::{
     App, Camera, Camera2d, ClearColorConfig, Color, DefaultPlugins, Entity, On, Plugin,
-    PluginGroup, Resource, Sprite, Startup, Time, Transform, Update, Vec2, Visibility, Window,
-    WindowPlugin, World, default,
+    PluginGroup, PreUpdate, Resource, Sprite, Startup, Time, Transform, Update, Vec2, Visibility,
+    Window, WindowPlugin, World, default,
 };
 use bevy::render::render_resource::{Extent3d, TextureDimension, TextureFormat, TextureUsages};
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk};
@@ -748,9 +748,6 @@ fn frame_shell(world: &mut World) {
     {
         audio.start_music();
     }
-    if world.contains_resource::<ShellSmoke>() {
-        inject_smoke_input(world, &mut state);
-    }
     let mut events = std::mem::take(&mut state.input.events);
     let on_page = state.pilots.is_some()
         && state
@@ -1118,6 +1115,28 @@ fn frame_shell(world: &mut World) {
                 if let Some(mut visibility) = entity.get_mut::<Visibility>() {
                     *visibility = Visibility::Hidden;
                 }
+            }
+        }
+    }
+    // The movie's sprite sits at z 0 under the section's panes (the movie
+    // camera draws every sprite), so the screen is hidden while the intro
+    // plays and shown again on the frame it ends.
+    if state.intro.active() || intro_busy {
+        let shown = if state.intro.active() {
+            Visibility::Hidden
+        } else {
+            Visibility::Visible
+        };
+        let scene = &state.scene;
+        let covered = scene
+            .panes
+            .iter()
+            .chain(&scene.buttons)
+            .map(|sprite| sprite.entity)
+            .chain(scene.cursor);
+        for entity in covered {
+            if let Some(mut visibility) = world.get_mut::<Visibility>(entity) {
+                *visibility = shown;
             }
         }
     }
@@ -1562,19 +1581,32 @@ pub enum SmokeScene {
     MainMenu,
     /// The cabin hub's hover, press and focus pass ([`cabin_script`]).
     Cabin,
+    /// The whole start flow (#1842): main menu → Campaign → a new pilot →
+    /// intro movie → cabin → a not-implemented notice → back to the main
+    /// menu ([`flow_script`]).
+    Flow,
 }
 
 /// The environment variable that selects [`SmokeScene::Cabin`] for
 /// `cs --cs-path <retail> --front-end --smoke-seconds <n> --capture-dir <dir>`:
-/// `cabin`. Any other value, or none, is the main-menu walk.
+/// `cabin`, or [`SmokeScene::Flow`]: `flow`. Any other value, or none, is the
+/// main-menu walk.
 pub const SMOKE_SCENE_ENV: &str = "CS_FRONT_END_SMOKE_SCENE";
 
 impl SmokeScene {
     /// The scene the environment names.
     #[must_use]
     pub fn from_env() -> Self {
-        match std::env::var(SMOKE_SCENE_ENV) {
-            Ok(value) if value.trim().eq_ignore_ascii_case("cabin") => Self::Cabin,
+        std::env::var(SMOKE_SCENE_ENV).map_or(Self::MainMenu, |value| Self::from_name(&value))
+    }
+
+    /// The scene a [`SMOKE_SCENE_ENV`] value names: `cabin` or `flow`, any
+    /// case; anything else is the main-menu walk.
+    #[must_use]
+    pub fn from_name(name: &str) -> Self {
+        match name.trim().to_ascii_lowercase().as_str() {
+            "cabin" => Self::Cabin,
+            "flow" => Self::Flow,
             _ => Self::MainMenu,
         }
     }
@@ -1795,6 +1827,45 @@ fn cabin_script() -> Vec<(u32, Step)> {
     steps
 }
 
+/// The deterministic pass over the whole start flow (#1842): the main menu,
+/// Campaign, a typed new pilot and Continue (the intro movie starts), three
+/// frames of the movie, Esc to skip it, the cabin, a press on Previous
+/// Missions (the marked notice), Esc, and Return to Main Menu. Needs
+/// `--smoke-seconds 16` or more.
+#[inline(always)]
+fn flow_script() -> Vec<(u32, Step)> {
+    let at = |seconds: f64| (seconds * SMOKE_FRAME_HZ) as u32;
+    vec![
+        (at(0.5), Step::Shot("flow-mainmenu")),
+        (at(1.0), Step::HoverButton("MM_B_CAMPAIGN")),
+        (at(1.4), Step::Mouse(true)),
+        (at(1.6), Step::Mouse(false)),
+        (at(2.0), Step::Shot("flow-pilot")),
+        (at(2.1), Step::Type("Eve")),
+        (at(2.3), Step::Shot("flow-pilot-typed")),
+        (at(2.5), Step::HoverButton("CM_B_START")),
+        (at(2.7), Step::Mouse(true)),
+        (at(2.9), Step::Mouse(false)),
+        (at(3.5), Step::Shot("intro-a")),
+        (at(5.0), Step::Shot("intro-b")),
+        (at(8.0), Step::Shot("intro-c")),
+        (at(10.0), Step::Key(KeyCode::Escape, true)),
+        (at(10.1), Step::Key(KeyCode::Escape, false)),
+        (at(11.0), Step::Shot("flow-cabin")),
+        (at(11.3), Step::HoverButton("PC_B_PREVIOUS")),
+        (at(11.5), Step::Mouse(true)),
+        (at(11.7), Step::Mouse(false)),
+        (at(12.2), Step::Shot("flow-notice")),
+        (at(12.5), Step::Key(KeyCode::Escape, true)),
+        (at(12.6), Step::Key(KeyCode::Escape, false)),
+        (at(13.0), Step::Shot("flow-cabin-after")),
+        (at(13.2), Step::HoverButton("PC_B_RETURNMM")),
+        (at(13.4), Step::Mouse(true)),
+        (at(13.6), Step::Mouse(false)),
+        (at(14.2), Step::Shot("flow-mainmenu-again")),
+    ]
+}
+
 /// The smoke run as a plugin.
 pub struct ShellSmokePlugin {
     scene: SmokeScene,
@@ -1821,6 +1892,7 @@ impl ShellSmokePlugin {
             steps: match scene {
                 SmokeScene::MainMenu => script(),
                 SmokeScene::Cabin => cabin_script(),
+                SmokeScene::Flow => flow_script(),
             },
             handle: ShellSmokeHandle::default(),
         }
@@ -1847,12 +1919,32 @@ impl Plugin for ShellSmokePlugin {
             request: self.request.clone(),
             handle: self.handle.clone(),
         });
+        // After the input systems' per-frame clear and before `Update`, where
+        // `frame_shell` and the movie's skip both read `just_pressed`: a
+        // scripted key reaches every reader as a real one does.
+        app.add_systems(
+            PreUpdate,
+            bevy::ecs::schedule::IntoScheduleConfigs::after(
+                inject_smoke_input_system,
+                bevy::input::InputSystems,
+            ),
+        );
     }
 }
 
 /// Injects the frame's scripted input into the real `ButtonInput`/`CursorMoved`
 /// path — the input systems' own per-frame clear already ran in `PreUpdate`,
 /// so scripted `just_*` edges survive exactly one frame like real ones.
+#[inline(always)]
+fn inject_smoke_input_system(world: &mut World) {
+    let Some(mut state) = world.remove_resource::<ShellResource>() else {
+        return;
+    };
+    inject_smoke_input(world, &mut state);
+    world.insert_resource(state);
+}
+
+/// The body of [`inject_smoke_input_system`].
 #[inline(always)]
 fn inject_smoke_input(world: &mut World, state: &mut ShellResource) {
     let Some(mut smoke) = world.remove_resource::<ShellSmoke>() else {
@@ -1955,7 +2047,22 @@ fn step_smoke(world: &mut World, state: &ShellResource, smoke: &mut ShellSmoke) 
     let delivered = smoke.shots.lock().map_or(0, |shots| shots.len());
     let finished = delivered >= smoke.shots_requested;
     if frame >= end_frame && (finished || frame >= end_frame + SCREENSHOT_GRACE_FRAMES) {
-        let report = evaluate(smoke, &state.run, state.audio.as_ref());
+        let facts = FlowFacts {
+            intro: state
+                .intro
+                .outcomes
+                .iter()
+                .map(|outcome| format!("{outcome:?}"))
+                .collect(),
+            notices: state.flow.as_ref().map_or_else(Vec::new, |flow| {
+                flow.not_implemented_seen()
+                    .iter()
+                    .map(|entry| entry.button.to_owned())
+                    .collect()
+            }),
+            notice_open: state.flow.as_ref().is_some_and(|f| f.notice().is_some()),
+        };
+        let report = evaluate(smoke, &state.run, state.audio.as_ref(), &facts);
         let outcome = write_artifacts(&smoke.request.capture_dir, &report)
             .map(|()| report.clone())
             .map_err(|(path, error)| format!("cannot write {}: {error}", path.display()));
@@ -2031,7 +2138,12 @@ fn measure_shot(image: &Image, label: String, path: PathBuf) -> ShellShotRecord 
 
 /// The pass/fail checks of a finished run.
 #[inline(always)]
-fn evaluate(smoke: &ShellSmoke, run: &ShellRun, audio: Option<&MenuAudio>) -> ShellSmokeReport {
+fn evaluate(
+    smoke: &ShellSmoke,
+    run: &ShellRun,
+    audio: Option<&MenuAudio>,
+    facts: &FlowFacts,
+) -> ShellSmokeReport {
     let shots = smoke
         .shots
         .lock()
@@ -2057,6 +2169,37 @@ fn evaluate(smoke: &ShellSmoke, run: &ShellRun, audio: Option<&MenuAudio>) -> Sh
                 shot.mean_luminance
             ));
         }
+    }
+    if smoke.scene == SmokeScene::Flow {
+        // The notice and its dismissal do not move the section.
+        if run.visited != ["MainMenu", "Campaign", "PassengerCabin", "MainMenu"] {
+            failures.push(format!(
+                "the flow visited {:?}, expected MainMenu → Campaign → PassengerCabin → MainMenu",
+                run.visited
+            ));
+        }
+        if facts.intro.len() != 1 {
+            failures.push(format!(
+                "the intro ended {} times ({:?}); expected once, by the skip key",
+                facts.intro.len(),
+                facts.intro
+            ));
+        }
+        if facts.notices != ["PC_B_PREVIOUS"] {
+            failures.push(format!(
+                "the not-implemented notices opened were {:?}; expected exactly Previous Missions",
+                facts.notices
+            ));
+        }
+        if facts.notice_open {
+            failures.push("the notice was still up at the end of the run".to_owned());
+        }
+        let mut audio_lines = Vec::new();
+        if let Some(note) = &run.audio_note {
+            audio_lines.push(format!("no audio output: {note}"));
+        }
+        audio_lines.push(format!("intro outcomes {:?}", facts.intro));
+        return smoke_report(smoke, run, shots, failures, audio_lines, audio);
     }
     if smoke.scene == SmokeScene::Cabin {
         if run.visited != ["PassengerCabin"] {
@@ -2183,6 +2326,16 @@ fn evaluate(smoke: &ShellSmoke, run: &ShellRun, audio: Option<&MenuAudio>) -> Sh
         }
     }
     smoke_report(smoke, run, shots, failures, audio_lines, audio)
+}
+
+/// What the start flow did that the shell's own record does not hold.
+struct FlowFacts {
+    /// How each intro ended (`Debug` of the outcome).
+    intro: Vec<String>,
+    /// The `button` of each not-implemented screen opened.
+    notices: Vec<String>,
+    /// A notice is up now.
+    notice_open: bool,
 }
 
 /// The report of a finished pass.
@@ -2330,6 +2483,9 @@ fn json_f32(value: f32) -> String {
 pub fn shell_app(
     request: &FrontEndRequest,
 ) -> Result<(App, Option<ShellSmokeHandle>), FrontEndError> {
+    if request.smoke.is_some() && SmokeScene::from_env() == SmokeScene::Flow {
+        return shell_app_with(request, Some(StartFlow::new()));
+    }
     if request.smoke.is_some() && SmokeScene::from_env() == SmokeScene::Cabin {
         let flow = StartFlow::after_mission(super::start_flow::MissionEnd::ReturnedToCabin)
             .map_err(|refusal| FrontEndError::Exit(refusal.to_string()))?;
