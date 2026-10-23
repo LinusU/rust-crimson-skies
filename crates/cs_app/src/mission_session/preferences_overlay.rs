@@ -508,6 +508,13 @@ fn press_of(
                 effect: PreferencesEffect::Navigate(section),
             })
         }
+        ShellOutcome::Returned { section, previous } => {
+            shell.reopen(&previous);
+            Some(PreferencesPress {
+                id: held,
+                effect: PreferencesEffect::Navigate(section),
+            })
+        }
         ShellOutcome::Unhandled { id, effect } => {
             let effect = if id.eq_ignore_ascii_case(IN_GAME_BUTTON) {
                 PreferencesEffect::ReturnToGame

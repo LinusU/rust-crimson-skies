@@ -1141,7 +1141,9 @@ fn frame_shell(world: &mut World) {
             continue;
         }
         match outcome {
-            ShellOutcome::Entered { section } | ShellOutcome::Back { section } => {
+            ShellOutcome::Entered { section }
+            | ShellOutcome::Returned { section, .. }
+            | ShellOutcome::Back { section } => {
                 state.run.visited.push(section);
                 state.redraw = true;
             }

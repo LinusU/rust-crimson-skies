@@ -178,6 +178,11 @@ pub enum ButtonEffect {
     /// `activate(@name@)` + `script_end` handler). The name is the section's
     /// as written.
     Navigate(String),
+    /// Hand back to `name` and end this section: the `activate(@name@)` +
+    /// `script_end "<this>.script"` pair. The target is the still-open
+    /// section that started this one, so the shell unwinds to it instead of
+    /// stacking another copy; when it is not open it replaces this section.
+    Return(String),
     /// End the run: the handler is exactly `terminate`.
     Terminate,
     /// The press has no effect the shell knows; recorded, never guessed.
@@ -393,6 +398,16 @@ pub enum ShellOutcome {
     Entered {
         /// The section now on top.
         section: String,
+    },
+    /// A button handed control back to a section that was already open (or
+    /// replaced this one): the shell unwound to `section` rather than
+    /// opening a new copy of it.
+    Returned {
+        /// The section now on top.
+        section: String,
+        /// The whole stack before the move, so a refused move can be undone
+        /// with [`MenuShell::reopen`].
+        previous: Vec<String>,
     },
     /// Esc stepped back to the previous section.
     Back {
@@ -1009,13 +1024,39 @@ impl MenuShell {
         }
         match &button.effect {
             ButtonEffect::Navigate(name) => {
-                let name = self
-                    .sections
-                    .get(&name.to_ascii_uppercase())
-                    .map_or_else(|| name.clone(), |section| section.name.clone());
+                let name = self.canonical(name);
+                // A script start that names a section already open below
+                // this one reactivates that parent: close what is above it.
+                if let Some(parent) = self.stack[..self.stack.len() - 1]
+                    .iter()
+                    .rposition(|open| open.eq_ignore_ascii_case(&name))
+                {
+                    return self.unwind_to(parent + 1);
+                }
                 self.stack.push(name.clone());
                 self.entered();
                 ShellOutcome::Entered { section: name }
+            }
+            ButtonEffect::Return(name) => {
+                let name = self.canonical(name);
+                let open = self.stack[..self.stack.len() - 1]
+                    .iter()
+                    .rposition(|open| open.eq_ignore_ascii_case(&name));
+                match open {
+                    Some(parent) => self.unwind_to(parent + 1),
+                    None => {
+                        // Not open: this section ends and the target takes
+                        // its place.
+                        let previous = self.stack.clone();
+                        self.stack.pop();
+                        self.stack.push(name.clone());
+                        self.entered();
+                        ShellOutcome::Returned {
+                            section: name,
+                            previous,
+                        }
+                    }
+                }
             }
             ButtonEffect::Terminate => ShellOutcome::Quit,
             ButtonEffect::Unhandled(effect) => {
@@ -1028,6 +1069,31 @@ impl MenuShell {
                 }
             }
         }
+    }
+
+    /// The section's own spelling of `name`, or `name` as written.
+    fn canonical(&self, name: &str) -> String {
+        self.sections
+            .get(&name.to_ascii_uppercase())
+            .map_or_else(|| name.to_owned(), |section| section.name.clone())
+    }
+
+    /// Closes every section above the first `keep`.
+    fn unwind_to(&mut self, keep: usize) -> ShellOutcome {
+        let previous = self.stack.clone();
+        self.stack.truncate(keep);
+        self.entered();
+        ShellOutcome::Returned {
+            section: self.stack.last().expect("a root stays").clone(),
+            previous,
+        }
+    }
+
+    /// Undoes a [`ShellOutcome::Returned`] the caller refused: the stack goes
+    /// back to the `previous` one the outcome carried.
+    pub fn reopen(&mut self, previous: &[String]) {
+        self.stack = previous.to_vec();
+        self.entered();
     }
 
     /// Resets the per-screen input state on entry: focus to the first
@@ -1246,7 +1312,9 @@ fn present_button(
         handler_effect(&section.name, row, handlers)
     };
     let effect = match effect {
-        ButtonEffect::Navigate(name) if layout.section(&name).is_none() => {
+        ButtonEffect::Navigate(name) | ButtonEffect::Return(name)
+            if layout.section(&name).is_none() =>
+        {
             ButtonEffect::Unhandled(UnhandledEffect::ScriptNotPresent { script: name })
         }
         other => other,
@@ -1338,7 +1406,7 @@ fn handler_effect(section: &str, row: &Row, handlers: Option<&ScreenHandlers>) -
             .all(|statement| statement.eq_ignore_ascii_case(&self_end))
             && !statements[1..].is_empty()
         {
-            return ButtonEffect::Navigate(destination);
+            return ButtonEffect::Return(destination);
         }
     }
     ButtonEffect::Unhandled(UnhandledEffect::HandlerNotShell {

@@ -88,6 +88,7 @@
 //! windowed tests are `#[ignore]`d for the same reason.
 
 mod audio_preferences;
+mod bug_fe_back_stack;
 mod evidence;
 mod evidence_f45_b_1;
 mod evidence_f45_c_5;

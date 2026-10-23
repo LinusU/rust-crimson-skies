@@ -223,7 +223,7 @@ fn accept_fe_menu_1_a_button_does_only_what_the_data_states() {
     let sub = &shell.sections()["SUB"];
     assert_eq!(
         sub.buttons[0].effect,
-        ButtonEffect::Navigate("menu".to_owned())
+        ButtonEffect::Return("menu".to_owned())
     );
 }
 
@@ -843,7 +843,7 @@ fn accept_fe_menu_1_retail_the_original_sections_present_and_navigate_as_written
         .expect("the cancel button is drawn");
     assert_eq!(
         cancel.effect,
-        ButtonEffect::Navigate("mainmenu".to_owned()),
+        ButtonEffect::Return("mainmenu".to_owned()),
         "CAMPAIGN.SCRIPT's case LB: activate(@mainmenu@) + script_end"
     );
     assert_eq!(

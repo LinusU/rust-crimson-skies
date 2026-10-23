@@ -584,6 +584,14 @@ impl StartFlow {
                 }
                 step
             }
+            ShellOutcome::Returned { section, previous } => {
+                let step = self.enter_section(&section);
+                if matches!(step, StartStep::Refused(_) | StartStep::NotImplemented(_)) {
+                    // The shell already unwound; put the closed screens back.
+                    shell.reopen(&previous);
+                }
+                step
+            }
             ShellOutcome::Unhandled { id, .. } => {
                 let step = self.press_button(&id);
                 if let StartStep::Moved { to, .. } = step
