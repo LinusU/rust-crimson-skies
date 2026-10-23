@@ -1223,6 +1223,15 @@ pub struct PauseMapMetrics {
     pub preferences_opened: bool,
     /// The overlay's Return to Game closed it and the map was drawn again.
     pub returned: bool,
+    /// The physics tick count when the Esc map was first drawn
+    /// (PARITY3-PAUSE-MAP-SCREEN.03, #1818).
+    pub open_tick: Option<u64>,
+    /// The physics tick count read just before the Resume click's press
+    /// edge was queued, after the Preferences detour: equal to
+    /// `open_tick` when the sim clock stood still under the map.
+    pub resume_tick: Option<u64>,
+    /// The Resume button's click closed the map and the flight carried on.
+    pub resumed: bool,
 }
 
 /// Everything the run measured, as [`evaluate`] consumes it.
@@ -1958,6 +1967,37 @@ pub fn evaluate(m: &SmokeMeasurements) -> Vec<Check> {
             "the overlay's Return to Game never came back to the Esc map".to_owned()
         },
     });
+
+    // --- the Esc map's frozen clock and Resume click (PARITY3-PAUSE-MAP-SCREEN.03,
+    // #1818) ------------------------------------------------------------------
+    {
+        let pm = &m.pause_map;
+        let frozen = matches!((pm.open_tick, pm.resume_tick), (Some(a), Some(b)) if a == b);
+        checks.push(Check {
+            id: "pause_map_clock_frozen".to_owned(),
+            applies: true,
+            passed: frozen,
+            detail: match (pm.open_tick, pm.resume_tick) {
+                (Some(a), Some(b)) if a == b => {
+                    format!("the physics tick count stood at {a} from the map's opening to the Resume click")
+                }
+                (Some(a), Some(b)) => format!(
+                    "the sim clock ran under the Esc map: tick {a} when it opened, {b} before Resume"
+                ),
+                _ => "the Esc map's phase never sampled the physics tick count at both ends".to_owned(),
+            },
+        });
+        checks.push(Check {
+            id: "pause_map_resumed".to_owned(),
+            applies: true,
+            passed: pm.resumed,
+            detail: if pm.resumed {
+                "the Resume button closed the map and the flight went on".to_owned()
+            } else {
+                "the Esc map's Resume click never closed the map".to_owned()
+            },
+        });
+    }
 
     // --- the cockpit views (PARITY3-COCKPIT-VIEW.05, #1813) -----------------
     evaluate_cockpit(&m.cockpit, &mut checks);
@@ -3085,15 +3125,15 @@ struct PauseMapParams<'w, 's> {
 }
 
 impl PauseMapParams<'_, '_> {
-    /// The Preferences button's centre in the screens' shared logical
-    /// 800x600 space.
-    fn preferences_centre(&self) -> Option<(f32, f32)> {
+    /// The centre of the map's button of `kind` in the screens' shared
+    /// logical 800x600 space.
+    fn button_centre(&self, kind: PauseButtonKind) -> Option<(f32, f32)> {
         let source = self.source.as_deref()?;
         let button = source
             .scene
             .buttons
             .iter()
-            .find(|button| button.kind == PauseButtonKind::Preferences)?;
+            .find(|button| button.kind == kind)?;
         let (width, height) = source
             .artwork
             .get(&button.bitmaps[0].to_ascii_lowercase())
@@ -3105,24 +3145,20 @@ impl PauseMapParams<'_, '_> {
         ))
     }
 
-    /// The Quit button's centre in the same space (#1832): the start-flow
-    /// smoke's leave-the-flight stage clicks the mission out through it.
+    /// The Preferences button's centre.
+    fn preferences_centre(&self) -> Option<(f32, f32)> {
+        self.button_centre(PauseButtonKind::Preferences)
+    }
+
+    /// The Resume button's centre (#1818).
+    fn resume_centre(&self) -> Option<(f32, f32)> {
+        self.button_centre(PauseButtonKind::Resume)
+    }
+
+    /// The Quit button's centre (#1832): the start-flow smoke's
+    /// leave-the-flight stage clicks the mission out through it.
     fn quit_centre(&self) -> Option<(f32, f32)> {
-        let source = self.source.as_deref()?;
-        let button = source
-            .scene
-            .buttons
-            .iter()
-            .find(|button| button.kind == PauseButtonKind::Quit)?;
-        let (width, height) = source
-            .artwork
-            .get(&button.bitmaps[0].to_ascii_lowercase())
-            .map(|art| (art.width() as f32, art.height() as f32))
-            .unwrap_or((132.0, 28.0));
-        Some((
-            button.at.x as f32 + width / 2.0,
-            button.at.y as f32 + height / 2.0,
-        ))
+        self.button_centre(PauseButtonKind::Quit)
     }
 
     /// The overlay's Return to Game row's centre in the same space, once it
@@ -4570,6 +4606,8 @@ fn smoke_script(
                 // The drawn map answers the opening Esc.
                 0 => {
                     if shown {
+                        data.measurements.pause_map.open_tick =
+                            flak.tick_ledger.as_deref().map(|ledger| ledger.ticks);
                         data.pause_map_step = 1;
                         data.pause_map_mark = frame;
                     }
@@ -4612,23 +4650,29 @@ fn smoke_script(
                     } else if since > PAUSE_MAP_CLICK_FRAMES && !covered && shown {
                         data.measurements.pause_map.returned = true;
                         due.push("pause_map_returned".to_owned());
-                        queue.0.push(KeyOp::Press(KeyCode::Escape));
-                        data.pause_map_step = 4;
-                        data.pause_map_mark = frame;
+                        // The clock is read before the click can resume
+                        // the session: the tick count the map opened on
+                        // must still stand.
+                        data.measurements.pause_map.resume_tick =
+                            flak.tick_ledger.as_deref().map(|ledger| ledger.ticks);
+                        if let Some((x, y)) = pause_map.resume_centre() {
+                            queue.0.push(KeyOp::CursorAt(x, y));
+                            queue.0.push(KeyOp::MouseDown);
+                            data.pause_map_step = 4;
+                            data.pause_map_mark = frame;
+                        }
                     }
                 }
-                // Esc closes the pause: the release edge, then the map
-                // gone hands over to the cockpit views.
+                // The release edge on Resume, then the map gone hands over
+                // to the cockpit views.
                 4 => {
                     if since == PAUSE_MAP_CLICK_FRAMES {
-                        queue.0.push(KeyOp::Release(KeyCode::Escape));
-                        data.pause_map_step = 5;
-                        data.pause_map_mark = frame;
+                        queue.0.push(KeyOp::MouseUp);
+                    } else if since > PAUSE_MAP_CLICK_FRAMES && !shown {
+                        data.measurements.pause_map.resumed = true;
+                        data.phase = Phase::Cockpit;
+                        data.phase_start = frame + 1;
                     }
-                }
-                5 if !shown => {
-                    data.phase = Phase::Cockpit;
-                    data.phase_start = frame + 1;
                 }
                 _ => {}
             }
@@ -6739,6 +6783,46 @@ pub fn finish(
 mod tests {
     use super::*;
     use crate::playtest::SmokeRequest;
+
+    /// **`accept_parity3_pause_map_03_` the Esc map's clock and Resume checks.**
+    ///
+    /// A run whose tick count stood still from the map's opening to the
+    /// Resume click and whose Resume closed the map passes both checks; one
+    /// whose clock ran, or that never sampled it, or whose Resume never
+    /// closed the map, fails the matching one.
+    #[test]
+    fn accept_parity3_pause_map_03_clock_frozen_and_resume_checks() {
+        let verdict = |metrics: PauseMapMetrics| {
+            let checks = evaluate(&SmokeMeasurements {
+                pause_map: metrics,
+                ..SmokeMeasurements::default()
+            });
+            let find = |id: &str| checks.iter().find(|c| c.id == id).map(|c| c.passed);
+            (find("pause_map_clock_frozen"), find("pause_map_resumed"))
+        };
+        let healthy = PauseMapMetrics {
+            open_tick: Some(900),
+            resume_tick: Some(900),
+            resumed: true,
+            ..PauseMapMetrics::default()
+        };
+        assert_eq!(verdict(healthy.clone()), (Some(true), Some(true)));
+        let ran = PauseMapMetrics {
+            resume_tick: Some(901),
+            ..healthy.clone()
+        };
+        assert_eq!(verdict(ran), (Some(false), Some(true)));
+        let unsampled = PauseMapMetrics {
+            open_tick: None,
+            ..healthy.clone()
+        };
+        assert_eq!(verdict(unsampled), (Some(false), Some(true)));
+        let stuck = PauseMapMetrics {
+            resumed: false,
+            ..healthy
+        };
+        assert_eq!(verdict(stuck), (Some(true), Some(false)));
+    }
 
     fn good_frames() -> Vec<CinematicFrame> {
         CINEMATIC_FRAME_LABELS

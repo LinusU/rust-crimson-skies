@@ -211,6 +211,9 @@ fn healthy() -> SmokeMeasurements {
         pause_map: cs_app::mission_session::PauseMapMetrics {
             preferences_opened: true,
             returned: true,
+            open_tick: Some(600),
+            resume_tick: Some(600),
+            resumed: true,
         },
         camera_modes: crate::accept_parity3_camera_modes_04::healthy_camera_modes(),
         lens_flare: Some(cs_app::mission_session::LensFlareMetrics {
