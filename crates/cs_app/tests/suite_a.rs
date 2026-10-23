@@ -229,6 +229,7 @@ mod accept_parity3_cockpit_view_02;
 mod accept_parity3_cockpit_view_03;
 mod accept_parity3_cockpit_view_04;
 mod accept_parity3_cockpit_view_05;
+mod accept_parity3_haze_fade_after_launch;
 mod accept_parity6_m01_audio_01_sample_identity;
 mod accept_parity6_m01_audio_02_voice_laws;
 mod accept_parity6_m01_audio_03_launch_voices;
