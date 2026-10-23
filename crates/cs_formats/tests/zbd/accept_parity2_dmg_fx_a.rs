@@ -306,7 +306,7 @@ fn accept_parity2_dmg_fx_a_a_vehicle_record_yields_its_injure_thresholds() {
 const ZRDR: &str = "ZBD/zrdr.zbd";
 
 /// Runs `f` over every member of the retail shared reader archive.
-fn with_zrdr<R>(f: impl FnOnce(&[(String, &[u8])]) -> R) -> R {
+pub(super) fn with_zrdr<R>(f: impl FnOnce(&[(String, &[u8])]) -> R) -> R {
     let bytes = fs::read(game_dir().join(ZRDR)).expect("ZBD/zrdr.zbd is readable");
     let relative = path(ZRDR);
     let probe = &bytes[..bytes.len().min(64)];
@@ -346,7 +346,9 @@ fn animations_named<'a>(
     out
 }
 
-fn decode_all<'a>(members: &'a [(String, &'a [u8])]) -> Vec<(String, Vec<ReaderNode<'a>>)> {
+pub(super) fn decode_all<'a>(
+    members: &'a [(String, &'a [u8])],
+) -> Vec<(String, Vec<ReaderNode<'a>>)> {
     members
         .iter()
         .filter(|(name, _)| name.to_ascii_lowercase().ends_with(".zrd"))

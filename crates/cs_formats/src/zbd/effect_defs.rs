@@ -241,6 +241,37 @@ impl<'a> EffectAnimation<'a> {
                 _ => None,
             })
     }
+
+    /// Every `OBJECT_CYCLE_TEXTURE` event of every sequence as
+    /// `(node name, RESET value)`, in stored order. An event without a name
+    /// and an integer `RESET` is skipped, not guessed.
+    ///
+    /// What `RESET` indexes (first frame zero or one, clamping or wrapping on
+    /// a shorter cycle) is unmeasured; see
+    /// `docs/findings/2026-10-23-parity-m01-player-damage-gauge-mapping.md`.
+    pub fn cycle_textures(&self) -> impl Iterator<Item = (&'a str, i32)> + '_ {
+        self.sequences
+            .iter()
+            .flat_map(|sequence| sequence.events.iter())
+            .filter_map(|event| match event {
+                EffectEvent::Other {
+                    keyword: "OBJECT_CYCLE_TEXTURE",
+                    value,
+                } => {
+                    let mut node = None;
+                    let mut reset = None;
+                    for (field, values) in value.fields()? {
+                        match (field, children(values)) {
+                            (Some("NAME"), [name]) => node = name.as_str(),
+                            (Some("RESET"), [ReaderNode::Int(index)]) => reset = Some(*index),
+                            _ => {}
+                        }
+                    }
+                    Some((node?, reset?))
+                }
+                _ => None,
+            })
+    }
 }
 
 fn shape(keyword: &str, expected: &'static str) -> EffectDefError {
