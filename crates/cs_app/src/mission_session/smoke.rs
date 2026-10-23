@@ -85,10 +85,10 @@ use bevy::input::keyboard::KeyCode;
 use bevy::input::mouse::MouseButton;
 use bevy::input::{ButtonInput, InputSystems};
 use bevy::prelude::{
-    App, AppExit, ChildOf, ClearColor, Commands, DistanceFog, Entity, FogFalloff, GlobalTransform,
-    IntoScheduleConfigs, Last, Local, Mesh3d, MessageReader, MessageWriter, On, Plugin, PostUpdate,
-    PreUpdate, Quat, Query, Res, ResMut, Resource, Text, Transform, Update, Vec2, Vec3, Visibility,
-    Window, With,
+    App, AppExit, ChildOf, ClearColor, Commands, Component, DistanceFog, Entity, FogFalloff,
+    GlobalTransform, IntoScheduleConfigs, Last, Mesh3d, MessageReader, MessageWriter, On, Plugin,
+    PostUpdate, PreUpdate, Quat, Query, Res, ResMut, Resource, Text, Transform, Update, Vec2, Vec3,
+    Visibility, Window, With,
 };
 use bevy::render::render_resource::TextureFormat;
 use bevy::render::view::screenshot::{Screenshot, ScreenshotCaptured, save_to_disk};
@@ -2577,6 +2577,10 @@ impl MissionSmokePlugin {
     }
 }
 
+/// The distance fog a camera had before a probe parked it.
+#[derive(Component)]
+struct KeptFogFalloff(FogFalloff);
+
 /// What the probe is currently hiding.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 enum ProbeMode {
@@ -3193,8 +3197,8 @@ fn apply_probe(
     mut visibility: Query<&mut Visibility>,
     classes: ProbeClasses,
     overlay: Option<Res<crate::playtest::visuals::DeveloperOverlay>>,
-    mut fogs: Query<&mut DistanceFog>,
-    mut kept_fog: Local<Option<FogFalloff>>,
+    mut fogs: Query<(Entity, &mut DistanceFog, Option<&KeptFogFalloff>)>,
+    mut commands: Commands,
 ) {
     let mode = mode.0;
     let hidden = Visibility::Hidden;
@@ -3232,17 +3236,24 @@ fn apply_probe(
     // `FOG_RANGES 1000 4500`, PARITY-M01-ATMO-B) would paint a probe's
     // terrain flat. The falloff is parked far away while a probe isolates
     // something and put back with the restored frame.
-    for mut fog in &mut fogs {
+    // The falloff to restore rides on the camera itself, not in a system
+    // `Local`: `apply_probe` is registered twice (with and without the flare
+    // ordering), so two copies of a `Local` would race and the second would
+    // save the already parked value as the one to restore.
+    for (entity, mut fog, kept) in &mut fogs {
         if anything_hidden {
-            if kept_fog.is_none() {
-                *kept_fog = Some(fog.falloff.clone());
+            if kept.is_none() {
+                commands
+                    .entity(entity)
+                    .insert(KeptFogFalloff(fog.falloff.clone()));
+                fog.falloff = FogFalloff::Linear {
+                    start: 1.0e9,
+                    end: 2.0e9,
+                };
             }
-            fog.falloff = FogFalloff::Linear {
-                start: 1.0e9,
-                end: 2.0e9,
-            };
-        } else if let Some(falloff) = kept_fog.take() {
-            fog.falloff = falloff;
+        } else if let Some(KeptFogFalloff(falloff)) = kept {
+            fog.falloff = falloff.clone();
+            commands.entity(entity).remove::<KeptFogFalloff>();
         }
     }
     write_all(&mut visibility, classes.domes.iter(), hidden);
@@ -7527,6 +7538,52 @@ FC_T_OBJECTIVES =T,,10,60,0,200,360000,0xFF2D3843,0
             dyaw.abs() < 1e-3 && dpitch.abs() < 1e-3,
             "an aimed sun asks for ({dyaw}, {dpitch})"
         );
+    }
+
+    /// **`accept_m01_sea_fade_` a probe's parked fog comes back.**
+    ///
+    /// The smoke parks the distance fog while a probe isolates something and
+    /// restores it afterwards. `apply_probe` runs twice a frame (`Update` and
+    /// `PostUpdate`, two system instances), and the restore used to read a
+    /// `Local` per instance: the second instance saved the first one's parked
+    /// value and put it back last, so the scene camera stayed unfogged for the
+    /// rest of the run and every later frame showed the sea meeting the sky at
+    /// a hard line (#1796). The falloff must be back after a restore.
+    #[test]
+    fn accept_m01_sea_fade_probe_restores_the_scene_fog() {
+        use bevy::prelude::PostUpdate;
+        let real = FogFalloff::Linear {
+            start: 1000.0,
+            end: 4500.0,
+        };
+        let mut app = App::new();
+        app.init_resource::<ProbeState>()
+            .add_systems(Update, apply_probe)
+            .add_systems(PostUpdate, apply_probe);
+        let camera = app
+            .world_mut()
+            .spawn(DistanceFog {
+                falloff: real.clone(),
+                ..DistanceFog::default()
+            })
+            .id();
+        let start = |app: &App| match app.world().get::<DistanceFog>(camera).unwrap().falloff {
+            FogFalloff::Linear { start, .. } => start,
+            _ => panic!("the fog is linear"),
+        };
+        app.world_mut().resource_mut::<ProbeState>().0 = ProbeMode::SeaVisible;
+        app.update();
+        app.update();
+        assert!(start(&app) > 1.0e8, "a sea probe parks the fog");
+        app.world_mut().resource_mut::<ProbeState>().0 = ProbeMode::Restored;
+        app.update();
+        assert_eq!(start(&app), 1000.0, "the restore puts the fog back");
+        app.world_mut().resource_mut::<ProbeState>().0 = ProbeMode::TerrainOnly;
+        app.update();
+        app.world_mut().resource_mut::<ProbeState>().0 = ProbeMode::Restored;
+        app.update();
+        app.update();
+        assert_eq!(start(&app), 1000.0, "a second probe round restores too");
     }
 
     /// **`accept_parity4_lens_flare_c_` the comparison probe hides the quads
