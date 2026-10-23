@@ -731,6 +731,7 @@ pub mod debris;
 pub mod diagnostics;
 pub mod engine_facts;
 pub mod environment;
+pub mod force_feedback;
 pub mod input;
 pub mod interaction;
 pub mod livery;
