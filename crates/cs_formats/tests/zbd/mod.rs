@@ -14,6 +14,7 @@
 //! instead of pretending it checked them. Task #340 documented the GameZ and
 //! animation signatures, so the AC01 pair is now two documented headers.
 
+mod accept_f27_c_fx_orig;
 mod accept_parity2_dmg_fx_a;
 mod accept_parity2_dmg_fx_levels;
 mod accept_parity_m01_player_damage_gauge_a;
