@@ -21,6 +21,8 @@ use cs_content::cameras::{
 };
 use cs_sim::damage::ActorId;
 use cs_types::Tick;
+use cs_types::content::Resolved;
+use cs_types::evidence::ClaimStatus;
 use cs_types::net::SessionId;
 use cs_types::space::Quaternion;
 
@@ -99,4 +101,32 @@ fn accept_parity_m01_player_view_a_the_synthetic_fixture_keeps_its_12_by_3_chase
     assert_ne!(chase(&fitted), chase(&fixture));
     assert_eq!(chase(&fixture).forward_m().0, -12.0);
     assert_eq!(fitted.origin(), fixture.origin(), "still labelled designed");
+}
+
+#[test]
+fn accept_parity2_m01_chase_camera_fov_is_the_measured_vertical_angle() {
+    let modes = declared_capture_fitted_chase_modes();
+    let chase = modes
+        .get(CameraModeKind::External)
+        .expect("an external mode");
+    let Resolved::Known(fov) = chase.projection().fov.clone() else {
+        panic!("the chase field of view is known");
+    };
+    // 60 degrees horizontal on the fixed 4:3 frame: 2 atan(0.75 tan 30 deg).
+    assert!(
+        (fov.value.0.to_degrees() - 46.827).abs() < 1e-2,
+        "{}",
+        fov.value.0.to_degrees()
+    );
+    assert_eq!(fov.provenance.class, ClaimStatus::ObservedTool);
+    let fixture = declared_synthetic_camera_modes();
+    let designed = fixture
+        .get(CameraModeKind::External)
+        .expect("an external mode")
+        .projection()
+        .fov
+        .clone()
+        .known()
+        .expect("known");
+    assert_ne!(fov.value, designed, "no longer the designed 55 degrees");
 }

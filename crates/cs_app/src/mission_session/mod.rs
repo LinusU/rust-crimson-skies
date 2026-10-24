@@ -172,8 +172,8 @@ pub use burst_puffs::{
     PuffBurst, measure_burst_puffs, plan_burst, puff_pose, read_burst_puff_definition,
 };
 pub use cockpit_camera::{
-    COCKPIT_EYE_NODE_NAME, MissionCockpitEye, drive_cockpit_camera, find_cockpit_eye,
-    install_cockpit_camera, resolve_player_cockpit_eye,
+    COCKPIT_EYE_NODE_NAME, COCKPIT_HORIZONTAL_FOV_DEGREES, MissionCockpitEye, cockpit_vertical_fov,
+    drive_cockpit_camera, find_cockpit_eye, install_cockpit_camera, resolve_player_cockpit_eye,
 };
 pub use cockpit_dials::{
     CockpitDialNode, CockpitDialsReport, CockpitDialsRoot, MissionCockpitDials,
