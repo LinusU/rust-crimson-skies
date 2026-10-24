@@ -4328,6 +4328,9 @@ const IA_ARCHIVE_NAME: &str = "zrdr.zbd";
 /// The root key listing, per offered mission type, that type's spawn points.
 pub const IA_SPAWN_POINTS_KEY: &str = "spawn_points";
 
+/// The root key naming the wingmen's airframe (`0x625588`, read at `0x45943f`).
+pub const IA_WINGMAN_PLANE_KEY: &str = "wingman_plane";
+
 /// The root key listing the mission types a directory does not offer.
 pub const IA_DISALLOW_KEY: &str = "disallow_missions";
 
@@ -4379,6 +4382,65 @@ pub const IA_ENGINE_DEFAULT_PLAYER_PLANE_INDEX: usize = 5;
 /// The `num_wingmen` the same initialiser leaves in the record
 /// (`mov [ebp+8], 0` at `0x45900b`).
 pub const IA_ENGINE_DEFAULT_WINGMEN: u32 = 0;
+
+/// The airframe-table index the record holds for `wingman_plane` before
+/// `ia.zrd` is read (`mov [ebp+0xc], esi` with `esi = 5` at `0x459012`).
+pub const IA_ENGINE_DEFAULT_WINGMAN_PLANE_INDEX: usize = 5;
+
+/// The claim the per-mission-type spawn-roster measurement is recorded under
+/// (the Instant Action spawn routine `0x45a390` of the owner-supplied decrypted
+/// image; `docs/findings/2026-10-24-f49-d-03-fu-rules-roster.md`).
+pub const IA_SPAWN_ROSTER_CLAIM: &str = "f49.d.03.ia-spawn-roster";
+
+/// The airframe-table index a group record holds for `enemy_plane` before
+/// `ia.zrd` is read (`mov [ebp+0x14], 6` at `0x458dd6`, inside the group
+/// initialiser `0x458d00`): row 6, `Firebrand`.
+pub const IA_ENGINE_DEFAULT_GROUP_PLANE_INDEX: usize = 6;
+
+/// The airframe-table index the record holds for `ace_plane` before `ia.zrd`
+/// is read (`mov [ebp+0x64], esi` with `esi = 5` at `0x459082`): row 5.
+pub const IA_ENGINE_DEFAULT_ACE_PLANE_INDEX: usize = 5;
+
+/// Which vehicle record the spawn routine seats a wingman as.
+///
+/// The routine (`0x45a390`) looks the wingman up by name in the `vehicle.zrd`
+/// registry (`[0x71daac]`): the airframe row's `w` field (`0x426d60`) for the
+/// follower, its `base` field (`0x426d20`) for a plain aircraft.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IaWingmanTemplate {
+    /// The row's `w` record (`wingman`, `wkestrel`, …): every one carries
+    /// `mode: wingman`, the follower of the player.
+    Follower,
+    /// The row's `base` record (`devastator`, `kestrel`, …): a record with no
+    /// `mode`, the same one an enemy group of that airframe uses.
+    Base,
+}
+
+/// The wingman template one mission type seats (`0x45a4fb`..`0x45a69b`: the
+/// case for each type moves the `w` name (`edi`) or the `base` name (`esi`)
+/// into the lookup register `ebx`).
+///
+/// `None` for a name outside [`IA_MISSION_TYPE_VOCABULARY`].
+#[must_use]
+pub fn ia_wingman_template(mission_type: &str) -> Option<IaWingmanTemplate> {
+    match mission_type {
+        "dogfight_ace" | "zeppelin_run" | "stunt_flying" => Some(IaWingmanTemplate::Follower),
+        "dogfight_squadron" | "ground_target" => Some(IaWingmanTemplate::Base),
+        _ => None,
+    }
+}
+
+/// Whether the spawn routine seats the descriptor's named ace for one mission
+/// type: only type 0, `dogfight_ace` (`cmp [0x718cd8], 0; jne 0x45ad18` at
+/// `0x45aa24`..`0x45aa2b` skips the ace block for every other type).
+///
+/// `None` for a name outside [`IA_MISSION_TYPE_VOCABULARY`].
+#[must_use]
+pub fn ia_spawns_named_ace(mission_type: &str) -> Option<bool> {
+    IA_MISSION_TYPE_VOCABULARY
+        .contains(&mission_type)
+        .then_some(mission_type == "dogfight_ace")
+}
 
 /// The claim the per-mission-type victory-rule measurement is recorded under
 /// (the Instant Action end check `0x45b9d0` of the owner-supplied decrypted
@@ -4479,6 +4541,24 @@ impl IaWingmen {
     }
 }
 
+/// The wingmen's aircraft a scenario uses, and where that came from.
+///
+/// The reader (`0x45943f`) stores the airframe-table row of the `wingman_plane`
+/// name, and `5` for a name the table lacks (`0x459468`); an absent key leaves
+/// the initialiser's `5` (`0x459012`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IaWingmanPlane {
+    /// The descriptor's `wingman_plane`.
+    Declared(String),
+    /// The descriptor declares no `wingman_plane`; the record keeps the
+    /// initialiser's airframe-table row
+    /// ([`IA_ENGINE_DEFAULT_WINGMAN_PLANE_INDEX`]).
+    EngineDefault {
+        /// The airframe-table row index.
+        index: usize,
+    },
+}
+
 /// What one `ZBD/<group>/IA<n>/zrdr.zbd` `ia.zrd` declares.
 #[derive(Clone, Debug, PartialEq)]
 pub struct IaDirectory {
@@ -4492,6 +4572,7 @@ pub struct IaDirectory {
     disallowed: Vec<String>,
     default_mission_type: Option<String>,
     aircraft: crate::stunts::ScenarioNonPlayerAircraft,
+    wingman_plane: Option<String>,
     zone_bindings: Vec<(String, String)>,
 }
 
@@ -4549,6 +4630,18 @@ impl IaDirectory {
     #[must_use]
     pub const fn aircraft(&self) -> &crate::stunts::ScenarioNonPlayerAircraft {
         &self.aircraft
+    }
+
+    /// The wingmen's plane: the descriptor's `wingman_plane`, else the
+    /// executable's default.
+    #[must_use]
+    pub fn wingman_plane(&self) -> IaWingmanPlane {
+        match &self.wingman_plane {
+            Some(plane) => IaWingmanPlane::Declared(plane.clone()),
+            None => IaWingmanPlane::EngineDefault {
+                index: IA_ENGINE_DEFAULT_WINGMAN_PLANE_INDEX,
+            },
+        }
     }
 
     /// The `dzones` bindings as `(world node, scenario label)`.
@@ -4976,6 +5069,13 @@ pub fn read_ia_descriptor(
         disallowed,
         default_mission_type: scenario_mission_type(root).map(str::to_owned),
         aircraft: crate::stunts::scenario_non_player_aircraft(root),
+        wingman_plane: field(IA_WINGMAN_PLANE_KEY).and_then(|value| match value {
+            ZrdValue::Text(text) => Some(text.clone()),
+            other => match other.as_list() {
+                Some([ZrdValue::Text(text)]) => Some(text.clone()),
+                _ => None,
+            },
+        }),
         zone_bindings: scenario_zone_bindings(root)
             .into_iter()
             .map(|(node, label)| (node.to_owned(), label.to_owned()))
