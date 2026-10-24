@@ -233,6 +233,13 @@ pub struct LandingNodeEntry {
     /// The node's world position minus its anchor's, from the container —
     /// the measured part of [`LANDING_NODE_POSITION_CLAIM`].
     pub offset: [f64; 3],
+    /// The anchor's own world position in the container, which is the
+    /// composition's frame. The observation writer uses it only when the
+    /// anchor is **not** a bound world actor (a static container node such as
+    /// `treasure_approach`): then nothing moves it and the container's
+    /// stated position is its position. An actor anchor ignores it, since the
+    /// container's zeppelin sits at the origin, not where the zeppelin flies.
+    pub anchor_rest: [f64; 3],
 }
 
 /// The landing table one composition carries: the rows it can run, the node
@@ -729,6 +736,7 @@ pub fn landing_node_entries(
                     node: row.node.clone(),
                     anchor: anchor.name().to_owned(),
                     offset: [node_x - anchor_x, node_y - anchor_y, node_z - anchor_z],
+                    anchor_rest: [anchor_x, anchor_y, anchor_z],
                 });
             }
             many => {

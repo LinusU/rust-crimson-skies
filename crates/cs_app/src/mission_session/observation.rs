@@ -278,6 +278,9 @@ pub fn mission_world_observation(world: &mut World) {
             })
             .collect()
     };
+    // Every bound actor's subject node name, in play or not, so step 4 can
+    // tell a static container anchor from an actor whose row is absent.
+    let mut bound_names: BTreeSet<String> = BTreeSet::new();
     let session = world
         .get_resource::<MissionHost>()
         .and_then(MissionHost::world_actors);
@@ -288,6 +291,7 @@ pub fn mission_world_observation(world: &mut World) {
         let Some(name) = subject_node_name(&subject) else {
             continue;
         };
+        bound_names.insert(name.to_owned());
         match world_actor_in_play(session, world_actor, damage, damage_actor) {
             Some(true) => {
                 // An in-play actor anchors the landing nodes that hang from
@@ -495,7 +499,14 @@ pub fn mission_world_observation(world: &mut World) {
     //    from the table's `nodes` and are simply not looked up here.
     if let Some(table) = world.get_resource::<MissionLandings>() {
         for entry in &table.nodes {
-            if let Some(anchor) = anchors.get(&entry.anchor) {
+            // A bound actor anchors on its observed row only. An anchor that
+            // is no bound actor and not the player is a static container
+            // node: the container's own position for it is its position.
+            let anchor = anchors.get(&entry.anchor).or_else(|| {
+                (entry.anchor != PLAYER_MEMBER && !bound_names.contains(&entry.anchor))
+                    .then_some(&entry.anchor_rest)
+            });
+            if let Some(anchor) = anchor {
                 let [ax, ay, az] = *anchor;
                 let [ox, oy, oz] = entry.offset;
                 observation = observation.member(

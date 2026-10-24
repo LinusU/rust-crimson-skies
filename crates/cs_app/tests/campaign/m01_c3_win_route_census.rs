@@ -343,8 +343,8 @@ fn accept_m01_c3_win_route_census_pins_the_block_table_and_the_win_chain() {
 /// **What the composed windowed mission offers the route.**
 ///
 /// The landing table of `zbd/c3` carries the six `do_approach` rows (the
-/// shipwreck drop-off) and the two `pz_*` rows (the docking); the composed
-/// observation reports a Medusa group, and an idle run changes none of the
+/// shipwreck drop-off) and the two `pz_*` rows (the docking), all positioned
+/// by the composition; the composed observation reports a Medusa group, and an idle run changes none of the
 /// route's animation states.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
@@ -375,16 +375,15 @@ fn accept_m01_c3_win_route_census_the_composed_mission_carries_the_route_inputs(
     // The Medusa group (OBJECTIVE13's DEDG group 1): the three Kestrels.
     assert_eq!(observation.groups().get(&1), Some(&3));
 
-    // The docking nodes compose a position; the six drop-off nodes do not:
-    // their anchor `treasure_approach` is not a bound world actor, so the
-    // landing consumer finds no node and the shipwreck landing cannot run.
-    // When a later task composes them this assertion is the one to flip.
+    // The docking nodes and the six drop-off nodes compose a position. The
+    // drop-off nodes hang from `treasure_approach`, a static container node
+    // (no bound actor), so the container's own position is theirs.
     let positioned = |node: &str| observation.members().contains_key(&member_chain([node]));
     assert!(positioned("pz_manual_land") && positioned("pz_auto_land"));
     for n in 1..=6 {
         assert!(
-            !positioned(&format!("do_approach{n}")),
-            "do_approach{n} gained a position"
+            positioned(&format!("do_approach{n}")),
+            "do_approach{n} has no position"
         );
     }
 
@@ -395,6 +394,64 @@ fn accept_m01_c3_win_route_census_the_composed_mission_carries_the_route_inputs(
             None,
             "{name} moved unaided"
         );
+    }
+    teardown(&mut app);
+}
+
+/// **The drop-off nodes sit where the container states `treasure_approach`.**
+///
+/// `do_approach1..6` anchor on `treasure_approach`, a static node of the
+/// world container that no bound actor spells. The composition reports each
+/// node at the container's own position for it (anchor plus offset), while a
+/// zeppelin-anchored docking node still waits for its live actor row.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_m01_do_approach_position_nodes_sit_at_the_static_anchor() {
+    let stage = retail_stage();
+    let landings = read_landings(&game_dir(), &stage.mount.directory).expect("C3's landings read");
+    let mut app = build_headless(&stage).expect("M01 composes");
+    pump(&mut app, 120, None);
+    let host = app.world().resource::<MissionHost>();
+    let observation = host.world_facts().observation();
+    for n in 1..=6 {
+        let name = format!("do_approach{n}");
+        let entry = landings
+            .nodes
+            .iter()
+            .find(|entry| entry.node == name)
+            .unwrap_or_else(|| panic!("{name} has a node entry"));
+        assert_eq!(entry.anchor, "treasure_approach", "{name}");
+        let member = observation
+            .members()
+            .get(&member_chain([name.as_str()]))
+            .unwrap_or_else(|| panic!("{name} has no position"));
+        for axis in 0..3 {
+            let want = entry.anchor_rest[axis] + entry.offset[axis];
+            assert!(
+                (member.position[axis] - want).abs() < 1e-6,
+                "{name} axis {axis}: {} vs {want}",
+                member.position[axis]
+            );
+        }
+        assert!(member.in_play, "{name}");
+    }
+    // The static fallback never applies to an actor anchor: the docking
+    // nodes sit at the live piratezep, not at the container's origin.
+    let pz = observation
+        .members()
+        .get(&member_chain(["pz_manual_land"]))
+        .expect("pz_manual_land is positioned");
+    let zep = observation
+        .members()
+        .get(&member_chain(["piratezep"]))
+        .expect("piratezep is observed");
+    let entry = landings
+        .nodes
+        .iter()
+        .find(|entry| entry.node == "pz_manual_land")
+        .expect("pz_manual_land has a node entry");
+    for axis in 0..3 {
+        assert!((pz.position[axis] - zep.position[axis] - entry.offset[axis]).abs() < 1e-3);
     }
     teardown(&mut app);
 }

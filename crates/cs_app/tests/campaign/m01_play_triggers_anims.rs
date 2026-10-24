@@ -133,6 +133,7 @@ fn synthetic_parent_landings() -> MissionLandings {
             node: SYNTHETIC_NODE.to_owned(),
             anchor: PLAYER_MEMBER.to_owned(),
             offset: [0.0, 0.0, 0.0],
+            anchor_rest: [0.0, 0.0, 0.0],
         }],
         refusals: Vec::new(),
     }
