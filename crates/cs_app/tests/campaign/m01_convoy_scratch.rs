@@ -267,6 +267,46 @@ fn scratch_dump_m01_sweep_overlap() {
     }
 }
 
+/// Lists every `.zrd` member of the three reader archives the mission scope
+/// searches, and prints each member's OBJECTIVE-block count — hunting where
+/// M01's convoy INACTIVE ladders live.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn scratch_dump_member_census() {
+    let root = game_dir();
+    let found = cs_assets::install::discover(&root).expect("the installation discovers");
+    for key in [
+        "zbd/c3/m01/zrdr.zbd",
+        "zbd/c3/zrdr.zbd",
+        "zbd/zrdr.zbd",
+    ] {
+        let record = found
+            .manifest
+            .files
+            .iter()
+            .find(|record| record.relative_spelling.logical_key() == key)
+            .unwrap_or_else(|| panic!("the installation has {key}"));
+        let spelling = record.relative_spelling.as_str().to_owned();
+        let bytes = std::fs::read(found.manifest.host_root.join(&spelling)).expect("readable");
+        let path = cs_types::install::RelativePath::new(&spelling.to_lowercase()).expect("a path");
+        let discovery = cs_formats::script_raw::discover_container(key, &path, &bytes);
+        println!("=== {key} ({} programs) ===", discovery.programs().len());
+        for program in discovery.programs() {
+            let name = program
+                .locator()
+                .member()
+                .map(str::to_owned)
+                .unwrap_or_else(|| "<unnamed>".to_owned());
+            let count = program
+                .bytes()
+                .windows(b"OBJECTIVE".len())
+                .filter(|w| *w == b"OBJECTIVE")
+                .count();
+            println!("  {name:32} {count:4} OBJECTIVE spellings");
+        }
+    }
+}
+
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn scratch_dump_m01_operands() {
