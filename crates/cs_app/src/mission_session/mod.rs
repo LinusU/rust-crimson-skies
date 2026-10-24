@@ -131,6 +131,8 @@ mod letterbox;
 mod lifecycles;
 mod look_view;
 mod observation;
+mod ordinance_screen;
+mod ordinance_stage;
 mod original_keys;
 pub(crate) mod parts;
 mod pause_map;
@@ -322,6 +324,7 @@ pub use look_view::{
 pub use observation::{
     PLAYER_MEMBER, mission_world_observation, subject_node_name, world_actor_in_play,
 };
+pub use ordinance_stage::{ACCEPT_ROW, CANCEL_ROW, OrdinanceSetup, OrdinanceStage, StageButton};
 pub use original_keys::{
     ControlsHelpOpen, ControlsHelpPanel, HELP_COMMAND_ID, MissionControls,
     MissionControlsHelpPlugin, controls_screen_text, held_modifiers, mint_original_chord_keys,

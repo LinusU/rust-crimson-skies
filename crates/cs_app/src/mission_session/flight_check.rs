@@ -64,7 +64,7 @@ use bevy::ecs::schedule::IntoScheduleConfigs;
 use bevy::prelude::{
     App, BackgroundColor, ButtonInput, Color, Commands, Component, Entity, GlobalZIndex, Image,
     ImageNode, KeyCode, Last, MouseButton, Node, Plugin, PositionType, PreUpdate, Query, Res,
-    ResMut, Resource, Text, TextColor, TextFont, Update, Val, Window, With, default,
+    ResMut, Resource, Text, TextColor, TextFont, Update, Val, Window, With, Without, default,
 };
 use bevy::text::FontSize;
 use bevy::time::{Time, Virtual};
@@ -74,6 +74,8 @@ use cs_types::content::ContentId;
 
 use super::MissionStage;
 use super::briefing_screen::{BriefingSource, read_briefing};
+use super::ordinance_stage::{OrdinanceSetup, OrdinanceStage, logical_point, side_of};
+use crate::ui::front_end::ordinance_layout::{OrdinancePress, OrdinanceSide};
 use crate::ui::front_end::{
     Action, ArtExtents, Artwork, BUTTON_STATE_FRAMES, BriefingPlayback, BriefingScene, Entry,
     FlightCheckButton, FlightCheckSlot, FlightCheckView, FrontEnd, FrontEndScreens,
@@ -96,9 +98,11 @@ pub const RETURN_TO_BRIEFING_UNAVAILABLE: &str = "Return to Briefing is unavaila
 pub const RETURN_TO_CABIN_UNAVAILABLE: &str = "Return to Cabin is unavailable: the cabin hub \
      screen is not built yet (#1749), so there is nothing to return to";
 
-/// Why the Change Ammo buttons do nothing yet.
-pub const CHANGE_AMMO_UNAVAILABLE: &str = "Change Ammo is out of scope here: its screen \
-     (`OrdinanceLayout`) is not built, and the original's ammunition lists are unread (F45-C.5)";
+/// Why the Change Ammo buttons do nothing when the phase holds no
+/// `OrdinanceLayout` screen: a phase opened without the installation's layout
+/// (a developer composition) has no rows to draw it from.
+pub const CHANGE_AMMO_UNAVAILABLE: &str = "Change Ammo is unavailable: this run opened the \
+     Flight Check without the installation's `OrdinanceLayout` screen";
 
 /// Why the Change Plane buttons do nothing yet.
 pub const CHANGE_PLANE_UNAVAILABLE: &str = "Change Plane is out of scope here: its screen \
@@ -122,7 +126,7 @@ pub enum ButtonRole {
     FlyMission,
     /// Return to Briefing: unavailable until the briefing exists.
     ReturnToBriefing,
-    /// Change Ammo for one plane: its screen is out of scope.
+    /// Change Ammo for one plane: opens the `OrdinanceLayout` screen.
     ChangeAmmo(FlightCheckSlot),
     /// Change Plane for one plane: its screen is out of scope.
     ChangePlane(FlightCheckSlot),
@@ -690,6 +694,16 @@ pub enum PhaseResponse {
     Replayed,
     /// Return to Cabin went through the machine; the cabin hub is next.
     CabinOpened,
+    /// A Change Ammo button opened the `OrdinanceLayout` screen for a side.
+    OrdinanceOpened(OrdinanceSide),
+    /// A press on the `OrdinanceLayout` screen changed it (a list opened,
+    /// closed or took a choice) without leaving it.
+    OrdinanceEdited(OrdinancePress),
+    /// The `OrdinanceLayout` screen was left for the Flight Check.
+    OrdinanceClosed {
+        /// Whether the draft was committed (accept) or dropped.
+        committed: bool,
+    },
     /// The button is drawn but does nothing yet; the reason is named.
     Unavailable {
         /// The hotspot.
@@ -712,6 +726,9 @@ pub enum PreMissionStage {
     Briefing,
     /// The Flight Check (#1671).
     FlightCheck,
+    /// The `OrdinanceLayout` screen, opened by a Change Ammo button over the
+    /// Flight Check (#2070).
+    Ordinance,
     /// The cabin hub: reached by Return to Cabin once the hub exists.
     Cabin,
     /// Fly Mission went through: the mission runs.
@@ -771,6 +788,11 @@ pub struct FlightCheckPhase {
     loadout: Loadout,
     /// The briefing the phase opens on, when it has one.
     briefing: Option<BriefingStage>,
+    /// What the `OrdinanceLayout` screen needs, when the installation's
+    /// layout was read.
+    ordinance: Option<OrdinanceSetup>,
+    /// The `OrdinanceLayout` screen while a Change Ammo button has it open.
+    ordinance_stage: Option<OrdinanceStage>,
 }
 
 impl FlightCheckPhase {
@@ -794,6 +816,8 @@ impl FlightCheckPhase {
             notice: None,
             loadout,
             briefing: None,
+            ordinance: None,
+            ordinance_stage: None,
         })
     }
 
@@ -823,7 +847,39 @@ impl FlightCheckPhase {
                 cabin_hub: false,
                 notice: None,
             }),
+            ordinance: None,
+            ordinance_stage: None,
         })
+    }
+
+    /// Gives the phase the `OrdinanceLayout` screen its Change Ammo buttons
+    /// open (#2070).
+    #[must_use]
+    pub fn with_ordinance(mut self, setup: OrdinanceSetup) -> Self {
+        self.ordinance = Some(setup);
+        self
+    }
+
+    /// The `OrdinanceLayout` screen's setup, when the phase has one.
+    #[must_use]
+    pub const fn ordinance(&self) -> Option<&OrdinanceSetup> {
+        self.ordinance.as_ref()
+    }
+
+    /// The `OrdinanceLayout` screen while it is showing.
+    #[must_use]
+    pub const fn ordinance_stage(&self) -> Option<&OrdinanceStage> {
+        self.ordinance_stage.as_ref()
+    }
+
+    /// The record the accept button committed for a side (the fresh
+    /// campaign's roster record until then); `None` without the screen.
+    #[must_use]
+    pub fn ordinance_record(
+        &self,
+        side: OrdinanceSide,
+    ) -> Option<&crate::ui::front_end::ordinance_feed::PlaneRecord> {
+        self.ordinance.as_ref().map(|setup| setup.record(side))
     }
 
     /// Declares that a cabin hub screen exists, so Return to Cabin delivers
@@ -840,6 +896,9 @@ impl FlightCheckPhase {
     /// Which pre-mission screen is showing.
     #[must_use]
     pub fn stage(&self) -> PreMissionStage {
+        if self.ordinance_stage.is_some() {
+            return PreMissionStage::Ordinance;
+        }
         match self.front_end.screen() {
             Screen::Briefing | Screen::Recon => PreMissionStage::Briefing,
             Screen::FlightCheck => PreMissionStage::FlightCheck,
@@ -870,7 +929,9 @@ impl FlightCheckPhase {
         stage: &MissionStage,
     ) -> Result<(Self, FlightCheckArtwork), FlightCheckPhaseError> {
         let parts = RetailParts::read(install_root, mission, stage)?;
-        Ok((Self::open(parts.scene, parts.loadout)?, parts.artwork))
+        let mut phase = Self::open(parts.scene, parts.loadout)?;
+        phase.ordinance = parts.ordinance;
+        Ok((phase, parts.artwork))
     }
 
     /// Reads and opens the phase for one retail mission on its briefing
@@ -898,7 +959,8 @@ impl FlightCheckPhase {
             .collect();
         let source = read_briefing(install_root, mission, &parts.screens, &strings, objectives)
             .map_err(|error| FlightCheckPhaseError::Briefing(error.to_string()))?;
-        let phase = Self::open_with_briefing(parts.scene, source.scene.clone(), parts.loadout)?;
+        let mut phase = Self::open_with_briefing(parts.scene, source.scene.clone(), parts.loadout)?;
+        phase.ordinance = parts.ordinance;
         Ok((phase, parts.artwork, source))
     }
 
@@ -933,6 +995,8 @@ impl FlightCheckPhase {
         match self.stage() {
             PreMissionStage::Briefing => self.press_briefing_button(DialogButtonKind::FlightCheck),
             PreMissionStage::FlightCheck => self.fly_mission(),
+            // Enter has no stated meaning on the `OrdinanceLayout` screen.
+            PreMissionStage::Ordinance => PhaseResponse::NoButton,
             _ => PhaseResponse::Over,
         }
     }
@@ -945,6 +1009,7 @@ impl FlightCheckPhase {
                 self.press_briefing_button(DialogButtonKind::ReturnToCabin)
             }
             PreMissionStage::FlightCheck => self.press_hotspot("FC_B_RETURNBRIEF"),
+            PreMissionStage::Ordinance => self.ordinance_back(),
             _ => PhaseResponse::Over,
         }
     }
@@ -965,6 +1030,10 @@ impl FlightCheckPhase {
         match &button.role {
             ButtonRole::FlyMission => self.fly_mission(),
             ButtonRole::ReturnToBriefing if self.briefing.is_some() => self.return_to_briefing(),
+            ButtonRole::ChangeAmmo(slot) if self.ordinance.is_some() => {
+                let side = side_of(*slot);
+                self.open_ordinance(side)
+            }
             role => {
                 let hotspot = button.hotspot.clone();
                 let reason = role.unavailable().unwrap_or(RETURN_TO_BRIEFING_UNAVAILABLE);
@@ -972,6 +1041,85 @@ impl FlightCheckPhase {
                 PhaseResponse::Unavailable { hotspot, reason }
             }
         }
+    }
+
+    /// Opens the `OrdinanceLayout` screen for a side.
+    fn open_ordinance(&mut self, side: OrdinanceSide) -> PhaseResponse {
+        let Some(setup) = &self.ordinance else {
+            return PhaseResponse::NoButton;
+        };
+        match setup.open(side) {
+            Ok(stage) => {
+                self.ordinance_stage = Some(stage);
+                self.notice = None;
+                PhaseResponse::OrdinanceOpened(side)
+            }
+            Err(reason) => {
+                self.notice = Some(reason.clone());
+                PhaseResponse::Refused(reason)
+            }
+        }
+    }
+
+    /// Leaves the `OrdinanceLayout` screen for the Flight Check.
+    fn close_ordinance(&mut self, committed: bool) -> PhaseResponse {
+        self.ordinance_stage = None;
+        self.notice = None;
+        PhaseResponse::OrdinanceClosed { committed }
+    }
+
+    /// Escape on the `OrdinanceLayout` screen: an open list closes first,
+    /// then the screen is left without committing the draft.
+    fn ordinance_back(&mut self) -> PhaseResponse {
+        let Some(stage) = &mut self.ordinance_stage else {
+            return PhaseResponse::Over;
+        };
+        if stage.screen_mut().close_list() {
+            stage.touch();
+            return PhaseResponse::OrdinanceEdited(OrdinancePress::Toggled);
+        }
+        self.close_ordinance(false)
+    }
+
+    /// The pointer on the `OrdinanceLayout` screen (`None` off the window):
+    /// the row under it is rolled over while a list is open.
+    pub fn ordinance_hover(&mut self, surface: (u32, u32), at: Option<(u32, u32)>) {
+        let Some(stage) = &mut self.ordinance_stage else {
+            return;
+        };
+        let point = at.and_then(|(x, y)| logical_point(surface, x, y));
+        stage.screen_mut().hover_at(point);
+        stage.touch();
+    }
+
+    /// A click on the `OrdinanceLayout` screen.
+    fn ordinance_click(&mut self, surface: (u32, u32), x: u32, y: u32) -> PhaseResponse {
+        let (Some(setup), Some(stage)) = (&mut self.ordinance, &mut self.ordinance_stage) else {
+            return PhaseResponse::Over;
+        };
+        let Some((lx, ly)) = logical_point(surface, x, y) else {
+            return PhaseResponse::NoButton;
+        };
+        let button = setup
+            .buttons()
+            .iter()
+            .find(|button| lx >= 0 && ly >= 0 && button.rect.contains(lx as u32, ly as u32))
+            .map(|button| button.id);
+        let list_open = stage.screen().open_list().is_some();
+        let press = match button {
+            Some(id) if !list_open => stage.screen().press_button(id),
+            _ => stage.screen_mut().press_at(lx, ly),
+        };
+        stage.touch();
+        if press == OrdinancePress::Nothing {
+            return PhaseResponse::NoButton;
+        }
+        let applied = setup.apply(stage, &press);
+        stage.touch();
+        if applied.leaves {
+            return self.close_ordinance(applied.committed);
+        }
+        PhaseResponse::OrdinanceEdited(press)
     }
 
     /// Presses one of the briefing's three buttons.
@@ -1122,6 +1270,7 @@ impl FlightCheckPhase {
                     None => PhaseResponse::NoButton,
                 }
             }
+            PreMissionStage::Ordinance => self.ordinance_click(surface, x, y),
             _ => PhaseResponse::Over,
         }
     }
@@ -1352,6 +1501,7 @@ struct RetailParts {
     scene: FlightCheckScene,
     artwork: FlightCheckArtwork,
     loadout: Loadout,
+    ordinance: Option<OrdinanceSetup>,
 }
 
 impl RetailParts {
@@ -1368,7 +1518,12 @@ impl RetailParts {
         let ui = FlightCheckStrings::read(install_root, &screens)?;
         let strings = |id: &str| ui.resolve(id).or_else(|| stage_string(stage, id));
         let scene = FlightCheckScene::from_retail(&screens, &view, &strings)?;
-        let artwork = FlightCheckArtwork::read(&screens, &scene)?;
+        let mut artwork = FlightCheckArtwork::read(&screens, &scene)?;
+        let ordinance = OrdinanceSetup::from_retail(&screens, &ui)?;
+        artwork.merge(FlightCheckArtwork::read_names(
+            &screens,
+            ordinance.art_names(),
+        )?);
         let airframe = designed_player_airframe(install_root, mission)?;
         let loadout = Loadout {
             player: Some(airframe),
@@ -1381,6 +1536,7 @@ impl RetailParts {
             scene,
             artwork,
             loadout,
+            ordinance: Some(ordinance),
         })
     }
 }
@@ -1490,6 +1646,11 @@ impl FlightCheckArtwork {
         Ok(Self { images })
     }
 
+    /// Adds another set of art files to this one.
+    pub fn merge(&mut self, other: Self) {
+        self.images.extend(other.images);
+    }
+
     /// One art file.
     #[must_use]
     pub fn get(&self, name: &str) -> Option<&Artwork> {
@@ -1562,8 +1723,11 @@ impl Plugin for FlightCheckScreenPlugin {
             Update,
             (
                 sync_flight_check_screen,
+                super::ordinance_screen::sync_ordinance_screen,
                 phase_input,
+                super::ordinance_screen::ordinance_hover,
                 fit_screen,
+                super::ordinance_screen::fit_ordinance_screen,
                 show_notice,
             )
                 .chain(),
@@ -1591,11 +1755,11 @@ pub(super) struct ScreenOverlay {
 
 /// A part's region in the logical screen.
 #[derive(Component)]
-struct Logical(Rect);
+pub(super) struct Logical(pub(super) Rect);
 
 /// A text part's designed height in logical pixels.
 #[derive(Component)]
-struct LogicalFont(f32);
+pub(super) struct LogicalFont(pub(super) f32);
 
 /// The notice line.
 #[derive(Component)]
@@ -1762,13 +1926,17 @@ fn spawn_screen(
 }
 
 /// A placed part: its region, its node and, for text, its designed size.
-type PlacedPart<'a> = (
+pub(super) type PlacedPart<'a> = (
     &'a Logical,
     &'a mut Node,
     Option<(&'a LogicalFont, &'a mut TextFont)>,
 );
 
-fn fit_screen(phase: Res<FlightCheckPhase>, windows: Query<&Window>, mut parts: Query<PlacedPart>) {
+fn fit_screen(
+    phase: Res<FlightCheckPhase>,
+    windows: Query<&Window>,
+    mut parts: Query<PlacedPart, Without<super::ordinance_screen::OrdPart>>,
+) {
     let Ok(window) = windows.single() else { return };
     let surface = (window.width() as u32, window.height() as u32);
     let Some(fit) = AspectFit::new(phase.scene().size, surface) else {
@@ -1824,6 +1992,15 @@ fn phase_input(
         }
         Some(PhaseResponse::CabinOpened) => {
             println!("mission briefing: Return to Cabin — the cabin hub is next");
+        }
+        Some(PhaseResponse::OrdinanceOpened(side)) => {
+            println!("mission flight check: Change Ammo — the OrdinanceLayout screen ({side})");
+        }
+        Some(PhaseResponse::OrdinanceClosed { committed }) => {
+            println!(
+                "mission flight check: OrdinanceLayout left — draft {}",
+                if committed { "committed" } else { "dropped" }
+            );
         }
         Some(PhaseResponse::Unavailable { reason, .. }) => {
             println!("mission pre-flight: {reason}");
