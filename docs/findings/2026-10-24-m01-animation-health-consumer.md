@@ -37,8 +37,8 @@ definition (no `ACTIVATION`, no `ARMOR`, `HEALTH 15`) is exactly that.
    collide handler. Bit 22 of `+0x9c` (set at the start of every definition, `0x51df1e`)
    applies it to the node's children too.
 2. **Dispatch**: the hit dispatcher `0x5abcf0` (callers `0x44323d`, `0x48d55b`, `0x5ac4cd`,
-   `0x5ac80f`, `0x5acc24`, `0x5ad01b`, `0x5b13d8`, `0x5b14bd`: gun hits, rocket impacts and
-   bursts) calls `[handler+4]([handler], weapon, record, damage_pair)` (`0x5abe62`).
+   `0x5ac80f`, `0x5acc24`, `0x5ad01b`, `0x5b13d8`, `0x5b14bd`: the impact and
+   detonation paths) calls `[handler+4]([handler], weapon, record, damage_pair)` (`0x5abe62`).
 3. **Filter**: a weapon whose flag word has `0x400` (set by the weapon key `FREEZE`,
    `0x5ae321`) returns at once (`0x4e7224`).
 4. **Amount**: `damage_pair[1] - ARMOR` (`0x4e724a`); `damage_pair[1]` is the health channel
@@ -52,8 +52,8 @@ definition (no `ACTIVATION`, no `ARMOR`, `HEALTH 15`) is exactly that.
    `DAMAGE_SEQUENCE` object (`+0xd4`) is started by `0x4e71e0` on every counted hit; the
    hydrobombboom definition has none.
 
-So the answer to #2088's questions: **every weapon hit counts** (guns, rockets, bursts: the
-health channel), **the threshold is the record's `HEALTH`** (15, in `HEALTH_DAMAGE` units
+So the answer to #2088's questions: **every hit that reaches the dispatcher counts** (its health
+channel; which weapon kinds reach it is not traced per caller), **the threshold is the record's `HEALTH`** (15, in `HEALTH_DAMAGE` units
 after `ARMOR`), and the start is **on the hit that takes the pool to zero or below**, in the
 same dispatch.
 
