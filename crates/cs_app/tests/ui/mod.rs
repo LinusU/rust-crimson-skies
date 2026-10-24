@@ -129,6 +129,7 @@ mod parity5_main_menu;
 mod parity5_start_flow_02;
 mod parity5_start_flow_03;
 mod parity5_start_flow_04;
+mod parity5_start_flow_pilot_state;
 mod pause_map;
 mod pause_map_preferences;
 mod pause_map_presenter;
