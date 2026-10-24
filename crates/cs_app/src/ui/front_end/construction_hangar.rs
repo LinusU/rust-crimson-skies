@@ -71,9 +71,12 @@
 
 use std::fmt;
 
+use super::construction_hub::TabCaption;
 use super::construction_slots::{SlotError, SlotText, text_row};
 use super::original::{OriginalLayout, Section};
 use super::previous_missions::split_tag;
+use super::shell::ShellRect;
+use super::start_flow::NotImplemented;
 use super::widgets::{DropdownRow, WidgetError, dropdown_rows};
 
 /// The layout section of the hangar.
@@ -87,6 +90,22 @@ pub use super::construction_hub::SELL_MIN_PLANES;
 pub const YES_ANSWER: u32 = 3;
 /// A record whose first word is this is not sold (string 704 explains).
 pub const KIND_NOT_SOLD: u32 = 2;
+
+/// What Export stands on: the export itself (`A 22`) is unread, so the box
+/// that announces it is the marked notice (task #2063).
+pub const EXPORT_NOT_BUILT: NotImplemented = NotImplemented {
+    section: HANGAR_SECTION,
+    button: "HA_B_EXPORTP",
+    what: "exporting a plane (A 22 unread)",
+};
+
+/// What Sell with too few saved planes stands on: the box text (`NB 701`) is
+/// unread (task #2063).
+pub const TOO_FEW_NOT_BUILT: NotImplemented = NotImplemented {
+    section: HANGAR_SECTION,
+    button: "HA_B_SELLP",
+    what: "the too-few-planes box (NB 701 unread)",
+};
 
 /// `Done`, `Sell` and `Export` buttons.
 pub const DONE_BUTTON: &str = "HA_B_DONE";
@@ -201,12 +220,14 @@ pub struct HangarPage {
     plane_line: SlotText,
     value_line: SlotText,
     list: DropdownRow,
+    captions: Vec<TabCaption>,
     strings: Strings,
     planes: Vec<Option<SavedPlane>>,
     constructing: bool,
     selected: usize,
     cash: u64,
     asking: Option<String>,
+    list_open: bool,
     dirty: bool,
 }
 
@@ -267,12 +288,14 @@ impl HangarPage {
             plane_line: text(PLANE_ROW, false)?,
             value_line: text(VALUE_ROW, false)?,
             list,
+            captions: read_captions(section, name),
             strings,
             planes: vec![None; SAVED_SLOTS],
             constructing: false,
             selected: 0,
             cash: 0,
             asking: None,
+            list_open: false,
             dirty: true,
         })
     }
@@ -295,7 +318,14 @@ impl HangarPage {
         self.selected = selected.min(WORKING_SLOT);
         self.cash = cash;
         self.asking = None;
+        self.list_open = false;
         self.dirty = true;
+    }
+
+    /// The Sell and Export buttons' captions with their four colours.
+    #[must_use]
+    pub fn captions(&self) -> &[TabCaption] {
+        &self.captions
     }
 
     /// The drop-down's closed box (25 rows displayed).
@@ -332,6 +362,10 @@ impl HangarPage {
     #[must_use]
     pub fn asking(&self) -> Option<&str> {
         self.asking.as_deref()
+    }
+
+    pub(super) fn mark_dirty(&mut self) {
+        self.dirty = true;
     }
 
     /// Whether the model changed since the last call; clears the flag.
@@ -437,6 +471,73 @@ impl HangarPage {
             .as_deref()
     }
 
+    /// How many rows the open list shows: one per saved plane, as the walk of
+    /// `0x4101d0` counts them.
+    #[must_use]
+    pub fn row_count(&self) -> usize {
+        (self.saved_count() as usize).min(SAVED_SLOTS)
+    }
+
+    /// Where row `index` of the open list is: the rows hang under the closed
+    /// box, one box height apart (as the hub's drop-downs do; the control's
+    /// own geometry is unread).
+    #[must_use]
+    pub fn item_rect(&self, index: usize) -> ShellRect {
+        let closed = self.list.rect;
+        ShellRect {
+            x: closed.x,
+            y: closed.y + ((index as u32 + 1) * closed.height) as i32,
+            width: closed.width,
+            height: closed.height,
+        }
+    }
+
+    /// The plane row `index` stands for, when the record holds one.
+    #[must_use]
+    pub fn plane_at(&self, index: usize) -> Option<&SavedPlane> {
+        self.planes
+            .get(self.slot_for_index(index))
+            .and_then(Option::as_ref)
+    }
+
+    /// Whether the list is open.
+    #[must_use]
+    pub const fn list_open(&self) -> bool {
+        self.list_open
+    }
+
+    /// Closes the open list; `true` if one was open.
+    pub fn close_list(&mut self) -> bool {
+        let was = std::mem::take(&mut self.list_open);
+        self.dirty |= was;
+        was
+    }
+
+    /// A press at a logical point: opens or closes the list, or selects the
+    /// row under it (`E 2013(-1, row)`). `true` if the page took the press.
+    /// While a box is up the page takes nothing.
+    pub fn press_at(&mut self, x: i32, y: i32) -> bool {
+        if self.asking.is_some() {
+            return false;
+        }
+        if self.list_open {
+            self.list_open = false;
+            self.dirty = true;
+            if let Some(row) = (0..self.row_count()).find(|row| self.item_rect(*row).contains(x, y))
+            {
+                self.select_index(row);
+                return true;
+            }
+            return self.list.rect.contains(x, y);
+        }
+        if self.list.rect.contains(x, y) {
+            self.list_open = true;
+            self.dirty = true;
+            return true;
+        }
+        false
+    }
+
     fn airframe_short(&self, airframe: u32) -> Option<&str> {
         self.strings
             .airframe_short
@@ -515,6 +616,41 @@ impl HangarPage {
             value: plane.value,
         }
     }
+}
+
+/// The Sell and Export buttons' captions (`IDS_PS_B_SELL`, `IDS_PS_B_EXPORT`)
+/// with the four colours of a `B` row's columns 14 to 17, as the hub's tabs
+/// read them.
+fn read_captions(section: &Section, name: &dyn Fn(&str) -> Option<String>) -> Vec<TabCaption> {
+    [SELL_BUTTON, EXPORT_BUTTON]
+        .into_iter()
+        .filter_map(|id| {
+            let button = section
+                .buttons
+                .iter()
+                .find(|button| button.id.eq_ignore_ascii_case(id))?;
+            let res = button
+                .fields
+                .iter()
+                .find(|field| field.trim().starts_with("IDS_"))?;
+            let raw = name(res.trim())?;
+            let (size, text) = split_tag(&raw);
+            let mut colors = [0xFF00_0000; 4];
+            for (slot, index) in colors.iter_mut().zip(14..18) {
+                let field = button.fields.get(index)?.trim();
+                let digits = field
+                    .strip_prefix("0x")
+                    .or_else(|| field.strip_prefix("0X"))?;
+                *slot = u32::from_str_radix(digits, 16).ok()?;
+            }
+            Some(TabCaption {
+                button: button.id.to_ascii_uppercase(),
+                text: text.to_owned(),
+                size,
+                colors,
+            })
+        })
+        .collect()
 }
 
 /// Puts the arguments into the string's `%1!d!` / `%1!s!` holes (`%2!..!`, ...).

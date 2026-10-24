@@ -18,7 +18,10 @@ use cs_app::ui::front_end::{
     HUB_SECTION, HubOutcome, HubPage, OriginalLayout, SELL_NOT_BUILT, StartingLoadout,
 };
 
-use super::parity5_cabin_plane_construction_hub::{LAYOUT, ids, names};
+use super::parity5_cabin_plane_construction_hub::{
+    LAYOUT, TestInput, extents, hub, ids, inject, name_page, names, open_hub, press_button,
+    section, state, tap, type_text,
+};
 
 const GLOBALS: &str = "\
 [GLOBALVARS]
@@ -317,6 +320,116 @@ fn accept_parity5_cabin_plane_construction_hangar_the_default_loadout_box_picks_
     assert_eq!(hub.starting_loadout(), StartingLoadout::Empty);
     hub.set_default_loadout(true);
     assert_eq!(hub.starting_loadout(), StartingLoadout::Stock);
+}
+
+/// The hub fixture's art plus the hangar's buttons (four 32-row frames) and
+/// the end-of-screen Done strip.
+fn hangar_extents(art: &str) -> Option<(u32, u32)> {
+    match art.to_ascii_lowercase().as_str() {
+        "fc_b_paperbutton.png" | "ms_b_done.png" => Some((150, 128)),
+        "ps_background.jpg" => Some((800, 600)),
+        _ => extents(art),
+    }
+}
+
+/// The cabin → the Plane Name dialog → the hub, over the layout with the
+/// `[@Hangar@]` rows, with four saved planes (one is the plane being built).
+fn hangar_app() -> bevy::app::App {
+    use bevy::app::App;
+    use bevy::input::InputSystems;
+    use bevy::prelude::{IntoScheduleConfigs, PreUpdate};
+    use cs_app::ui::front_end::{MenuShell, MissionEnd, StartFlow, headless_app_construction};
+
+    let layout = layout();
+    let mut shell = MenuShell::build(&layout, &hangar_extents, &|_: &str| None);
+    shell.open("PassengerCabin").expect("the cabin opens");
+    let flow = StartFlow::after_mission(MissionEnd::ReturnedToCabin).expect("the walk");
+    let hub = HubPage::from_layout(&layout, &hangar_names, &hangar_ids).expect("the hub");
+    let mut app: App = headless_app_construction(shell, Some(flow), name_page(), hub);
+    app.init_resource::<TestInput>();
+    app.add_systems(PreUpdate, inject.after(InputSystems));
+    app.update();
+    open_hub(&mut app, "Ace");
+    let mut planes = four();
+    planes[0].as_mut().expect("a plane").kind = 2;
+    assert!(
+        app.world_mut()
+            .resource_mut::<cs_app::ui::front_end::ShellResource>()
+            .set_hub_saved_planes(planes, 5, 100)
+    );
+    app.update();
+    app
+}
+
+#[test]
+fn accept_parity5_cabin_plane_construction_hangar_sell_opens_the_hangar_and_done_returns_to_the_hub()
+ {
+    use cs_app::ui::front_end::construction_hangar::{EXPORT_NOT_BUILT, HANGAR_SECTION};
+    let mut app = hangar_app();
+    assert_eq!(section(&app), HUB_SECTION);
+    press_button(&mut app, "PX_B_SELL");
+    assert_eq!(section(&app), HANGAR_SECTION);
+    let flow = state(&app).flow().expect("a flow");
+    assert!(flow.hangar_open());
+    assert_eq!(flow.section(), Some(HANGAR_SECTION));
+    assert!(flow.notice().is_none(), "the hangar is built: no notice");
+    // The hub's selected record stands in the hangar: record 5 is the plane
+    // being built, so the first row is selected through Done's reset later.
+    // Export is marked (A 22 unread) and leaves the planes alone.
+    press_button(&mut app, EXPORT_BUTTON);
+    assert_eq!(
+        state(&app).flow().expect("a flow").notice(),
+        Some(&EXPORT_NOT_BUILT)
+    );
+    tap(&mut app, bevy::input::keyboard::KeyCode::Enter);
+    assert!(state(&app).flow().expect("a flow").notice().is_none());
+    // Row 0 is record 0, a plane that is not sold: Sell answers with the
+    // OK-only box (its text is carried by the page's flow state).
+    let list = hub(&app).hangar().expect("the hangar").list().rect;
+    super::parity5_cabin_plane_construction_hub::click_logical(&mut app, list.x + 10, list.y + 5);
+    let row = hub(&app).hangar().expect("the hangar").item_rect(0);
+    super::parity5_cabin_plane_construction_hub::click_logical(&mut app, row.x + 5, row.y + 5);
+    assert_eq!(hub(&app).hangar().map(HangarPage::selected_slot), Some(0));
+    press_button(&mut app, SELL_BUTTON);
+    assert!(hub(&app).hangar().is_some_and(|h| h.asking().is_none()));
+    assert_eq!(section(&app), HANGAR_SECTION);
+    assert_eq!(hub(&app).hangar().map(HangarPage::saved_count), Some(3));
+    tap(&mut app, bevy::input::keyboard::KeyCode::Enter);
+    // Done: the hub again, with its tab and name intact.
+    press_button(&mut app, DONE_BUTTON);
+    assert_eq!(section(&app), HUB_SECTION);
+    assert!(!state(&app).flow().expect("a flow").hangar_open());
+    assert_eq!(hub(&app).text(), "Ace");
+    assert_eq!(section(&app), HUB_SECTION);
+}
+
+#[test]
+fn accept_parity5_cabin_plane_construction_hangar_a_sale_lowers_the_hubs_count_through_the_message_box()
+ {
+    use cs_app::ui::front_end::construction_hangar::HANGAR_SECTION;
+    let mut app = hangar_app();
+    press_button(&mut app, "PX_B_SELL");
+    assert_eq!(section(&app), HANGAR_SECTION);
+    // Row 1 is Bravo (record 1), which can be sold.
+    let list = hub(&app).hangar().expect("the hangar").list().rect;
+    let (x, y) = (list.x + 10, list.y + 5);
+    super::parity5_cabin_plane_construction_hub::click_logical(&mut app, x, y);
+    assert!(hub(&app).hangar().is_some_and(HangarPage::list_open));
+    let row = hub(&app).hangar().expect("the hangar").item_rect(1);
+    super::parity5_cabin_plane_construction_hub::click_logical(&mut app, row.x + 5, row.y + 5);
+    assert_eq!(hub(&app).hangar().map(HangarPage::selected_slot), Some(1));
+    press_button(&mut app, SELL_BUTTON);
+    assert!(hub(&app).hangar().is_some_and(|h| h.asking().is_some()));
+    // N keeps the plane.
+    type_text(&mut app, "n");
+    assert!(hub(&app).hangar().is_some_and(|h| h.asking().is_none()));
+    assert_eq!(hub(&app).hangar().map(HangarPage::saved_count), Some(3));
+    press_button(&mut app, SELL_BUTTON);
+    type_text(&mut app, "y");
+    assert_eq!(hub(&app).hangar().map(HangarPage::saved_count), Some(2));
+    assert!(!hub(&app).sell_enabled(), "two planes are too few to sell");
+    press_button(&mut app, DONE_BUTTON);
+    assert_eq!(section(&app), HUB_SECTION);
 }
 
 /// **Retail.** The installation's `[@Hangar@]` rows and strings build the

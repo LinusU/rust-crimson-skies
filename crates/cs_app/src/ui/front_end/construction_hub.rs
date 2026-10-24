@@ -644,6 +644,15 @@ impl HubPage {
         self.dirty = true;
     }
 
+    /// Takes Sell's count from the hangar again after a sale emptied a record
+    /// (`E 2018`).
+    pub fn hangar_changed(&mut self) {
+        if let Some(hangar) = self.hangar.as_ref() {
+            self.feed.saved_planes = Some(hangar.saved_count());
+        }
+        self.dirty = true;
+    }
+
     /// The four saved-plane picture panes (`PX_P_PLANE0..3`), when the layout
     /// has all four.
     #[must_use]

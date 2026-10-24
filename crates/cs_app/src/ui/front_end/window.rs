@@ -84,7 +84,8 @@ use super::audio_page::{
     ACCEPT_BUTTON, AUDIO_SECTION, AudioControl, AudioPage, AudioSettingsFile, MUSIC_BUTTON,
 };
 use super::cabin::CabinHub;
-use super::construction_hub::{HUB_SECTION, HubOutcome, HubPage, READY_NOT_BUILT, SELL_NOT_BUILT};
+use super::construction_hangar::{HANGAR_SECTION, HangarOutcome, YES_ANSWER};
+use super::construction_hub::{HUB_SECTION, HubOutcome, HubPage, READY_NOT_BUILT};
 use super::intro::{self, IntroMovie, IntroState};
 use super::movie::{MovieBackdrop, movie_media};
 use super::original::script_member;
@@ -238,6 +239,21 @@ struct HubState {
         Option<[u8; super::construction_stats::STATS]>,
         Option<String>,
     )>,
+    /// The Sell hangar's overlay entities while it is on screen.
+    hangar_scene: Vec<Entity>,
+    /// The surface the hangar overlay was laid out for.
+    hangar_surface: (u32, u32),
+    /// The hangar's OK-only box text while one is up.
+    note: Option<String>,
+}
+
+impl HubState {
+    /// Redraws the hangar's overlay (its page or its OK box changed).
+    fn touch_hangar(&mut self) {
+        if let Some(hangar) = self.page.hangar_mut() {
+            hangar.mark_dirty();
+        }
+    }
 }
 
 /// The Plane Name page's live state.
@@ -356,6 +372,25 @@ impl ShellResource {
                 true
             }
             None => false,
+        }
+    }
+
+    /// Hands the Sell hangar the pilot's saved planes, the selected record
+    /// and the cash, and Sell its count (see
+    /// [`HubPage::set_saved_planes`]). `false` when the run has no hub or the
+    /// layout gave the hangar no rows.
+    pub fn set_hub_saved_planes(
+        &mut self,
+        planes: Vec<Option<super::construction_hangar::SavedPlane>>,
+        selected: usize,
+        cash: u64,
+    ) -> bool {
+        match self.hub.as_mut() {
+            Some(hub) if hub.page.hangar().is_some() => {
+                hub.page.set_saved_planes(planes, selected, cash);
+                true
+            }
+            _ => false,
         }
     }
 
@@ -881,6 +916,9 @@ impl Plugin for FrontEndShellPlugin {
                     base_panes: None,
                     panes_of: None,
                     stats_of: None,
+                    hangar_scene: Vec::new(),
+                    hangar_surface: (0, 0),
+                    note: None,
                 }),
         });
         if app.world().resource::<ShellResource>().intro.enabled()
@@ -1162,6 +1200,11 @@ fn frame_shell(world: &mut World) {
             .shell
             .section_name()
             .is_some_and(|name| name.eq_ignore_ascii_case(HUB_SECTION));
+    let on_hangar = state.hub.is_some()
+        && state
+            .shell
+            .section_name()
+            .is_some_and(|name| name.eq_ignore_ascii_case(HANGAR_SECTION));
     let notice_up = state
         .flow
         .as_ref()
@@ -1177,7 +1220,7 @@ fn frame_shell(world: &mut World) {
             .cloned()
             .collect();
         if on_hub && !notice_up {
-            for event in typed {
+            for event in &typed {
                 if hub.page.prompt().is_some() {
                     // Y answers as Enter does, N as Esc.
                     match event.text.as_deref() {
@@ -1189,6 +1232,22 @@ fn frame_shell(world: &mut World) {
                     hub.page.backspace();
                 } else if let Some(text) = &event.text {
                     hub.page.type_text(text);
+                }
+            }
+        }
+        // The hangar's yes/no box: Y answers as Enter does, N as Esc.
+        if on_hangar
+            && !notice_up
+            && hub
+                .page
+                .hangar()
+                .is_some_and(|page| page.asking().is_some())
+        {
+            for event in &typed {
+                match event.text.as_deref() {
+                    Some("y" | "Y") => events.push(ShellEvent::ActivateDown),
+                    Some("n" | "N") => events.push(ShellEvent::Escape),
+                    _ => {}
                 }
             }
         }
@@ -1386,8 +1445,26 @@ fn frame_shell(world: &mut World) {
                 } else {
                     false
                 };
+                let hangar_hit = if on_hangar && let Some(hub) = hub.as_mut() {
+                    if hub.note.take().is_some() {
+                        hub.touch_hangar();
+                        true
+                    } else {
+                        let hit = point.is_some_and(|(x, y)| {
+                            hub.page
+                                .hangar_mut()
+                                .is_some_and(|hangar| hangar.press_at(x, y))
+                        });
+                        hub.touch_hangar();
+                        hit
+                    }
+                } else {
+                    false
+                };
                 if audio_hit {
                     // The Audio page's slider or drop-down took the press.
+                } else if hangar_hit {
+                    // The hangar's list, or its OK box, took the press.
                 } else if hub_hit {
                     // The hub's Airframe or Engine drop-down took the press.
                 } else if let (Some(previous), Some(row)) = (previous.as_mut(), toc_row) {
@@ -1466,6 +1543,44 @@ fn frame_shell(world: &mut World) {
                 if let Some(hub) = hub.as_mut() {
                     let done = hub.page.answer_prompt(0);
                     pilot_step = hub_step(hub, done, flow, shell);
+                }
+                ShellOutcome::Nothing
+            }
+            ShellEvent::ActivateDown if on_hangar && hangar_box_up(hub) => {
+                if let Some(hub) = hub.as_mut() {
+                    let done = if hub.note.take().is_some() {
+                        hub.touch_hangar();
+                        HangarOutcome::Nothing
+                    } else {
+                        answer_hangar(hub, YES_ANSWER)
+                    };
+                    pilot_step = hangar_step(hub, done, flow, shell);
+                }
+                ShellOutcome::Nothing
+            }
+            ShellEvent::ActivateUp if on_hangar && hangar_box_up(hub) => ShellOutcome::Nothing,
+            ShellEvent::Escape if on_hangar && hangar_box_up(hub) => {
+                if let Some(hub) = hub.as_mut() {
+                    let done = if hub.note.take().is_some() {
+                        hub.touch_hangar();
+                        HangarOutcome::Nothing
+                    } else {
+                        answer_hangar(hub, 0)
+                    };
+                    pilot_step = hangar_step(hub, done, flow, shell);
+                }
+                ShellOutcome::Nothing
+            }
+            ShellEvent::Escape
+                if on_hangar
+                    && hub.as_mut().is_some_and(|hub| {
+                        hub.page
+                            .hangar_mut()
+                            .is_some_and(super::construction_hangar::HangarPage::close_list)
+                    }) =>
+            {
+                if let Some(hub) = hub.as_mut() {
+                    hub.touch_hangar();
                 }
                 ShellOutcome::Nothing
             }
@@ -1558,6 +1673,18 @@ fn frame_shell(world: &mut World) {
         {
             let done = plane.page.press(id);
             pilot_step = name_step(plane, hub, done, flow, shell);
+        }
+        if pilot_step.is_none()
+            && on_hangar
+            && let ShellOutcome::Unhandled { id, .. } = &outcome
+            && let Some(hub) = hub.as_mut()
+        {
+            let done = hub
+                .page
+                .hangar_mut()
+                .map_or(HangarOutcome::Nothing, |hangar| hangar.press(id));
+            hub.touch_hangar();
+            pilot_step = hangar_step(hub, done, flow, shell);
         }
         if pilot_step.is_none()
             && on_hub
@@ -1802,6 +1929,7 @@ fn frame_shell(world: &mut World) {
     sync_previous_scene(world, &mut state);
     sync_plane_scene(world, &mut state);
     sync_hub_scene(world, &mut state);
+    sync_hangar_scene(world, &mut state);
     sync_audio_scene(world, &mut state);
     sync_notice_scene(world, &mut state);
     if let Some(cursor) = state.scene.cursor
@@ -2030,9 +2158,24 @@ fn hub_step(
         HubOutcome::Ready => flow
             .as_mut()
             .map(|flow| flow.show_not_implemented(READY_NOT_BUILT)),
-        HubOutcome::Sell => flow
-            .as_mut()
-            .map(|flow| flow.show_not_implemented(SELL_NOT_BUILT)),
+        HubOutcome::Sell => {
+            // The hub's Sell opens the hangar (`hangar.script`, task #2063).
+            hub.page.mark_dirty();
+            match flow.as_mut() {
+                Some(flow) => {
+                    let section = flow.open_hangar()?;
+                    let _ = shell.open(section);
+                    Some(StartStep::Moved {
+                        from: flow.screen(),
+                        to: flow.screen(),
+                    })
+                }
+                None => {
+                    let _ = shell.open(HANGAR_SECTION);
+                    Some(StartStep::Stay)
+                }
+            }
+        }
         HubOutcome::Leave => match flow.as_mut() {
             Some(flow) => {
                 let step = flow.press_machine(super::Action::Cancel);
@@ -2048,6 +2191,127 @@ fn hub_step(
                 Some(StartStep::Stay)
             }
         },
+    }
+}
+
+/// Whether the hangar has a box up: the yes/no box or the OK-only one.
+fn hangar_box_up(hub: &Option<HubState>) -> bool {
+    hub.as_ref().is_some_and(|hub| {
+        hub.note.is_some()
+            || hub
+                .page
+                .hangar()
+                .is_some_and(|page| page.asking().is_some())
+    })
+}
+
+/// Answers the hangar's yes/no box and takes Sell's count from the hangar.
+fn answer_hangar(hub: &mut HubState, answer: u32) -> HangarOutcome {
+    hub.touch_hangar();
+    let done = hub
+        .page
+        .hangar_mut()
+        .map_or(HangarOutcome::Nothing, |hangar| hangar.answer_sell(answer));
+    hub.page.hangar_changed();
+    done
+}
+
+/// What the flow does with a hangar outcome (task #2063): Done is back to the
+/// hub; a sale or a refusal stays on the page; the OK-only box carries its
+/// text; Export and the too-few box, whose text and effect are unread, put up
+/// the marked notice.
+fn hangar_step(
+    hub: &mut HubState,
+    done: HangarOutcome,
+    flow: &mut Option<StartFlow>,
+    shell: &mut MenuShell,
+) -> Option<StartStep> {
+    match done {
+        HangarOutcome::Nothing => None,
+        HangarOutcome::ConfirmSell { .. } | HangarOutcome::Sold { .. } | HangarOutcome::Kept => {
+            Some(StartStep::Stay)
+        }
+        HangarOutcome::NotSold { text } => {
+            hub.note = Some(text);
+            hub.touch_hangar();
+            Some(StartStep::Stay)
+        }
+        HangarOutcome::TooFew => flow
+            .as_mut()
+            .map(|flow| flow.show_not_implemented(super::construction_hangar::TOO_FEW_NOT_BUILT)),
+        HangarOutcome::Export { .. } => flow
+            .as_mut()
+            .map(|flow| flow.show_not_implemented(super::construction_hangar::EXPORT_NOT_BUILT)),
+        HangarOutcome::Done => {
+            hub.note = None;
+            hub.page.mark_dirty();
+            match flow.as_mut() {
+                Some(flow) => {
+                    let section = flow.close_hangar()?;
+                    let _ = shell.open(section);
+                    Some(StartStep::Moved {
+                        from: flow.screen(),
+                        to: flow.screen(),
+                    })
+                }
+                None => {
+                    let _ = shell.open(HUB_SECTION);
+                    Some(StartStep::Stay)
+                }
+            }
+        }
+    }
+}
+
+/// Keeps the Sell hangar's overlay in step with its model: drawn while the
+/// `Hangar` section is shown, gone otherwise. Sell is enabled by the count.
+fn sync_hangar_scene(world: &mut World, state: &mut ShellResource) {
+    let active = state
+        .shell
+        .section_name()
+        .is_some_and(|name| name.eq_ignore_ascii_case(HANGAR_SECTION));
+    if !state.visuals {
+        return;
+    }
+    let surface = state.surface;
+    let buttons: Vec<(String, super::ShellRect)> = state
+        .shell
+        .section()
+        .map(|section| {
+            section
+                .buttons
+                .iter()
+                .map(|button| (button.id.to_ascii_uppercase(), button.rect))
+                .collect()
+        })
+        .unwrap_or_default();
+    let Some(hub) = state.hub.as_mut() else {
+        return;
+    };
+    if !active {
+        for entity in hub.hangar_scene.drain(..) {
+            let _ = world.despawn(entity);
+        }
+        return;
+    }
+    let dirty = hub
+        .page
+        .hangar_mut()
+        .is_some_and(super::construction_hangar::HangarPage::take_dirty);
+    if hub.hangar_scene.is_empty() || dirty || hub.hangar_surface != surface {
+        for entity in hub.hangar_scene.drain(..) {
+            let _ = world.despawn(entity);
+        }
+        if let Some(page) = hub.page.hangar() {
+            hub.hangar_scene = super::construction_hangar_view::spawn_page(
+                world,
+                page,
+                &buttons,
+                hub.note.as_deref(),
+                surface,
+            );
+        }
+        hub.hangar_surface = surface;
     }
 }
 
@@ -2790,6 +3054,11 @@ pub enum SmokeScene {
     /// The cabin's Change Memento screen (#1957): Change Memento, the arrows,
     /// Cancel, then again and Accept ([`memento_script`]).
     Memento,
+    /// The Plane Construction hub's Sell hangar (#2063): the cabin, the Plane
+    /// Name dialog, the hub, Sell over **synthetic** saved planes (the pilot
+    /// store has none yet), the list, a refused sale, a sale answered no and
+    /// yes, Export's marked notice and Done ([`hangar_script`]).
+    Hangar,
 }
 
 /// The environment variable that selects [`SmokeScene::Cabin`] for
@@ -2814,6 +3083,7 @@ impl SmokeScene {
             "flow" => Self::Flow,
             "audio" => Self::Audio,
             "memento" => Self::Memento,
+            "hangar" => Self::Hangar,
             _ => Self::MainMenu,
         }
     }
@@ -3157,6 +3427,85 @@ fn memento_script() -> Vec<(u32, Step)> {
     steps
 }
 
+/// The cash the hangar smoke's synthetic pilot holds.
+const SMOKE_CASH: u64 = 12_000;
+
+/// Five **synthetic** saved planes for the hangar smoke — the pilot store keeps
+/// none yet. Record 0 is a plane that is not sold; record 5 stands for the
+/// plane being built.
+fn smoke_planes() -> Vec<Option<super::construction_hangar::SavedPlane>> {
+    let plane = |kind, name: &str, airframe, value| {
+        Some(super::construction_hangar::SavedPlane {
+            kind,
+            name: name.to_owned(),
+            airframe,
+            value,
+        })
+    };
+    vec![
+        plane(2, "Kept", 0, 9_000),
+        plane(1, "Bravo", 1, 15_000),
+        plane(1, "Charlie", 2, 21_000),
+        None,
+        plane(1, "Delta", 3, 18_000),
+        plane(1, "Echo", 4, 30_000),
+    ]
+}
+
+/// The deterministic pass over the Sell hangar (#2063): the cabin, the Plane
+/// Name dialog and its OK (the hub), Sell, the list opened and a row picked,
+/// Sell on it (the yes/no box), N, Sell and Y (the sale), Sell on the kept
+/// plane (the OK-only box), Export (the marked notice) and Done (the hub).
+/// Needs `--smoke-seconds 16` or more.
+#[inline(always)]
+fn hangar_script() -> Vec<(u32, Step)> {
+    let at = |seconds: f64| (seconds * SMOKE_FRAME_HZ) as u32;
+    let click = |steps: &mut Vec<(u32, Step)>, from: f64, button: &'static str| {
+        steps.push((at(from), Step::HoverButton(button)));
+        steps.push((at(from + 0.2), Step::Mouse(true)));
+        steps.push((at(from + 0.3), Step::Mouse(false)));
+    };
+    let click_at = |steps: &mut Vec<(u32, Step)>, from: f64, x: i32, y: i32| {
+        steps.push((at(from), Step::HoverPoint(x, y)));
+        steps.push((at(from + 0.2), Step::Mouse(true)));
+        steps.push((at(from + 0.3), Step::Mouse(false)));
+    };
+    let key = |steps: &mut Vec<(u32, Step)>, from: f64, key: KeyCode| {
+        steps.push((at(from), Step::Key(key, true)));
+        steps.push((at(from + 0.1), Step::Key(key, false)));
+    };
+    let mut steps = vec![(at(0.6), Step::Shot("cabin"))];
+    click(&mut steps, 1.0, "PC_B_PLANEX");
+    steps.push((at(1.8), Step::Type("Skylark")));
+    click(&mut steps, 2.2, "PN_B_OK");
+    steps.push((at(3.0), Step::Shot("hub")));
+    click(&mut steps, 3.2, "PX_B_SELL");
+    steps.push((at(4.0), Step::Shot("hangar")));
+    // The closed box is at (138, 132), 15 high; row N hangs 15 (N + 1) below.
+    click_at(&mut steps, 4.2, 200, 139);
+    steps.push((at(5.0), Step::Shot("hangar-list")));
+    click_at(&mut steps, 5.2, 200, 169);
+    steps.push((at(6.0), Step::Shot("hangar-picked")));
+    click(&mut steps, 6.2, "HA_B_SELLP");
+    steps.push((at(7.0), Step::Shot("hangar-ask")));
+    steps.push((at(7.2), Step::Type("n")));
+    steps.push((at(7.8), Step::Shot("hangar-kept")));
+    click(&mut steps, 8.0, "HA_B_SELLP");
+    steps.push((at(8.8), Step::Type("y")));
+    steps.push((at(9.5), Step::Shot("hangar-sold")));
+    click_at(&mut steps, 9.7, 200, 139);
+    click_at(&mut steps, 10.0, 200, 154);
+    click(&mut steps, 10.5, "HA_B_SELLP");
+    steps.push((at(11.3), Step::Shot("hangar-not-sold")));
+    key(&mut steps, 11.5, KeyCode::Enter);
+    click(&mut steps, 12.0, "HA_B_EXPORTP");
+    steps.push((at(12.8), Step::Shot("hangar-export")));
+    key(&mut steps, 13.0, KeyCode::Enter);
+    click(&mut steps, 13.5, "HA_B_DONE");
+    steps.push((at(14.5), Step::Shot("hangar-done")));
+    steps
+}
+
 /// The deterministic pass over the whole start flow (#1842): the main menu,
 /// Campaign, a typed new pilot and Continue (the intro movie starts), three
 /// frames of the movie, Esc to skip it, the cabin, a press on Previous
@@ -3297,6 +3646,7 @@ impl ShellSmokePlugin {
                 SmokeScene::StartFlowResumed => start_flow_resumed_script(),
                 SmokeScene::Audio => audio_script(),
                 SmokeScene::Memento => memento_script(),
+                SmokeScene::Hangar => hangar_script(),
             },
             handle: ShellSmokeHandle::default(),
         }
@@ -3767,6 +4117,25 @@ fn evaluate(
         }
         return smoke_report(smoke, run, shots, failures, audio_lines, audio);
     }
+    if smoke.scene == SmokeScene::Hangar {
+        for label in [
+            "hub",
+            "hangar",
+            "hangar-list",
+            "hangar-picked",
+            "hangar-ask",
+            "hangar-kept",
+            "hangar-sold",
+            "hangar-not-sold",
+            "hangar-export",
+            "hangar-done",
+        ] {
+            if !shots.iter().any(|shot| shot.label == label) {
+                failures.push(format!("the {label} framebuffer never arrived"));
+            }
+        }
+        return smoke_report(smoke, run, shots, failures, Vec::new(), None);
+    }
     if smoke.scene == SmokeScene::Memento {
         let section = "MomentoSelection";
         let cabin = "PassengerCabin";
@@ -4115,7 +4484,12 @@ pub fn shell_app(
     if request.smoke.is_some() && scene == SmokeScene::Flow {
         return shell_app_with(request, Some(StartFlow::new()), scene);
     }
-    if request.smoke.is_some() && matches!(scene, SmokeScene::Cabin | SmokeScene::Memento) {
+    if request.smoke.is_some()
+        && matches!(
+            scene,
+            SmokeScene::Cabin | SmokeScene::Memento | SmokeScene::Hangar
+        )
+    {
         let flow = StartFlow::after_mission(super::start_flow::MissionEnd::ReturnedToCabin)
             .map_err(|refusal| FrontEndError::Exit(refusal.to_string()))?;
         return shell_app_with(request, Some(flow), scene);
@@ -4192,7 +4566,7 @@ pub(super) fn shell_app_with(
     let audio_page = audio_page_setup(request, &screens, &layout);
     let previous = previous_missions_setup(request, &screens, &layout);
     let plane = plane_name_setup(request, &screens, &layout);
-    let hub = construction_hub_setup(request, &screens, &layout);
+    let mut hub = construction_hub_setup(request, &screens, &layout);
     if hub.is_some() {
         // The airframes' blueprints, which no pane row names (#2051).
         for airframe in 0..super::construction_stats::AIRFRAMES as u32 {
@@ -4201,6 +4575,12 @@ pub(super) fn shell_app_with(
                 art.entry(name.to_ascii_lowercase()).or_insert(artwork);
             }
         }
+    }
+    if request.smoke.is_some()
+        && scene == SmokeScene::Hangar
+        && let Some(page) = hub.as_mut()
+    {
+        page.set_saved_planes(smoke_planes(), 5, SMOKE_CASH);
     }
     if previous.is_some()
         && let Some(artwork) = screens.graphic_artwork(super::previous_missions::ICON_ART)

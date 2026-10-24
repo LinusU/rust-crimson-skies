@@ -79,3 +79,21 @@ template, weapons included; unchecked it starts with empty guns and hardpoints.
 (`--include-ignored` with `CS_GAME_DIR`): ten synthetic tests and one retail test.
 No owner-command smoke: nothing the player sees changed (Sell still shows the
 marked notice).
+
+## Presented (task #2063)
+
+The hub's Sell button opens the `Hangar` section (`StartFlow::open_hangar`);
+Done returns to the hub. The yes/no box is drawn by the page (Y/Enter = answer
+3, N/Esc = no), the not-sold box is an OK-only box, and Export and the too-few
+box put up the marked not-implemented notice (their text and effect, `A 22`
+and `NB 701`, stay unread).
+
+Stand-ins, all unread in the original: the list's row text is the plane's name;
+the Sell and Export captions are drawn with the colour column's low 24 bits
+(the alpha bytes `0x1D` and `0x76` would make them vanish); the box art is a
+black ground. The four `PX_P_PLANE0..3` pictures are not drawn here.
+
+The pilot store keeps no saved planes yet, so a retail run never reaches an
+enabled Sell. The owner-command smoke (`CS_FRONT_END_SMOKE_SCENE=hangar`) seeds
+**synthetic** planes (`smoke_planes`); it shows the presentation, not the
+original's data.

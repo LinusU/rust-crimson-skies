@@ -89,6 +89,7 @@ mod cabin;
 mod capture;
 pub mod construction_armor_paint;
 pub mod construction_hangar;
+mod construction_hangar_view;
 pub mod construction_hub;
 mod construction_hub_view;
 pub mod construction_panels;

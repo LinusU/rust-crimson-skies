@@ -699,6 +699,15 @@ pub(super) fn press_button(app: &mut App, id: &str) {
     drive(app, |queue| queue.mouse.push(false));
 }
 
+/// A left click at a logical (800x600) point.
+pub(super) fn click_logical(app: &mut App, x: i32, y: i32) {
+    drive(app, |queue| {
+        queue.cursor = Some(Vec2::new(x as f32, y as f32));
+        queue.mouse.push(true);
+    });
+    drive(app, |queue| queue.mouse.push(false));
+}
+
 pub(super) fn state(app: &App) -> &ShellResource {
     app.world().resource::<ShellResource>()
 }

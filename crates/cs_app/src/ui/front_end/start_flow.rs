@@ -47,6 +47,7 @@ use std::path::PathBuf;
 use bevy::app::AppExit;
 
 use super::cabin::show_memento as show_cabin_memento;
+use super::construction_hangar::HANGAR_SECTION;
 use super::construction_hub::HUB_SECTION;
 use super::memento::{
     ACCEPT_BUTTON, ARROW_LEFT_BUTTON, ARROW_RIGHT_BUTTON, DEFAULT_MEMENTO, Direction,
@@ -358,6 +359,7 @@ pub struct StartFlow {
     /// Whether the construction screen shows the hub (`PlaneConstruction`)
     /// rather than the name dialog before it (#2042).
     hub_open: bool,
+    hangar_open: bool,
 }
 
 impl Default for StartFlow {
@@ -389,6 +391,7 @@ impl StartFlow {
             memento_unlocks: MementoUnlocks::new_pilot(),
             memento_pictures: BTreeMap::new(),
             hub_open: false,
+            hangar_open: false,
         }
     }
 
@@ -442,7 +445,11 @@ impl StartFlow {
     #[must_use]
     pub fn section(&self) -> Option<&'static str> {
         if self.hub_open && self.screen() == Screen::Construction {
-            return Some(HUB_SECTION);
+            return Some(if self.hangar_open {
+                HANGAR_SECTION
+            } else {
+                HUB_SECTION
+            });
         }
         section_of_screen(self.screen())
     }
@@ -455,7 +462,34 @@ impl StartFlow {
             return None;
         }
         self.hub_open = true;
+        self.hangar_open = false;
         Some(HUB_SECTION)
+    }
+
+    /// The hub's Sell button: the construction screen shows the Sell hangar
+    /// (`HANGAR.SCRIPT`). Returns the section to open, or `None` unless the
+    /// hub is showing.
+    pub fn open_hangar(&mut self) -> Option<&'static str> {
+        if !self.hub_open() {
+            return None;
+        }
+        self.hangar_open = true;
+        Some(HANGAR_SECTION)
+    }
+
+    /// The hangar's Done: the hub shows again. Returns its section.
+    pub fn close_hangar(&mut self) -> Option<&'static str> {
+        if !self.hub_open() {
+            return None;
+        }
+        self.hangar_open = false;
+        Some(HUB_SECTION)
+    }
+
+    /// Whether the construction screen is showing the Sell hangar.
+    #[must_use]
+    pub fn hangar_open(&self) -> bool {
+        self.hangar_open && self.hub_open()
     }
 
     /// Whether the construction screen is showing the hub.
@@ -773,6 +807,7 @@ impl StartFlow {
         };
         if outcome.to != Screen::Construction {
             self.hub_open = false;
+            self.hangar_open = false;
         }
         let mut quit = false;
         for effect in &outcome.effects {
