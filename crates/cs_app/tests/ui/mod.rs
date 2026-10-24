@@ -114,6 +114,7 @@ mod lobby;
 mod m01_lc_fc_a;
 mod original;
 mod parity2_flight_check_page;
+mod parity5_cabin_change_memento;
 mod parity5_cabin_intro_01;
 mod parity5_cabin_intro_02;
 mod parity5_cabin_intro_03;

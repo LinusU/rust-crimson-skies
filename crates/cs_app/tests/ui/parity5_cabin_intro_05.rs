@@ -92,7 +92,7 @@ fn accept_parity5_cabin_intro_05_return_to_main_menu_closes_the_profile() {
 
 #[test]
 fn accept_parity5_cabin_intro_05_the_unbuilt_buttons_open_a_marked_screen() {
-    for (entry, y) in NOT_IMPLEMENTED.iter().zip([90, 130]) {
+    for (entry, y) in NOT_IMPLEMENTED.iter().zip([130]) {
         let (mut flow, mut shell) = cabin();
         let step = press(&mut flow, &mut shell, y);
         assert_eq!(step, StartStep::NotImplemented(*entry));
@@ -112,7 +112,7 @@ fn accept_parity5_cabin_intro_05_the_unbuilt_buttons_open_a_marked_screen() {
         ));
     }
     let names: Vec<&str> = NOT_IMPLEMENTED.iter().map(|entry| entry.what).collect();
-    assert_eq!(names, ["Change Memento", "Plane Construction"]);
+    assert_eq!(names, ["Plane Construction"]);
 }
 
 #[test]
