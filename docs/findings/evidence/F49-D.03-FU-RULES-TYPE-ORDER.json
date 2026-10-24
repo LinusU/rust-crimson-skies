@@ -1,0 +1,19 @@
+{
+ "schema_version": 1,
+ "task_id": "F49-D.03-FU-RULES-TYPE-ORDER",
+ "candidate_tree": "ad4028728bbd1bb84ce6e818f8f0a0faaebdb9c5",
+ "engine": {"rust": "rustc 1.98.1 (48a229cea 2026-09-01)", "bevy": "0.20.0", "avian": "0.8.0"},
+ "created_at": "2026-10-24T19:05:17Z",
+ "command": {"argv": ["cargo", "test", "--locked", "-p", "cs_app", "--test", "cs_app_tests_a", "--", "accept_f49_d_03_fu_rules_type_order", "--include-ignored"], "cwd": "/Users/linus/coding/rust-crimson-skies/sonnet-1", "exit_code": 0},
+ "source": {"install_sha256": "b4e780ab84cf31d85b8452fbfcec1478137768e32d9a75ccedc4c1847c631978", "content_sha256": "a0223506e512b50c0e0445ba73204a0461e60197e28d58a7f7144632d262c12d", "engine_image_sha256": "43540fc97347210d6f4c10b77edbd4cdab1f03d57554d638223c2430a6c37d75", "engine_image_len": 2580480},
+ "seed": 0,
+ "ticks": {"start": 0, "end": 0},
+ "overrides": [],
+ "capabilities": ["retail", "synthetic"],
+ "tests": {"discovered": 4, "executed": 4, "passed": 4, "failed": 0, "ignored": 0},
+ "assertions": [{"id": "accept_f49_d_03_fu_rules_type_order::accept_f49_d_03_fu_rules_type_order_the_finding_records_the_measurement", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f49_d_03_fu_rules_type_order::accept_f49_d_03_fu_rules_type_order_image_the_load_resets_then_rereads_the_descriptor_type", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f49_d_03_fu_rules_type_order::accept_f49_d_03_fu_rules_type_order_image_the_menu_stores_the_type_before_the_parameters", "status": "pass", "evidence": ["cargo-test.log"]}, {"id": "accept_f49_d_03_fu_rules_type_order::accept_f49_d_03_fu_rules_type_order_retail_each_directory_runs_its_descriptor_default", "status": "pass", "evidence": ["cargo-test.log"]}],
+ "artifacts": [{"path": "cargo-test.log", "sha256": "1d6633b95ea59e5751424dd42a860ea2a5318812be9d8388ef8d1838bf714605", "kind": "log"}],
+ "unknowns": [],
+ "review": {"identity": "pending: written by the implementing agent swe2-max-1. The reviewing agent regenerates this report on the reviewed commit and records their identity (CS_EVIDENCE_REVIEW); no agent review awards more than `checked`.", "method": "acceptance suite run locally with the retail capability and the owner-supplied decrypted engine image; every field is derived from the recorded log, production discovery of $CS_GAME_DIR, the image's own bytes and Cargo.lock. The finding (menu store `0x417554`..`0x417578`, reset `0x45a120`/`0x458ff0`, descriptor re-read `0x459390`/`0x4593d7`, the exhaustive references to `[0x718cd8]`) is static image analysis — provenance static, never verified_original; no original executable ran. LIMITATIONS: a write through a computed pointer cannot be excluded statically; why the menu offers rows whose type the load overrides is unmeasured; the preset catalog is not yet re-keyed (follow-up). Validated with tools/validate_evidence.py --require-pass."},
+ "claim": "implemented"
+}
