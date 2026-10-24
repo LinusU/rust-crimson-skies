@@ -773,6 +773,7 @@ fn bind_mission_targets_from(
             target.target_half_extents_m = half;
         }
     }
+    drop_container_boxes(&mut targets);
 
     let names_bound: Vec<&str> = targets.iter().map(|target| target.node.as_str()).collect();
     let resolved =
@@ -842,6 +843,39 @@ fn bind_mission_targets_from(
         targets,
         declared,
         refusals,
+    }
+}
+
+/// Zeroes the extents of every target whose stored box encloses another bound
+/// target's point, so the sweep falls back to the designed box for it (#2061).
+///
+/// A grouping node's box is the union of its children's
+/// (`docs/findings/2026-10-24-node-box-unk164.md` section 3): `susp_bridge`
+/// (17 x 97 x 563 m) encloses `t_truck01`, so a round at the convoy would also
+/// destroy the bridge's one-unit pool. The image's intersection walk does not
+/// narrow-phase such a node (flag `0x40` clear) but recurses into its
+/// children, so the group box is a broad bound and the children are what a
+/// round tests. **Inferred**: no gun-round path to that walk was found in the
+/// image (`docs/findings/2026-10-24-gun-hit-volume.md`). The target point is
+/// kept; only the extents change.
+pub fn drop_container_boxes(targets: &mut [BoundTarget]) {
+    let points: Vec<(u32, [f64; 3])> = targets
+        .iter()
+        .map(|target| (target.index, target.target_point_m))
+        .collect();
+    for target in targets.iter_mut() {
+        let half = target.target_half_extents_m;
+        if half.iter().all(|h| *h == 0.0) {
+            continue;
+        }
+        let centre = target.target_point_m;
+        let encloses_another = points.iter().any(|(index, point)| {
+            *index != target.index
+                && (0..3).all(|axis| (point[axis] - centre[axis]).abs() <= half[axis])
+        });
+        if encloses_another {
+            target.target_half_extents_m = [0.0; 3];
+        }
     }
 }
 

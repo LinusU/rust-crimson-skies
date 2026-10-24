@@ -21,6 +21,8 @@ use cs_app::mission_actors::{
 use cs_app::mission_session::{
     MissionCockpitActions, MissionComposition, MissionHost, admit_actor, build_headless, teardown,
 };
+use cs_app::mission_targets::{BoundTarget, DamageCoupling, drop_container_boxes};
+use cs_app::mission_world_actors::{AllegianceBinding, AllegianceSource};
 use cs_app::score::SessionScoreLedger;
 use cs_app::targeting::TargetingSession;
 use cs_app::weapons::{PartSweptBox, SessionDamageResolver, part_sweep_candidates};
@@ -352,4 +354,114 @@ fn accept_m01_convoy_gun_hits_the_sweep_takes_the_stored_box_or_the_designed_fal
         sweep.provenance.class,
         cs_types::evidence::ClaimStatus::Designed
     );
+}
+
+fn box_target(node: &str, index: u32, point: [f64; 3], half: [f64; 3]) -> BoundTarget {
+    BoundTarget {
+        declared: None,
+        chain: vec![node.to_owned()],
+        node: node.to_owned(),
+        index,
+        path: format!("world1.{node}"),
+        position_m: point,
+        target_point_m: point,
+        target_half_extents_m: half,
+        healthy: None,
+        destroyed: None,
+        coupling: DamageCoupling::default(),
+        objective: false,
+        other_target: false,
+        description: None,
+        help_label: None,
+        allegiance: AllegianceBinding::Measured {
+            team: 1,
+            source: AllegianceSource::NoBinding,
+        },
+    }
+}
+
+/// **A target whose box encloses another target's point is a container: it
+/// loses its box (the sweep then falls back), the enclosed truck keeps its.**
+#[test]
+fn accept_m01_convoy_gun_hits_a_container_box_does_not_swallow_the_trucks() {
+    let truck_half = [1.5, 2.3, 3.6];
+    let mut targets = vec![
+        box_target("susp_bridge", 1, [0.0, 120.0, 0.0], [8.5, 48.0, 280.0]),
+        box_target("t_truck01", 2, [0.0, 100.0, 40.0], truck_half),
+        box_target("camp", 3, [900.0, 5.0, 0.0], [10.0, 5.0, 10.0]),
+    ];
+    drop_container_boxes(&mut targets);
+    assert_eq!(targets[0].target_half_extents_m, [0.0; 3]);
+    assert_eq!(targets[0].target_point_m, [0.0, 120.0, 0.0]);
+    assert_eq!(targets[1].target_half_extents_m, truck_half);
+    assert_eq!(targets[2].target_half_extents_m, [10.0, 5.0, 10.0]);
+    let at = targets[0].target_point_m;
+    let actor = ActorId {
+        session: cs_types::net::SessionId::new(1).expect("a session id"),
+        serial: 5,
+    };
+    let ((_, _, swept, sweep), _) = ground_target_sweep(
+        actor,
+        key("susp_bridge"),
+        at,
+        targets[0].target_half_extents_m,
+        at,
+    );
+    assert_eq!(swept.half_extents_m, DESIGNED_GROUND_TARGET_HALF_EXTENTS_M);
+    assert_eq!(
+        sweep.provenance.class,
+        cs_types::evidence::ClaimStatus::Designed
+    );
+}
+
+/// **Retail M01: no round at the convoy can sweep the bridge or the zeppelin
+/// rock; each keeps the designed box, and every truck keeps its stored one.**
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_m01_convoy_gun_hits_retail_container_nodes_do_not_enclose_the_trucks() {
+    use cs_app::mission_launch::plan_mission_launch;
+    use cs_app::mission_session::stage_for;
+    let root = game_dir();
+    let plan = plan_mission_launch(
+        &root,
+        crate::campaign::common::label("M01"),
+        "The Lost Treasure",
+    )
+    .expect("M01's launch closure plans");
+    let stage = stage_for(&root, &plan).expect("M01's stage reads");
+    let mut app = build_headless(&stage).expect("M01 composes");
+    app.update();
+    idle(&mut app);
+    let report = app.world().resource::<MissionGroundTargetReport>().clone();
+    for node in ["susp_bridge", "rock_zeppelin"] {
+        let Some(bound) = report.target(node) else {
+            assert_ne!(node, "susp_bridge", "the bridge is a bound target");
+            continue;
+        };
+        let sweep = app
+            .world()
+            .entity(bound.entity)
+            .get::<MissionGroundTargetSweep>()
+            .expect("sweep provenance")
+            .clone();
+        assert_eq!(
+            sweep.half_extents_m, DESIGNED_GROUND_TARGET_HALF_EXTENTS_M,
+            "{node} is a container and takes the designed box"
+        );
+    }
+    for node in ["t_truck01", "t_truck02", "t_truck03", "bridge_truck01"] {
+        let bound = report
+            .target(node)
+            .unwrap_or_else(|| panic!("{node} spawned"));
+        let sweep = app
+            .world()
+            .entity(bound.entity)
+            .get::<MissionGroundTargetSweep>()
+            .expect("sweep provenance")
+            .clone();
+        assert_ne!(
+            sweep.half_extents_m, DESIGNED_GROUND_TARGET_HALF_EXTENTS_M,
+            "{node} keeps its stored box"
+        );
+    }
 }
