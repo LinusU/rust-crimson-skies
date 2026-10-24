@@ -14,16 +14,14 @@
 //!
 //! **What "retail" can and cannot show here.** The retail option table measures
 //! worlds, environments, factions, airframes, pilots (the ia.zrd aces,
-//! F49-D.02-FU-PILOT) and difficulty tiers; it keeps loadouts and relations
-//! *unmeasured* (F49-D.02), so a custom scenario naming a loadout is refused by
-//! the pure retail catalog today, which is the right answer and is asserted as
-//! such
-//! (`accept_f49_d_04_retail_every_measured_selection_is_accepted_and_the_unmeasured_loadout_is_refused`).
-//! A request that *no* problem touches therefore cannot be built from the pure
-//! retail table. The positive control uses the retail lists **plus declared
-//! stand-ins** for the two unmeasured lists (`standin_catalog`): it proves
-//! refusal is specific rather than unconditional, and it claims nothing about
-//! what the original accepts.
+//! F49-D.02-FU-PILOT) and difficulty tiers. It lists no loadout identity (the
+//! original selects ordnance per slot, F49-D.02-FU-SLOTS) and no faction
+//! relation (a measured negative, F49-D.02-FU), so both lists are explicitly
+//! empty and cited, not missing. The positive control therefore runs on the
+//! pure retail catalog: each actor selects its airframe's measured per-slot
+//! ordnance (`SlotOrdnance::of_airframe`) and leaves the named loadout as a
+//! cited unknown. It claims nothing about what the original accepts beyond that
+//! the retail lists are enough to build a request nothing refuses.
 
 use std::path::PathBuf;
 use std::sync::OnceLock;
@@ -36,12 +34,13 @@ use cs_content::ai::DifficultyTier;
 use cs_content::environment::EnvironmentId;
 use cs_content::instant_action::{
     CustomScenarioDraft, InstantActionCatalog, RespawnBudget, RosterSlot, ScenarioActorSpec,
-    ScenarioOptionDimension, ScenarioOptions, ScenarioProblem, ScenarioProblems,
-    ScenarioSchemaError, ScenarioSeed, ScenarioSide, TieOutcome, VictoryCondition, VictoryRules,
-    synthetic_difficulty, synthetic_instant_action_catalog, synthetic_provenance,
+    ScenarioOptionDimension, ScenarioProblem, ScenarioProblems, ScenarioSchemaError, ScenarioSeed,
+    ScenarioSide, SlotOrdnance, TieOutcome, VictoryCondition, VictoryRules, synthetic_difficulty,
+    synthetic_instant_action_catalog, synthetic_provenance,
 };
 use cs_content::pilots::DeclaredSurvivability;
 use cs_content::target_rules::{DeclaredAllegiance, DeclaredRelation};
+use cs_content::weapons::original_airframe_loadout;
 use cs_content::world::WorldId;
 use cs_sim::campaign::{ProfileId, SessionGeneration};
 use cs_types::content::{ContentId, ContentKind, Known, Resolved};
@@ -77,55 +76,6 @@ fn profile() -> ProfileId {
     ProfileId::new("pilot.nathan").expect("a valid profile id")
 }
 
-/// The retail catalog's own lists with declared stand-ins for the two lists
-/// the installation leaves unmeasured: one loadout and two relations
-/// (`factions[0]` hostile to `factions[1]`, friendly to `factions[2]`). The
-/// pilots are the measured ia.zrd ace identities, not a stand-in.
-///
-/// Every other list, and every preset, is the retail catalog's.
-fn standin_catalog(retail: &InstantActionCatalog) -> InstantActionCatalog {
-    let options = retail.options();
-    assert_eq!(
-        options.unmeasured_dimensions(),
-        [
-            ScenarioOptionDimension::Loadouts,
-            ScenarioOptionDimension::Relations
-        ],
-        "the retail table keeps exactly loadouts and relations unmeasured"
-    );
-    let factions = options.factions().to_vec();
-    assert!(factions.len() >= 3, "the retail table measures factions");
-    let relation = |from: &ContentId, to: &ContentId, allegiance| DeclaredRelation {
-        from: from.clone(),
-        to: to.clone(),
-        allegiance: known(allegiance),
-    };
-    let widened = ScenarioOptions::try_new(
-        options.worlds().to_vec(),
-        options.environments().to_vec(),
-        factions.clone(),
-        options.airframes().to_vec(),
-        vec![id(ContentKind::Loadout, "synthetic.ac04_standin_loadout")],
-        options.pilots().to_vec(),
-        options.difficulty_tiers().to_vec(),
-        options.victory_conditions().to_vec(),
-        vec![
-            relation(&factions[0], &factions[1], DeclaredAllegiance::Hostile),
-            relation(&factions[1], &factions[0], DeclaredAllegiance::Hostile),
-            relation(&factions[0], &factions[2], DeclaredAllegiance::Friendly),
-            relation(&factions[2], &factions[0], DeclaredAllegiance::Friendly),
-        ],
-        options.max_players(),
-    )
-    .expect("the retail lists plus stand-ins form a valid table");
-    InstantActionCatalog::try_new(
-        retail.presets().into_iter().cloned().collect(),
-        widened,
-        retail.provenance().clone(),
-    )
-    .expect("the retail presets fit the widened table")
-}
-
 /// The selections a valid request is built from, all taken from one catalog's
 /// own option table so nothing here is typed in.
 struct Base {
@@ -136,15 +86,15 @@ struct Base {
     /// A faction the player's is declared friendly or neutral toward.
     unfightable_faction: Option<ContentId>,
     airframes: [ContentId; 2],
-    loadout: ContentId,
+    /// The catalog's first named loadout; `None` when it lists none (the retail
+    /// table), where each actor selects its airframe's ordnance per slot.
+    loadout: Option<ContentId>,
     tier: DifficultyTier,
     rules: VictoryRules,
 }
 
 impl Base {
-    /// `loadout` is the catalog's first loadout when it has one, else `fallback`
-    /// (the pure retail table has none).
-    fn from(catalog: &InstantActionCatalog, fallback: Option<ContentId>) -> Self {
+    fn from(catalog: &InstantActionCatalog) -> Self {
         let options = catalog.options();
         let relations = options.relations();
         let hostile = |relation: &DeclaredRelation| matches!(&relation.allegiance, Resolved::Known(k) if k.value == DeclaredAllegiance::Hostile);
@@ -189,12 +139,7 @@ impl Base {
                 options.airframes()[0].clone(),
                 options.airframes()[1].clone(),
             ],
-            loadout: options
-                .loadouts()
-                .first()
-                .cloned()
-                .or(fallback)
-                .expect("a loadout to select"),
+            loadout: options.loadouts().first().cloned(),
             tier: options.difficulty_tiers()[0],
             rules,
         }
@@ -207,17 +152,40 @@ impl Base {
         faction: &ContentId,
         airframe: &ContentId,
     ) -> ScenarioActorSpec {
-        ScenarioActorSpec::try_new(
+        let loadout = match &self.loadout {
+            Some(loadout) => known(loadout.clone()),
+            None => Resolved::unknown(
+                ClaimId::new("f49.d.04.fu1.loadout-selected-per-slot").expect("a claim id"),
+                "the original selects ordnance per slot and lists no loadout identity",
+            )
+            .expect("an unknown with a reason"),
+        };
+        let actor = ScenarioActorSpec::try_new(
             side,
             RosterSlot(slot),
             faction.clone(),
             known(airframe.clone()),
-            known(self.loadout.clone()),
+            loadout,
             None,
             known(DeclaredSurvivability::Mortal),
             synthetic_provenance(),
         )
-        .expect("the fixture actor is valid")
+        .expect("the fixture actor is valid");
+        match (&self.loadout, original_airframe_loadout(airframe.key())) {
+            (None, Some(template)) => actor.with_slot_ordnance(SlotOrdnance::of_airframe(template)),
+            _ => actor,
+        }
+    }
+
+    /// Extra refusals a plane nobody offers draws when ordnance is selected per
+    /// slot: it has no measured slot template, so its actor keeps the open
+    /// loadout claim and that is reported too.
+    fn slot_template_problems(&self, phantom_actors: usize) -> usize {
+        if self.loadout.is_none() {
+            phantom_actors
+        } else {
+            0
+        }
     }
 
     /// One player against one enemy, on distinct factions.
@@ -253,6 +221,12 @@ impl Base {
             .with_players(players)
             .with_provenance(synthetic_provenance())
     }
+}
+
+fn slot_ordnance_of(airframe: &ContentId) -> SlotOrdnance {
+    SlotOrdnance::of_airframe(
+        original_airframe_loadout(airframe.key()).expect("a measured airframe template"),
+    )
 }
 
 // ------------------------------------------------------------- assertions ---
@@ -404,7 +378,17 @@ fn check_an_airframe_nobody_offers(catalog: &InstantActionCatalog, base: &Base) 
     let problems = invalid(catalog, draft);
 
     // All three problems come back at once.
-    assert_eq!(problems.len(), 3, "world and both airframes: {problems}");
+    let slot_noise = base.slot_template_problems(2);
+    assert_eq!(
+        problems.len(),
+        3 + slot_noise,
+        "world and both airframes: {problems}"
+    );
+    assert_eq!(
+        problems.with_code(ProblemCode::UnmeasuredActorField).len(),
+        slot_noise,
+        "{problems}"
+    );
     let airframes = problems.with_code(ProblemCode::UnsupportedAirframe);
     assert_eq!(airframes.len(), 2);
     let offenders: Vec<&str> = airframes.iter().filter_map(|p| p.offender()).collect();
@@ -433,7 +417,7 @@ fn check_an_airframe_nobody_offers(catalog: &InstantActionCatalog, base: &Base) 
         problems: problems.clone(),
     };
     let reported = report_problems(&error);
-    assert_eq!(reported.len(), 3);
+    assert_eq!(reported.len(), 3 + slot_noise);
     let joined = problems.to_string();
     for needed in [
         &phantom_a.to_string(),
@@ -673,7 +657,18 @@ fn check_every_problem_comes_back_at_once(catalog: &InstantActionCatalog, base: 
         catalog,
         base.draft(roster, 2).with_world(known(phantom_world)),
     );
-    let mut codes: Vec<ProblemCode> = problems.problems().iter().map(|p| p.code()).collect();
+    let slot_noise = base.slot_template_problems(1);
+    assert_eq!(
+        problems.with_code(ProblemCode::UnmeasuredActorField).len(),
+        slot_noise,
+        "{problems}"
+    );
+    let mut codes: Vec<ProblemCode> = problems
+        .problems()
+        .iter()
+        .map(|p| p.code())
+        .filter(|code| *code != ProblemCode::UnmeasuredActorField)
+        .collect();
     codes.dedup();
     assert_eq!(
         codes,
@@ -685,7 +680,7 @@ fn check_every_problem_comes_back_at_once(catalog: &InstantActionCatalog, base: 
         ],
         "one entry per class, in the stable order: {problems}"
     );
-    assert_eq!(problems.len(), 4);
+    assert_eq!(problems.len(), 4 + slot_noise);
     let sentences: Vec<String> = problems.problems().iter().map(assert_renders).collect();
     assert_eq!(
         problems.to_string(),
@@ -805,7 +800,7 @@ fn check_retail_custom_refusal(catalog: InstantActionCatalog) {
 #[test]
 fn accept_f49_d_04_synthetic_every_invalid_class_is_reported_in_full() {
     let catalog = synthetic_instant_action_catalog();
-    let base = Base::from(&catalog, None);
+    let base = Base::from(&catalog);
     check_a_valid_request_is_accepted(&catalog, &base);
     check_an_empty_roster(&catalog, &base);
     check_an_airframe_nobody_offers(&catalog, &base);
@@ -821,35 +816,69 @@ fn accept_f49_d_04_synthetic_a_refused_selection_starts_no_session() {
     check_a_refused_selection_starts_no_session(synthetic_instant_action_catalog());
 }
 
-/// The pure retail catalog: every measured selection is accepted, so the only
-/// thing standing between a retail-measured request and a launch is the
-/// loadout the installation does not measure.
+/// The pure retail catalog lists no loadout identity and no relation, and says
+/// so: both are empty, unmeasured and cited, so a named loadout is refused and
+/// the per-slot selection is what a request carries.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
-fn accept_f49_d_04_retail_every_measured_selection_is_accepted_and_the_unmeasured_loadout_is_refused()
+fn accept_f49_d_04_retail_the_empty_loadout_and_relation_lists_are_cited_and_a_named_loadout_is_refused()
  {
     let catalog = retail();
     assert!(catalog.is_original_complete());
     assert!(catalog.options().loadouts().is_empty());
-    let base = Base::from(
-        catalog,
-        Some(id(ContentKind::Loadout, "synthetic.ac04_standin_loadout")),
+    assert!(catalog.options().relations().is_empty());
+    assert_eq!(
+        catalog.options().unmeasured_dimensions(),
+        [
+            ScenarioOptionDimension::Loadouts,
+            ScenarioOptionDimension::Relations
+        ],
+        "the retail table keeps exactly loadouts and relations unmeasured"
     );
+    let base = Base::from(catalog);
 
-    // World, environment, both factions, both airframes, tier, rules, seed and
-    // seat count are all retail selections; the loadout is the only refusal and
-    // it is reported once per actor, naming the selection to replace.
-    let problems = invalid(catalog, base.draft(base.roster(), 1));
+    // A named loadout is not a thing the original has: it is refused once per
+    // actor, naming the selection to replace.
+    let stand_in = id(ContentKind::Loadout, "synthetic.ac04_standin_loadout");
+    let named = Base {
+        loadout: Some(stand_in.clone()),
+        ..Base::from(catalog)
+    };
+    let problems = invalid(catalog, named.draft(named.roster(), 1));
     assert_eq!(problems.len(), 2, "{problems}");
     for problem in problems.problems() {
         assert_eq!(problem.code(), ProblemCode::UnsupportedLoadout);
         assert_eq!(problem.dimension(), "roster");
-        assert_eq!(problem.offender(), Some(base.loadout.to_string().as_str()));
+        assert_eq!(problem.offender(), Some(stand_in.to_string().as_str()));
         assert_renders(problem);
     }
 
-    // With the loadout left unmeasured, as the retail presets leave it, the
-    // refusal names the open claim instead of a selection.
+    // An actor that selects per slot and also names a loadout contradicts itself.
+    let conflicted = vec![
+        named
+            .actor(
+                ScenarioSide::Player,
+                0,
+                &base.player_faction,
+                &base.airframes[0],
+            )
+            .with_slot_ordnance(slot_ordnance_of(&base.airframes[0])),
+        base.actor(
+            ScenarioSide::Enemy,
+            0,
+            &base.enemy_faction,
+            &base.airframes[1],
+        ),
+    ];
+    let problems = invalid(catalog, base.draft(conflicted, 1));
+    assert_eq!(problems.len(), 1, "{problems}");
+    assert_eq!(
+        problems.problems()[0].code(),
+        ProblemCode::ConflictingOrdnance
+    );
+
+    // Left as the unmeasured claim and with no slot selection, the refusal names
+    // the open claim instead of a selection.
     let claim = ClaimId::new("f49.d.04.test.loadout-unmeasured").expect("a claim id");
     let actor = |side, slot, faction: &ContentId, airframe: &ContentId| {
         ScenarioActorSpec::try_new(
@@ -888,77 +917,92 @@ fn accept_f49_d_04_retail_every_measured_selection_is_accepted_and_the_unmeasure
     }
 }
 
+/// The positive control, built from the pure retail lists only: the request
+/// every list agrees on is accepted by validation, and lowering it is refused
+/// by name at the one thing still missing, the loadout lowering.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_f49_d_04_retail_a_valid_request_from_the_retail_lists_is_accepted() {
-    let catalog = standin_catalog(retail());
-    let base = Base::from(&catalog, None);
-    check_a_valid_request_is_accepted(&catalog, &base);
+    let catalog = retail();
+    let base = Base::from(catalog);
+    assert!(base.loadout.is_none(), "the retail table lists no loadout");
+    let request = resolve_custom(catalog, base.draft(base.roster(), 1))
+        .expect("a request built from the retail catalog's own table is accepted");
+    assert!(catalog.validate_custom(&request).is_empty());
+    catalog
+        .require_valid_custom(&request)
+        .expect("require_valid_custom agrees");
+    for actor in request.parameters().roster().actors() {
+        assert!(
+            actor.slot_ordnance().is_some(),
+            "ordnance is selected per slot"
+        );
+    }
+    // No production consumer lowers a per-slot selection yet
+    // (LOADOUT_RESOLVING_TASK): lowering names the open loadout, never defaults it.
+    let refusal = lower_custom(catalog, base.draft(base.roster(), 1))
+        .expect_err("the per-slot selection has no lowering yet");
+    let LowerError::UnknownValue { field, .. } = &refusal else {
+        panic!("expected the open loadout to be named, got {refusal:?}");
+    };
+    assert!(field.contains("loadout"), "{field}");
 }
 
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_f49_d_04_retail_an_empty_roster_is_refused_with_a_sentence() {
-    let catalog = standin_catalog(retail());
-    check_an_empty_roster(&catalog, &Base::from(&catalog, None));
-    // And on the pure retail catalog, where the refusal happens before any
-    // option table is consulted.
-    let pure = retail();
-    let base = Base::from(
-        pure,
-        Some(id(ContentKind::Loadout, "synthetic.ac04_standin_loadout")),
-    );
-    assert_eq!(
-        schema_refusal(pure, base.draft(Vec::new(), 1)),
-        ScenarioSchemaError::EmptyRoster
-    );
+    let catalog = retail();
+    check_an_empty_roster(catalog, &Base::from(catalog));
 }
 
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_f49_d_04_retail_an_airframe_no_option_table_offers_is_refused_with_every_other_problem() {
-    let catalog = standin_catalog(retail());
-    check_an_airframe_nobody_offers(&catalog, &Base::from(&catalog, None));
+    let catalog = retail();
+    check_an_airframe_nobody_offers(catalog, &Base::from(catalog));
 }
 
+/// The retail table declares no relation (a measured negative), so there is no
+/// friendly pair to refuse; the same-faction and unoffered-faction refusals are
+/// what retail data can show.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_f49_d_04_retail_an_impossible_faction_pair_is_refused() {
-    let catalog = standin_catalog(retail());
-    let base = Base::from(&catalog, None);
+    let catalog = retail();
+    let base = Base::from(catalog);
     assert!(
-        base.unfightable_faction.is_some(),
-        "the stand-in table declares a friendly pair to refuse"
+        base.unfightable_faction.is_none(),
+        "the retail table declares no relation, so it declares no friendly pair"
     );
-    check_an_impossible_faction_pair(&catalog, &base);
+    check_an_impossible_faction_pair(catalog, &base);
 }
 
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_f49_d_04_retail_a_seat_count_the_roster_cannot_fill_is_refused() {
-    let catalog = standin_catalog(retail());
-    check_a_seat_count_the_roster_cannot_fill(&catalog, &Base::from(&catalog, None));
+    let catalog = retail();
+    check_a_seat_count_the_roster_cannot_fill(catalog, &Base::from(catalog));
 }
 
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_f49_d_04_retail_an_incomplete_draft_names_every_unset_dimension() {
-    let catalog = standin_catalog(retail());
-    check_an_incomplete_draft(&catalog, &Base::from(&catalog, None));
+    let catalog = retail();
+    check_an_incomplete_draft(catalog, &Base::from(catalog));
 }
 
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_f49_d_04_retail_an_unknown_is_refused_with_its_claim_never_defaulted() {
-    let catalog = standin_catalog(retail());
-    check_an_unknown_is_refused_not_defaulted(&catalog, &Base::from(&catalog, None));
+    let catalog = retail();
+    check_an_unknown_is_refused_not_defaulted(catalog, &Base::from(catalog));
 }
 
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_f49_d_04_retail_every_problem_of_a_request_comes_back_at_once() {
-    let catalog = standin_catalog(retail());
-    check_every_problem_comes_back_at_once(&catalog, &Base::from(&catalog, None));
+    let catalog = retail();
+    check_every_problem_comes_back_at_once(catalog, &Base::from(catalog));
 }
 
 #[test]
