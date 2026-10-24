@@ -350,6 +350,19 @@ impl ShellResource {
         }
     }
 
+    /// Hands the hub's Airframe or Engine panel its entries and the one the
+    /// draft holds (#2043). Does nothing without a hub or a built panel.
+    pub fn set_hub_choices(
+        &mut self,
+        panel: super::construction_hub::Panel,
+        options: Vec<super::construction_panels::ChoiceOption>,
+        selected: Option<&cs_types::content::ContentId>,
+    ) {
+        if let Some(hub) = self.hub.as_mut() {
+            hub.page.set_choices(panel, options, selected);
+        }
+    }
+
     /// The Plane Construction hub, when the run has one.
     #[must_use]
     pub fn construction_hub(&self) -> Option<&HubPage> {
@@ -1255,6 +1268,9 @@ fn frame_shell(world: &mut World) {
     if on_toc && let Some(previous) = previous.as_mut() {
         previous.page.hover_at(point);
     }
+    if on_hub && let Some(hub) = hub.as_mut() {
+        hub.page.hover_at(point);
+    }
     let audio_page = &mut state.audio_page;
     if on_audio
         && let Some(page) = audio_page.as_mut()
@@ -1306,8 +1322,21 @@ fn frame_shell(world: &mut World) {
                     .as_ref()
                     .filter(|_| on_toc)
                     .and_then(|previous| point.and_then(|(x, y)| previous.page.row_at(x, y)));
+                let hub_hit = if on_hub && let (Some(hub), Some((x, y))) = (hub.as_mut(), point) {
+                    let done = hub.page.press_at(x, y);
+                    if done == HubOutcome::Nothing {
+                        false
+                    } else {
+                        hub.outcomes.push(done);
+                        true
+                    }
+                } else {
+                    false
+                };
                 if audio_hit {
                     // The Audio page's slider or drop-down took the press.
+                } else if hub_hit {
+                    // The hub's Airframe or Engine drop-down took the press.
                 } else if let (Some(previous), Some(row)) = (previous.as_mut(), toc_row) {
                     previous.page.select_row(row);
                 } else if let (Some(pilots), Some(row)) = (pilots.as_mut(), row) {
@@ -1422,6 +1451,11 @@ fn frame_shell(world: &mut World) {
                     audio.released = shell.pressed_id().map(str::to_owned);
                 }
                 shell.activate_up()
+            }
+            ShellEvent::Escape
+                if on_hub && hub.as_mut().is_some_and(|hub| hub.page.close_list()) =>
+            {
+                ShellOutcome::Nothing
             }
             ShellEvent::Escape
                 if on_audio && audio_page.as_mut().is_some_and(|a| a.page.close_list()) =>
@@ -1887,9 +1921,14 @@ fn name_step(
                     let _ = shell.open(section);
                     // The hub opens on the Airframe tab, whose panel is not
                     // built: counted, with no notice over the hub.
-                    flow.record_not_implemented(
-                        super::construction_hub::Panel::Airframe.not_built().0,
-                    );
+                    if !hub
+                        .page
+                        .panel_built(super::construction_hub::Panel::Airframe)
+                    {
+                        flow.record_not_implemented(
+                            super::construction_hub::Panel::Airframe.not_built().0,
+                        );
+                    }
                     Some(StartStep::Moved {
                         from: flow.screen(),
                         to: flow.screen(),
@@ -1920,7 +1959,13 @@ fn hub_step(
     hub.outcomes.push(done.clone());
     match done {
         HubOutcome::Nothing => None,
-        HubOutcome::ConfirmLeave | HubOutcome::Stay => Some(StartStep::Stay),
+        HubOutcome::ConfirmLeave
+        | HubOutcome::Stay
+        | HubOutcome::List
+        | HubOutcome::Choose { .. } => Some(StartStep::Stay),
+        // A built panel (#2043) is the page's own; the others put up the
+        // marked notice.
+        HubOutcome::Panel(panel) if hub.page.panel_built(panel) => Some(StartStep::Stay),
         HubOutcome::Panel(panel) => flow
             .as_mut()
             .map(|flow| flow.show_not_implemented(panel.not_built().0)),
