@@ -27,6 +27,7 @@ mod campaign {
     mod f29_c_3c_extraction;
     mod f37_c_fu1;
     mod m01_bridge_convoy_spawn;
+    mod m01_c3_win_route_census;
     mod m01_convoy_destruction;
     mod m01_convoy_gun_hits;
     mod m01_convoy_rocket;
