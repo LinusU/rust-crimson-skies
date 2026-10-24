@@ -315,10 +315,10 @@ fn accept_m01_scenery_collider_jungle_plateau_is_solid_from_above() {
         let mut x = -7000.0;
         while x <= -3500.0 {
             total += 1;
-            if let Some((d, _, _)) = first_hit(&tris, Vec3::new(x, top, z), down) {
-                if top - d > 1.0 {
-                    hit += 1;
-                }
+            if let Some((d, _, _)) = first_hit(&tris, Vec3::new(x, top, z), down)
+                && top - d > 1.0
+            {
+                hit += 1;
             }
             x += 100.0;
         }
