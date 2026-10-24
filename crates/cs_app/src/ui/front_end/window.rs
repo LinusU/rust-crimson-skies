@@ -3280,6 +3280,13 @@ enum Step {
     Type(&'static str),
     /// Feeds the Plane Construction hub a [`SMOKE_PLANE`] (#2051).
     HubPlane,
+    /// Feeds the hub's purchase panel the [`SMOKE_PLANE`] and the
+    /// [`SMOKE_CASH`] (#2053).
+    HubPurchase,
+    /// Stands in for the caller of a [`HubOutcome::Commit`]: puts up the
+    /// purchase box (#2053). The smoke keeps no profile, so nothing is
+    /// charged.
+    HubPurchased,
     /// A framebuffer screenshot.
     Shot(&'static str),
 }
@@ -3297,6 +3304,10 @@ const SMOKE_PLANE: super::construction_stats::PlaneRecord =
         guns: [5, 5, 5, 1],
         gun_pairs: 0,
     };
+
+/// The cash the smoke gives the purchase panel: more than [`SMOKE_PLANE`]
+/// costs, so *Purchase Now* is active. A harness value, not the pilot's.
+const SMOKE_CASH: i64 = 9_000;
 
 /// The deterministic pass the smoke drives over `MainMenu` (FE-MENU-2):
 ///
@@ -3623,16 +3634,23 @@ fn flow_script() -> Vec<(u32, Step)> {
         (at(15.5), Step::Mouse(true)),
         (at(15.6), Step::Mouse(false)),
         (at(16.0), Step::Shot("flow-plane-construction-guns")),
-        (at(16.1), Step::Key(KeyCode::Enter, true)),
-        (at(16.2), Step::Key(KeyCode::Enter, false)),
-        (at(16.5), Step::HoverButton("PX_B_CANCEL")),
-        (at(16.6), Step::Mouse(true)),
-        (at(16.7), Step::Mouse(false)),
-        (at(17.1), Step::Shot("flow-cabin-again")),
-        (at(17.3), Step::HoverButton("PC_B_RETURNMM")),
-        (at(17.5), Step::Mouse(true)),
-        (at(17.7), Step::Mouse(false)),
-        (at(18.3), Step::Shot("flow-mainmenu-again")),
+        (at(16.3), Step::HubPurchase),
+        (at(16.4), Step::HoverButton("PX_B_READY")),
+        (at(16.5), Step::Mouse(true)),
+        (at(16.6), Step::Mouse(false)),
+        (at(17.0), Step::Shot("flow-plane-construction-purchase")),
+        (at(17.1), Step::HoverButton("PUR_B_PURCHASE")),
+        (at(17.2), Step::Mouse(true)),
+        (at(17.3), Step::Mouse(false)),
+        (at(17.5), Step::HubPurchased),
+        (at(17.9), Step::Shot("flow-plane-construction-purchased")),
+        (at(18.0), Step::Key(KeyCode::Enter, true)),
+        (at(18.1), Step::Key(KeyCode::Enter, false)),
+        (at(18.6), Step::Shot("flow-cabin-again")),
+        (at(18.8), Step::HoverButton("PC_B_RETURNMM")),
+        (at(19.0), Step::Mouse(true)),
+        (at(19.2), Step::Mouse(false)),
+        (at(19.8), Step::Shot("flow-mainmenu-again")),
     ]
 }
 
@@ -3863,6 +3881,20 @@ fn inject_smoke_input(world: &mut World, state: &mut ShellResource) {
                     plane: Some(SMOKE_PLANE),
                     ..super::construction_hub::HubFeed::default()
                 });
+            }
+            Step::HubPurchase => {
+                let fed = state.set_hub_purchase_feed(super::construction_purchase::PurchaseFeed {
+                    record: SMOKE_PLANE,
+                    cash: SMOKE_CASH,
+                });
+                if !matches!(fed, Ok(true)) {
+                    eprintln!("cs: the smoke could not feed the purchase panel: {fed:?}");
+                }
+            }
+            Step::HubPurchased => {
+                if !state.finish_hub_purchase() {
+                    eprintln!("cs: the smoke found no purchase box to put up");
+                }
             }
             Step::Shot(label) => {
                 smoke.shots_requested += 1;
@@ -4115,12 +4147,13 @@ fn evaluate(
                 facts.intro
             ));
         }
-        // The hub opens on the Airframe tab and the script presses Guns: their
-        // panels are not built (#2043, #2045), so exactly those two are marked.
-        if facts.notices != ["PX_B_AIRFRAME", "PX_B_GUNS"] {
+        // The hub opens on the Airframe tab, the script presses Guns, Ready and
+        // Purchase Now: all their panels are built (#2043, #2045, #2053), so no
+        // marked notice is up.
+        if !facts.notices.is_empty() {
             failures.push(format!(
-                "not-implemented notices during the flow: {:?}, expected the hub's Airframe \
-                 and Guns panels",
+                "not-implemented notices during the flow: {:?}, expected none: the hub's \
+                 panels are built",
                 facts.notices
             ));
         }

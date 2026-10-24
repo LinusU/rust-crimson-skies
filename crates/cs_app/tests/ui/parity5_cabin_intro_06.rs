@@ -6,8 +6,8 @@
 //!   scene on a GPU: main menu, Campaign, a typed new pilot, the intro movie
 //!   (three frames, then skipped), the cabin, the Previous Missions screen
 //!   (#1956), its Return to Cabin, the Plane Name dialog (#1958) with a typed name and
-//!   its OK, the construction hub (#2042) with its Guns tab and Cancel, and Return to
-//!   Main Menu. It is `#[ignore]`d
+//!   its OK, the construction hub (#2042) with its Guns tab, Ready's purchase panel
+//!   (#2053) and Purchase Now, and Return to Main Menu. It is `#[ignore]`d
 //!   because CI has neither the installation nor a GPU. Nothing here is
 //!   `human_play` or `verified_original`.
 
@@ -80,6 +80,8 @@ fn accept_parity5_cabin_intro_06_the_windowed_smoke_plays_the_intro_then_the_cab
         "flow-plane-name-typed",
         "flow-plane-construction",
         "flow-plane-construction-guns",
+        "flow-plane-construction-purchase",
+        "flow-plane-construction-purchased",
         "flow-cabin-again",
         "flow-mainmenu-again",
     ] {
