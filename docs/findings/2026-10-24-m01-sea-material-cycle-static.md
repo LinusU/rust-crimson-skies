@@ -41,8 +41,7 @@ named by the 0.001 factor only).
 
 * `render/material_cycle.rs`: the cycle rule (`cycle_delta`, `cycle_frame`, `cycle_advance`) and the system that sets
   each cycled material's base colour texture every frame; `TextureBinder` registers every cycled material whose rate is
-  positive and whose frames all resolve (14 of the 627 retail cycled materials are not affected: rate 0 keeps the
-  first frame, as the engine's update would); the world draw's shaded and sky copies, and the horizon sea's copy, follow
+  positive and whose frames all resolve (a rate of 0 keeps the first frame, as the engine's update would); the world draw's shaded and sky copies, and the horizon sea's copy, follow
   the original material's cycle (255 water parts, the horizon plane).
 * Retail member: M01's water material 220 is a 16-frame cycle at rate 10.0.
 
