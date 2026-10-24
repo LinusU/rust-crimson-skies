@@ -328,6 +328,15 @@ pub struct MissionGroundTarget {
     pub healthy: Option<String>,
     /// The node's authored `destroyed` child, when it has one.
     pub destroyed: Option<String>,
+    /// Every stored slot of the target's intact presentation
+    /// ([`crate::mission_targets::BoundTarget::intact_slots`]): the drawn
+    /// nodes the layout pass hides when the damage authority destroys the
+    /// target.
+    pub intact_slots: Vec<u32>,
+    /// Every stored slot under the authored `destroyed` child
+    /// ([`crate::mission_targets::BoundTarget::destroyed_slots`]): the drawn
+    /// nodes the pass shows instead.
+    pub destroyed_slots: Vec<u32>,
     /// The damage-coupling field names the world group states for the node,
     /// in [`crate::mission_targets::DAMAGE_COUPLING_FIELDS`] order — read,
     /// never interpreted.
@@ -1442,6 +1451,8 @@ fn spawn_mission_actors_under(
                     target_half_extents_m: target.target_half_extents_m,
                     healthy: target.healthy.clone(),
                     destroyed: target.destroyed.clone(),
+                    intact_slots: target.intact_slots.clone(),
+                    destroyed_slots: target.destroyed_slots.clone(),
                     coupling: target.coupling.fields.clone(),
                     objective: target.objective,
                     other_target: target.other_target,

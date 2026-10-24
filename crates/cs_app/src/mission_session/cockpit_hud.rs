@@ -703,6 +703,8 @@ mod tests {
             target_half_extents_m: [0.0; 3],
             healthy: None,
             destroyed: None,
+            intact_slots: Vec::new(),
+            destroyed_slots: Vec::new(),
             coupling: Vec::new(),
             objective,
             other_target: false,

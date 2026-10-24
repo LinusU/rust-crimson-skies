@@ -551,6 +551,8 @@ fn accept_parity2_m01_target_indicators_pose_sync_updates_records() {
         target_half_extents_m: [0.0; 3],
         healthy: None,
         destroyed: None,
+        intact_slots: Vec::new(),
+        destroyed_slots: Vec::new(),
         coupling: Vec::new(),
         objective: true,
         other_target: false,
