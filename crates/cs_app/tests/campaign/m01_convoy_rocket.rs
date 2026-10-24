@@ -105,6 +105,7 @@ fn composed(label: &str) -> (Scratch, App) {
     let stage = synthetic_stage(scratch.path());
     let mut app = build_headless(&stage).expect("the synthetic stage composes");
     app.update();
+    crate::campaign::common::put_player_in_flight(&mut app, 55.0);
     (scratch, app)
 }
 

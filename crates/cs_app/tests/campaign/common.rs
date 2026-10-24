@@ -220,3 +220,34 @@ pub(crate) fn ready_campaign() -> CampaignBindings {
         ready_binding("M03", "Synthetic Three", Progression::known(Vec::new())),
     ])
 }
+
+/// Puts the composed mission's player body in cruising flight along its nose.
+///
+/// The M01 hand-over is a standstill (#1845): speed zero, the actual throttle
+/// spooling up from 0, so a body left alone falls and pitches over before a
+/// test that aims ordnance along the nose can use it. Tests of other
+/// behaviour that need an aircraft already in flight choose the speed
+/// themselves (a value of the test, not of the original) and take the law's
+/// own throttle to the held command.
+pub(crate) fn put_player_in_flight(app: &mut bevy::app::App, speed_m_s: f32) {
+    use avian3d::prelude::{AngularVelocity, LinearVelocity, Rotation};
+    use bevy::prelude::{Vec3, With};
+    use cs_app::mission_session::MissionPlayerBody;
+    use cs_app::playtest::scene::PlaytestOriginalFlight;
+
+    let world = app.world_mut();
+    let mut bodies = world.query_filtered::<(
+        &mut LinearVelocity,
+        &mut AngularVelocity,
+        &Rotation,
+        &mut PlaytestOriginalFlight,
+    ), With<MissionPlayerBody>>();
+    for (mut velocity, mut angular, rotation, mut record) in bodies.iter_mut(world) {
+        let nose = rotation.0 * Vec3::NEG_Z * speed_m_s;
+        velocity.0 = nose;
+        angular.0 = Vec3::ZERO;
+        record.state.velocity_mps = nose.to_array().map(f64::from);
+        record.state.throttle = record.command.throttle;
+        record.state.angular_momentum_world = [0.0; 3];
+    }
+}

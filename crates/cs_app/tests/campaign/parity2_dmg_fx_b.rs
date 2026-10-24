@@ -90,6 +90,7 @@ fn accept_parity2_dmg_fx_b_a_burst_plans_the_stored_number_inside_the_stored_ran
 #[test]
 fn accept_parity2_dmg_fx_b_a_rocket_detonation_draws_the_stored_puffs_and_they_expire() {
     let (_scratch, mut app, actor) = armed_stage("parity2-dmg-fx-b-rocket");
+    crate::campaign::common::put_player_in_flight(&mut app, 55.0);
     assert!(
         app.world_mut()
             .resource_mut::<TargetingSession>()
