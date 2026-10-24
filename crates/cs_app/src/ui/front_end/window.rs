@@ -258,6 +258,8 @@ struct HubState {
         Option<[u8; super::construction_stats::STATS]>,
         Option<String>,
     )>,
+    /// The pilot's working plane and cash, from the Plane Name OK on.
+    pilot: Option<super::pilot_plane::PilotPlane>,
     /// The Sell hangar's overlay entities while it is on screen.
     hangar_scene: Vec<Entity>,
     /// The surface the hangar overlay was laid out for.
@@ -267,6 +269,22 @@ struct HubState {
 }
 
 impl HubState {
+    /// Hands the hub and its purchase panel the figures of the pilot's
+    /// working plane; call again after the record or the cash changes.
+    fn feed_pilot(&mut self) {
+        let Some(pilot) = &self.pilot else {
+            return;
+        };
+        self.page
+            .set_feed(pilot.hub_feed(self.page.airframe_names()));
+        if let Some(feed) = pilot.purchase_feed() {
+            match self.page.set_purchase_feed(feed) {
+                Ok(_) => {}
+                Err(error) => eprintln!("cs: the purchase panel is not fed: {error:?}"),
+            }
+        }
+    }
+
     /// Redraws the hangar's overlay (its page or its OK box changed).
     fn touch_hangar(&mut self) {
         if let Some(hangar) = self.page.hangar_mut() {
@@ -985,6 +1003,7 @@ impl Plugin for FrontEndShellPlugin {
                     base_buttons: None,
                     panes_of: None,
                     stats_of: None,
+                    pilot: None,
                     hangar_scene: Vec::new(),
                     hangar_surface: (0, 0),
                     note: None,
@@ -2272,6 +2291,10 @@ fn name_step(
             hub.page.open(&name);
             hub.page.set_default_loadout(default_loadout);
             hub.outcomes.clear();
+            // A new pilot's start state is `fAllowAll` = 0: the profile's
+            // value is unread (docs/findings/2026-10-24-parity5-new-pilot-start-state.md).
+            hub.pilot = super::pilot_plane::PilotPlane::new_pilot(false, default_loadout);
+            hub.feed_pilot();
             match flow.as_mut() {
                 Some(flow) => {
                     let section = flow.open_construction_hub()?;
@@ -3439,8 +3462,6 @@ enum Step {
     /// Typed text, as one `KeyboardInput` press per character (the message
     /// the OS text input writes), for the pilot page's edit box.
     Type(&'static str),
-    /// Feeds the Plane Construction hub a [`SMOKE_PLANE`] (#2051).
-    HubPlane,
     /// Feeds the hub's purchase panel the [`SMOKE_PLANE`] and the
     /// [`SMOKE_PURCHASE_CASH`] (#2053).
     HubPurchase,
@@ -3452,10 +3473,10 @@ enum Step {
     Shot(&'static str),
 }
 
-/// The plane record the flow smoke feeds the hub so the statistics, the bar
-/// graphs and the blueprint are on screen. It is a harness value chosen for
-/// the picture, not a plane of the original: the start flow keeps no
-/// per-pilot plane yet (task #2052).
+/// The plane record the flow smoke feeds the purchase panel so the totals
+/// are on screen. It is a harness value chosen for the picture, not a plane
+/// of the original; the hub itself shows the pilot's own working plane
+/// ([`super::pilot_plane`], #2075).
 const SMOKE_PLANE: super::construction_stats::PlaneRecord =
     super::construction_stats::PlaneRecord {
         airframe: 1,
@@ -3790,7 +3811,6 @@ fn flow_script() -> Vec<(u32, Step)> {
         (at(14.5), Step::HoverButton("PN_B_OK")),
         (at(14.6), Step::Mouse(true)),
         (at(14.7), Step::Mouse(false)),
-        (at(15.0), Step::HubPlane),
         (at(15.2), Step::Shot("flow-plane-construction")),
         (at(15.4), Step::HoverButton("PX_B_GUNS")),
         (at(15.5), Step::Mouse(true)),
@@ -4050,12 +4070,6 @@ fn inject_smoke_input(world: &mut World, state: &mut ShellResource) {
                         window,
                     });
                 }
-            }
-            Step::HubPlane => {
-                state.set_hub_feed(super::construction_hub::HubFeed {
-                    plane: Some(SMOKE_PLANE),
-                    ..super::construction_hub::HubFeed::default()
-                });
             }
             Step::HubPurchase => {
                 let fed = state.set_hub_purchase_feed(super::construction_purchase::PurchaseFeed {
