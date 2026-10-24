@@ -35,10 +35,10 @@ use cs_types::space::WorldPosition;
 
 use crate::campaign::vs_m01_rt_window::{Scratch, synthetic_stage};
 
-const MAX_FRAMES: usize = 400;
+pub(crate) const MAX_FRAMES: usize = 400;
 const STANDOFF_M: f32 = 80.0;
 
-fn key(name: &str) -> DamageNodeKey {
+pub(crate) fn key(name: &str) -> DamageNodeKey {
     DamageNodeKey::new(name).expect("a damage node key")
 }
 
@@ -46,14 +46,14 @@ fn claim() -> ClaimId {
     ClaimId::new("m01-convoy-gun-hits.accept-test").expect("claim")
 }
 
-fn fire(app: &mut App) {
+pub(crate) fn fire(app: &mut App) {
     app.world_mut().insert_resource(MissionCockpitActions {
         actions: vec![Action::Flight(FlightCommand::FirePrimary)],
     });
     app.update();
 }
 
-fn idle(app: &mut App) {
+pub(crate) fn idle(app: &mut App) {
     app.world_mut().insert_resource(MissionCockpitActions {
         actions: Vec::new(),
     });
@@ -63,7 +63,7 @@ fn idle(app: &mut App) {
 /// Whether the damage authority holds `actor` as destroyed: its recorded
 /// lifecycle, not one tick's report, which a later tick of the same update
 /// overwrites.
-fn destroyed(app: &App, actor: ActorId) -> bool {
+pub(crate) fn destroyed(app: &App, actor: ActorId) -> bool {
     app.world()
         .resource::<SessionDamageResolver>()
         .resolver()
@@ -71,7 +71,7 @@ fn destroyed(app: &App, actor: ActorId) -> bool {
 }
 
 /// Parks the player `STANDOFF_M` short of `point`, nose on it, at rest.
-fn aim_player_at(app: &mut App, point: Vec3, from_side: Vec3) {
+pub(crate) fn aim_player_at(app: &mut App, point: Vec3, from_side: Vec3) {
     let player = app.world().resource::<MissionComposition>().player;
     let eye = point + from_side.normalize() * STANDOFF_M;
     let look = Transform::from_translation(eye).looking_at(point, Vec3::Y);
@@ -235,7 +235,7 @@ fn accept_m01_convoy_gun_hits_a_friendly_ground_target_is_not_damaged() {
     teardown(&mut app);
 }
 
-fn game_dir() -> PathBuf {
+pub(crate) fn game_dir() -> PathBuf {
     PathBuf::from(std::env::var_os("CS_GAME_DIR").expect("CS_GAME_DIR must be set"))
 }
 
