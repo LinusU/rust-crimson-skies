@@ -7074,3 +7074,84 @@ value = 0
 va = 0x40ac0f
 claim = "OWNER-STATIC-2026-10-24"
 provenance = "static"
+
+
+# The animation object's HEALTH consumer (M01-HYDROGEN-FIRE-HOOK, #2088, finding
+# docs/findings/2026-10-24-m01-animation-health-consumer.md). An
+# ANIMATION_DEFINITION is an object of the array at [0x9fd14c] (stride 0x110,
+# count word [0x9fd14a]); `ACTIVATION` is its byte +0xa1 (0 weapon hit, 1
+# COLLIDE_HIT, 2 WEAPON_OR_COLLIDE_HIT, 3 ON_CALL, 4 ON_STARTUP), HEALTH is
+# +0xb4 (max) and +0xb8 (current), ARMOR is +0xbc. Provenance `static`; nothing
+# is `verified_original`.
+
+[[animation_health_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "anim.object_zeroed"
+va = 0x0051fc5c
+bytes = "b944000000f3ab"
+fact = "the allocator of a new animation object zero-fills 0x44 dwords (0x110 bytes): a definition that states no ACTIVATION is activation 0 (weapon hit), ARMOR 0 and HEALTH 0"
+
+[[animation_health_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "anim.health_store"
+va = 0x0051eee5
+bytes = "8983b40000008983b8000000"
+fact = "the HEALTH handler stores the value into both +0xb4 (maximum) and +0xb8 (current)"
+
+[[animation_health_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "anim.armor_store"
+va = 0x0051e425
+bytes = "d99bbc000000"
+fact = "the ARMOR handler (string 0x633d40) stores the value at +0xbc"
+
+[[animation_health_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "anim.weapon_hit_registration"
+va = 0x0052329c
+bytes = "84c0751f"
+fact = "registration walk 0x5231e2: an object whose activation byte +0xa1 is 0 registers callback 0x4e7220 (push 0x4e7220 at 0x5232ac) as the weapon-hit handler of its target node [object+0x6c] through 0x5abbf0; activations 1 and 2 register 0x4e7150 as the collide handler"
+
+[[animation_health_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "anim.weapon_hit_dispatch"
+va = 0x005abe62
+bytes = "8b0753565550ff5704"
+fact = "the hit dispatcher 0x5abcf0 calls the node's registered handler as [handler+4]([handler], weapon, record, damage pair): the animation object is the context"
+
+[[animation_health_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "anim.hit_weapon_filter"
+va = 0x004e7224
+bytes = "8b4874f6c504"
+fact = "0x4e7220 returns at once when the weapon's flag word [weapon+0x74] has bit 0x400 (set by the weapon key FREEZE, 0x5ae321): such a weapon never counts against an animation's health"
+
+[[animation_health_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "anim.hit_amount"
+va = 0x004e724a
+bytes = "d94004d8a6bc000000"
+fact = "the counted amount is damage[1] (the health channel of the pair, [damage+4]) minus the object's ARMOR (+0xbc); the result is stored back into damage[1]"
+
+[[animation_health_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "anim.health_subtract"
+va = 0x004e7263
+bytes = "d986b8000000d8e1d99eb800"
+fact = "only when the amount is greater than 0 (compare with 0.0f at 0x4e7253, branch 0x4e7261): current health +0xb8 -= amount, with no clamp at 0"
+
+[[animation_health_fact]]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+name = "anim.start_at_zero"
+va = 0x004e727f
+bytes = "d81dc832600083c404dfe0f6"
+fact = "after every counted hit, whether or not it did damage, current health +0xb8 is compared with 0.0f (0x6032c8): at or below zero the object is started through 0x4ed730(object, ten zero arguments) (0x4e729f..0x4e72a4), which starts its default (unnamed) sequence; the handler returns 0"
