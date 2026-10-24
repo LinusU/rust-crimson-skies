@@ -1062,6 +1062,38 @@ pub struct AnimationDefinitionSite {
 }
 
 impl AnimationDefinitionSite {
+    /// Whether a wildcard `NAME1` pair of this definition expands to the stored
+    /// record name `animation` (and, when given, to its `object`).
+    ///
+    /// A group damage definition spells its records once, as a state name
+    /// `P*` bound to a node path ending in `Q*` (`hydrobombboom*` over
+    /// `cargozep1/underneath/hydrogentank*`). The stored records are
+    /// `P<s>` on `Q<s>` for one non-empty suffix `s`, the same on both sides
+    /// (`hydrobombboom1` on `hydrogentank1`). Only a lone trailing `*` on both
+    /// spellings is read; any other wildcard shape is left undeclared.
+    #[must_use]
+    pub fn expands_state(&self, animation: &str, object: Option<&str>) -> bool {
+        let DefinitionObjects::StateBindings(bindings) = self.objects() else {
+            return false;
+        };
+        bindings.iter().any(|binding| {
+            let Some(state) = lone_trailing_star(binding.state()) else {
+                return false;
+            };
+            let Some(suffix) = animation.strip_prefix(state).filter(|s| !s.is_empty()) else {
+                return false;
+            };
+            let Some(node) = binding
+                .path()
+                .terminal()
+                .and_then(|terminal| lone_trailing_star(terminal.stored()))
+            else {
+                return false;
+            };
+            object.is_none_or(|object| object.strip_prefix(node) == Some(suffix))
+        })
+    }
+
     /// Records a located definition.
     #[must_use]
     pub fn new(
@@ -1256,6 +1288,12 @@ pub fn resolve_animation(
             .filter(|site| site.animation_name().is_none() && names_only(site, animation))
             .collect();
     }
+    if hits.is_empty() {
+        hits = declarations
+            .iter()
+            .filter(|site| site.animation_name().is_none() && site.expands_state(animation, None))
+            .collect();
+    }
     let mut hits = hits.into_iter().cloned();
     let Some(first) = hits.next() else {
         return BindingResolution::Unresolved;
@@ -1266,6 +1304,13 @@ pub fn resolve_animation(
     let mut sites = vec![first, second];
     sites.extend(hits);
     BindingResolution::Ambiguous(sites)
+}
+
+/// The text before a lone trailing `*`, or `None` for any other spelling.
+fn lone_trailing_star(stored: &str) -> Option<&str> {
+    stored
+        .strip_suffix(WILDCARD_CHAR)
+        .filter(|prefix| !prefix.contains(WILDCARD_CHAR))
 }
 
 /// Whether the definition's only object is the literal `name`.
@@ -2231,4 +2276,68 @@ fn read_sequence(value: &ZrdValue) -> AnimationSequence {
         });
     }
     AnimationSequence { name, entries }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cs_types::evidence::ContentHash;
+
+    fn group_site(state: &str, path: &str) -> AnimationDefinitionSite {
+        let binding = StateBinding::new(state, NodePathSelector::parse(path).expect("a path"));
+        let span = SourceSpan::new(
+            ContentHash::from_bytes([1u8; 32]),
+            "zbd/synthetic/zrdr.zbd",
+            None,
+            0,
+            1,
+            None,
+        )
+        .expect("a span");
+        AnimationDefinitionSite::new(
+            "zbd/synthetic/zrdr.zbd",
+            "group.zrd",
+            span,
+            DeclaredAnimationDefinition {
+                index: 0,
+                animation_name: None,
+                objects: DefinitionObjects::StateBindings(vec![binding]),
+                activation: None,
+                prerequisite: None,
+                sequences: Vec::new(),
+                uninterpreted_fields: Vec::new(),
+            },
+        )
+    }
+
+    /// A lone trailing `*` on the state name and the path's terminal expands
+    /// to one record per shared suffix, and nothing else resolves.
+    #[test]
+    fn accept_m01_wildcard_declare_state_names_expand_over_a_shared_suffix() {
+        let site = group_site("boom*", "zep/underneath/tank*");
+        assert!(site.expands_state("boom1", None));
+        assert!(site.expands_state("boom1", Some("tank1")));
+        assert!(
+            !site.expands_state("boom1", Some("tank2")),
+            "suffix differs"
+        );
+        assert!(!site.expands_state("boom", None), "empty suffix");
+        assert!(!site.expands_state("other1", None));
+        let declarations = [site];
+        assert!(matches!(
+            resolve_animation("boom3", &declarations),
+            BindingResolution::Single(_)
+        ));
+        assert!(matches!(
+            resolve_animation("nope3", &declarations),
+            BindingResolution::Unresolved
+        ));
+        let literal = group_site("boom", "zep/tank");
+        assert!(!literal.expands_state("boom1", None));
+        let inner = group_site("b*om*", "zep/tank*");
+        assert!(
+            !inner.expands_state("b1om2", None),
+            "only a lone trailing *"
+        );
+    }
 }

@@ -14,7 +14,6 @@
 use std::collections::BTreeSet;
 
 use bevy::prelude::App;
-use cs_app::animation::mission::PlayRefusal;
 use cs_app::animation::mission::{
     AnimationNameIndex, AnimationRecordFacts, CarrierRecords, RecordSequence, SequenceEvents,
 };
@@ -304,8 +303,8 @@ fn strike(app: &mut App, node: &str, damage: f64, serial: u32) {
 /// targets; no tank record runs before a hit; three hits of 6 health points
 /// leave 15, 9, 3 and -3, and the record starts on the third, not on the
 /// first hit that destroys the target's designed one-unit pool; the other
-/// three tank records are left to `call_others`. The player's answer today is
-/// the named `Undeclared` refusal (see the body).
+/// three tank records are started by `call_others`. The player's answer today is
+/// a started `hydrobombboom1` whose default sequence runs `hydrogen_fire`.
 #[test]
 #[ignore = "requires CS_GAME_DIR"]
 fn accept_m01_hydrogen_fire_hook_hits_on_a_tank_empty_its_pool_and_ask_for_its_record() {
@@ -366,27 +365,29 @@ fn accept_m01_hydrogen_fire_hook_hits_on_a_tank_empty_its_pool_and_ask_for_its_r
     assert_eq!(starts.len(), 1, "{starts:?}");
     assert_eq!(starts[0].animation, "hydrobombboom1");
     assert_eq!(starts[0].node, "hydrogentank1");
-    // The start is made, and the record player refuses it today: no
-    // `ANIMATION_NAME` declares `hydrobombboom1` (the group definition spells
-    // the state name `hydrobombboom*` in `NAME1`), so the join refuses the row
-    // as undeclared. That is the named gap between this hook and a running
-    // `hydrogen_fire`; see the finding's follow-up table.
-    assert_eq!(starts[0].outcome, ActivationOutcome::Refused);
-    let refused = host(&app)
-        .animation()
-        .refused_record("hydrobombboom1")
-        .expect("the refusal is kept by name");
+    // The group damage definition spells the record only as the wildcard
+    // state name `hydrobombboom*` over `hydrogentank*`; the join expands it to
+    // `hydrobombboom1` on `hydrogentank1`, so the start is made.
+    assert_eq!(starts[0].outcome, ActivationOutcome::Started);
+    assert!(running(&app).contains("hydrobombboom1"));
+    // Its default sequence calls `hydrogen_fire`, which is what OBJECTIVE25's
+    // `ANIM_STATE` gate reads as `Running`.
     assert!(
-        refused
-            .refusals()
+        host(&app)
+            .call_animations()
+            .activations()
             .iter()
-            .any(|refusal| matches!(refusal, PlayRefusal::Undeclared { .. })),
-        "{:?}",
-        refused.refusals()
+            .any(|call| call.caller() == "hydrobombboom1"
+                && call.name() == "hydrogen_fire"
+                && call.outcome() == ActivationOutcome::Started),
+        "{:?} {:?}",
+        host(&app).call_animations().activations(),
+        host(&app).call_animations().refused()
     );
-    assert!(!running(&app).contains("hydrobombboom1"));
+    assert!(running(&app).contains("hydrogen_fire"));
     for other in ["hydrobombboom2", "hydrobombboom3", "hydrobombboom4"] {
-        assert!(!running(&app).contains(other), "{other}: call_others' job");
+        // Not hit, but started by the first record's `call_others` call.
+        assert!(running(&app).contains(other), "{other}: call_others' job");
     }
     teardown(&mut app);
 }

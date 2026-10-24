@@ -2045,7 +2045,9 @@ fn check_agreements(
         .selectors()
         .map(|selector| selector.stored().to_owned())
         .collect();
-    if !declared.iter().any(|name| name == &facts.object_name) {
+    if !declared.iter().any(|name| name == &facts.object_name)
+        && !site.expands_state(&facts.anim_name, Some(&facts.object_name))
+    {
         refusals.push(PlayRefusal::ObjectNameDisagrees {
             reason: OBJECT_NAME_DISAGREES_REASON,
             declared,
