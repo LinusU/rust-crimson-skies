@@ -526,6 +526,8 @@ pub struct MenuShell {
     cursor: Option<(String, (u32, u32))>,
     /// Presses that had no known effect, in order: `(section, id, effect)`.
     unhandled: Vec<(String, String, UnhandledEffect)>,
+    /// The row id of the button the last press applied.
+    applied: Option<String>,
 }
 
 impl MenuShell {
@@ -570,6 +572,7 @@ impl MenuShell {
             pointer: None,
             cursor,
             unhandled: Vec::new(),
+            applied: None,
         }
     }
 
@@ -1008,6 +1011,13 @@ impl MenuShell {
         })
     }
 
+    /// The row id of the button whose press the last outcome came from: what
+    /// tells Accept from Cancel when both start the same screen.
+    #[must_use]
+    pub fn last_applied(&self) -> Option<&str> {
+        self.applied.as_deref()
+    }
+
     /// Applies one button's effect.
     fn apply(&mut self, index: usize) -> ShellOutcome {
         let Some(section) = self.section().cloned() else {
@@ -1016,6 +1026,7 @@ impl MenuShell {
         let Some(button) = section.buttons.get(index) else {
             return ShellOutcome::Nothing;
         };
+        self.applied = Some(button.id.clone());
         if let Some(checked) = button.check {
             let id = button.id.clone();
             let checked = !checked;
