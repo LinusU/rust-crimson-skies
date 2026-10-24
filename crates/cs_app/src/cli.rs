@@ -83,10 +83,9 @@ pub struct MissionRequest {
     /// destroyed every truck and judges framebuffer screenshots of the intact
     /// and the destroyed convoy (Rally #2047).
     pub smoke_convoy_kill: bool,
-    /// `--smoke-success`: the smoke places the player inside `OBJECTIVE3`'s
-    /// radius of `workersvoyagezep`, presses the guns key until the
-    /// zeppelin's engine parts are out of play and records which objective
-    /// blocks the host reported completed (Rally #2081 `M01-SMOKE-SUCCESS-A`).
+    /// `--smoke-success`: the smoke places the player inside `OBJECTIVE12`'s
+    /// radius of the `shipwreck` site and records which objective blocks the
+    /// host reported completed (Rally #2081 `M01-SMOKE-SUCCESS-A`).
     pub smoke_success: bool,
     /// `--from-start-flow`: the mission was handed over by the start flow
     /// (`cs --cs-path <dir>`), so leaving it for the cabin (the debrief's
@@ -995,9 +994,8 @@ WINDOWED PLAYTEST (development, not original)
         (a test placement), presses the guns key until the damage authority
         has destroyed every truck and judges the observation rows and
         framebuffer screenshots of the intact and the destroyed convoy
-        --smoke-success places the player inside OBJECTIVE3's radius of
-        workersvoyagezep (a test placement), presses the guns key until the
-        zeppelin's engine parts are out of play and judges which objective
+        --smoke-success places the player inside OBJECTIVE12's radius of
+        the shipwreck site (a test placement) and judges which objective
         blocks the mission host reported completed
 
     --mission <id> [--joystick <vid:pid|name>] [--force-feedback-gain <percent>]

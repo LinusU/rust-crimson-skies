@@ -1092,10 +1092,9 @@ pub enum MissionSmokeMode {
     /// every truck, and framebuffer screenshots of the intact and the
     /// destroyed convoy are judged (#2047). No damage is written by the smoke.
     ConvoyKill,
-    /// `--smoke-success`: the player is placed inside `OBJECTIVE3`'s radius of
-    /// `workersvoyagezep`, presses the guns key until the zeppelin's engine
-    /// parts are out of play, and the blocks the host reported completed are
-    /// recorded (#2081). No damage is written by the smoke.
+    /// `--smoke-success`: the player is placed inside `OBJECTIVE12`'s radius
+    /// of the `shipwreck` site and the blocks the host reported completed are
+    /// recorded (#2081). No state is written by the smoke.
     Success,
 }
 
@@ -4322,8 +4321,8 @@ fn smoke_script(
         // `convoy_kill::smoke_convoy_kill` places the player, fires the guns
         // and photographs the convoy, then hands over to `Final`.
         _ if config.mode == MissionSmokeMode::ConvoyKill => {}
-        // `success::smoke_success` places the player, fires the guns and
-        // photographs the zeppelin, then hands over to `Final`.
+        // `success::smoke_success` places the player at the shipwreck
+        // site and photographs it, then hands over to `Final`.
         _ if config.mode == MissionSmokeMode::Success => {}
         _ if config.mode == MissionSmokeMode::Engagement => {
             if data.phase != Phase::Final && data.phase != Phase::Ended {

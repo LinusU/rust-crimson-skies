@@ -1,6 +1,6 @@
 //! Rally #2081 (`M01-SMOKE-SUCCESS-A`): the owner-command smoke's success
-//! stage, part A (`--smoke-success`): the proximity beat and the engine-part
-//! beat. Task test prefix: `accept_m01_smoke_success_a_`.
+//! stage, part A (`--smoke-success`): the `shipwreck` proximity beat
+//! (`OBJECTIVE12`, `OBJECTIVE27`). Task test prefix: `accept_m01_smoke_success_a_`.
 //!
 //! The judging is pure, so these tests drive the same `evaluate_mission_smoke`
 //! the windowed run ends with. The windowed half is the retail run recorded in
@@ -22,37 +22,17 @@ fn check<'a>(checks: &'a [Check], id: &str) -> &'a Check {
         .unwrap_or_else(|| panic!("no check named {id}: {checks:#?}"))
 }
 
-fn engine_nodes() -> Vec<String> {
-    (1..=9)
-        .flat_map(|n| [format!("reng{n}"), format!("leng{n}")])
-        .collect()
-}
-
 fn full() -> SuccessMetrics {
-    let parts = engine_nodes();
     SuccessMetrics {
         start_frame: Some(2_600),
         centre: Some([0.0, 500.0, 0.0]),
-        destroyed: parts
-            .iter()
-            .enumerate()
-            .map(|(index, node)| (node.clone(), 2_700 + index as u32 * 5))
-            .collect(),
-        parts,
         placements: 90,
-        fire_presses: 300,
-        last_destroyed_frame: Some(2_800),
-        completed: vec![(2, 2_610), (5, 2_810), (7, 2_820), (8, 2_830)],
+        completed: vec![(11, 2_610), (26, 2_740)],
         frames_delivered: true,
         near_permille: 900,
-        out_permille: 900,
-        out_shot_frame: Some(2_830),
-        part_report_present: true,
-        parts_reported: 39,
-        part_refusals: Vec::new(),
-        engine_chains_reported: 18,
-        parts_never_found: false,
-        gave_up: false,
+        marked_permille: 900,
+        marked_shot_frame: Some(2_740),
+        site_never_found: false,
     }
 }
 
@@ -108,8 +88,7 @@ fn accept_m01_smoke_success_a_empty_stage_fails_every_check() {
     let checks = evaluate_mission_smoke(&measured(SuccessMetrics::default()));
     for id in [
         "success_proximity_block_completed",
-        "success_engines_out_by_fire_key",
-        "success_engine_ladders_completed",
+        "success_mark_block_completed",
         "success_frames_drawn",
     ] {
         assert!(
@@ -130,25 +109,15 @@ fn accept_m01_smoke_success_a_whole_sequence_passes() {
 #[test]
 fn accept_m01_smoke_success_a_each_missing_piece_fails_its_own_check() {
     type Mutate = fn(&mut SuccessMetrics);
-    let cases: [(&str, Mutate); 9] = [
+    let cases: [(&str, Mutate); 5] = [
         ("success_proximity_block_completed", |c| {
-            c.completed.retain(|(block, _)| *block != 2)
+            c.completed.retain(|(block, _)| *block != 11)
         }),
-        ("success_engines_out_by_fire_key", |c| {
-            c.destroyed.pop();
+        ("success_proximity_block_completed", |c| c.placements = 0),
+        ("success_mark_block_completed", |c| {
+            c.completed.retain(|(block, _)| *block != 26)
         }),
-        ("success_engines_out_by_fire_key", |c| c.fire_presses = 0),
-        ("success_engines_out_by_fire_key", |c| c.gave_up = true),
-        ("success_engines_out_by_fire_key", |c| {
-            c.parts.pop();
-        }),
-        ("success_engine_ladders_completed", |c| {
-            c.completed.retain(|(block, _)| *block != 7)
-        }),
-        ("success_engine_ladders_completed", |c| {
-            c.completed.retain(|(block, _)| *block != 8)
-        }),
-        ("success_frames_drawn", |c| c.out_permille = 10),
+        ("success_frames_drawn", |c| c.marked_permille = 10),
         ("success_frames_drawn", |c| c.frames_delivered = false),
     ];
     for (id, mutate) in cases {
