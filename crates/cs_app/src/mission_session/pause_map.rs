@@ -42,7 +42,8 @@
 //! `docs/findings/2026-10-22-pause-map-presenter.md` and
 //! `docs/findings/2026-10-22-pause-map-live-objectives.md`: the faces `Andy
 //! Bold` and `Trebuchet MS Bold` are not in the installation, so the note
-//! title, list and the button labels use Bevy's default face (colours and
+//! title, list and the button labels use Bevy's default face, a monospace
+//! (`docs/findings/2026-10-24-pause-map-button-labels.md`; colours and
 //! offsets are the record's); the "?" to number rule, the check mark's
 //! placement and the `WORLD` mapping are readings, not decodes. Nothing here
 //! is `verified_original`.
@@ -56,9 +57,10 @@ use bevy::app::AppExit;
 use bevy::ecs::schedule::IntoScheduleConfigs;
 use bevy::prelude::{
     App, BackgroundColor, ButtonInput, ChildOf, Color, Commands, Component, Entity, FlexDirection,
-    GlobalZIndex, Handle, Has, Image, ImageNode, Local, Message, MessageReader, MessageWriter,
-    MouseButton, Node, Overflow, Plugin, PositionType, Quat, Query, Res, ResMut, Resource, Rot2,
-    Text, TextColor, TextFont, UiTransform, Update, Val, Vec3, Window, With, Without, default,
+    GlobalZIndex, Handle, Has, Image, ImageNode, JustifyContent, Local, Message, MessageReader,
+    MessageWriter, MouseButton, Node, Overflow, Plugin, PositionType, Quat, Query, Res, ResMut,
+    Resource, Rot2, Text, TextColor, TextFont, UiTransform, Update, Val, Vec3, Window, With,
+    Without, default,
 };
 use bevy::text::{FontSize, Justify, LineBreak, TextLayout};
 use bevy::window::CursorOptions;
@@ -1163,30 +1165,40 @@ fn spawn_pause_map(
             PauseMapPart,
             super::original_keys::ControlsHelpPanel,
         ));
-        // The label is centred on the record's offset in a row of the
-        // button's own width.
+        // The label is centred on the record's offset in a plate-wide row.
+        // Bevy's text layout leaves a glyph run at the left of a node wider
+        // than it, so the row is a flex container that centres the text.
         let centre = button.at.x as f32 + button.label_offset.x as f32;
-        commands.spawn((
-            absolute(),
-            Text::new(button.label.clone()),
-            TextFont {
-                font_size: FontSize::Px(LABEL_FONT_PX),
-                ..default()
-            },
-            TextLayout::new(Justify::Center, LineBreak::NoWrap),
-            TextColor(rgb(LABEL_NORMAL)),
-            FontPx(LABEL_FONT_PX),
-            Placed {
-                x: centre - size.0 / 2.0,
-                y: (button.at.y + button.label_offset.y) as f32,
-                width: size.0,
-                height: size.1,
-            },
-            ButtonLabel { kind: button.kind },
-            GlobalZIndex(Z_BUTTON + 1),
-            PauseMapPart,
-            super::original_keys::ControlsHelpPanel,
-        ));
+        commands
+            .spawn((
+                Node {
+                    justify_content: JustifyContent::Center,
+                    ..absolute()
+                },
+                Placed {
+                    x: centre - size.0 / 2.0,
+                    y: (button.at.y + button.label_offset.y) as f32,
+                    width: size.0,
+                    height: size.1,
+                },
+                GlobalZIndex(Z_BUTTON + 1),
+                PauseMapPart,
+                super::original_keys::ControlsHelpPanel,
+            ))
+            .with_children(|row| {
+                row.spawn((
+                    Text::new(button.label.clone()),
+                    TextFont {
+                        font_size: FontSize::Px(LABEL_FONT_PX),
+                        ..default()
+                    },
+                    TextLayout::new(Justify::Center, LineBreak::NoWrap),
+                    TextColor(rgb(LABEL_NORMAL)),
+                    FontPx(LABEL_FONT_PX),
+                    ButtonLabel { kind: button.kind },
+                    PauseMapPart,
+                ));
+            });
     }
     if let (Some((normal, ..)), Some((rollover, ..))) =
         (handle_of(&scene.cursor.0), handle_of(&scene.cursor.1))

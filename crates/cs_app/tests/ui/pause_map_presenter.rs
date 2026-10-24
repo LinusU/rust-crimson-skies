@@ -238,7 +238,7 @@ fn accept_parity3_pause_map_02a_esc_opens_the_chart_screen_with_the_clock_frozen
     // pins, four buttons and the cursor are pictures; the backdrop, the chart's
     // clip container, the title and four labels are not.
     assert_eq!(images(&mut app), 1 + 1 + 1 + 1 + 1 + 4 + 4 + 1);
-    assert_eq!(parts(&mut app), 1 + images(&mut app) + 1 + 1 + 4);
+    assert_eq!(parts(&mut app), 1 + images(&mut app) + 1 + 1 + 4 + 4);
 
     let frozen = ticks(&app);
     run(&mut app, 60);
@@ -882,4 +882,52 @@ fn accept_parity3_pause_map_gap_07_cursor_is_drawn_once_the_pointer_has_a_positi
     assert_eq!(node.display, bevy::prelude::Display::Flex);
     assert_eq!(node.top, bevy::prelude::Val::Px(250.0));
     assert_eq!(node.width, bevy::prelude::Val::Px(40.0));
+}
+
+#[test]
+fn accept_parity3_pause_map_02a_button_labels_are_centred_in_their_plates() {
+    use bevy::prelude::{ChildOf, JustifyContent, Node, Text, Val};
+    let mut app = app();
+    run(&mut app, 30);
+    tap_escape(&mut app);
+    run(&mut app, 3);
+
+    let mut plates = app
+        .world_mut()
+        .query_filtered::<(&Node, &ImageNode), With<PauseMapPart>>();
+    let plates: Vec<(f32, f32)> = plates
+        .iter(app.world())
+        .filter_map(|(node, _)| match (node.left, node.width) {
+            (Val::Px(left), Val::Px(width)) if (width - 132.0).abs() < 1.0 => Some((left, width)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(plates.len(), 4, "four 132-wide button plates");
+
+    let mut labels = app
+        .world_mut()
+        .query_filtered::<(&Text, &ChildOf), With<PauseMapPart>>();
+    let rows: Vec<(String, Entity)> = labels
+        .iter(app.world())
+        .filter(|(text, _)| ["Resume", "Restart", "Preferences", "Quit"].contains(&text.0.as_str()))
+        .map(|(text, parent)| (text.0.clone(), parent.parent()))
+        .collect();
+    assert_eq!(rows.len(), 4, "four labels");
+    for (label, row) in rows {
+        let node = app.world().get::<Node>(row).expect("the label's row");
+        assert_eq!(
+            node.justify_content,
+            JustifyContent::Center,
+            "{label} is centred in its row"
+        );
+        let (Val::Px(left), Val::Px(width)) = (node.left, node.width) else {
+            panic!("{label}'s row is not placed in pixels");
+        };
+        assert!(
+            plates
+                .iter()
+                .any(|(l, w)| (l - left).abs() < 1.0 && (w - width).abs() < 1.0),
+            "{label}'s row spans exactly one plate"
+        );
+    }
 }
