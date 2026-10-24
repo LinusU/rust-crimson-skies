@@ -38,7 +38,7 @@ with Up held; the production terrain-contact rule judged 9 contacts and ended th
 * The `Fatal Crash!` text sits at the left edge in blue; whether that is the original's place and colour is
   not established here.
 
-## #2021 PARITY4-CRASH-F: the plateau dive, and why it is blocked
+## #2021 PARITY4-CRASH-F: the plateau dive
 
 Implementer: `claude-2`. Nothing here is `verified_original`.
 
@@ -70,3 +70,15 @@ world scenery, not `PlaytestSea`/`PlaytestGround`) and `crash_dial_red_pair`.
   zone over the silhouette. The overlay quads' placement on the dial looks wrong; follow-up task filed.
 * The scripted wing hit also starts the wing fire before the crash, so `crash_contact_effects` (sparks and
   puffs alive after the crash began) is weaker here than in the #1857 run; the sparks come only from the crash.
+
+### Update after #1814 and #2032 (2026-10-24)
+
+With the grouped-scenery colliders in, the same dive (from `(-4742, 721, -4469)`) meets scenery: the ray under
+the observed point finds scenery at y = 321.3 (the owner's observed height is 324), and the fatal contact is
+`scenery`, 291 m horizontally from the observed point at `(-4808, 205, -4563)`. `crash_on_plateau` now passes
+without any invented coordinate, which resolves the unknown above. Retail run on this machine (claude-2):
+7 of 10 checks pass; `crash_dial_red_pair` (the red pieces are drawn: 4 of 4, no other zone), `crash_frames_drawn`
+and `crash_failed_screen_shown` fail on **this machine only because every captured framebuffer is entirely black**,
+the briefing frames too (0 per mille off black), also under `caffeinate -d`. So no frame of the plateau contact,
+the dial, the crash camera or Mission Failed is cited here; they need a run on a machine whose captures are not
+black.

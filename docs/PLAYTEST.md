@@ -762,14 +762,18 @@ target/release/cs --cs-path /path/to/retail --mission M01 \
 `--smoke-crash` (valid only with `--mission … --smoke-seconds`, not with the
 other modes) goes through the briefing, the Flight Check and the launch
 cinematic, waits 60 frames after the player has control, **places the player
-400 m up with the nose 45 degrees down** (a test placement, listed in
-`report.json`) and holds the original's nose-down key (the Up arrow). Everything
+400 m up, 400 m back from the owner's observed crash point `(-5055, 324, -4718)`
+(#1755) along the line from the player's position, with the nose 45 degrees
+down** (a test placement, listed in `report.json`; the approach is derived, the
+original's heading is unknown) and holds the original's nose-down key (the Up arrow). Everything
 after that is production: the flight law, the terrain-contact rule, the crash
 camera, `Fatal Crash!` and the handover. The run photographs the contact
 (`frame_crNNNNN_crash_contact.png`), the detached camera
 (`frame_crNNNNN_crash_camera.png`), presses a key (a scripted input) and
 photographs the Mission Failed screen (`frame_crNNNNN_failed.png`). It judges
-`crash_flight_ended`, `crash_frames_drawn`, `crash_contact_effects` (a contact
+`crash_flight_ended`, `crash_on_plateau` (the fatal contact is with world
+scenery, not the sea), `crash_dial_red_pair` (a scripted wing hit draws the
+zone's dial pieces red; `frame_crNNNNN_crash_dial.png`), `crash_frames_drawn`, `crash_contact_effects` (a contact
 spark and a wing-fire puff were alive), `crash_camera_detached`,
 `crash_message_shown`, `crash_key_hands_over`, `crash_failed_screen_shown` and
 `smoke_shots_delivered`; `report.json` carries a `crash` object with the
