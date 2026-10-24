@@ -3281,7 +3281,7 @@ enum Step {
     /// Feeds the Plane Construction hub a [`SMOKE_PLANE`] (#2051).
     HubPlane,
     /// Feeds the hub's purchase panel the [`SMOKE_PLANE`] and the
-    /// [`SMOKE_CASH`] (#2053).
+    /// [`SMOKE_PURCHASE_CASH`] (#2053).
     HubPurchase,
     /// Stands in for the caller of a [`HubOutcome::Commit`]: puts up the
     /// purchase box (#2053). The smoke keeps no profile, so nothing is
@@ -3307,7 +3307,7 @@ const SMOKE_PLANE: super::construction_stats::PlaneRecord =
 
 /// The cash the smoke gives the purchase panel: more than [`SMOKE_PLANE`]
 /// costs, so *Purchase Now* is active. A harness value, not the pilot's.
-const SMOKE_CASH: i64 = 9_000;
+const SMOKE_PURCHASE_CASH: i64 = 9_000;
 
 /// The deterministic pass the smoke drives over `MainMenu` (FE-MENU-2):
 ///
@@ -3885,7 +3885,7 @@ fn inject_smoke_input(world: &mut World, state: &mut ShellResource) {
             Step::HubPurchase => {
                 let fed = state.set_hub_purchase_feed(super::construction_purchase::PurchaseFeed {
                     record: SMOKE_PLANE,
-                    cash: SMOKE_CASH,
+                    cash: SMOKE_PURCHASE_CASH,
                 });
                 if !matches!(fed, Ok(true)) {
                     eprintln!("cs: the smoke could not feed the purchase panel: {fed:?}");
