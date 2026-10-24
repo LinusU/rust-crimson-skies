@@ -125,6 +125,8 @@ pub struct EngineFacts {
     gun_loadout: GunLoadoutFact,
     /// The OrdinanceLayout screen's rocket table and record readings (#2069).
     ordinance: OrdinanceFacts,
+    /// The new pilot's starting cash and plane record (#2074).
+    new_pilot: NewPilotStartFacts,
     /// The original's default control bindings (#1733), in table order.
     control_bindings: Vec<ControlBindingFact>,
 }
@@ -357,6 +359,7 @@ impl EngineFacts {
             flight_check: flight_check_facts(&document, image_va_base)?,
             gun_loadout: gun_loadout_fact(&document, image_va_base)?,
             ordinance: ordinance_facts(&document, image_va_base)?,
+            new_pilot: new_pilot_start_facts(&document, image_va_base)?,
             control_bindings: control_binding_facts(&document, image_va_base)?,
         };
         let missions = mission_facts(&document, &facts, image_va_base)?;
@@ -439,6 +442,12 @@ impl EngineFacts {
     #[must_use]
     pub fn ordinance(&self) -> &OrdinanceFacts {
         &self.ordinance
+    }
+
+    /// The new pilot's starting cash and plane record (#2074).
+    #[must_use]
+    pub fn new_pilot(&self) -> &NewPilotStartFacts {
+        &self.new_pilot
     }
 
     /// The per-mission player-airframe rows, in file order.
@@ -1212,6 +1221,222 @@ fn ordinance_facts(
         claim,
         values,
         entries,
+    })
+}
+
+/// The keys of `[new_pilot_start]`, every one an integer. The `*_va` keys are
+/// virtual addresses in the image; the rest are values, offsets and counts.
+const NEW_PILOT_KEYS: &[&str] = &[
+    "reset_va",
+    "cash_va",
+    "cash_reset_write_va",
+    "cash_reset_value",
+    "cash_grant_write_va",
+    "cash_grant_value",
+    "cash_grant_gate_va",
+    "cash_grant_test_va",
+    "cash_profile_name_va",
+    "cash_profile_bind_va",
+    "roster_va",
+    "roster_records",
+    "record_dwords",
+    "record_copy_va",
+    "working_plane_va",
+    "working_plane_copy_va",
+    "saved_copy_va",
+    "saved_copy_write_va",
+    "template_base_va",
+    "pilot_template_va",
+    "wingman_template_va",
+    "hit_paint_flag_va",
+    "hit_paint_test_va",
+    "empty_loadout_guard_va",
+    "empty_gun_bits_mask_va",
+    "empty_gun_bits_mask",
+    "gun_bits_offset",
+    "derived_colour_offset",
+    "derived_colour_dwords",
+    "derived_colour_va",
+];
+
+/// One dword of the new pilot's template plane record at a byte offset.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PlaneRecordWord {
+    /// Byte offset inside the 204-byte record.
+    pub offset: u32,
+    /// The dword the engine holds or stores there.
+    pub value: i32,
+    /// The deciding virtual address: the template dword itself, or the
+    /// store instruction that writes it.
+    pub va: u64,
+}
+
+/// The new pilot's starting cash and plane record, committed in
+/// `data/owner-static/engine-facts.toml` `[new_pilot_start]`,
+/// `[[new_pilot_plane_word]]` and `[[empty_loadout_store]]` (#2074).
+///
+/// Unknown, and so absent from the rows: the record's name word (`+0x4`, set
+/// from a string id), the three derived colour words (`+0x68..+0x70`, written
+/// by a resolver at `derived_colour_va`) and the trailing pointer (`+0xc8`).
+#[derive(Clone, Debug)]
+pub struct NewPilotStartFacts {
+    /// The claim id the table was recorded under.
+    pub claim: String,
+    values: Vec<(&'static str, u64)>,
+    cash_reset: i64,
+    cash_grant: i64,
+    template: Vec<PlaneRecordWord>,
+    empty_loadout: Vec<PlaneRecordWord>,
+}
+
+impl NewPilotStartFacts {
+    /// One value by its `[new_pilot_start]` key.
+    ///
+    /// # Panics
+    ///
+    /// When `key` is not one of the schema's keys; the parser guarantees
+    /// every schema key is present.
+    #[must_use]
+    pub fn value(&self, key: &str) -> u64 {
+        self.values
+            .iter()
+            .find(|(name, _)| *name == key)
+            .map(|(_, value)| *value)
+            .unwrap_or_else(|| panic!("{key:?} is not a [new_pilot_start] key"))
+    }
+
+    /// The new pilot's cash in dollars. The reset writes zero; it writes the
+    /// grant instead when the profile variable `fAllowAll` (the cell at
+    /// `cash_grant_gate_va`) is non-zero.
+    #[must_use]
+    pub fn starting_cash(&self, allow_all: bool) -> i64 {
+        if allow_all {
+            self.cash_grant
+        } else {
+            self.cash_reset
+        }
+    }
+
+    /// The measured dwords of the fresh pilot's template record, by offset.
+    #[must_use]
+    pub fn template_words(&self) -> &[PlaneRecordWord] {
+        &self.template
+    }
+
+    /// One measured template dword by byte offset; `None` for an offset the
+    /// table leaves unknown.
+    #[must_use]
+    pub fn template_word(&self, offset: u32) -> Option<i32> {
+        self.template
+            .iter()
+            .find(|word| word.offset == offset)
+            .map(|word| word.value)
+    }
+
+    /// The stores `E 2212` makes when the Plane Name dialog's default-loadout
+    /// box is unchecked, in offset order (the gun-bits nibble mask is
+    /// `empty_gun_bits_mask` at `gun_bits_offset`).
+    #[must_use]
+    pub fn empty_loadout_stores(&self) -> &[PlaneRecordWord] {
+        &self.empty_loadout
+    }
+
+    /// Applies the unchecked default-loadout box to a record's dwords:
+    /// clears the gun-presence nibble, then makes the stores.
+    ///
+    /// # Panics
+    ///
+    /// When `record` is shorter than the engine's record (`record_dwords`).
+    pub fn apply_empty_loadout(&self, record: &mut [i32]) {
+        let bits = (self.value("gun_bits_offset") / 4) as usize;
+        record[bits] &= self.value("empty_gun_bits_mask") as i32;
+        for store in &self.empty_loadout {
+            record[(store.offset / 4) as usize] = store.value;
+        }
+    }
+}
+
+/// `[new_pilot_start]`, `[[new_pilot_plane_word]]` and
+/// `[[empty_loadout_store]]`.
+fn new_pilot_start_facts(
+    document: &subset::Document,
+    image_va_base: u64,
+) -> Result<NewPilotStartFacts, EngineFactsError> {
+    let table = single(document, "new_pilot_start")?;
+    let mut allowed = vec!["claim", "provenance"];
+    allowed.extend_from_slice(NEW_PILOT_KEYS);
+    known_keys(table, &allowed, "new_pilot_start")?;
+    let claim = cited(table, "new_pilot_start")?;
+    let mut values = Vec::with_capacity(NEW_PILOT_KEYS.len());
+    for key in NEW_PILOT_KEYS {
+        let value = if key.ends_with("_va") {
+            scalar_va(table, key, image_va_base)?
+        } else {
+            u64::try_from(scalar_int_in(table, key)?).map_err(|_| {
+                EngineFactsError::schema(format!("new_pilot_start: {key} is negative"))
+            })?
+        };
+        values.push((*key, value));
+    }
+    let value_of = |key: &str| {
+        values
+            .iter()
+            .find(|(name, _)| *name == key)
+            .map_or(0, |(_, value)| *value)
+    };
+    let dwords = value_of("record_dwords");
+    let words = |section: &str| -> Result<Vec<PlaneRecordWord>, EngineFactsError> {
+        let mut out: Vec<PlaneRecordWord> = Vec::new();
+        for row in array(document, section)? {
+            known_keys(
+                row,
+                &["offset", "value", "va", "claim", "provenance"],
+                section,
+            )?;
+            cited(row, section)?;
+            let offset = u32::try_from(scalar_int_in(row, "offset")?)
+                .ok()
+                .filter(|offset| offset % 4 == 0 && u64::from(offset / 4) < dwords)
+                .ok_or_else(|| {
+                    EngineFactsError::schema(format!(
+                        "{section}: offset is not a dword inside the record"
+                    ))
+                })?;
+            let value = i32::try_from(scalar_int_in(row, "value")?).map_err(|_| {
+                EngineFactsError::schema(format!("{section}: value is not a dword"))
+            })?;
+            out.push(PlaneRecordWord {
+                offset,
+                value,
+                va: scalar_va(row, "va", image_va_base)?,
+            });
+        }
+        out.sort_by_key(|word| word.offset);
+        if out.windows(2).any(|pair| pair[0].offset == pair[1].offset) {
+            return Err(EngineFactsError::schema(format!(
+                "{section}: an offset is declared twice"
+            )));
+        }
+        Ok(out)
+    };
+    let template = words("new_pilot_plane_word")?;
+    for word in &template {
+        if word.va != value_of("pilot_template_va") + u64::from(word.offset) {
+            return Err(EngineFactsError::schema(format!(
+                "new_pilot_plane_word: +0x{:x} is not at the template's address",
+                word.offset
+            )));
+        }
+    }
+    let empty_loadout = words("empty_loadout_store")?;
+    let signed = |key: &str| -> Result<i64, EngineFactsError> { scalar_int_in(table, key) };
+    Ok(NewPilotStartFacts {
+        claim,
+        values,
+        cash_reset: signed("cash_reset_value")?,
+        cash_grant: signed("cash_grant_value")?,
+        template,
+        empty_loadout,
     })
 }
 
