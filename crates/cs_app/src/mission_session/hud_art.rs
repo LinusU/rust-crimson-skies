@@ -1024,6 +1024,10 @@ fn tag_zone_pieces(
     }
 }
 
+/// How far each glyph quad stands in front of its dial face, in the gauge's
+/// own units: the face mesh reaches z = 0.024 (measured from the stored mesh).
+const GLYPH_LIFT: f32 = 0.05;
+
 /// Tags each piece of a glyph row with its left-to-right cell index.
 fn tag_glyph_cells(
     world: &mut World,
@@ -1040,11 +1044,19 @@ fn tag_glyph_cells(
         if index >= part.pieces.len() {
             break;
         }
-        world.entity_mut(*child).insert(HudGlyphCell {
+        let mut child = world.entity_mut(*child);
+        child.insert(HudGlyphCell {
             gauge,
             kind,
             cell: index,
         });
+        // The glyph quads are authored flat at z = 0 while the dial face's
+        // mesh bulges to +0.024 toward the camera, so the face hid every
+        // digit and letter (#1797). Lifting each cell clear of the face
+        // is designed; the original's draw order is unmeasured.
+        if let Some(mut transform) = child.get_mut::<Transform>() {
+            transform.translation.z += GLYPH_LIFT;
+        }
     }
 }
 
@@ -1302,12 +1314,12 @@ pub fn update_hud_art(
     let ordnance_name = rows
         .as_deref()
         .and_then(|rows| rows.first())
-        .map(|row| short_name(row.ordnance.as_str()))
+        .map(|_| super::cockpit_hud::ROCKETS_LABEL.to_owned())
         .unwrap_or_default();
     let ammo_name = gauge
         .as_ref()
         .and_then(|gauge| gauge.ammunition.first())
-        .map(|ammo| short_name(ammo.as_str()))
+        .map(|_| super::cockpit_hud::GUNS_LABEL.to_owned())
         .unwrap_or_default();
 
     for (mut visibility, pip) in &mut pips {
@@ -1375,19 +1387,6 @@ pub fn update_hud_art(
             material.0 = handle;
         }
     }
-}
-
-/// The last path segment of a content id, uppercased and trimmed to the
-/// `6char_type` extent — the ordnance/ammo type's short form (designed; the
-/// original's label source is unmeasured).
-fn short_name(id: &str) -> String {
-    id.rsplit('/')
-        .next()
-        .unwrap_or(id)
-        .to_ascii_uppercase()
-        .chars()
-        .take(6)
-        .collect()
 }
 
 /// `char` → the digit/letter material on the authored cell's parameters.

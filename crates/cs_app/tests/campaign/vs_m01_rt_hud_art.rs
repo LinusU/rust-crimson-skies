@@ -6,7 +6,7 @@
 use std::path::PathBuf;
 
 use bevy::camera::visibility::RenderLayers;
-use bevy::prelude::{Children, Entity, Mesh3d, With};
+use bevy::prelude::{Children, Entity, Mesh3d, Transform, With};
 use cs_app::mission_launch::plan_mission_launch;
 use cs_app::mission_session::{
     HUD_CAMERA_LAYER, HudArrow, HudArtCamera, HudArtRoot, HudCompassTape, HudFlag, HudGlyphCell,
@@ -323,4 +323,36 @@ fn accept_parity_m01_player_damage_gauge_composition_preloads_every_frame() {
         }
     }
     teardown(&mut app);
+}
+
+/// #1797: the glyph cells must stand in front of the dial face, whose mesh
+/// reaches z = 0.024 toward the camera; at z = 0 the face hid every digit.
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_m01_hud_1797_glyph_cells_stand_in_front_of_the_dial_face() {
+    let root = game_dir();
+    let plan = plan_mission_launch(&root, label("M06"), "The Red Menace")
+        .expect("the launch closure plans");
+    let stage = stage_for(&root, &plan).expect("the stage reads through the production readers");
+    let mut app = build_headless(&stage).expect("the stage composes headlessly");
+    app.update();
+    let world = app.world_mut();
+    let mut cells = world.query::<(&HudGlyphCell, &Transform)>();
+    let zs: Vec<f32> = cells
+        .iter(world)
+        .map(|(_, transform)| transform.translation.z)
+        .collect();
+    // The HUD pass and the cockpit's own dials each carry 4+6 missile and
+    // 4+6 gun glyph cells.
+    assert!(
+        !zs.is_empty() && zs.len().is_multiple_of(20),
+        "{} glyph cells",
+        zs.len()
+    );
+    for z in zs {
+        assert!(
+            z > 0.025,
+            "a glyph cell at z = {z} sits behind the dial face"
+        );
+    }
 }
