@@ -328,6 +328,18 @@ impl HangarPage {
         &self.captions
     }
 
+    /// `E 2210` (handler `0x4111f0`): the record a bought plane goes into, the
+    /// first empty one, unless five or fewer records are empty or of kind 2.
+    #[must_use]
+    pub fn free_slot(&self) -> Option<usize> {
+        let kinds: Vec<Option<u32>> = self
+            .planes
+            .iter()
+            .map(|plane| plane.as_ref().map(|plane| plane.kind))
+            .collect();
+        super::construction_purchase::free_slot(&kinds)
+    }
+
     /// The drop-down's closed box (25 rows displayed).
     #[must_use]
     pub const fn list(&self) -> &DropdownRow {

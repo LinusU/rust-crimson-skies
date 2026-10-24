@@ -93,6 +93,7 @@ mod construction_hangar_view;
 pub mod construction_hub;
 mod construction_hub_view;
 pub mod construction_panels;
+pub mod construction_purchase;
 pub mod construction_slots;
 pub mod construction_stats;
 mod flight_check_view;

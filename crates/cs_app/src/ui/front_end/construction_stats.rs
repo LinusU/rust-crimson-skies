@@ -87,7 +87,7 @@ const ARMOR: [i32; AIRFRAMES] = [60, 95, 125, 80, 105, 100, 110, 90, 110, 85, 12
 const AGILITY: [i32; AIRFRAMES] = [20, 12, -2, 19, 8, 10, 3, 16, 4, 17, 2];
 /// The fifth word of the airframe rows (`0x619bc8`): the gun slots whose
 /// bit is set read the second column of [`GUN`].
-const GUN_SLOTS: [u8; AIRFRAMES] = [0, 8, 12, 0, 8, 0, 8, 0, 8, 0, 0];
+pub(super) const GUN_SLOTS: [u8; AIRFRAMES] = [0, 8, 12, 0, 8, 0, 8, 0, 8, 0, 0];
 /// The gun rows at `0x619e68`, 28 bytes each: the third and fourth words
 /// (`+8`, `+0xc`) by kind 0 to 4.
 const GUN: [[i32; 2]; 5] = [[280, 520], [380, 620], [480, 720], [580, 820], [680, 920]];
