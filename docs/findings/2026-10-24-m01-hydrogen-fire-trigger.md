@@ -41,9 +41,8 @@ and `burners` inactive). It carries **no** `DAMAGE_SEQUENCE` and no `ACTIVATION`
 
 ## 2. What the data does not contain
 
-* No `CALL_ANIMATION hydrobombboomN` outside those four records (all 57 000-odd
-  decoded statements of the mission's container were checked through the records'
-  `CALL_ANIMATION` events).
+* No `CALL_ANIMATION hydrobombboomN` outside those four records (every record of the
+  mission's container was decoded; the test pins the caller set).
 * The control program (`ZBD/C3/M01/zrdr.zbd`) names `hydrogen_fire` once (OBJECTIVE25's
   `ANIM_STATE`) and `hydrogentank1` as an objective target (OBJECTIVE38 sets it;
   OBJECTIVE25 clears it); no `WAKE_ANIM`, `CALL_ANIMATION` or other statement names a
