@@ -283,6 +283,11 @@ const PAUSE_MAP_OPEN_SHOT_FRAMES: u32 = 6;
 /// Frames a scripted mouse press is held, so both screens read the down edge
 /// on one frame and the up edge on another (#1923).
 const PAUSE_MAP_CLICK_FRAMES: u32 = 2;
+/// Where the scripted pointer rests while the open Esc screen is photographed:
+/// on the chart, clear of every button, so the brass cursor is in the frame
+/// (the pause screen draws it only once the window has a pointer position;
+/// PARITY3-PAUSE-MAP-GAP.07, #1990).
+const PAUSE_MAP_POINTER_REST: (f32, f32) = (300.0, 250.0);
 /// The most frames the pause-map phase may take across its open →
 /// Preferences → Return → close steps: a step that never lands fails its
 /// check instead of hanging the run (#1923).
@@ -4793,7 +4798,12 @@ fn smoke_script(
                 // The open map's frame, then the Preferences click's
                 // press edge on its authored centre.
                 1 => {
-                    if since == PAUSE_MAP_OPEN_SHOT_FRAMES {
+                    if since == 1 {
+                        queue.0.push(KeyOp::CursorAt(
+                            PAUSE_MAP_POINTER_REST.0,
+                            PAUSE_MAP_POINTER_REST.1,
+                        ));
+                    } else if since == PAUSE_MAP_OPEN_SHOT_FRAMES {
                         due.push("pause_map".to_owned());
                     } else if since == PAUSE_MAP_OPEN_SHOT_FRAMES + 2
                         && let Some((x, y)) = pause_map.preferences_centre()

@@ -852,3 +852,36 @@ fn accept_parity3_pause_map_gap_05_retail_photo_is_the_default_pinup_texture() {
     let art = &source.artwork["ms_p_initialpinup1"];
     assert_eq!((art.width(), art.height()), (256, 256));
 }
+
+fn cursor_node(app: &mut App) -> bevy::prelude::Node {
+    let mut query = app
+        .world_mut()
+        .query_filtered::<&bevy::prelude::Node, With<cs_app::mission_session::PauseMapPart>>();
+    // The cursor is the only 40x40 picture that tracks the pointer; find it by
+    // the position the pointer was moved to.
+    query
+        .iter(app.world())
+        .find(|node| node.left == bevy::prelude::Val::Px(300.0))
+        .expect("the cursor node follows the pointer")
+        .clone()
+}
+
+#[test]
+fn accept_parity3_pause_map_gap_07_cursor_is_drawn_once_the_pointer_has_a_position() {
+    let mut app = app();
+    tap_escape(&mut app);
+    run(&mut app, 2);
+    let window = {
+        let mut query = app.world_mut().query_filtered::<Entity, With<Window>>();
+        query.single(app.world()).expect("one window")
+    };
+    app.world_mut()
+        .get_mut::<Window>(window)
+        .expect("window")
+        .set_cursor_position(Some(Vec2::new(300.0, 250.0)));
+    run(&mut app, 2);
+    let node = cursor_node(&mut app);
+    assert_eq!(node.display, bevy::prelude::Display::Flex);
+    assert_eq!(node.top, bevy::prelude::Val::Px(250.0));
+    assert_eq!(node.width, bevy::prelude::Val::Px(40.0));
+}
