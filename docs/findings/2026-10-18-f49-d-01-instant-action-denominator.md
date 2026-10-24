@@ -58,7 +58,9 @@ do; `ZBD/c2b/IA1` declares no `num_wingmen`**, in addition to declaring no
 
 * Whether the original menu offers every (directory, offered type) pair, and
   the original preset titles.
-* The player airframe and wingman count of c2b's scenario.
+* The player airframe and wingman count of c2b's scenario. *(Resolved by F49-D.02b: the
+  engine defaults, row 5 and none; re-verified in
+  `2026-10-24-f49-d-03-fu-rules-roster.md`.)*
 * The meaning of the four numbers per spawn-point record and the runtime effect
   of `disallow_missions`.
 
