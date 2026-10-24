@@ -6524,3 +6524,529 @@ first = 1
 aux = 0
 claim = "OWNER-STATIC-2026-10-24"
 provenance = "static"
+
+# The new pilot's starting state (task #2074, P5-FEED-A, finding
+# docs/findings/2026-10-24-parity5-new-pilot-start-state.md). `reset_va` is the
+# routine behind the campaign page's `A 9` (and the startup parameter routine):
+# it zeroes the 26 plane records, copies the fresh-campaign template over
+# record 0 and over the working plane, and writes the cash. The cash is whole
+# dollars (string 1036 prints it after "$"). `cash_grant_gate_va` is the
+# profile variable `fAllowAll` (the profile table at `0x402000` binds names to
+# cells by address); its value in a profile is not read here. The empty
+# loadout rows are the stores `E 2212` makes when its flag argument is 0.
+[new_pilot_start]
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+reset_va = 0x4113b0
+cash_va = 0x64b788
+cash_reset_write_va = 0x41146b
+cash_reset_value = 0
+cash_grant_write_va = 0x41160b
+cash_grant_value = 250000
+cash_grant_gate_va = 0x647b5c
+cash_grant_test_va = 0x4115d7
+cash_profile_name_va = 0x61e7b0
+cash_profile_bind_va = 0x402002
+roster_va = 0x64b78c
+roster_records = 26
+record_dwords = 51
+record_copy_va = 0x411596
+working_plane_va = 0x64cb78
+working_plane_copy_va = 0x4115ec
+saved_copy_va = 0x6480cc
+saved_copy_write_va = 0x40ac2c
+template_base_va = 0x619f58
+pilot_template_va = 0x61a81c
+wingman_template_va = 0x61a8e8
+hit_paint_flag_va = 0x647b94
+hit_paint_test_va = 0x40aacc
+empty_loadout_guard_va = 0x40ab92
+empty_gun_bits_mask_va = 0x40ab9b
+empty_gun_bits_mask = 0xf0
+gun_bits_offset = 0x84
+derived_colour_offset = 0x68
+derived_colour_dwords = 3
+derived_colour_va = 0x406840
+
+[[new_pilot_plane_word]]
+offset = 0x0
+value = 1
+va = 0x61a81c
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0x8
+value = 0
+va = 0x61a824
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0xc
+value = 0
+va = 0x61a828
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0x10
+value = 0
+va = 0x61a82c
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0x14
+value = 0
+va = 0x61a830
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0x18
+value = 0
+va = 0x61a834
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0x1c
+value = 0
+va = 0x61a838
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0x20
+value = 0
+va = 0x61a83c
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0x24
+value = 0
+va = 0x61a840
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0x28
+value = -1
+va = 0x61a844
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0x2c
+value = 5
+va = 0x61a848
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0x30
+value = 1
+va = 0x61a84c
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0x34
+value = 2
+va = 0x61a850
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0x38
+value = 2
+va = 0x61a854
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0x3c
+value = -1
+va = 0x61a858
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0x40
+value = 4
+va = 0x61a85c
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0x44
+value = 1
+va = 0x61a860
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0x48
+value = 26
+va = 0x61a864
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0x4c
+value = 26
+va = 0x61a868
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0x50
+value = 8
+va = 0x61a86c
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0x54
+value = 0
+va = 0x61a870
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0x58
+value = 9
+va = 0x61a874
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0x5c
+value = 40
+va = 0x61a878
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0x60
+value = 8
+va = 0x61a87c
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0x64
+value = 7
+va = 0x61a880
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0x74
+value = 25
+va = 0x61a890
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0x78
+value = 25
+va = 0x61a894
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0x7c
+value = 25
+va = 0x61a898
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0x80
+value = 25
+va = 0x61a89c
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0x84
+value = 7
+va = 0x61a8a0
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0x88
+value = 2
+va = 0x61a8a4
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0x8c
+value = 1
+va = 0x61a8a8
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0x90
+value = 0
+va = 0x61a8ac
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0x94
+value = 5
+va = 0x61a8b0
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0x98
+value = 0
+va = 0x61a8b4
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0x9c
+value = 0
+va = 0x61a8b8
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0xa0
+value = 0
+va = 0x61a8bc
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0xa4
+value = 4
+va = 0x61a8c0
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0xa8
+value = 1
+va = 0x61a8c4
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0xac
+value = 1
+va = 0x61a8c8
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0xb0
+value = 11
+va = 0x61a8cc
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0xb4
+value = 11
+va = 0x61a8d0
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0xb8
+value = 1
+va = 0x61a8d4
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0xbc
+value = 1
+va = 0x61a8d8
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0xc0
+value = 11
+va = 0x61a8dc
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[new_pilot_plane_word]]
+offset = 0xc4
+value = 11
+va = 0x61a8e0
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[empty_loadout_store]]
+offset = 0x88
+value = 5
+va = 0x40aba7
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[empty_loadout_store]]
+offset = 0x8c
+value = 5
+va = 0x40abad
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[empty_loadout_store]]
+offset = 0x90
+value = 5
+va = 0x40abc2
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[empty_loadout_store]]
+offset = 0x94
+value = 5
+va = 0x40abcd
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[empty_loadout_store]]
+offset = 0x98
+value = 5
+va = 0x40abd8
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[empty_loadout_store]]
+offset = 0x9c
+value = 4
+va = 0x40abbd
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[empty_loadout_store]]
+offset = 0xa0
+value = 4
+va = 0x40abc8
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[empty_loadout_store]]
+offset = 0xa4
+value = 4
+va = 0x40abd3
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[empty_loadout_store]]
+offset = 0xa8
+value = 11
+va = 0x40ac1b
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[empty_loadout_store]]
+offset = 0xac
+value = 11
+va = 0x40ac1b
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[empty_loadout_store]]
+offset = 0xb0
+value = 11
+va = 0x40ac1b
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[empty_loadout_store]]
+offset = 0xb4
+value = 11
+va = 0x40ac1b
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[empty_loadout_store]]
+offset = 0xb8
+value = 11
+va = 0x40ac1b
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[empty_loadout_store]]
+offset = 0xbc
+value = 11
+va = 0x40ac1b
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[empty_loadout_store]]
+offset = 0xc0
+value = 11
+va = 0x40ac1b
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[empty_loadout_store]]
+offset = 0xc4
+value = 11
+va = 0x40ac1b
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[empty_loadout_store]]
+offset = 0x30
+value = 6
+va = 0x40abed
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[empty_loadout_store]]
+offset = 0x34
+value = 0
+va = 0x40abf7
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[empty_loadout_store]]
+offset = 0x38
+value = 0
+va = 0x40abfd
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[empty_loadout_store]]
+offset = 0x74
+value = 0
+va = 0x40ac09
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[empty_loadout_store]]
+offset = 0x78
+value = 0
+va = 0x40ac15
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[empty_loadout_store]]
+offset = 0x7c
+value = 0
+va = 0x40ac03
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
+
+[[empty_loadout_store]]
+offset = 0x80
+value = 0
+va = 0x40ac0f
+claim = "OWNER-STATIC-2026-10-24"
+provenance = "static"
