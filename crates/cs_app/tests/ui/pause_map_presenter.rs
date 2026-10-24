@@ -35,6 +35,7 @@ fn synthetic_source() -> PauseMapSource {
         ("loadframe", 801, 601),
         ("ha-m1map", 800, 600),
         ("momento_temp", 242, 305),
+        ("ms_p_initialpinup1", 256, 256),
         ("momento_shad", 300, 300),
         ("pin6", 76, 80),
         ("pin4", 76, 80),
@@ -821,4 +822,33 @@ fn accept_parity3_pause_map_02a_chart_draws_the_source_rectangle_at_its_position
         Some(chart_colour),
         "the bitmap is shifted so the source rectangle's corner meets the container's"
     );
+}
+
+#[test]
+fn accept_parity3_pause_map_gap_05_photo_replaces_the_placeholder_portrait() {
+    let mut scene = synthetic_source().scene;
+    assert_eq!(scene.memento.0, "momento_temp");
+    assert_eq!(scene.memento_photo(), "ms_p_initialpinup1");
+    assert!(
+        scene
+            .bitmaps()
+            .iter()
+            .any(|name| name == "ms_p_initialpinup1")
+    );
+    // A bitmap the script names otherwise is drawn as named.
+    scene.memento.0 = "ms_p_mom".to_owned();
+    assert_eq!(scene.memento_photo(), "ms_p_mom");
+}
+
+#[test]
+#[ignore = "requires CS_GAME_DIR"]
+fn accept_parity3_pause_map_gap_05_retail_photo_is_the_default_pinup_texture() {
+    let install = game_dir();
+    let screens = FrontEndScreens::open(&install).expect("the screen artwork opens");
+    let strings = |id: &str| Some(format!("<{id}>"));
+    let source =
+        read_pause_map(&install, "zbd/c3/m01", &screens, &strings).expect("M01's Esc screen reads");
+    assert_eq!(source.scene.memento_photo(), "ms_p_initialpinup1");
+    let art = &source.artwork["ms_p_initialpinup1"];
+    assert_eq!((art.width(), art.height()), (256, 256));
 }

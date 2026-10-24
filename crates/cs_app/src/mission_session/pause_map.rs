@@ -104,6 +104,14 @@ const MAX_FLAG_NUMBER: u32 = 8;
 const CHECK_MARK_WIDTH: f32 = 25.0;
 const LABEL_FONT_PX: f32 = 14.0;
 
+/// The script's placeholder photo: `momento_temp`, a studio portrait of a man
+/// that is a template, not what the original shows.
+const PLACEHOLDER_PHOTO: &str = "momento_temp";
+/// The photo the original's pause screen shows for a pilot who has chosen no
+/// cabin memento: the `rimage.zbd` texture `ms_p_initialpinup1`, a woman in a
+/// spotlight pose (finding `2026-10-24-pause-map-memento-photo.md`).
+pub const DEFAULT_MEMENTO_PHOTO: &str = "ms_p_initialpinup1";
+
 /// The layers, back to front.
 const Z_BACKDROP: i32 = 3000;
 const Z_BACKGROUND: i32 = 3001;
@@ -265,12 +273,26 @@ pub struct PauseMapScene {
 }
 
 impl PauseMapScene {
+    /// The bitmap drawn as the memento photo: the cabin memento the pilot
+    /// chose, which is [`DEFAULT_MEMENTO_PHOTO`] until a choice exists, in
+    /// place of the script's `momento_temp` placeholder. Any other bitmap the
+    /// script names is drawn as named.
+    #[must_use]
+    pub fn memento_photo(&self) -> &str {
+        if self.memento.0.eq_ignore_ascii_case(PLACEHOLDER_PHOTO) {
+            DEFAULT_MEMENTO_PHOTO
+        } else {
+            &self.memento.0
+        }
+    }
+
     /// Every bitmap name the scene draws.
     #[must_use]
     pub fn bitmaps(&self) -> Vec<String> {
         let mut names: Vec<String> = self.background.iter().map(|(n, _)| n.clone()).collect();
         names.push(self.chart.bitmap.clone());
         names.push(self.memento.0.clone());
+        names.push(self.memento_photo().to_owned());
         names.extend(self.pictures.iter().map(|p| p.bitmap.clone()));
         names.push(self.note.bitmap.clone());
         for button in &self.buttons {
@@ -1092,7 +1114,7 @@ fn spawn_pause_map(
     }
     image_part(
         commands,
-        &scene.memento.0,
+        scene.memento_photo(),
         (scene.memento.1.x as f32, scene.memento.1.y as f32),
         Z_MEMENTO,
     );

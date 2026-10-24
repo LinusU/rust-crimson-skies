@@ -59,6 +59,7 @@ fn synthetic_source() -> PauseMapSource {
         ("loadframe", 801, 601),
         ("ha-m1map", 800, 600),
         ("momento_temp", 242, 305),
+        ("ms_p_initialpinup1", 256, 256),
         ("momento_shad", 300, 300),
         ("pin6", 76, 80),
         ("pin4", 76, 80),
