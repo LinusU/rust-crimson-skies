@@ -66,7 +66,7 @@
 
 use std::fmt;
 
-use super::original::OriginalLayout;
+use super::original::{OriginalLayout, Section};
 use super::pilot_page::ListBox;
 use super::shell::ShellRect;
 
@@ -244,7 +244,7 @@ pub struct PreviousMissionsPage {
     dirty: bool,
 }
 
-fn split_tag(raw: &str) -> (Option<u32>, &str) {
+pub(super) fn split_tag(raw: &str) -> (Option<u32>, &str) {
     let Some(rest) = raw.strip_prefix('[') else {
         return (None, raw);
     };
@@ -255,12 +255,96 @@ fn split_tag(raw: &str) -> (Option<u32>, &str) {
     (digits.parse().ok(), text)
 }
 
-fn colour(text: &str) -> Option<u32> {
+pub(super) fn colour(text: &str) -> Option<u32> {
     let digits = text
         .trim()
         .strip_prefix("0x")
         .or_else(|| text.trim().strip_prefix("0X"))?;
     u32::from_str_radix(digits, 16).ok()
+}
+
+/// The `T` rows of `section` whose resource id `name` answers, as captions.
+/// A row with no resource id is filled at run time and skipped.
+pub(super) fn read_labels(
+    section: &Section,
+    name: &dyn Fn(&str) -> Option<String>,
+) -> Result<Vec<TocLabel>, TocError> {
+    let mut labels = Vec::new();
+    for row in section
+        .other
+        .iter()
+        .filter(|row| row.kind.eq_ignore_ascii_case("T"))
+    {
+        let Some(res) = row
+            .fields
+            .first()
+            .map(|field| field.trim())
+            .filter(|field| !field.is_empty())
+        else {
+            // The row with no resource id is filled at run time.
+            continue;
+        };
+        let Some(raw) = name(res) else {
+            continue;
+        };
+        let number = |index: usize| {
+            row.fields
+                .get(index)
+                .and_then(|value| value.trim().parse::<i32>().ok())
+        };
+        let (Some(x), Some(y), Some(width), Some(height), Some(color), Some(justify)) = (
+            number(1),
+            number(2),
+            number(4),
+            number(5),
+            row.fields.get(6).and_then(|value| colour(value)),
+            number(7),
+        ) else {
+            return Err(TocError::Column {
+                row: "T",
+                column: "X/Y/Width/Height/Color/Justify",
+            });
+        };
+        let (size, text) = split_tag(&raw);
+        labels.push(TocLabel {
+            id: row.id.clone(),
+            text: text.to_owned(),
+            size,
+            rect: ShellRect {
+                x,
+                y,
+                width: width.max(0) as u32,
+                height: height.max(0) as u32,
+            },
+            color,
+            justify: justify.max(0) as u32,
+        });
+    }
+    Ok(labels)
+}
+
+/// The captions of `section`'s buttons whose `IDS_*` id `name` answers.
+pub(super) fn read_captions(
+    section: &Section,
+    name: &dyn Fn(&str) -> Option<String>,
+) -> Vec<ButtonCaption> {
+    section
+        .buttons
+        .iter()
+        .filter_map(|button| {
+            let res = button
+                .fields
+                .iter()
+                .find(|field| field.trim().starts_with("IDS_"))?;
+            let raw = name(res.trim())?;
+            let (size, text) = split_tag(&raw);
+            Some(ButtonCaption {
+                button: button.id.to_ascii_uppercase(),
+                text: text.to_owned(),
+                size,
+            })
+        })
+        .collect()
 }
 
 impl PreviousMissionsPage {
@@ -315,74 +399,8 @@ impl PreviousMissionsPage {
             row_height,
             visible,
         };
-        let mut labels = Vec::new();
-        for row in section
-            .other
-            .iter()
-            .filter(|row| row.kind.eq_ignore_ascii_case("T"))
-        {
-            let Some(res) = row
-                .fields
-                .first()
-                .map(|field| field.trim())
-                .filter(|field| !field.is_empty())
-            else {
-                // The row with no resource id is filled at run time.
-                continue;
-            };
-            let Some(raw) = name(res) else {
-                continue;
-            };
-            let number = |index: usize| {
-                row.fields
-                    .get(index)
-                    .and_then(|value| value.trim().parse::<i32>().ok())
-            };
-            let (Some(x), Some(y), Some(width), Some(height), Some(color), Some(justify)) = (
-                number(1),
-                number(2),
-                number(4),
-                number(5),
-                row.fields.get(6).and_then(|value| colour(value)),
-                number(7),
-            ) else {
-                return Err(TocError::Column {
-                    row: "T",
-                    column: "X/Y/Width/Height/Color/Justify",
-                });
-            };
-            let (size, text) = split_tag(&raw);
-            labels.push(TocLabel {
-                id: row.id.clone(),
-                text: text.to_owned(),
-                size,
-                rect: ShellRect {
-                    x,
-                    y,
-                    width: width.max(0) as u32,
-                    height: height.max(0) as u32,
-                },
-                color,
-                justify: justify.max(0) as u32,
-            });
-        }
-        let captions = section
-            .buttons
-            .iter()
-            .filter_map(|button| {
-                let res = button
-                    .fields
-                    .iter()
-                    .find(|field| field.trim().starts_with("IDS_"))?;
-                let raw = name(res.trim())?;
-                let (size, text) = split_tag(&raw);
-                Some(ButtonCaption {
-                    button: button.id.to_ascii_uppercase(),
-                    text: text.to_owned(),
-                    size,
-                })
-            })
-            .collect();
+        let labels = read_labels(section, name)?;
+        let captions = read_captions(section, name);
         let icon_frame = measure(ICON_ART).map(|(width, height)| (width, height / ICON_FRAMES));
         let mut progress = progress;
         progress.completed = progress.completed.min(CAMPAIGN_MISSIONS);
