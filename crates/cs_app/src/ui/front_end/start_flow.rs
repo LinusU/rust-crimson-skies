@@ -40,11 +40,16 @@
 //! Nothing here is `verified_original`: the machine's table is designed, the
 //! transitions it is checked against are static readings.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
 
 use bevy::app::AppExit;
 
+use super::memento::{
+    ACCEPT_BUTTON, ARROW_LEFT_BUTTON, ARROW_RIGHT_BUTTON, DEFAULT_MEMENTO, Direction,
+    MEMENTO_SECTION, MementoScreen, MementoUnlocks, index_of, show_picture,
+};
 use super::window::{HandoverCell, shell_app_with};
 use super::{
     Action, ActionSource, Effect, FrontEnd, MenuShell, Request, SCREEN_SECTIONS, Screen,
@@ -227,22 +232,16 @@ pub struct NotImplemented {
     pub what: &'static str,
 }
 
-/// The cabin's two buttons that open a screen this project has not built.
+/// The cabin button that opens a screen this project has not built.
 /// Each opens a marked "not implemented" screen (rule 5: a missing screen
 /// blocks release, it never passes); a follow-up task builds each. (Previous
-/// Missions was the third until #1956 built it: [`super::previous_missions`].)
-pub const NOT_IMPLEMENTED: &[NotImplemented] = &[
-    NotImplemented {
-        section: "MomentoSelection",
-        button: "PC_B_CHANGEMOMENTO",
-        what: "Change Memento",
-    },
-    NotImplemented {
-        section: "PlaneName",
-        button: "PC_B_PLANEX",
-        what: "Plane Construction",
-    },
-];
+/// Missions was built by #1956: [`super::previous_missions`]; Change Memento
+/// by #1957: [`super::memento`].)
+pub const NOT_IMPLEMENTED: &[NotImplemented] = &[NotImplemented {
+    section: "PlaneName",
+    button: "PC_B_PLANEX",
+    what: "Plane Construction",
+}];
 
 /// The layout section that presents `screen` through the shell.
 fn section_of_screen(screen: Screen) -> Option<&'static str> {
@@ -328,6 +327,9 @@ pub enum StartStep {
     /// A cabin button opened a screen that is not built: the marked
     /// "not implemented" screen is up over the cabin until dismissed.
     NotImplemented(NotImplemented),
+    /// The Change Memento screen opened, changed its picture or closed: the
+    /// shell section needs drawing again ([`StartFlow::sync_memento`]).
+    Memento,
     /// The application should end.
     Quit,
     /// The move was refused; the machine is where it was.
@@ -345,6 +347,13 @@ pub struct StartFlow {
     launch: Option<String>,
     notice: Option<NotImplemented>,
     not_implemented_seen: Vec<NotImplemented>,
+    /// The table index of the pilot's memento (engine `[0x647b90]`).
+    memento: usize,
+    /// The Change Memento screen, while it is open.
+    memento_screen: Option<MementoScreen>,
+    memento_unlocks: MementoUnlocks,
+    /// Extent of each picture by lower-cased layout art name.
+    memento_pictures: BTreeMap<String, (u32, u32)>,
 }
 
 impl Default for StartFlow {
@@ -371,6 +380,10 @@ impl StartFlow {
             launch: None,
             notice: None,
             not_implemented_seen: Vec::new(),
+            memento: index_of(DEFAULT_MEMENTO),
+            memento_screen: None,
+            memento_unlocks: MementoUnlocks::new_pilot(),
+            memento_pictures: BTreeMap::new(),
         }
     }
 
@@ -489,6 +502,44 @@ impl StartFlow {
         StartStep::NotImplemented(entry)
     }
 
+    /// The name of the pilot's memento picture.
+    #[must_use]
+    pub fn memento(&self) -> &'static str {
+        super::memento::MEMENTOS[self.memento].name
+    }
+
+    /// The Change Memento screen, while it is open.
+    #[must_use]
+    pub fn memento_screen(&self) -> Option<&MementoScreen> {
+        self.memento_screen.as_ref()
+    }
+
+    /// The same flow for a pilot with these unlocks.
+    #[must_use]
+    pub fn with_memento_unlocks(mut self, unlocks: MementoUnlocks) -> Self {
+        self.memento_unlocks = unlocks;
+        self
+    }
+
+    /// Gives the flow the extent of each memento picture, by layout art name,
+    /// so the screen can place the one it shows.
+    pub fn set_memento_pictures(&mut self, extents: BTreeMap<String, (u32, u32)>) {
+        self.memento_pictures = extents
+            .into_iter()
+            .map(|(art, extent)| (art.to_ascii_lowercase(), extent))
+            .collect();
+    }
+
+    /// Puts the open screen's picture on the shell's `MomentoSelection`
+    /// section. `true` when the pane changed and the section must be drawn
+    /// again.
+    pub fn sync_memento(&self, shell: &mut MenuShell) -> bool {
+        match &self.memento_screen {
+            Some(screen) => show_picture(shell, screen.name(), &self.memento_pictures),
+            None => false,
+        }
+    }
+
     /// Closes the not-implemented screen, back on the screen under it.
     /// `false` when none was up.
     pub fn dismiss_notice(&mut self) -> bool {
@@ -497,6 +548,10 @@ impl StartFlow {
 
     /// The shell started the layout section `section`: look up the move.
     pub fn enter_section(&mut self, section: &str) -> StartStep {
+        if self.screen() == Screen::Cabin && section.eq_ignore_ascii_case(MEMENTO_SECTION) {
+            self.memento_screen = Some(MementoScreen::open(self.memento));
+            return StartStep::Memento;
+        }
         if self.screen() == Screen::Cabin
             && let Some(entry) = NOT_IMPLEMENTED
                 .iter()
@@ -528,6 +583,19 @@ impl StartFlow {
     /// A button with no screen script was pressed: the table action it stands
     /// for, when it is one of the native calls this flow models.
     pub fn press_button(&mut self, id: &str) -> StartStep {
+        if let Some(screen) = self.memento_screen.as_mut() {
+            let direction = if id.eq_ignore_ascii_case(ARROW_RIGHT_BUTTON) {
+                Some(Direction::Next)
+            } else if id.eq_ignore_ascii_case(ARROW_LEFT_BUTTON) {
+                Some(Direction::Previous)
+            } else {
+                None
+            };
+            if let Some(direction) = direction {
+                screen.arrow(direction, &self.memento_unlocks);
+                return StartStep::Memento;
+            }
+        }
         match BUTTON_ACTIONS
             .iter()
             .find(|(button, _)| button.eq_ignore_ascii_case(id))
@@ -578,6 +646,23 @@ impl StartFlow {
     /// Routes what the shell reported for an input: the glue the window and
     /// the tests share. A refused move is undone on the shell.
     pub fn route(&mut self, shell: &mut MenuShell, outcome: ShellOutcome) -> StartStep {
+        if let Some(screen) = self.memento_screen.take() {
+            if matches!(
+                outcome,
+                ShellOutcome::Entered { .. } | ShellOutcome::Returned { .. }
+            ) {
+                // Accept and Cancel both start the cabin: Accept stores the
+                // picture shown (`2150, 1`), Cancel leaves the choice alone.
+                if shell
+                    .last_applied()
+                    .is_some_and(|id| id.eq_ignore_ascii_case(ACCEPT_BUTTON))
+                {
+                    self.memento = screen.shown();
+                }
+                return StartStep::Memento;
+            }
+            self.memento_screen = Some(screen);
+        }
         match outcome {
             ShellOutcome::Entered { section } => {
                 let step = self.enter_section(&section);

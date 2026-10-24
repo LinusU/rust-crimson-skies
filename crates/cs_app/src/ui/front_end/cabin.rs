@@ -17,9 +17,12 @@
 //! * `focus(@ctl@)`: the script focuses the control host, not a button, so no
 //!   button is focused on entry (the owner's frame draws Change Memento in its
 //!   resting gold, not the focus glow) and the first `Down` focuses the first;
-//! * the memento picture, `callback($$E$$, 2150, …)`: **not drawn** — which
-//!   picture the pilot chose is engine state (unread), and a guessed one
-//!   would be invented content.
+//! * the memento picture, `callback($$E$$, 2150, 0, -1, …)`: **not drawn**.
+//!   Which picture it is is now known — the pilot's memento, the one the
+//!   Change Memento screen ([`super::memento`], #1957) shows and stores — but
+//!   how `KX.GK/HK/IK/JK` (20, 20, 1, 3) size and place it in the frame is
+//!   not measured (`docs/findings/2026-10-24-cabin-change-memento.md`), and a
+//!   guessed size would be invented content.
 //!
 //! What the original's `N` (callback 2010) and pin count (callback 7) are for
 //! a pilot is engine state this project has not read. [`CabinHub::NEW_PILOT`]
