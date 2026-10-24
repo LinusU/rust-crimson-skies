@@ -5,9 +5,9 @@
 //! The pieces (hub, panels, purchase, hangar, feed) have their own prefixes;
 //! these tests prove they are one screen on the production start flow: OK
 //! opens the hub fed with the pilot's plane, Ready and Sell are their own
-//! pages and not marked notices, and Cancel returns to the cabin. The
-//! synthetic test runs over layout text in the original's format and proves
-//! nothing about retail data; the `retail` test reads `$CS_GAME_DIR`.
+//! pages and not marked notices, and Cancel returns to the cabin. The tests
+//! run over layout text in the original's format and prove nothing about
+//! retail data; the retail run is the owner-command front-end smoke.
 
 use bevy::input::InputSystems;
 use bevy::prelude::{App, IntoScheduleConfigs, PreUpdate};
