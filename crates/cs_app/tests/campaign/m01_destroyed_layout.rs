@@ -9,7 +9,6 @@
 
 use avian3d::prelude::{AngularVelocity, LinearVelocity, Position, Rotation};
 use bevy::prelude::{App, GlobalTransform, Transform, Vec3, Visibility};
-use cs_app::damage::DamageScheduleReport;
 use cs_app::mission_actors::{
     MissionGroundTarget, MissionGroundTargetReport, MissionGroundTargetSweep,
 };
@@ -90,6 +89,7 @@ fn ground_target(
         generation: cs_app::scene::SceneGeneration::default(),
         position_m: [0.0; 3],
         target_point_m: [0.0; 3],
+        target_half_extents_m: [0.0; 3],
         healthy: None,
         destroyed: None,
         intact_slots: intact,
@@ -495,10 +495,13 @@ fn accept_m01_destroyed_layout_retail_the_fire_key_swaps_the_drawn_layout() {
     for _ in 0..MAX_FRAMES {
         aim_player_at(&mut app, point, Vec3::new(1.0, 0.15, 0.3));
         fire(&mut app);
+        // The authority's recorded lifecycle, not one tick's report, which a
+        // later tick of the same update overwrites.
         if app
             .world()
-            .get_resource::<DamageScheduleReport>()
-            .is_some_and(|report| report.destroyed.contains(&bound.actor))
+            .resource::<SessionDamageResolver>()
+            .resolver()
+            .is_destroyed(&bound.actor)
         {
             killed = true;
             break;
