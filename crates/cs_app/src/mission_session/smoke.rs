@@ -139,6 +139,7 @@ mod camera_modes;
 mod convoy_kill;
 mod crash;
 mod debrief;
+mod ordinance;
 mod start_flow;
 mod trucks;
 pub mod voice_trace;
@@ -2856,6 +2857,8 @@ struct SmokeData {
     debrief_run: debrief::DebriefRun,
     /// The briefing stage's progress (#1750).
     briefing: briefing::BriefingRun,
+    /// The Change Ammo detour's progress (#2070).
+    ordinance: ordinance::OrdinanceRun,
     /// The overlay nodes read at the Flight Check's full frame.
     flight_check_rows: Vec<DrawnRow>,
     phase: Phase,
@@ -3018,6 +3021,7 @@ impl Plugin for MissionSmokePlugin {
 
 /// The script's per-frame systems, in the order they must run.
 fn add_script_systems(app: &mut App) {
+    app.add_systems(Last, ordinance::smoke_ordinance.before(smoke_flight_check));
     app.add_systems(
         Last,
         (
@@ -5260,6 +5264,17 @@ fn smoke_flight_check(
         return;
     }
     probe.0 = ProbeMode::Restored;
+    if data.ordinance.step == 0 {
+        // The Change Ammo detour (#2070): the screen is opened here and the
+        // Flight Check comes back to this point once it has been left.
+        let response = phase.press_hotspot("FC_B_CHANGEAMMO");
+        println!("mission flight check: smoke pressed Change Ammo: {response:?}");
+        data.ordinance.step = 1;
+        return;
+    }
+    if data.ordinance.step == 1 {
+        return;
+    }
     let raw = frames
         .0
         .lock()
