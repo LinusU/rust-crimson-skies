@@ -33,7 +33,7 @@ use std::path::PathBuf;
 use std::process::Command;
 
 use cs_app::mission_session::{
-    CAPABILITIES_ENV, CAPTURE_ENV, EVIDENCE_DIR_ENV, MIN_CLEAR_COVERAGE_PERMILLE,
+    CAPABILITIES_ENV, CAPTURE_ENV, EVIDENCE_DIR_ENV, MIN_PROBE_DIFFERENCE_PERMILLE,
     MIN_WORLD_COVERAGE_PERMILLE, PLAYBACK_FILE, TRACE_FILE,
 };
 use cs_assets::install::{content_fingerprint, discover, fingerprint, sha256};
@@ -204,15 +204,28 @@ fn evidence_report_m01_play_world_writes_the_acceptance_report() {
         "the spawn frame must hold the world's own pixels: {world}"
     );
     assert!(world_pixels > 0 && total_pixels >= world_pixels, "{world}");
-    // The probe must also have found the window's clear colour in that frame:
-    // without it the horizon's dome and sea — which fill the frame — would
-    // be counted as the world's, and a window with no terrain at all would
-    // pass.
-    let clear = field("\"clear_permille\":");
+    // The probe must have hidden the horizon and the player structurally
+    // (their inherited visibility on the probe frame) and the hide must show
+    // in the pixels: the clear colour cannot prove it on a world whose own
+    // sky and sea fill the frame.
+    for class in ["dome", "sea", "player"] {
+        let found = field(&format!("\"{class}_found\":"));
+        let hidden = field(&format!("\"{class}_hidden\":"));
+        assert!(
+            found > 0 && hidden == found,
+            "every {class} entity must be hidden on the probe frame: {world}"
+        );
+    }
+    for class in ["weather", "precipitation"] {
+        let found = field(&format!("\"{class}_found\":"));
+        let hidden = field(&format!("\"{class}_hidden\":"));
+        assert_eq!(hidden, found, "every {class} layer must be hidden: {world}");
+    }
+    let difference = field("\"difference_permille\":");
     assert!(
-        clear >= i64::from(MIN_CLEAR_COVERAGE_PERMILLE),
-        "the probe frame must still hold the window's clear colour, or the sky was not hidden: \
-         {world}"
+        difference >= i64::from(MIN_PROBE_DIFFERENCE_PERMILLE),
+        "the probe frame must differ from the unhidden reference frame, or the hide took no \
+         effect: {world}"
     );
 
     // Both frames: real framebuffer PNGs with real content, the world probe's

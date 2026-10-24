@@ -223,7 +223,7 @@ pub use debrief_screen::{
 };
 pub use evidence::{
     CAPABILITIES_ENV, CAPTURE_ENV, CaptureHandle, CaptureRefusal, CaptureSettings,
-    EVIDENCE_DIR_ENV, MIN_CLEAR_COVERAGE_PERMILLE, MIN_WORLD_COVERAGE_PERMILLE,
+    EVIDENCE_DIR_ENV, MIN_PROBE_DIFFERENCE_PERMILLE, MIN_WORLD_COVERAGE_PERMILLE,
     MissionCapturePlugin, PLAYBACK_FILE, TRACE_FILE, finish as finish_capture, write_playback,
 };
 pub use examine::{TargetFlagChange, TargetFlagLedger};

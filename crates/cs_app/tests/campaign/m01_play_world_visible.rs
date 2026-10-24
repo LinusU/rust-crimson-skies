@@ -40,7 +40,7 @@ use bevy::asset::Handle;
 use bevy::prelude::{Entity, MeshMaterial3d, StandardMaterial, With};
 use cs_app::mission_launch::plan_mission_launch;
 use cs_app::mission_session::{
-    MIN_CLEAR_COVERAGE_PERMILLE, MIN_WORLD_COVERAGE_PERMILLE, MissionWorldParts, build_headless,
+    MIN_PROBE_DIFFERENCE_PERMILLE, MIN_WORLD_COVERAGE_PERMILLE, MissionWorldParts, build_headless,
     stage_for,
 };
 use cs_app::playtest_textures::PlaytestPart;
@@ -232,11 +232,28 @@ fn accept_m01_play_world_windowed_mission_capture_draws_world_pixels() {
         covered >= MIN_WORLD_COVERAGE_PERMILLE,
         "the spawn frame must hold the world's own pixels: {world}"
     );
-    let clear = field("\"clear_permille\":");
+    // The probe must have hidden the horizon and the player structurally
+    // (their inherited visibility on the probe frame) and the hide must show
+    // in the pixels: the clear colour cannot prove it on a world whose own
+    // sky and sea fill the frame.
+    for class in ["dome", "sea", "player"] {
+        let found = field(&format!("\"{class}_found\":"));
+        let hidden = field(&format!("\"{class}_hidden\":"));
+        assert!(
+            found > 0 && hidden == found,
+            "every {class} entity must be hidden on the probe frame: {world}"
+        );
+    }
+    for class in ["weather", "precipitation"] {
+        let found = field(&format!("\"{class}_found\":"));
+        let hidden = field(&format!("\"{class}_hidden\":"));
+        assert_eq!(hidden, found, "every {class} layer must be hidden: {world}");
+    }
+    let difference = field("\"difference_permille\":");
     assert!(
-        clear >= MIN_CLEAR_COVERAGE_PERMILLE,
-        "the probe frame must still hold the window's clear colour, or the sky was not hidden \
-         and its own gradient would be the 'world' pixels: {world}"
+        difference >= MIN_PROBE_DIFFERENCE_PERMILLE,
+        "the probe frame must differ from the unhidden reference frame, or the hide took no \
+         effect: {world}"
     );
     assert!(
         dir.join("trace.jsonl").exists()
